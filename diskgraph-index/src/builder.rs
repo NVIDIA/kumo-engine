@@ -91,13 +91,17 @@ impl ShardBuilder {
 
         let mut nodes_seen = 0u64;
         let mut last_edge: Option<EdgeRec> = None;
-
+        let mut build_stats = BuildStats {
+            truncated_edges_per_relation: vec![0; self.params.relation_metas.len()],
+            ..Default::default()
+        };
         let mut prev_offset: u64 = 0;
         // Reuse allocations for buckets and counts to avoid per-node Vec allocations.
         let mut buckets: Vec<Vec<EdgeRec>> = vec![Vec::new(); self.params.relation_metas.len()];
         let mut counts: Vec<usize> = vec![0; self.params.relation_metas.len()];
         while let Some(node_id) = node_stream.next_id()? {
             nodes_seen += 1;
+            build_stats.nodes_ingested += 1;
             let start_offset = edges_writer.byte_offset();
             // Collect edges for this node by relation.
             for bucket in buckets.iter_mut() {
@@ -114,6 +118,7 @@ impl ShardBuilder {
             for (i, b) in buckets.iter().enumerate() {
                 counts[i] = b.len();
             }
+            let original_counts = counts.clone();
             let node_bytes = EdgeWriter::node_length_bytes(&layouts, &counts)?;
 
             // Determine if we need to truncate to stay within u16 delta budget.
@@ -125,6 +130,7 @@ impl ShardBuilder {
                 .ok_or(IndexBuildError::OffsetDeltaOverflow)?;
             if node_bytes > budget {
                 truncate_counts(&mut buckets, &mut counts, &layouts, start_offset, prev_offset)?;
+                build_stats.truncated_nodes += 1;
             }
 
             // Write prefix counts then edge data per relation.
@@ -133,10 +139,18 @@ impl ShardBuilder {
                 if rel_edges.len() > target_len {
                     rel_edges.truncate(target_len);
                 }
+                let truncated = original_counts[rel_idx].saturating_sub(target_len);
+                if truncated > 0 {
+                    build_stats.truncated_edges_total += truncated as u64;
+                    build_stats.truncated_edges_per_relation[rel_idx] = build_stats.truncated_edges_per_relation[rel_idx].saturating_add(truncated as u64);
+                }
                 edges_writer.write_count(target_len as u32)?;
                 for edge in rel_edges.iter().take(target_len) {
                     edges_writer.write_edge(edge)?;
                 }
+                build_stats.edges_ingested = build_stats
+                    .edges_ingested
+                    .saturating_add(target_len as u64);
             }
             offsets_writer.push(edges_writer.byte_offset())?;
             prev_offset = edges_writer.byte_offset();
@@ -169,6 +183,7 @@ impl ShardBuilder {
             edges_path,
             stats,
             layouts,
+            build_stats,
         })
     }
 }
@@ -178,7 +193,19 @@ pub struct ShardBuildOutput {
     pub offsets_path: PathBuf,
     pub edges_path: PathBuf,
     pub stats: NodeEdgeStats,
+    pub build_stats: BuildStats,
     pub layouts: Arc<Vec<RelationLayout>>,
+}
+
+/// Counters gathered during build. These are non-fatal events that help
+/// surface warning conditions to callers.
+#[derive(Debug, Default, Clone)]
+pub struct BuildStats {
+    pub nodes_ingested: u64,
+    pub edges_ingested: u64,
+    pub truncated_nodes: u64,
+    pub truncated_edges_total: u64,
+    pub truncated_edges_per_relation: Vec<u64>,
 }
 
 fn compute_relation_layouts(relation_metas: &[EdgeRelationMetadata], node_types: &[NodeTypeMetadata]) -> Result<Vec<RelationLayout>> {
