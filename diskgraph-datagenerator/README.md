@@ -11,7 +11,8 @@ cargo build -p diskgraph-datagenerator
 ## Usage
 
 ```bash
-cargo run -p diskgraph-datagenerator -- --output /tmp/dg-data --scenario coverage --nodes 10000 --edges 50000 --edge-shards 4
+# Generate all scenarios with multi-shard nodes/edges (shared shard count)
+cargo run -p diskgraph-datagenerator -- --output /tmp/dg-data --scenario coverage --nodes 10000 --edges 50000 --node-shards 8
 ```
 
 Arguments:
@@ -19,22 +20,28 @@ Arguments:
 - `--scenario {coverage,simple-no-optional,temporal-presorted-with-edge-id,temporal-weighted-unsorted,weighted-only,mixed-multitable}`: which scenario(s) to generate. `coverage` generates all.
 - `--nodes N`: approximate nodes per node type (default: 10_000).
 - `--edges N`: approximate edges per relation (default: 50_000).
-- `--edge-shards N`: number of Parquet shards per edge relation (default: 4).
+- `--node-shards N`: number of Parquet shards per node type and per edge relation (default: 4; multi-shard by default).
 
 ## Scenarios and Edge Cases
 
 - `simple_no_optional`: one node type, one relation, no dest_sort_key or edge_id.
-- `temporal_presorted_with_edge_id`: dest_sort_key present (32-bit), edge_id present (64-bit), input shards presorted by (src_id, dest_sort_key desc).
-- `temporal_weighted_unsorted`: dest_sort_key present (16-bit) with unsorted shards to test robustness of ingest sorting; edge_id present (32-bit).
+- `temporal_presorted_with_edge_id`: dest_sort_key present (32-bit), edge_id present (64-bit); shards sorted by (src_id, dest_sort_key desc).
+- `temporal_weighted_unsorted`: dest_sort_key present (16-bit), edge_id present (32-bit); shards sorted by (src_id, dest_sort_key desc).
 - `weighted_only`: dest_sort_key present (8-bit) used purely as weight; no edge_id.
-- `mixed_multitable`: multiple node types and relations, mixing presence/absence of dest_sort_key and edge_id; both presorted and unsorted relations included.
+- `mixed_multitable`: multiple node types and relations, mixing presence/absence of dest_sort_key and edge_id; all shards sorted and aligned.
 - `coverage`: generates all the above under the output directory.
 
 ## Output Layout
 
 Each scenario creates a dataset directory under `--output`, for example `simple_no_optional/`:
 - `metadata.json`: matches the schema in `diskgraph-core/src/metadata.rs`.
-- `nodes/TYPE_nodes.parquet`: one Parquet file per node type with an `id` column.
+- `nodes/TYPE/part-00000.parquet ...`: sharded Parquet files per node type with an `id` column.
 - `edges/RELATION/part-00000.parquet ...`: shards for each edge relation containing `src_id`, `dst_id`, optional `dest_sort_key`, and optional `edge_id` columns.
+Metadata records the relative shard paths for both nodes and edges to keep the dataset self-contained.
+
+Generation guarantees:
+- Node shards are contiguous, sorted by `id`.
+- Edge shards are sorted by `(src_id, dest_sort_key DESC when present)`.
+- Shard counts for nodes and edges match, and edge shard `N` only contains `src_id` values from node shard `N` of the relation’s source type.
 
 Parquet files are generated with ArrowWriter using plain-encoded `Int64` columns to keep ingestion predictable.

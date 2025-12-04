@@ -35,6 +35,8 @@ pub struct NodeTypeMetadata {
     pub estimated_count: Option<u64>,
     /// Input ID width (32 or 64 bits).
     pub id_width: BitWidth,
+    /// Relative paths to Parquet shards containing node ids.
+    pub shards: Vec<String>,
 }
 
 /// Edge relation definition pulled from metadata.json.
@@ -51,8 +53,6 @@ pub struct EdgeRelationMetadata {
     pub dest_sort_key_bits: Option<BitWidth>,
     /// Optional edge_id width.
     pub edge_id_bits: Option<BitWidth>,
-    /// Whether input shards are pre-sorted by (src_id, dest_sort_key desc).
-    pub presorted_by_src_and_sort_key: bool,
     /// Expected edge count for sizing admission control.
     pub estimated_count: Option<u64>,
 }
