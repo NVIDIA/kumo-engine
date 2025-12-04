@@ -37,7 +37,7 @@ Each scenario creates a dataset directory under `--output`, for example `simple_
 - `metadata.json`: matches the schema in `diskgraph-core/src/metadata.rs`.
 - `nodes/TYPE/part-00000.parquet ...`: sharded Parquet files per node type with an `id` column.
 - `edges/RELATION/part-00000.parquet ...`: shards for each edge relation containing `src_id`, `dst_id`, optional `dest_sort_key`, and optional `edge_id` columns.
-Metadata records the relative shard paths for both nodes and edges to keep the dataset self-contained.
+Metadata records the relative shard paths for both nodes and edges plus per-shard id ranges (node shard min/max id; edge shard source min/max id) to keep the dataset self-contained and routable.
 
 Generation guarantees:
 - Node shards are contiguous, sorted by `id`.

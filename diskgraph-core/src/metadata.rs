@@ -1,28 +1,13 @@
 use crate::errors::{DiskgraphError, Result};
 use serde::{Deserialize, Serialize};
-use serde_with::{serde_as, DisplayFromStr};
+use serde_with::serde_as;
 
-/// Bit width enum for ids and optional edge attributes.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum BitWidth {
-    Bits32,
-    Bits64,
-    Bits16,
-    Bits8,
-    Bits4,
-}
-
-impl BitWidth {
-    pub fn as_bits(self) -> u8 {
-        match self {
-            BitWidth::Bits32 => 32,
-            BitWidth::Bits64 => 64,
-            BitWidth::Bits16 => 16,
-            BitWidth::Bits8 => 8,
-            BitWidth::Bits4 => 4,
-        }
-    }
+/// Per-shard node metadata to route lookups.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NodeShardMetadata {
+    pub path: String,
+    pub min_id: u64,
+    pub max_id: u64,
 }
 
 /// Node type definition pulled from metadata.json.
@@ -31,12 +16,16 @@ pub struct NodeTypeMetadata {
     pub name: String,
     /// Maximum node id observed for the type.
     pub max_id: u64,
-    /// Expected cardinality. Used for sizing the on-disk layout.
-    pub estimated_count: Option<u64>,
-    /// Input ID width (32 or 64 bits).
-    pub id_width: BitWidth,
-    /// Relative paths to Parquet shards containing node ids.
-    pub shards: Vec<String>,
+    /// Relative paths and ranges for Parquet shards containing node ids.
+    pub shards: Vec<NodeShardMetadata>,
+}
+
+/// Per-shard edge metadata to route source id lookups.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EdgeShardMetadata {
+    pub path: String,
+    pub src_min_id: u64,
+    pub src_max_id: u64,
 }
 
 /// Edge relation definition pulled from metadata.json.
@@ -48,13 +37,9 @@ pub struct EdgeRelationMetadata {
     /// Destination node type name.
     pub dst_type: String,
     /// Relative paths to the Parquet shards from the dataset root.
-    pub shards: Vec<String>,
-    /// Optional dest_sort_key configuration.
-    pub dest_sort_key_bits: Option<BitWidth>,
-    /// Optional edge_id width.
-    pub edge_id_bits: Option<BitWidth>,
-    /// Expected edge count for sizing admission control.
-    pub estimated_count: Option<u64>,
+    pub shards: Vec<EdgeShardMetadata>,
+    /// Optional dest_sort_key configuration (bit width when present).
+    pub dest_sort_key_bits: Option<u8>,
 }
 
 /// Root metadata payload found in metadata.json.
@@ -64,14 +49,6 @@ pub struct DatasetMetadata {
     pub dataset_name: String,
     pub node_types: Vec<NodeTypeMetadata>,
     pub edge_relations: Vec<EdgeRelationMetadata>,
-    /// Optional hint about the logical timestamp column name used to derive
-    /// dest_sort_key when present.
-    pub dest_sort_key_name: Option<String>,
-    /// Optional hint about the edge identifier column name.
-    pub edge_id_name: Option<String>,
-    /// Raw size of the source Parquet payload on object storage or disk.
-    #[serde_as(as = "Option<DisplayFromStr>")]
-    pub source_parquet_bytes: Option<u64>,
 }
 
 impl DatasetMetadata {
@@ -82,21 +59,47 @@ impl DatasetMetadata {
         let mut bytes: u64 = 0;
         // Nodes: ids only, packed densely with minimal overhead.
         for node in &self.node_types {
-            let count = node.estimated_count.unwrap_or(node.max_id + 1);
-            let per_node = (node.id_width.as_bits() as u64).saturating_div(8).max(4);
+            let count_from_shards: u64 = node
+                .shards
+                .iter()
+                .map(|s| {
+                    if s.max_id >= s.min_id {
+                        s.max_id - s.min_id + 1
+                    } else {
+                        0
+                    }
+                })
+                .sum();
+            let count = count_from_shards.max(node.max_id + 1);
+            let per_node = 8u64;
             bytes = bytes
                 .checked_add(count.saturating_mul(per_node))
                 .ok_or_else(|| DiskgraphError::InvalidMetadata("node size overflow".into()))?;
         }
         // Edges: id + dest_sort_key + edge_id + layout overhead (~16 bytes).
         for edge in &self.edge_relations {
-            let count = edge.estimated_count.unwrap_or(0);
+            // We do not know the exact edge count from metadata. Use a conservative
+            // heuristic: assume a fanout per source id (default 16) across the
+            // covered src_id ranges. This intentionally over-estimates to keep
+            // admission control safe.
+            let src_span: u64 = edge
+                .shards
+                .iter()
+                .map(|s| {
+                    if s.src_max_id >= s.src_min_id {
+                        s.src_max_id - s.src_min_id + 1
+                    } else {
+                        0
+                    }
+                })
+                .sum();
+            let assumed_fanout = 16u64;
+            let count = src_span
+                .saturating_mul(assumed_fanout)
+                .max(src_span);
             let mut per_edge = 8u64; // src_id + dst_id minimum footprint.
             if let Some(bits) = edge.dest_sort_key_bits {
-                per_edge = per_edge.saturating_add((bits.as_bits() as u64).saturating_div(8).max(1));
-            }
-            if let Some(bits) = edge.edge_id_bits {
-                per_edge = per_edge.saturating_add((bits.as_bits() as u64).saturating_div(8).max(4));
+                per_edge = per_edge.saturating_add((bits as u64).saturating_div(8).max(1));
             }
             // Allow for encoding overhead and indexing structures.
             per_edge = per_edge.saturating_add(16);
