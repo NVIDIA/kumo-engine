@@ -1,16 +1,24 @@
-use crate::layout::{EdgeListView, OffsetFileHeader, OFFSETS_FILENAME, EDGES_FILENAME};
+use crate::layout::{EdgeListView, OffsetFileHeader, OFFSETS_FILENAME, EDGES_FILENAME, DELTA_CHUNK};
 use anyhow::Result;
 use diskgraph_core::errors::DiskgraphError;
 use memmap2::Mmap;
 use std::fs::File;
 use std::path::Path;
 
+#[derive(Debug)]
+struct OffsetChunk {
+    base_idx: u64,
+    count: u16,
+    data_offset: usize,
+}
+
 /// Memory-mapped shard reader. Provides zero-copy edge list access by decoding
 /// offsets and slicing into the edge data file.
 pub struct ShardReader {
-    _offsets: Mmap,
+    offsets_mmap: Mmap,
     edges: Mmap,
     header: OffsetFileHeader,
+    chunks: Vec<OffsetChunk>,
 }
 
 impl ShardReader {
@@ -23,10 +31,12 @@ impl ShardReader {
         let edges = unsafe { Mmap::map(&edges_file)? };
         let header: OffsetFileHeader = bincode::deserialize(&offsets[..std::mem::size_of::<OffsetFileHeader>()])
             .map_err(|_| DiskgraphError::InvalidMetadata("invalid offsets header".into()))?;
+        let chunks = parse_offset_chunks(&offsets, header.total_offsets)?;
         Ok(Self {
-            _offsets: offsets,
+            offsets_mmap: offsets,
             edges,
             header,
+            chunks,
         })
     }
 
@@ -34,13 +44,79 @@ impl ShardReader {
         &self.header
     }
 
-    /// Lookup a node's edge list by index within the shard. This is a stub that
-    /// returns an empty view until the offset decoding is implemented.
-    pub fn edges_for_node(&self, _node_idx: u64, dest_sort_key_bits: Option<u8>) -> Result<EdgeListView<'_>> {
+    /// Lookup a node's edge list by index within the shard.
+    pub fn edges_for_node(&self, node_idx: u64, dest_sort_key_bits: Option<u8>) -> Result<EdgeListView<'_>> {
+        if node_idx + 1 >= self.header.total_offsets {
+            return Err(DiskgraphError::InvalidMetadata("node index out of range".into()).into());
+        }
+        let start_word = decode_offset(&self.offsets_mmap, &self.chunks, node_idx)?;
+        let end_word = decode_offset(&self.offsets_mmap, &self.chunks, node_idx + 1)?;
+        let start_byte = (start_word * self.header.edge_blob_word_size as u64) as usize;
+        let end_byte = (end_word * self.header.edge_blob_word_size as u64) as usize;
+        if end_byte > self.edges.len() || start_byte > end_byte {
+            return Err(DiskgraphError::InvalidMetadata("offset points outside edge blob".into()).into());
+        }
+        let raw = &self.edges[start_byte..end_byte];
+        let entry_size = if dest_sort_key_bits.is_some() { 16 } else { 8 };
+        let edge_count = (raw.len() / entry_size) as u32;
         Ok(EdgeListView {
-            raw: &self.edges[..0],
-            edge_count: 0,
+            raw,
+            edge_count,
             dest_sort_key_bits,
         })
     }
+}
+
+fn parse_offset_chunks(offsets: &Mmap, total_offsets: u64) -> Result<Vec<OffsetChunk>> {
+    let mut chunks = Vec::new();
+    let mut cursor = std::mem::size_of::<OffsetFileHeader>();
+    let mut base_idx = 0u64;
+    while (cursor as u64) < offsets.len() as u64 && base_idx < total_offsets {
+        if cursor + 2 + 8 > offsets.len() {
+            break;
+        }
+        let count = u16::from_le_bytes([offsets[cursor], offsets[cursor + 1]]);
+        let base_offset_bytes = &offsets[cursor + 2..cursor + 10];
+        let _base = u64::from_le_bytes(base_offset_bytes.try_into().unwrap());
+        chunks.push(OffsetChunk {
+            base_idx,
+            count,
+            data_offset: cursor,
+        });
+        // advance cursor: count/u64/deltas
+        let chunk_bytes = 2 + 8 + (count.saturating_sub(1) as usize) * 2;
+        cursor += chunk_bytes;
+        base_idx += count as u64;
+    }
+    Ok(chunks)
+}
+
+fn decode_offset(offsets: &Mmap, chunks: &[OffsetChunk], idx: u64) -> Result<u64> {
+    // Find chunk containing idx
+    let chunk_idx = (idx as usize) / DELTA_CHUNK;
+    let chunk = chunks
+        .get(chunk_idx)
+        .ok_or_else(|| DiskgraphError::InvalidMetadata("offset chunk missing".into()))?;
+    let within = idx - chunk.base_idx;
+    if within as u16 >= chunk.count {
+        return Err(DiskgraphError::InvalidMetadata("offset index out of chunk range".into()).into());
+    }
+    let mut cursor = chunk.data_offset;
+    let count = u16::from_le_bytes([offsets[cursor], offsets[cursor + 1]]);
+    debug_assert_eq!(count, chunk.count);
+    cursor += 2;
+    let base = u64::from_le_bytes(offsets[cursor..cursor + 8].try_into().unwrap());
+    if within == 0 {
+        return Ok(base);
+    }
+    cursor += 8;
+    let mut acc = base;
+    for _ in 0..within {
+        let delta = u16::from_le_bytes([offsets[cursor], offsets[cursor + 1]]);
+        acc = acc
+            .checked_add(delta as u64)
+            .ok_or_else(|| DiskgraphError::InvalidMetadata("offset delta overflow".into()))?;
+        cursor += 2;
+    }
+    Ok(acc)
 }

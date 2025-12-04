@@ -13,8 +13,15 @@ anyhow = { workspace = true }
 bytes = { workspace = true }
 diskgraph-core = { path = "../diskgraph-core" }
 memmap2 = "0.9"
+parquet = { version = "51", features = ["arrow", "async"] }
+arrow-array = "51"
+arrow-schema = "51"
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 bincode = "1.3"
+tokio = { workspace = true, features = ["fs", "rt-multi-thread"] }
+tokio-util = { version = "0.7", features = ["compat"] }
+futures = { workspace = true }
+object_store = "0.9"
