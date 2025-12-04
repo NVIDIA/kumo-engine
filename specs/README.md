@@ -1,0 +1,77 @@
+# DiskGraph Dataset Specification
+
+This document captures the required on-disk layout and `metadata.json` schema for datasets ingested by DiskGraph.
+
+## Directory Layout
+
+- Dataset root contains:
+  - `metadata.json`
+  - `nodes/TYPE/part-00000.parquet ...` — sharded Parquet files per node type.
+  - `edges/RELATION/part-00000.parquet ...` — sharded Parquet files per edge relation.
+- Shard alignment: node and edge shard counts must match. Edge shard `N` only contains `src_id` values within the min/max range of node shard `N` for the relation’s source type.
+- Sorting:
+  - Node shards: sorted by `id` ascending.
+  - Edge shards: sorted by `(src_id, dest_sort_key desc when present)`.
+
+## Column Names (fixed)
+
+- Node Parquet schema: `id` (Int64).
+- Edge Parquet schema (depending on optional fields):
+  - Required: `src_id` (Int64), `dst_id` (Int64)
+  - Optional: `dest_sort_key` (Int64) when present in relation metadata
+  - Optional: `edge_id` (Int64) when present in relation metadata
+Column names are fixed and must adhere to this spec.
+
+## metadata.json Schema
+
+```jsonc
+{
+  "dataset_name": "my_dataset",
+  "node_types": [
+    {
+      "name": "User",
+      "max_id": 123456,
+      "shards": [
+        { "path": "nodes/user/part-00000.parquet", "min_id": 0, "max_id": 49999 },
+        { "path": "nodes/user/part-00001.parquet", "min_id": 50000, "max_id": 99999 }
+      ]
+    }
+  ],
+  "edge_relations": [
+    {
+      "name": "Follows",
+      "src_type": "User",
+      "dst_type": "User",
+      "shards": [
+        { "path": "edges/follows/part-00000.parquet", "src_min_id": 0, "src_max_id": 49999 },
+        { "path": "edges/follows/part-00001.parquet", "src_min_id": 50000, "src_max_id": 99999 }
+      ],
+      "dest_sort_key_bits": null,
+      "edge_id_bits": null
+    }
+  ]
+}
+```
+
+Field notes:
+- `dataset_name`: arbitrary identifier for this dataset.
+- `node_types[*].name`: logical node type name.
+- `node_types[*].max_id`: maximum node id observed for the type.
+- `node_types[*].shards`: relative paths and ID ranges for node shards.
+- `edge_relations[*].name`: logical relation name.
+- `edge_relations[*].src_type` / `dst_type`: refer to node type names.
+- `edge_relations[*].shards`: relative paths and source ID ranges for edge shards; shard count must align with the source node type shard count.
+- `edge_relations[*].dest_sort_key_bits`: one of `4|8|16|32` (bit width) or null to indicate presence/width of `dest_sort_key`.
+- `edge_relations[*].edge_id_bits`: `64` (bit width) or null to indicate presence/width of `edge_id`.
+
+## Validation Rules
+
+- All IDs in Parquet files must fall within the shard ranges declared in metadata.
+- Edge shard ranges must be a subset of the source node shard ranges.
+- Node and edge shard counts for a relation’s source type must match.
+- Sorting requirements must hold for fast lookup.
+
+## Non-goals
+
+- Compression/layout specifics are implementation-defined.
+- No alternate column names are supported; schemas are fixed as above.
