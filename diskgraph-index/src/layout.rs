@@ -47,6 +47,9 @@ pub struct RelationLayout {
     pub dst_bits: u8,
     pub dest_sort_key_bits: Option<u8>,
     pub entry_bytes: usize,
+    /// Precomputed masks to avoid per-edge recomputation.
+    pub dst_mask: u64,
+    pub dest_sort_key_mask: Option<u64>,
 }
 
 /// A view over an edge list stored in the edge data file. This is a lightweight

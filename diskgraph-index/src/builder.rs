@@ -93,11 +93,16 @@ impl ShardBuilder {
         let mut last_edge: Option<EdgeRec> = None;
 
         let mut prev_offset: u64 = 0;
+        // Reuse allocations for buckets and counts to avoid per-node Vec allocations.
+        let mut buckets: Vec<Vec<EdgeRec>> = vec![Vec::new(); self.params.relation_metas.len()];
+        let mut counts: Vec<usize> = vec![0; self.params.relation_metas.len()];
         while let Some(node_id) = node_stream.next_id()? {
             nodes_seen += 1;
             let start_offset = edges_writer.byte_offset();
             // Collect edges for this node by relation.
-            let mut buckets: Vec<Vec<EdgeRec>> = vec![Vec::new(); self.params.relation_metas.len()];
+            for bucket in buckets.iter_mut() {
+                bucket.clear();
+            }
             while let Some(edge) = edge_stream.peek_order_checked(last_edge.as_ref())? {
                 if edge.src > node_id {
                     break;
@@ -106,7 +111,9 @@ impl ShardBuilder {
                 last_edge = Some(edge);
                 buckets[edge.relation_id as usize].push(edge);
             }
-            let mut counts: Vec<usize> = buckets.iter().map(|b| b.len()).collect();
+            for (i, b) in buckets.iter().enumerate() {
+                counts[i] = b.len();
+            }
             let node_bytes = EdgeWriter::node_length_bytes(&layouts, &counts)?;
 
             // Determine if we need to truncate to stay within u16 delta budget.
@@ -127,7 +134,7 @@ impl ShardBuilder {
                     rel_edges.truncate(target_len);
                 }
                 edges_writer.write_count(target_len as u32)?;
-                for edge in rel_edges {
+                for edge in rel_edges.iter().take(target_len) {
                     edges_writer.write_edge(edge)?;
                 }
             }
@@ -182,11 +189,16 @@ fn compute_relation_layouts(relation_metas: &[EdgeRelationMetadata], node_types:
             .find(|n| n.name == rel.dst_type)
             .map(|n| bits_for_id(n.max_id))
             .unwrap_or(64);
+        let dst_mask = if dst_bits >= 64 { u64::MAX } else { (1u64 << dst_bits) - 1 };
+        let sort_bits = rel.dest_sort_key_bits;
+        let dest_sort_key_mask = sort_bits.map(|bits| if bits >= 64 { u64::MAX } else { (1u64 << bits) - 1 });
         out.push(RelationLayout {
             relation_id: i as u16,
             dst_bits,
             dest_sort_key_bits: rel.dest_sort_key_bits,
             entry_bytes: ((dst_bits as usize + rel.dest_sort_key_bits.unwrap_or(0) as usize + 7) / 8).max(1),
+            dst_mask,
+            dest_sort_key_mask,
         });
     }
     Ok(out)
@@ -315,16 +327,11 @@ impl EdgeWriter {
         }
         let mut acc: u128 = 0;
         let mut bit_cursor = 0usize;
-        let dst_mask = if layout.dst_bits == 64 {
-            u64::MAX
-        } else {
-            (1u64 << layout.dst_bits) - 1
-        };
-        let dst_val = edge.dst & dst_mask;
+        let dst_val = edge.dst & layout.dst_mask;
         acc |= (dst_val as u128) << bit_cursor;
         bit_cursor += layout.dst_bits as usize;
-        if let Some(bits) = layout.dest_sort_key_bits {
-            let mask = if bits == 64 { u64::MAX } else { (1u64 << bits) - 1 };
+        if layout.dest_sort_key_bits.is_some() {
+            let mask = layout.dest_sort_key_mask.unwrap_or(u64::MAX);
             let sort_val = edge.dest_sort_key.unwrap_or(0) & mask;
             acc |= (sort_val as u128) << bit_cursor;
         }
