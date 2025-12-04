@@ -307,8 +307,7 @@ impl EdgeWriter {
     fn write_edge(&mut self, edge: &EdgeRec) -> Result<()> {
         let layout = self
             .layouts
-            .iter()
-            .find(|l| l.relation_id == edge.relation_id)
+            .get(edge.relation_id as usize)
             .ok_or(IndexBuildError::UnknownRelation)?;
         let bits_total = layout.dst_bits as usize + layout.dest_sort_key_bits.unwrap_or(0) as usize;
         if bits_total > layout.entry_bytes * 8 {
@@ -404,9 +403,10 @@ pub(crate) struct EdgeRec {
 
 struct NodeStream {
     stream: BoxStream<'static, parquet::errors::Result<arrow_array::RecordBatch>>,
-    schema: SchemaRef,
+    _schema: SchemaRef,
     current_batch: Option<arrow_array::RecordBatch>,
     idx_in_batch: usize,
+    id_col_idx: usize,
     rt: Arc<Runtime>,
 }
 
@@ -422,9 +422,10 @@ impl NodeStream {
         })?;
         Ok(Self {
             stream: Box::pin(stream),
-            schema,
+            _schema: schema,
             current_batch: None,
             idx_in_batch: 0,
+            id_col_idx: 0, // initialized when first batch arrives
             rt,
         })
     }
@@ -433,10 +434,11 @@ impl NodeStream {
         loop {
             if let Some(batch) = &self.current_batch {
                 if self.idx_in_batch < batch.num_rows() {
-                    let id_array = batch
-                        .column_by_name("id")
+                    let id_col = batch
+                        .column(self.id_col_idx)
+                        .as_any()
+                        .downcast_ref::<Int64Array>()
                         .ok_or_else(|| IndexBuildError::InvalidColumn("id"))?;
-                    let id_col: &Int64Array = as_i64_array(id_array, &self.schema, "id")?;
                     let val = id_col.value(self.idx_in_batch) as u64;
                     self.idx_in_batch += 1;
                     return Ok(Some(val));
@@ -444,6 +446,10 @@ impl NodeStream {
             }
             match self.rt.block_on(self.stream.next()) {
                 Some(Ok(batch)) => {
+                    self.id_col_idx = batch
+                        .schema()
+                        .index_of("id")
+                        .map_err(|_| IndexBuildError::InvalidColumn("id"))?;
                     self.current_batch = Some(batch);
                     self.idx_in_batch = 0;
                 }
@@ -456,11 +462,17 @@ impl NodeStream {
 
 struct EdgeSubStream {
     stream: BoxStream<'static, parquet::errors::Result<arrow_array::RecordBatch>>,
-    schema: SchemaRef,
+    _schema: SchemaRef,
     batch: Option<arrow_array::RecordBatch>,
     idx_in_batch: usize,
     dest_sort_key_bits: Option<u8>,
     relation_id: u16,
+    src_idx: usize,
+    dst_idx: usize,
+    sort_idx: Option<usize>,
+    current_src: Option<Int64Array>,
+    current_dst: Option<Int64Array>,
+    current_sort: Option<Int64Array>,
     rt: Arc<Runtime>,
 }
 
@@ -476,11 +488,17 @@ impl EdgeSubStream {
         })?;
         Ok(Self {
             stream: Box::pin(stream),
-            schema,
+            _schema: schema,
             batch: None,
             idx_in_batch: 0,
             dest_sort_key_bits,
             relation_id,
+            src_idx: 0,
+            dst_idx: 0,
+            sort_idx: None,
+            current_src: None,
+            current_dst: None,
+            current_sort: None,
             rt,
         })
     }
@@ -489,19 +507,17 @@ impl EdgeSubStream {
         loop {
             if let Some(batch) = &self.batch {
                 if self.idx_in_batch < batch.num_rows() {
-                    let src_ref = batch
-                        .column_by_name("src_id")
+                    let src_col = self
+                        .current_src
+                        .as_ref()
                         .ok_or_else(|| IndexBuildError::InvalidColumn("src_id"))?;
-                    let dst_ref = batch
-                        .column_by_name("dst_id")
+                    let dst_col = self
+                        .current_dst
+                        .as_ref()
                         .ok_or_else(|| IndexBuildError::InvalidColumn("dst_id"))?;
-                    let src_col: &Int64Array = as_i64_array(src_ref, &self.schema, "src_id")?;
-                    let dst_col: &Int64Array = as_i64_array(dst_ref, &self.schema, "dst_id")?;
                     let sort_col = self
-                        .dest_sort_key_bits
-                        .and_then(|_| batch.column_by_name("dest_sort_key"))
-                        .map(|col| as_i64_array(col, &self.schema, "dest_sort_key"))
-                        .transpose()?;
+                        .current_sort
+                        .as_ref();
                     let row = self.idx_in_batch;
                     self.idx_in_batch += 1;
                     let sort_val = sort_col.map(|c| c.value(row) as u64);
@@ -515,6 +531,47 @@ impl EdgeSubStream {
             }
             match self.rt.block_on(self.stream.next()) {
                 Some(Ok(batch)) => {
+                    self.src_idx = batch
+                        .schema()
+                        .index_of("src_id")
+                        .map_err(|_| IndexBuildError::InvalidColumn("src_id"))?;
+                    self.dst_idx = batch
+                        .schema()
+                        .index_of("dst_id")
+                        .map_err(|_| IndexBuildError::InvalidColumn("dst_id"))?;
+                    self.sort_idx = if self.dest_sort_key_bits.is_some() {
+                        Some(
+                            batch
+                                .schema()
+                                .index_of("dest_sort_key")
+                                .map_err(|_| IndexBuildError::InvalidColumn("dest_sort_key"))?,
+                        )
+                    } else {
+                        None
+                    };
+                    self.current_src = Some(
+                        batch
+                            .column(self.src_idx)
+                            .as_any()
+                            .downcast_ref::<Int64Array>()
+                            .ok_or(IndexBuildError::InvalidColumn("src_id"))?
+                            .clone(),
+                    );
+                    self.current_dst = Some(
+                        batch
+                            .column(self.dst_idx)
+                            .as_any()
+                            .downcast_ref::<Int64Array>()
+                            .ok_or(IndexBuildError::InvalidColumn("dst_id"))?
+                            .clone(),
+                    );
+                    self.current_sort = self.sort_idx.and_then(|idx| {
+                        batch
+                            .column(idx)
+                            .as_any()
+                            .downcast_ref::<Int64Array>()
+                            .cloned()
+                    });
                     self.batch = Some(batch);
                     self.idx_in_batch = 0;
                 }
@@ -622,6 +679,8 @@ impl MergedEdgeStream {
     }
 }
 
+// helper retained for potential future use; keep to avoid dead-code lint in case cfg changes.
+#[allow(dead_code)]
 fn as_i64_array<'a>(array: &'a ArrayRef, _schema: &SchemaRef, name: &'static str) -> Result<&'a Int64Array> {
     array
         .as_any()
