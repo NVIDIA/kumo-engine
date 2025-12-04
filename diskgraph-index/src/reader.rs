@@ -1,4 +1,4 @@
-use crate::layout::{EdgeListView, OffsetFileHeader, RelationLayout, DELTA_CHUNK, OFFSETS_FILENAME, EDGES_FILENAME};
+use crate::layout::{EdgeListView, OffsetFileHeader, RelationLayout, OFFSETS_FILENAME, EDGES_FILENAME};
 use anyhow::Result;
 use diskgraph_core::errors::DiskgraphError;
 use memmap2::Mmap;
@@ -94,13 +94,7 @@ fn parse_offset_chunks(offsets: &Mmap, total_offsets: u64) -> Result<Vec<OffsetC
 }
 
 fn decode_offset(offsets: &Mmap, chunks: &[OffsetChunk], idx: u64) -> Result<u64> {
-    let chunk_idx = idx as usize / DELTA_CHUNK;
-    let chunk = chunks
-        .get(chunk_idx)
-        .ok_or_else(|| DiskgraphError::InvalidMetadata("offset chunk missing".into()))?;
-    if idx < chunk.base_idx || idx >= chunk.base_idx + chunk.count as u64 {
-        return Err(DiskgraphError::InvalidMetadata("offset chunk range mismatch".into()).into());
-    }
+    let chunk = find_chunk(chunks, idx)?;
     let within = idx - chunk.base_idx;
     let mut cursor = chunk.data_offset;
     let count = u16::from_le_bytes([offsets[cursor], offsets[cursor + 1]]);
@@ -128,4 +122,28 @@ fn decode_offset(offsets: &Mmap, chunks: &[OffsetChunk], idx: u64) -> Result<u64
         cursor += 2;
     }
     Ok(acc)
+}
+
+fn find_chunk<'a>(chunks: &'a [OffsetChunk], idx: u64) -> Result<&'a OffsetChunk> {
+    if chunks.is_empty() {
+        return Err(DiskgraphError::InvalidMetadata("no offset chunks".into()).into());
+    }
+    let mut lo = 0usize;
+    let mut hi = chunks.len();
+    while lo < hi {
+        let mid = (lo + hi) / 2;
+        if chunks[mid].base_idx <= idx {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    if lo == 0 {
+        return Err(DiskgraphError::InvalidMetadata("offset chunk missing".into()).into());
+    }
+    let chunk = &chunks[lo - 1];
+    if idx >= chunk.base_idx + chunk.count as u64 {
+        return Err(DiskgraphError::InvalidMetadata("offset chunk range mismatch".into()).into());
+    }
+    Ok(chunk)
 }
