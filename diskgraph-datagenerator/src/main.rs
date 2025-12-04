@@ -3,7 +3,7 @@
 //! Generates synthetic datasets in the on-disk layout expected by the
 //! diskgraph ingest pipeline: a dataset root containing `metadata.json` and
 //! Parquet shards for node and edge tables. Scenarios cover combinations of
-//! optional fields (dest_sort_key, edge_id) and single vs multi-table layouts.
+//! optional dest_sort_key fields and single vs multi-table layouts.
 //! All shards are sorted: nodes by id, edges by (src_id, dest_sort_key desc when present).
 
 use std::collections::HashMap;
@@ -26,13 +26,13 @@ use tracing::info;
 enum ScenarioKind {
     /// Single node type and relation, no optional fields.
     SimpleNoOptional,
-    /// Temporal dest_sort_key with edge_id (sorted shards).
-    TemporalPresortedWithEdgeId,
+    /// Temporal dest_sort_key (sorted shards).
+    TemporalPresorted,
     /// Temporal weighted sampling mode (sorted shards).
-    TemporalWeightedUnsorted,
-    /// Weighted-only dest_sort_key (no temporal filter) with edge_id absent.
+    TemporalWeighted,
+    /// Weighted-only dest_sort_key (no temporal filter).
     WeightedOnly,
-    /// Multi-table mix of relations with and without optional fields.
+    /// Multi-table mix of relations with and without optional dest_sort_key.
     MixedMultitable,
     /// Generate all scenarios above under one output directory.
     Coverage,
@@ -67,8 +67,8 @@ fn main() -> anyhow::Result<()> {
         ScenarioKind::Coverage => {
             for scenario in [
                 ScenarioKind::SimpleNoOptional,
-                ScenarioKind::TemporalPresortedWithEdgeId,
-                ScenarioKind::TemporalWeightedUnsorted,
+                ScenarioKind::TemporalPresorted,
+                ScenarioKind::TemporalWeighted,
                 ScenarioKind::WeightedOnly,
                 ScenarioKind::MixedMultitable,
             ] {
@@ -89,8 +89,8 @@ fn generate_dataset(cli: &Cli, scenario: ScenarioKind) -> anyhow::Result<()> {
 
     let (mut node_types, mut edge_relations, edge_rows) = match scenario {
         ScenarioKind::SimpleNoOptional => build_simple(cli),
-        ScenarioKind::TemporalPresortedWithEdgeId => build_temporal_presorted(cli),
-        ScenarioKind::TemporalWeightedUnsorted => build_temporal_weighted(cli),
+        ScenarioKind::TemporalPresorted => build_temporal_presorted(cli),
+        ScenarioKind::TemporalWeighted => build_temporal_weighted(cli),
         ScenarioKind::WeightedOnly => build_weighted_only(cli),
         ScenarioKind::MixedMultitable => build_mixed(cli),
         ScenarioKind::Coverage => unreachable!("handled earlier"),
@@ -129,7 +129,7 @@ fn build_simple(cli: &Cli) -> (Vec<NodeTypeMetadata>, Vec<EdgeRelationMetadata>,
     (node_types, relations, edges)
 }
 
-/// Scenario: dest_sort_key present, shards presorted by (src_id, dest_sort_key desc), edge_id present.
+/// Scenario: dest_sort_key present, shards presorted by (src_id, dest_sort_key desc).
 fn build_temporal_presorted(cli: &Cli) -> (Vec<NodeTypeMetadata>, Vec<EdgeRelationMetadata>, HashMap<String, Vec<EdgeShardData>>) {
     let node_types = vec![NodeTypeMetadata {
         name: "Account".into(),
@@ -156,7 +156,7 @@ fn build_temporal_presorted(cli: &Cli) -> (Vec<NodeTypeMetadata>, Vec<EdgeRelati
     (node_types, relations, edges)
 }
 
-/// Scenario: dest_sort_key present for temporal weighted sampling, shards unsorted, edge_id present.
+/// Scenario: dest_sort_key present for temporal weighted sampling.
 fn build_temporal_weighted(cli: &Cli) -> (Vec<NodeTypeMetadata>, Vec<EdgeRelationMetadata>, HashMap<String, Vec<EdgeShardData>>) {
     let node_types = vec![NodeTypeMetadata {
         name: "Device".into(),
@@ -520,8 +520,8 @@ fn write_metadata(
 fn scenario_dir_name(scenario: &ScenarioKind) -> String {
     match scenario {
         ScenarioKind::SimpleNoOptional => "simple_no_optional",
-        ScenarioKind::TemporalPresortedWithEdgeId => "temporal_presorted_with_edge_id",
-        ScenarioKind::TemporalWeightedUnsorted => "temporal_weighted_unsorted",
+        ScenarioKind::TemporalPresorted => "temporal_presorted",
+        ScenarioKind::TemporalWeighted => "temporal_weighted",
         ScenarioKind::WeightedOnly => "weighted_only",
         ScenarioKind::MixedMultitable => "mixed_multitable",
         ScenarioKind::Coverage => "coverage",

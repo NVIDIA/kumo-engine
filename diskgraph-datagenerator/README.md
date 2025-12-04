@@ -1,6 +1,6 @@
 # DiskGraph Data Generator
 
-This tool produces synthetic datasets in the format expected by diskgraph: a dataset root containing `metadata.json` plus Parquet shards for node and edge tables. Scenarios cover combinations of optional fields (dest_sort_key, edge_id), presorted vs unsorted shards, and single vs multi-table layouts.
+This tool produces synthetic datasets in the format expected by diskgraph: a dataset root containing `metadata.json` plus Parquet shards for node and edge tables. Scenarios cover combinations of optional dest_sort_key presence, presorted shards, and single vs multi-table layouts.
 
 ## Building
 
@@ -24,11 +24,11 @@ Arguments:
 
 ## Scenarios and Edge Cases
 
-- `simple_no_optional`: one node type, one relation, no dest_sort_key or edge_id.
-- `temporal_presorted_with_edge_id`: dest_sort_key present (32-bit), edge_id present (64-bit); shards sorted by (src_id, dest_sort_key desc).
-- `temporal_weighted_unsorted`: dest_sort_key present (16-bit), edge_id present (32-bit); shards sorted by (src_id, dest_sort_key desc).
-- `weighted_only`: dest_sort_key present (8-bit) used purely as weight; no edge_id.
-- `mixed_multitable`: multiple node types and relations, mixing presence/absence of dest_sort_key and edge_id; all shards sorted and aligned.
+- `simple_no_optional`: one node type, one relation, no dest_sort_key.
+- `temporal_presorted`: dest_sort_key present (32-bit); shards sorted by (src_id, dest_sort_key desc).
+- `temporal_weighted`: dest_sort_key present (16-bit); shards sorted by (src_id, dest_sort_key desc).
+- `weighted_only`: dest_sort_key present (8-bit) used purely as weight.
+- `mixed_multitable`: multiple node types and relations, mixing presence/absence of dest_sort_key; all shards sorted and aligned.
 - `coverage`: generates all the above under the output directory.
 
 ## Output Layout
@@ -36,7 +36,7 @@ Arguments:
 Each scenario creates a dataset directory under `--output`, for example `simple_no_optional/`:
 - `metadata.json`: matches the schema in `diskgraph-core/src/metadata.rs`.
 - `nodes/TYPE/part-00000.parquet ...`: sharded Parquet files per node type with an `id` column.
-- `edges/RELATION/part-00000.parquet ...`: shards for each edge relation containing `src_id`, `dst_id`, optional `dest_sort_key`, and optional `edge_id` columns.
+- `edges/RELATION/part-00000.parquet ...`: shards for each edge relation containing `src_id`, `dst_id`, optional `dest_sort_key` columns.
 Metadata records the relative shard paths for both nodes and edges plus per-shard id ranges (node shard min/max id; edge shard source min/max id) to keep the dataset self-contained and routable.
 
 Generation guarantees:

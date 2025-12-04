@@ -76,7 +76,7 @@ impl DatasetMetadata {
                 .checked_add(count.saturating_mul(per_node))
                 .ok_or_else(|| DiskgraphError::InvalidMetadata("node size overflow".into()))?;
         }
-        // Edges: id + dest_sort_key + edge_id + layout overhead (~16 bytes).
+        // Edges: id + dest_sort_key + layout overhead (~16 bytes).
         for edge in &self.edge_relations {
             // We do not know the exact edge count from metadata. Use a conservative
             // heuristic: assume a fanout per source id (default 16) across the

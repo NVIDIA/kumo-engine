@@ -19,7 +19,6 @@ This document captures the required on-disk layout and `metadata.json` schema fo
 - Edge Parquet schema (depending on optional fields):
   - Required: `src_id` (Int64), `dst_id` (Int64)
   - Optional: `dest_sort_key` (Int64) when present in relation metadata
-  - Optional: `edge_id` (Int64) when present in relation metadata
 Column names are fixed and must adhere to this spec.
 
 ## metadata.json Schema
@@ -46,8 +45,7 @@ Column names are fixed and must adhere to this spec.
         { "path": "edges/follows/part-00000.parquet", "src_min_id": 0, "src_max_id": 49999 },
         { "path": "edges/follows/part-00001.parquet", "src_min_id": 50000, "src_max_id": 99999 }
       ],
-      "dest_sort_key_bits": null,
-      "edge_id_bits": null
+      "dest_sort_key_bits": null
     }
   ]
 }
@@ -62,7 +60,6 @@ Field notes:
 - `edge_relations[*].src_type` / `dst_type`: refer to node type names.
 - `edge_relations[*].shards`: relative paths and source ID ranges for edge shards; shard count must align with the source node type shard count.
 - `edge_relations[*].dest_sort_key_bits`: one of `4|8|16|32` (bit width) or null to indicate presence/width of `dest_sort_key`.
-- `edge_relations[*].edge_id_bits`: `64` (bit width) or null to indicate presence/width of `edge_id`.
 
 ## Validation Rules
 
