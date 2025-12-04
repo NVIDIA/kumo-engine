@@ -48,6 +48,8 @@ pub enum IndexBuildError {
 pub struct ShardBuildParams {
     pub output_dir: PathBuf,
     pub node_meta: NodeTypeMetadata,
+    /// All node type metadata, used to derive destination id bit widths per relation.
+    pub node_types: Vec<NodeTypeMetadata>,
     pub relation_metas: Vec<EdgeRelationMetadata>,
     /// Shard index we are building (used for selecting aligned edge shards).
     pub shard_index: usize,
@@ -79,7 +81,7 @@ impl ShardBuilder {
 
         let rt = Arc::new(Runtime::new()?);
 
-        let layouts = Arc::new(compute_relation_layouts(&self.params.relation_metas, &self.params.node_meta)?);
+        let layouts = Arc::new(compute_relation_layouts(&self.params.relation_metas, &self.params.node_types)?);
 
         let mut node_stream = NodeStream::try_new(rt.clone(), node_shard)?;
         let mut edge_stream = MergedEdgeStream::try_new(rt.clone(), edge_shards, &self.params.relation_metas)?;
@@ -172,10 +174,14 @@ pub struct ShardBuildOutput {
     pub layouts: Arc<Vec<RelationLayout>>,
 }
 
-fn compute_relation_layouts(relation_metas: &[EdgeRelationMetadata], _node_meta: &NodeTypeMetadata) -> Result<Vec<RelationLayout>> {
+fn compute_relation_layouts(relation_metas: &[EdgeRelationMetadata], node_types: &[NodeTypeMetadata]) -> Result<Vec<RelationLayout>> {
     let mut out = Vec::new();
     for (i, rel) in relation_metas.iter().enumerate() {
-        let dst_bits = 64u8; // fixed 64-bit ids for destinations (can be tightened with max_id per type)
+        let dst_bits = node_types
+            .iter()
+            .find(|n| n.name == rel.dst_type)
+            .map(|n| bits_for_id(n.max_id))
+            .unwrap_or(64);
         out.push(RelationLayout {
             relation_id: i as u16,
             dst_bits,
@@ -184,6 +190,14 @@ fn compute_relation_layouts(relation_metas: &[EdgeRelationMetadata], _node_meta:
         });
     }
     Ok(out)
+}
+
+fn bits_for_id(max_id: u64) -> u8 {
+    if max_id == 0 {
+        1
+    } else {
+        64 - max_id.leading_zeros() as u8
+    }
 }
 
 /// Delta-encode offsets in fixed-size chunks. Each chunk is stored as:
