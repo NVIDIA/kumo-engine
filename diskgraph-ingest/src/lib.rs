@@ -10,9 +10,7 @@
 //! layout unimplemented until the core algorithms are chosen.
 
 use async_trait::async_trait;
-use diskgraph_core::dataset::{
-    DatasetDescriptor, DatasetHandle, DatasetId, DatasetRegistry, DatasetReservation, DatasetState,
-};
+use diskgraph_core::dataset::{DatasetDescriptor, DatasetHandle, DatasetId, DatasetRegistry, DatasetState};
 use diskgraph_core::errors::{DiskgraphError, Result};
 use diskgraph_core::metadata::DatasetMetadata;
 use diskgraph_core::storage::GraphStorage;

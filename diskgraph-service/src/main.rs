@@ -12,8 +12,8 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use diskgraph_core::dataset::{DatasetHandle, DatasetRegistry, DatasetState, InMemoryDatasetRegistry};
-use diskgraph_core::errors::{DiskgraphError, Result as CoreResult};
+use diskgraph_core::dataset::{DatasetHandle, DatasetRegistry, InMemoryDatasetRegistry};
+use diskgraph_core::errors::DiskgraphError;
 use diskgraph_core::sampling::{SampledNeighborhood, SamplingRequest};
 use diskgraph_core::storage::{GraphStorage, LocalGraphStorage, StorageConfig};
 use diskgraph_ingest::IngestCoordinator;
@@ -22,7 +22,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::signal;
-use tracing::{error, info};
+use tracing::info;
 use uuid::Uuid;
 
 #[derive(Clone)]
@@ -119,8 +119,8 @@ async fn healthz() -> Json<HealthResponse> {
     Json(HealthResponse { status: "ok" })
 }
 
-async fn list_datasets(State(state): State<AppState>) -> CoreResult<Json<Vec<DatasetHandle>>> {
-    let datasets = state.registry.list().await?;
+async fn list_datasets(State(state): State<AppState>) -> Result<Json<Vec<DatasetHandle>>, ApiError> {
+    let datasets = state.registry.list().await.map_err(ApiError::from)?;
     Ok(Json(datasets))
 }
 
