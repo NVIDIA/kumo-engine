@@ -4,6 +4,7 @@ members = [
     "diskgraph-ingest",
     "diskgraph-service",
     "diskgraph-datagenerator",
+    "diskgraph-index",
 ]
 resolver = "2"
 

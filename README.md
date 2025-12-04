@@ -13,6 +13,9 @@ DiskGraph is a Rust-based system for ingesting large typed, bidirectional graphs
 - `diskgraph-datagenerator/` — synthetic dataset generator for testing.
   - Produces dataset directories with `metadata.json`, sharded node tables, and sharded edge tables.
   - Guarantees: node shards sorted by `id`; edge shards sorted by `(src_id, dest_sort_key desc when present)`; shard alignment (edge shard N only references src IDs from node shard N of the source type); per-shard id ranges are recorded in metadata for routing; optional fields exercised across scenarios.
+- `diskgraph-index/` — shard-level index builder/reader.
+  - Will ingest a node shard and aligned edge shards into compact on-disk files (`offsets.bin`, `edges.bin`) with delta-encoded offsets and mmap-friendly edge blobs.
+  - Includes a mmap-based shard reader that returns zero-copy edge list views (encoding is stubbed until compression/packing is finalized).
 - `diskgraph-ingest/` — ingestion coordinator.
   - Loads metadata.json, runs disk admission control, registers datasets, and invokes storage ingestion (materialization is stubbed until layout/compression are chosen).
   - Emits progress callbacks via `IngestObserver`.
