@@ -8,12 +8,6 @@ pub const OFFSETS_FILENAME: &str = "offsets.bin";
 pub const EDGES_FILENAME: &str = "edges.bin";
 
 /// Number of offsets to delta-pack in a chunk.
-///
-/// The offsets file stores:
-/// - a header with version + counts
-/// - a table of fixed-size chunks; each chunk stores the starting absolute
-///   offset followed by `DELTA_CHUNK` u16 deltas to reconstruct the next
-///   offsets. This balances size and decode cost.
 pub const DELTA_CHUNK: usize = 64;
 
 /// Header persisted at the start of the offsets file.
@@ -46,13 +40,20 @@ pub struct NodeEdgeStats {
     pub byte_len: u32,
 }
 
+/// Relation-specific layout information used to decode packed edges.
+#[derive(Debug, Clone)]
+pub struct RelationLayout {
+    pub relation_id: u16,
+    pub dst_bits: u8,
+    pub dest_sort_key_bits: Option<u8>,
+    pub entry_bytes: usize,
+}
+
 /// A view over an edge list stored in the edge data file. This is a lightweight
 /// pointer into an mmapped region; decoding uses the on-disk layout rather than
 /// copying data out.
 pub struct EdgeListView<'a> {
     pub raw: &'a [u8],
-    pub relation_bits: u8,
-    pub entry_bytes: usize,
     pub layouts: std::sync::Arc<Vec<RelationLayout>>,
 }
 
@@ -95,15 +96,6 @@ pub struct RelationSegment<'a> {
     pub layout: RelationLayout,
     pub count: u32,
     pub data: &'a [u8],
-}
-
-/// Relation-specific layout information used to decode packed edges.
-#[derive(Debug, Clone)]
-pub struct RelationLayout {
-    pub relation_id: u16,
-    pub dst_bits: u8,
-    pub dest_sort_key_bits: Option<u8>,
-    pub entry_bytes: usize,
 }
 
 fn decode_varint(buf: &[u8]) -> Result<(u32, usize), std::io::Error> {

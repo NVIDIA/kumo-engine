@@ -1,4 +1,5 @@
 use crate::layout::{NodeEdgeStats, OffsetFileHeader, RelationLayout, DELTA_CHUNK, EDGES_FILENAME, OFFSETS_FILENAME};
+use crate::truncate::{truncate_counts, varint_len};
 use crate::streaming::{EdgeShardInput, NodeShardInput, ParquetSource};
 use anyhow::Result;
 use arrow_array::{ArrayRef, Int64Array};
@@ -78,30 +79,58 @@ impl ShardBuilder {
 
         let rt = Arc::new(Runtime::new()?);
 
-        let relation_bits = ((self.params.relation_metas.len().saturating_sub(1) as f64).log2().ceil() as u8).max(1);
-        let layouts = Arc::new(compute_relation_layouts(&self.params.relation_metas, &self.params.node_meta, relation_bits)?);
-        let entry_bytes = compute_entry_bytes(relation_bits, &layouts);
+        let layouts = Arc::new(compute_relation_layouts(&self.params.relation_metas, &self.params.node_meta)?);
 
         let mut node_stream = NodeStream::try_new(rt.clone(), node_shard)?;
         let mut edge_stream = MergedEdgeStream::try_new(rt.clone(), edge_shards, &self.params.relation_metas)?;
 
         let mut offsets_writer = OffsetChunkWriter::try_new(&offsets_path)?;
-        let mut edges_writer = EdgeWriter::try_new(&edges_path, entry_bytes, relation_bits, layouts.clone())?;
+        let mut edges_writer = EdgeWriter::try_new(&edges_path, layouts.clone())?;
 
         let mut nodes_seen = 0u64;
         let mut last_edge: Option<EdgeRec> = None;
 
+        let mut prev_offset: u64 = 0;
         while let Some(node_id) = node_stream.next_id()? {
             nodes_seen += 1;
-            offsets_writer.push(edges_writer.byte_offset())?;
+            let start_offset = edges_writer.byte_offset();
+            // Collect edges for this node by relation.
+            let mut buckets: Vec<Vec<EdgeRec>> = vec![Vec::new(); self.params.relation_metas.len()];
             while let Some(edge) = edge_stream.peek_order_checked(last_edge.as_ref())? {
                 if edge.src > node_id {
                     break;
                 }
                 let edge = edge_stream.pop().unwrap();
                 last_edge = Some(edge);
-                edges_writer.write_edge(&edge)?;
+                buckets[edge.relation_id as usize].push(edge);
             }
+            let mut counts: Vec<usize> = buckets.iter().map(|b| b.len()).collect();
+            let node_bytes = EdgeWriter::node_length_bytes(&layouts, &counts)?;
+
+            // Determine if we need to truncate to stay within u16 delta budget.
+            let base_span = start_offset
+                .checked_sub(prev_offset)
+                .ok_or(IndexBuildError::CountOverflow)?;
+            let budget = (u16::MAX as u64)
+                .checked_sub(base_span)
+                .ok_or(IndexBuildError::OffsetDeltaOverflow)?;
+            if node_bytes > budget {
+                truncate_counts(&mut buckets, &mut counts, &layouts, start_offset, prev_offset)?;
+            }
+
+            // Write prefix counts then edge data per relation.
+            for (rel_idx, rel_edges) in buckets.iter_mut().enumerate() {
+                let target_len = counts[rel_idx];
+                if rel_edges.len() > target_len {
+                    rel_edges.truncate(target_len);
+                }
+                edges_writer.write_count(target_len as u32)?;
+                for edge in rel_edges {
+                    edges_writer.write_edge(edge)?;
+                }
+            }
+            offsets_writer.push(edges_writer.byte_offset())?;
+            prev_offset = edges_writer.byte_offset();
         }
 
         if edge_stream.peek().is_some() {
@@ -130,9 +159,7 @@ impl ShardBuilder {
             offsets_path,
             edges_path,
             stats,
-            relation_bits,
             layouts,
-            entry_bytes,
         })
     }
 }
@@ -142,33 +169,21 @@ pub struct ShardBuildOutput {
     pub offsets_path: PathBuf,
     pub edges_path: PathBuf,
     pub stats: NodeEdgeStats,
-    pub relation_bits: u8,
-    pub entry_bytes: usize,
     pub layouts: Arc<Vec<RelationLayout>>,
 }
 
-fn compute_relation_layouts(relation_metas: &[EdgeRelationMetadata], _node_meta: &NodeTypeMetadata, relation_bits: u8) -> Result<Vec<RelationLayout>> {
+fn compute_relation_layouts(relation_metas: &[EdgeRelationMetadata], _node_meta: &NodeTypeMetadata) -> Result<Vec<RelationLayout>> {
     let mut out = Vec::new();
     for (i, rel) in relation_metas.iter().enumerate() {
-        let dst_bits = 64u8.min(64u8); // fixed 64-bit ids for destinations
+        let dst_bits = 64u8; // fixed 64-bit ids for destinations (can be tightened with max_id per type)
         out.push(RelationLayout {
             relation_id: i as u16,
             dst_bits,
             dest_sort_key_bits: rel.dest_sort_key_bits,
-            entry_bytes: ((relation_bits as usize + dst_bits as usize + rel.dest_sort_key_bits.unwrap_or(0) as usize + 7) / 8)
-                .max(1),
+            entry_bytes: ((dst_bits as usize + rel.dest_sort_key_bits.unwrap_or(0) as usize + 7) / 8).max(1),
         });
     }
     Ok(out)
-}
-
-fn compute_entry_bytes(relation_bits: u8, layouts: &[RelationLayout]) -> usize {
-    let mut max_bits = 0usize;
-    for l in layouts {
-        let bits = relation_bits as usize + l.dst_bits as usize + l.dest_sort_key_bits.unwrap_or(0) as usize;
-        max_bits = max_bits.max(bits);
-    }
-    ((max_bits + 7) / 8).max(1)
 }
 
 /// Delta-encode offsets in fixed-size chunks. Each chunk is stored as:
@@ -200,7 +215,7 @@ fn delta_encode_offsets(offsets: &[u64]) -> Result<Vec<u8>> {
 }
 
 struct OffsetChunkWriter {
-    writer: BufWriter<File>,
+    pub(crate) writer: BufWriter<File>,
     chunk_buf: Vec<u64>,
     total_offsets: u64,
 }
@@ -248,26 +263,31 @@ impl OffsetChunkWriter {
     }
 }
 
-struct EdgeWriter {
+pub(crate) struct EdgeWriter {
     writer: BufWriter<File>,
     bytes_written: u64,
     edge_count: u64,
-    entry_bytes: usize,
-    relation_bits: u8,
     layouts: Arc<Vec<RelationLayout>>,
 }
 
 impl EdgeWriter {
-    fn try_new(path: &Path, entry_bytes: usize, relation_bits: u8, layouts: Arc<Vec<RelationLayout>>) -> Result<Self> {
+    fn try_new(path: &Path, layouts: Arc<Vec<RelationLayout>>) -> Result<Self> {
         let writer = BufWriter::new(File::create(path)?);
         Ok(Self {
             writer,
             bytes_written: 0,
             edge_count: 0,
-            entry_bytes,
-            relation_bits,
             layouts,
         })
+    }
+
+    fn write_count(&mut self, count: u32) -> Result<()> {
+        let written = write_varint(&mut self.writer, count)?;
+        self.bytes_written = self
+            .bytes_written
+            .checked_add(written as u64)
+            .ok_or(IndexBuildError::CountOverflow)?;
+        Ok(())
     }
 
     fn write_edge(&mut self, edge: &EdgeRec) -> Result<()> {
@@ -276,18 +296,12 @@ impl EdgeWriter {
             .iter()
             .find(|l| l.relation_id == edge.relation_id)
             .ok_or(IndexBuildError::UnknownRelation)?;
-        let bits_total = self.relation_bits as usize
-            + layout.dst_bits as usize
-            + layout.dest_sort_key_bits.unwrap_or(0) as usize;
-        if bits_total > self.entry_bytes * 8 {
+        let bits_total = layout.dst_bits as usize + layout.dest_sort_key_bits.unwrap_or(0) as usize;
+        if bits_total > layout.entry_bytes * 8 {
             return Err(IndexBuildError::NotImplemented("entry size too small").into());
         }
         let mut acc: u128 = 0;
         let mut bit_cursor = 0usize;
-        // relation id
-        acc |= (edge.relation_id as u128) << bit_cursor;
-        bit_cursor += self.relation_bits as usize;
-        // dst id (masked to bit width)
         let dst_mask = if layout.dst_bits == 64 {
             u64::MAX
         } else {
@@ -296,7 +310,6 @@ impl EdgeWriter {
         let dst_val = edge.dst & dst_mask;
         acc |= (dst_val as u128) << bit_cursor;
         bit_cursor += layout.dst_bits as usize;
-        // dest_sort_key if present
         if let Some(bits) = layout.dest_sort_key_bits {
             let mask = if bits == 64 { u64::MAX } else { (1u64 << bits) - 1 };
             let sort_val = edge.dest_sort_key.unwrap_or(0) & mask;
@@ -304,19 +317,38 @@ impl EdgeWriter {
         }
 
         let mut buf = [0u8; 16];
-        let bytes_needed = self.entry_bytes.min(16);
+        let bytes_needed = layout.entry_bytes.min(16);
         buf[..bytes_needed].copy_from_slice(&acc.to_le_bytes()[..bytes_needed]);
         self.writer.write_all(&buf[..bytes_needed])?;
 
         self.bytes_written = self
             .bytes_written
-            .checked_add(self.entry_bytes as u64)
+            .checked_add(layout.entry_bytes as u64)
             .ok_or(IndexBuildError::CountOverflow)?;
         self.edge_count = self
             .edge_count
             .checked_add(1)
             .ok_or(IndexBuildError::CountOverflow)?;
         Ok(())
+    }
+
+    /// Compute total byte length for a node given relation counts.
+    pub(crate) fn node_length_bytes(layouts: &[RelationLayout], counts: &[usize]) -> std::result::Result<u64, IndexBuildError> {
+        let mut len: u64 = 0;
+        for (layout, &count) in layouts.iter().zip(counts.iter()) {
+            let count_u32: u32 = count.try_into().map_err(|_| IndexBuildError::CountOverflow)?;
+            len = len
+                .checked_add(varint_len(count_u32) as u64)
+                .ok_or(IndexBuildError::CountOverflow)?;
+            len = len
+                .checked_add(
+                    (count as u64)
+                        .checked_mul(layout.entry_bytes as u64)
+                        .ok_or(IndexBuildError::CountOverflow)?,
+                )
+                .ok_or(IndexBuildError::CountOverflow)?;
+        }
+        Ok(len)
     }
 
     fn byte_offset(&self) -> u64 {
@@ -329,8 +361,27 @@ impl EdgeWriter {
     }
 }
 
+fn write_varint<W: Write>(writer: &mut W, mut val: u32) -> Result<usize> {
+    let mut buf = [0u8; 5];
+    let mut i = 0;
+    loop {
+        let mut byte = (val & 0x7F) as u8;
+        val >>= 7;
+        if val != 0 {
+            byte |= 0x80;
+        }
+        buf[i] = byte;
+        i += 1;
+        if val == 0 {
+            break;
+        }
+    }
+    writer.write_all(&buf[..i])?;
+    Ok(i)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct EdgeRec {
+pub(crate) struct EdgeRec {
     src: u64,
     dst: u64,
     dest_sort_key: Option<u64>,

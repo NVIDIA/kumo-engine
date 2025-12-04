@@ -65,8 +65,6 @@ impl ShardReader {
         let raw = &self.edges[start_byte..end_byte];
         Ok(EdgeListView {
             raw,
-            relation_bits: 0, // relation id not stored per entry
-            entry_bytes: 0,   // per relation entry sizes used via layouts
             layouts: self.layouts.clone(),
         })
     }
