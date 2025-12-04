@@ -1,4 +1,4 @@
-use crate::layout::{EdgeListView, OffsetFileHeader, OFFSETS_FILENAME, EDGES_FILENAME, DELTA_CHUNK};
+use crate::layout::{EdgeListView, OffsetFileHeader, OFFSETS_FILENAME, EDGES_FILENAME};
 use anyhow::Result;
 use diskgraph_core::errors::DiskgraphError;
 use memmap2::Mmap;
@@ -92,11 +92,14 @@ fn parse_offset_chunks(offsets: &Mmap, total_offsets: u64) -> Result<Vec<OffsetC
 }
 
 fn decode_offset(offsets: &Mmap, chunks: &[OffsetChunk], idx: u64) -> Result<u64> {
-    // Find chunk containing idx
-    let chunk_idx = (idx as usize) / DELTA_CHUNK;
+    // Chunk location is deterministic: each chunk holds up to DELTA_CHUNK offsets.
+    let chunk_idx = (idx as usize) / crate::layout::DELTA_CHUNK;
     let chunk = chunks
         .get(chunk_idx)
         .ok_or_else(|| DiskgraphError::InvalidMetadata("offset chunk missing".into()))?;
+    if idx < chunk.base_idx || idx >= chunk.base_idx + chunk.count as u64 {
+        return Err(DiskgraphError::InvalidMetadata("offset chunk range mismatch".into()).into());
+    }
     let within = idx - chunk.base_idx;
     if within as u16 >= chunk.count {
         return Err(DiskgraphError::InvalidMetadata("offset index out of chunk range".into()).into());
