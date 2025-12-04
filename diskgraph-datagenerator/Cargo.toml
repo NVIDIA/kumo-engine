@@ -1,0 +1,23 @@
+[package]
+name = "diskgraph-datagenerator"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+arrow-array = "51"
+arrow-schema = "51"
+clap = { version = "4.4", features = ["derive"] }
+diskgraph-core = { path = "../diskgraph-core" }
+parquet = { version = "51", features = ["arrow"] }
+rand = "0.8"
+seahash = "4.1"
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
