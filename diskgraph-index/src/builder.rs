@@ -1,15 +1,15 @@
-use crate::layout::{NodeEdgeStats, OffsetFileHeader, DELTA_CHUNK, EDGES_FILENAME, OFFSETS_FILENAME};
+use crate::layout::{NodeEdgeStats, OffsetFileHeader, RelationLayout, DELTA_CHUNK, EDGES_FILENAME, OFFSETS_FILENAME};
 use crate::streaming::{EdgeShardInput, NodeShardInput, ParquetSource};
 use anyhow::Result;
 use arrow_array::{ArrayRef, Int64Array};
 use arrow_schema::SchemaRef;
-use diskgraph_core::metadata::{EdgeRelationMetadata, NodeTypeMetadata};
 use bytes::Bytes;
-use futures::{StreamExt, future::BoxFuture, stream::BoxStream};
+use diskgraph_core::metadata::{EdgeRelationMetadata, NodeTypeMetadata};
+use futures::{future::BoxFuture, stream::BoxStream, StreamExt};
 use parquet::arrow::async_reader::{AsyncFileReader, ParquetRecordBatchStreamBuilder};
 use parquet::file::metadata::ParquetMetaData;
-use parquet::file::serialized_reader::SerializedFileReader;
 use parquet::file::reader::FileReader;
+use parquet::file::serialized_reader::SerializedFileReader;
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 use std::fs::{self, File};
@@ -36,6 +36,8 @@ pub enum IndexBuildError {
     EdgeOrderingViolation,
     #[error("invalid column type for {0}")]
     InvalidColumn(&'static str),
+    #[error("unknown relation in shard input")]
+    UnknownRelation,
     #[error("parquet error: {0}")]
     Parquet(#[from] parquet::errors::ParquetError),
 }
@@ -45,17 +47,17 @@ pub enum IndexBuildError {
 pub struct ShardBuildParams {
     pub output_dir: PathBuf,
     pub node_meta: NodeTypeMetadata,
-    pub relation_meta: EdgeRelationMetadata,
+    pub relation_metas: Vec<EdgeRelationMetadata>,
     /// Shard index we are building (used for selecting aligned edge shards).
     pub shard_index: usize,
 }
 
-/// Consumes a node shard and its aligned edge shards and emits two files:
-/// - offsets.bin: delta-encoded offsets into edges.bin
-/// - edges.bin: edge payload blobs, 8-byte aligned
+/// Consumes a node shard and all aligned edge shards (across relations) and emits two files:
+/// - offsets.bin: delta-encoded byte offsets into edges.bin
+/// - edges.bin: packed edge payload blobs (relation id + dst id + optional dest_sort_key)
 ///
-/// Edge encoding uses fixed 8-byte words. When dest_sort_key is present, each
-/// edge is 16 bytes (dst_id, dest_sort_key). Otherwise, 8 bytes (dst_id).
+/// Entry layout:
+/// [relation_id bits][dst_id bits (per relation)][dest_sort_key bits (optional per relation)]
 pub struct ShardBuilder {
     params: ShardBuildParams,
 }
@@ -65,7 +67,6 @@ impl ShardBuilder {
         Self { params }
     }
 
-    /// Build the shard index from a node shard and its aligned edge shards.
     pub fn build(
         &self,
         node_shard: &NodeShardInput,
@@ -76,17 +77,23 @@ impl ShardBuilder {
         let edges_path = self.params.output_dir.join(EDGES_FILENAME);
 
         let rt = Arc::new(Runtime::new()?);
+
+        let relation_bits = ((self.params.relation_metas.len().saturating_sub(1) as f64).log2().ceil() as u8).max(1);
+        let layouts = Arc::new(compute_relation_layouts(&self.params.relation_metas, &self.params.node_meta, relation_bits)?);
+        let entry_bytes = compute_entry_bytes(relation_bits, &layouts);
+
         let mut node_stream = NodeStream::try_new(rt.clone(), node_shard)?;
-        let mut edge_stream = MergedEdgeStream::try_new(rt.clone(), edge_shards, self.params.relation_meta.dest_sort_key_bits)?;
+        let mut edge_stream = MergedEdgeStream::try_new(rt.clone(), edge_shards, &self.params.relation_metas)?;
 
         let mut offsets_writer = OffsetChunkWriter::try_new(&offsets_path)?;
-        let mut edges_writer = EdgeWriter::try_new(&edges_path, self.params.relation_meta.dest_sort_key_bits)?;
+        let mut edges_writer = EdgeWriter::try_new(&edges_path, entry_bytes, relation_bits, layouts.clone())?;
 
         let mut nodes_seen = 0u64;
         let mut last_edge: Option<EdgeRec> = None;
+
         while let Some(node_id) = node_stream.next_id()? {
             nodes_seen += 1;
-            offsets_writer.push(edges_writer.word_offset())?;
+            offsets_writer.push(edges_writer.byte_offset())?;
             while let Some(edge) = edge_stream.peek_order_checked(last_edge.as_ref())? {
                 if edge.src > node_id {
                     break;
@@ -96,34 +103,36 @@ impl ShardBuilder {
                 edges_writer.write_edge(&edge)?;
             }
         }
-        // If edges remain for nodes we never saw, fail fast to avoid a corrupted index.
+
         if edge_stream.peek().is_some() {
             return Err(IndexBuildError::DanglingEdges.into());
         }
-        // Sentinel offset
-        offsets_writer.push(edges_writer.word_offset())?;
-        let _total_offsets = offsets_writer.finish(nodes_seen)?;
-        let bytes_written = edges_writer.bytes_written;
-        let edge_count = edges_writer.edge_count;
+
+        offsets_writer.push(edges_writer.byte_offset())?;
+        offsets_writer.finish(nodes_seen)?;
+        let stats = NodeEdgeStats {
+            edge_count: edges_writer.edge_count.try_into().map_err(|_| IndexBuildError::CountOverflow)?,
+            byte_len: edges_writer.bytes_written.try_into().map_err(|_| IndexBuildError::CountOverflow)?,
+        };
         edges_writer.finish()?;
 
         info!(
-            "built shard {} for node type {} relation {} (nodes={}, edges={}, bytes={})",
+            "built shard {} for node type {} (relations: {}, nodes={}, edges={}, bytes={})",
             self.params.shard_index,
             self.params.node_meta.name,
-            self.params.relation_meta.name,
+            self.params.relation_metas.len(),
             nodes_seen,
-            edge_count,
-            bytes_written
+            stats.edge_count,
+            stats.byte_len
         );
 
         Ok(ShardBuildOutput {
             offsets_path,
             edges_path,
-            stats: NodeEdgeStats {
-                edge_count: edge_count.try_into().map_err(|_| IndexBuildError::CountOverflow)?,
-                byte_len: bytes_written.try_into().map_err(|_| IndexBuildError::CountOverflow)?,
-            },
+            stats,
+            relation_bits,
+            layouts,
+            entry_bytes,
         })
     }
 }
@@ -133,6 +142,33 @@ pub struct ShardBuildOutput {
     pub offsets_path: PathBuf,
     pub edges_path: PathBuf,
     pub stats: NodeEdgeStats,
+    pub relation_bits: u8,
+    pub entry_bytes: usize,
+    pub layouts: Arc<Vec<RelationLayout>>,
+}
+
+fn compute_relation_layouts(relation_metas: &[EdgeRelationMetadata], _node_meta: &NodeTypeMetadata, relation_bits: u8) -> Result<Vec<RelationLayout>> {
+    let mut out = Vec::new();
+    for (i, rel) in relation_metas.iter().enumerate() {
+        let dst_bits = 64u8.min(64u8); // fixed 64-bit ids for destinations
+        out.push(RelationLayout {
+            relation_id: i as u16,
+            dst_bits,
+            dest_sort_key_bits: rel.dest_sort_key_bits,
+            entry_bytes: ((relation_bits as usize + dst_bits as usize + rel.dest_sort_key_bits.unwrap_or(0) as usize + 7) / 8)
+                .max(1),
+        });
+    }
+    Ok(out)
+}
+
+fn compute_entry_bytes(relation_bits: u8, layouts: &[RelationLayout]) -> usize {
+    let mut max_bits = 0usize;
+    for l in layouts {
+        let bits = relation_bits as usize + l.dst_bits as usize + l.dest_sort_key_bits.unwrap_or(0) as usize;
+        max_bits = max_bits.max(bits);
+    }
+    ((max_bits + 7) / 8).max(1)
 }
 
 /// Delta-encode offsets in fixed-size chunks. Each chunk is stored as:
@@ -153,7 +189,7 @@ fn delta_encode_offsets(offsets: &[u64]) -> Result<Vec<u8>> {
         for &off in &offsets[idx + 1..chunk_end] {
             let delta = off
                 .checked_sub(prev)
-                .ok_or(IndexBuildError::NotImplemented("offsets must be non-decreasing"))?;
+                .ok_or(IndexBuildError::EdgeOrderingViolation)?;
             let delta_u16: u16 = delta.try_into().map_err(|_| IndexBuildError::OffsetDeltaOverflow)?;
             out.extend_from_slice(&delta_u16.to_le_bytes());
             prev = off;
@@ -216,33 +252,75 @@ struct EdgeWriter {
     writer: BufWriter<File>,
     bytes_written: u64,
     edge_count: u64,
-    entry_words: u64,
+    entry_bytes: usize,
+    relation_bits: u8,
+    layouts: Arc<Vec<RelationLayout>>,
 }
 
 impl EdgeWriter {
-    fn try_new(path: &Path, dest_sort_key_bits: Option<u8>) -> Result<Self> {
+    fn try_new(path: &Path, entry_bytes: usize, relation_bits: u8, layouts: Arc<Vec<RelationLayout>>) -> Result<Self> {
         let writer = BufWriter::new(File::create(path)?);
-        let entry_words = if dest_sort_key_bits.is_some() { 2 } else { 1 };
         Ok(Self {
             writer,
             bytes_written: 0,
             edge_count: 0,
-            entry_words,
+            entry_bytes,
+            relation_bits,
+            layouts,
         })
     }
 
     fn write_edge(&mut self, edge: &EdgeRec) -> Result<()> {
-        self.writer.write_all(&edge.dst.to_le_bytes())?;
-        if let Some(sort) = edge.dest_sort_key {
-            self.writer.write_all(&sort.to_le_bytes())?;
+        let layout = self
+            .layouts
+            .iter()
+            .find(|l| l.relation_id == edge.relation_id)
+            .ok_or(IndexBuildError::UnknownRelation)?;
+        let bits_total = self.relation_bits as usize
+            + layout.dst_bits as usize
+            + layout.dest_sort_key_bits.unwrap_or(0) as usize;
+        if bits_total > self.entry_bytes * 8 {
+            return Err(IndexBuildError::NotImplemented("entry size too small").into());
         }
-        self.bytes_written += self.entry_words * 8;
-        self.edge_count += 1;
+        let mut acc: u128 = 0;
+        let mut bit_cursor = 0usize;
+        // relation id
+        acc |= (edge.relation_id as u128) << bit_cursor;
+        bit_cursor += self.relation_bits as usize;
+        // dst id (masked to bit width)
+        let dst_mask = if layout.dst_bits == 64 {
+            u64::MAX
+        } else {
+            (1u64 << layout.dst_bits) - 1
+        };
+        let dst_val = edge.dst & dst_mask;
+        acc |= (dst_val as u128) << bit_cursor;
+        bit_cursor += layout.dst_bits as usize;
+        // dest_sort_key if present
+        if let Some(bits) = layout.dest_sort_key_bits {
+            let mask = if bits == 64 { u64::MAX } else { (1u64 << bits) - 1 };
+            let sort_val = edge.dest_sort_key.unwrap_or(0) & mask;
+            acc |= (sort_val as u128) << bit_cursor;
+        }
+
+        let mut buf = [0u8; 16];
+        let bytes_needed = self.entry_bytes.min(16);
+        buf[..bytes_needed].copy_from_slice(&acc.to_le_bytes()[..bytes_needed]);
+        self.writer.write_all(&buf[..bytes_needed])?;
+
+        self.bytes_written = self
+            .bytes_written
+            .checked_add(self.entry_bytes as u64)
+            .ok_or(IndexBuildError::CountOverflow)?;
+        self.edge_count = self
+            .edge_count
+            .checked_add(1)
+            .ok_or(IndexBuildError::CountOverflow)?;
         Ok(())
     }
 
-    fn word_offset(&self) -> u64 {
-        self.bytes_written / 8
+    fn byte_offset(&self) -> u64 {
+        self.bytes_written
     }
 
     fn finish(mut self) -> Result<()> {
@@ -256,6 +334,7 @@ struct EdgeRec {
     src: u64,
     dst: u64,
     dest_sort_key: Option<u64>,
+    relation_id: u16,
 }
 
 struct NodeStream {
@@ -291,11 +370,11 @@ impl NodeStream {
                 if self.idx_in_batch < batch.num_rows() {
                     let id_array = batch
                         .column_by_name("id")
-                        .ok_or_else(|| IndexBuildError::NotImplemented("id column missing"))?;
+                        .ok_or_else(|| IndexBuildError::InvalidColumn("id"))?;
                     let id_col: &Int64Array = as_i64_array(id_array, &self.schema, "id")?;
                     let val = id_col.value(self.idx_in_batch) as u64;
                     self.idx_in_batch += 1;
-            return Ok(Some(val));
+                    return Ok(Some(val));
                 }
             }
             match self.rt.block_on(self.stream.next()) {
@@ -316,11 +395,12 @@ struct EdgeSubStream {
     batch: Option<arrow_array::RecordBatch>,
     idx_in_batch: usize,
     dest_sort_key_bits: Option<u8>,
+    relation_id: u16,
     rt: Arc<Runtime>,
 }
 
 impl EdgeSubStream {
-    fn try_new(rt: Arc<Runtime>, input: &EdgeShardInput, dest_sort_key_bits: Option<u8>) -> Result<Self> {
+    fn try_new(rt: Arc<Runtime>, input: &EdgeShardInput, relation_id: u16, dest_sort_key_bits: Option<u8>) -> Result<Self> {
         let reader = object_reader_from_local(&input.parquet)?;
         let (stream, schema) = rt.block_on(async move {
             let mut builder = ParquetRecordBatchStreamBuilder::new(reader).await?;
@@ -335,6 +415,7 @@ impl EdgeSubStream {
             batch: None,
             idx_in_batch: 0,
             dest_sort_key_bits,
+            relation_id,
             rt,
         })
     }
@@ -345,10 +426,10 @@ impl EdgeSubStream {
                 if self.idx_in_batch < batch.num_rows() {
                     let src_ref = batch
                         .column_by_name("src_id")
-                        .ok_or_else(|| IndexBuildError::NotImplemented("src_id column missing"))?;
+                        .ok_or_else(|| IndexBuildError::InvalidColumn("src_id"))?;
                     let dst_ref = batch
                         .column_by_name("dst_id")
-                        .ok_or_else(|| IndexBuildError::NotImplemented("dst_id column missing"))?;
+                        .ok_or_else(|| IndexBuildError::InvalidColumn("dst_id"))?;
                     let src_col: &Int64Array = as_i64_array(src_ref, &self.schema, "src_id")?;
                     let dst_col: &Int64Array = as_i64_array(dst_ref, &self.schema, "dst_id")?;
                     let sort_col = self
@@ -363,6 +444,7 @@ impl EdgeSubStream {
                         src: src_col.value(row) as u64,
                         dst: dst_col.value(row) as u64,
                         dest_sort_key: sort_val,
+                        relation_id: self.relation_id,
                     }));
                 }
             }
@@ -405,7 +487,10 @@ impl PartialOrd for HeapItem {
 
 impl PartialEq for HeapItem {
     fn eq(&self, other: &Self) -> bool {
-        self.rec.src == other.rec.src && self.rec.dest_sort_key == other.rec.dest_sort_key && self.stream_idx == other.stream_idx
+        self.rec.src == other.rec.src
+            && self.rec.dest_sort_key == other.rec.dest_sort_key
+            && self.rec.relation_id == other.rec.relation_id
+            && self.stream_idx == other.stream_idx
     }
 }
 
@@ -415,11 +500,18 @@ struct MergedEdgeStream {
 }
 
 impl MergedEdgeStream {
-    fn try_new(rt: Arc<Runtime>, inputs: &[EdgeShardInput], dest_sort_key_bits: Option<u8>) -> Result<Self> {
+    fn try_new(rt: Arc<Runtime>, inputs: &[EdgeShardInput], relation_metas: &[EdgeRelationMetadata]) -> Result<Self> {
+        let mut rel_lookup = std::collections::HashMap::new();
+        for (idx, meta) in relation_metas.iter().enumerate() {
+            rel_lookup.insert(meta.name.clone(), (idx as u16, meta.dest_sort_key_bits));
+        }
         let mut streams = Vec::new();
         let mut heap = BinaryHeap::new();
         for (idx, input) in inputs.iter().enumerate() {
-            let mut stream = EdgeSubStream::try_new(rt.clone(), input, dest_sort_key_bits)?;
+            let (relation_id, sort_bits) = rel_lookup
+                .get(&input.relation)
+                .ok_or(IndexBuildError::UnknownRelation)?;
+            let mut stream = EdgeSubStream::try_new(rt.clone(), input, *relation_id, *sort_bits)?;
             if let Some(rec) = stream.next_rec()? {
                 heap.push(HeapItem { rec, stream_idx: idx });
             }
@@ -435,7 +527,6 @@ impl MergedEdgeStream {
     fn pop(&mut self) -> Option<EdgeRec> {
         if let Some(item) = self.heap.pop() {
             let rec = item.rec;
-            // Refill from the same stream.
             if let Some(next_rec) = self.streams[item.stream_idx].next_rec().ok().flatten() {
                 self.heap.push(HeapItem {
                     rec: next_rec,
@@ -466,18 +557,12 @@ impl MergedEdgeStream {
     }
 }
 
-fn as_i64_array<'a>(array: &'a ArrayRef, _schema: &SchemaRef, name: &str) -> Result<&'a Int64Array> {
+fn as_i64_array<'a>(array: &'a ArrayRef, _schema: &SchemaRef, name: &'static str) -> Result<&'a Int64Array> {
     array
         .as_any()
         .downcast_ref::<Int64Array>()
-        .ok_or_else(|| IndexBuildError::InvalidColumn(match name {
-            "id" => "id",
-            "src_id" => "src_id",
-            "dst_id" => "dst_id",
-            "dest_sort_key" => "dest_sort_key",
-            _ => "unknown",
-        })
-        .into())
+        .ok_or_else(|| IndexBuildError::InvalidColumn(name))
+        .map_err(Into::into)
 }
 
 fn object_reader_from_local(source: &ParquetSource) -> Result<ParquetObjectReader> {

@@ -1,9 +1,10 @@
-use crate::layout::{EdgeListView, OffsetFileHeader, OFFSETS_FILENAME, EDGES_FILENAME};
+use crate::layout::{EdgeListView, OffsetFileHeader, RelationLayout, DELTA_CHUNK, OFFSETS_FILENAME, EDGES_FILENAME};
 use anyhow::Result;
 use diskgraph_core::errors::DiskgraphError;
 use memmap2::Mmap;
 use std::fs::File;
 use std::path::Path;
+use std::sync::Arc;
 
 #[derive(Debug)]
 struct OffsetChunk {
@@ -19,10 +20,14 @@ pub struct ShardReader {
     edges: Mmap,
     header: OffsetFileHeader,
     chunks: Vec<OffsetChunk>,
+    layouts: Arc<Vec<RelationLayout>>,
 }
 
 impl ShardReader {
-    pub fn open(dir: &Path) -> Result<Self> {
+    pub fn open(
+        dir: &Path,
+        layouts: Arc<Vec<RelationLayout>>,
+    ) -> Result<Self> {
         let offsets_path = dir.join(OFFSETS_FILENAME);
         let edges_path = dir.join(EDGES_FILENAME);
         let offsets_file = File::open(&offsets_path)?;
@@ -37,6 +42,7 @@ impl ShardReader {
             edges,
             header,
             chunks,
+            layouts,
         })
     }
 
@@ -45,24 +51,23 @@ impl ShardReader {
     }
 
     /// Lookup a node's edge list by index within the shard.
-    pub fn edges_for_node(&self, node_idx: u64, dest_sort_key_bits: Option<u8>) -> Result<EdgeListView<'_>> {
+    pub fn edges_for_node(&self, node_idx: u64) -> Result<EdgeListView<'_>> {
         if node_idx + 1 >= self.header.total_offsets {
             return Err(DiskgraphError::InvalidMetadata("node index out of range".into()).into());
         }
-        let start_word = decode_offset(&self.offsets_mmap, &self.chunks, node_idx)?;
-        let end_word = decode_offset(&self.offsets_mmap, &self.chunks, node_idx + 1)?;
-        let start_byte = (start_word * self.header.edge_blob_word_size as u64) as usize;
-        let end_byte = (end_word * self.header.edge_blob_word_size as u64) as usize;
+        let start = decode_offset(&self.offsets_mmap, &self.chunks, node_idx)?;
+        let end = decode_offset(&self.offsets_mmap, &self.chunks, node_idx + 1)?;
+        let start_byte = start as usize;
+        let end_byte = end as usize;
         if end_byte > self.edges.len() || start_byte > end_byte {
             return Err(DiskgraphError::InvalidMetadata("offset points outside edge blob".into()).into());
         }
         let raw = &self.edges[start_byte..end_byte];
-        let entry_size = if dest_sort_key_bits.is_some() { 16 } else { 8 };
-        let edge_count = (raw.len() / entry_size) as u32;
         Ok(EdgeListView {
             raw,
-            edge_count,
-            dest_sort_key_bits,
+            relation_bits: 0, // relation id not stored per entry
+            entry_bytes: 0,   // per relation entry sizes used via layouts
+            layouts: self.layouts.clone(),
         })
     }
 }
@@ -83,7 +88,6 @@ fn parse_offset_chunks(offsets: &Mmap, total_offsets: u64) -> Result<Vec<OffsetC
             count,
             data_offset: cursor,
         });
-        // advance cursor: count/u64/deltas
         let chunk_bytes = 2 + 8 + (count.saturating_sub(1) as usize) * 2;
         cursor += chunk_bytes;
         base_idx += count as u64;
@@ -92,8 +96,7 @@ fn parse_offset_chunks(offsets: &Mmap, total_offsets: u64) -> Result<Vec<OffsetC
 }
 
 fn decode_offset(offsets: &Mmap, chunks: &[OffsetChunk], idx: u64) -> Result<u64> {
-    // Chunk location is deterministic: each chunk holds up to DELTA_CHUNK offsets.
-    let chunk_idx = (idx as usize) / crate::layout::DELTA_CHUNK;
+    let chunk_idx = idx as usize / DELTA_CHUNK;
     let chunk = chunks
         .get(chunk_idx)
         .ok_or_else(|| DiskgraphError::InvalidMetadata("offset chunk missing".into()))?;
@@ -101,9 +104,6 @@ fn decode_offset(offsets: &Mmap, chunks: &[OffsetChunk], idx: u64) -> Result<u64
         return Err(DiskgraphError::InvalidMetadata("offset chunk range mismatch".into()).into());
     }
     let within = idx - chunk.base_idx;
-    if within as u16 >= chunk.count {
-        return Err(DiskgraphError::InvalidMetadata("offset index out of chunk range".into()).into());
-    }
     let mut cursor = chunk.data_offset;
     let count = u16::from_le_bytes([offsets[cursor], offsets[cursor + 1]]);
     if count != chunk.count {

@@ -23,6 +23,7 @@ pub struct OffsetFileHeader {
     pub nodes: u64,
     pub total_offsets: u64,
     pub delta_chunk: u16,
+    /// Offsets refer to byte positions in the edge blob.
     pub edge_blob_word_size: u16,
 }
 
@@ -33,9 +34,7 @@ impl OffsetFileHeader {
             nodes,
             total_offsets,
             delta_chunk: DELTA_CHUNK as u16,
-            // Edge blobs are expected to be 8-byte aligned and offsets point to
-            // 8-byte words to keep metadata small.
-            edge_blob_word_size: 8,
+            edge_blob_word_size: 1,
         }
     }
 }
@@ -47,27 +46,79 @@ pub struct NodeEdgeStats {
     pub byte_len: u32,
 }
 
-/// Logical view of an edge payload. The concrete encoding is left open; this
-/// enum documents required fields and their intended bit-packing.
-#[derive(Debug, Clone, Copy)]
-pub enum EncodedEdgeFields {
-    /// Only src/dst ids are present.
-    Basic { dst: u64 },
-    /// dest_sort_key is present.
-    WithSortKey { dst: u64, dest_sort_key: u64 },
-}
-
 /// A view over an edge list stored in the edge data file. This is a lightweight
 /// pointer into an mmapped region; decoding uses the on-disk layout rather than
 /// copying data out.
 pub struct EdgeListView<'a> {
     pub raw: &'a [u8],
-    pub edge_count: u32,
-    pub dest_sort_key_bits: Option<u8>,
+    pub relation_bits: u8,
+    pub entry_bytes: usize,
+    pub layouts: std::sync::Arc<Vec<RelationLayout>>,
 }
 
 impl<'a> EdgeListView<'a> {
-    pub fn is_empty(&self) -> bool {
-        self.edge_count == 0
+    /// Returns the relation segments for this node. Each entry contains the
+    /// edge count and raw slice for that relation's edges.
+    pub fn relation_segments(&self) -> Result<Vec<RelationSegment<'a>>, std::io::Error> {
+        let mut segments = Vec::with_capacity(self.layouts.len());
+        // First read all counts up front (prefix) to allow quick validation.
+        let mut cursor = 0usize;
+        let mut counts = Vec::with_capacity(self.layouts.len());
+        for layout in self.layouts.iter() {
+            let (count, consumed) = decode_varint(&self.raw[cursor..])?;
+            cursor = cursor.checked_add(consumed).ok_or(std::io::ErrorKind::InvalidData)?;
+            counts.push((layout.clone(), count));
+        }
+        // Now slice the data segments in the same order.
+        for (layout, count) in counts {
+            let bytes = count
+                .checked_mul(layout.entry_bytes as u32)
+                .ok_or(std::io::ErrorKind::InvalidData)? as usize;
+            let end = cursor.checked_add(bytes).ok_or(std::io::ErrorKind::InvalidData)?;
+            if end > self.raw.len() {
+                return Err(std::io::ErrorKind::UnexpectedEof.into());
+            }
+            let data = &self.raw[cursor..end];
+            segments.push(RelationSegment {
+                layout,
+                count,
+                data,
+            });
+            cursor = end;
+        }
+        Ok(segments)
     }
+}
+
+/// A relation-specific slice of edges for a node.
+pub struct RelationSegment<'a> {
+    pub layout: RelationLayout,
+    pub count: u32,
+    pub data: &'a [u8],
+}
+
+/// Relation-specific layout information used to decode packed edges.
+#[derive(Debug, Clone)]
+pub struct RelationLayout {
+    pub relation_id: u16,
+    pub dst_bits: u8,
+    pub dest_sort_key_bits: Option<u8>,
+    pub entry_bytes: usize,
+}
+
+fn decode_varint(buf: &[u8]) -> Result<(u32, usize), std::io::Error> {
+    let mut val: u32 = 0;
+    let mut shift = 0;
+    for (i, b) in buf.iter().enumerate() {
+        let byte = *b as u32;
+        val |= (byte & 0x7F) << shift;
+        if byte & 0x80 == 0 {
+            return Ok((val, i + 1));
+        }
+        shift += 7;
+        if shift > 28 {
+            return Err(std::io::ErrorKind::InvalidData.into());
+        }
+    }
+    Err(std::io::ErrorKind::UnexpectedEof.into())
 }
