@@ -26,6 +26,18 @@ pub enum IndexBuildError {
     NotImplemented(&'static str),
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+    #[error("offset delta exceeds u16 max")]
+    OffsetDeltaOverflow,
+    #[error("edge or byte count exceeds supported limit")]
+    CountOverflow,
+    #[error("edges remain after exhausting node ids (misaligned shards)")]
+    DanglingEdges,
+    #[error("input edges not sorted by src_id then dest_sort_key desc")]
+    EdgeOrderingViolation,
+    #[error("invalid column type for {0}")]
+    InvalidColumn(&'static str),
+    #[error("parquet error: {0}")]
+    Parquet(#[from] parquet::errors::ParquetError),
 }
 
 /// Parameters for building a single shard index.
@@ -71,16 +83,22 @@ impl ShardBuilder {
         let mut edges_writer = EdgeWriter::try_new(&edges_path, self.params.relation_meta.dest_sort_key_bits)?;
 
         let mut nodes_seen = 0u64;
+        let mut last_edge: Option<EdgeRec> = None;
         while let Some(node_id) = node_stream.next_id()? {
             nodes_seen += 1;
             offsets_writer.push(edges_writer.word_offset())?;
-            while let Some(edge) = edge_stream.peek() {
+            while let Some(edge) = edge_stream.peek_order_checked(last_edge.as_ref())? {
                 if edge.src > node_id {
                     break;
                 }
                 let edge = edge_stream.pop().unwrap();
+                last_edge = Some(edge);
                 edges_writer.write_edge(&edge)?;
             }
+        }
+        // If edges remain for nodes we never saw, fail fast to avoid a corrupted index.
+        if edge_stream.peek().is_some() {
+            return Err(IndexBuildError::DanglingEdges.into());
         }
         // Sentinel offset
         offsets_writer.push(edges_writer.word_offset())?;
@@ -103,8 +121,8 @@ impl ShardBuilder {
             offsets_path,
             edges_path,
             stats: NodeEdgeStats {
-                edge_count: edge_count as u32,
-                byte_len: bytes_written as u32,
+                edge_count: edge_count.try_into().map_err(|_| IndexBuildError::CountOverflow)?,
+                byte_len: bytes_written.try_into().map_err(|_| IndexBuildError::CountOverflow)?,
             },
         })
     }
@@ -136,7 +154,7 @@ fn delta_encode_offsets(offsets: &[u64]) -> Result<Vec<u8>> {
             let delta = off
                 .checked_sub(prev)
                 .ok_or(IndexBuildError::NotImplemented("offsets must be non-decreasing"))?;
-            let delta_u16: u16 = delta.try_into().map_err(|_| IndexBuildError::NotImplemented("delta too large for u16"))?;
+            let delta_u16: u16 = delta.try_into().map_err(|_| IndexBuildError::OffsetDeltaOverflow)?;
             out.extend_from_slice(&delta_u16.to_le_bytes());
             prev = off;
         }
@@ -271,10 +289,13 @@ impl NodeStream {
         loop {
             if let Some(batch) = &self.current_batch {
                 if self.idx_in_batch < batch.num_rows() {
-                    let id_col: &Int64Array = as_i64_array(batch.column_by_name("id").unwrap(), &self.schema, "id")?;
+                    let id_array = batch
+                        .column_by_name("id")
+                        .ok_or_else(|| IndexBuildError::NotImplemented("id column missing"))?;
+                    let id_col: &Int64Array = as_i64_array(id_array, &self.schema, "id")?;
                     let val = id_col.value(self.idx_in_batch) as u64;
                     self.idx_in_batch += 1;
-                    return Ok(Some(val));
+            return Ok(Some(val));
                 }
             }
             match self.rt.block_on(self.stream.next()) {
@@ -322,8 +343,14 @@ impl EdgeSubStream {
         loop {
             if let Some(batch) = &self.batch {
                 if self.idx_in_batch < batch.num_rows() {
-                    let src_col: &Int64Array = as_i64_array(batch.column_by_name("src_id").unwrap(), &self.schema, "src_id")?;
-                    let dst_col: &Int64Array = as_i64_array(batch.column_by_name("dst_id").unwrap(), &self.schema, "dst_id")?;
+                    let src_ref = batch
+                        .column_by_name("src_id")
+                        .ok_or_else(|| IndexBuildError::NotImplemented("src_id column missing"))?;
+                    let dst_ref = batch
+                        .column_by_name("dst_id")
+                        .ok_or_else(|| IndexBuildError::NotImplemented("dst_id column missing"))?;
+                    let src_col: &Int64Array = as_i64_array(src_ref, &self.schema, "src_id")?;
+                    let dst_col: &Int64Array = as_i64_array(dst_ref, &self.schema, "dst_id")?;
                     let sort_col = self
                         .dest_sort_key_bits
                         .and_then(|_| batch.column_by_name("dest_sort_key"))
@@ -420,13 +447,37 @@ impl MergedEdgeStream {
             None
         }
     }
+
+    fn peek_order_checked(&mut self, last: Option<&EdgeRec>) -> Result<Option<&EdgeRec>> {
+        if let Some(current) = self.peek() {
+            if let Some(prev) = last {
+                if current.src < prev.src
+                    || (current.src == prev.src
+                        && current
+                            .dest_sort_key
+                            .unwrap_or(u64::MAX)
+                            > prev.dest_sort_key.unwrap_or(u64::MAX))
+                {
+                    return Err(IndexBuildError::EdgeOrderingViolation.into());
+                }
+            }
+        }
+        Ok(self.peek())
+    }
 }
 
 fn as_i64_array<'a>(array: &'a ArrayRef, _schema: &SchemaRef, name: &str) -> Result<&'a Int64Array> {
     array
         .as_any()
         .downcast_ref::<Int64Array>()
-        .ok_or_else(|| IndexBuildError::NotImplemented(Box::leak(format!("column {} not int64", name).into_boxed_str())).into())
+        .ok_or_else(|| IndexBuildError::InvalidColumn(match name {
+            "id" => "id",
+            "src_id" => "src_id",
+            "dst_id" => "dst_id",
+            "dest_sort_key" => "dest_sort_key",
+            _ => "unknown",
+        })
+        .into())
 }
 
 fn object_reader_from_local(source: &ParquetSource) -> Result<ParquetObjectReader> {

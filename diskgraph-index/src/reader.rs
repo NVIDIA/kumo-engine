@@ -103,15 +103,23 @@ fn decode_offset(offsets: &Mmap, chunks: &[OffsetChunk], idx: u64) -> Result<u64
     }
     let mut cursor = chunk.data_offset;
     let count = u16::from_le_bytes([offsets[cursor], offsets[cursor + 1]]);
-    debug_assert_eq!(count, chunk.count);
+    if count != chunk.count {
+        return Err(DiskgraphError::InvalidMetadata("offset chunk count mismatch".into()).into());
+    }
     cursor += 2;
-    let base = u64::from_le_bytes(offsets[cursor..cursor + 8].try_into().unwrap());
+    let base_bytes: [u8; 8] = offsets[cursor..cursor + 8]
+        .try_into()
+        .map_err(|_| DiskgraphError::InvalidMetadata("offset base slice error".into()))?;
+    let base = u64::from_le_bytes(base_bytes);
     if within == 0 {
         return Ok(base);
     }
     cursor += 8;
     let mut acc = base;
     for _ in 0..within {
+        if cursor + 2 > offsets.len() {
+            return Err(DiskgraphError::InvalidMetadata("offset delta out of bounds".into()).into());
+        }
         let delta = u16::from_le_bytes([offsets[cursor], offsets[cursor + 1]]);
         acc = acc
             .checked_add(delta as u64)
