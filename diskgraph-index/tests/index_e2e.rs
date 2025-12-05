@@ -1199,6 +1199,54 @@ fn builder_errors_on_corrupted_parquet() {
 }
 
 #[test]
+fn builder_errors_on_shard_index_mismatch() {
+    let dir = tempdir().unwrap();
+    let node_path = dir.path().join("nodes.parquet");
+    let edge_path = dir.path().join("edges.parquet");
+    write_nodes(&node_path, &[0]).unwrap();
+    write_edges(
+        &edge_path,
+        &[EdgeRow {
+            src: 0,
+            dst: 1,
+            dest_sort_key: None,
+        }],
+        false,
+    )
+    .unwrap();
+
+    let node_meta = node_meta("User", 1);
+    let relation_meta = relation_meta("Follows", "User", "User", None);
+    let builder = ShardBuilder::new(ShardBuildParams {
+        output_dir: dir.path().join("out"),
+        node_meta: node_meta.clone(),
+        node_types: vec![node_meta.clone()],
+        relation_metas: vec![relation_meta.clone()],
+        shard_index: 0,
+    });
+    let msg = match builder.build(
+        &NodeShardInput {
+            node_type: "User".into(),
+            shard_index: 0,
+            parquet: ParquetSource::LocalFile(node_path),
+        },
+        &[EdgeShardInput {
+            relation: "Follows".into(),
+            source_shard_index: 1,
+            parquet: ParquetSource::LocalFile(edge_path),
+            has_dest_sort_key: false,
+        }],
+    ) {
+        Ok(_) => panic!("expected shard index mismatch"),
+        Err(err) => err.to_string(),
+    };
+    assert!(
+        msg.contains("ShardIndexMismatch") || msg.contains("shard index mismatch"),
+        "expected shard index mismatch, got {msg}"
+    );
+}
+
+#[test]
 fn builder_fails_on_missing_edge_file() {
     let dir = tempdir().unwrap();
     let node_path = dir.path().join("nodes.parquet");

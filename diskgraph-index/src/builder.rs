@@ -43,6 +43,8 @@ pub enum IndexBuildError {
     InvalidColumn(&'static str),
     #[error("unknown relation in shard input")]
     UnknownRelation,
+    #[error("shard index mismatch between node shard ({node}) and edge shard ({edge})")]
+    ShardIndexMismatch { node: usize, edge: usize },
     #[error("parquet error: {0}")]
     Parquet(#[from] parquet::errors::ParquetError),
 }
@@ -79,6 +81,15 @@ impl ShardBuilder {
         node_shard: &NodeShardInput,
         edge_shards: &[EdgeShardInput],
     ) -> Result<ShardBuildOutput> {
+        for e in edge_shards {
+            if e.source_shard_index != self.params.shard_index {
+                return Err(IndexBuildError::ShardIndexMismatch {
+                    node: self.params.shard_index,
+                    edge: e.source_shard_index,
+                }
+                .into());
+            }
+        }
         fs::create_dir_all(&self.params.output_dir)?;
         let offsets_path = self.params.output_dir.join(OFFSETS_FILENAME);
         let edges_path = self.params.output_dir.join(EDGES_FILENAME);
