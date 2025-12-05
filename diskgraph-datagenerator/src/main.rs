@@ -58,6 +58,22 @@ struct Cli {
     edges: u64,
 }
 
+const SHARD_GAP: u64 = 7;
+
+#[derive(Clone, Debug)]
+struct ShardRange {
+    start: u64,
+    end: u64,
+}
+
+#[derive(Clone, Debug)]
+struct ShardPlan {
+    ranges: Vec<Option<ShardRange>>,
+    max_id: u64,
+}
+
+type EdgeCountMap = HashMap<String, u64>;
+
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt().with_env_filter("info").init();
     let cli = Cli::parse();
@@ -85,9 +101,13 @@ fn generate_dataset(cli: &Cli, scenario: ScenarioKind) -> anyhow::Result<()> {
     let name = scenario_dir_name(&scenario);
     let root = cli.output.join(name);
     fs::create_dir_all(&root)?;
-    info!("generating scenario {:?} under {}", scenario, root.display());
+    info!(
+        "generating scenario {:?} under {}",
+        scenario,
+        root.display()
+    );
 
-    let (mut node_types, mut edge_relations, edge_rows) = match scenario {
+    let (mut node_types, mut edge_relations, edge_counts) = match scenario {
         ScenarioKind::SimpleNoOptional => build_simple(cli),
         ScenarioKind::TemporalPresorted => build_temporal_presorted(cli),
         ScenarioKind::TemporalWeighted => build_temporal_weighted(cli),
@@ -96,29 +116,35 @@ fn generate_dataset(cli: &Cli, scenario: ScenarioKind) -> anyhow::Result<()> {
         ScenarioKind::Coverage => unreachable!("handled earlier"),
     };
 
-    write_nodes(&root, &mut node_types, cli.node_shards)?;
+    let shard_plan = shard_plan(cli.nodes, cli.node_shards, SHARD_GAP);
+    let mut shard_ranges_by_type: HashMap<String, Vec<Option<ShardRange>>> = HashMap::new();
+    for nt in node_types.iter_mut() {
+        nt.max_id = shard_plan.max_id;
+        shard_ranges_by_type.insert(nt.name.clone(), shard_plan.ranges.clone());
+    }
+
+    write_nodes(&root, &mut node_types, &shard_ranges_by_type)?;
+    let edge_rows = build_edge_shards(&edge_relations, &edge_counts, &shard_ranges_by_type);
     write_edges(&root, &mut edge_relations, edge_rows, cli.node_shards)?;
     write_metadata(&root, &node_types, &edge_relations)?;
     Ok(())
 }
 
 /// Scenario: single node type, single relation, no optional fields.
-fn build_simple(cli: &Cli) -> (Vec<NodeTypeMetadata>, Vec<EdgeRelationMetadata>, HashMap<String, Vec<EdgeShardData>>) {
+fn build_simple(
+    cli: &Cli,
+) -> (
+    Vec<NodeTypeMetadata>,
+    Vec<EdgeRelationMetadata>,
+    EdgeCountMap,
+) {
     let node_types = vec![NodeTypeMetadata {
         name: "User".into(),
-        max_id: cli.nodes - 1,
+        max_id: 0,
         shards: Vec::new(),
     }];
-    let edges = generate_edges(
-        "Follows",
-        "User",
-        "User",
-        cli.edges,
-        cli.nodes - 1,
-        cli.nodes - 1,
-        None,
-        cli.node_shards,
-    );
+    let mut edge_counts = HashMap::new();
+    edge_counts.insert("Follows".into(), cli.edges);
     let relations = vec![EdgeRelationMetadata {
         name: "Follows".into(),
         src_type: "User".into(),
@@ -126,26 +152,24 @@ fn build_simple(cli: &Cli) -> (Vec<NodeTypeMetadata>, Vec<EdgeRelationMetadata>,
         shards: Vec::new(),
         dest_sort_key_bits: None,
     }];
-    (node_types, relations, edges)
+    (node_types, relations, edge_counts)
 }
 
 /// Scenario: dest_sort_key present, shards presorted by (src_id, dest_sort_key desc).
-fn build_temporal_presorted(cli: &Cli) -> (Vec<NodeTypeMetadata>, Vec<EdgeRelationMetadata>, HashMap<String, Vec<EdgeShardData>>) {
+fn build_temporal_presorted(
+    cli: &Cli,
+) -> (
+    Vec<NodeTypeMetadata>,
+    Vec<EdgeRelationMetadata>,
+    EdgeCountMap,
+) {
     let node_types = vec![NodeTypeMetadata {
         name: "Account".into(),
-        max_id: cli.nodes - 1,
+        max_id: 0,
         shards: Vec::new(),
     }];
-    let edges = generate_edges(
-        "Transfers",
-        "Account",
-        "Account",
-        cli.edges,
-        cli.nodes - 1,
-        cli.nodes - 1,
-        Some(32),
-        cli.node_shards,
-    );
+    let mut edge_counts = HashMap::new();
+    edge_counts.insert("Transfers".into(), cli.edges);
     let relations = vec![EdgeRelationMetadata {
         name: "Transfers".into(),
         src_type: "Account".into(),
@@ -153,26 +177,24 @@ fn build_temporal_presorted(cli: &Cli) -> (Vec<NodeTypeMetadata>, Vec<EdgeRelati
         shards: Vec::new(),
         dest_sort_key_bits: Some(32),
     }];
-    (node_types, relations, edges)
+    (node_types, relations, edge_counts)
 }
 
 /// Scenario: dest_sort_key present for temporal weighted sampling.
-fn build_temporal_weighted(cli: &Cli) -> (Vec<NodeTypeMetadata>, Vec<EdgeRelationMetadata>, HashMap<String, Vec<EdgeShardData>>) {
+fn build_temporal_weighted(
+    cli: &Cli,
+) -> (
+    Vec<NodeTypeMetadata>,
+    Vec<EdgeRelationMetadata>,
+    EdgeCountMap,
+) {
     let node_types = vec![NodeTypeMetadata {
         name: "Device".into(),
-        max_id: cli.nodes - 1,
+        max_id: 0,
         shards: Vec::new(),
     }];
-    let edges = generate_edges(
-        "Interactions",
-        "Device",
-        "Device",
-        cli.edges,
-        cli.nodes - 1,
-        cli.nodes - 1,
-        Some(16),
-        cli.node_shards,
-    );
+    let mut edge_counts = HashMap::new();
+    edge_counts.insert("Interactions".into(), cli.edges);
     let relations = vec![EdgeRelationMetadata {
         name: "Interactions".into(),
         src_type: "Device".into(),
@@ -180,26 +202,24 @@ fn build_temporal_weighted(cli: &Cli) -> (Vec<NodeTypeMetadata>, Vec<EdgeRelatio
         shards: Vec::new(),
         dest_sort_key_bits: Some(16),
     }];
-    (node_types, relations, edges)
+    (node_types, relations, edge_counts)
 }
 
 /// Scenario: dest_sort_key used purely as weight, no edge_id.
-fn build_weighted_only(cli: &Cli) -> (Vec<NodeTypeMetadata>, Vec<EdgeRelationMetadata>, HashMap<String, Vec<EdgeShardData>>) {
+fn build_weighted_only(
+    cli: &Cli,
+) -> (
+    Vec<NodeTypeMetadata>,
+    Vec<EdgeRelationMetadata>,
+    EdgeCountMap,
+) {
     let node_types = vec![NodeTypeMetadata {
         name: "Item".into(),
-        max_id: cli.nodes - 1,
+        max_id: 0,
         shards: Vec::new(),
     }];
-    let edges = generate_edges(
-        "SimilarTo",
-        "Item",
-        "Item",
-        cli.edges,
-        cli.nodes - 1,
-        cli.nodes - 1,
-        Some(8),
-        cli.node_shards,
-    );
+    let mut edge_counts = HashMap::new();
+    edge_counts.insert("SimilarTo".into(), cli.edges);
     let relations = vec![EdgeRelationMetadata {
         name: "SimilarTo".into(),
         src_type: "Item".into(),
@@ -207,50 +227,38 @@ fn build_weighted_only(cli: &Cli) -> (Vec<NodeTypeMetadata>, Vec<EdgeRelationMet
         shards: Vec::new(),
         dest_sort_key_bits: Some(8),
     }];
-    (node_types, relations, edges)
+    (node_types, relations, edge_counts)
 }
 
 /// Scenario: multi-table with mixed optional fields.
-fn build_mixed(cli: &Cli) -> (Vec<NodeTypeMetadata>, Vec<EdgeRelationMetadata>, HashMap<String, Vec<EdgeShardData>>) {
+fn build_mixed(
+    cli: &Cli,
+) -> (
+    Vec<NodeTypeMetadata>,
+    Vec<EdgeRelationMetadata>,
+    EdgeCountMap,
+) {
     let node_types = vec![
         NodeTypeMetadata {
             name: "User".into(),
-            max_id: cli.nodes - 1,
+            max_id: 0,
             shards: Vec::new(),
         },
         NodeTypeMetadata {
             name: "Ip".into(),
-            max_id: cli.nodes - 1,
+            max_id: 0,
             shards: Vec::new(),
         },
         NodeTypeMetadata {
             name: "Merchant".into(),
-            max_id: cli.nodes - 1,
+            max_id: 0,
             shards: Vec::new(),
         },
     ];
 
-    let mut edges = HashMap::new();
-    edges.extend(generate_edges(
-        "UserIp",
-        "User",
-        "Ip",
-        cli.edges / 2,
-        cli.nodes - 1,
-        cli.nodes - 1,
-        Some(32),
-        cli.node_shards,
-    ));
-    edges.extend(generate_edges(
-        "Purchases",
-        "User",
-        "Merchant",
-        cli.edges / 2,
-        cli.nodes - 1,
-        cli.nodes - 1,
-        None,
-        cli.node_shards,
-    ));
+    let mut edge_counts = HashMap::new();
+    edge_counts.insert("UserIp".into(), cli.edges / 2);
+    edge_counts.insert("Purchases".into(), cli.edges / 2);
 
     let relations = vec![
         EdgeRelationMetadata {
@@ -268,7 +276,7 @@ fn build_mixed(cli: &Cli) -> (Vec<NodeTypeMetadata>, Vec<EdgeRelationMetadata>, 
             dest_sort_key_bits: None,
         },
     ];
-    (node_types, relations, edges)
+    (node_types, relations, edge_counts)
 }
 
 #[derive(Clone)]
@@ -285,97 +293,189 @@ struct EdgeShardData {
     src_max: u64,
 }
 
-fn generate_edges(
-    relation: &str,
-    src_type: &str,
-    dst_type: &str,
-    count: u64,
-    src_max: u64,
-    dst_max: u64,
-    dest_sort_key_bits: Option<u8>,
-    shards: usize,
-) -> HashMap<String, Vec<EdgeShardData>> {
-    let mut rng = StdRng::seed_from_u64(hash_seed(relation, src_type, dst_type));
-    let ranges = shard_ranges(src_max, shards);
-    let dst_range = Uniform::new_inclusive(0_i64, dst_max as i64);
-    if count == 0 {
-        let mut map = HashMap::new();
-        map.insert(relation.to_string(), vec![EdgeShardData { rows: Vec::new(), src_min: 0, src_max: 0 }; shards.max(1)]);
-        return map;
+fn shard_plan(total_nodes: u64, shards: usize, gap: u64) -> ShardPlan {
+    let shard_count = shards.max(1) as u64;
+    if total_nodes == 0 {
+        return ShardPlan {
+            ranges: vec![None; shard_count as usize],
+            max_id: 0,
+        };
     }
-    let per_shard = ((count + shards as u64 - 1) / shards as u64).max(1);
-    let mut shards_rows: Vec<EdgeShardData> = Vec::with_capacity(shards);
-    for (idx, (start, end)) in ranges.iter().enumerate() {
-        if *end < *start {
-            shards_rows.push(EdgeShardData {
+    let per_shard = ((total_nodes + shard_count - 1) / shard_count).max(1);
+    let mut remaining = total_nodes;
+    let mut start = 0u64;
+    let mut ranges = Vec::with_capacity(shard_count as usize);
+    let mut max_id = 0;
+    for _ in 0..shard_count {
+        if remaining == 0 {
+            ranges.push(None);
+            continue;
+        }
+        let len = per_shard.min(remaining);
+        let end = start + len - 1;
+        ranges.push(Some(ShardRange { start, end }));
+        max_id = end;
+        remaining -= len;
+        start = end + 1 + gap;
+    }
+    // Ensure we produce exactly shard_count entries.
+    while ranges.len() < shard_count as usize {
+        ranges.push(None);
+    }
+    ShardPlan { ranges, max_id }
+}
+
+fn build_edge_shards(
+    relations: &[EdgeRelationMetadata],
+    edge_counts: &EdgeCountMap,
+    shard_ranges_by_type: &HashMap<String, Vec<Option<ShardRange>>>,
+) -> HashMap<String, Vec<EdgeShardData>> {
+    let mut shards = HashMap::new();
+    for rel in relations {
+        let count = *edge_counts.get(&rel.name).unwrap_or(&0);
+        let src_ranges = shard_ranges_by_type
+            .get(&rel.src_type)
+            .cloned()
+            .unwrap_or_default();
+        let dst_ranges: Vec<ShardRange> = shard_ranges_by_type
+            .get(&rel.dst_type)
+            .into_iter()
+            .flat_map(|ranges| ranges.iter())
+            .filter_map(|r| r.clone())
+            .collect::<Vec<_>>();
+        let rows = generate_edges_for_relation(rel, count, &src_ranges, &dst_ranges);
+        shards.insert(rel.name.clone(), rows);
+    }
+    shards
+}
+
+fn generate_edges_for_relation(
+    relation: &EdgeRelationMetadata,
+    count: u64,
+    src_ranges: &[Option<ShardRange>],
+    dst_ranges: &[ShardRange],
+) -> Vec<EdgeShardData> {
+    let mut rng = StdRng::seed_from_u64(hash_seed(
+        &relation.name,
+        &relation.src_type,
+        &relation.dst_type,
+    ));
+    if count == 0 {
+        return vec![
+            EdgeShardData {
                 rows: Vec::new(),
                 src_min: 0,
                 src_max: 0,
-            });
-            continue;
+            };
+            src_ranges.len().max(1)
+        ];
+    }
+
+    let active_shards: Vec<(usize, &ShardRange)> = src_ranges
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, r)| r.as_ref().map(|range| (idx, range)))
+        .collect();
+    if active_shards.is_empty() {
+        return vec![
+            EdgeShardData {
+                rows: Vec::new(),
+                src_min: 0,
+                src_max: 0,
+            };
+            src_ranges.len().max(1)
+        ];
+    }
+
+    let per_shard = ((count + active_shards.len() as u64 - 1) / active_shards.len() as u64).max(1);
+    let mut remaining_edges = count;
+    let mut shards_rows: Vec<EdgeShardData> = vec![
+        EdgeShardData {
+            rows: Vec::new(),
+            src_min: 0,
+            src_max: 0
+        };
+        src_ranges.len().max(1)
+    ];
+
+    for (idx, range) in active_shards {
+        if remaining_edges == 0 {
+            break;
         }
-        let src_range = Uniform::new_inclusive(*start, *end);
+        let edges_here = per_shard.min(remaining_edges);
+        let src_range = Uniform::new_inclusive(range.start as i64, range.end as i64);
         let mut shard_rows = Vec::new();
-        for i in 0..per_shard {
+        for i in 0..edges_here {
             let src = rng.sample(src_range);
-            let dst = rng.sample(dst_range);
-            let dest_sort_key = dest_sort_key_bits.map(|_| {
-                let base = (per_shard * (idx as u64 + 1) - i) as i64;
+            let dst = sample_from_ranges(&mut rng, dst_ranges).unwrap_or(0);
+            let dest_sort_key = relation.dest_sort_key_bits.map(|_| {
+                let base = (edges_here * (idx as u64 + 1) - i) as i64;
                 base + rng.gen_range(0..10)
             });
-            shard_rows.push(EdgeRow { src, dst, dest_sort_key });
+            shard_rows.push(EdgeRow {
+                src,
+                dst,
+                dest_sort_key,
+            });
         }
-        // Sort shard by src, then dest_sort_key descending if present.
         shard_rows.sort_by(|a, b| {
             a.src
                 .cmp(&b.src)
                 .then_with(|| b.dest_sort_key.cmp(&a.dest_sort_key))
         });
-        shards_rows.push(EdgeShardData {
+        shards_rows[idx] = EdgeShardData {
             rows: shard_rows,
-            src_min: *start as u64,
-            src_max: *end as u64,
-        });
+            src_min: range.start,
+            src_max: range.end,
+        };
+        remaining_edges -= edges_here;
     }
-    let mut map = HashMap::new();
-    map.insert(relation.to_string(), shards_rows);
-    map
+    shards_rows
 }
 
-fn shard_ranges(max_id: u64, shards: usize) -> Vec<(i64, i64)> {
-    let shard_count = shards.max(1) as u64;
-    let per_shard = ((max_id + 1) + shard_count - 1) / shard_count; // ceil div
-    let mut ranges = Vec::with_capacity(shard_count as usize);
-    let mut start = 0_i64;
-    for _ in 0..shard_count {
-        let end = (start as u64 + per_shard).min(max_id + 1) as i64 - 1;
-        ranges.push((start, end.max(start)));
-        start = end + 1;
-        if start as u64 > max_id {
-            break;
+fn sample_from_ranges(rng: &mut StdRng, ranges: &[ShardRange]) -> Option<i64> {
+    if ranges.is_empty() {
+        return None;
+    }
+    let total: u64 = ranges.iter().map(|r| r.end - r.start + 1).sum();
+    if total == 0 {
+        return None;
+    }
+    let offset = rng.gen_range(0..total);
+    let mut acc = offset;
+    for range in ranges {
+        let len = range.end - range.start + 1;
+        if acc < len {
+            return Some((range.start + acc) as i64);
         }
+        acc -= len;
     }
-    // Ensure we produce exactly shard_count entries.
-    while ranges.len() < shard_count as usize {
-        ranges.push((0, -1)); // empty range for padding shards if max_id < shard count
-    }
-    ranges
+    None
 }
 
-fn write_nodes(root: &Path, node_types: &mut [NodeTypeMetadata], shards: usize) -> anyhow::Result<()> {
+fn write_nodes(
+    root: &Path,
+    node_types: &mut [NodeTypeMetadata],
+    shard_ranges: &HashMap<String, Vec<Option<ShardRange>>>,
+) -> anyhow::Result<()> {
     let base = root.join("nodes");
     fs::create_dir_all(&base)?;
     for nt in node_types.iter_mut() {
         let nt_dir = base.join(nt.name.to_lowercase());
         fs::create_dir_all(&nt_dir)?;
         let schema = Schema::new(vec![Field::new("id", DataType::Int64, false)]);
-        let ranges = shard_ranges(nt.max_id, shards);
+        let ranges = shard_ranges
+            .get(&nt.name)
+            .cloned()
+            .unwrap_or_else(|| vec![None; 1]);
         nt.shards.clear();
-        for (idx, (start, end)) in ranges.iter().enumerate() {
-            if *end < *start {
-                // Empty shard placeholder.
+        for (idx, maybe_range) in ranges.iter().enumerate() {
+            if maybe_range.is_none() {
                 let empty = Int64Array::from(Vec::<i64>::new());
-                let batch = RecordBatch::try_new(Arc::new(schema.clone()), vec![Arc::new(empty) as ArrayRef])?;
+                let batch = RecordBatch::try_new(
+                    Arc::new(schema.clone()),
+                    vec![Arc::new(empty) as ArrayRef],
+                )?;
                 let path = nt_dir.join(format!("part-{idx:05}.parquet"));
                 write_parquet(&path, &schema, &[batch])?;
                 nt.shards.push(NodeShardMetadata {
@@ -385,14 +485,16 @@ fn write_nodes(root: &Path, node_types: &mut [NodeTypeMetadata], shards: usize) 
                 });
                 continue;
             }
-            let ids: Int64Array = (*start..=*end).collect();
-            let batch = RecordBatch::try_new(Arc::new(schema.clone()), vec![Arc::new(ids) as ArrayRef])?;
+            let range = maybe_range.as_ref().unwrap();
+            let ids: Int64Array = (range.start as i64..=range.end as i64).collect();
+            let batch =
+                RecordBatch::try_new(Arc::new(schema.clone()), vec![Arc::new(ids) as ArrayRef])?;
             let path = nt_dir.join(format!("part-{idx:05}.parquet"));
             write_parquet(&path, &schema, &[batch])?;
             nt.shards.push(NodeShardMetadata {
                 path: format!("nodes/{}/part-{idx:05}.parquet", nt.name.to_lowercase()),
-                min_id: *start as u64,
-                max_id: *end as u64,
+                min_id: range.start,
+                max_id: range.end,
             });
         }
     }
@@ -411,19 +513,22 @@ fn write_edges(
     for rel in relations.iter_mut() {
         let rel_dir = base.join(rel.name.to_lowercase());
         fs::create_dir_all(&rel_dir)?;
-        let mut rel_rows = shards
-            .get(&rel.name)
-            .cloned()
-            .unwrap_or_else(|| vec![EdgeShardData { rows: Vec::new(), src_min: 0, src_max: 0 }; shard_count]);
-        if rel_rows.len() < shard_count {
-            rel_rows.resize_with(
-                shard_count,
-                || EdgeShardData {
+        let mut rel_rows = shards.get(&rel.name).cloned().unwrap_or_else(|| {
+            vec![
+                EdgeShardData {
                     rows: Vec::new(),
                     src_min: 0,
-                    src_max: 0,
-                },
-            );
+                    src_max: 0
+                };
+                shard_count
+            ]
+        });
+        if rel_rows.len() < shard_count {
+            rel_rows.resize_with(shard_count, || EdgeShardData {
+                rows: Vec::new(),
+                src_min: 0,
+                src_max: 0,
+            });
         }
         rel.shards.clear();
         for (idx, shard) in rel_rows.into_iter().enumerate() {
@@ -537,6 +642,6 @@ fn hash_seed(a: &str, b: &str, c: &str) -> u64 {
 }
 
 // Required for SeaHasher.
-use std::hash::Hasher;
 use seahash;
+use std::hash::Hasher;
 use std::sync::Arc;

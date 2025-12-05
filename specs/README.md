@@ -8,7 +8,7 @@ This document captures the required on-disk layout and `metadata.json` schema fo
   - `metadata.json`
   - `nodes/TYPE/part-00000.parquet ...` — sharded Parquet files per node type.
   - `edges/RELATION/part-00000.parquet ...` — sharded Parquet files per edge relation.
-- Shard alignment: node and edge shard counts must match. Edge shard `N` only contains `src_id` values within the min/max range of node shard `N` for the relation’s source type.
+- Shard alignment: node and edge shard counts must match. Edge shard `N` only contains `src_id` values within the min/max range of node shard `N` for the relation’s source type. Node shard ranges are contiguous within a shard, but ranges for a given type may have gaps between shards.
 - Sorting:
   - Node shards: sorted by `id` ascending.
   - Edge shards: sorted by `(src_id, dest_sort_key desc when present)`.
@@ -54,8 +54,8 @@ Column names are fixed and must adhere to this spec.
 Field notes:
 - `dataset_name`: arbitrary identifier for this dataset.
 - `node_types[*].name`: logical node type name.
-- `node_types[*].max_id`: maximum node id observed for the type.
-- `node_types[*].shards`: relative paths and ID ranges for node shards.
+- `node_types[*].max_id`: maximum node id observed for the type (may be greater than the total node count if there are gaps between shard ranges).
+- `node_types[*].shards`: relative paths and contiguous ID ranges for node shards; ranges may be non-contiguous across shards of the same type. Gaps between shards are allowed and their widths are dataset-defined (no fixed spacing requirement).
 - `edge_relations[*].name`: logical relation name.
 - `edge_relations[*].src_type` / `dst_type`: refer to node type names.
 - `edge_relations[*].shards`: relative paths and source ID ranges for edge shards; shard count must align with the source node type shard count.
@@ -64,6 +64,7 @@ Field notes:
 ## Validation Rules
 
 - All IDs in Parquet files must fall within the shard ranges declared in metadata.
+- Shards for a given node type must not overlap; gaps between shard ranges are allowed.
 - Edge shard ranges must be a subset of the source node shard ranges.
 - Node and edge shard counts for a relation’s source type must match.
 - Sorting requirements must hold for fast lookup.

@@ -40,7 +40,7 @@ Each scenario creates a dataset directory under `--output`, for example `simple_
 Metadata records the relative shard paths for both nodes and edges plus per-shard id ranges (node shard min/max id; edge shard source min/max id) to keep the dataset self-contained and routable.
 
 Generation guarantees:
-- Node shards are contiguous, sorted by `id`.
+- Node shards contain contiguous ranges per shard, sorted by `id`; gaps may exist between shard ranges.
 - Edge shards are sorted by `(src_id, dest_sort_key DESC when present)`.
 - Shard counts for nodes and edges match, and edge shard `N` only contains `src_id` values from node shard `N` of the relation’s source type.
 
