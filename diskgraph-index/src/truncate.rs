@@ -20,21 +20,20 @@ pub(crate) fn truncate_counts(
         .checked_sub(base_span)
         .ok_or(IndexBuildError::OffsetDeltaOverflow)?;
 
-    let mut working_counts = counts.to_vec();
+    let entry_bytes: Vec<u64> = layouts.iter().map(|l| l.entry_bytes as u64).collect();
 
     loop {
-        let node_bytes = EdgeWriter::node_length_bytes(layouts, &working_counts)?;
+        let node_bytes = EdgeWriter::node_length_bytes(layouts, counts)?;
         if node_bytes <= budget {
             // Apply truncations to buckets and propagate counts.
-            for (idx, target) in working_counts.iter().enumerate() {
+            for (idx, target) in counts.iter().enumerate() {
                 buckets[idx].truncate(*target);
             }
-            counts.copy_from_slice(&working_counts);
             return Ok(());
         }
 
         // Items sorted by current length desc.
-        let mut items: Vec<(usize, usize)> = working_counts
+        let mut items: Vec<(usize, usize)> = counts
             .iter()
             .enumerate()
             .filter(|(_, &c)| c > 0)
@@ -46,67 +45,32 @@ pub(crate) fn truncate_counts(
             return Err(IndexBuildError::OffsetDeltaOverflow);
         }
 
-        let mut leveled = false;
-        for level in 0..items.len() {
-            let current_len = items[level].1;
-            let next_len = items.get(level + 1).map(|p| p.1).unwrap_or(0);
-
-            // If there is no change in length at this level, skip ahead to avoid
-            // getting stuck when multiple relations have identical lengths.
-            if current_len == next_len {
-                continue;
-            }
-
-            // Level the top (level+1) lists down to next_len and see if it fits.
-            let mut candidate_counts = working_counts.clone();
-            for i in 0..=level {
-                candidate_counts[items[i].0] = next_len;
-            }
-            if candidate_counts == working_counts {
-                continue;
-            }
-            let candidate_bytes = EdgeWriter::node_length_bytes(layouts, &candidate_counts)?;
-            if candidate_bytes > budget {
-                // Still too large; accept this leveling and iterate again.
-                working_counts = candidate_counts;
-                leveled = true;
-                break;
-            }
-
-            // Binary search for the largest length between next_len and current_len that fits.
-            let mut low = next_len;
-            let mut high = current_len;
-            let mut best = next_len;
-            while low <= high {
-                let mid = (low + high) / 2;
-                let mut trial = working_counts.clone();
-                for i in 0..=level {
-                    trial[items[i].0] = mid;
-                }
-                let trial_bytes = EdgeWriter::node_length_bytes(layouts, &trial)?;
-                if trial_bytes <= budget {
-                    best = mid;
-                    if mid == current_len {
-                        break;
-                    }
-                    low = mid + 1;
-                } else {
-                    if mid == 0 {
-                        break;
-                    }
-                    high = mid - 1;
-                }
-            }
-            for i in 0..=level {
-                working_counts[items[i].0] = best;
-            }
-            leveled = true;
-            break;
+        // Identify the top "plateau" (all relations with the current max length).
+        let top_len = items[0].1;
+        let mut level = 1;
+        while level < items.len() && items[level].1 == top_len {
+            level += 1;
         }
+        let next_len = items.get(level).map(|p| p.1).unwrap_or(0);
+        let max_drop = top_len.saturating_sub(next_len).max(1);
 
-        if !leveled {
-            // Every list already zero or could not be reduced further.
+        // Estimate how many elements we need to drop from this plateau to reach budget,
+        // using entry byte size as the dominating term (varint prefix is small).
+        let mut bytes_per_step: u64 = 0;
+        for i in 0..level {
+            bytes_per_step = bytes_per_step.saturating_add(entry_bytes[items[i].0]);
+        }
+        if bytes_per_step == 0 {
             return Err(IndexBuildError::OffsetDeltaOverflow);
+        }
+        let needed = node_bytes
+            .checked_sub(budget)
+            .ok_or(IndexBuildError::OffsetDeltaOverflow)?;
+        let steps_needed = (needed + bytes_per_step - 1) / bytes_per_step;
+        let drop = max_drop.min(steps_needed as usize).max(1);
+
+        for i in 0..level {
+            counts[items[i].0] = counts[items[i].0].saturating_sub(drop);
         }
     }
 }
