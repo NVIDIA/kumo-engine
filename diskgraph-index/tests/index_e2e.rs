@@ -584,6 +584,164 @@ fn multi_relation_mixed_dst_widths_and_partial_edges() {
 }
 
 #[test]
+fn truncates_large_node_without_sort_key() {
+    let dir = tempdir().unwrap();
+    let node_path = dir.path().join("nodes.parquet");
+    let edge_path = dir.path().join("edges.parquet");
+    // Two nodes; node 0 has a huge fanout, node 1 has a small edge.
+    write_nodes(&node_path, &[0, 1]).unwrap();
+    let big_count = 70_000;
+    let mut edges = Vec::with_capacity(big_count as usize + 1);
+    for i in 0..big_count {
+        edges.push(EdgeRow {
+            src: 0,
+            dst: i as i64,
+            dest_sort_key: None,
+        });
+    }
+    edges.push(EdgeRow {
+        src: 1,
+        dst: 999,
+        dest_sort_key: None,
+    });
+    write_edges(&edge_path, &edges, false).unwrap();
+
+    let node_meta = node_meta("User", 999);
+    let relation_meta = relation_meta("Follows", "User", "User", None);
+    let output_dir = dir.path().join("out");
+    let builder = ShardBuilder::new(ShardBuildParams {
+        output_dir: output_dir.clone(),
+        node_meta: node_meta.clone(),
+        node_types: vec![node_meta.clone()],
+        relation_metas: vec![relation_meta.clone()],
+        shard_index: 0,
+    });
+    let built = builder
+        .build(
+            &NodeShardInput {
+                node_type: "User".into(),
+                shard_index: 0,
+                parquet: ParquetSource::LocalFile(node_path),
+            },
+            &[EdgeShardInput {
+                relation: "Follows".into(),
+                source_shard_index: 0,
+                parquet: ParquetSource::LocalFile(edge_path),
+                has_dest_sort_key: false,
+            }],
+        )
+        .unwrap();
+    let reader = ShardReader::open(&output_dir, built.layouts.clone()).unwrap();
+    let segments0 = reader
+        .edges_for_node(0)
+        .unwrap()
+        .relation_segments()
+        .unwrap();
+    let seg = &segments0[0];
+    let entry_bytes = seg.layout.entry_bytes as u64;
+    let budget = u16::MAX as u64; // base_span is 0 for first node.
+    let node_bytes =
+        varint_len_u64(seg.count as u64) as u64 + (seg.count as u64).saturating_mul(entry_bytes);
+    assert!(
+        seg.count < big_count as u32,
+        "expected truncation below original"
+    );
+    assert!(
+        node_bytes <= budget,
+        "truncated node payload should fit budget"
+    );
+    assert!(built.build_stats.truncated_edges_total > 0);
+    // Next node should still decode correctly.
+    let segments1 = reader
+        .edges_for_node(1)
+        .unwrap()
+        .relation_segments()
+        .unwrap();
+    assert_eq!(segments1[0].count, 1);
+    let decoded1 = decode_relation(&reader, 1, 0);
+    assert_eq!(decoded1, vec![(999, None)]);
+}
+
+#[test]
+fn truncates_large_node_with_sort_key() {
+    let dir = tempdir().unwrap();
+    let node_path = dir.path().join("nodes.parquet");
+    let edge_path = dir.path().join("edges.parquet");
+    write_nodes(&node_path, &[0, 1]).unwrap();
+    let big_count = 70_000;
+    let mut edges = Vec::with_capacity(big_count as usize + 1);
+    for i in 0..big_count {
+        edges.push(EdgeRow {
+            src: 0,
+            dst: (i + 1000) as i64,
+            dest_sort_key: Some((big_count - i) as i64),
+        });
+    }
+    // Node 1 has two edges with sort keys.
+    edges.push(EdgeRow {
+        src: 1,
+        dst: 500,
+        dest_sort_key: Some(8),
+    });
+    edges.push(EdgeRow {
+        src: 1,
+        dst: 600,
+        dest_sort_key: Some(7),
+    });
+    write_edges(&edge_path, &edges, true).unwrap();
+
+    let node_meta = node_meta("User", 70_600);
+    let relation_meta = relation_meta("Temporal", "User", "User", Some(8));
+    let output_dir = dir.path().join("out");
+    let builder = ShardBuilder::new(ShardBuildParams {
+        output_dir: output_dir.clone(),
+        node_meta: node_meta.clone(),
+        node_types: vec![node_meta.clone()],
+        relation_metas: vec![relation_meta.clone()],
+        shard_index: 0,
+    });
+    let built = builder
+        .build(
+            &NodeShardInput {
+                node_type: "User".into(),
+                shard_index: 0,
+                parquet: ParquetSource::LocalFile(node_path),
+            },
+            &[EdgeShardInput {
+                relation: "Temporal".into(),
+                source_shard_index: 0,
+                parquet: ParquetSource::LocalFile(edge_path),
+                has_dest_sort_key: true,
+            }],
+        )
+        .unwrap();
+    let reader = ShardReader::open(&output_dir, built.layouts.clone()).unwrap();
+    let segments0 = reader
+        .edges_for_node(0)
+        .unwrap()
+        .relation_segments()
+        .unwrap();
+    let seg0 = &segments0[0];
+    let entry_bytes = seg0.layout.entry_bytes as u64;
+    let budget = u16::MAX as u64;
+    let node_bytes =
+        varint_len_u64(seg0.count as u64) as u64 + (seg0.count as u64).saturating_mul(entry_bytes);
+    assert!(
+        seg0.count < big_count as u32,
+        "expected truncation with sort key"
+    );
+    assert!(
+        node_bytes <= budget,
+        "truncated node payload should fit budget"
+    );
+    assert!(built.build_stats.truncated_edges_total > 0);
+
+    // Node 1 should decode its two edges with sort keys intact and ordered.
+    let decoded = decode_relation(&reader, 1, 0);
+    assert_eq!(decoded, vec![(500, Some(8)), (600, Some(7))]);
+}
+
+#[test]
 fn reader_rejects_invalid_header() {
     let dir = tempdir().unwrap();
     let offsets = dir.path().join("offsets.bin");
@@ -911,4 +1069,47 @@ fn write_custom_nodes(path: &Path, col: &str, ids: &[i64]) -> anyhow::Result<()>
         vec![Arc::new(Int64Array::from(ids.to_vec())) as ArrayRef],
     )?;
     write_parquet(path, &schema, &[batch])
+}
+
+fn max_fit_count(entry_bytes: u64, budget: u64) -> u64 {
+    // Find the maximum count such that varint_len(count) + count * entry_bytes <= budget.
+    let fits = |c: u64| -> bool {
+        let len = varint_len_u64(c);
+        len as u64 + c.saturating_mul(entry_bytes) <= budget
+    };
+    let mut lo = 0u64;
+    let mut hi = budget / entry_bytes;
+    while lo < hi {
+        let mid = (lo + hi + 1) / 2;
+        if fits(mid) {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    lo
+}
+
+fn varint_len_u64(v: u64) -> usize {
+    if v < (1 << 7) {
+        1
+    } else if v < (1 << 14) {
+        2
+    } else if v < (1 << 21) {
+        3
+    } else if v < (1 << 28) {
+        4
+    } else if v < (1 << 35) {
+        5
+    } else if v < (1 << 42) {
+        6
+    } else if v < (1 << 49) {
+        7
+    } else if v < (1 << 56) {
+        8
+    } else if v < (1 << 63) {
+        9
+    } else {
+        10
+    }
 }
