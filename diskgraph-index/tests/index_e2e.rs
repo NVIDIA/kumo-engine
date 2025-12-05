@@ -491,6 +491,99 @@ fn multi_relation_counts_and_edges_decode_correctly() {
 }
 
 #[test]
+fn multi_relation_mixed_dst_widths_and_partial_edges() {
+    let dir = tempdir().unwrap();
+    let node_path = dir.path().join("nodes.parquet");
+    let edge_path_a = dir.path().join("edges_a.parquet"); // small dst ids
+    let edge_path_b = dir.path().join("edges_b.parquet"); // larger dst ids + sort key
+    write_nodes(&node_path, &[0, 1, 2]).unwrap();
+
+    // Relation A: no sort key, small dst ids.
+    write_edges(
+        &edge_path_a,
+        &[EdgeRow {
+            src: 0,
+            dst: 3, // small dst
+            dest_sort_key: None,
+        }],
+        false,
+    )
+    .unwrap();
+    // Relation B: with sort key, larger dst ids; node 0 has multiple edges, node 1 empty.
+    write_edges(
+        &edge_path_b,
+        &[
+            EdgeRow {
+                src: 0,
+                dst: 5000,
+                dest_sort_key: Some(9),
+            },
+            EdgeRow {
+                src: 0,
+                dst: 4000,
+                dest_sort_key: Some(2),
+            },
+            EdgeRow {
+                src: 2,
+                dst: 6000,
+                dest_sort_key: Some(1),
+            },
+        ],
+        true,
+    )
+    .unwrap();
+
+    let node_meta = node_meta("User", 6000);
+    let follows = relation_meta("Follows", "User", "User", None);
+    let temporal = relation_meta("Temporal", "User", "User", Some(8));
+    let output_dir = dir.path().join("out");
+    let builder = ShardBuilder::new(ShardBuildParams {
+        output_dir: output_dir.clone(),
+        node_meta: node_meta.clone(),
+        node_types: vec![node_meta.clone()],
+        relation_metas: vec![follows.clone(), temporal.clone()],
+        shard_index: 0,
+    });
+    let built = builder
+        .build(
+            &NodeShardInput {
+                node_type: "User".into(),
+                shard_index: 0,
+                parquet: ParquetSource::LocalFile(node_path),
+            },
+            &[
+                EdgeShardInput {
+                    relation: "Follows".into(),
+                    source_shard_index: 0,
+                    parquet: ParquetSource::LocalFile(edge_path_a),
+                    has_dest_sort_key: false,
+                },
+                EdgeShardInput {
+                    relation: "Temporal".into(),
+                    source_shard_index: 0,
+                    parquet: ParquetSource::LocalFile(edge_path_b),
+                    has_dest_sort_key: true,
+                },
+            ],
+        )
+        .unwrap();
+    let reader = ShardReader::open(&output_dir, built.layouts.clone()).unwrap();
+
+    // Node 0: edges in both relations; relation B should be sorted by sort key desc.
+    assert_eq!(decode_relation(&reader, 0, 0), vec![(3, None)]);
+    assert_eq!(
+        decode_relation(&reader, 0, 1),
+        vec![(5000, Some(9)), (4000, Some(2))]
+    );
+    // Node 1: empty in both relations.
+    assert!(decode_relation(&reader, 1, 0).is_empty());
+    assert!(decode_relation(&reader, 1, 1).is_empty());
+    // Node 2: only relation B has an edge.
+    assert!(decode_relation(&reader, 2, 0).is_empty());
+    assert_eq!(decode_relation(&reader, 2, 1), vec![(6000, Some(1))]);
+}
+
+#[test]
 fn reader_rejects_invalid_header() {
     let dir = tempdir().unwrap();
     let offsets = dir.path().join("offsets.bin");
