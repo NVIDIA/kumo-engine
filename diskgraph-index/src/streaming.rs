@@ -5,7 +5,21 @@ use std::path::PathBuf;
 #[derive(Debug, Clone)]
 pub enum ParquetSource {
     LocalFile(PathBuf),
-    // Future: S3, GCS, ADLS, in-memory buffers, etc.
+    S3(S3Location),
+    // Future: GCS, ADLS, in-memory buffers, etc.
+}
+
+/// S3 location and optional configuration for fetching Parquet.
+#[derive(Debug, Clone)]
+pub struct S3Location {
+    pub bucket: String,
+    pub key: String,
+    pub region: Option<String>,
+    pub endpoint: Option<String>,
+    pub access_key_id: Option<String>,
+    pub secret_access_key: Option<String>,
+    pub session_token: Option<String>,
+    pub virtual_hosted_style_request: Option<bool>,
 }
 
 /// Edge shard input bundle for a single source node shard.

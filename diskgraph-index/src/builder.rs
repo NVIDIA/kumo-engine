@@ -9,7 +9,10 @@ use arrow_schema::SchemaRef;
 use bytes::Bytes;
 use diskgraph_core::metadata::{EdgeRelationMetadata, NodeTypeMetadata};
 use futures::{future::BoxFuture, stream::BoxStream, StreamExt};
-use parquet::arrow::async_reader::{AsyncFileReader, ParquetRecordBatchStreamBuilder};
+use object_store::aws::AmazonS3Builder;
+use object_store::path::Path as ObjectPath;
+use object_store::ObjectStore;
+use parquet::arrow::async_reader::{AsyncFileReader, ParquetObjectReader as StoreParquetObjectReader, ParquetRecordBatchStreamBuilder};
 use parquet::file::metadata::ParquetMetaData;
 use parquet::file::reader::FileReader;
 use parquet::file::serialized_reader::SerializedFileReader;
@@ -52,6 +55,8 @@ pub enum IndexBuildError {
     ShardIndexMismatch { node: usize, edge: usize },
     #[error("parquet error: {0}")]
     Parquet(#[from] parquet::errors::ParquetError),
+    #[error("object store error: {0}")]
+    ObjectStore(String),
 }
 
 /// Parameters for building a single shard index.
@@ -543,7 +548,7 @@ struct NodeStream {
 
 impl NodeStream {
     fn try_new(rt: Arc<Runtime>, node_shard: &NodeShardInput) -> Result<Self> {
-        let reader = object_reader_from_local(&node_shard.parquet)?;
+        let reader = object_reader_from_source(&node_shard.parquet, &rt)?;
         let (stream, schema) = rt.block_on(async move {
             let mut builder = ParquetRecordBatchStreamBuilder::new(reader).await?;
             builder = builder.with_batch_size(8192);
@@ -614,7 +619,7 @@ impl EdgeSubStream {
         relation_id: u16,
         dest_sort_key_bits: Option<u8>,
     ) -> Result<Self> {
-        let reader = object_reader_from_local(&input.parquet)?;
+        let reader = object_reader_from_source(&input.parquet, &rt)?;
         let (stream, schema) = rt.block_on(async move {
             let mut builder = ParquetRecordBatchStreamBuilder::new(reader).await?;
             builder = builder.with_batch_size(8192);
@@ -832,24 +837,93 @@ fn as_i64_array<'a>(
         .map_err(Into::into)
 }
 
-fn object_reader_from_local(source: &ParquetSource) -> Result<ParquetObjectReader> {
-    let path = match source {
-        ParquetSource::LocalFile(p) => p.clone(),
-    };
-    Ok(ParquetObjectReader::new(LocalAsyncFileReader { path }))
+fn object_reader_from_source(
+    source: &ParquetSource,
+    rt: &Runtime,
+) -> Result<AnyParquetReader> {
+    match source {
+        ParquetSource::LocalFile(path) => Ok(AnyParquetReader::Local(LocalParquetObjectReader::new(
+            LocalAsyncFileReader { path: path.clone() },
+        ))),
+        ParquetSource::S3(cfg) => {
+            let mut builder = AmazonS3Builder::new()
+                .with_bucket_name(&cfg.bucket)
+                .with_virtual_hosted_style_request(
+                    cfg.virtual_hosted_style_request.unwrap_or(false),
+                );
+            if let Some(region) = &cfg.region {
+                builder = builder.with_region(region);
+            }
+            if let Some(endpoint) = &cfg.endpoint {
+                builder = builder.with_endpoint(endpoint);
+            }
+            if let Some(ak) = &cfg.access_key_id {
+                builder = builder.with_access_key_id(ak);
+            }
+            if let Some(sk) = &cfg.secret_access_key {
+                builder = builder.with_secret_access_key(sk);
+            }
+            if let Some(token) = &cfg.session_token {
+                builder = builder.with_token(token);
+            }
+            let store = builder
+                .build()
+                .map_err(|e| IndexBuildError::ObjectStore(e.to_string()))?;
+            let store: Arc<dyn ObjectStore> = Arc::new(store);
+            let location = ObjectPath::from(cfg.key.clone());
+            let meta = rt
+                .block_on(store.head(&location))
+                .map_err(|e| IndexBuildError::ObjectStore(e.to_string()))?;
+            let reader = StoreParquetObjectReader::new(store, meta);
+            Ok(AnyParquetReader::Store(reader))
+        }
+    }
 }
 
-struct ParquetObjectReader {
+enum AnyParquetReader {
+    Local(LocalParquetObjectReader),
+    Store(StoreParquetObjectReader),
+}
+
+impl AsyncFileReader for AnyParquetReader {
+    fn get_metadata(
+        &mut self,
+    ) -> BoxFuture<'_, parquet::errors::Result<std::sync::Arc<ParquetMetaData>>> {
+        match self {
+            AnyParquetReader::Local(r) => r.get_metadata(),
+            AnyParquetReader::Store(r) => r.get_metadata(),
+        }
+    }
+
+    fn get_byte_ranges(
+        &mut self,
+        ranges: Vec<std::ops::Range<usize>>,
+    ) -> BoxFuture<'_, parquet::errors::Result<Vec<Bytes>>> {
+        match self {
+            AnyParquetReader::Local(r) => r.get_byte_ranges(ranges),
+            AnyParquetReader::Store(r) => r.get_byte_ranges(ranges),
+        }
+    }
+
+    fn get_bytes(&mut self, range: std::ops::Range<usize>) -> BoxFuture<'_, parquet::errors::Result<Bytes>> {
+        match self {
+            AnyParquetReader::Local(r) => r.get_bytes(range),
+            AnyParquetReader::Store(r) => r.get_bytes(range),
+        }
+    }
+}
+
+struct LocalParquetObjectReader {
     inner: LocalAsyncFileReader,
 }
 
-impl ParquetObjectReader {
+impl LocalParquetObjectReader {
     fn new(inner: LocalAsyncFileReader) -> Self {
         Self { inner }
     }
 }
 
-impl AsyncFileReader for ParquetObjectReader {
+impl AsyncFileReader for LocalParquetObjectReader {
     fn get_metadata(
         &mut self,
     ) -> BoxFuture<'_, parquet::errors::Result<std::sync::Arc<ParquetMetaData>>> {
