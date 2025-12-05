@@ -125,16 +125,18 @@ fn decode_varint(buf: &[u8]) -> Result<(u32, usize), std::io::Error> {
     }
     let first = buf[0];
     let tag = first >> 6;
-    match tag {
-        0 => Ok(((first & 0x3F) as u32, 1)),
-        1 => {
-            if buf.len() < 2 {
-                return Err(std::io::ErrorKind::UnexpectedEof.into());
-            }
-            let hi = (first & 0x3F) as u32;
-            let lo = buf[1] as u32;
-            Ok(((hi << 8) | lo, 2))
-        }
-        _ => Err(std::io::ErrorKind::InvalidData.into()),
+    // Fast path: 1-byte count (0..=63).
+    if tag == 0 {
+        return Ok(((first & 0x3F) as u32, 1));
     }
+    // Fast path: 2-byte count (64..=0x3FFF).
+    if tag == 1 {
+        if buf.len() < 2 {
+            return Err(std::io::ErrorKind::UnexpectedEof.into());
+        }
+        let hi = (first & 0x3F) as u32;
+        let lo = buf[1] as u32;
+        return Ok(((hi << 8) | lo, 2));
+    }
+    Err(std::io::ErrorKind::InvalidData.into())
 }

@@ -143,19 +143,22 @@ impl ShardBuilder {
                 last_edge = Some(edge);
                 buckets[edge.relation_id as usize].push(edge);
             }
-            for (i, b) in buckets.iter().enumerate() {
-                counts[i] = b.len();
-            }
-            let original_counts = counts.clone();
-            // Hard cap per-relation lists to keep varints small and predictable.
-            for (i, count) in counts.iter_mut().enumerate() {
-                if *count > MAX_RELATION_EDGE_COUNT {
+            let mut original_counts: Option<Vec<usize>> = None;
+            // Compute lengths first to avoid borrowing conflicts, then apply truncation.
+            let lens: Vec<usize> = buckets.iter().map(|b| b.len()).collect();
+            for (i, len) in lens.iter().copied().enumerate() {
+                counts[i] = len;
+                if len > MAX_RELATION_EDGE_COUNT {
+                    if original_counts.is_none() {
+                        original_counts = Some(counts.clone());
+                    }
                     buckets[i].truncate(MAX_RELATION_EDGE_COUNT);
-                    *count = MAX_RELATION_EDGE_COUNT;
+                    counts[i] = MAX_RELATION_EDGE_COUNT;
                     truncated_node = true;
                     build_stats.capped_edge_lists = build_stats.capped_edge_lists.saturating_add(1);
                 }
             }
+            let original_counts = original_counts.unwrap_or_else(|| counts.clone());
             let total_edges: usize = counts.iter().sum();
             if total_edges == 0 {
                 // No edges for this node across all relations; avoid writing zero counts.
@@ -319,11 +322,10 @@ fn bits_for_id(max_id: u64) -> u8 {
 
 /// Delta-encode offsets in fixed-size chunks. Each chunk is stored as:
 /// [u16 count][u64 base][(count-1) * u16 deltas].
-fn delta_encode_offsets(offsets: &[u64]) -> Result<Vec<u8>> {
+fn delta_encode_offsets_into(offsets: &[u64], out: &mut Vec<u8>) -> Result<()> {
     if offsets.is_empty() {
-        return Ok(Vec::new());
+        return Ok(());
     }
-    let mut out = Vec::new();
     let mut idx = 0;
     while idx < offsets.len() {
         let chunk_end = (idx + DELTA_CHUNK).min(offsets.len());
@@ -344,7 +346,7 @@ fn delta_encode_offsets(offsets: &[u64]) -> Result<Vec<u8>> {
         }
         idx = chunk_end;
     }
-    Ok(out)
+    Ok(())
 }
 
 struct OffsetChunkWriter {
@@ -355,7 +357,8 @@ struct OffsetChunkWriter {
 
 impl OffsetChunkWriter {
     fn try_new(path: &Path) -> Result<Self> {
-        let mut writer = BufWriter::new(File::create(path)?);
+        // Use a larger buffer to reduce flushes on many small writes.
+        let mut writer = BufWriter::with_capacity(256 * 1024, File::create(path)?);
         let header_len =
             bincode::serialized_size(&OffsetFileHeader::new(0, 0)).unwrap_or(32) as usize;
         writer.write_all(&vec![0u8; header_len])?;
@@ -370,23 +373,24 @@ impl OffsetChunkWriter {
         self.chunk_buf.push(offset);
         self.total_offsets += 1;
         if self.chunk_buf.len() == DELTA_CHUNK {
-            self.flush_chunk()?;
+            self.flush_chunk(Vec::new())?;
         }
         Ok(())
     }
 
-    fn flush_chunk(&mut self) -> Result<()> {
+    fn flush_chunk(&mut self, mut scratch: Vec<u8>) -> Result<()> {
         if self.chunk_buf.is_empty() {
             return Ok(());
         }
-        let encoded = delta_encode_offsets(&self.chunk_buf)?;
-        self.writer.write_all(&encoded)?;
+        scratch.clear();
+        delta_encode_offsets_into(&self.chunk_buf, &mut scratch)?;
+        self.writer.write_all(&scratch)?;
         self.chunk_buf.clear();
         Ok(())
     }
 
     fn finish(mut self, node_count: u64) -> Result<u64> {
-        self.flush_chunk()?;
+        self.flush_chunk(Vec::new())?;
         self.writer.flush()?;
         let header = OffsetFileHeader::new(node_count, self.total_offsets);
         let header_bytes = bincode::serialize(&header)
@@ -407,7 +411,8 @@ pub(crate) struct EdgeWriter {
 
 impl EdgeWriter {
     fn try_new(path: &Path, layouts: Arc<Vec<RelationLayout>>) -> Result<Self> {
-        let writer = BufWriter::new(File::create(path)?);
+        // Larger buffer to reduce syscalls while writing large edge blobs.
+        let writer = BufWriter::with_capacity(256 * 1024, File::create(path)?);
         Ok(Self {
             writer,
             bytes_written: 0,
