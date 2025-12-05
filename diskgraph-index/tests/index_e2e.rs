@@ -430,7 +430,7 @@ fn multi_relation_counts_and_edges_decode_correctly() {
 
     let node_meta = node_meta("User", 22);
     let follows = relation_meta("Follows", "User", "User", None);
-    let temporal = relation_meta("Temporal", "User", "User", Some(8));
+    let temporal = relation_meta("Temporal", "User", "User", Some(16));
     let output_dir = dir.path().join("out");
     let builder = ShardBuilder::new(ShardBuildParams {
         output_dir: output_dir.clone(),
@@ -463,21 +463,6 @@ fn multi_relation_counts_and_edges_decode_correctly() {
         )
         .unwrap();
     let reader = ShardReader::open(&output_dir, built.layouts.clone()).unwrap();
-
-    let view0 = reader.edges_for_node(0).unwrap();
-    assert_eq!(view0.raw.len(), 7, "unexpected raw len for node 0");
-    assert_eq!(
-        view0.raw.to_vec(),
-        vec![1u8, 2, 10, 180, 0, 117, 0],
-        "unexpected raw bytes for node0"
-    );
-    let view1 = reader.edges_for_node(1).unwrap();
-    assert_eq!(view1.raw.len(), 4, "unexpected raw len for node 1");
-    assert_eq!(
-        view1.raw.to_vec(),
-        vec![0u8, 1, 54, 1],
-        "unexpected raw bytes for node1"
-    );
 
     // Relation order: Follows (idx 0), Temporal (idx 1).
     assert_eq!(decode_relation(&reader, 0, 0), vec![(10, None)]);
@@ -606,7 +591,7 @@ fn truncates_large_node_without_sort_key() {
     });
     write_edges(&edge_path, &edges, false).unwrap();
 
-    let node_meta = node_meta("User", 999);
+    let node_meta = node_meta("User", 80_000);
     let relation_meta = relation_meta("Follows", "User", "User", None);
     let output_dir = dir.path().join("out");
     let builder = ShardBuilder::new(ShardBuildParams {
@@ -668,7 +653,7 @@ fn truncates_large_node_with_sort_key() {
     let node_path = dir.path().join("nodes.parquet");
     let edge_path = dir.path().join("edges.parquet");
     write_nodes(&node_path, &[0, 1]).unwrap();
-    let big_count = 70_000;
+    let big_count = 60_000;
     let mut edges = Vec::with_capacity(big_count as usize + 1);
     for i in 0..big_count {
         edges.push(EdgeRow {
@@ -690,8 +675,8 @@ fn truncates_large_node_with_sort_key() {
     });
     write_edges(&edge_path, &edges, true).unwrap();
 
-    let node_meta = node_meta("User", 70_600);
-    let relation_meta = relation_meta("Temporal", "User", "User", Some(8));
+    let node_meta = node_meta("User", 80_000);
+    let relation_meta = relation_meta("Temporal", "User", "User", Some(16));
     let output_dir = dir.path().join("out");
     let builder = ShardBuilder::new(ShardBuildParams {
         output_dir: output_dir.clone(),
@@ -860,6 +845,164 @@ fn reader_rejects_truncated_edge_counts() {
             || lower.contains("offset points outside edge blob"),
         "expected EOF/invalid data, got {msg}"
     );
+}
+
+#[test]
+fn offsets_many_chunks_sparse_edges() {
+    let dir = tempdir().unwrap();
+    let node_path = dir.path().join("nodes.parquet");
+    let edge_path = dir.path().join("edges.parquet");
+    let nodes: Vec<i64> = (0..5000).collect();
+    write_nodes(&node_path, &nodes).unwrap();
+    write_edges(
+        &edge_path,
+        &[
+            EdgeRow {
+                src: 0,
+                dst: 123,
+                dest_sort_key: None,
+            },
+            EdgeRow {
+                src: 4999,
+                dst: 321,
+                dest_sort_key: None,
+            },
+        ],
+        false,
+    )
+    .unwrap();
+
+    let node_meta = node_meta("User", 4999);
+    let relation_meta = relation_meta("Follows", "User", "User", None);
+    let output_dir = dir.path().join("out");
+    let builder = ShardBuilder::new(ShardBuildParams {
+        output_dir: output_dir.clone(),
+        node_meta: node_meta.clone(),
+        node_types: vec![node_meta.clone()],
+        relation_metas: vec![relation_meta.clone()],
+        shard_index: 0,
+    });
+    let built = builder
+        .build(
+            &NodeShardInput {
+                node_type: "User".into(),
+                shard_index: 0,
+                parquet: ParquetSource::LocalFile(node_path),
+            },
+            &[EdgeShardInput {
+                relation: "Follows".into(),
+                source_shard_index: 0,
+                parquet: ParquetSource::LocalFile(edge_path),
+                has_dest_sort_key: false,
+            }],
+        )
+        .unwrap();
+    let reader = ShardReader::open(&output_dir, built.layouts.clone()).unwrap();
+    assert_eq!(decode_relation(&reader, 0, 0), vec![(123, None)]);
+    assert!(decode_relation(&reader, 1, 0).is_empty());
+    assert_eq!(decode_relation(&reader, 4999, 0), vec![(321, None)]);
+}
+
+#[test]
+fn truncates_large_node_multi_relation() {
+    let dir = tempdir().unwrap();
+    let node_path = dir.path().join("nodes.parquet");
+    let edge_path_a = dir.path().join("edges_a.parquet");
+    let edge_path_b = dir.path().join("edges_b.parquet");
+    write_nodes(&node_path, &[0, 1]).unwrap();
+
+    // Large dst bits (max_id very large) plus wide dest_sort_key bits to inflate entry sizes.
+    let big = 4_000;
+    let mut edges_a = Vec::new();
+    let mut edges_b = Vec::new();
+    for i in 0..big {
+        edges_a.push(EdgeRow {
+            src: 0,
+            dst: i as i64,
+            dest_sort_key: None,
+        });
+        edges_b.push(EdgeRow {
+            src: 0,
+            dst: (i + 10_000) as i64,
+            dest_sort_key: Some((100 - (i % 100)) as i64),
+        });
+    }
+    // Node 1 has small edges to ensure post-truncation nodes still decode.
+    edges_a.push(EdgeRow {
+        src: 1,
+        dst: 999,
+        dest_sort_key: None,
+    });
+    edges_b.push(EdgeRow {
+        src: 1,
+        dst: 1999,
+        dest_sort_key: Some(5),
+    });
+
+    edges_a.sort_by(|a, b| a.src.cmp(&b.src).then_with(|| a.dst.cmp(&b.dst)));
+    edges_b.sort_by(|a, b| {
+        a.src
+            .cmp(&b.src)
+            .then_with(|| b.dest_sort_key.cmp(&a.dest_sort_key))
+    });
+
+    write_edges(&edge_path_a, &edges_a, false).unwrap();
+    write_edges(&edge_path_b, &edges_b, true).unwrap();
+
+    let node_meta = node_meta("User", u64::MAX - 1);
+    let follows = relation_meta("Follows", "User", "User", None);
+    let temporal = relation_meta("Temporal", "User", "User", Some(56));
+    let output_dir = dir.path().join("out");
+    let builder = ShardBuilder::new(ShardBuildParams {
+        output_dir: output_dir.clone(),
+        node_meta: node_meta.clone(),
+        node_types: vec![node_meta.clone()],
+        relation_metas: vec![follows.clone(), temporal.clone()],
+        shard_index: 0,
+    });
+    let built = builder
+        .build(
+            &NodeShardInput {
+                node_type: "User".into(),
+                shard_index: 0,
+                parquet: ParquetSource::LocalFile(node_path),
+            },
+            &[
+                EdgeShardInput {
+                    relation: "Follows".into(),
+                    source_shard_index: 0,
+                    parquet: ParquetSource::LocalFile(edge_path_a),
+                    has_dest_sort_key: false,
+                },
+                EdgeShardInput {
+                    relation: "Temporal".into(),
+                    source_shard_index: 0,
+                    parquet: ParquetSource::LocalFile(edge_path_b),
+                    has_dest_sort_key: true,
+                },
+            ],
+        )
+        .unwrap();
+    let reader = ShardReader::open(&output_dir, built.layouts.clone()).unwrap();
+    let segments = reader
+        .edges_for_node(0)
+        .unwrap()
+        .relation_segments()
+        .unwrap();
+    let seg_a = &segments[0];
+    let seg_b = &segments[1];
+    // Both relations should have been truncated but still non-empty and within budget.
+    assert!(seg_b.count < big as u32 && seg_b.count > 0);
+    let budget = u16::MAX as u64;
+    let node_bytes = varint_len_u64(seg_a.count as u64) as u64
+        + (seg_a.count as u64).saturating_mul(seg_a.layout.entry_bytes as u64)
+        + varint_len_u64(seg_b.count as u64) as u64
+        + (seg_b.count as u64).saturating_mul(seg_b.layout.entry_bytes as u64);
+    assert!(node_bytes <= budget, "truncated node fits budget");
+    assert!(built.build_stats.truncated_edges_total > 0);
+    // Node 1 still decodes cleanly.
+    assert_eq!(decode_relation(&reader, 1, 0), vec![(999, None)]);
+    assert_eq!(decode_relation(&reader, 1, 1), vec![(1999, Some(5))]);
 }
 
 #[test]

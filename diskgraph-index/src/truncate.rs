@@ -51,10 +51,19 @@ pub(crate) fn truncate_counts(
             let current_len = items[level].1;
             let next_len = items.get(level + 1).map(|p| p.1).unwrap_or(0);
 
+            // If there is no change in length at this level, skip ahead to avoid
+            // getting stuck when multiple relations have identical lengths.
+            if current_len == next_len {
+                continue;
+            }
+
             // Level the top (level+1) lists down to next_len and see if it fits.
             let mut candidate_counts = working_counts.clone();
             for i in 0..=level {
                 candidate_counts[items[i].0] = next_len;
+            }
+            if candidate_counts == working_counts {
+                continue;
             }
             let candidate_bytes = EdgeWriter::node_length_bytes(layouts, &candidate_counts)?;
             if candidate_bytes > budget {
@@ -64,7 +73,7 @@ pub(crate) fn truncate_counts(
                 break;
             }
 
-            // Binary search for the smallest length between next_len and current_len that fits.
+            // Binary search for the largest length between next_len and current_len that fits.
             let mut low = next_len;
             let mut high = current_len;
             let mut best = next_len;
@@ -77,12 +86,15 @@ pub(crate) fn truncate_counts(
                 let trial_bytes = EdgeWriter::node_length_bytes(layouts, &trial)?;
                 if trial_bytes <= budget {
                     best = mid;
+                    if mid == current_len {
+                        break;
+                    }
+                    low = mid + 1;
+                } else {
                     if mid == 0 {
                         break;
                     }
                     high = mid - 1;
-                } else {
-                    low = mid + 1;
                 }
             }
             for i in 0..=level {
