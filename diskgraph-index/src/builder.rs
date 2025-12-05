@@ -943,6 +943,13 @@ fn object_reader_from_source(source: &ParquetSource, rt: &Runtime) -> Result<Any
             let reader = StoreParquetObjectReader::new(store, meta);
             Ok(AnyParquetReader::Store(reader))
         }
+        ParquetSource::InMemory { store, location } => {
+            let meta = rt
+                .block_on(store.head(location))
+                .map_err(|e| IndexBuildError::ObjectStore(e.to_string()))?;
+            let reader = StoreParquetObjectReader::new(store.clone(), meta);
+            Ok(AnyParquetReader::Store(reader))
+        }
     }
 }
 

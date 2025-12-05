@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 
 /// Abstraction over input Parquet sources. This will later support remote
 /// object storage; for now, it captures a local path for streaming reads.
@@ -8,6 +9,12 @@ pub enum ParquetSource {
     S3(S3Location),
     Gcs(GcsLocation),
     Adls(AdlsLocation),
+    /// Test-only in-memory object store location to exercise the object-store reader
+    /// without external dependencies.
+    InMemory {
+        store: Arc<dyn object_store::ObjectStore>,
+        location: object_store::path::Path,
+    },
     // Future: in-memory buffers, etc.
 }
 
