@@ -236,7 +236,7 @@ pub struct BuildStats {
     pub truncated_edges_per_relation: Vec<u64>,
 }
 
-fn compute_relation_layouts(
+pub fn compute_relation_layouts(
     relation_metas: &[EdgeRelationMetadata],
     node_types: &[NodeTypeMetadata],
 ) -> Result<Vec<RelationLayout>> {
