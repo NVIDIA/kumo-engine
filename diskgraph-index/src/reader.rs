@@ -132,20 +132,14 @@ fn find_chunk<'a>(chunks: &'a [OffsetChunk], idx: u64) -> Result<&'a OffsetChunk
     if chunks.is_empty() {
         return Err(DiskgraphError::InvalidMetadata("no offset chunks".into()).into());
     }
-    let mut lo = 0usize;
-    let mut hi = chunks.len();
-    while lo < hi {
-        let mid = (lo + hi) / 2;
-        if chunks[mid].base_idx <= idx {
-            lo = mid + 1;
-        } else {
-            hi = mid;
-        }
+    let chunk_idx = (idx / crate::layout::DELTA_CHUNK as u64) as usize;
+    let chunk = chunks
+        .get(chunk_idx)
+        .ok_or_else(|| DiskgraphError::InvalidMetadata("offset chunk missing".into()))?;
+    // Validate the chunk really covers this index.
+    if idx < chunk.base_idx {
+        return Err(DiskgraphError::InvalidMetadata("offset chunk range mismatch".into()).into());
     }
-    if lo == 0 {
-        return Err(DiskgraphError::InvalidMetadata("offset chunk missing".into()).into());
-    }
-    let chunk = &chunks[lo - 1];
     if idx >= chunk.base_idx + chunk.count as u64 {
         return Err(DiskgraphError::InvalidMetadata("offset chunk range mismatch".into()).into());
     }
