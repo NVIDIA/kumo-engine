@@ -33,6 +33,8 @@ pub enum IndexBuildError {
     OffsetDeltaOverflow,
     #[error("edge or byte count exceeds supported limit")]
     CountOverflow,
+    #[error("value out of range for {0}")]
+    ValueOutOfRange(&'static str),
     #[error("edges remain after exhausting node ids (misaligned shards)")]
     DanglingEdges,
     #[error("input edges not sorted by src_id then dest_sort_key desc")]
@@ -397,6 +399,9 @@ impl EdgeWriter {
             .layouts
             .get(edge.relation_id as usize)
             .ok_or(IndexBuildError::UnknownRelation)?;
+        if edge.dst > layout.dst_mask {
+            return Err(IndexBuildError::ValueOutOfRange("dst_id").into());
+        }
         let bits_total = layout.dst_bits as usize + layout.dest_sort_key_bits.unwrap_or(0) as usize;
         if bits_total > layout.entry_bytes * 8 {
             return Err(IndexBuildError::NotImplemented("entry size too small").into());
@@ -408,6 +413,10 @@ impl EdgeWriter {
         bit_cursor += layout.dst_bits as usize;
         if layout.dest_sort_key_bits.is_some() {
             let mask = layout.dest_sort_key_mask.unwrap_or(u64::MAX);
+            let raw_sort = edge.dest_sort_key.unwrap_or(0);
+            if raw_sort > mask {
+                return Err(IndexBuildError::ValueOutOfRange("dest_sort_key").into());
+            }
             let sort_val = edge.dest_sort_key.unwrap_or(0) & mask;
             acc |= (sort_val as u128) << bit_cursor;
         }

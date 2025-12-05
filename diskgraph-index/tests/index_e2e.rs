@@ -1013,6 +1013,104 @@ fn builder_errors_when_edge_column_wrong_type() {
 }
 
 #[test]
+fn builder_errors_when_dst_id_exceeds_mask() {
+    let dir = tempdir().unwrap();
+    let node_path = dir.path().join("nodes.parquet");
+    let edge_path = dir.path().join("edges.parquet");
+    write_nodes(&node_path, &[0]).unwrap();
+    // max_id = 10 so dst_bits small; use a large dst to overflow mask.
+    write_edges(
+        &edge_path,
+        &[EdgeRow {
+            src: 0,
+            dst: 10_000,
+            dest_sort_key: None,
+        }],
+        false,
+    )
+    .unwrap();
+
+    let node_meta = node_meta("User", 10);
+    let relation_meta = relation_meta("Follows", "User", "User", None);
+    let builder = ShardBuilder::new(ShardBuildParams {
+        output_dir: dir.path().join("out"),
+        node_meta: node_meta.clone(),
+        node_types: vec![node_meta.clone()],
+        relation_metas: vec![relation_meta.clone()],
+        shard_index: 0,
+    });
+    let msg = match builder.build(
+        &NodeShardInput {
+            node_type: "User".into(),
+            shard_index: 0,
+            parquet: ParquetSource::LocalFile(node_path),
+        },
+        &[EdgeShardInput {
+            relation: "Follows".into(),
+            source_shard_index: 0,
+            parquet: ParquetSource::LocalFile(edge_path),
+            has_dest_sort_key: false,
+        }],
+    ) {
+        Ok(_) => panic!("expected dst_id out of range error"),
+        Err(err) => err.to_string(),
+    };
+    assert!(
+        msg.contains("dst_id"),
+        "expected dst_id out of range, got {msg}"
+    );
+}
+
+#[test]
+fn builder_errors_when_dest_sort_key_exceeds_mask() {
+    let dir = tempdir().unwrap();
+    let node_path = dir.path().join("nodes.parquet");
+    let edge_path = dir.path().join("edges.parquet");
+    write_nodes(&node_path, &[0]).unwrap();
+    // dest_sort_key_bits = 8; value 300 exceeds mask 0xff.
+    write_edges(
+        &edge_path,
+        &[EdgeRow {
+            src: 0,
+            dst: 1,
+            dest_sort_key: Some(300),
+        }],
+        true,
+    )
+    .unwrap();
+
+    let node_meta = node_meta("User", 1);
+    let relation_meta = relation_meta("Temporal", "User", "User", Some(8));
+    let builder = ShardBuilder::new(ShardBuildParams {
+        output_dir: dir.path().join("out"),
+        node_meta: node_meta.clone(),
+        node_types: vec![node_meta.clone()],
+        relation_metas: vec![relation_meta.clone()],
+        shard_index: 0,
+    });
+    let msg = match builder.build(
+        &NodeShardInput {
+            node_type: "User".into(),
+            shard_index: 0,
+            parquet: ParquetSource::LocalFile(node_path),
+        },
+        &[EdgeShardInput {
+            relation: "Temporal".into(),
+            source_shard_index: 0,
+            parquet: ParquetSource::LocalFile(edge_path),
+            has_dest_sort_key: true,
+        }],
+    ) {
+        Ok(_) => panic!("expected dest_sort_key out of range error"),
+        Err(err) => err.to_string(),
+    };
+    assert!(
+        msg.contains("dest_sort_key"),
+        "expected dest_sort_key out of range, got {msg}"
+    );
+}
+
+#[test]
 fn builder_errors_on_unknown_relation_name() {
     let dir = tempdir().unwrap();
     let node_path = dir.path().join("nodes.parquet");
