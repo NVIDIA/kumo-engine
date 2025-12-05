@@ -1,6 +1,6 @@
+use crate::builder::EdgeWriter;
 use crate::builder::{EdgeRec, IndexBuildError};
 use crate::layout::RelationLayout;
-use crate::builder::EdgeWriter;
 
 /// Truncate per-relation edge lists for a node to keep the offset delta within u16::MAX.
 /// Strategy: identify the longest edge lists and "level" them down together so they end

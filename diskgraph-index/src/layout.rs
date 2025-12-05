@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 /// Logical layout version for on-disk shard artifacts.
-pub const LAYOUT_VERSION: u32 = 1;
+/// v2: zero-edge nodes write no counts or data; offsets may repeat (delta 0).
+pub const LAYOUT_VERSION: u32 = 2;
 
 /// Filename conventions for artifacts emitted per shard.
 pub const OFFSETS_FILENAME: &str = "offsets.bin";
@@ -64,13 +65,27 @@ impl<'a> EdgeListView<'a> {
     /// Returns the relation segments for this node. Each entry contains the
     /// edge count and raw slice for that relation's edges.
     pub fn relation_segments(&self) -> Result<Vec<RelationSegment<'a>>, std::io::Error> {
+        if self.raw.is_empty() {
+            // Node has no edges; return empty segments for each relation.
+            return Ok(self
+                .layouts
+                .iter()
+                .map(|layout| RelationSegment {
+                    layout: layout.clone(),
+                    count: 0,
+                    data: &[],
+                })
+                .collect());
+        }
         let mut segments = Vec::with_capacity(self.layouts.len());
         // First read all counts up front (prefix) to allow quick validation.
         let mut cursor = 0usize;
         let mut counts = Vec::with_capacity(self.layouts.len());
         for layout in self.layouts.iter() {
             let (count, consumed) = decode_varint(&self.raw[cursor..])?;
-            cursor = cursor.checked_add(consumed).ok_or(std::io::ErrorKind::InvalidData)?;
+            cursor = cursor
+                .checked_add(consumed)
+                .ok_or(std::io::ErrorKind::InvalidData)?;
             counts.push((layout.clone(), count));
         }
         // Now slice the data segments in the same order.
@@ -78,7 +93,9 @@ impl<'a> EdgeListView<'a> {
             let bytes = count
                 .checked_mul(layout.entry_bytes as u32)
                 .ok_or(std::io::ErrorKind::InvalidData)? as usize;
-            let end = cursor.checked_add(bytes).ok_or(std::io::ErrorKind::InvalidData)?;
+            let end = cursor
+                .checked_add(bytes)
+                .ok_or(std::io::ErrorKind::InvalidData)?;
             if end > self.raw.len() {
                 return Err(std::io::ErrorKind::UnexpectedEof.into());
             }

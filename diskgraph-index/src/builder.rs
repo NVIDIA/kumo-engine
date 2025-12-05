@@ -1,6 +1,8 @@
-use crate::layout::{NodeEdgeStats, OffsetFileHeader, RelationLayout, DELTA_CHUNK, EDGES_FILENAME, OFFSETS_FILENAME};
-use crate::truncate::{truncate_counts, varint_len};
+use crate::layout::{
+    NodeEdgeStats, OffsetFileHeader, RelationLayout, DELTA_CHUNK, EDGES_FILENAME, OFFSETS_FILENAME,
+};
 use crate::streaming::{EdgeShardInput, NodeShardInput, ParquetSource};
+use crate::truncate::{truncate_counts, varint_len};
 use anyhow::Result;
 use arrow_array::{ArrayRef, Int64Array};
 use arrow_schema::SchemaRef;
@@ -81,10 +83,14 @@ impl ShardBuilder {
 
         let rt = Arc::new(Runtime::new()?);
 
-        let layouts = Arc::new(compute_relation_layouts(&self.params.relation_metas, &self.params.node_types)?);
+        let layouts = Arc::new(compute_relation_layouts(
+            &self.params.relation_metas,
+            &self.params.node_types,
+        )?);
 
         let mut node_stream = NodeStream::try_new(rt.clone(), node_shard)?;
-        let mut edge_stream = MergedEdgeStream::try_new(rt.clone(), edge_shards, &self.params.relation_metas)?;
+        let mut edge_stream =
+            MergedEdgeStream::try_new(rt.clone(), edge_shards, &self.params.relation_metas)?;
 
         let mut offsets_writer = OffsetChunkWriter::try_new(&offsets_path)?;
         let mut edges_writer = EdgeWriter::try_new(&edges_path, layouts.clone())?;
@@ -118,6 +124,13 @@ impl ShardBuilder {
             for (i, b) in buckets.iter().enumerate() {
                 counts[i] = b.len();
             }
+            let total_edges: usize = counts.iter().sum();
+            if total_edges == 0 {
+                // No edges for this node across all relations; avoid writing zero counts.
+                offsets_writer.push(start_offset)?;
+                prev_offset = start_offset;
+                continue;
+            }
             let original_counts = counts.clone();
             let node_bytes = EdgeWriter::node_length_bytes(&layouts, &counts)?;
 
@@ -129,7 +142,13 @@ impl ShardBuilder {
                 .checked_sub(base_span)
                 .ok_or(IndexBuildError::OffsetDeltaOverflow)?;
             if node_bytes > budget {
-                truncate_counts(&mut buckets, &mut counts, &layouts, start_offset, prev_offset)?;
+                truncate_counts(
+                    &mut buckets,
+                    &mut counts,
+                    &layouts,
+                    start_offset,
+                    prev_offset,
+                )?;
                 build_stats.truncated_nodes += 1;
             }
 
@@ -142,15 +161,16 @@ impl ShardBuilder {
                 let truncated = original_counts[rel_idx].saturating_sub(target_len);
                 if truncated > 0 {
                     build_stats.truncated_edges_total += truncated as u64;
-                    build_stats.truncated_edges_per_relation[rel_idx] = build_stats.truncated_edges_per_relation[rel_idx].saturating_add(truncated as u64);
+                    build_stats.truncated_edges_per_relation[rel_idx] = build_stats
+                        .truncated_edges_per_relation[rel_idx]
+                        .saturating_add(truncated as u64);
                 }
                 edges_writer.write_count(target_len as u32)?;
                 for edge in rel_edges.iter().take(target_len) {
                     edges_writer.write_edge(edge)?;
                 }
-                build_stats.edges_ingested = build_stats
-                    .edges_ingested
-                    .saturating_add(target_len as u64);
+                build_stats.edges_ingested =
+                    build_stats.edges_ingested.saturating_add(target_len as u64);
             }
             offsets_writer.push(edges_writer.byte_offset())?;
             prev_offset = edges_writer.byte_offset();
@@ -163,8 +183,14 @@ impl ShardBuilder {
         offsets_writer.push(edges_writer.byte_offset())?;
         offsets_writer.finish(nodes_seen)?;
         let stats = NodeEdgeStats {
-            edge_count: edges_writer.edge_count.try_into().map_err(|_| IndexBuildError::CountOverflow)?,
-            byte_len: edges_writer.bytes_written.try_into().map_err(|_| IndexBuildError::CountOverflow)?,
+            edge_count: edges_writer
+                .edge_count
+                .try_into()
+                .map_err(|_| IndexBuildError::CountOverflow)?,
+            byte_len: edges_writer
+                .bytes_written
+                .try_into()
+                .map_err(|_| IndexBuildError::CountOverflow)?,
         };
         edges_writer.finish()?;
 
@@ -208,7 +234,10 @@ pub struct BuildStats {
     pub truncated_edges_per_relation: Vec<u64>,
 }
 
-fn compute_relation_layouts(relation_metas: &[EdgeRelationMetadata], node_types: &[NodeTypeMetadata]) -> Result<Vec<RelationLayout>> {
+fn compute_relation_layouts(
+    relation_metas: &[EdgeRelationMetadata],
+    node_types: &[NodeTypeMetadata],
+) -> Result<Vec<RelationLayout>> {
     let mut out = Vec::new();
     for (i, rel) in relation_metas.iter().enumerate() {
         let dst_bits = node_types
@@ -216,14 +245,26 @@ fn compute_relation_layouts(relation_metas: &[EdgeRelationMetadata], node_types:
             .find(|n| n.name == rel.dst_type)
             .map(|n| bits_for_id(n.max_id))
             .unwrap_or(64);
-        let dst_mask = if dst_bits >= 64 { u64::MAX } else { (1u64 << dst_bits) - 1 };
+        let dst_mask = if dst_bits >= 64 {
+            u64::MAX
+        } else {
+            (1u64 << dst_bits) - 1
+        };
         let sort_bits = rel.dest_sort_key_bits;
-        let dest_sort_key_mask = sort_bits.map(|bits| if bits >= 64 { u64::MAX } else { (1u64 << bits) - 1 });
+        let dest_sort_key_mask = sort_bits.map(|bits| {
+            if bits >= 64 {
+                u64::MAX
+            } else {
+                (1u64 << bits) - 1
+            }
+        });
         out.push(RelationLayout {
             relation_id: i as u16,
             dst_bits,
             dest_sort_key_bits: rel.dest_sort_key_bits,
-            entry_bytes: ((dst_bits as usize + rel.dest_sort_key_bits.unwrap_or(0) as usize + 7) / 8).max(1),
+            entry_bytes: ((dst_bits as usize + rel.dest_sort_key_bits.unwrap_or(0) as usize + 7)
+                / 8)
+            .max(1),
             dst_mask,
             dest_sort_key_mask,
         });
@@ -258,7 +299,9 @@ fn delta_encode_offsets(offsets: &[u64]) -> Result<Vec<u8>> {
             let delta = off
                 .checked_sub(prev)
                 .ok_or(IndexBuildError::EdgeOrderingViolation)?;
-            let delta_u16: u16 = delta.try_into().map_err(|_| IndexBuildError::OffsetDeltaOverflow)?;
+            let delta_u16: u16 = delta
+                .try_into()
+                .map_err(|_| IndexBuildError::OffsetDeltaOverflow)?;
             out.extend_from_slice(&delta_u16.to_le_bytes());
             prev = off;
         }
@@ -276,7 +319,8 @@ struct OffsetChunkWriter {
 impl OffsetChunkWriter {
     fn try_new(path: &Path) -> Result<Self> {
         let mut writer = BufWriter::new(File::create(path)?);
-        let header_len = bincode::serialized_size(&OffsetFileHeader::new(0, 0)).unwrap_or(32) as usize;
+        let header_len =
+            bincode::serialized_size(&OffsetFileHeader::new(0, 0)).unwrap_or(32) as usize;
         writer.write_all(&vec![0u8; header_len])?;
         Ok(Self {
             writer,
@@ -308,7 +352,8 @@ impl OffsetChunkWriter {
         self.flush_chunk()?;
         self.writer.flush()?;
         let header = OffsetFileHeader::new(node_count, self.total_offsets);
-        let header_bytes = bincode::serialize(&header).map_err(|_| IndexBuildError::NotImplemented("offset encoding"))?;
+        let header_bytes = bincode::serialize(&header)
+            .map_err(|_| IndexBuildError::NotImplemented("offset encoding"))?;
         let mut file = self.writer.into_inner()?;
         file.seek(SeekFrom::Start(0))?;
         file.write_all(&header_bytes)?;
@@ -380,10 +425,15 @@ impl EdgeWriter {
     }
 
     /// Compute total byte length for a node given relation counts.
-    pub(crate) fn node_length_bytes(layouts: &[RelationLayout], counts: &[usize]) -> std::result::Result<u64, IndexBuildError> {
+    pub(crate) fn node_length_bytes(
+        layouts: &[RelationLayout],
+        counts: &[usize],
+    ) -> std::result::Result<u64, IndexBuildError> {
         let mut len: u64 = 0;
         for (layout, &count) in layouts.iter().zip(counts.iter()) {
-            let count_u32: u32 = count.try_into().map_err(|_| IndexBuildError::CountOverflow)?;
+            let count_u32: u32 = count
+                .try_into()
+                .map_err(|_| IndexBuildError::CountOverflow)?;
             len = len
                 .checked_add(varint_len(count_u32) as u64)
                 .ok_or(IndexBuildError::CountOverflow)?;
@@ -409,6 +459,10 @@ impl EdgeWriter {
 }
 
 fn write_varint<W: Write>(writer: &mut W, mut val: u32) -> Result<usize> {
+    if val < 0x80 {
+        writer.write_all(&[val as u8])?;
+        return Ok(1);
+    }
     let mut buf = [0u8; 5];
     let mut i = 0;
     loop {
@@ -511,7 +565,12 @@ struct EdgeSubStream {
 }
 
 impl EdgeSubStream {
-    fn try_new(rt: Arc<Runtime>, input: &EdgeShardInput, relation_id: u16, dest_sort_key_bits: Option<u8>) -> Result<Self> {
+    fn try_new(
+        rt: Arc<Runtime>,
+        input: &EdgeShardInput,
+        relation_id: u16,
+        dest_sort_key_bits: Option<u8>,
+    ) -> Result<Self> {
         let reader = object_reader_from_local(&input.parquet)?;
         let (stream, schema) = rt.block_on(async move {
             let mut builder = ParquetRecordBatchStreamBuilder::new(reader).await?;
@@ -549,9 +608,7 @@ impl EdgeSubStream {
                         .current_dst
                         .as_ref()
                         .ok_or_else(|| IndexBuildError::InvalidColumn("dst_id"))?;
-                    let sort_col = self
-                        .current_sort
-                        .as_ref();
+                    let sort_col = self.current_sort.as_ref();
                     let row = self.idx_in_batch;
                     self.idx_in_batch += 1;
                     let sort_val = sort_col.map(|c| c.value(row) as u64);
@@ -656,7 +713,11 @@ struct MergedEdgeStream {
 }
 
 impl MergedEdgeStream {
-    fn try_new(rt: Arc<Runtime>, inputs: &[EdgeShardInput], relation_metas: &[EdgeRelationMetadata]) -> Result<Self> {
+    fn try_new(
+        rt: Arc<Runtime>,
+        inputs: &[EdgeShardInput],
+        relation_metas: &[EdgeRelationMetadata],
+    ) -> Result<Self> {
         let mut rel_lookup = std::collections::HashMap::new();
         for (idx, meta) in relation_metas.iter().enumerate() {
             rel_lookup.insert(meta.name.clone(), (idx as u16, meta.dest_sort_key_bits));
@@ -669,7 +730,10 @@ impl MergedEdgeStream {
                 .ok_or(IndexBuildError::UnknownRelation)?;
             let mut stream = EdgeSubStream::try_new(rt.clone(), input, *relation_id, *sort_bits)?;
             if let Some(rec) = stream.next_rec()? {
-                heap.push(HeapItem { rec, stream_idx: idx });
+                heap.push(HeapItem {
+                    rec,
+                    stream_idx: idx,
+                });
             }
             streams.push(stream);
         }
@@ -700,9 +764,7 @@ impl MergedEdgeStream {
             if let Some(prev) = last {
                 if current.src < prev.src
                     || (current.src == prev.src
-                        && current
-                            .dest_sort_key
-                            .unwrap_or(u64::MAX)
+                        && current.dest_sort_key.unwrap_or(u64::MAX)
                             > prev.dest_sort_key.unwrap_or(u64::MAX))
                 {
                     return Err(IndexBuildError::EdgeOrderingViolation.into());
@@ -715,7 +777,11 @@ impl MergedEdgeStream {
 
 // helper retained for potential future use; keep to avoid dead-code lint in case cfg changes.
 #[allow(dead_code)]
-fn as_i64_array<'a>(array: &'a ArrayRef, _schema: &SchemaRef, name: &'static str) -> Result<&'a Int64Array> {
+fn as_i64_array<'a>(
+    array: &'a ArrayRef,
+    _schema: &SchemaRef,
+    name: &'static str,
+) -> Result<&'a Int64Array> {
     array
         .as_any()
         .downcast_ref::<Int64Array>()
@@ -741,7 +807,9 @@ impl ParquetObjectReader {
 }
 
 impl AsyncFileReader for ParquetObjectReader {
-    fn get_metadata(&mut self) -> BoxFuture<'_, parquet::errors::Result<std::sync::Arc<ParquetMetaData>>> {
+    fn get_metadata(
+        &mut self,
+    ) -> BoxFuture<'_, parquet::errors::Result<std::sync::Arc<ParquetMetaData>>> {
         let path = self.inner.path.clone();
         Box::pin(async move {
             let meta = tokio::task::spawn_blocking(move || {
@@ -755,7 +823,10 @@ impl AsyncFileReader for ParquetObjectReader {
         })
     }
 
-    fn get_bytes(&mut self, range: std::ops::Range<usize>) -> BoxFuture<'_, parquet::errors::Result<Bytes>> {
+    fn get_bytes(
+        &mut self,
+        range: std::ops::Range<usize>,
+    ) -> BoxFuture<'_, parquet::errors::Result<Bytes>> {
         let path = self.inner.path.clone();
         Box::pin(async move {
             let buf = tokio::task::spawn_blocking(move || {
@@ -772,7 +843,10 @@ impl AsyncFileReader for ParquetObjectReader {
         })
     }
 
-    fn get_byte_ranges(&mut self, ranges: Vec<std::ops::Range<usize>>) -> BoxFuture<'_, parquet::errors::Result<Vec<Bytes>>> {
+    fn get_byte_ranges(
+        &mut self,
+        ranges: Vec<std::ops::Range<usize>>,
+    ) -> BoxFuture<'_, parquet::errors::Result<Vec<Bytes>>> {
         let path = self.inner.path.clone();
         Box::pin(async move {
             let bufs = tokio::task::spawn_blocking(move || {

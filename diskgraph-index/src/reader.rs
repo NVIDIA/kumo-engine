@@ -1,4 +1,6 @@
-use crate::layout::{EdgeListView, OffsetFileHeader, RelationLayout, OFFSETS_FILENAME, EDGES_FILENAME};
+use crate::layout::{
+    EdgeListView, OffsetFileHeader, RelationLayout, EDGES_FILENAME, OFFSETS_FILENAME,
+};
 use anyhow::Result;
 use diskgraph_core::errors::DiskgraphError;
 use memmap2::Mmap;
@@ -24,18 +26,16 @@ pub struct ShardReader {
 }
 
 impl ShardReader {
-    pub fn open(
-        dir: &Path,
-        layouts: Arc<Vec<RelationLayout>>,
-    ) -> Result<Self> {
+    pub fn open(dir: &Path, layouts: Arc<Vec<RelationLayout>>) -> Result<Self> {
         let offsets_path = dir.join(OFFSETS_FILENAME);
         let edges_path = dir.join(EDGES_FILENAME);
         let offsets_file = File::open(&offsets_path)?;
         let edges_file = File::open(&edges_path)?;
         let offsets = unsafe { Mmap::map(&offsets_file)? };
         let edges = unsafe { Mmap::map(&edges_file)? };
-        let header: OffsetFileHeader = bincode::deserialize(&offsets[..std::mem::size_of::<OffsetFileHeader>()])
-            .map_err(|_| DiskgraphError::InvalidMetadata("invalid offsets header".into()))?;
+        let header: OffsetFileHeader =
+            bincode::deserialize(&offsets[..std::mem::size_of::<OffsetFileHeader>()])
+                .map_err(|_| DiskgraphError::InvalidMetadata("invalid offsets header".into()))?;
         let chunks = parse_offset_chunks(&offsets, header.total_offsets)?;
         Ok(Self {
             offsets_mmap: offsets,
@@ -60,7 +60,9 @@ impl ShardReader {
         let start_byte = start as usize;
         let end_byte = end as usize;
         if end_byte > self.edges.len() || start_byte > end_byte {
-            return Err(DiskgraphError::InvalidMetadata("offset points outside edge blob".into()).into());
+            return Err(
+                DiskgraphError::InvalidMetadata("offset points outside edge blob".into()).into(),
+            );
         }
         let raw = &self.edges[start_byte..end_byte];
         Ok(EdgeListView {
@@ -113,7 +115,9 @@ fn decode_offset(offsets: &Mmap, chunks: &[OffsetChunk], idx: u64) -> Result<u64
     let mut acc = base;
     for _ in 0..within {
         if cursor + 2 > offsets.len() {
-            return Err(DiskgraphError::InvalidMetadata("offset delta out of bounds".into()).into());
+            return Err(
+                DiskgraphError::InvalidMetadata("offset delta out of bounds".into()).into(),
+            );
         }
         let delta = u16::from_le_bytes([offsets[cursor], offsets[cursor + 1]]);
         acc = acc

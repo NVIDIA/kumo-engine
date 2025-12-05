@@ -19,8 +19,8 @@ At query time a shard is mmapped and edge lists are served zero-copy by slicing 
   - `u64 base` (absolute byte offset for the first node in the chunk)
   - `(count-1) * u16` deltas to subsequent offsets (must fit in `u16`).
 - **Edge blob (edges.bin):** For each node:
-  - Prefix: varint counts for every relation, in a fixed order.
-  - Data: For each relation (in the same order), `count * entry_bytes` packed edges.
+  - If the node has zero edges across all relations, nothing is written; its start/end offsets are equal.
+  - Otherwise: Prefix varint counts for every relation (fixed order), then per relation `count * entry_bytes` packed edges.
     - Entry packing: `dst_id` masked to the minimum bits needed for the destination type, followed by optional `dest_sort_key` bits (if present for that relation). Relation IDs are implicit by position, not stored per edge.
 
 All offsets are byte-based (not words).
@@ -93,6 +93,7 @@ Outputs: `ShardBuildOutput` with file paths, `NodeEdgeStats`, `BuildStats`, and 
 ### Validations and graceful failures
 - Edge ordering: edges must be sorted by `src_id`, then `dest_sort_key` descending (when present). Violation → error.
 - Shard alignment: edges must not continue after nodes are exhausted (DanglingEdges).
+- Zero-edge nodes: allowed. Offsets may repeat (delta 0) when start==end; reader treats zero-length slices as all-zero counts.
 - Offset overflow: prevented by truncation; residual overflow → error.
 - Count/byte overflows: guarded with checked arithmetic; errors on overflow.
 
