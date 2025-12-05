@@ -28,3 +28,8 @@ object_store = { version = "0.9", features = ["aws", "gcp", "azure"] }
 
 [dev-dependencies]
 tempfile = "3"
+testcontainers = "0.16"
+
+[features]
+default = []
+cloud-ingest-tests = []

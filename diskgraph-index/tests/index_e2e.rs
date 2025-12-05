@@ -16,7 +16,7 @@ use parquet::file::properties::WriterProperties;
 use tempfile::tempdir;
 
 #[derive(Clone)]
-struct EdgeRow {
+pub struct EdgeRow {
     src: i64,
     dst: i64,
     dest_sort_key: Option<i64>,
@@ -1504,7 +1504,7 @@ fn node_meta(name: &str, max_id: u64) -> NodeTypeMetadata {
     }
 }
 
-fn relation_meta(
+pub fn relation_meta(
     name: &str,
     src: &str,
     dst: &str,
@@ -1519,7 +1519,7 @@ fn relation_meta(
     }
 }
 
-fn write_nodes(path: &Path, ids: &[i64]) -> anyhow::Result<()> {
+pub fn write_nodes(path: &Path, ids: &[i64]) -> anyhow::Result<()> {
     let schema = Schema::new(vec![Field::new("id", DataType::Int64, false)]);
     let batch = RecordBatch::try_new(
         Arc::new(schema.clone()),
@@ -1528,7 +1528,7 @@ fn write_nodes(path: &Path, ids: &[i64]) -> anyhow::Result<()> {
     write_parquet(path, &schema, &[batch])
 }
 
-fn write_edges(path: &Path, edges: &[EdgeRow], with_sort_key: bool) -> anyhow::Result<()> {
+pub fn write_edges(path: &Path, edges: &[EdgeRow], with_sort_key: bool) -> anyhow::Result<()> {
     let mut fields = vec![
         Field::new("src_id", DataType::Int64, false),
         Field::new("dst_id", DataType::Int64, false),
@@ -1600,7 +1600,7 @@ fn decode_segment(seg: &RelationSegment) -> Vec<(u64, Option<u64>)> {
     out
 }
 
-fn relation_layouts(
+pub fn relation_layouts(
     relation_metas: Vec<EdgeRelationMetadata>,
     node_types: Vec<NodeTypeMetadata>,
 ) -> Arc<Vec<diskgraph_index::layout::RelationLayout>> {
