@@ -102,6 +102,9 @@ impl ShardBuilder {
             ..Default::default()
         };
         let mut prev_offset: u64 = 0;
+        // Seed offsets with the start of the first node (0) to make start/end
+        // lookups simpler on the read path.
+        offsets_writer.push(edges_writer.byte_offset())?;
         // Reuse allocations for buckets and counts to avoid per-node Vec allocations.
         let mut buckets: Vec<Vec<EdgeRec>> = vec![Vec::new(); self.params.relation_metas.len()];
         let mut counts: Vec<usize> = vec![0; self.params.relation_metas.len()];
@@ -180,7 +183,6 @@ impl ShardBuilder {
             return Err(IndexBuildError::DanglingEdges.into());
         }
 
-        offsets_writer.push(edges_writer.byte_offset())?;
         offsets_writer.finish(nodes_seen)?;
         let stats = NodeEdgeStats {
             edge_count: edges_writer

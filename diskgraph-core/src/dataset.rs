@@ -73,7 +73,11 @@ pub struct DatasetStatus {
 pub trait DatasetRegistry: Send + Sync {
     /// Insert or update a dataset handle. Typically invoked at the beginning of
     /// ingestion after parsing metadata.json.
-    async fn upsert(&self, descriptor: DatasetDescriptor, reservation: DatasetReservation) -> Result<DatasetHandle>;
+    async fn upsert(
+        &self,
+        descriptor: DatasetDescriptor,
+        reservation: DatasetReservation,
+    ) -> Result<DatasetHandle>;
 
     /// Transition a dataset to the next state (e.g., Loading -> LoadedActive).
     async fn update_state(&self, id: DatasetId, next: DatasetState) -> Result<DatasetHandle>;
@@ -111,7 +115,11 @@ impl InMemoryDatasetRegistry {
 
 #[async_trait]
 impl DatasetRegistry for InMemoryDatasetRegistry {
-    async fn upsert(&self, descriptor: DatasetDescriptor, reservation: DatasetReservation) -> Result<DatasetHandle> {
+    async fn upsert(
+        &self,
+        descriptor: DatasetDescriptor,
+        reservation: DatasetReservation,
+    ) -> Result<DatasetHandle> {
         let mut guard = self.inner.write();
         let id = Uuid::new_v4();
         let handle = DatasetHandle {
@@ -127,7 +135,9 @@ impl DatasetRegistry for InMemoryDatasetRegistry {
 
     async fn update_state(&self, id: DatasetId, next: DatasetState) -> Result<DatasetHandle> {
         let mut guard = self.inner.write();
-        let handle = guard.get_mut(&id).ok_or_else(|| DiskgraphError::DatasetNotFound(id.to_string()))?;
+        let handle = guard
+            .get_mut(&id)
+            .ok_or_else(|| DiskgraphError::DatasetNotFound(id.to_string()))?;
         handle.state = next;
         Ok(handle.clone())
     }

@@ -60,7 +60,9 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let status = match self.0 {
             DiskgraphError::DatasetNotFound(_) => StatusCode::NOT_FOUND,
-            DiskgraphError::MetadataMissing | DiskgraphError::InvalidMetadata(_) => StatusCode::BAD_REQUEST,
+            DiskgraphError::MetadataMissing | DiskgraphError::InvalidMetadata(_) => {
+                StatusCode::BAD_REQUEST
+            }
             DiskgraphError::InsufficientDiskSpace { .. } => StatusCode::INSUFFICIENT_STORAGE,
             DiskgraphError::DatasetBusy(_) => StatusCode::CONFLICT,
             DiskgraphError::NotImplemented(_) => StatusCode::NOT_IMPLEMENTED,
@@ -119,7 +121,9 @@ async fn healthz() -> Json<HealthResponse> {
     Json(HealthResponse { status: "ok" })
 }
 
-async fn list_datasets(State(state): State<AppState>) -> Result<Json<Vec<DatasetHandle>>, ApiError> {
+async fn list_datasets(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<DatasetHandle>>, ApiError> {
     let datasets = state.registry.list().await.map_err(ApiError::from)?;
     Ok(Json(datasets))
 }
@@ -128,7 +132,12 @@ async fn load_dataset(
     State(state): State<AppState>,
     Json(req): Json<LoadDatasetRequest>,
 ) -> Result<Json<DatasetHandle>, ApiError> {
-    state.ingest.ingest_dataset(req.dataset_root).await.map(Json).map_err(ApiError::from)
+    state
+        .ingest
+        .ingest_dataset(req.dataset_root)
+        .await
+        .map(Json)
+        .map_err(ApiError::from)
 }
 
 async fn unload_dataset(
@@ -136,11 +145,19 @@ async fn unload_dataset(
     Path(id): Path<String>,
     Json(req): Json<UnloadDatasetRequest>,
 ) -> Result<StatusCode, ApiError> {
-    let dataset_id =
-        Uuid::parse_str(&id).map_err(|_| ApiError(DiskgraphError::InvalidMetadata("invalid dataset id".into())))?;
+    let dataset_id = Uuid::parse_str(&id)
+        .map_err(|_| ApiError(DiskgraphError::InvalidMetadata("invalid dataset id".into())))?;
     // Transition state and purge if requested.
-    state.storage.unload(dataset_id).await.map_err(ApiError::from)?;
-    state.registry.remove(dataset_id).await.map_err(ApiError::from)?;
+    state
+        .storage
+        .unload(dataset_id)
+        .await
+        .map_err(ApiError::from)?;
+    state
+        .registry
+        .remove(dataset_id)
+        .await
+        .map_err(ApiError::from)?;
     if req.purge.unwrap_or(false) {
         info!("purge requested for dataset {}", dataset_id);
         // Actual purging of on-disk files will be implemented alongside layout.
@@ -153,8 +170,13 @@ async fn sample_neighborhood(
     Path(id): Path<String>,
     Json(mut request): Json<SamplingRequest>,
 ) -> Result<Json<SampledNeighborhood>, ApiError> {
-    let dataset_id =
-        Uuid::parse_str(&id).map_err(|_| ApiError(DiskgraphError::InvalidMetadata("invalid dataset id".into())))?;
+    let dataset_id = Uuid::parse_str(&id)
+        .map_err(|_| ApiError(DiskgraphError::InvalidMetadata("invalid dataset id".into())))?;
     request.dataset_id = dataset_id;
-    state.storage.sample(request).await.map(Json).map_err(ApiError::from)
+    state
+        .storage
+        .sample(request)
+        .await
+        .map(Json)
+        .map_err(ApiError::from)
 }

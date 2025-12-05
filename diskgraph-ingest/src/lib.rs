@@ -10,7 +10,9 @@
 //! layout unimplemented until the core algorithms are chosen.
 
 use async_trait::async_trait;
-use diskgraph_core::dataset::{DatasetDescriptor, DatasetHandle, DatasetId, DatasetRegistry, DatasetState};
+use diskgraph_core::dataset::{
+    DatasetDescriptor, DatasetHandle, DatasetId, DatasetRegistry, DatasetState,
+};
 use diskgraph_core::errors::{DiskgraphError, Result};
 use diskgraph_core::metadata::DatasetMetadata;
 use diskgraph_core::storage::GraphStorage;
@@ -87,7 +89,12 @@ impl IngestCoordinator {
     /// together admission control and hands off to the storage engine to
     /// materialize data. The algorithmic heavy lifting is stubbed out.
     pub async fn ingest_dataset(&self, root_uri: String) -> Result<DatasetHandle> {
-        self.emit_progress(None, IngestPhase::MetadataDiscovery, 0.0, Some("loading metadata"));
+        self.emit_progress(
+            None,
+            IngestPhase::MetadataDiscovery,
+            0.0,
+            Some("loading metadata"),
+        );
         let metadata = self.load_metadata(&root_uri).await?;
         self.emit_progress(None, IngestPhase::MetadataDiscovery, 1.0, None);
 

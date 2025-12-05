@@ -131,7 +131,9 @@ impl Sampler for RoutingSampler {
         // The storage implementation is expected to respect the sampling plan.
         // At this layer we only perform shallow validation.
         if request.plan.hops.is_empty() {
-            return Err(DiskgraphError::InvalidMetadata("sampling plan has no hops".into()));
+            return Err(DiskgraphError::InvalidMetadata(
+                "sampling plan has no hops".into(),
+            ));
         }
         self.storage.sample(request).await
     }

@@ -94,9 +94,7 @@ impl DatasetMetadata {
                 })
                 .sum();
             let assumed_fanout = 16u64;
-            let count = src_span
-                .saturating_mul(assumed_fanout)
-                .max(src_span);
+            let count = src_span.saturating_mul(assumed_fanout).max(src_span);
             let mut per_edge = 8u64; // src_id + dst_id minimum footprint.
             if let Some(bits) = edge.dest_sort_key_bits {
                 per_edge = per_edge.saturating_add((bits as u64).saturating_div(8).max(1));
