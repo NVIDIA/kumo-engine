@@ -27,7 +27,7 @@ fn build_and_read_round_trip_basic() {
     let dir = tempdir().unwrap();
     let node_path = dir.path().join("nodes.parquet");
     let edge_path = dir.path().join("edges.parquet");
-    write_nodes(&node_path, &[0, 1, 2]).unwrap();
+    write_nodes(&node_path, &[0, 1]).unwrap();
     write_edges(
         &edge_path,
         &[
@@ -42,7 +42,7 @@ fn build_and_read_round_trip_basic() {
                 dest_sort_key: None,
             },
             EdgeRow {
-                src: 2,
+                src: 1,
                 dst: 12,
                 dest_sort_key: None,
             },
@@ -78,6 +78,9 @@ fn build_and_read_round_trip_basic() {
         .unwrap();
 
     let reader = ShardReader::open(&output_dir, built.layouts.clone()).unwrap();
+    let header = reader.header();
+    assert_eq!(header.nodes, 2);
+    assert_eq!(header.total_offsets, 3);
 
     let rel0 = 0;
     let seg0 = decode_relation(&reader, 0, rel0);
@@ -87,11 +90,8 @@ fn build_and_read_round_trip_basic() {
 
     // Node with no edges should yield empty relation data and zero-length slice.
     let seg1 = decode_relation(&reader, 1, rel0);
-    assert!(seg1.is_empty());
-
-    let seg2 = decode_relation(&reader, 2, rel0);
-    assert_eq!(seg2.len(), 1);
-    assert_eq!(seg2[0].0, 12);
+    assert_eq!(seg1.len(), 1);
+    assert_eq!(seg1[0].0, 12);
 }
 
 #[test]
@@ -328,7 +328,7 @@ fn sort_key_round_trip_decodes_correctly() {
     let dir = tempdir().unwrap();
     let node_path = dir.path().join("nodes.parquet");
     let edge_path = dir.path().join("edges.parquet");
-    write_nodes(&node_path, &[0, 1, 2]).unwrap();
+    write_nodes(&node_path, &[0, 1]).unwrap();
     write_edges(
         &edge_path,
         &[
@@ -384,7 +384,110 @@ fn sort_key_round_trip_decodes_correctly() {
         vec![(10, Some(5)), (11, Some(3))] // order preserved by sort key desc
     );
     assert_eq!(decode_relation(&reader, 1, 0), vec![(12, Some(9))]);
-    assert!(decode_relation(&reader, 2, 0).is_empty());
+}
+
+#[test]
+fn multi_relation_counts_and_edges_decode_correctly() {
+    let dir = tempdir().unwrap();
+    let node_path = dir.path().join("nodes.parquet");
+    let edge_path_a = dir.path().join("edges_a.parquet");
+    let edge_path_b = dir.path().join("edges_b.parquet");
+    write_nodes(&node_path, &[0, 1, 2]).unwrap();
+    // Relation A: no sort key.
+    write_edges(
+        &edge_path_a,
+        &[EdgeRow {
+            src: 0,
+            dst: 10,
+            dest_sort_key: None,
+        }],
+        false,
+    )
+    .unwrap();
+    // Relation B: with sort key.
+    write_edges(
+        &edge_path_b,
+        &[
+            EdgeRow {
+                src: 0,
+                dst: 20,
+                dest_sort_key: Some(5),
+            },
+            EdgeRow {
+                src: 0,
+                dst: 21,
+                dest_sort_key: Some(3),
+            },
+            EdgeRow {
+                src: 1,
+                dst: 22,
+                dest_sort_key: Some(9),
+            },
+        ],
+        true,
+    )
+    .unwrap();
+
+    let node_meta = node_meta("User", 22);
+    let follows = relation_meta("Follows", "User", "User", None);
+    let temporal = relation_meta("Temporal", "User", "User", Some(8));
+    let output_dir = dir.path().join("out");
+    let builder = ShardBuilder::new(ShardBuildParams {
+        output_dir: output_dir.clone(),
+        node_meta: node_meta.clone(),
+        node_types: vec![node_meta.clone()],
+        relation_metas: vec![follows.clone(), temporal.clone()],
+        shard_index: 0,
+    });
+    let built = builder
+        .build(
+            &NodeShardInput {
+                node_type: "User".into(),
+                shard_index: 0,
+                parquet: ParquetSource::LocalFile(node_path),
+            },
+            &[
+                EdgeShardInput {
+                    relation: "Follows".into(),
+                    source_shard_index: 0,
+                    parquet: ParquetSource::LocalFile(edge_path_a),
+                    has_dest_sort_key: false,
+                },
+                EdgeShardInput {
+                    relation: "Temporal".into(),
+                    source_shard_index: 0,
+                    parquet: ParquetSource::LocalFile(edge_path_b),
+                    has_dest_sort_key: true,
+                },
+            ],
+        )
+        .unwrap();
+    let reader = ShardReader::open(&output_dir, built.layouts.clone()).unwrap();
+
+    let view0 = reader.edges_for_node(0).unwrap();
+    assert_eq!(view0.raw.len(), 7, "unexpected raw len for node 0");
+    assert_eq!(
+        view0.raw.to_vec(),
+        vec![1u8, 2, 10, 180, 0, 117, 0],
+        "unexpected raw bytes for node0"
+    );
+    let view1 = reader.edges_for_node(1).unwrap();
+    assert_eq!(view1.raw.len(), 4, "unexpected raw len for node 1");
+    assert_eq!(
+        view1.raw.to_vec(),
+        vec![0u8, 1, 54, 1],
+        "unexpected raw bytes for node1"
+    );
+
+    // Relation order: Follows (idx 0), Temporal (idx 1).
+    assert_eq!(decode_relation(&reader, 0, 0), vec![(10, None)]);
+    assert_eq!(
+        decode_relation(&reader, 0, 1),
+        vec![(20, Some(5)), (21, Some(3))]
+    );
+
+    assert!(decode_relation(&reader, 1, 0).is_empty());
+    assert_eq!(decode_relation(&reader, 1, 1), vec![(22, Some(9))]);
 }
 
 #[test]

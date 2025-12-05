@@ -155,20 +155,22 @@ impl ShardBuilder {
                 build_stats.truncated_nodes += 1;
             }
 
-            // Write prefix counts then edge data per relation.
-            for (rel_idx, rel_edges) in buckets.iter_mut().enumerate() {
-                let target_len = counts[rel_idx];
-                if rel_edges.len() > target_len {
-                    rel_edges.truncate(target_len);
-                }
-                let truncated = original_counts[rel_idx].saturating_sub(target_len);
+            // Write all counts first (prefix), then edge data per relation.
+            for (rel_idx, target_len) in counts.iter().enumerate() {
+                let truncated = original_counts[rel_idx].saturating_sub(*target_len);
                 if truncated > 0 {
                     build_stats.truncated_edges_total += truncated as u64;
                     build_stats.truncated_edges_per_relation[rel_idx] = build_stats
                         .truncated_edges_per_relation[rel_idx]
                         .saturating_add(truncated as u64);
                 }
-                edges_writer.write_count(target_len as u32)?;
+                edges_writer.write_count(*target_len as u32)?;
+            }
+            for (rel_idx, rel_edges) in buckets.iter_mut().enumerate() {
+                let target_len = counts[rel_idx];
+                if rel_edges.len() > target_len {
+                    rel_edges.truncate(target_len);
+                }
                 for edge in rel_edges.iter().take(target_len) {
                     edges_writer.write_edge(edge)?;
                 }
