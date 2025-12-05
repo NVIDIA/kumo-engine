@@ -2,7 +2,7 @@ use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 
-use arrow_array::{ArrayRef, Int64Array, RecordBatch};
+use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use diskgraph_core::metadata::{EdgeRelationMetadata, NodeTypeMetadata};
 use diskgraph_index::{
@@ -824,6 +824,37 @@ fn builder_errors_when_node_column_missing() {
 }
 
 #[test]
+fn builder_errors_when_node_column_wrong_type() {
+    let dir = tempdir().unwrap();
+    let node_path = dir.path().join("nodes.parquet");
+    write_wrong_type_nodes(&node_path, "id", &["a", "b"]).unwrap();
+    let node_meta = node_meta("User", 1);
+    let relation_meta = relation_meta("Follows", "User", "User", None);
+    let builder = ShardBuilder::new(ShardBuildParams {
+        output_dir: dir.path().join("out"),
+        node_meta: node_meta.clone(),
+        node_types: vec![node_meta.clone()],
+        relation_metas: vec![relation_meta.clone()],
+        shard_index: 0,
+    });
+    let msg = match builder.build(
+        &NodeShardInput {
+            node_type: "User".into(),
+            shard_index: 0,
+            parquet: ParquetSource::LocalFile(node_path),
+        },
+        &[],
+    ) {
+        Ok(_) => panic!("expected invalid column type error"),
+        Err(err) => err.to_string(),
+    };
+    assert!(
+        msg.contains("invalid column type"),
+        "expected InvalidColumn type, got {msg}"
+    );
+}
+
+#[test]
 fn builder_errors_when_edge_columns_missing() {
     let dir = tempdir().unwrap();
     let node_path = dir.path().join("nodes.parquet");
@@ -869,6 +900,133 @@ fn builder_errors_when_edge_columns_missing() {
     assert!(
         msg.contains("invalid column type"),
         "expected InvalidColumn for missing dest_sort_key, got {msg}"
+    );
+}
+
+#[test]
+fn builder_errors_when_edge_column_wrong_type() {
+    let dir = tempdir().unwrap();
+    let node_path = dir.path().join("nodes.parquet");
+    let edge_path = dir.path().join("edges.parquet");
+    write_nodes(&node_path, &[0]).unwrap();
+    write_wrong_type_edges(&edge_path, &["src_id"], &["dst_id"]).unwrap();
+
+    let node_meta = node_meta("User", 1);
+    let relation_meta = relation_meta("Follows", "User", "User", None);
+    let builder = ShardBuilder::new(ShardBuildParams {
+        output_dir: dir.path().join("out"),
+        node_meta: node_meta.clone(),
+        node_types: vec![node_meta.clone()],
+        relation_metas: vec![relation_meta.clone()],
+        shard_index: 0,
+    });
+    let msg = match builder.build(
+        &NodeShardInput {
+            node_type: "User".into(),
+            shard_index: 0,
+            parquet: ParquetSource::LocalFile(node_path),
+        },
+        &[EdgeShardInput {
+            relation: "Follows".into(),
+            source_shard_index: 0,
+            parquet: ParquetSource::LocalFile(edge_path),
+            has_dest_sort_key: false,
+        }],
+    ) {
+        Ok(_) => panic!("expected invalid column type error"),
+        Err(err) => err.to_string(),
+    };
+    assert!(
+        msg.contains("invalid column type"),
+        "expected InvalidColumn type, got {msg}"
+    );
+}
+
+#[test]
+fn builder_errors_on_unknown_relation_name() {
+    let dir = tempdir().unwrap();
+    let node_path = dir.path().join("nodes.parquet");
+    let edge_path = dir.path().join("edges.parquet");
+    write_nodes(&node_path, &[0]).unwrap();
+    write_edges(
+        &edge_path,
+        &[EdgeRow {
+            src: 0,
+            dst: 1,
+            dest_sort_key: None,
+        }],
+        false,
+    )
+    .unwrap();
+
+    let node_meta = node_meta("User", 1);
+    let relation_meta = relation_meta("Follows", "User", "User", None);
+    let builder = ShardBuilder::new(ShardBuildParams {
+        output_dir: dir.path().join("out"),
+        node_meta: node_meta.clone(),
+        node_types: vec![node_meta.clone()],
+        relation_metas: vec![relation_meta.clone()],
+        shard_index: 0,
+    });
+    let msg = match builder.build(
+        &NodeShardInput {
+            node_type: "User".into(),
+            shard_index: 0,
+            parquet: ParquetSource::LocalFile(node_path),
+        },
+        &[EdgeShardInput {
+            relation: "Unknown".into(),
+            source_shard_index: 0,
+            parquet: ParquetSource::LocalFile(edge_path),
+            has_dest_sort_key: false,
+        }],
+    ) {
+        Ok(_) => panic!("expected UnknownRelation error"),
+        Err(err) => err.to_string(),
+    };
+    assert!(
+        msg.contains("UnknownRelation") || msg.contains("unknown relation in shard input"),
+        "expected UnknownRelation, got {msg}"
+    );
+}
+
+#[test]
+fn builder_errors_on_corrupted_parquet() {
+    let dir = tempdir().unwrap();
+    let node_path = dir.path().join("nodes.parquet");
+    let edge_path = dir.path().join("edges.parquet");
+    // Write non-parquet bytes to edge file.
+    write_nodes(&node_path, &[0]).unwrap();
+    fs::write(&edge_path, b"not parquet").unwrap();
+
+    let node_meta = node_meta("User", 0);
+    let relation_meta = relation_meta("Follows", "User", "User", None);
+    let builder = ShardBuilder::new(ShardBuildParams {
+        output_dir: dir.path().join("out"),
+        node_meta: node_meta.clone(),
+        node_types: vec![node_meta.clone()],
+        relation_metas: vec![relation_meta.clone()],
+        shard_index: 0,
+    });
+    let msg = match builder.build(
+        &NodeShardInput {
+            node_type: "User".into(),
+            shard_index: 0,
+            parquet: ParquetSource::LocalFile(node_path),
+        },
+        &[EdgeShardInput {
+            relation: "Follows".into(),
+            source_shard_index: 0,
+            parquet: ParquetSource::LocalFile(edge_path),
+            has_dest_sort_key: false,
+        }],
+    ) {
+        Ok(_) => panic!("expected parquet error"),
+        Err(err) => err.to_string(),
+    };
+    assert!(
+        msg.to_lowercase().contains("parquet"),
+        "expected parquet error, got {msg}"
     );
 }
 
@@ -1071,23 +1229,28 @@ fn write_custom_nodes(path: &Path, col: &str, ids: &[i64]) -> anyhow::Result<()>
     write_parquet(path, &schema, &[batch])
 }
 
-fn max_fit_count(entry_bytes: u64, budget: u64) -> u64 {
-    // Find the maximum count such that varint_len(count) + count * entry_bytes <= budget.
-    let fits = |c: u64| -> bool {
-        let len = varint_len_u64(c);
-        len as u64 + c.saturating_mul(entry_bytes) <= budget
-    };
-    let mut lo = 0u64;
-    let mut hi = budget / entry_bytes;
-    while lo < hi {
-        let mid = (lo + hi + 1) / 2;
-        if fits(mid) {
-            lo = mid;
-        } else {
-            hi = mid - 1;
-        }
-    }
-    lo
+fn write_wrong_type_nodes(path: &Path, col: &str, vals: &[&str]) -> anyhow::Result<()> {
+    let schema = Schema::new(vec![Field::new(col, DataType::Utf8, false)]);
+    let batch = RecordBatch::try_new(
+        Arc::new(schema.clone()),
+        vec![Arc::new(StringArray::from(vals.to_vec())) as ArrayRef],
+    )?;
+    write_parquet(path, &schema, &[batch])
+}
+
+fn write_wrong_type_edges(path: &Path, src_col: &[&str], dst_col: &[&str]) -> anyhow::Result<()> {
+    let schema = Schema::new(vec![
+        Field::new("src_id", DataType::Utf8, false),
+        Field::new("dst_id", DataType::Utf8, false),
+    ]);
+    let batch = RecordBatch::try_new(
+        Arc::new(schema.clone()),
+        vec![
+            Arc::new(StringArray::from(src_col.to_vec())) as ArrayRef,
+            Arc::new(StringArray::from(dst_col.to_vec())) as ArrayRef,
+        ],
+    )?;
+    write_parquet(path, &schema, &[batch])
 }
 
 fn varint_len_u64(v: u64) -> usize {
