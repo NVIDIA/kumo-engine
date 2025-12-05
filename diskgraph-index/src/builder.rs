@@ -10,9 +10,14 @@ use bytes::Bytes;
 use diskgraph_core::metadata::{EdgeRelationMetadata, NodeTypeMetadata};
 use futures::{future::BoxFuture, stream::BoxStream, StreamExt};
 use object_store::aws::AmazonS3Builder;
+use object_store::azure::{AzureConfigKey, MicrosoftAzureBuilder};
+use object_store::gcp::GoogleCloudStorageBuilder;
 use object_store::path::Path as ObjectPath;
 use object_store::ObjectStore;
-use parquet::arrow::async_reader::{AsyncFileReader, ParquetObjectReader as StoreParquetObjectReader, ParquetRecordBatchStreamBuilder};
+use parquet::arrow::async_reader::{
+    AsyncFileReader, ParquetObjectReader as StoreParquetObjectReader,
+    ParquetRecordBatchStreamBuilder,
+};
 use parquet::file::metadata::ParquetMetaData;
 use parquet::file::reader::FileReader;
 use parquet::file::serialized_reader::SerializedFileReader;
@@ -837,14 +842,11 @@ fn as_i64_array<'a>(
         .map_err(Into::into)
 }
 
-fn object_reader_from_source(
-    source: &ParquetSource,
-    rt: &Runtime,
-) -> Result<AnyParquetReader> {
+fn object_reader_from_source(source: &ParquetSource, rt: &Runtime) -> Result<AnyParquetReader> {
     match source {
-        ParquetSource::LocalFile(path) => Ok(AnyParquetReader::Local(LocalParquetObjectReader::new(
-            LocalAsyncFileReader { path: path.clone() },
-        ))),
+        ParquetSource::LocalFile(path) => Ok(AnyParquetReader::Local(
+            LocalParquetObjectReader::new(LocalAsyncFileReader { path: path.clone() }),
+        )),
         ParquetSource::S3(cfg) => {
             let mut builder = AmazonS3Builder::new()
                 .with_bucket_name(&cfg.bucket)
@@ -865,6 +867,70 @@ fn object_reader_from_source(
             }
             if let Some(token) = &cfg.session_token {
                 builder = builder.with_token(token);
+            }
+            let store = builder
+                .build()
+                .map_err(|e| IndexBuildError::ObjectStore(e.to_string()))?;
+            let store: Arc<dyn ObjectStore> = Arc::new(store);
+            let location = ObjectPath::from(cfg.key.clone());
+            let meta = rt
+                .block_on(store.head(&location))
+                .map_err(|e| IndexBuildError::ObjectStore(e.to_string()))?;
+            let reader = StoreParquetObjectReader::new(store, meta);
+            Ok(AnyParquetReader::Store(reader))
+        }
+        ParquetSource::Gcs(cfg) => {
+            let mut builder = GoogleCloudStorageBuilder::new().with_bucket_name(&cfg.bucket);
+            if let Some(endpoint) = &cfg.endpoint {
+                builder = builder.with_url(endpoint);
+            }
+            if let Some(sa_path) = &cfg.service_account_path {
+                builder = builder.with_service_account_path(sa_path);
+            }
+            if let Some(sa_key) = &cfg.service_account_key {
+                builder = builder.with_service_account_key(sa_key);
+            }
+            if let Some(app_creds) = &cfg.application_credentials_path {
+                builder = builder.with_application_credentials(app_creds);
+            }
+            let store = builder
+                .build()
+                .map_err(|e| IndexBuildError::ObjectStore(e.to_string()))?;
+            let store: Arc<dyn ObjectStore> = Arc::new(store);
+            let location = ObjectPath::from(cfg.key.clone());
+            let meta = rt
+                .block_on(store.head(&location))
+                .map_err(|e| IndexBuildError::ObjectStore(e.to_string()))?;
+            let reader = StoreParquetObjectReader::new(store, meta);
+            Ok(AnyParquetReader::Store(reader))
+        }
+        ParquetSource::Adls(cfg) => {
+            let mut builder = MicrosoftAzureBuilder::new()
+                .with_account(&cfg.account)
+                .with_container_name(&cfg.container);
+            if let Some(endpoint) = &cfg.endpoint {
+                builder = builder.with_endpoint(endpoint.to_string());
+            }
+            if let Some(access_key) = &cfg.access_key {
+                builder = builder.with_access_key(access_key);
+            }
+            if let Some(sas) = &cfg.sas_key {
+                builder = builder.with_config(AzureConfigKey::SasKey, sas);
+            }
+            if let Some(bearer) = &cfg.bearer_token {
+                builder = builder.with_bearer_token_authorization(bearer);
+            }
+            if let Some(client_id) = &cfg.client_id {
+                builder = builder.with_client_id(client_id);
+            }
+            if let Some(client_secret) = &cfg.client_secret {
+                builder = builder.with_client_secret(client_secret);
+            }
+            if let Some(tenant_id) = &cfg.tenant_id {
+                builder = builder.with_tenant_id(tenant_id);
+            }
+            if let Some(use_emulator) = cfg.use_emulator {
+                builder = builder.with_use_emulator(use_emulator);
             }
             let store = builder
                 .build()
@@ -905,7 +971,10 @@ impl AsyncFileReader for AnyParquetReader {
         }
     }
 
-    fn get_bytes(&mut self, range: std::ops::Range<usize>) -> BoxFuture<'_, parquet::errors::Result<Bytes>> {
+    fn get_bytes(
+        &mut self,
+        range: std::ops::Range<usize>,
+    ) -> BoxFuture<'_, parquet::errors::Result<Bytes>> {
         match self {
             AnyParquetReader::Local(r) => r.get_bytes(range),
             AnyParquetReader::Store(r) => r.get_bytes(range),

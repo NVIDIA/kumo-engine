@@ -6,7 +6,9 @@ use std::path::PathBuf;
 pub enum ParquetSource {
     LocalFile(PathBuf),
     S3(S3Location),
-    // Future: GCS, ADLS, in-memory buffers, etc.
+    Gcs(GcsLocation),
+    Adls(AdlsLocation),
+    // Future: in-memory buffers, etc.
 }
 
 /// S3 location and optional configuration for fetching Parquet.
@@ -20,6 +22,33 @@ pub struct S3Location {
     pub secret_access_key: Option<String>,
     pub session_token: Option<String>,
     pub virtual_hosted_style_request: Option<bool>,
+}
+
+/// GCS location and optional configuration.
+#[derive(Debug, Clone)]
+pub struct GcsLocation {
+    pub bucket: String,
+    pub key: String,
+    pub service_account_path: Option<String>,
+    pub service_account_key: Option<String>,
+    pub application_credentials_path: Option<String>,
+    pub endpoint: Option<String>,
+}
+
+/// ADLS v2 / Azure Blob location and optional configuration.
+#[derive(Debug, Clone)]
+pub struct AdlsLocation {
+    pub account: String,
+    pub container: String,
+    pub key: String,
+    pub access_key: Option<String>,
+    pub sas_key: Option<String>,
+    pub bearer_token: Option<String>,
+    pub client_id: Option<String>,
+    pub client_secret: Option<String>,
+    pub tenant_id: Option<String>,
+    pub endpoint: Option<String>,
+    pub use_emulator: Option<bool>,
 }
 
 /// Edge shard input bundle for a single source node shard.
