@@ -75,16 +75,12 @@ pub(crate) fn truncate_counts(
     }
 }
 
-pub(crate) fn varint_len(v: u32) -> usize {
-    if v < (1 << 7) {
-        1
-    } else if v < (1 << 14) {
-        2
-    } else if v < (1 << 21) {
-        3
-    } else if v < (1 << 28) {
-        4
+pub(crate) fn varint_len(v: u32) -> Result<usize, IndexBuildError> {
+    if v <= 63 {
+        Ok(1)
+    } else if v <= 0x3FFF {
+        Ok(2)
     } else {
-        5
+        Err(IndexBuildError::CountOverflow)
     }
 }

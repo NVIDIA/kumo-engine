@@ -20,7 +20,8 @@ At query time a shard is mmapped and edge lists are served zero-copy by slicing 
   - `(count-1) * u16` deltas to subsequent offsets (must fit in `u16`).
 - **Edge blob (edges.bin):** For each node:
   - If the node has zero edges across all relations, nothing is written; its start/end offsets are equal.
-  - Otherwise: Prefix varint counts for every relation (fixed order), then per relation `count * entry_bytes` packed edges.
+  - Otherwise: Prefix compact varint counts for every relation (fixed order), then per relation `count * entry_bytes` packed edges.
+    - Count encoding: 1 byte for 0–63 (`00xxxxxx`), 2 bytes for 64–16,383 (`01xxxxxx xxxxxxxx`). Higher values are truncated by the builder (hard cap at the encoding limit, 0x3FFF edges per relation per node).
     - Entry packing: `dst_id` masked to the minimum bits needed for the destination type, followed by optional `dest_sort_key` bits (if present for that relation). Relation IDs are implicit by position, not stored per edge.
 
 All offsets are byte-based (not words).
@@ -59,7 +60,7 @@ edges.bin
 +--------+-------------------------------------------------------------+
 ```
 
-Counts are varints in prefix order (R0 then R1), followed by contiguous segments for each relation in the same order.
+Counts use the compact 1–2 byte scheme in prefix order (R0 then R1), followed by contiguous segments for each relation in the same order.
 
 ## Build algorithm (ShardBuilder)
 
@@ -75,11 +76,11 @@ Steps:
    - Merge edges across relations with a heap, preserving global ordering and validating sort order.
 3. For each node (single pass):
    - Collect edges into per-relation buckets (reused vectors).
-   - Compute per-relation counts; estimate node blob size.
-   - If the resulting offset delta would exceed `u16::MAX`, run truncation:
-     - Greedy leveling of the longest relation lists downward until the node blob fits the delta budget.
+   - Compute per-relation counts; cap each relation at 10k edges to keep counts within the compact varint range.
+   - Estimate node blob size. If the resulting offset delta would exceed `u16::MAX`, run truncation:
+     - Greedy leveling of the longest relation lists downward (bulk drops of the current longest plateau) until the node blob fits the delta budget.
      - Truncate buckets accordingly; record counters.
-   - Write varint counts (per relation), then packed edges for that relation.
+   - Write compact varint counts (per relation), then packed edges for that relation.
    - Append the cumulative byte offset to the offsets writer.
 4. Offsets writer delta-encodes offsets in fixed chunks; writes header once finalized.
 
@@ -87,7 +88,7 @@ Outputs: `ShardBuildOutput` with file paths, `NodeEdgeStats`, `BuildStats`, and 
 
 ### Truncation behavior
 - Trigger: projected offset delta > `u16::MAX`.
-- Strategy: iteratively level the longest relation lists down (binary search on length) until the node blob fits the delta budget; preserves relative order within each relation; truncation is per node, per relation.
+- Strategy: iteratively level the longest relation lists down in bulk (plateau drops) until the node blob fits the delta budget; preserves relative order within each relation; truncation is per node, per relation.
 - Counters: `truncated_nodes`, `truncated_edges_total`, `truncated_edges_per_relation`.
 
 ### Validations and graceful failures
@@ -123,7 +124,7 @@ Steps:
 
 ## Counters and stats
 - `NodeEdgeStats`: total edges and bytes written for the shard.
-- `BuildStats`: nodes/edges ingested, nodes truncated, total truncated edges, and per-relation truncation counts. Returned from build for monitoring/alerting.
+- `BuildStats`: nodes/edges ingested, nodes truncated, total truncated edges, per-relation truncation counts, and how many relation lists were capped at the varint limit. Returned from build for monitoring/alerting.
 
 ## Edge cases handled
 - Missing `dest_sort_key`: relation stores only `dst_id` with minimal bits.

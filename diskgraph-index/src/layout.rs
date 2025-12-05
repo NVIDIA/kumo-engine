@@ -1,8 +1,9 @@
 use serde::{Deserialize, Serialize};
 
 /// Logical layout version for on-disk shard artifacts.
+/// v3: compact count varints (1–2 bytes, capped at 10k per relation per node).
 /// v2: zero-edge nodes write no counts or data; offsets may repeat (delta 0).
-pub const LAYOUT_VERSION: u32 = 2;
+pub const LAYOUT_VERSION: u32 = 3;
 
 /// Filename conventions for artifacts emitted per shard.
 pub const OFFSETS_FILENAME: &str = "offsets.bin";
@@ -119,18 +120,21 @@ pub struct RelationSegment<'a> {
 }
 
 fn decode_varint(buf: &[u8]) -> Result<(u32, usize), std::io::Error> {
-    let mut val: u32 = 0;
-    let mut shift = 0;
-    for (i, b) in buf.iter().enumerate() {
-        let byte = *b as u32;
-        val |= (byte & 0x7F) << shift;
-        if byte & 0x80 == 0 {
-            return Ok((val, i + 1));
-        }
-        shift += 7;
-        if shift > 28 {
-            return Err(std::io::ErrorKind::InvalidData.into());
-        }
+    if buf.is_empty() {
+        return Err(std::io::ErrorKind::UnexpectedEof.into());
     }
-    Err(std::io::ErrorKind::UnexpectedEof.into())
+    let first = buf[0];
+    let tag = first >> 6;
+    match tag {
+        0 => Ok(((first & 0x3F) as u32, 1)),
+        1 => {
+            if buf.len() < 2 {
+                return Err(std::io::ErrorKind::UnexpectedEof.into());
+            }
+            let hi = (first & 0x3F) as u32;
+            let lo = buf[1] as u32;
+            Ok(((hi << 8) | lo, 2))
+        }
+        _ => Err(std::io::ErrorKind::InvalidData.into()),
+    }
 }

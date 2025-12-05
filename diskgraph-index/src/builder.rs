@@ -23,6 +23,11 @@ use thiserror::Error;
 use tokio::runtime::Runtime;
 use tracing::info;
 
+/// Hard cap on edges per relation for a single node to keep varint encoding small.
+/// Compact varint supports up to 14 bits (0x3FFF). We cap relation edge lists
+/// at that limit to guarantee counts fit the encoding without overflow.
+const MAX_RELATION_EDGE_COUNT: usize = 0x3FFF;
+
 #[derive(Debug, Error)]
 pub enum IndexBuildError {
     #[error("not implemented: {0}")]
@@ -129,6 +134,7 @@ impl ShardBuilder {
             for bucket in buckets.iter_mut() {
                 bucket.clear();
             }
+            let mut truncated_node = false;
             while let Some(edge) = edge_stream.peek_order_checked(last_edge.as_ref())? {
                 if edge.src > node_id {
                     break;
@@ -140,6 +146,16 @@ impl ShardBuilder {
             for (i, b) in buckets.iter().enumerate() {
                 counts[i] = b.len();
             }
+            let original_counts = counts.clone();
+            // Hard cap per-relation lists to keep varints small and predictable.
+            for (i, count) in counts.iter_mut().enumerate() {
+                if *count > MAX_RELATION_EDGE_COUNT {
+                    buckets[i].truncate(MAX_RELATION_EDGE_COUNT);
+                    *count = MAX_RELATION_EDGE_COUNT;
+                    truncated_node = true;
+                    build_stats.capped_edge_lists = build_stats.capped_edge_lists.saturating_add(1);
+                }
+            }
             let total_edges: usize = counts.iter().sum();
             if total_edges == 0 {
                 // No edges for this node across all relations; avoid writing zero counts.
@@ -147,7 +163,6 @@ impl ShardBuilder {
                 prev_offset = start_offset;
                 continue;
             }
-            let original_counts = counts.clone();
             let node_bytes = EdgeWriter::node_length_bytes(&layouts, &counts)?;
 
             // Determine if we need to truncate to stay within u16 delta budget.
@@ -165,9 +180,12 @@ impl ShardBuilder {
                     start_offset,
                     prev_offset,
                 )?;
-                build_stats.truncated_nodes += 1;
+                truncated_node = true;
             }
 
+            if truncated_node {
+                build_stats.truncated_nodes = build_stats.truncated_nodes.saturating_add(1);
+            }
             // Write all counts first (prefix), then edge data per relation.
             for (rel_idx, target_len) in counts.iter().enumerate() {
                 let truncated = original_counts[rel_idx].saturating_sub(*target_len);
@@ -249,6 +267,8 @@ pub struct BuildStats {
     pub truncated_nodes: u64,
     pub truncated_edges_total: u64,
     pub truncated_edges_per_relation: Vec<u64>,
+    /// Number of per-relation edge lists that were capped at MAX_RELATION_EDGE_COUNT.
+    pub capped_edge_lists: u64,
 }
 
 pub fn compute_relation_layouts(
@@ -458,8 +478,11 @@ impl EdgeWriter {
             let count_u32: u32 = count
                 .try_into()
                 .map_err(|_| IndexBuildError::CountOverflow)?;
+            let count_len: u64 = varint_len(count_u32)?
+                .try_into()
+                .map_err(|_| IndexBuildError::CountOverflow)?;
             len = len
-                .checked_add(varint_len(count_u32) as u64)
+                .checked_add(count_len)
                 .ok_or(IndexBuildError::CountOverflow)?;
             len = len
                 .checked_add(
@@ -482,27 +505,18 @@ impl EdgeWriter {
     }
 }
 
-fn write_varint<W: Write>(writer: &mut W, mut val: u32) -> Result<usize> {
-    if val < 0x80 {
-        writer.write_all(&[val as u8])?;
+fn write_varint<W: Write>(writer: &mut W, val: u32) -> Result<usize> {
+    if val <= 63 {
+        writer.write_all(&[(val & 0x3F) as u8])?;
         return Ok(1);
     }
-    let mut buf = [0u8; 5];
-    let mut i = 0;
-    loop {
-        let mut byte = (val & 0x7F) as u8;
-        val >>= 7;
-        if val != 0 {
-            byte |= 0x80;
-        }
-        buf[i] = byte;
-        i += 1;
-        if val == 0 {
-            break;
-        }
+    if val <= 0x3FFF {
+        let b0 = 0x40 | (((val >> 8) & 0x3F) as u8);
+        let b1 = (val & 0xFF) as u8;
+        writer.write_all(&[b0, b1])?;
+        return Ok(2);
     }
-    writer.write_all(&buf[..i])?;
-    Ok(i)
+    Err(IndexBuildError::CountOverflow.into())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

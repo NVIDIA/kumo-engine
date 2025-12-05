@@ -727,6 +727,77 @@ fn truncates_large_node_with_sort_key() {
 }
 
 #[test]
+fn caps_relation_edge_count_at_varint_limit() {
+    let dir = tempdir().unwrap();
+    let node_path = dir.path().join("nodes.parquet");
+    let edge_path = dir.path().join("edges.parquet");
+    write_nodes(&node_path, &[0, 1]).unwrap();
+    let cap = 0x3FFFusize;
+    let big = cap + 500;
+    let mut edges = Vec::with_capacity(big + 1);
+    for i in 0..big {
+        edges.push(EdgeRow {
+            src: 0,
+            dst: i as i64,
+            dest_sort_key: None,
+        });
+    }
+    // Second node to ensure following nodes still decode correctly.
+    edges.push(EdgeRow {
+        src: 1,
+        dst: 999,
+        dest_sort_key: None,
+    });
+    write_edges(&edge_path, &edges, false).unwrap();
+
+    let node_meta = node_meta("User", big as u64);
+    let relation_meta = relation_meta("Follows", "User", "User", None);
+    let output_dir = dir.path().join("out");
+    let builder = ShardBuilder::new(ShardBuildParams {
+        output_dir: output_dir.clone(),
+        node_meta: node_meta.clone(),
+        node_types: vec![node_meta.clone()],
+        relation_metas: vec![relation_meta.clone()],
+        shard_index: 0,
+    });
+    let built = builder
+        .build(
+            &NodeShardInput {
+                node_type: "User".into(),
+                shard_index: 0,
+                parquet: ParquetSource::LocalFile(node_path),
+            },
+            &[EdgeShardInput {
+                relation: "Follows".into(),
+                source_shard_index: 0,
+                parquet: ParquetSource::LocalFile(edge_path),
+                has_dest_sort_key: false,
+            }],
+        )
+        .unwrap();
+
+    let truncated = (big - cap) as u64;
+    assert_eq!(built.build_stats.capped_edge_lists, 1);
+    assert_eq!(built.build_stats.truncated_nodes, 1);
+    assert_eq!(built.build_stats.truncated_edges_total, truncated);
+    assert_eq!(built.build_stats.truncated_edges_per_relation[0], truncated);
+
+    let reader = ShardReader::open(&output_dir, built.layouts.clone()).unwrap();
+    let segments = reader
+        .edges_for_node(0)
+        .unwrap()
+        .relation_segments()
+        .unwrap();
+    assert_eq!(segments[0].count as usize, cap);
+    let decoded = decode_relation(&reader, 0, 0);
+    assert_eq!(decoded.len(), cap);
+    assert_eq!(decoded.first(), Some(&(0, None)));
+    assert_eq!(decoded.last(), Some(&((cap - 1) as u64, None)));
+    // Following node still decodes.
+    assert_eq!(decode_relation(&reader, 1, 0), vec![(999, None)]);
+}
+
+#[test]
 fn reader_rejects_invalid_header() {
     let dir = tempdir().unwrap();
     let offsets = dir.path().join("offsets.bin");
@@ -1613,25 +1684,11 @@ fn write_wrong_type_edges(path: &Path, src_col: &[&str], dst_col: &[&str]) -> an
 }
 
 fn varint_len_u64(v: u64) -> usize {
-    if v < (1 << 7) {
+    if v <= 63 {
         1
-    } else if v < (1 << 14) {
+    } else if v <= 0x3FFF {
         2
-    } else if v < (1 << 21) {
-        3
-    } else if v < (1 << 28) {
-        4
-    } else if v < (1 << 35) {
-        5
-    } else if v < (1 << 42) {
-        6
-    } else if v < (1 << 49) {
-        7
-    } else if v < (1 << 56) {
-        8
-    } else if v < (1 << 63) {
-        9
     } else {
-        10
+        panic!("varint_len_u64 only supports counts up to 0x3FFF");
     }
 }
