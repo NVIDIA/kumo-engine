@@ -793,6 +793,76 @@ fn reader_rejects_offsets_out_of_bounds() {
 }
 
 #[test]
+fn reader_rejects_node_index_out_of_range() {
+    let (_tmp, output_dir, layouts) = build_simple_shard(&[0], &[]);
+    let reader = ShardReader::open(&output_dir, layouts).unwrap();
+    let msg = match reader.edges_for_node(10) {
+        Ok(_) => panic!("expected node index out of range"),
+        Err(err) => err.to_string(),
+    };
+    assert!(
+        msg.contains("node index out of range"),
+        "expected node index error, got {msg}"
+    );
+}
+
+#[test]
+fn reader_rejects_offset_chunk_mismatch() {
+    let (_tmp, output_dir, layouts) = build_simple_shard(&[0, 1], &[]);
+    let offsets_path = output_dir.join("offsets.bin");
+    let mut bytes = fs::read(&offsets_path).unwrap();
+    // Tamper with the first chunk count to a larger number.
+    let header_len = std::mem::size_of::<diskgraph_index::layout::OffsetFileHeader>();
+    bytes[header_len] = 10;
+    bytes[header_len + 1] = 0;
+    fs::write(&offsets_path, bytes).unwrap();
+    let reader = ShardReader::open(&output_dir, layouts).unwrap();
+    let msg = match reader.edges_for_node(5) {
+        Ok(_) => panic!("expected offset chunk mismatch"),
+        Err(err) => err.to_string(),
+    };
+    assert!(
+        msg.contains("offset chunk range mismatch")
+            || msg.contains("offset chunk missing")
+            || msg.contains("node index out of range"),
+        "expected metadata error, got {msg}"
+    );
+}
+
+#[test]
+fn reader_rejects_truncated_edge_counts() {
+    let (_tmp, output_dir, layouts) = build_simple_shard(
+        &[0],
+        &[EdgeRow {
+            src: 0,
+            dst: 1,
+            dest_sort_key: None,
+        }],
+    );
+    let edges_path = output_dir.join("edges.bin");
+    let mut bytes = fs::read(&edges_path).unwrap();
+    // Replace the edge blob with an incomplete varint to force decode failure.
+    bytes.clear();
+    bytes.push(0x80); // varint with continuation but no following byte
+    fs::write(&edges_path, bytes).unwrap();
+    let reader = ShardReader::open(&output_dir, layouts).unwrap();
+    let msg = match reader.edges_for_node(0) {
+        Ok(view) => match view.relation_segments() {
+            Ok(_) => panic!("expected relation_segments error"),
+            Err(e) => e.to_string(),
+        },
+        Err(err) => err.to_string(),
+    };
+    let lower = msg.to_lowercase();
+    assert!(
+        lower.contains("unexpected eof")
+            || lower.contains("invalid data")
+            || lower.contains("offset points outside edge blob"),
+        "expected EOF/invalid data, got {msg}"
+    );
+}
+
+#[test]
 fn builder_errors_when_node_column_missing() {
     let dir = tempdir().unwrap();
     let node_path = dir.path().join("nodes.parquet");
