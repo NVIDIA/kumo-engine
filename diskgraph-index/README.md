@@ -132,6 +132,49 @@ Steps:
 - Sparse shards: empty edge lists are encoded as zero counts; offsets remain monotonic.
 - Destination ID width: minimized per relation using destination type `max_id`; masks precomputed.
 
+## Cloud ingest tests
+
+We support end-to-end ingest/read tests against S3, GCS, and ADLS using local emulators (MinIO, fake-gcs-server, Azurite) or real cloud endpoints. Tests fail fast if misconfigured and actually read/write data for two relations per shard with multiple row groups and multiple offset chunks.
+
+- Quick run with emulators (requires Docker):
+  ```bash
+  ./diskgraph-index/run_cloud_tests.sh
+  ```
+  This spins up emulators, creates buckets/containers, sets env vars, runs `cargo test -p diskgraph-index --test cloud_ingest`, then tears down containers.
+
+- Manual run against your own endpoints:
+  ```bash
+  # S3 / MinIO style
+  RUN_CLOUD_TESTS=1 \
+  S3_BUCKET=your-bucket \
+  S3_ENDPOINT=https://your-s3-endpoint \
+  S3_REGION=us-east-1 \
+  S3_ACCESS_KEY=... \
+  S3_SECRET_KEY=... \
+  cargo test -p diskgraph-index --test cloud_ingest -- --ignored
+
+  # GCS (must be https; provide service account or ADC)
+  RUN_CLOUD_TESTS=1 \
+  GCS_BUCKET=your-bucket \
+  GCS_ENDPOINT=https://storage.googleapis.com \
+  GCS_SERVICE_ACCOUNT_PATH=/path/to/sa.json \
+  cargo test -p diskgraph-index --test cloud_ingest -- --ignored
+
+  # ADLS/Azurite
+  RUN_CLOUD_TESTS=1 \
+  AZURE_ACCOUNT=devstoreaccount1 \
+  AZURE_CONTAINER=test-container \
+  AZURE_ENDPOINT=http://127.0.0.1:10000/devstoreaccount1 \
+  AZURE_ACCESS_KEY=Eby8vdM02xnoz0DU3+UEiFZdLFhCydS+z+EUz0MBAhc= \
+  AZURE_USE_EMULATOR=1 \
+  cargo test -p diskgraph-index --test cloud_ingest -- --ignored
+  ```
+
+Notes:
+- Tests require `RUN_CLOUD_TESTS=1` and the relevant `S3_*`, `GCS_*`, or `AZURE_*` vars. With `RUN_CLOUD_TESTS=1`, missing vars panic instead of silently skipping.
+- GCS client requires `https`; for emulators we inject a minimal service account and use the JSON API for HTTP endpoints.
+- Data sets include two relations (with and without `dest_sort_key`), enough nodes to span multiple offset chunks, and row groups to exercise multi-group Parquet reads.
+
 ## Expectations and assumptions
 - Input Parquet shards are already sorted:
   - Nodes by `id` ascending.
