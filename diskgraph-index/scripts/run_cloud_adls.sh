@@ -12,10 +12,17 @@ RUN_ID="run-$(date +%s)-$RANDOM"
 export AZURE_URL="${AZURE_PREFIX%/}/${RUN_ID}"
 
 echo "Using Azure URL=${AZURE_URL}"
-echo "Checking access to ${AZURE_URL}..."
-if ! az storage blob list --container-name "$(echo "${AZURE_URL}" | cut -d/ -f4)" --account-name "$(echo "${AZURE_URL}" | cut -d/ -f3)" >/dev/null 2>&1; then
-  echo "ERROR: Unable to access ${AZURE_URL}. Ensure Azure auth is configured (e.g., 'az login' or MSI/role) and the container exists." >&2
+echo "Checking access by uploading a dummy blob..."
+TMPFILE="$(mktemp)"
+echo "diskgraph cloud ingest access check" > "${TMPFILE}"
+AZ_ACCOUNT="$(echo "${AZURE_URL}" | cut -d/ -f3)"
+AZ_CONTAINER="$(echo "${AZURE_URL}" | cut -d/ -f4)"
+AZ_BLOB_PATH="$(echo "${AZURE_URL}" | cut -d/ -f5-)/_access_check.txt"
+if ! az storage blob upload --overwrite --account-name "${AZ_ACCOUNT}" --container-name "${AZ_CONTAINER}" --name "${AZ_BLOB_PATH}" --file "${TMPFILE}" >/dev/null 2>&1; then
+  echo "ERROR: Unable to write to ${AZURE_URL}. Ensure Azure auth is configured (e.g., 'az login' or MSI/role) and the container exists." >&2
+  rm -f "${TMPFILE}"
   exit 1
 fi
+rm -f "${TMPFILE}"
 echo "Running cloud ingest test (ADLS)..."
 cargo test -p diskgraph-index --test cloud_ingest -- --ignored adls_ingest_round_trip

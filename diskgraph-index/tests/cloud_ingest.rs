@@ -264,6 +264,11 @@ fn upload_to_store(
             .put(&location, bytes.into())
             .await
             .expect("upload to store (ensure bucket/container exists and credentials are valid)");
+        // Verify the object is visible (helps catch auth/path issues early).
+        store
+            .head(&location)
+            .await
+            .expect("uploaded object not visible; check permissions/prefix");
     });
     (store, location)
 }
