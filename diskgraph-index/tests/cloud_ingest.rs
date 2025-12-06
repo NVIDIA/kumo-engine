@@ -16,6 +16,7 @@ use parquet::file::properties::WriterProperties;
 use parquet::file::reader::{FileReader, SerializedFileReader};
 use tempfile::tempdir;
 use std::time::{SystemTime, UNIX_EPOCH};
+use url::Url;
 use tokio::runtime::Runtime;
 
 #[derive(Debug, Clone)]
@@ -28,6 +29,7 @@ struct EdgeRow {
 #[derive(Debug, Clone)]
 struct S3Config {
     bucket: String,
+    prefix: Option<String>,
     endpoint: Option<String>,
     region: Option<String>,
     access_key: Option<String>,
@@ -35,17 +37,16 @@ struct S3Config {
     session_token: Option<String>,
     virtual_hosted: bool,
     allow_http: bool,
-    prefix: Option<String>,
 }
 
 #[derive(Debug, Clone)]
 struct GcsConfig {
     bucket: String,
+    prefix: Option<String>,
     endpoint: Option<String>,
     service_account_path: Option<String>,
     service_account_key: Option<String>,
     application_credentials_path: Option<String>,
-    prefix: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -321,13 +322,30 @@ fn s3_config_from_env() -> Option<S3Config> {
     if std::env::var("RUN_CLOUD_TESTS").ok()?.as_str() != "1" {
         return None;
     }
-    let bucket = std::env::var("S3_BUCKET").ok()?;
+    let mut bucket = None;
+    let mut prefix = None;
+    if let Ok(url) = std::env::var("S3_URL") {
+        if let Ok(parsed) = Url::parse(&url) {
+            if parsed.scheme() == "s3" {
+                bucket = parsed.host_str().map(|s| s.to_string());
+                let path = parsed.path().trim_start_matches('/');
+                if !path.is_empty() {
+                    prefix = Some(path.to_string());
+                }
+            }
+        }
+    }
+    if bucket.is_none() {
+        bucket = std::env::var("S3_BUCKET").ok();
+    }
+    let bucket = bucket?;
     let allow_http = std::env::var("S3_ALLOW_HTTP")
         .or_else(|_| std::env::var("AWS_ALLOW_HTTP"))
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
     Some(S3Config {
         bucket,
+        prefix,
         endpoint: std::env::var("S3_ENDPOINT").ok(),
         region: std::env::var("S3_REGION").ok(),
         access_key: std::env::var("S3_ACCESS_KEY").ok(),
@@ -337,7 +355,6 @@ fn s3_config_from_env() -> Option<S3Config> {
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false),
         allow_http,
-        prefix: std::env::var("S3_PREFIX").ok(),
     })
 }
 
@@ -345,14 +362,30 @@ fn gcs_config_from_env() -> Option<GcsConfig> {
     if std::env::var("RUN_CLOUD_TESTS").ok()?.as_str() != "1" {
         return None;
     }
-    let bucket = std::env::var("GCS_BUCKET").ok()?;
+    let mut bucket = None;
+    let mut prefix = None;
+    if let Ok(url) = std::env::var("GCS_URL") {
+        if let Ok(parsed) = Url::parse(&url) {
+            if parsed.scheme() == "gs" {
+                bucket = parsed.host_str().map(|s| s.to_string());
+                let path = parsed.path().trim_start_matches('/');
+                if !path.is_empty() {
+                    prefix = Some(path.to_string());
+                }
+            }
+        }
+    }
+    if bucket.is_none() {
+        bucket = std::env::var("GCS_BUCKET").ok();
+    }
+    let bucket = bucket?;
     Some(GcsConfig {
         bucket,
+        prefix,
         endpoint: std::env::var("GCS_ENDPOINT").ok(),
         service_account_path: std::env::var("GCS_SERVICE_ACCOUNT_PATH").ok(),
         service_account_key: std::env::var("GCS_SERVICE_ACCOUNT_KEY").ok(),
         application_credentials_path: std::env::var("GCS_APPLICATION_CREDENTIALS_PATH").ok(),
-        prefix: std::env::var("GCS_PREFIX").ok(),
     })
 }
 
@@ -360,11 +393,40 @@ fn adls_config_from_env() -> Option<AdlsConfig> {
     if std::env::var("RUN_CLOUD_TESTS").ok()?.as_str() != "1" {
         return None;
     }
-    let account = std::env::var("AZURE_ACCOUNT").ok()?;
-    let container = std::env::var("AZURE_CONTAINER").ok()?;
+    let mut account = None;
+    let mut container = None;
+    let mut prefix = None;
+    if let Ok(url) = std::env::var("AZURE_URL") {
+        if let Ok(parsed) = Url::parse(&url) {
+            if parsed.scheme() == "az" {
+                account = parsed.host_str().map(|s| s.to_string());
+                let mut segments = parsed
+                    .path()
+                    .trim_start_matches('/')
+                    .split('/')
+                    .filter(|s| !s.is_empty());
+                if let Some(c) = segments.next() {
+                    container = Some(c.to_string());
+                }
+                let rest: String = segments.collect::<Vec<_>>().join("/");
+                if !rest.is_empty() {
+                    prefix = Some(rest);
+                }
+            }
+        }
+    }
+    if account.is_none() {
+        account = std::env::var("AZURE_ACCOUNT").ok();
+    }
+    if container.is_none() {
+        container = std::env::var("AZURE_CONTAINER").ok();
+    }
+    let account = account?;
+    let container = container?;
     Some(AdlsConfig {
         account,
         container,
+        prefix,
         endpoint: std::env::var("AZURE_ENDPOINT").ok(),
         access_key: std::env::var("AZURE_ACCESS_KEY").ok(),
         sas_key: std::env::var("AZURE_SAS_KEY").ok(),
@@ -375,7 +437,6 @@ fn adls_config_from_env() -> Option<AdlsConfig> {
         use_emulator: std::env::var("AZURE_USE_EMULATOR")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false),
-        prefix: std::env::var("AZURE_PREFIX").ok(),
     })
 }
 

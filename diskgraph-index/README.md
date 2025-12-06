@@ -141,15 +141,15 @@ Scripts live in `diskgraph-index/scripts`:
 - Emulators (Docker required): `scripts/run_cloud_emulators.sh`
   - Spins up MinIO/fake-gcs-server/Azurite, creates buckets/containers, sets prefixes (`S3_PREFIX`, `GCS_PREFIX`, `AZURE_PREFIX`) under `diskgraph-index/emulator/*/run-<timestamp>`, runs the tests, tears down containers.
 - Real clouds (IAM/ADC/MSI preferred; omit keys to use ambient creds):
-  - `scripts/run_cloud_s3.sh` (requires `S3_BUCKET`, optional `S3_ENDPOINT`/`S3_REGION`; sets `S3_PREFIX` to `diskgraph-index/s3/run-<timestamp>` by default)
-  - `scripts/run_cloud_gcs.sh` (requires `GCS_BUCKET`, `GCS_ENDPOINT=https://...`; sets `GCS_PREFIX` to `diskgraph-index/gcs/run-<timestamp>` by default)
-  - `scripts/run_cloud_adls.sh` (requires `AZURE_ACCOUNT`, `AZURE_CONTAINER`, optional `AZURE_ENDPOINT`; sets `AZURE_PREFIX` to `diskgraph-index/azure/run-<timestamp>` by default)
+  - `scripts/run_cloud_s3.sh` (default `S3_PREFIX=s3://kumo-unit-test/diskgraph-index`; override to your bucket/prefix; per-run `S3_URL` is generated; optional `S3_ENDPOINT`/`S3_REGION`; ensure AWS creds/role are active, e.g., `aws sso login`)
+  - `scripts/run_cloud_gcs.sh` (default `GCS_PREFIX=gs://kumo-unit-test/diskgraph-index`; override to your bucket/prefix; per-run `GCS_URL` is generated; requires `GCS_ENDPOINT=https://...`; ensure `gcloud auth login`/ADC is configured)
+  - `scripts/run_cloud_adls.sh` (set `AZURE_URL=az://account/container/path` or `AZURE_ACCOUNT`/`AZURE_CONTAINER`; optional `AZURE_ENDPOINT`)
 
 Notes:
 - Tests require `RUN_CLOUD_TESTS=1` and the relevant `S3_*`, `GCS_*`, or `AZURE_*` vars. With `RUN_CLOUD_TESTS=1`, missing vars panic instead of silently skipping.
 - GCS client requires `https` for real endpoints; emulators are handled via a JSON API path for http.
 - For real clouds, prefer role-based auth: AWS IAM (omit `S3_ACCESS_KEY`/`S3_SECRET_KEY`), GCP ADC/workload identity (omit `GCS_SERVICE_ACCOUNT_*`), Azure MSI/client creds (omit `AZURE_ACCESS_KEY`/`AZURE_SAS_KEY`). Emulators still need the fake keys provided by the emulator script.
-- Object keys (paths) are generated in the tests: if `*_PREFIX` is set it is used; otherwise a per-run prefix is synthesized under `diskgraph-index/<cloud>/run-<timestamp>`.
+- Object keys (paths) are generated in the tests: if a URL/prefix is provided it is used; otherwise a per-run prefix is synthesized under `diskgraph-index/<cloud>/run-<timestamp>`.
 - Data sets include two relations (with and without `dest_sort_key`), enough nodes to span multiple offset chunks, and row groups to exercise multi-group Parquet reads.
 
 ## Expectations and assumptions

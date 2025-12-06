@@ -61,7 +61,7 @@ docker run --rm --network host -e AZURE_STORAGE_ACCOUNT=${AZURITE_ACCOUNT} \
   --connection-string "DefaultEndpointsProtocol=http;AccountName=${AZURITE_ACCOUNT};AccountKey=${AZURITE_ACCESS_KEY};BlobEndpoint=http://127.0.0.1:${AZURITE_PORT}/${AZURITE_ACCOUNT};" >/dev/null
 
 export RUN_CLOUD_TESTS=1
-export S3_BUCKET=test-bucket
+export S3_URL="s3://test-bucket/${S3_PREFIX_BASE}/${RUN_ID}"
 export S3_ENDPOINT="http://127.0.0.1:${MINIO_PORT}"
 export S3_REGION=us-east-1
 export S3_ACCESS_KEY=minioadmin
@@ -70,11 +70,10 @@ export S3_VIRTUAL_HOSTED=false
 export AWS_ALLOW_HTTP=true
 export S3_ALLOW_HTTP=1
 
-export GCS_BUCKET=gcs-bucket
+export GCS_URL="gs://gcs-bucket/${GCS_PREFIX_BASE}/${RUN_ID}"
 export GCS_ENDPOINT="http://127.0.0.1:${GCS_PORT}"
 
-export AZURE_ACCOUNT=${AZURITE_ACCOUNT}
-export AZURE_CONTAINER=${AZURITE_CONTAINER}
+export AZURE_URL="az://${AZURITE_ACCOUNT}/${AZURITE_CONTAINER}/${AZURE_PREFIX_BASE}/${RUN_ID}"
 export AZURE_ENDPOINT="http://127.0.0.1:${AZURITE_PORT}/${AZURITE_ACCOUNT}"
 export AZURE_ACCESS_KEY="${AZURITE_ACCESS_KEY}"
 export AZURE_USE_EMULATOR=1
