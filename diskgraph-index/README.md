@@ -136,40 +136,20 @@ Steps:
 
 We support end-to-end ingest/read tests against S3, GCS, and ADLS using local emulators (MinIO, fake-gcs-server, Azurite) or real cloud endpoints. Tests fail fast if misconfigured and actually read/write data for two relations per shard with multiple row groups and multiple offset chunks.
 
-- Quick run with emulators (requires Docker):
-  ```bash
-  ./diskgraph-index/run_cloud_tests.sh
-  ```
-  This spins up emulators, creates buckets/containers, sets env vars, runs `cargo test -p diskgraph-index --test cloud_ingest`, then tears down containers.
+Scripts live in `diskgraph-index/scripts`:
 
-- Manual run against your own endpoints (IAM/ADC/MSI preferred; omit keys to use ambient creds):
-  ```bash
-  # S3 / MinIO style
-  RUN_CLOUD_TESTS=1 \
-  S3_BUCKET=your-bucket \
-  S3_ENDPOINT=https://your-s3-endpoint \
-  S3_REGION=us-east-1 \
-  cargo test -p diskgraph-index --test cloud_ingest -- --ignored
-
-  # GCS (must be https; provide service account or ADC)
-  RUN_CLOUD_TESTS=1 \
-  GCS_BUCKET=your-bucket \
-  GCS_ENDPOINT=https://storage.googleapis.com \
-  cargo test -p diskgraph-index --test cloud_ingest -- --ignored
-
-  # ADLS/Azurite
-  RUN_CLOUD_TESTS=1 \
-  AZURE_ACCOUNT=devstoreaccount1 \
-  AZURE_CONTAINER=test-container \
-  AZURE_ENDPOINT=http://127.0.0.1:10000/devstoreaccount1 \
-  AZURE_USE_EMULATOR=1 \
-  cargo test -p diskgraph-index --test cloud_ingest -- --ignored
-  ```
+- Emulators (Docker required): `scripts/run_cloud_emulators.sh`
+  - Spins up MinIO/fake-gcs-server/Azurite, creates buckets/containers, sets prefixes (`S3_PREFIX`, `GCS_PREFIX`, `AZURE_PREFIX`) under `diskgraph-index/emulator/*/run-<timestamp>`, runs the tests, tears down containers.
+- Real clouds (IAM/ADC/MSI preferred; omit keys to use ambient creds):
+  - `scripts/run_cloud_s3.sh` (requires `S3_BUCKET`, optional `S3_ENDPOINT`/`S3_REGION`; sets `S3_PREFIX` to `diskgraph-index/s3/run-<timestamp>` by default)
+  - `scripts/run_cloud_gcs.sh` (requires `GCS_BUCKET`, `GCS_ENDPOINT=https://...`; sets `GCS_PREFIX` to `diskgraph-index/gcs/run-<timestamp>` by default)
+  - `scripts/run_cloud_adls.sh` (requires `AZURE_ACCOUNT`, `AZURE_CONTAINER`, optional `AZURE_ENDPOINT`; sets `AZURE_PREFIX` to `diskgraph-index/azure/run-<timestamp>` by default)
 
 Notes:
 - Tests require `RUN_CLOUD_TESTS=1` and the relevant `S3_*`, `GCS_*`, or `AZURE_*` vars. With `RUN_CLOUD_TESTS=1`, missing vars panic instead of silently skipping.
-- GCS client requires `https`; for emulators we inject a minimal service account and use the JSON API for HTTP endpoints.
-- For real clouds, prefer role-based auth: AWS IAM (omit `S3_ACCESS_KEY`/`S3_SECRET_KEY`), GCP ADC/workload identity (omit `GCS_SERVICE_ACCOUNT_*`), Azure MSI/client creds (omit `AZURE_ACCESS_KEY`/`AZURE_SAS_KEY`). Emulators still need the fake keys provided by `run_cloud_tests.sh`.
+- GCS client requires `https` for real endpoints; emulators are handled via a JSON API path for http.
+- For real clouds, prefer role-based auth: AWS IAM (omit `S3_ACCESS_KEY`/`S3_SECRET_KEY`), GCP ADC/workload identity (omit `GCS_SERVICE_ACCOUNT_*`), Azure MSI/client creds (omit `AZURE_ACCESS_KEY`/`AZURE_SAS_KEY`). Emulators still need the fake keys provided by the emulator script.
+- Object keys (paths) are generated in the tests: if `*_PREFIX` is set it is used; otherwise a per-run prefix is synthesized under `diskgraph-index/<cloud>/run-<timestamp>`.
 - Data sets include two relations (with and without `dest_sort_key`), enough nodes to span multiple offset chunks, and row groups to exercise multi-group Parquet reads.
 
 ## Expectations and assumptions

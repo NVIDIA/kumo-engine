@@ -15,6 +15,7 @@ use object_store::ObjectStore;
 use parquet::file::properties::WriterProperties;
 use parquet::file::reader::{FileReader, SerializedFileReader};
 use tempfile::tempdir;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::runtime::Runtime;
 
 #[derive(Debug, Clone)]
@@ -34,6 +35,7 @@ struct S3Config {
     session_token: Option<String>,
     virtual_hosted: bool,
     allow_http: bool,
+    prefix: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -43,6 +45,7 @@ struct GcsConfig {
     service_account_path: Option<String>,
     service_account_key: Option<String>,
     application_credentials_path: Option<String>,
+    prefix: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -57,6 +60,7 @@ struct AdlsConfig {
     client_secret: Option<String>,
     tenant_id: Option<String>,
     use_emulator: bool,
+    prefix: Option<String>,
 }
 
 fn node_meta(name: &str, max_id: u64) -> diskgraph_core::metadata::NodeTypeMetadata {
@@ -263,6 +267,25 @@ fn upload_to_store(
     (store, location)
 }
 
+fn prefix_or_generated(env_prefix: &Option<String>, default_base: &str) -> String {
+    if let Some(p) = env_prefix {
+        return p.clone();
+    }
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!("{}/run-{}", default_base, nanos)
+}
+
+fn join_prefix(prefix: &str, name: &str) -> String {
+    if prefix.is_empty() {
+        name.to_string()
+    } else {
+        format!("{}/{}", prefix.trim_end_matches('/'), name)
+    }
+}
+
 /// Helper to upload to a fake GCS emulator using the JSON API (uploadType=media).
 fn upload_to_gcs_emulator(
     rt: &Runtime,
@@ -314,6 +337,7 @@ fn s3_config_from_env() -> Option<S3Config> {
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false),
         allow_http,
+        prefix: std::env::var("S3_PREFIX").ok(),
     })
 }
 
@@ -328,6 +352,7 @@ fn gcs_config_from_env() -> Option<GcsConfig> {
         service_account_path: std::env::var("GCS_SERVICE_ACCOUNT_PATH").ok(),
         service_account_key: std::env::var("GCS_SERVICE_ACCOUNT_KEY").ok(),
         application_credentials_path: std::env::var("GCS_APPLICATION_CREDENTIALS_PATH").ok(),
+        prefix: std::env::var("GCS_PREFIX").ok(),
     })
 }
 
@@ -350,6 +375,7 @@ fn adls_config_from_env() -> Option<AdlsConfig> {
         use_emulator: std::env::var("AZURE_USE_EMULATOR")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false),
+        prefix: std::env::var("AZURE_PREFIX").ok(),
     })
 }
 
@@ -401,10 +427,13 @@ fn s3_ingest_round_trip() {
     assert_multiple_row_groups(&follows_path);
     assert_multiple_row_groups(&blocks_path);
 
-    let (_s, node_loc) = upload_to_store(&rt, store.clone(), "nodes.parquet", &node_path);
-    let (_s2, follows_loc) =
-        upload_to_store(&rt, store.clone(), "follows.parquet", &follows_path);
-    let (_s3, blocks_loc) = upload_to_store(&rt, store.clone(), "blocks.parquet", &blocks_path);
+    let prefix = prefix_or_generated(&cfg.prefix, "diskgraph-index/s3");
+    let node_key = join_prefix(&prefix, "nodes.parquet");
+    let follows_key = join_prefix(&prefix, "follows.parquet");
+    let blocks_key = join_prefix(&prefix, "blocks.parquet");
+    let (_s, node_loc) = upload_to_store(&rt, store.clone(), &node_key, &node_path);
+    let (_s2, follows_loc) = upload_to_store(&rt, store.clone(), &follows_key, &follows_path);
+    let (_s3, blocks_loc) = upload_to_store(&rt, store.clone(), &blocks_key, &blocks_path);
 
     let node_meta = node_meta("User", 1000);
     let follows_meta = relation_meta("Follows", "User", "User", Some(16));
@@ -525,9 +554,10 @@ fn gcs_ingest_round_trip() {
     assert_multiple_row_groups(&follows_path);
     assert_multiple_row_groups(&blocks_path);
 
-    let node_key = "nodes.parquet".to_string();
-    let follows_key = "follows.parquet".to_string();
-    let blocks_key = "blocks.parquet".to_string();
+    let prefix = prefix_or_generated(&cfg.prefix, "diskgraph-index/gcs");
+    let node_key = join_prefix(&prefix, "nodes.parquet");
+    let follows_key = join_prefix(&prefix, "follows.parquet");
+    let blocks_key = join_prefix(&prefix, "blocks.parquet");
     let ep = cfg
         .endpoint
         .as_ref()
@@ -663,10 +693,13 @@ fn adls_ingest_round_trip() {
     assert_multiple_row_groups(&follows_path);
     assert_multiple_row_groups(&blocks_path);
 
-    let (_s, node_loc) = upload_to_store(&rt, store.clone(), "nodes.parquet", &node_path);
-    let (_s2, follows_loc) =
-        upload_to_store(&rt, store.clone(), "follows.parquet", &follows_path);
-    let (_s3, blocks_loc) = upload_to_store(&rt, store.clone(), "blocks.parquet", &blocks_path);
+    let prefix = prefix_or_generated(&cfg.prefix, "diskgraph-index/azure");
+    let node_key = join_prefix(&prefix, "nodes.parquet");
+    let follows_key = join_prefix(&prefix, "follows.parquet");
+    let blocks_key = join_prefix(&prefix, "blocks.parquet");
+    let (_s, node_loc) = upload_to_store(&rt, store.clone(), &node_key, &node_path);
+    let (_s2, follows_loc) = upload_to_store(&rt, store.clone(), &follows_key, &follows_path);
+    let (_s3, blocks_loc) = upload_to_store(&rt, store.clone(), &blocks_key, &blocks_path);
 
     let node_meta = node_meta("User", 1000);
     let follows_meta = relation_meta("Follows", "User", "User", Some(16));
