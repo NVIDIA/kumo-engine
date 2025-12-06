@@ -23,4 +23,4 @@ if ! gsutil cp "${TMPFILE}" "${GCS_URL}/_access_check.txt" >/dev/null 2>&1; then
 fi
 rm -f "${TMPFILE}"
 echo "Running cloud ingest test (GCS)..."
-cargo test -p diskgraph-index --test cloud_ingest -- --ignored gcs_ingest_round_trip
+cargo test -p diskgraph-index --test cloud_ingest -- gcs_ingest_round_trip

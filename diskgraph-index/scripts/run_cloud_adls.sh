@@ -25,4 +25,4 @@ if ! az storage blob upload --overwrite --account-name "${AZ_ACCOUNT}" --contain
 fi
 rm -f "${TMPFILE}"
 echo "Running cloud ingest test (ADLS)..."
-cargo test -p diskgraph-index --test cloud_ingest -- --ignored adls_ingest_round_trip
+cargo test -p diskgraph-index --test cloud_ingest -- adls_ingest_round_trip
