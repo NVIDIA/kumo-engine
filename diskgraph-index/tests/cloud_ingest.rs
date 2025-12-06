@@ -12,6 +12,8 @@ use diskgraph_index::streaming::{
 };
 use object_store::path::Path as ObjectPath;
 use object_store::ObjectStore;
+use parquet::file::properties::WriterProperties;
+use parquet::file::reader::{FileReader, SerializedFileReader};
 use tempfile::tempdir;
 use tokio::runtime::Runtime;
 
@@ -80,30 +82,54 @@ fn relation_meta(
     }
 }
 
+#[allow(dead_code)]
 fn write_nodes(path: &std::path::Path, ids: &[i64]) -> anyhow::Result<()> {
+    write_nodes_batched(path, ids, ids.len())
+}
+
+fn write_nodes_batched(
+    path: &std::path::Path,
+    ids: &[i64],
+    batch_size: usize,
+) -> anyhow::Result<()> {
     use arrow_array::{ArrayRef, Int64Array};
     use arrow_schema::{DataType, Field, Schema};
     use parquet::arrow::arrow_writer::ArrowWriter;
 
-    let schema = Schema::new(vec![Field::new("id", DataType::Int64, false)]);
-    let batch = arrow_array::RecordBatch::try_new(
-        Arc::new(schema.clone()),
-        vec![Arc::new(Int64Array::from(ids.to_vec())) as ArrayRef],
-    )?;
+    let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+    let props = WriterProperties::builder()
+        .set_max_row_group_size(batch_size.max(1))
+        .build();
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
     let file = std::fs::File::create(path)?;
-    let mut writer = ArrowWriter::try_new(file, Arc::new(schema), None)?;
-    writer.write(&batch)?;
+    let mut writer = ArrowWriter::try_new(file, schema.clone(), Some(props))?;
+    for chunk in ids.chunks(batch_size.max(1)) {
+        let batch = arrow_array::RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Int64Array::from(chunk.to_vec())) as ArrayRef],
+        )?;
+        writer.write(&batch)?;
+    }
     writer.close()?;
     Ok(())
 }
 
+#[allow(dead_code)]
 fn write_edges(
     path: &std::path::Path,
     edges: &[EdgeRow],
     with_sort_key: bool,
+) -> anyhow::Result<()> {
+    write_edges_batched(path, edges, with_sort_key, edges.len())
+}
+
+fn write_edges_batched(
+    path: &std::path::Path,
+    edges: &[EdgeRow],
+    with_sort_key: bool,
+    batch_size: usize,
 ) -> anyhow::Result<()> {
     use arrow_array::{ArrayRef, Int64Array};
     use arrow_schema::{DataType, Field, Schema};
@@ -116,29 +142,79 @@ fn write_edges(
     if with_sort_key {
         fields.push(Field::new("dest_sort_key", DataType::Int64, false));
     }
-    let schema = Schema::new(fields);
-    let src: Vec<i64> = edges.iter().map(|e| e.src).collect();
-    let dst: Vec<i64> = edges.iter().map(|e| e.dst).collect();
-    let mut cols: Vec<ArrayRef> = vec![
-        Arc::new(Int64Array::from(src)) as ArrayRef,
-        Arc::new(Int64Array::from(dst)) as ArrayRef,
-    ];
-    if with_sort_key {
-        let dsk: Vec<i64> = edges
-            .iter()
-            .map(|e| e.dest_sort_key.unwrap_or_default())
-            .collect();
-        cols.push(Arc::new(Int64Array::from(dsk)) as ArrayRef);
-    }
-    let batch = arrow_array::RecordBatch::try_new(Arc::new(schema.clone()), cols)?;
+    let schema = Arc::new(Schema::new(fields));
+    let props = WriterProperties::builder()
+        .set_max_row_group_size(batch_size.max(1))
+        .build();
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
     let file = std::fs::File::create(path)?;
-    let mut writer = ArrowWriter::try_new(file, Arc::new(schema), None)?;
-    writer.write(&batch)?;
+    let mut writer = ArrowWriter::try_new(file, schema.clone(), Some(props))?;
+    for chunk in edges.chunks(batch_size.max(1)) {
+        let src: Vec<i64> = chunk.iter().map(|e| e.src).collect();
+        let dst: Vec<i64> = chunk.iter().map(|e| e.dst).collect();
+        let mut cols: Vec<ArrayRef> = vec![
+            Arc::new(Int64Array::from(src)) as ArrayRef,
+            Arc::new(Int64Array::from(dst)) as ArrayRef,
+        ];
+        if with_sort_key {
+            let dsk: Vec<i64> = chunk
+                .iter()
+                .map(|e| e.dest_sort_key.unwrap_or_default())
+                .collect();
+            cols.push(Arc::new(Int64Array::from(dsk)) as ArrayRef);
+        }
+        let batch = arrow_array::RecordBatch::try_new(schema.clone(), cols)?;
+        writer.write(&batch)?;
+    }
     writer.close()?;
     Ok(())
+}
+
+fn assert_multiple_row_groups(path: &std::path::Path) {
+    let file = std::fs::File::open(path).expect("open parquet to inspect row groups");
+    let reader = SerializedFileReader::new(file).expect("read parquet metadata");
+    let rg = reader.num_row_groups();
+    assert!(
+        rg > 1,
+        "expected parquet at {} to have multiple row groups, saw {}",
+        path.display(),
+        rg
+    );
+}
+
+fn complex_dataset() -> (Vec<i64>, Vec<EdgeRow>, Vec<EdgeRow>) {
+    // Nodes span > DELTA_CHUNK (64) to force multiple offset chunks.
+    let nodes: Vec<i64> = (0..=130).collect();
+
+    // Relation 0: has dest_sort_key, two edges for most nodes, none for tail nodes to cover empty lists.
+    let mut follows = Vec::new();
+    for src in 0..=110 {
+        let high_key = 2000 - (src as i64);
+        let low_key = 1000 - (src as i64);
+        follows.push(EdgeRow {
+            src,
+            dst: ((src + 1) % 131) as i64,
+            dest_sort_key: Some(high_key),
+        });
+        follows.push(EdgeRow {
+            src,
+            dst: ((src + 2) % 131) as i64,
+            dest_sort_key: Some(low_key),
+        });
+    }
+
+    // Relation 1: no dest_sort_key, sparse edges.
+    let mut blocks = Vec::new();
+    for src in (5..=125).step_by(3) {
+        blocks.push(EdgeRow {
+            src,
+            dst: (200 + src as i64) % 500,
+            dest_sort_key: None,
+        });
+    }
+    (nodes, follows, blocks)
 }
 
 fn decode_relation(
@@ -315,37 +391,30 @@ fn s3_ingest_round_trip() {
 
     let dir = tempdir().unwrap();
     let node_path = dir.path().join("nodes.parquet");
-    let edge_path = dir.path().join("edges.parquet");
-    write_nodes(&node_path, &[0, 1]).unwrap();
-    write_edges(
-        &edge_path,
-        &[
-            EdgeRow {
-                src: 0,
-                dst: 1,
-                dest_sort_key: None,
-            },
-            EdgeRow {
-                src: 1,
-                dst: 0,
-                dest_sort_key: None,
-            },
-        ],
-        false,
-    )
-    .unwrap();
+    let follows_path = dir.path().join("follows.parquet");
+    let blocks_path = dir.path().join("blocks.parquet");
+    let (nodes, follows, blocks) = complex_dataset();
+    write_nodes_batched(&node_path, &nodes, 40).unwrap();
+    write_edges_batched(&follows_path, &follows, true, 50).unwrap();
+    write_edges_batched(&blocks_path, &blocks, false, 20).unwrap();
+    assert_multiple_row_groups(&node_path);
+    assert_multiple_row_groups(&follows_path);
+    assert_multiple_row_groups(&blocks_path);
 
     let (_s, node_loc) = upload_to_store(&rt, store.clone(), "nodes.parquet", &node_path);
-    let (_s2, edge_loc) = upload_to_store(&rt, store.clone(), "edges.parquet", &edge_path);
+    let (_s2, follows_loc) =
+        upload_to_store(&rt, store.clone(), "follows.parquet", &follows_path);
+    let (_s3, blocks_loc) = upload_to_store(&rt, store.clone(), "blocks.parquet", &blocks_path);
 
-    let node_meta = node_meta("User", 10);
-    let relation_meta = relation_meta("Follows", "User", "User", None);
+    let node_meta = node_meta("User", 1000);
+    let follows_meta = relation_meta("Follows", "User", "User", Some(16));
+    let blocks_meta = relation_meta("Blocks", "User", "User", None);
     let out = dir.path().join("out");
     let builder = ShardBuilder::new(ShardBuildParams {
         output_dir: out.clone(),
         node_meta: node_meta.clone(),
         node_types: vec![node_meta.clone()],
-        relation_metas: vec![relation_meta.clone()],
+        relation_metas: vec![follows_meta.clone(), blocks_meta.clone()],
         shard_index: 0,
     });
     let built = builder
@@ -369,7 +438,21 @@ fn s3_ingest_round_trip() {
                 source_shard_index: 0,
                 parquet: ParquetSource::S3(S3Location {
                     bucket: cfg.bucket.clone(),
-                    key: edge_loc.to_string(),
+                    key: follows_loc.to_string(),
+                    region: cfg.region.clone(),
+                    endpoint: cfg.endpoint.clone(),
+                    access_key_id: cfg.access_key.clone(),
+                    secret_access_key: cfg.secret_key.clone(),
+                    session_token: cfg.session_token.clone(),
+                    virtual_hosted_style_request: Some(cfg.virtual_hosted),
+                }),
+                has_dest_sort_key: true,
+            }, EdgeShardInput {
+                relation: "Blocks".into(),
+                source_shard_index: 0,
+                parquet: ParquetSource::S3(S3Location {
+                    bucket: cfg.bucket.clone(),
+                    key: blocks_loc.to_string(),
                     region: cfg.region.clone(),
                     endpoint: cfg.endpoint.clone(),
                     access_key_id: cfg.access_key.clone(),
@@ -383,8 +466,16 @@ fn s3_ingest_round_trip() {
         .expect("S3 build");
 
     let reader = ShardReader::open(&out, built.layouts.clone()).unwrap();
-    let decoded = decode_relation(&reader, 0, 0);
-    assert_eq!(decoded, vec![(1, None)]);
+    let decoded_follows = decode_relation(&reader, 0, 0);
+    assert_eq!(
+        decoded_follows,
+        vec![(1, Some(2000)), (2, Some(1000))]
+    );
+    let decoded_blocks = decode_relation(&reader, 8, 1);
+    assert_eq!(decoded_blocks, vec![(208, None)]);
+    // Tail node has no edges in either relation.
+    assert!(decode_relation(&reader, 128, 0).is_empty());
+    assert!(decode_relation(&reader, 128, 1).is_empty());
 }
 
 #[test]
@@ -424,37 +515,38 @@ fn gcs_ingest_round_trip() {
 
     let dir = tempdir().unwrap();
     let node_path = dir.path().join("nodes.parquet");
-    let edge_path = dir.path().join("edges.parquet");
-    write_nodes(&node_path, &[0]).unwrap();
-    write_edges(
-        &edge_path,
-        &[EdgeRow {
-            src: 0,
-            dst: 42,
-            dest_sort_key: None,
-        }],
-        false,
-    )
-    .unwrap();
+    let follows_path = dir.path().join("follows.parquet");
+    let blocks_path = dir.path().join("blocks.parquet");
+    let (nodes, follows, blocks) = complex_dataset();
+    write_nodes_batched(&node_path, &nodes, 40).unwrap();
+    write_edges_batched(&follows_path, &follows, true, 50).unwrap();
+    write_edges_batched(&blocks_path, &blocks, false, 20).unwrap();
+    assert_multiple_row_groups(&node_path);
+    assert_multiple_row_groups(&follows_path);
+    assert_multiple_row_groups(&blocks_path);
 
     let node_key = "nodes.parquet".to_string();
-    let edge_key = "edges.parquet".to_string();
+    let follows_key = "follows.parquet".to_string();
+    let blocks_key = "blocks.parquet".to_string();
     let ep = cfg
         .endpoint
         .as_ref()
         .expect("GCS_ENDPOINT must be set for emulator uploads");
     upload_to_gcs_emulator(&rt, ep, &cfg.bucket, &node_key, &node_path);
-    upload_to_gcs_emulator(&rt, ep, &cfg.bucket, &edge_key, &edge_path);
+    upload_to_gcs_emulator(&rt, ep, &cfg.bucket, &follows_key, &follows_path);
+    upload_to_gcs_emulator(&rt, ep, &cfg.bucket, &blocks_key, &blocks_path);
     let node_loc = ObjectPath::from(node_key);
-    let edge_loc = ObjectPath::from(edge_key);
-    let node_meta = node_meta("User", 100);
-    let relation_meta = relation_meta("Follows", "User", "User", None);
+    let follows_loc = ObjectPath::from(follows_key);
+    let blocks_loc = ObjectPath::from(blocks_key);
+    let node_meta = node_meta("User", 1000);
+    let relation_follows = relation_meta("Follows", "User", "User", Some(16));
+    let relation_blocks = relation_meta("Blocks", "User", "User", None);
     let out = dir.path().join("out");
     let builder = ShardBuilder::new(ShardBuildParams {
         output_dir: out.clone(),
         node_meta: node_meta.clone(),
         node_types: vec![node_meta.clone()],
-        relation_metas: vec![relation_meta.clone()],
+        relation_metas: vec![relation_follows.clone(), relation_blocks.clone()],
         shard_index: 0,
     });
     let built = builder
@@ -476,7 +568,19 @@ fn gcs_ingest_round_trip() {
                 source_shard_index: 0,
                 parquet: ParquetSource::Gcs(GcsLocation {
                     bucket: cfg.bucket.clone(),
-                    key: edge_loc.to_string(),
+                    key: follows_loc.to_string(),
+                    service_account_path: cfg.service_account_path.clone(),
+                    service_account_key: cfg.service_account_key.clone(),
+                    application_credentials_path: cfg.application_credentials_path.clone(),
+                    endpoint: cfg.endpoint.clone(),
+                }),
+                has_dest_sort_key: true,
+            }, EdgeShardInput {
+                relation: "Blocks".into(),
+                source_shard_index: 0,
+                parquet: ParquetSource::Gcs(GcsLocation {
+                    bucket: cfg.bucket.clone(),
+                    key: blocks_loc.to_string(),
                     service_account_path: cfg.service_account_path.clone(),
                     service_account_key: cfg.service_account_key.clone(),
                     application_credentials_path: cfg.application_credentials_path.clone(),
@@ -488,8 +592,15 @@ fn gcs_ingest_round_trip() {
         .expect("GCS build");
 
     let reader = ShardReader::open(&out, built.layouts.clone()).unwrap();
-    let decoded = decode_relation(&reader, 0, 0);
-    assert_eq!(decoded, vec![(42, None)]);
+    let decoded_follows = decode_relation(&reader, 5, 0);
+    assert_eq!(
+        decoded_follows,
+        vec![(6, Some(1995)), (7, Some(995))]
+    );
+    let decoded_blocks = decode_relation(&reader, 14, 1);
+    assert_eq!(decoded_blocks, vec![(214, None)]);
+    assert!(decode_relation(&reader, 128, 0).is_empty());
+    assert!(decode_relation(&reader, 128, 1).is_empty());
 }
 
 #[test]
@@ -542,30 +653,30 @@ fn adls_ingest_round_trip() {
 
     let dir = tempdir().unwrap();
     let node_path = dir.path().join("nodes.parquet");
-    let edge_path = dir.path().join("edges.parquet");
-    write_nodes(&node_path, &[0, 1]).unwrap();
-    write_edges(
-        &edge_path,
-        &[EdgeRow {
-            src: 1,
-            dst: 7,
-            dest_sort_key: None,
-        }],
-        false,
-    )
-    .unwrap();
+    let follows_path = dir.path().join("follows.parquet");
+    let blocks_path = dir.path().join("blocks.parquet");
+    let (nodes, follows, blocks) = complex_dataset();
+    write_nodes_batched(&node_path, &nodes, 40).unwrap();
+    write_edges_batched(&follows_path, &follows, true, 50).unwrap();
+    write_edges_batched(&blocks_path, &blocks, false, 20).unwrap();
+    assert_multiple_row_groups(&node_path);
+    assert_multiple_row_groups(&follows_path);
+    assert_multiple_row_groups(&blocks_path);
 
     let (_s, node_loc) = upload_to_store(&rt, store.clone(), "nodes.parquet", &node_path);
-    let (_s2, edge_loc) = upload_to_store(&rt, store.clone(), "edges.parquet", &edge_path);
+    let (_s2, follows_loc) =
+        upload_to_store(&rt, store.clone(), "follows.parquet", &follows_path);
+    let (_s3, blocks_loc) = upload_to_store(&rt, store.clone(), "blocks.parquet", &blocks_path);
 
-    let node_meta = node_meta("User", 10);
-    let relation_meta = relation_meta("Follows", "User", "User", None);
+    let node_meta = node_meta("User", 1000);
+    let follows_meta = relation_meta("Follows", "User", "User", Some(16));
+    let blocks_meta = relation_meta("Blocks", "User", "User", None);
     let out = dir.path().join("out");
     let builder = ShardBuilder::new(ShardBuildParams {
         output_dir: out.clone(),
         node_meta: node_meta.clone(),
         node_types: vec![node_meta.clone()],
-        relation_metas: vec![relation_meta.clone()],
+        relation_metas: vec![follows_meta.clone(), blocks_meta.clone()],
         shard_index: 0,
     });
     let built = builder
@@ -593,7 +704,24 @@ fn adls_ingest_round_trip() {
                 parquet: ParquetSource::Adls(AdlsLocation {
                     account: cfg.account.clone(),
                     container: cfg.container.clone(),
-                    key: edge_loc.to_string(),
+                    key: follows_loc.to_string(),
+                    access_key: cfg.access_key.clone(),
+                    sas_key: cfg.sas_key.clone(),
+                    bearer_token: cfg.bearer_token.clone(),
+                    client_id: cfg.client_id.clone(),
+                    client_secret: cfg.client_secret.clone(),
+                    tenant_id: cfg.tenant_id.clone(),
+                    endpoint: cfg.endpoint.clone(),
+                    use_emulator: Some(cfg.use_emulator),
+                }),
+                has_dest_sort_key: true,
+            }, EdgeShardInput {
+                relation: "Blocks".into(),
+                source_shard_index: 0,
+                parquet: ParquetSource::Adls(AdlsLocation {
+                    account: cfg.account.clone(),
+                    container: cfg.container.clone(),
+                    key: blocks_loc.to_string(),
                     access_key: cfg.access_key.clone(),
                     sas_key: cfg.sas_key.clone(),
                     bearer_token: cfg.bearer_token.clone(),
@@ -609,6 +737,13 @@ fn adls_ingest_round_trip() {
         .expect("ADLS build");
 
     let reader = ShardReader::open(&out, built.layouts.clone()).unwrap();
-    let decoded = decode_relation(&reader, 1, 0);
-    assert_eq!(decoded, vec![(7, None)]);
+    let decoded_follows = decode_relation(&reader, 2, 0);
+    assert_eq!(
+        decoded_follows,
+        vec![(3, Some(1998)), (4, Some(998))]
+    );
+    let decoded_blocks = decode_relation(&reader, 11, 1);
+    assert_eq!(decoded_blocks, vec![(211, None)]);
+    assert!(decode_relation(&reader, 128, 0).is_empty());
+    assert!(decode_relation(&reader, 128, 1).is_empty());
 }
