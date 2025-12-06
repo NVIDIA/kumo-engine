@@ -8,7 +8,6 @@ if [[ "${RUN_CLOUD_TESTS:-}" != "1" ]]; then
 fi
 
 : "${GCS_PREFIX:=gs://kumo-unit-test/diskgraph-index}"
-: "${GCS_ENDPOINT:?Set GCS_ENDPOINT=https://storage.googleapis.com or your endpoint (must be https)}"
 RUN_ID="run-$(date +%s)-$RANDOM"
 export GCS_URL="${GCS_PREFIX%/}/${RUN_ID}"
 

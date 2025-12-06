@@ -360,10 +360,10 @@ fn gcs_config_from_env() -> Option<GcsConfig> {
     Some(GcsConfig {
         bucket,
         prefix,
-        endpoint: std::env::var("GCS_ENDPOINT").ok(),
-        service_account_path: std::env::var("GCS_SERVICE_ACCOUNT_PATH").ok(),
-        service_account_key: std::env::var("GCS_SERVICE_ACCOUNT_KEY").ok(),
-        application_credentials_path: std::env::var("GCS_APPLICATION_CREDENTIALS_PATH").ok(),
+        endpoint: None,
+        service_account_path: None,
+        service_account_key: None,
+        application_credentials_path: None,
     })
 }
 
@@ -604,28 +604,19 @@ fn gcs_ingest_round_trip() {
     // If RUN_CLOUD_TESTS=1 is set but GCS_* vars are missing, fail fast
     let Some(cfg) = gcs_config_from_env() else {
         if std::env::var("RUN_CLOUD_TESTS").ok().as_deref() == Some("1") {
-            panic!("RUN_CLOUD_TESTS=1 but GCS_* env vars not set; set at least GCS_BUCKET (and optionally GCS_ENDPOINT/creds)");
+            panic!("RUN_CLOUD_TESTS=1 but GCS_* env vars not set; set at least GCS_BUCKET");
         } else {
             eprintln!("skipping gcs_ingest_round_trip; set RUN_CLOUD_TESTS=1 and GCS_* env vars");
             return;
         }
     };
     let rt = Runtime::new().unwrap();
-    let mut builder =
-        object_store::gcp::GoogleCloudStorageBuilder::new().with_bucket_name(&cfg.bucket);
-    if let Some(sa_path) = &cfg.service_account_path {
-        builder = builder.with_service_account_path(sa_path);
-    } else if let Some(sa_key) = &cfg.service_account_key {
-        builder = builder.with_service_account_key(sa_key);
-    } else if let Some(app_creds) = &cfg.application_credentials_path {
-        builder = builder.with_application_credentials(app_creds);
-    } else {
-        panic!("Provide GCS_SERVICE_ACCOUNT_PATH, GCS_SERVICE_ACCOUNT_KEY, or GCS_APPLICATION_CREDENTIALS_PATH");
-    }
+    // Use default Google ADC (supports gcloud auth login / application-default).
     let store: Arc<dyn ObjectStore> = Arc::new(
-        builder
+        object_store::gcp::GoogleCloudStorageBuilder::from_env()
+            .with_bucket_name(&cfg.bucket)
             .build()
-            .expect("failed to build GCS object store (check endpoint/creds)"),
+            .expect("failed to build GCS object store (check ADC/gcloud auth)"),
     );
 
     let dir = tempdir().unwrap();
@@ -666,10 +657,10 @@ fn gcs_ingest_round_trip() {
                 parquet: ParquetSource::Gcs(GcsLocation {
                     bucket: cfg.bucket.clone(),
                     key: node_loc.to_string(),
-                    service_account_path: cfg.service_account_path.clone(),
-                    service_account_key: cfg.service_account_key.clone(),
-                    application_credentials_path: cfg.application_credentials_path.clone(),
-                    endpoint: cfg.endpoint.clone(),
+                    service_account_path: None,
+                    service_account_key: None,
+                    application_credentials_path: None,
+                    endpoint: None,
                 }),
             },
             &[EdgeShardInput {
@@ -678,10 +669,10 @@ fn gcs_ingest_round_trip() {
                 parquet: ParquetSource::Gcs(GcsLocation {
                     bucket: cfg.bucket.clone(),
                     key: follows_loc.to_string(),
-                    service_account_path: cfg.service_account_path.clone(),
-                    service_account_key: cfg.service_account_key.clone(),
-                    application_credentials_path: cfg.application_credentials_path.clone(),
-                    endpoint: cfg.endpoint.clone(),
+                    service_account_path: None,
+                    service_account_key: None,
+                    application_credentials_path: None,
+                    endpoint: None,
                 }),
                 has_dest_sort_key: true,
             }, EdgeShardInput {
@@ -690,10 +681,10 @@ fn gcs_ingest_round_trip() {
                 parquet: ParquetSource::Gcs(GcsLocation {
                     bucket: cfg.bucket.clone(),
                     key: blocks_loc.to_string(),
-                    service_account_path: cfg.service_account_path.clone(),
-                    service_account_key: cfg.service_account_key.clone(),
-                    application_credentials_path: cfg.application_credentials_path.clone(),
-                    endpoint: cfg.endpoint.clone(),
+                    service_account_path: None,
+                    service_account_key: None,
+                    application_credentials_path: None,
+                    endpoint: None,
                 }),
                 has_dest_sort_key: false,
             }],
