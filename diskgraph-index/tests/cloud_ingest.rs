@@ -5,6 +5,8 @@
 
 use std::sync::Arc;
 
+use aws_credential_types::provider::ProvideCredentials;
+use aws_types::region::Region;
 use diskgraph_index::builder::{ShardBuildParams, ShardBuilder};
 use diskgraph_index::reader::ShardReader;
 use diskgraph_index::streaming::{
@@ -16,8 +18,8 @@ use parquet::file::properties::WriterProperties;
 use parquet::file::reader::{FileReader, SerializedFileReader};
 use tempfile::tempdir;
 use std::time::{SystemTime, UNIX_EPOCH};
-use url::Url;
 use tokio::runtime::Runtime;
+use url::Url;
 
 #[derive(Debug, Clone)]
 struct EdgeRow {
@@ -32,9 +34,6 @@ struct S3Config {
     prefix: Option<String>,
     endpoint: Option<String>,
     region: Option<String>,
-    access_key: Option<String>,
-    secret_key: Option<String>,
-    session_token: Option<String>,
     virtual_hosted: bool,
     allow_http: bool,
 }
@@ -348,17 +347,17 @@ fn s3_config_from_env() -> Option<S3Config> {
         .or_else(|_| std::env::var("AWS_ALLOW_HTTP"))
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
+    let endpoint = std::env::var("S3_ENDPOINT").ok();
+    let virtual_hosted = std::env::var("S3_VIRTUAL_HOSTED")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        // Default to virtual-hosted for real S3; path-style for custom endpoints unless explicitly set.
+        .unwrap_or_else(|_| endpoint.as_ref().map_or(true, |ep| ep.contains("amazonaws.com")));
     Some(S3Config {
         bucket,
         prefix,
-        endpoint: std::env::var("S3_ENDPOINT").ok(),
+        endpoint,
         region: std::env::var("S3_REGION").ok(),
-        access_key: std::env::var("S3_ACCESS_KEY").ok(),
-        secret_key: std::env::var("S3_SECRET_KEY").ok(),
-        session_token: std::env::var("S3_SESSION_TOKEN").ok(),
-        virtual_hosted: std::env::var("S3_VIRTUAL_HOSTED")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false),
+        virtual_hosted,
         allow_http,
     })
 }
@@ -456,24 +455,47 @@ fn s3_ingest_round_trip() {
         }
     };
     let rt = Runtime::new().unwrap();
+    // Build the S3 client from the AWS SDK env/config chain (supports AWS_PROFILE/SSO).
+    let profile = std::env::var("S3_PROFILE")
+        .ok()
+        .or_else(|| std::env::var("AWS_PROFILE").ok());
+    let aws_conf = rt.block_on(async {
+        let mut loader = aws_config::from_env();
+        if let Some(p) = profile.clone() {
+            loader = loader.profile_name(p);
+        }
+        if let Some(region) = cfg.region.clone() {
+            loader = loader.region(Region::new(region));
+        }
+        loader.load().await
+    });
+    let creds_provider = aws_conf
+        .credentials_provider()
+        .expect("No AWS credentials provider found; run `aws sso login` or configure AWS_PROFILE");
+    let creds = rt.block_on(async {
+        creds_provider
+            .provide_credentials()
+            .await
+            .expect("Failed to load AWS credentials from the default chain")
+    });
+    let region = cfg
+        .region
+        .clone()
+        .or_else(|| aws_conf.region().map(|r| r.as_ref().to_string()))
+        .unwrap_or_else(|| "us-east-1".to_string());
+
     let mut builder = object_store::aws::AmazonS3Builder::new()
         .with_bucket_name(&cfg.bucket)
+        .with_region(&region)
+        .with_access_key_id(creds.access_key_id())
+        .with_secret_access_key(creds.secret_access_key())
         .with_virtual_hosted_style_request(cfg.virtual_hosted)
         .with_allow_http(cfg.allow_http);
+    if let Some(token) = creds.session_token() {
+        builder = builder.with_token(token);
+    }
     if let Some(ep) = &cfg.endpoint {
         builder = builder.with_endpoint(ep);
-    }
-    if let Some(region) = &cfg.region {
-        builder = builder.with_region(region);
-    }
-    if let Some(ak) = &cfg.access_key {
-        builder = builder.with_access_key_id(ak);
-    }
-    if let Some(sk) = &cfg.secret_key {
-        builder = builder.with_secret_access_key(sk);
-    }
-    if let Some(token) = &cfg.session_token {
-        builder = builder.with_token(token);
     }
     let store: Arc<dyn ObjectStore> = Arc::new(
         builder
@@ -520,11 +542,11 @@ fn s3_ingest_round_trip() {
                 parquet: ParquetSource::S3(S3Location {
                     bucket: cfg.bucket.clone(),
                     key: node_loc.to_string(),
-                    region: cfg.region.clone(),
+                    region: Some(region.clone()),
                     endpoint: cfg.endpoint.clone(),
-                    access_key_id: cfg.access_key.clone(),
-                    secret_access_key: cfg.secret_key.clone(),
-                    session_token: cfg.session_token.clone(),
+                    access_key_id: Some(creds.access_key_id().to_string()),
+                    secret_access_key: Some(creds.secret_access_key().to_string()),
+                    session_token: creds.session_token().map(|t| t.to_string()),
                     virtual_hosted_style_request: Some(cfg.virtual_hosted),
                 }),
             },
@@ -534,11 +556,11 @@ fn s3_ingest_round_trip() {
                 parquet: ParquetSource::S3(S3Location {
                     bucket: cfg.bucket.clone(),
                     key: follows_loc.to_string(),
-                    region: cfg.region.clone(),
+                    region: Some(region.clone()),
                     endpoint: cfg.endpoint.clone(),
-                    access_key_id: cfg.access_key.clone(),
-                    secret_access_key: cfg.secret_key.clone(),
-                    session_token: cfg.session_token.clone(),
+                    access_key_id: Some(creds.access_key_id().to_string()),
+                    secret_access_key: Some(creds.secret_access_key().to_string()),
+                    session_token: creds.session_token().map(|t| t.to_string()),
                     virtual_hosted_style_request: Some(cfg.virtual_hosted),
                 }),
                 has_dest_sort_key: true,
@@ -548,11 +570,11 @@ fn s3_ingest_round_trip() {
                 parquet: ParquetSource::S3(S3Location {
                     bucket: cfg.bucket.clone(),
                     key: blocks_loc.to_string(),
-                    region: cfg.region.clone(),
+                    region: Some(region.clone()),
                     endpoint: cfg.endpoint.clone(),
-                    access_key_id: cfg.access_key.clone(),
-                    secret_access_key: cfg.secret_key.clone(),
-                    session_token: cfg.session_token.clone(),
+                    access_key_id: Some(creds.access_key_id().to_string()),
+                    secret_access_key: Some(creds.secret_access_key().to_string()),
+                    session_token: creds.session_token().map(|t| t.to_string()),
                     virtual_hosted_style_request: Some(cfg.virtual_hosted),
                 }),
                 has_dest_sort_key: false,

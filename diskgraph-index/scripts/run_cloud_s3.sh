@@ -8,16 +8,21 @@ if [[ "${RUN_CLOUD_TESTS:-}" != "1" ]]; then
 fi
 
 : "${S3_PREFIX:=s3://kumo-unit-test/diskgraph-index}"
-: "${S3_REGION:=us-east-1}"
 RUN_ID="run-$(date +%s)-$RANDOM"
 export S3_URL="${S3_PREFIX%/}/${RUN_ID}"
 export AWS_EC2_METADATA_DISABLED=true
-export AWS_REGION="${S3_REGION}"
 export AWS_SDK_LOAD_CONFIG=1
 # Prefer SSO/profile creds if provided; otherwise rely on default chain (with SSO cache).
 AWS_PROFILE_TO_USE="${S3_PROFILE:-${AWS_PROFILE:-}}"
 if [[ -n "${AWS_PROFILE_TO_USE}" ]]; then
   export AWS_PROFILE="${AWS_PROFILE_TO_USE}"
+else
+  # If no profile specified and there's exactly one non-default profile, use it.
+  mapfile -t AWS_PROFILES < <(aws configure list-profiles 2>/dev/null | grep -v '^default$' || true)
+  if [[ "${#AWS_PROFILES[@]}" -eq 1 ]]; then
+    export AWS_PROFILE="${AWS_PROFILES[0]}"
+    echo "No AWS_PROFILE provided; auto-selecting profile '${AWS_PROFILE}'."
+  fi
 fi
 
 echo "Using S3 URL=${S3_URL}"
