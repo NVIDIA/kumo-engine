@@ -1,5 +1,5 @@
 //! Integration tests for S3/GCS/ADLS ingest. These rely on external endpoints
-//! (either real clouds or emulators) provided via environment variables.
+//! provided via environment variables.
 //! Tests are skipped unless RUN_CLOUD_TESTS=1 is set and the necessary
 //! per-backend env vars are present.
 
@@ -34,6 +34,9 @@ struct S3Config {
     prefix: Option<String>,
     endpoint: Option<String>,
     region: Option<String>,
+    access_key: Option<String>,
+    secret_key: Option<String>,
+    session_token: Option<String>,
     virtual_hosted: bool,
     allow_http: bool,
 }
@@ -59,7 +62,6 @@ struct AdlsConfig {
     client_id: Option<String>,
     client_secret: Option<String>,
     tenant_id: Option<String>,
-    use_emulator: bool,
     prefix: Option<String>,
 }
 
@@ -291,37 +293,6 @@ fn join_prefix(prefix: &str, name: &str) -> String {
     }
 }
 
-/// Helper to upload to a fake GCS emulator using the JSON API (uploadType=media).
-fn upload_to_gcs_emulator(
-    rt: &Runtime,
-    endpoint: &str,
-    bucket: &str,
-    key: &str,
-    local_path: &std::path::Path,
-) {
-    let bytes = std::fs::read(local_path).expect("read local parquet");
-    let base = endpoint.trim_end_matches('/');
-    let url = format!(
-        "{}/upload/storage/v1/b/{}/o?uploadType=media&name={}",
-        base, bucket, key
-    );
-    rt.block_on(async {
-        let client = reqwest::Client::builder()
-            .danger_accept_invalid_certs(true)
-            .build()
-            .expect("build reqwest client");
-        client
-            .post(&url)
-            .header("Content-Type", "application/octet-stream")
-            .body(bytes)
-            .send()
-            .await
-            .expect("upload to fake GCS (ensure bucket exists and endpoint reachable)")
-            .error_for_status()
-            .expect("fake GCS upload returned error");
-    });
-}
-
 fn s3_config_from_env() -> Option<S3Config> {
     if std::env::var("RUN_CLOUD_TESTS").ok()?.as_str() != "1" {
         return None;
@@ -357,6 +328,9 @@ fn s3_config_from_env() -> Option<S3Config> {
         prefix,
         endpoint,
         region: std::env::var("S3_REGION").ok(),
+        access_key: std::env::var("S3_ACCESS_KEY").ok(),
+        secret_key: std::env::var("S3_SECRET_KEY").ok(),
+        session_token: std::env::var("S3_SESSION_TOKEN").ok(),
         virtual_hosted,
         allow_http,
     })
@@ -438,9 +412,6 @@ fn adls_config_from_env() -> Option<AdlsConfig> {
         client_id: std::env::var("AZURE_CLIENT_ID").ok(),
         client_secret: std::env::var("AZURE_CLIENT_SECRET").ok(),
         tenant_id: std::env::var("AZURE_TENANT_ID").ok(),
-        use_emulator: std::env::var("AZURE_USE_EMULATOR")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false),
     })
 }
 
@@ -487,16 +458,22 @@ fn s3_ingest_round_trip() {
     let mut builder = object_store::aws::AmazonS3Builder::new()
         .with_bucket_name(&cfg.bucket)
         .with_region(&region)
-        .with_access_key_id(creds.access_key_id())
-        .with_secret_access_key(creds.secret_access_key())
         .with_virtual_hosted_style_request(cfg.virtual_hosted)
         .with_allow_http(cfg.allow_http);
-    if let Some(token) = creds.session_token() {
+    if let Some(ak) = &cfg.access_key {
+        builder = builder.with_access_key_id(ak);
+    } else {
+        builder = builder.with_access_key_id(creds.access_key_id());
+    }
+    if let Some(sk) = &cfg.secret_key {
+        builder = builder.with_secret_access_key(sk);
+    } else {
+        builder = builder.with_secret_access_key(creds.secret_access_key());
+    }
+    if let Some(token) = cfg.session_token.as_deref().or(creds.session_token()) {
         builder = builder.with_token(token);
     }
-    if let Some(ep) = &cfg.endpoint {
-        builder = builder.with_endpoint(ep);
-    }
+    // Endpoint override is only supported for custom backends; for real GCS this is typically unset.
     let store: Arc<dyn ObjectStore> = Arc::new(
         builder
             .build()
@@ -544,9 +521,18 @@ fn s3_ingest_round_trip() {
                     key: node_loc.to_string(),
                     region: Some(region.clone()),
                     endpoint: cfg.endpoint.clone(),
-                    access_key_id: Some(creds.access_key_id().to_string()),
-                    secret_access_key: Some(creds.secret_access_key().to_string()),
-                    session_token: creds.session_token().map(|t| t.to_string()),
+                    access_key_id: cfg
+                        .access_key
+                        .clone()
+                        .or_else(|| Some(creds.access_key_id().to_string())),
+                    secret_access_key: cfg
+                        .secret_key
+                        .clone()
+                        .or_else(|| Some(creds.secret_access_key().to_string())),
+                    session_token: cfg
+                        .session_token
+                        .clone()
+                        .or_else(|| creds.session_token().map(|t| t.to_string())),
                     virtual_hosted_style_request: Some(cfg.virtual_hosted),
                 }),
             },
@@ -558,9 +544,18 @@ fn s3_ingest_round_trip() {
                     key: follows_loc.to_string(),
                     region: Some(region.clone()),
                     endpoint: cfg.endpoint.clone(),
-                    access_key_id: Some(creds.access_key_id().to_string()),
-                    secret_access_key: Some(creds.secret_access_key().to_string()),
-                    session_token: creds.session_token().map(|t| t.to_string()),
+                    access_key_id: cfg
+                        .access_key
+                        .clone()
+                        .or_else(|| Some(creds.access_key_id().to_string())),
+                    secret_access_key: cfg
+                        .secret_key
+                        .clone()
+                        .or_else(|| Some(creds.secret_access_key().to_string())),
+                    session_token: cfg
+                        .session_token
+                        .clone()
+                        .or_else(|| creds.session_token().map(|t| t.to_string())),
                     virtual_hosted_style_request: Some(cfg.virtual_hosted),
                 }),
                 has_dest_sort_key: true,
@@ -572,9 +567,18 @@ fn s3_ingest_round_trip() {
                     key: blocks_loc.to_string(),
                     region: Some(region.clone()),
                     endpoint: cfg.endpoint.clone(),
-                    access_key_id: Some(creds.access_key_id().to_string()),
-                    secret_access_key: Some(creds.secret_access_key().to_string()),
-                    session_token: creds.session_token().map(|t| t.to_string()),
+                    access_key_id: cfg
+                        .access_key
+                        .clone()
+                        .or_else(|| Some(creds.access_key_id().to_string())),
+                    secret_access_key: cfg
+                        .secret_key
+                        .clone()
+                        .or_else(|| Some(creds.secret_access_key().to_string())),
+                    session_token: cfg
+                        .session_token
+                        .clone()
+                        .or_else(|| creds.session_token().map(|t| t.to_string())),
                     virtual_hosted_style_request: Some(cfg.virtual_hosted),
                 }),
                 has_dest_sort_key: false,
@@ -615,16 +619,10 @@ fn gcs_ingest_round_trip() {
         builder = builder.with_service_account_key(sa_key);
     } else if let Some(app_creds) = &cfg.application_credentials_path {
         builder = builder.with_application_credentials(app_creds);
-    } else if let Some(ep) = &cfg.endpoint {
-        // For emulator: use a minimal service account blob that disables OAuth and points to the custom base URL.
-        let sa = format!(
-            r#"{{"private_key":"private_key","private_key_id":"fake","client_email":"fake@example.com","disable_oauth":true,"gcs_base_url":"{ep}"}}"#
-        );
-        builder = builder.with_service_account_key(sa);
     } else {
-        panic!("GCS_ENDPOINT must be set for gcs_ingest_round_trip (emulator or real endpoint)");
+        panic!("Provide GCS_SERVICE_ACCOUNT_PATH, GCS_SERVICE_ACCOUNT_KEY, or GCS_APPLICATION_CREDENTIALS_PATH");
     }
-    let _store: Arc<dyn ObjectStore> = Arc::new(
+    let store: Arc<dyn ObjectStore> = Arc::new(
         builder
             .build()
             .expect("failed to build GCS object store (check endpoint/creds)"),
@@ -646,16 +644,9 @@ fn gcs_ingest_round_trip() {
     let node_key = join_prefix(&prefix, "nodes.parquet");
     let follows_key = join_prefix(&prefix, "follows.parquet");
     let blocks_key = join_prefix(&prefix, "blocks.parquet");
-    let ep = cfg
-        .endpoint
-        .as_ref()
-        .expect("GCS_ENDPOINT must be set for emulator uploads");
-    upload_to_gcs_emulator(&rt, ep, &cfg.bucket, &node_key, &node_path);
-    upload_to_gcs_emulator(&rt, ep, &cfg.bucket, &follows_key, &follows_path);
-    upload_to_gcs_emulator(&rt, ep, &cfg.bucket, &blocks_key, &blocks_path);
-    let node_loc = ObjectPath::from(node_key);
-    let follows_loc = ObjectPath::from(follows_key);
-    let blocks_loc = ObjectPath::from(blocks_key);
+    let (_, node_loc) = upload_to_store(&rt, store.clone(), &node_key, &node_path);
+    let (_, follows_loc) = upload_to_store(&rt, store.clone(), &follows_key, &follows_path);
+    let (_, blocks_loc) = upload_to_store(&rt, store.clone(), &blocks_key, &blocks_path);
     let node_meta = node_meta("User", 1000);
     let relation_follows = relation_meta("Follows", "User", "User", Some(16));
     let relation_blocks = relation_meta("Blocks", "User", "User", None);
@@ -736,11 +727,10 @@ fn adls_ingest_round_trip() {
         .endpoint
         .as_deref()
         .map(|e| e.starts_with("http://"))
-        .unwrap_or(cfg.use_emulator);
+        .unwrap_or(false);
     let mut builder = object_store::azure::MicrosoftAzureBuilder::new()
         .with_account(&cfg.account)
         .with_container_name(&cfg.container)
-        .with_use_emulator(cfg.use_emulator)
         .with_allow_http(allow_http);
     if let Some(ep) = &cfg.endpoint {
         builder = builder.with_endpoint(ep.to_string());
@@ -816,7 +806,7 @@ fn adls_ingest_round_trip() {
                     client_secret: cfg.client_secret.clone(),
                     tenant_id: cfg.tenant_id.clone(),
                     endpoint: cfg.endpoint.clone(),
-                    use_emulator: Some(cfg.use_emulator),
+                    use_emulator: None,
                 }),
             },
             &[EdgeShardInput {
@@ -833,7 +823,7 @@ fn adls_ingest_round_trip() {
                     client_secret: cfg.client_secret.clone(),
                     tenant_id: cfg.tenant_id.clone(),
                     endpoint: cfg.endpoint.clone(),
-                    use_emulator: Some(cfg.use_emulator),
+                    use_emulator: None,
                 }),
                 has_dest_sort_key: true,
             }, EdgeShardInput {
@@ -850,7 +840,7 @@ fn adls_ingest_round_trip() {
                     client_secret: cfg.client_secret.clone(),
                     tenant_id: cfg.tenant_id.clone(),
                     endpoint: cfg.endpoint.clone(),
-                    use_emulator: Some(cfg.use_emulator),
+                    use_emulator: None,
                 }),
                 has_dest_sort_key: false,
             }],
