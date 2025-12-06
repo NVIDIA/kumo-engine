@@ -11,6 +11,7 @@ AZURITE_IMAGE="mcr.microsoft.com/azure-storage/azurite:3.29.0"
 MINIO_PORT=9000
 GCS_PORT=4443
 AZURITE_PORT=10000
+GCS_BUCKET="gcs-bucket"
 AZURITE_ACCOUNT="devstoreaccount1"
 AZURITE_ACCESS_KEY="Eby8vdM02xnoz0DU3+UEiFZdLFhCydS+z+EUz0MBAhc="
 AZURITE_CONTAINER="test-container"
@@ -41,6 +42,10 @@ echo "Starting fake-gcs-server..."
 docker run -d --name cloudtest-gcs -p ${GCS_PORT}:4443 \
   ${GCS_IMAGE} -scheme http >/dev/null
 sleep 3
+echo "Creating fake GCS bucket..."
+curl -s -X POST -H "Content-Type: application/json" \
+  -d "{\"name\":\"${GCS_BUCKET}\"}" \
+  "http://127.0.0.1:${GCS_PORT}/storage/v1/b?project=fake" >/dev/null
 
 # Start Azurite
 echo "Starting Azurite..."
@@ -68,9 +73,7 @@ export AWS_ALLOW_HTTP=true
 export S3_ALLOW_HTTP=1
 
 export GCS_BUCKET=gcs-bucket
-# fake-gcs-server only exposes http; cloud_ingest skips GCS unless https is provided.
-# Uncomment the next line if you have an https endpoint.
-# export GCS_ENDPOINT="https://127.0.0.1:${GCS_PORT}"
+export GCS_ENDPOINT="http://127.0.0.1:${GCS_PORT}"
 
 # ADLS/Azure test skipped by default; uncomment and set to enable.
 export AZURE_ACCOUNT=${AZURITE_ACCOUNT}

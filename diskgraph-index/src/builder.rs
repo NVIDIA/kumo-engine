@@ -21,12 +21,14 @@ use parquet::arrow::async_reader::{
 use parquet::file::metadata::ParquetMetaData;
 use parquet::file::reader::FileReader;
 use parquet::file::serialized_reader::SerializedFileReader;
+use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 use std::fs::{self, File};
 use std::io::{BufWriter, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 use tokio::runtime::Runtime;
 use tracing::info;
@@ -883,18 +885,62 @@ fn object_reader_from_source(source: &ParquetSource, rt: &Runtime) -> Result<Any
             Ok(AnyParquetReader::Store(reader))
         }
         ParquetSource::Gcs(cfg) => {
-            let mut builder = GoogleCloudStorageBuilder::new().with_bucket_name(&cfg.bucket);
+            // For emulator endpoints (http), fake-gcs-server speaks JSON API instead of the XML API the
+            // object_store client uses. Fetch the bytes directly via the JSON download API and read locally.
             if let Some(endpoint) = &cfg.endpoint {
-                builder = builder.with_url(endpoint);
+                if endpoint.starts_with("http") {
+                    let base = endpoint.trim_end_matches('/');
+                    let key_enc =
+                        utf8_percent_encode(&cfg.key, NON_ALPHANUMERIC).to_string();
+                    let url = format!(
+                        "{}/download/storage/v1/b/{}/o/{}?alt=media",
+                        base, cfg.bucket, key_enc
+                    );
+                    let client = reqwest::Client::builder()
+                        .danger_accept_invalid_certs(true)
+                        .build()
+                        .map_err(|e| IndexBuildError::ObjectStore(e.to_string()))?;
+                    let bytes = rt.block_on(async {
+                        let resp = client
+                            .get(&url)
+                            .send()
+                            .await
+                            .map_err(|e| IndexBuildError::ObjectStore(e.to_string()))?
+                            .error_for_status()
+                            .map_err(|e| IndexBuildError::ObjectStore(e.to_string()))?;
+                        resp.bytes()
+                            .await
+                            .map_err(|e| IndexBuildError::ObjectStore(e.to_string()))
+                    })?;
+                    let tmp_name = format!(
+                        "diskgraph_gcs_{}_{}_{}.parquet",
+                        cfg.bucket,
+                        cfg.key.replace('/', "_"),
+                        SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_nanos()
+                    );
+                    let tmp_path = std::env::temp_dir().join(tmp_name);
+                    fs::write(&tmp_path, &bytes)?;
+                    let reader =
+                        LocalParquetObjectReader::new(LocalAsyncFileReader { path: tmp_path });
+                    return Ok(AnyParquetReader::Local(reader));
+                }
             }
+
+            let mut builder = GoogleCloudStorageBuilder::new().with_bucket_name(&cfg.bucket);
             if let Some(sa_path) = &cfg.service_account_path {
                 builder = builder.with_service_account_path(sa_path);
-            }
-            if let Some(sa_key) = &cfg.service_account_key {
+            } else if let Some(sa_key) = &cfg.service_account_key {
                 builder = builder.with_service_account_key(sa_key);
-            }
-            if let Some(app_creds) = &cfg.application_credentials_path {
+            } else if let Some(app_creds) = &cfg.application_credentials_path {
                 builder = builder.with_application_credentials(app_creds);
+            } else if let Some(endpoint) = &cfg.endpoint {
+                let sa = format!(
+                    r#"{{"private_key":"private_key","private_key_id":"fake","client_email":"fake@example.com","disable_oauth":true,"gcs_base_url":"{endpoint}"}}"#
+                );
+                builder = builder.with_service_account_key(sa);
             }
             let store = builder
                 .build()

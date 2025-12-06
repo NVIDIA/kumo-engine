@@ -187,6 +187,37 @@ fn upload_to_store(
     (store, location)
 }
 
+/// Helper to upload to a fake GCS emulator using the JSON API (uploadType=media).
+fn upload_to_gcs_emulator(
+    rt: &Runtime,
+    endpoint: &str,
+    bucket: &str,
+    key: &str,
+    local_path: &std::path::Path,
+) {
+    let bytes = std::fs::read(local_path).expect("read local parquet");
+    let base = endpoint.trim_end_matches('/');
+    let url = format!(
+        "{}/upload/storage/v1/b/{}/o?uploadType=media&name={}",
+        base, bucket, key
+    );
+    rt.block_on(async {
+        let client = reqwest::Client::builder()
+            .danger_accept_invalid_certs(true)
+            .build()
+            .expect("build reqwest client");
+        client
+            .post(&url)
+            .header("Content-Type", "application/octet-stream")
+            .body(bytes)
+            .send()
+            .await
+            .expect("upload to fake GCS (ensure bucket exists and endpoint reachable)")
+            .error_for_status()
+            .expect("fake GCS upload returned error");
+    });
+}
+
 fn s3_config_from_env() -> Option<S3Config> {
     if std::env::var("RUN_CLOUD_TESTS").ok()?.as_str() != "1" {
         return None;
@@ -354,36 +385,34 @@ fn s3_ingest_round_trip() {
 
 #[test]
 fn gcs_ingest_round_trip() {
+    // If RUN_CLOUD_TESTS=1 is set but GCS_* vars are missing, fail fast
     let Some(cfg) = gcs_config_from_env() else {
-        eprintln!("skipping gcs_ingest_round_trip; set RUN_CLOUD_TESTS=1 and GCS_* env vars");
-        return;
+        if std::env::var("RUN_CLOUD_TESTS").ok().as_deref() == Some("1") {
+            panic!("RUN_CLOUD_TESTS=1 but GCS_* env vars not set; set at least GCS_BUCKET (and optionally GCS_ENDPOINT/creds)");
+        } else {
+            eprintln!("skipping gcs_ingest_round_trip; set RUN_CLOUD_TESTS=1 and GCS_* env vars");
+            return;
+        }
     };
-    if cfg
-        .endpoint
-        .as_deref()
-        .map(|e| e.starts_with("https"))
-        .unwrap_or(false)
-        == false
-    {
-        eprintln!("skipping gcs_ingest_round_trip; GCS_ENDPOINT must be https:// for the client");
-        return;
-    }
     let rt = Runtime::new().unwrap();
     let mut builder =
         object_store::gcp::GoogleCloudStorageBuilder::new().with_bucket_name(&cfg.bucket);
-    if let Some(ep) = &cfg.endpoint {
-        builder = builder.with_url(ep);
-    }
     if let Some(sa_path) = &cfg.service_account_path {
         builder = builder.with_service_account_path(sa_path);
-    }
-    if let Some(sa_key) = &cfg.service_account_key {
+    } else if let Some(sa_key) = &cfg.service_account_key {
         builder = builder.with_service_account_key(sa_key);
-    }
-    if let Some(app_creds) = &cfg.application_credentials_path {
+    } else if let Some(app_creds) = &cfg.application_credentials_path {
         builder = builder.with_application_credentials(app_creds);
+    } else if let Some(ep) = &cfg.endpoint {
+        // For emulator: use a minimal service account blob that disables OAuth and points to the custom base URL.
+        let sa = format!(
+            r#"{{"private_key":"private_key","private_key_id":"fake","client_email":"fake@example.com","disable_oauth":true,"gcs_base_url":"{ep}"}}"#
+        );
+        builder = builder.with_service_account_key(sa);
+    } else {
+        panic!("GCS_ENDPOINT must be set for gcs_ingest_round_trip (emulator or real endpoint)");
     }
-    let store: Arc<dyn ObjectStore> = Arc::new(
+    let _store: Arc<dyn ObjectStore> = Arc::new(
         builder
             .build()
             .expect("failed to build GCS object store (check endpoint/creds)"),
@@ -404,9 +433,16 @@ fn gcs_ingest_round_trip() {
     )
     .unwrap();
 
-    let (_s, node_loc) = upload_to_store(&rt, store.clone(), "nodes.parquet", &node_path);
-    let (_s2, edge_loc) = upload_to_store(&rt, store.clone(), "edges.parquet", &edge_path);
-
+    let node_key = "nodes.parquet".to_string();
+    let edge_key = "edges.parquet".to_string();
+    let ep = cfg
+        .endpoint
+        .as_ref()
+        .expect("GCS_ENDPOINT must be set for emulator uploads");
+    upload_to_gcs_emulator(&rt, ep, &cfg.bucket, &node_key, &node_path);
+    upload_to_gcs_emulator(&rt, ep, &cfg.bucket, &edge_key, &edge_path);
+    let node_loc = ObjectPath::from(node_key);
+    let edge_loc = ObjectPath::from(edge_key);
     let node_meta = node_meta("User", 100);
     let relation_meta = relation_meta("Follows", "User", "User", None);
     let out = dir.path().join("out");
