@@ -280,8 +280,12 @@ fn adls_config_from_env() -> Option<AdlsConfig> {
 #[test]
 fn s3_ingest_round_trip() {
     let Some(cfg) = s3_config_from_env() else {
-        eprintln!("skipping s3_ingest_round_trip; set RUN_CLOUD_TESTS=1 and S3_* env vars");
-        return;
+        if std::env::var("RUN_CLOUD_TESTS").ok().as_deref() == Some("1") {
+            panic!("RUN_CLOUD_TESTS=1 but S3_* env vars not set; set at least S3_BUCKET (and S3_ENDPOINT/creds for emulator or cloud)");
+        } else {
+            eprintln!("skipping s3_ingest_round_trip; set RUN_CLOUD_TESTS=1 and S3_* env vars");
+            return;
+        }
     };
     let rt = Runtime::new().unwrap();
     let mut builder = object_store::aws::AmazonS3Builder::new()
@@ -491,8 +495,12 @@ fn gcs_ingest_round_trip() {
 #[test]
 fn adls_ingest_round_trip() {
     let Some(cfg) = adls_config_from_env() else {
-        eprintln!("skipping adls_ingest_round_trip; set RUN_CLOUD_TESTS=1 and AZURE_* env vars");
-        return;
+        if std::env::var("RUN_CLOUD_TESTS").ok().as_deref() == Some("1") {
+            panic!("RUN_CLOUD_TESTS=1 but AZURE_* env vars not set; set AZURE_ACCOUNT, AZURE_CONTAINER, and either AZURE_ACCESS_KEY/SAS or emulator vars");
+        } else {
+            eprintln!("skipping adls_ingest_round_trip; set RUN_CLOUD_TESTS=1 and AZURE_* env vars");
+            return;
+        }
     };
     let rt = Runtime::new().unwrap();
     let allow_http = cfg
