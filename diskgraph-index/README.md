@@ -126,11 +126,6 @@ Steps:
 - `NodeEdgeStats`: total edges and bytes written for the shard.
 - `BuildStats`: nodes/edges ingested, nodes truncated, total truncated edges, per-relation truncation counts, and how many relation lists were capped at the varint limit. Returned from build for monitoring/alerting.
 
-## Cloud ingest tests
-Optional integration tests cover S3, GCS, and ADLS/Blob ingest via emulators (MinIO, fake-gcs-server, Azurite) using testcontainers. They are opt-in:
-- Build/run: `cargo test -p diskgraph-index --features cloud-ingest-tests -- --ignored`
-- Requires Docker running locally; tests will pull images for the emulators.
-
 ## Edge cases handled
 - Missing `dest_sort_key`: relation stores only `dst_id` with minimal bits.
 - Large fanout nodes: truncated to fit offset delta budget; truncation recorded.

@@ -1,4 +1,7 @@
-#![cfg(feature = "cloud-ingest-tests")]
+//! Integration tests for S3/GCS/ADLS ingest. These rely on external endpoints
+//! (either real clouds or emulators) provided via environment variables.
+//! Tests are skipped unless RUN_CLOUD_TESTS=1 is set and the necessary
+//! per-backend env vars are present.
 
 use std::sync::Arc;
 
@@ -17,6 +20,41 @@ struct EdgeRow {
     src: i64,
     dst: i64,
     dest_sort_key: Option<i64>,
+}
+
+#[derive(Debug, Clone)]
+struct S3Config {
+    bucket: String,
+    endpoint: Option<String>,
+    region: Option<String>,
+    access_key: Option<String>,
+    secret_key: Option<String>,
+    session_token: Option<String>,
+    virtual_hosted: bool,
+    allow_http: bool,
+}
+
+#[derive(Debug, Clone)]
+struct GcsConfig {
+    bucket: String,
+    endpoint: Option<String>,
+    service_account_path: Option<String>,
+    service_account_key: Option<String>,
+    application_credentials_path: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct AdlsConfig {
+    account: String,
+    container: String,
+    endpoint: Option<String>,
+    access_key: Option<String>,
+    sas_key: Option<String>,
+    bearer_token: Option<String>,
+    client_id: Option<String>,
+    client_secret: Option<String>,
+    tenant_id: Option<String>,
+    use_emulator: bool,
 }
 
 fn node_meta(name: &str, max_id: u64) -> diskgraph_core::metadata::NodeTypeMetadata {
@@ -144,16 +182,101 @@ fn upload_to_store(
         store
             .put(&location, bytes.into())
             .await
-            .expect("upload to store");
+            .expect("upload to store (ensure bucket/container exists and credentials are valid)");
     });
     (store, location)
 }
 
+fn s3_config_from_env() -> Option<S3Config> {
+    if std::env::var("RUN_CLOUD_TESTS").ok()?.as_str() != "1" {
+        return None;
+    }
+    let bucket = std::env::var("S3_BUCKET").ok()?;
+    let allow_http = std::env::var("S3_ALLOW_HTTP")
+        .or_else(|_| std::env::var("AWS_ALLOW_HTTP"))
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    Some(S3Config {
+        bucket,
+        endpoint: std::env::var("S3_ENDPOINT").ok(),
+        region: std::env::var("S3_REGION").ok(),
+        access_key: std::env::var("S3_ACCESS_KEY").ok(),
+        secret_key: std::env::var("S3_SECRET_KEY").ok(),
+        session_token: std::env::var("S3_SESSION_TOKEN").ok(),
+        virtual_hosted: std::env::var("S3_VIRTUAL_HOSTED")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false),
+        allow_http,
+    })
+}
+
+fn gcs_config_from_env() -> Option<GcsConfig> {
+    if std::env::var("RUN_CLOUD_TESTS").ok()?.as_str() != "1" {
+        return None;
+    }
+    let bucket = std::env::var("GCS_BUCKET").ok()?;
+    Some(GcsConfig {
+        bucket,
+        endpoint: std::env::var("GCS_ENDPOINT").ok(),
+        service_account_path: std::env::var("GCS_SERVICE_ACCOUNT_PATH").ok(),
+        service_account_key: std::env::var("GCS_SERVICE_ACCOUNT_KEY").ok(),
+        application_credentials_path: std::env::var("GCS_APPLICATION_CREDENTIALS_PATH").ok(),
+    })
+}
+
+fn adls_config_from_env() -> Option<AdlsConfig> {
+    if std::env::var("RUN_CLOUD_TESTS").ok()?.as_str() != "1" {
+        return None;
+    }
+    let account = std::env::var("AZURE_ACCOUNT").ok()?;
+    let container = std::env::var("AZURE_CONTAINER").ok()?;
+    Some(AdlsConfig {
+        account,
+        container,
+        endpoint: std::env::var("AZURE_ENDPOINT").ok(),
+        access_key: std::env::var("AZURE_ACCESS_KEY").ok(),
+        sas_key: std::env::var("AZURE_SAS_KEY").ok(),
+        bearer_token: std::env::var("AZURE_BEARER_TOKEN").ok(),
+        client_id: std::env::var("AZURE_CLIENT_ID").ok(),
+        client_secret: std::env::var("AZURE_CLIENT_SECRET").ok(),
+        tenant_id: std::env::var("AZURE_TENANT_ID").ok(),
+        use_emulator: std::env::var("AZURE_USE_EMULATOR")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false),
+    })
+}
+
 #[test]
 fn s3_ingest_round_trip() {
+    let Some(cfg) = s3_config_from_env() else {
+        eprintln!("skipping s3_ingest_round_trip; set RUN_CLOUD_TESTS=1 and S3_* env vars");
+        return;
+    };
     let rt = Runtime::new().unwrap();
-    // Use in-memory object store to exercise the object-store reader without Docker.
-    let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+    let mut builder = object_store::aws::AmazonS3Builder::new()
+        .with_bucket_name(&cfg.bucket)
+        .with_virtual_hosted_style_request(cfg.virtual_hosted)
+        .with_allow_http(cfg.allow_http);
+    if let Some(ep) = &cfg.endpoint {
+        builder = builder.with_endpoint(ep);
+    }
+    if let Some(region) = &cfg.region {
+        builder = builder.with_region(region);
+    }
+    if let Some(ak) = &cfg.access_key {
+        builder = builder.with_access_key_id(ak);
+    }
+    if let Some(sk) = &cfg.secret_key {
+        builder = builder.with_secret_access_key(sk);
+    }
+    if let Some(token) = &cfg.session_token {
+        builder = builder.with_token(token);
+    }
+    let store: Arc<dyn ObjectStore> = Arc::new(
+        builder
+            .build()
+            .expect("failed to build S3 object store (check endpoint/creds)"),
+    );
 
     let dir = tempdir().unwrap();
     let node_path = dir.path().join("nodes.parquet");
@@ -195,22 +318,34 @@ fn s3_ingest_round_trip() {
             &NodeShardInput {
                 node_type: "User".into(),
                 shard_index: 0,
-                parquet: ParquetSource::InMemory {
-                    store: store.clone(),
-                    location: node_loc,
-                },
+                parquet: ParquetSource::S3(S3Location {
+                    bucket: cfg.bucket.clone(),
+                    key: node_loc.to_string(),
+                    region: cfg.region.clone(),
+                    endpoint: cfg.endpoint.clone(),
+                    access_key_id: cfg.access_key.clone(),
+                    secret_access_key: cfg.secret_key.clone(),
+                    session_token: cfg.session_token.clone(),
+                    virtual_hosted_style_request: Some(cfg.virtual_hosted),
+                }),
             },
             &[EdgeShardInput {
                 relation: "Follows".into(),
                 source_shard_index: 0,
-                parquet: ParquetSource::InMemory {
-                    store: store.clone(),
-                    location: edge_loc,
-                },
+                parquet: ParquetSource::S3(S3Location {
+                    bucket: cfg.bucket.clone(),
+                    key: edge_loc.to_string(),
+                    region: cfg.region.clone(),
+                    endpoint: cfg.endpoint.clone(),
+                    access_key_id: cfg.access_key.clone(),
+                    secret_access_key: cfg.secret_key.clone(),
+                    session_token: cfg.session_token.clone(),
+                    virtual_hosted_style_request: Some(cfg.virtual_hosted),
+                }),
                 has_dest_sort_key: false,
             }],
         )
-        .unwrap();
+        .expect("S3 build");
 
     let reader = ShardReader::open(&out, built.layouts.clone()).unwrap();
     let decoded = decode_relation(&reader, 0, 0);
@@ -219,8 +354,40 @@ fn s3_ingest_round_trip() {
 
 #[test]
 fn gcs_ingest_round_trip() {
+    let Some(cfg) = gcs_config_from_env() else {
+        eprintln!("skipping gcs_ingest_round_trip; set RUN_CLOUD_TESTS=1 and GCS_* env vars");
+        return;
+    };
+    if cfg
+        .endpoint
+        .as_deref()
+        .map(|e| e.starts_with("https"))
+        .unwrap_or(false)
+        == false
+    {
+        eprintln!("skipping gcs_ingest_round_trip; GCS_ENDPOINT must be https:// for the client");
+        return;
+    }
     let rt = Runtime::new().unwrap();
-    let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+    let mut builder =
+        object_store::gcp::GoogleCloudStorageBuilder::new().with_bucket_name(&cfg.bucket);
+    if let Some(ep) = &cfg.endpoint {
+        builder = builder.with_url(ep);
+    }
+    if let Some(sa_path) = &cfg.service_account_path {
+        builder = builder.with_service_account_path(sa_path);
+    }
+    if let Some(sa_key) = &cfg.service_account_key {
+        builder = builder.with_service_account_key(sa_key);
+    }
+    if let Some(app_creds) = &cfg.application_credentials_path {
+        builder = builder.with_application_credentials(app_creds);
+    }
+    let store: Arc<dyn ObjectStore> = Arc::new(
+        builder
+            .build()
+            .expect("failed to build GCS object store (check endpoint/creds)"),
+    );
 
     let dir = tempdir().unwrap();
     let node_path = dir.path().join("nodes.parquet");
@@ -255,22 +422,31 @@ fn gcs_ingest_round_trip() {
             &NodeShardInput {
                 node_type: "User".into(),
                 shard_index: 0,
-                parquet: ParquetSource::InMemory {
-                    store: store.clone(),
-                    location: node_loc,
-                },
+                parquet: ParquetSource::Gcs(GcsLocation {
+                    bucket: cfg.bucket.clone(),
+                    key: node_loc.to_string(),
+                    service_account_path: cfg.service_account_path.clone(),
+                    service_account_key: cfg.service_account_key.clone(),
+                    application_credentials_path: cfg.application_credentials_path.clone(),
+                    endpoint: cfg.endpoint.clone(),
+                }),
             },
             &[EdgeShardInput {
                 relation: "Follows".into(),
                 source_shard_index: 0,
-                parquet: ParquetSource::InMemory {
-                    store: store.clone(),
-                    location: edge_loc,
-                },
+                parquet: ParquetSource::Gcs(GcsLocation {
+                    bucket: cfg.bucket.clone(),
+                    key: edge_loc.to_string(),
+                    service_account_path: cfg.service_account_path.clone(),
+                    service_account_key: cfg.service_account_key.clone(),
+                    application_credentials_path: cfg.application_credentials_path.clone(),
+                    endpoint: cfg.endpoint.clone(),
+                }),
                 has_dest_sort_key: false,
             }],
         )
-        .unwrap();
+        .expect("GCS build");
+
     let reader = ShardReader::open(&out, built.layouts.clone()).unwrap();
     let decoded = decode_relation(&reader, 0, 0);
     assert_eq!(decoded, vec![(42, None)]);
@@ -278,8 +454,47 @@ fn gcs_ingest_round_trip() {
 
 #[test]
 fn adls_ingest_round_trip() {
+    let Some(cfg) = adls_config_from_env() else {
+        eprintln!("skipping adls_ingest_round_trip; set RUN_CLOUD_TESTS=1 and AZURE_* env vars");
+        return;
+    };
     let rt = Runtime::new().unwrap();
-    let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+    let allow_http = cfg
+        .endpoint
+        .as_deref()
+        .map(|e| e.starts_with("http://"))
+        .unwrap_or(cfg.use_emulator);
+    let mut builder = object_store::azure::MicrosoftAzureBuilder::new()
+        .with_account(&cfg.account)
+        .with_container_name(&cfg.container)
+        .with_use_emulator(cfg.use_emulator)
+        .with_allow_http(allow_http);
+    if let Some(ep) = &cfg.endpoint {
+        builder = builder.with_endpoint(ep.to_string());
+    }
+    if let Some(access_key) = &cfg.access_key {
+        builder = builder.with_access_key(access_key);
+    }
+    if let Some(sas) = &cfg.sas_key {
+        builder = builder.with_config(object_store::azure::AzureConfigKey::SasKey, sas);
+    }
+    if let Some(bearer) = &cfg.bearer_token {
+        builder = builder.with_bearer_token_authorization(bearer);
+    }
+    if let Some(client_id) = &cfg.client_id {
+        builder = builder.with_client_id(client_id);
+    }
+    if let Some(client_secret) = &cfg.client_secret {
+        builder = builder.with_client_secret(client_secret);
+    }
+    if let Some(tenant_id) = &cfg.tenant_id {
+        builder = builder.with_tenant_id(tenant_id);
+    }
+    let store: Arc<dyn ObjectStore> = Arc::new(
+        builder
+            .build()
+            .expect("failed to build Azure object store (check endpoint/creds)"),
+    );
 
     let dir = tempdir().unwrap();
     let node_path = dir.path().join("nodes.parquet");
@@ -314,22 +529,40 @@ fn adls_ingest_round_trip() {
             &NodeShardInput {
                 node_type: "User".into(),
                 shard_index: 0,
-                parquet: ParquetSource::InMemory {
-                    store: store.clone(),
-                    location: node_loc,
-                },
+                parquet: ParquetSource::Adls(AdlsLocation {
+                    account: cfg.account.clone(),
+                    container: cfg.container.clone(),
+                    key: node_loc.to_string(),
+                    access_key: cfg.access_key.clone(),
+                    sas_key: cfg.sas_key.clone(),
+                    bearer_token: cfg.bearer_token.clone(),
+                    client_id: cfg.client_id.clone(),
+                    client_secret: cfg.client_secret.clone(),
+                    tenant_id: cfg.tenant_id.clone(),
+                    endpoint: cfg.endpoint.clone(),
+                    use_emulator: Some(cfg.use_emulator),
+                }),
             },
             &[EdgeShardInput {
                 relation: "Follows".into(),
                 source_shard_index: 0,
-                parquet: ParquetSource::InMemory {
-                    store: store.clone(),
-                    location: edge_loc,
-                },
+                parquet: ParquetSource::Adls(AdlsLocation {
+                    account: cfg.account.clone(),
+                    container: cfg.container.clone(),
+                    key: edge_loc.to_string(),
+                    access_key: cfg.access_key.clone(),
+                    sas_key: cfg.sas_key.clone(),
+                    bearer_token: cfg.bearer_token.clone(),
+                    client_id: cfg.client_id.clone(),
+                    client_secret: cfg.client_secret.clone(),
+                    tenant_id: cfg.tenant_id.clone(),
+                    endpoint: cfg.endpoint.clone(),
+                    use_emulator: Some(cfg.use_emulator),
+                }),
                 has_dest_sort_key: false,
             }],
         )
-        .unwrap();
+        .expect("ADLS build");
 
     let reader = ShardReader::open(&out, built.layouts.clone()).unwrap();
     let decoded = decode_relation(&reader, 1, 0);

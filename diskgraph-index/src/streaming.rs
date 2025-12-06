@@ -1,21 +1,31 @@
 use std::path::PathBuf;
-use std::sync::Arc;
 
-/// Abstraction over input Parquet sources. This will later support remote
-/// object storage; for now, it captures a local path for streaming reads.
+/// Abstraction over input Parquet sources. This supports local files and remote
+/// object storage backends.
 #[derive(Debug, Clone)]
 pub enum ParquetSource {
     LocalFile(PathBuf),
     S3(S3Location),
     Gcs(GcsLocation),
     Adls(AdlsLocation),
-    /// Test-only in-memory object store location to exercise the object-store reader
-    /// without external dependencies.
-    InMemory {
-        store: Arc<dyn object_store::ObjectStore>,
-        location: object_store::path::Path,
-    },
-    // Future: in-memory buffers, etc.
+}
+
+/// Edge shard input bundle for a single source node shard.
+#[derive(Debug, Clone)]
+pub struct EdgeShardInput {
+    pub relation: String,
+    pub source_shard_index: usize,
+    pub parquet: ParquetSource,
+    /// Whether this edge shard carries dest_sort_key in its schema.
+    pub has_dest_sort_key: bool,
+}
+
+/// Node shard input bundle.
+#[derive(Debug, Clone)]
+pub struct NodeShardInput {
+    pub node_type: String,
+    pub shard_index: usize,
+    pub parquet: ParquetSource,
 }
 
 /// S3 location and optional configuration for fetching Parquet.
@@ -56,22 +66,4 @@ pub struct AdlsLocation {
     pub tenant_id: Option<String>,
     pub endpoint: Option<String>,
     pub use_emulator: Option<bool>,
-}
-
-/// Edge shard input bundle for a single source node shard.
-#[derive(Debug, Clone)]
-pub struct EdgeShardInput {
-    pub relation: String,
-    pub source_shard_index: usize,
-    pub parquet: ParquetSource,
-    /// Whether this edge shard carries dest_sort_key in its schema.
-    pub has_dest_sort_key: bool,
-}
-
-/// Node shard input bundle.
-#[derive(Debug, Clone)]
-pub struct NodeShardInput {
-    pub node_type: String,
-    pub shard_index: usize,
-    pub parquet: ParquetSource,
 }

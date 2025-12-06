@@ -858,6 +858,9 @@ fn object_reader_from_source(source: &ParquetSource, rt: &Runtime) -> Result<Any
             }
             if let Some(endpoint) = &cfg.endpoint {
                 builder = builder.with_endpoint(endpoint);
+                if endpoint.starts_with("http://") {
+                    builder = builder.with_allow_http(true);
+                }
             }
             if let Some(ak) = &cfg.access_key_id {
                 builder = builder.with_access_key_id(ak);
@@ -941,13 +944,6 @@ fn object_reader_from_source(source: &ParquetSource, rt: &Runtime) -> Result<Any
                 .block_on(store.head(&location))
                 .map_err(|e| IndexBuildError::ObjectStore(e.to_string()))?;
             let reader = StoreParquetObjectReader::new(store, meta);
-            Ok(AnyParquetReader::Store(reader))
-        }
-        ParquetSource::InMemory { store, location } => {
-            let meta = rt
-                .block_on(store.head(location))
-                .map_err(|e| IndexBuildError::ObjectStore(e.to_string()))?;
-            let reader = StoreParquetObjectReader::new(store.clone(), meta);
             Ok(AnyParquetReader::Store(reader))
         }
     }
