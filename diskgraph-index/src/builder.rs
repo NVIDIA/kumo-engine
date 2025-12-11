@@ -17,6 +17,7 @@ use parquet::arrow::async_reader::{
     AsyncFileReader, ParquetObjectReader as StoreParquetObjectReader,
     ParquetRecordBatchStreamBuilder,
 };
+use parquet::arrow::arrow_reader::ArrowReaderOptions;
 use parquet::file::metadata::ParquetMetaData;
 use parquet::file::reader::FileReader;
 use parquet::file::serialized_reader::SerializedFileReader;
@@ -869,10 +870,7 @@ fn object_reader_from_source(source: &ParquetSource, rt: &Runtime) -> Result<Any
             .map_err(|e| IndexBuildError::ObjectStore(e.to_string()))?;
             let store: Arc<dyn ObjectStore> = s3.store;
             let location = ObjectPath::from(cfg.key.clone());
-            let meta = rt
-                .block_on(store.head(&location))
-                .map_err(|e| IndexBuildError::ObjectStore(e.to_string()))?;
-            let reader = StoreParquetObjectReader::new(store, meta);
+            let reader = StoreParquetObjectReader::new(store, location);
             Ok(AnyParquetReader::Store(reader))
         }
         ParquetSource::Gcs(cfg) => {
@@ -938,10 +936,7 @@ fn object_reader_from_source(source: &ParquetSource, rt: &Runtime) -> Result<Any
                 .map_err(|e| IndexBuildError::ObjectStore(e.to_string()))?;
             let store: Arc<dyn ObjectStore> = Arc::new(store);
             let location = ObjectPath::from(cfg.key.clone());
-            let meta = rt
-                .block_on(store.head(&location))
-                .map_err(|e| IndexBuildError::ObjectStore(e.to_string()))?;
-            let reader = StoreParquetObjectReader::new(store, meta);
+            let reader = StoreParquetObjectReader::new(store, location);
             Ok(AnyParquetReader::Store(reader))
         }
         ParquetSource::Adls(cfg) => {
@@ -977,10 +972,7 @@ fn object_reader_from_source(source: &ParquetSource, rt: &Runtime) -> Result<Any
                 .map_err(|e| IndexBuildError::ObjectStore(e.to_string()))?;
             let store: Arc<dyn ObjectStore> = Arc::new(store);
             let location = ObjectPath::from(cfg.key.clone());
-            let meta = rt
-                .block_on(store.head(&location))
-                .map_err(|e| IndexBuildError::ObjectStore(e.to_string()))?;
-            let reader = StoreParquetObjectReader::new(store, meta);
+            let reader = StoreParquetObjectReader::new(store, location);
             Ok(AnyParquetReader::Store(reader))
         }
     }
@@ -992,18 +984,19 @@ enum AnyParquetReader {
 }
 
 impl AsyncFileReader for AnyParquetReader {
-    fn get_metadata(
-        &mut self,
-    ) -> BoxFuture<'_, parquet::errors::Result<std::sync::Arc<ParquetMetaData>>> {
+    fn get_metadata<'a>(
+        &'a mut self,
+        options: Option<&'a ArrowReaderOptions>,
+    ) -> BoxFuture<'a, parquet::errors::Result<std::sync::Arc<ParquetMetaData>>> {
         match self {
-            AnyParquetReader::Local(r) => r.get_metadata(),
-            AnyParquetReader::Store(r) => r.get_metadata(),
+            AnyParquetReader::Local(r) => r.get_metadata(options),
+            AnyParquetReader::Store(r) => r.get_metadata(options),
         }
     }
 
     fn get_byte_ranges(
         &mut self,
-        ranges: Vec<std::ops::Range<usize>>,
+        ranges: Vec<std::ops::Range<u64>>,
     ) -> BoxFuture<'_, parquet::errors::Result<Vec<Bytes>>> {
         match self {
             AnyParquetReader::Local(r) => r.get_byte_ranges(ranges),
@@ -1013,7 +1006,7 @@ impl AsyncFileReader for AnyParquetReader {
 
     fn get_bytes(
         &mut self,
-        range: std::ops::Range<usize>,
+        range: std::ops::Range<u64>,
     ) -> BoxFuture<'_, parquet::errors::Result<Bytes>> {
         match self {
             AnyParquetReader::Local(r) => r.get_bytes(range),
@@ -1033,9 +1026,10 @@ impl LocalParquetObjectReader {
 }
 
 impl AsyncFileReader for LocalParquetObjectReader {
-    fn get_metadata(
-        &mut self,
-    ) -> BoxFuture<'_, parquet::errors::Result<std::sync::Arc<ParquetMetaData>>> {
+    fn get_metadata<'a>(
+        &'a mut self,
+        _options: Option<&'a ArrowReaderOptions>,
+    ) -> BoxFuture<'a, parquet::errors::Result<std::sync::Arc<ParquetMetaData>>> {
         let path = self.inner.path.clone();
         Box::pin(async move {
             let meta = tokio::task::spawn_blocking(move || {
@@ -1051,15 +1045,18 @@ impl AsyncFileReader for LocalParquetObjectReader {
 
     fn get_bytes(
         &mut self,
-        range: std::ops::Range<usize>,
+        range: std::ops::Range<u64>,
     ) -> BoxFuture<'_, parquet::errors::Result<Bytes>> {
         let path = self.inner.path.clone();
         Box::pin(async move {
             let buf = tokio::task::spawn_blocking(move || {
                 let mut f = std::fs::File::open(&path)?;
                 use std::io::{Read, Seek, SeekFrom};
-                f.seek(SeekFrom::Start(range.start as u64))?;
-                let mut buf = vec![0u8; range.end - range.start];
+                f.seek(SeekFrom::Start(range.start))?;
+                let len: usize = (range.end - range.start)
+                    .try_into()
+                    .map_err(|_| parquet::errors::ParquetError::General("range too large".into()))?;
+                let mut buf = vec![0u8; len];
                 f.read_exact(&mut buf)?;
                 Ok::<_, parquet::errors::ParquetError>(buf)
             })
@@ -1071,7 +1068,7 @@ impl AsyncFileReader for LocalParquetObjectReader {
 
     fn get_byte_ranges(
         &mut self,
-        ranges: Vec<std::ops::Range<usize>>,
+        ranges: Vec<std::ops::Range<u64>>,
     ) -> BoxFuture<'_, parquet::errors::Result<Vec<Bytes>>> {
         let path = self.inner.path.clone();
         Box::pin(async move {
@@ -1080,8 +1077,11 @@ impl AsyncFileReader for LocalParquetObjectReader {
                 for range in ranges {
                     let mut f = std::fs::File::open(&path)?;
                     use std::io::{Read, Seek, SeekFrom};
-                    f.seek(SeekFrom::Start(range.start as u64))?;
-                    let mut buf = vec![0u8; range.end - range.start];
+                    f.seek(SeekFrom::Start(range.start))?;
+                    let len: usize = (range.end - range.start).try_into().map_err(|_| {
+                        parquet::errors::ParquetError::General("range too large".into())
+                    })?;
+                    let mut buf = vec![0u8; len];
                     f.read_exact(&mut buf)?;
                     out.push(Bytes::from(buf));
                 }

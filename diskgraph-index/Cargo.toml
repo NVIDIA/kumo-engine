@@ -13,9 +13,9 @@ anyhow = { workspace = true }
 bytes = { workspace = true }
 diskgraph-core = { path = "../diskgraph-core" }
 memmap2 = "0.9"
-parquet = { version = "51", features = ["arrow", "async", "object_store"] }
-arrow-array = "51"
-arrow-schema = "51"
+parquet = { version = "57.1.0", features = ["arrow", "async", "object_store"] }
+arrow-array = "57.1.0"
+arrow-schema = "57.1.0"
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -25,7 +25,7 @@ bincode = "1.3"
 tokio = { workspace = true, features = ["fs", "rt-multi-thread"] }
 tokio-util = { version = "0.7", features = ["compat"] }
 futures = { workspace = true }
-object_store = { version = "0.9", features = ["aws", "gcp", "azure"] }
+object_store = { version = "0.12.4", features = ["aws", "gcp", "azure"] }
 reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls"] }
 percent-encoding = "2"
 rustyline = "12"

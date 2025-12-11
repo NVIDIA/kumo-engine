@@ -9,12 +9,12 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-arrow-array = "51"
-arrow-schema = "51"
+arrow-array = "57.1.0"
+arrow-schema = "57.1.0"
 clap = { version = "4.4", features = ["derive"] }
 diskgraph-core = { path = "../diskgraph-core" }
 diskgraph-fs = { path = "../diskgraph-fs" }
-parquet = { version = "51", features = ["arrow"] }
+parquet = { version = "57.1.0", features = ["arrow"] }
 rand = "0.8"
 seahash = "4.1"
 anyhow = { workspace = true }
@@ -22,7 +22,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-object_store = { version = "0.9", default-features = false, features = ["aws", "gcp", "azure"] }
+object_store = { version = "0.12.4", default-features = false, features = ["aws", "gcp", "azure"] }
 url = "2"
 bytes = "1"
 tokio = { version = "1", features = ["rt-multi-thread"] }

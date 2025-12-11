@@ -21,6 +21,7 @@ use diskgraph_core::metadata::{
 use diskgraph_fs::{
     build_adls_client, build_gcs_client, build_s3_client, AdlsConfig, GcsConfig, S3Config,
 };
+use object_store::WriteMultipart;
 use object_store::{path::Path as ObjectPath, ObjectStore};
 use parquet::arrow::ArrowWriter;
 use parquet::file::properties::WriterProperties;
@@ -547,13 +548,15 @@ impl OutputTarget {
                 ..
             } => {
                 let obj = ObjectPath::from(path.to_string_lossy().to_string());
-                let (_id, writer) =
-                    rt.block_on(store.put_multipart(&obj)).map_err(to_io_err)?;
+                let upload = rt
+                    .block_on(store.put_multipart(&obj))
+                    .map_err(to_io_err)?;
                 Ok(Box::new(S3Sink {
-                    writer,
+                    writer: Some(WriteMultipart::new_with_chunk_size(
+                        upload,
+                        *part_size,
+                    )),
                     rt: rt.clone(),
-                    buf: Vec::with_capacity(*part_size),
-                    part_size: *part_size,
                 }))
             }
         }
@@ -618,48 +621,37 @@ impl OutputTarget {
 }
 
 struct S3Sink {
-    writer: Box<dyn tokio::io::AsyncWrite + Unpin + Send>,
+    writer: Option<WriteMultipart>,
     rt: Arc<Runtime>,
-    buf: Vec<u8>,
-    part_size: usize,
 }
 
 impl Write for S3Sink {
     fn write(&mut self, data: &[u8]) -> io::Result<usize> {
-        self.buf.extend_from_slice(data);
-        if self.buf.len() >= self.part_size {
-            self.flush()?;
+        if let Some(writer) = self.writer.as_mut() {
+            writer.write(data);
         }
         Ok(data.len())
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        if self.buf.is_empty() {
-            return Ok(());
+        // Ensure in-flight parts have progressed; does not force a partial chunk upload.
+        if let Some(writer) = self.writer.as_mut() {
+            self.rt
+                .block_on(writer.wait_for_capacity(0))
+                .map_err(to_io_err)?;
         }
-        let bytes = std::mem::take(&mut self.buf);
-        self.rt
-            .block_on(tokio::io::AsyncWriteExt::write_all(
-                &mut self.writer,
-                &bytes,
-            ))
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-        self.rt
-            .block_on(tokio::io::AsyncWriteExt::flush(&mut self.writer))
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
         Ok(())
     }
 }
 
 impl Drop for S3Sink {
     fn drop(&mut self) {
-        if let Err(err) = self.flush() {
-            eprintln!("S3Sink flush error on drop: {err}");
-            return;
+        if let Some(writer) = self.writer.take() {
+            let writer = writer;
+            if let Err(err) = self.rt.block_on(writer.finish()) {
+                eprintln!("S3Sink finish error on drop: {err}");
+            }
         }
-        let _ = self
-            .rt
-            .block_on(tokio::io::AsyncWriteExt::shutdown(&mut self.writer));
     }
 }
 
