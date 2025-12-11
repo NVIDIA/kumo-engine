@@ -8,7 +8,7 @@ use arrow_array::{ArrayRef, Int64Array};
 use arrow_schema::SchemaRef;
 use bytes::Bytes;
 use diskgraph_core::metadata::{EdgeRelationMetadata, NodeTypeMetadata};
-use futures::{future::BoxFuture, stream::BoxStream, StreamExt};
+use futures::{future::BoxFuture, StreamExt};
 use object_store::azure::{AzureConfigKey, MicrosoftAzureBuilder};
 use object_store::gcp::GoogleCloudStorageBuilder;
 use object_store::path::Path as ObjectPath;
@@ -25,6 +25,7 @@ use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use serde_json;
 use serde::Serialize;
 use diskgraph_fs::{build_s3_client, S3Config as FsS3Config};
+use std::sync::mpsc::{self, Receiver};
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 use std::fs::{self, File};
@@ -35,11 +36,15 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 use tokio::runtime::Runtime;
 use tracing::info;
+use object_store::chunked::ChunkedStore;
 
 /// Hard cap on edges per relation for a single node to keep varint encoding small.
 /// Compact varint supports up to 14 bits (0x3FFF). We cap relation edge lists
 /// at that limit to guarantee counts fit the encoding without overflow.
 const MAX_RELATION_EDGE_COUNT: usize = 0x3FFF;
+
+type PrefetchBatch =
+    std::result::Result<Option<arrow_array::RecordBatch>, parquet::errors::ParquetError>;
 
 #[derive(Debug, Error)]
 pub enum IndexBuildError {
@@ -555,31 +560,47 @@ pub(crate) struct EdgeRec {
 }
 
 struct NodeStream {
-    stream: BoxStream<'static, parquet::errors::Result<arrow_array::RecordBatch>>,
     _schema: SchemaRef,
     current_batch: Option<arrow_array::RecordBatch>,
     idx_in_batch: usize,
     id_col_idx: usize,
-    rt: Arc<Runtime>,
+    rx: Receiver<PrefetchBatch>,
 }
 
 impl NodeStream {
     fn try_new(rt: Arc<Runtime>, node_shard: &NodeShardInput) -> Result<Self> {
         let reader = object_reader_from_source(&node_shard.parquet, &rt)?;
-        let (stream, schema) = rt.block_on(async move {
+        let (tx, rx) = mpsc::sync_channel(32);
+        let schema = rt.block_on(async move {
             let mut builder = ParquetRecordBatchStreamBuilder::new(reader).await?;
-            builder = builder.with_batch_size(8192);
+            builder = builder.with_batch_size(256_000);
             let stream = builder.build()?;
             let schema = stream.schema().clone();
-            Ok::<_, parquet::errors::ParquetError>((stream, schema))
+            tokio::spawn(async move {
+                futures::pin_mut!(stream);
+                while let Some(item) = stream.next().await {
+                    match item {
+                        Ok(batch) => {
+                            if tx.send(Ok(Some(batch))).is_err() {
+                                return;
+                            }
+                        }
+                        Err(e) => {
+                            let _ = tx.send(Err(e));
+                            return;
+                        }
+                    }
+                }
+                let _ = tx.send(Ok(None));
+            });
+            Ok::<_, parquet::errors::ParquetError>(schema)
         })?;
         Ok(Self {
-            stream: Box::pin(stream),
             _schema: schema,
             current_batch: None,
             idx_in_batch: 0,
             id_col_idx: 0, // initialized when first batch arrives
-            rt,
+            rx,
         })
     }
 
@@ -597,24 +618,32 @@ impl NodeStream {
                     return Ok(Some(val));
                 }
             }
-            match self.rt.block_on(self.stream.next()) {
-                Some(Ok(batch)) => {
-                    self.id_col_idx = batch
-                        .schema()
-                        .index_of("id")
-                        .map_err(|_| IndexBuildError::InvalidColumn("id"))?;
+            match self.rx.recv() {
+                Ok(Ok(Some(batch))) => {
+                    if self.idx_in_batch == 0 && self.current_batch.is_none() {
+                        // On first batch, cache column index to avoid repeated schema lookups.
+                        self.id_col_idx = batch
+                            .schema()
+                            .index_of("id")
+                            .map_err(|_| IndexBuildError::InvalidColumn("id"))?;
+                    }
                     self.current_batch = Some(batch);
                     self.idx_in_batch = 0;
                 }
-                Some(Err(e)) => return Err(e.into()),
-                None => return Ok(None),
+                Ok(Ok(None)) => return Ok(None),
+                Ok(Err(e)) => return Err(e.into()),
+                Err(_) => return Err(IndexBuildError::Parquet(
+                    parquet::errors::ParquetError::General(
+                        "prefetch channel closed".to_string(),
+                    ),
+                )
+                .into()),
             }
         }
     }
 }
 
 struct EdgeSubStream {
-    stream: BoxStream<'static, parquet::errors::Result<arrow_array::RecordBatch>>,
     _schema: SchemaRef,
     batch: Option<arrow_array::RecordBatch>,
     idx_in_batch: usize,
@@ -626,7 +655,7 @@ struct EdgeSubStream {
     current_src: Option<Int64Array>,
     current_dst: Option<Int64Array>,
     current_sort: Option<Int64Array>,
-    rt: Arc<Runtime>,
+    rx: Receiver<PrefetchBatch>,
 }
 
 impl EdgeSubStream {
@@ -637,15 +666,32 @@ impl EdgeSubStream {
         dest_sort_key_bits: Option<u8>,
     ) -> Result<Self> {
         let reader = object_reader_from_source(&input.parquet, &rt)?;
-        let (stream, schema) = rt.block_on(async move {
+        let (tx, rx) = mpsc::sync_channel(32);
+        let schema = rt.block_on(async move {
             let mut builder = ParquetRecordBatchStreamBuilder::new(reader).await?;
-            builder = builder.with_batch_size(8192);
+            builder = builder.with_batch_size(256_000);
             let stream = builder.build()?;
             let schema = stream.schema().clone();
-            Ok::<_, parquet::errors::ParquetError>((stream, schema))
+            tokio::spawn(async move {
+                futures::pin_mut!(stream);
+                while let Some(item) = stream.next().await {
+                    match item {
+                        Ok(batch) => {
+                            if tx.send(Ok(Some(batch))).is_err() {
+                                return;
+                            }
+                        }
+                        Err(e) => {
+                            let _ = tx.send(Err(e));
+                            return;
+                        }
+                    }
+                }
+                let _ = tx.send(Ok(None));
+            });
+            Ok::<_, parquet::errors::ParquetError>(schema)
         })?;
         Ok(Self {
-            stream: Box::pin(stream),
             _schema: schema,
             batch: None,
             idx_in_batch: 0,
@@ -657,7 +703,7 @@ impl EdgeSubStream {
             current_src: None,
             current_dst: None,
             current_sort: None,
-            rt,
+            rx,
         })
     }
 
@@ -685,26 +731,28 @@ impl EdgeSubStream {
                     }));
                 }
             }
-            match self.rt.block_on(self.stream.next()) {
-                Some(Ok(batch)) => {
-                    self.src_idx = batch
-                        .schema()
-                        .index_of("src_id")
-                        .map_err(|_| IndexBuildError::InvalidColumn("src_id"))?;
-                    self.dst_idx = batch
-                        .schema()
-                        .index_of("dst_id")
-                        .map_err(|_| IndexBuildError::InvalidColumn("dst_id"))?;
-                    self.sort_idx = if self.dest_sort_key_bits.is_some() {
-                        Some(
-                            batch
-                                .schema()
-                                .index_of("dest_sort_key")
-                                .map_err(|_| IndexBuildError::InvalidColumn("dest_sort_key"))?,
-                        )
-                    } else {
-                        None
-                    };
+            match self.rx.recv() {
+                Ok(Ok(Some(batch))) => {
+                    if self.batch.is_none() {
+                        self.src_idx = batch
+                            .schema()
+                            .index_of("src_id")
+                            .map_err(|_| IndexBuildError::InvalidColumn("src_id"))?;
+                        self.dst_idx = batch
+                            .schema()
+                            .index_of("dst_id")
+                            .map_err(|_| IndexBuildError::InvalidColumn("dst_id"))?;
+                        self.sort_idx = if self.dest_sort_key_bits.is_some() {
+                            Some(
+                                batch
+                                    .schema()
+                                    .index_of("dest_sort_key")
+                                    .map_err(|_| IndexBuildError::InvalidColumn("dest_sort_key"))?,
+                            )
+                        } else {
+                            None
+                        };
+                    }
                     self.current_src = Some(
                         batch
                             .column(self.src_idx)
@@ -731,8 +779,14 @@ impl EdgeSubStream {
                     self.batch = Some(batch);
                     self.idx_in_batch = 0;
                 }
-                Some(Err(e)) => return Err(e.into()),
-                None => return Ok(None),
+                Ok(Ok(None)) => return Ok(None),
+                Ok(Err(e)) => return Err(e.into()),
+                Err(_) => return Err(IndexBuildError::Parquet(
+                    parquet::errors::ParquetError::General(
+                        "prefetch channel closed".to_string(),
+                    ),
+                )
+                .into()),
             }
         }
     }
@@ -877,7 +931,8 @@ fn object_reader_from_source(source: &ParquetSource, rt: &Runtime) -> Result<Any
                 session_token: cfg.session_token.clone(),
             })
             .map_err(|e| IndexBuildError::ObjectStore(e.to_string()))?;
-            let store: Arc<dyn ObjectStore> = s3.store;
+            let store: Arc<dyn ObjectStore> =
+                Arc::new(ChunkedStore::new(s3.store, 32 * 1024 * 1024));
             let location = ObjectPath::from(cfg.key.clone());
             let reader = StoreParquetObjectReader::new(store, location);
             Ok(AnyParquetReader::Store(reader))
@@ -943,7 +998,8 @@ fn object_reader_from_source(source: &ParquetSource, rt: &Runtime) -> Result<Any
             let store = builder
                 .build()
                 .map_err(|e| IndexBuildError::ObjectStore(e.to_string()))?;
-            let store: Arc<dyn ObjectStore> = Arc::new(store);
+            let store: Arc<dyn ObjectStore> =
+                Arc::new(ChunkedStore::new(Arc::new(store), 32 * 1024 * 1024));
             let location = ObjectPath::from(cfg.key.clone());
             let reader = StoreParquetObjectReader::new(store, location);
             Ok(AnyParquetReader::Store(reader))
@@ -979,7 +1035,8 @@ fn object_reader_from_source(source: &ParquetSource, rt: &Runtime) -> Result<Any
             let store = builder
                 .build()
                 .map_err(|e| IndexBuildError::ObjectStore(e.to_string()))?;
-            let store: Arc<dyn ObjectStore> = Arc::new(store);
+            let store: Arc<dyn ObjectStore> =
+                Arc::new(ChunkedStore::new(Arc::new(store), 32 * 1024 * 1024));
             let location = ObjectPath::from(cfg.key.clone());
             let reader = StoreParquetObjectReader::new(store, location);
             Ok(AnyParquetReader::Store(reader))
