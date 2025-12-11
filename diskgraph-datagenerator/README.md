@@ -46,36 +46,29 @@ Generation guarantees:
 
 Parquet files are generated with ArrowWriter using plain-encoded `Int64` columns to keep ingestion predictable.
 
-## Massive-scale generator (single shard)
+## Massive-scale generator (streaming, single shard)
 
-For large throughput benchmarks (hundreds of millions of nodes / billions of edges), use the dedicated binary:
+For throughput benchmarks at hundreds of millions of nodes / billions of edges, use the `massive` binary. It streams Parquet row groups directly to the destination (local filesystem, S3, GCS, ADLS) in batches so RAM stays within a few GB. Default multipart size for S3 is 64 MiB (`--s3-part-size`), and Parquet row groups default to 1,000,000 rows.
+
+Example (direct to S3, full scale by default):
 
 ```bash
-# Generates nodes.parquet + two edge files and metadata.json under /tmp/dg-massive/run-<timestamp>
-OUT_ROOT=/tmp/dg-massive RUN_ID=run-$(date +%s) \
-  cargo run -p diskgraph-datagenerator --bin massive --release -- \
-    --output "/tmp/dg-massive/${RUN_ID}" \
-    --nodes 500000000 \
-    --edges-per-relation 500000000 \
-    --max-dst-id 100000000000 \
-    --edge-batch-size 1000000 \
-    --node-batch-size 5000000 \
-    --relation0-name follows \
-    --relation1-name blocks \
-    --relation1-sort-bits 16
+# Uses ambient AWS profile (auto-selected like the diskgraph-index cloud tests), streams without local staging
+S3_PREFIX=s3://kumo-unit-test/diskgraph-datagenerator RUN_ID=run-$(date +%s) \
+  scripts/generate_massive_s3.sh
 ```
 
-The generator streams Parquet row groups in batches (configurable) to keep RAM usage to a few GB while emitting very large files. It writes:
+CLI highlights (see `--help`):
+- `--dest {local,s3,gcs,adls}` and `--output <path or URL>` control the sink.
+- `--nodes`, `--edges-per-relation`, `--max-dst-id` set scale; defaults: 500M nodes, 500M edges per relation, dst ids sampled up to 1e11.
+- `--edge-batch-size`, `--node-batch-size`, `--row-group-size` set streaming/buffering; defaults keep memory low.
+- `--relation{0,1}-name` and `--relation{0,1}-sort-bits` toggle relation names and optional `dest_sort_key`.
+- `--s3-part-size` (default 64 MiB), `--s3-region`, `--s3-endpoint` allow tuning multipart uploads when `--dest s3`.
 
-- `nodes.parquet` with a single `id` column.
-- `edges_<relation>.parquet` for two relations (names configurable), optional `dest_sort_key` when `--relation{N}-sort-bits` is non-zero.
-- `metadata.json` describing the dataset.
+Helper scripts (all default to the full-scale run; override with env vars shown in the scripts):
+- `scripts/generate_massive_local.sh` — local filesystem output (OUT_ROOT, RUN_ID).
+- `scripts/generate_massive_s3.sh` — direct streaming to S3; auto-detects an AWS profile if none is set, disables EC2 IMDS, and verifies `sts get-caller-identity`.
+- `scripts/generate_massive_gcs.sh` — direct streaming to GCS; runs a quick `gsutil` access check before generating.
+- `scripts/generate_massive_adls.sh` — direct streaming to Azure Blob/ADLS; honors the usual `AZURE_*` env vars.
 
-Helper scripts live in `scripts/` to generate and upload large datasets:
-
-- `scripts/generate_massive_local.sh` – local filesystem output.
-- `scripts/generate_massive_s3.sh` – generate locally, then `aws s3 cp --recursive` to `s3://kumo-unit-test/diskgraph-datagenerator/...` (editable).
-- `scripts/generate_massive_gcs.sh` – generate locally, then `gsutil -m cp` to `gs://kumo-unit-test/diskgraph-datagenerator/...` (editable).
-- `scripts/generate_massive_adls.sh` – generate locally, then `azcopy copy` to an ADLS/Blob URL (editable).
-
-Each script exposes tunable constants at the top (nodes, edges per relation, dest_sort_key bits, batch sizes, prefixes, etc.) and relies on ambient credentials for the respective cloud CLI.
+Each script writes `nodes.parquet`, `edges_<relation>.parquet` for two relations, and `metadata.json` under a per-run prefix like `.../run-<timestamp>-<rand>`. Metadata uses the larger of `nodes-1` and `max_dst_id` so `dst_id` values are always in-range for indexing.

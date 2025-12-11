@@ -152,6 +152,21 @@ Notes:
 - Object keys (paths) are generated in the tests: if a URL/prefix is provided it is used; otherwise a per-run prefix is synthesized under `diskgraph-index/<cloud>/run-<timestamp>`.
 - Data sets include two relations (with and without `dest_sort_key`), enough nodes to span multiple offset chunks, and row groups to exercise multi-group Parquet reads.
 
+## Shard explorer (TUI)
+
+`cargo run -p diskgraph-index --bin explore -- <path|s3://...|gs://...|az://...>` opens a REPL to inspect a shard built from Parquet. It streams the Parquet shards through `ShardBuilder` (no local staging), writes `offsets.bin`/`edges.bin` plus `metadata.json` into a temp cache derived from the source path, and reuses that cache within the same run if already present. Expected layout matches the massive generator output: `metadata.json`, `nodes.parquet`, and `edges_<relation>.parquet` under the provided prefix.
+
+Commands inside the REPL:
+- `info` — print relation layouts and node count.
+- `node <id>` — show counts and a few edges per relation for the node.
+- `quit` / `exit` / `Ctrl+D` — leave the explorer.
+
+Helper scripts wrap auth/env checks:
+- `scripts/explore_local.sh /path/to/shard`
+- `scripts/explore_s3.sh s3://bucket/prefix` (auto-picks an AWS profile like the cloud tests, sets `AWS_EC2_METADATA_DISABLED=1`, uses `aws_config::from_env` to avoid IMDS).
+- `scripts/explore_gcs.sh gs://bucket/prefix` (ADC/gcloud).
+- `scripts/explore_adls.sh az://account/container/prefix` (`AZURE_*` env vars).
+
 ## Expectations and assumptions
 - Input Parquet shards are already sorted:
   - Nodes by `id` ascending.
