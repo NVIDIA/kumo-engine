@@ -9,7 +9,6 @@ use arrow_schema::SchemaRef;
 use bytes::Bytes;
 use diskgraph_core::metadata::{EdgeRelationMetadata, NodeTypeMetadata};
 use futures::{future::BoxFuture, stream::BoxStream, StreamExt};
-use object_store::aws::AmazonS3Builder;
 use object_store::azure::{AzureConfigKey, MicrosoftAzureBuilder};
 use object_store::gcp::GoogleCloudStorageBuilder;
 use object_store::path::Path as ObjectPath;
@@ -22,6 +21,7 @@ use parquet::file::metadata::ParquetMetaData;
 use parquet::file::reader::FileReader;
 use parquet::file::serialized_reader::SerializedFileReader;
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
+use diskgraph_fs::{build_s3_client, S3Config as FsS3Config};
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 use std::fs::{self, File};
@@ -850,33 +850,24 @@ fn object_reader_from_source(source: &ParquetSource, rt: &Runtime) -> Result<Any
             LocalParquetObjectReader::new(LocalAsyncFileReader { path: path.clone() }),
         )),
         ParquetSource::S3(cfg) => {
-            let mut builder = AmazonS3Builder::new()
-                .with_bucket_name(&cfg.bucket)
-                .with_virtual_hosted_style_request(
-                    cfg.virtual_hosted_style_request.unwrap_or(false),
-                );
-            if let Some(region) = &cfg.region {
-                builder = builder.with_region(region);
-            }
-            if let Some(endpoint) = &cfg.endpoint {
-                builder = builder.with_endpoint(endpoint);
-                if endpoint.starts_with("http://") {
-                    builder = builder.with_allow_http(true);
-                }
-            }
-            if let Some(ak) = &cfg.access_key_id {
-                builder = builder.with_access_key_id(ak);
-            }
-            if let Some(sk) = &cfg.secret_access_key {
-                builder = builder.with_secret_access_key(sk);
-            }
-            if let Some(token) = &cfg.session_token {
-                builder = builder.with_token(token);
-            }
-            let store = builder
-                .build()
-                .map_err(|e| IndexBuildError::ObjectStore(e.to_string()))?;
-            let store: Arc<dyn ObjectStore> = Arc::new(store);
+            let allow_http = cfg
+                .endpoint
+                .as_deref()
+                .map(|e| e.starts_with("http://"))
+                .unwrap_or(false);
+            let s3 = build_s3_client(FsS3Config {
+                bucket: cfg.bucket.clone(),
+                region: cfg.region.clone(),
+                endpoint: cfg.endpoint.clone(),
+                allow_http: Some(allow_http),
+                virtual_hosted: cfg.virtual_hosted_style_request,
+                profile: None,
+                access_key_id: cfg.access_key_id.clone(),
+                secret_access_key: cfg.secret_access_key.clone(),
+                session_token: cfg.session_token.clone(),
+            })
+            .map_err(|e| IndexBuildError::ObjectStore(e.to_string()))?;
+            let store: Arc<dyn ObjectStore> = s3.store;
             let location = ObjectPath::from(cfg.key.clone());
             let meta = rt
                 .block_on(store.head(&location))

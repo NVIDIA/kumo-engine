@@ -5,12 +5,14 @@
 
 use std::sync::Arc;
 
-use aws_credential_types::provider::ProvideCredentials;
-use aws_types::region::Region;
 use diskgraph_index::builder::{ShardBuildParams, ShardBuilder};
 use diskgraph_index::reader::ShardReader;
 use diskgraph_index::streaming::{
     AdlsLocation, EdgeShardInput, GcsLocation, NodeShardInput, ParquetSource, S3Location,
+};
+use diskgraph_fs::{
+    build_adls_client, build_gcs_client, build_s3_client, AdlsConfig as FsAdlsConfig,
+    GcsConfig as FsGcsConfig, S3Config as FsS3Config,
 };
 use object_store::path::Path as ObjectPath;
 use object_store::ObjectStore;
@@ -418,59 +420,22 @@ fn s3_ingest_round_trip() {
         }
     };
     let rt = Runtime::new().unwrap();
-    // Build the S3 client from the AWS SDK env/config chain (supports AWS_PROFILE/SSO).
-    let profile = std::env::var("S3_PROFILE")
-        .ok()
-        .or_else(|| std::env::var("AWS_PROFILE").ok());
-    let aws_conf = rt.block_on(async {
-        let mut loader = aws_config::from_env();
-        if let Some(p) = profile.clone() {
-            loader = loader.profile_name(p);
-        }
-        if let Some(region) = cfg.region.clone() {
-            loader = loader.region(Region::new(region));
-        }
-        loader.load().await
-    });
-    let creds_provider = aws_conf
-        .credentials_provider()
-        .expect("No AWS credentials provider found; run `aws sso login` or configure AWS_PROFILE");
-    let creds = rt.block_on(async {
-        creds_provider
-            .provide_credentials()
-            .await
-            .expect("Failed to load AWS credentials from the default chain")
-    });
-    let region = cfg
-        .region
-        .clone()
-        .or_else(|| aws_conf.region().map(|r| r.as_ref().to_string()))
-        .unwrap_or_else(|| "us-east-1".to_string());
-
-    let mut builder = object_store::aws::AmazonS3Builder::new()
-        .with_bucket_name(&cfg.bucket)
-        .with_region(&region)
-        .with_virtual_hosted_style_request(cfg.virtual_hosted)
-        .with_allow_http(cfg.allow_http);
-    if let Some(ak) = &cfg.access_key {
-        builder = builder.with_access_key_id(ak);
-    } else {
-        builder = builder.with_access_key_id(creds.access_key_id());
-    }
-    if let Some(sk) = &cfg.secret_key {
-        builder = builder.with_secret_access_key(sk);
-    } else {
-        builder = builder.with_secret_access_key(creds.secret_access_key());
-    }
-    if let Some(token) = cfg.session_token.as_deref().or(creds.session_token()) {
-        builder = builder.with_token(token);
-    }
-    // Endpoint override is only supported for custom backends; for real GCS this is typically unset.
-    let store: Arc<dyn ObjectStore> = Arc::new(
-        builder
-            .build()
-            .expect("failed to build S3 object store (check endpoint/creds)"),
-    );
+    let s3 = build_s3_client(FsS3Config {
+        bucket: cfg.bucket.clone(),
+        region: cfg.region.clone(),
+        endpoint: cfg.endpoint.clone(),
+        allow_http: Some(cfg.allow_http),
+        virtual_hosted: Some(cfg.virtual_hosted),
+        profile: std::env::var("S3_PROFILE")
+            .ok()
+            .or_else(|| std::env::var("AWS_PROFILE").ok()),
+        access_key_id: cfg.access_key.clone(),
+        secret_access_key: cfg.secret_key.clone(),
+        session_token: cfg.session_token.clone(),
+    })
+    .expect("failed to build S3 client");
+    let store: Arc<dyn ObjectStore> = s3.store.clone();
+    let resolved = s3.resolved.clone();
 
     let dir = tempdir().unwrap();
     let node_path = dir.path().join("nodes.parquet");
@@ -511,21 +476,12 @@ fn s3_ingest_round_trip() {
                 parquet: ParquetSource::S3(S3Location {
                     bucket: cfg.bucket.clone(),
                     key: node_loc.to_string(),
-                    region: Some(region.clone()),
-                    endpoint: cfg.endpoint.clone(),
-                    access_key_id: cfg
-                        .access_key
-                        .clone()
-                        .or_else(|| Some(creds.access_key_id().to_string())),
-                    secret_access_key: cfg
-                        .secret_key
-                        .clone()
-                        .or_else(|| Some(creds.secret_access_key().to_string())),
-                    session_token: cfg
-                        .session_token
-                        .clone()
-                        .or_else(|| creds.session_token().map(|t| t.to_string())),
-                    virtual_hosted_style_request: Some(cfg.virtual_hosted),
+                    region: Some(resolved.region.clone()),
+                    endpoint: resolved.endpoint.clone(),
+                    access_key_id: Some(resolved.access_key_id.clone()),
+                    secret_access_key: Some(resolved.secret_access_key.clone()),
+                    session_token: resolved.session_token.clone(),
+                    virtual_hosted_style_request: Some(resolved.virtual_hosted),
                 }),
             },
             &[EdgeShardInput {
@@ -534,21 +490,12 @@ fn s3_ingest_round_trip() {
                 parquet: ParquetSource::S3(S3Location {
                     bucket: cfg.bucket.clone(),
                     key: follows_loc.to_string(),
-                    region: Some(region.clone()),
-                    endpoint: cfg.endpoint.clone(),
-                    access_key_id: cfg
-                        .access_key
-                        .clone()
-                        .or_else(|| Some(creds.access_key_id().to_string())),
-                    secret_access_key: cfg
-                        .secret_key
-                        .clone()
-                        .or_else(|| Some(creds.secret_access_key().to_string())),
-                    session_token: cfg
-                        .session_token
-                        .clone()
-                        .or_else(|| creds.session_token().map(|t| t.to_string())),
-                    virtual_hosted_style_request: Some(cfg.virtual_hosted),
+                    region: Some(resolved.region.clone()),
+                    endpoint: resolved.endpoint.clone(),
+                    access_key_id: Some(resolved.access_key_id.clone()),
+                    secret_access_key: Some(resolved.secret_access_key.clone()),
+                    session_token: resolved.session_token.clone(),
+                    virtual_hosted_style_request: Some(resolved.virtual_hosted),
                 }),
                 has_dest_sort_key: true,
             }, EdgeShardInput {
@@ -557,21 +504,12 @@ fn s3_ingest_round_trip() {
                 parquet: ParquetSource::S3(S3Location {
                     bucket: cfg.bucket.clone(),
                     key: blocks_loc.to_string(),
-                    region: Some(region.clone()),
-                    endpoint: cfg.endpoint.clone(),
-                    access_key_id: cfg
-                        .access_key
-                        .clone()
-                        .or_else(|| Some(creds.access_key_id().to_string())),
-                    secret_access_key: cfg
-                        .secret_key
-                        .clone()
-                        .or_else(|| Some(creds.secret_access_key().to_string())),
-                    session_token: cfg
-                        .session_token
-                        .clone()
-                        .or_else(|| creds.session_token().map(|t| t.to_string())),
-                    virtual_hosted_style_request: Some(cfg.virtual_hosted),
+                    region: Some(resolved.region.clone()),
+                    endpoint: resolved.endpoint.clone(),
+                    access_key_id: Some(resolved.access_key_id.clone()),
+                    secret_access_key: Some(resolved.secret_access_key.clone()),
+                    session_token: resolved.session_token.clone(),
+                    virtual_hosted_style_request: Some(resolved.virtual_hosted),
                 }),
                 has_dest_sort_key: false,
             }],
@@ -603,13 +541,11 @@ fn gcs_ingest_round_trip() {
         }
     };
     let rt = Runtime::new().unwrap();
-    // Use default Google ADC (supports gcloud auth login / application-default).
-    let store: Arc<dyn ObjectStore> = Arc::new(
-        object_store::gcp::GoogleCloudStorageBuilder::from_env()
-            .with_bucket_name(&cfg.bucket)
-            .build()
-            .expect("failed to build GCS object store (check ADC/gcloud auth)"),
-    );
+    let gcs = build_gcs_client(FsGcsConfig {
+        bucket: cfg.bucket.clone(),
+    })
+    .expect("failed to build GCS client");
+    let store: Arc<dyn ObjectStore> = gcs.store.clone();
 
     let dir = tempdir().unwrap();
     let node_path = dir.path().join("nodes.parquet");
@@ -711,36 +647,21 @@ fn adls_ingest_round_trip() {
         .as_deref()
         .map(|e| e.starts_with("http://"))
         .unwrap_or(false);
-    let mut builder = object_store::azure::MicrosoftAzureBuilder::new()
-        .with_account(&cfg.account)
-        .with_container_name(&cfg.container)
-        .with_allow_http(allow_http);
-    if let Some(ep) = &cfg.endpoint {
-        builder = builder.with_endpoint(ep.to_string());
-    }
-    if let Some(access_key) = &cfg.access_key {
-        builder = builder.with_access_key(access_key);
-    }
-    if let Some(sas) = &cfg.sas_key {
-        builder = builder.with_config(object_store::azure::AzureConfigKey::SasKey, sas);
-    }
-    if let Some(bearer) = &cfg.bearer_token {
-        builder = builder.with_bearer_token_authorization(bearer);
-    }
-    if let Some(client_id) = &cfg.client_id {
-        builder = builder.with_client_id(client_id);
-    }
-    if let Some(client_secret) = &cfg.client_secret {
-        builder = builder.with_client_secret(client_secret);
-    }
-    if let Some(tenant_id) = &cfg.tenant_id {
-        builder = builder.with_tenant_id(tenant_id);
-    }
-    let store: Arc<dyn ObjectStore> = Arc::new(
-        builder
-            .build()
-            .expect("failed to build Azure object store (check endpoint/creds)"),
-    );
+    let adls = build_adls_client(FsAdlsConfig {
+        account: cfg.account.clone(),
+        container: cfg.container.clone(),
+        endpoint: cfg.endpoint.clone(),
+        allow_http: Some(allow_http),
+        access_key: cfg.access_key.clone(),
+        sas_key: cfg.sas_key.clone(),
+        bearer_token: cfg.bearer_token.clone(),
+        client_id: cfg.client_id.clone(),
+        client_secret: cfg.client_secret.clone(),
+        tenant_id: cfg.tenant_id.clone(),
+    })
+    .expect("failed to build Azure client");
+    let store: Arc<dyn ObjectStore> = adls.store.clone();
+    let resolved = adls.resolved.clone();
 
     let dir = tempdir().unwrap();
     let node_path = dir.path().join("nodes.parquet");
@@ -779,16 +700,16 @@ fn adls_ingest_round_trip() {
                 node_type: "User".into(),
                 shard_index: 0,
                 parquet: ParquetSource::Adls(AdlsLocation {
-                    account: cfg.account.clone(),
-                    container: cfg.container.clone(),
+                    account: resolved.account.clone(),
+                    container: resolved.container.clone(),
                     key: node_loc.to_string(),
-                    access_key: cfg.access_key.clone(),
-                    sas_key: cfg.sas_key.clone(),
-                    bearer_token: cfg.bearer_token.clone(),
-                    client_id: cfg.client_id.clone(),
-                    client_secret: cfg.client_secret.clone(),
-                    tenant_id: cfg.tenant_id.clone(),
-                    endpoint: cfg.endpoint.clone(),
+                    access_key: resolved.access_key.clone(),
+                    sas_key: resolved.sas_key.clone(),
+                    bearer_token: resolved.bearer_token.clone(),
+                    client_id: resolved.client_id.clone(),
+                    client_secret: resolved.client_secret.clone(),
+                    tenant_id: resolved.tenant_id.clone(),
+                    endpoint: resolved.endpoint.clone(),
                     use_emulator: None,
                 }),
             },
@@ -796,16 +717,16 @@ fn adls_ingest_round_trip() {
                 relation: "Follows".into(),
                 source_shard_index: 0,
                 parquet: ParquetSource::Adls(AdlsLocation {
-                    account: cfg.account.clone(),
-                    container: cfg.container.clone(),
+                    account: resolved.account.clone(),
+                    container: resolved.container.clone(),
                     key: follows_loc.to_string(),
-                    access_key: cfg.access_key.clone(),
-                    sas_key: cfg.sas_key.clone(),
-                    bearer_token: cfg.bearer_token.clone(),
-                    client_id: cfg.client_id.clone(),
-                    client_secret: cfg.client_secret.clone(),
-                    tenant_id: cfg.tenant_id.clone(),
-                    endpoint: cfg.endpoint.clone(),
+                    access_key: resolved.access_key.clone(),
+                    sas_key: resolved.sas_key.clone(),
+                    bearer_token: resolved.bearer_token.clone(),
+                    client_id: resolved.client_id.clone(),
+                    client_secret: resolved.client_secret.clone(),
+                    tenant_id: resolved.tenant_id.clone(),
+                    endpoint: resolved.endpoint.clone(),
                     use_emulator: None,
                 }),
                 has_dest_sort_key: true,
@@ -813,16 +734,16 @@ fn adls_ingest_round_trip() {
                 relation: "Blocks".into(),
                 source_shard_index: 0,
                 parquet: ParquetSource::Adls(AdlsLocation {
-                    account: cfg.account.clone(),
-                    container: cfg.container.clone(),
+                    account: resolved.account.clone(),
+                    container: resolved.container.clone(),
                     key: blocks_loc.to_string(),
-                    access_key: cfg.access_key.clone(),
-                    sas_key: cfg.sas_key.clone(),
-                    bearer_token: cfg.bearer_token.clone(),
-                    client_id: cfg.client_id.clone(),
-                    client_secret: cfg.client_secret.clone(),
-                    tenant_id: cfg.tenant_id.clone(),
-                    endpoint: cfg.endpoint.clone(),
+                    access_key: resolved.access_key.clone(),
+                    sas_key: resolved.sas_key.clone(),
+                    bearer_token: resolved.bearer_token.clone(),
+                    client_id: resolved.client_id.clone(),
+                    client_secret: resolved.client_secret.clone(),
+                    tenant_id: resolved.tenant_id.clone(),
+                    endpoint: resolved.endpoint.clone(),
                     use_emulator: None,
                 }),
                 has_dest_sort_key: false,

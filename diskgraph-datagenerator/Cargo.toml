@@ -13,6 +13,7 @@ arrow-array = "51"
 arrow-schema = "51"
 clap = { version = "4.4", features = ["derive"] }
 diskgraph-core = { path = "../diskgraph-core" }
+diskgraph-fs = { path = "../diskgraph-fs" }
 parquet = { version = "51", features = ["arrow"] }
 rand = "0.8"
 seahash = "4.1"
@@ -21,10 +22,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-object_store = { version = "0.10", default-features = false, features = ["aws", "gcp", "azure"] }
+object_store = { version = "0.9", default-features = false, features = ["aws", "gcp", "azure"] }
 url = "2"
-aws-config = "1"
-aws-credential-types = "1"
-aws-types = "1"
 bytes = "1"
 tokio = { version = "1", features = ["rt-multi-thread"] }

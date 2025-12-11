@@ -6,17 +6,14 @@
 //! edge lists by node id.
 
 use anyhow::{anyhow, Context, Result};
-use aws_config;
-use aws_credential_types::provider::ProvideCredentials;
-use aws_types::region::Region;
 use diskgraph_core::metadata::{DatasetMetadata, EdgeRelationMetadata, NodeTypeMetadata};
 use diskgraph_index::builder::{compute_relation_layouts, ShardBuildParams, ShardBuilder};
 use diskgraph_index::reader::ShardReader;
 use diskgraph_index::streaming::{EdgeShardInput, NodeShardInput, ParquetSource};
-use object_store::aws::AmazonS3Builder;
-use object_store::azure::MicrosoftAzureBuilder;
-use object_store::gcp::GoogleCloudStorageBuilder;
-use object_store::{path::Path as ObjectPath, ObjectStore};
+use diskgraph_fs::{
+    build_adls_client, build_gcs_client, build_s3_client, AdlsConfig, GcsConfig, S3Config,
+};
+use object_store::path::Path as ObjectPath;
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
 use std::fs;
@@ -24,19 +21,34 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::runtime::Runtime;
 
-#[derive(Clone, Copy, Debug)]
-enum RemoteKind {
-    S3,
-    Gcs,
-    Adls,
-}
-
 #[derive(Clone, Debug)]
 enum Source {
     Local(PathBuf),
-    Remote {
-        kind: RemoteKind,
-        prefix: String, // key prefix without scheme/bucket
+    S3 { bucket: String, prefix: String },
+    Gcs { bucket: String, prefix: String },
+    Adls {
+        account: String,
+        container: String,
+        prefix: String,
+    },
+}
+
+enum RemoteStore {
+    S3 {
+        bucket: String,
+        prefix: String,
+        client: diskgraph_fs::S3Client,
+    },
+    Gcs {
+        bucket: String,
+        prefix: String,
+        client: diskgraph_fs::GcsClient,
+    },
+    Adls {
+        account: String,
+        container: String,
+        prefix: String,
+        client: diskgraph_fs::AdlsClient,
     },
 }
 
@@ -56,11 +68,72 @@ fn main() -> Result<()> {
             .context("parse metadata.json")?;
             (metadata, p.clone())
         }
-        Source::Remote { kind, prefix } => {
-            let store = build_store(*kind)?;
-            let (metadata, shard_dir) =
-                build_from_remote(&rt, *kind, prefix, &store, tmp.path())?;
-            (metadata, shard_dir)
+        Source::S3 { bucket, prefix } => {
+            let profile = std::env::var("S3_PROFILE")
+                .ok()
+                .or_else(|| std::env::var("AWS_PROFILE").ok());
+            let s3 = build_s3_client(S3Config {
+                bucket: bucket.clone(),
+                region: std::env::var("S3_REGION").ok(),
+                endpoint: std::env::var("S3_ENDPOINT").ok(),
+                allow_http: env_flag("S3_ALLOW_HTTP").or_else(|| env_flag("AWS_ALLOW_HTTP")),
+                virtual_hosted: env_flag("S3_VIRTUAL_HOSTED"),
+                profile,
+                access_key_id: None,
+                secret_access_key: None,
+                session_token: None,
+            })?;
+            build_from_remote(
+                &rt,
+                RemoteStore::S3 {
+                    bucket: bucket.clone(),
+                    prefix: prefix.clone(),
+                    client: s3,
+                },
+                tmp.path(),
+            )?
+        }
+        Source::Gcs { bucket, prefix } => {
+            let gcs = build_gcs_client(GcsConfig {
+                bucket: bucket.clone(),
+            })?;
+            build_from_remote(
+                &rt,
+                RemoteStore::Gcs {
+                    bucket: bucket.clone(),
+                    prefix: prefix.clone(),
+                    client: gcs,
+                },
+                tmp.path(),
+            )?
+        }
+        Source::Adls {
+            account,
+            container,
+            prefix,
+        } => {
+            let adls = build_adls_client(AdlsConfig {
+                account: account.clone(),
+                container: container.clone(),
+                endpoint: std::env::var("AZURE_ENDPOINT").ok(),
+                allow_http: env_flag("AZURE_ALLOW_HTTP"),
+                access_key: std::env::var("AZURE_ACCESS_KEY").ok(),
+                sas_key: std::env::var("AZURE_SAS_KEY").ok(),
+                bearer_token: std::env::var("AZURE_BEARER_TOKEN").ok(),
+                client_id: std::env::var("AZURE_CLIENT_ID").ok(),
+                client_secret: std::env::var("AZURE_CLIENT_SECRET").ok(),
+                tenant_id: std::env::var("AZURE_TENANT_ID").ok(),
+            })?;
+            build_from_remote(
+                &rt,
+                RemoteStore::Adls {
+                    account: account.clone(),
+                    container: container.clone(),
+                    prefix: prefix.clone(),
+                    client: adls,
+                },
+                tmp.path(),
+            )?
         }
     };
     let (layouts, _node_types) = relation_layouts(&metadata)?;
@@ -82,13 +155,30 @@ fn relation_layouts(
 
 fn build_from_remote(
     rt: &Runtime,
-    kind: RemoteKind,
-    prefix: &str,
-    store: &Arc<dyn ObjectStore>,
+    remote: RemoteStore,
     cache_root: &Path,
 ) -> Result<(DatasetMetadata, PathBuf)> {
-    // Cache path derived from prefix.
-    let safe_prefix = prefix.replace(['/', ':'], "_");
+    let (safe_prefix, store_arc) = {
+        match &remote {
+            RemoteStore::S3 { bucket, prefix, client } => (
+                format!("s3_{}_{}", bucket, prefix).replace(['/', ':'], "_"),
+                client.store.clone(),
+            ),
+            RemoteStore::Gcs { bucket, prefix, client } => (
+                format!("gcs_{}_{}", bucket, prefix).replace(['/', ':'], "_"),
+                client.store.clone(),
+            ),
+            RemoteStore::Adls {
+                account,
+                container,
+                prefix,
+                client,
+            } => (
+                format!("az_{}_{}_{}", account, container, prefix).replace(['/', ':'], "_"),
+                client.store.clone(),
+            ),
+        }
+    };
     let cache_dir = cache_root.join(safe_prefix);
     let offsets = cache_dir.join("offsets.bin");
     let edges = cache_dir.join("edges.bin");
@@ -101,14 +191,19 @@ fn build_from_remote(
         return Ok((metadata, cache_dir));
     }
     fs::create_dir_all(&cache_dir)?;
+    let prefix = match &remote {
+        RemoteStore::S3 { prefix, .. }
+        | RemoteStore::Gcs { prefix, .. }
+        | RemoteStore::Adls { prefix, .. } => prefix.trim_end_matches('/').to_string(),
+    };
     // Download metadata, then build using remote Parquet sources.
     let loc = if prefix.is_empty() {
         ObjectPath::from("metadata.json")
     } else {
-        ObjectPath::from(format!("{}/{}", prefix.trim_end_matches('/'), "metadata.json"))
+        ObjectPath::from(format!("{}/{}", prefix, "metadata.json"))
     };
     let meta_obj = rt
-        .block_on(store.get(&loc))
+        .block_on(store_arc.get(&loc))
         .with_context(|| format!("download metadata.json from {prefix}"))?;
     let meta_bytes = rt
         .block_on(meta_obj.bytes())
@@ -116,6 +211,53 @@ fn build_from_remote(
     fs::write(&meta_path, &meta_bytes)?;
     let metadata: DatasetMetadata =
         serde_json::from_slice(&meta_bytes).context("parse metadata.json")?;
+
+    let make_source = |key: String| -> Result<ParquetSource> {
+        match &remote {
+            RemoteStore::S3 { bucket, client, .. } => Ok(ParquetSource::S3(
+                diskgraph_index::streaming::S3Location {
+                    bucket: bucket.clone(),
+                    key,
+                    region: Some(client.resolved.region.clone()),
+                    endpoint: client.resolved.endpoint.clone(),
+                    access_key_id: Some(client.resolved.access_key_id.clone()),
+                    secret_access_key: Some(client.resolved.secret_access_key.clone()),
+                    session_token: client.resolved.session_token.clone(),
+                    virtual_hosted_style_request: Some(client.resolved.virtual_hosted),
+                },
+            )),
+            RemoteStore::Gcs { bucket, .. } => Ok(ParquetSource::Gcs(
+                diskgraph_index::streaming::GcsLocation {
+                    bucket: bucket.clone(),
+                    key,
+                    service_account_path: None,
+                    service_account_key: None,
+                    application_credentials_path: None,
+                    endpoint: None,
+                },
+            )),
+            RemoteStore::Adls {
+                account,
+                container,
+                client,
+                ..
+            } => Ok(ParquetSource::Adls(
+                diskgraph_index::streaming::AdlsLocation {
+                    account: account.clone(),
+                    container: container.clone(),
+                    key,
+                    access_key: client.resolved.access_key.clone(),
+                    sas_key: client.resolved.sas_key.clone(),
+                    bearer_token: client.resolved.bearer_token.clone(),
+                    client_id: client.resolved.client_id.clone(),
+                    client_secret: client.resolved.client_secret.clone(),
+                    tenant_id: client.resolved.tenant_id.clone(),
+                    endpoint: client.resolved.endpoint.clone(),
+                    use_emulator: None,
+                },
+            )),
+        }
+    };
 
     // Build using streaming Parquet sources (first shard per type/relation).
     let node_inputs: Vec<NodeShardInput> = metadata
@@ -126,43 +268,12 @@ fn build_from_remote(
                 .shards
                 .get(0)
                 .ok_or_else(|| anyhow!("no node shard found for {}", nt.name))?;
-            let key = format!("{}/{}", prefix.trim_end_matches('/'), shard.path);
-            let parquet = match kind {
-                RemoteKind::S3 => {
-                    let auth = s3_auth()?;
-                    ParquetSource::S3(diskgraph_index::streaming::S3Location {
-                        bucket: auth.bucket,
-                        key,
-                        region: Some(auth.region),
-                        endpoint: auth.endpoint,
-                        access_key_id: Some(auth.access_key_id),
-                        secret_access_key: Some(auth.secret_access_key),
-                        session_token: auth.session_token,
-                        virtual_hosted_style_request: Some(auth.virtual_hosted),
-                    })
-                }
-                RemoteKind::Gcs => ParquetSource::Gcs(diskgraph_index::streaming::GcsLocation {
-                    bucket: std::env::var("GCS_BUCKET").unwrap_or_default(),
-                    key,
-                    service_account_path: None,
-                    service_account_key: None,
-                    application_credentials_path: None,
-                    endpoint: None,
-                }),
-                RemoteKind::Adls => ParquetSource::Adls(diskgraph_index::streaming::AdlsLocation {
-                    account: std::env::var("AZURE_ACCOUNT").unwrap_or_default(),
-                    container: std::env::var("AZURE_CONTAINER").unwrap_or_default(),
-                    key,
-                    access_key: std::env::var("AZURE_ACCESS_KEY").ok(),
-                    sas_key: std::env::var("AZURE_SAS_KEY").ok(),
-                    bearer_token: std::env::var("AZURE_BEARER_TOKEN").ok(),
-                    client_id: std::env::var("AZURE_CLIENT_ID").ok(),
-                    client_secret: std::env::var("AZURE_CLIENT_SECRET").ok(),
-                    tenant_id: std::env::var("AZURE_TENANT_ID").ok(),
-                    endpoint: std::env::var("AZURE_ENDPOINT").ok(),
-                    use_emulator: None,
-                }),
+            let key = if prefix.is_empty() {
+                shard.path.clone()
+            } else {
+                format!("{}/{}", prefix.trim_end_matches('/'), shard.path)
             };
+            let parquet = make_source(key)?;
             Ok(NodeShardInput {
                 node_type: nt.name.clone(),
                 shard_index: 0,
@@ -179,43 +290,12 @@ fn build_from_remote(
                 .shards
                 .get(0)
                 .ok_or_else(|| anyhow!("no edge shard found for {}", rel.name))?;
-            let key = format!("{}/{}", prefix.trim_end_matches('/'), shard.path);
-            let parquet = match kind {
-                RemoteKind::S3 => {
-                    let auth = s3_auth()?;
-                    ParquetSource::S3(diskgraph_index::streaming::S3Location {
-                        bucket: auth.bucket,
-                        key,
-                        region: Some(auth.region),
-                        endpoint: auth.endpoint,
-                        access_key_id: Some(auth.access_key_id),
-                        secret_access_key: Some(auth.secret_access_key),
-                        session_token: auth.session_token,
-                        virtual_hosted_style_request: Some(auth.virtual_hosted),
-                    })
-                }
-                RemoteKind::Gcs => ParquetSource::Gcs(diskgraph_index::streaming::GcsLocation {
-                    bucket: std::env::var("GCS_BUCKET").unwrap_or_default(),
-                    key,
-                    service_account_path: None,
-                    service_account_key: None,
-                    application_credentials_path: None,
-                    endpoint: None,
-                }),
-                RemoteKind::Adls => ParquetSource::Adls(diskgraph_index::streaming::AdlsLocation {
-                    account: std::env::var("AZURE_ACCOUNT").unwrap_or_default(),
-                    container: std::env::var("AZURE_CONTAINER").unwrap_or_default(),
-                    key,
-                    access_key: std::env::var("AZURE_ACCESS_KEY").ok(),
-                    sas_key: std::env::var("AZURE_SAS_KEY").ok(),
-                    bearer_token: std::env::var("AZURE_BEARER_TOKEN").ok(),
-                    client_id: std::env::var("AZURE_CLIENT_ID").ok(),
-                    client_secret: std::env::var("AZURE_CLIENT_SECRET").ok(),
-                    tenant_id: std::env::var("AZURE_TENANT_ID").ok(),
-                    endpoint: std::env::var("AZURE_ENDPOINT").ok(),
-                    use_emulator: None,
-                }),
+            let key = if prefix.is_empty() {
+                shard.path.clone()
+            } else {
+                format!("{}/{}", prefix.trim_end_matches('/'), shard.path)
             };
+            let parquet = make_source(key)?;
             Ok(EdgeShardInput {
                 relation: rel.name.clone(),
                 source_shard_index: 0,
@@ -354,92 +434,19 @@ fn show_node(relations: &[EdgeRelationMetadata], reader: &ShardReader, node: u64
 fn parse_source(raw: &str) -> Result<Source> {
     if raw.starts_with("s3://") {
         let (bucket, key) = parse_s3_url(raw)?;
-        std::env::set_var("S3_BUCKET", &bucket);
-        Ok(Source::Remote {
-            kind: RemoteKind::S3,
-            prefix: key,
-        })
+        Ok(Source::S3 { bucket, prefix: key })
     } else if raw.starts_with("gs://") {
         let (bucket, key) = parse_gs_url(raw)?;
-        std::env::set_var("GCS_BUCKET", &bucket);
-        Ok(Source::Remote {
-            kind: RemoteKind::Gcs,
-            prefix: key,
-        })
+        Ok(Source::Gcs { bucket, prefix: key })
     } else if raw.starts_with("az://") {
         let (account, container, key) = parse_az_url(raw)?;
-        std::env::set_var("AZURE_ACCOUNT", &account);
-        std::env::set_var("AZURE_CONTAINER", &container);
-        Ok(Source::Remote {
-            kind: RemoteKind::Adls,
+        Ok(Source::Adls {
+            account,
+            container,
             prefix: key,
         })
     } else {
         Ok(Source::Local(PathBuf::from(raw)))
-    }
-}
-
-fn build_store(kind: RemoteKind) -> Result<Arc<dyn ObjectStore>> {
-    match kind {
-        RemoteKind::S3 => {
-            let auth = s3_auth()?;
-            let mut builder = AmazonS3Builder::new()
-                .with_bucket_name(&auth.bucket)
-                .with_region(&auth.region)
-                .with_virtual_hosted_style_request(auth.virtual_hosted)
-                .with_allow_http(auth.allow_http);
-            if let Some(endpoint) = &auth.endpoint {
-                builder = builder.with_endpoint(endpoint);
-            }
-            builder = builder
-                .with_access_key_id(auth.access_key_id.clone())
-                .with_secret_access_key(auth.secret_access_key.clone());
-            if let Some(token) = &auth.session_token {
-                builder = builder.with_token(token);
-            }
-            Ok(Arc::new(builder.build()?))
-        }
-        RemoteKind::Gcs => {
-            let bucket = std::env::var("GCS_BUCKET").context("set GCS_BUCKET or include bucket in url")?;
-            let builder = GoogleCloudStorageBuilder::from_env().with_bucket_name(&bucket);
-            Ok(Arc::new(builder.build()?))
-        }
-        RemoteKind::Adls => {
-            let account =
-                std::env::var("AZURE_ACCOUNT").context("set AZURE_ACCOUNT for az:// sources")?;
-            let container =
-                std::env::var("AZURE_CONTAINER").context("set AZURE_CONTAINER for az:// sources")?;
-            let allow_http = std::env::var("AZURE_ALLOW_HTTP")
-                .ok()
-                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-                .unwrap_or(false);
-            let mut builder = MicrosoftAzureBuilder::new()
-                .with_account(&account)
-                .with_container_name(&container)
-                .with_allow_http(allow_http);
-            if let Ok(ep) = std::env::var("AZURE_ENDPOINT") {
-                builder = builder.with_endpoint(ep);
-            }
-            if let Ok(access_key) = std::env::var("AZURE_ACCESS_KEY") {
-                builder = builder.with_access_key(access_key);
-            }
-            if let Ok(sas) = std::env::var("AZURE_SAS_KEY") {
-                builder = builder.with_config(object_store::azure::AzureConfigKey::SasKey, sas);
-            }
-            if let Ok(bearer) = std::env::var("AZURE_BEARER_TOKEN") {
-                builder = builder.with_bearer_token_authorization(bearer);
-            }
-            if let Ok(client_id) = std::env::var("AZURE_CLIENT_ID") {
-                builder = builder.with_client_id(client_id);
-            }
-            if let Ok(client_secret) = std::env::var("AZURE_CLIENT_SECRET") {
-                builder = builder.with_client_secret(client_secret);
-            }
-            if let Ok(tenant_id) = std::env::var("AZURE_TENANT_ID") {
-                builder = builder.with_tenant_id(tenant_id);
-            }
-            Ok(Arc::new(builder.build()?))
-        }
     }
 }
 
@@ -503,75 +510,8 @@ fn parse_az_url(raw: &str) -> Result<(String, String, String)> {
     Ok((account, container, key))
 }
 
-struct S3Auth {
-    bucket: String,
-    region: String,
-    endpoint: Option<String>,
-    allow_http: bool,
-    virtual_hosted: bool,
-    access_key_id: String,
-    secret_access_key: String,
-    session_token: Option<String>,
-}
-
-fn s3_auth() -> Result<S3Auth> {
-    let bucket = std::env::var("S3_BUCKET").context("set S3_BUCKET or include bucket in url")?;
-    let allow_http = std::env::var("S3_ALLOW_HTTP")
+fn env_flag(name: &str) -> Option<bool> {
+    std::env::var(name)
         .ok()
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false);
-    let endpoint = std::env::var("S3_ENDPOINT").ok();
-    let rt = Runtime::new()?;
-    let profile = std::env::var("S3_PROFILE")
-        .ok()
-        .or_else(|| std::env::var("AWS_PROFILE").ok());
-    let aws_conf = rt.block_on(async {
-        let mut loader = aws_config::from_env();
-        if let Some(p) = profile.clone() {
-            loader = loader.profile_name(p);
-        }
-        if let Ok(region) = std::env::var("S3_REGION") {
-            loader = loader.region(Region::new(region));
-        }
-        loader.load().await
-    });
-    let creds_provider = aws_conf
-        .credentials_provider()
-        .ok_or_else(|| anyhow!("No AWS credentials provider found; ensure AWS_PROFILE/SSO is set"))?;
-    let creds = rt
-        .block_on(async {
-            creds_provider
-                .provide_credentials()
-                .await
-                .map_err(|e| anyhow!("Failed to load AWS credentials: {e}"))
-        })?;
-    let region = std::env::var("S3_REGION")
-        .ok()
-        .or_else(|| aws_conf.region().map(|r| r.as_ref().to_string()))
-        .unwrap_or_else(|| "us-east-1".to_string());
-    let virtual_hosted = std::env::var("S3_VIRTUAL_HOSTED")
-        .ok()
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or_else(|| endpoint.as_ref().map_or(true, |ep| ep.contains("amazonaws.com")));
-    let access_key_id = std::env::var("S3_ACCESS_KEY")
-        .ok()
-        .or_else(|| std::env::var("AWS_ACCESS_KEY_ID").ok())
-        .unwrap_or_else(|| creds.access_key_id().to_string());
-    let secret_access_key = std::env::var("S3_SECRET_KEY")
-        .ok()
-        .or_else(|| std::env::var("AWS_SECRET_ACCESS_KEY").ok())
-        .unwrap_or_else(|| creds.secret_access_key().to_string());
-    let session_token = std::env::var("S3_SESSION_TOKEN")
-        .ok()
-        .or_else(|| creds.session_token().map(|t| t.to_string()));
-    Ok(S3Auth {
-        bucket,
-        region,
-        endpoint,
-        allow_http,
-        virtual_hosted,
-        access_key_id,
-        secret_access_key,
-        session_token,
-    })
 }

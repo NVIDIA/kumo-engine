@@ -13,17 +13,14 @@ use std::sync::Arc;
 use anyhow::Result;
 use arrow_array::{ArrayRef, Int64Array, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
-use aws_config::{self, BehaviorVersion};
-use aws_credential_types::provider::ProvideCredentials;
-use aws_types::region::Region;
 use bytes::Bytes;
 use clap::{Parser, ValueEnum};
 use diskgraph_core::metadata::{
     DatasetMetadata, EdgeRelationMetadata, EdgeShardMetadata, NodeShardMetadata, NodeTypeMetadata,
 };
-use object_store::aws::AmazonS3Builder;
-use object_store::azure::MicrosoftAzureBuilder;
-use object_store::gcp::GoogleCloudStorageBuilder;
+use diskgraph_fs::{
+    build_adls_client, build_gcs_client, build_s3_client, AdlsConfig, GcsConfig, S3Config,
+};
 use object_store::{path::Path as ObjectPath, ObjectStore};
 use parquet::arrow::ArrowWriter;
 use parquet::file::properties::WriterProperties;
@@ -406,36 +403,6 @@ impl OutputTarget {
                     .or_else(|| env_flag("S3_ALLOW_HTTP"))
                     .or_else(|| env_flag("AWS_ALLOW_HTTP"))
                     .unwrap_or(false);
-                let rt = Arc::new(Runtime::new()?);
-                let profile = env::var("S3_PROFILE")
-                    .ok()
-                    .or_else(|| env::var("AWS_PROFILE").ok());
-                let aws_conf = rt.block_on(async {
-                    let mut loader =
-                        aws_config::defaults(BehaviorVersion::latest());
-                    if let Some(p) = profile.clone() {
-                        loader = loader.profile_name(p);
-                    }
-                    if let Some(region) = args.s3_region.clone() {
-                        loader = loader.region(Region::new(region));
-                    }
-                    loader.load().await
-                });
-
-                let mut builder = AmazonS3Builder::new()
-                    .with_bucket_name(&bucket)
-                    .with_allow_http(allow_http);
-
-                let region = args
-                    .s3_region
-                    .clone()
-                    .or_else(|| aws_conf.region().map(|r| r.as_ref().to_string()));
-                if let Some(region) = &region {
-                    builder = builder.with_region(region);
-                }
-                if let Some(ep) = &args.s3_endpoint {
-                    builder = builder.with_endpoint(ep);
-                }
                 let virtual_hosted = args
                     .s3_virtual_hosted
                     .or_else(|| env_flag("S3_VIRTUAL_HOSTED"))
@@ -444,46 +411,33 @@ impl OutputTarget {
                             .as_ref()
                             .map_or(true, |ep| ep.contains("amazonaws.com"))
                     });
-                builder = builder.with_virtual_hosted_style_request(virtual_hosted);
-                if let Some(ak) = env::var("S3_ACCESS_KEY")
+                let profile = env::var("S3_PROFILE")
                     .ok()
-                    .or_else(|| env::var("AWS_ACCESS_KEY_ID").ok())
-                {
-                    builder = builder.with_access_key_id(ak);
-                }
-                if let Some(sk) = env::var("S3_SECRET_KEY")
-                    .ok()
-                    .or_else(|| env::var("AWS_SECRET_ACCESS_KEY").ok())
-                {
-                    builder = builder.with_secret_access_key(sk);
-                }
-                if let Some(token) = env::var("S3_SESSION_TOKEN")
-                    .ok()
-                    .or_else(|| env::var("AWS_SESSION_TOKEN").ok())
-                {
-                    builder = builder.with_token(token);
-                } else if let Some(creds_provider) = aws_conf.credentials_provider() {
-                    if let Ok(creds) = rt.block_on(async { creds_provider.provide_credentials().await }) {
-                        builder = builder.with_access_key_id(creds.access_key_id());
-                        builder = builder.with_secret_access_key(creds.secret_access_key());
-                        if let Some(token) = creds.session_token() {
-                            builder = builder.with_token(token);
-                        }
-                    }
-                }
-                let store: Arc<dyn ObjectStore> = Arc::new(builder.build()?);
+                    .or_else(|| env::var("AWS_PROFILE").ok());
+                let s3 = build_s3_client(S3Config {
+                    bucket: bucket.clone(),
+                    region: args.s3_region.clone(),
+                    endpoint: args.s3_endpoint.clone(),
+                    allow_http: Some(allow_http),
+                    virtual_hosted: Some(virtual_hosted),
+                    profile,
+                    access_key_id: None,
+                    secret_access_key: None,
+                    session_token: None,
+                })?;
+                let store: Arc<dyn ObjectStore> = s3.store;
                 Ok(OutputTarget::S3 {
                     prefix,
                     store,
                     display: args.output.clone(),
-                    rt,
+                    rt: Arc::new(Runtime::new()?),
                     part_size: args.s3_part_size,
                 })
             }
             Dest::Gcs => {
                 let (bucket, prefix) = parse_gs_url(&args.output)?;
-                let builder = GoogleCloudStorageBuilder::from_env().with_bucket_name(&bucket);
-                let store: Arc<dyn ObjectStore> = Arc::new(builder.build()?);
+                let gcs = build_gcs_client(GcsConfig { bucket: bucket.clone() })?;
+                let store: Arc<dyn ObjectStore> = gcs.store;
                 let rt = Arc::new(Runtime::new()?);
                 Ok(OutputTarget::Gcs {
                     prefix,
@@ -499,56 +453,37 @@ impl OutputTarget {
                     .azure_allow_http
                     .or_else(|| args.azure_endpoint.as_ref().map(|e| e.starts_with("http://")))
                     .unwrap_or(false);
-                let mut builder = MicrosoftAzureBuilder::new()
-                    .with_account(&account)
-                    .with_container_name(&container)
-                    .with_allow_http(allow_http);
-                if let Some(ep) = &args.azure_endpoint {
-                    builder = builder.with_endpoint(ep.to_string());
-                }
-                if let Some(access_key) = args
-                    .azure_access_key
-                    .clone()
-                    .or_else(|| env::var("AZURE_ACCESS_KEY").ok())
-                {
-                    builder = builder.with_access_key(access_key);
-                }
-                if let Some(sas) = args
-                    .azure_sas_key
-                    .clone()
-                    .or_else(|| env::var("AZURE_SAS_KEY").ok())
-                {
-                    builder = builder.with_config(object_store::azure::AzureConfigKey::SasKey, sas);
-                }
-                if let Some(bearer) = args
-                    .azure_bearer_token
-                    .clone()
-                    .or_else(|| env::var("AZURE_BEARER_TOKEN").ok())
-                {
-                    builder = builder.with_bearer_token_authorization(bearer);
-                }
-                if let Some(client_id) = args
-                    .azure_client_id
-                    .clone()
-                    .or_else(|| env::var("AZURE_CLIENT_ID").ok())
-                {
-                    builder = builder.with_client_id(client_id);
-                }
-                if let Some(client_secret) = args
-                    .azure_client_secret
-                    .clone()
-                    .or_else(|| env::var("AZURE_CLIENT_SECRET").ok())
-                {
-                    builder = builder.with_client_secret(client_secret);
-                }
-                if let Some(tenant_id) = args
-                    .azure_tenant_id
-                    .clone()
-                    .or_else(|| env::var("AZURE_TENANT_ID").ok())
-                {
-                    builder = builder.with_tenant_id(tenant_id);
-                }
-                let store: Arc<dyn ObjectStore> = Arc::new(builder.build()?);
+                let adls = build_adls_client(AdlsConfig {
+                    account: account.clone(),
+                    container: container.clone(),
+                    endpoint: args.azure_endpoint.clone(),
+                    allow_http: Some(allow_http),
+                    access_key: args
+                        .azure_access_key
+                        .clone()
+                        .or_else(|| env::var("AZURE_ACCESS_KEY").ok()),
+                    sas_key: args
+                        .azure_sas_key
+                        .clone()
+                        .or_else(|| env::var("AZURE_SAS_KEY").ok()),
+                    bearer_token: args
+                        .azure_bearer_token
+                        .clone()
+                        .or_else(|| env::var("AZURE_BEARER_TOKEN").ok()),
+                    client_id: args
+                        .azure_client_id
+                        .clone()
+                        .or_else(|| env::var("AZURE_CLIENT_ID").ok()),
+                    client_secret: args
+                        .azure_client_secret
+                        .clone()
+                        .or_else(|| env::var("AZURE_CLIENT_SECRET").ok()),
+                    tenant_id: args
+                        .azure_tenant_id
+                        .clone()
+                        .or_else(|| env::var("AZURE_TENANT_ID").ok()),
+                })?;
+                let store: Arc<dyn ObjectStore> = adls.store;
                 let rt = Arc::new(Runtime::new()?);
                 Ok(OutputTarget::Adls {
                     prefix,
@@ -612,10 +547,10 @@ impl OutputTarget {
                 ..
             } => {
                 let obj = ObjectPath::from(path.to_string_lossy().to_string());
-                let upload: Box<dyn object_store::MultipartUpload + Send> =
+                let (_id, writer) =
                     rt.block_on(store.put_multipart(&obj)).map_err(to_io_err)?;
                 Ok(Box::new(S3Sink {
-                    upload,
+                    writer,
                     rt: rt.clone(),
                     buf: Vec::with_capacity(*part_size),
                     part_size: *part_size,
@@ -683,7 +618,7 @@ impl OutputTarget {
 }
 
 struct S3Sink {
-    upload: Box<dyn object_store::MultipartUpload + Send>,
+    writer: Box<dyn tokio::io::AsyncWrite + Unpin + Send>,
     rt: Arc<Runtime>,
     buf: Vec<u8>,
     part_size: usize,
@@ -704,8 +639,14 @@ impl Write for S3Sink {
         }
         let bytes = std::mem::take(&mut self.buf);
         self.rt
-            .block_on(self.upload.put_part(Bytes::from(bytes).into()))
-            .map_err(to_io_err)?;
+            .block_on(tokio::io::AsyncWriteExt::write_all(
+                &mut self.writer,
+                &bytes,
+            ))
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        self.rt
+            .block_on(tokio::io::AsyncWriteExt::flush(&mut self.writer))
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
         Ok(())
     }
 }
@@ -716,9 +657,9 @@ impl Drop for S3Sink {
             eprintln!("S3Sink flush error on drop: {err}");
             return;
         }
-        if let Err(err) = self.rt.block_on(self.upload.complete()) {
-            eprintln!("S3Sink complete error on drop: {err}");
-        }
+        let _ = self
+            .rt
+            .block_on(tokio::io::AsyncWriteExt::shutdown(&mut self.writer));
     }
 }
 
