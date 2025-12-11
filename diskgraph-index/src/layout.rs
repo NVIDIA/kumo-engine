@@ -21,6 +21,8 @@ pub struct OffsetFileHeader {
     pub delta_chunk: u16,
     /// Offsets refer to byte positions in the edge blob.
     pub edge_blob_word_size: u16,
+    /// Total edges encoded across all relations (optional; may be zero if not set).
+    pub edge_count: u64,
 }
 
 impl OffsetFileHeader {
@@ -31,15 +33,16 @@ impl OffsetFileHeader {
             total_offsets,
             delta_chunk: DELTA_CHUNK as u16,
             edge_blob_word_size: 1,
+            edge_count: 0,
         }
     }
 }
 
 /// Metadata captured per node while building the shard.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 pub struct NodeEdgeStats {
-    pub edge_count: u32,
-    pub byte_len: u32,
+    pub edge_count: u64,
+    pub byte_len: u64,
 }
 
 /// Relation-specific layout information used to decode packed edges.

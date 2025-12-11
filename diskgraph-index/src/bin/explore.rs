@@ -10,6 +10,8 @@ use diskgraph_core::metadata::{DatasetMetadata, EdgeRelationMetadata, NodeTypeMe
 use diskgraph_index::builder::{compute_relation_layouts, ShardBuildParams, ShardBuilder};
 use diskgraph_index::reader::ShardReader;
 use diskgraph_index::streaming::{EdgeShardInput, NodeShardInput, ParquetSource};
+use diskgraph_index::layout::{OFFSETS_FILENAME, EDGES_FILENAME};
+use object_store::ObjectStore;
 use diskgraph_fs::{
     build_adls_client, build_gcs_client, build_s3_client, AdlsConfig, GcsConfig, S3Config,
 };
@@ -60,6 +62,7 @@ fn main() -> Result<()> {
     let source = parse_source(&source_str)?;
     let rt = Runtime::new().context("init tokio runtime")?;
     let tmp = tempfile::tempdir().context("create tempdir")?;
+    let load_start = std::time::Instant::now();
     let (metadata, shard_dir) = match &source {
         Source::Local(p) => {
             let metadata: DatasetMetadata = serde_json::from_slice(
@@ -83,7 +86,7 @@ fn main() -> Result<()> {
                 secret_access_key: None,
                 session_token: None,
             })?;
-            build_from_remote(
+            let (metadata, dir) = build_from_remote(
                 &rt,
                 RemoteStore::S3 {
                     bucket: bucket.clone(),
@@ -91,13 +94,14 @@ fn main() -> Result<()> {
                     client: s3,
                 },
                 tmp.path(),
-            )?
+            )?;
+            (metadata, dir)
         }
         Source::Gcs { bucket, prefix } => {
             let gcs = build_gcs_client(GcsConfig {
                 bucket: bucket.clone(),
             })?;
-            build_from_remote(
+            let (metadata, dir) = build_from_remote(
                 &rt,
                 RemoteStore::Gcs {
                     bucket: bucket.clone(),
@@ -105,7 +109,8 @@ fn main() -> Result<()> {
                     client: gcs,
                 },
                 tmp.path(),
-            )?
+            )?;
+            (metadata, dir)
         }
         Source::Adls {
             account,
@@ -124,7 +129,7 @@ fn main() -> Result<()> {
                 client_secret: std::env::var("AZURE_CLIENT_SECRET").ok(),
                 tenant_id: std::env::var("AZURE_TENANT_ID").ok(),
             })?;
-            build_from_remote(
+            let (metadata, dir) = build_from_remote(
                 &rt,
                 RemoteStore::Adls {
                     account: account.clone(),
@@ -133,13 +138,38 @@ fn main() -> Result<()> {
                     client: adls,
                 },
                 tmp.path(),
-            )?
+            )?;
+            (metadata, dir)
         }
     };
+    let elapsed = load_start.elapsed().as_secs_f64();
     let (layouts, _node_types) = relation_layouts(&metadata)?;
     let reader = ShardReader::open(&shard_dir, layouts.clone()).context("open shard reader")?;
 
     println!("Loaded shard from {}", source_str);
+    if elapsed > 0.0 {
+        let offsets_size = fs::metadata(shard_dir.join(OFFSETS_FILENAME))
+            .map(|m| m.len())
+            .unwrap_or(0);
+        let edges_size = fs::metadata(shard_dir.join(EDGES_FILENAME))
+            .map(|m| m.len())
+            .unwrap_or(0);
+        let bytes_total = offsets_size + edges_size;
+        let nodes = reader.header().nodes;
+        let edges = reader.edge_count();
+        let bps = bytes_total as f64 / elapsed;
+        let nps = nodes as f64 / elapsed;
+        let eps = edges as f64 / elapsed;
+        println!(
+            "Load stats: {:.2}s, {:.2} MB, {:.2} MB/s, {:.0} nodes/s, {:.0} edges/s, {:.0} (nodes+edges)/s",
+            elapsed,
+            bytes_total as f64 / (1024.0 * 1024.0),
+            bps / (1024.0 * 1024.0),
+            nps,
+            eps,
+            (nodes + edges) as f64 / elapsed
+        );
+    }
     print_header(&metadata, &reader);
     repl(&metadata.edge_relations, &reader)?;
     Ok(())

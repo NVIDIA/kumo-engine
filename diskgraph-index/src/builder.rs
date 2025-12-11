@@ -22,6 +22,8 @@ use parquet::file::metadata::ParquetMetaData;
 use parquet::file::reader::FileReader;
 use parquet::file::serialized_reader::SerializedFileReader;
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
+use serde_json;
+use serde::Serialize;
 use diskgraph_fs::{build_s3_client, S3Config as FsS3Config};
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
@@ -232,18 +234,18 @@ impl ShardBuilder {
             return Err(IndexBuildError::DanglingEdges.into());
         }
 
-        offsets_writer.finish(nodes_seen)?;
+        offsets_writer.finish(nodes_seen, edges_writer.edge_count)?;
         let stats = NodeEdgeStats {
-            edge_count: edges_writer
-                .edge_count
-                .try_into()
-                .map_err(|_| IndexBuildError::CountOverflow)?,
-            byte_len: edges_writer
-                .bytes_written
-                .try_into()
-                .map_err(|_| IndexBuildError::CountOverflow)?,
+            edge_count: edges_writer.edge_count,
+            byte_len: edges_writer.bytes_written,
         };
         edges_writer.finish()?;
+        let report = BuildReport {
+            node_edge_stats: stats,
+            build_stats: build_stats.clone(),
+        };
+        let report_path = self.params.output_dir.join("build_stats.json");
+        fs::write(&report_path, serde_json::to_vec_pretty(&report)?)?;
 
         info!(
             "built shard {} for node type {} (relations: {}, nodes={}, edges={}, bytes={})",
@@ -276,7 +278,7 @@ pub struct ShardBuildOutput {
 
 /// Counters gathered during build. These are non-fatal events that help
 /// surface warning conditions to callers.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, Serialize)]
 pub struct BuildStats {
     pub nodes_ingested: u64,
     pub edges_ingested: u64,
@@ -285,6 +287,12 @@ pub struct BuildStats {
     pub truncated_edges_per_relation: Vec<u64>,
     /// Number of per-relation edge lists that were capped at MAX_RELATION_EDGE_COUNT.
     pub capped_edge_lists: u64,
+}
+
+#[derive(Serialize)]
+struct BuildReport {
+    node_edge_stats: NodeEdgeStats,
+    build_stats: BuildStats,
 }
 
 pub fn compute_relation_layouts(
@@ -402,10 +410,11 @@ impl OffsetChunkWriter {
         Ok(())
     }
 
-    fn finish(mut self, node_count: u64) -> Result<u64> {
+    fn finish(mut self, node_count: u64, edge_count: u64) -> Result<u64> {
         self.flush_chunk(Vec::new())?;
         self.writer.flush()?;
-        let header = OffsetFileHeader::new(node_count, self.total_offsets);
+        let mut header = OffsetFileHeader::new(node_count, self.total_offsets);
+        header.edge_count = edge_count;
         let header_bytes = bincode::serialize(&header)
             .map_err(|_| IndexBuildError::NotImplemented("offset encoding"))?;
         let mut file = self.writer.into_inner()?;

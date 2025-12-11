@@ -84,6 +84,9 @@ struct MassiveArgs {
     /// S3 multipart part size in bytes (default 64 MiB).
     #[arg(long, default_value_t = 64 * 1024 * 1024)]
     s3_part_size: usize,
+    /// Max concurrent multipart parts in flight (for all cloud backends).
+    #[arg(long, default_value_t = 10)]
+    multipart_concurrency: usize,
     /// Allow http for S3 endpoints (e.g., local emulators).
     #[arg(long)]
     s3_allow_http: Option<bool>,
@@ -374,6 +377,7 @@ enum OutputTarget {
         display: String,
         rt: Arc<Runtime>,
         part_size: usize,
+        part_concurrency: usize,
     },
     Gcs {
         prefix: String,
@@ -381,6 +385,7 @@ enum OutputTarget {
         display: String,
         rt: Arc<Runtime>,
         part_size: usize,
+        part_concurrency: usize,
     },
     Adls {
         prefix: String,
@@ -388,6 +393,7 @@ enum OutputTarget {
         display: String,
         rt: Arc<Runtime>,
         part_size: usize,
+        part_concurrency: usize,
     },
 }
 
@@ -399,6 +405,10 @@ impl OutputTarget {
             }),
             Dest::S3 => {
                 let (bucket, prefix) = parse_s3_url(&args.output)?;
+                let part_concurrency = env::var("MULTIPART_CONCURRENCY")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(args.multipart_concurrency);
                 let allow_http = args
                     .s3_allow_http
                     .or_else(|| env_flag("S3_ALLOW_HTTP"))
@@ -433,10 +443,15 @@ impl OutputTarget {
                     display: args.output.clone(),
                     rt: Arc::new(Runtime::new()?),
                     part_size: args.s3_part_size,
+                    part_concurrency,
                 })
             }
             Dest::Gcs => {
                 let (bucket, prefix) = parse_gs_url(&args.output)?;
+                let part_concurrency = env::var("MULTIPART_CONCURRENCY")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(args.multipart_concurrency);
                 let gcs = build_gcs_client(GcsConfig { bucket: bucket.clone() })?;
                 let store: Arc<dyn ObjectStore> = gcs.store;
                 let rt = Arc::new(Runtime::new()?);
@@ -446,10 +461,15 @@ impl OutputTarget {
                     display: args.output.clone(),
                     rt,
                     part_size: args.s3_part_size,
+                    part_concurrency,
                 })
             }
             Dest::Adls => {
                 let (account, container, prefix) = parse_az_url(&args.output)?;
+                let part_concurrency = env::var("MULTIPART_CONCURRENCY")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(args.multipart_concurrency);
                 let allow_http = args
                     .azure_allow_http
                     .or_else(|| args.azure_endpoint.as_ref().map(|e| e.starts_with("http://")))
@@ -492,6 +512,7 @@ impl OutputTarget {
                     display: args.output.clone(),
                     rt,
                     part_size: args.s3_part_size,
+                    part_concurrency,
                 })
             }
         }
@@ -533,18 +554,21 @@ impl OutputTarget {
                 store,
                 rt,
                 part_size,
+                part_concurrency,
                 ..
             }
             | OutputTarget::Gcs {
                 store,
                 rt,
                 part_size,
+                part_concurrency,
                 ..
             }
             | OutputTarget::Adls {
                 store,
                 rt,
                 part_size,
+                part_concurrency,
                 ..
             } => {
                 let obj = ObjectPath::from(path.to_string_lossy().to_string());
@@ -557,6 +581,8 @@ impl OutputTarget {
                         *part_size,
                     )),
                     rt: rt.clone(),
+                    max_concurrency: *part_concurrency,
+                    handle: rt.handle().clone(),
                 }))
             }
         }
@@ -623,11 +649,17 @@ impl OutputTarget {
 struct S3Sink {
     writer: Option<WriteMultipart>,
     rt: Arc<Runtime>,
+    max_concurrency: usize,
+    handle: tokio::runtime::Handle,
 }
 
 impl Write for S3Sink {
     fn write(&mut self, data: &[u8]) -> io::Result<usize> {
         if let Some(writer) = self.writer.as_mut() {
+            self.rt
+                .block_on(writer.wait_for_capacity(self.max_concurrency))
+                .map_err(to_io_err)?;
+            let _guard = self.handle.enter();
             writer.write(data);
         }
         Ok(data.len())

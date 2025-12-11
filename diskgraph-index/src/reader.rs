@@ -23,6 +23,7 @@ pub struct ShardReader {
     header: OffsetFileHeader,
     chunks: Vec<OffsetChunk>,
     layouts: Arc<Vec<RelationLayout>>,
+    edge_count: u64,
 }
 
 impl ShardReader {
@@ -37,17 +38,23 @@ impl ShardReader {
             bincode::deserialize(&offsets[..std::mem::size_of::<OffsetFileHeader>()])
                 .map_err(|_| DiskgraphError::InvalidMetadata("invalid offsets header".into()))?;
         let chunks = parse_offset_chunks(&offsets, header.total_offsets)?;
+        let edge_count = header.edge_count;
         Ok(Self {
             offsets_mmap: offsets,
             edges,
             header,
             chunks,
             layouts,
+            edge_count,
         })
     }
 
     pub fn header(&self) -> &OffsetFileHeader {
         &self.header
+    }
+
+    pub fn edge_count(&self) -> u64 {
+        self.edge_count
     }
 
     /// Lookup a node's edge list by index within the shard.
