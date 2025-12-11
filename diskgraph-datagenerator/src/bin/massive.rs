@@ -182,6 +182,7 @@ fn main() -> Result<()> {
         &target,
         &args.node_type_name,
         node_meta,
+        args.max_dst_id,
         rel0_cfg,
         edge0_meta,
         rel1_cfg,
@@ -331,6 +332,7 @@ fn write_metadata(
     root: &OutputTarget,
     node_type_name: &str,
     node: NodeShardMetadata,
+    max_dst_id: u64,
     rel0: RelationConfig,
     edge0: EdgeShardMetadata,
     rel1: RelationConfig,
@@ -338,7 +340,7 @@ fn write_metadata(
 ) -> Result<()> {
     let node_meta = NodeTypeMetadata {
         name: node_type_name.into(),
-        max_id: node.max_id,
+        max_id: node.max_id.max(max_dst_id),
         shards: vec![node],
     };
     let edge_relations = vec![
