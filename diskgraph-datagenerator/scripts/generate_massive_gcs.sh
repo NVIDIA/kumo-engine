@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Generate a massive dataset locally and push it to GCS.
+# Generate a massive dataset and stream it directly to GCS.
 # Edit the constants below or override via env vars.
 
 NODES="${NODES:-500000000}"
@@ -17,12 +17,9 @@ NODE_BATCH="${NODE_BATCH:-5000000}"
 ROW_GROUP="${ROW_GROUP:-1000000}"
 SEED="${SEED:-42}"
 
-LOCAL_ROOT="${LOCAL_ROOT:-/tmp/diskgraph-massive}"
-RUN_ID="${RUN_ID:-run-$(date +%s)-$RANDOM}"
-OUTPUT_DIR="${LOCAL_ROOT}/${RUN_ID}"
-
 # Target prefix in GCS, e.g. gs://bucket/diskgraph-datagenerator
 GCS_PREFIX="${GCS_PREFIX:-gs://kumo-unit-test/diskgraph-datagenerator}"
+RUN_ID="${RUN_ID:-run-$(date +%s)-$RANDOM}"
 DEST="${GCS_PREFIX%/}/${RUN_ID}"
 
 echo "Using GCS destination: ${DEST}"
@@ -32,11 +29,10 @@ echo "diskgraph massive generator access check" > "${TMPFILE}"
 gsutil cp "${TMPFILE}" "${DEST}/_access_check.txt" >/dev/null
 rm -f "${TMPFILE}"
 
-mkdir -p "${OUTPUT_DIR}"
-
-echo "Generating massive dataset to ${OUTPUT_DIR}"
+echo "Generating massive dataset directly to ${DEST}"
 cargo run -p diskgraph-datagenerator --bin massive --release -- \
-  --output "${OUTPUT_DIR}" \
+  --dest gcs \
+  --output "${DEST}" \
   --nodes "${NODES}" \
   --edges-per-relation "${EDGES_PER_REL}" \
   --max-dst-id "${MAX_DST_ID}" \
@@ -49,8 +45,5 @@ cargo run -p diskgraph-datagenerator --bin massive --release -- \
   --relation1-name "${REL1_NAME}" \
   --relation0-sort-bits "${REL0_SORT_BITS}" \
   --relation1-sort-bits "${REL1_SORT_BITS}"
-
-echo "Uploading dataset to ${DEST}"
-gsutil -m cp -r "${OUTPUT_DIR}"/* "${DEST}/"
-
-echo "Done. Dataset uploaded to ${DEST}"
+  
+echo "Done. Dataset written to ${DEST}"

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Generate a massive dataset locally and push it to Azure Blob/ADLS via azcopy.
+# Generate a massive dataset and stream it directly to Azure Blob/ADLS.
 # Edit the constants below or override via env vars.
 
 NODES="${NODES:-500000000}"
@@ -17,22 +17,18 @@ NODE_BATCH="${NODE_BATCH:-5000000}"
 ROW_GROUP="${ROW_GROUP:-1000000}"
 SEED="${SEED:-42}"
 
-LOCAL_ROOT="${LOCAL_ROOT:-/tmp/diskgraph-massive}"
+# Target URL prefix, e.g. az://ACCOUNT/CONTAINER/diskgraph-datagenerator
+AZURE_URL="${AZURE_URL:-az://kumo/kumo-unit-test/diskgraph-datagenerator}"
 RUN_ID="${RUN_ID:-run-$(date +%s)-$RANDOM}"
-OUTPUT_DIR="${LOCAL_ROOT}/${RUN_ID}"
-
-# Target URL prefix, e.g. https://ACCOUNT.blob.core.windows.net/CONTAINER/diskgraph-datagenerator
-AZURE_URL="${AZURE_URL:-https://kumo.blob.core.windows.net/kumo-unit-test/diskgraph-datagenerator}"
 DEST="${AZURE_URL%/}/${RUN_ID}"
 
 echo "Using Azure destination: ${DEST}"
 echo "Ensure azcopy is logged in (SAS/account key/identity)."
 
-mkdir -p "${OUTPUT_DIR}"
-
-echo "Generating massive dataset to ${OUTPUT_DIR}"
+echo "Generating massive dataset directly to ${DEST}"
 cargo run -p diskgraph-datagenerator --bin massive --release -- \
-  --output "${OUTPUT_DIR}" \
+  --dest adls \
+  --output "${DEST}" \
   --nodes "${NODES}" \
   --edges-per-relation "${EDGES_PER_REL}" \
   --max-dst-id "${MAX_DST_ID}" \
@@ -46,7 +42,4 @@ cargo run -p diskgraph-datagenerator --bin massive --release -- \
   --relation0-sort-bits "${REL0_SORT_BITS}" \
   --relation1-sort-bits "${REL1_SORT_BITS}"
 
-echo "Uploading dataset to ${DEST}"
-azcopy copy "${OUTPUT_DIR}" "${DEST}" --recursive
-
-echo "Done. Dataset uploaded to ${DEST}"
+echo "Done. Dataset written to ${DEST}"

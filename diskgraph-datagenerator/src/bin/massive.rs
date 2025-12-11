@@ -22,6 +22,8 @@ use diskgraph_core::metadata::{
     DatasetMetadata, EdgeRelationMetadata, EdgeShardMetadata, NodeShardMetadata, NodeTypeMetadata,
 };
 use object_store::aws::AmazonS3Builder;
+use object_store::azure::MicrosoftAzureBuilder;
+use object_store::gcp::GoogleCloudStorageBuilder;
 use object_store::{path::Path as ObjectPath, ObjectStore};
 use parquet::arrow::ArrowWriter;
 use parquet::file::properties::WriterProperties;
@@ -90,12 +92,38 @@ struct MassiveArgs {
     /// Force virtual-hosted style for S3 (defaults to true for AWS endpoints, false for custom unless set).
     #[arg(long)]
     s3_virtual_hosted: Option<bool>,
+    /// Azure endpoint override (dest=adls, for custom/emulator).
+    #[arg(long)]
+    azure_endpoint: Option<String>,
+    /// Allow http for Azure endpoints (e.g., emulator).
+    #[arg(long)]
+    azure_allow_http: Option<bool>,
+    /// Azure SAS key.
+    #[arg(long)]
+    azure_sas_key: Option<String>,
+    /// Azure access key.
+    #[arg(long)]
+    azure_access_key: Option<String>,
+    /// Azure bearer token.
+    #[arg(long)]
+    azure_bearer_token: Option<String>,
+    /// Azure client id.
+    #[arg(long)]
+    azure_client_id: Option<String>,
+    /// Azure client secret.
+    #[arg(long)]
+    azure_client_secret: Option<String>,
+    /// Azure tenant id.
+    #[arg(long)]
+    azure_tenant_id: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum, PartialEq, Eq)]
 enum Dest {
     Local,
     S3,
+    Gcs,
+    Adls,
 }
 
 #[derive(Clone)]
@@ -347,6 +375,20 @@ enum OutputTarget {
         rt: Arc<Runtime>,
         part_size: usize,
     },
+    Gcs {
+        prefix: String,
+        store: Arc<dyn ObjectStore>,
+        display: String,
+        rt: Arc<Runtime>,
+        part_size: usize,
+    },
+    Adls {
+        prefix: String,
+        store: Arc<dyn ObjectStore>,
+        display: String,
+        rt: Arc<Runtime>,
+        part_size: usize,
+    },
 }
 
 impl OutputTarget {
@@ -436,6 +478,84 @@ impl OutputTarget {
                     part_size: args.s3_part_size,
                 })
             }
+            Dest::Gcs => {
+                let (bucket, prefix) = parse_gs_url(&args.output)?;
+                let builder = GoogleCloudStorageBuilder::from_env().with_bucket_name(&bucket);
+                let store: Arc<dyn ObjectStore> = Arc::new(builder.build()?);
+                let rt = Arc::new(Runtime::new()?);
+                Ok(OutputTarget::Gcs {
+                    prefix,
+                    store,
+                    display: args.output.clone(),
+                    rt,
+                    part_size: args.s3_part_size,
+                })
+            }
+            Dest::Adls => {
+                let (account, container, prefix) = parse_az_url(&args.output)?;
+                let allow_http = args
+                    .azure_allow_http
+                    .or_else(|| args.azure_endpoint.as_ref().map(|e| e.starts_with("http://")))
+                    .unwrap_or(false);
+                let mut builder = MicrosoftAzureBuilder::new()
+                    .with_account(&account)
+                    .with_container_name(&container)
+                    .with_allow_http(allow_http);
+                if let Some(ep) = &args.azure_endpoint {
+                    builder = builder.with_endpoint(ep.to_string());
+                }
+                if let Some(access_key) = args
+                    .azure_access_key
+                    .clone()
+                    .or_else(|| env::var("AZURE_ACCESS_KEY").ok())
+                {
+                    builder = builder.with_access_key(access_key);
+                }
+                if let Some(sas) = args
+                    .azure_sas_key
+                    .clone()
+                    .or_else(|| env::var("AZURE_SAS_KEY").ok())
+                {
+                    builder = builder.with_config(object_store::azure::AzureConfigKey::SasKey, sas);
+                }
+                if let Some(bearer) = args
+                    .azure_bearer_token
+                    .clone()
+                    .or_else(|| env::var("AZURE_BEARER_TOKEN").ok())
+                {
+                    builder = builder.with_bearer_token_authorization(bearer);
+                }
+                if let Some(client_id) = args
+                    .azure_client_id
+                    .clone()
+                    .or_else(|| env::var("AZURE_CLIENT_ID").ok())
+                {
+                    builder = builder.with_client_id(client_id);
+                }
+                if let Some(client_secret) = args
+                    .azure_client_secret
+                    .clone()
+                    .or_else(|| env::var("AZURE_CLIENT_SECRET").ok())
+                {
+                    builder = builder.with_client_secret(client_secret);
+                }
+                if let Some(tenant_id) = args
+                    .azure_tenant_id
+                    .clone()
+                    .or_else(|| env::var("AZURE_TENANT_ID").ok())
+                {
+                    builder = builder.with_tenant_id(tenant_id);
+                }
+                let store: Arc<dyn ObjectStore> = Arc::new(builder.build()?);
+                let rt = Arc::new(Runtime::new()?);
+                Ok(OutputTarget::Adls {
+                    prefix,
+                    store,
+                    display: args.output.clone(),
+                    rt,
+                    part_size: args.s3_part_size,
+                })
+            }
         }
     }
 
@@ -444,7 +564,7 @@ impl OutputTarget {
             OutputTarget::Local { root } => {
                 fs::create_dir_all(root)?;
             }
-            OutputTarget::S3 { .. } => {}
+            OutputTarget::S3 { .. } | OutputTarget::Gcs { .. } | OutputTarget::Adls { .. } => {}
         }
         Ok(())
     }
@@ -452,7 +572,9 @@ impl OutputTarget {
     fn join(&self, name: &str) -> PathBuf {
         match self {
             OutputTarget::Local { root } => root.join(name),
-            OutputTarget::S3 { prefix, .. } => {
+            OutputTarget::S3 { prefix, .. }
+            | OutputTarget::Gcs { prefix, .. }
+            | OutputTarget::Adls { prefix, .. } => {
                 let p = if prefix.is_empty() {
                     name.to_string()
                 } else {
@@ -470,6 +592,18 @@ impl OutputTarget {
                 Ok(Box::new(file))
             }
             OutputTarget::S3 {
+                store,
+                rt,
+                part_size,
+                ..
+            }
+            | OutputTarget::Gcs {
+                store,
+                rt,
+                part_size,
+                ..
+            }
+            | OutputTarget::Adls {
                 store,
                 rt,
                 part_size,
@@ -499,6 +633,18 @@ impl OutputTarget {
                 rt,
                 prefix,
                 ..
+            }
+            | OutputTarget::Gcs {
+                store,
+                rt,
+                prefix,
+                ..
+            }
+            | OutputTarget::Adls {
+                store,
+                rt,
+                prefix,
+                ..
             } => {
                 let obj = if prefix.is_empty() {
                     ObjectPath::from(name)
@@ -515,7 +661,9 @@ impl OutputTarget {
     fn display(&self) -> String {
         match self {
             OutputTarget::Local { root } => root.display().to_string(),
-            OutputTarget::S3 { display, .. } => display.clone(),
+            OutputTarget::S3 { display, .. }
+            | OutputTarget::Gcs { display, .. }
+            | OutputTarget::Adls { display, .. } => display.clone(),
         }
     }
 
@@ -525,7 +673,9 @@ impl OutputTarget {
                 .file_name()
                 .map(|s| s.to_string_lossy().to_string())
                 .unwrap_or_else(|| "massive".into()),
-            OutputTarget::S3 { prefix, .. } => prefix.clone(),
+            OutputTarget::S3 { prefix, .. }
+            | OutputTarget::Gcs { prefix, .. }
+            | OutputTarget::Adls { prefix, .. } => prefix.clone(),
         }
     }
 }
@@ -589,6 +739,49 @@ fn parse_s3_url(raw: &str) -> Result<(String, String)> {
         key.pop();
     }
     Ok((bucket, key))
+}
+
+fn parse_gs_url(raw: &str) -> Result<(String, String)> {
+    let url = url::Url::parse(raw)
+        .map_err(|e| anyhow::anyhow!("invalid gs url {raw}: {e}"))?;
+    if url.scheme() != "gs" {
+        anyhow::bail!("expected gs:// url, got {raw}");
+    }
+    let bucket = url
+        .host_str()
+        .ok_or_else(|| anyhow::anyhow!("missing bucket in gs url"))?
+        .to_string();
+    let mut key = url.path().trim_start_matches('/').to_string();
+    if key.ends_with('/') {
+        key.pop();
+    }
+    Ok((bucket, key))
+}
+
+fn parse_az_url(raw: &str) -> Result<(String, String, String)> {
+    let url = url::Url::parse(raw)
+        .map_err(|e| anyhow::anyhow!("invalid az url {raw}: {e}"))?;
+    if url.scheme() != "az" {
+        anyhow::bail!("expected az:// url, got {raw}");
+    }
+    let account = url
+        .host_str()
+        .ok_or_else(|| anyhow::anyhow!("missing account in az url"))?
+        .to_string();
+    let mut segments = url
+        .path()
+        .trim_start_matches('/')
+        .split('/')
+        .filter(|s| !s.is_empty());
+    let container = segments
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("missing container in az url"))?
+        .to_string();
+    let mut key = segments.collect::<Vec<_>>().join("/");
+    if key.ends_with('/') {
+        key.pop();
+    }
+    Ok((account, container, key))
 }
 
 fn env_flag(key: &str) -> Option<bool> {
