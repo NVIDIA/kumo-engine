@@ -45,10 +45,6 @@ struct S3Config {
 struct GcsConfig {
     bucket: String,
     prefix: Option<String>,
-    endpoint: Option<String>,
-    service_account_path: Option<String>,
-    service_account_key: Option<String>,
-    application_credentials_path: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -360,10 +356,6 @@ fn gcs_config_from_env() -> Option<GcsConfig> {
     Some(GcsConfig {
         bucket,
         prefix,
-        endpoint: None,
-        service_account_path: None,
-        service_account_key: None,
-        application_credentials_path: None,
     })
 }
 

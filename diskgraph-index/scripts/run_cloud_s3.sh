@@ -18,9 +18,11 @@ if [[ -n "${AWS_PROFILE_TO_USE}" ]]; then
   export AWS_PROFILE="${AWS_PROFILE_TO_USE}"
 else
   # If no profile specified and there's exactly one non-default profile, use it.
-  mapfile -t AWS_PROFILES < <(aws configure list-profiles 2>/dev/null | grep -v '^default$' || true)
-  if [[ "${#AWS_PROFILES[@]}" -eq 1 ]]; then
-    export AWS_PROFILE="${AWS_PROFILES[0]}"
+  AWS_PROFILES_RAW="$(aws configure list-profiles 2>/dev/null | grep -v '^default$' || true)"
+  # shellcheck disable=SC2086 # intentional word splitting into positional params
+  set -- ${AWS_PROFILES_RAW}
+  if [[ "$#" -eq 1 ]]; then
+    export AWS_PROFILE="$1"
     echo "No AWS_PROFILE provided; auto-selecting profile '${AWS_PROFILE}'."
   fi
 fi
