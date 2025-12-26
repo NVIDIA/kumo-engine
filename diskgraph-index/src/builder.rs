@@ -193,17 +193,21 @@ impl ShardBuilder {
                 }
                 let edge = edge_stream.pop().unwrap();
                 last_edge = Some(edge);
-                buckets[edge.relation_id as usize].push(edge);
+                let rel_idx = edge.relation_id as usize;
+                buckets[rel_idx].push(edge);
             }
             // Compute lengths first to avoid borrowing conflicts, then apply truncation.
             let mut any_truncated = false;
+            let mut total_edges: usize = 0;
             for i in 0..rel_count {
                 let len = buckets[i].len();
                 lens[i] = len;
                 counts[i] = len;
+                total_edges = total_edges.saturating_add(len);
                 if len > MAX_RELATION_EDGE_COUNT {
                     buckets[i].truncate(MAX_RELATION_EDGE_COUNT);
                     counts[i] = MAX_RELATION_EDGE_COUNT;
+                    total_edges = total_edges.saturating_sub(len - MAX_RELATION_EDGE_COUNT);
                     truncated_node = true;
                     any_truncated = true;
                     build_stats.capped_edge_lists = build_stats.capped_edge_lists.saturating_add(1);
@@ -212,7 +216,6 @@ impl ShardBuilder {
             if any_truncated {
                 original_counts.copy_from_slice(&lens);
             }
-            let total_edges: usize = counts.iter().sum();
             if total_edges == 0 {
                 // No edges for this node across all relations; avoid writing zero counts.
                 offsets_writer.push(start_offset)?;
