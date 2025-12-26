@@ -7,7 +7,9 @@
 
 use anyhow::{anyhow, Context, Result};
 use diskgraph_core::metadata::{DatasetMetadata, EdgeRelationMetadata, NodeTypeMetadata};
-use diskgraph_index::builder::{compute_relation_layouts, ShardBuildParams, ShardBuilder};
+use diskgraph_index::builder::{
+    compute_relation_layouts, IndexBuildError, ShardBuildParams, ShardBuilder,
+};
 use diskgraph_index::reader::ShardReader;
 use diskgraph_index::streaming::{EdgeShardInput, NodeShardInput, ParquetSource};
 use diskgraph_index::layout::{OFFSETS_FILENAME, EDGES_FILENAME};
@@ -23,6 +25,7 @@ use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::runtime::Runtime;
 
@@ -62,6 +65,7 @@ fn main() -> Result<()> {
     let mut profile_path: Option<PathBuf> = None;
     let mut profile_pprof_path: Option<PathBuf> = None;
     let mut profile_out_base: Option<PathBuf> = None;
+    let mut profile_seconds: Option<u64> = None;
     let mut source_str: Option<String> = None;
     while let Some(arg) = args.next() {
         if arg == "--profile" {
@@ -86,15 +90,29 @@ fn main() -> Result<()> {
             profile_out_base = Some(PathBuf::from(base));
             continue;
         }
+        if arg == "--profile-seconds" {
+            let raw = args
+                .next()
+                .ok_or_else(|| anyhow!("--profile-seconds requires an integer"))?;
+            let secs: u64 = raw
+                .parse()
+                .map_err(|_| anyhow!("--profile-seconds must be an integer"))?;
+            profile_seconds = Some(secs);
+            continue;
+        }
         if source_str.is_none() {
             source_str = Some(arg);
         }
     }
     let source_str = source_str.ok_or_else(|| {
         anyhow!(
-            "usage: explore [--profile-out [base]] [--profile <path.svg>] [--profile-pprof <path.pb>] <source> (local path or s3:// gs:// az://)"
+            "usage: explore [--profile-out [base]] [--profile-seconds <secs>] <source> (local path or s3:// gs:// az://); optional: --profile <path.svg> or --profile-pprof <path.pb>"
         )
     })?;
+    let profile_enabled = profile_path.is_some()
+        || profile_pprof_path.is_some()
+        || profile_out_base.is_some()
+        || profile_seconds.is_some();
     let _guard = profile_path
         .as_ref()
         .or(profile_pprof_path.as_ref())
@@ -102,123 +120,32 @@ fn main() -> Result<()> {
         .map(|_| ProfilerGuard::new(100))
         .transpose()
         .context("start profiler")?;
-    let source = parse_source(&source_str)?;
-    let rt = Runtime::new().context("init tokio runtime")?;
-    let tmp = cache_tempdir().context("create cache tempdir")?;
-    let load_start = std::time::Instant::now();
-    let (metadata, shard_dir) = match &source {
-        Source::Local(p) => {
-            if is_indexed_shard(p) {
-                let metadata: DatasetMetadata = serde_json::from_slice(
-                    &fs::read(p.join("metadata.json")).context("read metadata.json")?,
-                )
-                .context("parse metadata.json")?;
-                (metadata, p.clone())
-            } else {
-                build_from_local_parquet(p, tmp.path())?
-            }
+    let abort_flag = if profile_enabled {
+        let flag = Arc::new(AtomicBool::new(false));
+        if let Some(secs) = profile_seconds {
+            let thread_flag = flag.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_secs(secs));
+                thread_flag.store(true, Ordering::Relaxed);
+            });
         }
-        Source::S3 { bucket, prefix } => {
-            let profile = std::env::var("S3_PROFILE")
-                .ok()
-                .or_else(|| std::env::var("AWS_PROFILE").ok());
-            let s3 = build_s3_client(S3Config {
-                bucket: bucket.clone(),
-                region: std::env::var("S3_REGION").ok(),
-                endpoint: std::env::var("S3_ENDPOINT").ok(),
-                allow_http: env_flag("S3_ALLOW_HTTP").or_else(|| env_flag("AWS_ALLOW_HTTP")),
-                virtual_hosted: env_flag("S3_VIRTUAL_HOSTED"),
-                profile,
-                access_key_id: None,
-                secret_access_key: None,
-                session_token: None,
-            })?;
-            let (metadata, dir) = build_from_remote(
-                &rt,
-                RemoteStore::S3 {
-                    bucket: bucket.clone(),
-                    prefix: prefix.clone(),
-                    client: s3,
-                },
-                tmp.path(),
-            )?;
-            (metadata, dir)
-        }
-        Source::Gcs { bucket, prefix } => {
-            let gcs = build_gcs_client(GcsConfig {
-                bucket: bucket.clone(),
-            })?;
-            let (metadata, dir) = build_from_remote(
-                &rt,
-                RemoteStore::Gcs {
-                    bucket: bucket.clone(),
-                    prefix: prefix.clone(),
-                    client: gcs,
-                },
-                tmp.path(),
-            )?;
-            (metadata, dir)
-        }
-        Source::Adls {
-            account,
-            container,
-            prefix,
-        } => {
-            let adls = build_adls_client(AdlsConfig {
-                account: account.clone(),
-                container: container.clone(),
-                endpoint: std::env::var("AZURE_ENDPOINT").ok(),
-                allow_http: env_flag("AZURE_ALLOW_HTTP"),
-                access_key: std::env::var("AZURE_ACCESS_KEY").ok(),
-                sas_key: std::env::var("AZURE_SAS_KEY").ok(),
-                bearer_token: std::env::var("AZURE_BEARER_TOKEN").ok(),
-                client_id: std::env::var("AZURE_CLIENT_ID").ok(),
-                client_secret: std::env::var("AZURE_CLIENT_SECRET").ok(),
-                tenant_id: std::env::var("AZURE_TENANT_ID").ok(),
-            })?;
-            let (metadata, dir) = build_from_remote(
-                &rt,
-                RemoteStore::Adls {
-                    account: account.clone(),
-                    container: container.clone(),
-                    prefix: prefix.clone(),
-                    client: adls,
-                },
-                tmp.path(),
-            )?;
-            (metadata, dir)
-        }
+        let handler_flag = flag.clone();
+        ctrlc::set_handler(move || {
+            handler_flag.store(true, Ordering::Relaxed);
+        })
+        .context("install ctrl-c handler")?;
+        Some(flag)
+    } else {
+        None
     };
-    let elapsed = load_start.elapsed().as_secs_f64();
-    let (layouts, _node_types) = relation_layouts(&metadata)?;
-    let reader = ShardReader::open(&shard_dir, layouts.clone()).context("open shard reader")?;
-
-    println!("Loaded shard from {}", source_str);
-    if elapsed > 0.0 {
-        let offsets_size = fs::metadata(shard_dir.join(OFFSETS_FILENAME))
-            .map(|m| m.len())
-            .unwrap_or(0);
-        let edges_size = fs::metadata(shard_dir.join(EDGES_FILENAME))
-            .map(|m| m.len())
-            .unwrap_or(0);
-        let bytes_total = offsets_size + edges_size;
-        let nodes = reader.header().nodes;
-        let edges = reader.edge_count();
-        let bps = bytes_total as f64 / elapsed;
-        let nps = nodes as f64 / elapsed;
-        let eps = edges as f64 / elapsed;
-        println!(
-            "Load stats: {:.2}s, {:.2} MB, {:.2} MB/s, {:.0} nodes/s, {:.0} edges/s, {:.0} (nodes+edges)/s",
-            elapsed,
-            bytes_total as f64 / (1024.0 * 1024.0),
-            bps / (1024.0 * 1024.0),
-            nps,
-            eps,
-            (nodes + edges) as f64 / elapsed
-        );
+    let run_result = run_explore(&source_str, abort_flag.clone());
+    if let (Some(guard), Some(secs)) = (_guard.as_ref(), profile_seconds) {
+        let guard = guard.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(secs));
+            drop(guard);
+        });
     }
-    print_header(&metadata, &reader);
-    repl(&metadata.edge_relations, &reader)?;
     if let Some(guard) = _guard.as_ref() {
         let report = guard.report().build().context("build profile report")?;
         if let Some(base) = profile_out_base.as_ref() {
@@ -252,6 +179,152 @@ fn main() -> Result<()> {
             println!("Wrote pprof profile to {}", path.display());
         }
     }
+    match run_result {
+        Ok(()) => Ok(()),
+        Err(err) => {
+            let aborted = err
+                .downcast_ref::<IndexBuildError>()
+                .map(|e| matches!(e, IndexBuildError::Aborted))
+                .unwrap_or(false);
+            if aborted {
+                println!("Profile time limit reached; exiting early.");
+                Ok(())
+            } else {
+                Err(err)
+            }
+        }
+    }
+}
+
+fn run_explore(source_str: &str, abort_flag: Option<Arc<AtomicBool>>) -> Result<()> {
+    let source = parse_source(source_str)?;
+    let rt = Runtime::new().context("init tokio runtime")?;
+    let tmp = cache_tempdir().context("create cache tempdir")?;
+    let load_start = std::time::Instant::now();
+    let (metadata, shard_dir) = match &source {
+        Source::Local(p) => {
+            if is_indexed_shard(p) {
+                let metadata: DatasetMetadata = serde_json::from_slice(
+                    &fs::read(p.join("metadata.json")).context("read metadata.json")?,
+                )
+                .context("parse metadata.json")?;
+                (metadata, p.clone())
+            } else {
+                build_from_local_parquet(p, tmp.path(), abort_flag.clone())?
+            }
+        }
+        Source::S3 { bucket, prefix } => {
+            let profile = std::env::var("S3_PROFILE")
+                .ok()
+                .or_else(|| std::env::var("AWS_PROFILE").ok());
+            let s3 = build_s3_client(S3Config {
+                bucket: bucket.clone(),
+                region: std::env::var("S3_REGION").ok(),
+                endpoint: std::env::var("S3_ENDPOINT").ok(),
+                allow_http: env_flag("S3_ALLOW_HTTP").or_else(|| env_flag("AWS_ALLOW_HTTP")),
+                virtual_hosted: env_flag("S3_VIRTUAL_HOSTED"),
+                profile,
+                access_key_id: None,
+                secret_access_key: None,
+                session_token: None,
+            })?;
+            let (metadata, dir) = build_from_remote(
+                &rt,
+                RemoteStore::S3 {
+                    bucket: bucket.clone(),
+                    prefix: prefix.clone(),
+                    client: s3,
+                },
+                tmp.path(),
+                abort_flag.clone(),
+            )?;
+            (metadata, dir)
+        }
+        Source::Gcs { bucket, prefix } => {
+            let gcs = build_gcs_client(GcsConfig {
+                bucket: bucket.clone(),
+            })?;
+            let (metadata, dir) = build_from_remote(
+                &rt,
+                RemoteStore::Gcs {
+                    bucket: bucket.clone(),
+                    prefix: prefix.clone(),
+                    client: gcs,
+                },
+                tmp.path(),
+                abort_flag.clone(),
+            )?;
+            (metadata, dir)
+        }
+        Source::Adls {
+            account,
+            container,
+            prefix,
+        } => {
+            let adls = build_adls_client(AdlsConfig {
+                account: account.clone(),
+                container: container.clone(),
+                endpoint: std::env::var("AZURE_ENDPOINT").ok(),
+                allow_http: env_flag("AZURE_ALLOW_HTTP"),
+                access_key: std::env::var("AZURE_ACCESS_KEY").ok(),
+                sas_key: std::env::var("AZURE_SAS_KEY").ok(),
+                bearer_token: std::env::var("AZURE_BEARER_TOKEN").ok(),
+                client_id: std::env::var("AZURE_CLIENT_ID").ok(),
+                client_secret: std::env::var("AZURE_CLIENT_SECRET").ok(),
+                tenant_id: std::env::var("AZURE_TENANT_ID").ok(),
+            })?;
+            let (metadata, dir) = build_from_remote(
+                &rt,
+                RemoteStore::Adls {
+                    account: account.clone(),
+                    container: container.clone(),
+                    prefix: prefix.clone(),
+                    client: adls,
+                },
+                tmp.path(),
+                abort_flag.clone(),
+            )?;
+            (metadata, dir)
+        }
+    };
+    let elapsed = load_start.elapsed().as_secs_f64();
+    let (layouts, _node_types) = relation_layouts(&metadata)?;
+    let reader = ShardReader::open(&shard_dir, layouts.clone()).context("open shard reader")?;
+
+    println!("Loaded shard from {}", source_str);
+    if elapsed > 0.0 {
+        let offsets_size = fs::metadata(shard_dir.join(OFFSETS_FILENAME))
+            .map(|m| m.len())
+            .unwrap_or(0);
+        let edges_size = fs::metadata(shard_dir.join(EDGES_FILENAME))
+            .map(|m| m.len())
+            .unwrap_or(0);
+        let bytes_total = offsets_size + edges_size;
+        let nodes = reader.header().nodes;
+        let edges = reader.edge_count();
+        let bps = bytes_total as f64 / elapsed;
+        let nps = nodes as f64 / elapsed;
+        let eps = edges as f64 / elapsed;
+        println!(
+            "Load stats: {:.2}s, {:.2} MB, {:.2} MB/s, {:.0} nodes/s, {:.0} edges/s, {:.0} (nodes+edges)/s",
+            elapsed,
+            bytes_total as f64 / (1024.0 * 1024.0),
+            bps / (1024.0 * 1024.0),
+            nps,
+            eps,
+            (nodes + edges) as f64 / elapsed
+        );
+    }
+    print_header(&metadata, &reader);
+    if abort_flag
+        .as_ref()
+        .map(|flag| flag.load(Ordering::Relaxed))
+        .unwrap_or(false)
+    {
+        println!("Profile time limit reached; exiting before REPL.");
+        return Ok(());
+    }
+    repl(&metadata.edge_relations, &reader)?;
     Ok(())
 }
 
@@ -267,6 +340,7 @@ fn build_from_remote(
     rt: &Runtime,
     remote: RemoteStore,
     cache_root: &Path,
+    abort_flag: Option<Arc<AtomicBool>>,
 ) -> Result<(DatasetMetadata, PathBuf)> {
     let cache_spinner = start_spinner("Checking cache");
     let (safe_prefix, store_arc) = {
@@ -439,8 +513,20 @@ fn build_from_remote(
             build_progress.tick();
         }
     };
+    let should_abort = || {
+        abort_flag
+            .as_ref()
+            .map(|flag| flag.load(Ordering::Relaxed))
+            .unwrap_or(false)
+    };
     builder
-        .build_with_progress(&node_inputs[0], &edge_inputs, total_nodes, Some(&mut on_progress))
+        .build_with_progress(
+            &node_inputs[0],
+            &edge_inputs,
+            total_nodes,
+            Some(&mut on_progress),
+            Some(&should_abort),
+        )
         .context("build shard from parquet")?;
     build_progress.finish_with_message("Built shard");
     fs::write(&meta_path, serde_json::to_vec_pretty(&metadata)?)?;
@@ -524,6 +610,7 @@ fn sanitize_cache_name(input: &str) -> String {
 fn build_from_local_parquet(
     source: &Path,
     cache_root: &Path,
+    abort_flag: Option<Arc<AtomicBool>>,
 ) -> Result<(DatasetMetadata, PathBuf)> {
     let meta_path = source.join("metadata.json");
     let meta_spinner = start_spinner("Loading metadata.json");
@@ -596,8 +683,20 @@ fn build_from_local_parquet(
             build_progress.tick();
         }
     };
+    let should_abort = || {
+        abort_flag
+            .as_ref()
+            .map(|flag| flag.load(Ordering::Relaxed))
+            .unwrap_or(false)
+    };
     builder
-        .build_with_progress(&node_inputs[0], &edge_inputs, total_nodes, Some(&mut on_progress))
+        .build_with_progress(
+            &node_inputs[0],
+            &edge_inputs,
+            total_nodes,
+            Some(&mut on_progress),
+            Some(&should_abort),
+        )
         .context("build shard from parquet")?;
     build_progress.finish_with_message("Built shard");
     fs::write(&cached_meta, serde_json::to_vec_pretty(&metadata)?)?;

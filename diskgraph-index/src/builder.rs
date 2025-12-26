@@ -72,6 +72,8 @@ pub enum IndexBuildError {
     Parquet(#[from] parquet::errors::ParquetError),
     #[error("object store error: {0}")]
     ObjectStore(String),
+    #[error("build aborted")]
+    Aborted,
 }
 
 /// Parameters for building a single shard index.
@@ -106,7 +108,7 @@ impl ShardBuilder {
         node_shard: &NodeShardInput,
         edge_shards: &[EdgeShardInput],
     ) -> Result<ShardBuildOutput> {
-        self.build_with_progress(node_shard, edge_shards, None, None)
+        self.build_with_progress(node_shard, edge_shards, None, None, None)
     }
 
     pub fn build_with_progress(
@@ -115,6 +117,7 @@ impl ShardBuilder {
         edge_shards: &[EdgeShardInput],
         total_nodes: Option<u64>,
         mut on_progress: Option<&mut dyn FnMut(u64, u64)>,
+        should_abort: Option<&dyn Fn() -> bool>,
     ) -> Result<ShardBuildOutput> {
         for e in edge_shards {
             if e.source_shard_index != self.params.shard_index {
@@ -158,6 +161,11 @@ impl ShardBuilder {
         let mut buckets: Vec<Vec<EdgeRec>> = vec![Vec::new(); self.params.relation_metas.len()];
         let mut counts: Vec<usize> = vec![0; self.params.relation_metas.len()];
         while let Some(node_id) = node_stream.next_id()? {
+            if let Some(should_abort) = should_abort {
+                if should_abort() {
+                    return Err(IndexBuildError::Aborted.into());
+                }
+            }
             nodes_seen += 1;
             build_stats.nodes_ingested += 1;
             if let Some(cb) = on_progress.as_deref_mut() {
