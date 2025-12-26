@@ -27,7 +27,6 @@ use serde::Serialize;
 use diskgraph_fs::{build_s3_client, S3Config as FsS3Config};
 use std::sync::mpsc::{self, Receiver};
 use std::cmp::Ordering;
-use std::collections::BinaryHeap;
 use std::fs::{self, File};
 use std::io::{BufWriter, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -822,43 +821,9 @@ impl EdgeSubStream {
     }
 }
 
-#[derive(Eq)]
-struct HeapItem {
-    rec: EdgeRec,
-    stream_idx: usize,
-}
-
-impl Ord for HeapItem {
-    fn cmp(&self, other: &Self) -> Ordering {
-        match self.rec.src.cmp(&other.rec.src) {
-            Ordering::Equal => {
-                let a = self.rec.dest_sort_key.unwrap_or(0);
-                let b = other.rec.dest_sort_key.unwrap_or(0);
-                b.cmp(&a) // descending dest_sort_key
-            }
-            ord => ord.reverse(), // min-heap behavior using BinaryHeap
-        }
-    }
-}
-
-impl PartialOrd for HeapItem {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl PartialEq for HeapItem {
-    fn eq(&self, other: &Self) -> bool {
-        self.rec.src == other.rec.src
-            && self.rec.dest_sort_key == other.rec.dest_sort_key
-            && self.rec.relation_id == other.rec.relation_id
-            && self.stream_idx == other.stream_idx
-    }
-}
-
 struct MergedEdgeStream {
     streams: Vec<EdgeSubStream>,
-    heap: BinaryHeap<HeapItem>,
+    heads: Vec<Option<EdgeRec>>,
 }
 
 impl MergedEdgeStream {
@@ -872,55 +837,65 @@ impl MergedEdgeStream {
             rel_lookup.insert(meta.name.clone(), (idx as u16, meta.dest_sort_key_bits));
         }
         let mut streams = Vec::new();
-        let mut heap = BinaryHeap::new();
-        for (idx, input) in inputs.iter().enumerate() {
+        let mut heads = Vec::new();
+        for (_idx, input) in inputs.iter().enumerate() {
             let (relation_id, sort_bits) = rel_lookup
                 .get(&input.relation)
                 .ok_or(IndexBuildError::UnknownRelation)?;
             let mut stream = EdgeSubStream::try_new(rt.clone(), input, *relation_id, *sort_bits)?;
-            if let Some(rec) = stream.next_rec()? {
-                heap.push(HeapItem {
-                    rec,
-                    stream_idx: idx,
-                });
-            }
+            let rec = stream.next_rec()?;
             streams.push(stream);
+            heads.push(rec);
         }
-        Ok(Self { streams, heap })
+        Ok(Self { streams, heads })
     }
 
     fn peek(&self) -> Option<&EdgeRec> {
-        self.heap.peek().map(|h| &h.rec)
+        self.min_index().and_then(|idx| self.heads[idx].as_ref())
     }
 
     fn pop(&mut self) -> Option<EdgeRec> {
-        if let Some(item) = self.heap.pop() {
-            let rec = item.rec;
-            if let Some(next_rec) = self.streams[item.stream_idx].next_rec().ok().flatten() {
-                self.heap.push(HeapItem {
-                    rec: next_rec,
-                    stream_idx: item.stream_idx,
-                });
-            }
-            Some(rec)
-        } else {
-            None
+        let idx = self.min_index()?;
+        let rec = self.heads[idx].take()?;
+        if let Ok(next_rec) = self.streams[idx].next_rec() {
+            self.heads[idx] = next_rec;
         }
+        Some(rec)
+    }
+
+    fn min_index(&self) -> Option<usize> {
+        let mut best_idx: Option<usize> = None;
+        for (idx, head) in self.heads.iter().enumerate() {
+            let Some(rec) = head else { continue };
+            match best_idx {
+                None => best_idx = Some(idx),
+                Some(best) => {
+                    let best_rec = self.heads[best].as_ref().unwrap();
+                    if edge_cmp(rec, best_rec) == Ordering::Less {
+                        best_idx = Some(idx);
+                    }
+                }
+            }
+        }
+        best_idx
     }
 
     fn peek_order_checked(&mut self, last: Option<&EdgeRec>) -> Result<Option<&EdgeRec>> {
         if let Some(current) = self.peek() {
             if let Some(prev) = last {
-                if current.src < prev.src
-                    || (current.src == prev.src
-                        && current.dest_sort_key.unwrap_or(u64::MAX)
-                            > prev.dest_sort_key.unwrap_or(u64::MAX))
-                {
+                if current.src < prev.src {
                     return Err(IndexBuildError::EdgeOrderingViolation.into());
                 }
             }
         }
         Ok(self.peek())
+    }
+}
+
+fn edge_cmp(a: &EdgeRec, b: &EdgeRec) -> Ordering {
+    match a.src.cmp(&b.src) {
+        Ordering::Equal => a.relation_id.cmp(&b.relation_id),
+        ord => ord,
     }
 }
 
