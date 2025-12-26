@@ -232,6 +232,7 @@ main() {
   fi
 
   mount -o noatime,nodiratime "$target" "$mountpoint"
+  chmod 0777 "$mountpoint"
 
   if [[ "$target" == /dev/md* ]]; then
     mdadm --detail --scan | tee -a /etc/mdadm/mdadm.conf >/dev/null

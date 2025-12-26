@@ -11,9 +11,14 @@ fi
 RUN_ID="run-$(date +%s)-$RANDOM"
 export GCS_URL="${GCS_PREFIX%/}/${RUN_ID}"
 
+if [[ -d /mnt/localssd && -w /mnt/localssd ]]; then
+  TMPDIR="/mnt/localssd/tmp"
+  mkdir -p "${TMPDIR}"
+fi
+
 echo "Using GCS URL=${GCS_URL}"
 echo "Checking access by uploading a dummy object..."
-TMPFILE="$(mktemp)"
+TMPFILE="$(mktemp -p "${TMPDIR:-/tmp}")"
 echo "diskgraph cloud ingest access check" > "${TMPFILE}"
 if ! gsutil cp "${TMPFILE}" "${GCS_URL}/_access_check.txt" >/dev/null 2>&1; then
   echo "ERROR: Unable to write to ${GCS_URL}. Ensure your GCP creds are configured (e.g., run 'gcloud auth login' or activate the correct service account/Workload Identity)." >&2

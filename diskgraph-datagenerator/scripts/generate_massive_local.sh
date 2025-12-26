@@ -17,7 +17,16 @@ NODE_BATCH="${NODE_BATCH:-5000000}"
 ROW_GROUP="${ROW_GROUP:-1000000}"
 SEED="${SEED:-42}"
 
-OUT_ROOT="${OUT_ROOT:-/tmp/diskgraph-massive}"
+if [[ -d /mnt/localssd ]]; then
+  DEFAULT_OUT_ROOT="/mnt/localssd/diskgraph-massive"
+  if ! mkdir -p "${DEFAULT_OUT_ROOT}" 2>/dev/null; then
+    echo "ERROR: ${DEFAULT_OUT_ROOT} is not writable. Run with sudo or chown /mnt/localssd." >&2
+    exit 1
+  fi
+else
+  DEFAULT_OUT_ROOT="/tmp/diskgraph-massive"
+fi
+OUT_ROOT="${OUT_ROOT:-${DEFAULT_OUT_ROOT}}"
 RUN_ID="${RUN_ID:-run-$(date +%s)-$RANDOM}"
 OUTPUT_DIR="${OUT_ROOT}/${RUN_ID}"
 

@@ -12,6 +12,10 @@ RUN_ID="run-$(date +%s)-$RANDOM"
 export S3_URL="${S3_PREFIX%/}/${RUN_ID}"
 export AWS_EC2_METADATA_DISABLED=true
 export AWS_SDK_LOAD_CONFIG=1
+if [[ -d /mnt/localssd && -w /mnt/localssd ]]; then
+  TMPDIR="/mnt/localssd/tmp"
+  mkdir -p "${TMPDIR}"
+fi
 # Prefer SSO/profile creds if provided; otherwise rely on default chain (with SSO cache).
 AWS_PROFILE_TO_USE="${S3_PROFILE:-${AWS_PROFILE:-}}"
 if [[ -n "${AWS_PROFILE_TO_USE}" ]]; then
@@ -34,7 +38,7 @@ if ! aws sts get-caller-identity >/dev/null 2>&1; then
   exit 1
 fi
 echo "Checking access by uploading a dummy object..."
-TMPFILE="$(mktemp)"
+TMPFILE="$(mktemp -p "${TMPDIR:-/tmp}")"
 echo "diskgraph cloud ingest access check" > "${TMPFILE}"
 if ! aws s3 cp "${TMPFILE}" "${S3_URL}/_access_check.txt" >/dev/null 2>&1; then
   echo "ERROR: Unable to write to ${S3_URL}. Ensure your AWS creds/role are configured (e.g., run 'aws sso login' on a laptop or attach the proper IAM role on a VM)." >&2

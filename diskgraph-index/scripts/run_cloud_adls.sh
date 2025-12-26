@@ -11,9 +11,14 @@ fi
 RUN_ID="run-$(date +%s)-$RANDOM"
 export AZURE_URL="${AZURE_PREFIX%/}/${RUN_ID}"
 
+if [[ -d /mnt/localssd && -w /mnt/localssd ]]; then
+  TMPDIR="/mnt/localssd/tmp"
+  mkdir -p "${TMPDIR}"
+fi
+
 echo "Using Azure URL=${AZURE_URL}"
 echo "Checking access by uploading a dummy blob..."
-TMPFILE="$(mktemp)"
+TMPFILE="$(mktemp -p "${TMPDIR:-/tmp}")"
 echo "diskgraph cloud ingest access check" > "${TMPFILE}"
 AZ_ACCOUNT="$(echo "${AZURE_URL}" | cut -d/ -f3)"
 AZ_CONTAINER="$(echo "${AZURE_URL}" | cut -d/ -f4)"
