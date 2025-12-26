@@ -1,0 +1,250 @@
+#!/usr/bin/env bash
+# localssd-raid0-xfs-tui.sh
+#
+# Interactive setup for initializing cloud VMs with multiple attached local SSDs
+# into a single XFS volume.
+# - Detects NVMe disks and prompts for selection.
+# - Optional destructive reset of selected disks (unmount + wipe).
+# - Creates RAID0 (mdadm) with a user-chosen chunk size.
+# - Formats XFS with matching stripe geometry and mounts it.
+# - Persists mdadm and fstab entries when using RAID0.
+#
+# Usage:
+#   sudo scripts/localssd-raid0-xfs-tui.sh
+#
+# Notes:
+# - All selected disks are wiped.
+# - For a single disk, the script skips RAID0 and formats directly.
+set -euo pipefail
+
+if [[ "${EUID}" -ne 0 ]]; then
+  exec sudo -- "$0" "$@"
+fi
+
+require_cmd() {
+  command -v "$1" >/dev/null 2>&1 || {
+    echo "Missing required command: $1" >&2
+    exit 1
+  }
+}
+
+require_cmd lsblk
+require_cmd findmnt
+require_cmd mdadm
+require_cmd mkfs.xfs
+require_cmd wipefs
+require_cmd blkid
+
+root_disk_name() {
+  local root_src parent
+  root_src="$(findmnt -n -o SOURCE /)"
+  parent="$(lsblk -no PKNAME "$root_src")"
+  if [[ -n "$parent" ]]; then
+    echo "$parent"
+  else
+    echo "$(basename "$root_src")"
+  fi
+}
+
+root_device_path() {
+  local root_disk
+  root_disk="$(root_disk_name)"
+  readlink -f "/sys/block/$root_disk/device"
+}
+
+is_boot_disk() {
+  local disk="$1"
+  local root_path disk_path
+  root_path="$(root_device_path)"
+  disk_path="$(readlink -f "/sys/block/$(basename "$disk")/device")"
+  [[ -n "$root_path" && "$disk_path" == "$root_path" ]]
+}
+
+list_nvme_disks() {
+  local d
+  while IFS= read -r d; do
+    d="/dev/$d"
+    if ! is_boot_disk "$d"; then
+      echo "$d"
+    fi
+  done < <(lsblk -dn -o NAME,TYPE | awk '$2=="disk" && $1 ~ /^nvme/ {print $1}')
+}
+
+disk_info() {
+  local disk="$1"
+  local size model mps sigs
+  size="$(lsblk -dn -o SIZE "$disk")"
+  model="$(lsblk -dn -o MODEL "$disk" | sed 's/[[:space:]]*$//')"
+  mps="$(lsblk -n -o MOUNTPOINT "$disk" | awk 'NF' | paste -sd ',' -)"
+  sigs="$(wipefs -n "$disk" 2>/dev/null | wc -l | tr -d ' ' || true)"
+  printf "%s | %s | %s | mounts: %s | sigs: %s\n" "$disk" "$size" "${model:-unknown}" "${mps:-none}" "$sigs"
+}
+
+disk_in_use() {
+  local disk="$1"
+  local disk_name
+  disk_name="$(basename "$disk")"
+  if lsblk -n -o MOUNTPOINT "$disk" | awk 'NF{found=1} END{exit !found}'; then
+    return 0
+  fi
+  if lsblk -nr -o NAME,TYPE,PKNAME | awk -v d="$disk_name" '$3==d && $2 ~ /^raid/ {found=1} END{exit !found}'; then
+    return 0
+  fi
+  if wipefs -n "$disk" 2>/dev/null | awk 'NF{found=1} END{exit !found}'; then
+    return 0
+  fi
+  return 1
+}
+
+reset_disk() {
+  local disk="$1"
+  local mp part md disk_name
+  disk_name="$(basename "$disk")"
+  while IFS= read -r md; do
+    [[ -z "$md" ]] && continue
+    while IFS= read -r mp; do
+      [[ -n "$mp" ]] && umount "$mp"
+    done < <(lsblk -nr -o MOUNTPOINT "/dev/$md" | awk 'NF')
+    mdadm --stop "/dev/$md" >/dev/null 2>&1 || true
+    mdadm --remove "/dev/$md" >/dev/null 2>&1 || true
+  done < <(lsblk -nr -o NAME,TYPE,PKNAME | awk -v d="$disk_name" '$2=="raid0" && $3==d {print $1}')
+  while IFS= read -r mp; do
+    [[ -n "$mp" ]] && umount "$mp"
+  done < <(lsblk -nr -o MOUNTPOINT "$disk" | awk 'NF')
+  while IFS= read -r part; do
+    wipefs -a "/dev/$part" >/dev/null 2>&1 || true
+  done < <(lsblk -nr -o NAME "$disk" | awk 'NR>1')
+  mdadm --zero-superblock --force "$disk" >/dev/null 2>&1 || true
+  wipefs -a "$disk"
+}
+
+choose_disks() {
+  local disks=("$@")
+  local ans
+  echo "Eligible NVMe disks:" >/dev/tty
+  for d in "${disks[@]}"; do
+    disk_info "$d" >/dev/tty
+  done
+  echo >/dev/tty
+  printf "Use all listed disks for the volume? [Y/n] " >/dev/tty
+  read -r ans </dev/tty
+  case "${ans:-Y}" in
+    y|Y) printf "%s\n" "${disks[@]}" ;;
+    *) ;;
+  esac
+}
+
+main() {
+  mapfile -t disks < <(list_nvme_disks)
+  if [[ "${#disks[@]}" -eq 0 ]]; then
+    echo "No NVMe disks found."
+    exit 1
+  fi
+
+  mapfile -t selected < <(choose_disks "${disks[@]}")
+  if [[ "${#selected[@]}" -eq 0 ]]; then
+    echo "No disks selected. Exiting."
+    exit 1
+  fi
+
+  local in_use=()
+  for d in "${selected[@]}"; do
+    if disk_in_use "$d"; then
+      in_use+=("$d")
+    fi
+  done
+
+  if [[ "${#in_use[@]}" -gt 0 ]]; then
+    echo "Selected disks appear in use or have signatures:"
+    for d in "${in_use[@]}"; do
+      disk_info "$d"
+    done
+    local ans
+    read -r -p "Reset (unmount + wipe) these disks? This is destructive. [y/N] " ans
+    case "${ans:-N}" in
+      y|Y)
+        for d in "${in_use[@]}"; do
+          reset_disk "$d"
+        done
+        ;;
+      *)
+        echo "Aborting."
+        exit 1
+        ;;
+    esac
+  fi
+
+  local chunk_k="256"
+  local mountpoint="/mnt/localssd"
+
+  local target
+  if [[ "${#selected[@]}" -eq 1 ]]; then
+    target="${selected[0]}"
+  else
+    local md=""
+    local i
+    for i in $(seq 0 127); do
+      if [[ ! -e "/dev/md$i" ]]; then
+        md="/dev/md$i"
+        break
+      fi
+    done
+    if [[ -z "$md" ]]; then
+      echo "No free /dev/mdX device found."
+      exit 1
+    fi
+    echo "Creating RAID0 device $md from: ${selected[*]}"
+    mdadm --create "$md" --level=0 --raid-devices="${#selected[@]}" --chunk="$chunk_k" "${selected[@]}"
+    target="$md"
+  fi
+
+  if [[ "${#selected[@]}" -gt 1 ]]; then
+    mkfs.xfs -f -d "su=${chunk_k}k,sw=${#selected[@]}" "$target"
+  else
+    mkfs.xfs -f "$target"
+  fi
+
+  mkdir -p "$mountpoint"
+
+  local uuid fstab_line fstab_changed
+  uuid="$(blkid -s UUID -o value "$target")"
+  fstab_line="UUID=$uuid $mountpoint xfs noatime,nodiratime 0 2"
+  fstab_changed="false"
+  if grep -qE "^[^#].*[[:space:]]$mountpoint[[:space:]]" /etc/fstab; then
+    if ! grep -qF "$fstab_line" /etc/fstab; then
+      local tmp
+      tmp="$(mktemp)"
+      awk -v mp="$mountpoint" -v line="$fstab_line" '
+        $0 ~ "^[^#].*[[:space:]]" mp "[[:space:]]" {print line; next}
+        {print}
+      ' /etc/fstab > "$tmp"
+      cat "$tmp" > /etc/fstab
+      rm -f "$tmp"
+      fstab_changed="true"
+    fi
+  else
+    echo "$fstab_line" >> /etc/fstab
+    fstab_changed="true"
+  fi
+
+  if [[ "$fstab_changed" == "true" ]] && command -v systemctl >/dev/null 2>&1; then
+    systemctl daemon-reload
+  fi
+
+  mount -o noatime,nodiratime "$target" "$mountpoint"
+
+  if [[ "$target" == /dev/md* ]]; then
+    mdadm --detail --scan | tee -a /etc/mdadm/mdadm.conf >/dev/null
+    if command -v update-initramfs >/dev/null 2>&1; then
+      update-initramfs -u
+    fi
+  fi
+
+  echo "Done."
+  echo "  Target: $target"
+  echo "  Disks: ${selected[*]}"
+  echo "  Chunk: ${chunk_k}KiB"
+  echo "  Mount: $mountpoint"
+}
+
+main "$@"
