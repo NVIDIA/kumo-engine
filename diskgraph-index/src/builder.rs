@@ -106,6 +106,16 @@ impl ShardBuilder {
         node_shard: &NodeShardInput,
         edge_shards: &[EdgeShardInput],
     ) -> Result<ShardBuildOutput> {
+        self.build_with_progress(node_shard, edge_shards, None, None)
+    }
+
+    pub fn build_with_progress(
+        &self,
+        node_shard: &NodeShardInput,
+        edge_shards: &[EdgeShardInput],
+        total_nodes: Option<u64>,
+        mut on_progress: Option<&mut dyn FnMut(u64, u64)>,
+    ) -> Result<ShardBuildOutput> {
         for e in edge_shards {
             if e.source_shard_index != self.params.shard_index {
                 return Err(IndexBuildError::ShardIndexMismatch {
@@ -140,6 +150,7 @@ impl ShardBuilder {
             ..Default::default()
         };
         let mut prev_offset: u64 = 0;
+        let mut last_progress_at: u64 = 0;
         // Seed offsets with the start of the first node (0) to make start/end
         // lookups simpler on the read path.
         offsets_writer.push(edges_writer.byte_offset())?;
@@ -149,6 +160,13 @@ impl ShardBuilder {
         while let Some(node_id) = node_stream.next_id()? {
             nodes_seen += 1;
             build_stats.nodes_ingested += 1;
+            if let Some(cb) = on_progress.as_deref_mut() {
+                let total = total_nodes.unwrap_or(0);
+                if nodes_seen - last_progress_at >= 10_000 {
+                    cb(nodes_seen, total);
+                    last_progress_at = nodes_seen;
+                }
+            }
             let start_offset = edges_writer.byte_offset();
             // Collect edges for this node by relation.
             for bucket in buckets.iter_mut() {
@@ -233,6 +251,10 @@ impl ShardBuilder {
             }
             offsets_writer.push(edges_writer.byte_offset())?;
             prev_offset = edges_writer.byte_offset();
+        }
+
+        if let Some(cb) = on_progress.as_deref_mut() {
+            cb(nodes_seen, total_nodes.unwrap_or(nodes_seen));
         }
 
         if edge_stream.peek().is_some() {

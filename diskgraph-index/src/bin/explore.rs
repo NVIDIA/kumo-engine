@@ -15,6 +15,7 @@ use object_store::ObjectStore;
 use diskgraph_fs::{
     build_adls_client, build_gcs_client, build_s3_client, AdlsConfig, GcsConfig, S3Config,
 };
+use indicatif::{ProgressBar, ProgressStyle};
 use object_store::path::Path as ObjectPath;
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
@@ -192,6 +193,7 @@ fn build_from_remote(
     remote: RemoteStore,
     cache_root: &Path,
 ) -> Result<(DatasetMetadata, PathBuf)> {
+    let cache_spinner = start_spinner("Checking cache");
     let (safe_prefix, store_arc) = {
         match &remote {
             RemoteStore::S3 { bucket, prefix, client } => (
@@ -218,12 +220,14 @@ fn build_from_remote(
     let edges = cache_dir.join("edges.bin");
     let meta_path = cache_dir.join("metadata.json");
     if offsets.exists() && edges.exists() && meta_path.exists() {
+        cache_spinner.finish_with_message("Using cached shard");
         let metadata: DatasetMetadata = serde_json::from_slice(
             &fs::read(&meta_path).context("read cached metadata")?,
         )
         .context("parse cached metadata")?;
         return Ok((metadata, cache_dir));
     }
+    cache_spinner.finish_with_message("Cache miss");
     fs::create_dir_all(&cache_dir)?;
     let prefix = match &remote {
         RemoteStore::S3 { prefix, .. }
@@ -236,6 +240,7 @@ fn build_from_remote(
     } else {
         ObjectPath::from(format!("{}/{}", prefix, "metadata.json"))
     };
+    let meta_spinner = start_spinner("Downloading metadata.json");
     let meta_obj = rt
         .block_on(store_arc.get(&loc))
         .with_context(|| format!("download metadata.json from {prefix}"))?;
@@ -243,6 +248,7 @@ fn build_from_remote(
         .block_on(meta_obj.bytes())
         .context("buffer metadata.json")?;
     fs::write(&meta_path, &meta_bytes)?;
+    meta_spinner.finish_with_message("Downloaded metadata.json");
     let metadata: DatasetMetadata =
         serde_json::from_slice(&meta_bytes).context("parse metadata.json")?;
 
@@ -347,9 +353,21 @@ fn build_from_remote(
         shard_index: 0,
     };
     let builder = ShardBuilder::new(params);
+    let total_nodes = shard_node_count(&metadata);
+    let (build_progress, is_bar) =
+        start_build_progress(total_nodes, "Building shard from parquet");
+    let mut on_progress = |seen: u64, total: u64| {
+        if is_bar {
+            let len = build_progress.length().unwrap_or(total);
+            build_progress.set_position(seen.min(len));
+        } else {
+            build_progress.tick();
+        }
+    };
     builder
-        .build(&node_inputs[0], &edge_inputs)
+        .build_with_progress(&node_inputs[0], &edge_inputs, total_nodes, Some(&mut on_progress))
         .context("build shard from parquet")?;
+    build_progress.finish_with_message("Built shard");
     fs::write(&meta_path, serde_json::to_vec_pretty(&metadata)?)?;
     Ok((metadata, shard_dir))
 }
@@ -381,6 +399,40 @@ fn cache_root_dir() -> Option<PathBuf> {
     None
 }
 
+fn shard_node_count(metadata: &DatasetMetadata) -> Option<u64> {
+    metadata
+        .node_types
+        .get(0)
+        .and_then(|nt| nt.shards.get(0))
+        .map(|s| s.max_id.saturating_sub(s.min_id).saturating_add(1))
+}
+
+fn start_build_progress(total: Option<u64>, message: &str) -> (ProgressBar, bool) {
+    let total = total.unwrap_or(0);
+    if total > 0 {
+        let pb = ProgressBar::new(total);
+        pb.set_style(
+            ProgressStyle::with_template("{msg} {bar:40.cyan/blue} {percent}% {pos}/{len} ({eta})")
+                .unwrap_or_else(|_| ProgressStyle::default_bar()),
+        );
+        pb.set_message(message.to_string());
+        (pb, true)
+    } else {
+        (start_spinner(message), false)
+    }
+}
+
+fn start_spinner(message: &str) -> ProgressBar {
+    let pb = ProgressBar::new_spinner();
+    pb.set_style(
+        ProgressStyle::with_template("{spinner} {msg}")
+            .unwrap_or_else(|_| ProgressStyle::default_spinner()),
+    );
+    pb.set_message(message.to_string());
+    pb.enable_steady_tick(std::time::Duration::from_millis(120));
+    pb
+}
+
 fn is_indexed_shard(dir: &Path) -> bool {
     dir.join(OFFSETS_FILENAME).exists()
         && dir.join(EDGES_FILENAME).exists()
@@ -399,7 +451,9 @@ fn build_from_local_parquet(
     cache_root: &Path,
 ) -> Result<(DatasetMetadata, PathBuf)> {
     let meta_path = source.join("metadata.json");
+    let meta_spinner = start_spinner("Loading metadata.json");
     let meta_bytes = fs::read(&meta_path).context("read metadata.json")?;
+    meta_spinner.finish_with_message("Loaded metadata.json");
     let metadata: DatasetMetadata =
         serde_json::from_slice(&meta_bytes).context("parse metadata.json")?;
 
@@ -456,9 +510,21 @@ fn build_from_local_parquet(
         shard_index: 0,
     };
     let builder = ShardBuilder::new(params);
+    let total_nodes = shard_node_count(&metadata);
+    let (build_progress, is_bar) =
+        start_build_progress(total_nodes, "Building shard from local parquet");
+    let mut on_progress = |seen: u64, total: u64| {
+        if is_bar {
+            let len = build_progress.length().unwrap_or(total);
+            build_progress.set_position(seen.min(len));
+        } else {
+            build_progress.tick();
+        }
+    };
     builder
-        .build(&node_inputs[0], &edge_inputs)
+        .build_with_progress(&node_inputs[0], &edge_inputs, total_nodes, Some(&mut on_progress))
         .context("build shard from parquet")?;
+    build_progress.finish_with_message("Built shard");
     fs::write(&cached_meta, serde_json::to_vec_pretty(&metadata)?)?;
     Ok((metadata, cache_dir))
 }
