@@ -272,13 +272,13 @@ fn run_explore(source_str: &str, profile_enabled: bool) -> Result<()> {
         let nps = nodes as f64 / elapsed;
         let eps = edges as f64 / elapsed;
         println!(
-            "Load stats: {:.2}s, {:.2} MB, {:.2} MB/s, {:.0} nodes/s, {:.0} edges/s, {:.0} (nodes+edges)/s",
+            "Load stats: {:.2}s, {:.2} MB, {:.2} MB/s, {} nodes/s, {} edges/s, {} (nodes+edges)/s",
             elapsed,
             bytes_total as f64 / (1024.0 * 1024.0),
             bps / (1024.0 * 1024.0),
-            nps,
-            eps,
-            (nodes + edges) as f64 / elapsed
+            format_number(nps.round() as u64),
+            format_number(eps.round() as u64),
+            format_number(((nodes + edges) as f64 / elapsed).round() as u64),
         );
     }
     print_header(&metadata, &reader);
@@ -296,13 +296,13 @@ fn run_explore(source_str: &str, profile_enabled: bool) -> Result<()> {
         let nps = nodes as f64 / elapsed.max(0.0001);
         let eps = edges as f64 / elapsed.max(0.0001);
         println!("Profile mode summary:");
-        println!("  Nodes: {}", nodes);
-        println!("  Edges: {}", edges);
+        println!("  Nodes: {}", format_number(nodes));
+        println!("  Edges: {}", format_number(edges));
         println!("  Time: {:.2}s", elapsed);
         println!("  Data: {:.2} GB", bytes_total as f64 / (1024.0 * 1024.0 * 1024.0));
         println!("  Throughput: {:.2} MB/s", bps / (1024.0 * 1024.0));
-        println!("  Nodes/s: {:.0}", nps);
-        println!("  Edges/s: {:.0}", eps);
+        println!("  Nodes/s: {}", format_number(nps.round() as u64));
+        println!("  Edges/s: {}", format_number(eps.round() as u64));
         return Ok(());
     }
     repl(&metadata.edge_relations, &reader)?;
@@ -555,6 +555,20 @@ fn start_build_progress(total: Option<u64>, message: &str) -> (ProgressBar, bool
     } else {
         (start_spinner(message), false)
     }
+}
+
+fn format_number(value: u64) -> String {
+    let s = value.to_string();
+    let mut out = String::with_capacity(s.len() + s.len() / 3);
+    let mut count = 0usize;
+    for ch in s.chars().rev() {
+        if count != 0 && count % 3 == 0 {
+            out.push(',');
+        }
+        out.push(ch);
+        count += 1;
+    }
+    out.chars().rev().collect()
 }
 
 fn start_spinner(message: &str) -> ProgressBar {
