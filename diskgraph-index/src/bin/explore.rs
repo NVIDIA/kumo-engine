@@ -17,6 +17,8 @@ use diskgraph_fs::{
 };
 use indicatif::{ProgressBar, ProgressStyle};
 use object_store::path::Path as ObjectPath;
+use pprof::protos::Message;
+use pprof::ProfilerGuard;
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
 use std::fs;
@@ -56,10 +58,50 @@ enum RemoteStore {
 }
 
 fn main() -> Result<()> {
-    let mut args = std::env::args().skip(1);
-    let source_str = args
-        .next()
-        .ok_or_else(|| anyhow!("usage: explore <source> (local path or s3:// gs:// az://)"))?;
+    let mut args = std::env::args().skip(1).peekable();
+    let mut profile_path: Option<PathBuf> = None;
+    let mut profile_pprof_path: Option<PathBuf> = None;
+    let mut profile_out_base: Option<PathBuf> = None;
+    let mut source_str: Option<String> = None;
+    while let Some(arg) = args.next() {
+        if arg == "--profile" {
+            let path = args
+                .next()
+                .ok_or_else(|| anyhow!("--profile requires a file path"))?;
+            profile_path = Some(PathBuf::from(path));
+            continue;
+        }
+        if arg == "--profile-pprof" {
+            let path = args
+                .next()
+                .ok_or_else(|| anyhow!("--profile-pprof requires a file path"))?;
+            profile_pprof_path = Some(PathBuf::from(path));
+            continue;
+        }
+        if arg == "--profile-out" {
+            let base = match args.peek() {
+                Some(next) if !next.starts_with("--") => args.next().unwrap(),
+                _ => "explore-profile".to_string(),
+            };
+            profile_out_base = Some(PathBuf::from(base));
+            continue;
+        }
+        if source_str.is_none() {
+            source_str = Some(arg);
+        }
+    }
+    let source_str = source_str.ok_or_else(|| {
+        anyhow!(
+            "usage: explore [--profile-out [base]] [--profile <path.svg>] [--profile-pprof <path.pb>] <source> (local path or s3:// gs:// az://)"
+        )
+    })?;
+    let _guard = profile_path
+        .as_ref()
+        .or(profile_pprof_path.as_ref())
+        .or(profile_out_base.as_ref())
+        .map(|_| ProfilerGuard::new(100))
+        .transpose()
+        .context("start profiler")?;
     let source = parse_source(&source_str)?;
     let rt = Runtime::new().context("init tokio runtime")?;
     let tmp = cache_tempdir().context("create cache tempdir")?;
@@ -177,6 +219,39 @@ fn main() -> Result<()> {
     }
     print_header(&metadata, &reader);
     repl(&metadata.edge_relations, &reader)?;
+    if let Some(guard) = _guard.as_ref() {
+        let report = guard.report().build().context("build profile report")?;
+        if let Some(base) = profile_out_base.as_ref() {
+            let svg_path = PathBuf::from(format!("{}.svg", base.display()));
+            let pb_path = PathBuf::from(format!("{}.pb", base.display()));
+            let file = fs::File::create(&svg_path).context("create profile output")?;
+            report
+                .flamegraph(file)
+                .context("write flamegraph profile")?;
+            println!("Wrote profile to {}", svg_path.display());
+            let profile = report.pprof().context("build pprof profile")?;
+            let mut file = fs::File::create(&pb_path).context("create pprof output")?;
+            profile
+                .write_to_writer(&mut file)
+                .context("write pprof profile")?;
+            println!("Wrote pprof profile to {}", pb_path.display());
+        }
+        if let Some(path) = profile_path.as_ref() {
+            let file = fs::File::create(path).context("create profile output")?;
+            report
+                .flamegraph(file)
+                .context("write flamegraph profile")?;
+            println!("Wrote profile to {}", path.display());
+        }
+        if let Some(path) = profile_pprof_path.as_ref() {
+            let profile = report.pprof().context("build pprof profile")?;
+            let mut file = fs::File::create(path).context("create pprof output")?;
+            profile
+                .write_to_writer(&mut file)
+                .context("write pprof profile")?;
+            println!("Wrote pprof profile to {}", path.display());
+        }
+    }
     Ok(())
 }
 
