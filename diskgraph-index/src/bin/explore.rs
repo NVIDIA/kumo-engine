@@ -61,15 +61,19 @@ fn main() -> Result<()> {
         .ok_or_else(|| anyhow!("usage: explore <source> (local path or s3:// gs:// az://)"))?;
     let source = parse_source(&source_str)?;
     let rt = Runtime::new().context("init tokio runtime")?;
-    let tmp = tempfile::tempdir().context("create tempdir")?;
+    let tmp = cache_tempdir().context("create cache tempdir")?;
     let load_start = std::time::Instant::now();
     let (metadata, shard_dir) = match &source {
         Source::Local(p) => {
-            let metadata: DatasetMetadata = serde_json::from_slice(
-                &fs::read(p.join("metadata.json")).context("read metadata.json")?,
-            )
-            .context("parse metadata.json")?;
-            (metadata, p.clone())
+            if is_indexed_shard(p) {
+                let metadata: DatasetMetadata = serde_json::from_slice(
+                    &fs::read(p.join("metadata.json")).context("read metadata.json")?,
+                )
+                .context("parse metadata.json")?;
+                (metadata, p.clone())
+            } else {
+                build_from_local_parquet(p, tmp.path())?
+            }
         }
         Source::S3 { bucket, prefix } => {
             let profile = std::env::var("S3_PROFILE")
@@ -348,6 +352,115 @@ fn build_from_remote(
         .context("build shard from parquet")?;
     fs::write(&meta_path, serde_json::to_vec_pretty(&metadata)?)?;
     Ok((metadata, shard_dir))
+}
+
+fn cache_tempdir() -> Result<tempfile::TempDir> {
+    if let Some(root) = cache_root_dir() {
+        tempfile::Builder::new()
+            .prefix("diskgraph-explore-")
+            .tempdir_in(root)
+            .context("create tempdir in /mnt/localssd")
+    } else {
+        tempfile::Builder::new()
+            .prefix("diskgraph-explore-")
+            .tempdir()
+            .context("create tempdir in system temp")
+    }
+}
+
+fn cache_root_dir() -> Option<PathBuf> {
+    let root = PathBuf::from("/mnt/localssd/diskgraph-index-cache");
+    if root.exists() {
+        return Some(root);
+    }
+    if let Some(parent) = root.parent() {
+        if parent.exists() && fs::create_dir_all(&root).is_ok() {
+            return Some(root);
+        }
+    }
+    None
+}
+
+fn is_indexed_shard(dir: &Path) -> bool {
+    dir.join(OFFSETS_FILENAME).exists()
+        && dir.join(EDGES_FILENAME).exists()
+        && dir.join("metadata.json").exists()
+}
+
+fn sanitize_cache_name(input: &str) -> String {
+    input
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect()
+}
+
+fn build_from_local_parquet(
+    source: &Path,
+    cache_root: &Path,
+) -> Result<(DatasetMetadata, PathBuf)> {
+    let meta_path = source.join("metadata.json");
+    let meta_bytes = fs::read(&meta_path).context("read metadata.json")?;
+    let metadata: DatasetMetadata =
+        serde_json::from_slice(&meta_bytes).context("parse metadata.json")?;
+
+    let safe_prefix = format!("local_{}", sanitize_cache_name(&source.display().to_string()));
+    let cache_dir = cache_root.join(safe_prefix);
+    let offsets = cache_dir.join(OFFSETS_FILENAME);
+    let edges = cache_dir.join(EDGES_FILENAME);
+    let cached_meta = cache_dir.join("metadata.json");
+    if offsets.exists() && edges.exists() && cached_meta.exists() {
+        return Ok((metadata, cache_dir));
+    }
+    fs::create_dir_all(&cache_dir)?;
+
+    let node_inputs: Vec<NodeShardInput> = metadata
+        .node_types
+        .iter()
+        .map(|nt| {
+            let shard = nt
+                .shards
+                .get(0)
+                .ok_or_else(|| anyhow!("no node shard found for {}", nt.name))?;
+            let parquet = ParquetSource::LocalFile(source.join(&shard.path));
+            Ok(NodeShardInput {
+                node_type: nt.name.clone(),
+                shard_index: 0,
+                parquet,
+            })
+        })
+        .collect::<Result<_>>()?;
+
+    let edge_inputs: Vec<EdgeShardInput> = metadata
+        .edge_relations
+        .iter()
+        .map(|rel| {
+            let shard = rel
+                .shards
+                .get(0)
+                .ok_or_else(|| anyhow!("no edge shard found for {}", rel.name))?;
+            let parquet = ParquetSource::LocalFile(source.join(&shard.path));
+            Ok(EdgeShardInput {
+                relation: rel.name.clone(),
+                source_shard_index: 0,
+                parquet,
+                has_dest_sort_key: rel.dest_sort_key_bits.is_some(),
+            })
+        })
+        .collect::<Result<_>>()?;
+
+    let params = ShardBuildParams {
+        output_dir: cache_dir.clone(),
+        node_meta: metadata.node_types[0].clone(),
+        node_types: metadata.node_types.clone(),
+        relation_metas: metadata.edge_relations.clone(),
+        shard_index: 0,
+    };
+    let builder = ShardBuilder::new(params);
+    builder
+        .build(&node_inputs[0], &edge_inputs)
+        .context("build shard from parquet")?;
+    fs::write(&cached_meta, serde_json::to_vec_pretty(&metadata)?)?;
+    Ok((metadata, cache_dir))
 }
 
 fn repl(relations: &[EdgeRelationMetadata], reader: &ShardReader) -> Result<()> {
