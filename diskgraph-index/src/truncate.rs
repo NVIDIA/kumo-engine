@@ -75,12 +75,4 @@ pub(crate) fn truncate_counts(
     }
 }
 
-pub(crate) fn varint_len(v: u32) -> Result<usize, IndexBuildError> {
-    if v <= 63 {
-        Ok(1)
-    } else if v <= 0x3FFF {
-        Ok(2)
-    } else {
-        Err(IndexBuildError::CountOverflow)
-    }
-}
+// helper removed; count varint sizing is handled in builder hot path now.

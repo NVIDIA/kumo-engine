@@ -2,7 +2,7 @@ use crate::layout::{
     NodeEdgeStats, OffsetFileHeader, RelationLayout, DELTA_CHUNK, EDGES_FILENAME, OFFSETS_FILENAME,
 };
 use crate::streaming::{EdgeShardInput, NodeShardInput, ParquetSource};
-use crate::truncate::{truncate_counts, varint_len};
+use crate::truncate::truncate_counts;
 use anyhow::Result;
 use arrow_array::{ArrayRef, Int64Array};
 use arrow_schema::SchemaRef;
@@ -157,8 +157,12 @@ impl ShardBuilder {
         // lookups simpler on the read path.
         offsets_writer.push(edges_writer.byte_offset())?;
         // Reuse allocations for buckets and counts to avoid per-node Vec allocations.
-        let mut buckets: Vec<Vec<EdgeRec>> = vec![Vec::new(); self.params.relation_metas.len()];
-        let mut counts: Vec<usize> = vec![0; self.params.relation_metas.len()];
+        let rel_count = self.params.relation_metas.len();
+        let mut buckets: Vec<Vec<EdgeRec>> = vec![Vec::new(); rel_count];
+        let mut counts: Vec<usize> = vec![0; rel_count];
+        let mut last_counts: Vec<usize> = vec![0; rel_count];
+        let mut original_counts: Vec<usize> = vec![0; rel_count];
+        let mut lens: Vec<usize> = vec![0; rel_count];
         while let Some(node_id) = node_stream.next_id()? {
             if let Some(should_abort) = should_abort {
                 if should_abort() {
@@ -176,8 +180,11 @@ impl ShardBuilder {
             }
             let start_offset = edges_writer.byte_offset();
             // Collect edges for this node by relation.
-            for bucket in buckets.iter_mut() {
+            for (i, bucket) in buckets.iter_mut().enumerate() {
                 bucket.clear();
+                if last_counts[i] > bucket.capacity() {
+                    bucket.reserve_exact(last_counts[i] - bucket.capacity());
+                }
             }
             let mut truncated_node = false;
             while let Some(edge) = edge_stream.peek_order_checked(last_edge.as_ref())? {
@@ -188,22 +195,23 @@ impl ShardBuilder {
                 last_edge = Some(edge);
                 buckets[edge.relation_id as usize].push(edge);
             }
-            let mut original_counts: Option<Vec<usize>> = None;
             // Compute lengths first to avoid borrowing conflicts, then apply truncation.
-            let lens: Vec<usize> = buckets.iter().map(|b| b.len()).collect();
-            for (i, len) in lens.iter().copied().enumerate() {
+            let mut any_truncated = false;
+            for i in 0..rel_count {
+                let len = buckets[i].len();
+                lens[i] = len;
                 counts[i] = len;
                 if len > MAX_RELATION_EDGE_COUNT {
-                    if original_counts.is_none() {
-                        original_counts = Some(counts.clone());
-                    }
                     buckets[i].truncate(MAX_RELATION_EDGE_COUNT);
                     counts[i] = MAX_RELATION_EDGE_COUNT;
                     truncated_node = true;
+                    any_truncated = true;
                     build_stats.capped_edge_lists = build_stats.capped_edge_lists.saturating_add(1);
                 }
             }
-            let original_counts = original_counts.unwrap_or_else(|| counts.clone());
+            if any_truncated {
+                original_counts.copy_from_slice(&lens);
+            }
             let total_edges: usize = counts.iter().sum();
             if total_edges == 0 {
                 // No edges for this node across all relations; avoid writing zero counts.
@@ -236,7 +244,11 @@ impl ShardBuilder {
             }
             // Write all counts first (prefix), then edge data per relation.
             for (rel_idx, target_len) in counts.iter().enumerate() {
-                let truncated = original_counts[rel_idx].saturating_sub(*target_len);
+                let truncated = if any_truncated {
+                    original_counts[rel_idx].saturating_sub(*target_len)
+                } else {
+                    0
+                };
                 if truncated > 0 {
                     build_stats.truncated_edges_total += truncated as u64;
                     build_stats.truncated_edges_per_relation[rel_idx] = build_stats
@@ -258,6 +270,7 @@ impl ShardBuilder {
             }
             offsets_writer.push(edges_writer.byte_offset())?;
             prev_offset = edges_writer.byte_offset();
+            last_counts.copy_from_slice(&counts);
         }
 
         if let Some(cb) = on_progress.as_deref_mut() {
@@ -413,7 +426,7 @@ struct OffsetChunkWriter {
 impl OffsetChunkWriter {
     fn try_new(path: &Path) -> Result<Self> {
         // Use a larger buffer to reduce flushes on many small writes.
-        let mut writer = BufWriter::with_capacity(256 * 1024, File::create(path)?);
+        let mut writer = BufWriter::with_capacity(1024 * 1024, File::create(path)?);
         let header_len =
             bincode::serialized_size(&OffsetFileHeader::new(0, 0)).unwrap_or(32) as usize;
         writer.write_all(&vec![0u8; header_len])?;
@@ -468,7 +481,7 @@ pub(crate) struct EdgeWriter {
 impl EdgeWriter {
     fn try_new(path: &Path, layouts: Arc<Vec<RelationLayout>>) -> Result<Self> {
         // Larger buffer to reduce syscalls while writing large edge blobs.
-        let writer = BufWriter::with_capacity(256 * 1024, File::create(path)?);
+        let writer = BufWriter::with_capacity(1024 * 1024, File::create(path)?);
         Ok(Self {
             writer,
             bytes_written: 0,
@@ -536,12 +549,7 @@ impl EdgeWriter {
     ) -> std::result::Result<u64, IndexBuildError> {
         let mut len: u64 = 0;
         for (layout, &count) in layouts.iter().zip(counts.iter()) {
-            let count_u32: u32 = count
-                .try_into()
-                .map_err(|_| IndexBuildError::CountOverflow)?;
-            let count_len: u64 = varint_len(count_u32)?
-                .try_into()
-                .map_err(|_| IndexBuildError::CountOverflow)?;
+            let count_len = if count <= 63 { 1 } else { 2 };
             len = len
                 .checked_add(count_len)
                 .ok_or(IndexBuildError::CountOverflow)?;
