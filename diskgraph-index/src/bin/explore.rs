@@ -114,6 +114,11 @@ fn main() -> Result<()> {
         || profile_pprof_path.is_some()
         || profile_out_base.is_some()
         || profile_seconds.is_some();
+    if profile_enabled && cfg!(debug_assertions) && cfg!(target_arch = "aarch64") {
+        return Err(anyhow!(
+            "pprof profiling in debug builds can panic on aarch64; rerun with `--release`"
+        ));
+    }
     let _guard = profile_path
         .as_ref()
         .or(profile_pprof_path.as_ref())
