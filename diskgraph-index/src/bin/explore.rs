@@ -24,6 +24,7 @@ use pprof::ProfilerGuard;
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -139,13 +140,6 @@ fn main() -> Result<()> {
         None
     };
     let run_result = run_explore(&source_str, abort_flag.clone());
-    if let (Some(guard), Some(secs)) = (_guard.as_ref(), profile_seconds) {
-        let guard = guard.clone();
-        std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_secs(secs));
-            drop(guard);
-        });
-    }
     if let Some(guard) = _guard.as_ref() {
         let report = guard.report().build().context("build profile report")?;
         if let Some(base) = profile_out_base.as_ref() {
@@ -158,9 +152,8 @@ fn main() -> Result<()> {
             println!("Wrote profile to {}", svg_path.display());
             let profile = report.pprof().context("build pprof profile")?;
             let mut file = fs::File::create(&pb_path).context("create pprof output")?;
-            profile
-                .write_to_writer(&mut file)
-                .context("write pprof profile")?;
+            let bytes = profile.encode_to_vec();
+            file.write_all(&bytes).context("write pprof profile")?;
             println!("Wrote pprof profile to {}", pb_path.display());
         }
         if let Some(path) = profile_path.as_ref() {
@@ -173,9 +166,8 @@ fn main() -> Result<()> {
         if let Some(path) = profile_pprof_path.as_ref() {
             let profile = report.pprof().context("build pprof profile")?;
             let mut file = fs::File::create(path).context("create pprof output")?;
-            profile
-                .write_to_writer(&mut file)
-                .context("write pprof profile")?;
+            let bytes = profile.encode_to_vec();
+            file.write_all(&bytes).context("write pprof profile")?;
             println!("Wrote pprof profile to {}", path.display());
         }
     }
