@@ -13,7 +13,6 @@ REL0_SORT_BITS="${REL0_SORT_BITS:-0}"   # 0 disables dest_sort_key
 REL1_SORT_BITS="${REL1_SORT_BITS:-0}"
 NODE_TYPE="${NODE_TYPE:-Node}"
 EDGE_BATCH="${EDGE_BATCH:-1000000}"
-NODE_BATCH="${NODE_BATCH:-5000000}"
 ROW_GROUP="${ROW_GROUP:-4000000}"
 SEED="${SEED:-42}"
 
@@ -39,7 +38,6 @@ cargo run -p diskgraph-datagenerator --bin massive --release -- \
   --edges-per-relation "${EDGES_PER_REL}" \
   --max-dst-id "${MAX_DST_ID}" \
   --edge-batch-size "${EDGE_BATCH}" \
-  --node-batch-size "${NODE_BATCH}" \
   --row-group-size "${ROW_GROUP}" \
   --seed "${SEED}" \
   --node-type-name "${NODE_TYPE}" \
