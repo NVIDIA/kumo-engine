@@ -154,7 +154,7 @@ Notes:
 
 ## Shard explorer (TUI)
 
-`cargo run -p diskgraph-index --bin explore -- <path|s3://...|gs://...|az://...>` opens a REPL to inspect a shard built from Parquet. It streams the Parquet shards through `ShardBuilder` (no local staging), writes `offsets.bin`/`edges.bin` plus `metadata.json` into a temp cache derived from the source path, and reuses that cache within the same run if already present. Expected layout matches the massive generator output: `metadata.json`, `nodes.parquet`, and `edges_<relation>.parquet` under the provided prefix.
+`cargo run -p diskgraph-index --bin explore -- <path|s3://...|gs://...|az://...>` opens a REPL to inspect a shard built from Parquet. It streams the Parquet shards through `ShardBuilder` (no local staging), writes `offsets.bin`/`edges.bin` plus `metadata.json` into a temp cache derived from the source path, and reuses that cache within the same run if already present. Expected layout matches the massive generator output: `metadata.json` and `edges_<relation>.parquet` under the provided prefix. `nodes.parquet` is optional (the builder uses node id ranges from `metadata.json`).
 
 Commands inside the REPL:
 - `info` — print relation layouts and node count.

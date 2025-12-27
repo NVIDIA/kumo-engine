@@ -66,6 +66,10 @@ pub enum IndexBuildError {
     UnknownRelation,
     #[error("shard index mismatch between node shard ({node}) and edge shard ({edge})")]
     ShardIndexMismatch { node: usize, edge: usize },
+    #[error("node shard index {index} missing from metadata")]
+    NodeShardMissing { index: usize },
+    #[error("node shard type mismatch: expected {expected}, got {actual}")]
+    NodeTypeMismatch { expected: String, actual: String },
     #[error("parquet error: {0}")]
     Parquet(#[from] parquet::errors::ParquetError),
     #[error("object store error: {0}")]
@@ -117,6 +121,20 @@ impl ShardBuilder {
         mut on_progress: Option<&mut dyn FnMut(u64, u64)>,
         should_abort: Option<&dyn Fn() -> bool>,
     ) -> Result<ShardBuildOutput> {
+        if node_shard.shard_index != self.params.shard_index {
+            return Err(IndexBuildError::ShardIndexMismatch {
+                node: self.params.shard_index,
+                edge: node_shard.shard_index,
+            }
+            .into());
+        }
+        if node_shard.node_type != self.params.node_meta.name {
+            return Err(IndexBuildError::NodeTypeMismatch {
+                expected: self.params.node_meta.name.clone(),
+                actual: node_shard.node_type.clone(),
+            }
+            .into());
+        }
         for e in edge_shards {
             if e.source_shard_index != self.params.shard_index {
                 return Err(IndexBuildError::ShardIndexMismatch {
@@ -137,7 +155,8 @@ impl ShardBuilder {
             &self.params.node_types,
         )?);
 
-        let mut node_stream = NodeStream::try_new(rt.clone(), node_shard)?;
+        let mut node_stream =
+            NodeStream::try_new(&self.params.node_meta, self.params.shard_index)?;
         let mut edge_stream =
             MergedEdgeStream::try_new(rt.clone(), edge_shards, &self.params.relation_metas)?;
 
@@ -596,86 +615,35 @@ pub(crate) struct EdgeRec {
 }
 
 struct NodeStream {
-    _schema: SchemaRef,
-    current_batch: Option<arrow_array::RecordBatch>,
-    idx_in_batch: usize,
-    id_col_idx: usize,
-    rx: Receiver<PrefetchBatch>,
+    next_id: u64,
+    max_id: u64,
+    done: bool,
 }
 
 impl NodeStream {
-    fn try_new(rt: Arc<Runtime>, node_shard: &NodeShardInput) -> Result<Self> {
-        let reader = object_reader_from_source(&node_shard.parquet, &rt)?;
-        let (tx, rx) = mpsc::sync_channel(32);
-        let schema = rt.block_on(async move {
-            let mut builder = ParquetRecordBatchStreamBuilder::new(reader).await?;
-            builder = builder.with_batch_size(256_000);
-            let stream = builder.build()?;
-            let schema = stream.schema().clone();
-            tokio::spawn(async move {
-                futures::pin_mut!(stream);
-                while let Some(item) = stream.next().await {
-                    match item {
-                        Ok(batch) => {
-                            if tx.send(Ok(Some(batch))).is_err() {
-                                return;
-                            }
-                        }
-                        Err(e) => {
-                            let _ = tx.send(Err(e));
-                            return;
-                        }
-                    }
-                }
-                let _ = tx.send(Ok(None));
-            });
-            Ok::<_, parquet::errors::ParquetError>(schema)
-        })?;
+    fn try_new(node_meta: &NodeTypeMetadata, shard_index: usize) -> Result<Self> {
+        let shard = node_meta
+            .shards
+            .get(shard_index)
+            .ok_or(IndexBuildError::NodeShardMissing { index: shard_index })?;
         Ok(Self {
-            _schema: schema,
-            current_batch: None,
-            idx_in_batch: 0,
-            id_col_idx: 0, // initialized when first batch arrives
-            rx,
+            next_id: shard.min_id,
+            max_id: shard.max_id,
+            done: false,
         })
     }
 
     fn next_id(&mut self) -> Result<Option<u64>> {
-        loop {
-            if let Some(batch) = &self.current_batch {
-                if self.idx_in_batch < batch.num_rows() {
-                    let id_col = batch
-                        .column(self.id_col_idx)
-                        .as_any()
-                        .downcast_ref::<Int64Array>()
-                        .ok_or_else(|| IndexBuildError::InvalidColumn("id"))?;
-                    let val = id_col.value(self.idx_in_batch) as u64;
-                    self.idx_in_batch += 1;
-                    return Ok(Some(val));
-                }
-            }
-            match self.rx.recv() {
-                Ok(Ok(Some(batch))) => {
-                    if self.idx_in_batch == 0 && self.current_batch.is_none() {
-                        // On first batch, cache column index to avoid repeated schema lookups.
-                        self.id_col_idx = batch
-                            .schema()
-                            .index_of("id")
-                            .map_err(|_| IndexBuildError::InvalidColumn("id"))?;
-                    }
-                    self.current_batch = Some(batch);
-                    self.idx_in_batch = 0;
-                }
-                Ok(Ok(None)) => return Ok(None),
-                Ok(Err(e)) => return Err(e.into()),
-                Err(_) => return Err(IndexBuildError::Parquet(
-                    parquet::errors::ParquetError::General(
-                        "prefetch channel closed".to_string(),
-                    ),
-                )
-                .into()),
-            }
+        if self.done {
+            return Ok(None);
         }
+        if self.next_id > self.max_id {
+            self.done = true;
+            return Ok(None);
+        }
+        let val = self.next_id;
+        self.next_id = self.next_id.saturating_add(1);
+        Ok(Some(val))
     }
 }
 
