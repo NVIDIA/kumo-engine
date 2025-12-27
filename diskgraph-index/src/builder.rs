@@ -8,7 +8,7 @@ use arrow_array::{ArrayRef, Int64Array};
 use arrow_schema::SchemaRef;
 use bytes::Bytes;
 use diskgraph_core::metadata::{EdgeRelationMetadata, NodeTypeMetadata};
-use futures::{future::BoxFuture, StreamExt};
+use futures::{future::BoxFuture, StreamExt, TryStreamExt};
 use object_store::azure::{AzureConfigKey, MicrosoftAzureBuilder};
 use object_store::gcp::GoogleCloudStorageBuilder;
 use object_store::path::Path as ObjectPath;
@@ -28,11 +28,13 @@ use diskgraph_fs::{build_s3_client, S3Config as FsS3Config};
 use std::sync::mpsc::{self, Receiver};
 use std::fs::{self, File};
 use std::io::{BufWriter, Seek, SeekFrom, Write};
+use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 use tokio::runtime::Runtime;
+use tokio::task;
 use tracing::info;
 use object_store::chunked::ChunkedStore;
 
@@ -40,6 +42,21 @@ use object_store::chunked::ChunkedStore;
 /// Compact varint supports up to 14 bits (0x3FFF). We cap relation edge lists
 /// at that limit to guarantee counts fit the encoding without overflow.
 const MAX_RELATION_EDGE_COUNT: usize = 0x3FFF;
+
+#[derive(Debug, Clone)]
+pub struct ParquetDownloadOptions {
+    pub chunk_size: u64,
+    pub concurrency: usize,
+}
+
+impl Default for ParquetDownloadOptions {
+    fn default() -> Self {
+        Self {
+            chunk_size: 64 * 1024 * 1024,
+            concurrency: 8,
+        }
+    }
+}
 
 type PrefetchBatch =
     std::result::Result<Option<arrow_array::RecordBatch>, parquet::errors::ParquetError>;
@@ -74,6 +91,66 @@ pub enum IndexBuildError {
     ObjectStore(String),
     #[error("build aborted")]
     Aborted,
+}
+
+pub fn download_parquet_to_local(
+    rt: &Runtime,
+    store: &Arc<dyn ObjectStore>,
+    key: &str,
+    local_path: &Path,
+    opts: &ParquetDownloadOptions,
+) -> Result<()> {
+    if local_path.exists() {
+        return Ok(());
+    }
+    if let Some(parent) = local_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let loc = ObjectPath::from(key.to_string());
+    let total = rt.block_on(async { store.head(&loc).await.map(|m| m.size) })?;
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .read(true)
+        .open(local_path)?;
+    file.set_len(total)?;
+    let file = Arc::new(file);
+    let mut ranges = Vec::new();
+    let mut offset = 0u64;
+    while offset < total {
+        let end = (offset + opts.chunk_size).min(total);
+        ranges.push(offset..end);
+        offset = end;
+    }
+    rt.block_on(async {
+        futures::stream::iter(ranges)
+            .map(|range| {
+                let store = Arc::clone(store);
+                let loc = loc.clone();
+                let file = Arc::clone(&file);
+                async move {
+                    let bytes = store.get_range(&loc, range.clone()).await?;
+                    task::spawn_blocking(move || {
+                        file.write_all_at(&bytes, range.start)?;
+                        Ok::<(), std::io::Error>(())
+                    })
+                    .await??;
+                    Ok::<(), anyhow::Error>(())
+                }
+            })
+            .buffer_unordered(opts.concurrency)
+            .try_collect::<Vec<_>>()
+            .await?;
+        Ok::<(), anyhow::Error>(())
+    })?;
+    Ok(())
+}
+
+pub fn cleanup_parquet_cache(parquet_root: &Path) -> Result<()> {
+    if parquet_root.exists() {
+        fs::remove_dir_all(parquet_root)?;
+    }
+    Ok(())
 }
 
 /// Parameters for building a single shard index.

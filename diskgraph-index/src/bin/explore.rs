@@ -8,7 +8,8 @@
 use anyhow::{anyhow, Context, Result};
 use diskgraph_core::metadata::{DatasetMetadata, EdgeRelationMetadata, NodeTypeMetadata};
 use diskgraph_index::builder::{
-    compute_relation_layouts, IndexBuildError, ShardBuildParams, ShardBuilder,
+    cleanup_parquet_cache, compute_relation_layouts, download_parquet_to_local,
+    IndexBuildError, ParquetDownloadOptions, ShardBuildParams, ShardBuilder,
 };
 use diskgraph_index::reader::ShardReader;
 use diskgraph_index::streaming::{EdgeShardInput, ParquetSource};
@@ -23,13 +24,11 @@ use pprof::protos::Message;
 use pprof::ProfilerGuard;
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
-use futures::{StreamExt, TryStreamExt};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::runtime::Runtime;
-use std::os::unix::fs::FileExt;
 
 #[derive(Clone, Debug)]
 enum Source {
@@ -384,6 +383,7 @@ fn build_from_remote(
         serde_json::from_slice(&meta_bytes).context("parse metadata.json")?;
 
     let parquet_root = cache_dir.join("parquet");
+    let download_opts = ParquetDownloadOptions::default();
     // Download Parquet shards locally, then build from local files.
     let edge_inputs: Vec<EdgeShardInput> = metadata
         .edge_relations
@@ -399,7 +399,7 @@ fn build_from_remote(
                 format!("{}/{}", prefix.trim_end_matches('/'), shard.path)
             };
             let local_path = parquet_root.join(&shard.path);
-            download_remote_parquet(rt, &store_arc, &key, &local_path)
+            download_parquet_to_local(rt, &store_arc, &key, &local_path, &download_opts)
                 .with_context(|| format!("download {}", shard.path))?;
             let parquet = ParquetSource::LocalFile(local_path);
             Ok(EdgeShardInput {
@@ -439,6 +439,7 @@ fn build_from_remote(
         )
         .context("build shard from parquet")?;
     build_progress.finish_with_message("Built shard");
+    cleanup_parquet_cache(&parquet_root).context("remove downloaded parquet")?;
     fs::write(&meta_path, serde_json::to_vec_pretty(&metadata)?)?;
     Ok((metadata, shard_dir))
 }
@@ -468,63 +469,6 @@ fn cache_root_dir() -> Option<PathBuf> {
         }
     }
     None
-}
-
-fn download_remote_parquet(
-    rt: &Runtime,
-    store: &Arc<dyn ObjectStore>,
-    key: &str,
-    local_path: &Path,
-) -> Result<()> {
-    if local_path.exists() {
-        return Ok(());
-    }
-    if let Some(parent) = local_path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let loc = Arc::new(ObjectPath::from(key.to_string()));
-    let spinner = start_spinner(&format!("Downloading {}", key));
-    rt.block_on(async {
-        let meta = store.head(&loc).await?;
-        let total = meta.size;
-        let file = std::fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .read(true)
-            .open(local_path)?;
-        file.set_len(total)?;
-        let file = Arc::new(file);
-        let chunk_size: u64 = 64 * 1024 * 1024;
-        let concurrency: usize = 8;
-        let mut ranges = Vec::new();
-        let mut offset = 0u64;
-        while offset < total {
-            let end = (offset + chunk_size).min(total);
-            ranges.push(offset..end);
-            offset = end;
-        }
-        futures::stream::iter(ranges)
-            .map(|range| {
-                let store = Arc::clone(store);
-                let loc = Arc::clone(&loc);
-                let file = Arc::clone(&file);
-                async move {
-                    let bytes = store.get_range(&loc, range.clone()).await?;
-                    tokio::task::spawn_blocking(move || {
-                        file.write_all_at(&bytes, range.start)?;
-                        Ok::<(), std::io::Error>(())
-                    })
-                    .await??;
-                    Ok::<(), anyhow::Error>(())
-                }
-            })
-            .buffer_unordered(concurrency)
-            .try_collect::<Vec<_>>()
-            .await?;
-        Ok::<(), anyhow::Error>(())
-    })?;
-    spinner.finish_with_message(format!("Downloaded {}", key));
-    Ok(())
 }
 
 fn shard_node_count(metadata: &DatasetMetadata) -> Option<u64> {
