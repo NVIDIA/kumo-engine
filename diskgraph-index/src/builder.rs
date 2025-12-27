@@ -26,7 +26,6 @@ use serde_json;
 use serde::Serialize;
 use diskgraph_fs::{build_s3_client, S3Config as FsS3Config};
 use std::sync::mpsc::{self, Receiver};
-use std::cmp::Ordering;
 use std::fs::{self, File};
 use std::io::{BufWriter, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -146,7 +145,6 @@ impl ShardBuilder {
         let mut edges_writer = EdgeWriter::try_new(&edges_path, layouts.clone())?;
 
         let mut nodes_seen = 0u64;
-        let mut last_edge: Option<EdgeRec> = None;
         let mut build_stats = BuildStats {
             truncated_edges_per_relation: vec![0; self.params.relation_metas.len()],
             ..Default::default()
@@ -187,15 +185,7 @@ impl ShardBuilder {
                 }
             }
             let mut truncated_node = false;
-            while let Some(edge) = edge_stream.peek_order_checked(last_edge.as_ref())? {
-                if edge.src > node_id {
-                    break;
-                }
-                let edge = edge_stream.pop().unwrap();
-                last_edge = Some(edge);
-                let rel_idx = edge.relation_id as usize;
-                buckets[rel_idx].push(edge);
-            }
+            edge_stream.drain_for_node(node_id, &mut buckets)?;
             // Compute lengths first to avoid borrowing conflicts, then apply truncation.
             let mut any_truncated = false;
             let mut total_edges: usize = 0;
@@ -280,7 +270,7 @@ impl ShardBuilder {
             cb(nodes_seen, total_nodes.unwrap_or(nodes_seen));
         }
 
-        if edge_stream.peek().is_some() {
+        if edge_stream.peek_any().is_some() {
             return Err(IndexBuildError::DanglingEdges.into());
         }
 
@@ -861,52 +851,26 @@ impl MergedEdgeStream {
         Ok(Self { streams, heads })
     }
 
-    fn peek(&self) -> Option<&EdgeRec> {
-        self.min_index().and_then(|idx| self.heads[idx].as_ref())
+    fn peek_any(&self) -> Option<&EdgeRec> {
+        self.heads.iter().find_map(|h| h.as_ref())
     }
 
-    fn pop(&mut self) -> Option<EdgeRec> {
-        let idx = self.min_index()?;
-        let rec = self.heads[idx].take()?;
-        if let Ok(next_rec) = self.streams[idx].next_rec() {
-            self.heads[idx] = next_rec;
-        }
-        Some(rec)
-    }
-
-    fn min_index(&self) -> Option<usize> {
-        let mut best_idx: Option<usize> = None;
-        for (idx, head) in self.heads.iter().enumerate() {
-            let Some(rec) = head else { continue };
-            match best_idx {
-                None => best_idx = Some(idx),
-                Some(best) => {
-                    let best_rec = self.heads[best].as_ref().unwrap();
-                    if edge_cmp(rec, best_rec) == Ordering::Less {
-                        best_idx = Some(idx);
-                    }
+    fn drain_for_node(&mut self, node_id: u64, buckets: &mut [Vec<EdgeRec>]) -> Result<()> {
+        for idx in 0..self.heads.len() {
+            let Some(head) = self.heads[idx] else { continue };
+            if head.src < node_id {
+                return Err(IndexBuildError::EdgeOrderingViolation.into());
+            }
+            while let Some(edge) = self.heads[idx] {
+                if edge.src != node_id {
+                    break;
                 }
+                let rel_idx = edge.relation_id as usize;
+                buckets[rel_idx].push(edge);
+                self.heads[idx] = self.streams[idx].next_rec()?;
             }
         }
-        best_idx
-    }
-
-    fn peek_order_checked(&mut self, last: Option<&EdgeRec>) -> Result<Option<&EdgeRec>> {
-        if let Some(current) = self.peek() {
-            if let Some(prev) = last {
-                if current.src < prev.src {
-                    return Err(IndexBuildError::EdgeOrderingViolation.into());
-                }
-            }
-        }
-        Ok(self.peek())
-    }
-}
-
-fn edge_cmp(a: &EdgeRec, b: &EdgeRec) -> Ordering {
-    match a.src.cmp(&b.src) {
-        Ordering::Equal => a.relation_id.cmp(&b.relation_id),
-        ord => ord,
+        Ok(())
     }
 }
 
