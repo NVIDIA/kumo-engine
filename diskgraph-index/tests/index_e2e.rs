@@ -73,7 +73,7 @@ fn build_and_read_round_trip_basic() {
     let reader = ShardReader::open(&output_dir, built.layouts.clone()).unwrap();
     let header = reader.header();
     assert_eq!(header.nodes, 13);
-    assert_eq!(header.total_offsets, 3);
+    assert_eq!(header.total_offsets, 14);
 
     let rel0 = 0;
     let seg0 = decode_relation(&reader, 0, rel0);
@@ -130,7 +130,7 @@ fn build_rejects_dangling_edges() {
     )
     .unwrap();
 
-    let node_meta = node_meta("User", 42);
+    let node_meta = node_meta("User", 0);
     let relation_meta = relation_meta("Follows", "User", "User", None);
     let output_dir = dir.path().join("out");
     let builder = ShardBuilder::new(ShardBuildParams {
@@ -161,27 +161,27 @@ fn build_rejects_dangling_edges() {
 fn build_rejects_edge_ordering_violation() {
     let dir = tempdir().unwrap();
     let edge_path = dir.path().join("edges.parquet");
-    // dest_sort_key must be descending; make it ascending to trigger violation.
+    // src_id must be sorted ascending; make it descending to trigger violation.
     write_edges(
         &edge_path,
         &[
             EdgeRow {
-                src: 0,
+                src: 1,
                 dst: 1,
-                dest_sort_key: Some(1),
+                dest_sort_key: None,
             },
             EdgeRow {
                 src: 0,
                 dst: 2,
-                dest_sort_key: Some(2),
+                dest_sort_key: None,
             },
         ],
-        true,
+        false,
     )
     .unwrap();
 
     let node_meta = node_meta("User", 2);
-    let relation_meta = relation_meta("Temporal", "User", "User", Some(8));
+    let relation_meta = relation_meta("Follows", "User", "User", None);
     let output_dir = dir.path().join("out");
     let builder = ShardBuilder::new(ShardBuildParams {
         output_dir: output_dir.clone(),
@@ -192,10 +192,10 @@ fn build_rejects_edge_ordering_violation() {
     });
     let msg = match builder.build(
         &[EdgeShardInput {
-            relation: "Temporal".into(),
+            relation: "Follows".into(),
             source_shard_index: 0,
             parquet: ParquetSource::LocalFile(edge_path),
-            has_dest_sort_key: true,
+            has_dest_sort_key: false,
         }],
     ) {
         Ok(_) => panic!("expected EdgeOrderingViolation error"),
@@ -212,7 +212,6 @@ fn offsets_span_multiple_chunks_and_edges_decode_correctly() {
     // Ensure offset delta encoding handles repeated offsets and multiple chunks.
     let dir = tempdir().unwrap();
     let edge_path = dir.path().join("edges.parquet");
-    let nodes: Vec<i64> = (0..=129).collect(); // 130 nodes => 131 offsets (seed + per node), spans >2 chunks of 64
     write_edges(
         &edge_path,
         &[
@@ -845,7 +844,6 @@ fn reader_rejects_truncated_edge_counts() {
 fn offsets_many_chunks_sparse_edges() {
     let dir = tempdir().unwrap();
     let edge_path = dir.path().join("edges.parquet");
-    let nodes: Vec<i64> = (0..5000).collect();
     write_edges(
         &edge_path,
         &[
@@ -934,7 +932,14 @@ fn truncates_large_node_multi_relation() {
     write_edges(&edge_path_a, &edges_a, false).unwrap();
     write_edges(&edge_path_b, &edges_b, true).unwrap();
 
-    let node_meta = node_meta("User", u64::MAX - 1);
+    let node_meta = NodeTypeMetadata {
+        name: "User".into(),
+        max_id: u64::MAX - 1,
+        shards: vec![NodeShardMetadata {
+            min_id: 0,
+            max_id: 1,
+        }],
+    };
     let follows = relation_meta("Follows", "User", "User", None);
     let temporal = relation_meta("Temporal", "User", "User", Some(56));
     let output_dir = dir.path().join("out");
@@ -1294,7 +1299,6 @@ fn node_meta(name: &str, max_id: u64) -> NodeTypeMetadata {
         name: name.into(),
         max_id,
         shards: vec![NodeShardMetadata {
-            path: format!("nodes/{}/part-00000.parquet", name.to_lowercase()),
             min_id: 0,
             max_id,
         }],

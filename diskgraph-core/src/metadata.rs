@@ -5,7 +5,6 @@ use serde_with::serde_as;
 /// Per-shard node metadata to route lookups.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeShardMetadata {
-    pub path: String,
     pub min_id: u64,
     pub max_id: u64,
 }
@@ -16,7 +15,7 @@ pub struct NodeTypeMetadata {
     pub name: String,
     /// Maximum node id observed for the type.
     pub max_id: u64,
-    /// Relative paths and ranges for node shards (paths may be omitted on disk).
+    /// Contiguous ID ranges for node shards.
     pub shards: Vec<NodeShardMetadata>,
 }
 

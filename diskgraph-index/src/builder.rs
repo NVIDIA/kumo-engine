@@ -58,7 +58,7 @@ pub enum IndexBuildError {
     ValueOutOfRange(&'static str),
     #[error("edges remain after exhausting node ids (misaligned shards)")]
     DanglingEdges,
-    #[error("input edges not sorted by src_id then dest_sort_key desc")]
+    #[error("input edges not sorted by src_id")]
     EdgeOrderingViolation,
     #[error("invalid column type for {0}")]
     InvalidColumn(&'static str),
@@ -221,6 +221,10 @@ impl ShardBuilder {
                 .checked_sub(base_span)
                 .ok_or(IndexBuildError::OffsetDeltaOverflow)?;
             if node_bytes > budget {
+                if !any_truncated {
+                    original_counts.copy_from_slice(&lens);
+                    any_truncated = true;
+                }
                 truncate_counts(
                     &mut buckets,
                     &mut counts,
@@ -621,7 +625,11 @@ impl NodeStream {
             return Ok(None);
         }
         let val = self.next_id;
-        self.next_id = self.next_id.saturating_add(1);
+        if self.next_id == self.max_id {
+            self.done = true;
+        } else {
+            self.next_id += 1;
+        }
         Ok(Some(val))
     }
 }
@@ -639,6 +647,7 @@ struct EdgeSubStream {
     current_src: Option<Int64Array>,
     current_dst: Option<Int64Array>,
     current_sort: Option<Int64Array>,
+    last_src: Option<u64>,
     rx: Receiver<PrefetchBatch>,
 }
 
@@ -688,6 +697,7 @@ impl EdgeSubStream {
             current_src: None,
             current_dst: None,
             current_sort: None,
+            last_src: None,
             rx,
         })
     }
@@ -786,10 +796,16 @@ impl EdgeSubStream {
                     while self.idx_in_batch < self.batch_len {
                         let row = self.idx_in_batch;
                         let src_val = src_col.value(row) as u64;
+                        if let Some(last_src) = self.last_src {
+                            if src_val < last_src {
+                                return Err(IndexBuildError::EdgeOrderingViolation.into());
+                            }
+                        }
                         if src_val != node_id {
                             return Ok(Some(src_val));
                         }
                         let sort_val = sort_col.map(|c| c.value(row) as u64);
+                        self.last_src = Some(src_val);
                         buckets[self.relation_id as usize].push(EdgeRec {
                             src: src_val,
                             dst: dst_col.value(row) as u64,

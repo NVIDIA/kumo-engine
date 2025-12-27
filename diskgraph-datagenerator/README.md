@@ -1,6 +1,6 @@
 # DiskGraph Data Generator
 
-This tool produces synthetic datasets in the format expected by diskgraph: a dataset root containing `metadata.json` plus Parquet shards for edge tables. Node shard ranges are still recorded in metadata, but node parquet files are optional. Scenarios cover combinations of optional dest_sort_key presence, presorted shards, and single vs multi-table layouts.
+This tool produces synthetic datasets in the format expected by diskgraph: a dataset root containing `metadata.json` plus Parquet shards for edge tables. Node shard ranges are recorded in metadata. Scenarios cover combinations of optional dest_sort_key presence, presorted shards, and single vs multi-table layouts.
 
 ## Building
 
@@ -36,7 +36,7 @@ Arguments:
 Each scenario creates a dataset directory under `--output`, for example `simple_no_optional/`:
 - `metadata.json`: matches the schema in `diskgraph-core/src/metadata.rs`.
 - `edges/RELATION/part-00000.parquet ...`: shards for each edge relation containing `src_id`, `dst_id`, optional `dest_sort_key` columns.
-Metadata records node shard ranges plus the relative edge shard paths and per-shard source id ranges (edge shard source min/max id) to keep the dataset self-contained and routable. Node parquet files are optional and may be omitted.
+Metadata records node shard ranges plus the relative edge shard paths and per-shard source id ranges (edge shard source min/max id) to keep the dataset self-contained and routable.
 
 Generation guarantees:
 - Node shards contain contiguous ranges per shard; gaps may exist between shard ranges.

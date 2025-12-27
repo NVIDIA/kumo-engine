@@ -66,7 +66,6 @@ fn node_meta(name: &str, max_id: u64) -> diskgraph_core::metadata::NodeTypeMetad
         name: name.into(),
         max_id,
         shards: vec![diskgraph_core::metadata::NodeShardMetadata {
-            path: format!("nodes/{}/part-00000.parquet", name.to_lowercase()),
             min_id: 0,
             max_id,
         }],

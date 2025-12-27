@@ -64,7 +64,7 @@ Counts use the compact 1–2 byte scheme in prefix order (R0 then R1), followed 
 
 ## Build algorithm (ShardBuilder)
 
-Input: node shard ranges from metadata (node parquet optional) and all aligned edge shards (sorted by `src_id`, then `dest_sort_key` desc when present).
+Input: node shard ranges from metadata and all aligned edge shards (sorted by `src_id`, then `dest_sort_key` desc when present).
 
 Steps:
 1. Precompute relation layouts:
@@ -72,7 +72,7 @@ Steps:
    - Masks for `dst_id` and optional `dest_sort_key`.
    - `entry_bytes` = ceil((dst_bits + sort_bits)/8).
 2. Stream edges and generate node ids:
-   - Node ids are generated from the shard range in metadata (node parquet is not required).
+   - Node ids are generated from the shard range in metadata.
    - Each edge stream is an async Parquet reader (`ParquetRecordBatchStreamBuilder`), caching column indices and downcast arrays per batch.
    - Merge edges across relations with a heap, preserving global ordering and validating sort order.
 3. For each node (single pass):
@@ -155,7 +155,7 @@ Notes:
 
 ## Shard explorer (TUI)
 
-`cargo run -p diskgraph-index --bin explore -- <path|s3://...|gs://...|az://...>` opens a REPL to inspect a shard built from Parquet. It streams the Parquet shards through `ShardBuilder` (no local staging), writes `offsets.bin`/`edges.bin` plus `metadata.json` into a temp cache derived from the source path, and reuses that cache within the same run if already present. Expected layout matches the massive generator output: `metadata.json` and `edges_<relation>.parquet` under the provided prefix. `nodes.parquet` is optional (the builder uses node id ranges from `metadata.json`).
+`cargo run -p diskgraph-index --bin explore -- <path|s3://...|gs://...|az://...>` opens a REPL to inspect a shard built from Parquet. It streams the Parquet shards through `ShardBuilder` (no local staging), writes `offsets.bin`/`edges.bin` plus `metadata.json` into a temp cache derived from the source path, and reuses that cache within the same run if already present. Expected layout matches the massive generator output: `metadata.json` and `edges_<relation>.parquet` under the provided prefix.
 
 Commands inside the REPL:
 - `info` — print relation layouts and node count.

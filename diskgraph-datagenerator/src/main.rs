@@ -2,8 +2,8 @@
 //!
 //! Generates synthetic datasets in the on-disk layout expected by the
 //! diskgraph ingest pipeline: a dataset root containing `metadata.json` and
-//! Parquet shards for edge tables. Node shard ranges are recorded in metadata,
-//! but node parquet files are optional. Scenarios cover combinations of
+//! Parquet shards for edge tables. Node shard ranges are recorded in metadata.
+//! Scenarios cover combinations of
 //! optional dest_sort_key fields and single vs multi-table layouts.
 //! All shards are sorted: edges by (src_id, dest_sort_key desc when present).
 
@@ -467,7 +467,6 @@ fn assign_node_shards(
         for (idx, maybe_range) in ranges.iter().enumerate() {
             if maybe_range.is_none() {
                 nt.shards.push(NodeShardMetadata {
-                    path: format!("nodes/{}/part-{idx:05}.parquet", nt.name.to_lowercase()),
                     min_id: 0,
                     max_id: 0,
                 });
@@ -475,7 +474,6 @@ fn assign_node_shards(
             }
             let range = maybe_range.as_ref().unwrap();
             nt.shards.push(NodeShardMetadata {
-                path: format!("nodes/{}/part-{idx:05}.parquet", nt.name.to_lowercase()),
                 min_id: range.start,
                 max_id: range.end,
             });

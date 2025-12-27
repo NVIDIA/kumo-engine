@@ -11,7 +11,7 @@ DiskGraph is a Rust-based system for ingesting large typed, bidirectional graphs
   - `storage.rs` — storage abstraction, local storage stub, compression interface (`storage/compression.rs`).
   - `errors.rs` — common error type.
 - `diskgraph-datagenerator/` — synthetic dataset generator for testing.
-  - Produces dataset directories with `metadata.json` and sharded edge tables; node shard metadata is included even when node parquet files are omitted.
+  - Produces dataset directories with `metadata.json` and sharded edge tables; node shard ranges are recorded in metadata.
   - Includes a massive-scale streaming generator and helper scripts to push directly to S3/GCS/ADLS or the local filesystem for large benchmarks.
   - Guarantees: node shard ranges recorded in metadata; edge shards sorted by `(src_id, dest_sort_key desc when present)`; shard alignment (edge shard N only references src IDs from node shard N of the source type); per-shard id ranges are recorded in metadata for routing; optional fields exercised across scenarios.
 - `diskgraph-index/` — shard-level index builder/reader.

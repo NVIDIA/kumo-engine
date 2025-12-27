@@ -144,7 +144,6 @@ fn main() -> Result<()> {
         args.nodes, args.edges_per_relation, args.max_dst_id
     );
     let node_meta = NodeShardMetadata {
-        path: "nodes.parquet".into(),
         min_id: 0,
         max_id: args.nodes.saturating_sub(1),
     };
