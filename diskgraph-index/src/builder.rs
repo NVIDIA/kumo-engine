@@ -677,6 +677,7 @@ struct EdgeSubStream {
     _schema: SchemaRef,
     batch: Option<arrow_array::RecordBatch>,
     idx_in_batch: usize,
+    batch_len: usize,
     dest_sort_key_bits: Option<u8>,
     relation_id: u16,
     src_idx: usize,
@@ -725,6 +726,7 @@ impl EdgeSubStream {
             _schema: schema,
             batch: None,
             idx_in_batch: 0,
+            batch_len: 0,
             dest_sort_key_bits,
             relation_id,
             src_idx: 0,
@@ -737,28 +739,15 @@ impl EdgeSubStream {
         })
     }
 
-    fn next_rec(&mut self) -> Result<Option<EdgeRec>> {
+    fn peek_src(&mut self) -> Result<Option<u64>> {
         loop {
-            if let Some(batch) = &self.batch {
-                if self.idx_in_batch < batch.num_rows() {
+            if let Some(_) = &self.batch {
+                if self.idx_in_batch < self.batch_len {
                     let src_col = self
                         .current_src
                         .as_ref()
                         .ok_or_else(|| IndexBuildError::InvalidColumn("src_id"))?;
-                    let dst_col = self
-                        .current_dst
-                        .as_ref()
-                        .ok_or_else(|| IndexBuildError::InvalidColumn("dst_id"))?;
-                    let sort_col = self.current_sort.as_ref();
-                    let row = self.idx_in_batch;
-                    self.idx_in_batch += 1;
-                    let sort_val = sort_col.map(|c| c.value(row) as u64);
-                    return Ok(Some(EdgeRec {
-                        src: src_col.value(row) as u64,
-                        dst: dst_col.value(row) as u64,
-                        dest_sort_key: sort_val,
-                        relation_id: self.relation_id,
-                    }));
+                    return Ok(Some(src_col.value(self.idx_in_batch) as u64));
                 }
             }
             match self.rx.recv() {
@@ -808,15 +797,115 @@ impl EdgeSubStream {
                     });
                     self.batch = Some(batch);
                     self.idx_in_batch = 0;
+                    self.batch_len = self.batch.as_ref().map(|b| b.num_rows()).unwrap_or(0);
                 }
                 Ok(Ok(None)) => return Ok(None),
                 Ok(Err(e)) => return Err(e.into()),
-                Err(_) => return Err(IndexBuildError::Parquet(
-                    parquet::errors::ParquetError::General(
-                        "prefetch channel closed".to_string(),
-                    ),
-                )
-                .into()),
+                Err(_) => {
+                    return Err(IndexBuildError::Parquet(
+                        parquet::errors::ParquetError::General(
+                            "prefetch channel closed".to_string(),
+                        ),
+                    )
+                    .into())
+                }
+            }
+        }
+    }
+
+    fn drain_edges(
+        &mut self,
+        node_id: u64,
+        buckets: &mut [Vec<EdgeRec>],
+    ) -> Result<Option<u64>> {
+        loop {
+            if let Some(_) = &self.batch {
+                if self.idx_in_batch < self.batch_len {
+                    let src_col = self
+                        .current_src
+                        .as_ref()
+                        .ok_or_else(|| IndexBuildError::InvalidColumn("src_id"))?;
+                    let dst_col = self
+                        .current_dst
+                        .as_ref()
+                        .ok_or_else(|| IndexBuildError::InvalidColumn("dst_id"))?;
+                    let sort_col = self.current_sort.as_ref();
+                    while self.idx_in_batch < self.batch_len {
+                        let row = self.idx_in_batch;
+                        let src_val = src_col.value(row) as u64;
+                        if src_val != node_id {
+                            return Ok(Some(src_val));
+                        }
+                        let sort_val = sort_col.map(|c| c.value(row) as u64);
+                        buckets[self.relation_id as usize].push(EdgeRec {
+                            src: src_val,
+                            dst: dst_col.value(row) as u64,
+                            dest_sort_key: sort_val,
+                            relation_id: self.relation_id,
+                        });
+                        self.idx_in_batch += 1;
+                    }
+                }
+            }
+            match self.rx.recv() {
+                Ok(Ok(Some(batch))) => {
+                    if self.batch.is_none() {
+                        self.src_idx = batch
+                            .schema()
+                            .index_of("src_id")
+                            .map_err(|_| IndexBuildError::InvalidColumn("src_id"))?;
+                        self.dst_idx = batch
+                            .schema()
+                            .index_of("dst_id")
+                            .map_err(|_| IndexBuildError::InvalidColumn("dst_id"))?;
+                        self.sort_idx = if self.dest_sort_key_bits.is_some() {
+                            Some(
+                                batch
+                                    .schema()
+                                    .index_of("dest_sort_key")
+                                    .map_err(|_| IndexBuildError::InvalidColumn("dest_sort_key"))?,
+                            )
+                        } else {
+                            None
+                        };
+                    }
+                    self.current_src = Some(
+                        batch
+                            .column(self.src_idx)
+                            .as_any()
+                            .downcast_ref::<Int64Array>()
+                            .ok_or(IndexBuildError::InvalidColumn("src_id"))?
+                            .clone(),
+                    );
+                    self.current_dst = Some(
+                        batch
+                            .column(self.dst_idx)
+                            .as_any()
+                            .downcast_ref::<Int64Array>()
+                            .ok_or(IndexBuildError::InvalidColumn("dst_id"))?
+                            .clone(),
+                    );
+                    self.current_sort = self.sort_idx.and_then(|idx| {
+                        batch
+                            .column(idx)
+                            .as_any()
+                            .downcast_ref::<Int64Array>()
+                            .cloned()
+                    });
+                    self.batch = Some(batch);
+                    self.idx_in_batch = 0;
+                    self.batch_len = self.batch.as_ref().map(|b| b.num_rows()).unwrap_or(0);
+                }
+                Ok(Ok(None)) => return Ok(None),
+                Ok(Err(e)) => return Err(e.into()),
+                Err(_) => {
+                    return Err(IndexBuildError::Parquet(
+                        parquet::errors::ParquetError::General(
+                            "prefetch channel closed".to_string(),
+                        ),
+                    )
+                    .into())
+                }
             }
         }
     }
@@ -824,7 +913,7 @@ impl EdgeSubStream {
 
 struct MergedEdgeStream {
     streams: Vec<EdgeSubStream>,
-    heads: Vec<Option<EdgeRec>>,
+    head_srcs: Vec<Option<u64>>,
 }
 
 impl MergedEdgeStream {
@@ -838,37 +927,36 @@ impl MergedEdgeStream {
             rel_lookup.insert(meta.name.clone(), (idx as u16, meta.dest_sort_key_bits));
         }
         let mut streams = Vec::new();
-        let mut heads = Vec::new();
+        let mut head_srcs = Vec::new();
         for (_idx, input) in inputs.iter().enumerate() {
             let (relation_id, sort_bits) = rel_lookup
                 .get(&input.relation)
                 .ok_or(IndexBuildError::UnknownRelation)?;
-            let mut stream = EdgeSubStream::try_new(rt.clone(), input, *relation_id, *sort_bits)?;
-            let rec = stream.next_rec()?;
+            let stream = EdgeSubStream::try_new(rt.clone(), input, *relation_id, *sort_bits)?;
             streams.push(stream);
-            heads.push(rec);
+            head_srcs.push(streams.last_mut().unwrap().peek_src()?);
         }
-        Ok(Self { streams, heads })
+        Ok(Self {
+            streams,
+            head_srcs,
+        })
     }
 
-    fn peek_any(&self) -> Option<&EdgeRec> {
-        self.heads.iter().find_map(|h| h.as_ref())
+    fn peek_any(&self) -> Option<u64> {
+        self.head_srcs.iter().copied().flatten().next()
     }
 
     fn drain_for_node(&mut self, node_id: u64, buckets: &mut [Vec<EdgeRec>]) -> Result<()> {
-        for idx in 0..self.heads.len() {
-            let Some(head) = self.heads[idx] else { continue };
-            if head.src < node_id {
+        for idx in 0..self.streams.len() {
+            let Some(head_src) = self.head_srcs[idx] else { continue };
+            if head_src < node_id {
                 return Err(IndexBuildError::EdgeOrderingViolation.into());
             }
-            while let Some(edge) = self.heads[idx] {
-                if edge.src != node_id {
-                    break;
-                }
-                let rel_idx = edge.relation_id as usize;
-                buckets[rel_idx].push(edge);
-                self.heads[idx] = self.streams[idx].next_rec()?;
+            if head_src != node_id {
+                continue;
             }
+            let next_src = self.streams[idx].drain_edges(node_id, buckets)?;
+            self.head_srcs[idx] = next_src;
         }
         Ok(())
     }
