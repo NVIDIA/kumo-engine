@@ -23,11 +23,13 @@ use pprof::protos::Message;
 use pprof::ProfilerGuard;
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
+use futures::{StreamExt, TryStreamExt};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::runtime::Runtime;
+use std::os::unix::fs::FileExt;
 
 #[derive(Clone, Debug)]
 enum Source {
@@ -381,54 +383,8 @@ fn build_from_remote(
     let metadata: DatasetMetadata =
         serde_json::from_slice(&meta_bytes).context("parse metadata.json")?;
 
-    let make_source = |key: String| -> Result<ParquetSource> {
-        match &remote {
-            RemoteStore::S3 { bucket, client, .. } => Ok(ParquetSource::S3(
-                diskgraph_index::streaming::S3Location {
-                    bucket: bucket.clone(),
-                    key,
-                    region: Some(client.resolved.region.clone()),
-                    endpoint: client.resolved.endpoint.clone(),
-                    access_key_id: Some(client.resolved.access_key_id.clone()),
-                    secret_access_key: Some(client.resolved.secret_access_key.clone()),
-                    session_token: client.resolved.session_token.clone(),
-                    virtual_hosted_style_request: Some(client.resolved.virtual_hosted),
-                },
-            )),
-            RemoteStore::Gcs { bucket, .. } => Ok(ParquetSource::Gcs(
-                diskgraph_index::streaming::GcsLocation {
-                    bucket: bucket.clone(),
-                    key,
-                    service_account_path: None,
-                    service_account_key: None,
-                    application_credentials_path: None,
-                    endpoint: None,
-                },
-            )),
-            RemoteStore::Adls {
-                account,
-                container,
-                client,
-                ..
-            } => Ok(ParquetSource::Adls(
-                diskgraph_index::streaming::AdlsLocation {
-                    account: account.clone(),
-                    container: container.clone(),
-                    key,
-                    access_key: client.resolved.access_key.clone(),
-                    sas_key: client.resolved.sas_key.clone(),
-                    bearer_token: client.resolved.bearer_token.clone(),
-                    client_id: client.resolved.client_id.clone(),
-                    client_secret: client.resolved.client_secret.clone(),
-                    tenant_id: client.resolved.tenant_id.clone(),
-                    endpoint: client.resolved.endpoint.clone(),
-                    use_emulator: None,
-                },
-            )),
-        }
-    };
-
-    // Build using streaming Parquet sources (first shard per relation).
+    let parquet_root = cache_dir.join("parquet");
+    // Download Parquet shards locally, then build from local files.
     let edge_inputs: Vec<EdgeShardInput> = metadata
         .edge_relations
         .iter()
@@ -442,7 +398,10 @@ fn build_from_remote(
             } else {
                 format!("{}/{}", prefix.trim_end_matches('/'), shard.path)
             };
-            let parquet = make_source(key)?;
+            let local_path = parquet_root.join(&shard.path);
+            download_remote_parquet(rt, &store_arc, &key, &local_path)
+                .with_context(|| format!("download {}", shard.path))?;
+            let parquet = ParquetSource::LocalFile(local_path);
             Ok(EdgeShardInput {
                 relation: rel.name.clone(),
                 source_shard_index: 0,
@@ -509,6 +468,63 @@ fn cache_root_dir() -> Option<PathBuf> {
         }
     }
     None
+}
+
+fn download_remote_parquet(
+    rt: &Runtime,
+    store: &Arc<dyn ObjectStore>,
+    key: &str,
+    local_path: &Path,
+) -> Result<()> {
+    if local_path.exists() {
+        return Ok(());
+    }
+    if let Some(parent) = local_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let loc = Arc::new(ObjectPath::from(key.to_string()));
+    let spinner = start_spinner(&format!("Downloading {}", key));
+    rt.block_on(async {
+        let meta = store.head(&loc).await?;
+        let total = meta.size;
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .read(true)
+            .open(local_path)?;
+        file.set_len(total)?;
+        let file = Arc::new(file);
+        let chunk_size: u64 = 64 * 1024 * 1024;
+        let concurrency: usize = 8;
+        let mut ranges = Vec::new();
+        let mut offset = 0u64;
+        while offset < total {
+            let end = (offset + chunk_size).min(total);
+            ranges.push(offset..end);
+            offset = end;
+        }
+        futures::stream::iter(ranges)
+            .map(|range| {
+                let store = Arc::clone(store);
+                let loc = Arc::clone(&loc);
+                let file = Arc::clone(&file);
+                async move {
+                    let bytes = store.get_range(&loc, range.clone()).await?;
+                    tokio::task::spawn_blocking(move || {
+                        file.write_all_at(&bytes, range.start)?;
+                        Ok::<(), std::io::Error>(())
+                    })
+                    .await??;
+                    Ok::<(), anyhow::Error>(())
+                }
+            })
+            .buffer_unordered(concurrency)
+            .try_collect::<Vec<_>>()
+            .await?;
+        Ok::<(), anyhow::Error>(())
+    })?;
+    spinner.finish_with_message(format!("Downloaded {}", key));
+    Ok(())
 }
 
 fn shard_node_count(metadata: &DatasetMetadata) -> Option<u64> {
