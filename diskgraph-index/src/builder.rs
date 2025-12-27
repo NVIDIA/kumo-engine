@@ -647,7 +647,6 @@ struct EdgeSubStream {
     current_src: Option<Int64Array>,
     current_dst: Option<Int64Array>,
     current_sort: Option<Int64Array>,
-    last_src: Option<u64>,
     rx: Receiver<PrefetchBatch>,
 }
 
@@ -697,7 +696,6 @@ impl EdgeSubStream {
             current_src: None,
             current_dst: None,
             current_sort: None,
-            last_src: None,
             rx,
         })
     }
@@ -796,16 +794,10 @@ impl EdgeSubStream {
                     while self.idx_in_batch < self.batch_len {
                         let row = self.idx_in_batch;
                         let src_val = src_col.value(row) as u64;
-                        if let Some(last_src) = self.last_src {
-                            if src_val < last_src {
-                                return Err(IndexBuildError::EdgeOrderingViolation.into());
-                            }
-                        }
                         if src_val != node_id {
                             return Ok(Some(src_val));
                         }
                         let sort_val = sort_col.map(|c| c.value(row) as u64);
-                        self.last_src = Some(src_val);
                         buckets[self.relation_id as usize].push(EdgeRec {
                             src: src_val,
                             dst: dst_col.value(row) as u64,
@@ -918,13 +910,15 @@ impl MergedEdgeStream {
     fn drain_for_node(&mut self, node_id: u64, buckets: &mut [Vec<EdgeRec>]) -> Result<()> {
         for idx in 0..self.streams.len() {
             let Some(head_src) = self.head_srcs[idx] else { continue };
-            if head_src < node_id {
-                return Err(IndexBuildError::EdgeOrderingViolation.into());
-            }
             if head_src != node_id {
                 continue;
             }
             let next_src = self.streams[idx].drain_edges(node_id, buckets)?;
+            if let Some(next_src) = next_src {
+                if next_src < head_src {
+                    return Err(IndexBuildError::EdgeOrderingViolation.into());
+                }
+            }
             self.head_srcs[idx] = next_src;
         }
         Ok(())
