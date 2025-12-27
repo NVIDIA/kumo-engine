@@ -1,7 +1,7 @@
 use crate::layout::{
     NodeEdgeStats, OffsetFileHeader, RelationLayout, DELTA_CHUNK, EDGES_FILENAME, OFFSETS_FILENAME,
 };
-use crate::streaming::{EdgeShardInput, NodeShardInput, ParquetSource};
+use crate::streaming::{EdgeShardInput, ParquetSource};
 use crate::truncate::truncate_counts;
 use anyhow::Result;
 use arrow_array::{ArrayRef, Int64Array};
@@ -64,12 +64,10 @@ pub enum IndexBuildError {
     InvalidColumn(&'static str),
     #[error("unknown relation in shard input")]
     UnknownRelation,
-    #[error("shard index mismatch between node shard ({node}) and edge shard ({edge})")]
+    #[error("shard index mismatch (expected {node}, got {edge})")]
     ShardIndexMismatch { node: usize, edge: usize },
     #[error("node shard index {index} missing from metadata")]
     NodeShardMissing { index: usize },
-    #[error("node shard type mismatch: expected {expected}, got {actual}")]
-    NodeTypeMismatch { expected: String, actual: String },
     #[error("parquet error: {0}")]
     Parquet(#[from] parquet::errors::ParquetError),
     #[error("object store error: {0}")]
@@ -90,7 +88,7 @@ pub struct ShardBuildParams {
     pub shard_index: usize,
 }
 
-/// Consumes a node shard and all aligned edge shards (across relations) and emits two files:
+/// Consumes node shard metadata and all aligned edge shards (across relations) and emits two files:
 /// - offsets.bin: delta-encoded byte offsets into edges.bin
 /// - edges.bin: packed edge payload blobs (relation id + dst id + optional dest_sort_key)
 ///
@@ -105,36 +103,17 @@ impl ShardBuilder {
         Self { params }
     }
 
-    pub fn build(
-        &self,
-        node_shard: &NodeShardInput,
-        edge_shards: &[EdgeShardInput],
-    ) -> Result<ShardBuildOutput> {
-        self.build_with_progress(node_shard, edge_shards, None, None, None)
+    pub fn build(&self, edge_shards: &[EdgeShardInput]) -> Result<ShardBuildOutput> {
+        self.build_with_progress(edge_shards, None, None, None)
     }
 
     pub fn build_with_progress(
         &self,
-        node_shard: &NodeShardInput,
         edge_shards: &[EdgeShardInput],
         total_nodes: Option<u64>,
         mut on_progress: Option<&mut dyn FnMut(u64, u64)>,
         should_abort: Option<&dyn Fn() -> bool>,
     ) -> Result<ShardBuildOutput> {
-        if node_shard.shard_index != self.params.shard_index {
-            return Err(IndexBuildError::ShardIndexMismatch {
-                node: self.params.shard_index,
-                edge: node_shard.shard_index,
-            }
-            .into());
-        }
-        if node_shard.node_type != self.params.node_meta.name {
-            return Err(IndexBuildError::NodeTypeMismatch {
-                expected: self.params.node_meta.name.clone(),
-                actual: node_shard.node_type.clone(),
-            }
-            .into());
-        }
         for e in edge_shards {
             if e.source_shard_index != self.params.shard_index {
                 return Err(IndexBuildError::ShardIndexMismatch {

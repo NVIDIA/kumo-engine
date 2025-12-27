@@ -1,6 +1,6 @@
 # DiskGraph Data Generator
 
-This tool produces synthetic datasets in the format expected by diskgraph: a dataset root containing `metadata.json` plus Parquet shards for node and edge tables. Scenarios cover combinations of optional dest_sort_key presence, presorted shards, and single vs multi-table layouts.
+This tool produces synthetic datasets in the format expected by diskgraph: a dataset root containing `metadata.json` plus Parquet shards for edge tables. Node shard ranges are still recorded in metadata, but node parquet files are optional. Scenarios cover combinations of optional dest_sort_key presence, presorted shards, and single vs multi-table layouts.
 
 ## Building
 
@@ -11,7 +11,7 @@ cargo build -p diskgraph-datagenerator
 ## Usage
 
 ```bash
-# Generate all scenarios with multi-shard nodes/edges (shared shard count)
+# Generate all scenarios with multi-shard edges
 cargo run -p diskgraph-datagenerator -- --output /tmp/dg-data --scenario coverage --nodes 10000 --edges 50000 --node-shards 8
 ```
 
@@ -20,7 +20,7 @@ Arguments:
 - `--scenario {coverage,simple-no-optional,temporal-presorted-with-edge-id,temporal-weighted-unsorted,weighted-only,mixed-multitable}`: which scenario(s) to generate. `coverage` generates all.
 - `--nodes N`: approximate nodes per node type (default: 10_000).
 - `--edges N`: approximate edges per relation (default: 50_000).
-- `--node-shards N`: number of Parquet shards per node type and per edge relation (default: 4; multi-shard by default).
+- `--node-shards N`: number of node shard ranges (recorded in metadata) and edge shards per relation (default: 4; multi-shard by default).
 
 ## Scenarios and Edge Cases
 
@@ -35,12 +35,11 @@ Arguments:
 
 Each scenario creates a dataset directory under `--output`, for example `simple_no_optional/`:
 - `metadata.json`: matches the schema in `diskgraph-core/src/metadata.rs`.
-- `nodes/TYPE/part-00000.parquet ...`: sharded Parquet files per node type with an `id` column.
 - `edges/RELATION/part-00000.parquet ...`: shards for each edge relation containing `src_id`, `dst_id`, optional `dest_sort_key` columns.
-Metadata records the relative shard paths for both nodes and edges plus per-shard id ranges (node shard min/max id; edge shard source min/max id) to keep the dataset self-contained and routable.
+Metadata records node shard ranges plus the relative edge shard paths and per-shard source id ranges (edge shard source min/max id) to keep the dataset self-contained and routable. Node parquet files are optional and may be omitted.
 
 Generation guarantees:
-- Node shards contain contiguous ranges per shard, sorted by `id`; gaps may exist between shard ranges.
+- Node shards contain contiguous ranges per shard; gaps may exist between shard ranges.
 - Edge shards are sorted by `(src_id, dest_sort_key DESC when present)`.
 - Shard counts for nodes and edges match, and edge shard `N` only contains `src_id` values from node shard `N` of the relation’s source type.
 
@@ -71,4 +70,4 @@ Helper scripts (all default to the full-scale run; override with env vars shown 
 - `scripts/generate_massive_gcs.sh` — direct streaming to GCS; runs a quick `gsutil` access check before generating.
 - `scripts/generate_massive_adls.sh` — direct streaming to Azure Blob/ADLS; honors the usual `AZURE_*` env vars.
 
-Each script writes `nodes.parquet`, `edges_<relation>.parquet` for two relations, and `metadata.json` under a per-run prefix like `.../run-<timestamp>-<rand>`. Metadata uses the larger of `nodes-1` and `max_dst_id` so `dst_id` values are always in-range for indexing.
+Each script writes `edges_<relation>.parquet` for two relations, and `metadata.json` under a per-run prefix like `.../run-<timestamp>-<rand>`. Metadata uses the larger of `nodes-1` and `max_dst_id` so `dst_id` values are always in-range for indexing.

@@ -10,7 +10,7 @@ pub enum ParquetSource {
     Adls(AdlsLocation),
 }
 
-/// Edge shard input bundle for a single source node shard.
+/// Edge shard input bundle for a single source shard index.
 #[derive(Debug, Clone)]
 pub struct EdgeShardInput {
     pub relation: String,
@@ -18,14 +18,6 @@ pub struct EdgeShardInput {
     pub parquet: ParquetSource,
     /// Whether this edge shard carries dest_sort_key in its schema.
     pub has_dest_sort_key: bool,
-}
-
-/// Node shard input bundle.
-#[derive(Debug, Clone)]
-pub struct NodeShardInput {
-    pub node_type: String,
-    pub shard_index: usize,
-    pub parquet: ParquetSource,
 }
 
 /// S3 location and optional configuration for fetching Parquet.

@@ -16,7 +16,7 @@ pub struct NodeTypeMetadata {
     pub name: String,
     /// Maximum node id observed for the type.
     pub max_id: u64,
-    /// Relative paths and ranges for Parquet shards containing node ids.
+    /// Relative paths and ranges for node shards (paths may be omitted on disk).
     pub shards: Vec<NodeShardMetadata>,
 }
 

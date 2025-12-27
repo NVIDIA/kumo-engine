@@ -1,7 +1,7 @@
 //! Index builder and shard reader for diskgraph.
 //!
 //! This crate focuses on per-shard ingestion and lookup:
-//! - `ShardBuilder` ingests a node shard and its edge shards into a compact
+//! - `ShardBuilder` ingests a node shard range (from metadata) and its edge shards into a compact
 //!   on-disk representation (offset file + edge data file).
 //! - `ShardReader` mmaps the on-disk representation and provides zero-copy
 //!   edge list views for lookup.

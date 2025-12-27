@@ -1,6 +1,6 @@
 //! Generate massive synthetic shards for benchmarking.
 //!
-//! This binary emits a single node shard plus two edge shards (relations) and a
+//! This binary emits two edge shards (relations) plus node shard metadata and a
 //! metadata.json describing the dataset. It streams Parquet row groups in
 //! batches to keep memory usage low even for very large datasets (hundreds of
 //! millions of nodes / billions of edges).
@@ -51,9 +51,6 @@ struct MassiveArgs {
     /// Rows per RecordBatch written to Parquet for edges (controls memory usage).
     #[arg(long, default_value_t = 1_000_000)]
     edge_batch_size: usize,
-    /// Rows per RecordBatch written to Parquet for nodes.
-    #[arg(long, default_value_t = 5_000_000)]
-    node_batch_size: usize,
     /// Parquet row group size (rows); keep aligned with batch sizes for streaming writes.
     #[arg(long, default_value_t = 1_000_000)]
     row_group_size: usize,
@@ -139,7 +136,6 @@ fn main() -> Result<()> {
     let target = OutputTarget::parse(&args)?;
     target.prepare()?;
 
-    let node_path = target.join("nodes.parquet");
     let edge0_path = target.join(&format!("edges_{}.parquet", args.relation0_name));
     let edge1_path = target.join(&format!("edges_{}.parquet", args.relation1_name));
 
@@ -147,13 +143,11 @@ fn main() -> Result<()> {
         "Generating massive dataset: nodes={}, edges_per_relation={}, max_dst_id={}",
         args.nodes, args.edges_per_relation, args.max_dst_id
     );
-    let node_meta = generate_nodes(
-        &target,
-        &node_path,
-        args.nodes,
-        args.node_batch_size,
-        args.row_group_size,
-    )?;
+    let node_meta = NodeShardMetadata {
+        path: "nodes.parquet".into(),
+        min_id: 0,
+        max_id: args.nodes.saturating_sub(1),
+    };
 
     let rel0_cfg = RelationConfig {
         name: args.relation0_name.clone(),
@@ -199,44 +193,6 @@ fn normalize_bits(bits: Option<u8>) -> Option<u8> {
         Some(0) => None,
         other => other,
     }
-}
-
-fn generate_nodes(
-    target: &OutputTarget,
-    path: &Path,
-    nodes: u64,
-    batch_size: usize,
-    row_group_size: usize,
-) -> Result<NodeShardMetadata> {
-    let schema = Schema::new(vec![Field::new("id", DataType::Int64, false)]);
-    let props = WriterProperties::builder()
-        .set_max_row_group_size(row_group_size)
-        .build();
-    let sink = target.sink(path)?;
-    let mut writer = ArrowWriter::try_new(sink, Arc::new(schema.clone()), Some(props))?;
-
-    let mut remaining = nodes;
-    let mut next_id: i64 = 0;
-    let mut buf = Vec::with_capacity(batch_size);
-    while remaining > 0 {
-        let take = remaining.min(batch_size as u64) as usize;
-        buf.clear();
-        for i in 0..take {
-            buf.push(next_id + i as i64);
-        }
-        next_id += take as i64;
-        remaining -= take as u64;
-        let array = Int64Array::from(buf.clone());
-        let batch =
-            RecordBatch::try_new(Arc::new(schema.clone()), vec![Arc::new(array) as ArrayRef])?;
-        writer.write(&batch)?;
-    }
-    writer.close()?;
-    Ok(NodeShardMetadata {
-        path: "nodes.parquet".into(),
-        min_id: 0,
-        max_id: nodes.saturating_sub(1),
-    })
 }
 
 fn generate_edges(

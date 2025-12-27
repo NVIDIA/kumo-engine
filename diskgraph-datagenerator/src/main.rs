@@ -2,9 +2,10 @@
 //!
 //! Generates synthetic datasets in the on-disk layout expected by the
 //! diskgraph ingest pipeline: a dataset root containing `metadata.json` and
-//! Parquet shards for node and edge tables. Scenarios cover combinations of
+//! Parquet shards for edge tables. Node shard ranges are recorded in metadata,
+//! but node parquet files are optional. Scenarios cover combinations of
 //! optional dest_sort_key fields and single vs multi-table layouts.
-//! All shards are sorted: nodes by id, edges by (src_id, dest_sort_key desc when present).
+//! All shards are sorted: edges by (src_id, dest_sort_key desc when present).
 
 use std::collections::HashMap;
 use std::fs;
@@ -50,7 +51,7 @@ struct Cli {
     /// Total nodes per node type (used by scenarios that support override).
     #[arg(long, default_value_t = 10_000)]
     nodes: u64,
-    /// Number of shards to split node tables into.
+    /// Number of node shard ranges (recorded in metadata) and edge shards.
     #[arg(long, default_value_t = 4)]
     node_shards: usize,
     /// Total edges per relation (used by scenarios that support override).
@@ -123,7 +124,7 @@ fn generate_dataset(cli: &Cli, scenario: ScenarioKind) -> anyhow::Result<()> {
         shard_ranges_by_type.insert(nt.name.clone(), shard_plan.ranges.clone());
     }
 
-    write_nodes(&root, &mut node_types, &shard_ranges_by_type)?;
+    assign_node_shards(&mut node_types, &shard_ranges_by_type);
     let edge_rows = build_edge_shards(&edge_relations, &edge_counts, &shard_ranges_by_type);
     write_edges(&root, &mut edge_relations, edge_rows, cli.node_shards)?;
     write_metadata(&root, &node_types, &edge_relations)?;
@@ -453,17 +454,11 @@ fn sample_from_ranges(rng: &mut StdRng, ranges: &[ShardRange]) -> Option<i64> {
     None
 }
 
-fn write_nodes(
-    root: &Path,
+fn assign_node_shards(
     node_types: &mut [NodeTypeMetadata],
     shard_ranges: &HashMap<String, Vec<Option<ShardRange>>>,
-) -> anyhow::Result<()> {
-    let base = root.join("nodes");
-    fs::create_dir_all(&base)?;
+) {
     for nt in node_types.iter_mut() {
-        let nt_dir = base.join(nt.name.to_lowercase());
-        fs::create_dir_all(&nt_dir)?;
-        let schema = Schema::new(vec![Field::new("id", DataType::Int64, false)]);
         let ranges = shard_ranges
             .get(&nt.name)
             .cloned()
@@ -471,13 +466,6 @@ fn write_nodes(
         nt.shards.clear();
         for (idx, maybe_range) in ranges.iter().enumerate() {
             if maybe_range.is_none() {
-                let empty = Int64Array::from(Vec::<i64>::new());
-                let batch = RecordBatch::try_new(
-                    Arc::new(schema.clone()),
-                    vec![Arc::new(empty) as ArrayRef],
-                )?;
-                let path = nt_dir.join(format!("part-{idx:05}.parquet"));
-                write_parquet(&path, &schema, &[batch])?;
                 nt.shards.push(NodeShardMetadata {
                     path: format!("nodes/{}/part-{idx:05}.parquet", nt.name.to_lowercase()),
                     min_id: 0,
@@ -486,11 +474,6 @@ fn write_nodes(
                 continue;
             }
             let range = maybe_range.as_ref().unwrap();
-            let ids: Int64Array = (range.start as i64..=range.end as i64).collect();
-            let batch =
-                RecordBatch::try_new(Arc::new(schema.clone()), vec![Arc::new(ids) as ArrayRef])?;
-            let path = nt_dir.join(format!("part-{idx:05}.parquet"));
-            write_parquet(&path, &schema, &[batch])?;
             nt.shards.push(NodeShardMetadata {
                 path: format!("nodes/{}/part-{idx:05}.parquet", nt.name.to_lowercase()),
                 min_id: range.start,
@@ -498,7 +481,6 @@ fn write_nodes(
             });
         }
     }
-    Ok(())
 }
 
 fn write_edges(

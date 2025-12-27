@@ -11,7 +11,7 @@ use diskgraph_index::builder::{
     compute_relation_layouts, IndexBuildError, ShardBuildParams, ShardBuilder,
 };
 use diskgraph_index::reader::ShardReader;
-use diskgraph_index::streaming::{EdgeShardInput, NodeShardInput, ParquetSource};
+use diskgraph_index::streaming::{EdgeShardInput, ParquetSource};
 use diskgraph_index::layout::{OFFSETS_FILENAME, EDGES_FILENAME};
 use object_store::ObjectStore;
 use diskgraph_fs::{
@@ -428,29 +428,7 @@ fn build_from_remote(
         }
     };
 
-    // Build using streaming Parquet sources (first shard per type/relation).
-    let node_inputs: Vec<NodeShardInput> = metadata
-        .node_types
-        .iter()
-        .map(|nt| {
-            let shard = nt
-                .shards
-                .get(0)
-                .ok_or_else(|| anyhow!("no node shard found for {}", nt.name))?;
-            let key = if prefix.is_empty() {
-                shard.path.clone()
-            } else {
-                format!("{}/{}", prefix.trim_end_matches('/'), shard.path)
-            };
-            let parquet = make_source(key)?;
-            Ok(NodeShardInput {
-                node_type: nt.name.clone(),
-                shard_index: 0,
-                parquet,
-            })
-        })
-        .collect::<Result<_>>()?;
-
+    // Build using streaming Parquet sources (first shard per relation).
     let edge_inputs: Vec<EdgeShardInput> = metadata
         .edge_relations
         .iter()
@@ -495,7 +473,6 @@ fn build_from_remote(
     };
     builder
         .build_with_progress(
-            &node_inputs[0],
             &edge_inputs,
             total_nodes,
             Some(&mut on_progress),
@@ -616,23 +593,6 @@ fn build_from_local_parquet(
     }
     fs::create_dir_all(&cache_dir)?;
 
-    let node_inputs: Vec<NodeShardInput> = metadata
-        .node_types
-        .iter()
-        .map(|nt| {
-            let shard = nt
-                .shards
-                .get(0)
-                .ok_or_else(|| anyhow!("no node shard found for {}", nt.name))?;
-            let parquet = ParquetSource::LocalFile(source.join(&shard.path));
-            Ok(NodeShardInput {
-                node_type: nt.name.clone(),
-                shard_index: 0,
-                parquet,
-            })
-        })
-        .collect::<Result<_>>()?;
-
     let edge_inputs: Vec<EdgeShardInput> = metadata
         .edge_relations
         .iter()
@@ -672,7 +632,6 @@ fn build_from_local_parquet(
     };
     builder
         .build_with_progress(
-            &node_inputs[0],
             &edge_inputs,
             total_nodes,
             Some(&mut on_progress),

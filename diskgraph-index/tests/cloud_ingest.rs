@@ -7,9 +7,7 @@ use std::sync::Arc;
 
 use diskgraph_index::builder::{ShardBuildParams, ShardBuilder};
 use diskgraph_index::reader::ShardReader;
-use diskgraph_index::streaming::{
-    AdlsLocation, EdgeShardInput, GcsLocation, NodeShardInput, ParquetSource, S3Location,
-};
+use diskgraph_index::streaming::{AdlsLocation, EdgeShardInput, GcsLocation, ParquetSource, S3Location};
 use diskgraph_fs::{
     build_adls_client, build_gcs_client, build_s3_client, AdlsConfig as FsAdlsConfig,
     GcsConfig as FsGcsConfig, S3Config as FsS3Config,
@@ -67,7 +65,11 @@ fn node_meta(name: &str, max_id: u64) -> diskgraph_core::metadata::NodeTypeMetad
     diskgraph_core::metadata::NodeTypeMetadata {
         name: name.into(),
         max_id,
-        shards: vec![],
+        shards: vec![diskgraph_core::metadata::NodeShardMetadata {
+            path: format!("nodes/{}/part-00000.parquet", name.to_lowercase()),
+            min_id: 0,
+            max_id,
+        }],
     }
 }
 
@@ -84,40 +86,6 @@ fn relation_meta(
         shards: vec![],
         dest_sort_key_bits,
     }
-}
-
-#[allow(dead_code)]
-fn write_nodes(path: &std::path::Path, ids: &[i64]) -> anyhow::Result<()> {
-    write_nodes_batched(path, ids, ids.len())
-}
-
-fn write_nodes_batched(
-    path: &std::path::Path,
-    ids: &[i64],
-    batch_size: usize,
-) -> anyhow::Result<()> {
-    use arrow_array::{ArrayRef, Int64Array};
-    use arrow_schema::{DataType, Field, Schema};
-    use parquet::arrow::arrow_writer::ArrowWriter;
-
-    let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
-    let props = WriterProperties::builder()
-        .set_max_row_group_size(batch_size.max(1))
-        .build();
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let file = std::fs::File::create(path)?;
-    let mut writer = ArrowWriter::try_new(file, schema.clone(), Some(props))?;
-    for chunk in ids.chunks(batch_size.max(1)) {
-        let batch = arrow_array::RecordBatch::try_new(
-            schema.clone(),
-            vec![Arc::new(Int64Array::from(chunk.to_vec())) as ArrayRef],
-        )?;
-        writer.write(&batch)?;
-    }
-    writer.close()?;
-    Ok(())
 }
 
 #[allow(dead_code)]
@@ -438,22 +406,17 @@ fn s3_ingest_round_trip() {
     let resolved = s3.resolved.clone();
 
     let dir = tempdir().unwrap();
-    let node_path = dir.path().join("nodes.parquet");
     let follows_path = dir.path().join("follows.parquet");
     let blocks_path = dir.path().join("blocks.parquet");
-    let (nodes, follows, blocks) = complex_dataset();
-    write_nodes_batched(&node_path, &nodes, 40).unwrap();
+    let (_nodes, follows, blocks) = complex_dataset();
     write_edges_batched(&follows_path, &follows, true, 50).unwrap();
     write_edges_batched(&blocks_path, &blocks, false, 20).unwrap();
-    assert_multiple_row_groups(&node_path);
     assert_multiple_row_groups(&follows_path);
     assert_multiple_row_groups(&blocks_path);
 
     let prefix = prefix_or_generated(&cfg.prefix, "diskgraph-index/s3");
-    let node_key = join_prefix(&prefix, "nodes.parquet");
     let follows_key = join_prefix(&prefix, "follows.parquet");
     let blocks_key = join_prefix(&prefix, "blocks.parquet");
-    let (_s, node_loc) = upload_to_store(&rt, store.clone(), &node_key, &node_path);
     let (_s2, follows_loc) = upload_to_store(&rt, store.clone(), &follows_key, &follows_path);
     let (_s3, blocks_loc) = upload_to_store(&rt, store.clone(), &blocks_key, &blocks_path);
 
@@ -469,22 +432,8 @@ fn s3_ingest_round_trip() {
         shard_index: 0,
     });
     let built = builder
-        .build(
-            &NodeShardInput {
-                node_type: "User".into(),
-                shard_index: 0,
-                parquet: ParquetSource::S3(S3Location {
-                    bucket: cfg.bucket.clone(),
-                    key: node_loc.to_string(),
-                    region: Some(resolved.region.clone()),
-                    endpoint: resolved.endpoint.clone(),
-                    access_key_id: Some(resolved.access_key_id.clone()),
-                    secret_access_key: Some(resolved.secret_access_key.clone()),
-                    session_token: resolved.session_token.clone(),
-                    virtual_hosted_style_request: Some(resolved.virtual_hosted),
-                }),
-            },
-            &[EdgeShardInput {
+        .build(&[
+            EdgeShardInput {
                 relation: "Follows".into(),
                 source_shard_index: 0,
                 parquet: ParquetSource::S3(S3Location {
@@ -498,7 +447,8 @@ fn s3_ingest_round_trip() {
                     virtual_hosted_style_request: Some(resolved.virtual_hosted),
                 }),
                 has_dest_sort_key: true,
-            }, EdgeShardInput {
+            },
+            EdgeShardInput {
                 relation: "Blocks".into(),
                 source_shard_index: 0,
                 parquet: ParquetSource::S3(S3Location {
@@ -512,8 +462,8 @@ fn s3_ingest_round_trip() {
                     virtual_hosted_style_request: Some(resolved.virtual_hosted),
                 }),
                 has_dest_sort_key: false,
-            }],
-        )
+            },
+        ])
         .expect("S3 build");
 
     let reader = ShardReader::open(&out, built.layouts.clone()).unwrap();
@@ -548,22 +498,17 @@ fn gcs_ingest_round_trip() {
     let store: Arc<dyn ObjectStore> = gcs.store.clone();
 
     let dir = tempdir().unwrap();
-    let node_path = dir.path().join("nodes.parquet");
     let follows_path = dir.path().join("follows.parquet");
     let blocks_path = dir.path().join("blocks.parquet");
-    let (nodes, follows, blocks) = complex_dataset();
-    write_nodes_batched(&node_path, &nodes, 40).unwrap();
+    let (_nodes, follows, blocks) = complex_dataset();
     write_edges_batched(&follows_path, &follows, true, 50).unwrap();
     write_edges_batched(&blocks_path, &blocks, false, 20).unwrap();
-    assert_multiple_row_groups(&node_path);
     assert_multiple_row_groups(&follows_path);
     assert_multiple_row_groups(&blocks_path);
 
     let prefix = prefix_or_generated(&cfg.prefix, "diskgraph-index/gcs");
-    let node_key = join_prefix(&prefix, "nodes.parquet");
     let follows_key = join_prefix(&prefix, "follows.parquet");
     let blocks_key = join_prefix(&prefix, "blocks.parquet");
-    let (_, node_loc) = upload_to_store(&rt, store.clone(), &node_key, &node_path);
     let (_, follows_loc) = upload_to_store(&rt, store.clone(), &follows_key, &follows_path);
     let (_, blocks_loc) = upload_to_store(&rt, store.clone(), &blocks_key, &blocks_path);
     let node_meta = node_meta("User", 1000);
@@ -578,20 +523,8 @@ fn gcs_ingest_round_trip() {
         shard_index: 0,
     });
     let built = builder
-        .build(
-            &NodeShardInput {
-                node_type: "User".into(),
-                shard_index: 0,
-                parquet: ParquetSource::Gcs(GcsLocation {
-                    bucket: cfg.bucket.clone(),
-                    key: node_loc.to_string(),
-                    service_account_path: None,
-                    service_account_key: None,
-                    application_credentials_path: None,
-                    endpoint: None,
-                }),
-            },
-            &[EdgeShardInput {
+        .build(&[
+            EdgeShardInput {
                 relation: "Follows".into(),
                 source_shard_index: 0,
                 parquet: ParquetSource::Gcs(GcsLocation {
@@ -603,7 +536,8 @@ fn gcs_ingest_round_trip() {
                     endpoint: None,
                 }),
                 has_dest_sort_key: true,
-            }, EdgeShardInput {
+            },
+            EdgeShardInput {
                 relation: "Blocks".into(),
                 source_shard_index: 0,
                 parquet: ParquetSource::Gcs(GcsLocation {
@@ -615,8 +549,8 @@ fn gcs_ingest_round_trip() {
                     endpoint: None,
                 }),
                 has_dest_sort_key: false,
-            }],
-        )
+            },
+        ])
         .expect("GCS build");
 
     let reader = ShardReader::open(&out, built.layouts.clone()).unwrap();
@@ -664,22 +598,17 @@ fn adls_ingest_round_trip() {
     let resolved = adls.resolved.clone();
 
     let dir = tempdir().unwrap();
-    let node_path = dir.path().join("nodes.parquet");
     let follows_path = dir.path().join("follows.parquet");
     let blocks_path = dir.path().join("blocks.parquet");
-    let (nodes, follows, blocks) = complex_dataset();
-    write_nodes_batched(&node_path, &nodes, 40).unwrap();
+    let (_nodes, follows, blocks) = complex_dataset();
     write_edges_batched(&follows_path, &follows, true, 50).unwrap();
     write_edges_batched(&blocks_path, &blocks, false, 20).unwrap();
-    assert_multiple_row_groups(&node_path);
     assert_multiple_row_groups(&follows_path);
     assert_multiple_row_groups(&blocks_path);
 
     let prefix = prefix_or_generated(&cfg.prefix, "diskgraph-index/azure");
-    let node_key = join_prefix(&prefix, "nodes.parquet");
     let follows_key = join_prefix(&prefix, "follows.parquet");
     let blocks_key = join_prefix(&prefix, "blocks.parquet");
-    let (_s, node_loc) = upload_to_store(&rt, store.clone(), &node_key, &node_path);
     let (_s2, follows_loc) = upload_to_store(&rt, store.clone(), &follows_key, &follows_path);
     let (_s3, blocks_loc) = upload_to_store(&rt, store.clone(), &blocks_key, &blocks_path);
 
@@ -695,25 +624,8 @@ fn adls_ingest_round_trip() {
         shard_index: 0,
     });
     let built = builder
-        .build(
-            &NodeShardInput {
-                node_type: "User".into(),
-                shard_index: 0,
-                parquet: ParquetSource::Adls(AdlsLocation {
-                    account: resolved.account.clone(),
-                    container: resolved.container.clone(),
-                    key: node_loc.to_string(),
-                    access_key: resolved.access_key.clone(),
-                    sas_key: resolved.sas_key.clone(),
-                    bearer_token: resolved.bearer_token.clone(),
-                    client_id: resolved.client_id.clone(),
-                    client_secret: resolved.client_secret.clone(),
-                    tenant_id: resolved.tenant_id.clone(),
-                    endpoint: resolved.endpoint.clone(),
-                    use_emulator: None,
-                }),
-            },
-            &[EdgeShardInput {
+        .build(&[
+            EdgeShardInput {
                 relation: "Follows".into(),
                 source_shard_index: 0,
                 parquet: ParquetSource::Adls(AdlsLocation {
@@ -730,7 +642,8 @@ fn adls_ingest_round_trip() {
                     use_emulator: None,
                 }),
                 has_dest_sort_key: true,
-            }, EdgeShardInput {
+            },
+            EdgeShardInput {
                 relation: "Blocks".into(),
                 source_shard_index: 0,
                 parquet: ParquetSource::Adls(AdlsLocation {
@@ -747,8 +660,8 @@ fn adls_ingest_round_trip() {
                     use_emulator: None,
                 }),
                 has_dest_sort_key: false,
-            }],
-        )
+            },
+        ])
         .expect("ADLS build");
 
     let reader = ShardReader::open(&out, built.layouts.clone()).unwrap();

@@ -4,7 +4,7 @@ Rust crate for building and reading per-shard on-disk indices for the Diskgraph 
 
 ## Overview
 
-`diskgraph-index` ingests a single node shard and its aligned edge shards, producing two files:
+`diskgraph-index` ingests node shard ranges (from metadata) and aligned edge shards, producing two files:
 
 - `offsets.bin`: delta-encoded byte offsets for each node’s edge blob.
 - `edges.bin`: packed edge blobs containing relation-prefixed counts and contiguous relation segments.
@@ -64,15 +64,16 @@ Counts use the compact 1–2 byte scheme in prefix order (R0 then R1), followed 
 
 ## Build algorithm (ShardBuilder)
 
-Input: one node shard (sorted by `id`) and all aligned edge shards (sorted by `src_id`, then `dest_sort_key` desc when present).
+Input: node shard ranges from metadata (node parquet optional) and all aligned edge shards (sorted by `src_id`, then `dest_sort_key` desc when present).
 
 Steps:
 1. Precompute relation layouts:
    - `dst_bits` = min bits to hold `max_id` of destination node type (fallback 64).
    - Masks for `dst_id` and optional `dest_sort_key`.
    - `entry_bytes` = ceil((dst_bits + sort_bits)/8).
-2. Stream nodes and edges:
-   - Node stream and each edge stream are async Parquet readers (`ParquetRecordBatchStreamBuilder`), caching column indices and downcast arrays per batch.
+2. Stream edges and generate node ids:
+   - Node ids are generated from the shard range in metadata (node parquet is not required).
+   - Each edge stream is an async Parquet reader (`ParquetRecordBatchStreamBuilder`), caching column indices and downcast arrays per batch.
    - Merge edges across relations with a heap, preserving global ordering and validating sort order.
 3. For each node (single pass):
    - Collect edges into per-relation buckets (reused vectors).
