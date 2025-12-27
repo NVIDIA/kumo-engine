@@ -2,11 +2,11 @@
 set -euo pipefail
 
 # Explore a shard stored on Azure Blob/ADLS (expects metadata.json, offsets.bin, edges.bin).
-# Set AZURE_URL=az://account/container/prefix or pass as first arg.
+# Pass az://account/container/prefix as the first arg.
 
-AZURE_URL="${AZURE_URL:-${1:-}}"
+AZURE_URL="${1:-}"
 if [[ -z "${AZURE_URL}" ]]; then
-  echo "usage: AZURE_URL=az://account/container/prefix $0"
+  echo "usage: $0 az://account/container/prefix"
   exit 1
 fi
 

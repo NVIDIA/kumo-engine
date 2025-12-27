@@ -2,11 +2,11 @@
 set -euo pipefail
 
 # Explore a shard stored on GCS (expects metadata.json, offsets.bin, edges.bin under the prefix).
-# Set GCS_URL=gs://bucket/prefix or pass as first arg. Uses ADC/gcloud auth.
+# Pass gs://bucket/prefix as the first arg. Uses ADC/gcloud auth.
 
-GCS_URL="${GCS_URL:-${1:-}}"
+GCS_URL="${1:-}"
 if [[ -z "${GCS_URL}" ]]; then
-  echo "usage: GCS_URL=gs://bucket/prefix $0"
+  echo "usage: $0 gs://bucket/prefix"
   exit 1
 fi
 

@@ -2,11 +2,11 @@
 set -euo pipefail
 
 # Explore a shard stored on S3 (expects metadata.json, offsets.bin, edges.bin under the prefix).
-# Set S3_URL=s3://bucket/prefix or pass as first arg.
+# Pass s3://bucket/prefix as the first arg.
 
-S3_URL="${S3_URL:-${1:-}}"
+S3_URL="${1:-}"
 if [[ -z "${S3_URL}" ]]; then
-  echo "usage: S3_URL=s3://bucket/prefix $0"
+  echo "usage: $0 s3://bucket/prefix"
   exit 1
 fi
 
