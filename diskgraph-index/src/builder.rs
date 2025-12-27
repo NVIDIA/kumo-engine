@@ -143,6 +143,7 @@ impl ShardBuilder {
 
         let mut offsets_writer = OffsetChunkWriter::try_new(&offsets_path)?;
         let mut edges_writer = EdgeWriter::try_new(&edges_path, layouts.clone())?;
+        let mut node_buf: Vec<u8> = Vec::new();
 
         let mut nodes_seen = 0u64;
         let mut build_stats = BuildStats {
@@ -235,7 +236,7 @@ impl ShardBuilder {
             if truncated_node {
                 build_stats.truncated_nodes = build_stats.truncated_nodes.saturating_add(1);
             }
-            // Write all counts first (prefix), then edge data per relation.
+            // Write all counts + edge data for this node in a single buffer.
             for (rel_idx, target_len) in counts.iter().enumerate() {
                 let truncated = if any_truncated {
                     original_counts[rel_idx].saturating_sub(*target_len)
@@ -248,19 +249,10 @@ impl ShardBuilder {
                         .truncated_edges_per_relation[rel_idx]
                         .saturating_add(truncated as u64);
                 }
-                edges_writer.write_count(*target_len as u32)?;
             }
-            for (rel_idx, rel_edges) in buckets.iter_mut().enumerate() {
-                let target_len = counts[rel_idx];
-                if rel_edges.len() > target_len {
-                    rel_edges.truncate(target_len);
-                }
-                for edge in rel_edges.iter().take(target_len) {
-                    edges_writer.write_edge(edge)?;
-                }
-                build_stats.edges_ingested =
-                    build_stats.edges_ingested.saturating_add(target_len as u64);
-            }
+            edges_writer.write_node(&counts, &buckets, total_edges, &mut node_buf)?;
+            build_stats.edges_ingested =
+                build_stats.edges_ingested.saturating_add(total_edges as u64);
             offsets_writer.push(edges_writer.byte_offset())?;
             prev_offset = edges_writer.byte_offset();
             last_counts.copy_from_slice(&counts);
@@ -483,53 +475,70 @@ impl EdgeWriter {
         })
     }
 
-    fn write_count(&mut self, count: u32) -> Result<()> {
-        let written = write_varint(&mut self.writer, count)?;
-        self.bytes_written = self
-            .bytes_written
-            .checked_add(written as u64)
-            .ok_or(IndexBuildError::CountOverflow)?;
-        Ok(())
-    }
-
-    fn write_edge(&mut self, edge: &EdgeRec) -> Result<()> {
-        let layout = self
-            .layouts
-            .get(edge.relation_id as usize)
-            .ok_or(IndexBuildError::UnknownRelation)?;
-        if edge.dst > layout.dst_mask {
-            return Err(IndexBuildError::ValueOutOfRange("dst_id").into());
+    fn write_node(
+        &mut self,
+        counts: &[usize],
+        buckets: &[Vec<EdgeRec>],
+        total_edges: usize,
+        scratch: &mut Vec<u8>,
+    ) -> Result<()> {
+        scratch.clear();
+        let node_bytes = EdgeWriter::node_length_bytes_fast(&self.layouts, counts) as usize;
+        if node_bytes > scratch.capacity() {
+            scratch.reserve(node_bytes - scratch.capacity());
         }
-        debug_assert!(
-            (layout.dst_bits as usize + layout.dest_sort_key_bits.unwrap_or(0) as usize)
-                <= layout.entry_bytes * 8
-        );
-        let mut acc: u128 = 0;
-        let mut bit_cursor = 0usize;
-        let dst_val = edge.dst & layout.dst_mask;
-        acc |= (dst_val as u128) << bit_cursor;
-        bit_cursor += layout.dst_bits as usize;
-        if layout.dest_sort_key_bits.is_some() {
-            let mask = layout.dest_sort_key_mask.unwrap_or(u64::MAX);
-            let raw_sort = edge.dest_sort_key.unwrap_or(0);
-            if raw_sort > mask {
-                return Err(IndexBuildError::ValueOutOfRange("dest_sort_key").into());
+        for &count in counts.iter() {
+            debug_assert!(count <= MAX_RELATION_EDGE_COUNT);
+            if count <= 63 {
+                scratch.push((count & 0x3F) as u8);
+            } else {
+                let b0 = 0x40 | (((count >> 8) & 0x3F) as u8);
+                let b1 = (count & 0xFF) as u8;
+                scratch.push(b0);
+                scratch.push(b1);
             }
-            let sort_val = edge.dest_sort_key.unwrap_or(0) & mask;
-            acc |= (sort_val as u128) << bit_cursor;
         }
-
-        let bytes_needed = layout.entry_bytes.min(16);
-        let bytes = acc.to_le_bytes();
-        self.writer.write_all(&bytes[..bytes_needed])?;
-
+        for (rel_idx, (layout, rel_edges)) in
+            self.layouts.iter().zip(buckets.iter()).enumerate()
+        {
+            let target_len = counts[rel_idx];
+            for edge in rel_edges.iter().take(target_len) {
+                if edge.dst > layout.dst_mask {
+                    return Err(IndexBuildError::ValueOutOfRange("dst_id").into());
+                }
+                debug_assert!(
+                    (layout.dst_bits as usize
+                        + layout.dest_sort_key_bits.unwrap_or(0) as usize)
+                        <= layout.entry_bytes * 8
+                );
+                let mut acc: u128 = 0;
+                let mut bit_cursor = 0usize;
+                let dst_val = edge.dst & layout.dst_mask;
+                acc |= (dst_val as u128) << bit_cursor;
+                bit_cursor += layout.dst_bits as usize;
+                if layout.dest_sort_key_bits.is_some() {
+                    let mask = layout.dest_sort_key_mask.unwrap_or(u64::MAX);
+                    let raw_sort = edge.dest_sort_key.unwrap_or(0);
+                    if raw_sort > mask {
+                        return Err(IndexBuildError::ValueOutOfRange("dest_sort_key").into());
+                    }
+                    let sort_val = edge.dest_sort_key.unwrap_or(0) & mask;
+                    acc |= (sort_val as u128) << bit_cursor;
+                }
+                let bytes_needed = layout.entry_bytes.min(16);
+                let bytes = acc.to_le_bytes();
+                scratch.extend_from_slice(&bytes[..bytes_needed]);
+            }
+        }
+        debug_assert!(scratch.len() == node_bytes);
+        self.writer.write_all(scratch)?;
         self.bytes_written = self
             .bytes_written
-            .checked_add(layout.entry_bytes as u64)
+            .checked_add(scratch.len() as u64)
             .ok_or(IndexBuildError::CountOverflow)?;
         self.edge_count = self
             .edge_count
-            .checked_add(1)
+            .checked_add(total_edges as u64)
             .ok_or(IndexBuildError::CountOverflow)?;
         Ok(())
     }
@@ -576,20 +585,6 @@ impl EdgeWriter {
         self.writer.flush()?;
         Ok(())
     }
-}
-
-fn write_varint<W: Write>(writer: &mut W, val: u32) -> Result<usize> {
-    if val <= 63 {
-        writer.write_all(&[(val & 0x3F) as u8])?;
-        return Ok(1);
-    }
-    if val <= 0x3FFF {
-        let b0 = 0x40 | (((val >> 8) & 0x3F) as u8);
-        let b1 = (val & 0xFF) as u8;
-        writer.write_all(&[b0, b1])?;
-        return Ok(2);
-    }
-    Err(IndexBuildError::CountOverflow.into())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
