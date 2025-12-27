@@ -212,7 +212,7 @@ impl ShardBuilder {
                 prev_offset = start_offset;
                 continue;
             }
-            let node_bytes = EdgeWriter::node_length_bytes(&layouts, &counts)?;
+            let node_bytes = EdgeWriter::node_length_bytes_fast(&layouts, &counts);
 
             // Determine if we need to truncate to stay within u16 delta budget.
             let base_span = start_offset
@@ -554,6 +554,18 @@ impl EdgeWriter {
                 .ok_or(IndexBuildError::CountOverflow)?;
         }
         Ok(len)
+    }
+
+    #[inline]
+    pub(crate) fn node_length_bytes_fast(layouts: &[RelationLayout], counts: &[usize]) -> u64 {
+        let mut len: u64 = 0;
+        for (layout, &count) in layouts.iter().zip(counts.iter()) {
+            let count_len = if count <= 63 { 1 } else { 2 };
+            debug_assert!(count <= MAX_RELATION_EDGE_COUNT);
+            let add = (count as u64) * (layout.entry_bytes as u64) + count_len;
+            len += add;
+        }
+        len
     }
 
     fn byte_offset(&self) -> u64 {
