@@ -13,10 +13,7 @@ use object_store::azure::{AzureConfigKey, MicrosoftAzureBuilder};
 use object_store::gcp::GoogleCloudStorageBuilder;
 use object_store::path::Path as ObjectPath;
 use object_store::ObjectStore;
-use parquet::arrow::async_reader::{
-    AsyncFileReader, ParquetObjectReader as StoreParquetObjectReader,
-    ParquetRecordBatchStreamBuilder,
-};
+use parquet::arrow::async_reader::{AsyncFileReader, ParquetRecordBatchStreamBuilder};
 use parquet::arrow::arrow_reader::ArrowReaderOptions;
 use parquet::file::metadata::ParquetMetaData;
 use parquet::file::reader::FileReader;
@@ -31,12 +28,10 @@ use std::io::{BufWriter, Seek, SeekFrom, Write};
 use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 use tokio::runtime::Runtime;
 use tokio::task;
 use tracing::info;
-use object_store::chunked::ChunkedStore;
 
 /// Hard cap on edges per relation for a single node to keep varint encoding small.
 /// Compact varint supports up to 14 bits (0x3FFF). We cap relation edge lists
@@ -1200,145 +1195,20 @@ fn as_i64_array<'a>(
         .map_err(Into::into)
 }
 
-fn object_reader_from_source(source: &ParquetSource, rt: &Runtime) -> Result<AnyParquetReader> {
+fn object_reader_from_source(source: &ParquetSource, _rt: &Runtime) -> Result<AnyParquetReader> {
     match source {
         ParquetSource::LocalFile(path) => Ok(AnyParquetReader::Local(
             LocalParquetObjectReader::new(LocalAsyncFileReader { path: path.clone() }),
         )),
-        ParquetSource::S3(cfg) => {
-            let allow_http = cfg
-                .endpoint
-                .as_deref()
-                .map(|e| e.starts_with("http://"))
-                .unwrap_or(false);
-            let s3 = build_s3_client(FsS3Config {
-                bucket: cfg.bucket.clone(),
-                region: cfg.region.clone(),
-                endpoint: cfg.endpoint.clone(),
-                allow_http: Some(allow_http),
-                virtual_hosted: cfg.virtual_hosted_style_request,
-                profile: None,
-                access_key_id: cfg.access_key_id.clone(),
-                secret_access_key: cfg.secret_access_key.clone(),
-                session_token: cfg.session_token.clone(),
-            })
-            .map_err(|e| IndexBuildError::ObjectStore(e.to_string()))?;
-            let store: Arc<dyn ObjectStore> =
-                Arc::new(ChunkedStore::new(s3.store, 32 * 1024 * 1024));
-            let location = ObjectPath::from(cfg.key.clone());
-            let reader = StoreParquetObjectReader::new(store, location);
-            Ok(AnyParquetReader::Store(reader))
-        }
-        ParquetSource::Gcs(cfg) => {
-            // For emulator endpoints (http), fake-gcs-server speaks JSON API instead of the XML API the
-            // object_store client uses. Fetch the bytes directly via the JSON download API and read locally.
-            if let Some(endpoint) = &cfg.endpoint {
-                if endpoint.starts_with("http") {
-                    let base = endpoint.trim_end_matches('/');
-                    let key_enc =
-                        utf8_percent_encode(&cfg.key, NON_ALPHANUMERIC).to_string();
-                    let url = format!(
-                        "{}/download/storage/v1/b/{}/o/{}?alt=media",
-                        base, cfg.bucket, key_enc
-                    );
-                    let client = reqwest::Client::builder()
-                        .danger_accept_invalid_certs(true)
-                        .build()
-                        .map_err(|e| IndexBuildError::ObjectStore(e.to_string()))?;
-                    let bytes = rt.block_on(async {
-                        let resp = client
-                            .get(&url)
-                            .send()
-                            .await
-                            .map_err(|e| IndexBuildError::ObjectStore(e.to_string()))?
-                            .error_for_status()
-                            .map_err(|e| IndexBuildError::ObjectStore(e.to_string()))?;
-                        resp.bytes()
-                            .await
-                            .map_err(|e| IndexBuildError::ObjectStore(e.to_string()))
-                    })?;
-                    let tmp_name = format!(
-                        "diskgraph_gcs_{}_{}_{}.parquet",
-                        cfg.bucket,
-                        cfg.key.replace('/', "_"),
-                        SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_nanos()
-                    );
-                    let tmp_path = std::env::temp_dir().join(tmp_name);
-                    fs::write(&tmp_path, &bytes)?;
-                    let reader =
-                        LocalParquetObjectReader::new(LocalAsyncFileReader { path: tmp_path });
-                    return Ok(AnyParquetReader::Local(reader));
-                }
-            }
-
-            let mut builder = GoogleCloudStorageBuilder::new().with_bucket_name(&cfg.bucket);
-            if let Some(sa_path) = &cfg.service_account_path {
-                builder = builder.with_service_account_path(sa_path);
-            } else if let Some(sa_key) = &cfg.service_account_key {
-                builder = builder.with_service_account_key(sa_key);
-            } else if let Some(app_creds) = &cfg.application_credentials_path {
-                builder = builder.with_application_credentials(app_creds);
-            } else if let Some(endpoint) = &cfg.endpoint {
-                let sa = format!(
-                    r#"{{"private_key":"private_key","private_key_id":"fake","client_email":"fake@example.com","disable_oauth":true,"gcs_base_url":"{endpoint}"}}"#
-                );
-                builder = builder.with_service_account_key(sa);
-            }
-            let store = builder
-                .build()
-                .map_err(|e| IndexBuildError::ObjectStore(e.to_string()))?;
-            let store: Arc<dyn ObjectStore> =
-                Arc::new(ChunkedStore::new(Arc::new(store), 128 * 1024 * 1024));
-            let location = ObjectPath::from(cfg.key.clone());
-            let reader = StoreParquetObjectReader::new(store, location);
-            Ok(AnyParquetReader::Store(reader))
-        }
-        ParquetSource::Adls(cfg) => {
-            let mut builder = MicrosoftAzureBuilder::new()
-                .with_account(&cfg.account)
-                .with_container_name(&cfg.container);
-            if let Some(endpoint) = &cfg.endpoint {
-                builder = builder.with_endpoint(endpoint.to_string());
-            }
-            if let Some(access_key) = &cfg.access_key {
-                builder = builder.with_access_key(access_key);
-            }
-            if let Some(sas) = &cfg.sas_key {
-                builder = builder.with_config(AzureConfigKey::SasKey, sas);
-            }
-            if let Some(bearer) = &cfg.bearer_token {
-                builder = builder.with_bearer_token_authorization(bearer);
-            }
-            if let Some(client_id) = &cfg.client_id {
-                builder = builder.with_client_id(client_id);
-            }
-            if let Some(client_secret) = &cfg.client_secret {
-                builder = builder.with_client_secret(client_secret);
-            }
-            if let Some(tenant_id) = &cfg.tenant_id {
-                builder = builder.with_tenant_id(tenant_id);
-            }
-            if let Some(use_emulator) = cfg.use_emulator {
-                builder = builder.with_use_emulator(use_emulator);
-            }
-            let store = builder
-                .build()
-                .map_err(|e| IndexBuildError::ObjectStore(e.to_string()))?;
-            let store: Arc<dyn ObjectStore> =
-                Arc::new(ChunkedStore::new(Arc::new(store), 32 * 1024 * 1024));
-            let location = ObjectPath::from(cfg.key.clone());
-            let reader = StoreParquetObjectReader::new(store, location);
-            Ok(AnyParquetReader::Store(reader))
-        }
+        _ => Err(IndexBuildError::NotImplemented(
+            "remote parquet sources must be localized before reading",
+        )
+        .into()),
     }
 }
 
 enum AnyParquetReader {
     Local(LocalParquetObjectReader),
-    Store(StoreParquetObjectReader),
 }
 
 impl AsyncFileReader for AnyParquetReader {
@@ -1348,7 +1218,6 @@ impl AsyncFileReader for AnyParquetReader {
     ) -> BoxFuture<'a, parquet::errors::Result<std::sync::Arc<ParquetMetaData>>> {
         match self {
             AnyParquetReader::Local(r) => r.get_metadata(options),
-            AnyParquetReader::Store(r) => r.get_metadata(options),
         }
     }
 
@@ -1358,7 +1227,6 @@ impl AsyncFileReader for AnyParquetReader {
     ) -> BoxFuture<'_, parquet::errors::Result<Vec<Bytes>>> {
         match self {
             AnyParquetReader::Local(r) => r.get_byte_ranges(ranges),
-            AnyParquetReader::Store(r) => r.get_byte_ranges(ranges),
         }
     }
 
@@ -1368,7 +1236,6 @@ impl AsyncFileReader for AnyParquetReader {
     ) -> BoxFuture<'_, parquet::errors::Result<Bytes>> {
         match self {
             AnyParquetReader::Local(r) => r.get_bytes(range),
-            AnyParquetReader::Store(r) => r.get_bytes(range),
         }
     }
 }
