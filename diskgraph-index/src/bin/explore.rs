@@ -113,7 +113,7 @@ fn main() -> Result<()> {
         .as_ref()
         .or(profile_pprof_path.as_ref())
         .or(profile_out_base.as_ref())
-        .map(|_| ProfilerGuard::new(100))
+        .map(|_| ProfilerGuard::new(500))
         .transpose()
         .context("start profiler")?;
     let run_result = run_explore(&source_str, profile_enabled);
