@@ -561,9 +561,9 @@ impl EdgeWriter {
         let mut len: u64 = 0;
         for (layout, &count) in layouts.iter().zip(counts.iter()) {
             let count_len = if count <= 63 { 1 } else { 2 };
-            debug_assert!(count <= MAX_RELATION_EDGE_COUNT);
-            let add = (count as u64) * (layout.entry_bytes as u64) + count_len;
-            len += add;
+            len = len
+                .saturating_add(count_len)
+                .saturating_add((count as u64).saturating_mul(layout.entry_bytes as u64));
         }
         len
     }
