@@ -153,6 +153,181 @@ pub fn cleanup_parquet_cache(parquet_root: &Path) -> Result<()> {
     Ok(())
 }
 
+fn localize_edge_inputs(
+    rt: &Runtime,
+    edge_shards: &[EdgeShardInput],
+    download_root: &Path,
+) -> Result<(Vec<EdgeShardInput>, Option<PathBuf>)> {
+    let mut localized = Vec::with_capacity(edge_shards.len());
+    let mut used_remote = false;
+    let opts = ParquetDownloadOptions::default();
+    for edge in edge_shards {
+        match &edge.parquet {
+            ParquetSource::LocalFile(_) => localized.push(edge.clone()),
+            ParquetSource::S3(cfg) => {
+                used_remote = true;
+                let s3 = build_s3_client(FsS3Config {
+                    bucket: cfg.bucket.clone(),
+                    region: cfg.region.clone(),
+                    endpoint: cfg.endpoint.clone(),
+                    allow_http: cfg
+                        .endpoint
+                        .as_deref()
+                        .map(|e| e.starts_with("http://")),
+                    virtual_hosted: cfg.virtual_hosted_style_request,
+                    profile: None,
+                    access_key_id: cfg.access_key_id.clone(),
+                    secret_access_key: cfg.secret_access_key.clone(),
+                    session_token: cfg.session_token.clone(),
+                })
+                .map_err(|e| IndexBuildError::ObjectStore(e.to_string()))?;
+                let store = s3.store.clone();
+                let local_path = download_root
+                    .join("s3")
+                    .join(&cfg.bucket)
+                    .join(&cfg.key);
+                download_parquet_to_local(rt, &store, &cfg.key, &local_path, &opts)?;
+                let mut localized_edge = edge.clone();
+                localized_edge.parquet = ParquetSource::LocalFile(local_path);
+                localized.push(localized_edge);
+            }
+            ParquetSource::Gcs(cfg) => {
+                used_remote = true;
+                let local_path = download_root
+                    .join("gcs")
+                    .join(&cfg.bucket)
+                    .join(&cfg.key);
+                if let Some(endpoint) = &cfg.endpoint {
+                    if endpoint.starts_with("http") {
+                        download_gcs_emulator(rt, cfg, &local_path)?;
+                    } else {
+                        download_gcs_store(rt, cfg, &local_path, &opts)?;
+                    }
+                } else {
+                    download_gcs_store(rt, cfg, &local_path, &opts)?;
+                }
+                let mut localized_edge = edge.clone();
+                localized_edge.parquet = ParquetSource::LocalFile(local_path);
+                localized.push(localized_edge);
+            }
+            ParquetSource::Adls(cfg) => {
+                used_remote = true;
+                let mut builder = MicrosoftAzureBuilder::new()
+                    .with_account(&cfg.account)
+                    .with_container_name(&cfg.container);
+                if let Some(endpoint) = &cfg.endpoint {
+                    builder = builder.with_endpoint(endpoint.to_string());
+                }
+                if let Some(access_key) = &cfg.access_key {
+                    builder = builder.with_access_key(access_key);
+                }
+                if let Some(sas) = &cfg.sas_key {
+                    builder = builder.with_config(AzureConfigKey::SasKey, sas);
+                }
+                if let Some(bearer) = &cfg.bearer_token {
+                    builder = builder.with_bearer_token_authorization(bearer);
+                }
+                if let Some(client_id) = &cfg.client_id {
+                    builder = builder.with_client_id(client_id);
+                }
+                if let Some(client_secret) = &cfg.client_secret {
+                    builder = builder.with_client_secret(client_secret);
+                }
+                if let Some(tenant_id) = &cfg.tenant_id {
+                    builder = builder.with_tenant_id(tenant_id);
+                }
+                if let Some(use_emulator) = cfg.use_emulator {
+                    builder = builder.with_use_emulator(use_emulator);
+                }
+                let store = builder
+                    .build()
+                    .map_err(|e| IndexBuildError::ObjectStore(e.to_string()))?;
+                let store: Arc<dyn ObjectStore> = Arc::new(store);
+                let local_path = download_root
+                    .join("az")
+                    .join(&cfg.account)
+                    .join(&cfg.container)
+                    .join(&cfg.key);
+                download_parquet_to_local(rt, &store, &cfg.key, &local_path, &opts)?;
+                let mut localized_edge = edge.clone();
+                localized_edge.parquet = ParquetSource::LocalFile(local_path);
+                localized.push(localized_edge);
+            }
+        }
+    }
+    Ok((
+        localized,
+        if used_remote {
+            Some(download_root.to_path_buf())
+        } else {
+            None
+        },
+    ))
+}
+
+fn download_gcs_store(
+    rt: &Runtime,
+    cfg: &crate::streaming::GcsLocation,
+    local_path: &Path,
+    opts: &ParquetDownloadOptions,
+) -> Result<()> {
+    let mut builder = GoogleCloudStorageBuilder::new().with_bucket_name(&cfg.bucket);
+    if let Some(sa_path) = &cfg.service_account_path {
+        builder = builder.with_service_account_path(sa_path);
+    } else if let Some(sa_key) = &cfg.service_account_key {
+        builder = builder.with_service_account_key(sa_key);
+    } else if let Some(app_creds) = &cfg.application_credentials_path {
+        builder = builder.with_application_credentials(app_creds);
+    } else if let Some(endpoint) = &cfg.endpoint {
+        let sa = format!(
+            r#"{{"private_key":"private_key","private_key_id":"fake","client_email":"fake@example.com","disable_oauth":true,"gcs_base_url":"{endpoint}"}}"#
+        );
+        builder = builder.with_service_account_key(sa);
+    }
+    let store = builder
+        .build()
+        .map_err(|e| IndexBuildError::ObjectStore(e.to_string()))?;
+    let store: Arc<dyn ObjectStore> = Arc::new(store);
+    download_parquet_to_local(rt, &store, &cfg.key, local_path, opts)
+}
+
+fn download_gcs_emulator(
+    rt: &Runtime,
+    cfg: &crate::streaming::GcsLocation,
+    local_path: &Path,
+) -> Result<()> {
+    if let Some(parent) = local_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let endpoint = cfg
+        .endpoint
+        .as_ref()
+        .ok_or_else(|| IndexBuildError::ObjectStore("missing GCS endpoint".into()))?;
+    let base = endpoint.trim_end_matches('/');
+    let key_enc = utf8_percent_encode(&cfg.key, NON_ALPHANUMERIC).to_string();
+    let url = format!(
+        "{}/download/storage/v1/b/{}/o/{}?alt=media",
+        base, cfg.bucket, key_enc
+    );
+    let bytes = rt.block_on(async {
+        let resp = reqwest::Client::builder()
+            .danger_accept_invalid_certs(true)
+            .build()
+            .map_err(|e| IndexBuildError::ObjectStore(e.to_string()))?
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| IndexBuildError::ObjectStore(e.to_string()))?
+            .error_for_status()
+            .map_err(|e| IndexBuildError::ObjectStore(e.to_string()))?;
+        resp.bytes()
+            .await
+            .map_err(|e| IndexBuildError::ObjectStore(e.to_string()))
+    })?;
+    fs::write(local_path, &bytes)?;
+    Ok(())
+}
+
 /// Parameters for building a single shard index.
 #[derive(Debug, Clone)]
 pub struct ShardBuildParams {
@@ -205,6 +380,9 @@ impl ShardBuilder {
         let edges_path = self.params.output_dir.join(EDGES_FILENAME);
 
         let rt = Arc::new(Runtime::new()?);
+        let download_root = self.params.output_dir.join("parquet_downloads");
+        let (edge_inputs, download_root) =
+            localize_edge_inputs(&rt, edge_shards, &download_root)?;
 
         let layouts = Arc::new(compute_relation_layouts(
             &self.params.relation_metas,
@@ -214,7 +392,7 @@ impl ShardBuilder {
         let mut node_stream =
             NodeStream::try_new(&self.params.node_meta, self.params.shard_index)?;
         let mut edge_stream =
-            MergedEdgeStream::try_new(rt.clone(), edge_shards, &self.params.relation_metas)?;
+            MergedEdgeStream::try_new(rt.clone(), &edge_inputs, &self.params.relation_metas)?;
 
         let mut offsets_writer = OffsetChunkWriter::try_new(&offsets_path)?;
         let mut edges_writer = EdgeWriter::try_new(&edges_path, layouts.clone())?;
@@ -237,7 +415,8 @@ impl ShardBuilder {
         let mut last_counts: Vec<usize> = vec![0; rel_count];
         let mut original_counts: Vec<usize> = vec![0; rel_count];
         let mut lens: Vec<usize> = vec![0; rel_count];
-        while let Some(node_id) = node_stream.next_id()? {
+        let result = (|| {
+            while let Some(node_id) = node_stream.next_id()? {
             if let Some(should_abort) = should_abort {
                 if should_abort() {
                     return Err(IndexBuildError::Aborted.into());
@@ -247,7 +426,7 @@ impl ShardBuilder {
             build_stats.nodes_ingested += 1;
             if let Some(cb) = on_progress.as_deref_mut() {
                 let total = total_nodes.unwrap_or(0);
-                if nodes_seen - last_progress_at >= 10_000 {
+                if nodes_seen - last_progress_at >= 100_000 {
                     cb(nodes_seen, total);
                     last_progress_at = nodes_seen;
                 }
@@ -368,13 +547,18 @@ impl ShardBuilder {
             stats.byte_len
         );
 
-        Ok(ShardBuildOutput {
-            offsets_path,
-            edges_path,
-            stats,
-            layouts,
-            build_stats,
-        })
+            Ok(ShardBuildOutput {
+                offsets_path,
+                edges_path,
+                stats,
+                layouts,
+                build_stats,
+            })
+        })();
+        if let Some(root) = download_root {
+            let _ = cleanup_parquet_cache(&root);
+        }
+        result
     }
 }
 

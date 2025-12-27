@@ -8,8 +8,7 @@
 use anyhow::{anyhow, Context, Result};
 use diskgraph_core::metadata::{DatasetMetadata, EdgeRelationMetadata, NodeTypeMetadata};
 use diskgraph_index::builder::{
-    cleanup_parquet_cache, compute_relation_layouts, download_parquet_to_local,
-    IndexBuildError, ParquetDownloadOptions, ShardBuildParams, ShardBuilder,
+    compute_relation_layouts, IndexBuildError, ShardBuildParams, ShardBuilder,
 };
 use diskgraph_index::reader::ShardReader;
 use diskgraph_index::streaming::{EdgeShardInput, ParquetSource};
@@ -382,9 +381,54 @@ fn build_from_remote(
     let metadata: DatasetMetadata =
         serde_json::from_slice(&meta_bytes).context("parse metadata.json")?;
 
-    let parquet_root = cache_dir.join("parquet");
-    let download_opts = ParquetDownloadOptions::default();
-    // Download Parquet shards locally, then build from local files.
+    let make_source = |key: String| -> Result<ParquetSource> {
+        match &remote {
+            RemoteStore::S3 { bucket, client, .. } => Ok(ParquetSource::S3(
+                diskgraph_index::streaming::S3Location {
+                    bucket: bucket.clone(),
+                    key,
+                    region: Some(client.resolved.region.clone()),
+                    endpoint: client.resolved.endpoint.clone(),
+                    access_key_id: Some(client.resolved.access_key_id.clone()),
+                    secret_access_key: Some(client.resolved.secret_access_key.clone()),
+                    session_token: client.resolved.session_token.clone(),
+                    virtual_hosted_style_request: Some(client.resolved.virtual_hosted),
+                },
+            )),
+            RemoteStore::Gcs { bucket, .. } => Ok(ParquetSource::Gcs(
+                diskgraph_index::streaming::GcsLocation {
+                    bucket: bucket.clone(),
+                    key,
+                    service_account_path: None,
+                    service_account_key: None,
+                    application_credentials_path: None,
+                    endpoint: None,
+                },
+            )),
+            RemoteStore::Adls {
+                account,
+                container,
+                client,
+                ..
+            } => Ok(ParquetSource::Adls(
+                diskgraph_index::streaming::AdlsLocation {
+                    account: account.clone(),
+                    container: container.clone(),
+                    key,
+                    access_key: client.resolved.access_key.clone(),
+                    sas_key: client.resolved.sas_key.clone(),
+                    bearer_token: client.resolved.bearer_token.clone(),
+                    client_id: client.resolved.client_id.clone(),
+                    client_secret: client.resolved.client_secret.clone(),
+                    tenant_id: client.resolved.tenant_id.clone(),
+                    endpoint: client.resolved.endpoint.clone(),
+                    use_emulator: None,
+                },
+            )),
+        }
+    };
+
+    // Build using streaming Parquet sources (first shard per relation).
     let edge_inputs: Vec<EdgeShardInput> = metadata
         .edge_relations
         .iter()
@@ -398,10 +442,7 @@ fn build_from_remote(
             } else {
                 format!("{}/{}", prefix.trim_end_matches('/'), shard.path)
             };
-            let local_path = parquet_root.join(&shard.path);
-            download_parquet_to_local(rt, &store_arc, &key, &local_path, &download_opts)
-                .with_context(|| format!("download {}", shard.path))?;
-            let parquet = ParquetSource::LocalFile(local_path);
+            let parquet = make_source(key)?;
             Ok(EdgeShardInput {
                 relation: rel.name.clone(),
                 source_shard_index: 0,
@@ -439,7 +480,6 @@ fn build_from_remote(
         )
         .context("build shard from parquet")?;
     build_progress.finish_with_message("Built shard");
-    cleanup_parquet_cache(&parquet_root).context("remove downloaded parquet")?;
     fs::write(&meta_path, serde_json::to_vec_pretty(&metadata)?)?;
     Ok((metadata, shard_dir))
 }
