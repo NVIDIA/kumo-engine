@@ -3,9 +3,7 @@ set -euo pipefail
 
 # Run cloud_ingest S3 test against a real S3-compatible endpoint using IAM/role or supplied creds.
 
-if [[ "${RUN_CLOUD_TESTS:-}" != "1" ]]; then
-  export RUN_CLOUD_TESTS=1
-fi
+export RUN_CLOUD_TESTS=1
 
 : "${S3_PREFIX:=s3://kumo-unit-test/diskgraph-index}"
 RUN_ID="run-$(date +%s)-$RANDOM"

@@ -3,9 +3,7 @@ set -euo pipefail
 
 # Run cloud_ingest GCS test against real GCS (or another https-compatible endpoint).
 
-if [[ "${RUN_CLOUD_TESTS:-}" != "1" ]]; then
-  export RUN_CLOUD_TESTS=1
-fi
+export RUN_CLOUD_TESTS=1
 
 : "${GCS_PREFIX:=gs://kumo-unit-test/diskgraph-index}"
 RUN_ID="run-$(date +%s)-$RANDOM"

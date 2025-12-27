@@ -3,9 +3,7 @@ set -euo pipefail
 
 # Run cloud_ingest ADLS test against real Azure Blob/ADLS v2 (MSI/role or supplied creds).
 
-if [[ "${RUN_CLOUD_TESTS:-}" != "1" ]]; then
-  export RUN_CLOUD_TESTS=1
-fi
+export RUN_CLOUD_TESTS=1
 
 : "${AZURE_PREFIX:=az://kumo-unit-test/diskgraph-index}"
 RUN_ID="run-$(date +%s)-$RANDOM"
