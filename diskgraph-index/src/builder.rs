@@ -4,7 +4,7 @@ use crate::layout::{
 use crate::streaming::{EdgeShardInput, ParquetSource};
 use crate::truncate::truncate_counts;
 use anyhow::Result;
-use arrow_array::{ArrayRef, Int64Array};
+use arrow_array::Int64Array;
 use arrow_schema::SchemaRef;
 use bytes::Bytes;
 use diskgraph_core::metadata::{EdgeRelationMetadata, NodeTypeMetadata};
@@ -1179,20 +1179,6 @@ impl MergedEdgeStream {
         }
         Ok(())
     }
-}
-
-// helper retained for potential future use; keep to avoid dead-code lint in case cfg changes.
-#[allow(dead_code)]
-fn as_i64_array<'a>(
-    array: &'a ArrayRef,
-    _schema: &SchemaRef,
-    name: &'static str,
-) -> Result<&'a Int64Array> {
-    array
-        .as_any()
-        .downcast_ref::<Int64Array>()
-        .ok_or_else(|| IndexBuildError::InvalidColumn(name))
-        .map_err(Into::into)
 }
 
 fn object_reader_from_source(source: &ParquetSource, _rt: &Runtime) -> Result<AnyParquetReader> {
