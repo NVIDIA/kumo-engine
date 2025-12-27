@@ -8,7 +8,8 @@
 use anyhow::{anyhow, Context, Result};
 use diskgraph_core::metadata::{DatasetMetadata, EdgeRelationMetadata, NodeTypeMetadata};
 use diskgraph_index::builder::{
-    compute_relation_layouts, IndexBuildError, ShardBuildParams, ShardBuilder,
+    BuildProgress, BuildStage, ProgressReporter, compute_relation_layouts, IndexBuildError,
+    ShardBuildParams, ShardBuilder,
 };
 use diskgraph_index::reader::ShardReader;
 use diskgraph_index::streaming::{EdgeShardInput, ParquetSource};
@@ -461,21 +462,12 @@ fn build_from_remote(
     };
     let builder = ShardBuilder::new(params);
     let total_nodes = shard_node_count(&metadata);
-    let (build_progress, is_bar) =
-        start_build_progress(total_nodes, "Building shard from parquet");
-    let mut on_progress = |seen: u64, total: u64| {
-        if is_bar {
-            let len = build_progress.length().unwrap_or(total);
-            build_progress.set_position(seen.min(len));
-        } else {
-            build_progress.tick();
-        }
-    };
+    let (build_progress, progress_reporter) = make_progress_handler(total_nodes);
     builder
         .build_with_progress(
             &edge_inputs,
             total_nodes,
-            Some(&mut on_progress),
+            Some(&progress_reporter),
             None,
         )
         .context("build shard from parquet")?;
@@ -519,18 +511,128 @@ fn shard_node_count(metadata: &DatasetMetadata) -> Option<u64> {
         .map(|s| s.max_id.saturating_sub(s.min_id).saturating_add(1))
 }
 
-fn start_build_progress(total: Option<u64>, message: &str) -> (ProgressBar, bool) {
-    let total = total.unwrap_or(0);
-    if total > 0 {
-        let pb = ProgressBar::new(total);
-        pb.set_style(
-            ProgressStyle::with_template("{msg} {bar:40.cyan/blue} {percent}% {pos}/{len} ({eta})")
-                .unwrap_or_else(|_| ProgressStyle::default_bar()),
-        );
-        pb.set_message(message.to_string());
-        (pb, true)
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ProgressStageKey {
+    Download {
+        file: String,
+        index: usize,
+        total: usize,
+    },
+    BuildIndex,
+}
+
+fn bar_style() -> ProgressStyle {
+    ProgressStyle::with_template("{msg} {bar:40.cyan/blue} {percent}% {prefix} ({eta})")
+        .unwrap_or_else(|_| ProgressStyle::default_bar())
+}
+
+fn spinner_style() -> ProgressStyle {
+    ProgressStyle::with_template("{spinner} {msg}")
+        .unwrap_or_else(|_| ProgressStyle::default_spinner())
+}
+
+fn make_progress_handler(
+    total_nodes: Option<u64>,
+) -> (ProgressBar, ProgressReporter<Box<dyn FnMut(BuildProgress)>>) {
+    let pb = ProgressBar::new(0);
+    pb.set_style(spinner_style());
+    let pb_handle = pb.clone();
+    let mut last_stage: Option<ProgressStageKey> = None;
+    let mut last_total: Option<u64> = None;
+    let handler = move |progress: BuildProgress| {
+        match progress.stage {
+            BuildStage::Download { file, index, total } => {
+                let stage_key = ProgressStageKey::Download {
+                    file: file.to_string(),
+                    index,
+                    total,
+                };
+                if last_stage.as_ref() != Some(&stage_key) {
+                    pb_handle.set_style(bar_style());
+                    pb_handle.set_position(0);
+                    pb_handle.set_message(format!("Downloading {} ({}/{})", file, index, total));
+                    last_stage = Some(stage_key);
+                    last_total = None;
+                }
+                if let Some(total) = progress.total {
+                    if last_total != Some(total) {
+                        pb_handle.set_length(total);
+                        last_total = Some(total);
+                    }
+                    pb_handle.set_position(progress.current.min(total));
+                    pb_handle.set_prefix(format!(
+                        "{} / {}",
+                        format_bytes(progress.current),
+                        format_bytes(total),
+                    ));
+                } else {
+                    pb_handle.tick();
+                }
+            }
+            BuildStage::BuildIndex => {
+                let stage_key = ProgressStageKey::BuildIndex;
+                if last_stage.as_ref() != Some(&stage_key) {
+                    pb_handle.set_message("Building shard from parquet".to_string());
+                    if let Some(total) = progress.total.or(total_nodes) {
+                        pb_handle.set_style(bar_style());
+                        pb_handle.set_length(total);
+                        pb_handle.set_position(0);
+                        last_total = Some(total);
+                    } else {
+                        pb_handle.set_style(spinner_style());
+                        last_total = None;
+                    }
+                    last_stage = Some(stage_key);
+                }
+                if let Some(total) = progress.total.or(total_nodes) {
+                    if last_total != Some(total) {
+                        pb_handle.set_length(total);
+                        last_total = Some(total);
+                    }
+                    pb_handle.set_position(progress.current.min(total));
+                    pb_handle.set_prefix(format!(
+                        "{} / {}",
+                        format_count(progress.current),
+                        format_count(total),
+                    ));
+                } else {
+                    pb_handle.tick();
+                }
+            }
+        }
+    };
+    (pb, ProgressReporter::new(Box::new(handler)))
+}
+
+fn format_bytes(value: u64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = 1024.0 * 1024.0;
+    const GB: f64 = 1024.0 * 1024.0 * 1024.0;
+    let v = value as f64;
+    if v >= GB {
+        format!("{:.1} GB", v / GB)
+    } else if v >= MB {
+        format!("{:.1} MB", v / MB)
+    } else if v >= KB {
+        format!("{:.1} KB", v / KB)
     } else {
-        (start_spinner(message), false)
+        format!("{} B", value)
+    }
+}
+
+fn format_count(value: u64) -> String {
+    const K: f64 = 1_000.0;
+    const M: f64 = 1_000_000.0;
+    const B: f64 = 1_000_000_000.0;
+    let v = value as f64;
+    if v >= B {
+        format!("{:.2}B", v / B)
+    } else if v >= M {
+        format!("{:.2}M", v / M)
+    } else if v >= K {
+        format!("{:.1}K", v / K)
+    } else {
+        value.to_string()
     }
 }
 
@@ -620,21 +722,12 @@ fn build_from_local_parquet(
     };
     let builder = ShardBuilder::new(params);
     let total_nodes = shard_node_count(&metadata);
-    let (build_progress, is_bar) =
-        start_build_progress(total_nodes, "Building shard from local parquet");
-    let mut on_progress = |seen: u64, total: u64| {
-        if is_bar {
-            let len = build_progress.length().unwrap_or(total);
-            build_progress.set_position(seen.min(len));
-        } else {
-            build_progress.tick();
-        }
-    };
+    let (build_progress, progress_reporter) = make_progress_handler(total_nodes);
     builder
         .build_with_progress(
             &edge_inputs,
             total_nodes,
-            Some(&mut on_progress),
+            Some(&progress_reporter),
             None,
         )
         .context("build shard from parquet")?;

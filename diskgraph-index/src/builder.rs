@@ -8,7 +8,7 @@ use arrow_array::Int64Array;
 use arrow_schema::SchemaRef;
 use bytes::Bytes;
 use diskgraph_core::metadata::{EdgeRelationMetadata, NodeTypeMetadata};
-use futures::{future::BoxFuture, StreamExt, TryStreamExt};
+use futures::{future::BoxFuture, StreamExt};
 use object_store::azure::{AzureConfigKey, MicrosoftAzureBuilder};
 use object_store::gcp::GoogleCloudStorageBuilder;
 use object_store::path::Path as ObjectPath;
@@ -28,6 +28,7 @@ use std::io::{BufWriter, Seek, SeekFrom, Write};
 use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::cell::RefCell;
 use thiserror::Error;
 use tokio::runtime::Runtime;
 use tokio::task;
@@ -50,6 +51,45 @@ impl Default for ParquetDownloadOptions {
             chunk_size: 64 * 1024 * 1024,
             concurrency: 8,
         }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BuildStage {
+    Download {
+        file: Arc<str>,
+        index: usize,
+        total: usize,
+    },
+    BuildIndex,
+}
+
+#[derive(Clone, Debug)]
+pub struct BuildProgress {
+    pub stage: BuildStage,
+    pub current: u64,
+    pub total: Option<u64>,
+}
+
+pub trait ProgressSink {
+    fn report(&self, update: BuildProgress);
+}
+
+pub struct ProgressReporter<F: FnMut(BuildProgress)> {
+    inner: RefCell<F>,
+}
+
+impl<F: FnMut(BuildProgress)> ProgressReporter<F> {
+    pub fn new(inner: F) -> Self {
+        Self {
+            inner: RefCell::new(inner),
+        }
+    }
+}
+
+impl<F: FnMut(BuildProgress)> ProgressSink for ProgressReporter<F> {
+    fn report(&self, update: BuildProgress) {
+        (self.inner.borrow_mut())(update);
     }
 }
 
@@ -94,6 +134,8 @@ pub fn download_parquet_to_local(
     key: &str,
     local_path: &Path,
     opts: &ParquetDownloadOptions,
+    progress: Option<&dyn ProgressSink>,
+    stage: Option<BuildStage>,
 ) -> Result<()> {
     if local_path.exists() {
         return Ok(());
@@ -103,6 +145,13 @@ pub fn download_parquet_to_local(
     }
     let loc = ObjectPath::from(key.to_string());
     let total = rt.block_on(async { store.head(&loc).await.map(|m| m.size) })?;
+    if let (Some(progress), Some(stage)) = (progress, stage.clone()) {
+        progress.report(BuildProgress {
+            stage,
+            current: 0,
+            total: Some(total),
+        });
+    }
     let file = std::fs::OpenOptions::new()
         .create(true)
         .write(true)
@@ -118,24 +167,35 @@ pub fn download_parquet_to_local(
         offset = end;
     }
     rt.block_on(async {
-        futures::stream::iter(ranges)
+        let mut downloaded = 0u64;
+        let mut stream = futures::stream::iter(ranges)
             .map(|range| {
                 let store = Arc::clone(store);
                 let loc = loc.clone();
                 let file = Arc::clone(&file);
                 async move {
                     let bytes = store.get_range(&loc, range.clone()).await?;
+                    let len = bytes.len() as u64;
                     task::spawn_blocking(move || {
                         file.write_all_at(&bytes, range.start)?;
                         Ok::<(), std::io::Error>(())
                     })
                     .await??;
-                    Ok::<(), anyhow::Error>(())
+                    Ok::<u64, anyhow::Error>(len)
                 }
             })
-            .buffer_unordered(opts.concurrency)
-            .try_collect::<Vec<_>>()
-            .await?;
+            .buffer_unordered(opts.concurrency);
+        while let Some(res) = stream.next().await {
+            let len = res?;
+            downloaded = downloaded.saturating_add(len);
+            if let (Some(progress), Some(stage)) = (progress, stage.clone()) {
+                progress.report(BuildProgress {
+                    stage,
+                    current: downloaded,
+                    total: Some(total),
+                });
+            }
+        }
         Ok::<(), anyhow::Error>(())
     })?;
     Ok(())
@@ -152,15 +212,22 @@ fn localize_edge_inputs(
     rt: &Runtime,
     edge_shards: &[EdgeShardInput],
     download_root: &Path,
+    progress: Option<&dyn ProgressSink>,
 ) -> Result<(Vec<EdgeShardInput>, Option<PathBuf>)> {
     let mut localized = Vec::with_capacity(edge_shards.len());
     let mut used_remote = false;
     let opts = ParquetDownloadOptions::default();
+    let total_remote = edge_shards
+        .iter()
+        .filter(|e| !matches!(e.parquet, ParquetSource::LocalFile(_)))
+        .count();
+    let mut remote_index = 0usize;
     for edge in edge_shards {
         match &edge.parquet {
             ParquetSource::LocalFile(_) => localized.push(edge.clone()),
             ParquetSource::S3(cfg) => {
                 used_remote = true;
+                remote_index += 1;
                 let s3 = build_s3_client(FsS3Config {
                     bucket: cfg.bucket.clone(),
                     region: cfg.region.clone(),
@@ -181,25 +248,70 @@ fn localize_edge_inputs(
                     .join("s3")
                     .join(&cfg.bucket)
                     .join(&cfg.key);
-                download_parquet_to_local(rt, &store, &cfg.key, &local_path, &opts)?;
+                let stage = BuildStage::Download {
+                    file: Arc::from(cfg.key.as_str()),
+                    index: remote_index,
+                    total: total_remote,
+                };
+                download_parquet_to_local(
+                    rt,
+                    &store,
+                    &cfg.key,
+                    &local_path,
+                    &opts,
+                    progress,
+                    Some(stage),
+                )?;
                 let mut localized_edge = edge.clone();
                 localized_edge.parquet = ParquetSource::LocalFile(local_path);
                 localized.push(localized_edge);
             }
             ParquetSource::Gcs(cfg) => {
                 used_remote = true;
+                remote_index += 1;
                 let local_path = download_root
                     .join("gcs")
                     .join(&cfg.bucket)
                     .join(&cfg.key);
                 if let Some(endpoint) = &cfg.endpoint {
                     if endpoint.starts_with("http") {
-                        download_gcs_emulator(rt, cfg, &local_path)?;
+                        download_gcs_emulator(
+                            rt,
+                            cfg,
+                            &local_path,
+                            progress,
+                            remote_index,
+                            total_remote,
+                        )?;
                     } else {
-                        download_gcs_store(rt, cfg, &local_path, &opts)?;
+                        let stage = BuildStage::Download {
+                            file: Arc::from(cfg.key.as_str()),
+                            index: remote_index,
+                            total: total_remote,
+                        };
+                        download_gcs_store(
+                            rt,
+                            cfg,
+                            &local_path,
+                            &opts,
+                            progress,
+                            Some(stage),
+                        )?;
                     }
                 } else {
-                    download_gcs_store(rt, cfg, &local_path, &opts)?;
+                    let stage = BuildStage::Download {
+                        file: Arc::from(cfg.key.as_str()),
+                        index: remote_index,
+                        total: total_remote,
+                    };
+                    download_gcs_store(
+                        rt,
+                        cfg,
+                        &local_path,
+                        &opts,
+                        progress,
+                        Some(stage),
+                    )?;
                 }
                 let mut localized_edge = edge.clone();
                 localized_edge.parquet = ParquetSource::LocalFile(local_path);
@@ -207,6 +319,7 @@ fn localize_edge_inputs(
             }
             ParquetSource::Adls(cfg) => {
                 used_remote = true;
+                remote_index += 1;
                 let mut builder = MicrosoftAzureBuilder::new()
                     .with_account(&cfg.account)
                     .with_container_name(&cfg.container);
@@ -243,7 +356,20 @@ fn localize_edge_inputs(
                     .join(&cfg.account)
                     .join(&cfg.container)
                     .join(&cfg.key);
-                download_parquet_to_local(rt, &store, &cfg.key, &local_path, &opts)?;
+                let stage = BuildStage::Download {
+                    file: Arc::from(cfg.key.as_str()),
+                    index: remote_index,
+                    total: total_remote,
+                };
+                download_parquet_to_local(
+                    rt,
+                    &store,
+                    &cfg.key,
+                    &local_path,
+                    &opts,
+                    progress,
+                    Some(stage),
+                )?;
                 let mut localized_edge = edge.clone();
                 localized_edge.parquet = ParquetSource::LocalFile(local_path);
                 localized.push(localized_edge);
@@ -265,6 +391,8 @@ fn download_gcs_store(
     cfg: &crate::streaming::GcsLocation,
     local_path: &Path,
     opts: &ParquetDownloadOptions,
+    progress: Option<&dyn ProgressSink>,
+    stage: Option<BuildStage>,
 ) -> Result<()> {
     let mut builder = GoogleCloudStorageBuilder::new().with_bucket_name(&cfg.bucket);
     if let Some(sa_path) = &cfg.service_account_path {
@@ -283,13 +411,24 @@ fn download_gcs_store(
         .build()
         .map_err(|e| IndexBuildError::ObjectStore(e.to_string()))?;
     let store: Arc<dyn ObjectStore> = Arc::new(store);
-    download_parquet_to_local(rt, &store, &cfg.key, local_path, opts)
+    download_parquet_to_local(
+        rt,
+        &store,
+        &cfg.key,
+        local_path,
+        opts,
+        progress,
+        stage,
+    )
 }
 
 fn download_gcs_emulator(
     rt: &Runtime,
     cfg: &crate::streaming::GcsLocation,
     local_path: &Path,
+    progress: Option<&dyn ProgressSink>,
+    index: usize,
+    total: usize,
 ) -> Result<()> {
     if let Some(parent) = local_path.parent() {
         fs::create_dir_all(parent)?;
@@ -320,6 +459,17 @@ fn download_gcs_emulator(
             .map_err(|e| IndexBuildError::ObjectStore(e.to_string()))
     })?;
     fs::write(local_path, &bytes)?;
+    if let Some(progress) = progress {
+        progress.report(BuildProgress {
+            stage: BuildStage::Download {
+                file: Arc::from(cfg.key.as_str()),
+                index,
+                total,
+            },
+            current: bytes.len() as u64,
+            total: Some(bytes.len() as u64),
+        });
+    }
     Ok(())
 }
 
@@ -358,7 +508,7 @@ impl ShardBuilder {
         &self,
         edge_shards: &[EdgeShardInput],
         total_nodes: Option<u64>,
-        mut on_progress: Option<&mut dyn FnMut(u64, u64)>,
+        progress: Option<&dyn ProgressSink>,
         should_abort: Option<&dyn Fn() -> bool>,
     ) -> Result<ShardBuildOutput> {
         for e in edge_shards {
@@ -377,7 +527,7 @@ impl ShardBuilder {
         let rt = Arc::new(Runtime::new()?);
         let download_root = self.params.output_dir.join("parquet_downloads");
         let (edge_inputs, download_root) =
-            localize_edge_inputs(&rt, edge_shards, &download_root)?;
+            localize_edge_inputs(&rt, edge_shards, &download_root, progress)?;
 
         let layouts = Arc::new(compute_relation_layouts(
             &self.params.relation_metas,
@@ -411,6 +561,13 @@ impl ShardBuilder {
         let mut original_counts: Vec<usize> = vec![0; rel_count];
         let mut lens: Vec<usize> = vec![0; rel_count];
         let result = (|| {
+            if let Some(progress) = progress {
+                progress.report(BuildProgress {
+                    stage: BuildStage::BuildIndex,
+                    current: 0,
+                    total: total_nodes,
+                });
+            }
             while let Some(node_id) = node_stream.next_id()? {
             if let Some(should_abort) = should_abort {
                 if should_abort() {
@@ -419,10 +576,13 @@ impl ShardBuilder {
             }
             nodes_seen += 1;
             build_stats.nodes_ingested += 1;
-            if let Some(cb) = on_progress.as_deref_mut() {
-                let total = total_nodes.unwrap_or(0);
-                if nodes_seen - last_progress_at >= 100_000 {
-                    cb(nodes_seen, total);
+            if let Some(progress) = progress {
+                if nodes_seen - last_progress_at >= 1_000_000 {
+                    progress.report(BuildProgress {
+                        stage: BuildStage::BuildIndex,
+                        current: nodes_seen,
+                        total: total_nodes,
+                    });
                     last_progress_at = nodes_seen;
                 }
             }
@@ -511,8 +671,12 @@ impl ShardBuilder {
             last_counts.copy_from_slice(&counts);
         }
 
-        if let Some(cb) = on_progress.as_deref_mut() {
-            cb(nodes_seen, total_nodes.unwrap_or(nodes_seen));
+        if let Some(progress) = progress {
+            progress.report(BuildProgress {
+                stage: BuildStage::BuildIndex,
+                current: nodes_seen,
+                total: total_nodes.or(Some(nodes_seen)),
+            });
         }
 
         if edge_stream.peek_any().is_some() {
