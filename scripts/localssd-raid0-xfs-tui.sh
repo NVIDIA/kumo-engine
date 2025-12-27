@@ -7,7 +7,7 @@
 # - Optional destructive reset of selected disks (unmount + wipe).
 # - Creates RAID0 (mdadm) with a user-chosen chunk size.
 # - Formats XFS with matching stripe geometry and mounts it.
-# - Persists mdadm and fstab entries when using RAID0.
+# - Persists mdadm entries when using RAID0.
 #
 # Usage:
 #   sudo scripts/localssd-raid0-xfs-tui.sh
@@ -15,6 +15,7 @@
 # Notes:
 # - All selected disks are wiped.
 # - For a single disk, the script skips RAID0 and formats directly.
+# - Mount persistence is manual; this script does not modify /etc/fstab.
 set -euo pipefail
 
 if [[ "${EUID}" -ne 0 ]]; then
@@ -33,7 +34,6 @@ require_cmd findmnt
 require_cmd mdadm
 require_cmd mkfs.xfs
 require_cmd wipefs
-require_cmd blkid
 
 root_disk_name() {
   local root_src parent
@@ -205,31 +205,6 @@ main() {
   fi
 
   mkdir -p "$mountpoint"
-
-  local uuid fstab_line fstab_changed
-  uuid="$(blkid -s UUID -o value "$target")"
-  fstab_line="UUID=$uuid $mountpoint xfs noatime,nodiratime 0 2"
-  fstab_changed="false"
-  if grep -qE "^[^#].*[[:space:]]$mountpoint[[:space:]]" /etc/fstab; then
-    if ! grep -qF "$fstab_line" /etc/fstab; then
-      local tmp
-      tmp="$(mktemp)"
-      awk -v mp="$mountpoint" -v line="$fstab_line" '
-        $0 ~ "^[^#].*[[:space:]]" mp "[[:space:]]" {print line; next}
-        {print}
-      ' /etc/fstab > "$tmp"
-      cat "$tmp" > /etc/fstab
-      rm -f "$tmp"
-      fstab_changed="true"
-    fi
-  else
-    echo "$fstab_line" >> /etc/fstab
-    fstab_changed="true"
-  fi
-
-  if [[ "$fstab_changed" == "true" ]] && command -v systemctl >/dev/null 2>&1; then
-    systemctl daemon-reload
-  fi
 
   mount -o noatime,nodiratime "$target" "$mountpoint"
   chmod 0777 "$mountpoint"

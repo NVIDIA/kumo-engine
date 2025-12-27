@@ -1030,7 +1030,7 @@ fn object_reader_from_source(source: &ParquetSource, rt: &Runtime) -> Result<Any
                 .build()
                 .map_err(|e| IndexBuildError::ObjectStore(e.to_string()))?;
             let store: Arc<dyn ObjectStore> =
-                Arc::new(ChunkedStore::new(Arc::new(store), 32 * 1024 * 1024));
+                Arc::new(ChunkedStore::new(Arc::new(store), 128 * 1024 * 1024));
             let location = ObjectPath::from(cfg.key.clone());
             let reader = StoreParquetObjectReader::new(store, location);
             Ok(AnyParquetReader::Store(reader))
