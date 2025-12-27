@@ -500,10 +500,10 @@ impl EdgeWriter {
         if edge.dst > layout.dst_mask {
             return Err(IndexBuildError::ValueOutOfRange("dst_id").into());
         }
-        let bits_total = layout.dst_bits as usize + layout.dest_sort_key_bits.unwrap_or(0) as usize;
-        if bits_total > layout.entry_bytes * 8 {
-            return Err(IndexBuildError::NotImplemented("entry size too small").into());
-        }
+        debug_assert!(
+            (layout.dst_bits as usize + layout.dest_sort_key_bits.unwrap_or(0) as usize)
+                <= layout.entry_bytes * 8
+        );
         let mut acc: u128 = 0;
         let mut bit_cursor = 0usize;
         let dst_val = edge.dst & layout.dst_mask;
@@ -519,10 +519,9 @@ impl EdgeWriter {
             acc |= (sort_val as u128) << bit_cursor;
         }
 
-        let mut buf = [0u8; 16];
         let bytes_needed = layout.entry_bytes.min(16);
-        buf[..bytes_needed].copy_from_slice(&acc.to_le_bytes()[..bytes_needed]);
-        self.writer.write_all(&buf[..bytes_needed])?;
+        let bytes = acc.to_le_bytes();
+        self.writer.write_all(&bytes[..bytes_needed])?;
 
         self.bytes_written = self
             .bytes_written
