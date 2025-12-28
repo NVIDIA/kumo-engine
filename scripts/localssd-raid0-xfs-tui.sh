@@ -7,7 +7,7 @@
 # - Optional destructive reset of selected disks (unmount + wipe).
 # - Creates RAID0 (mdadm) with a user-chosen chunk size.
 # - Formats XFS with matching stripe geometry and mounts it.
-# - Persists mdadm entries when using RAID0.
+# - Does not persist RAID0 across reboots (ephemeral local SSDs).
 #
 # Usage:
 #   sudo scripts/localssd-raid0-xfs-tui.sh
@@ -208,13 +208,6 @@ main() {
 
   mount -o noatime,nodiratime "$target" "$mountpoint"
   chmod 0777 "$mountpoint"
-
-  if [[ "$target" == /dev/md* ]]; then
-    mdadm --detail --scan | tee -a /etc/mdadm/mdadm.conf >/dev/null
-    if command -v update-initramfs >/dev/null 2>&1; then
-      update-initramfs -u
-    fi
-  fi
 
   echo "Done."
   echo "  Target: $target"
