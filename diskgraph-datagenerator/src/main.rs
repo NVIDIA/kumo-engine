@@ -65,7 +65,7 @@ struct Cli {
     #[arg(long, default_value_t = false)]
     no_node_data: bool,
     /// Bytes per node in the node data column.
-    #[arg(long, default_value_t = 8)]
+    #[arg(long, default_value_t = 4096)]
     node_data_bytes: usize,
 }
 
@@ -144,6 +144,7 @@ fn generate_dataset(cli: &Cli, scenario: ScenarioKind) -> anyhow::Result<()> {
     let edge_rows = build_edge_shards(&edge_relations, &edge_counts, &shard_ranges_by_type);
     write_edges(&root, &mut edge_relations, edge_rows, cli.node_shards)?;
     write_metadata(&root, &node_types, &edge_relations)?;
+    print_stats(&root, &scenario, &node_types, &edge_counts, cli.node_data_bytes);
     Ok(())
 }
 
@@ -571,7 +572,7 @@ fn node_data_bytes(node_id: u64, bytes_per_node: usize) -> Vec<u8> {
     if bytes_per_node == 0 {
         return Vec::new();
     }
-    let text = format!("node:{node_id}");
+    let text = format!("node:{node_id} fake data bytes_per_node={bytes_per_node}");
     let mut out = text.into_bytes();
     if out.len() > bytes_per_node {
         out.truncate(bytes_per_node);
@@ -579,6 +580,45 @@ fn node_data_bytes(node_id: u64, bytes_per_node: usize) -> Vec<u8> {
         out.resize(bytes_per_node, b' ');
     }
     out
+}
+
+fn print_stats(
+    root: &Path,
+    scenario: &ScenarioKind,
+    node_types: &[NodeTypeMetadata],
+    edge_counts: &EdgeCountMap,
+    node_data_bytes: usize,
+) {
+    let total_nodes: u64 = node_types
+        .iter()
+        .map(|nt| nt.max_id.saturating_add(1))
+        .sum();
+    let total_edges: u64 = edge_counts.values().copied().sum();
+    println!(
+        "Stats ({:?}): nodes={}, edges={}, relations={}, node_data_bytes={}",
+        scenario,
+        total_nodes,
+        total_edges,
+        edge_counts.len(),
+        node_data_bytes
+    );
+    if let Ok(bytes) = dir_size(root) {
+        println!("Stats ({:?}): total_bytes={}", scenario, bytes);
+    }
+}
+
+fn dir_size(path: &Path) -> anyhow::Result<u64> {
+    let mut total = 0u64;
+    for entry in fs::read_dir(path)? {
+        let entry = entry?;
+        let meta = entry.metadata()?;
+        if meta.is_dir() {
+            total += dir_size(&entry.path())?;
+        } else {
+            total += meta.len();
+        }
+    }
+    Ok(total)
 }
 
 fn write_edges(

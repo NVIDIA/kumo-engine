@@ -127,7 +127,7 @@ struct MassiveArgs {
     #[arg(long, default_value_t = false)]
     no_node_data: bool,
     /// Bytes per node in the node data column.
-    #[arg(long, default_value_t = 8)]
+    #[arg(long, default_value_t = 4096)]
     node_data_bytes: usize,
     /// Rows per RecordBatch written to Parquet for node data.
     #[arg(long, default_value_t = 1_000_000)]
@@ -162,8 +162,8 @@ fn main() -> Result<()> {
     let edge1_path = target.join(&format!("edges_{}.parquet", args.relation1_name));
 
     info!(
-        "Generating massive dataset: nodes={}, edges_per_relation={}, max_dst_id={}",
-        args.nodes, args.edges_per_relation, args.max_dst_id
+        "Generating massive dataset: nodes={}, edges_per_relation={}, max_dst_id={}, node_data={}, node_data_bytes={}",
+        args.nodes, args.edges_per_relation, args.max_dst_id, args.node_data, args.node_data_bytes
     );
     let mut node_meta = NodeShardMetadata {
         min_id: 0,
@@ -217,6 +217,7 @@ fn main() -> Result<()> {
     )?;
 
     progress.finish("Done");
+    print_stats(&args, &target);
     info!("Done. Output written to {}", target.display());
     Ok(())
 }
@@ -436,7 +437,7 @@ fn node_data_bytes(node_id: u64, bytes_per_node: usize) -> Vec<u8> {
     if bytes_per_node == 0 {
         return Vec::new();
     }
-    let text = format!("node:{node_id}");
+    let text = format!("node:{node_id} fake data bytes_per_node={bytes_per_node}");
     let mut out = text.into_bytes();
     if out.len() > bytes_per_node {
         out.truncate(bytes_per_node);
@@ -444,6 +445,30 @@ fn node_data_bytes(node_id: u64, bytes_per_node: usize) -> Vec<u8> {
         out.resize(bytes_per_node, b' ');
     }
     out
+}
+
+fn print_stats(args: &MassiveArgs, target: &OutputTarget) {
+    println!(
+        "Stats: nodes={}, edges_per_relation={}, relations=2, node_data_bytes={}",
+        args.nodes, args.edges_per_relation, args.node_data_bytes
+    );
+    if let OutputTarget::Local { root } = target {
+        let mut total = 0u64;
+        let files = [
+            root.join(format!("edges_{}.parquet", args.relation0_name)),
+            root.join(format!("edges_{}.parquet", args.relation1_name)),
+            root.join("metadata.json"),
+            root.join("nodes.parquet"),
+        ];
+        for path in files {
+            if let Ok(meta) = fs::metadata(&path) {
+                total += meta.len();
+            }
+        }
+        println!("Stats: total_bytes={}", total);
+    } else {
+        println!("Stats: total_bytes=n/a");
+    }
 }
 
 enum OutputTarget {

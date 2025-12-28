@@ -821,6 +821,7 @@ fn print_info(relations: &[EdgeRelationMetadata], reader: &ShardReader) {
 }
 
 fn show_node(relations: &[EdgeRelationMetadata], reader: &ShardReader, node: u64) -> Result<()> {
+    let start = std::time::Instant::now();
     let view = match reader.edges_for_node(node) {
         Ok(v) => v,
         Err(e) => {
@@ -872,6 +873,8 @@ fn show_node(relations: &[EdgeRelationMetadata], reader: &ShardReader, node: u64
             println!("  node_data: <error: {}>", e);
         }
     }
+    let elapsed = start.elapsed();
+    println!("  lookup: {:.3} ms", elapsed.as_secs_f64() * 1000.0);
     Ok(())
 }
 
