@@ -243,9 +243,10 @@ fn run_explore(source_str: &str, profile_enabled: bool) -> Result<()> {
         let bps = bytes_total as f64 / elapsed;
         let nps = nodes as f64 / elapsed;
         let eps = edges as f64 / elapsed;
+        let duration_display = format_duration_seconds(elapsed);
         println!(
-            "Load stats: {:.2}s, {}, {}/s, {} nodes/s, {} edges/s, {} (nodes+edges)/s",
-            elapsed,
+            "Load stats: {}, {}, {}/s, {} nodes/s, {} edges/s, {} (nodes+edges)/s",
+            duration_display,
             format_bytes(bytes_total),
             format_bytes(bps.round() as u64),
             format_number(nps.round() as u64),
@@ -755,7 +756,7 @@ fn build_from_local_parquet(
 
 fn repl(relations: &[EdgeRelationMetadata], reader: Arc<ShardReader>) -> Result<()> {
     let mut rl = DefaultEditor::new().context("init editor")?;
-    println!("Commands: info | node <id> | benchmark <threads> | quit");
+    println!("Commands: info | node <id> | benchmark <threads> [duration] | quit");
     loop {
         match rl.readline("explore> ") {
             Ok(line) => {
@@ -779,15 +780,41 @@ fn repl(relations: &[EdgeRelationMetadata], reader: Arc<ShardReader>) -> Result<
                     continue;
                 }
                 if let Some(rest) = trimmed.strip_prefix("benchmark ") {
-                    match rest.trim().parse::<usize>() {
-                        Ok(threads) if threads > 0 => {
-                            run_benchmark(reader.clone(), threads)?;
-                        }
-                        _ => println!("Invalid thread count: {rest}"),
+                    let mut parts = rest.split_whitespace();
+                    let Some(thread_part) = parts.next() else {
+                        println!("Invalid benchmark command: {rest}");
+                        continue;
+                    };
+                    let duration_part = parts.next();
+                    let extra = parts.next();
+                    if extra.is_some() {
+                        println!("Invalid benchmark command: {rest}");
+                        continue;
                     }
+                    let threads = match thread_part.parse::<usize>() {
+                        Ok(threads) if threads > 0 => threads,
+                        _ => {
+                            println!("Invalid thread count: {thread_part}");
+                            continue;
+                        }
+                    };
+                    let duration = if let Some(raw) = duration_part {
+                        match parse_duration(raw) {
+                            Some(d) => d,
+                            None => {
+                                println!("Invalid duration: {raw} (expected 30s or 5m)");
+                                continue;
+                            }
+                        }
+                    } else {
+                        std::time::Duration::from_secs(20)
+                    };
+                    run_benchmark(reader.clone(), threads, duration)?;
                     continue;
                 }
-                println!("Unknown command. Use: info | node <id> | benchmark <threads> | quit");
+                println!(
+                    "Unknown command. Use: info | node <id> | benchmark <threads> [duration] | quit"
+                );
             }
             Err(ReadlineError::Interrupted) | Err(ReadlineError::Eof) => break,
             Err(err) => return Err(err.into()),
@@ -886,13 +913,12 @@ fn show_node(relations: &[EdgeRelationMetadata], reader: &ShardReader, node: u64
     Ok(())
 }
 
-fn run_benchmark(reader: Arc<ShardReader>, threads: usize) -> Result<()> {
+fn run_benchmark(reader: Arc<ShardReader>, threads: usize, duration: std::time::Duration) -> Result<()> {
     let nodes = reader.header().nodes;
     if nodes == 0 {
         println!("Benchmark skipped: no nodes in shard.");
         return Ok(());
     }
-    let duration = std::time::Duration::from_secs(20);
     println!(
         "Benchmark: threads={}, duration={}s, nodes={}",
         threads, duration.as_secs(), nodes
@@ -1074,6 +1100,19 @@ fn run_benchmark(reader: Arc<ShardReader>, threads: usize) -> Result<()> {
     Ok(())
 }
 
+fn parse_duration(raw: &str) -> Option<std::time::Duration> {
+    if raw.len() < 2 {
+        return None;
+    }
+    let (value, suffix) = raw.split_at(raw.len() - 1);
+    let amount: u64 = value.parse().ok()?;
+    match suffix {
+        "s" => Some(std::time::Duration::from_secs(amount)),
+        "m" => Some(std::time::Duration::from_secs(amount.saturating_mul(60))),
+        _ => None,
+    }
+}
+
 fn percentile_ns(hist: &[u64], buckets_us: &[u64], pct: f64) -> u128 {
     let total: u64 = hist.iter().sum();
     if total == 0 {
@@ -1103,6 +1142,16 @@ fn format_duration_ns(ns: u128) -> String {
     } else {
         format!("{} ns", ns)
     }
+}
+
+fn format_duration_seconds(seconds: f64) -> String {
+    if seconds < 60.0 {
+        return format!("{:.2}s", seconds);
+    }
+    let total_secs = seconds.round() as u64;
+    let minutes = total_secs / 60;
+    let secs = total_secs % 60;
+    format!("{}m {}s", minutes, secs)
 }
 
 fn escape_ascii(bytes: &[u8]) -> String {

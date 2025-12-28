@@ -31,6 +31,7 @@ use rand::{rngs::StdRng, Rng, SeedableRng};
 use tokio::runtime::Runtime;
 use tracing::info;
 use std::env;
+use futures_util::StreamExt;
 
 #[path = "../progress.rs"]
 mod progress;
@@ -485,8 +486,21 @@ fn print_stats(args: &MassiveArgs, target: &OutputTarget, elapsed: std::time::Du
             println!("    {:<24} {}", name, format_bytes(size));
         }
     } else {
-        println!("  total_bytes: n/a");
-        println!("  files: n/a (remote)");
+        match list_remote_objects(target) {
+            Ok(mut entries) => {
+                entries.sort_by(|a, b| a.0.cmp(&b.0));
+                let total: u64 = entries.iter().map(|(_, size)| *size).sum();
+                println!("  total_bytes: {}", format_bytes(total));
+                println!("  files:");
+                for (name, size) in entries {
+                    println!("    {:<24} {}", name, format_bytes(size));
+                }
+            }
+            Err(err) => {
+                println!("  total_bytes: n/a");
+                println!("  files: n/a (remote; {err})");
+            }
+        }
     }
 }
 
@@ -797,6 +811,29 @@ impl OutputTarget {
             | OutputTarget::Adls { prefix, .. } => prefix.clone(),
         }
     }
+}
+
+fn list_remote_objects(target: &OutputTarget) -> Result<Vec<(String, u64)>> {
+    let (store, rt, prefix) = match target {
+        OutputTarget::S3 { store, rt, prefix, .. }
+        | OutputTarget::Gcs { store, rt, prefix, .. }
+        | OutputTarget::Adls { store, rt, prefix, .. } => (store, rt, prefix),
+        OutputTarget::Local { .. } => return Ok(Vec::new()),
+    };
+    let root = if prefix.is_empty() {
+        None
+    } else {
+        Some(ObjectPath::from(prefix.clone()))
+    };
+    rt.block_on(async {
+        let mut stream = store.list(root.as_ref());
+        let mut entries = Vec::new();
+        while let Some(res) = stream.next().await {
+            let meta = res?;
+            entries.push((meta.location.to_string(), meta.size as u64));
+        }
+        Ok(entries)
+    })
 }
 
 enum OutputSink {

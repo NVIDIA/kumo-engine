@@ -163,7 +163,7 @@ Profiling: `--profile [base]` writes `base.svg` and `base.pb` (defaults to `expl
 Commands inside the REPL:
 - `info` — print relation layouts and node count.
 - `node <id>` — show counts and a few edges per relation for the node.
-- `benchmark <threads>` — run a 20s random lookup benchmark across N threads, including edge + node data reads.
+- `benchmark <threads> [duration]` — run a 20s random lookup benchmark across N threads, including edge + node data reads (duration like `30s` or `5m`).
 - `quit` / `exit` / `Ctrl+D` — leave the explorer.
 
 Helper scripts wrap auth/env checks:
