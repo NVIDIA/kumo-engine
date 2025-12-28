@@ -3,6 +3,7 @@ use crate::layout::{
 };
 use anyhow::Result;
 use diskgraph_core::errors::DiskgraphError;
+use libc::madvise;
 use memmap2::Mmap;
 use std::fs::File;
 use std::path::Path;
@@ -35,6 +36,7 @@ impl ShardReader {
         let edges_file = File::open(&edges_path)?;
         let offsets = unsafe { Mmap::map(&offsets_file)? };
         let edges = unsafe { Mmap::map(&edges_file)? };
+        advise_random(&edges);
         let header: OffsetFileHeader =
             bincode::deserialize(&offsets[..std::mem::size_of::<OffsetFileHeader>()])
                 .map_err(|_| DiskgraphError::InvalidMetadata("invalid offsets header".into()))?;
@@ -79,6 +81,13 @@ impl ShardReader {
             layouts: self.layouts.clone(),
             has_node_data: self.has_node_data,
         })
+    }
+}
+
+fn advise_random(map: &Mmap) {
+    let ret = unsafe { madvise(map.as_ptr() as *mut libc::c_void, map.len(), libc::MADV_RANDOM) };
+    if ret != 0 {
+        let _ = std::io::Error::last_os_error();
     }
 }
 

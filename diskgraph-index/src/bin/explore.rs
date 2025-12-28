@@ -917,7 +917,9 @@ fn run_benchmark(reader: Arc<ShardReader>, threads: usize) -> Result<()> {
             let mut min_ns = u128::MAX;
             let mut max_ns = 0u128;
             let mut total_edges = 0u64;
+            let mut total_edge_bytes = 0u64;
             let mut total_node_data = 0u64;
+            let mut checksum = 0u64;
             let mut hist = vec![0u64; BUCKETS_US.len() + 1];
             while std::time::Instant::now() < end_time {
                 // LCG for speed; take high bits for distribution.
@@ -928,8 +930,17 @@ fn run_benchmark(reader: Arc<ShardReader>, threads: usize) -> Result<()> {
                 let elapsed_ns = start.elapsed().as_nanos();
                 if let Ok(view) = view {
                     if let Ok(segments) = view.relation_segments() {
-                        let edges_here: u64 = segments.iter().map(|s| s.count as u64).sum();
+                        let mut edges_here = 0u64;
+                        let mut edge_bytes_here = 0u64;
+                        for seg in &segments {
+                            edges_here += seg.count as u64;
+                            edge_bytes_here += seg.data.len() as u64;
+                            for &b in seg.data {
+                                checksum = checksum.wrapping_add(b as u64);
+                            }
+                        }
                         total_edges += edges_here;
+                        total_edge_bytes += edge_bytes_here;
                     } else {
                         errors += 1;
                     }
@@ -961,7 +972,18 @@ fn run_benchmark(reader: Arc<ShardReader>, threads: usize) -> Result<()> {
                 }
                 hist[bucket] += 1;
             }
-            (ops, errors, total_ns, min_ns, max_ns, total_edges, total_node_data, hist)
+            (
+                ops,
+                errors,
+                total_ns,
+                min_ns,
+                max_ns,
+                total_edges,
+                total_edge_bytes,
+                total_node_data,
+                checksum,
+                hist,
+            )
         }));
     }
 
@@ -971,10 +993,13 @@ fn run_benchmark(reader: Arc<ShardReader>, threads: usize) -> Result<()> {
     let mut min_ns = u128::MAX;
     let mut max_ns = 0u128;
     let mut total_edges = 0u64;
+    let mut total_edge_bytes = 0u64;
     let mut total_node_data = 0u64;
+    let mut checksum = 0u64;
     let mut hist = vec![0u64; BUCKETS_US.len() + 1];
     for handle in handles {
-        let (ops, errors, ns, min, max, edges, node_bytes, h) = handle.join().unwrap();
+        let (ops, errors, ns, min, max, edges, edge_bytes, node_bytes, chk, h) =
+            handle.join().unwrap();
         total_ops += ops;
         total_errors += errors;
         total_ns += ns;
@@ -985,7 +1010,9 @@ fn run_benchmark(reader: Arc<ShardReader>, threads: usize) -> Result<()> {
             max_ns = max;
         }
         total_edges += edges;
+        total_edge_bytes += edge_bytes;
         total_node_data += node_bytes;
+        checksum = checksum.wrapping_add(chk);
         for (i, v) in h.into_iter().enumerate() {
             hist[i] += v;
         }
@@ -1007,12 +1034,16 @@ fn run_benchmark(reader: Arc<ShardReader>, threads: usize) -> Result<()> {
         "  edges/s: {}",
         format_number((total_edges as f64 / elapsed).round() as u64)
     );
+    println!("  edge bytes: {}", format_bytes(total_edge_bytes));
+    let edge_bps = (total_edge_bytes as f64 / elapsed).round() as u64;
+    println!("  edge bytes/s: {}/s", format_bytes(edge_bps));
     println!("  node_data bytes: {}", format_bytes(total_node_data));
     let node_data_bps = (total_node_data as f64 / elapsed).round() as u64;
     println!(
         "  node_data bytes/s: {}/s",
         format_bytes(node_data_bps)
     );
+    println!("  checksum: {}", checksum);
     println!("  avg: {}", format_duration_ns(avg_ns as u128));
     if min_ns != u128::MAX {
         println!("  min: {}", format_duration_ns(min_ns));

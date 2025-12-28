@@ -11,6 +11,7 @@ rust-version.workspace = true
 [dependencies]
 anyhow = { workspace = true }
 bytes = { workspace = true }
+libc = "0.2"
 diskgraph-core = { path = "../diskgraph-core" }
 memmap2 = "0.9"
 parquet = { version = "57.1.0", features = ["arrow", "async", "object_store"] }

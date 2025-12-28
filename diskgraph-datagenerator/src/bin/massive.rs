@@ -155,6 +155,7 @@ fn main() -> Result<()> {
         args.node_data = false;
     }
     let mut progress = ProgressState::new();
+    let start = std::time::Instant::now();
     let target = OutputTarget::parse(&args)?;
     target.prepare()?;
 
@@ -217,7 +218,7 @@ fn main() -> Result<()> {
     )?;
 
     progress.finish("Done");
-    print_stats(&args, &target);
+    print_stats(&args, &target, start.elapsed());
     info!("Done. Output written to {}", target.display());
     Ok(())
 }
@@ -447,12 +448,13 @@ fn node_data_bytes(node_id: u64, bytes_per_node: usize) -> Vec<u8> {
     out
 }
 
-fn print_stats(args: &MassiveArgs, target: &OutputTarget) {
+fn print_stats(args: &MassiveArgs, target: &OutputTarget, elapsed: std::time::Duration) {
     println!("Stats:");
     println!("  nodes: {}", format_count(args.nodes));
     println!("  edges_per_relation: {}", format_count(args.edges_per_relation));
     println!("  relations: 2");
     println!("  node_data_bytes: {}", format_bytes(args.node_data_bytes as u64));
+    println!("  time: {:.2}s", elapsed.as_secs_f64());
     if let OutputTarget::Local { root } = target {
         let files = [
             root.join(format!("edges_{}.parquet", args.relation0_name)),

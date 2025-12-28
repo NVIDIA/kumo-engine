@@ -112,6 +112,7 @@ fn main() -> anyhow::Result<()> {
 }
 
 fn generate_dataset(cli: &Cli, scenario: ScenarioKind) -> anyhow::Result<()> {
+    let start = std::time::Instant::now();
     let name = scenario_dir_name(&scenario);
     let root = cli.output.join(name);
     fs::create_dir_all(&root)?;
@@ -144,7 +145,14 @@ fn generate_dataset(cli: &Cli, scenario: ScenarioKind) -> anyhow::Result<()> {
     let edge_rows = build_edge_shards(&edge_relations, &edge_counts, &shard_ranges_by_type);
     write_edges(&root, &mut edge_relations, edge_rows, cli.node_shards)?;
     write_metadata(&root, &node_types, &edge_relations)?;
-    print_stats(&root, &scenario, &node_types, &edge_counts, cli.node_data_bytes);
+    print_stats(
+        &root,
+        &scenario,
+        &node_types,
+        &edge_counts,
+        cli.node_data_bytes,
+        start.elapsed(),
+    );
     Ok(())
 }
 
@@ -588,6 +596,7 @@ fn print_stats(
     node_types: &[NodeTypeMetadata],
     edge_counts: &EdgeCountMap,
     node_data_bytes: usize,
+    elapsed: std::time::Duration,
 ) {
     let total_nodes: u64 = node_types
         .iter()
@@ -599,6 +608,7 @@ fn print_stats(
     println!("  edges: {}", format_count(total_edges));
     println!("  relations: {}", edge_counts.len());
     println!("  node_data_bytes: {}", format_bytes(node_data_bytes as u64));
+    println!("  time: {:.2}s", elapsed.as_secs_f64());
     if let Ok(bytes) = dir_size(root) {
         println!("  total_bytes: {}", format_bytes(bytes));
     }
