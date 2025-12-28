@@ -862,7 +862,33 @@ fn show_node(relations: &[EdgeRelationMetadata], reader: &ShardReader, node: u64
             println!("    first {} edges: {:?}", rows.len(), rows);
         }
     }
+    match view.node_data() {
+        Ok(Some(bytes)) => {
+            let escaped = escape_ascii(bytes);
+            println!("  node_data: \"{}\"", escaped);
+        }
+        Ok(None) => {}
+        Err(e) => {
+            println!("  node_data: <error: {}>", e);
+        }
+    }
     Ok(())
+}
+
+fn escape_ascii(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len());
+    for &b in bytes {
+        match b {
+            b'\\' => out.push_str("\\\\"),
+            b'"' => out.push_str("\\\""),
+            b'\n' => out.push_str("\\n"),
+            b'\r' => out.push_str("\\r"),
+            b'\t' => out.push_str("\\t"),
+            0x20..=0x7E => out.push(b as char),
+            _ => out.push_str(&format!("\\x{:02x}", b)),
+        }
+    }
+    out
 }
 
 fn parse_source(raw: &str) -> Result<Source> {

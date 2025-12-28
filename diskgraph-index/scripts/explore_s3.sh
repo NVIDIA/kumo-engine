@@ -4,9 +4,23 @@ set -euo pipefail
 # Explore a shard stored on S3 (expects metadata.json, offsets.bin, edges.bin under the prefix).
 # Pass s3://bucket/prefix as the first arg.
 
+PROFILE_ENABLED="false"
+while getopts "p" opt; do
+  case "${opt}" in
+    p)
+      PROFILE_ENABLED="true"
+      ;;
+    *)
+      echo "usage: $0 [-p] s3://bucket/prefix" >&2
+      exit 1
+      ;;
+  esac
+done
+shift $((OPTIND - 1))
+
 S3_URL="${1:-}"
 if [[ -z "${S3_URL}" ]]; then
-  echo "usage: $0 s3://bucket/prefix"
+  echo "usage: $0 [-p] s3://bucket/prefix" >&2
   exit 1
 fi
 
@@ -27,4 +41,8 @@ fi
 
 echo "Exploring S3 shard at ${S3_URL}"
 aws sts get-caller-identity >/dev/null
-AWS_ALLOW_HTTP=0 AWS_EC2_METADATA_DISABLED=1 cargo run -p diskgraph-index --bin explore -- "${S3_URL}"
+if [[ "${PROFILE_ENABLED}" == "true" ]]; then
+  AWS_ALLOW_HTTP=0 AWS_EC2_METADATA_DISABLED=1 cargo run -p diskgraph-index --bin explore --release -- --profile "explore-profile" "${S3_URL}"
+else
+  AWS_ALLOW_HTTP=0 AWS_EC2_METADATA_DISABLED=1 cargo run -p diskgraph-index --bin explore --release -- "${S3_URL}"
+fi
