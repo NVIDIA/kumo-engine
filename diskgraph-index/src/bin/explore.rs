@@ -244,10 +244,10 @@ fn run_explore(source_str: &str, profile_enabled: bool) -> Result<()> {
         let nps = nodes as f64 / elapsed;
         let eps = edges as f64 / elapsed;
         println!(
-            "Load stats: {:.2}s, {:.2} MB, {:.2} MB/s, {} nodes/s, {} edges/s, {} (nodes+edges)/s",
+            "Load stats: {:.2}s, {}, {}/s, {} nodes/s, {} edges/s, {} (nodes+edges)/s",
             elapsed,
-            bytes_total as f64 / (1024.0 * 1024.0),
-            bps / (1024.0 * 1024.0),
+            format_bytes(bytes_total),
+            format_bytes(bps.round() as u64),
             format_number(nps.round() as u64),
             format_number(eps.round() as u64),
             format_number(((nodes + edges) as f64 / elapsed).round() as u64),
