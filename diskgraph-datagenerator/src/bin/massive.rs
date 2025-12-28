@@ -146,6 +146,7 @@ fn main() -> Result<()> {
     let node_meta = NodeShardMetadata {
         min_id: 0,
         max_id: args.nodes.saturating_sub(1),
+        node_data_path: None,
     };
 
     let rel0_cfg = RelationConfig {
@@ -297,6 +298,7 @@ fn write_metadata(
     let node_meta = NodeTypeMetadata {
         name: node_type_name.into(),
         max_id: node.max_id.max(max_dst_id),
+        has_node_data: false,
         shards: vec![node],
     };
     let edge_relations = vec![

@@ -63,15 +63,27 @@ pub struct RelationLayout {
 pub struct EdgeListView<'a> {
     pub raw: &'a [u8],
     pub layouts: std::sync::Arc<Vec<RelationLayout>>,
+    pub has_node_data: bool,
 }
 
 impl<'a> EdgeListView<'a> {
     /// Returns the relation segments for this node. Each entry contains the
     /// edge count and raw slice for that relation's edges.
     pub fn relation_segments(&self) -> Result<Vec<RelationSegment<'a>>, std::io::Error> {
+        Ok(self.parse()?.0)
+    }
+
+    pub fn node_data(&self) -> Result<Option<&'a [u8]>, std::io::Error> {
+        Ok(self.parse()?.1)
+    }
+
+    fn parse(&self) -> Result<(Vec<RelationSegment<'a>>, Option<&'a [u8]>), std::io::Error> {
         if self.raw.is_empty() {
+            if self.has_node_data {
+                return Err(std::io::ErrorKind::InvalidData.into());
+            }
             // Node has no edges; return empty segments for each relation.
-            return Ok(self
+            let segments = self
                 .layouts
                 .iter()
                 .map(|layout| RelationSegment {
@@ -79,7 +91,8 @@ impl<'a> EdgeListView<'a> {
                     count: 0,
                     data: &[],
                 })
-                .collect());
+                .collect();
+            return Ok((segments, None));
         }
         let mut segments = Vec::with_capacity(self.layouts.len());
         // First read all counts up front (prefix) to allow quick validation.
@@ -92,6 +105,16 @@ impl<'a> EdgeListView<'a> {
                 .ok_or(std::io::ErrorKind::InvalidData)?;
             counts.push((layout.clone(), count));
         }
+        let node_data_len = if self.has_node_data {
+            if cursor + 2 > self.raw.len() {
+                return Err(std::io::ErrorKind::UnexpectedEof.into());
+            }
+            let len = u16::from_le_bytes([self.raw[cursor], self.raw[cursor + 1]]) as usize;
+            cursor += 2;
+            Some(len)
+        } else {
+            None
+        };
         // Now slice the data segments in the same order.
         for (layout, count) in counts {
             let bytes = count
@@ -111,7 +134,24 @@ impl<'a> EdgeListView<'a> {
             });
             cursor = end;
         }
-        Ok(segments)
+        let node_data = if let Some(len) = node_data_len {
+            let end = cursor
+                .checked_add(len)
+                .ok_or(std::io::ErrorKind::InvalidData)?;
+            if end > self.raw.len() {
+                return Err(std::io::ErrorKind::UnexpectedEof.into());
+            }
+            if end != self.raw.len() {
+                return Err(std::io::ErrorKind::InvalidData.into());
+            }
+            Some(&self.raw[cursor..end])
+        } else {
+            if cursor != self.raw.len() {
+                return Err(std::io::ErrorKind::InvalidData.into());
+            }
+            None
+        };
+        Ok((segments, node_data))
     }
 }
 

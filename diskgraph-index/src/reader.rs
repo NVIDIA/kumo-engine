@@ -24,10 +24,11 @@ pub struct ShardReader {
     chunks: Vec<OffsetChunk>,
     layouts: Arc<Vec<RelationLayout>>,
     edge_count: u64,
+    has_node_data: bool,
 }
 
 impl ShardReader {
-    pub fn open(dir: &Path, layouts: Arc<Vec<RelationLayout>>) -> Result<Self> {
+    pub fn open(dir: &Path, layouts: Arc<Vec<RelationLayout>>, has_node_data: bool) -> Result<Self> {
         let offsets_path = dir.join(OFFSETS_FILENAME);
         let edges_path = dir.join(EDGES_FILENAME);
         let offsets_file = File::open(&offsets_path)?;
@@ -46,6 +47,7 @@ impl ShardReader {
             chunks,
             layouts,
             edge_count,
+            has_node_data,
         })
     }
 
@@ -75,6 +77,7 @@ impl ShardReader {
         Ok(EdgeListView {
             raw,
             layouts: self.layouts.clone(),
+            has_node_data: self.has_node_data,
         })
     }
 }

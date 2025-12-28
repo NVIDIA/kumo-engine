@@ -256,7 +256,12 @@ fn run_explore(source_str: &str, profile_enabled: bool) -> Result<()> {
     };
     let elapsed = load_start.elapsed().as_secs_f64();
     let (layouts, _node_types) = relation_layouts(&metadata)?;
-    let reader = ShardReader::open(&shard_dir, layouts.clone()).context("open shard reader")?;
+    let reader = ShardReader::open(
+        &shard_dir,
+        layouts.clone(),
+        metadata.node_types.first().map(|n| n.has_node_data).unwrap_or(false),
+    )
+    .context("open shard reader")?;
 
     println!("Loaded shard from {}", source_str);
     if elapsed > 0.0 {
@@ -429,6 +434,31 @@ fn build_from_remote(
         }
     };
 
+    let node_data_source = if metadata
+        .node_types
+        .first()
+        .map(|n| n.has_node_data)
+        .unwrap_or(false)
+    {
+        let shard = metadata
+            .node_types
+            .first()
+            .and_then(|n| n.shards.get(0))
+            .ok_or_else(|| anyhow!("no node shard found for node data"))?;
+        let path = shard
+            .node_data_path
+            .clone()
+            .ok_or_else(|| anyhow!("node data path missing in metadata"))?;
+        let key = if prefix.is_empty() {
+            path
+        } else {
+            format!("{}/{}", prefix.trim_end_matches('/'), path)
+        };
+        Some(make_source(key)?)
+    } else {
+        None
+    };
+
     // Build using streaming Parquet sources (first shard per relation).
     let edge_inputs: Vec<EdgeShardInput> = metadata
         .edge_relations
@@ -459,6 +489,7 @@ fn build_from_remote(
         node_types: metadata.node_types.clone(),
         relation_metas: metadata.edge_relations.clone(),
         shard_index: 0,
+        node_data: node_data_source,
     };
     let builder = ShardBuilder::new(params);
     let total_nodes = shard_node_count(&metadata);
@@ -695,6 +726,26 @@ fn build_from_local_parquet(
     }
     fs::create_dir_all(&cache_dir)?;
 
+    let node_data_source = if metadata
+        .node_types
+        .first()
+        .map(|n| n.has_node_data)
+        .unwrap_or(false)
+    {
+        let shard = metadata
+            .node_types
+            .first()
+            .and_then(|n| n.shards.get(0))
+            .ok_or_else(|| anyhow!("no node shard found for node data"))?;
+        let path = shard
+            .node_data_path
+            .clone()
+            .ok_or_else(|| anyhow!("node data path missing in metadata"))?;
+        Some(ParquetSource::LocalFile(source.join(&path)))
+    } else {
+        None
+    };
+
     let edge_inputs: Vec<EdgeShardInput> = metadata
         .edge_relations
         .iter()
@@ -719,6 +770,7 @@ fn build_from_local_parquet(
         node_types: metadata.node_types.clone(),
         relation_metas: metadata.edge_relations.clone(),
         shard_index: 0,
+        node_data: node_data_source,
     };
     let builder = ShardBuilder::new(params);
     let total_nodes = shard_node_count(&metadata);

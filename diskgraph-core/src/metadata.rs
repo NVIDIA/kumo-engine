@@ -7,6 +7,8 @@ use serde_with::serde_as;
 pub struct NodeShardMetadata {
     pub min_id: u64,
     pub max_id: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_data_path: Option<String>,
 }
 
 /// Node type definition pulled from metadata.json.
@@ -15,6 +17,8 @@ pub struct NodeTypeMetadata {
     pub name: String,
     /// Maximum node id observed for the type.
     pub max_id: u64,
+    #[serde(default)]
+    pub has_node_data: bool,
     /// Contiguous ID ranges for node shards.
     pub shards: Vec<NodeShardMetadata>,
 }

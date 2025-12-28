@@ -12,6 +12,7 @@ pub(crate) fn truncate_counts(
     layouts: &[RelationLayout],
     current_offset: u64,
     prev_offset: u64,
+    extra_bytes: u64,
 ) -> Result<(), IndexBuildError> {
     let base_span = current_offset
         .checked_sub(prev_offset)
@@ -23,7 +24,9 @@ pub(crate) fn truncate_counts(
     let entry_bytes: Vec<u64> = layouts.iter().map(|l| l.entry_bytes as u64).collect();
 
     loop {
-        let node_bytes = EdgeWriter::node_length_bytes(layouts, counts)?;
+        let node_bytes = EdgeWriter::node_length_bytes(layouts, counts)?
+            .checked_add(extra_bytes)
+            .ok_or(IndexBuildError::CountOverflow)?;
         if node_bytes <= budget {
             // Apply truncations to buckets and propagate counts.
             for (idx, target) in counts.iter().enumerate() {

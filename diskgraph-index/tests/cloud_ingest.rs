@@ -65,9 +65,11 @@ fn node_meta(name: &str, max_id: u64) -> diskgraph_core::metadata::NodeTypeMetad
     diskgraph_core::metadata::NodeTypeMetadata {
         name: name.into(),
         max_id,
+        has_node_data: false,
         shards: vec![diskgraph_core::metadata::NodeShardMetadata {
             min_id: 0,
             max_id,
+            node_data_path: None,
         }],
     }
 }
@@ -429,6 +431,7 @@ fn s3_ingest_round_trip() {
         node_types: vec![node_meta.clone()],
         relation_metas: vec![follows_meta.clone(), blocks_meta.clone()],
         shard_index: 0,
+        node_data: None,
     });
     let built = builder
         .build(&[
@@ -465,7 +468,7 @@ fn s3_ingest_round_trip() {
         ])
         .expect("S3 build");
 
-    let reader = ShardReader::open(&out, built.layouts.clone()).unwrap();
+    let reader = ShardReader::open(&out, built.layouts.clone(), false).unwrap();
     let decoded_follows = decode_relation(&reader, 0, 0);
     assert_eq!(
         decoded_follows,
@@ -520,6 +523,7 @@ fn gcs_ingest_round_trip() {
         node_types: vec![node_meta.clone()],
         relation_metas: vec![relation_follows.clone(), relation_blocks.clone()],
         shard_index: 0,
+        node_data: None,
     });
     let built = builder
         .build(&[
@@ -552,7 +556,7 @@ fn gcs_ingest_round_trip() {
         ])
         .expect("GCS build");
 
-    let reader = ShardReader::open(&out, built.layouts.clone()).unwrap();
+    let reader = ShardReader::open(&out, built.layouts.clone(), false).unwrap();
     let decoded_follows = decode_relation(&reader, 5, 0);
     assert_eq!(
         decoded_follows,
@@ -621,6 +625,7 @@ fn adls_ingest_round_trip() {
         node_types: vec![node_meta.clone()],
         relation_metas: vec![follows_meta.clone(), blocks_meta.clone()],
         shard_index: 0,
+        node_data: None,
     });
     let built = builder
         .build(&[
@@ -663,7 +668,7 @@ fn adls_ingest_round_trip() {
         ])
         .expect("ADLS build");
 
-    let reader = ShardReader::open(&out, built.layouts.clone()).unwrap();
+    let reader = ShardReader::open(&out, built.layouts.clone(), false).unwrap();
     let decoded_follows = decode_relation(&reader, 2, 0);
     assert_eq!(
         decoded_follows,

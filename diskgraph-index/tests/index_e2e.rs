@@ -2,7 +2,7 @@ use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 
-use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
+use arrow_array::{ArrayRef, BinaryArray, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use diskgraph_core::metadata::{EdgeRelationMetadata, NodeShardMetadata, NodeTypeMetadata};
 use diskgraph_index::{
@@ -58,6 +58,7 @@ fn build_and_read_round_trip_basic() {
         node_types: vec![node_meta.clone()],
         relation_metas: vec![relation_meta.clone()],
         shard_index: 0,
+        node_data: None,
     });
     let built = builder
         .build(
@@ -70,7 +71,7 @@ fn build_and_read_round_trip_basic() {
         )
         .unwrap();
 
-    let reader = ShardReader::open(&output_dir, built.layouts.clone()).unwrap();
+    let reader = ShardReader::open(&output_dir, built.layouts.clone(), false).unwrap();
     let header = reader.header();
     assert_eq!(header.nodes, 13);
     assert_eq!(header.total_offsets, 14);
@@ -100,6 +101,7 @@ fn build_handles_all_zero_edges() {
         node_types: vec![node_meta.clone()],
         relation_metas: vec![relation_meta.clone()],
         shard_index: 0,
+        node_data: None,
     });
     let built = builder
         .build(
@@ -107,7 +109,7 @@ fn build_handles_all_zero_edges() {
         )
         .unwrap();
 
-    let reader = ShardReader::open(&output_dir, built.layouts.clone()).unwrap();
+    let reader = ShardReader::open(&output_dir, built.layouts.clone(), false).unwrap();
 
     for node in 0..=1 {
         let seg = decode_relation(&reader, node, 0);
@@ -139,6 +141,7 @@ fn build_rejects_dangling_edges() {
         node_types: vec![node_meta.clone()],
         relation_metas: vec![relation_meta.clone()],
         shard_index: 0,
+        node_data: None,
     });
     let msg = match builder.build(
         &[EdgeShardInput {
@@ -189,6 +192,7 @@ fn build_rejects_edge_ordering_violation() {
         node_types: vec![node_meta.clone()],
         relation_metas: vec![relation_meta.clone()],
         shard_index: 0,
+        node_data: None,
     });
     let msg = match builder.build(
         &[EdgeShardInput {
@@ -259,6 +263,7 @@ fn offsets_span_multiple_chunks_and_edges_decode_correctly() {
         node_types: vec![node_meta.clone()],
         relation_metas: vec![relation_meta.clone()],
         shard_index: 0,
+        node_data: None,
     });
     let built = builder
         .build(
@@ -270,7 +275,7 @@ fn offsets_span_multiple_chunks_and_edges_decode_correctly() {
             }],
         )
         .unwrap();
-    let reader = ShardReader::open(&output_dir, built.layouts.clone()).unwrap();
+    let reader = ShardReader::open(&output_dir, built.layouts.clone(), false).unwrap();
 
     // Nodes with edges.
     assert_eq!(decode_relation(&reader, 0, 0), vec![(10, None), (11, None)]);
@@ -323,6 +328,7 @@ fn sort_key_round_trip_decodes_correctly() {
         node_types: vec![node_meta.clone()],
         relation_metas: vec![relation_meta.clone()],
         shard_index: 0,
+        node_data: None,
     });
     let built = builder
         .build(
@@ -334,7 +340,7 @@ fn sort_key_round_trip_decodes_correctly() {
             }],
         )
         .unwrap();
-    let reader = ShardReader::open(&output_dir, built.layouts.clone()).unwrap();
+    let reader = ShardReader::open(&output_dir, built.layouts.clone(), false).unwrap();
 
     assert_eq!(
         decode_relation(&reader, 0, 0),
@@ -393,6 +399,7 @@ fn multi_relation_counts_and_edges_decode_correctly() {
         node_types: vec![node_meta.clone()],
         relation_metas: vec![follows.clone(), temporal.clone()],
         shard_index: 0,
+        node_data: None,
     });
     let built = builder
         .build(
@@ -412,7 +419,7 @@ fn multi_relation_counts_and_edges_decode_correctly() {
             ],
         )
         .unwrap();
-    let reader = ShardReader::open(&output_dir, built.layouts.clone()).unwrap();
+    let reader = ShardReader::open(&output_dir, built.layouts.clone(), false).unwrap();
 
     // Relation order: Follows (idx 0), Temporal (idx 1).
     assert_eq!(decode_relation(&reader, 0, 0), vec![(10, None)]);
@@ -476,6 +483,7 @@ fn multi_relation_mixed_dst_widths_and_partial_edges() {
         node_types: vec![node_meta.clone()],
         relation_metas: vec![follows.clone(), temporal.clone()],
         shard_index: 0,
+        node_data: None,
     });
     let built = builder
         .build(
@@ -495,7 +503,7 @@ fn multi_relation_mixed_dst_widths_and_partial_edges() {
             ],
         )
         .unwrap();
-    let reader = ShardReader::open(&output_dir, built.layouts.clone()).unwrap();
+    let reader = ShardReader::open(&output_dir, built.layouts.clone(), false).unwrap();
 
     // Node 0: edges in both relations; relation B should be sorted by sort key desc.
     assert_eq!(decode_relation(&reader, 0, 0), vec![(3, None)]);
@@ -541,6 +549,7 @@ fn truncates_large_node_without_sort_key() {
         node_types: vec![node_meta.clone()],
         relation_metas: vec![relation_meta.clone()],
         shard_index: 0,
+        node_data: None,
     });
     let built = builder
         .build(
@@ -552,7 +561,7 @@ fn truncates_large_node_without_sort_key() {
             }],
         )
         .unwrap();
-    let reader = ShardReader::open(&output_dir, built.layouts.clone()).unwrap();
+    let reader = ShardReader::open(&output_dir, built.layouts.clone(), false).unwrap();
     let segments0 = reader
         .edges_for_node(0)
         .unwrap()
@@ -618,6 +627,7 @@ fn truncates_large_node_with_sort_key() {
         node_types: vec![node_meta.clone()],
         relation_metas: vec![relation_meta.clone()],
         shard_index: 0,
+        node_data: None,
     });
     let built = builder
         .build(
@@ -629,7 +639,7 @@ fn truncates_large_node_with_sort_key() {
             }],
         )
         .unwrap();
-    let reader = ShardReader::open(&output_dir, built.layouts.clone()).unwrap();
+    let reader = ShardReader::open(&output_dir, built.layouts.clone(), false).unwrap();
     let segments0 = reader
         .edges_for_node(0)
         .unwrap()
@@ -686,6 +696,7 @@ fn caps_relation_edge_count_at_varint_limit() {
         node_types: vec![node_meta.clone()],
         relation_metas: vec![relation_meta.clone()],
         shard_index: 0,
+        node_data: None,
     });
     let built = builder
         .build(
@@ -704,7 +715,7 @@ fn caps_relation_edge_count_at_varint_limit() {
     assert_eq!(built.build_stats.truncated_edges_total, truncated);
     assert_eq!(built.build_stats.truncated_edges_per_relation[0], truncated);
 
-    let reader = ShardReader::open(&output_dir, built.layouts.clone()).unwrap();
+    let reader = ShardReader::open(&output_dir, built.layouts.clone(), false).unwrap();
     let segments = reader
         .edges_for_node(0)
         .unwrap()
@@ -733,7 +744,7 @@ fn reader_rejects_invalid_header() {
     let layouts = vec![relation_meta("Follows", "User", "User", None)];
     let node_types = vec![node_meta("User", 0)];
     let layouts = relation_layouts(layouts, node_types);
-    let reader = ShardReader::open(dir.path(), layouts).unwrap();
+    let reader = ShardReader::open(dir.path(), layouts, false).unwrap();
     let msg = match reader.edges_for_node(0) {
         Ok(_) => panic!("expected offset chunk error"),
         Err(err) => err.to_string(),
@@ -759,7 +770,7 @@ fn reader_rejects_offsets_out_of_bounds() {
     bytes[base_pos..base_pos + 8].copy_from_slice(&1_000_000u64.to_le_bytes());
     fs::write(&offsets_path, bytes).unwrap();
 
-    let reader = ShardReader::open(&output_dir, layouts).unwrap();
+    let reader = ShardReader::open(&output_dir, layouts, false).unwrap();
     let msg = match reader.edges_for_node(0) {
         Ok(_) => panic!("expected offset bounds error"),
         Err(err) => err.to_string(),
@@ -773,7 +784,7 @@ fn reader_rejects_offsets_out_of_bounds() {
 #[test]
 fn reader_rejects_node_index_out_of_range() {
     let (_tmp, output_dir, layouts) = build_simple_shard(&[0], &[]);
-    let reader = ShardReader::open(&output_dir, layouts).unwrap();
+    let reader = ShardReader::open(&output_dir, layouts, false).unwrap();
     let msg = match reader.edges_for_node(10) {
         Ok(_) => panic!("expected node index out of range"),
         Err(err) => err.to_string(),
@@ -794,7 +805,7 @@ fn reader_rejects_offset_chunk_mismatch() {
     bytes[header_len] = 10;
     bytes[header_len + 1] = 0;
     fs::write(&offsets_path, bytes).unwrap();
-    let reader = ShardReader::open(&output_dir, layouts).unwrap();
+    let reader = ShardReader::open(&output_dir, layouts, false).unwrap();
     let msg = match reader.edges_for_node(5) {
         Ok(_) => panic!("expected offset chunk mismatch"),
         Err(err) => err.to_string(),
@@ -823,7 +834,7 @@ fn reader_rejects_truncated_edge_counts() {
     bytes.clear();
     bytes.push(0x80); // varint with continuation but no following byte
     fs::write(&edges_path, bytes).unwrap();
-    let reader = ShardReader::open(&output_dir, layouts).unwrap();
+    let reader = ShardReader::open(&output_dir, layouts, false).unwrap();
     let msg = match reader.edges_for_node(0) {
         Ok(view) => match view.relation_segments() {
             Ok(_) => panic!("expected relation_segments error"),
@@ -871,6 +882,7 @@ fn offsets_many_chunks_sparse_edges() {
         node_types: vec![node_meta.clone()],
         relation_metas: vec![relation_meta.clone()],
         shard_index: 0,
+        node_data: None,
     });
     let built = builder
         .build(
@@ -882,7 +894,7 @@ fn offsets_many_chunks_sparse_edges() {
             }],
         )
         .unwrap();
-    let reader = ShardReader::open(&output_dir, built.layouts.clone()).unwrap();
+    let reader = ShardReader::open(&output_dir, built.layouts.clone(), false).unwrap();
     assert_eq!(decode_relation(&reader, 0, 0), vec![(123, None)]);
     assert!(decode_relation(&reader, 1, 0).is_empty());
     assert_eq!(decode_relation(&reader, 4999, 0), vec![(321, None)]);
@@ -935,9 +947,11 @@ fn truncates_large_node_multi_relation() {
     let node_meta = NodeTypeMetadata {
         name: "User".into(),
         max_id: u64::MAX - 1,
+        has_node_data: false,
         shards: vec![NodeShardMetadata {
             min_id: 0,
             max_id: 1,
+            node_data_path: None,
         }],
     };
     let follows = relation_meta("Follows", "User", "User", None);
@@ -949,6 +963,7 @@ fn truncates_large_node_multi_relation() {
         node_types: vec![node_meta.clone()],
         relation_metas: vec![follows.clone(), temporal.clone()],
         shard_index: 0,
+        node_data: None,
     });
     let built = builder
         .build(
@@ -968,7 +983,7 @@ fn truncates_large_node_multi_relation() {
             ],
         )
         .unwrap();
-    let reader = ShardReader::open(&output_dir, built.layouts.clone()).unwrap();
+    let reader = ShardReader::open(&output_dir, built.layouts.clone(), false).unwrap();
     let segments = reader
         .edges_for_node(0)
         .unwrap()
@@ -1016,6 +1031,7 @@ fn builder_errors_when_edge_columns_missing() {
         node_types: vec![node_meta.clone()],
         relation_metas: vec![relation_meta.clone()],
         shard_index: 0,
+        node_data: None,
     });
     let msg = match builder.build(
         &[EdgeShardInput {
@@ -1048,6 +1064,7 @@ fn builder_errors_when_edge_column_wrong_type() {
         node_types: vec![node_meta.clone()],
         relation_metas: vec![relation_meta.clone()],
         shard_index: 0,
+        node_data: None,
     });
     let msg = match builder.build(
         &[EdgeShardInput {
@@ -1090,6 +1107,7 @@ fn builder_errors_when_dst_id_exceeds_mask() {
         node_types: vec![node_meta.clone()],
         relation_metas: vec![relation_meta.clone()],
         shard_index: 0,
+        node_data: None,
     });
     let msg = match builder.build(
         &[EdgeShardInput {
@@ -1132,6 +1150,7 @@ fn builder_errors_when_dest_sort_key_exceeds_mask() {
         node_types: vec![node_meta.clone()],
         relation_metas: vec![relation_meta.clone()],
         shard_index: 0,
+        node_data: None,
     });
     let msg = match builder.build(
         &[EdgeShardInput {
@@ -1173,6 +1192,7 @@ fn builder_errors_on_unknown_relation_name() {
         node_types: vec![node_meta.clone()],
         relation_metas: vec![relation_meta.clone()],
         shard_index: 0,
+        node_data: None,
     });
     let msg = match builder.build(
         &[EdgeShardInput {
@@ -1206,6 +1226,7 @@ fn builder_errors_on_corrupted_parquet() {
         node_types: vec![node_meta.clone()],
         relation_metas: vec![relation_meta.clone()],
         shard_index: 0,
+        node_data: None,
     });
     let msg = match builder.build(
         &[EdgeShardInput {
@@ -1247,6 +1268,7 @@ fn builder_errors_on_shard_index_mismatch() {
         node_types: vec![node_meta.clone()],
         relation_metas: vec![relation_meta.clone()],
         shard_index: 0,
+        node_data: None,
     });
     let msg = match builder.build(
         &[EdgeShardInput {
@@ -1276,6 +1298,7 @@ fn builder_fails_on_missing_edge_file() {
         node_types: vec![node_meta.clone()],
         relation_metas: vec![relation_meta.clone()],
         shard_index: 0,
+        node_data: None,
     });
     let msg = match builder.build(
         &[EdgeShardInput {
@@ -1298,9 +1321,11 @@ fn node_meta(name: &str, max_id: u64) -> NodeTypeMetadata {
     NodeTypeMetadata {
         name: name.into(),
         max_id,
+        has_node_data: false,
         shards: vec![NodeShardMetadata {
             min_id: 0,
             max_id,
+            node_data_path: None,
         }],
     }
 }
@@ -1344,6 +1369,13 @@ pub fn write_edges(path: &Path, edges: &[EdgeRow], with_sort_key: bool) -> anyho
         cols.push(Arc::new(Int64Array::from(dsk)) as ArrayRef);
     }
     let batch = RecordBatch::try_new(Arc::new(schema.clone()), cols)?;
+    write_parquet(path, &schema, &[batch])
+}
+
+pub fn write_node_data(path: &Path, rows: &[Vec<u8>]) -> anyhow::Result<()> {
+    let schema = Schema::new(vec![Field::new("data", DataType::Binary, false)]);
+    let data = BinaryArray::from_iter_values(rows.iter().map(|v| v.as_slice()));
+    let batch = RecordBatch::try_new(Arc::new(schema.clone()), vec![Arc::new(data)])?;
     write_parquet(path, &schema, &[batch])
 }
 
@@ -1422,6 +1454,7 @@ fn build_simple_shard(
         node_types: vec![node_meta.clone()],
         relation_metas: vec![relation_meta.clone()],
         shard_index: 0,
+        node_data: None,
     });
     let built = builder
         .build(
@@ -1434,6 +1467,113 @@ fn build_simple_shard(
         )
         .unwrap();
     (dir, output_dir, built.layouts.clone())
+}
+
+#[test]
+fn builder_writes_node_data() {
+    let dir = tempdir().unwrap();
+    let edge_path = dir.path().join("edges.parquet");
+    let edges = vec![
+        EdgeRow {
+            src: 0,
+            dst: 1,
+            dest_sort_key: None,
+        },
+        EdgeRow {
+            src: 1,
+            dst: 2,
+            dest_sort_key: None,
+        },
+    ];
+    write_edges(&edge_path, &edges, false).unwrap();
+    let node_data_path = dir.path().join("nodes.parquet");
+    let node_data = vec![vec![1, 2], vec![3], vec![]];
+    write_node_data(&node_data_path, &node_data).unwrap();
+
+    let node_meta = NodeTypeMetadata {
+        name: "User".into(),
+        max_id: 2,
+        has_node_data: true,
+        shards: vec![NodeShardMetadata {
+            min_id: 0,
+            max_id: 2,
+            node_data_path: Some("nodes.parquet".into()),
+        }],
+    };
+    let relation_meta = relation_meta("Follows", "User", "User", None);
+    let output_dir = dir.path().join("out");
+    let builder = ShardBuilder::new(ShardBuildParams {
+        output_dir: output_dir.clone(),
+        node_meta: node_meta.clone(),
+        node_types: vec![node_meta.clone()],
+        relation_metas: vec![relation_meta.clone()],
+        shard_index: 0,
+        node_data: Some(ParquetSource::LocalFile(node_data_path)),
+    });
+    let built = builder
+        .build(
+            &[EdgeShardInput {
+                relation: "Follows".into(),
+                source_shard_index: 0,
+                parquet: ParquetSource::LocalFile(edge_path),
+                has_dest_sort_key: false,
+            }],
+        )
+        .unwrap();
+
+    let reader = ShardReader::open(&output_dir, built.layouts.clone(), true).unwrap();
+    let data0 = reader.edges_for_node(0).unwrap().node_data().unwrap().unwrap();
+    let data1 = reader.edges_for_node(1).unwrap().node_data().unwrap().unwrap();
+    let data2 = reader.edges_for_node(2).unwrap().node_data().unwrap().unwrap();
+    assert_eq!(data0, &[1, 2]);
+    assert_eq!(data1, &[3]);
+    assert!(data2.is_empty());
+}
+
+#[test]
+fn builder_errors_on_node_data_row_count_mismatch() {
+    let dir = tempdir().unwrap();
+    let edge_path = dir.path().join("edges.parquet");
+    write_edges(&edge_path, &[], false).unwrap();
+    let node_data_path = dir.path().join("nodes.parquet");
+    let node_data = vec![vec![1], vec![2]]; // should be 3 rows
+    write_node_data(&node_data_path, &node_data).unwrap();
+
+    let node_meta = NodeTypeMetadata {
+        name: "User".into(),
+        max_id: 2,
+        has_node_data: true,
+        shards: vec![NodeShardMetadata {
+            min_id: 0,
+            max_id: 2,
+            node_data_path: Some("nodes.parquet".into()),
+        }],
+    };
+    let relation_meta = relation_meta("Follows", "User", "User", None);
+    let output_dir = dir.path().join("out");
+    let builder = ShardBuilder::new(ShardBuildParams {
+        output_dir: output_dir.clone(),
+        node_meta: node_meta.clone(),
+        node_types: vec![node_meta.clone()],
+        relation_metas: vec![relation_meta.clone()],
+        shard_index: 0,
+        node_data: Some(ParquetSource::LocalFile(node_data_path)),
+    });
+    let msg = match builder.build(
+        &[EdgeShardInput {
+            relation: "Follows".into(),
+            source_shard_index: 0,
+            parquet: ParquetSource::LocalFile(edge_path),
+            has_dest_sort_key: false,
+        }],
+    ) {
+        Ok(_) => panic!("expected node data row count error"),
+        Err(err) => err.to_string(),
+    };
+    assert!(
+        msg.to_lowercase().contains("node data row count"),
+        "expected node data row count error, got {msg}"
+    );
 }
 
 

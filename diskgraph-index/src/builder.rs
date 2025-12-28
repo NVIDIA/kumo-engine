@@ -4,8 +4,8 @@ use crate::layout::{
 use crate::streaming::{EdgeShardInput, ParquetSource};
 use crate::truncate::truncate_counts;
 use anyhow::Result;
-use arrow_array::Int64Array;
-use arrow_schema::SchemaRef;
+use arrow_array::{BinaryArray, Int64Array};
+use arrow_schema::{DataType, SchemaRef};
 use bytes::Bytes;
 use diskgraph_core::metadata::{EdgeRelationMetadata, NodeTypeMetadata};
 use futures::{future::BoxFuture, StreamExt};
@@ -211,16 +211,22 @@ pub fn cleanup_parquet_cache(parquet_root: &Path) -> Result<()> {
 fn localize_edge_inputs(
     rt: &Runtime,
     edge_shards: &[EdgeShardInput],
+    node_data: Option<&ParquetSource>,
     download_root: &Path,
     progress: Option<&dyn ProgressSink>,
-) -> Result<(Vec<EdgeShardInput>, Option<PathBuf>)> {
+) -> Result<(Vec<EdgeShardInput>, Option<PathBuf>, Option<ParquetSource>)> {
     let mut localized = Vec::with_capacity(edge_shards.len());
     let mut used_remote = false;
     let opts = ParquetDownloadOptions::default();
-    let total_remote = edge_shards
+    let mut total_remote = edge_shards
         .iter()
         .filter(|e| !matches!(e.parquet, ParquetSource::LocalFile(_)))
         .count();
+    if let Some(source) = node_data {
+        if !matches!(source, ParquetSource::LocalFile(_)) {
+            total_remote += 1;
+        }
+    }
     let mut remote_index = 0usize;
     for edge in edge_shards {
         match &edge.parquet {
@@ -228,154 +234,92 @@ fn localize_edge_inputs(
             ParquetSource::S3(cfg) => {
                 used_remote = true;
                 remote_index += 1;
-                let s3 = build_s3_client(FsS3Config {
-                    bucket: cfg.bucket.clone(),
-                    region: cfg.region.clone(),
-                    endpoint: cfg.endpoint.clone(),
-                    allow_http: cfg
-                        .endpoint
-                        .as_deref()
-                        .map(|e| e.starts_with("http://")),
-                    virtual_hosted: cfg.virtual_hosted_style_request,
-                    profile: None,
-                    access_key_id: cfg.access_key_id.clone(),
-                    secret_access_key: cfg.secret_access_key.clone(),
-                    session_token: cfg.session_token.clone(),
-                })
-                .map_err(|e| IndexBuildError::ObjectStore(e.to_string()))?;
-                let store = s3.store.clone();
-                let local_path = download_root
-                    .join("s3")
-                    .join(&cfg.bucket)
-                    .join(&cfg.key);
                 let stage = BuildStage::Download {
                     file: Arc::from(cfg.key.as_str()),
                     index: remote_index,
                     total: total_remote,
                 };
-                download_parquet_to_local(
+                let localized_parquet = localize_parquet_source(
                     rt,
-                    &store,
-                    &cfg.key,
-                    &local_path,
-                    &opts,
+                    &edge.parquet,
+                    download_root,
                     progress,
                     Some(stage),
+                    "edges",
+                    &opts,
                 )?;
                 let mut localized_edge = edge.clone();
-                localized_edge.parquet = ParquetSource::LocalFile(local_path);
+                localized_edge.parquet = localized_parquet;
                 localized.push(localized_edge);
             }
             ParquetSource::Gcs(cfg) => {
                 used_remote = true;
                 remote_index += 1;
-                let local_path = download_root
-                    .join("gcs")
-                    .join(&cfg.bucket)
-                    .join(&cfg.key);
-                if let Some(endpoint) = &cfg.endpoint {
-                    if endpoint.starts_with("http") {
-                        download_gcs_emulator(
-                            rt,
-                            cfg,
-                            &local_path,
-                            progress,
-                            remote_index,
-                            total_remote,
-                        )?;
-                    } else {
-                        let stage = BuildStage::Download {
-                            file: Arc::from(cfg.key.as_str()),
-                            index: remote_index,
-                            total: total_remote,
-                        };
-                        download_gcs_store(
-                            rt,
-                            cfg,
-                            &local_path,
-                            &opts,
-                            progress,
-                            Some(stage),
-                        )?;
-                    }
-                } else {
-                    let stage = BuildStage::Download {
-                        file: Arc::from(cfg.key.as_str()),
-                        index: remote_index,
-                        total: total_remote,
-                    };
-                    download_gcs_store(
-                        rt,
-                        cfg,
-                        &local_path,
-                        &opts,
-                        progress,
-                        Some(stage),
-                    )?;
-                }
-                let mut localized_edge = edge.clone();
-                localized_edge.parquet = ParquetSource::LocalFile(local_path);
-                localized.push(localized_edge);
-            }
-            ParquetSource::Adls(cfg) => {
-                used_remote = true;
-                remote_index += 1;
-                let mut builder = MicrosoftAzureBuilder::new()
-                    .with_account(&cfg.account)
-                    .with_container_name(&cfg.container);
-                if let Some(endpoint) = &cfg.endpoint {
-                    builder = builder.with_endpoint(endpoint.to_string());
-                }
-                if let Some(access_key) = &cfg.access_key {
-                    builder = builder.with_access_key(access_key);
-                }
-                if let Some(sas) = &cfg.sas_key {
-                    builder = builder.with_config(AzureConfigKey::SasKey, sas);
-                }
-                if let Some(bearer) = &cfg.bearer_token {
-                    builder = builder.with_bearer_token_authorization(bearer);
-                }
-                if let Some(client_id) = &cfg.client_id {
-                    builder = builder.with_client_id(client_id);
-                }
-                if let Some(client_secret) = &cfg.client_secret {
-                    builder = builder.with_client_secret(client_secret);
-                }
-                if let Some(tenant_id) = &cfg.tenant_id {
-                    builder = builder.with_tenant_id(tenant_id);
-                }
-                if let Some(use_emulator) = cfg.use_emulator {
-                    builder = builder.with_use_emulator(use_emulator);
-                }
-                let store = builder
-                    .build()
-                    .map_err(|e| IndexBuildError::ObjectStore(e.to_string()))?;
-                let store: Arc<dyn ObjectStore> = Arc::new(store);
-                let local_path = download_root
-                    .join("az")
-                    .join(&cfg.account)
-                    .join(&cfg.container)
-                    .join(&cfg.key);
                 let stage = BuildStage::Download {
                     file: Arc::from(cfg.key.as_str()),
                     index: remote_index,
                     total: total_remote,
                 };
-                download_parquet_to_local(
+                let localized_parquet = localize_parquet_source(
                     rt,
-                    &store,
-                    &cfg.key,
-                    &local_path,
-                    &opts,
+                    &edge.parquet,
+                    download_root,
                     progress,
                     Some(stage),
+                    "edges",
+                    &opts,
                 )?;
                 let mut localized_edge = edge.clone();
-                localized_edge.parquet = ParquetSource::LocalFile(local_path);
+                localized_edge.parquet = localized_parquet;
+                localized.push(localized_edge);
+            }
+            ParquetSource::Adls(cfg) => {
+                used_remote = true;
+                remote_index += 1;
+                let stage = BuildStage::Download {
+                    file: Arc::from(cfg.key.as_str()),
+                    index: remote_index,
+                    total: total_remote,
+                };
+                let localized_parquet = localize_parquet_source(
+                    rt,
+                    &edge.parquet,
+                    download_root,
+                    progress,
+                    Some(stage),
+                    "edges",
+                    &opts,
+                )?;
+                let mut localized_edge = edge.clone();
+                localized_edge.parquet = localized_parquet;
                 localized.push(localized_edge);
             }
         }
     }
+    let localized_node_data = if let Some(source) = node_data {
+        if matches!(source, ParquetSource::LocalFile(_)) {
+            Some(source.clone())
+        } else {
+            used_remote = true;
+            remote_index += 1;
+            let stage = BuildStage::Download {
+                file: Arc::from(parquet_source_name(source)),
+                index: remote_index,
+                total: total_remote,
+            };
+            Some(localize_parquet_source(
+                rt,
+                source,
+                download_root,
+                progress,
+                Some(stage),
+                "node_data",
+                &opts,
+            )?)
+        }
+    } else {
+        None
+    };
     Ok((
         localized,
         if used_remote {
@@ -383,6 +327,7 @@ fn localize_edge_inputs(
         } else {
             None
         },
+        localized_node_data,
     ))
 }
 
@@ -427,8 +372,7 @@ fn download_gcs_emulator(
     cfg: &crate::streaming::GcsLocation,
     local_path: &Path,
     progress: Option<&dyn ProgressSink>,
-    index: usize,
-    total: usize,
+    stage: Option<BuildStage>,
 ) -> Result<()> {
     if let Some(parent) = local_path.parent() {
         fs::create_dir_all(parent)?;
@@ -459,18 +403,134 @@ fn download_gcs_emulator(
             .map_err(|e| IndexBuildError::ObjectStore(e.to_string()))
     })?;
     fs::write(local_path, &bytes)?;
-    if let Some(progress) = progress {
+    if let (Some(progress), Some(stage)) = (progress, stage) {
         progress.report(BuildProgress {
-            stage: BuildStage::Download {
-                file: Arc::from(cfg.key.as_str()),
-                index,
-                total,
-            },
+            stage,
             current: bytes.len() as u64,
             total: Some(bytes.len() as u64),
         });
     }
     Ok(())
+}
+
+fn parquet_source_name(source: &ParquetSource) -> String {
+    match source {
+        ParquetSource::LocalFile(path) => path.display().to_string(),
+        ParquetSource::S3(cfg) => cfg.key.clone(),
+        ParquetSource::Gcs(cfg) => cfg.key.clone(),
+        ParquetSource::Adls(cfg) => cfg.key.clone(),
+    }
+}
+
+fn localize_parquet_source(
+    rt: &Runtime,
+    source: &ParquetSource,
+    download_root: &Path,
+    progress: Option<&dyn ProgressSink>,
+    stage: Option<BuildStage>,
+    subdir: &str,
+    opts: &ParquetDownloadOptions,
+) -> Result<ParquetSource> {
+    match source {
+        ParquetSource::LocalFile(path) => Ok(ParquetSource::LocalFile(path.clone())),
+        ParquetSource::S3(cfg) => {
+            let s3 = build_s3_client(FsS3Config {
+                bucket: cfg.bucket.clone(),
+                region: cfg.region.clone(),
+                endpoint: cfg.endpoint.clone(),
+                allow_http: cfg
+                    .endpoint
+                    .as_deref()
+                    .map(|e| e.starts_with("http://")),
+                virtual_hosted: cfg.virtual_hosted_style_request,
+                profile: None,
+                access_key_id: cfg.access_key_id.clone(),
+                secret_access_key: cfg.secret_access_key.clone(),
+                session_token: cfg.session_token.clone(),
+            })
+            .map_err(|e| IndexBuildError::ObjectStore(e.to_string()))?;
+            let store = s3.store.clone();
+            let local_path = download_root
+                .join(subdir)
+                .join("s3")
+                .join(&cfg.bucket)
+                .join(&cfg.key);
+            download_parquet_to_local(
+                rt,
+                &store,
+                &cfg.key,
+                &local_path,
+                opts,
+                progress,
+                stage,
+            )?;
+            Ok(ParquetSource::LocalFile(local_path))
+        }
+        ParquetSource::Gcs(cfg) => {
+            let local_path = download_root
+                .join(subdir)
+                .join("gcs")
+                .join(&cfg.bucket)
+                .join(&cfg.key);
+            if let Some(endpoint) = &cfg.endpoint {
+                if endpoint.starts_with("http") {
+                    download_gcs_emulator(rt, cfg, &local_path, progress, stage)?;
+                    return Ok(ParquetSource::LocalFile(local_path));
+                }
+            }
+            download_gcs_store(rt, cfg, &local_path, opts, progress, stage)?;
+            Ok(ParquetSource::LocalFile(local_path))
+        }
+        ParquetSource::Adls(cfg) => {
+            let mut builder = MicrosoftAzureBuilder::new()
+                .with_account(&cfg.account)
+                .with_container_name(&cfg.container);
+            if let Some(endpoint) = &cfg.endpoint {
+                builder = builder.with_endpoint(endpoint.to_string());
+            }
+            if let Some(access_key) = &cfg.access_key {
+                builder = builder.with_access_key(access_key);
+            }
+            if let Some(sas) = &cfg.sas_key {
+                builder = builder.with_config(AzureConfigKey::SasKey, sas);
+            }
+            if let Some(bearer) = &cfg.bearer_token {
+                builder = builder.with_bearer_token_authorization(bearer);
+            }
+            if let Some(client_id) = &cfg.client_id {
+                builder = builder.with_client_id(client_id);
+            }
+            if let Some(client_secret) = &cfg.client_secret {
+                builder = builder.with_client_secret(client_secret);
+            }
+            if let Some(tenant_id) = &cfg.tenant_id {
+                builder = builder.with_tenant_id(tenant_id);
+            }
+            if let Some(use_emulator) = cfg.use_emulator {
+                builder = builder.with_use_emulator(use_emulator);
+            }
+            let store = builder
+                .build()
+                .map_err(|e| IndexBuildError::ObjectStore(e.to_string()))?;
+            let store: Arc<dyn ObjectStore> = Arc::new(store);
+            let local_path = download_root
+                .join(subdir)
+                .join("az")
+                .join(&cfg.account)
+                .join(&cfg.container)
+                .join(&cfg.key);
+            download_parquet_to_local(
+                rt,
+                &store,
+                &cfg.key,
+                &local_path,
+                opts,
+                progress,
+                stage,
+            )?;
+            Ok(ParquetSource::LocalFile(local_path))
+        }
+    }
 }
 
 /// Parameters for building a single shard index.
@@ -483,6 +543,8 @@ pub struct ShardBuildParams {
     pub relation_metas: Vec<EdgeRelationMetadata>,
     /// Shard index we are building (used for selecting aligned edge shards).
     pub shard_index: usize,
+    /// Optional node data Parquet source for this shard.
+    pub node_data: Option<ParquetSource>,
 }
 
 /// Consumes node shard metadata and all aligned edge shards (across relations) and emits two files:
@@ -526,8 +588,13 @@ impl ShardBuilder {
 
         let rt = Arc::new(Runtime::new()?);
         let download_root = self.params.output_dir.join("parquet_downloads");
-        let (edge_inputs, download_root) =
-            localize_edge_inputs(&rt, edge_shards, &download_root, progress)?;
+        let (edge_inputs, download_root, localized_node_data) = localize_edge_inputs(
+            &rt,
+            edge_shards,
+            self.params.node_data.as_ref(),
+            &download_root,
+            progress,
+        )?;
 
         let layouts = Arc::new(compute_relation_layouts(
             &self.params.relation_metas,
@@ -538,6 +605,26 @@ impl ShardBuilder {
             NodeStream::try_new(&self.params.node_meta, self.params.shard_index)?;
         let mut edge_stream =
             MergedEdgeStream::try_new(rt.clone(), &edge_inputs, &self.params.relation_metas)?;
+        let expected_nodes = shard_node_count(&self.params.node_meta, self.params.shard_index)?;
+        if !self.params.node_meta.has_node_data && self.params.node_data.is_some() {
+            return Err(IndexBuildError::NotImplemented(
+                "node data provided but metadata disables it",
+            )
+            .into());
+        }
+        let mut node_data_stream = if self.params.node_meta.has_node_data {
+            let source = localized_node_data
+                .as_ref()
+                .ok_or(IndexBuildError::NotImplemented("node data missing for shard"))?;
+            Some(NodeDataStream::try_new(
+                rt.clone(),
+                source,
+                expected_nodes,
+            )?)
+        } else {
+            None
+        };
+        let mut node_data_buf: Vec<u8> = Vec::new();
 
         let mut offsets_writer = OffsetChunkWriter::try_new(&offsets_path)?;
         let mut edges_writer = EdgeWriter::try_new(&edges_path, layouts.clone())?;
@@ -587,6 +674,14 @@ impl ShardBuilder {
                 }
             }
             let start_offset = edges_writer.byte_offset();
+            let mut node_data_len: Option<usize> = None;
+            if let Some(stream) = node_data_stream.as_mut() {
+                let len = stream.next_into(&mut node_data_buf)?;
+                if len > u16::MAX as usize {
+                    return Err(IndexBuildError::ValueOutOfRange("node_data_len").into());
+                }
+                node_data_len = Some(len);
+            }
             // Collect edges for this node by relation.
             for (i, bucket) in buckets.iter_mut().enumerate() {
                 bucket.clear();
@@ -616,13 +711,17 @@ impl ShardBuilder {
             if any_truncated {
                 original_counts.copy_from_slice(&lens);
             }
-            if total_edges == 0 {
+            if total_edges == 0 && node_data_len.is_none() {
                 // No edges for this node across all relations; avoid writing zero counts.
                 offsets_writer.push(start_offset)?;
                 prev_offset = start_offset;
                 continue;
             }
-            let node_bytes = EdgeWriter::node_length_bytes_fast(&layouts, &counts);
+            let extra_bytes = node_data_len
+                .map(|len| 2u64.saturating_add(len as u64))
+                .unwrap_or(0);
+            let node_bytes = EdgeWriter::node_length_bytes_fast(&layouts, &counts)
+                .saturating_add(extra_bytes);
 
             // Determine if we need to truncate to stay within u16 delta budget.
             let base_span = start_offset
@@ -642,6 +741,7 @@ impl ShardBuilder {
                     &layouts,
                     start_offset,
                     prev_offset,
+                    extra_bytes,
                 )?;
                 truncated_node = true;
             }
@@ -663,7 +763,14 @@ impl ShardBuilder {
                         .saturating_add(truncated as u64);
                 }
             }
-            edges_writer.write_node(&counts, &buckets, total_edges, &mut node_buf)?;
+            let node_data_slice = node_data_len.map(|_| node_data_buf.as_slice());
+            edges_writer.write_node(
+                &counts,
+                &buckets,
+                total_edges,
+                &mut node_buf,
+                node_data_slice,
+            )?;
             build_stats.edges_ingested =
                 build_stats.edges_ingested.saturating_add(total_edges as u64);
             offsets_writer.push(edges_writer.byte_offset())?;
@@ -903,9 +1010,18 @@ impl EdgeWriter {
         buckets: &[Vec<EdgeRec>],
         total_edges: usize,
         scratch: &mut Vec<u8>,
+        node_data: Option<&[u8]>,
     ) -> Result<()> {
         scratch.clear();
-        let node_bytes = EdgeWriter::node_length_bytes_fast(&self.layouts, counts) as usize;
+        let edge_bytes = EdgeWriter::node_length_bytes_fast(&self.layouts, counts) as usize;
+        let node_bytes = if let Some(node_data) = node_data {
+            edge_bytes
+                .checked_add(2)
+                .and_then(|v| v.checked_add(node_data.len()))
+                .ok_or(IndexBuildError::CountOverflow)?
+        } else {
+            edge_bytes
+        };
         if node_bytes > scratch.capacity() {
             scratch.reserve(node_bytes - scratch.capacity());
         }
@@ -919,6 +1035,13 @@ impl EdgeWriter {
                 scratch.push(b0);
                 scratch.push(b1);
             }
+        }
+        if let Some(node_data) = node_data {
+            let len: u16 = node_data
+                .len()
+                .try_into()
+                .map_err(|_| IndexBuildError::ValueOutOfRange("node_data_len"))?;
+            scratch.extend_from_slice(&len.to_le_bytes());
         }
         for (rel_idx, (layout, rel_edges)) in
             self.layouts.iter().zip(buckets.iter()).enumerate()
@@ -951,6 +1074,9 @@ impl EdgeWriter {
                 let bytes = acc.to_le_bytes();
                 scratch.extend_from_slice(&bytes[..bytes_needed]);
             }
+        }
+        if let Some(node_data) = node_data {
+            scratch.extend_from_slice(node_data);
         }
         debug_assert!(scratch.len() == node_bytes);
         self.writer.write_all(scratch)?;
@@ -1052,6 +1178,17 @@ impl NodeStream {
         }
         Ok(Some(val))
     }
+}
+
+fn shard_node_count(node_meta: &NodeTypeMetadata, shard_index: usize) -> Result<u64> {
+    let shard = node_meta
+        .shards
+        .get(shard_index)
+        .ok_or(IndexBuildError::NodeShardMissing { index: shard_index })?;
+    if shard.max_id < shard.min_id {
+        return Ok(0);
+    }
+    Ok(shard.max_id - shard.min_id + 1)
 }
 
 struct EdgeSubStream {
@@ -1283,6 +1420,139 @@ impl EdgeSubStream {
                     return Err(IndexBuildError::Parquet(
                         parquet::errors::ParquetError::General(
                             "prefetch channel closed".to_string(),
+                        ),
+                    )
+                    .into())
+                }
+            }
+        }
+    }
+}
+
+struct NodeDataStream {
+    batch: Option<arrow_array::RecordBatch>,
+    idx_in_batch: usize,
+    batch_len: usize,
+    data_idx: usize,
+    current_data: Option<BinaryArray>,
+    rx: Receiver<PrefetchBatch>,
+    expected_rows: u64,
+    seen_rows: u64,
+}
+
+impl NodeDataStream {
+    fn try_new(rt: Arc<Runtime>, source: &ParquetSource, expected_rows: u64) -> Result<Self> {
+        if let ParquetSource::LocalFile(path) = source {
+            let file = std::fs::File::open(path)?;
+            let reader = SerializedFileReader::new(file)?;
+            let rows = reader.metadata().file_metadata().num_rows() as u64;
+            if rows != expected_rows {
+                return Err(IndexBuildError::NotImplemented(
+                    "node data row count mismatch",
+                )
+                .into());
+            }
+        }
+        let reader = object_reader_from_source(source, &rt)?;
+        let (tx, rx) = mpsc::sync_channel(32);
+        let data_idx = rt.block_on(async move {
+            let mut builder = ParquetRecordBatchStreamBuilder::new(reader).await?;
+            builder = builder.with_batch_size(256_000);
+            let stream = builder.build()?;
+            let schema = stream.schema().clone();
+            if schema.fields().len() != 1 {
+                return Err(parquet::errors::ParquetError::General(
+                    "node data parquet must have exactly one column".into(),
+                ));
+            }
+            let idx = schema
+                .index_of("data")
+                .map_err(|_| parquet::errors::ParquetError::General("missing data column".into()))?;
+            let field = schema.field(idx);
+            if !matches!(field.data_type(), DataType::Binary) {
+                return Err(parquet::errors::ParquetError::General(
+                    "node data column must be binary".into(),
+                ));
+            }
+            tokio::spawn(async move {
+                futures::pin_mut!(stream);
+                while let Some(item) = stream.next().await {
+                    match item {
+                        Ok(batch) => {
+                            if tx.send(Ok(Some(batch))).is_err() {
+                                return;
+                            }
+                        }
+                        Err(e) => {
+                            let _ = tx.send(Err(e));
+                            return;
+                        }
+                    }
+                }
+                let _ = tx.send(Ok(None));
+            });
+            Ok::<_, parquet::errors::ParquetError>(idx)
+        })?;
+        Ok(Self {
+            batch: None,
+            idx_in_batch: 0,
+            batch_len: 0,
+            data_idx,
+            current_data: None,
+            rx,
+            expected_rows,
+            seen_rows: 0,
+        })
+    }
+
+    fn next_into(&mut self, out: &mut Vec<u8>) -> Result<usize> {
+        loop {
+            if let Some(_) = &self.batch {
+                if self.idx_in_batch < self.batch_len {
+                    let data_col = self
+                        .current_data
+                        .as_ref()
+                        .ok_or_else(|| IndexBuildError::InvalidColumn("data"))?;
+                    let bytes = data_col.value(self.idx_in_batch);
+                    out.clear();
+                    out.extend_from_slice(bytes);
+                    self.idx_in_batch += 1;
+                    self.seen_rows += 1;
+                    return Ok(bytes.len());
+                }
+            }
+            match self.rx.recv() {
+                Ok(Ok(Some(batch))) => {
+                    let batch_len = batch.num_rows();
+                    if self.seen_rows + batch_len as u64 > self.expected_rows {
+                        return Err(IndexBuildError::NotImplemented(
+                            "node data row count exceeds shard range",
+                        )
+                        .into());
+                    }
+                    self.current_data = Some(
+                        batch
+                            .column(self.data_idx)
+                            .as_any()
+                            .downcast_ref::<BinaryArray>()
+                            .ok_or(IndexBuildError::InvalidColumn("data"))?
+                            .clone(),
+                    );
+                    self.batch = Some(batch);
+                    self.idx_in_batch = 0;
+                    self.batch_len = batch_len;
+                }
+                Ok(Ok(None)) => {
+                    return Err(IndexBuildError::NotImplemented(
+                        "node data row count shorter than shard range",
+                    )
+                    .into())
+                }
+                Ok(Err(e)) => return Err(e.into()),
+                Err(_) => {
+                    return Err(IndexBuildError::Parquet(
+                        parquet::errors::ParquetError::General(
+                            "node data prefetch channel closed".to_string(),
                         ),
                     )
                     .into())

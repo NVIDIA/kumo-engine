@@ -142,6 +142,7 @@ fn build_simple(
     let node_types = vec![NodeTypeMetadata {
         name: "User".into(),
         max_id: 0,
+        has_node_data: false,
         shards: Vec::new(),
     }];
     let mut edge_counts = HashMap::new();
@@ -167,6 +168,7 @@ fn build_temporal_presorted(
     let node_types = vec![NodeTypeMetadata {
         name: "Account".into(),
         max_id: 0,
+        has_node_data: false,
         shards: Vec::new(),
     }];
     let mut edge_counts = HashMap::new();
@@ -192,6 +194,7 @@ fn build_temporal_weighted(
     let node_types = vec![NodeTypeMetadata {
         name: "Device".into(),
         max_id: 0,
+        has_node_data: false,
         shards: Vec::new(),
     }];
     let mut edge_counts = HashMap::new();
@@ -217,6 +220,7 @@ fn build_weighted_only(
     let node_types = vec![NodeTypeMetadata {
         name: "Item".into(),
         max_id: 0,
+        has_node_data: false,
         shards: Vec::new(),
     }];
     let mut edge_counts = HashMap::new();
@@ -243,16 +247,19 @@ fn build_mixed(
         NodeTypeMetadata {
             name: "User".into(),
             max_id: 0,
+            has_node_data: false,
             shards: Vec::new(),
         },
         NodeTypeMetadata {
             name: "Ip".into(),
             max_id: 0,
+            has_node_data: false,
             shards: Vec::new(),
         },
         NodeTypeMetadata {
             name: "Merchant".into(),
             max_id: 0,
+            has_node_data: false,
             shards: Vec::new(),
         },
     ];
@@ -469,6 +476,7 @@ fn assign_node_shards(
                 nt.shards.push(NodeShardMetadata {
                     min_id: 0,
                     max_id: 0,
+                    node_data_path: None,
                 });
                 continue;
             }
@@ -476,6 +484,7 @@ fn assign_node_shards(
             nt.shards.push(NodeShardMetadata {
                 min_id: range.start,
                 max_id: range.end,
+                node_data_path: None,
             });
         }
     }
