@@ -1065,6 +1065,23 @@ fn run_benchmark(reader: Arc<ShardReader>, threads: usize, duration: std::time::
         0
     };
     println!("Results:");
+    let offsets_bytes = reader.offsets_len();
+    let edges_bytes = reader.edges_len();
+    let data_bytes = offsets_bytes.saturating_add(edges_bytes);
+    println!("  offsets bytes: {}", format_bytes(offsets_bytes));
+    println!("  edge bytes: {}", format_bytes(edges_bytes));
+    if let Some(available) = available_memory_bytes() {
+        println!("  available ram: {}", format_bytes(available));
+        let load_factor = if available > 0 {
+            data_bytes as f64 / available as f64
+        } else {
+            0.0
+        };
+        println!("  load factor: {:.2}", load_factor);
+    } else {
+        println!("  available ram: n/a");
+        println!("  load factor: n/a");
+    }
     println!("  ops: {}", format_number(total_ops));
     println!("  ops/s: {}", format_number(ops_per_sec));
     println!("  errors: {}", format_number(total_errors));
@@ -1157,6 +1174,21 @@ fn format_duration_ns(ns: u128) -> String {
     } else {
         format!("{} ns", ns)
     }
+}
+
+fn available_memory_bytes() -> Option<u64> {
+    let contents = fs::read_to_string("/proc/meminfo").ok()?;
+    for line in contents.lines() {
+        if let Some(rest) = line.strip_prefix("MemAvailable:") {
+            let parts: Vec<&str> = rest.trim().split_whitespace().collect();
+            if let Some(kb) = parts.first() {
+                if let Ok(value) = kb.parse::<u64>() {
+                    return Some(value.saturating_mul(1024));
+                }
+            }
+        }
+    }
+    None
 }
 
 fn format_duration_seconds(seconds: f64) -> String {

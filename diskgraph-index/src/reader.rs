@@ -61,6 +61,14 @@ impl ShardReader {
         self.edge_count
     }
 
+    pub fn offsets_len(&self) -> u64 {
+        self.offsets_mmap.len() as u64
+    }
+
+    pub fn edges_len(&self) -> u64 {
+        self.edges.len() as u64
+    }
+
     /// Lookup a node's edge list by index within the shard.
     pub fn edges_for_node(&self, node_idx: u64) -> Result<EdgeListView<'_>> {
         if node_idx + 1 >= self.header.total_offsets {
