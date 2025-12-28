@@ -31,6 +31,11 @@ use tokio::runtime::Runtime;
 use tracing::info;
 use std::env;
 
+#[path = "../progress.rs"]
+mod progress;
+
+use progress::ProgressState;
+
 #[derive(Parser, Debug)]
 #[command(author, version, about = "Generate massive Parquet shards for benchmarking diskgraph ingest.")]
 struct MassiveArgs {
@@ -149,6 +154,7 @@ fn main() -> Result<()> {
     if args.no_node_data {
         args.node_data = false;
     }
+    let mut progress = ProgressState::new();
     let target = OutputTarget::parse(&args)?;
     target.prepare()?;
 
@@ -180,6 +186,7 @@ fn main() -> Result<()> {
         &rel0_cfg,
         &args,
         args.seed ^ 0xA5A5_0001,
+        Some(&mut progress),
     )?;
     let edge1_meta = generate_edges(
         &target,
@@ -187,14 +194,16 @@ fn main() -> Result<()> {
         &rel1_cfg,
         &args,
         args.seed ^ 0xA5A5_0002,
+        Some(&mut progress),
     )?;
 
     if args.node_data {
         let rel = "nodes.parquet".to_string();
-        generate_node_data(&target, &rel, &args)?;
+        generate_node_data(&target, &rel, &args, Some(&mut progress))?;
         node_meta.node_data_path = Some(rel);
     }
 
+    progress.start_stage("Writing metadata", None);
     write_metadata(
         &target,
         &args.node_type_name,
@@ -207,6 +216,7 @@ fn main() -> Result<()> {
         edge1_meta,
     )?;
 
+    progress.finish("Done");
     info!("Done. Output written to {}", target.display());
     Ok(())
 }
@@ -224,6 +234,7 @@ fn generate_edges(
     rel: &RelationConfig,
     args: &MassiveArgs,
     seed: u64,
+    mut progress: Option<&mut ProgressState>,
 ) -> Result<EdgeShardMetadata> {
     let schema = edge_schema(rel.dest_sort_key_bits.is_some());
     let props = WriterProperties::builder()
@@ -241,6 +252,17 @@ fn generate_edges(
     let base_edges = args.edges_per_relation / args.nodes.max(1);
     let extra_edges = args.edges_per_relation % args.nodes.max(1);
     let mut remaining = args.edges_per_relation;
+    let total_nodes = if args.edges_per_relation == 0 {
+        0
+    } else {
+        args.nodes.min(args.edges_per_relation)
+    };
+    if let Some(progress) = progress.as_deref_mut() {
+        progress.start_stage(format!("Generating edges {}", rel.name), Some(total_nodes));
+        progress.set_position(0);
+    }
+    let mut processed_nodes = 0u64;
+    let mut next_report = 1_000_000u64;
 
     for src in 0..args.nodes {
         if remaining == 0 {
@@ -263,9 +285,19 @@ fn generate_edges(
             }
         }
         remaining -= edges_here;
+        processed_nodes += 1;
+        if let Some(progress) = progress.as_deref_mut() {
+            if processed_nodes >= next_report {
+                progress.set_position(processed_nodes);
+                next_report += 1_000_000;
+            }
+        }
     }
     flush_edge_batch(&schema, &mut writer, &mut src_buf, &mut dst_buf, &mut dsk_buf)?;
     writer.close()?;
+    if let Some(progress) = progress.as_deref_mut() {
+        progress.set_position(processed_nodes);
+    }
 
     Ok(EdgeShardMetadata {
         path: format!("edges_{}.parquet", rel.name),
@@ -350,7 +382,12 @@ fn write_metadata(
     root.write_bytes("metadata.json", json.into_bytes())
 }
 
-fn generate_node_data(target: &OutputTarget, rel_path: &str, args: &MassiveArgs) -> Result<()> {
+fn generate_node_data(
+    target: &OutputTarget,
+    rel_path: &str,
+    args: &MassiveArgs,
+    mut progress: Option<&mut ProgressState>,
+) -> Result<()> {
     let path = target.join(rel_path);
     if let OutputTarget::Local { .. } = target {
         if let Some(parent) = path.parent() {
@@ -365,8 +402,13 @@ fn generate_node_data(target: &OutputTarget, rel_path: &str, args: &MassiveArgs)
     let sink = target.sink(&path)?;
     let mut writer = ArrowWriter::try_new(sink, Arc::new(schema.clone()), Some(props))?;
 
+    if let Some(progress) = progress.as_deref_mut() {
+        progress.start_stage("Generating node data", Some(args.nodes));
+        progress.set_position(0);
+    }
     let mut remaining = args.nodes;
     let mut next_id = 0u64;
+    let mut processed = 0u64;
     while remaining > 0 {
         let take = remaining.min(args.node_data_batch_size as u64) as usize;
         let mut builder = BinaryBuilder::new();
@@ -380,6 +422,10 @@ fn generate_node_data(target: &OutputTarget, rel_path: &str, args: &MassiveArgs)
         writer.write(&batch)?;
         remaining -= take as u64;
         next_id += take as u64;
+        processed += take as u64;
+        if let Some(progress) = progress.as_deref_mut() {
+            progress.set_position(processed);
+        }
     }
 
     writer.close()?;
