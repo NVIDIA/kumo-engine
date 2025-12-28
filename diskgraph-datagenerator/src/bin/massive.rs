@@ -127,7 +127,7 @@ struct MassiveArgs {
     #[arg(long, default_value_t = false)]
     no_node_data: bool,
     /// Bytes per node in the node data column.
-    #[arg(long, default_value_t = 4096)]
+    #[arg(long, default_value_t = 128)]
     node_data_bytes: usize,
     /// Rows per RecordBatch written to Parquet for node data.
     #[arg(long, default_value_t = 1_000_000)]
@@ -448,26 +448,72 @@ fn node_data_bytes(node_id: u64, bytes_per_node: usize) -> Vec<u8> {
 }
 
 fn print_stats(args: &MassiveArgs, target: &OutputTarget) {
-    println!(
-        "Stats: nodes={}, edges_per_relation={}, relations=2, node_data_bytes={}",
-        args.nodes, args.edges_per_relation, args.node_data_bytes
-    );
+    println!("Stats:");
+    println!("  nodes: {}", format_count(args.nodes));
+    println!("  edges_per_relation: {}", format_count(args.edges_per_relation));
+    println!("  relations: 2");
+    println!("  node_data_bytes: {}", format_bytes(args.node_data_bytes as u64));
     if let OutputTarget::Local { root } = target {
-        let mut total = 0u64;
         let files = [
             root.join(format!("edges_{}.parquet", args.relation0_name)),
             root.join(format!("edges_{}.parquet", args.relation1_name)),
             root.join("metadata.json"),
             root.join("nodes.parquet"),
         ];
+        let mut entries = Vec::new();
+        let mut total = 0u64;
         for path in files {
             if let Ok(meta) = fs::metadata(&path) {
-                total += meta.len();
+                let size = meta.len();
+                total += size;
+                let name = path
+                    .file_name()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_else(|| path.display().to_string());
+                entries.push((name, size));
             }
         }
-        println!("Stats: total_bytes={}", total);
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        println!("  total_bytes: {}", format_bytes(total));
+        println!("  files:");
+        for (name, size) in entries {
+            println!("    {:<24} {}", name, format_bytes(size));
+        }
     } else {
-        println!("Stats: total_bytes=n/a");
+        println!("  total_bytes: n/a");
+        println!("  files: n/a (remote)");
+    }
+}
+
+fn format_bytes(value: u64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = 1024.0 * 1024.0;
+    const GB: f64 = 1024.0 * 1024.0 * 1024.0;
+    let v = value as f64;
+    if v >= GB {
+        format!("{:.1} GB", v / GB)
+    } else if v >= MB {
+        format!("{:.1} MB", v / MB)
+    } else if v >= KB {
+        format!("{:.1} KB", v / KB)
+    } else {
+        format!("{} B", value)
+    }
+}
+
+fn format_count(value: u64) -> String {
+    const K: f64 = 1_000.0;
+    const M: f64 = 1_000_000.0;
+    const B: f64 = 1_000_000_000.0;
+    let v = value as f64;
+    if v >= B {
+        format!("{:.2}B", v / B)
+    } else if v >= M {
+        format!("{:.2}M", v / M)
+    } else if v >= K {
+        format!("{:.1}K", v / K)
+    } else {
+        value.to_string()
     }
 }
 

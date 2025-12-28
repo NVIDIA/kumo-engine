@@ -65,7 +65,7 @@ struct Cli {
     #[arg(long, default_value_t = false)]
     no_node_data: bool,
     /// Bytes per node in the node data column.
-    #[arg(long, default_value_t = 4096)]
+    #[arg(long, default_value_t = 128)]
     node_data_bytes: usize,
 }
 
@@ -594,16 +594,20 @@ fn print_stats(
         .map(|nt| nt.max_id.saturating_add(1))
         .sum();
     let total_edges: u64 = edge_counts.values().copied().sum();
-    println!(
-        "Stats ({:?}): nodes={}, edges={}, relations={}, node_data_bytes={}",
-        scenario,
-        total_nodes,
-        total_edges,
-        edge_counts.len(),
-        node_data_bytes
-    );
+    println!("Stats ({:?}):", scenario);
+    println!("  nodes: {}", format_count(total_nodes));
+    println!("  edges: {}", format_count(total_edges));
+    println!("  relations: {}", edge_counts.len());
+    println!("  node_data_bytes: {}", format_bytes(node_data_bytes as u64));
     if let Ok(bytes) = dir_size(root) {
-        println!("Stats ({:?}): total_bytes={}", scenario, bytes);
+        println!("  total_bytes: {}", format_bytes(bytes));
+    }
+    if let Ok(mut files) = dir_files(root) {
+        files.sort_by(|a, b| a.0.cmp(&b.0));
+        println!("  files:");
+        for (name, size) in files {
+            println!("    {:<32} {}", name, format_bytes(size));
+        }
     }
 }
 
@@ -619,6 +623,61 @@ fn dir_size(path: &Path) -> anyhow::Result<u64> {
         }
     }
     Ok(total)
+}
+
+fn dir_files(path: &Path) -> anyhow::Result<Vec<(String, u64)>> {
+    let mut entries = Vec::new();
+    for entry in fs::read_dir(path)? {
+        let entry = entry?;
+        let meta = entry.metadata()?;
+        let entry_path = entry.path();
+        if meta.is_dir() {
+            let sub = dir_files(&entry_path)?;
+            for (name, size) in sub {
+                let rel = entry_path
+                    .strip_prefix(path)
+                    .unwrap_or(&entry_path)
+                    .join(name);
+                entries.push((rel.to_string_lossy().to_string(), size));
+            }
+        } else {
+            let rel = entry_path.strip_prefix(path).unwrap_or(&entry_path);
+            entries.push((rel.to_string_lossy().to_string(), meta.len()));
+        }
+    }
+    Ok(entries)
+}
+
+fn format_bytes(value: u64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = 1024.0 * 1024.0;
+    const GB: f64 = 1024.0 * 1024.0 * 1024.0;
+    let v = value as f64;
+    if v >= GB {
+        format!("{:.1} GB", v / GB)
+    } else if v >= MB {
+        format!("{:.1} MB", v / MB)
+    } else if v >= KB {
+        format!("{:.1} KB", v / KB)
+    } else {
+        format!("{} B", value)
+    }
+}
+
+fn format_count(value: u64) -> String {
+    const K: f64 = 1_000.0;
+    const M: f64 = 1_000_000.0;
+    const B: f64 = 1_000_000_000.0;
+    let v = value as f64;
+    if v >= B {
+        format!("{:.2}B", v / B)
+    } else if v >= M {
+        format!("{:.2}M", v / M)
+    } else if v >= K {
+        format!("{:.1}K", v / K)
+    } else {
+        value.to_string()
+    }
 }
 
 fn write_edges(

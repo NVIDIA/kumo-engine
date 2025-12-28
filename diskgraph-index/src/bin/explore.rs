@@ -253,6 +253,7 @@ fn run_explore(source_str: &str, profile_enabled: bool) -> Result<()> {
             format_number(((nodes + edges) as f64 / elapsed).round() as u64),
         );
     }
+    let reader = Arc::new(reader);
     print_header(&metadata, &reader);
     if profile_enabled {
         let offsets_size = fs::metadata(shard_dir.join(OFFSETS_FILENAME))
@@ -277,7 +278,7 @@ fn run_explore(source_str: &str, profile_enabled: bool) -> Result<()> {
         println!("  Edges/s: {}", format_number(eps.round() as u64));
         return Ok(());
     }
-    repl(&metadata.edge_relations, &reader)?;
+    repl(&metadata.edge_relations, reader)?;
     Ok(())
 }
 
@@ -754,9 +755,9 @@ fn build_from_local_parquet(
     Ok((metadata, cache_dir))
 }
 
-fn repl(relations: &[EdgeRelationMetadata], reader: &ShardReader) -> Result<()> {
+fn repl(relations: &[EdgeRelationMetadata], reader: Arc<ShardReader>) -> Result<()> {
     let mut rl = DefaultEditor::new().context("init editor")?;
-    println!("Commands: info | node <id> | quit");
+    println!("Commands: info | node <id> | benchmark <threads> | quit");
     loop {
         match rl.readline("explore> ") {
             Ok(line) => {
@@ -769,17 +770,26 @@ fn repl(relations: &[EdgeRelationMetadata], reader: &ShardReader) -> Result<()> 
                     break;
                 }
                 if trimmed.eq_ignore_ascii_case("info") {
-                    print_info(relations, reader);
+                    print_info(relations, &reader);
                     continue;
                 }
                 if let Some(rest) = trimmed.strip_prefix("node ") {
                     match rest.trim().parse::<u64>() {
-                        Ok(id) => show_node(relations, reader, id)?,
+                        Ok(id) => show_node(relations, &reader, id)?,
                         Err(_) => println!("Invalid node id: {rest}"),
                     }
                     continue;
                 }
-                println!("Unknown command. Use: info | node <id> | quit");
+                if let Some(rest) = trimmed.strip_prefix("benchmark ") {
+                    match rest.trim().parse::<usize>() {
+                        Ok(threads) if threads > 0 => {
+                            run_benchmark(reader.clone(), threads)?;
+                        }
+                        _ => println!("Invalid thread count: {rest}"),
+                    }
+                    continue;
+                }
+                println!("Unknown command. Use: info | node <id> | benchmark <threads> | quit");
             }
             Err(ReadlineError::Interrupted) | Err(ReadlineError::Eof) => break,
             Err(err) => return Err(err.into()),
@@ -876,6 +886,194 @@ fn show_node(relations: &[EdgeRelationMetadata], reader: &ShardReader, node: u64
     let elapsed = start.elapsed();
     println!("  lookup: {:.3} ms", elapsed.as_secs_f64() * 1000.0);
     Ok(())
+}
+
+fn run_benchmark(reader: Arc<ShardReader>, threads: usize) -> Result<()> {
+    let nodes = reader.header().nodes;
+    if nodes == 0 {
+        println!("Benchmark skipped: no nodes in shard.");
+        return Ok(());
+    }
+    let duration = std::time::Duration::from_secs(20);
+    println!(
+        "Benchmark: threads={}, duration={}s, nodes={}",
+        threads, duration.as_secs(), nodes
+    );
+    let end_time = std::time::Instant::now() + duration;
+
+    const BUCKETS_US: [u64; 18] = [
+        1, 2, 5, 10, 20, 50, 100, 200, 500, 1_000, 2_000, 5_000, 10_000, 20_000, 50_000,
+        100_000, 200_000, 500_000,
+    ];
+
+    let mut handles = Vec::with_capacity(threads);
+    for idx in 0..threads {
+        let reader = reader.clone();
+        handles.push(std::thread::spawn(move || {
+            let mut state = (idx as u64 + 1) * 0x9E37_79B9_7F4A_7C15;
+            let mut ops = 0u64;
+            let mut errors = 0u64;
+            let mut total_ns = 0u128;
+            let mut min_ns = u128::MAX;
+            let mut max_ns = 0u128;
+            let mut total_edges = 0u64;
+            let mut total_node_data = 0u64;
+            let mut hist = vec![0u64; BUCKETS_US.len() + 1];
+            while std::time::Instant::now() < end_time {
+                // LCG for speed; take high bits for distribution.
+                state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+                let node = ((state >> 32) % nodes) as u64;
+                let start = std::time::Instant::now();
+                let view = reader.edges_for_node(node);
+                let elapsed_ns = start.elapsed().as_nanos();
+                if let Ok(view) = view {
+                    if let Ok(segments) = view.relation_segments() {
+                        let edges_here: u64 = segments.iter().map(|s| s.count as u64).sum();
+                        total_edges += edges_here;
+                    } else {
+                        errors += 1;
+                    }
+                    if let Ok(node_data) = view.node_data() {
+                        if let Some(bytes) = node_data {
+                            total_node_data += bytes.len() as u64;
+                        }
+                    } else {
+                        errors += 1;
+                    }
+                } else {
+                    errors += 1;
+                }
+                ops += 1;
+                total_ns += elapsed_ns;
+                if elapsed_ns < min_ns {
+                    min_ns = elapsed_ns;
+                }
+                if elapsed_ns > max_ns {
+                    max_ns = elapsed_ns;
+                }
+                let us = (elapsed_ns / 1_000) as u64;
+                let mut bucket = BUCKETS_US.len();
+                for (i, bound) in BUCKETS_US.iter().enumerate() {
+                    if us <= *bound {
+                        bucket = i;
+                        break;
+                    }
+                }
+                hist[bucket] += 1;
+            }
+            (ops, errors, total_ns, min_ns, max_ns, total_edges, total_node_data, hist)
+        }));
+    }
+
+    let mut total_ops = 0u64;
+    let mut total_errors = 0u64;
+    let mut total_ns = 0u128;
+    let mut min_ns = u128::MAX;
+    let mut max_ns = 0u128;
+    let mut total_edges = 0u64;
+    let mut total_node_data = 0u64;
+    let mut hist = vec![0u64; BUCKETS_US.len() + 1];
+    for handle in handles {
+        let (ops, errors, ns, min, max, edges, node_bytes, h) = handle.join().unwrap();
+        total_ops += ops;
+        total_errors += errors;
+        total_ns += ns;
+        if min < min_ns {
+            min_ns = min;
+        }
+        if max > max_ns {
+            max_ns = max;
+        }
+        total_edges += edges;
+        total_node_data += node_bytes;
+        for (i, v) in h.into_iter().enumerate() {
+            hist[i] += v;
+        }
+    }
+
+    let elapsed = duration.as_secs_f64();
+    let ops_per_sec = (total_ops as f64 / elapsed).round() as u64;
+    let avg_ns = if total_ops > 0 {
+        (total_ns / total_ops as u128) as u64
+    } else {
+        0
+    };
+    println!("Results:");
+    println!("  ops: {}", format_number(total_ops));
+    println!("  ops/s: {}", format_number(ops_per_sec));
+    println!("  errors: {}", format_number(total_errors));
+    println!("  edges read: {}", format_number(total_edges));
+    println!(
+        "  edges/s: {}",
+        format_number((total_edges as f64 / elapsed).round() as u64)
+    );
+    println!("  node_data bytes: {}", format_bytes(total_node_data));
+    let node_data_bps = (total_node_data as f64 / elapsed).round() as u64;
+    println!(
+        "  node_data bytes/s: {}/s",
+        format_bytes(node_data_bps)
+    );
+    println!("  avg: {}", format_duration_ns(avg_ns as u128));
+    if min_ns != u128::MAX {
+        println!("  min: {}", format_duration_ns(min_ns));
+    }
+    println!("  max: {}", format_duration_ns(max_ns));
+    println!("  p50: {}", format_duration_ns(percentile_ns(&hist, &BUCKETS_US, 0.50)));
+    println!("  p90: {}", format_duration_ns(percentile_ns(&hist, &BUCKETS_US, 0.90)));
+    println!("  p99: {}", format_duration_ns(percentile_ns(&hist, &BUCKETS_US, 0.99)));
+    println!("Latency histogram:");
+    for (i, count) in hist.iter().enumerate() {
+        if *count == 0 {
+            continue;
+        }
+        if i < BUCKETS_US.len() {
+            let bound_ns = (BUCKETS_US[i] as u128) * 1_000;
+            println!(
+                "  <= {:>9}: {}",
+                format_duration_ns(bound_ns),
+                format_number(*count)
+            );
+        } else {
+            let bound_ns = (BUCKETS_US[BUCKETS_US.len() - 1] as u128) * 1_000;
+            println!(
+                "  >  {:>9}: {}",
+                format_duration_ns(bound_ns),
+                format_number(*count)
+            );
+        }
+    }
+    Ok(())
+}
+
+fn percentile_ns(hist: &[u64], buckets_us: &[u64], pct: f64) -> u128 {
+    let total: u64 = hist.iter().sum();
+    if total == 0 {
+        return 0;
+    }
+    let target = (total as f64 * pct).ceil() as u64;
+    let mut cumulative = 0u64;
+    for (i, count) in hist.iter().enumerate() {
+        cumulative += *count;
+        if cumulative >= target {
+            if i < buckets_us.len() {
+                return (buckets_us[i] as u128) * 1_000;
+            }
+            return (buckets_us[buckets_us.len() - 1] as u128) * 1_000;
+        }
+    }
+    (buckets_us[buckets_us.len() - 1] as u128) * 1_000
+}
+
+fn format_duration_ns(ns: u128) -> String {
+    if ns >= 1_000_000_000 {
+        format!("{:.2} s", ns as f64 / 1_000_000_000.0)
+    } else if ns >= 1_000_000 {
+        format!("{:.2} ms", ns as f64 / 1_000_000.0)
+    } else if ns >= 1_000 {
+        format!("{:.2} us", ns as f64 / 1_000.0)
+    } else {
+        format!("{} ns", ns)
+    }
 }
 
 fn escape_ascii(bytes: &[u8]) -> String {
