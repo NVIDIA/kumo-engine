@@ -4,20 +4,20 @@ set -euo pipefail
 # Local massive data generation for benchmarking diskgraph ingest.
 # Adjust the constants below or override via env vars when calling the script.
 
-NODES="${NODES:-500000000}"
-EDGES_PER_REL="${EDGES_PER_REL:-500000000}"
-MAX_DST_ID="${MAX_DST_ID:-100000000000}"
+NODES="${1:-${NODES:-500m}}"
+EDGES_PER_REL="${2:-${EDGES_PER_REL:-500m}}"
+NODE_DATA_BYTES="${3:-${NODE_DATA_BYTES:-128b}}"
+MAX_DST_ID="${MAX_DST_ID:-100b}"
 REL0_NAME="${REL0_NAME:-rel_a}"
 REL1_NAME="${REL1_NAME:-rel_b}"
 REL0_SORT_BITS="${REL0_SORT_BITS:-0}"   # 0 disables dest_sort_key
 REL1_SORT_BITS="${REL1_SORT_BITS:-0}"
 NODE_TYPE="${NODE_TYPE:-Node}"
-EDGE_BATCH="${EDGE_BATCH:-1000000}"
-ROW_GROUP="${ROW_GROUP:-4000000}"
+EDGE_BATCH="${EDGE_BATCH:-1m}"
+ROW_GROUP="${ROW_GROUP:-4m}"
 SEED="${SEED:-42}"
 NODE_DATA="${NODE_DATA:-true}"
-NODE_DATA_BYTES="${NODE_DATA_BYTES:-128}"
-NODE_DATA_BATCH="${NODE_DATA_BATCH:-1000000}"
+NODE_DATA_BATCH="${NODE_DATA_BATCH:-1m}"
 NODE_DATA_FLAG=""
 if [[ "${NODE_DATA}" == "false" ]]; then
   NODE_DATA_FLAG="--no-node-data"
@@ -33,7 +33,7 @@ else
   DEFAULT_OUT_ROOT="/tmp/diskgraph-massive"
 fi
 OUT_ROOT="${OUT_ROOT:-${DEFAULT_OUT_ROOT}}"
-RUN_ID="${RUN_ID:-run-$(date +%s)-$RANDOM}"
+RUN_ID="${RUN_ID:-nodes-${NODES}-edges-${EDGES_PER_REL}-bytes-${NODE_DATA_BYTES}}"
 OUTPUT_DIR="${OUT_ROOT}/${RUN_ID}"
 
 mkdir -p "${OUTPUT_DIR}"

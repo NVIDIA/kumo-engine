@@ -923,7 +923,8 @@ fn run_benchmark(reader: Arc<ShardReader>, threads: usize, duration: std::time::
         "Benchmark: threads={}, duration={}s, nodes={}",
         threads, duration.as_secs(), nodes
     );
-    let end_time = std::time::Instant::now() + duration;
+    let start_time = std::time::Instant::now();
+    let end_time = start_time + duration;
 
     const BUCKETS_US: [u64; 18] = [
         1, 2, 5, 10, 20, 50, 100, 200, 500, 1_000, 2_000, 5_000, 10_000, 20_000, 50_000,
@@ -1010,6 +1011,20 @@ fn run_benchmark(reader: Arc<ShardReader>, threads: usize, duration: std::time::
             )
         }));
     }
+
+    let length = duration.as_secs().max(1);
+    let pb = ProgressBar::new(length);
+    pb.set_style(
+        ProgressStyle::with_template("{msg} {bar:40.cyan/blue} {pos}/{len}s ({eta})")
+            .unwrap_or_else(|_| ProgressStyle::default_bar()),
+    );
+    pb.set_message("Benchmark");
+    while std::time::Instant::now() < end_time {
+        let elapsed = std::time::Instant::now().duration_since(start_time);
+        pb.set_position(elapsed.as_secs().min(length));
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    pb.finish_with_message("Benchmark complete");
 
     let mut total_ops = 0u64;
     let mut total_errors = 0u64;

@@ -47,20 +47,20 @@ struct MassiveArgs {
     /// Destination kind.
     #[arg(long, value_enum, default_value = "local")]
     dest: Dest,
-    /// Number of nodes to generate.
-    #[arg(long, default_value_t = 500_000_000)]
+    /// Number of nodes to generate (supports 10k, 5m, 2b).
+    #[arg(long, default_value = "500000000", value_parser = parse_human_u64)]
     nodes: u64,
-    /// Number of edges to generate per relation (two relations are emitted).
-    #[arg(long, default_value_t = 500_000_000)]
+    /// Number of edges to generate per relation (supports 10k, 5m, 2b).
+    #[arg(long, default_value = "500000000", value_parser = parse_human_u64)]
     edges_per_relation: u64,
-    /// Maximum destination id (dst_id sampled uniformly from [0, max_dst_id]).
-    #[arg(long, default_value_t = 100_000_000_000u64)]
+    /// Maximum destination id (supports 10k, 5m, 2b).
+    #[arg(long, default_value = "100000000000", value_parser = parse_human_u64)]
     max_dst_id: u64,
-    /// Rows per RecordBatch written to Parquet for edges (controls memory usage).
-    #[arg(long, default_value_t = 1_000_000)]
+    /// Rows per RecordBatch written to Parquet for edges (supports 10k, 5m).
+    #[arg(long, default_value = "1000000", value_parser = parse_human_usize)]
     edge_batch_size: usize,
-    /// Parquet row group size (rows); keep aligned with batch sizes for streaming writes.
-    #[arg(long, default_value_t = 1_000_000)]
+    /// Parquet row group size (rows); keep aligned with batch sizes for streaming writes (supports 10k, 5m).
+    #[arg(long, default_value = "1000000", value_parser = parse_human_usize)]
     row_group_size: usize,
     /// RNG seed (per relation a different salt is applied).
     #[arg(long, default_value_t = 42)]
@@ -86,8 +86,8 @@ struct MassiveArgs {
     /// S3 endpoint override (dest=s3, for custom/minio).
     #[arg(long)]
     s3_endpoint: Option<String>,
-    /// S3 multipart part size in bytes (default 64 MiB).
-    #[arg(long, default_value_t = 64 * 1024 * 1024)]
+    /// S3 multipart part size in bytes (supports 64mb, 128mb).
+    #[arg(long, default_value = "64mb", value_parser = parse_human_usize_bytes)]
     s3_part_size: usize,
     /// Max concurrent multipart parts in flight (for all cloud backends).
     #[arg(long, default_value_t = 10)]
@@ -128,11 +128,11 @@ struct MassiveArgs {
     /// Disable node data Parquet generation.
     #[arg(long, default_value_t = false)]
     no_node_data: bool,
-    /// Bytes per node in the node data column.
-    #[arg(long, default_value_t = 128)]
+    /// Bytes per node in the node data column (supports 12mb, 256k).
+    #[arg(long, default_value = "128b", value_parser = parse_human_usize_bytes)]
     node_data_bytes: usize,
-    /// Rows per RecordBatch written to Parquet for node data.
-    #[arg(long, default_value_t = 1_000_000)]
+    /// Rows per RecordBatch written to Parquet for node data (supports 10k, 5m).
+    #[arg(long, default_value = "1000000", value_parser = parse_human_usize)]
     node_data_batch_size: usize,
 }
 
@@ -166,7 +166,11 @@ fn main() -> Result<()> {
 
     info!(
         "Generating massive dataset: nodes={}, edges_per_relation={}, max_dst_id={}, node_data={}, node_data_bytes={}",
-        args.nodes, args.edges_per_relation, args.max_dst_id, args.node_data, args.node_data_bytes
+        format_count_with_raw(args.nodes),
+        format_count_with_raw(args.edges_per_relation),
+        format_count_with_raw(args.max_dst_id),
+        args.node_data,
+        format_bytes_with_raw(args.node_data_bytes as u64),
     );
     let mut node_meta = NodeShardMetadata {
         min_id: 0,
@@ -454,10 +458,20 @@ fn node_data_bytes(node_id: u64, bytes_per_node: usize) -> Vec<u8> {
 
 fn print_stats(args: &MassiveArgs, target: &OutputTarget, elapsed: std::time::Duration) {
     println!("Stats:");
-    println!("  nodes: {}", format_count(args.nodes));
-    println!("  edges_per_relation: {}", format_count(args.edges_per_relation));
+    println!("  nodes: {}", format_count_with_raw(args.nodes));
+    println!(
+        "  edges_per_relation: {}",
+        format_count_with_raw(args.edges_per_relation)
+    );
     println!("  relations: 2");
-    println!("  node_data_bytes: {}", format_bytes(args.node_data_bytes as u64));
+    println!(
+        "  max_dst_id: {}",
+        format_count_with_raw(args.max_dst_id)
+    );
+    println!(
+        "  node_data_bytes: {}",
+        format_bytes_with_raw(args.node_data_bytes as u64)
+    );
     println!("  time: {:.2}s", elapsed.as_secs_f64());
     if let OutputTarget::Local { root } = target {
         let files = [
@@ -480,20 +494,20 @@ fn print_stats(args: &MassiveArgs, target: &OutputTarget, elapsed: std::time::Du
             }
         }
         entries.sort_by(|a, b| a.0.cmp(&b.0));
-        println!("  total_bytes: {}", format_bytes(total));
+        println!("  total_bytes: {}", format_bytes_with_raw(total));
         println!("  files:");
         for (name, size) in entries {
-            println!("    {:<24} {}", name, format_bytes(size));
+            println!("    {:<24} {}", name, format_bytes_with_raw(size));
         }
     } else {
         match list_remote_objects(target) {
             Ok(mut entries) => {
                 entries.sort_by(|a, b| a.0.cmp(&b.0));
                 let total: u64 = entries.iter().map(|(_, size)| *size).sum();
-                println!("  total_bytes: {}", format_bytes(total));
+                println!("  total_bytes: {}", format_bytes_with_raw(total));
                 println!("  files:");
                 for (name, size) in entries {
-                    println!("    {:<24} {}", name, format_bytes(size));
+                    println!("    {:<24} {}", name, format_bytes_with_raw(size));
                 }
             }
             Err(err) => {
@@ -534,6 +548,78 @@ fn format_count(value: u64) -> String {
     } else {
         value.to_string()
     }
+}
+
+fn format_count_with_raw(value: u64) -> String {
+    format!("{} ({})", value, format_count(value))
+}
+
+fn format_bytes_with_raw(value: u64) -> String {
+    format!("{} ({})", value, format_bytes(value))
+}
+
+fn parse_human_usize(raw: &str) -> Result<usize, String> {
+    let value = parse_human_u64(raw)?;
+    usize::try_from(value).map_err(|_| format!("value out of range: {raw}"))
+}
+
+fn parse_human_usize_bytes(raw: &str) -> Result<usize, String> {
+    let value = parse_human_bytes(raw)?;
+    usize::try_from(value).map_err(|_| format!("value out of range: {raw}"))
+}
+
+fn parse_human_u64(raw: &str) -> Result<u64, String> {
+    let (number, suffix) = split_number_suffix(raw)?;
+    let multiplier = match suffix.as_str() {
+        "" => 1u64,
+        "k" => 1_000u64,
+        "m" => 1_000_000u64,
+        "b" => 1_000_000_000u64,
+        "t" => 1_000_000_000_000u64,
+        _ => return Err(format!("invalid suffix: {raw}")),
+    };
+    number
+        .checked_mul(multiplier)
+        .ok_or_else(|| format!("value out of range: {raw}"))
+}
+
+fn parse_human_bytes(raw: &str) -> Result<u64, String> {
+    let (number, suffix) = split_number_suffix(raw)?;
+    let multiplier = match suffix.as_str() {
+        "" | "b" => 1u64,
+        "k" | "kb" => 1024u64,
+        "m" | "mb" => 1024u64 * 1024u64,
+        "g" | "gb" => 1024u64 * 1024u64 * 1024u64,
+        "t" | "tb" => 1024u64 * 1024u64 * 1024u64 * 1024u64,
+        _ => return Err(format!("invalid suffix: {raw}")),
+    };
+    number
+        .checked_mul(multiplier)
+        .ok_or_else(|| format!("value out of range: {raw}"))
+}
+
+fn split_number_suffix(raw: &str) -> Result<(u64, String), String> {
+    let cleaned = raw.trim().replace('_', "");
+    if cleaned.is_empty() {
+        return Err("empty value".into());
+    }
+    let lower = cleaned.to_ascii_lowercase();
+    let mut idx = 0;
+    for (i, ch) in lower.char_indices() {
+        if !ch.is_ascii_digit() {
+            idx = i;
+            break;
+        }
+        idx = i + ch.len_utf8();
+    }
+    let (num_part, suffix_part) = lower.split_at(idx);
+    if num_part.is_empty() {
+        return Err(format!("missing number: {raw}"));
+    }
+    let number: u64 = num_part
+        .parse()
+        .map_err(|_| format!("invalid number: {raw}"))?;
+    Ok((number, suffix_part.to_string()))
 }
 
 enum OutputTarget {
