@@ -63,26 +63,10 @@ enum RemoteStore {
 
 fn main() -> Result<()> {
     let mut args = std::env::args().skip(1).peekable();
-    let mut profile_path: Option<PathBuf> = None;
-    let mut profile_pprof_path: Option<PathBuf> = None;
     let mut profile_out_base: Option<PathBuf> = None;
     let mut source_str: Option<String> = None;
     while let Some(arg) = args.next() {
         if arg == "--profile" {
-            let path = args
-                .next()
-                .ok_or_else(|| anyhow!("--profile requires a file path"))?;
-            profile_path = Some(PathBuf::from(path));
-            continue;
-        }
-        if arg == "--profile-pprof" {
-            let path = args
-                .next()
-                .ok_or_else(|| anyhow!("--profile-pprof requires a file path"))?;
-            profile_pprof_path = Some(PathBuf::from(path));
-            continue;
-        }
-        if arg == "--profile-out" {
             let base = match args.peek() {
                 Some(next) if !next.starts_with("--") => args.next().unwrap(),
                 _ => "explore-profile".to_string(),
@@ -99,21 +83,17 @@ fn main() -> Result<()> {
     }
     let source_str = source_str.ok_or_else(|| {
         anyhow!(
-            "usage: explore [--profile-out [base]] <source> (local path or s3:// gs:// az://); optional: --profile <path.svg> or --profile-pprof <path.pb>"
+            "usage: explore [--profile [base]] <source> (local path or s3:// gs:// az://)"
         )
     })?;
-    let profile_enabled = profile_path.is_some()
-        || profile_pprof_path.is_some()
-        || profile_out_base.is_some();
+    let profile_enabled = profile_out_base.is_some();
     if profile_enabled && cfg!(debug_assertions) && cfg!(target_arch = "aarch64") {
         return Err(anyhow!(
             "pprof profiling in debug builds can panic on aarch64; rerun with `--release`"
         ));
     }
-    let _guard = profile_path
+    let _guard = profile_out_base
         .as_ref()
-        .or(profile_pprof_path.as_ref())
-        .or(profile_out_base.as_ref())
         .map(|_| ProfilerGuard::new(500))
         .transpose()
         .context("start profiler")?;
@@ -133,20 +113,6 @@ fn main() -> Result<()> {
             let bytes = profile.encode_to_vec();
             file.write_all(&bytes).context("write pprof profile")?;
             println!("Wrote pprof profile to {}", pb_path.display());
-        }
-        if let Some(path) = profile_path.as_ref() {
-            let file = fs::File::create(path).context("create profile output")?;
-            report
-                .flamegraph(file)
-                .context("write flamegraph profile")?;
-            println!("Wrote profile to {}", path.display());
-        }
-        if let Some(path) = profile_pprof_path.as_ref() {
-            let profile = report.pprof().context("build pprof profile")?;
-            let mut file = fs::File::create(path).context("create pprof output")?;
-            let bytes = profile.encode_to_vec();
-            file.write_all(&bytes).context("write pprof profile")?;
-            println!("Wrote pprof profile to {}", path.display());
         }
     }
     match run_result {
