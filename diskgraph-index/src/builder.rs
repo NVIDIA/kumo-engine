@@ -18,7 +18,6 @@ use parquet::arrow::arrow_reader::ArrowReaderOptions;
 use parquet::file::metadata::ParquetMetaData;
 use parquet::file::reader::FileReader;
 use parquet::file::serialized_reader::SerializedFileReader;
-use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use serde_json;
 use serde::Serialize;
 use diskgraph_fs::{build_s3_client, S3Config as FsS3Config};
@@ -346,11 +345,6 @@ fn download_gcs_store(
         builder = builder.with_service_account_key(sa_key);
     } else if let Some(app_creds) = &cfg.application_credentials_path {
         builder = builder.with_application_credentials(app_creds);
-    } else if let Some(endpoint) = &cfg.endpoint {
-        let sa = format!(
-            r#"{{"private_key":"private_key","private_key_id":"fake","client_email":"fake@example.com","disable_oauth":true,"gcs_base_url":"{endpoint}"}}"#
-        );
-        builder = builder.with_service_account_key(sa);
     }
     let store = builder
         .build()
@@ -365,52 +359,6 @@ fn download_gcs_store(
         progress,
         stage,
     )
-}
-
-fn download_gcs_emulator(
-    rt: &Runtime,
-    cfg: &crate::streaming::GcsLocation,
-    local_path: &Path,
-    progress: Option<&dyn ProgressSink>,
-    stage: Option<BuildStage>,
-) -> Result<()> {
-    if let Some(parent) = local_path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let endpoint = cfg
-        .endpoint
-        .as_ref()
-        .ok_or_else(|| IndexBuildError::ObjectStore("missing GCS endpoint".into()))?;
-    let base = endpoint.trim_end_matches('/');
-    let key_enc = utf8_percent_encode(&cfg.key, NON_ALPHANUMERIC).to_string();
-    let url = format!(
-        "{}/download/storage/v1/b/{}/o/{}?alt=media",
-        base, cfg.bucket, key_enc
-    );
-    let bytes = rt.block_on(async {
-        let resp = reqwest::Client::builder()
-            .danger_accept_invalid_certs(true)
-            .build()
-            .map_err(|e| IndexBuildError::ObjectStore(e.to_string()))?
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| IndexBuildError::ObjectStore(e.to_string()))?
-            .error_for_status()
-            .map_err(|e| IndexBuildError::ObjectStore(e.to_string()))?;
-        resp.bytes()
-            .await
-            .map_err(|e| IndexBuildError::ObjectStore(e.to_string()))
-    })?;
-    fs::write(local_path, &bytes)?;
-    if let (Some(progress), Some(stage)) = (progress, stage) {
-        progress.report(BuildProgress {
-            stage,
-            current: bytes.len() as u64,
-            total: Some(bytes.len() as u64),
-        });
-    }
-    Ok(())
 }
 
 fn parquet_source_name(source: &ParquetSource) -> String {
@@ -472,12 +420,6 @@ fn localize_parquet_source(
                 .join("gcs")
                 .join(&cfg.bucket)
                 .join(&cfg.key);
-            if let Some(endpoint) = &cfg.endpoint {
-                if endpoint.starts_with("http") {
-                    download_gcs_emulator(rt, cfg, &local_path, progress, stage)?;
-                    return Ok(ParquetSource::LocalFile(local_path));
-                }
-            }
             download_gcs_store(rt, cfg, &local_path, opts, progress, stage)?;
             Ok(ParquetSource::LocalFile(local_path))
         }
@@ -505,9 +447,6 @@ fn localize_parquet_source(
             }
             if let Some(tenant_id) = &cfg.tenant_id {
                 builder = builder.with_tenant_id(tenant_id);
-            }
-            if let Some(use_emulator) = cfg.use_emulator {
-                builder = builder.with_use_emulator(use_emulator);
             }
             let store = builder
                 .build()

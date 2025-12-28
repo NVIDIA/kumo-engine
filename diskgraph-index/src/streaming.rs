@@ -41,7 +41,6 @@ pub struct GcsLocation {
     pub service_account_path: Option<String>,
     pub service_account_key: Option<String>,
     pub application_credentials_path: Option<String>,
-    pub endpoint: Option<String>,
 }
 
 /// ADLS v2 / Azure Blob location and optional configuration.
@@ -57,5 +56,4 @@ pub struct AdlsLocation {
     pub client_secret: Option<String>,
     pub tenant_id: Option<String>,
     pub endpoint: Option<String>,
-    pub use_emulator: Option<bool>,
 }

@@ -375,7 +375,6 @@ fn build_from_remote(
                     service_account_path: None,
                     service_account_key: None,
                     application_credentials_path: None,
-                    endpoint: None,
                 },
             )),
             RemoteStore::Adls {
@@ -395,7 +394,6 @@ fn build_from_remote(
                     client_secret: client.resolved.client_secret.clone(),
                     tenant_id: client.resolved.tenant_id.clone(),
                     endpoint: client.resolved.endpoint.clone(),
-                    use_emulator: None,
                 },
             )),
         }

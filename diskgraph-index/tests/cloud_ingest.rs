@@ -382,7 +382,7 @@ fn adls_config_from_env() -> Option<AdlsConfig> {
 fn s3_ingest_round_trip() {
     let Some(cfg) = s3_config_from_env() else {
         if std::env::var("RUN_CLOUD_TESTS").ok().as_deref() == Some("1") {
-            panic!("RUN_CLOUD_TESTS=1 but S3_* env vars not set; set at least S3_BUCKET (and S3_ENDPOINT/creds for emulator or cloud)");
+            panic!("RUN_CLOUD_TESTS=1 but S3_* env vars not set; set at least S3_BUCKET (and S3_ENDPOINT/creds for custom endpoints if needed)");
         } else {
             eprintln!("skipping s3_ingest_round_trip; set RUN_CLOUD_TESTS=1 and S3_* env vars");
             return;
@@ -536,7 +536,6 @@ fn gcs_ingest_round_trip() {
                     service_account_path: None,
                     service_account_key: None,
                     application_credentials_path: None,
-                    endpoint: None,
                 }),
                 has_dest_sort_key: true,
             },
@@ -549,7 +548,6 @@ fn gcs_ingest_round_trip() {
                     service_account_path: None,
                     service_account_key: None,
                     application_credentials_path: None,
-                    endpoint: None,
                 }),
                 has_dest_sort_key: false,
             },
@@ -572,7 +570,7 @@ fn gcs_ingest_round_trip() {
 fn adls_ingest_round_trip() {
     let Some(cfg) = adls_config_from_env() else {
         if std::env::var("RUN_CLOUD_TESTS").ok().as_deref() == Some("1") {
-            panic!("RUN_CLOUD_TESTS=1 but AZURE_* env vars not set; set AZURE_ACCOUNT, AZURE_CONTAINER, and either AZURE_ACCESS_KEY/SAS or emulator vars");
+            panic!("RUN_CLOUD_TESTS=1 but AZURE_* env vars not set; set AZURE_ACCOUNT, AZURE_CONTAINER, and either AZURE_ACCESS_KEY/SAS or other auth vars");
         } else {
             eprintln!("skipping adls_ingest_round_trip; set RUN_CLOUD_TESTS=1 and AZURE_* env vars");
             return;
@@ -643,7 +641,6 @@ fn adls_ingest_round_trip() {
                     client_secret: resolved.client_secret.clone(),
                     tenant_id: resolved.tenant_id.clone(),
                     endpoint: resolved.endpoint.clone(),
-                    use_emulator: None,
                 }),
                 has_dest_sort_key: true,
             },
@@ -661,7 +658,6 @@ fn adls_ingest_round_trip() {
                     client_secret: resolved.client_secret.clone(),
                     tenant_id: resolved.tenant_id.clone(),
                     endpoint: resolved.endpoint.clone(),
-                    use_emulator: None,
                 }),
                 has_dest_sort_key: false,
             },

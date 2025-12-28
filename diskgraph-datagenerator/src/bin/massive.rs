@@ -9,6 +9,7 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Result;
 use arrow_array::builder::BinaryBuilder;
@@ -90,16 +91,16 @@ struct MassiveArgs {
     /// Max concurrent multipart parts in flight (for all cloud backends).
     #[arg(long, default_value_t = 10)]
     multipart_concurrency: usize,
-    /// Allow http for S3 endpoints (e.g., local emulators).
+    /// Allow http for S3 endpoints (e.g., local test endpoints).
     #[arg(long)]
     s3_allow_http: Option<bool>,
     /// Force virtual-hosted style for S3 (defaults to true for AWS endpoints, false for custom unless set).
     #[arg(long)]
     s3_virtual_hosted: Option<bool>,
-    /// Azure endpoint override (dest=adls, for custom/emulator).
+    /// Azure endpoint override (dest=adls, for custom endpoints).
     #[arg(long)]
     azure_endpoint: Option<String>,
-    /// Allow http for Azure endpoints (e.g., emulator).
+    /// Allow http for Azure endpoints (e.g., local test endpoints).
     #[arg(long)]
     azure_allow_http: Option<bool>,
     /// Azure SAS key.
@@ -296,7 +297,8 @@ fn generate_edges(
         }
     }
     flush_edge_batch(&schema, &mut writer, &mut src_buf, &mut dst_buf, &mut dsk_buf)?;
-    writer.close()?;
+    let sink = writer.into_inner()?;
+    sink.finish()?;
     if let Some(progress) = progress.as_deref_mut() {
         progress.set_position(processed_nodes);
     }
@@ -430,7 +432,8 @@ fn generate_node_data(
         }
     }
 
-    writer.close()?;
+    let sink = writer.into_inner()?;
+    sink.finish()?;
     Ok(())
 }
 
@@ -694,11 +697,11 @@ impl OutputTarget {
         }
     }
 
-    fn sink(&self, path: &Path) -> Result<Box<dyn Write + Send>> {
+    fn sink(&self, path: &Path) -> Result<OutputSink> {
         match self {
             OutputTarget::Local { .. } => {
                 let file = fs::File::create(path)?;
-                Ok(Box::new(file))
+                Ok(OutputSink::Local(file))
             }
             OutputTarget::S3 {
                 store,
@@ -725,7 +728,7 @@ impl OutputTarget {
                 let upload = rt
                     .block_on(store.put_multipart(&obj))
                     .map_err(to_io_err)?;
-                Ok(Box::new(S3Sink {
+                Ok(OutputSink::Multipart(MultipartSink {
                     writer: Some(WriteMultipart::new_with_chunk_size(
                         upload,
                         *part_size,
@@ -796,19 +799,93 @@ impl OutputTarget {
     }
 }
 
-struct S3Sink {
+enum OutputSink {
+    Local(fs::File),
+    Multipart(MultipartSink),
+}
+
+impl OutputSink {
+    fn finish(self) -> io::Result<()> {
+        match self {
+            OutputSink::Local(mut file) => file.flush(),
+            OutputSink::Multipart(sink) => sink.finish(),
+        }
+    }
+}
+
+impl Write for OutputSink {
+    fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+        match self {
+            OutputSink::Local(file) => file.write(data),
+            OutputSink::Multipart(sink) => sink.write(data),
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        match self {
+            OutputSink::Local(file) => file.flush(),
+            OutputSink::Multipart(sink) => sink.flush(),
+        }
+    }
+}
+
+struct MultipartSink {
     writer: Option<WriteMultipart>,
     rt: Arc<Runtime>,
     max_concurrency: usize,
     handle: tokio::runtime::Handle,
 }
 
-impl Write for S3Sink {
+impl MultipartSink {
+    fn finish(mut self) -> io::Result<()> {
+        self.finish_inner()
+    }
+
+    fn finish_inner(&mut self) -> io::Result<()> {
+        let mut writer = match self.writer.take() {
+            Some(writer) => writer,
+            None => return Ok(()),
+        };
+        let rt = self.rt.clone();
+        Self::retry_with_backoff(|| rt.block_on(writer.wait_for_capacity(0)))?;
+        self.rt.block_on(writer.finish()).map_err(to_io_err)?;
+        Ok(())
+    }
+
+    fn retry_with_backoff<T>(mut op: impl FnMut() -> Result<T, object_store::Error>) -> io::Result<T> {
+        const RETRIES: usize = 3;
+        const BASE_DELAY_MS: u64 = 250;
+        let mut last_err: Option<object_store::Error> = None;
+        for attempt in 0..=RETRIES {
+            match op() {
+                Ok(val) => return Ok(val),
+                Err(err) => {
+                    last_err = Some(err);
+                    if attempt == RETRIES {
+                        break;
+                    }
+                    let delay = BASE_DELAY_MS.saturating_mul(1 << attempt);
+                    std::thread::sleep(Duration::from_millis(delay));
+                }
+            }
+        }
+        if let Some(err) = last_err {
+            Err(to_io_err(err))
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::Other,
+                "unknown multipart error",
+            ))
+        }
+    }
+}
+
+impl Write for MultipartSink {
     fn write(&mut self, data: &[u8]) -> io::Result<usize> {
         if let Some(writer) = self.writer.as_mut() {
-            self.rt
-                .block_on(writer.wait_for_capacity(self.max_concurrency))
-                .map_err(to_io_err)?;
+            let rt = self.rt.clone();
+            let max_concurrency = self.max_concurrency;
+            Self::retry_with_backoff(|| rt.block_on(writer.wait_for_capacity(max_concurrency)))?;
             let _guard = self.handle.enter();
             writer.write(data);
         }
@@ -818,21 +895,17 @@ impl Write for S3Sink {
     fn flush(&mut self) -> io::Result<()> {
         // Ensure in-flight parts have progressed; does not force a partial chunk upload.
         if let Some(writer) = self.writer.as_mut() {
-            self.rt
-                .block_on(writer.wait_for_capacity(0))
-                .map_err(to_io_err)?;
+            let rt = self.rt.clone();
+            Self::retry_with_backoff(|| rt.block_on(writer.wait_for_capacity(0)))?;
         }
         Ok(())
     }
 }
 
-impl Drop for S3Sink {
+impl Drop for MultipartSink {
     fn drop(&mut self) {
-        if let Some(writer) = self.writer.take() {
-            let writer = writer;
-            if let Err(err) = self.rt.block_on(writer.finish()) {
-                eprintln!("S3Sink finish error on drop: {err}");
-            }
+        if let Err(err) = self.finish_inner() {
+            eprintln!("MultipartSink finish error on drop: {err}");
         }
     }
 }
