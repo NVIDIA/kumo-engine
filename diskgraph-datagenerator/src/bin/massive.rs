@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::Result;
+use arrow_array::builder::BinaryBuilder;
 use arrow_array::{ArrayRef, Int64Array, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
 use bytes::Bytes;
@@ -114,6 +115,18 @@ struct MassiveArgs {
     /// Azure tenant id.
     #[arg(long)]
     azure_tenant_id: Option<String>,
+    /// Enable node data Parquet generation.
+    #[arg(long, default_value_t = true)]
+    node_data: bool,
+    /// Disable node data Parquet generation.
+    #[arg(long, default_value_t = false)]
+    no_node_data: bool,
+    /// Bytes per node in the node data column.
+    #[arg(long, default_value_t = 8)]
+    node_data_bytes: usize,
+    /// Rows per RecordBatch written to Parquet for node data.
+    #[arg(long, default_value_t = 1_000_000)]
+    node_data_batch_size: usize,
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum, PartialEq, Eq)]
@@ -132,7 +145,10 @@ struct RelationConfig {
 
 fn main() -> Result<()> {
     tracing_subscriber::fmt().with_env_filter("info").init();
-    let args = MassiveArgs::parse();
+    let mut args = MassiveArgs::parse();
+    if args.no_node_data {
+        args.node_data = false;
+    }
     let target = OutputTarget::parse(&args)?;
     target.prepare()?;
 
@@ -143,7 +159,7 @@ fn main() -> Result<()> {
         "Generating massive dataset: nodes={}, edges_per_relation={}, max_dst_id={}",
         args.nodes, args.edges_per_relation, args.max_dst_id
     );
-    let node_meta = NodeShardMetadata {
+    let mut node_meta = NodeShardMetadata {
         min_id: 0,
         max_id: args.nodes.saturating_sub(1),
         node_data_path: None,
@@ -173,10 +189,17 @@ fn main() -> Result<()> {
         args.seed ^ 0xA5A5_0002,
     )?;
 
+    if args.node_data {
+        let rel = "nodes.parquet".to_string();
+        generate_node_data(&target, &rel, &args)?;
+        node_meta.node_data_path = Some(rel);
+    }
+
     write_metadata(
         &target,
         &args.node_type_name,
         node_meta,
+        args.node_data,
         args.max_dst_id,
         rel0_cfg,
         edge0_meta,
@@ -289,6 +312,7 @@ fn write_metadata(
     root: &OutputTarget,
     node_type_name: &str,
     node: NodeShardMetadata,
+    has_node_data: bool,
     max_dst_id: u64,
     rel0: RelationConfig,
     edge0: EdgeShardMetadata,
@@ -298,7 +322,7 @@ fn write_metadata(
     let node_meta = NodeTypeMetadata {
         name: node_type_name.into(),
         max_id: node.max_id.max(max_dst_id),
-        has_node_data: false,
+        has_node_data,
         shards: vec![node],
     };
     let edge_relations = vec![
@@ -324,6 +348,56 @@ fn write_metadata(
     };
     let json = serde_json::to_string_pretty(&metadata)?;
     root.write_bytes("metadata.json", json.into_bytes())
+}
+
+fn generate_node_data(target: &OutputTarget, rel_path: &str, args: &MassiveArgs) -> Result<()> {
+    let path = target.join(rel_path);
+    if let OutputTarget::Local { .. } = target {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+    }
+
+    let schema = Schema::new(vec![Field::new("data", DataType::Binary, false)]);
+    let props = WriterProperties::builder()
+        .set_max_row_group_size(args.row_group_size)
+        .build();
+    let sink = target.sink(&path)?;
+    let mut writer = ArrowWriter::try_new(sink, Arc::new(schema.clone()), Some(props))?;
+
+    let mut remaining = args.nodes;
+    let mut next_id = 0u64;
+    while remaining > 0 {
+        let take = remaining.min(args.node_data_batch_size as u64) as usize;
+        let mut builder = BinaryBuilder::new();
+        for i in 0..take {
+            let id = next_id + i as u64;
+            let bytes = node_data_bytes(id, args.node_data_bytes);
+            builder.append_value(&bytes);
+        }
+        let array = builder.finish();
+        let batch = RecordBatch::try_new(Arc::new(schema.clone()), vec![Arc::new(array)])?;
+        writer.write(&batch)?;
+        remaining -= take as u64;
+        next_id += take as u64;
+    }
+
+    writer.close()?;
+    Ok(())
+}
+
+fn node_data_bytes(node_id: u64, bytes_per_node: usize) -> Vec<u8> {
+    if bytes_per_node == 0 {
+        return Vec::new();
+    }
+    let text = format!("node:{node_id}");
+    let mut out = text.into_bytes();
+    if out.len() > bytes_per_node {
+        out.truncate(bytes_per_node);
+    } else if out.len() < bytes_per_node {
+        out.resize(bytes_per_node, b' ');
+    }
+    out
 }
 
 enum OutputTarget {

@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use arrow_array::builder::BinaryBuilder;
 use arrow_array::{ArrayRef, Int64Array, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
 use clap::{Parser, ValueEnum};
@@ -57,6 +58,15 @@ struct Cli {
     /// Total edges per relation (used by scenarios that support override).
     #[arg(long, default_value_t = 50_000)]
     edges: u64,
+    /// Enable node data Parquet generation.
+    #[arg(long, default_value_t = true)]
+    node_data: bool,
+    /// Disable node data Parquet generation.
+    #[arg(long, default_value_t = false)]
+    no_node_data: bool,
+    /// Bytes per node in the node data column.
+    #[arg(long, default_value_t = 8)]
+    node_data_bytes: usize,
 }
 
 const SHARD_GAP: u64 = 7;
@@ -77,7 +87,10 @@ type EdgeCountMap = HashMap<String, u64>;
 
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt().with_env_filter("info").init();
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
+    if cli.no_node_data {
+        cli.node_data = false;
+    }
     fs::create_dir_all(&cli.output)?;
 
     match cli.scenario.clone() {
@@ -125,6 +138,9 @@ fn generate_dataset(cli: &Cli, scenario: ScenarioKind) -> anyhow::Result<()> {
     }
 
     assign_node_shards(&mut node_types, &shard_ranges_by_type);
+    if cli.node_data {
+        write_node_data(&root, &mut node_types, cli.node_data_bytes)?;
+    }
     let edge_rows = build_edge_shards(&edge_relations, &edge_counts, &shard_ranges_by_type);
     write_edges(&root, &mut edge_relations, edge_rows, cli.node_shards)?;
     write_metadata(&root, &node_types, &edge_relations)?;
@@ -142,7 +158,7 @@ fn build_simple(
     let node_types = vec![NodeTypeMetadata {
         name: "User".into(),
         max_id: 0,
-        has_node_data: false,
+        has_node_data: cli.node_data,
         shards: Vec::new(),
     }];
     let mut edge_counts = HashMap::new();
@@ -168,7 +184,7 @@ fn build_temporal_presorted(
     let node_types = vec![NodeTypeMetadata {
         name: "Account".into(),
         max_id: 0,
-        has_node_data: false,
+        has_node_data: cli.node_data,
         shards: Vec::new(),
     }];
     let mut edge_counts = HashMap::new();
@@ -194,7 +210,7 @@ fn build_temporal_weighted(
     let node_types = vec![NodeTypeMetadata {
         name: "Device".into(),
         max_id: 0,
-        has_node_data: false,
+        has_node_data: cli.node_data,
         shards: Vec::new(),
     }];
     let mut edge_counts = HashMap::new();
@@ -220,7 +236,7 @@ fn build_weighted_only(
     let node_types = vec![NodeTypeMetadata {
         name: "Item".into(),
         max_id: 0,
-        has_node_data: false,
+        has_node_data: cli.node_data,
         shards: Vec::new(),
     }];
     let mut edge_counts = HashMap::new();
@@ -247,19 +263,19 @@ fn build_mixed(
         NodeTypeMetadata {
             name: "User".into(),
             max_id: 0,
-            has_node_data: false,
+            has_node_data: cli.node_data,
             shards: Vec::new(),
         },
         NodeTypeMetadata {
             name: "Ip".into(),
             max_id: 0,
-            has_node_data: false,
+            has_node_data: cli.node_data,
             shards: Vec::new(),
         },
         NodeTypeMetadata {
             name: "Merchant".into(),
             max_id: 0,
-            has_node_data: false,
+            has_node_data: cli.node_data,
             shards: Vec::new(),
         },
     ];
@@ -471,7 +487,7 @@ fn assign_node_shards(
             .cloned()
             .unwrap_or_else(|| vec![None; 1]);
         nt.shards.clear();
-        for (idx, maybe_range) in ranges.iter().enumerate() {
+        for (_idx, maybe_range) in ranges.iter().enumerate() {
             if maybe_range.is_none() {
                 nt.shards.push(NodeShardMetadata {
                     min_id: 0,
@@ -488,6 +504,81 @@ fn assign_node_shards(
             });
         }
     }
+}
+
+fn write_node_data(
+    root: &Path,
+    node_types: &mut [NodeTypeMetadata],
+    bytes_per_node: usize,
+) -> anyhow::Result<()> {
+    for nt in node_types.iter_mut() {
+        if !nt.has_node_data {
+            continue;
+        }
+        for (idx, shard) in nt.shards.iter_mut().enumerate() {
+            let rows = shard
+                .max_id
+                .saturating_sub(shard.min_id)
+                .saturating_add(1);
+            let path = root.join(format!("nodes-{idx:05}.parquet"));
+            write_node_data_parquet(&path, shard.min_id, rows, bytes_per_node)?;
+            let rel = path
+                .strip_prefix(root)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .to_string();
+            shard.node_data_path = Some(rel);
+        }
+    }
+    Ok(())
+}
+
+fn write_node_data_parquet(
+    path: &Path,
+    start_id: u64,
+    rows: u64,
+    bytes_per_node: usize,
+) -> anyhow::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let schema = Schema::new(vec![Field::new("data", DataType::Binary, false)]);
+    let props = WriterProperties::builder().build();
+    let file = fs::File::create(path)?;
+    let mut writer = ArrowWriter::try_new(file, Arc::new(schema.clone()), Some(props))?;
+    let mut remaining = rows;
+    let mut next_id = start_id;
+    let batch_size = 10_000u64;
+    while remaining > 0 {
+        let take = remaining.min(batch_size) as usize;
+        let mut builder = BinaryBuilder::new();
+        for i in 0..take {
+            let id = next_id + i as u64;
+            let bytes = node_data_bytes(id, bytes_per_node);
+            builder.append_value(&bytes);
+        }
+        let array = builder.finish();
+        let batch = RecordBatch::try_new(Arc::new(schema.clone()), vec![Arc::new(array)])?;
+        writer.write(&batch)?;
+        remaining -= take as u64;
+        next_id += take as u64;
+    }
+    writer.close()?;
+    Ok(())
+}
+
+fn node_data_bytes(node_id: u64, bytes_per_node: usize) -> Vec<u8> {
+    if bytes_per_node == 0 {
+        return Vec::new();
+    }
+    let text = format!("node:{node_id}");
+    let mut out = text.into_bytes();
+    if out.len() > bytes_per_node {
+        out.truncate(bytes_per_node);
+    } else if out.len() < bytes_per_node {
+        out.resize(bytes_per_node, b' ');
+    }
+    out
 }
 
 fn write_edges(

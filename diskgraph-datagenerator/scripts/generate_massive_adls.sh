@@ -15,6 +15,13 @@ NODE_TYPE="${NODE_TYPE:-Node}"
 EDGE_BATCH="${EDGE_BATCH:-1000000}"
 ROW_GROUP="${ROW_GROUP:-1000000}"
 SEED="${SEED:-42}"
+NODE_DATA="${NODE_DATA:-true}"
+NODE_DATA_BYTES="${NODE_DATA_BYTES:-8}"
+NODE_DATA_BATCH="${NODE_DATA_BATCH:-1000000}"
+NODE_DATA_FLAG=""
+if [[ "${NODE_DATA}" == "false" ]]; then
+  NODE_DATA_FLAG="--no-node-data"
+fi
 
 # Target URL prefix, e.g. az://ACCOUNT/CONTAINER/diskgraph-datagenerator
 AZURE_URL="${AZURE_URL:-az://kumo/kumo-unit-test/diskgraph-datagenerator}"
@@ -38,6 +45,9 @@ cargo run -p diskgraph-datagenerator --bin massive --release -- \
   --relation0-name "${REL0_NAME}" \
   --relation1-name "${REL1_NAME}" \
   --relation0-sort-bits "${REL0_SORT_BITS}" \
-  --relation1-sort-bits "${REL1_SORT_BITS}"
+  --relation1-sort-bits "${REL1_SORT_BITS}" \
+  ${NODE_DATA_FLAG} \
+  --node-data-bytes "${NODE_DATA_BYTES}" \
+  --node-data-batch-size "${NODE_DATA_BATCH}"
 
 echo "Done. Dataset written to ${DEST}"
