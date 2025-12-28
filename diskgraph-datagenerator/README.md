@@ -17,10 +17,12 @@ cargo run -p diskgraph-datagenerator -- --output /tmp/dg-data --scenario coverag
 
 Arguments:
 - `--output PATH` (required): directory where dataset subdirectories are written.
-- `--scenario {coverage,simple-no-optional,temporal-presorted-with-edge-id,temporal-weighted-unsorted,weighted-only,mixed-multitable}`: which scenario(s) to generate. `coverage` generates all.
+- `--scenario {coverage,simple-no-optional,temporal-presorted,temporal-weighted,weighted-only,mixed-multitable}`: which scenario(s) to generate. `coverage` generates all.
 - `--nodes N`: approximate nodes per node type (default: 10_000).
 - `--edges N`: approximate edges per relation (default: 50_000).
 - `--node-shards N`: number of node shard ranges (recorded in metadata) and edge shards per relation (default: 4; multi-shard by default).
+- `--node-data/--no-node-data`: enable or disable node data Parquet generation (default: enabled).
+- `--node-data-bytes N`: bytes per node in the node data column (default: 128).
 
 ## Scenarios and Edge Cases
 
@@ -36,6 +38,7 @@ Arguments:
 Each scenario creates a dataset directory under `--output`, for example `simple_no_optional/`:
 - `metadata.json`: matches the schema in `diskgraph-core/src/metadata.rs`.
 - `edges/RELATION/part-00000.parquet ...`: shards for each edge relation containing `src_id`, `dst_id`, optional `dest_sort_key` columns.
+- `nodes-00000.parquet ...`: optional node data shards at the dataset root, a single binary `data` column with one row per node id in the shard range.
 Metadata records node shard ranges plus the relative edge shard paths and per-shard source id ranges (edge shard source min/max id) to keep the dataset self-contained and routable.
 
 Generation guarantees:
@@ -43,11 +46,13 @@ Generation guarantees:
 - Edge shards are sorted by `(src_id, dest_sort_key DESC when present)`.
 - Shard counts for nodes and edges match, and edge shard `N` only contains `src_id` values from node shard `N` of the relation’s source type.
 
-Parquet files are generated with ArrowWriter using plain-encoded `Int64` columns to keep ingestion predictable.
+Parquet files are generated with ArrowWriter using plain-encoded `Int64` columns to keep ingestion predictable. Node data bytes are human-readable text padded/truncated to `--node-data-bytes`.
 
 ## Massive-scale generator (streaming, single shard)
 
 For throughput benchmarks at hundreds of millions of nodes / billions of edges, use the `massive` binary. It streams Parquet row groups directly to the destination (local filesystem, S3, GCS, ADLS) in batches so RAM stays within a few GB. Default multipart size for S3 is 64 MiB (`--s3-part-size`), and Parquet row groups default to 1,000,000 rows.
+
+At the end of each run, the generator prints a stats block with node/edge counts, node data bytes, total elapsed time, and per-file sizes (local output only).
 
 Example (direct to S3, full scale by default):
 
@@ -60,8 +65,9 @@ S3_PREFIX=s3://kumo-unit-test/diskgraph-datagenerator RUN_ID=run-$(date +%s) \
 CLI highlights (see `--help`):
 - `--dest {local,s3,gcs,adls}` and `--output <path or URL>` control the sink.
 - `--nodes`, `--edges-per-relation`, `--max-dst-id` set scale; defaults: 500M nodes, 500M edges per relation, dst ids sampled up to 1e11.
-- `--edge-batch-size`, `--node-batch-size`, `--row-group-size` set streaming/buffering; defaults keep memory low.
+- `--edge-batch-size`, `--node-data-batch-size`, `--row-group-size` set streaming/buffering; defaults keep memory low.
 - `--relation{0,1}-name` and `--relation{0,1}-sort-bits` toggle relation names and optional `dest_sort_key`.
+- `--node-data/--no-node-data` and `--node-data-bytes` control node data output (default: enabled, 128 bytes).
 - `--s3-part-size` (default 64 MiB), `--s3-region`, `--s3-endpoint` allow tuning multipart uploads when `--dest s3`.
 
 Helper scripts (all default to the full-scale run; override with env vars shown in the scripts):
@@ -70,4 +76,9 @@ Helper scripts (all default to the full-scale run; override with env vars shown 
 - `scripts/generate_massive_gcs.sh` — direct streaming to GCS; runs a quick `gsutil` access check before generating.
 - `scripts/generate_massive_adls.sh` — direct streaming to Azure Blob/ADLS; honors the usual `AZURE_*` env vars.
 
-Each script writes `edges_<relation>.parquet` for two relations, and `metadata.json` under a per-run prefix like `.../run-<timestamp>-<rand>`. Metadata uses the larger of `nodes-1` and `max_dst_id` so `dst_id` values are always in-range for indexing.
+Node data env overrides for massive scripts:
+- `NODE_DATA=true|false`
+- `NODE_DATA_BYTES=128`
+- `NODE_DATA_BATCH=1000000`
+
+Each script writes `edges_<relation>.parquet` for two relations, `nodes.parquet` for optional node data, and `metadata.json` under a per-run prefix like `.../run-<timestamp>-<rand>`. Metadata uses the larger of `nodes-1` and `max_dst_id` so `dst_id` values are always in-range for indexing.

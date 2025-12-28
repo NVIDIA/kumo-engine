@@ -4,10 +4,10 @@ Rust crate for building and reading per-shard on-disk indices for the Diskgraph 
 
 ## Overview
 
-`diskgraph-index` ingests node shard ranges (from metadata) and aligned edge shards, producing two files:
+`diskgraph-index` ingests node shard ranges (from metadata) and aligned edge shards, producing two files (plus optional node data). Node data is enabled per node type in metadata (`has_node_data`), with a `node_data_path` per shard.
 
 - `offsets.bin`: delta-encoded byte offsets for each node’s edge blob.
-- `edges.bin`: packed edge blobs containing relation-prefixed counts and contiguous relation segments.
+- `edges.bin`: packed edge blobs containing relation-prefixed counts and contiguous relation segments (and optional node data payloads).
 
 At query time a shard is mmapped and edge lists are served zero-copy by slicing into the edge blob.
 
@@ -20,9 +20,10 @@ At query time a shard is mmapped and edge lists are served zero-copy by slicing 
   - `(count-1) * u16` deltas to subsequent offsets (must fit in `u16`).
 - **Edge blob (edges.bin):** For each node:
   - If the node has zero edges across all relations, nothing is written; its start/end offsets are equal.
-  - Otherwise: Prefix compact varint counts for every relation (fixed order), then per relation `count * entry_bytes` packed edges.
+  - Otherwise: Prefix compact varint counts for every relation (fixed order), then optional node data length, then per relation `count * entry_bytes` packed edges, then optional node data payload.
     - Count encoding: 1 byte for 0–63 (`00xxxxxx`), 2 bytes for 64–16,383 (`01xxxxxx xxxxxxxx`). Higher values are truncated by the builder (hard cap at the encoding limit, 0x3FFF edges per relation per node).
     - Entry packing: `dst_id` masked to the minimum bits needed for the destination type, followed by optional `dest_sort_key` bits (if present for that relation). Relation IDs are implicit by position, not stored per edge.
+    - Node data length: `u16` byte length (little-endian) stored immediately after the counts when node data is enabled. Node data bytes follow all relation segments.
 
 All offsets are byte-based (not words).
 
@@ -53,14 +54,14 @@ offsets.bin
                    |
                    v
 edges.bin
-+--------+-------------------------------------------------------------+
-| node0  | cnt(R0) | cnt(R1) | R0 edges ... | R1 edges ...             |
-+--------+-------------------------------------------------------------+
-| node1  | cnt(R0) | cnt(R1) | R0 edges ... | R1 edges ...             |
-+--------+-------------------------------------------------------------+
++--------+-------------------------------------------------------------------------+
+| node0  | cnt(R0) | cnt(R1) | [node_len] | R0 edges ... | R1 edges ... | node |
++--------+-------------------------------------------------------------------------+
+| node1  | cnt(R0) | cnt(R1) | [node_len] | R0 edges ... | R1 edges ... | data |
++--------+-------------------------------------------------------------------------+
 ```
 
-Counts use the compact 1–2 byte scheme in prefix order (R0 then R1), followed by contiguous segments for each relation in the same order.
+Counts use the compact 1–2 byte scheme in prefix order (R0 then R1), followed by optional `node_len` (u16), then contiguous segments for each relation in the same order. Node data bytes (when enabled) come last.
 
 ## Build algorithm (ShardBuilder)
 
@@ -78,10 +79,10 @@ Steps:
 3. For each node (single pass):
    - Collect edges into per-relation buckets (reused vectors).
    - Compute per-relation counts; cap each relation at 10k edges to keep counts within the compact varint range.
-   - Estimate node blob size. If the resulting offset delta would exceed `u16::MAX`, run truncation:
+   - Estimate node blob size (counts + optional node data length/payload + edges). If the resulting offset delta would exceed `u16::MAX`, run truncation:
      - Greedy leveling of the longest relation lists downward (bulk drops of the current longest plateau) until the node blob fits the delta budget.
      - Truncate buckets accordingly; record counters.
-   - Write compact varint counts (per relation), then packed edges for that relation.
+   - Write compact varint counts (per relation), optional `u16` node data length, then packed edges for that relation, then node data bytes.
    - Append the cumulative byte offset to the offsets writer.
 4. Offsets writer delta-encodes offsets in fixed chunks; writes header once finalized.
 
@@ -111,17 +112,20 @@ Steps:
    - Slice `edges.bin` for `[start, end)`.
    - Wrap in `EdgeListView` which:
      - Decodes all relation counts from the prefix (varints).
+     - If node data is enabled, reads a `u16` node data length and slices node data bytes after all relation segments.
      - Returns `RelationSegment` slices (data + layout) for zero-copy iteration.
 
 ### Efficiency considerations
 - No binary search for offsets; chunk position is arithmetic.
 - Edge list access is zero-copy; consumer can decode in place using `RelationLayout` masks.
 - Relation IDs are implicit by segment order; no per-entry relation bits stored.
+- When node data is enabled, `EdgeListView::node_data()` returns the raw bytes for the node (no padding).
 
 ## Failure modes (read path)
 - Invalid offsets header/chunk mismatch → `InvalidMetadata`.
 - Offset pointing outside edge blob or inconsistent delta encoding → `InvalidMetadata`.
 - Relation count/segment length mismatch (prefix exceeds blob, or not enough data) → I/O error.
+- Node data length overflow or trailing bytes when node data is enabled → I/O error.
 
 ## Counters and stats
 - `NodeEdgeStats`: total edges and bytes written for the shard.
@@ -157,16 +161,19 @@ Notes:
 
 `cargo run -p diskgraph-index --bin explore -- <path|s3://...|gs://...|az://...>` opens a REPL to inspect a shard built from Parquet. It streams the Parquet shards through `ShardBuilder` (no local staging), writes `offsets.bin`/`edges.bin` plus `metadata.json` into a temp cache derived from the source path, and reuses that cache within the same run if already present. Expected layout matches the massive generator output: `metadata.json` and `edges_<relation>.parquet` under the provided prefix.
 
+Profiling: `--profile [base]` writes `base.svg` and `base.pb` (defaults to `explore-profile`).
+
 Commands inside the REPL:
 - `info` — print relation layouts and node count.
 - `node <id>` — show counts and a few edges per relation for the node.
+- `benchmark <threads>` — run a 20s random lookup benchmark across N threads, including edge + node data reads.
 - `quit` / `exit` / `Ctrl+D` — leave the explorer.
 
 Helper scripts wrap auth/env checks:
-- `scripts/explore_local.sh /path/to/shard`
-- `scripts/explore_s3.sh s3://bucket/prefix` (auto-picks an AWS profile like the cloud tests, sets `AWS_EC2_METADATA_DISABLED=1`, uses `aws_config::from_env` to avoid IMDS).
-- `scripts/explore_gcs.sh gs://bucket/prefix` (ADC/gcloud).
-- `scripts/explore_adls.sh az://account/container/prefix` (`AZURE_*` env vars).
+- `scripts/explore_local.sh [-p] /path/to/shard` (`-p` writes `./explore-profile.svg` and `./explore-profile.pb`)
+- `scripts/explore_s3.sh [-p] s3://bucket/prefix` (auto-picks an AWS profile like the cloud tests, sets `AWS_EC2_METADATA_DISABLED=1`, uses `aws_config::from_env` to avoid IMDS).
+- `scripts/explore_gcs.sh [-p] gs://bucket/prefix` (ADC/gcloud).
+- `scripts/explore_adls.sh [-p] az://account/container/prefix` (`AZURE_*` env vars).
 
 ## Expectations and assumptions
 - Input Parquet shards are already sorted:
