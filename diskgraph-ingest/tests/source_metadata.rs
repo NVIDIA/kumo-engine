@@ -332,3 +332,37 @@ fn validate_relationship_duplicate_reverse_pk_pk() {
     });
     assert_err_contains(meta, "has reverse already declared");
 }
+
+#[test]
+fn validate_empty_table_name() {
+    let mut meta = base_metadata();
+    meta.tables[0].name = "  ".into();
+    assert_err_contains(meta, "table name cannot be empty");
+}
+
+#[test]
+fn validate_empty_column_name() {
+    let mut meta = base_metadata();
+    meta.tables[0].columns[0].name = " ".into();
+    assert_err_contains(meta, "table User has empty column name");
+}
+
+#[test]
+fn validate_duplicate_relationship_same_direction() {
+    let mut meta = base_metadata();
+    meta.relationships.push(RelationshipSpec {
+        name: Some("a".into()),
+        src_table: "User".into(),
+        src_column: "id".into(),
+        dst_table: "Device".into(),
+        dst_column: "id".into(),
+    });
+    meta.relationships.push(RelationshipSpec {
+        name: Some("b".into()),
+        src_table: "User".into(),
+        src_column: "id".into(),
+        dst_table: "Device".into(),
+        dst_column: "id".into(),
+    });
+    assert_err_contains(meta, "is duplicated");
+}
