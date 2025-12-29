@@ -40,7 +40,7 @@ const NODE_BATCH_SIZE: usize = 50_000;
 const EDGE_BATCH_SIZE: usize = 200_000;
 const ZSTD_DICT_SAMPLE_LIMIT: usize = 50_000;
 const ZSTD_DICT_SAMPLE_BYTES: usize = 8 * 1024 * 1024;
-const PROGRESS_STEP: u64 = 100_000;
+const PROGRESS_STEP: u64 = 10_000;
 
 #[derive(Clone)]
 pub struct IngestOptions {
