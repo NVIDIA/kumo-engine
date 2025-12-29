@@ -2,7 +2,6 @@
 members = [
     "diskgraph-core",
     "diskgraph-ingest",
-    "diskgraph-service",
     "diskgraph-datagenerator",
     "diskgraph-index",
     "diskgraph-fs",

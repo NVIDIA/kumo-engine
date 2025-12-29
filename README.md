@@ -20,7 +20,6 @@ DiskGraph is a Rust-based system for ingesting large typed, bidirectional graphs
 - `diskgraph-ingest/` — ingestion coordinator.
   - Loads metadata.json, runs disk admission control, registers datasets, and invokes storage ingestion (materialization is stubbed until layout/compression are chosen).
   - Emits progress callbacks via `IngestObserver`.
-- `diskgraph-service/` — axum HTTP service.
   - Endpoints: health, list datasets, load dataset, unload dataset, sample.
   - Wires together `IngestCoordinator`, registry, and storage.
 
@@ -35,7 +34,6 @@ DiskGraph is a Rust-based system for ingesting large typed, bidirectional graphs
 cargo build --workspace
 
 # Run the HTTP service (default port 8080)
-DISKGRAPH_DATA_PATH=/path/to/data cargo run -p diskgraph-service
 
 # Generate synthetic datasets (coverage of all scenarios)
 cargo run -p diskgraph-datagenerator -- --output /tmp/dg-data --scenario coverage --nodes 10000 --edges 50000 --node-shards 4
