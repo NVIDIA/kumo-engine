@@ -285,6 +285,7 @@ fn ingest_parquet_with_sorted_mapping() -> Result<()> {
 
     let options = IngestOptions {
         mapping_kind: MappingKind::Sorted,
+        train_dict: false,
     };
     let metadata = ingest(&source_path, output_root.to_str().unwrap(), Dest::Local, options)?;
     assert_eq!(metadata.node_types.len(), 1);
@@ -341,6 +342,7 @@ fn ingest_csv_with_bytes_pk_mapping() -> Result<()> {
 
     let options = IngestOptions {
         mapping_kind: MappingKind::Hash,
+        train_dict: false,
     };
     let metadata = ingest(&source_path, output_root.to_str().unwrap(), Dest::Local, options)?;
     let asset = metadata
@@ -425,7 +427,15 @@ fn ingest_relationship_uses_dest_timestamp_sort_key() -> Result<()> {
     let source_path = dir.path().join("source_metadata.json");
     fs::write(&source_path, serde_json::to_vec_pretty(&source)?)?;
 
-    let metadata = ingest(&source_path, output_root.to_str().unwrap(), Dest::Local, IngestOptions::default())?;
+    let metadata = ingest(
+        &source_path,
+        output_root.to_str().unwrap(),
+        Dest::Local,
+        IngestOptions {
+            mapping_kind: MappingKind::Hash,
+            train_dict: false,
+        },
+    )?;
     let forward = metadata
         .edge_relations
         .iter()
