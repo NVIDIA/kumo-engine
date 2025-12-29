@@ -43,14 +43,12 @@ const ZSTD_DICT_SAMPLE_BYTES: usize = 8 * 1024 * 1024;
 #[derive(Clone, Debug)]
 pub struct IngestOptions {
     pub mapping_kind: MappingKind,
-    pub train_dict: bool,
 }
 
 impl Default for IngestOptions {
     fn default() -> Self {
         Self {
             mapping_kind: MappingKind::Hash,
-            train_dict: true,
         }
     }
 }
@@ -88,7 +86,6 @@ struct IngestContext {
     source: SourceMetadata,
     target: OutputTarget,
     mapping_kind: MappingKind,
-    train_dict: bool,
     pk_maps: HashMap<String, TableMapState>,
     table_rows: HashMap<String, u64>,
     table_dicts: HashMap<String, String>,
@@ -218,7 +215,6 @@ impl IngestContext {
             source,
             target,
             mapping_kind: options.mapping_kind,
-            train_dict: options.train_dict,
             pk_maps: HashMap::new(),
             table_rows: HashMap::new(),
             table_dicts: HashMap::new(),
@@ -429,9 +425,6 @@ impl IngestContext {
     }
 
     fn train_dict(&self, table: &TableSpec) -> Result<(Option<String>, Option<Vec<u8>>)> {
-        if !self.train_dict {
-            return Ok((None, None));
-        }
         if table.columns.is_empty() {
             return Ok((None, None));
         }
