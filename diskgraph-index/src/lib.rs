@@ -11,6 +11,7 @@
 //! can be swapped in later without changing callers.
 
 pub mod builder;
+pub mod graph;
 pub mod layout;
 pub mod reader;
 pub mod streaming;

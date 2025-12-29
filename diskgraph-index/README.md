@@ -156,14 +156,17 @@ Notes:
 
 ## Shard explorer (TUI)
 
-`cargo run -p diskgraph-index --bin explore -- <path|s3://...|gs://...|az://...>` opens a REPL to inspect a shard built from Parquet. It streams the Parquet shards through `ShardBuilder` (no local staging), writes `offsets.bin`/`edges.bin` plus `metadata.json` into a temp cache derived from the source path, and reuses that cache within the same run if already present. Expected layout matches the massive generator output: `metadata.json` and `edges_<relation>.parquet` under the provided prefix.
+`cargo run -p diskgraph-index --bin explore -- <path|s3://...|gs://...|az://...>` opens a REPL to inspect a graph built from Parquet. It streams the Parquet shards through `GraphIndexBuilder` into a temp cache derived from the source path, and reuses that cache within the same run if already present. Expected layout matches the massive generator output: `metadata.json` and `edges_<relation>.parquet` under the provided prefix.
 
 Profiling: `--profile [base]` writes `base.svg` and `base.pb` (defaults to `explore-profile`).
 
 Commands inside the REPL:
-- `info` — print relation layouts and node count.
-- `node <id>` — show counts and a few edges per relation for the node.
+- `tables` — list node types with shard and node counts.
+- `use <table>` — switch the active table for `node`/`benchmark`.
+- `info` — print relation layouts and node count for the active table.
+- `node <id>` — show counts and a few edges per relation for the node in the active table.
 - `benchmark <threads> [duration]` — run a 20s random lookup benchmark across N threads, including edge + node data reads (duration like `30s` or `5m`).
+- `benchmarkall <threads> [duration]` — run a 20s random lookup benchmark across all tables (round robin).
 - `quit` / `exit` / `Ctrl+D` — leave the explorer.
 
 Helper scripts wrap auth/env checks:

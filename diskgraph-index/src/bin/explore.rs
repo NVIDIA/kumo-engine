@@ -1,33 +1,32 @@
 //! Interactive shard explorer for diskgraph-index.
 //!
-//! Supports local shards or remote shards on S3/GCS/ADLS by streaming Parquet
-//! shards through `ShardBuilder` into a temp cache (derived from the remote
-//! path) and opening a `ShardReader`. Provides a simple REPL for inspecting
+//! Supports local graphs or remote graphs on S3/GCS/ADLS by streaming Parquet
+//! shards through `GraphIndexBuilder` into a temp cache (derived from the remote
+//! path) and opening a `GraphIndexReader`. Provides a simple REPL for inspecting
 //! edge lists by node id.
 
 use anyhow::{anyhow, Context, Result};
-use diskgraph_core::metadata::{DatasetMetadata, EdgeRelationMetadata, NodeTypeMetadata};
-use diskgraph_index::builder::{
-    BuildProgress, BuildStage, ProgressReporter, compute_relation_layouts, IndexBuildError,
-    ShardBuildParams, ShardBuilder,
+use diskgraph_core::metadata::DatasetMetadata;
+use diskgraph_index::builder::IndexBuildError;
+use diskgraph_index::graph::{
+    GraphBuildProgress, GraphBuildStage, GraphDataSource, GraphIndexBuilder, GraphIndexReader,
+    GraphProgressSink, TableReader,
 };
-use diskgraph_index::reader::ShardReader;
-use diskgraph_index::streaming::{EdgeShardInput, ParquetSource};
-use diskgraph_index::layout::{OFFSETS_FILENAME, EDGES_FILENAME};
 use object_store::ObjectStore;
 use diskgraph_fs::{
     build_adls_client, build_gcs_client, build_s3_client, AdlsConfig, GcsConfig, S3Config,
 };
-use indicatif::{ProgressBar, ProgressStyle};
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use object_store::path::Path as ObjectPath;
 use pprof::protos::Message;
 use pprof::ProfilerGuard;
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
+use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Write, IsTerminal};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::runtime::Runtime;
 
@@ -138,16 +137,26 @@ fn run_explore(source_str: &str, profile_enabled: bool) -> Result<()> {
     let rt = Runtime::new().context("init tokio runtime")?;
     let tmp = cache_tempdir().context("create cache tempdir")?;
     let load_start = std::time::Instant::now();
-    let (metadata, shard_dir) = match &source {
+    let (metadata, index_root) = match &source {
         Source::Local(p) => {
-            if is_indexed_shard(p) {
+            if p.is_file() && p.file_name().map(|n| n == "metadata.json").unwrap_or(false) {
+                let root = p.parent().unwrap_or(p).to_path_buf();
+                if is_indexed_graph(&root) {
+                    let metadata: DatasetMetadata =
+                        serde_json::from_slice(&fs::read(p).context("read metadata.json")?)
+                            .context("parse metadata.json")?;
+                    (metadata, root)
+                } else {
+                    build_from_local_dataset(&root, tmp.path())?
+                }
+            } else if is_indexed_graph(p) {
                 let metadata: DatasetMetadata = serde_json::from_slice(
                     &fs::read(p.join("metadata.json")).context("read metadata.json")?,
                 )
                 .context("parse metadata.json")?;
                 (metadata, p.clone())
             } else {
-                build_from_local_parquet(p, tmp.path())?
+                build_from_local_dataset(p, tmp.path())?
             }
         }
         Source::S3 { bucket, prefix } => {
@@ -222,25 +231,26 @@ fn run_explore(source_str: &str, profile_enabled: bool) -> Result<()> {
         }
     };
     let elapsed = load_start.elapsed().as_secs_f64();
-    let (layouts, _node_types) = relation_layouts(&metadata)?;
-    let reader = ShardReader::open(
-        &shard_dir,
-        layouts.clone(),
-        metadata.node_types.first().map(|n| n.has_node_data).unwrap_or(false),
-    )
-    .context("open shard reader")?;
+    let reader = GraphIndexReader::open(&index_root.join("metadata.json"), &index_root)
+        .context("open graph reader")?;
 
-    println!("Loaded shard from {}", source_str);
+    println!("Loaded graph from {}", source_str);
     if elapsed > 0.0 {
-        let offsets_size = fs::metadata(shard_dir.join(OFFSETS_FILENAME))
-            .map(|m| m.len())
-            .unwrap_or(0);
-        let edges_size = fs::metadata(shard_dir.join(EDGES_FILENAME))
-            .map(|m| m.len())
-            .unwrap_or(0);
+        let mut offsets_size = 0u64;
+        let mut edges_size = 0u64;
+        let mut nodes = 0u64;
+        let mut edges = 0u64;
+        for table in reader.tables() {
+            for idx in 0..table.shard_count() {
+                if let Some(shard) = table.shard(idx) {
+                    offsets_size += shard.offsets_len();
+                    edges_size += shard.edges_len();
+                    nodes += shard.header().nodes;
+                    edges += shard.edge_count();
+                }
+            }
+        }
         let bytes_total = offsets_size + edges_size;
-        let nodes = reader.header().nodes;
-        let edges = reader.edge_count();
         let bps = bytes_total as f64 / elapsed;
         let nps = nodes as f64 / elapsed;
         let eps = edges as f64 / elapsed;
@@ -256,17 +266,32 @@ fn run_explore(source_str: &str, profile_enabled: bool) -> Result<()> {
         );
     }
     let reader = Arc::new(reader);
-    print_header(&metadata, &reader);
+    if metadata.node_types.is_empty() {
+        println!("No tables found in metadata.");
+        return Ok(());
+    }
+    let default_table = metadata
+        .node_types
+        .first()
+        .map(|n| n.name.clone())
+        .unwrap_or_else(|| "unknown".to_string());
+    print_header(&metadata, &reader, &default_table);
     if profile_enabled {
-        let offsets_size = fs::metadata(shard_dir.join(OFFSETS_FILENAME))
-            .map(|m| m.len())
-            .unwrap_or(0);
-        let edges_size = fs::metadata(shard_dir.join(EDGES_FILENAME))
-            .map(|m| m.len())
-            .unwrap_or(0);
+        let mut offsets_size = 0u64;
+        let mut edges_size = 0u64;
+        let mut nodes = 0u64;
+        let mut edges = 0u64;
+        for table in reader.tables() {
+            for idx in 0..table.shard_count() {
+                if let Some(shard) = table.shard(idx) {
+                    offsets_size += shard.offsets_len();
+                    edges_size += shard.edges_len();
+                    nodes += shard.header().nodes;
+                    edges += shard.edge_count();
+                }
+            }
+        }
         let bytes_total = offsets_size + edges_size;
-        let nodes = reader.header().nodes;
-        let edges = reader.edge_count();
         let bps = bytes_total as f64 / elapsed.max(0.0001);
         let nps = nodes as f64 / elapsed.max(0.0001);
         let eps = edges as f64 / elapsed.max(0.0001);
@@ -280,16 +305,8 @@ fn run_explore(source_str: &str, profile_enabled: bool) -> Result<()> {
         println!("  Edges/s: {}", format_number(eps.round() as u64));
         return Ok(());
     }
-    repl(&metadata.edge_relations, reader)?;
+    repl(reader, default_table)?;
     Ok(())
-}
-
-fn relation_layouts(
-    metadata: &DatasetMetadata,
-) -> Result<(Arc<Vec<diskgraph_index::layout::RelationLayout>>, Vec<NodeTypeMetadata>)> {
-    let layouts = compute_relation_layouts(&metadata.edge_relations, &metadata.node_types)
-        .context("compute relation layouts")?;
-    Ok((Arc::new(layouts), metadata.node_types.clone()))
 }
 
 fn build_from_remote(
@@ -320,11 +337,9 @@ fn build_from_remote(
         }
     };
     let cache_dir = cache_root.join(safe_prefix);
-    let offsets = cache_dir.join("offsets.bin");
-    let edges = cache_dir.join("edges.bin");
     let meta_path = cache_dir.join("metadata.json");
-    if offsets.exists() && edges.exists() && meta_path.exists() {
-        cache_spinner.finish_with_message("Using cached shard");
+    if cache_dir.join("nodes").exists() && meta_path.exists() {
+        cache_spinner.finish_with_message("Cache hit");
         let metadata: DatasetMetadata = serde_json::from_slice(
             &fs::read(&meta_path).context("read cached metadata")?,
         )
@@ -356,122 +371,46 @@ fn build_from_remote(
     let metadata: DatasetMetadata =
         serde_json::from_slice(&meta_bytes).context("parse metadata.json")?;
 
-    let make_source = |key: String| -> Result<ParquetSource> {
-        match &remote {
-            RemoteStore::S3 { bucket, client, .. } => Ok(ParquetSource::S3(
-                diskgraph_index::streaming::S3Location {
-                    bucket: bucket.clone(),
-                    key,
-                    region: Some(client.resolved.region.clone()),
-                    endpoint: client.resolved.endpoint.clone(),
-                    access_key_id: Some(client.resolved.access_key_id.clone()),
-                    secret_access_key: Some(client.resolved.secret_access_key.clone()),
-                    session_token: client.resolved.session_token.clone(),
-                    virtual_hosted_style_request: Some(client.resolved.virtual_hosted),
-                },
-            )),
-            RemoteStore::Gcs { bucket, .. } => Ok(ParquetSource::Gcs(
-                diskgraph_index::streaming::GcsLocation {
-                    bucket: bucket.clone(),
-                    key,
-                    service_account_path: None,
-                    service_account_key: None,
-                    application_credentials_path: None,
-                },
-            )),
-            RemoteStore::Adls {
-                account,
-                container,
-                client,
-                ..
-            } => Ok(ParquetSource::Adls(
-                diskgraph_index::streaming::AdlsLocation {
-                    account: account.clone(),
-                    container: container.clone(),
-                    key,
-                    access_key: client.resolved.access_key.clone(),
-                    sas_key: client.resolved.sas_key.clone(),
-                    bearer_token: client.resolved.bearer_token.clone(),
-                    client_id: client.resolved.client_id.clone(),
-                    client_secret: client.resolved.client_secret.clone(),
-                    tenant_id: client.resolved.tenant_id.clone(),
-                    endpoint: client.resolved.endpoint.clone(),
-                },
-            )),
-        }
+    let data_source = match &remote {
+        RemoteStore::S3 { bucket, client, prefix } => GraphDataSource::S3 {
+            bucket: bucket.clone(),
+            prefix: prefix.clone(),
+            region: Some(client.resolved.region.clone()),
+            endpoint: client.resolved.endpoint.clone(),
+            access_key_id: Some(client.resolved.access_key_id.clone()),
+            secret_access_key: Some(client.resolved.secret_access_key.clone()),
+            session_token: client.resolved.session_token.clone(),
+            virtual_hosted_style_request: Some(client.resolved.virtual_hosted),
+        },
+        RemoteStore::Gcs { bucket, prefix, .. } => GraphDataSource::Gcs {
+            bucket: bucket.clone(),
+            prefix: prefix.clone(),
+        },
+        RemoteStore::Adls {
+            account,
+            container,
+            prefix,
+            client,
+        } => GraphDataSource::Adls {
+            account: account.clone(),
+            container: container.clone(),
+            prefix: prefix.clone(),
+            access_key: client.resolved.access_key.clone(),
+            sas_key: client.resolved.sas_key.clone(),
+            bearer_token: client.resolved.bearer_token.clone(),
+            client_id: client.resolved.client_id.clone(),
+            client_secret: client.resolved.client_secret.clone(),
+            tenant_id: client.resolved.tenant_id.clone(),
+            endpoint: client.resolved.endpoint.clone(),
+        },
     };
 
-    let node_data_source = if metadata
-        .node_types
-        .first()
-        .map(|n| n.has_node_data)
-        .unwrap_or(false)
-    {
-        let shard = metadata
-            .node_types
-            .first()
-            .and_then(|n| n.shards.get(0))
-            .ok_or_else(|| anyhow!("no node shard found for node data"))?;
-        let path = shard
-            .node_data_path
-            .clone()
-            .ok_or_else(|| anyhow!("node data path missing in metadata"))?;
-        let key = if prefix.is_empty() {
-            path
-        } else {
-            format!("{}/{}", prefix.trim_end_matches('/'), path)
-        };
-        Some(make_source(key)?)
-    } else {
-        None
-    };
-
-    // Build using streaming Parquet sources (first shard per relation).
-    let edge_inputs: Vec<EdgeShardInput> = metadata
-        .edge_relations
-        .iter()
-        .map(|rel| {
-            let shard = rel
-                .shards
-                .get(0)
-                .ok_or_else(|| anyhow!("no edge shard found for {}", rel.name))?;
-            let key = if prefix.is_empty() {
-                shard.path.clone()
-            } else {
-                format!("{}/{}", prefix.trim_end_matches('/'), shard.path)
-            };
-            let parquet = make_source(key)?;
-            Ok(EdgeShardInput {
-                relation: rel.name.clone(),
-                source_shard_index: 0,
-                parquet,
-                has_dest_sort_key: rel.dest_sort_key_bits.is_some(),
-            })
-        })
-        .collect::<Result<_>>()?;
-    let shard_dir = cache_dir.clone();
-    let params = ShardBuildParams {
-        output_dir: shard_dir.clone(),
-        node_meta: metadata.node_types[0].clone(), // assumes single shard/node_type
-        node_types: metadata.node_types.clone(),
-        relation_metas: metadata.edge_relations.clone(),
-        shard_index: 0,
-        node_data: node_data_source,
-    };
-    let builder = ShardBuilder::new(params);
-    let total_nodes = shard_node_count(&metadata);
-    let (build_progress, progress_reporter) = make_progress_handler(total_nodes);
+    let builder = GraphIndexBuilder::from_metadata(metadata.clone(), data_source, &cache_dir);
+    let (_mp, progress_reporter) = make_graph_progress_handler();
     builder
-        .build_with_progress(
-            &edge_inputs,
-            total_nodes,
-            Some(&progress_reporter),
-            None,
-        )
-        .context("build shard from parquet")?;
-    build_progress.finish_with_message("Built shard");
-    fs::write(&meta_path, serde_json::to_vec_pretty(&metadata)?)?;
-    Ok((metadata, shard_dir))
+        .build(Some(&progress_reporter))
+        .context("build graph from parquet")?;
+    Ok((metadata, cache_dir))
 }
 
 fn cache_tempdir() -> Result<tempfile::TempDir> {
@@ -501,24 +440,6 @@ fn cache_root_dir() -> Option<PathBuf> {
     None
 }
 
-fn shard_node_count(metadata: &DatasetMetadata) -> Option<u64> {
-    metadata
-        .node_types
-        .get(0)
-        .and_then(|nt| nt.shards.get(0))
-        .map(|s| s.max_id.saturating_sub(s.min_id).saturating_add(1))
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum ProgressStageKey {
-    Download {
-        file: String,
-        index: usize,
-        total: usize,
-    },
-    BuildIndex,
-}
-
 fn bar_style() -> ProgressStyle {
     ProgressStyle::with_template("{msg} {bar:40.cyan/blue} {percent}% {prefix} ({eta})")
         .unwrap_or_else(|_| ProgressStyle::default_bar())
@@ -529,77 +450,91 @@ fn spinner_style() -> ProgressStyle {
         .unwrap_or_else(|_| ProgressStyle::default_spinner())
 }
 
-fn make_progress_handler(
-    total_nodes: Option<u64>,
-) -> (ProgressBar, ProgressReporter<Box<dyn FnMut(BuildProgress)>>) {
-    let pb = ProgressBar::new(0);
-    pb.set_style(spinner_style());
-    let pb_handle = pb.clone();
-    let mut last_stage: Option<ProgressStageKey> = None;
-    let mut last_total: Option<u64> = None;
-    let handler = move |progress: BuildProgress| {
-        match progress.stage {
-            BuildStage::Download { file, index, total } => {
-                let stage_key = ProgressStageKey::Download {
-                    file: file.to_string(),
-                    index,
-                    total,
-                };
-                if last_stage.as_ref() != Some(&stage_key) {
-                    pb_handle.set_style(bar_style());
-                    pb_handle.set_position(0);
-                    pb_handle.set_message(format!("Downloading {} ({}/{})", file, index, total));
-                    last_stage = Some(stage_key);
-                    last_total = None;
-                }
-                if let Some(total) = progress.total {
-                    if last_total != Some(total) {
-                        pb_handle.set_length(total);
-                        last_total = Some(total);
-                    }
-                    pb_handle.set_position(progress.current.min(total));
-                    pb_handle.set_prefix(format!(
+struct GraphProgressReporter {
+    multi: Arc<MultiProgress>,
+    bars: Mutex<HashMap<String, ProgressBar>>,
+}
+
+impl GraphProgressReporter {
+    fn new(multi: Arc<MultiProgress>) -> Self {
+        Self {
+            multi,
+            bars: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn bar_for(&self, key: &str) -> ProgressBar {
+        let mut bars = self.bars.lock().unwrap();
+        if let Some(pb) = bars.get(key) {
+            return pb.clone();
+        }
+        let pb = self.multi.add(ProgressBar::new(0));
+        pb.set_style(spinner_style());
+        pb.set_message(format!("Building {key}"));
+        bars.insert(key.to_string(), pb.clone());
+        pb
+    }
+
+    fn finish_bar(&self, key: &str) {
+        let mut bars = self.bars.lock().unwrap();
+        if let Some(pb) = bars.remove(key) {
+            pb.finish_with_message(format!("Built {key}"));
+        }
+    }
+}
+
+impl GraphProgressSink for GraphProgressReporter {
+    fn report(&self, update: GraphBuildProgress) {
+        match update.stage {
+            GraphBuildStage::Download {
+                shard,
+                file,
+                index,
+                total,
+            } => {
+                let pb = self.bar_for(shard.as_ref());
+                pb.set_style(bar_style());
+                pb.set_message(format!("Downloading {file} ({index}/{total})"));
+                if let Some(total) = update.total {
+                    pb.set_length(total);
+                    pb.set_position(update.current.min(total));
+                    pb.set_prefix(format!(
                         "{} / {}",
-                        format_bytes(progress.current),
+                        format_bytes(update.current),
                         format_bytes(total),
                     ));
                 } else {
-                    pb_handle.tick();
+                    pb.tick();
                 }
             }
-            BuildStage::BuildIndex => {
-                let stage_key = ProgressStageKey::BuildIndex;
-                if last_stage.as_ref() != Some(&stage_key) {
-                    pb_handle.set_message("Building shard from parquet".to_string());
-                    if let Some(total) = progress.total.or(total_nodes) {
-                        pb_handle.set_style(bar_style());
-                        pb_handle.set_length(total);
-                        pb_handle.set_position(0);
-                        last_total = Some(total);
-                    } else {
-                        pb_handle.set_style(spinner_style());
-                        last_total = None;
-                    }
-                    last_stage = Some(stage_key);
-                }
-                if let Some(total) = progress.total.or(total_nodes) {
-                    if last_total != Some(total) {
-                        pb_handle.set_length(total);
-                        last_total = Some(total);
-                    }
-                    pb_handle.set_position(progress.current.min(total));
-                    pb_handle.set_prefix(format!(
+            GraphBuildStage::BuildShard { shard } => {
+                let pb = self.bar_for(shard.as_ref());
+                pb.set_message(format!("Building {shard}"));
+                if let Some(total) = update.total {
+                    pb.set_style(bar_style());
+                    pb.set_length(total);
+                    pb.set_position(update.current.min(total));
+                    pb.set_prefix(format!(
                         "{} / {}",
-                        format_count(progress.current),
+                        format_count(update.current),
                         format_count(total),
                     ));
                 } else {
-                    pb_handle.tick();
+                    pb.set_style(spinner_style());
+                    pb.tick();
                 }
             }
+            GraphBuildStage::Complete { shard } => {
+                self.finish_bar(shard.as_ref());
+            }
         }
-    };
-    (pb, ProgressReporter::new(Box::new(handler)))
+    }
+}
+
+fn make_graph_progress_handler() -> (Arc<MultiProgress>, GraphProgressReporter) {
+    let multi = Arc::new(MultiProgress::new());
+    let reporter = GraphProgressReporter::new(Arc::clone(&multi));
+    (multi, reporter)
 }
 
 fn format_bytes(value: u64) -> String {
@@ -659,10 +594,8 @@ fn start_spinner(message: &str) -> ProgressBar {
     pb
 }
 
-fn is_indexed_shard(dir: &Path) -> bool {
-    dir.join(OFFSETS_FILENAME).exists()
-        && dir.join(EDGES_FILENAME).exists()
-        && dir.join("metadata.json").exists()
+fn is_indexed_graph(dir: &Path) -> bool {
+    dir.join("metadata.json").exists() && dir.join("nodes").exists()
 }
 
 fn sanitize_cache_name(input: &str) -> String {
@@ -672,7 +605,7 @@ fn sanitize_cache_name(input: &str) -> String {
         .collect()
 }
 
-fn build_from_local_parquet(
+fn build_from_local_dataset(
     source: &Path,
     cache_root: &Path,
 ) -> Result<(DatasetMetadata, PathBuf)> {
@@ -685,79 +618,25 @@ fn build_from_local_parquet(
 
     let safe_prefix = format!("local_{}", sanitize_cache_name(&source.display().to_string()));
     let cache_dir = cache_root.join(safe_prefix);
-    let offsets = cache_dir.join(OFFSETS_FILENAME);
-    let edges = cache_dir.join(EDGES_FILENAME);
     let cached_meta = cache_dir.join("metadata.json");
-    if offsets.exists() && edges.exists() && cached_meta.exists() {
+    if cache_dir.join("nodes").exists() && cached_meta.exists() {
         return Ok((metadata, cache_dir));
     }
     fs::create_dir_all(&cache_dir)?;
 
-    let node_data_source = if metadata
-        .node_types
-        .first()
-        .map(|n| n.has_node_data)
-        .unwrap_or(false)
-    {
-        let shard = metadata
-            .node_types
-            .first()
-            .and_then(|n| n.shards.get(0))
-            .ok_or_else(|| anyhow!("no node shard found for node data"))?;
-        let path = shard
-            .node_data_path
-            .clone()
-            .ok_or_else(|| anyhow!("node data path missing in metadata"))?;
-        Some(ParquetSource::LocalFile(source.join(&path)))
-    } else {
-        None
-    };
-
-    let edge_inputs: Vec<EdgeShardInput> = metadata
-        .edge_relations
-        .iter()
-        .map(|rel| {
-            let shard = rel
-                .shards
-                .get(0)
-                .ok_or_else(|| anyhow!("no edge shard found for {}", rel.name))?;
-            let parquet = ParquetSource::LocalFile(source.join(&shard.path));
-            Ok(EdgeShardInput {
-                relation: rel.name.clone(),
-                source_shard_index: 0,
-                parquet,
-                has_dest_sort_key: rel.dest_sort_key_bits.is_some(),
-            })
-        })
-        .collect::<Result<_>>()?;
-
-    let params = ShardBuildParams {
-        output_dir: cache_dir.clone(),
-        node_meta: metadata.node_types[0].clone(),
-        node_types: metadata.node_types.clone(),
-        relation_metas: metadata.edge_relations.clone(),
-        shard_index: 0,
-        node_data: node_data_source,
-    };
-    let builder = ShardBuilder::new(params);
-    let total_nodes = shard_node_count(&metadata);
-    let (build_progress, progress_reporter) = make_progress_handler(total_nodes);
+    let builder = GraphIndexBuilder::from_metadata_path(&meta_path, &cache_dir)?;
+    let (_mp, progress_reporter) = make_graph_progress_handler();
     builder
-        .build_with_progress(
-            &edge_inputs,
-            total_nodes,
-            Some(&progress_reporter),
-            None,
-        )
-        .context("build shard from parquet")?;
-    build_progress.finish_with_message("Built shard");
+        .build(Some(&progress_reporter))
+        .context("build graph from parquet")?;
     fs::write(&cached_meta, serde_json::to_vec_pretty(&metadata)?)?;
     Ok((metadata, cache_dir))
 }
 
-fn repl(relations: &[EdgeRelationMetadata], reader: Arc<ShardReader>) -> Result<()> {
+fn repl(reader: Arc<GraphIndexReader>, default_table: String) -> Result<()> {
     let mut rl = DefaultEditor::new().context("init editor")?;
-    println!("Commands: info | node <id> | benchmark <threads> [duration] | quit");
+    let mut current_table = default_table;
+    println!("Commands: tables | use <table> | info | node <id> | benchmark <threads> [duration] | benchmarkall <threads> [duration] | quit");
     loop {
         match rl.readline("explore> ") {
             Ok(line) => {
@@ -769,13 +648,27 @@ fn repl(relations: &[EdgeRelationMetadata], reader: Arc<ShardReader>) -> Result<
                 if trimmed.eq_ignore_ascii_case("quit") || trimmed.eq_ignore_ascii_case("exit") {
                     break;
                 }
+                if trimmed.eq_ignore_ascii_case("tables") {
+                    print_tables(&reader);
+                    continue;
+                }
+                if let Some(rest) = trimmed.strip_prefix("use ") {
+                    let name = rest.trim();
+                    if reader.table(name).is_some() {
+                        current_table = name.to_string();
+                        println!("Using table {}", current_table);
+                    } else {
+                        println!("Unknown table: {name}");
+                    }
+                    continue;
+                }
                 if trimmed.eq_ignore_ascii_case("info") {
-                    print_info(relations, &reader);
+                    print_info(&reader, &current_table);
                     continue;
                 }
                 if let Some(rest) = trimmed.strip_prefix("node ") {
                     match rest.trim().parse::<u64>() {
-                        Ok(id) => show_node(relations, &reader, id)?,
+                        Ok(id) => show_node(&reader, &current_table, id)?,
                         Err(_) => println!("Invalid node id: {rest}"),
                     }
                     continue;
@@ -810,11 +703,51 @@ fn repl(relations: &[EdgeRelationMetadata], reader: Arc<ShardReader>) -> Result<
                     } else {
                         std::time::Duration::from_secs(20)
                     };
-                    run_benchmark(reader.clone(), threads, duration)?;
+                    let table = match reader.table(&current_table) {
+                        Some(table) => table,
+                        None => {
+                            println!("Unknown table: {}", current_table);
+                            continue;
+                        }
+                    };
+                    run_benchmark(table, threads, duration)?;
+                    continue;
+                }
+                if let Some(rest) = trimmed.strip_prefix("benchmarkall ") {
+                    let mut parts = rest.split_whitespace();
+                    let Some(thread_part) = parts.next() else {
+                        println!("Invalid benchmarkall command: {rest}");
+                        continue;
+                    };
+                    let duration_part = parts.next();
+                    let extra = parts.next();
+                    if extra.is_some() {
+                        println!("Invalid benchmarkall command: {rest}");
+                        continue;
+                    }
+                    let threads = match thread_part.parse::<usize>() {
+                        Ok(threads) if threads > 0 => threads,
+                        _ => {
+                            println!("Invalid thread count: {thread_part}");
+                            continue;
+                        }
+                    };
+                    let duration = if let Some(raw) = duration_part {
+                        match parse_duration(raw) {
+                            Some(d) => d,
+                            None => {
+                                println!("Invalid duration: {raw} (expected 30s or 5m)");
+                                continue;
+                            }
+                        }
+                    } else {
+                        std::time::Duration::from_secs(20)
+                    };
+                    run_benchmark_all(reader.clone(), threads, duration)?;
                     continue;
                 }
                 println!(
-                    "Unknown command. Use: info | node <id> | benchmark <threads> [duration] | quit"
+                    "Unknown command. Use: tables | use <table> | info | node <id> | benchmark <threads> [duration] | benchmarkall <threads> [duration] | quit"
                 );
             }
             Err(ReadlineError::Interrupted) | Err(ReadlineError::Eof) => break,
@@ -824,14 +757,43 @@ fn repl(relations: &[EdgeRelationMetadata], reader: Arc<ShardReader>) -> Result<
     Ok(())
 }
 
-fn print_header(metadata: &DatasetMetadata, reader: &ShardReader) {
+fn print_header(metadata: &DatasetMetadata, reader: &GraphIndexReader, current_table: &str) {
     println!(
-        "Node types: {}; Relations: {}; Nodes in shard: {}",
+        "Node types: {}; Relations: {}; Current table: {}",
         metadata.node_types.len(),
         metadata.edge_relations.len(),
-        reader.header().nodes
+        current_table
     );
-    for (idx, rel) in metadata.edge_relations.iter().enumerate() {
+    print_tables(reader);
+}
+
+fn print_tables(reader: &GraphIndexReader) {
+    println!("Tables:");
+    for table in reader.tables() {
+        println!(
+            "  {} (shards={}, nodes={})",
+            table.node_type(),
+            table.shard_count(),
+            format_number(table.node_count())
+        );
+    }
+}
+
+fn print_info(reader: &GraphIndexReader, table_name: &str) {
+    let table = match reader.table(table_name) {
+        Some(table) => table,
+        None => {
+            println!("Unknown table: {table_name}");
+            return;
+        }
+    };
+    println!(
+        "Table: {} (nodes={}, relations={})",
+        table.node_type(),
+        format_number(table.node_count()),
+        table.relations().len()
+    );
+    for (idx, rel) in table.relations().iter().enumerate() {
         let sort = rel
             .dest_sort_key_bits
             .map(|b| format!("sort_bits={b}"))
@@ -840,25 +802,16 @@ fn print_header(metadata: &DatasetMetadata, reader: &ShardReader) {
     }
 }
 
-fn print_info(relations: &[EdgeRelationMetadata], reader: &ShardReader) {
-    println!(
-        "Nodes: {}, relations: {}",
-        reader.header().nodes,
-        relations.len()
-    );
-    print_header(
-        &DatasetMetadata {
-            dataset_name: "".into(),
-            node_types: vec![],
-            edge_relations: relations.to_vec(),
-        },
-        reader,
-    );
-}
-
-fn show_node(relations: &[EdgeRelationMetadata], reader: &ShardReader, node: u64) -> Result<()> {
+fn show_node(reader: &GraphIndexReader, table_name: &str, node: u64) -> Result<()> {
     let start = std::time::Instant::now();
-    let view = match reader.edges_for_node(node) {
+    let table = match reader.table(table_name) {
+        Some(table) => table,
+        None => {
+            println!("Unknown table: {table_name}");
+            return Ok(());
+        }
+    };
+    let view = match table.edges_for_node(node) {
         Ok(v) => v,
         Err(e) => {
             println!("Error reading node {}: {}", node, e);
@@ -874,7 +827,7 @@ fn show_node(relations: &[EdgeRelationMetadata], reader: &ShardReader, node: u64
     };
     println!("Node {node}:");
     for (idx, seg) in segments.iter().enumerate() {
-        let rel = &relations[idx];
+        let rel = &table.relations()[idx];
         println!(
             "  [{}] {}: count={}",
             idx,
@@ -914,15 +867,51 @@ fn show_node(relations: &[EdgeRelationMetadata], reader: &ShardReader, node: u64
     Ok(())
 }
 
-fn run_benchmark(reader: Arc<ShardReader>, threads: usize, duration: std::time::Duration) -> Result<()> {
-    let nodes = reader.header().nodes;
-    if nodes == 0 {
-        println!("Benchmark skipped: no nodes in shard.");
+fn run_benchmark(
+    table: Arc<TableReader>,
+    threads: usize,
+    duration: std::time::Duration,
+) -> Result<()> {
+    run_benchmark_tables(vec![table], false, threads, duration)
+}
+
+fn run_benchmark_all(
+    reader: Arc<GraphIndexReader>,
+    threads: usize,
+    duration: std::time::Duration,
+) -> Result<()> {
+    let tables: Vec<Arc<TableReader>> = reader
+        .tables()
+        .into_iter()
+        .filter(|t| t.node_count() > 0)
+        .collect();
+    if tables.is_empty() {
+        println!("Benchmark skipped: no nodes across tables.");
         return Ok(());
     }
+    run_benchmark_tables(tables, true, threads, duration)
+}
+
+fn run_benchmark_tables(
+    tables: Vec<Arc<TableReader>>,
+    round_robin: bool,
+    threads: usize,
+    duration: std::time::Duration,
+) -> Result<()> {
+    let table_count = tables.len();
+    if table_count == 1 && tables[0].node_count() == 0 {
+        println!("Benchmark skipped: no nodes in table.");
+        return Ok(());
+    }
+    let total_nodes: u64 = tables.iter().map(|t| t.node_count()).sum();
+    let label = if round_robin { "Benchmark all" } else { "Benchmark" };
     println!(
-        "Benchmark: threads={}, duration={}s, nodes={}",
-        threads, duration.as_secs(), nodes
+        "{}: threads={}, duration={}s, tables={}, nodes={}",
+        label,
+        threads,
+        duration.as_secs(),
+        table_count,
+        format_number(total_nodes)
     );
     let start_time = std::time::Instant::now();
     let end_time = start_time + duration;
@@ -938,8 +927,10 @@ fn run_benchmark(reader: Arc<ShardReader>, threads: usize, duration: std::time::
 
     let mut handles = Vec::with_capacity(threads);
     for idx in 0..threads {
-        let reader = reader.clone();
+        let tables = tables.clone();
+        let table_count = table_count;
         let ops_counter = ops_counters[idx].clone();
+        let round_robin = round_robin;
         handles.push(std::thread::spawn(move || {
             let mut state = (idx as u64 + 1) * 0x9E37_79B9_7F4A_7C15;
             let mut ops = 0u64;
@@ -955,9 +946,28 @@ fn run_benchmark(reader: Arc<ShardReader>, threads: usize, duration: std::time::
             while std::time::Instant::now() < end_time {
                 // LCG for speed; take high bits for distribution.
                 state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
-                let node = ((state >> 32) % nodes) as u64;
+                let table_idx = if round_robin {
+                    (ops as usize) % table_count
+                } else {
+                    0
+                };
+                let table = &tables[table_idx];
+                let node_count = table.node_count();
+                if node_count == 0 {
+                    errors += 1;
+                    ops += 1;
+                    ops_counter.fetch_add(1, Ordering::Relaxed);
+                    continue;
+                }
+                let offset = ((state >> 32) % node_count) as u64;
+                let Some(node) = table.node_id_from_offset(offset) else {
+                    errors += 1;
+                    ops += 1;
+                    ops_counter.fetch_add(1, Ordering::Relaxed);
+                    continue;
+                };
                 let start = std::time::Instant::now();
-                let view = reader.edges_for_node(node);
+                let view = table.edges_for_node(node);
                 let elapsed_ns = start.elapsed().as_nanos();
                 if let Ok(view) = view {
                     if let Ok(segments) = view.relation_segments() {
@@ -1100,8 +1110,7 @@ fn run_benchmark(reader: Arc<ShardReader>, threads: usize, duration: std::time::
         0
     };
     println!("Results:");
-    let offsets_bytes = reader.offsets_len();
-    let edges_bytes = reader.edges_len();
+    let (offsets_bytes, edges_bytes) = total_table_bytes(&tables);
     let data_bytes = offsets_bytes.saturating_add(edges_bytes);
     println!("  offsets bytes: {}", format_bytes(offsets_bytes));
     println!("  edge bytes: {}", format_bytes(edges_bytes));
@@ -1397,6 +1406,20 @@ fn available_memory_bytes() -> Option<u64> {
         }
     }
     None
+}
+
+fn total_table_bytes(tables: &[Arc<TableReader>]) -> (u64, u64) {
+    let mut offsets = 0u64;
+    let mut edges = 0u64;
+    for table in tables {
+        for idx in 0..table.shard_count() {
+            if let Some(shard) = table.shard(idx) {
+                offsets = offsets.saturating_add(shard.offsets_len());
+                edges = edges.saturating_add(shard.edges_len());
+            }
+        }
+    }
+    (offsets, edges)
 }
 
 fn format_duration_seconds(seconds: f64) -> String {

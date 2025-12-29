@@ -1119,7 +1119,7 @@ impl NodeStream {
     }
 }
 
-fn shard_node_count(node_meta: &NodeTypeMetadata, shard_index: usize) -> Result<u64> {
+pub(crate) fn shard_node_count(node_meta: &NodeTypeMetadata, shard_index: usize) -> Result<u64> {
     let shard = node_meta
         .shards
         .get(shard_index)
