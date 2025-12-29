@@ -43,6 +43,7 @@ fn main() -> Result<()> {
             MappingArg::Hash => MappingKind::Hash,
             MappingArg::Sorted => MappingKind::Sorted,
         },
+        train_dict: true,
     };
     let dest = match args.dest {
         DestArg::Local => Dest::Local,
