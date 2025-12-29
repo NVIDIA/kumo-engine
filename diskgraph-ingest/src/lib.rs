@@ -287,9 +287,6 @@ impl IngestContext {
             let mut dict_samples = Vec::new();
             let mut sample_bytes = 0usize;
             let mut row_id = 0u64;
-            let progress_key = format!("pk_map:{}", table.name);
-            self.progress_start(&progress_key, None);
-            let mut next_update = PROGRESS_STEP;
             for_each_row(table, |row| {
                 let pk_value = row.get_value(pk)?;
                 let key = key_from_value(&pk_value, pk_col, pk)?;
@@ -310,19 +307,8 @@ impl IngestContext {
                     dict_samples.push(msg);
                 }
                 row_id += 1;
-                if row_id == next_update {
-                    self.progress_advance(&progress_key, PROGRESS_STEP);
-                    next_update = next_update.saturating_add(PROGRESS_STEP);
-                }
                 Ok(())
             })?;
-            if row_id > 0 && row_id < next_update {
-                let delta = row_id.saturating_sub(next_update - PROGRESS_STEP);
-                if delta > 0 {
-                    self.progress_advance(&progress_key, delta);
-                }
-            }
-            self.progress_finish(&progress_key, Some(row_id));
             pk_map.finalize();
             if let Some(sort) = sort_map.as_mut() {
                 sort.finalize();

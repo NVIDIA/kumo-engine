@@ -2,11 +2,7 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::{Parser, ValueEnum};
-use diskgraph_ingest::{
-    ingest_with_stats, Dest, IngestOptions, MappingKind, ProgressCallback, ProgressEvent,
-};
-use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
-use std::sync::{Arc, Mutex};
+use diskgraph_ingest::{ingest_with_stats, Dest, IngestOptions, MappingKind};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about = "Ingest raw CSV/Parquet into diskgraph index format.")]
@@ -53,13 +49,12 @@ fn main() -> Result<()> {
             source_path.display()
         );
     }
-    let progress = progress_ui();
     let options = IngestOptions {
         mapping_kind: match args.mapping {
             MappingArg::Hash => MappingKind::Hash,
             MappingArg::Sorted => MappingKind::Sorted,
         },
-        progress,
+        progress: None,
     };
     let dest = match args.dest {
         DestArg::Local => Dest::Local,
@@ -94,42 +89,4 @@ fn main() -> Result<()> {
         }
     }
     Ok(())
-}
-
-fn progress_ui() -> Option<ProgressCallback> {
-    let total = Arc::new(Mutex::new(0u64));
-    let pb = ProgressBar::new(0);
-    pb.set_message("Ingest progress");
-    pb.set_style(
-        ProgressStyle::with_template("{msg} {bar:40.cyan/blue} {percent}% {pos}/{len} ({eta})")
-            .unwrap_or_else(|_| ProgressStyle::default_bar()),
-    );
-    pb.set_draw_target(ProgressDrawTarget::stdout_with_hz(5));
-    let progress: ProgressCallback = Arc::new({
-        let pb = pb.clone();
-        let total = Arc::clone(&total);
-        move |event| match event {
-            ProgressEvent::Start {
-                key,
-                total: event_total,
-            } => {
-                if let Some(add_total) = event_total {
-                    let mut guard = total.lock().unwrap();
-                    *guard = guard.saturating_add(add_total);
-                    pb.set_length(*guard);
-                } else {
-                    let _ = key;
-                }
-            }
-            ProgressEvent::Advance { key, delta } => {
-                let _ = key;
-                pb.inc(delta);
-            }
-            ProgressEvent::Finish { key, total } => {
-                let _ = key;
-                let _ = total;
-            }
-        }
-    });
-    Some(progress)
 }
