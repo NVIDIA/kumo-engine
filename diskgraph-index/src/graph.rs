@@ -365,6 +365,7 @@ impl<'a> crate::builder::ProgressSink for ShardProgressAdapter<'a> {
 pub struct GraphIndexReader {
     metadata: DatasetMetadata,
     tables: HashMap<String, Arc<TableReader>>,
+    root: PathBuf,
 }
 
 impl GraphIndexReader {
@@ -394,7 +395,11 @@ impl GraphIndexReader {
             let table = TableReader::new(node_type, relations, Arc::clone(&layouts), shard_readers)?;
             tables.insert(node_type.name.clone(), Arc::new(table));
         }
-        Ok(Self { metadata, tables })
+        Ok(Self {
+            metadata,
+            tables,
+            root: root.to_path_buf(),
+        })
     }
 
     pub fn metadata(&self) -> &DatasetMetadata {
@@ -409,6 +414,10 @@ impl GraphIndexReader {
         let mut tables: Vec<Arc<TableReader>> = self.tables.values().cloned().collect();
         tables.sort_by(|a, b| a.node_type().cmp(b.node_type()));
         tables
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
     }
 }
 

@@ -407,13 +407,14 @@ fn build_from_remote(
     };
 
     let builder = GraphIndexBuilder::from_metadata(metadata.clone(), data_source, &cache_dir);
-    let total_shards = builder
+    let total_nodes = builder
         .metadata()
         .node_types
         .iter()
-        .map(|t| t.shards.len())
-        .sum::<usize>();
-    let (_mp, progress_reporter) = make_graph_progress_handler(total_shards);
+        .flat_map(|t| t.shards.iter())
+        .map(|s| s.max_id.saturating_sub(s.min_id).saturating_add(1))
+        .sum::<u64>();
+    let (_mp, progress_reporter) = make_graph_progress_handler(total_nodes);
     builder
         .build(Some(&progress_reporter))
         .context("build graph from parquet")?;
@@ -461,20 +462,22 @@ struct GraphProgressReporter {
     multi: Arc<MultiProgress>,
     bars: Mutex<HashMap<String, ProgressBar>>,
     global: ProgressBar,
-    total_shards: usize,
+    total_nodes: u64,
+    shard_progress: Mutex<HashMap<String, u64>>,
 }
 
 impl GraphProgressReporter {
-    fn new(multi: Arc<MultiProgress>, total_shards: usize) -> Self {
-        let global = multi.add(ProgressBar::new(total_shards as u64));
+    fn new(multi: Arc<MultiProgress>, total_nodes: u64) -> Self {
+        let global = multi.add(ProgressBar::new(total_nodes));
         global.set_style(bar_style());
-        global.set_message("Overall");
-        global.set_prefix(format!("0 / {}", format_count(total_shards as u64)));
+        global.set_message("Overall nodes");
+        global.set_prefix(format!("0 / {}", format_count(total_nodes)));
         Self {
             multi,
             bars: Mutex::new(HashMap::new()),
             global,
-            total_shards,
+            total_nodes,
+            shard_progress: Mutex::new(HashMap::new()),
         }
     }
 
@@ -494,16 +497,6 @@ impl GraphProgressReporter {
         let mut bars = self.bars.lock().unwrap();
         if let Some(pb) = bars.remove(key) {
             pb.finish_with_message(format!("Built {key}"));
-            let done = self.total_shards.saturating_sub(bars.len());
-            self.global.set_position(done as u64);
-            self.global.set_prefix(format!(
-                "{} / {}",
-                format_count(done as u64),
-                format_count(self.total_shards as u64)
-            ));
-            if done >= self.total_shards {
-                self.global.finish_with_message("Overall done");
-            }
         }
     }
 }
@@ -548,17 +541,30 @@ impl GraphProgressSink for GraphProgressReporter {
                     pb.set_style(spinner_style());
                     pb.tick();
                 }
+                let mut shard_progress = self.shard_progress.lock().unwrap();
+                shard_progress.insert(shard.as_ref().to_string(), update.current);
+                let total_done: u64 = shard_progress.values().sum();
+                self.global.set_position(total_done.min(self.total_nodes));
+                self.global.set_prefix(format!(
+                    "{} / {}",
+                    format_count(total_done),
+                    format_count(self.total_nodes),
+                ));
             }
             GraphBuildStage::Complete { shard } => {
+                if let Some(total) = update.total {
+                    let mut shard_progress = self.shard_progress.lock().unwrap();
+                    shard_progress.insert(shard.as_ref().to_string(), total);
+                }
                 self.finish_bar(shard.as_ref());
             }
         }
     }
 }
 
-fn make_graph_progress_handler(total_shards: usize) -> (Arc<MultiProgress>, GraphProgressReporter) {
+fn make_graph_progress_handler(total_nodes: u64) -> (Arc<MultiProgress>, GraphProgressReporter) {
     let multi = Arc::new(MultiProgress::new());
-    let reporter = GraphProgressReporter::new(Arc::clone(&multi), total_shards);
+    let reporter = GraphProgressReporter::new(Arc::clone(&multi), total_nodes);
     (multi, reporter)
 }
 
@@ -675,13 +681,14 @@ fn build_from_local_dataset(
     fs::create_dir_all(&cache_dir)?;
 
     let builder = GraphIndexBuilder::from_metadata_path(&meta_path, &cache_dir)?;
-    let total_shards = builder
+    let total_nodes = builder
         .metadata()
         .node_types
         .iter()
-        .map(|t| t.shards.len())
-        .sum::<usize>();
-    let (_mp, progress_reporter) = make_graph_progress_handler(total_shards);
+        .flat_map(|t| t.shards.iter())
+        .map(|s| s.max_id.saturating_sub(s.min_id).saturating_add(1))
+        .sum::<u64>();
+    let (_mp, progress_reporter) = make_graph_progress_handler(total_nodes);
     builder
         .build(Some(&progress_reporter))
         .context("build graph from parquet")?;
@@ -832,6 +839,16 @@ fn print_tables(reader: &GraphIndexReader) {
             table.shard_count(),
             format_number(table.node_count())
         );
+        for rel in table.relations() {
+            let sort_label = rel
+                .dest_sort_key_bits
+                .map(|bits| format!("{bits}b"))
+                .unwrap_or_else(|| "none".to_string());
+            println!(
+                "    -> {} (dst={}, sort_key={})",
+                rel.name, rel.dst_type, sort_label
+            );
+        }
     }
 }
 

@@ -603,7 +603,7 @@ impl ShardBuilder {
             nodes_seen += 1;
             build_stats.nodes_ingested += 1;
             if let Some(progress) = progress {
-                if nodes_seen - last_progress_at >= 1_000_000 {
+                if nodes_seen - last_progress_at >= 100_000 {
                     progress.report(BuildProgress {
                         stage: BuildStage::BuildIndex,
                         current: nodes_seen,
