@@ -500,8 +500,18 @@ impl IngestContext {
         for (table_name, state) in &pk_maps {
             let map_path = format!("nodes/{}/pk_map.bin", table_name.to_lowercase());
             let target = self.target.join(&map_path);
-            let mut sink = self.target.sink(&target)?;
-            state.pk_map.write_to(&mut sink)?;
+            let sink = self.target.sink(&target)?;
+            let mut writer = io::BufWriter::new(sink);
+            state.pk_map.write_to(&mut writer)?;
+            writer.flush()?;
+            let sink = match writer.into_inner() {
+                Ok(sink) => sink,
+                Err(err) => {
+                    let message = err.error().to_string();
+                    let _ = err.into_inner().flush();
+                    return Err(anyhow!(message));
+                }
+            };
             sink.finish()?;
         }
         self.pk_maps = pk_maps;
