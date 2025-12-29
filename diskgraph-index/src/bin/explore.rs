@@ -25,9 +25,10 @@ use pprof::ProfilerGuard;
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
 use std::fs;
-use std::io::Write;
+use std::io::{self, Write, IsTerminal};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::runtime::Runtime;
 
 #[derive(Clone, Debug)]
@@ -925,6 +926,10 @@ fn run_benchmark(reader: Arc<ShardReader>, threads: usize, duration: std::time::
     );
     let start_time = std::time::Instant::now();
     let end_time = start_time + duration;
+    let mut ops_counters = Vec::with_capacity(threads);
+    for _ in 0..threads {
+        ops_counters.push(Arc::new(AtomicU64::new(0)));
+    }
 
     const BUCKETS_US: [u64; 18] = [
         1, 2, 5, 10, 20, 50, 100, 200, 500, 1_000, 2_000, 5_000, 10_000, 20_000, 50_000,
@@ -934,6 +939,7 @@ fn run_benchmark(reader: Arc<ShardReader>, threads: usize, duration: std::time::
     let mut handles = Vec::with_capacity(threads);
     for idx in 0..threads {
         let reader = reader.clone();
+        let ops_counter = ops_counters[idx].clone();
         handles.push(std::thread::spawn(move || {
             let mut state = (idx as u64 + 1) * 0x9E37_79B9_7F4A_7C15;
             let mut ops = 0u64;
@@ -980,6 +986,7 @@ fn run_benchmark(reader: Arc<ShardReader>, threads: usize, duration: std::time::
                     errors += 1;
                 }
                 ops += 1;
+                ops_counter.fetch_add(1, Ordering::Relaxed);
                 total_ns += elapsed_ns;
                 if elapsed_ns < min_ns {
                     min_ns = elapsed_ns;
@@ -1012,19 +1019,46 @@ fn run_benchmark(reader: Arc<ShardReader>, threads: usize, duration: std::time::
         }));
     }
 
-    let length = duration.as_secs().max(1);
-    let pb = ProgressBar::new(length);
-    pb.set_style(
-        ProgressStyle::with_template("{msg} {bar:40.cyan/blue} {pos}/{len}s ({eta})")
-            .unwrap_or_else(|_| ProgressStyle::default_bar()),
-    );
-    pb.set_message("Benchmark");
-    while std::time::Instant::now() < end_time {
-        let elapsed = std::time::Instant::now().duration_since(start_time);
-        pb.set_position(elapsed.as_secs().min(length));
-        std::thread::sleep(std::time::Duration::from_millis(200));
+    if io::stdout().is_terminal() {
+        let mut samples = Vec::new();
+        let mut last_bucket_time = start_time;
+        let mut last_ops = 0u64;
+        while std::time::Instant::now() < end_time {
+            let now = std::time::Instant::now();
+            let elapsed = now.duration_since(start_time);
+            let total_ops: u64 = ops_counters
+                .iter()
+                .map(|c| c.load(Ordering::Relaxed))
+                .sum();
+            if now.duration_since(last_bucket_time) >= std::time::Duration::from_secs(1) {
+                let bucket_secs = now.duration_since(last_bucket_time).as_secs_f64().max(0.001);
+                let delta = total_ops.saturating_sub(last_ops);
+                let throughput = (delta as f64 / bucket_secs).round() as u64;
+                samples.push(throughput);
+                last_ops = total_ops;
+                last_bucket_time = now;
+            }
+            render_benchmark_display(elapsed, duration, total_ops, &samples)?;
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+        let total_ops: u64 = ops_counters
+            .iter()
+            .map(|c| c.load(Ordering::Relaxed))
+            .sum();
+        let bucket_secs = std::time::Instant::now()
+            .duration_since(last_bucket_time)
+            .as_secs_f64()
+            .max(0.001);
+        let delta = total_ops.saturating_sub(last_ops);
+        let throughput = (delta as f64 / bucket_secs).round() as u64;
+        samples.push(throughput);
+        render_benchmark_display(duration, duration, total_ops, &samples)?;
+        clear_benchmark_display()?;
+    } else {
+        while std::time::Instant::now() < end_time {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
     }
-    pb.finish_with_message("Benchmark complete");
 
     let mut total_ops = 0u64;
     let mut total_errors = 0u64;
@@ -1173,6 +1207,135 @@ fn format_duration_ns(ns: u128) -> String {
         format!("{:.2} us", ns as f64 / 1_000.0)
     } else {
         format!("{} ns", ns)
+    }
+}
+
+fn render_benchmark_display(
+    elapsed: std::time::Duration,
+    duration: std::time::Duration,
+    total_ops: u64,
+    samples: &[u64],
+) -> Result<()> {
+    let width = terminal_width().unwrap_or(80);
+    let chart_height = 10usize;
+    let mut out = String::new();
+    out.push_str("\x1b[2J\x1b[H");
+    out.push_str(&format!(
+        "Benchmark running: {} / {}\n",
+        format_duration_short(elapsed),
+        format_duration_short(duration)
+    ));
+    out.push_str(&format!("Ops so far: {}\n", format_number(total_ops)));
+    let current_ops = samples.last().copied().unwrap_or(0);
+    out.push_str(&format!(
+        "Current ops/s: {}\n",
+        format_number(current_ops)
+    ));
+    out.push_str(&render_progress_bar(width, elapsed, duration));
+    out.push('\n');
+    out.push_str(&render_ops_chart(samples, width, chart_height));
+    let mut stdout = io::stdout();
+    stdout.write_all(out.as_bytes())?;
+    stdout.flush()?;
+    Ok(())
+}
+
+fn clear_benchmark_display() -> Result<()> {
+    let mut stdout = io::stdout();
+    stdout.write_all(b"\x1b[2J\x1b[H")?;
+    stdout.flush()?;
+    Ok(())
+}
+
+fn render_progress_bar(width: usize, elapsed: std::time::Duration, duration: std::time::Duration) -> String {
+    let bar_width = width.saturating_sub(20).max(10);
+    let frac = (elapsed.as_secs_f64() / duration.as_secs_f64()).min(1.0).max(0.0);
+    let filled = (bar_width as f64 * frac).round() as usize;
+    let empty = bar_width.saturating_sub(filled);
+    let percent = (frac * 100.0).round() as u64;
+    format!(
+        "[{}{}] {:>3}%",
+        format!("\x1b[46m{}\x1b[0m", " ".repeat(filled)),
+        "-".repeat(empty),
+        percent
+    )
+}
+
+fn render_ops_chart(samples: &[u64], width: usize, height: usize) -> String {
+    if height == 0 || width == 0 {
+        return String::new();
+    }
+    let chart_width = width.saturating_sub(2).max(10);
+    let start = samples.len().saturating_sub(chart_width);
+    let window = &samples[start..];
+    let max_val = window.iter().copied().max().unwrap_or(0);
+    let avg_val = if window.is_empty() {
+        0.0
+    } else {
+        window.iter().map(|v| *v as f64).sum::<f64>() / window.len() as f64
+    };
+    let target_max = (avg_val * 2.0).ceil() as u64;
+    let scale_max = if max_val == 0 {
+        1
+    } else {
+        max_val.max(target_max).max(1)
+    };
+    let mut out = String::new();
+    out.push_str(&format!(
+        "Ops/s (1s buckets), max {}\n",
+        format_number(scale_max)
+    ));
+    for row in (1..=height).rev() {
+        for &val in window {
+            let bar_height = ((val as u128 * height as u128) + scale_max as u128 - 1)
+                / scale_max as u128;
+            if bar_height >= row as u128 {
+                let color = color_for_row(row, height);
+                out.push_str(color);
+                out.push('⣿');
+                out.push_str("\x1b[0m");
+            } else {
+                out.push(' ');
+            }
+        }
+        out.push('\n');
+    }
+    out
+}
+
+fn terminal_width() -> Option<usize> {
+    unsafe {
+        let mut ws: libc::winsize = std::mem::zeroed();
+        if libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, &mut ws) == 0 && ws.ws_col > 0 {
+            return Some(ws.ws_col as usize);
+        }
+    }
+    std::env::var("COLUMNS").ok().and_then(|v| v.parse().ok())
+}
+
+fn format_duration_short(duration: std::time::Duration) -> String {
+    let secs = duration.as_secs();
+    if secs < 60 {
+        return format!("{}s", secs);
+    }
+    let minutes = secs / 60;
+    let rem = secs % 60;
+    format!("{}m {}s", minutes, rem)
+}
+
+fn color_for_row(row: usize, height: usize) -> &'static str {
+    if height == 0 {
+        return "\x1b[37m";
+    }
+    let ratio = (row as f64 / height as f64).min(1.0);
+    match ratio {
+        r if r >= 0.85 => "\x1b[31m", // red
+        r if r >= 0.70 => "\x1b[33m", // yellow
+        r if r >= 0.55 => "\x1b[32m", // green
+        r if r >= 0.40 => "\x1b[36m", // cyan
+        r if r >= 0.25 => "\x1b[34m", // blue
+        r if r >= 0.10 => "\x1b[35m", // magenta
+        _ => "\x1b[37m",              // white
     }
 }
 
