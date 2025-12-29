@@ -401,13 +401,14 @@ impl IngestContext {
                     let pk = table.primary_key.clone().unwrap_or_default();
                     let pk_col = column_spec(&table, &pk)?;
                     let key_type = key_type_for_column(&pk_col)?;
-                    let mut pk_map = PkMap::new(mapping_kind, key_type, estimate_rows(&table));
+                    let total_hint = row_count_hint(&table).unwrap_or(0);
+                    let capacity_hint = estimate_rows(&table).max(total_hint as usize);
+                    let mut pk_map = PkMap::new(mapping_kind, key_type, capacity_hint);
                     let mut sort_map = None;
                     let mut dict_samples = Vec::new();
                     let mut sample_bytes = 0usize;
                     let mut row_id = 0u64;
                     let progress_key = format!("pk_map:{}", table.name);
-                    let total_hint = row_count_hint(&table).unwrap_or(0);
                     let total_opt = if total_hint > 0 { Some(total_hint) } else { None };
                     if let Some(cb) = &progress {
                         cb(ProgressEvent::Start {
@@ -422,9 +423,8 @@ impl IngestContext {
                         pk_map.insert(key, row_id)?;
                         if let Some(sort_val) = row.sort_key(&table)? {
                             let sort_key = sort_key_to_u32(&sort_val)?;
-                            let sort_map = sort_map.get_or_insert_with(|| {
-                                PkMap::new(mapping_kind, key_type, estimate_rows(&table))
-                            });
+                            let sort_map = sort_map
+                                .get_or_insert_with(|| PkMap::new(mapping_kind, key_type, capacity_hint));
                             let key = key_from_value(&pk_value, &pk_col, &pk)?;
                             sort_map.insert(key, sort_key as u64)?;
                         }
@@ -500,6 +500,11 @@ impl IngestContext {
         for (table_name, state) in &pk_maps {
             let map_path = format!("nodes/{}/pk_map.bin", table_name.to_lowercase());
             let target = self.target.join(&map_path);
+            if let OutputTarget::Local { .. } = self.target.as_ref() {
+                if let Some(parent) = target.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+            }
             let sink = self.target.sink(&target)?;
             let mut writer = io::BufWriter::new(sink);
             state.pk_map.write_to(&mut writer)?;

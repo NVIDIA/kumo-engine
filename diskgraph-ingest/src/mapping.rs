@@ -50,6 +50,7 @@ pub struct PkMap {
     entries: Vec<(Key, u64)>,
     hash_table: Vec<Option<(Key, u64)>>,
     capacity: usize,
+    hash_len: usize,
 }
 
 impl PkMap {
@@ -64,6 +65,7 @@ impl PkMap {
             entries: Vec::with_capacity(capacity_hint),
             hash_table: vec![None; capacity],
             capacity,
+            hash_len: 0,
         }
     }
 
@@ -73,11 +75,15 @@ impl PkMap {
         }
         match self.kind {
             MappingKind::Hash => {
+                if (self.hash_len + 1) * 10 >= self.capacity * 7 {
+                    self.grow_hash();
+                }
                 let mut idx = (hash_key(&key) as usize) & (self.capacity - 1);
                 loop {
                     match &self.hash_table[idx] {
                         None => {
                             self.hash_table[idx] = Some((key, value));
+                            self.hash_len += 1;
                             return Ok(());
                         }
                         Some((existing, _)) if keys_equal(existing, &key) => {
@@ -142,7 +148,7 @@ impl PkMap {
         writer.write_all(&[key_type_tag])?;
         writer.write_all(&key_len.to_le_bytes())?;
         let count = match self.kind {
-            MappingKind::Hash => self.hash_table.iter().filter(|e| e.is_some()).count(),
+            MappingKind::Hash => self.hash_len,
             MappingKind::Sorted => self.entries.len(),
         } as u64;
         let capacity = if self.kind == MappingKind::Hash {
@@ -179,6 +185,25 @@ impl PkMap {
             }
         }
         Ok(())
+    }
+
+    fn grow_hash(&mut self) {
+        let new_capacity = (self.capacity * 2).max(8);
+        let mut new_table = vec![None; new_capacity];
+        for entry in self.hash_table.drain(..) {
+            if let Some((key, value)) = entry {
+                let mut idx = (hash_key(&key) as usize) & (new_capacity - 1);
+                loop {
+                    if new_table[idx].is_none() {
+                        new_table[idx] = Some((key, value));
+                        break;
+                    }
+                    idx = (idx + 1) & (new_capacity - 1);
+                }
+            }
+        }
+        self.hash_table = new_table;
+        self.capacity = new_capacity;
     }
 }
 
