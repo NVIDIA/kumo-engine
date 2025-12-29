@@ -991,8 +991,8 @@ fn profile_phase<T>(dir: &Path, name: &str, f: impl FnOnce() -> Result<T>) -> Re
     let guard = ProfilerGuard::new(500).context("start profiler")?;
     let result = f();
     let report = guard.report().build().context("build profile report")?;
-    let svg_path = dir.join(format!("{name}.svg"));
-    let pb_path = dir.join(format!("{name}.pb"));
+    let svg_path = dir.join(format!("{name}-profile.svg"));
+    let pb_path = dir.join(format!("{name}-profile.pb"));
     let file = fs::File::create(&svg_path).context("create profile output")?;
     report
         .flamegraph(file)
@@ -1056,14 +1056,17 @@ fn write_node_data_to(
     let sink = target.sink(&path)?;
     let mut writer = ArrowWriter::try_new(sink, Arc::new(schema.clone()), Some(props))?;
     let mut batch = Vec::with_capacity(NODE_BATCH_SIZE);
+    let mut compressor = if let Some(dict) = dict {
+        Some(zstd::bulk::Compressor::with_dictionary(0, dict)?)
+    } else {
+        None
+    };
     let mut rows = 0u64;
     let mut next_update = PROGRESS_STEP;
     for_each_row(table, |row| {
         let msg = row.to_msgpack(table)?;
-        let data = if let Some(dict) = dict {
-            let mut encoder = zstd::stream::Encoder::with_dictionary(Vec::new(), 0, dict)?;
-            encoder.write_all(&msg)?;
-            encoder.finish()?
+        let data = if let Some(compressor) = compressor.as_mut() {
+            compressor.compress(&msg)?
         } else {
             msg
         };

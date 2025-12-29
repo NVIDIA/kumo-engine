@@ -171,8 +171,8 @@ fn main() -> Result<()> {
     if let Some(profile_dir) = args.profile.as_ref() {
         let mut profiles = Vec::new();
         for name in ["pk_map", "nodes", "edges"] {
-            let svg = profile_dir.join(format!("{name}.svg"));
-            let pb = profile_dir.join(format!("{name}.pb"));
+            let svg = profile_dir.join(format!("{name}-profile.svg"));
+            let pb = profile_dir.join(format!("{name}-profile.pb"));
             if svg.exists() {
                 profiles.push(svg);
             }
@@ -187,7 +187,7 @@ fn main() -> Result<()> {
             }
             let mut pb_paths = Vec::new();
             for name in ["pk_map", "nodes", "edges"] {
-                let pb = profile_dir.join(format!("{name}.pb"));
+                let pb = profile_dir.join(format!("{name}-profile.pb"));
                 if pb.exists() {
                     pb_paths.push(pb);
                 }
@@ -195,7 +195,7 @@ fn main() -> Result<()> {
             if !pb_paths.is_empty() {
                 println!("Go pprof:");
                 for path in pb_paths {
-                    println!("  go tool pprof -http=:0 {}", path.display());
+                    println!("  go tool pprof {}", path.display());
                 }
             }
         }
