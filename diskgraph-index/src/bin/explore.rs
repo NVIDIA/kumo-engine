@@ -1289,10 +1289,7 @@ fn render_ops_chart(samples: &[u64], width: usize, height: usize, scale_max: &mu
     }
     let scale_max = *scale_max;
     let mut out = String::new();
-    out.push_str(&format!(
-        "Ops/s (1s buckets), max {}\n",
-        format_number(scale_max)
-    ));
+    out.push('\n');
     let row_mid = (height + 1) / 2;
     for row in (1..=height).rev() {
         let label = if row == height {
