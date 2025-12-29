@@ -28,3 +28,15 @@ url = "2"
 bytes = "1"
 tokio = { version = "1", features = ["rt-multi-thread"] }
 futures-util = "0.3"
+
+[[bin]]
+name = "diskgraph-datagenerator"
+path = "src/main.rs"
+
+[[bin]]
+name = "massive"
+path = "src/bin/massive.rs"
+
+[[bin]]
+name = "generate-multi"
+path = "src/bin/generate_multi.rs"

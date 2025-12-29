@@ -81,4 +81,27 @@ Node data env overrides for massive scripts:
 - `NODE_DATA_BYTES=128`
 - `NODE_DATA_BATCH=1000000`
 
-Each script writes `edges_<relation>.parquet` for two relations, `nodes.parquet` for optional node data, and `metadata.json` under a per-run prefix like `.../run-<timestamp>-<rand>`. Metadata uses the larger of `nodes-1` and `max_dst_id` so `dst_id` values are always in-range for indexing.
+Each script writes `edges_<relation>.parquet` for two relations, `nodes.parquet` for optional node data, and `metadata.json` under a per-run prefix like `.../nodes-<n>-edges-<m>-bytes-<b>`. Metadata uses the larger of `nodes-1` and `max_dst_id` so `dst_id` values are always in-range for indexing.
+
+## Multi-table massive generator (streaming, multi-shard)
+
+The `generate-multi` binary emits a multi-table, multi-shard dataset with a fixed, realistic schema (Users, Products, Orders, Sessions, Merchants, Categories) and bidirectional relations. It distributes the requested node count across tables and shards, and distributes edges per relation across source nodes while guaranteeing valid destination ids.
+
+Example (local):
+
+```bash
+scripts/generate_multi_local.sh 100m 200m 256b
+```
+
+CLI highlights (see `--help`):
+- `--nodes`, `--edges-per-relation`, `--node-data-bytes` accept human-friendly inputs like `100m`, `12mb`.
+- `--num-shards` controls node sharding per table (default: 5).
+- `--threads` controls parallel generation workers (default: CPU count).
+- `--edge-batch-size`, `--node-data-batch-size`, `--row-group-size` control streaming and memory usage.
+- `--dest {local,s3,gcs,adls}` and `--output <path or URL>` control the sink.
+
+Helper scripts (same defaults as massive; 3 positional args: nodes, edges per relation, node bytes):
+- `scripts/generate_multi_local.sh`
+- `scripts/generate_multi_s3.sh`
+- `scripts/generate_multi_gcs.sh`
+- `scripts/generate_multi_adls.sh`
