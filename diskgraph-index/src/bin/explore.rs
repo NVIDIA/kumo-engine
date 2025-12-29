@@ -1021,6 +1021,7 @@ fn run_benchmark(reader: Arc<ShardReader>, threads: usize, duration: std::time::
 
     if io::stdout().is_terminal() {
         let mut samples = Vec::new();
+        let mut scale_max = 1u64;
         let mut last_bucket_time = start_time;
         let mut last_ops = 0u64;
         while std::time::Instant::now() < end_time {
@@ -1038,7 +1039,7 @@ fn run_benchmark(reader: Arc<ShardReader>, threads: usize, duration: std::time::
                 last_ops = total_ops;
                 last_bucket_time = now;
             }
-            render_benchmark_display(elapsed, duration, total_ops, &samples)?;
+            render_benchmark_display(elapsed, duration, total_ops, &samples, &mut scale_max)?;
             std::thread::sleep(std::time::Duration::from_millis(200));
         }
         let total_ops: u64 = ops_counters
@@ -1052,7 +1053,7 @@ fn run_benchmark(reader: Arc<ShardReader>, threads: usize, duration: std::time::
         let delta = total_ops.saturating_sub(last_ops);
         let throughput = (delta as f64 / bucket_secs).round() as u64;
         samples.push(throughput);
-        render_benchmark_display(duration, duration, total_ops, &samples)?;
+        render_benchmark_display(duration, duration, total_ops, &samples, &mut scale_max)?;
         clear_benchmark_display()?;
     } else {
         while std::time::Instant::now() < end_time {
@@ -1215,6 +1216,7 @@ fn render_benchmark_display(
     duration: std::time::Duration,
     total_ops: u64,
     samples: &[u64],
+    scale_max: &mut u64,
 ) -> Result<()> {
     let width = terminal_width().unwrap_or(80);
     let chart_height = 10usize;
@@ -1233,7 +1235,7 @@ fn render_benchmark_display(
     ));
     out.push_str(&render_progress_bar(width, elapsed, duration));
     out.push('\n');
-    out.push_str(&render_ops_chart(samples, width, chart_height));
+    out.push_str(&render_ops_chart(samples, width, chart_height, scale_max));
     let mut stdout = io::stdout();
     stdout.write_all(out.as_bytes())?;
     stdout.flush()?;
@@ -1261,11 +1263,12 @@ fn render_progress_bar(width: usize, elapsed: std::time::Duration, duration: std
     )
 }
 
-fn render_ops_chart(samples: &[u64], width: usize, height: usize) -> String {
+fn render_ops_chart(samples: &[u64], width: usize, height: usize, scale_max: &mut u64) -> String {
     if height == 0 || width == 0 {
         return String::new();
     }
-    let chart_width = width.saturating_sub(2).max(10);
+    let label_width = 10usize;
+    let chart_width = width.saturating_sub(label_width + 3).max(10);
     let start = samples.len().saturating_sub(chart_width);
     let window = &samples[start..];
     let max_val = window.iter().copied().max().unwrap_or(0);
@@ -1275,17 +1278,33 @@ fn render_ops_chart(samples: &[u64], width: usize, height: usize) -> String {
         window.iter().map(|v| *v as f64).sum::<f64>() / window.len() as f64
     };
     let target_max = (avg_val * 2.0).ceil() as u64;
-    let scale_max = if max_val == 0 {
-        1
-    } else {
-        max_val.max(target_max).max(1)
-    };
+    let desired_scale = if max_val == 0 { 1 } else { max_val.max(1) };
+    if desired_scale > *scale_max {
+        *scale_max = desired_scale;
+    } else if target_max > 0 {
+        let min_increase = ((*scale_max as f64) * 1.5).ceil() as u64;
+        if target_max >= min_increase {
+            *scale_max = target_max;
+        }
+    }
+    let scale_max = *scale_max;
     let mut out = String::new();
     out.push_str(&format!(
         "Ops/s (1s buckets), max {}\n",
         format_number(scale_max)
     ));
+    let row_mid = (height + 1) / 2;
     for row in (1..=height).rev() {
+        let label = if row == height {
+            format_count(scale_max)
+        } else if row == row_mid {
+            format_count(scale_max / 2)
+        } else if row == 1 {
+            "0".to_string()
+        } else {
+            String::new()
+        };
+        out.push_str(&format!("{:>width$} |", label, width = label_width));
         for &val in window {
             let bar_height = ((val as u128 * height as u128) + scale_max as u128 - 1)
                 / scale_max as u128;
@@ -1300,6 +1319,35 @@ fn render_ops_chart(samples: &[u64], width: usize, height: usize) -> String {
         }
         out.push('\n');
     }
+    out.push_str(&format!(
+        "{:>width$} +{}\n",
+        "",
+        "-".repeat(chart_width),
+        width = label_width
+    ));
+    let mut axis = vec![' '; chart_width];
+    let total_secs = samples.len() as u64;
+    let window_start = total_secs.saturating_sub(window.len() as u64);
+    for i in 0..window.len() {
+        let t = window_start + i as u64 + 1;
+        if t % 10 == 0 {
+            let label = format_duration_short(std::time::Duration::from_secs(t));
+            let pos = i.min(chart_width.saturating_sub(1));
+            let end = (pos + label.len()).min(axis.len());
+            for (idx, ch) in label.chars().enumerate() {
+                if pos + idx >= end {
+                    break;
+                }
+                axis[pos + idx] = ch;
+            }
+        }
+    }
+    out.push_str(&format!(
+        "{:>width$}  {}\n",
+        "",
+        axis.into_iter().collect::<String>(),
+        width = label_width
+    ));
     out
 }
 
