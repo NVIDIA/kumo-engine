@@ -39,19 +39,42 @@ const NODE_BATCH_SIZE: usize = 50_000;
 const EDGE_BATCH_SIZE: usize = 200_000;
 const ZSTD_DICT_SAMPLE_LIMIT: usize = 50_000;
 const ZSTD_DICT_SAMPLE_BYTES: usize = 8 * 1024 * 1024;
+const PROGRESS_STEP: u64 = 100_000;
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct IngestOptions {
     pub mapping_kind: MappingKind,
+    pub progress: Option<ProgressCallback>,
 }
 
 impl Default for IngestOptions {
     fn default() -> Self {
         Self {
             mapping_kind: MappingKind::Hash,
+            progress: None,
         }
     }
 }
+
+#[derive(Clone, Debug)]
+pub struct IngestStats {
+    pub output: String,
+    pub node_tables: usize,
+    pub edge_relations: usize,
+    pub total_nodes: u64,
+    pub total_edges: u64,
+    pub node_counts: HashMap<String, u64>,
+    pub edge_counts: HashMap<String, u64>,
+}
+
+#[derive(Clone, Debug)]
+pub enum ProgressEvent {
+    Start { key: String, total: Option<u64> },
+    Advance { key: String, delta: u64 },
+    Finish { key: String, total: Option<u64> },
+}
+
+pub type ProgressCallback = Arc<dyn Fn(ProgressEvent) + Send + Sync>;
 
 pub fn ingest(
     source_metadata_path: &Path,
@@ -59,19 +82,34 @@ pub fn ingest(
     dest: Dest,
     options: IngestOptions,
 ) -> Result<DatasetMetadata> {
+    let (metadata, _) = ingest_with_stats(source_metadata_path, output, dest, options)?;
+    Ok(metadata)
+}
+
+pub fn ingest_with_stats(
+    source_metadata_path: &Path,
+    output: &str,
+    dest: Dest,
+    options: IngestOptions,
+) -> Result<(DatasetMetadata, IngestStats)> {
     let metadata_bytes = fs::read(source_metadata_path)
         .with_context(|| format!("read {}", source_metadata_path.display()))?;
-    let source: SourceMetadata = serde_json::from_slice(&metadata_bytes)?;
+    let mut source: SourceMetadata = serde_json::from_slice(&metadata_bytes)?;
+    let base_dir = source_metadata_path
+        .parent()
+        .ok_or_else(|| anyhow!("missing parent for {}", source_metadata_path.display()))?;
+    resolve_local_paths(&mut source, base_dir);
     source.validate()?;
 
     let target = OutputTarget::parse(output, dest)?;
     target.prepare()?;
 
-    let mut ctx = IngestContext::new(source, target, options)?;
+    let mut ctx = IngestContext::new(source, target, options, output)?;
     ctx.build_pk_maps()?;
     ctx.build_node_data_and_edges()?;
     let index_metadata = ctx.finalize_metadata()?;
-    Ok(index_metadata)
+    let stats = ctx.build_stats(&index_metadata);
+    Ok((index_metadata, stats))
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -86,11 +124,14 @@ struct IngestContext {
     source: SourceMetadata,
     target: OutputTarget,
     mapping_kind: MappingKind,
+    progress: Option<ProgressCallback>,
     pk_maps: HashMap<String, TableMapState>,
     table_rows: HashMap<String, u64>,
     table_dicts: HashMap<String, String>,
     relation_defs: Vec<RelationDef>,
     relationships: Vec<RelationshipRuntime>,
+    edge_counts: HashMap<String, u64>,
+    output: String,
 }
 
 struct TableMapState {
@@ -130,7 +171,12 @@ enum SortKeyMode {
 }
 
 impl IngestContext {
-    fn new(source: SourceMetadata, target: OutputTarget, options: IngestOptions) -> Result<Self> {
+    fn new(
+        source: SourceMetadata,
+        target: OutputTarget,
+        options: IngestOptions,
+        output: &str,
+    ) -> Result<Self> {
         let mut relation_defs = Vec::new();
         let mut relationships = Vec::new();
         for rel in &source.relationships {
@@ -215,11 +261,14 @@ impl IngestContext {
             source,
             target,
             mapping_kind: options.mapping_kind,
+            progress: options.progress,
             pk_maps: HashMap::new(),
             table_rows: HashMap::new(),
             table_dicts: HashMap::new(),
             relation_defs,
             relationships,
+            edge_counts: HashMap::new(),
+            output: output.to_string(),
         })
     }
 
@@ -238,6 +287,9 @@ impl IngestContext {
             let mut dict_samples = Vec::new();
             let mut sample_bytes = 0usize;
             let mut row_id = 0u64;
+            let progress_key = format!("pk_map:{}", table.name);
+            self.progress_start(&progress_key, None);
+            let mut next_update = PROGRESS_STEP;
             for_each_row(table, |row| {
                 let pk_value = row.get_value(pk)?;
                 let key = key_from_value(&pk_value, pk_col, pk)?;
@@ -258,8 +310,19 @@ impl IngestContext {
                     dict_samples.push(msg);
                 }
                 row_id += 1;
+                if row_id == next_update {
+                    self.progress_advance(&progress_key, PROGRESS_STEP);
+                    next_update = next_update.saturating_add(PROGRESS_STEP);
+                }
                 Ok(())
             })?;
+            if row_id > 0 && row_id < next_update {
+                let delta = row_id.saturating_sub(next_update - PROGRESS_STEP);
+                if delta > 0 {
+                    self.progress_advance(&progress_key, delta);
+                }
+            }
+            self.progress_finish(&progress_key, Some(row_id));
             pk_map.finalize();
             if let Some(sort) = sort_map.as_mut() {
                 sort.finalize();
@@ -294,7 +357,12 @@ impl IngestContext {
                 if let Some(state) = self.pk_maps.get_mut(table.name.as_str()) {
                     state.dict_path = dict_path.clone();
                 }
-                let row_count = self.write_node_data(table, dict_bytes.as_deref())?;
+                let progress_key = format!("nodes:{}", table.name);
+                let total = self.table_rows.get(table.name.as_str()).copied();
+                self.progress_start(&progress_key, total);
+                let row_count =
+                    self.write_node_data(table, dict_bytes.as_deref(), Some(&progress_key))?;
+                self.progress_finish(&progress_key, Some(row_count));
                 self.table_rows.insert(table.name.clone(), row_count);
             }
 
@@ -315,6 +383,14 @@ impl IngestContext {
                 }
                 let mut forward_edges = EdgeAccumulator::new(rel.forward_sort != SortKeyMode::None);
                 let mut reverse_edges = EdgeAccumulator::new(rel.reverse_sort != SortKeyMode::None);
+                let mut forward_count = 0u64;
+                let mut reverse_count = 0u64;
+                let total = self.table_rows.get(table.name.as_str()).copied();
+                let forward_key = format!("edges:{}", rel.name_forward);
+                let reverse_key = format!("edges:{}", rel.name_reverse);
+                self.progress_start(&forward_key, total);
+                self.progress_start(&reverse_key, total);
+                let mut next_update = PROGRESS_STEP;
                 for_each_row(table, |row| {
                     let src_id = row.row_id;
                     let fk_val = row.get_value(&rel.src_column)?;
@@ -337,6 +413,13 @@ impl IngestContext {
                         SortKeyMode::None => None,
                     };
                     reverse_edges.push(dst_id, src_id, reverse_sort_key);
+                    forward_count += 1;
+                    reverse_count += 1;
+                    if forward_count == next_update {
+                        self.progress_advance(&forward_key, PROGRESS_STEP);
+                        self.progress_advance(&reverse_key, PROGRESS_STEP);
+                        next_update = next_update.saturating_add(PROGRESS_STEP);
+                    }
                     if forward_edges.len() >= EDGE_BATCH_SIZE {
                         relation_writers.flush(&rel.name_forward, &forward_edges)?;
                         forward_edges.clear();
@@ -353,6 +436,12 @@ impl IngestContext {
                 if !reverse_edges.is_empty() {
                     relation_writers.flush(&rel.name_reverse, &reverse_edges)?;
                 }
+                self.progress_finish(&forward_key, Some(forward_count));
+                self.progress_finish(&reverse_key, Some(reverse_count));
+                self.edge_counts
+                    .insert(rel.name_forward.clone(), forward_count);
+                self.edge_counts
+                    .insert(rel.name_reverse.clone(), reverse_count);
             }
 
             if let Some(edge) = &table.edge_table {
@@ -379,6 +468,10 @@ impl IngestContext {
                 } else {
                     SortKeyMode::None
                 };
+                let forward_key = format!("edges:edge_{}_src_to_dst", table.name);
+                let reverse_key = format!("edges:edge_{}_dst_to_src", table.name);
+                self.progress_start(&forward_key, None);
+                self.progress_start(&reverse_key, None);
                 let mut forward_records: Vec<EdgeRecord> = Vec::new();
                 let mut reverse_records: Vec<EdgeRecord> = Vec::new();
                 for_each_row(table, |row| {
@@ -418,6 +511,16 @@ impl IngestContext {
                     sort_mode != SortKeyMode::None,
                     &reverse_records,
                 )?;
+                self.progress_finish(&forward_key, Some(forward_records.len() as u64));
+                self.progress_finish(&reverse_key, Some(reverse_records.len() as u64));
+                self.edge_counts.insert(
+                    format!("edge_{}_src_to_dst", table.name),
+                    forward_records.len() as u64,
+                );
+                self.edge_counts.insert(
+                    format!("edge_{}_dst_to_src", table.name),
+                    reverse_records.len() as u64,
+                );
             }
         }
         relation_writers.finish()?;
@@ -448,7 +551,12 @@ impl IngestContext {
         Ok((Some(dict_path), Some(dict)))
     }
 
-    fn write_node_data(&self, table: &TableSpec, dict: Option<&[u8]>) -> Result<u64> {
+    fn write_node_data(
+        &self,
+        table: &TableSpec,
+        dict: Option<&[u8]>,
+        progress_key: Option<&str>,
+    ) -> Result<u64> {
         let rel_path = format!("nodes/{}/part-00000.parquet", table.name.to_lowercase());
         let path = self.target.join(&rel_path);
         if let OutputTarget::Local { .. } = self.target {
@@ -464,6 +572,7 @@ impl IngestContext {
         let mut writer = ArrowWriter::try_new(sink, Arc::new(schema.clone()), Some(props))?;
         let mut batch = Vec::with_capacity(NODE_BATCH_SIZE);
         let mut rows = 0u64;
+        let mut next_update = PROGRESS_STEP;
         for_each_row(table, |row| {
             let msg = row.to_msgpack(table)?;
             let data = if let Some(dict) = dict {
@@ -475,11 +584,23 @@ impl IngestContext {
             };
             batch.push(data);
             rows += 1;
+            if rows == next_update {
+                if let Some(key) = progress_key {
+                    self.progress_advance(key, PROGRESS_STEP);
+                }
+                next_update = next_update.saturating_add(PROGRESS_STEP);
+            }
             if batch.len() >= NODE_BATCH_SIZE {
                 flush_node_batch(&schema, &mut writer, &mut batch)?;
             }
             Ok(())
         })?;
+        if let Some(key) = progress_key {
+            let delta = rows.saturating_sub(next_update - PROGRESS_STEP);
+            if delta > 0 {
+                self.progress_advance(key, delta);
+            }
+        }
         flush_node_batch(&schema, &mut writer, &mut batch)?;
         let sink = writer.into_inner()?;
         sink.finish()?;
@@ -581,6 +702,52 @@ impl IngestContext {
             }
         }
         Ok(index_metadata)
+    }
+
+    fn build_stats(&self, metadata: &DatasetMetadata) -> IngestStats {
+        let mut node_counts = HashMap::new();
+        for node in metadata.node_types.iter() {
+            let count = node.max_id.saturating_add(1);
+            node_counts.insert(node.name.clone(), count);
+        }
+        let total_nodes = node_counts.values().sum();
+        let total_edges = self.edge_counts.values().sum();
+        IngestStats {
+            output: self.output.clone(),
+            node_tables: metadata.node_types.len(),
+            edge_relations: metadata.edge_relations.len(),
+            total_nodes,
+            total_edges,
+            node_counts,
+            edge_counts: self.edge_counts.clone(),
+        }
+    }
+
+    fn progress_start(&self, key: &str, total: Option<u64>) {
+        if let Some(progress) = &self.progress {
+            progress(ProgressEvent::Start {
+                key: key.to_string(),
+                total,
+            });
+        }
+    }
+
+    fn progress_advance(&self, key: &str, delta: u64) {
+        if let Some(progress) = &self.progress {
+            progress(ProgressEvent::Advance {
+                key: key.to_string(),
+                delta,
+            });
+        }
+    }
+
+    fn progress_finish(&self, key: &str, total: Option<u64>) {
+        if let Some(progress) = &self.progress {
+            progress(ProgressEvent::Finish {
+                key: key.to_string(),
+                total,
+            });
+        }
     }
 }
 
@@ -882,10 +1049,14 @@ fn for_each_row(table: &TableSpec, mut f: impl FnMut(&RowView) -> Result<()>) ->
     let schema = table_schema(table)?;
     let mut global_row = 0u64;
     for path in &table.paths {
+        if !is_cloud_path(path) && !Path::new(path).exists() {
+            return Err(anyhow!("input path not found {}", path));
+        }
         let local = localize_input(path)?;
         match table.format {
             TableFormat::Parquet => {
-                let file = fs::File::open(&local.path)?;
+                let file = fs::File::open(&local.path)
+                    .with_context(|| format!("open {}", local.path.display()))?;
                 let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
                 let reader = builder.with_batch_size(NODE_BATCH_SIZE).build()?;
                 for batch in reader {
@@ -898,7 +1069,8 @@ fn for_each_row(table: &TableSpec, mut f: impl FnMut(&RowView) -> Result<()>) ->
                 }
             }
             TableFormat::Csv => {
-                let file = fs::File::open(&local.path)?;
+                let file = fs::File::open(&local.path)
+                    .with_context(|| format!("open {}", local.path.display()))?;
                 let builder = arrow_csv::ReaderBuilder::new(Arc::new(schema.clone()))
                     .with_header(true);
                 let reader = builder.build(file)?;
@@ -1217,6 +1389,26 @@ fn parse_az_url(raw: &str) -> Result<(String, String, String)> {
     Ok((account, container, key))
 }
 
+fn resolve_local_paths(source: &mut SourceMetadata, base_dir: &Path) {
+    for table in &mut source.tables {
+        for path in &mut table.paths {
+            if is_cloud_path(path) {
+                continue;
+            }
+            let path_buf = PathBuf::from(path.as_str());
+            if path_buf.is_absolute() {
+                continue;
+            }
+            let joined = base_dir.join(path_buf);
+            *path = joined.to_string_lossy().to_string();
+        }
+    }
+}
+
+fn is_cloud_path(path: &str) -> bool {
+    path.starts_with("s3://") || path.starts_with("gs://") || path.starts_with("az://")
+}
+
 enum OutputTarget {
     Local { root: PathBuf },
     S3 {
@@ -1330,7 +1522,12 @@ impl OutputTarget {
     fn write_bytes(&self, name: &str, bytes: Vec<u8>) -> Result<()> {
         match self {
             OutputTarget::Local { root } => {
-                fs::write(root.join(name), bytes)?;
+                let path = root.join(name);
+                if let Some(parent) = path.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                fs::write(&path, bytes)
+                    .with_context(|| format!("write {}", path.display()))?;
             }
             OutputTarget::S3 { store, rt, prefix, .. }
             | OutputTarget::Gcs { store, rt, prefix, .. }

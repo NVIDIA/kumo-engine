@@ -27,3 +27,4 @@ rmp-serde = "1"
 seahash = "4.1"
 base64 = "0.22"
 clap = { version = "4.4", features = ["derive"] }
+indicatif = "0.17"
