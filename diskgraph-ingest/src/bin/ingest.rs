@@ -8,6 +8,7 @@ use diskgraph_ingest::{
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::collections::HashMap;
 use std::io::IsTerminal;
+use std::fs;
 use std::sync::{Arc, Mutex};
 
 #[derive(Parser, Debug)]
@@ -25,6 +26,9 @@ struct Args {
     /// Primary key mapping strategy.
     #[arg(long, value_enum, default_value = "hash")]
     mapping: MappingArg,
+    /// Write pprof profiles per phase to this directory.
+    #[arg(long, value_name = "DIR", num_args = 0..=1, default_missing_value = ".")]
+    profile: Option<PathBuf>,
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
@@ -42,7 +46,9 @@ enum MappingArg {
 }
 
 fn main() -> Result<()> {
-    tracing_subscriber::fmt().with_env_filter("info").init();
+    tracing_subscriber::fmt()
+        .with_env_filter("info,pprof=warn")
+        .init();
     let args = Args::parse();
     let source_path = if args.source.is_dir() {
         args.source.join("source_metadata.json")
@@ -54,6 +60,14 @@ fn main() -> Result<()> {
             "source metadata not found at {}",
             source_path.display()
         );
+    }
+    if args.profile.is_some() && cfg!(debug_assertions) && cfg!(target_arch = "aarch64") {
+        anyhow::bail!(
+            "pprof profiling in debug builds can panic on aarch64; rerun with `--release`"
+        );
+    }
+    if let Some(profile_dir) = args.profile.as_ref() {
+        fs::create_dir_all(profile_dir)?;
     }
     let total_tasks = count_expected_tasks(&source_path).unwrap_or(0);
     let progress = if total_tasks > 0 {
@@ -67,6 +81,7 @@ fn main() -> Result<()> {
             MappingArg::Sorted => MappingKind::Sorted,
         },
         progress,
+        profile_dir: args.profile.clone(),
     };
     let dest = match args.dest {
         DestArg::Local => Dest::Local,
@@ -153,6 +168,38 @@ fn main() -> Result<()> {
         format_duration(stats.perf.edge_task_ms),
         stats.perf.edge_tasks
     );
+    if let Some(profile_dir) = args.profile.as_ref() {
+        let mut profiles = Vec::new();
+        for name in ["pk_map", "nodes", "edges"] {
+            let svg = profile_dir.join(format!("{name}.svg"));
+            let pb = profile_dir.join(format!("{name}.pb"));
+            if svg.exists() {
+                profiles.push(svg);
+            }
+            if pb.exists() {
+                profiles.push(pb);
+            }
+        }
+        if !profiles.is_empty() {
+            println!("Profiles:");
+            for path in &profiles {
+                println!("  {}", path.display());
+            }
+            let mut pb_paths = Vec::new();
+            for name in ["pk_map", "nodes", "edges"] {
+                let pb = profile_dir.join(format!("{name}.pb"));
+                if pb.exists() {
+                    pb_paths.push(pb);
+                }
+            }
+            if !pb_paths.is_empty() {
+                println!("Go pprof:");
+                for path in pb_paths {
+                    println!("  go tool pprof -http=:0 {}", path.display());
+                }
+            }
+        }
+    }
     Ok(())
 }
 

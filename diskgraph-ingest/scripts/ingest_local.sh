@@ -3,12 +3,26 @@ set -euo pipefail
 
 # Run diskgraph-ingest on a local source directory or source_metadata.json.
 
+PROFILE_ENABLED="false"
+POSITIONAL=()
+for arg in "$@"; do
+  case "${arg}" in
+    -p)
+      PROFILE_ENABLED="true"
+      ;;
+    *)
+      POSITIONAL+=("${arg}")
+      ;;
+  esac
+done
+set -- "${POSITIONAL[@]}"
+
 SOURCE="${SOURCE:-${1:-}}"
 OUTPUT="${OUTPUT:-${2:-}}"
 MAPPING="${MAPPING:-hash}"
 
 if [[ -z "${SOURCE}" ]]; then
-  echo "Usage: SOURCE=/path/to/source_dir_or_metadata [OUTPUT=path] [MAPPING=hash|sorted] $0" >&2
+  echo "Usage: SOURCE=/path/to/source_dir_or_metadata [OUTPUT=path] [MAPPING=hash|sorted] $0 [-p]" >&2
   exit 1
 fi
 
@@ -26,8 +40,17 @@ if [[ -z "${OUTPUT}" ]]; then
   OUTPUT="${OUT_ROOT:-${DEFAULT_OUT_ROOT}}/${INPUT_NAME}"
 fi
 
-cargo run -p diskgraph-ingest --bin ingest --release -- \
-  --source "${SOURCE}" \
-  --output "${OUTPUT}" \
-  --dest local \
-  --mapping "${MAPPING}"
+if [[ "${PROFILE_ENABLED}" == "true" ]]; then
+  cargo run -p diskgraph-ingest --bin ingest --release -- \
+    --profile "ingest-profile" \
+    --source "${SOURCE}" \
+    --output "${OUTPUT}" \
+    --dest local \
+    --mapping "${MAPPING}"
+else
+  cargo run -p diskgraph-ingest --bin ingest --release -- \
+    --source "${SOURCE}" \
+    --output "${OUTPUT}" \
+    --dest local \
+    --mapping "${MAPPING}"
+fi

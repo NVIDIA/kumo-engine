@@ -21,6 +21,8 @@ use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::arrow::ArrowWriter;
 use parquet::file::properties::WriterProperties;
 use parquet::file::reader::FileReader;
+use pprof::protos::Message;
+use pprof::ProfilerGuard;
 use rmp_serde::encode::to_vec_named;
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
@@ -46,6 +48,7 @@ const PROGRESS_STEP: u64 = 10_000;
 pub struct IngestOptions {
     pub mapping_kind: MappingKind,
     pub progress: Option<ProgressCallback>,
+    pub profile_dir: Option<PathBuf>,
 }
 
 impl Default for IngestOptions {
@@ -53,6 +56,7 @@ impl Default for IngestOptions {
         Self {
             mapping_kind: MappingKind::Hash,
             progress: None,
+            profile_dir: None,
         }
     }
 }
@@ -126,12 +130,38 @@ pub fn ingest_with_stats(
     target.prepare()?;
 
     let mut ctx = IngestContext::new(source, target, options, output)?;
+    let profile_dir = ctx.profile_dir.clone();
+    if let Some(profile_dir) = &profile_dir {
+        fs::create_dir_all(profile_dir)?;
+    }
     let pk_map_start = std::time::Instant::now();
-    ctx.build_pk_maps()?;
+    if let Some(profile_dir) = &profile_dir {
+        profile_phase(profile_dir, "pk_map", || ctx.build_pk_maps())?;
+    } else {
+        ctx.build_pk_maps()?;
+    }
     let pk_map_wall = pk_map_start.elapsed();
-    let build_start = std::time::Instant::now();
-    ctx.build_node_data_and_edges()?;
-    let build_wall = build_start.elapsed();
+    let mut build_wall = std::time::Duration::from_millis(0);
+    if let Some(profile_dir) = &profile_dir {
+        let node_start = std::time::Instant::now();
+        profile_phase(profile_dir, "nodes", || ctx.build_node_data_and_edges(BuildPhase::Nodes))?;
+        build_wall += node_start.elapsed();
+        let node_task_ms = ctx.node_task_ms;
+        let node_tasks = ctx.node_tasks;
+        let build_task_ms = ctx.build_task_ms;
+        let build_tasks = ctx.build_tasks;
+        let edge_start = std::time::Instant::now();
+        profile_phase(profile_dir, "edges", || ctx.build_node_data_and_edges(BuildPhase::Edges))?;
+        build_wall += edge_start.elapsed();
+        ctx.node_task_ms = node_task_ms;
+        ctx.node_tasks = node_tasks;
+        ctx.build_task_ms = build_task_ms + ctx.build_task_ms;
+        ctx.build_tasks = build_tasks + ctx.build_tasks;
+    } else {
+        let build_start = std::time::Instant::now();
+        ctx.build_node_data_and_edges(BuildPhase::All)?;
+        build_wall = build_start.elapsed();
+    }
     let finalize_start = std::time::Instant::now();
     let index_metadata = ctx.finalize_metadata()?;
     let finalize_wall = finalize_start.elapsed();
@@ -174,6 +204,7 @@ struct IngestContext {
     target: std::sync::Arc<OutputTarget>,
     mapping_kind: MappingKind,
     progress: Option<ProgressCallback>,
+    profile_dir: Option<PathBuf>,
     pk_maps: HashMap<String, TableMapState>,
     table_rows: HashMap<String, u64>,
     table_dicts: HashMap<String, String>,
@@ -226,6 +257,13 @@ enum SortKeyMode {
     None,
     Weight,
     CreateTime,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BuildPhase {
+    All,
+    Nodes,
+    Edges,
 }
 
 impl IngestContext {
@@ -320,6 +358,7 @@ impl IngestContext {
             target,
             mapping_kind: options.mapping_kind,
             progress: options.progress,
+            profile_dir: options.profile_dir,
             pk_maps: HashMap::new(),
             table_rows: HashMap::new(),
             table_dicts: HashMap::new(),
@@ -470,7 +509,7 @@ impl IngestContext {
         Ok(())
     }
 
-    fn build_node_data_and_edges(&mut self) -> Result<()> {
+    fn build_node_data_and_edges(&mut self, phase: BuildPhase) -> Result<()> {
         let progress = self.progress.clone();
         let target = std::sync::Arc::clone(&self.target);
         let source = std::sync::Arc::new(self.source.clone());
@@ -488,61 +527,67 @@ impl IngestContext {
 
         let mut tasks = Vec::new();
 
-        for table in source.tables.iter().filter(|t| t.edge_table.is_none()) {
-            let table = table.clone();
-            let pk_maps = std::sync::Arc::clone(&pk_maps);
-            let target = std::sync::Arc::clone(&target);
-            let progress = progress.clone();
-            let table_rows_snapshot = std::sync::Arc::clone(&table_rows_snapshot);
-            let table_rows = std::sync::Arc::clone(&table_rows);
-            let table_dicts = std::sync::Arc::clone(&table_dicts);
-            let dict_paths = std::sync::Arc::clone(&dict_paths);
-            let node_task_time = std::sync::Arc::clone(&node_task_time);
-            tasks.push(WorkItem {
-                bucket: Some(node_task_time),
-                run: Box::new(move || {
-                    let (dict_path, dict_bytes) =
-                        train_dict_for_table(&target, &pk_maps, &table)?;
-                    if let Some(path) = dict_path.clone() {
-                        table_dicts.lock().unwrap().insert(table.name.clone(), path.clone());
-                        dict_paths.lock().unwrap().insert(table.name.clone(), path);
-                    }
-                    let progress_key = format!("nodes:{}", table.name);
-                    let total = table_rows_snapshot
-                        .get(table.name.as_str())
-                        .copied()
-                        .or_else(|| row_count_hint(&table));
-                    let progress_enabled = total.is_some();
-                    if progress_enabled {
-                        emit_progress_start(&progress, &progress_key, total);
-                    }
-                    let row_count = write_node_data_to(
-                        &target,
-                        &table,
-                        dict_bytes.as_deref(),
-                        progress.as_ref(),
-                        progress_enabled.then_some(progress_key.as_str()),
-                    )?;
-                    if progress_enabled {
-                        emit_progress_finish(&progress, &progress_key, Some(row_count));
-                    }
-                    table_rows.lock().unwrap().insert(table.name.clone(), row_count);
-                    Ok(())
-                }),
-            });
+        let include_nodes = matches!(phase, BuildPhase::All | BuildPhase::Nodes);
+        let include_edges = matches!(phase, BuildPhase::All | BuildPhase::Edges);
+
+        if include_nodes {
+            for table in source.tables.iter().filter(|t| t.edge_table.is_none()) {
+                let table = table.clone();
+                let pk_maps = std::sync::Arc::clone(&pk_maps);
+                let target = std::sync::Arc::clone(&target);
+                let progress = progress.clone();
+                let table_rows_snapshot = std::sync::Arc::clone(&table_rows_snapshot);
+                let table_rows = std::sync::Arc::clone(&table_rows);
+                let table_dicts = std::sync::Arc::clone(&table_dicts);
+                let dict_paths = std::sync::Arc::clone(&dict_paths);
+                let node_task_time = std::sync::Arc::clone(&node_task_time);
+                tasks.push(WorkItem {
+                    bucket: Some(node_task_time),
+                    run: Box::new(move || {
+                        let (dict_path, dict_bytes) =
+                            train_dict_for_table(&target, &pk_maps, &table)?;
+                        if let Some(path) = dict_path.clone() {
+                            table_dicts.lock().unwrap().insert(table.name.clone(), path.clone());
+                            dict_paths.lock().unwrap().insert(table.name.clone(), path);
+                        }
+                        let progress_key = format!("nodes:{}", table.name);
+                        let total = table_rows_snapshot
+                            .get(table.name.as_str())
+                            .copied()
+                            .or_else(|| row_count_hint(&table));
+                        let progress_enabled = total.is_some();
+                        if progress_enabled {
+                            emit_progress_start(&progress, &progress_key, total);
+                        }
+                        let row_count = write_node_data_to(
+                            &target,
+                            &table,
+                            dict_bytes.as_deref(),
+                            progress.as_ref(),
+                            progress_enabled.then_some(progress_key.as_str()),
+                        )?;
+                        if progress_enabled {
+                            emit_progress_finish(&progress, &progress_key, Some(row_count));
+                        }
+                        table_rows.lock().unwrap().insert(table.name.clone(), row_count);
+                        Ok(())
+                    }),
+                });
+            }
         }
 
-        for rel in relationships {
-            let source = std::sync::Arc::clone(&source);
-            let pk_maps = std::sync::Arc::clone(&pk_maps);
-            let target = std::sync::Arc::clone(&target);
-            let progress = progress.clone();
-            let table_rows_snapshot = std::sync::Arc::clone(&table_rows_snapshot);
-            let edge_counts = std::sync::Arc::clone(&edge_counts);
-            let edge_task_time = std::sync::Arc::clone(&edge_task_time);
-            tasks.push(WorkItem {
-                bucket: Some(edge_task_time),
-                run: Box::new(move || {
+        if include_edges {
+            for rel in relationships {
+                let source = std::sync::Arc::clone(&source);
+                let pk_maps = std::sync::Arc::clone(&pk_maps);
+                let target = std::sync::Arc::clone(&target);
+                let progress = progress.clone();
+                let table_rows_snapshot = std::sync::Arc::clone(&table_rows_snapshot);
+                let edge_counts = std::sync::Arc::clone(&edge_counts);
+                let edge_task_time = std::sync::Arc::clone(&edge_task_time);
+                tasks.push(WorkItem {
+                    bucket: Some(edge_task_time),
+                    run: Box::new(move || {
                     let src_table = table_by_name(&source, &rel.src_table)?;
                     let dst_map = pk_maps
                         .get(rel.dst_table.as_str())
@@ -645,21 +690,21 @@ impl IngestContext {
                         .unwrap()
                         .insert(rel.name_reverse.clone(), reverse_count);
                     Ok(())
-                }),
-            });
-        }
+                    }),
+                });
+            }
 
-        for table in source.tables.iter().filter(|t| t.edge_table.is_some()) {
-            let table = table.clone();
-            let source = std::sync::Arc::clone(&source);
-            let pk_maps = std::sync::Arc::clone(&pk_maps);
-            let target = std::sync::Arc::clone(&target);
-            let progress = progress.clone();
-            let edge_counts = std::sync::Arc::clone(&edge_counts);
-            let edge_task_time = std::sync::Arc::clone(&edge_task_time);
-            tasks.push(WorkItem {
-                bucket: Some(edge_task_time),
-                run: Box::new(move || {
+            for table in source.tables.iter().filter(|t| t.edge_table.is_some()) {
+                let table = table.clone();
+                let source = std::sync::Arc::clone(&source);
+                let pk_maps = std::sync::Arc::clone(&pk_maps);
+                let target = std::sync::Arc::clone(&target);
+                let progress = progress.clone();
+                let edge_counts = std::sync::Arc::clone(&edge_counts);
+                let edge_task_time = std::sync::Arc::clone(&edge_task_time);
+                tasks.push(WorkItem {
+                    bucket: Some(edge_task_time),
+                    run: Box::new(move || {
                     let edge = table
                         .edge_table
                         .as_ref()
@@ -754,13 +799,22 @@ impl IngestContext {
                         reverse_records.len() as u64,
                     );
                     Ok(())
-                }),
-            });
+                    }),
+                });
+            }
         }
 
-        self.node_tasks = source.tables.iter().filter(|t| t.edge_table.is_none()).count() as u64;
-        self.edge_tasks = relationships_len as u64
-            + source.tables.iter().filter(|t| t.edge_table.is_some()).count() as u64;
+        self.node_tasks = if include_nodes {
+            source.tables.iter().filter(|t| t.edge_table.is_none()).count() as u64
+        } else {
+            0
+        };
+        self.edge_tasks = if include_edges {
+            relationships_len as u64
+                + source.tables.iter().filter(|t| t.edge_table.is_some()).count() as u64
+        } else {
+            0
+        };
         self.build_tasks = tasks.len() as u64;
         run_tasks(tasks, default_threads(), Some(task_time.clone()))?;
         self.build_task_ms = task_time.load(std::sync::atomic::Ordering::Relaxed) / 1_000_000;
@@ -930,6 +984,26 @@ fn emit_progress_finish(progress: &Option<ProgressCallback>, key: &str, total: O
             key: key.to_string(),
             total,
         });
+    }
+}
+
+fn profile_phase<T>(dir: &Path, name: &str, f: impl FnOnce() -> Result<T>) -> Result<T> {
+    let guard = ProfilerGuard::new(500).context("start profiler")?;
+    let result = f();
+    let report = guard.report().build().context("build profile report")?;
+    let svg_path = dir.join(format!("{name}.svg"));
+    let pb_path = dir.join(format!("{name}.pb"));
+    let file = fs::File::create(&svg_path).context("create profile output")?;
+    report
+        .flamegraph(file)
+        .context("write flamegraph profile")?;
+    let profile = report.pprof().context("build pprof profile")?;
+    let mut file = fs::File::create(&pb_path).context("create pprof output")?;
+    let bytes = profile.encode_to_vec();
+    file.write_all(&bytes).context("write pprof profile")?;
+    match result {
+        Ok(value) => Ok(value),
+        Err(err) => Err(err),
     }
 }
 

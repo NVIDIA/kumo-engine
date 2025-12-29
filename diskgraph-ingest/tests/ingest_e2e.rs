@@ -188,6 +188,7 @@ fn ingest_csv_with_edges_and_dict() -> Result<()> {
         IngestOptions {
             mapping_kind: MappingKind::Hash,
             progress: None,
+            profile_dir: None,
         },
     )?;
     let index_path = output_root.join("index_metadata.json");
@@ -294,6 +295,7 @@ fn ingest_parquet_with_sorted_mapping() -> Result<()> {
     let options = IngestOptions {
         mapping_kind: MappingKind::Sorted,
         progress: None,
+        profile_dir: None,
     };
     let metadata = ingest(&source_path, output_root.to_str().unwrap(), Dest::Local, options)?;
     assert_eq!(metadata.node_types.len(), 1);
@@ -351,6 +353,7 @@ fn ingest_csv_with_bytes_pk_mapping() -> Result<()> {
     let options = IngestOptions {
         mapping_kind: MappingKind::Hash,
         progress: None,
+        profile_dir: None,
     };
     let metadata = ingest(&source_path, output_root.to_str().unwrap(), Dest::Local, options)?;
     let asset = metadata
@@ -442,6 +445,7 @@ fn ingest_relationship_uses_dest_timestamp_sort_key() -> Result<()> {
         IngestOptions {
             mapping_kind: MappingKind::Hash,
             progress: None,
+            profile_dir: None,
         },
     )?;
     let forward = metadata

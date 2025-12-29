@@ -4,5 +4,5 @@
 .vscode
 .DS_Store
 Cargo.lock
-explore-profile.svg
-explore-profile.pb
+*profile.svg
+*profile.pb
