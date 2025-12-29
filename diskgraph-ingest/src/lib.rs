@@ -102,7 +102,7 @@ pub fn ingest_with_stats(
     resolve_local_paths(&mut source, base_dir);
     source.validate()?;
 
-    let target = OutputTarget::parse(output, dest)?;
+    let target = std::sync::Arc::new(OutputTarget::parse(output, dest)?);
     target.prepare()?;
 
     let mut ctx = IngestContext::new(source, target, options, output)?;
@@ -123,7 +123,7 @@ pub enum Dest {
 
 struct IngestContext {
     source: SourceMetadata,
-    target: OutputTarget,
+    target: std::sync::Arc<OutputTarget>,
     mapping_kind: MappingKind,
     progress: Option<ProgressCallback>,
     pk_maps: HashMap<String, TableMapState>,
@@ -154,6 +154,7 @@ struct RelationDef {
     sort_key: SortKeyMode,
 }
 
+#[derive(Clone)]
 struct RelationshipRuntime {
     name_forward: String,
     name_reverse: String,
@@ -174,7 +175,7 @@ enum SortKeyMode {
 impl IngestContext {
     fn new(
         source: SourceMetadata,
-        target: OutputTarget,
+        target: std::sync::Arc<OutputTarget>,
         options: IngestOptions,
         output: &str,
     ) -> Result<Self> {
@@ -274,358 +275,427 @@ impl IngestContext {
     }
 
     fn build_pk_maps(&mut self) -> Result<()> {
-        for table in &self.source.tables {
-            if table.edge_table.is_some() {
-                continue;
-            }
-            let Some(pk) = &table.primary_key else {
-                continue;
-            };
-            let pk_col = column_spec(table, pk)?;
-            let key_type = key_type_for_column(&pk_col)?;
-            let mut pk_map = PkMap::new(self.mapping_kind, key_type, estimate_rows(table));
-            let mut sort_map = None;
-            let mut dict_samples = Vec::new();
-            let mut sample_bytes = 0usize;
-            let mut row_id = 0u64;
-            let progress_key = format!("pk_map:{}", table.name);
-            let total_hint = row_count_hint(table).unwrap_or(0);
-            let total_opt = if total_hint > 0 { Some(total_hint) } else { None };
-            self.progress_start(&progress_key, total_opt);
-            let mut next_update = PROGRESS_STEP;
-            for_each_row(table, |row| {
-                let pk_value = row.get_value(pk)?;
-                let key = key_from_value(&pk_value, pk_col, pk)?;
-                pk_map.insert(key, row_id)?;
-                if let Some(sort_val) = row.sort_key(table)? {
-                    let sort_key = sort_key_to_u32(&sort_val)?;
-                    let sort_map = sort_map.get_or_insert_with(|| {
-                        PkMap::new(self.mapping_kind, key_type, estimate_rows(table))
-                    });
-                    let key = key_from_value(&pk_value, pk_col, pk)?;
-                    sort_map.insert(key, sort_key as u64)?;
-                }
-                if dict_samples.len() < ZSTD_DICT_SAMPLE_LIMIT
-                    && sample_bytes < ZSTD_DICT_SAMPLE_BYTES
-                {
-                    let msg = row.to_msgpack(table)?;
-                    sample_bytes += msg.len();
-                    dict_samples.push(msg);
-                }
-                row_id += 1;
-                if row_id == next_update {
-                    self.progress_advance(&progress_key, PROGRESS_STEP);
-                    next_update = next_update.saturating_add(PROGRESS_STEP);
-                }
-                Ok(())
-            })?;
-            if row_id > 0 && row_id < next_update {
-                let delta = row_id.saturating_sub(next_update - PROGRESS_STEP);
-                if delta > 0 {
-                    self.progress_advance(&progress_key, delta);
-                }
-            }
-            self.progress_finish(&progress_key, Some(row_id));
-            pk_map.finalize();
-            if let Some(sort) = sort_map.as_mut() {
-                sort.finalize();
-            }
-            self.table_rows.insert(table.name.clone(), row_id);
-            self.pk_maps.insert(
-                table.name.clone(),
-                TableMapState {
-                    key_type,
-                    pk_map,
-                    sort_map,
-                    pk_column: pk.clone(),
-                    pk_dtype: pk_col.dtype.clone(),
-                    fixed_len: pk_col.fixed_len,
-                    dict_samples,
-                    dict_path: None,
-                },
-            );
+        let mapping_kind = self.mapping_kind;
+        let progress = self.progress.clone();
+        let tables: Vec<TableSpec> = self
+            .source
+            .tables
+            .iter()
+            .filter(|t| t.edge_table.is_none() && t.primary_key.is_some())
+            .cloned()
+            .collect();
+        let pk_maps = std::sync::Arc::new(std::sync::Mutex::new(HashMap::new()));
+        let table_rows = std::sync::Arc::new(std::sync::Mutex::new(HashMap::new()));
+        let mut tasks = Vec::new();
+        for table in tables {
+            let pk_maps = std::sync::Arc::clone(&pk_maps);
+            let table_rows = std::sync::Arc::clone(&table_rows);
+            let progress = progress.clone();
+            tasks.push(WorkItem {
+                run: Box::new(move || {
+                    let pk = table.primary_key.clone().unwrap_or_default();
+                    let pk_col = column_spec(&table, &pk)?;
+                    let key_type = key_type_for_column(&pk_col)?;
+                    let mut pk_map = PkMap::new(mapping_kind, key_type, estimate_rows(&table));
+                    let mut sort_map = None;
+                    let mut dict_samples = Vec::new();
+                    let mut sample_bytes = 0usize;
+                    let mut row_id = 0u64;
+                    let progress_key = format!("pk_map:{}", table.name);
+                    let total_hint = row_count_hint(&table).unwrap_or(0);
+                    let total_opt = if total_hint > 0 { Some(total_hint) } else { None };
+                    if let Some(cb) = &progress {
+                        cb(ProgressEvent::Start {
+                            key: progress_key.clone(),
+                            total: total_opt,
+                        });
+                    }
+                    let mut next_update = PROGRESS_STEP;
+                    for_each_row(&table, |row| {
+                        let pk_value = row.get_value(&pk)?;
+                        let key = key_from_value(&pk_value, &pk_col, &pk)?;
+                        pk_map.insert(key, row_id)?;
+                        if let Some(sort_val) = row.sort_key(&table)? {
+                            let sort_key = sort_key_to_u32(&sort_val)?;
+                            let sort_map = sort_map.get_or_insert_with(|| {
+                                PkMap::new(mapping_kind, key_type, estimate_rows(&table))
+                            });
+                            let key = key_from_value(&pk_value, &pk_col, &pk)?;
+                            sort_map.insert(key, sort_key as u64)?;
+                        }
+                        if dict_samples.len() < ZSTD_DICT_SAMPLE_LIMIT
+                            && sample_bytes < ZSTD_DICT_SAMPLE_BYTES
+                        {
+                            let msg = row.to_msgpack(&table)?;
+                            sample_bytes += msg.len();
+                            dict_samples.push(msg);
+                        }
+                        row_id += 1;
+                        if row_id == next_update {
+                            if let Some(cb) = &progress {
+                                cb(ProgressEvent::Advance {
+                                    key: progress_key.clone(),
+                                    delta: PROGRESS_STEP,
+                                });
+                            }
+                            next_update = next_update.saturating_add(PROGRESS_STEP);
+                        }
+                        Ok(())
+                    })?;
+                    if row_id > 0 && row_id < next_update {
+                        let delta = row_id.saturating_sub(next_update - PROGRESS_STEP);
+                        if delta > 0 {
+                            if let Some(cb) = &progress {
+                                cb(ProgressEvent::Advance {
+                                    key: progress_key.clone(),
+                                    delta,
+                                });
+                            }
+                        }
+                    }
+                    if let Some(cb) = &progress {
+                        cb(ProgressEvent::Finish {
+                            key: progress_key,
+                            total: Some(row_id),
+                        });
+                    }
+                    pk_map.finalize();
+                    if let Some(sort) = sort_map.as_mut() {
+                        sort.finalize();
+                    }
+                    table_rows.lock().unwrap().insert(table.name.clone(), row_id);
+                    pk_maps.lock().unwrap().insert(
+                        table.name.clone(),
+                        TableMapState {
+                            key_type,
+                            pk_map,
+                            sort_map,
+                            pk_column: pk.clone(),
+                            pk_dtype: pk_col.dtype.clone(),
+                            fixed_len: pk_col.fixed_len,
+                            dict_samples,
+                            dict_path: None,
+                        },
+                    );
+                    Ok(())
+                }),
+            });
         }
+        run_tasks(tasks, default_threads())?;
+        self.pk_maps = std::sync::Arc::try_unwrap(pk_maps)
+            .map_err(|_| anyhow!("pk map tasks still running"))?
+            .into_inner()
+            .unwrap();
+        self.table_rows = std::sync::Arc::try_unwrap(table_rows)
+            .map_err(|_| anyhow!("pk map row tasks still running"))?
+            .into_inner()
+            .unwrap();
         Ok(())
     }
 
     fn build_node_data_and_edges(&mut self) -> Result<()> {
-        let mut relation_writers = RelationWriterSet::new(&self.target, &self.relation_defs)?;
+        let progress = self.progress.clone();
+        let target = std::sync::Arc::clone(&self.target);
+        let source = std::sync::Arc::new(self.source.clone());
+        let pk_maps = std::sync::Arc::new(std::mem::take(&mut self.pk_maps));
+        let table_rows_snapshot = std::sync::Arc::new(self.table_rows.clone());
+        let table_rows = std::sync::Arc::new(std::sync::Mutex::new(self.table_rows.clone()));
+        let table_dicts = std::sync::Arc::new(std::sync::Mutex::new(self.table_dicts.clone()));
+        let dict_paths = std::sync::Arc::new(std::sync::Mutex::new(HashMap::new()));
+        let edge_counts = std::sync::Arc::new(std::sync::Mutex::new(HashMap::new()));
+        let relationships = self.relationships.clone();
 
-        for table in &self.source.tables {
-            if table.edge_table.is_none() {
-                let (dict_path, dict_bytes) = self.train_dict(table)?;
-                if let Some(path) = dict_path.clone() {
-                    self.table_dicts.insert(table.name.clone(), path);
-                }
-                if let Some(state) = self.pk_maps.get_mut(table.name.as_str()) {
-                    state.dict_path = dict_path.clone();
-                }
-                let progress_key = format!("nodes:{}", table.name);
-                let total = self.table_rows.get(table.name.as_str()).copied();
-                self.progress_start(&progress_key, total);
-                let row_count =
-                    self.write_node_data(table, dict_bytes.as_deref(), Some(&progress_key))?;
-                self.progress_finish(&progress_key, Some(row_count));
-                self.table_rows.insert(table.name.clone(), row_count);
-            }
+        let mut tasks = Vec::new();
 
-            for rel in self.relationships.iter().filter(|r| r.src_table == table.name) {
-                let dst_map = self
-                    .pk_maps
-                    .get(rel.dst_table.as_str())
-                    .ok_or_else(|| anyhow!("missing pk map for {}", rel.dst_table))?;
-                let dst_pk = dst_map.pk_column.clone();
-                let dst_pk_col = column_spec(table_by_name(&self.source, &rel.dst_table)?, &dst_pk)?;
-                let dst_key_type = key_type_for_column(&dst_pk_col)?;
-                if dst_key_type != dst_map.key_type {
-                    return Err(anyhow!("pk map key type mismatch for {}", rel.dst_table));
-                }
-                let dst_sort_map = dst_map.sort_map.as_ref();
-                if rel.forward_sort != SortKeyMode::None && dst_sort_map.is_none() {
-                    return Err(anyhow!("missing sort key map for {}", rel.dst_table));
-                }
-                let mut forward_edges = EdgeAccumulator::new(rel.forward_sort != SortKeyMode::None);
-                let mut reverse_edges = EdgeAccumulator::new(rel.reverse_sort != SortKeyMode::None);
-                let mut forward_count = 0u64;
-                let mut reverse_count = 0u64;
-                let total = self.table_rows.get(table.name.as_str()).copied();
-                let forward_key = format!("edges:{}", rel.name_forward);
-                let reverse_key = format!("edges:{}", rel.name_reverse);
-                self.progress_start(&forward_key, total);
-                self.progress_start(&reverse_key, total);
-                let mut next_update = PROGRESS_STEP;
-                for_each_row(table, |row| {
-                    let src_id = row.row_id;
-                    let fk_val = row.get_value(&rel.src_column)?;
-                    let fk_key = key_from_value(&fk_val, dst_pk_col, &dst_pk)?;
-                    let dst_id = dst_map
-                        .pk_map
-                        .lookup(&fk_key)
-                        .ok_or_else(|| anyhow!("fk value not found for {}", rel.dst_table))?;
-                    let forward_sort_key = match rel.forward_sort {
-                        SortKeyMode::Weight | SortKeyMode::CreateTime => dst_sort_map
-                            .and_then(|m| m.lookup(&fk_key))
-                            .map(|v| v as u32),
-                        SortKeyMode::None => None,
-                    };
-                    forward_edges.push(src_id, dst_id, forward_sort_key);
-                    let reverse_sort_key = match rel.reverse_sort {
-                        SortKeyMode::Weight | SortKeyMode::CreateTime => row
-                            .sort_key(table)?
-                            .map(|v| sort_key_to_u32(&v).unwrap_or(0)),
-                        SortKeyMode::None => None,
-                    };
-                    reverse_edges.push(dst_id, src_id, reverse_sort_key);
-                    forward_count += 1;
-                    reverse_count += 1;
-                    if forward_count == next_update {
-                        self.progress_advance(&forward_key, PROGRESS_STEP);
-                        self.progress_advance(&reverse_key, PROGRESS_STEP);
-                        next_update = next_update.saturating_add(PROGRESS_STEP);
+        for table in source.tables.iter().filter(|t| t.edge_table.is_none()) {
+            let table = table.clone();
+            let pk_maps = std::sync::Arc::clone(&pk_maps);
+            let target = std::sync::Arc::clone(&target);
+            let progress = progress.clone();
+            let table_rows_snapshot = std::sync::Arc::clone(&table_rows_snapshot);
+            let table_rows = std::sync::Arc::clone(&table_rows);
+            let table_dicts = std::sync::Arc::clone(&table_dicts);
+            let dict_paths = std::sync::Arc::clone(&dict_paths);
+            tasks.push(WorkItem {
+                run: Box::new(move || {
+                    let (dict_path, dict_bytes) =
+                        train_dict_for_table(&target, &pk_maps, &table)?;
+                    if let Some(path) = dict_path.clone() {
+                        table_dicts.lock().unwrap().insert(table.name.clone(), path.clone());
+                        dict_paths.lock().unwrap().insert(table.name.clone(), path);
                     }
-                    if forward_edges.len() >= EDGE_BATCH_SIZE {
-                        relation_writers.flush(&rel.name_forward, &forward_edges)?;
-                        forward_edges.clear();
+                    let progress_key = format!("nodes:{}", table.name);
+                    let total = table_rows_snapshot
+                        .get(table.name.as_str())
+                        .copied()
+                        .or_else(|| row_count_hint(&table));
+                    let progress_enabled = total.is_some();
+                    if progress_enabled {
+                        emit_progress_start(&progress, &progress_key, total);
                     }
-                    if reverse_edges.len() >= EDGE_BATCH_SIZE {
-                        relation_writers.flush(&rel.name_reverse, &reverse_edges)?;
-                        reverse_edges.clear();
+                    let row_count = write_node_data_to(
+                        &target,
+                        &table,
+                        dict_bytes.as_deref(),
+                        progress.as_ref(),
+                        progress_enabled.then_some(progress_key.as_str()),
+                    )?;
+                    if progress_enabled {
+                        emit_progress_finish(&progress, &progress_key, Some(row_count));
                     }
+                    table_rows.lock().unwrap().insert(table.name.clone(), row_count);
                     Ok(())
-                })?;
-                if !forward_edges.is_empty() {
-                    relation_writers.flush(&rel.name_forward, &forward_edges)?;
-                }
-                if !reverse_edges.is_empty() {
-                    relation_writers.flush(&rel.name_reverse, &reverse_edges)?;
-                }
-                self.progress_finish(&forward_key, Some(forward_count));
-                self.progress_finish(&reverse_key, Some(reverse_count));
-                self.edge_counts
-                    .insert(rel.name_forward.clone(), forward_count);
-                self.edge_counts
-                    .insert(rel.name_reverse.clone(), reverse_count);
-            }
+                }),
+            });
+        }
 
-            if let Some(edge) = &table.edge_table {
-                let src_map = self
-                    .pk_maps
-                    .get(edge.src_fk.ref_table.as_str())
-                    .ok_or_else(|| anyhow!("missing pk map for {}", edge.src_fk.ref_table))?;
-                let dst_map = self
-                    .pk_maps
-                    .get(edge.dst_fk.ref_table.as_str())
-                    .ok_or_else(|| anyhow!("missing pk map for {}", edge.dst_fk.ref_table))?;
-                let src_pk_col = column_spec(
-                    table_by_name(&self.source, &edge.src_fk.ref_table)?,
-                    &edge.src_fk.ref_column,
-                )?;
-                let dst_pk_col = column_spec(
-                    table_by_name(&self.source, &edge.dst_fk.ref_table)?,
-                    &edge.dst_fk.ref_column,
-                )?;
-                let sort_mode = if table.weight.is_some() {
-                    SortKeyMode::Weight
-                } else if table.create_time.is_some() {
-                    SortKeyMode::CreateTime
-                } else {
-                    SortKeyMode::None
-                };
-                let progress_key = format!("edge_table:{}", table.name);
-                let total_hint = row_count_hint(table).unwrap_or(0);
-                let total_opt = if total_hint > 0 { Some(total_hint) } else { None };
-                self.progress_start(&progress_key, total_opt);
-                let mut next_update = PROGRESS_STEP;
-                let mut seen = 0u64;
-                let forward_key = format!("edges:edge_{}_src_to_dst", table.name);
-                let reverse_key = format!("edges:edge_{}_dst_to_src", table.name);
-                self.progress_start(&forward_key, None);
-                self.progress_start(&reverse_key, None);
-                let mut forward_records: Vec<EdgeRecord> = Vec::new();
-                let mut reverse_records: Vec<EdgeRecord> = Vec::new();
-                for_each_row(table, |row| {
-                    let src_val = row.get_value(&edge.src_fk.column)?;
-                    let dst_val = row.get_value(&edge.dst_fk.column)?;
-                    let src_key = key_from_value(&src_val, src_pk_col, &edge.src_fk.column)?;
-                    let dst_key = key_from_value(&dst_val, dst_pk_col, &edge.dst_fk.column)?;
-                    let src_id = src_map
-                        .pk_map
-                        .lookup(&src_key)
-                        .ok_or_else(|| anyhow!("fk value not found for {}", edge.src_fk.ref_table))?;
-                    let dst_id = dst_map
-                        .pk_map
-                        .lookup(&dst_key)
-                        .ok_or_else(|| anyhow!("fk value not found for {}", edge.dst_fk.ref_table))?;
-                    let sort_key = match sort_mode {
-                        SortKeyMode::Weight | SortKeyMode::CreateTime => {
-                            row.sort_key(table)?.map(|v| sort_key_to_u32(&v).unwrap_or(0))
+        for rel in relationships {
+            let source = std::sync::Arc::clone(&source);
+            let pk_maps = std::sync::Arc::clone(&pk_maps);
+            let target = std::sync::Arc::clone(&target);
+            let progress = progress.clone();
+            let table_rows_snapshot = std::sync::Arc::clone(&table_rows_snapshot);
+            let edge_counts = std::sync::Arc::clone(&edge_counts);
+            tasks.push(WorkItem {
+                run: Box::new(move || {
+                    let src_table = table_by_name(&source, &rel.src_table)?;
+                    let dst_map = pk_maps
+                        .get(rel.dst_table.as_str())
+                        .ok_or_else(|| anyhow!("missing pk map for {}", rel.dst_table))?;
+                    let dst_pk = dst_map.pk_column.clone();
+                    let dst_pk_col =
+                        column_spec(table_by_name(&source, &rel.dst_table)?, &dst_pk)?;
+                    let dst_key_type = key_type_for_column(&dst_pk_col)?;
+                    if dst_key_type != dst_map.key_type {
+                        return Err(anyhow!("pk map key type mismatch for {}", rel.dst_table));
+                    }
+                    let dst_sort_map = dst_map.sort_map.as_ref();
+                    if rel.forward_sort != SortKeyMode::None && dst_sort_map.is_none() {
+                        return Err(anyhow!("missing sort key map for {}", rel.dst_table));
+                    }
+                    let forward_key = format!("edges:{}", rel.name_forward);
+                    let reverse_key = format!("edges:{}", rel.name_reverse);
+                    let total = table_rows_snapshot.get(rel.src_table.as_str()).copied();
+                    let progress_enabled = total.is_some();
+                    if progress_enabled {
+                        emit_progress_start(&progress, &forward_key, total);
+                        emit_progress_start(&progress, &reverse_key, total);
+                    }
+                    let (mut forward_writer, forward_schema) = create_edge_writer(
+                        &target,
+                        &rel.name_forward,
+                        rel.forward_sort != SortKeyMode::None,
+                    )?;
+                    let (mut reverse_writer, reverse_schema) = create_edge_writer(
+                        &target,
+                        &rel.name_reverse,
+                        rel.reverse_sort != SortKeyMode::None,
+                    )?;
+                    let mut forward_edges =
+                        EdgeAccumulator::new(rel.forward_sort != SortKeyMode::None);
+                    let mut reverse_edges =
+                        EdgeAccumulator::new(rel.reverse_sort != SortKeyMode::None);
+                    let mut forward_count = 0u64;
+                    let mut reverse_count = 0u64;
+                    let mut next_update = PROGRESS_STEP;
+                    for_each_row(src_table, |row| {
+                        let src_id = row.row_id;
+                        let fk_val = row.get_value(&rel.src_column)?;
+                        let fk_key = key_from_value(&fk_val, dst_pk_col, &dst_pk)?;
+                        let dst_id = dst_map
+                            .pk_map
+                            .lookup(&fk_key)
+                            .ok_or_else(|| anyhow!("fk value not found for {}", rel.dst_table))?;
+                        let forward_sort_key = match rel.forward_sort {
+                            SortKeyMode::Weight | SortKeyMode::CreateTime => dst_sort_map
+                                .and_then(|m| m.lookup(&fk_key))
+                                .map(|v| v as u32),
+                            SortKeyMode::None => None,
+                        };
+                        forward_edges.push(src_id, dst_id, forward_sort_key);
+                        let reverse_sort_key = match rel.reverse_sort {
+                            SortKeyMode::Weight | SortKeyMode::CreateTime => row
+                                .sort_key(src_table)?
+                                .map(|v| sort_key_to_u32(&v).unwrap_or(0)),
+                            SortKeyMode::None => None,
+                        };
+                        reverse_edges.push(dst_id, src_id, reverse_sort_key);
+                        forward_count += 1;
+                        reverse_count += 1;
+                        if progress_enabled && forward_count == next_update {
+                            emit_progress_advance(&progress, &forward_key, PROGRESS_STEP);
+                            emit_progress_advance(&progress, &reverse_key, PROGRESS_STEP);
+                            next_update = next_update.saturating_add(PROGRESS_STEP);
                         }
-                        SortKeyMode::None => None,
-                    };
-                    forward_records.push(EdgeRecord::new(src_id, dst_id, sort_key));
-                    reverse_records.push(EdgeRecord::new(dst_id, src_id, sort_key));
-                    seen += 1;
-                    if seen == next_update {
-                        self.progress_advance(&progress_key, PROGRESS_STEP);
-                        next_update = next_update.saturating_add(PROGRESS_STEP);
+                        if forward_edges.len() >= EDGE_BATCH_SIZE {
+                            flush_edge_batch(&forward_schema, &mut forward_writer, &forward_edges)?;
+                            forward_edges.clear();
+                        }
+                        if reverse_edges.len() >= EDGE_BATCH_SIZE {
+                            flush_edge_batch(&reverse_schema, &mut reverse_writer, &reverse_edges)?;
+                            reverse_edges.clear();
+                        }
+                        Ok(())
+                    })?;
+                    if !forward_edges.is_empty() {
+                        flush_edge_batch(&forward_schema, &mut forward_writer, &forward_edges)?;
                     }
+                    if !reverse_edges.is_empty() {
+                        flush_edge_batch(&reverse_schema, &mut reverse_writer, &reverse_edges)?;
+                    }
+                    let forward_sink = forward_writer.into_inner()?;
+                    forward_sink.finish()?;
+                    let reverse_sink = reverse_writer.into_inner()?;
+                    reverse_sink.finish()?;
+                    if progress_enabled {
+                        emit_progress_finish(&progress, &forward_key, Some(forward_count));
+                        emit_progress_finish(&progress, &reverse_key, Some(reverse_count));
+                    }
+                    edge_counts
+                        .lock()
+                        .unwrap()
+                        .insert(rel.name_forward.clone(), forward_count);
+                    edge_counts
+                        .lock()
+                        .unwrap()
+                        .insert(rel.name_reverse.clone(), reverse_count);
                     Ok(())
-                })?;
-                if seen > 0 && seen < next_update {
-                    let delta = seen.saturating_sub(next_update - PROGRESS_STEP);
-                    if delta > 0 {
-                        self.progress_advance(&progress_key, delta);
+                }),
+            });
+        }
+
+        for table in source.tables.iter().filter(|t| t.edge_table.is_some()) {
+            let table = table.clone();
+            let source = std::sync::Arc::clone(&source);
+            let pk_maps = std::sync::Arc::clone(&pk_maps);
+            let target = std::sync::Arc::clone(&target);
+            let progress = progress.clone();
+            let edge_counts = std::sync::Arc::clone(&edge_counts);
+            tasks.push(WorkItem {
+                run: Box::new(move || {
+                    let edge = table
+                        .edge_table
+                        .as_ref()
+                        .ok_or_else(|| anyhow!("missing edge table spec for {}", table.name))?;
+                    let src_map = pk_maps
+                        .get(edge.src_fk.ref_table.as_str())
+                        .ok_or_else(|| anyhow!("missing pk map for {}", edge.src_fk.ref_table))?;
+                    let dst_map = pk_maps
+                        .get(edge.dst_fk.ref_table.as_str())
+                        .ok_or_else(|| anyhow!("missing pk map for {}", edge.dst_fk.ref_table))?;
+                    let src_pk_col = column_spec(
+                        table_by_name(&source, &edge.src_fk.ref_table)?,
+                        &edge.src_fk.ref_column,
+                    )?;
+                    let dst_pk_col = column_spec(
+                        table_by_name(&source, &edge.dst_fk.ref_table)?,
+                        &edge.dst_fk.ref_column,
+                    )?;
+                    let sort_mode = if table.weight.is_some() {
+                        SortKeyMode::Weight
+                    } else if table.create_time.is_some() {
+                        SortKeyMode::CreateTime
+                    } else {
+                        SortKeyMode::None
+                    };
+                    let total_hint = row_count_hint(&table).unwrap_or(0);
+                    let total_opt = if total_hint > 0 { Some(total_hint) } else { None };
+                    let progress_key = format!("edge_table:{}", table.name);
+                    let progress_enabled = total_opt.is_some();
+                    if progress_enabled {
+                        emit_progress_start(&progress, &progress_key, total_opt);
                     }
-                }
-                forward_records.sort_by(edge_record_cmp);
-                reverse_records.sort_by(edge_record_cmp);
-                write_edge_records(
-                    &mut relation_writers,
-                    &format!("edge_{}_src_to_dst", table.name),
-                    sort_mode != SortKeyMode::None,
-                    &forward_records,
-                )?;
-                write_edge_records(
-                    &mut relation_writers,
-                    &format!("edge_{}_dst_to_src", table.name),
-                    sort_mode != SortKeyMode::None,
-                    &reverse_records,
-                )?;
-                self.progress_finish(&progress_key, Some(seen));
-                self.progress_finish(&forward_key, Some(forward_records.len() as u64));
-                self.progress_finish(&reverse_key, Some(reverse_records.len() as u64));
-                self.edge_counts.insert(
-                    format!("edge_{}_src_to_dst", table.name),
-                    forward_records.len() as u64,
-                );
-                self.edge_counts.insert(
-                    format!("edge_{}_dst_to_src", table.name),
-                    reverse_records.len() as u64,
-                );
+                    let mut next_update = PROGRESS_STEP;
+                    let mut seen = 0u64;
+                    let mut forward_records: Vec<EdgeRecord> = Vec::new();
+                    let mut reverse_records: Vec<EdgeRecord> = Vec::new();
+                    for_each_row(&table, |row| {
+                        let src_val = row.get_value(&edge.src_fk.column)?;
+                        let dst_val = row.get_value(&edge.dst_fk.column)?;
+                        let src_key = key_from_value(&src_val, src_pk_col, &edge.src_fk.column)?;
+                        let dst_key = key_from_value(&dst_val, dst_pk_col, &edge.dst_fk.column)?;
+                        let src_id = src_map.pk_map.lookup(&src_key).ok_or_else(|| {
+                            anyhow!("fk value not found for {}", edge.src_fk.ref_table)
+                        })?;
+                        let dst_id = dst_map.pk_map.lookup(&dst_key).ok_or_else(|| {
+                            anyhow!("fk value not found for {}", edge.dst_fk.ref_table)
+                        })?;
+                        let sort_key = match sort_mode {
+                            SortKeyMode::Weight | SortKeyMode::CreateTime => {
+                                row.sort_key(&table)?.map(|v| sort_key_to_u32(&v).unwrap_or(0))
+                            }
+                            SortKeyMode::None => None,
+                        };
+                        forward_records.push(EdgeRecord::new(src_id, dst_id, sort_key));
+                        reverse_records.push(EdgeRecord::new(dst_id, src_id, sort_key));
+                        seen += 1;
+                        if progress_enabled && seen == next_update {
+                            emit_progress_advance(&progress, &progress_key, PROGRESS_STEP);
+                            next_update = next_update.saturating_add(PROGRESS_STEP);
+                        }
+                        Ok(())
+                    })?;
+                    if progress_enabled {
+                        let delta = seen.saturating_sub(next_update - PROGRESS_STEP);
+                        if delta > 0 {
+                            emit_progress_advance(&progress, &progress_key, delta);
+                        }
+                    }
+                    forward_records.sort_by(edge_record_cmp);
+                    reverse_records.sort_by(edge_record_cmp);
+                    write_edge_records_to(
+                        &target,
+                        &format!("edge_{}_src_to_dst", table.name),
+                        sort_mode != SortKeyMode::None,
+                        &forward_records,
+                    )?;
+                    write_edge_records_to(
+                        &target,
+                        &format!("edge_{}_dst_to_src", table.name),
+                        sort_mode != SortKeyMode::None,
+                        &reverse_records,
+                    )?;
+                    if progress_enabled {
+                        emit_progress_finish(&progress, &progress_key, Some(seen));
+                    }
+                    edge_counts.lock().unwrap().insert(
+                        format!("edge_{}_src_to_dst", table.name),
+                        forward_records.len() as u64,
+                    );
+                    edge_counts.lock().unwrap().insert(
+                        format!("edge_{}_dst_to_src", table.name),
+                        reverse_records.len() as u64,
+                    );
+                    Ok(())
+                }),
+            });
+        }
+
+        run_tasks(tasks, default_threads())?;
+        self.table_rows = std::sync::Arc::try_unwrap(table_rows)
+            .map_err(|_| anyhow!("node task row refs still running"))?
+            .into_inner()
+            .unwrap();
+        self.table_dicts = std::sync::Arc::try_unwrap(table_dicts)
+            .map_err(|_| anyhow!("node task dict refs still running"))?
+            .into_inner()
+            .unwrap();
+        self.edge_counts = std::sync::Arc::try_unwrap(edge_counts)
+            .map_err(|_| anyhow!("edge task refs still running"))?
+            .into_inner()
+            .unwrap();
+        let dict_paths = std::sync::Arc::try_unwrap(dict_paths)
+            .map_err(|_| anyhow!("dict path refs still running"))?
+            .into_inner()
+            .unwrap();
+        self.pk_maps = std::sync::Arc::try_unwrap(pk_maps)
+            .map_err(|_| anyhow!("pk map refs still running"))?;
+        for (table, path) in dict_paths {
+            if let Some(state) = self.pk_maps.get_mut(table.as_str()) {
+                state.dict_path = Some(path);
             }
         }
-        relation_writers.finish()?;
         Ok(())
-    }
-
-    fn train_dict(&self, table: &TableSpec) -> Result<(Option<String>, Option<Vec<u8>>)> {
-        if table.columns.is_empty() {
-            return Ok((None, None));
-        }
-        let mut samples: Vec<Vec<u8>> = Vec::new();
-        if let Some(state) = self.pk_maps.get(table.name.as_str()) {
-            samples.extend(state.dict_samples.iter().cloned());
-        }
-        if samples.is_empty() {
-            samples = collect_samples(table)?;
-        }
-        let sample_refs: Vec<&[u8]> = samples.iter().map(|s| s.as_slice()).collect();
-        if sample_refs.is_empty() {
-            return Ok((None, None));
-        }
-        let dict = match zstd::dict::from_samples(&sample_refs, 64 * 1024) {
-            Ok(dict) => dict,
-            Err(_) => return Ok((None, None)),
-        };
-        let dict_path = format!("nodes/{}/node_data.dict", table.name.to_lowercase());
-        self.target.write_bytes(&dict_path, dict.clone())?;
-        Ok((Some(dict_path), Some(dict)))
-    }
-
-    fn write_node_data(
-        &self,
-        table: &TableSpec,
-        dict: Option<&[u8]>,
-        progress_key: Option<&str>,
-    ) -> Result<u64> {
-        let rel_path = format!("nodes/{}/part-00000.parquet", table.name.to_lowercase());
-        let path = self.target.join(&rel_path);
-        if let OutputTarget::Local { .. } = self.target {
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent)?;
-            }
-        }
-        let schema = Schema::new(vec![Field::new("data", DataType::Binary, false)]);
-        let props = WriterProperties::builder()
-            .set_max_row_group_size(NODE_BATCH_SIZE)
-            .build();
-        let sink = self.target.sink(&path)?;
-        let mut writer = ArrowWriter::try_new(sink, Arc::new(schema.clone()), Some(props))?;
-        let mut batch = Vec::with_capacity(NODE_BATCH_SIZE);
-        let mut rows = 0u64;
-        let mut next_update = PROGRESS_STEP;
-        for_each_row(table, |row| {
-            let msg = row.to_msgpack(table)?;
-            let data = if let Some(dict) = dict {
-                let mut encoder = zstd::stream::Encoder::with_dictionary(Vec::new(), 0, dict)?;
-                encoder.write_all(&msg)?;
-                encoder.finish()?
-            } else {
-                msg
-            };
-            batch.push(data);
-            rows += 1;
-            if rows == next_update {
-                if let Some(key) = progress_key {
-                    self.progress_advance(key, PROGRESS_STEP);
-                }
-                next_update = next_update.saturating_add(PROGRESS_STEP);
-            }
-            if batch.len() >= NODE_BATCH_SIZE {
-                flush_node_batch(&schema, &mut writer, &mut batch)?;
-            }
-            Ok(())
-        })?;
-        if let Some(key) = progress_key {
-            let delta = rows.saturating_sub(next_update - PROGRESS_STEP);
-            if delta > 0 {
-                self.progress_advance(key, delta);
-            }
-        }
-        flush_node_batch(&schema, &mut writer, &mut batch)?;
-        let sink = writer.into_inner()?;
-        sink.finish()?;
-        Ok(rows)
     }
 
     fn finalize_metadata(&self) -> Result<DatasetMetadata> {
@@ -744,86 +814,168 @@ impl IngestContext {
         }
     }
 
-    fn progress_start(&self, key: &str, total: Option<u64>) {
-        if let Some(progress) = &self.progress {
-            progress(ProgressEvent::Start {
-                key: key.to_string(),
-                total,
-            });
+}
+
+fn emit_progress_start(progress: &Option<ProgressCallback>, key: &str, total: Option<u64>) {
+    if let Some(progress) = progress {
+        progress(ProgressEvent::Start {
+            key: key.to_string(),
+            total,
+        });
+    }
+}
+
+fn emit_progress_advance(progress: &Option<ProgressCallback>, key: &str, delta: u64) {
+    if let Some(progress) = progress {
+        progress(ProgressEvent::Advance {
+            key: key.to_string(),
+            delta,
+        });
+    }
+}
+
+fn emit_progress_finish(progress: &Option<ProgressCallback>, key: &str, total: Option<u64>) {
+    if let Some(progress) = progress {
+        progress(ProgressEvent::Finish {
+            key: key.to_string(),
+            total,
+        });
+    }
+}
+
+fn train_dict_for_table(
+    target: &OutputTarget,
+    pk_maps: &HashMap<String, TableMapState>,
+    table: &TableSpec,
+) -> Result<(Option<String>, Option<Vec<u8>>)> {
+    if table.columns.is_empty() {
+        return Ok((None, None));
+    }
+    let mut samples: Vec<Vec<u8>> = Vec::new();
+    if let Some(state) = pk_maps.get(table.name.as_str()) {
+        samples.extend(state.dict_samples.iter().cloned());
+    }
+    if samples.is_empty() {
+        samples = collect_samples(table)?;
+    }
+    let sample_refs: Vec<&[u8]> = samples.iter().map(|s| s.as_slice()).collect();
+    if sample_refs.is_empty() {
+        return Ok((None, None));
+    }
+    let dict = match zstd::dict::from_samples(&sample_refs, 64 * 1024) {
+        Ok(dict) => dict,
+        Err(_) => return Ok((None, None)),
+    };
+    let dict_path = format!("nodes/{}/node_data.dict", table.name.to_lowercase());
+    target.write_bytes(&dict_path, dict.clone())?;
+    Ok((Some(dict_path), Some(dict)))
+}
+
+fn write_node_data_to(
+    target: &OutputTarget,
+    table: &TableSpec,
+    dict: Option<&[u8]>,
+    progress: Option<&ProgressCallback>,
+    progress_key: Option<&str>,
+) -> Result<u64> {
+    let rel_path = format!("nodes/{}/part-00000.parquet", table.name.to_lowercase());
+    let path = target.join(&rel_path);
+    if let OutputTarget::Local { .. } = target {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
         }
     }
-
-    fn progress_advance(&self, key: &str, delta: u64) {
-        if let Some(progress) = &self.progress {
+    let schema = Schema::new(vec![Field::new("data", DataType::Binary, false)]);
+    let props = WriterProperties::builder()
+        .set_max_row_group_size(NODE_BATCH_SIZE)
+        .build();
+    let sink = target.sink(&path)?;
+    let mut writer = ArrowWriter::try_new(sink, Arc::new(schema.clone()), Some(props))?;
+    let mut batch = Vec::with_capacity(NODE_BATCH_SIZE);
+    let mut rows = 0u64;
+    let mut next_update = PROGRESS_STEP;
+    for_each_row(table, |row| {
+        let msg = row.to_msgpack(table)?;
+        let data = if let Some(dict) = dict {
+            let mut encoder = zstd::stream::Encoder::with_dictionary(Vec::new(), 0, dict)?;
+            encoder.write_all(&msg)?;
+            encoder.finish()?
+        } else {
+            msg
+        };
+        batch.push(data);
+        rows += 1;
+        if rows == next_update {
+            if let (Some(progress), Some(key)) = (progress, progress_key) {
+                progress(ProgressEvent::Advance {
+                    key: key.to_string(),
+                    delta: PROGRESS_STEP,
+                });
+            }
+            next_update = next_update.saturating_add(PROGRESS_STEP);
+        }
+        if batch.len() >= NODE_BATCH_SIZE {
+            flush_node_batch(&schema, &mut writer, &mut batch)?;
+        }
+        Ok(())
+    })?;
+    if let (Some(progress), Some(key)) = (progress, progress_key) {
+        let delta = rows.saturating_sub(next_update - PROGRESS_STEP);
+        if delta > 0 {
             progress(ProgressEvent::Advance {
                 key: key.to_string(),
                 delta,
             });
         }
     }
-
-    fn progress_finish(&self, key: &str, total: Option<u64>) {
-        if let Some(progress) = &self.progress {
-            progress(ProgressEvent::Finish {
-                key: key.to_string(),
-                total,
-            });
-        }
-    }
+    flush_node_batch(&schema, &mut writer, &mut batch)?;
+    let sink = writer.into_inner()?;
+    sink.finish()?;
+    Ok(rows)
 }
 
-struct RelationWriterSet {
-    writers: HashMap<String, ArrowWriter<OutputSink>>,
-    schemas: HashMap<String, Schema>,
+fn create_edge_writer(
+    target: &OutputTarget,
+    name: &str,
+    with_sort: bool,
+) -> Result<(ArrowWriter<OutputSink>, Schema)> {
+    let path = format!("edges/{}/part-00000.parquet", name.to_lowercase());
+    let out_path = target.join(&path);
+    if let OutputTarget::Local { .. } = target {
+        if let Some(parent) = out_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+    }
+    let schema = edge_schema(with_sort);
+    let props = WriterProperties::builder()
+        .set_max_row_group_size(EDGE_BATCH_SIZE)
+        .build();
+    let sink = target.sink(&out_path)?;
+    let writer = ArrowWriter::try_new(sink, Arc::new(schema.clone()), Some(props))?;
+    Ok((writer, schema))
 }
 
-impl RelationWriterSet {
-    fn new(target: &OutputTarget, relations: &[RelationDef]) -> Result<Self> {
-        let mut writers = HashMap::new();
-        let mut schemas = HashMap::new();
-        for rel in relations {
-            let path = format!("edges/{}/part-00000.parquet", rel.name.to_lowercase());
-            let out_path = target.join(&path);
-            if let OutputTarget::Local { .. } = target {
-                if let Some(parent) = out_path.parent() {
-                    fs::create_dir_all(parent)?;
-                }
-            }
-            let schema = edge_schema(rel.sort_key != SortKeyMode::None);
-            let props = WriterProperties::builder()
-                .set_max_row_group_size(EDGE_BATCH_SIZE)
-                .build();
-            let sink = target.sink(&out_path)?;
-            let writer = ArrowWriter::try_new(sink, Arc::new(schema.clone()), Some(props))?;
-            writers.insert(rel.name.clone(), writer);
-            schemas.insert(rel.name.clone(), schema);
+fn write_edge_records_to(
+    target: &OutputTarget,
+    name: &str,
+    with_sort: bool,
+    records: &[EdgeRecord],
+) -> Result<()> {
+    let (mut writer, schema) = create_edge_writer(target, name, with_sort)?;
+    let mut batch = EdgeAccumulator::new(with_sort);
+    for record in records {
+        batch.push(record.src_id, record.dst_id, record.sort_key);
+        if batch.len() >= EDGE_BATCH_SIZE {
+            flush_edge_batch(&schema, &mut writer, &batch)?;
+            batch.clear();
         }
-        Ok(Self { writers, schemas })
     }
-
-    fn flush(&mut self, name: &str, data: &EdgeAccumulator) -> Result<()> {
-        if data.is_empty() {
-            return Ok(());
-        }
-        let writer = self
-            .writers
-            .get_mut(name)
-            .ok_or_else(|| anyhow!("missing writer for {name}"))?;
-        let schema = self
-            .schemas
-            .get(name)
-            .ok_or_else(|| anyhow!("missing schema for {name}"))?;
-        flush_edge_batch(schema, writer, data)?;
-        Ok(())
+    if !batch.is_empty() {
+        flush_edge_batch(&schema, &mut writer, &batch)?;
     }
-
-    fn finish(mut self) -> Result<()> {
-        for (_, writer) in self.writers.drain() {
-            let sink = writer.into_inner()?;
-            sink.finish()?;
-        }
-        Ok(())
-    }
+    let sink = writer.into_inner()?;
+    sink.finish()?;
+    Ok(())
 }
 
 struct EdgeAccumulator {
@@ -893,26 +1045,6 @@ fn edge_record_cmp(a: &EdgeRecord, b: &EdgeRecord) -> std::cmp::Ordering {
         },
         other => other,
     }
-}
-
-fn write_edge_records(
-    writers: &mut RelationWriterSet,
-    name: &str,
-    with_sort: bool,
-    records: &[EdgeRecord],
-) -> Result<()> {
-    let mut batch = EdgeAccumulator::new(with_sort);
-    for record in records {
-        batch.push(record.src_id, record.dst_id, record.sort_key);
-        if batch.len() >= EDGE_BATCH_SIZE {
-            writers.flush(name, &batch)?;
-            batch.clear();
-        }
-    }
-    if !batch.is_empty() {
-        writers.flush(name, &batch)?;
-    }
-    Ok(())
 }
 
 fn edge_schema(with_sort_key: bool) -> Schema {
@@ -997,6 +1129,61 @@ fn row_count_hint(table: &TableSpec) -> Option<u64> {
         None
     } else {
         Some(total)
+    }
+}
+
+struct WorkItem {
+    run: Box<dyn FnOnce() -> Result<()> + Send>,
+}
+
+fn default_threads() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+}
+
+fn run_tasks(tasks: Vec<WorkItem>, threads: usize) -> Result<()> {
+    if tasks.is_empty() {
+        return Ok(());
+    }
+    let (tx, rx) = std::sync::mpsc::channel::<WorkItem>();
+    for task in tasks {
+        tx.send(task).map_err(|e| anyhow!("task queue error: {e}"))?;
+    }
+    drop(tx);
+    let rx = std::sync::Arc::new(std::sync::Mutex::new(rx));
+    let err: std::sync::Arc<std::sync::Mutex<Option<anyhow::Error>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(None));
+    let mut handles = Vec::with_capacity(threads);
+    for _ in 0..threads {
+        let rx = std::sync::Arc::clone(&rx);
+        let err = std::sync::Arc::clone(&err);
+        handles.push(std::thread::spawn(move || loop {
+            if err.lock().unwrap().is_some() {
+                break;
+            }
+            let task = {
+                let guard = rx.lock().unwrap();
+                guard.recv()
+            };
+            let task = match task {
+                Ok(task) => task,
+                Err(_) => break,
+            };
+            if let Err(e) = (task.run)() {
+                *err.lock().unwrap() = Some(e);
+                break;
+            }
+        }));
+    }
+    for handle in handles {
+        let _ = handle.join();
+    }
+    let mut err = err.lock().unwrap();
+    if let Some(e) = err.take() {
+        Err(e)
+    } else {
+        Ok(())
     }
 }
 
