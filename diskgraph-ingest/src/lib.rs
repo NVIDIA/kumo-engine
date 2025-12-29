@@ -439,8 +439,10 @@ impl IngestContext {
         if sample_refs.is_empty() {
             return Ok((None, None));
         }
-        let dict = zstd::dict::from_samples(&sample_refs, 64 * 1024)
-            .map_err(|e| anyhow!("zstd dict training error: {e}"))?;
+        let dict = match zstd::dict::from_samples(&sample_refs, 64 * 1024) {
+            Ok(dict) => dict,
+            Err(_) => return Ok((None, None)),
+        };
         let dict_path = format!("nodes/{}/node_data.dict", table.name.to_lowercase());
         self.target.write_bytes(&dict_path, dict.clone())?;
         Ok((Some(dict_path), Some(dict)))

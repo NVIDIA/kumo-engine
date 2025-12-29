@@ -93,6 +93,7 @@ impl SourceMetadata {
         }
         let mut table_names = HashSet::new();
         let mut table_map: HashMap<&str, &TableSpec> = HashMap::new();
+        let mut rel_keys = HashSet::new();
         for table in &self.tables {
             if table.name.trim().is_empty() {
                 errors.push("table name cannot be empty".to_string());
@@ -247,6 +248,28 @@ impl SourceMetadata {
                         rel.dst_table,
                         rel.dst_column
                     ));
+                }
+                let key = format!(
+                    "{}:{}->{}:{}",
+                    rel.src_table, rel.src_column, rel.dst_table, rel.dst_column
+                );
+                if !rel_keys.insert(key.clone()) {
+                    errors.push(format!(
+                        "relationship {}.{} -> {}.{} is duplicated",
+                        rel.src_table, rel.src_column, rel.dst_table, rel.dst_column
+                    ));
+                }
+                if src_is_pk && dst_is_pk {
+                    let reverse = format!(
+                        "{}:{}->{}:{}",
+                        rel.dst_table, rel.dst_column, rel.src_table, rel.src_column
+                    );
+                    if rel_keys.contains(&reverse) {
+                        errors.push(format!(
+                            "relationship {}.{} -> {}.{} has reverse already declared",
+                            rel.src_table, rel.src_column, rel.dst_table, rel.dst_column
+                        ));
+                    }
                 }
             }
         }
