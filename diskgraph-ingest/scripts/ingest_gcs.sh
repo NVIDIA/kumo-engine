@@ -28,7 +28,7 @@ fi
 
 if [[ "${PROFILE_ENABLED}" == "true" ]]; then
   cargo run -p diskgraph-ingest --bin ingest --release -- \
-    --profile "ingest-profile" \
+    --profile \
     --source "${SOURCE}" \
     --output "${OUTPUT}" \
     --dest gcs \

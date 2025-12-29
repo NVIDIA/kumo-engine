@@ -31,7 +31,7 @@ export AWS_SDK_LOAD_CONFIG=1
 
 if [[ "${PROFILE_ENABLED}" == "true" ]]; then
   cargo run -p diskgraph-ingest --bin ingest --release -- \
-    --profile "ingest-profile" \
+    --profile \
     --source "${SOURCE}" \
     --output "${OUTPUT}" \
     --dest s3 \
