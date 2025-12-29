@@ -12,6 +12,7 @@ use diskgraph_index::graph::{
     GraphBuildProgress, GraphBuildStage, GraphDataSource, GraphIndexBuilder, GraphIndexReader,
     GraphProgressSink, TableReader,
 };
+use diskgraph_index::layout::{EDGES_FILENAME, OFFSETS_FILENAME};
 use object_store::ObjectStore;
 use diskgraph_fs::{
     build_adls_client, build_gcs_client, build_s3_client, AdlsConfig, GcsConfig, S3Config,
@@ -595,7 +596,32 @@ fn start_spinner(message: &str) -> ProgressBar {
 }
 
 fn is_indexed_graph(dir: &Path) -> bool {
-    dir.join("metadata.json").exists() && dir.join("nodes").exists()
+    let meta_path = dir.join("metadata.json");
+    if !meta_path.exists() || !dir.join("nodes").exists() {
+        return false;
+    }
+    let bytes = match fs::read(&meta_path) {
+        Ok(bytes) => bytes,
+        Err(_) => return false,
+    };
+    let metadata: DatasetMetadata = match serde_json::from_slice(&bytes) {
+        Ok(meta) => meta,
+        Err(_) => return false,
+    };
+    for node_type in &metadata.node_types {
+        for (idx, _shard) in node_type.shards.iter().enumerate() {
+            let shard_dir = dir
+                .join("nodes")
+                .join(&node_type.name)
+                .join(format!("shard-{:05}", idx));
+            if !shard_dir.join(OFFSETS_FILENAME).exists()
+                || !shard_dir.join(EDGES_FILENAME).exists()
+            {
+                return false;
+            }
+        }
+    }
+    true
 }
 
 fn sanitize_cache_name(input: &str) -> String {

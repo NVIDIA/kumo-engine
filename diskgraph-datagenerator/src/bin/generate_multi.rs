@@ -671,6 +671,7 @@ fn write_node_data_parquet(
     let mut remaining = rows;
     let mut next_id = start_id;
     let mut processed = 0u64;
+    let mut next_update = PROGRESS_STEP;
     while remaining > 0 {
         let take = remaining.min(config.node_data_batch_size as u64) as usize;
         let mut builder = BinaryBuilder::new();
@@ -678,13 +679,17 @@ fn write_node_data_parquet(
             let id = next_id + i as u64;
             let bytes = node_data_bytes(id, bytes_per_node);
             builder.append_value(&bytes);
+            processed += 1;
+            if processed >= next_update {
+                update_progress(progress, processed);
+                next_update = next_update.saturating_add(PROGRESS_STEP);
+            }
         }
         let array = builder.finish();
         let batch = RecordBatch::try_new(Arc::new(schema.clone()), vec![Arc::new(array)])?;
         writer.write(&batch)?;
         remaining -= take as u64;
         next_id += take as u64;
-        processed += take as u64;
         update_progress(progress, processed);
     }
     let sink = writer.into_inner()?;
@@ -729,6 +734,10 @@ fn print_stats(
         Ok(mut entries) => {
             entries.sort_by(|a, b| a.0.cmp(&b.0));
             let total: u64 = entries.iter().map(|(_, size)| *size).sum();
+            if elapsed.as_secs_f64() > 0.0 {
+                let rate = (total as f64 / elapsed.as_secs_f64()).round() as u64;
+                println!("  throughput: {}/s", format_bytes(rate));
+            }
             println!("  total_bytes: {}", format_bytes_with_raw(total));
             println!("  files:");
             for (name, size) in entries {
@@ -1278,6 +1287,8 @@ fn format_bytes_with_raw(value: u64) -> String {
     format!("{} ({})", value, format_bytes(value))
 }
 
+const PROGRESS_STEP: u64 = 100_000;
+
 fn print_plan(
     node_types: &[NodeTypeMetadata],
     edge_relations: &[EdgeRelationMetadata],
@@ -1310,9 +1321,15 @@ fn print_plan(
     println!("  tables: {} ({})", node_types.len(), table_names);
     println!("  nodes: {}", table_counts);
     println!("  node shards: {} ({})", node_shards, shard_counts);
+    let relation_counts = edge_relations
+        .iter()
+        .map(|r| format!("{}:{}", r.name, r.shards.len()))
+        .collect::<Vec<_>>()
+        .join(", ");
     println!(
-        "  relations: {}, edge shards: {}",
+        "  relations: {} ({}), edge shards: {}",
         edge_relations.len(),
+        relation_counts,
         edge_shards
     );
     println!(
@@ -1333,9 +1350,8 @@ fn bar_style() -> ProgressStyle {
 }
 
 fn update_progress(pb: &ProgressBar, position: u64) {
-    const STEP: u64 = 100_000;
     if let Some(total) = pb.length() {
-        if position % STEP != 0 && position != total {
+        if position % PROGRESS_STEP != 0 && position != total {
             return;
         }
         pb.set_position(position.min(total));
@@ -1345,7 +1361,7 @@ fn update_progress(pb: &ProgressBar, position: u64) {
             format_count(total),
         ));
     } else {
-        if position % STEP != 0 {
+        if position % PROGRESS_STEP != 0 {
             return;
         }
         pb.set_position(position);
