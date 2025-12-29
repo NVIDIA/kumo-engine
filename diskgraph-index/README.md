@@ -156,7 +156,7 @@ Notes:
 
 ## Shard explorer (TUI)
 
-`cargo run -p diskgraph-index --bin explore -- <path|s3://...|gs://...|az://...>` opens a REPL to inspect a graph built from Parquet. It streams the Parquet shards through `GraphIndexBuilder` into a temp cache derived from the source path, and reuses that cache within the same run if already present. Expected layout matches the massive generator output: `metadata.json` and `edges_<relation>.parquet` under the provided prefix.
+`cargo run -p diskgraph-index --bin explore -- <path|s3://...|gs://...|az://...>` opens a REPL to inspect a graph built from Parquet. It streams the Parquet shards through `GraphIndexBuilder` into a temp cache derived from the source path, and reuses that cache within the same run if already present. Expected layout matches the massive generator output: `index_metadata.json` and `edges_<relation>.parquet` under the provided prefix.
 
 Profiling: `--profile [base]` writes `base.svg` and `base.pb` (defaults to `explore-profile`).
 

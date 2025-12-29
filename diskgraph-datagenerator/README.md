@@ -1,6 +1,6 @@
 # DiskGraph Data Generator
 
-This tool produces synthetic datasets in the format expected by diskgraph: a dataset root containing `metadata.json` plus Parquet shards for edge tables. Node shard ranges are recorded in metadata. Scenarios cover combinations of optional dest_sort_key presence, presorted shards, and single vs multi-table layouts.
+This tool produces synthetic datasets in the format expected by diskgraph: a dataset root containing `index_metadata.json` plus Parquet shards for edge tables. Node shard ranges are recorded in metadata. Scenarios cover combinations of optional dest_sort_key presence, presorted shards, and single vs multi-table layouts.
 
 ## Building
 
@@ -36,7 +36,7 @@ Arguments:
 ## Output Layout
 
 Each scenario creates a dataset directory under `--output`, for example `simple_no_optional/`:
-- `metadata.json`: matches the schema in `diskgraph-core/src/metadata.rs`.
+- `index_metadata.json`: matches the schema in `diskgraph-core/src/metadata.rs`.
 - `edges/RELATION/part-00000.parquet ...`: shards for each edge relation containing `src_id`, `dst_id`, optional `dest_sort_key` columns.
 - `nodes-00000.parquet ...`: optional node data shards at the dataset root, a single binary `data` column with one row per node id in the shard range.
 Metadata records node shard ranges plus the relative edge shard paths and per-shard source id ranges (edge shard source min/max id) to keep the dataset self-contained and routable.
@@ -81,7 +81,7 @@ Node data env overrides for massive scripts:
 - `NODE_DATA_BYTES=128`
 - `NODE_DATA_BATCH=1000000`
 
-Each script writes `edges_<relation>.parquet` for two relations, `nodes.parquet` for optional node data, and `metadata.json` under a per-run prefix like `.../nodes-<n>-edges-<m>-bytes-<b>`. Metadata uses the larger of `nodes-1` and `max_dst_id` so `dst_id` values are always in-range for indexing.
+Each script writes `edges_<relation>.parquet` for two relations, `nodes.parquet` for optional node data, and `index_metadata.json` under a per-run prefix like `.../nodes-<n>-edges-<m>-bytes-<b>`. Metadata uses the larger of `nodes-1` and `max_dst_id` so `dst_id` values are always in-range for indexing.
 
 ## Multi-table massive generator (streaming, multi-shard)
 
@@ -105,3 +105,19 @@ Helper scripts (same defaults as massive; 3 positional args: nodes, edges per re
 - `scripts/generate_multi_s3.sh`
 - `scripts/generate_multi_gcs.sh`
 - `scripts/generate_multi_adls.sh`
+
+## Raw source generator (CSV/Parquet + source_metadata.json)
+
+The `generate-source` binary emits raw node/edge tables along with a `source_metadata.json` file that is consumed by `diskgraph-ingest`. It supports CSV or Parquet output and can target local or cloud storage.
+
+Example:
+
+```bash
+scripts/generate_source_local.sh 1m 500k parquet
+```
+
+Helper scripts:
+- `scripts/generate_source_local.sh`
+- `scripts/generate_source_s3.sh`
+- `scripts/generate_source_gcs.sh`
+- `scripts/generate_source_adls.sh`

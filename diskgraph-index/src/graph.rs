@@ -4,7 +4,9 @@ use crate::reader::ShardReader;
 use crate::streaming::{EdgeShardInput, ParquetSource};
 use crate::builder::{compute_relation_layouts, shard_node_count};
 use anyhow::{anyhow, Context, Result};
-use diskgraph_core::metadata::{DatasetMetadata, EdgeRelationMetadata, NodeShardMetadata, NodeTypeMetadata};
+use diskgraph_core::metadata::{
+    DatasetMetadata, EdgeRelationMetadata, NodeDataCompression, NodeShardMetadata, NodeTypeMetadata,
+};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -83,12 +85,12 @@ pub struct GraphBuildOutput {
 
 impl GraphIndexBuilder {
     pub fn from_metadata_path(metadata_path: &Path, output_root: &Path) -> Result<Self> {
-        let bytes = fs::read(metadata_path).context("read metadata.json")?;
+        let bytes = fs::read(metadata_path).context("read index_metadata.json")?;
         let metadata: DatasetMetadata =
-            serde_json::from_slice(&bytes).context("parse metadata.json")?;
+            serde_json::from_slice(&bytes).context("parse index_metadata.json")?;
         let root = metadata_path
             .parent()
-            .ok_or_else(|| anyhow!("metadata.json path has no parent"))?
+            .ok_or_else(|| anyhow!("index_metadata.json path has no parent"))?
             .to_path_buf();
         Ok(Self::from_metadata(
             metadata,
@@ -123,7 +125,7 @@ impl GraphIndexBuilder {
 
     pub fn build(&self, progress: Option<&dyn GraphProgressSink>) -> Result<GraphBuildOutput> {
         fs::create_dir_all(&self.output_root)?;
-        let metadata_path = self.output_root.join("metadata.json");
+        let metadata_path = self.output_root.join("index_metadata.json");
         fs::write(metadata_path, serde_json::to_vec_pretty(&self.metadata)?)?;
 
         let jobs = self.prepare_jobs()?;
@@ -369,11 +371,26 @@ pub struct GraphIndexReader {
 
 impl GraphIndexReader {
     pub fn open(metadata_path: &Path, root: &Path) -> Result<Self> {
-        let bytes = fs::read(metadata_path).context("read metadata.json")?;
+        let bytes = fs::read(metadata_path).context("read index_metadata.json")?;
         let metadata: DatasetMetadata =
-            serde_json::from_slice(&bytes).context("parse metadata.json")?;
+            serde_json::from_slice(&bytes).context("parse index_metadata.json")?;
         let mut tables = HashMap::new();
         for node_type in &metadata.node_types {
+            let (node_data_compression, node_data_dict) = match &node_type.node_data_compression {
+                Some(cfg) => {
+                    if !node_type.has_node_data {
+                        return Err(anyhow!(
+                            "node data compression set but has_node_data is false for {}",
+                            node_type.name
+                        ));
+                    }
+                    let dict_path = root.join(&cfg.dict_path);
+                    let dict = fs::read(&dict_path)
+                        .with_context(|| format!("read node data dict {}", dict_path.display()))?;
+                    (Some(cfg.clone()), Some(dict))
+                }
+                None => (None, None),
+            };
             let relations: Vec<EdgeRelationMetadata> = metadata
                 .edge_relations
                 .iter()
@@ -391,7 +408,14 @@ impl GraphIndexReader {
                 let reader = ShardReader::open(&dir, Arc::clone(&layouts), node_type.has_node_data)?;
                 shard_readers.push(reader);
             }
-            let table = TableReader::new(node_type, relations, Arc::clone(&layouts), shard_readers)?;
+            let table = TableReader::new(
+                node_type,
+                relations,
+                Arc::clone(&layouts),
+                shard_readers,
+                node_data_compression,
+                node_data_dict,
+            )?;
             tables.insert(node_type.name.clone(), Arc::new(table));
         }
         Ok(Self { metadata, tables })
@@ -421,6 +445,8 @@ pub struct TableReader {
     shard_ranges: Vec<NodeShardMetadata>,
     shard_offsets: Vec<u64>,
     total_nodes: u64,
+    node_data_compression: Option<NodeDataCompression>,
+    node_data_dict: Option<Vec<u8>>,
 }
 
 impl TableReader {
@@ -429,6 +455,8 @@ impl TableReader {
         relations: Vec<EdgeRelationMetadata>,
         layouts: Arc<Vec<RelationLayout>>,
         shards: Vec<ShardReader>,
+        node_data_compression: Option<NodeDataCompression>,
+        node_data_dict: Option<Vec<u8>>,
     ) -> Result<Self> {
         let mut shard_offsets = Vec::with_capacity(node_type.shards.len());
         let mut offset = 0u64;
@@ -446,6 +474,8 @@ impl TableReader {
             shard_ranges: node_type.shards.clone(),
             shard_offsets,
             total_nodes: offset,
+            node_data_compression,
+            node_data_dict,
         })
     }
 
@@ -482,6 +512,29 @@ impl TableReader {
             .get(shard_idx)
             .ok_or_else(|| anyhow!("missing shard reader {shard_idx}"))?;
         reader.edges_for_node(local_idx)
+    }
+
+    pub fn decode_node_data(
+        &self,
+        view: &crate::layout::EdgeListView<'_>,
+    ) -> Result<Option<Vec<u8>>> {
+        let Some(raw) = view.node_data()? else {
+            return Ok(None);
+        };
+        let Some(compression) = &self.node_data_compression else {
+            return Ok(Some(raw.to_vec()));
+        };
+        if compression.codec != "zstd" {
+            return Err(anyhow!("unsupported node data codec {}", compression.codec));
+        }
+        let dict = self
+            .node_data_dict
+            .as_ref()
+            .ok_or_else(|| anyhow!("node data dict missing for {}", self.node_type))?;
+        let mut decoder = zstd::stream::Decoder::with_dictionary(raw, dict)?;
+        let mut out = Vec::new();
+        std::io::copy(&mut decoder, &mut out)?;
+        Ok(Some(out))
     }
 
     pub fn node_id_from_offset(&self, offset: u64) -> Option<u64> {

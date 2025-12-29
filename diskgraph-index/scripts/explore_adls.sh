@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Explore a shard stored on Azure Blob/ADLS (expects metadata.json, offsets.bin, edges.bin).
+# Explore a shard stored on Azure Blob/ADLS (expects index_metadata.json, offsets.bin, edges.bin).
 # Pass az://account/container/prefix as the first arg.
 
 PROFILE_ENABLED="false"

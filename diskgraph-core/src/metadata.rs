@@ -2,6 +2,24 @@ use crate::errors::{DiskgraphError, Result};
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
+/// Optional compression metadata for node data blobs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NodeDataCompression {
+    pub codec: String,
+    pub dict_path: String,
+}
+
+/// Optional primary key mapping metadata for node tables.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PrimaryKeyMap {
+    pub column: String,
+    pub dtype: String,
+    pub mapping_path: String,
+    pub mapping_kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fixed_len: Option<usize>,
+}
+
 /// Per-shard node metadata to route lookups.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeShardMetadata {
@@ -11,7 +29,7 @@ pub struct NodeShardMetadata {
     pub node_data_path: Option<String>,
 }
 
-/// Node type definition pulled from metadata.json.
+/// Node type definition pulled from index_metadata.json.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeTypeMetadata {
     pub name: String,
@@ -19,6 +37,10 @@ pub struct NodeTypeMetadata {
     pub max_id: u64,
     #[serde(default)]
     pub has_node_data: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_data_compression: Option<NodeDataCompression>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub primary_key_map: Option<PrimaryKeyMap>,
     /// Contiguous ID ranges for node shards.
     pub shards: Vec<NodeShardMetadata>,
 }
@@ -31,7 +53,7 @@ pub struct EdgeShardMetadata {
     pub src_max_id: u64,
 }
 
-/// Edge relation definition pulled from metadata.json.
+/// Edge relation definition pulled from index_metadata.json.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EdgeRelationMetadata {
     pub name: String,
@@ -45,7 +67,7 @@ pub struct EdgeRelationMetadata {
     pub dest_sort_key_bits: Option<u8>,
 }
 
-/// Root metadata payload found in metadata.json.
+/// Root metadata payload found in index_metadata.json.
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DatasetMetadata {

@@ -217,6 +217,8 @@ fn main() -> Result<()> {
             max_id,
             has_node_data: args.node_data,
             shards,
+            node_data_compression: None,
+            primary_key_map: None,
         });
     }
 
@@ -262,7 +264,7 @@ fn main() -> Result<()> {
         edge_relations,
     };
     let json = serde_json::to_string_pretty(&metadata)?;
-    target.write_bytes("metadata.json", json.into_bytes())?;
+    target.write_bytes("index_metadata.json", json.into_bytes())?;
 
     print_stats(&args, &metadata, &target, start.elapsed());
     info!("Done. Output written to {}", target.display());

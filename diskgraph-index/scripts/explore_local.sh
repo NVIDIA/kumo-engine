@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Explore a local shard directory (must contain offsets.bin, edges.bin, metadata.json).
+# Explore a local shard directory (must contain offsets.bin, edges.bin, index_metadata.json).
 
 PROFILE_ENABLED="false"
 while getopts "p" opt; do

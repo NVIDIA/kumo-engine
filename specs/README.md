@@ -1,11 +1,11 @@
 # DiskGraph Dataset Specification
 
-This document captures the required on-disk layout and `metadata.json` schema for datasets ingested by DiskGraph.
+This document captures the required on-disk layout and `index_metadata.json` schema for datasets ingested by DiskGraph.
 
 ## Directory Layout
 
 - Dataset root contains:
-  - `metadata.json`
+  - `index_metadata.json`
   - `edges/RELATION/part-00000.parquet ...` — sharded Parquet files per edge relation.
 - Shard alignment: edge shard `N` only contains `src_id` values within the min/max range of node shard `N` for the relation’s source type. Node shard ranges are contiguous within a shard, but ranges for a given type may have gaps between shards.
 - Sorting:
@@ -18,7 +18,7 @@ This document captures the required on-disk layout and `metadata.json` schema fo
   - Optional: `dest_sort_key` (Int64) when present in relation metadata
 Column names are fixed and must adhere to this spec.
 
-## metadata.json Schema
+## index_metadata.json Schema
 
 ```jsonc
 {

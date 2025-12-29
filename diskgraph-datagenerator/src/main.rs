@@ -1,7 +1,7 @@
 //! Diskgraph data generator.
 //!
 //! Generates synthetic datasets in the on-disk layout expected by the
-//! diskgraph ingest pipeline: a dataset root containing `metadata.json` and
+//! diskgraph ingest pipeline: a dataset root containing `index_metadata.json` and
 //! Parquet shards for edge tables. Node shard ranges are recorded in metadata.
 //! Scenarios cover combinations of
 //! optional dest_sort_key fields and single vs multi-table layouts.
@@ -169,6 +169,8 @@ fn build_simple(
         max_id: 0,
         has_node_data: cli.node_data,
         shards: Vec::new(),
+        node_data_compression: None,
+        primary_key_map: None,
     }];
     let mut edge_counts = HashMap::new();
     edge_counts.insert("Follows".into(), cli.edges);
@@ -195,6 +197,8 @@ fn build_temporal_presorted(
         max_id: 0,
         has_node_data: cli.node_data,
         shards: Vec::new(),
+        node_data_compression: None,
+        primary_key_map: None,
     }];
     let mut edge_counts = HashMap::new();
     edge_counts.insert("Transfers".into(), cli.edges);
@@ -221,6 +225,8 @@ fn build_temporal_weighted(
         max_id: 0,
         has_node_data: cli.node_data,
         shards: Vec::new(),
+        node_data_compression: None,
+        primary_key_map: None,
     }];
     let mut edge_counts = HashMap::new();
     edge_counts.insert("Interactions".into(), cli.edges);
@@ -247,6 +253,8 @@ fn build_weighted_only(
         max_id: 0,
         has_node_data: cli.node_data,
         shards: Vec::new(),
+        node_data_compression: None,
+        primary_key_map: None,
     }];
     let mut edge_counts = HashMap::new();
     edge_counts.insert("SimilarTo".into(), cli.edges);
@@ -274,18 +282,24 @@ fn build_mixed(
             max_id: 0,
             has_node_data: cli.node_data,
             shards: Vec::new(),
+            node_data_compression: None,
+            primary_key_map: None,
         },
         NodeTypeMetadata {
             name: "Ip".into(),
             max_id: 0,
             has_node_data: cli.node_data,
             shards: Vec::new(),
+            node_data_compression: None,
+            primary_key_map: None,
         },
         NodeTypeMetadata {
             name: "Merchant".into(),
             max_id: 0,
             has_node_data: cli.node_data,
             shards: Vec::new(),
+            node_data_compression: None,
+            primary_key_map: None,
         },
     ];
 
@@ -805,7 +819,7 @@ fn write_metadata(
         node_types: node_types.to_vec(),
         edge_relations: edge_relations.to_vec(),
     };
-    let path = root.join("metadata.json");
+    let path = root.join("index_metadata.json");
     let json = serde_json::to_string_pretty(&metadata)?;
     fs::write(path, json)?;
     Ok(())

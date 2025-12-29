@@ -11,7 +11,7 @@ pub enum DiskgraphError {
     Serde(#[from] serde_json::Error),
     #[error("invalid metadata: {0}")]
     InvalidMetadata(String),
-    #[error("metadata.json missing or unreadable")]
+    #[error("index_metadata.json missing or unreadable")]
     MetadataMissing,
     #[error("dataset not found: {0}")]
     DatasetNotFound(String),

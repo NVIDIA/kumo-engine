@@ -1,7 +1,7 @@
 //! Generate massive synthetic shards for benchmarking.
 //!
 //! This binary emits two edge shards (relations) plus node shard metadata and a
-//! metadata.json describing the dataset. It streams Parquet row groups in
+//! index_metadata.json describing the dataset. It streams Parquet row groups in
 //! batches to keep memory usage low even for very large datasets (hundreds of
 //! millions of nodes / billions of edges).
 
@@ -365,6 +365,8 @@ fn write_metadata(
         max_id: node.max_id.max(max_dst_id),
         has_node_data,
         shards: vec![node],
+        node_data_compression: None,
+        primary_key_map: None,
     };
     let edge_relations = vec![
         EdgeRelationMetadata {
@@ -388,7 +390,7 @@ fn write_metadata(
         edge_relations,
     };
     let json = serde_json::to_string_pretty(&metadata)?;
-    root.write_bytes("metadata.json", json.into_bytes())
+    root.write_bytes("index_metadata.json", json.into_bytes())
 }
 
 fn generate_node_data(
@@ -477,7 +479,7 @@ fn print_stats(args: &MassiveArgs, target: &OutputTarget, elapsed: std::time::Du
         let files = [
             root.join(format!("edges_{}.parquet", args.relation0_name)),
             root.join(format!("edges_{}.parquet", args.relation1_name)),
-            root.join("metadata.json"),
+            root.join("index_metadata.json"),
             root.join("nodes.parquet"),
         ];
         let mut entries = Vec::new();

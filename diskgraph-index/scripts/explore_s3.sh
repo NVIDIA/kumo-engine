@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Explore a shard stored on S3 (expects metadata.json, offsets.bin, edges.bin under the prefix).
+# Explore a shard stored on S3 (expects index_metadata.json, offsets.bin, edges.bin under the prefix).
 # Pass s3://bucket/prefix as the first arg.
 
 PROFILE_ENABLED="false"

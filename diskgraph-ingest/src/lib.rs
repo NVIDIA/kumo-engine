@@ -1,177 +1,1500 @@
-//! Ingestion pipeline for diskgraph.
-//!
-//! This crate orchestrates three phases:
-//! 1. Metadata discovery (reading metadata.json and validating schemas).
-//! 2. Admission control (disk space reservation and layout planning).
-//! 3. Materialization (stream Parquet shards, encode adjacency, commit to disk).
-//!
-//! Only phases 1 and 2 are partially implemented here to keep the project
-//! compiling. The materialization phase intentionally leaves compression and
-//! layout unimplemented until the core algorithms are chosen.
+//! Diskgraph ingest: convert raw CSV/Parquet sources into index-ready artifacts.
 
-use async_trait::async_trait;
-use diskgraph_core::dataset::{
-    DatasetDescriptor, DatasetHandle, DatasetId, DatasetRegistry, DatasetState,
+mod mapping;
+pub mod source_metadata;
+
+use crate::mapping::{Key, KeyType, PkMap};
+use crate::source_metadata::{ColumnSpec, ColumnType, TableFormat, TableSpec};
+use anyhow::{anyhow, Context, Result};
+use arrow_array::{ArrayRef, RecordBatch};
+use arrow_schema::{DataType, Field, Schema};
+use bytes::Bytes;
+use diskgraph_core::metadata::{
+    DatasetMetadata, EdgeRelationMetadata, EdgeShardMetadata, NodeDataCompression,
+    NodeShardMetadata, NodeTypeMetadata, PrimaryKeyMap,
 };
-use diskgraph_core::errors::{DiskgraphError, Result};
-use diskgraph_core::metadata::DatasetMetadata;
-use diskgraph_core::storage::GraphStorage;
-use serde::{Deserialize, Serialize};
+use diskgraph_fs::{
+    build_adls_client, build_gcs_client, build_s3_client, AdlsConfig, GcsConfig, S3Config,
+};
+use object_store::{path::Path as ObjectPath, ObjectStore, WriteMultipart};
+use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use parquet::arrow::ArrowWriter;
+use parquet::file::properties::WriterProperties;
+use rmp_serde::encode::to_vec_named;
+use serde_json::Value as JsonValue;
+use std::collections::HashMap;
+use std::fs;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tokio::fs;
-use tracing::info;
+use std::time::Duration;
+use tokio::runtime::Runtime;
+use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine;
 
-/// Progress snapshot emitted by the ingest coordinator.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct IngestProgress {
-    pub dataset_id: DatasetId,
-    pub phase: IngestPhase,
-    /// Fractional progress within the current phase (0.0-1.0).
-    pub progress: f32,
-    pub message: Option<String>,
+pub use mapping::MappingKind;
+pub use source_metadata::SourceMetadata;
+
+const NODE_BATCH_SIZE: usize = 50_000;
+const EDGE_BATCH_SIZE: usize = 200_000;
+const ZSTD_DICT_SAMPLE_LIMIT: usize = 50_000;
+const ZSTD_DICT_SAMPLE_BYTES: usize = 8 * 1024 * 1024;
+
+#[derive(Clone, Debug)]
+pub struct IngestOptions {
+    pub mapping_kind: MappingKind,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum IngestPhase {
-    MetadataDiscovery,
-    Reservation,
-    Materialization,
-    Finalizing,
-}
-
-/// Interface for components that want to receive ingestion progress events.
-#[async_trait]
-pub trait IngestObserver: Send + Sync {
-    async fn on_progress(&self, progress: IngestProgress);
-}
-
-/// Coordinates metadata discovery, admission control, and delegating the heavy
-/// lifting to the storage backend.
-pub struct IngestCoordinator {
-    storage: Arc<dyn GraphStorage>,
-    registry: Arc<dyn DatasetRegistry>,
-    observer: Option<Arc<dyn IngestObserver>>,
-}
-
-impl IngestCoordinator {
-    pub fn new(
-        storage: Arc<dyn GraphStorage>,
-        registry: Arc<dyn DatasetRegistry>,
-        observer: Option<Arc<dyn IngestObserver>>,
-    ) -> Self {
+impl Default for IngestOptions {
+    fn default() -> Self {
         Self {
-            storage,
-            registry,
-            observer,
+            mapping_kind: MappingKind::Hash,
         }
     }
+}
 
-    /// Load metadata.json from the dataset root. Remote backends are not yet
-    /// supported; those callers will receive a NotImplemented error.
-    pub async fn load_metadata(&self, root_uri: &str) -> Result<DatasetMetadata> {
-        if root_uri.starts_with("s3://")
-            || root_uri.starts_with("gs://")
-            || root_uri.starts_with("abfs://")
-        {
-            return Err(DiskgraphError::NotImplemented(
-                "remote object store metadata fetching",
-            ));
+pub fn ingest(
+    source_metadata_path: &Path,
+    output: &str,
+    dest: Dest,
+    options: IngestOptions,
+) -> Result<DatasetMetadata> {
+    let metadata_bytes = fs::read(source_metadata_path)
+        .with_context(|| format!("read {}", source_metadata_path.display()))?;
+    let source: SourceMetadata = serde_json::from_slice(&metadata_bytes)?;
+    source.validate()?;
+
+    let target = OutputTarget::parse(output, dest)?;
+    target.prepare()?;
+
+    let mut ctx = IngestContext::new(source, target, options)?;
+    ctx.build_pk_maps()?;
+    ctx.build_node_data_and_edges()?;
+    let index_metadata = ctx.finalize_metadata()?;
+    Ok(index_metadata)
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum Dest {
+    Local,
+    S3,
+    Gcs,
+    Adls,
+}
+
+struct IngestContext {
+    source: SourceMetadata,
+    target: OutputTarget,
+    mapping_kind: MappingKind,
+    pk_maps: HashMap<String, TableMapState>,
+    table_rows: HashMap<String, u64>,
+    table_dicts: HashMap<String, String>,
+    relation_defs: Vec<RelationDef>,
+    relationships: Vec<RelationshipRuntime>,
+}
+
+struct TableMapState {
+    key_type: KeyType,
+    pk_map: PkMap,
+    sort_map: Option<PkMap>,
+    pk_column: String,
+    pk_dtype: ColumnType,
+    fixed_len: Option<usize>,
+    dict_samples: Vec<Vec<u8>>,
+    dict_path: Option<String>,
+}
+
+#[derive(Clone)]
+struct RelationDef {
+    name: String,
+    src_table: String,
+    dst_table: String,
+    sort_key: SortKeyMode,
+}
+
+struct RelationshipRuntime {
+    name_forward: String,
+    name_reverse: String,
+    src_table: String,
+    src_column: String,
+    dst_table: String,
+    forward_sort: SortKeyMode,
+    reverse_sort: SortKeyMode,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SortKeyMode {
+    None,
+    Weight,
+    CreateTime,
+}
+
+impl IngestContext {
+    fn new(source: SourceMetadata, target: OutputTarget, options: IngestOptions) -> Result<Self> {
+        let mut relation_defs = Vec::new();
+        let mut relationships = Vec::new();
+        for rel in &source.relationships {
+            let base = rel.name.clone().unwrap_or_else(|| {
+                format!(
+                    "{}_{}_to_{}_{}",
+                    rel.src_table, rel.src_column, rel.dst_table, rel.dst_column
+                )
+            });
+            let dst_table = source
+                .tables
+                .iter()
+                .find(|t| t.name == rel.dst_table)
+                .ok_or_else(|| anyhow!("missing table {}", rel.dst_table))?;
+            let src_table = source
+                .tables
+                .iter()
+                .find(|t| t.name == rel.src_table)
+                .ok_or_else(|| anyhow!("missing table {}", rel.src_table))?;
+            let dst_sort = if dst_table.weight.is_some() {
+                SortKeyMode::Weight
+            } else if dst_table.create_time.is_some() {
+                SortKeyMode::CreateTime
+            } else {
+                SortKeyMode::None
+            };
+            let src_sort = if src_table.weight.is_some() {
+                SortKeyMode::Weight
+            } else if src_table.create_time.is_some() {
+                SortKeyMode::CreateTime
+            } else {
+                SortKeyMode::None
+            };
+            relation_defs.push(RelationDef {
+                name: base.clone(),
+                src_table: rel.src_table.clone(),
+                dst_table: rel.dst_table.clone(),
+                sort_key: dst_sort,
+            });
+            relation_defs.push(RelationDef {
+                name: format!("{base}_reverse"),
+                src_table: rel.dst_table.clone(),
+                dst_table: rel.src_table.clone(),
+                sort_key: src_sort,
+            });
+            relationships.push(RelationshipRuntime {
+                name_forward: base.clone(),
+                name_reverse: format!("{base}_reverse"),
+                src_table: rel.src_table.clone(),
+                src_column: rel.src_column.clone(),
+                dst_table: rel.dst_table.clone(),
+                forward_sort: dst_sort,
+                reverse_sort: src_sort,
+            });
         }
-        let mut path = PathBuf::from(root_uri);
-        path.push("metadata.json");
-        let data = fs::read(&path).await?;
-        let metadata: DatasetMetadata = serde_json::from_slice(&data)?;
-        Ok(metadata)
-    }
-
-    /// Main entry point invoked by the HTTP service. This function wires
-    /// together admission control and hands off to the storage engine to
-    /// materialize data. The algorithmic heavy lifting is stubbed out.
-    pub async fn ingest_dataset(&self, root_uri: String) -> Result<DatasetHandle> {
-        self.emit_progress(
-            None,
-            IngestPhase::MetadataDiscovery,
-            0.0,
-            Some("loading metadata"),
-        );
-        let metadata = self.load_metadata(&root_uri).await?;
-        self.emit_progress(None, IngestPhase::MetadataDiscovery, 1.0, None);
-
-        let reservation = self.storage.reserve(&metadata).await?;
-        self.emit_progress(None, IngestPhase::Reservation, 1.0, None);
-
-        let descriptor = DatasetDescriptor {
-            root_uri: root_uri.clone(),
-            metadata: metadata.clone(),
-        };
-        let handle = self.registry.upsert(descriptor, reservation).await?;
-
-        self.emit_progress(
-            Some(handle.id),
-            IngestPhase::Materialization,
-            0.0,
-            Some("streaming shards into on-disk layout"),
-        );
-        // Placeholder: real implementation would stream shards, compress, and
-        // build indices. For now we swap the dataset into an active state.
-        let ingested_handle = self.storage.ingest(handle.clone()).await?;
-        let activated = self
-            .registry
-            .update_state(ingested_handle.id, DatasetState::LoadedActive)
-            .await?;
-        self.emit_progress(
-            Some(ingested_handle.id),
-            IngestPhase::Materialization,
-            1.0,
-            Some("materialization stub complete"),
-        );
-        self.emit_progress(
-            Some(ingested_handle.id),
-            IngestPhase::Finalizing,
-            1.0,
-            Some("dataset ready for queries"),
-        );
-        info!("ingested dataset {} from {}", activated.id, root_uri);
-        Ok(activated)
-    }
-
-    fn emit_progress(
-        &self,
-        id: Option<DatasetId>,
-        phase: IngestPhase,
-        progress: f32,
-        message: Option<&str>,
-    ) {
-        if let Some(observer) = &self.observer {
-            if let Some(dataset_id) = id {
-                let progress = IngestProgress {
-                    dataset_id,
-                    phase,
-                    progress,
-                    message: message.map(str::to_string),
+        for table in &source.tables {
+            if let Some(edge) = &table.edge_table {
+                let base = format!("edge_{}", table.name);
+                let src_rel = RelationDef {
+                    name: format!("{base}_src_to_dst"),
+                    src_table: edge.src_fk.ref_table.clone(),
+                    dst_table: edge.dst_fk.ref_table.clone(),
+                    sort_key: if table.weight.is_some() {
+                        SortKeyMode::Weight
+                    } else if table.create_time.is_some() {
+                        SortKeyMode::CreateTime
+                    } else {
+                        SortKeyMode::None
+                    },
                 };
-                let observer = Arc::clone(observer);
-                tokio::spawn(async move {
-                    observer.on_progress(progress).await;
+                let dst_rel = RelationDef {
+                    name: format!("{base}_dst_to_src"),
+                    src_table: edge.dst_fk.ref_table.clone(),
+                    dst_table: edge.src_fk.ref_table.clone(),
+                    sort_key: src_rel.sort_key,
+                };
+                relation_defs.push(src_rel);
+                relation_defs.push(dst_rel);
+            }
+        }
+        Ok(Self {
+            source,
+            target,
+            mapping_kind: options.mapping_kind,
+            pk_maps: HashMap::new(),
+            table_rows: HashMap::new(),
+            table_dicts: HashMap::new(),
+            relation_defs,
+            relationships,
+        })
+    }
+
+    fn build_pk_maps(&mut self) -> Result<()> {
+        for table in &self.source.tables {
+            if table.edge_table.is_some() {
+                continue;
+            }
+            let Some(pk) = &table.primary_key else {
+                continue;
+            };
+            let pk_col = column_spec(table, pk)?;
+            let key_type = key_type_for_column(&pk_col)?;
+            let mut pk_map = PkMap::new(self.mapping_kind, key_type, estimate_rows(table));
+            let mut sort_map = None;
+            let mut dict_samples = Vec::new();
+            let mut sample_bytes = 0usize;
+            let mut row_id = 0u64;
+            for_each_row(table, |row| {
+                let pk_value = row.get_value(pk)?;
+                let key = key_from_value(&pk_value, pk_col, pk)?;
+                pk_map.insert(key, row_id)?;
+                if let Some(sort_val) = row.sort_key(table)? {
+                    let sort_key = sort_key_to_u32(&sort_val)?;
+                    let sort_map = sort_map.get_or_insert_with(|| {
+                        PkMap::new(self.mapping_kind, key_type, estimate_rows(table))
+                    });
+                    let key = key_from_value(&pk_value, pk_col, pk)?;
+                    sort_map.insert(key, sort_key as u64)?;
+                }
+                if dict_samples.len() < ZSTD_DICT_SAMPLE_LIMIT
+                    && sample_bytes < ZSTD_DICT_SAMPLE_BYTES
+                {
+                    let msg = row.to_msgpack(table)?;
+                    sample_bytes += msg.len();
+                    dict_samples.push(msg);
+                }
+                row_id += 1;
+                Ok(())
+            })?;
+            pk_map.finalize();
+            if let Some(sort) = sort_map.as_mut() {
+                sort.finalize();
+            }
+            self.table_rows.insert(table.name.clone(), row_id);
+            self.pk_maps.insert(
+                table.name.clone(),
+                TableMapState {
+                    key_type,
+                    pk_map,
+                    sort_map,
+                    pk_column: pk.clone(),
+                    pk_dtype: pk_col.dtype.clone(),
+                    fixed_len: pk_col.fixed_len,
+                    dict_samples,
+                    dict_path: None,
+                },
+            );
+        }
+        Ok(())
+    }
+
+    fn build_node_data_and_edges(&mut self) -> Result<()> {
+        let mut relation_writers = RelationWriterSet::new(&self.target, &self.relation_defs)?;
+
+        for table in &self.source.tables {
+            if table.edge_table.is_none() {
+                let (dict_path, dict_bytes) = self.train_dict(table)?;
+                if let Some(path) = dict_path.clone() {
+                    self.table_dicts.insert(table.name.clone(), path);
+                }
+                if let Some(state) = self.pk_maps.get_mut(table.name.as_str()) {
+                    state.dict_path = dict_path.clone();
+                }
+                let row_count = self.write_node_data(table, dict_bytes.as_deref())?;
+                self.table_rows.insert(table.name.clone(), row_count);
+            }
+
+            for rel in self.relationships.iter().filter(|r| r.src_table == table.name) {
+                let dst_map = self
+                    .pk_maps
+                    .get(rel.dst_table.as_str())
+                    .ok_or_else(|| anyhow!("missing pk map for {}", rel.dst_table))?;
+                let dst_pk = dst_map.pk_column.clone();
+                let dst_pk_col = column_spec(table_by_name(&self.source, &rel.dst_table)?, &dst_pk)?;
+                let dst_key_type = key_type_for_column(&dst_pk_col)?;
+                if dst_key_type != dst_map.key_type {
+                    return Err(anyhow!("pk map key type mismatch for {}", rel.dst_table));
+                }
+                let dst_sort_map = dst_map.sort_map.as_ref();
+                if rel.forward_sort != SortKeyMode::None && dst_sort_map.is_none() {
+                    return Err(anyhow!("missing sort key map for {}", rel.dst_table));
+                }
+                let mut forward_edges = EdgeAccumulator::new(rel.forward_sort != SortKeyMode::None);
+                let mut reverse_edges = EdgeAccumulator::new(rel.reverse_sort != SortKeyMode::None);
+                for_each_row(table, |row| {
+                    let src_id = row.row_id;
+                    let fk_val = row.get_value(&rel.src_column)?;
+                    let fk_key = key_from_value(&fk_val, dst_pk_col, &dst_pk)?;
+                    let dst_id = dst_map
+                        .pk_map
+                        .lookup(&fk_key)
+                        .ok_or_else(|| anyhow!("fk value not found for {}", rel.dst_table))?;
+                    let forward_sort_key = match rel.forward_sort {
+                        SortKeyMode::Weight | SortKeyMode::CreateTime => dst_sort_map
+                            .and_then(|m| m.lookup(&fk_key))
+                            .map(|v| v as u32),
+                        SortKeyMode::None => None,
+                    };
+                    forward_edges.push(src_id, dst_id, forward_sort_key);
+                    let reverse_sort_key = match rel.reverse_sort {
+                        SortKeyMode::Weight | SortKeyMode::CreateTime => row
+                            .sort_key(table)?
+                            .map(|v| sort_key_to_u32(&v).unwrap_or(0)),
+                        SortKeyMode::None => None,
+                    };
+                    reverse_edges.push(dst_id, src_id, reverse_sort_key);
+                    if forward_edges.len() >= EDGE_BATCH_SIZE {
+                        relation_writers.flush(&rel.name_forward, &forward_edges)?;
+                        forward_edges.clear();
+                    }
+                    if reverse_edges.len() >= EDGE_BATCH_SIZE {
+                        relation_writers.flush(&rel.name_reverse, &reverse_edges)?;
+                        reverse_edges.clear();
+                    }
+                    Ok(())
+                })?;
+                if !forward_edges.is_empty() {
+                    relation_writers.flush(&rel.name_forward, &forward_edges)?;
+                }
+                if !reverse_edges.is_empty() {
+                    relation_writers.flush(&rel.name_reverse, &reverse_edges)?;
+                }
+            }
+
+            if let Some(edge) = &table.edge_table {
+                let src_map = self
+                    .pk_maps
+                    .get(edge.src_fk.ref_table.as_str())
+                    .ok_or_else(|| anyhow!("missing pk map for {}", edge.src_fk.ref_table))?;
+                let dst_map = self
+                    .pk_maps
+                    .get(edge.dst_fk.ref_table.as_str())
+                    .ok_or_else(|| anyhow!("missing pk map for {}", edge.dst_fk.ref_table))?;
+                let src_pk_col = column_spec(
+                    table_by_name(&self.source, &edge.src_fk.ref_table)?,
+                    &edge.src_fk.ref_column,
+                )?;
+                let dst_pk_col = column_spec(
+                    table_by_name(&self.source, &edge.dst_fk.ref_table)?,
+                    &edge.dst_fk.ref_column,
+                )?;
+                let sort_mode = if table.weight.is_some() {
+                    SortKeyMode::Weight
+                } else if table.create_time.is_some() {
+                    SortKeyMode::CreateTime
+                } else {
+                    SortKeyMode::None
+                };
+                let mut forward_records: Vec<EdgeRecord> = Vec::new();
+                let mut reverse_records: Vec<EdgeRecord> = Vec::new();
+                for_each_row(table, |row| {
+                    let src_val = row.get_value(&edge.src_fk.column)?;
+                    let dst_val = row.get_value(&edge.dst_fk.column)?;
+                    let src_key = key_from_value(&src_val, src_pk_col, &edge.src_fk.column)?;
+                    let dst_key = key_from_value(&dst_val, dst_pk_col, &edge.dst_fk.column)?;
+                    let src_id = src_map
+                        .pk_map
+                        .lookup(&src_key)
+                        .ok_or_else(|| anyhow!("fk value not found for {}", edge.src_fk.ref_table))?;
+                    let dst_id = dst_map
+                        .pk_map
+                        .lookup(&dst_key)
+                        .ok_or_else(|| anyhow!("fk value not found for {}", edge.dst_fk.ref_table))?;
+                    let sort_key = match sort_mode {
+                        SortKeyMode::Weight | SortKeyMode::CreateTime => {
+                            row.sort_key(table)?.map(|v| sort_key_to_u32(&v).unwrap_or(0))
+                        }
+                        SortKeyMode::None => None,
+                    };
+                    forward_records.push(EdgeRecord::new(src_id, dst_id, sort_key));
+                    reverse_records.push(EdgeRecord::new(dst_id, src_id, sort_key));
+                    Ok(())
+                })?;
+                forward_records.sort_by(edge_record_cmp);
+                reverse_records.sort_by(edge_record_cmp);
+                write_edge_records(
+                    &mut relation_writers,
+                    &format!("edge_{}_src_to_dst", table.name),
+                    sort_mode != SortKeyMode::None,
+                    &forward_records,
+                )?;
+                write_edge_records(
+                    &mut relation_writers,
+                    &format!("edge_{}_dst_to_src", table.name),
+                    sort_mode != SortKeyMode::None,
+                    &reverse_records,
+                )?;
+            }
+        }
+        relation_writers.finish()?;
+        Ok(())
+    }
+
+    fn train_dict(&self, table: &TableSpec) -> Result<(Option<String>, Option<Vec<u8>>)> {
+        if table.columns.is_empty() {
+            return Ok((None, None));
+        }
+        let mut samples: Vec<Vec<u8>> = Vec::new();
+        if let Some(state) = self.pk_maps.get(table.name.as_str()) {
+            samples.extend(state.dict_samples.iter().cloned());
+        }
+        if samples.is_empty() {
+            samples = collect_samples(table)?;
+        }
+        let sample_refs: Vec<&[u8]> = samples.iter().map(|s| s.as_slice()).collect();
+        if sample_refs.is_empty() {
+            return Ok((None, None));
+        }
+        let dict = zstd::dict::from_samples(&sample_refs, 64 * 1024)
+            .map_err(|e| anyhow!("zstd dict training error: {e}"))?;
+        let dict_path = format!("nodes/{}/node_data.dict", table.name.to_lowercase());
+        self.target.write_bytes(&dict_path, dict.clone())?;
+        Ok((Some(dict_path), Some(dict)))
+    }
+
+    fn write_node_data(&self, table: &TableSpec, dict: Option<&[u8]>) -> Result<u64> {
+        let rel_path = format!("nodes/{}/part-00000.parquet", table.name.to_lowercase());
+        let path = self.target.join(&rel_path);
+        if let OutputTarget::Local { .. } = self.target {
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+        }
+        let schema = Schema::new(vec![Field::new("data", DataType::Binary, false)]);
+        let props = WriterProperties::builder()
+            .set_max_row_group_size(NODE_BATCH_SIZE)
+            .build();
+        let sink = self.target.sink(&path)?;
+        let mut writer = ArrowWriter::try_new(sink, Arc::new(schema.clone()), Some(props))?;
+        let mut batch = Vec::with_capacity(NODE_BATCH_SIZE);
+        let mut rows = 0u64;
+        for_each_row(table, |row| {
+            let msg = row.to_msgpack(table)?;
+            let data = if let Some(dict) = dict {
+                let mut encoder = zstd::stream::Encoder::with_dictionary(Vec::new(), 0, dict)?;
+                encoder.write_all(&msg)?;
+                encoder.finish()?
+            } else {
+                msg
+            };
+            batch.push(data);
+            rows += 1;
+            if batch.len() >= NODE_BATCH_SIZE {
+                flush_node_batch(&schema, &mut writer, &mut batch)?;
+            }
+            Ok(())
+        })?;
+        flush_node_batch(&schema, &mut writer, &mut batch)?;
+        let sink = writer.into_inner()?;
+        sink.finish()?;
+        Ok(rows)
+    }
+
+    fn finalize_metadata(&self) -> Result<DatasetMetadata> {
+        let mut node_types = Vec::new();
+        for table in &self.source.tables {
+            if table.edge_table.is_some() {
+                continue;
+            }
+            let map_state = self.pk_maps.get(table.name.as_str());
+            let row_count = self
+                .table_rows
+                .get(table.name.as_str())
+                .copied()
+                .unwrap_or(0);
+            let shard = NodeShardMetadata {
+                min_id: 0,
+                max_id: row_count.saturating_sub(1),
+                node_data_path: Some(format!(
+                    "nodes/{}/part-00000.parquet",
+                    table.name.to_lowercase()
+                )),
+            };
+            let (compression, pk_map) = if let Some(state) = map_state {
+                let dict_path = self.table_dicts.get(&table.name).cloned();
+                let compression = dict_path.map(|path| NodeDataCompression {
+                    codec: "zstd".to_string(),
+                    dict_path: path,
                 });
+                let pk_map = Some(PrimaryKeyMap {
+                    column: state.pk_column.clone(),
+                    dtype: format!("{:?}", state.pk_dtype).to_lowercase(),
+                    mapping_path: format!(
+                        "nodes/{}/pk_map.bin",
+                        table.name.to_lowercase()
+                    ),
+                    mapping_kind: match self.mapping_kind {
+                        MappingKind::Hash => "hash".to_string(),
+                        MappingKind::Sorted => "sorted".to_string(),
+                    },
+                    fixed_len: state.fixed_len,
+                });
+                (compression, pk_map)
+            } else {
+                let dict_path = self.table_dicts.get(&table.name).cloned();
+                let compression = dict_path.map(|path| NodeDataCompression {
+                    codec: "zstd".to_string(),
+                    dict_path: path,
+                });
+                (compression, None)
+            };
+            node_types.push(NodeTypeMetadata {
+                name: table.name.clone(),
+                max_id: shard.max_id,
+                has_node_data: true,
+                node_data_compression: compression,
+                primary_key_map: pk_map,
+                shards: vec![shard],
+            });
+        }
+
+        let mut edge_relations = Vec::new();
+        for rel in &self.relation_defs {
+            let rel_path = format!("edges/{}/part-00000.parquet", rel.name.to_lowercase());
+            edge_relations.push(EdgeRelationMetadata {
+                name: rel.name.clone(),
+                src_type: rel.src_table.clone(),
+                dst_type: rel.dst_table.clone(),
+                shards: vec![EdgeShardMetadata {
+                    path: rel_path,
+                    src_min_id: 0,
+                    src_max_id: table_rows(self, &rel.src_table).saturating_sub(1),
+                }],
+                dest_sort_key_bits: match rel.sort_key {
+                    SortKeyMode::None => None,
+                    _ => Some(32),
+                },
+            });
+        }
+
+        let index_metadata = DatasetMetadata {
+            dataset_name: self.source.dataset_name.clone(),
+            node_types,
+            edge_relations,
+        };
+        let json = serde_json::to_vec_pretty(&index_metadata)?;
+        self.target.write_bytes("index_metadata.json", json)?;
+
+        for table in &self.source.tables {
+            if let Some(state) = self.pk_maps.get(table.name.as_str()) {
+                let map_path = format!("nodes/{}/pk_map.bin", table.name.to_lowercase());
+                let target = self.target.join(&map_path);
+                let mut sink = self.target.sink(&target)?;
+                state.pk_map.write_to(&mut sink)?;
+                sink.finish()?;
+            }
+        }
+        Ok(index_metadata)
+    }
+}
+
+struct RelationWriterSet {
+    writers: HashMap<String, ArrowWriter<OutputSink>>,
+    schemas: HashMap<String, Schema>,
+}
+
+impl RelationWriterSet {
+    fn new(target: &OutputTarget, relations: &[RelationDef]) -> Result<Self> {
+        let mut writers = HashMap::new();
+        let mut schemas = HashMap::new();
+        for rel in relations {
+            let path = format!("edges/{}/part-00000.parquet", rel.name.to_lowercase());
+            let out_path = target.join(&path);
+            if let OutputTarget::Local { .. } = target {
+                if let Some(parent) = out_path.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+            }
+            let schema = edge_schema(rel.sort_key != SortKeyMode::None);
+            let props = WriterProperties::builder()
+                .set_max_row_group_size(EDGE_BATCH_SIZE)
+                .build();
+            let sink = target.sink(&out_path)?;
+            let writer = ArrowWriter::try_new(sink, Arc::new(schema.clone()), Some(props))?;
+            writers.insert(rel.name.clone(), writer);
+            schemas.insert(rel.name.clone(), schema);
+        }
+        Ok(Self { writers, schemas })
+    }
+
+    fn flush(&mut self, name: &str, data: &EdgeAccumulator) -> Result<()> {
+        if data.is_empty() {
+            return Ok(());
+        }
+        let writer = self
+            .writers
+            .get_mut(name)
+            .ok_or_else(|| anyhow!("missing writer for {name}"))?;
+        let schema = self
+            .schemas
+            .get(name)
+            .ok_or_else(|| anyhow!("missing schema for {name}"))?;
+        flush_edge_batch(schema, writer, data)?;
+        Ok(())
+    }
+
+    fn finish(mut self) -> Result<()> {
+        for (_, writer) in self.writers.drain() {
+            let sink = writer.into_inner()?;
+            sink.finish()?;
+        }
+        Ok(())
+    }
+}
+
+struct EdgeAccumulator {
+    src: Vec<i64>,
+    dst: Vec<i64>,
+    sort: Vec<i64>,
+    with_sort: bool,
+}
+
+impl EdgeAccumulator {
+    fn new(with_sort: bool) -> Self {
+        Self {
+            src: Vec::with_capacity(EDGE_BATCH_SIZE),
+            dst: Vec::with_capacity(EDGE_BATCH_SIZE),
+            sort: Vec::with_capacity(EDGE_BATCH_SIZE),
+            with_sort,
+        }
+    }
+
+    fn push(&mut self, src: u64, dst: u64, sort: Option<u32>) {
+        self.src.push(src as i64);
+        self.dst.push(dst as i64);
+        if self.with_sort {
+            self.sort.push(sort.unwrap_or(0) as i64);
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.src.len()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.src.is_empty()
+    }
+
+    fn clear(&mut self) {
+        self.src.clear();
+        self.dst.clear();
+        self.sort.clear();
+    }
+}
+
+#[derive(Clone)]
+struct EdgeRecord {
+    src_id: u64,
+    dst_id: u64,
+    sort_key: Option<u32>,
+}
+
+impl EdgeRecord {
+    fn new(src_id: u64, dst_id: u64, sort_key: Option<u32>) -> Self {
+        Self {
+            src_id,
+            dst_id,
+            sort_key,
+        }
+    }
+}
+
+fn edge_record_cmp(a: &EdgeRecord, b: &EdgeRecord) -> std::cmp::Ordering {
+    match a.src_id.cmp(&b.src_id) {
+        std::cmp::Ordering::Equal => match (a.sort_key, b.sort_key) {
+            (Some(a), Some(b)) => b.cmp(&a),
+            (None, None) => a.dst_id.cmp(&b.dst_id),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+        },
+        other => other,
+    }
+}
+
+fn write_edge_records(
+    writers: &mut RelationWriterSet,
+    name: &str,
+    with_sort: bool,
+    records: &[EdgeRecord],
+) -> Result<()> {
+    let mut batch = EdgeAccumulator::new(with_sort);
+    for record in records {
+        batch.push(record.src_id, record.dst_id, record.sort_key);
+        if batch.len() >= EDGE_BATCH_SIZE {
+            writers.flush(name, &batch)?;
+            batch.clear();
+        }
+    }
+    if !batch.is_empty() {
+        writers.flush(name, &batch)?;
+    }
+    Ok(())
+}
+
+fn edge_schema(with_sort_key: bool) -> Schema {
+    let mut fields = vec![
+        Field::new("src_id", DataType::Int64, false),
+        Field::new("dst_id", DataType::Int64, false),
+    ];
+    if with_sort_key {
+        fields.push(Field::new("dest_sort_key", DataType::Int64, false));
+    }
+    Schema::new(fields)
+}
+
+fn flush_edge_batch(
+    schema: &Schema,
+    writer: &mut ArrowWriter<OutputSink>,
+    data: &EdgeAccumulator,
+) -> Result<()> {
+    let mut cols: Vec<ArrayRef> = Vec::with_capacity(if schema.fields().len() == 3 { 3 } else { 2 });
+    cols.push(Arc::new(arrow_array::Int64Array::from(data.src.clone())) as ArrayRef);
+    cols.push(Arc::new(arrow_array::Int64Array::from(data.dst.clone())) as ArrayRef);
+    if schema.field_with_name("dest_sort_key").is_ok() {
+        cols.push(Arc::new(arrow_array::Int64Array::from(data.sort.clone())) as ArrayRef);
+    }
+    let batch = RecordBatch::try_new(Arc::new(schema.clone()), cols)?;
+    writer.write(&batch)?;
+    Ok(())
+}
+
+fn flush_node_batch(
+    schema: &Schema,
+    writer: &mut ArrowWriter<OutputSink>,
+    batch: &mut Vec<Vec<u8>>,
+) -> Result<()> {
+    if batch.is_empty() {
+        return Ok(());
+    }
+    let mut builder = arrow_array::builder::BinaryBuilder::new();
+    for item in batch.drain(..) {
+        builder.append_value(&item);
+    }
+    let array = builder.finish();
+    let batch = RecordBatch::try_new(Arc::new(schema.clone()), vec![Arc::new(array)])?;
+    writer.write(&batch)?;
+    Ok(())
+}
+
+fn column_spec<'a>(table: &'a TableSpec, name: &str) -> Result<&'a ColumnSpec> {
+    table
+        .columns
+        .iter()
+        .find(|c| c.name == name)
+        .ok_or_else(|| anyhow!("column {} not found in {}", name, table.name))
+}
+
+fn table_by_name<'a>(source: &'a SourceMetadata, name: &str) -> Result<&'a TableSpec> {
+    source
+        .tables
+        .iter()
+        .find(|t| t.name == name)
+        .ok_or_else(|| anyhow!("table {} not found", name))
+}
+
+fn estimate_rows(table: &TableSpec) -> usize {
+    table.paths.len().saturating_mul(1_000_000)
+}
+
+fn key_type_for_column(col: &ColumnSpec) -> Result<KeyType> {
+    match col.dtype {
+        ColumnType::Int64
+        | ColumnType::Int32
+        | ColumnType::UInt64
+        | ColumnType::UInt32 => Ok(KeyType::Int64),
+        ColumnType::String | ColumnType::Bytes => {
+            let len = col.fixed_len.ok_or_else(|| anyhow!("fixed_len required"))?;
+            Ok(KeyType::FixedBytes { len })
+        }
+        _ => Err(anyhow!("unsupported primary key type")),
+    }
+}
+
+fn key_from_value(value: &JsonValue, col: &ColumnSpec, label: &str) -> Result<Key> {
+    match col.dtype {
+        ColumnType::Int64 | ColumnType::Int32 | ColumnType::UInt64 | ColumnType::UInt32 => {
+            let v = value
+                .as_i64()
+                .ok_or_else(|| anyhow!("{} key is not integer", label))?;
+            if v < 0 {
+                return Err(anyhow!("{} key is negative", label));
+            }
+            Ok(Key::Int(v as u64))
+        }
+        ColumnType::String => {
+            let s = value
+                .as_str()
+                .ok_or_else(|| anyhow!("{} key is not string", label))?;
+            let bytes = s.as_bytes().to_vec();
+            let len = col.fixed_len.unwrap_or(bytes.len());
+            if bytes.len() != len {
+                return Err(anyhow!("{} key length mismatch", label));
+            }
+            Ok(Key::Bytes(bytes))
+        }
+        ColumnType::Bytes => {
+            let s = value
+                .as_str()
+                .ok_or_else(|| anyhow!("{} key is not bytes", label))?;
+            let bytes = BASE64.decode(s)?;
+            let len = col.fixed_len.unwrap_or(bytes.len());
+            if bytes.len() != len {
+                return Err(anyhow!("{} key length mismatch", label));
+            }
+            Ok(Key::Bytes(bytes))
+        }
+        _ => Err(anyhow!("unsupported key type")),
+    }
+}
+
+fn sort_key_to_u32(value: &JsonValue) -> Result<u32> {
+    if let Some(v) = value.as_i64() {
+        return Ok(v.max(0) as u32);
+    }
+    if let Some(v) = value.as_u64() {
+        return Ok(v.min(u32::MAX as u64) as u32);
+    }
+    if let Some(v) = value.as_f64() {
+        let v = v as f32;
+        let bits = v.to_bits();
+        let mapped = if bits & 0x8000_0000 != 0 {
+            !bits
+        } else {
+            bits | 0x8000_0000
+        };
+        return Ok(mapped);
+    }
+    Err(anyhow!("unsupported sort key type"))
+}
+
+fn collect_samples(table: &TableSpec) -> Result<Vec<Vec<u8>>> {
+    let mut samples = Vec::new();
+    let mut sample_bytes = 0usize;
+    for_each_row(table, |row| {
+        if samples.len() >= ZSTD_DICT_SAMPLE_LIMIT || sample_bytes >= ZSTD_DICT_SAMPLE_BYTES {
+            return Ok(());
+        }
+        let msg = row.to_msgpack(table)?;
+        sample_bytes += msg.len();
+        samples.push(msg);
+        Ok(())
+    })?;
+    Ok(samples)
+}
+
+fn for_each_row(table: &TableSpec, mut f: impl FnMut(&RowView) -> Result<()>) -> Result<()> {
+    let schema = table_schema(table)?;
+    let mut global_row = 0u64;
+    for path in &table.paths {
+        let local = localize_input(path)?;
+        match table.format {
+            TableFormat::Parquet => {
+                let file = fs::File::open(&local.path)?;
+                let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
+                let reader = builder.with_batch_size(NODE_BATCH_SIZE).build()?;
+                for batch in reader {
+                    let batch = batch?;
+                    for row in 0..batch.num_rows() {
+                        let row_view = RowView::new(&batch, table, row, global_row)?;
+                        f(&row_view)?;
+                        global_row += 1;
+                    }
+                }
+            }
+            TableFormat::Csv => {
+                let file = fs::File::open(&local.path)?;
+                let builder = arrow_csv::ReaderBuilder::new(Arc::new(schema.clone()))
+                    .with_header(true);
+                let reader = builder.build(file)?;
+                for batch in reader {
+                    let batch = batch?;
+                    for row in 0..batch.num_rows() {
+                        let row_view = RowView::new(&batch, table, row, global_row)?;
+                        f(&row_view)?;
+                        global_row += 1;
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn table_schema(table: &TableSpec) -> Result<Schema> {
+    let mut fields = Vec::with_capacity(table.columns.len());
+    for col in &table.columns {
+        let dtype = match col.dtype {
+            ColumnType::Int64 => DataType::Int64,
+            ColumnType::Int32 => DataType::Int32,
+            ColumnType::UInt64 => DataType::UInt64,
+            ColumnType::UInt32 => DataType::UInt32,
+            ColumnType::Float64 => DataType::Float64,
+            ColumnType::Float32 => DataType::Float32,
+            ColumnType::Bool => DataType::Boolean,
+            ColumnType::String => DataType::Utf8,
+            ColumnType::Bytes => DataType::Binary,
+            ColumnType::Date => DataType::Date32,
+            ColumnType::Timestamp => DataType::Timestamp(arrow_schema::TimeUnit::Second, None),
+            ColumnType::Float32Array => DataType::List(Arc::new(Field::new(
+                "item",
+                DataType::Float32,
+                true,
+            ))),
+            ColumnType::Float64Array => DataType::List(Arc::new(Field::new(
+                "item",
+                DataType::Float64,
+                true,
+            ))),
+        };
+        fields.push(Field::new(&col.name, dtype, true));
+    }
+    Ok(Schema::new(fields))
+}
+
+struct RowView {
+    row: usize,
+    row_id: u64,
+    cols: HashMap<String, ArrayRef>,
+}
+
+impl RowView {
+    fn new(batch: &RecordBatch, table: &TableSpec, row: usize, row_id: u64) -> Result<Self> {
+        let mut cols = HashMap::new();
+        for col in &table.columns {
+            let idx = batch
+                .schema()
+                .index_of(&col.name)
+                .context("missing column in batch")?;
+            cols.insert(col.name.clone(), batch.column(idx).clone());
+        }
+        Ok(Self { row, row_id, cols })
+    }
+
+    fn get_value(&self, name: &str) -> Result<JsonValue> {
+        let col = self
+            .cols
+            .get(name)
+            .ok_or_else(|| anyhow!("missing column {}", name))?;
+        value_from_array(col, self.row)
+    }
+
+    fn sort_key(&self, table: &TableSpec) -> Result<Option<JsonValue>> {
+        if let Some(weight) = &table.weight {
+            return Ok(Some(self.get_value(weight)?));
+        }
+        if let Some(ts) = &table.create_time {
+            return Ok(Some(self.get_value(ts)?));
+        }
+        Ok(None)
+    }
+
+    fn to_msgpack(&self, table: &TableSpec) -> Result<Vec<u8>> {
+        let mut map = serde_json::Map::with_capacity(table.columns.len());
+        for col in &table.columns {
+            let value = self.get_value(&col.name)?;
+            map.insert(col.name.clone(), value);
+        }
+        let value = JsonValue::Object(map);
+        Ok(to_vec_named(&value)?)
+    }
+}
+
+fn value_from_array(array: &ArrayRef, row: usize) -> Result<JsonValue> {
+    if array.is_null(row) {
+        return Ok(JsonValue::Null);
+    }
+    match array.data_type() {
+        DataType::Int64 => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::Int64Array>()
+                .ok_or_else(|| anyhow!("int64 cast"))?;
+            Ok(JsonValue::from(arr.value(row)))
+        }
+        DataType::Int32 => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::Int32Array>()
+                .ok_or_else(|| anyhow!("int32 cast"))?;
+            Ok(JsonValue::from(arr.value(row)))
+        }
+        DataType::UInt64 => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::UInt64Array>()
+                .ok_or_else(|| anyhow!("uint64 cast"))?;
+            Ok(JsonValue::from(arr.value(row)))
+        }
+        DataType::UInt32 => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::UInt32Array>()
+                .ok_or_else(|| anyhow!("uint32 cast"))?;
+            Ok(JsonValue::from(arr.value(row)))
+        }
+        DataType::Float64 => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::Float64Array>()
+                .ok_or_else(|| anyhow!("float64 cast"))?;
+            Ok(JsonValue::from(arr.value(row)))
+        }
+        DataType::Float32 => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::Float32Array>()
+                .ok_or_else(|| anyhow!("float32 cast"))?;
+            Ok(JsonValue::from(arr.value(row)))
+        }
+        DataType::Boolean => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::BooleanArray>()
+                .ok_or_else(|| anyhow!("bool cast"))?;
+            Ok(JsonValue::from(arr.value(row)))
+        }
+        DataType::Utf8 => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::StringArray>()
+                .ok_or_else(|| anyhow!("string cast"))?;
+            Ok(JsonValue::from(arr.value(row)))
+        }
+        DataType::Binary => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::BinaryArray>()
+                .ok_or_else(|| anyhow!("binary cast"))?;
+            Ok(JsonValue::from(BASE64.encode(arr.value(row))))
+        }
+        DataType::Date32 => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::Date32Array>()
+                .ok_or_else(|| anyhow!("date cast"))?;
+            Ok(JsonValue::from(arr.value(row)))
+        }
+        DataType::Timestamp(_, _) => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::TimestampSecondArray>()
+                .ok_or_else(|| anyhow!("timestamp cast"))?;
+            Ok(JsonValue::from(arr.value(row)))
+        }
+        DataType::List(_) => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::ListArray>()
+                .ok_or_else(|| anyhow!("list cast"))?;
+            let values = arr.value(row);
+            let mut out = Vec::new();
+            for i in 0..values.len() {
+                let v = value_from_array(&values, i)?;
+                out.push(v);
+            }
+            Ok(JsonValue::Array(out))
+        }
+        _ => Err(anyhow!("unsupported array type")),
+    }
+}
+
+fn table_rows(ctx: &IngestContext, name: &str) -> u64 {
+    ctx.table_rows.get(name).copied().unwrap_or(0)
+}
+
+struct LocalizedInput {
+    path: PathBuf,
+    _guard: Option<tempfile::TempPath>,
+}
+
+fn localize_input(path: &str) -> Result<LocalizedInput> {
+    if path.starts_with("s3://") || path.starts_with("gs://") || path.starts_with("az://") {
+        let scratch = scratch_root()?;
+        fs::create_dir_all(&scratch)?;
+        let tmp = tempfile::Builder::new()
+            .prefix("ingest-source-")
+            .tempfile_in(&scratch)?;
+        let (store, object_path) = build_store_for_path(path)?;
+        let rt = Runtime::new()?;
+        let obj = rt.block_on(store.get(&object_path))?;
+        let bytes = rt.block_on(obj.bytes())?;
+        fs::write(tmp.path(), &bytes)?;
+        Ok(LocalizedInput {
+            path: tmp.path().to_path_buf(),
+            _guard: Some(tmp.into_temp_path()),
+        })
+    } else {
+        Ok(LocalizedInput {
+            path: PathBuf::from(path),
+            _guard: None,
+        })
+    }
+}
+
+fn scratch_root() -> Result<PathBuf> {
+    let ssd = PathBuf::from("/mnt/localssd/diskgraph-ingest-tmp");
+    if ssd.exists() {
+        return Ok(ssd);
+    }
+    if ssd.parent().map(|p| p.exists()).unwrap_or(false) {
+        fs::create_dir_all(&ssd)?;
+        return Ok(ssd);
+    }
+    Ok(PathBuf::from("/tmp/diskgraph-ingest-tmp"))
+}
+
+fn build_store_for_path(path: &str) -> Result<(Arc<dyn ObjectStore>, ObjectPath)> {
+    if path.starts_with("s3://") {
+        let (bucket, key) = parse_s3_url(path)?;
+        let s3 = build_s3_client(S3Config {
+            bucket: bucket.clone(),
+            region: std::env::var("S3_REGION").ok(),
+            endpoint: std::env::var("S3_ENDPOINT").ok(),
+            allow_http: None,
+            virtual_hosted: None,
+            profile: std::env::var("S3_PROFILE").ok(),
+            access_key_id: None,
+            secret_access_key: None,
+            session_token: None,
+        })?;
+        Ok((s3.store, ObjectPath::from(key)))
+    } else if path.starts_with("gs://") {
+        let (bucket, key) = parse_gs_url(path)?;
+        let gcs = build_gcs_client(GcsConfig { bucket: bucket.clone() })?;
+        Ok((gcs.store, ObjectPath::from(key)))
+    } else if path.starts_with("az://") {
+        let (account, container, key) = parse_az_url(path)?;
+        let adls = build_adls_client(AdlsConfig {
+            account: account.clone(),
+            container: container.clone(),
+            endpoint: std::env::var("AZURE_ENDPOINT").ok(),
+            allow_http: None,
+            access_key: std::env::var("AZURE_ACCESS_KEY").ok(),
+            sas_key: std::env::var("AZURE_SAS_KEY").ok(),
+            bearer_token: std::env::var("AZURE_BEARER_TOKEN").ok(),
+            client_id: std::env::var("AZURE_CLIENT_ID").ok(),
+            client_secret: std::env::var("AZURE_CLIENT_SECRET").ok(),
+            tenant_id: std::env::var("AZURE_TENANT_ID").ok(),
+        })?;
+        Ok((adls.store, ObjectPath::from(key)))
+    } else {
+        Err(anyhow!("unsupported source path {}", path))
+    }
+}
+
+fn parse_s3_url(raw: &str) -> Result<(String, String)> {
+    let url = url::Url::parse(raw).map_err(|e| anyhow!("invalid s3 url {raw}: {e}"))?;
+    let bucket = url
+        .host_str()
+        .ok_or_else(|| anyhow!("missing bucket in s3 url"))?
+        .to_string();
+    let key = url.path().trim_start_matches('/').to_string();
+    Ok((bucket, key))
+}
+
+fn parse_gs_url(raw: &str) -> Result<(String, String)> {
+    let url = url::Url::parse(raw).map_err(|e| anyhow!("invalid gs url {raw}: {e}"))?;
+    let bucket = url
+        .host_str()
+        .ok_or_else(|| anyhow!("missing bucket in gs url"))?
+        .to_string();
+    let key = url.path().trim_start_matches('/').to_string();
+    Ok((bucket, key))
+}
+
+fn parse_az_url(raw: &str) -> Result<(String, String, String)> {
+    let url = url::Url::parse(raw).map_err(|e| anyhow!("invalid az url {raw}: {e}"))?;
+    let account = url
+        .host_str()
+        .ok_or_else(|| anyhow!("missing account in az url"))?
+        .to_string();
+    let mut segments = url
+        .path()
+        .trim_start_matches('/')
+        .split('/')
+        .filter(|s| !s.is_empty());
+    let container = segments
+        .next()
+        .ok_or_else(|| anyhow!("missing container in az url"))?
+        .to_string();
+    let key = segments.collect::<Vec<_>>().join("/");
+    Ok((account, container, key))
+}
+
+enum OutputTarget {
+    Local { root: PathBuf },
+    S3 {
+        prefix: String,
+        store: Arc<dyn ObjectStore>,
+        rt: Arc<Runtime>,
+        part_size: usize,
+        part_concurrency: usize,
+    },
+    Gcs {
+        prefix: String,
+        store: Arc<dyn ObjectStore>,
+        rt: Arc<Runtime>,
+        part_size: usize,
+        part_concurrency: usize,
+    },
+    Adls {
+        prefix: String,
+        store: Arc<dyn ObjectStore>,
+        rt: Arc<Runtime>,
+        part_size: usize,
+        part_concurrency: usize,
+    },
+}
+
+impl OutputTarget {
+    fn parse(output: &str, dest: Dest) -> Result<Self> {
+        match dest {
+            Dest::Local => Ok(OutputTarget::Local {
+                root: PathBuf::from(output),
+            }),
+            Dest::S3 => {
+                let (bucket, prefix) = parse_s3_url(output)?;
+                let s3 = build_s3_client(S3Config {
+                    bucket: bucket.clone(),
+                    region: None,
+                    endpoint: None,
+                    allow_http: None,
+                    virtual_hosted: None,
+                    profile: std::env::var("S3_PROFILE").ok(),
+                    access_key_id: None,
+                    secret_access_key: None,
+                    session_token: None,
+                })?;
+                Ok(OutputTarget::S3 {
+                    prefix,
+                    store: s3.store,
+                    rt: Arc::new(Runtime::new()?),
+                    part_size: 64 * 1024 * 1024,
+                    part_concurrency: 10,
+                })
+            }
+            Dest::Gcs => {
+                let (bucket, prefix) = parse_gs_url(output)?;
+                let gcs = build_gcs_client(GcsConfig { bucket })?;
+                Ok(OutputTarget::Gcs {
+                    prefix,
+                    store: gcs.store,
+                    rt: Arc::new(Runtime::new()?),
+                    part_size: 64 * 1024 * 1024,
+                    part_concurrency: 10,
+                })
+            }
+            Dest::Adls => {
+                let (account, container, prefix) = parse_az_url(output)?;
+                let adls = build_adls_client(AdlsConfig {
+                    account,
+                    container,
+                    endpoint: std::env::var("AZURE_ENDPOINT").ok(),
+                    allow_http: None,
+                    access_key: std::env::var("AZURE_ACCESS_KEY").ok(),
+                    sas_key: std::env::var("AZURE_SAS_KEY").ok(),
+                    bearer_token: std::env::var("AZURE_BEARER_TOKEN").ok(),
+                    client_id: std::env::var("AZURE_CLIENT_ID").ok(),
+                    client_secret: std::env::var("AZURE_CLIENT_SECRET").ok(),
+                    tenant_id: std::env::var("AZURE_TENANT_ID").ok(),
+                })?;
+                Ok(OutputTarget::Adls {
+                    prefix,
+                    store: adls.store,
+                    rt: Arc::new(Runtime::new()?),
+                    part_size: 64 * 1024 * 1024,
+                    part_concurrency: 10,
+                })
+            }
+        }
+    }
+
+    fn prepare(&self) -> Result<()> {
+        if let OutputTarget::Local { root } = self {
+            fs::create_dir_all(root)?;
+        }
+        Ok(())
+    }
+
+    fn join(&self, name: &str) -> PathBuf {
+        match self {
+            OutputTarget::Local { root } => root.join(name),
+            OutputTarget::S3 { prefix, .. }
+            | OutputTarget::Gcs { prefix, .. }
+            | OutputTarget::Adls { prefix, .. } => {
+                if prefix.is_empty() {
+                    PathBuf::from(name)
+                } else {
+                    PathBuf::from(format!("{}/{}", prefix.trim_end_matches('/'), name))
+                }
+            }
+        }
+    }
+
+    fn write_bytes(&self, name: &str, bytes: Vec<u8>) -> Result<()> {
+        match self {
+            OutputTarget::Local { root } => {
+                fs::write(root.join(name), bytes)?;
+            }
+            OutputTarget::S3 { store, rt, prefix, .. }
+            | OutputTarget::Gcs { store, rt, prefix, .. }
+            | OutputTarget::Adls { store, rt, prefix, .. } => {
+                let obj = if prefix.is_empty() {
+                    ObjectPath::from(name)
+                } else {
+                    ObjectPath::from(format!("{}/{}", prefix.trim_end_matches('/'), name))
+                };
+                rt.block_on(store.put(&obj, Bytes::from(bytes).into()))
+                    .map_err(anyhow::Error::from)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn sink(&self, path: &Path) -> Result<OutputSink> {
+        match self {
+            OutputTarget::Local { .. } => {
+                let file = fs::File::create(path)?;
+                Ok(OutputSink::Local(file))
+            }
+            OutputTarget::S3 {
+                store,
+                rt,
+                part_size,
+                part_concurrency,
+                ..
+            }
+            | OutputTarget::Gcs {
+                store,
+                rt,
+                part_size,
+                part_concurrency,
+                ..
+            }
+            | OutputTarget::Adls {
+                store,
+                rt,
+                part_size,
+                part_concurrency,
+                ..
+            } => {
+                let obj = ObjectPath::from(path.to_string_lossy().to_string());
+                let upload = rt.block_on(store.put_multipart(&obj)).map_err(to_io_err)?;
+                Ok(OutputSink::Multipart(MultipartSink {
+                    writer: Some(WriteMultipart::new_with_chunk_size(upload, *part_size)),
+                    rt: rt.clone(),
+                    max_concurrency: *part_concurrency,
+                    handle: rt.handle().clone(),
+                }))
             }
         }
     }
 }
 
-/// Helper to validate the dataset directory exists and contains a metadata.json
-/// file. Remote datasets should be validated by the transport-specific loader.
-pub fn validate_dataset_root(path: &Path) -> Result<()> {
-    if !path.exists() {
-        return Err(DiskgraphError::InvalidMetadata(format!(
-            "dataset root {} does not exist",
-            path.display()
-        )));
+enum OutputSink {
+    Local(fs::File),
+    Multipart(MultipartSink),
+}
+
+impl OutputSink {
+    fn finish(self) -> io::Result<()> {
+        match self {
+            OutputSink::Local(mut file) => file.flush(),
+            OutputSink::Multipart(sink) => sink.finish(),
+        }
     }
-    let metadata = path.join("metadata.json");
-    if !metadata.exists() {
-        return Err(DiskgraphError::MetadataMissing);
+}
+
+impl Write for OutputSink {
+    fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+        match self {
+            OutputSink::Local(file) => file.write(data),
+            OutputSink::Multipart(sink) => sink.write(data),
+        }
     }
-    Ok(())
+
+    fn flush(&mut self) -> io::Result<()> {
+        match self {
+            OutputSink::Local(file) => file.flush(),
+            OutputSink::Multipart(sink) => sink.flush(),
+        }
+    }
+}
+
+struct MultipartSink {
+    writer: Option<WriteMultipart>,
+    rt: Arc<Runtime>,
+    max_concurrency: usize,
+    handle: tokio::runtime::Handle,
+}
+
+impl MultipartSink {
+    fn finish(mut self) -> io::Result<()> {
+        self.finish_inner()
+    }
+
+    fn finish_inner(&mut self) -> io::Result<()> {
+        let mut writer = match self.writer.take() {
+            Some(writer) => writer,
+            None => return Ok(()),
+        };
+        let rt = self.rt.clone();
+        Self::retry_with_backoff(|| rt.block_on(writer.wait_for_capacity(0)))?;
+        self.rt.block_on(writer.finish()).map_err(to_io_err)?;
+        Ok(())
+    }
+
+    fn retry_with_backoff<T>(mut op: impl FnMut() -> Result<T, object_store::Error>) -> io::Result<T> {
+        const RETRIES: usize = 3;
+        const BASE_DELAY_MS: u64 = 250;
+        let mut last_err: Option<object_store::Error> = None;
+        for attempt in 0..=RETRIES {
+            match op() {
+                Ok(val) => return Ok(val),
+                Err(err) => {
+                    last_err = Some(err);
+                    if attempt == RETRIES {
+                        break;
+                    }
+                    let delay = BASE_DELAY_MS.saturating_mul(1 << attempt);
+                    std::thread::sleep(Duration::from_millis(delay));
+                }
+            }
+        }
+        if let Some(err) = last_err {
+            Err(to_io_err(err))
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::Other,
+                "unknown multipart error",
+            ))
+        }
+    }
+}
+
+impl Write for MultipartSink {
+    fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+        if let Some(writer) = self.writer.as_mut() {
+            let rt = self.rt.clone();
+            let max_concurrency = self.max_concurrency;
+            Self::retry_with_backoff(|| rt.block_on(writer.wait_for_capacity(max_concurrency)))?;
+            let _guard = self.handle.enter();
+            writer.write(data);
+        }
+        Ok(data.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        if let Some(writer) = self.writer.as_mut() {
+            let rt = self.rt.clone();
+            Self::retry_with_backoff(|| rt.block_on(writer.wait_for_capacity(0)))?;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for MultipartSink {
+    fn drop(&mut self) {
+        if let Err(err) = self.finish_inner() {
+            eprintln!("MultipartSink finish error on drop: {err}");
+        }
+    }
+}
+
+fn to_io_err(err: object_store::Error) -> io::Error {
+    io::Error::new(io::ErrorKind::Other, err)
 }

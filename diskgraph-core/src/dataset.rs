@@ -72,7 +72,7 @@ pub struct DatasetStatus {
 #[async_trait]
 pub trait DatasetRegistry: Send + Sync {
     /// Insert or update a dataset handle. Typically invoked at the beginning of
-    /// ingestion after parsing metadata.json.
+    /// ingestion after parsing index_metadata.json.
     async fn upsert(
         &self,
         descriptor: DatasetDescriptor,

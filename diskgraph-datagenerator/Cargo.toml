@@ -40,3 +40,7 @@ path = "src/bin/massive.rs"
 [[bin]]
 name = "generate-multi"
 path = "src/bin/generate_multi.rs"
+
+[[bin]]
+name = "generate-source"
+path = "src/bin/generate_source.rs"

@@ -13,6 +13,7 @@ use diskgraph_index::graph::{
     GraphProgressSink, TableReader,
 };
 use diskgraph_index::layout::{EDGES_FILENAME, OFFSETS_FILENAME};
+use serde_json::Value as JsonValue;
 use object_store::ObjectStore;
 use diskgraph_fs::{
     build_adls_client, build_gcs_client, build_s3_client, AdlsConfig, GcsConfig, S3Config,
@@ -140,21 +141,21 @@ fn run_explore(source_str: &str, profile_enabled: bool) -> Result<()> {
     let load_start = std::time::Instant::now();
     let (metadata, index_root) = match &source {
         Source::Local(p) => {
-            if p.is_file() && p.file_name().map(|n| n == "metadata.json").unwrap_or(false) {
+            if p.is_file() && p.file_name().map(|n| n == "index_metadata.json").unwrap_or(false) {
                 let root = p.parent().unwrap_or(p).to_path_buf();
                 if is_indexed_graph(&root) {
                     let metadata: DatasetMetadata =
-                        serde_json::from_slice(&fs::read(p).context("read metadata.json")?)
-                            .context("parse metadata.json")?;
+                        serde_json::from_slice(&fs::read(p).context("read index_metadata.json")?)
+                            .context("parse index_metadata.json")?;
                     (metadata, root)
                 } else {
                     build_from_local_dataset(&root, tmp.path())?
                 }
             } else if is_indexed_graph(p) {
                 let metadata: DatasetMetadata = serde_json::from_slice(
-                    &fs::read(p.join("metadata.json")).context("read metadata.json")?,
+                    &fs::read(p.join("index_metadata.json")).context("read index_metadata.json")?,
                 )
-                .context("parse metadata.json")?;
+                .context("parse index_metadata.json")?;
                 (metadata, p.clone())
             } else {
                 build_from_local_dataset(p, tmp.path())?
@@ -232,7 +233,7 @@ fn run_explore(source_str: &str, profile_enabled: bool) -> Result<()> {
         }
     };
     let elapsed = load_start.elapsed().as_secs_f64();
-    let reader = GraphIndexReader::open(&index_root.join("metadata.json"), &index_root)
+    let reader = GraphIndexReader::open(&index_root.join("index_metadata.json"), &index_root)
         .context("open graph reader")?;
 
     println!("Loaded graph from {}", source_str);
@@ -338,7 +339,7 @@ fn build_from_remote(
         }
     };
     let cache_dir = cache_root.join(safe_prefix);
-    let meta_path = cache_dir.join("metadata.json");
+    let meta_path = cache_dir.join("index_metadata.json");
     if cache_dir.join("nodes").exists() && meta_path.exists() {
         cache_spinner.finish_with_message("Cache hit");
         let metadata: DatasetMetadata = serde_json::from_slice(
@@ -356,21 +357,21 @@ fn build_from_remote(
     };
     // Download metadata, then build using remote Parquet sources.
     let loc = if prefix.is_empty() {
-        ObjectPath::from("metadata.json")
+        ObjectPath::from("index_metadata.json")
     } else {
-        ObjectPath::from(format!("{}/{}", prefix, "metadata.json"))
+        ObjectPath::from(format!("{}/{}", prefix, "index_metadata.json"))
     };
-    let meta_spinner = start_spinner("Downloading metadata.json");
+    let meta_spinner = start_spinner("Downloading index_metadata.json");
     let meta_obj = rt
         .block_on(store_arc.get(&loc))
-        .with_context(|| format!("download metadata.json from {prefix}"))?;
+        .with_context(|| format!("download index_metadata.json from {prefix}"))?;
     let meta_bytes = rt
         .block_on(meta_obj.bytes())
-        .context("buffer metadata.json")?;
+        .context("buffer index_metadata.json")?;
     fs::write(&meta_path, &meta_bytes)?;
-    meta_spinner.finish_with_message("Downloaded metadata.json");
+    meta_spinner.finish_with_message("Downloaded index_metadata.json");
     let metadata: DatasetMetadata =
-        serde_json::from_slice(&meta_bytes).context("parse metadata.json")?;
+        serde_json::from_slice(&meta_bytes).context("parse index_metadata.json")?;
 
     let data_source = match &remote {
         RemoteStore::S3 { bucket, client, prefix } => GraphDataSource::S3 {
@@ -626,7 +627,7 @@ fn start_spinner(message: &str) -> ProgressBar {
 }
 
 fn is_indexed_graph(dir: &Path) -> bool {
-    let meta_path = dir.join("metadata.json");
+    let meta_path = dir.join("index_metadata.json");
     if !meta_path.exists() || !dir.join("nodes").exists() {
         return false;
     }
@@ -665,16 +666,16 @@ fn build_from_local_dataset(
     source: &Path,
     cache_root: &Path,
 ) -> Result<(DatasetMetadata, PathBuf)> {
-    let meta_path = source.join("metadata.json");
-    let meta_spinner = start_spinner("Loading metadata.json");
-    let meta_bytes = fs::read(&meta_path).context("read metadata.json")?;
-    meta_spinner.finish_with_message("Loaded metadata.json");
+    let meta_path = source.join("index_metadata.json");
+    let meta_spinner = start_spinner("Loading index_metadata.json");
+    let meta_bytes = fs::read(&meta_path).context("read index_metadata.json")?;
+    meta_spinner.finish_with_message("Loaded index_metadata.json");
     let metadata: DatasetMetadata =
-        serde_json::from_slice(&meta_bytes).context("parse metadata.json")?;
+        serde_json::from_slice(&meta_bytes).context("parse index_metadata.json")?;
 
     let safe_prefix = format!("local_{}", sanitize_cache_name(&source.display().to_string()));
     let cache_dir = cache_root.join(safe_prefix);
-    let cached_meta = cache_dir.join("metadata.json");
+    let cached_meta = cache_dir.join("index_metadata.json");
     if cache_dir.join("nodes").exists() && cached_meta.exists() {
         return Ok((metadata, cache_dir));
     }
@@ -926,11 +927,27 @@ fn show_node(reader: &GraphIndexReader, table_name: &str, node: u64) -> Result<(
         }
     }
     match view.node_data() {
-        Ok(Some(bytes)) => {
-            let escaped = escape_ascii(bytes);
-            println!("  node_data: \"{}\"", escaped);
-        }
-        Ok(None) => {}
+        Ok(_) => match table.decode_node_data(&view) {
+            Ok(Some(bytes)) => {
+                match rmp_serde::from_slice::<JsonValue>(&bytes) {
+                    Ok(value) => match serde_json::to_string_pretty(&value) {
+                        Ok(pretty) => println!("  node_data:\n{pretty}"),
+                        Err(_) => {
+                            let escaped = escape_ascii(&bytes);
+                            println!("  node_data: \"{}\"", escaped);
+                        }
+                    },
+                    Err(_) => {
+                        let escaped = escape_ascii(&bytes);
+                        println!("  node_data: \"{}\"", escaped);
+                    }
+                }
+            }
+            Ok(None) => {}
+            Err(e) => {
+                println!("  node_data: <error: {}>", e);
+            }
+        },
         Err(e) => {
             println!("  node_data: <error: {}>", e);
         }

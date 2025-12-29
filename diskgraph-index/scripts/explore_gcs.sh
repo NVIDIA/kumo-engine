@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Explore a shard stored on GCS (expects metadata.json, offsets.bin, edges.bin under the prefix).
+# Explore a shard stored on GCS (expects index_metadata.json, offsets.bin, edges.bin under the prefix).
 # Pass gs://bucket/prefix as the first arg. Uses ADC/gcloud auth.
 
 PROFILE_ENABLED="false"

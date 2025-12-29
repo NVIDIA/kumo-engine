@@ -138,14 +138,14 @@ fn graph_builder_and_reader_multi_table() {
         ],
     };
 
-    let meta_path = root.join("metadata.json");
+    let meta_path = root.join("index_metadata.json");
     fs::write(&meta_path, serde_json::to_vec_pretty(&metadata).unwrap()).unwrap();
 
     let output = dir.path().join("index");
     let builder = GraphIndexBuilder::from_metadata_path(&meta_path, &output).unwrap();
     builder.build(None).unwrap();
 
-    let reader = GraphIndexReader::open(&output.join("metadata.json"), &output).unwrap();
+    let reader = GraphIndexReader::open(&output.join("index_metadata.json"), &output).unwrap();
     let user = reader.table("User").unwrap();
     let item = reader.table("Item").unwrap();
 

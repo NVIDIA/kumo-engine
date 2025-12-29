@@ -5,14 +5,25 @@ edition = "2021"
 
 [dependencies]
 anyhow = { workspace = true }
-async-trait = { workspace = true }
 chrono = { workspace = true }
 futures = { workspace = true }
-parking_lot = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-thiserror = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "fs"] }
 tracing = { workspace = true }
-uuid = { workspace = true }
+tracing-subscriber = { workspace = true }
 diskgraph-core = { path = "../diskgraph-core" }
+diskgraph-fs = { path = "../diskgraph-fs" }
+arrow-array = "57.1.0"
+arrow-schema = "57.1.0"
+arrow-csv = "57.1.0"
+parquet = { version = "57.1.0", features = ["arrow"] }
+object_store = { version = "0.12.4", features = ["aws", "gcp", "azure"] }
+bytes = "1"
+url = "2"
+tempfile = "3"
+zstd = "0.13"
+rmp-serde = "1"
+seahash = "4.1"
+base64 = "0.22"
+clap = { version = "4.4", features = ["derive"] }
