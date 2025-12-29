@@ -2,7 +2,13 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::{Parser, ValueEnum};
-use diskgraph_ingest::{ingest_with_stats, Dest, IngestOptions, MappingKind};
+use diskgraph_ingest::{
+    ingest_with_stats, Dest, IngestOptions, MappingKind, ProgressCallback, ProgressEvent,
+};
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use std::collections::HashMap;
+use std::io::IsTerminal;
+use std::sync::{Arc, Mutex};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about = "Ingest raw CSV/Parquet into diskgraph index format.")]
@@ -49,12 +55,18 @@ fn main() -> Result<()> {
             source_path.display()
         );
     }
+    let total_tasks = count_expected_tasks(&source_path).unwrap_or(0);
+    let progress = if total_tasks > 0 {
+        progress_ui(total_tasks)
+    } else {
+        None
+    };
     let options = IngestOptions {
         mapping_kind: match args.mapping {
             MappingArg::Hash => MappingKind::Hash,
             MappingArg::Sorted => MappingKind::Sorted,
         },
-        progress: None,
+        progress,
     };
     let dest = match args.dest {
         DestArg::Local => Dest::Local,
@@ -89,4 +101,140 @@ fn main() -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn progress_ui(total_tasks: u64) -> Option<ProgressCallback> {
+    if !std::io::stdout().is_terminal() {
+        return None;
+    }
+    struct TaskState {
+        pb: ProgressBar,
+        total: Option<u64>,
+        count: u64,
+    }
+
+    let multi = Arc::new(MultiProgress::new());
+    let global = multi.add(ProgressBar::new(total_tasks));
+    global.set_style(bar_style());
+    global.set_message("Overall");
+    global.set_prefix(format!("0 / {}", format_count(total_tasks)));
+    let tasks: Arc<Mutex<HashMap<String, TaskState>>> = Arc::new(Mutex::new(HashMap::new()));
+
+    let progress: ProgressCallback = Arc::new({
+        let multi = Arc::clone(&multi);
+        let tasks = Arc::clone(&tasks);
+        let global = global.clone();
+        move |event| match event {
+            ProgressEvent::Start { key, total } => {
+                let mut map = tasks.lock().unwrap();
+                if map.contains_key(&key) {
+                    return;
+                }
+                if let Some(total) = total {
+                    let pb = multi.insert_before(&global, ProgressBar::new(total));
+                    pb.set_style(bar_style());
+                    pb.set_message(key.clone());
+                    pb.set_prefix(format!("0 / {}", format_count(total)));
+                    map.insert(
+                        key,
+                        TaskState {
+                            pb,
+                            total: Some(total),
+                            count: 0,
+                        },
+                    );
+                } else {
+                    let pb = multi.insert_before(&global, ProgressBar::new_spinner());
+                    pb.set_style(spinner_style());
+                    pb.set_message(key.clone());
+                    pb.enable_steady_tick(std::time::Duration::from_millis(120));
+                    map.insert(
+                        key,
+                        TaskState {
+                            pb,
+                            total: None,
+                            count: 0,
+                        },
+                    );
+                }
+            }
+            ProgressEvent::Advance { key, delta } => {
+                let mut map = tasks.lock().unwrap();
+                if let Some(task) = map.get_mut(&key) {
+                    task.count = task.count.saturating_add(delta);
+                    if let Some(total) = task.total {
+                        task.pb.set_position(task.count.min(total));
+                        task.pb.set_prefix(format!(
+                            "{} / {}",
+                            format_count(task.count),
+                            format_count(total),
+                        ));
+                    }
+                }
+            }
+            ProgressEvent::Finish { key, total } => {
+                let mut map = tasks.lock().unwrap();
+                if let Some(task) = map.remove(&key) {
+                    if let Some(total) = total.or(task.total) {
+                        task.pb.set_position(total);
+                        task.pb.set_prefix(format!(
+                            "{} / {}",
+                            format_count(total),
+                            format_count(total),
+                        ));
+                    }
+                    task.pb.finish_with_message(key.clone());
+                    global.inc(1);
+                    let done = global.position();
+                    global.set_prefix(format!(
+                        "{} / {}",
+                        format_count(done),
+                        format_count(total_tasks),
+                    ));
+                }
+            }
+        }
+    });
+    Some(progress)
+}
+
+fn bar_style() -> ProgressStyle {
+    ProgressStyle::with_template("{msg} {bar:40.cyan/blue} {percent}% {prefix} ({eta})")
+        .unwrap_or_else(|_| ProgressStyle::default_bar())
+}
+
+fn spinner_style() -> ProgressStyle {
+    ProgressStyle::with_template("{spinner} {msg}")
+        .unwrap_or_else(|_| ProgressStyle::default_spinner())
+}
+
+fn format_count(value: u64) -> String {
+    if value >= 1_000_000_000 {
+        format!("{:.1}B", value as f64 / 1_000_000_000.0)
+    } else if value >= 1_000_000 {
+        format!("{:.1}M", value as f64 / 1_000_000.0)
+    } else if value >= 1_000 {
+        format!("{:.1}K", value as f64 / 1_000.0)
+    } else {
+        value.to_string()
+    }
+}
+
+fn count_expected_tasks(path: &std::path::Path) -> Option<u64> {
+    let bytes = std::fs::read(path).ok()?;
+    let meta: diskgraph_ingest::SourceMetadata = serde_json::from_slice(&bytes).ok()?;
+    let mut total = 0u64;
+    for table in &meta.tables {
+        if table.edge_table.is_none() {
+            total += 1; // node data
+            if table.primary_key.is_some() {
+                total += 1; // pk map
+            }
+        } else {
+            total += 1; // edge table scan
+            total += 2; // edge table forward/reverse
+        }
+    }
+    total += meta.relationships.len() as u64 * 2;
+    Some(total.max(1))
 }

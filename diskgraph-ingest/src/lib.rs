@@ -20,6 +20,7 @@ use object_store::{path::Path as ObjectPath, ObjectStore, WriteMultipart};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::arrow::ArrowWriter;
 use parquet::file::properties::WriterProperties;
+use parquet::file::reader::FileReader;
 use rmp_serde::encode::to_vec_named;
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
@@ -287,6 +288,11 @@ impl IngestContext {
             let mut dict_samples = Vec::new();
             let mut sample_bytes = 0usize;
             let mut row_id = 0u64;
+            let progress_key = format!("pk_map:{}", table.name);
+            let total_hint = row_count_hint(table).unwrap_or(0);
+            let total_opt = if total_hint > 0 { Some(total_hint) } else { None };
+            self.progress_start(&progress_key, total_opt);
+            let mut next_update = PROGRESS_STEP;
             for_each_row(table, |row| {
                 let pk_value = row.get_value(pk)?;
                 let key = key_from_value(&pk_value, pk_col, pk)?;
@@ -307,8 +313,19 @@ impl IngestContext {
                     dict_samples.push(msg);
                 }
                 row_id += 1;
+                if row_id == next_update {
+                    self.progress_advance(&progress_key, PROGRESS_STEP);
+                    next_update = next_update.saturating_add(PROGRESS_STEP);
+                }
                 Ok(())
             })?;
+            if row_id > 0 && row_id < next_update {
+                let delta = row_id.saturating_sub(next_update - PROGRESS_STEP);
+                if delta > 0 {
+                    self.progress_advance(&progress_key, delta);
+                }
+            }
+            self.progress_finish(&progress_key, Some(row_id));
             pk_map.finalize();
             if let Some(sort) = sort_map.as_mut() {
                 sort.finalize();
@@ -454,6 +471,12 @@ impl IngestContext {
                 } else {
                     SortKeyMode::None
                 };
+                let progress_key = format!("edge_table:{}", table.name);
+                let total_hint = row_count_hint(table).unwrap_or(0);
+                let total_opt = if total_hint > 0 { Some(total_hint) } else { None };
+                self.progress_start(&progress_key, total_opt);
+                let mut next_update = PROGRESS_STEP;
+                let mut seen = 0u64;
                 let forward_key = format!("edges:edge_{}_src_to_dst", table.name);
                 let reverse_key = format!("edges:edge_{}_dst_to_src", table.name);
                 self.progress_start(&forward_key, None);
@@ -481,8 +504,19 @@ impl IngestContext {
                     };
                     forward_records.push(EdgeRecord::new(src_id, dst_id, sort_key));
                     reverse_records.push(EdgeRecord::new(dst_id, src_id, sort_key));
+                    seen += 1;
+                    if seen == next_update {
+                        self.progress_advance(&progress_key, PROGRESS_STEP);
+                        next_update = next_update.saturating_add(PROGRESS_STEP);
+                    }
                     Ok(())
                 })?;
+                if seen > 0 && seen < next_update {
+                    let delta = seen.saturating_sub(next_update - PROGRESS_STEP);
+                    if delta > 0 {
+                        self.progress_advance(&progress_key, delta);
+                    }
+                }
                 forward_records.sort_by(edge_record_cmp);
                 reverse_records.sort_by(edge_record_cmp);
                 write_edge_records(
@@ -497,6 +531,7 @@ impl IngestContext {
                     sort_mode != SortKeyMode::None,
                     &reverse_records,
                 )?;
+                self.progress_finish(&progress_key, Some(seen));
                 self.progress_finish(&forward_key, Some(forward_records.len() as u64));
                 self.progress_finish(&reverse_key, Some(reverse_records.len() as u64));
                 self.edge_counts.insert(
@@ -943,6 +978,26 @@ fn table_by_name<'a>(source: &'a SourceMetadata, name: &str) -> Result<&'a Table
 
 fn estimate_rows(table: &TableSpec) -> usize {
     table.paths.len().saturating_mul(1_000_000)
+}
+
+fn row_count_hint(table: &TableSpec) -> Option<u64> {
+    if !matches!(table.format, TableFormat::Parquet) {
+        return None;
+    }
+    let mut total = 0u64;
+    for path in &table.paths {
+        if is_cloud_path(path) {
+            return None;
+        }
+        let file = fs::File::open(path).ok()?;
+        let reader = parquet::file::serialized_reader::SerializedFileReader::new(file).ok()?;
+        total = total.saturating_add(reader.metadata().file_metadata().num_rows() as u64);
+    }
+    if total == 0 {
+        None
+    } else {
+        Some(total)
+    }
 }
 
 fn key_type_for_column(col: &ColumnSpec) -> Result<KeyType> {
