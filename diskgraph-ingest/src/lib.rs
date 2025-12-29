@@ -66,6 +66,25 @@ pub struct IngestStats {
     pub total_edges: u64,
     pub node_counts: HashMap<String, u64>,
     pub edge_counts: HashMap<String, u64>,
+    pub perf: PerfStats,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct PerfStats {
+    pub wall_time_ms: u64,
+    pub pk_map_wall_ms: u64,
+    pub build_wall_ms: u64,
+    pub finalize_wall_ms: u64,
+    pub pk_map_task_ms: u64,
+    pub build_task_ms: u64,
+    pub node_task_ms: u64,
+    pub edge_task_ms: u64,
+    pub pk_map_tasks: u64,
+    pub build_tasks: u64,
+    pub node_tasks: u64,
+    pub edge_tasks: u64,
+    pub bytes_read: u64,
+    pub bytes_written: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -93,6 +112,7 @@ pub fn ingest_with_stats(
     dest: Dest,
     options: IngestOptions,
 ) -> Result<(DatasetMetadata, IngestStats)> {
+    let wall_start = std::time::Instant::now();
     let metadata_bytes = fs::read(source_metadata_path)
         .with_context(|| format!("read {}", source_metadata_path.display()))?;
     let mut source: SourceMetadata = serde_json::from_slice(&metadata_bytes)?;
@@ -106,10 +126,38 @@ pub fn ingest_with_stats(
     target.prepare()?;
 
     let mut ctx = IngestContext::new(source, target, options, output)?;
+    let pk_map_start = std::time::Instant::now();
     ctx.build_pk_maps()?;
+    let pk_map_wall = pk_map_start.elapsed();
+    let build_start = std::time::Instant::now();
     ctx.build_node_data_and_edges()?;
+    let build_wall = build_start.elapsed();
+    let finalize_start = std::time::Instant::now();
     let index_metadata = ctx.finalize_metadata()?;
-    let stats = ctx.build_stats(&index_metadata);
+    let finalize_wall = finalize_start.elapsed();
+    let wall_time = wall_start.elapsed();
+    let bytes_read = sum_input_bytes(&ctx.source);
+    let bytes_written = match &*ctx.target {
+        OutputTarget::Local { root } => sum_dir_bytes(root).unwrap_or(0),
+        _ => 0,
+    };
+    let perf = PerfStats {
+        wall_time_ms: wall_time.as_millis() as u64,
+        pk_map_wall_ms: pk_map_wall.as_millis() as u64,
+        build_wall_ms: build_wall.as_millis() as u64,
+        finalize_wall_ms: finalize_wall.as_millis() as u64,
+        pk_map_task_ms: ctx.pk_map_task_ms,
+        build_task_ms: ctx.build_task_ms,
+        node_task_ms: ctx.node_task_ms,
+        edge_task_ms: ctx.edge_task_ms,
+        pk_map_tasks: ctx.pk_map_tasks,
+        build_tasks: ctx.build_tasks,
+        node_tasks: ctx.node_tasks,
+        edge_tasks: ctx.edge_tasks,
+        bytes_read,
+        bytes_written,
+    };
+    let stats = ctx.build_stats(&index_metadata, perf);
     Ok((index_metadata, stats))
 }
 
@@ -133,6 +181,14 @@ struct IngestContext {
     relationships: Vec<RelationshipRuntime>,
     edge_counts: HashMap<String, u64>,
     output: String,
+    pk_map_task_ms: u64,
+    build_task_ms: u64,
+    node_task_ms: u64,
+    edge_task_ms: u64,
+    pk_map_tasks: u64,
+    build_tasks: u64,
+    node_tasks: u64,
+    edge_tasks: u64,
 }
 
 struct TableMapState {
@@ -271,6 +327,14 @@ impl IngestContext {
             relationships,
             edge_counts: HashMap::new(),
             output: output.to_string(),
+            pk_map_task_ms: 0,
+            build_task_ms: 0,
+            node_task_ms: 0,
+            edge_task_ms: 0,
+            pk_map_tasks: 0,
+            build_tasks: 0,
+            node_tasks: 0,
+            edge_tasks: 0,
         })
     }
 
@@ -286,12 +350,14 @@ impl IngestContext {
             .collect();
         let pk_maps = std::sync::Arc::new(std::sync::Mutex::new(HashMap::new()));
         let table_rows = std::sync::Arc::new(std::sync::Mutex::new(HashMap::new()));
+        let task_time = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
         let mut tasks = Vec::new();
         for table in tables {
             let pk_maps = std::sync::Arc::clone(&pk_maps);
             let table_rows = std::sync::Arc::clone(&table_rows);
             let progress = progress.clone();
             tasks.push(WorkItem {
+                bucket: None,
                 run: Box::new(move || {
                     let pk = table.primary_key.clone().unwrap_or_default();
                     let pk_col = column_spec(&table, &pk)?;
@@ -381,15 +447,26 @@ impl IngestContext {
                 }),
             });
         }
-        run_tasks(tasks, default_threads())?;
-        self.pk_maps = std::sync::Arc::try_unwrap(pk_maps)
+        self.pk_map_tasks = tasks.len() as u64;
+        run_tasks(tasks, default_threads(), Some(task_time.clone()))?;
+        self.pk_map_task_ms = task_time.load(std::sync::atomic::Ordering::Relaxed) / 1_000_000;
+        let pk_maps = std::sync::Arc::try_unwrap(pk_maps)
             .map_err(|_| anyhow!("pk map tasks still running"))?
             .into_inner()
             .unwrap();
-        self.table_rows = std::sync::Arc::try_unwrap(table_rows)
+        let table_rows = std::sync::Arc::try_unwrap(table_rows)
             .map_err(|_| anyhow!("pk map row tasks still running"))?
             .into_inner()
             .unwrap();
+        for (table_name, state) in &pk_maps {
+            let map_path = format!("nodes/{}/pk_map.bin", table_name.to_lowercase());
+            let target = self.target.join(&map_path);
+            let mut sink = self.target.sink(&target)?;
+            state.pk_map.write_to(&mut sink)?;
+            sink.finish()?;
+        }
+        self.pk_maps = pk_maps;
+        self.table_rows = table_rows;
         Ok(())
     }
 
@@ -404,6 +481,10 @@ impl IngestContext {
         let dict_paths = std::sync::Arc::new(std::sync::Mutex::new(HashMap::new()));
         let edge_counts = std::sync::Arc::new(std::sync::Mutex::new(HashMap::new()));
         let relationships = self.relationships.clone();
+        let relationships_len = relationships.len();
+        let task_time = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let node_task_time = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let edge_task_time = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
 
         let mut tasks = Vec::new();
 
@@ -416,7 +497,9 @@ impl IngestContext {
             let table_rows = std::sync::Arc::clone(&table_rows);
             let table_dicts = std::sync::Arc::clone(&table_dicts);
             let dict_paths = std::sync::Arc::clone(&dict_paths);
+            let node_task_time = std::sync::Arc::clone(&node_task_time);
             tasks.push(WorkItem {
+                bucket: Some(node_task_time),
                 run: Box::new(move || {
                     let (dict_path, dict_bytes) =
                         train_dict_for_table(&target, &pk_maps, &table)?;
@@ -456,7 +539,9 @@ impl IngestContext {
             let progress = progress.clone();
             let table_rows_snapshot = std::sync::Arc::clone(&table_rows_snapshot);
             let edge_counts = std::sync::Arc::clone(&edge_counts);
+            let edge_task_time = std::sync::Arc::clone(&edge_task_time);
             tasks.push(WorkItem {
+                bucket: Some(edge_task_time),
                 run: Box::new(move || {
                     let src_table = table_by_name(&source, &rel.src_table)?;
                     let dst_map = pk_maps
@@ -571,7 +656,9 @@ impl IngestContext {
             let target = std::sync::Arc::clone(&target);
             let progress = progress.clone();
             let edge_counts = std::sync::Arc::clone(&edge_counts);
+            let edge_task_time = std::sync::Arc::clone(&edge_task_time);
             tasks.push(WorkItem {
+                bucket: Some(edge_task_time),
                 run: Box::new(move || {
                     let edge = table
                         .edge_table
@@ -671,7 +758,14 @@ impl IngestContext {
             });
         }
 
-        run_tasks(tasks, default_threads())?;
+        self.node_tasks = source.tables.iter().filter(|t| t.edge_table.is_none()).count() as u64;
+        self.edge_tasks = relationships_len as u64
+            + source.tables.iter().filter(|t| t.edge_table.is_some()).count() as u64;
+        self.build_tasks = tasks.len() as u64;
+        run_tasks(tasks, default_threads(), Some(task_time.clone()))?;
+        self.build_task_ms = task_time.load(std::sync::atomic::Ordering::Relaxed) / 1_000_000;
+        self.node_task_ms = node_task_time.load(std::sync::atomic::Ordering::Relaxed) / 1_000_000;
+        self.edge_task_ms = edge_task_time.load(std::sync::atomic::Ordering::Relaxed) / 1_000_000;
         self.table_rows = std::sync::Arc::try_unwrap(table_rows)
             .map_err(|_| anyhow!("node task row refs still running"))?
             .into_inner()
@@ -783,19 +877,14 @@ impl IngestContext {
         let json = serde_json::to_vec_pretty(&index_metadata)?;
         self.target.write_bytes("index_metadata.json", json)?;
 
-        for table in &self.source.tables {
-            if let Some(state) = self.pk_maps.get(table.name.as_str()) {
-                let map_path = format!("nodes/{}/pk_map.bin", table.name.to_lowercase());
-                let target = self.target.join(&map_path);
-                let mut sink = self.target.sink(&target)?;
-                state.pk_map.write_to(&mut sink)?;
-                sink.finish()?;
-            }
-        }
         Ok(index_metadata)
     }
 
-    fn build_stats(&self, metadata: &DatasetMetadata) -> IngestStats {
+    fn build_stats(&self, metadata: &DatasetMetadata, mut perf: PerfStats) -> IngestStats {
+        perf.node_task_ms = self.node_task_ms;
+        perf.edge_task_ms = self.edge_task_ms;
+        perf.node_tasks = self.node_tasks;
+        perf.edge_tasks = self.edge_tasks;
         let mut node_counts = HashMap::new();
         for node in metadata.node_types.iter() {
             let count = node.max_id.saturating_add(1);
@@ -811,6 +900,7 @@ impl IngestContext {
             total_edges,
             node_counts,
             edge_counts: self.edge_counts.clone(),
+            perf,
         }
     }
 
@@ -1132,8 +1222,43 @@ fn row_count_hint(table: &TableSpec) -> Option<u64> {
     }
 }
 
+fn sum_input_bytes(source: &SourceMetadata) -> u64 {
+    let mut total = 0u64;
+    for table in &source.tables {
+        for path in &table.paths {
+            if is_cloud_path(path) {
+                continue;
+            }
+            if let Ok(meta) = fs::metadata(path) {
+                total = total.saturating_add(meta.len());
+            }
+        }
+    }
+    total
+}
+
+fn sum_dir_bytes(path: &Path) -> Result<u64> {
+    let mut total = 0u64;
+    if path.is_file() {
+        return Ok(fs::metadata(path)?.len());
+    }
+    if path.is_dir() {
+        for entry in fs::read_dir(path)? {
+            let entry = entry?;
+            let meta = entry.metadata()?;
+            if meta.is_dir() {
+                total = total.saturating_add(sum_dir_bytes(&entry.path())?);
+            } else {
+                total = total.saturating_add(meta.len());
+            }
+        }
+    }
+    Ok(total)
+}
+
 struct WorkItem {
     run: Box<dyn FnOnce() -> Result<()> + Send>,
+    bucket: Option<std::sync::Arc<std::sync::atomic::AtomicU64>>,
 }
 
 fn default_threads() -> usize {
@@ -1142,7 +1267,11 @@ fn default_threads() -> usize {
         .unwrap_or(1)
 }
 
-fn run_tasks(tasks: Vec<WorkItem>, threads: usize) -> Result<()> {
+fn run_tasks(
+    tasks: Vec<WorkItem>,
+    threads: usize,
+    task_time: Option<std::sync::Arc<std::sync::atomic::AtomicU64>>,
+) -> Result<()> {
     if tasks.is_empty() {
         return Ok(());
     }
@@ -1158,6 +1287,7 @@ fn run_tasks(tasks: Vec<WorkItem>, threads: usize) -> Result<()> {
     for _ in 0..threads {
         let rx = std::sync::Arc::clone(&rx);
         let err = std::sync::Arc::clone(&err);
+        let task_time = task_time.clone();
         handles.push(std::thread::spawn(move || loop {
             if err.lock().unwrap().is_some() {
                 break;
@@ -1170,7 +1300,16 @@ fn run_tasks(tasks: Vec<WorkItem>, threads: usize) -> Result<()> {
                 Ok(task) => task,
                 Err(_) => break,
             };
-            if let Err(e) = (task.run)() {
+            let start = std::time::Instant::now();
+            let result = (task.run)();
+            let elapsed = start.elapsed().as_nanos() as u64;
+            if let Some(task_time) = &task_time {
+                task_time.fetch_add(elapsed, std::sync::atomic::Ordering::Relaxed);
+            }
+            if let Some(bucket) = task.bucket {
+                bucket.fetch_add(elapsed, std::sync::atomic::Ordering::Relaxed);
+            }
+            if let Err(e) = result {
                 *err.lock().unwrap() = Some(e);
                 break;
             }

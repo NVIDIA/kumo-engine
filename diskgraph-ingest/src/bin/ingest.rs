@@ -100,6 +100,59 @@ fn main() -> Result<()> {
             println!("  {}: {}", name, count);
         }
     }
+    let total_bytes = stats.perf.bytes_read.saturating_add(stats.perf.bytes_written);
+    let wall_secs = (stats.perf.wall_time_ms as f64) / 1000.0;
+    let bytes_per_sec = if wall_secs > 0.0 {
+        (total_bytes as f64) / wall_secs
+    } else {
+        0.0
+    };
+    println!("Performance:");
+    println!("  Wall time: {}", format_duration(stats.perf.wall_time_ms));
+    println!(
+        "  Bytes read: {}",
+        format_bytes(stats.perf.bytes_read)
+    );
+    println!(
+        "  Bytes written: {}",
+        format_bytes(stats.perf.bytes_written)
+    );
+    println!("  Total bytes: {}", format_bytes(total_bytes));
+    println!("  Throughput: {}/s", format_bytes(bytes_per_sec as u64));
+    println!("  Stage timings (wall):");
+    println!(
+        "    pk_map: {}",
+        format_duration(stats.perf.pk_map_wall_ms)
+    );
+    println!(
+        "    build: {}",
+        format_duration(stats.perf.build_wall_ms)
+    );
+    println!(
+        "    finalize: {}",
+        format_duration(stats.perf.finalize_wall_ms)
+    );
+    println!("  Stage timings (summed across tasks):");
+    println!(
+        "    pk_map: {} ({} tasks)",
+        format_duration(stats.perf.pk_map_task_ms),
+        stats.perf.pk_map_tasks
+    );
+    println!(
+        "    build: {} ({} tasks)",
+        format_duration(stats.perf.build_task_ms),
+        stats.perf.build_tasks
+    );
+    println!(
+        "      nodes: {} ({} tasks)",
+        format_duration(stats.perf.node_task_ms),
+        stats.perf.node_tasks
+    );
+    println!(
+        "      edges: {} ({} tasks)",
+        format_duration(stats.perf.edge_task_ms),
+        stats.perf.edge_tasks
+    );
     Ok(())
 }
 
@@ -206,6 +259,38 @@ fn bar_style() -> ProgressStyle {
 fn spinner_style() -> ProgressStyle {
     ProgressStyle::with_template("{spinner} {msg}")
         .unwrap_or_else(|_| ProgressStyle::default_spinner())
+}
+
+fn format_bytes(bytes: u64) -> String {
+    let units = ["B", "KB", "MB", "GB", "TB", "PB"];
+    let mut value = bytes as f64;
+    let mut unit = units[0];
+    for next in &units[1..] {
+        if value < 1024.0 {
+            break;
+        }
+        value /= 1024.0;
+        unit = next;
+    }
+    if unit == "B" {
+        format!("{} {}", bytes, unit)
+    } else {
+        format!("{:.1} {}", value, unit)
+    }
+}
+
+fn format_duration(ms: u64) -> String {
+    if ms < 1000 {
+        return format!("{}ms", ms);
+    }
+    let secs = ms / 1000;
+    let rem_ms = ms % 1000;
+    if secs < 60 {
+        return format!("{}.{}s", secs, rem_ms / 100);
+    }
+    let mins = secs / 60;
+    let rem_secs = secs % 60;
+    format!("{}m {}s", mins, rem_secs)
 }
 
 fn format_count(value: u64) -> String {
