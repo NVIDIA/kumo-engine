@@ -2336,6 +2336,109 @@ mod tests {
     }
 
     #[test]
+    fn decimal_lossy_float_encoding_scale_nonzero() {
+        let mut config = RowPackConfig::default();
+        config.decimal_allow_lossy = Some(true);
+        let mut builder = RowPackContextBuilder::new(
+            vec![RowPackColumn {
+                name: "amount".to_string(),
+                logical_type: LogicalType::Decimal128,
+                fixed_len: None,
+                precision: Some(10),
+                scale: Some(3),
+            }],
+            config,
+        );
+        builder
+            .observe_row(&[ValueRef::Decimal128(123456i128)])
+            .unwrap();
+        let ctx = builder.finish().unwrap();
+        match &ctx.columns[0].encoding {
+            ColumnEncoding::Decimal {
+                storage: DecimalStorage::Float { .. },
+                ..
+            } => {}
+            other => panic!("unexpected encoding: {:?}", other),
+        }
+        let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
+        let row = vec![ValueRef::Decimal128(123456i128)];
+        let encoded = encoder.encode_row(&row).unwrap();
+        let decoder = RowPackDecoder::new(ctx).unwrap();
+        let json = decoder.decode_json(&encoded).unwrap();
+        let JsonValue::Object(map) = json else {
+            panic!("expected object");
+        };
+        let value = map.get("amount").and_then(|v| v.as_f64()).unwrap();
+        assert!((value - 123.456).abs() < 1e-6);
+    }
+
+    #[test]
+    fn decimal_lossless_scale_nonzero_raw_roundtrip() {
+        let mut config = RowPackConfig::default();
+        config.decimal_allow_lossy = Some(false);
+        let mut builder = RowPackContextBuilder::new(
+            vec![RowPackColumn {
+                name: "amount".to_string(),
+                logical_type: LogicalType::Decimal128,
+                fixed_len: None,
+                precision: Some(10),
+                scale: Some(3),
+            }],
+            config,
+        );
+        builder
+            .observe_row(&[ValueRef::Decimal128(123456i128)])
+            .unwrap();
+        let ctx = builder.finish().unwrap();
+        match &ctx.columns[0].encoding {
+            ColumnEncoding::Decimal {
+                storage: DecimalStorage::Raw,
+                ..
+            } => {}
+            other => panic!("unexpected encoding: {:?}", other),
+        }
+        let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
+        let row = vec![ValueRef::Decimal128(123456i128)];
+        let encoded = encoder.encode_row(&row).unwrap();
+        let decoder = RowPackDecoder::new(ctx).unwrap();
+        let json = decoder.decode_json(&encoded).unwrap();
+        let JsonValue::Object(map) = json else {
+            panic!("expected object");
+        };
+        assert_eq!(map.get("amount"), Some(&JsonValue::from("123.456")));
+    }
+
+    #[test]
+    fn decimal_int_fallback_when_out_of_range() {
+        let ctx = RowPackContext {
+            version: ROWPACK_VERSION,
+            columns: vec![ColumnContext {
+                name: "amount".to_string(),
+                logical_type: LogicalType::Decimal128,
+                encoding: ColumnEncoding::Decimal {
+                    precision: 20,
+                    scale: 0,
+                    bytes: 16,
+                    storage: DecimalStorage::Int {
+                        varint: false,
+                        bits: 64,
+                    },
+                },
+            }],
+        };
+        let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
+        let big = i128::MAX;
+        let row = vec![ValueRef::Decimal128(big)];
+        let encoded = encoder.encode_row(&row).unwrap();
+        let decoder = RowPackDecoder::new(ctx).unwrap();
+        let json = decoder.decode_json(&encoded).unwrap();
+        let JsonValue::Object(map) = json else {
+            panic!("expected object");
+        };
+        assert!(map.get("amount").unwrap().as_str().is_some());
+    }
+
+    #[test]
     fn dict_fallback() {
         let ctx = build_context();
         let encoder = RowPackEncoder::new(ctx.clone()).unwrap();

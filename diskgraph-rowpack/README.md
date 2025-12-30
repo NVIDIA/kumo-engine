@@ -49,6 +49,23 @@ This layout keeps parsing simple: read tags, then parse each column according to
 
 ## Column strategies
 
+## Supported Parquet types
+
+Rowpack is driven by `source_metadata.json` and ingestion maps Parquet/Arrow types as:
+
+- **Int**: `Int8`, `Int16`, `Int32`, `Int64`
+- **UInt**: `UInt8`, `UInt16`, `UInt32`, `UInt64`
+- **Float**: `Float32`, `Float64`
+- **Bool**: `Boolean`
+- **String**: `Utf8`
+- **Bytes**: `Binary`
+- **Date**: `Date32`
+- **Timestamp**: `Timestamp` with `Second|Millisecond|Microsecond|Nanosecond` units (timezone accepted, normalized to UTC)
+- **Decimal**: `Decimal128`, `Decimal256` (requires `precision` + `scale`)
+- **Arrays**: `List(Float32)` and `List(Float64)` only
+
+Other Parquet types are not supported by rowpack at this time.
+
 ### Integers
 - **Int8/UInt8**: always stored as a single byte (no varint).
 - **Int16/UInt16**: stored as fixed 16-bit unless varint is smaller for samples.

@@ -12,6 +12,23 @@
   - optional rowpack configuration per table
 - Source data files (CSV or Parquet), local or cloud paths.
 
+## Supported Parquet types
+
+Ingestion expects schemas to match `source_metadata.json` and supports:
+
+- **Int**: `Int8`, `Int16`, `Int32`, `Int64`
+- **UInt**: `UInt8`, `UInt16`, `UInt32`, `UInt64`
+- **Float**: `Float32`, `Float64`
+- **Bool**: `Boolean`
+- **String**: `Utf8`
+- **Bytes**: `Binary`
+- **Date**: `Date32`
+- **Timestamp**: `Timestamp` with `Second|Millisecond|Microsecond|Nanosecond` units (timezone accepted, normalized to UTC)
+- **Decimal**: `Decimal128`, `Decimal256` (requires `precision` + `scale` in metadata)
+- **Arrays**: `List(Float32)` and `List(Float64)` only
+
+Other Parquet/Arrow types are rejected during ingest.
+
 ## Outputs
 
 - `index_metadata.json` with:
@@ -51,4 +68,3 @@ Rowpack settings live in `source_metadata.json` per node table:
 
 The context file path is written into `index_metadata.json` under
 `node_data_compression.context_path` and used by the index reader/explorer.
-
