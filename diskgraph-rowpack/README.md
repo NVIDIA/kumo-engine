@@ -19,7 +19,7 @@ The context file is a binary format with:
   - Nullability and tag width (2-bit tags).
   - Integer strategy (fixed width vs varint; bit width).
   - Float strategy (float16 vs float32/float64).
-  - String strategy (raw, dictionary, hex, ISO timestamp, snappy).
+  - String strategy (raw, dictionary, alphabet, hex, ISO timestamp, snappy).
   - Bytes strategy (raw, fixed length).
   - Array strategy for float vectors (float16/float32/float64).
 - **Dictionaries**:
@@ -83,6 +83,8 @@ Varint uses zigzag for signed values; fixed width uses little-endian.
 Rowpack detects and chooses the most efficient strategy:
 
 - **Dictionary**: for categorical columns; dictionary entries stored in context.
+- **Alphabet**: for short strings with a small character set and high coverage (up to the snappy long-string threshold, default 64 bytes).
+- **Numeric**: for strings that are numeric (optional leading `-`, optional decimal point).
 - **Hex**: for UUIDs / hex IDs (upper or lower case per column).
 - **ISO timestamp**: encodes to int64 micros, tolerates non-ISO via fallback.
 - **Snappy**: only used when sampled long strings compress well.

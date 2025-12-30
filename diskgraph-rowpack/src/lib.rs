@@ -14,8 +14,18 @@ use hashbrown::HashMap;
 const ROWPACK_VERSION: u8 = 2;
 const MAX_FIELD_BYTES: usize = 8 * 1024 * 1024;
 const MAX_ARRAY_LEN: usize = 1_000_000;
+const ALPHABET_MAX_CHARS: usize = 32;
+const ALPHABET_MIN_COVERAGE: f32 = 0.95;
+const NUMERIC_MIN_COVERAGE: f32 = 0.98;
+const MAX_NUMERIC_SCALE: u32 = 38;
 
 type FastHashMap<K, V> = HashMap<K, V, RandomState>;
+
+#[derive(Clone)]
+struct AlphabetMap {
+    map: [i16; 256],
+    bits: u8,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RowPackConfig {
@@ -242,6 +252,9 @@ pub enum FloatStorage {
 pub enum StringEncoding {
     Raw,
     Dict { values: Vec<Vec<u8>> },
+    Alphabet { alphabet: Vec<u8> },
+    NumericInt,
+    NumericScaled,
     Hex { len: usize, dashed: bool, upper: bool },
     IsoTimestamp { fmt: IsoFormat },
     Snappy,
@@ -695,6 +708,14 @@ fn estimate_column_bytes(encoding: &ColumnEncoding, stats: &ColumnStats) -> usiz
         }
         ColumnEncoding::String { encoding } => match encoding {
             StringEncoding::Dict { .. } => varint_bytes_u64(1024),
+            StringEncoding::Alphabet { alphabet } => {
+                let avg = avg_len(stats.string_bytes, stats.string_total);
+                let bits = alphabet_bits(alphabet.len());
+                let packed = ((avg * bits as usize) + 7) / 8;
+                varint_bytes_u64(avg as u64) + packed
+            }
+            StringEncoding::NumericInt => varint_bytes(64),
+            StringEncoding::NumericScaled => varint_bytes(64) + varint_bytes(16),
             StringEncoding::Hex { len, .. } => len / 2,
             StringEncoding::IsoTimestamp { .. } => varint_bytes(64) + 5,
             StringEncoding::Snappy => {
@@ -801,6 +822,16 @@ struct ColumnStats {
     float_has_inf: bool,
     bool_seen: bool,
     string_counts: FastHashMap<Vec<u8>, usize>,
+    string_max_len: usize,
+    alphabet_bytes: [bool; 256],
+    alphabet_len: usize,
+    alphabet_ok: bool,
+    alphabet_hits: usize,
+    numeric_hits: usize,
+    numeric_scaled_hits: usize,
+    numeric_i64_hits: usize,
+    numeric_max_abs: i64,
+    numeric_max_scale: u32,
     string_bytes: usize,
     string_total: usize,
     bytes_total: usize,
@@ -838,6 +869,16 @@ impl ColumnStats {
             float_has_inf: false,
             bool_seen: false,
             string_counts: FastHashMap::default(),
+            string_max_len: 0,
+            alphabet_bytes: [false; 256],
+            alphabet_len: 0,
+            alphabet_ok: true,
+            alphabet_hits: 0,
+            numeric_hits: 0,
+            numeric_scaled_hits: 0,
+            numeric_i64_hits: 0,
+            numeric_max_abs: 0,
+            numeric_max_scale: 0,
             string_bytes: 0,
             string_total: 0,
             bytes_total: 0,
@@ -910,9 +951,52 @@ impl ColumnStats {
             ValueRef::String(v) => {
                 self.string_total += 1;
                 let bytes = v.as_bytes();
+                self.string_max_len = self.string_max_len.max(bytes.len());
                 self.string_bytes += bytes.len();
                 if self.string_counts.len() < 1_000_000 {
                     *self.string_counts.entry(bytes.to_vec()).or_insert(0) += 1;
+                }
+                if let Some((value, scale)) = parse_numeric_i64(v) {
+                    self.numeric_hits += 1;
+                    self.numeric_i64_hits += 1;
+                    if scale > 0 {
+                        self.numeric_scaled_hits += 1;
+                    }
+                    let abs = value.abs();
+                    if abs > self.numeric_max_abs {
+                        self.numeric_max_abs = abs;
+                    }
+                    if scale > self.numeric_max_scale {
+                        self.numeric_max_scale = scale;
+                    }
+                }
+                if self.alphabet_ok {
+                    if bytes.len() > config.string_long_min_len() {
+                        self.alphabet_ok = false;
+                    } else {
+                        let mut ok = true;
+                        for b in bytes {
+                            let idx = *b as usize;
+                            if !self.alphabet_bytes[idx] {
+                                if self.alphabet_len + 1 > ALPHABET_MAX_CHARS {
+                                    ok = false;
+                                    break;
+                                }
+                            }
+                        }
+                        if ok {
+                            for b in bytes {
+                                let idx = *b as usize;
+                                if !self.alphabet_bytes[idx] {
+                                    self.alphabet_bytes[idx] = true;
+                                    self.alphabet_len += 1;
+                                }
+                            }
+                            self.alphabet_hits += 1;
+                        } else {
+                            self.alphabet_ok = false;
+                        }
+                    }
                 }
                 if let Some((fmt, _, _)) = parse_iso(v) {
                     self.string_iso_hits += 1;
@@ -1141,6 +1225,27 @@ fn choose_string_encoding(stats: &ColumnStats, config: &RowPackConfig) -> Result
             });
         }
     }
+    if total > 0.0 {
+        let numeric_ratio = stats.numeric_i64_hits as f32 / total;
+        if numeric_ratio >= NUMERIC_MIN_COVERAGE {
+            if stats.numeric_scaled_hits > 0 {
+                return Ok(StringEncoding::NumericScaled);
+            }
+            return Ok(StringEncoding::NumericInt);
+        }
+    }
+    if stats.alphabet_ok && stats.alphabet_len > 1 {
+        let coverage_ratio = stats.alphabet_hits as f32 / total;
+        if coverage_ratio >= ALPHABET_MIN_COVERAGE {
+            let mut alphabet = Vec::with_capacity(stats.alphabet_len);
+            for (idx, seen) in stats.alphabet_bytes.iter().enumerate() {
+                if *seen {
+                    alphabet.push(idx as u8);
+                }
+            }
+            return Ok(StringEncoding::Alphabet { alphabet });
+        }
+    }
     if !stats.string_counts.is_empty() {
         let mut entries: Vec<(Vec<u8>, usize)> = stats
             .string_counts
@@ -1183,6 +1288,7 @@ fn choose_string_encoding(stats: &ColumnStats, config: &RowPackConfig) -> Result
 pub struct RowPackEncoder {
     ctx: RowPackContext,
     dict_maps: Vec<Option<FastHashMap<Vec<u8>, u32>>>,
+    alphabet_maps: Vec<Option<AlphabetMap>>,
 }
 
 pub struct RowPackScratch {
@@ -1234,6 +1340,7 @@ impl RowPackScratch {
 impl RowPackEncoder {
     pub fn new(ctx: RowPackContext) -> Result<Self> {
         let mut dict_maps = Vec::with_capacity(ctx.columns.len());
+        let mut alphabet_maps = Vec::with_capacity(ctx.columns.len());
         for col in &ctx.columns {
             match &col.encoding {
                 ColumnEncoding::String {
@@ -1250,8 +1357,27 @@ impl RowPackEncoder {
                 }
                 _ => dict_maps.push(None),
             }
+            match &col.encoding {
+                ColumnEncoding::String {
+                    encoding: StringEncoding::Alphabet { alphabet },
+                } => {
+                    let mut map = [-1i16; 256];
+                    for (idx, b) in alphabet.iter().enumerate() {
+                        map[*b as usize] = idx as i16;
+                    }
+                    alphabet_maps.push(Some(AlphabetMap {
+                        map,
+                        bits: alphabet_bits(alphabet.len()),
+                    }));
+                }
+                _ => alphabet_maps.push(None),
+            }
         }
-        Ok(Self { ctx, dict_maps })
+        Ok(Self {
+            ctx,
+            dict_maps,
+            alphabet_maps,
+        })
     }
 
     pub fn context(&self) -> &RowPackContext {
@@ -1290,6 +1416,7 @@ impl RowPackEncoder {
                     col,
                     value,
                     self.dict_maps[idx].as_ref(),
+                    self.alphabet_maps[idx].as_ref(),
                 )?,
             };
             tags.write_bits(tag, 2);
@@ -1328,6 +1455,7 @@ impl RowPackEncoder {
                     col,
                     value,
                     self.dict_maps[idx].as_ref(),
+                    self.alphabet_maps[idx].as_ref(),
                 )?,
             };
             scratch.tags.write_bits(tag, 2);
@@ -1480,6 +1608,7 @@ impl RowPackEncoder {
                                 encoding,
                                 v,
                                 self.dict_maps[idx].as_ref(),
+                                self.alphabet_maps[idx].as_ref(),
                             )?
                         } else {
                             return Err(anyhow!("rowpack string encoding mismatch"));
@@ -1607,6 +1736,7 @@ fn encode_value_with_tag<'a>(
     col: &ColumnContext,
     value: &ValueRef<'a>,
     dict: Option<&FastHashMap<Vec<u8>, u32>>,
+    alphabet: Option<&AlphabetMap>,
  ) -> Result<u8> {
     match (&col.encoding, value) {
         (ColumnEncoding::Int { signed, varint, bits }, ValueRef::Int64(v)) => {
@@ -1686,7 +1816,7 @@ fn encode_value_with_tag<'a>(
             encode_decimal_i256_with_tag(out, v, *scale, storage)
         }
         (ColumnEncoding::String { encoding }, ValueRef::String(v)) => {
-            encode_string_with_tag(out, encoding, v, dict)
+            encode_string_with_tag(out, encoding, v, dict, alphabet)
         }
         (ColumnEncoding::FloatArray { storage }, ValueRef::Float32Array(values)) => {
             let tag = encode_float_array_f32_with_tag(
@@ -1939,6 +2069,7 @@ fn encode_string_with_tag(
     encoding: &StringEncoding,
     value: &str,
     dict: Option<&FastHashMap<Vec<u8>, u32>>,
+    alphabet: Option<&AlphabetMap>,
 ) -> Result<u8> {
     match encoding {
         StringEncoding::Raw => {
@@ -1961,6 +2092,43 @@ fn encode_string_with_tag(
             } else {
                 Err(anyhow!("rowpack missing dict"))
             }
+        }
+        StringEncoding::Alphabet { .. } => {
+            let bytes = value.as_bytes();
+            let map = alphabet.ok_or_else(|| anyhow!("rowpack missing alphabet map"))?;
+            for b in bytes {
+                if map.map[*b as usize] < 0 {
+                    write_varint(bytes.len() as u64, out);
+                    out.extend_from_slice(bytes);
+                    return Ok(2);
+                }
+            }
+            write_varint(bytes.len() as u64, out);
+            write_alphabet_packed(out, bytes, &map.map, map.bits);
+            Ok(1)
+        }
+        StringEncoding::NumericInt => {
+            if let Some((value, scale)) = parse_numeric_i64(value) {
+                if scale == 0 {
+                    write_varint(zigzag_encode(value), out);
+                    return Ok(1);
+                }
+            }
+            let bytes = value.as_bytes();
+            write_varint(bytes.len() as u64, out);
+            out.extend_from_slice(bytes);
+            Ok(2)
+        }
+        StringEncoding::NumericScaled => {
+            if let Some((value, scale)) = parse_numeric_i64(value) {
+                write_varint(zigzag_encode(value), out);
+                write_varint(scale as u64, out);
+                return Ok(1);
+            }
+            let bytes = value.as_bytes();
+            write_varint(bytes.len() as u64, out);
+            out.extend_from_slice(bytes);
+            Ok(2)
         }
         StringEncoding::Hex { len, dashed, .. } => {
             if let Some(bytes) = encode_hex(value, *len, *dashed) {
@@ -1999,6 +2167,110 @@ fn encode_string_with_tag(
             }
         }
     }
+}
+
+fn alphabet_bits(len: usize) -> u8 {
+    if len <= 1 {
+        1
+    } else {
+        (usize::BITS - (len - 1).leading_zeros()) as u8
+    }
+}
+
+fn write_alphabet_packed(out: &mut Vec<u8>, bytes: &[u8], map: &[i16; 256], bits: u8) {
+    let mut cur: u64 = 0;
+    let mut used: u8 = 0;
+    for b in bytes {
+        let idx = map[*b as usize] as u64;
+        cur |= idx << used;
+        used = used.saturating_add(bits);
+        while used >= 8 {
+            out.push(cur as u8);
+            cur >>= 8;
+            used -= 8;
+        }
+    }
+    if used > 0 {
+        out.push(cur as u8);
+    }
+}
+
+fn parse_numeric_i64(value: &str) -> Option<(i64, u32)> {
+    if value.starts_with('.') || value.ends_with('.') {
+        return None;
+    }
+    let mut chars = value.as_bytes().iter().copied().peekable();
+    let mut negative = false;
+    if let Some(b'-') = chars.peek().copied() {
+        negative = true;
+        let _ = chars.next();
+    }
+    let mut seen_digit = false;
+    let mut scale = 0u32;
+    let mut seen_dot = false;
+    let mut acc: i128 = 0;
+    while let Some(b) = chars.next() {
+        if b == b'.' {
+            if seen_dot {
+                return None;
+            }
+            seen_dot = true;
+            continue;
+        }
+        if !b.is_ascii_digit() {
+            return None;
+        }
+        seen_digit = true;
+        let digit = (b - b'0') as i128;
+        acc = acc.checked_mul(10)?.checked_add(digit)?;
+        if seen_dot {
+            scale = scale.saturating_add(1);
+        }
+    }
+    if !seen_digit {
+        return None;
+    }
+    if scale > MAX_NUMERIC_SCALE {
+        return None;
+    }
+    if negative {
+        acc = -acc;
+    }
+    if acc < i64::MIN as i128 || acc > i64::MAX as i128 {
+        return None;
+    }
+    Some((acc as i64, scale))
+}
+
+fn format_scaled_i64(value: i64, scale: u32) -> String {
+    if scale == 0 {
+        return value.to_string();
+    }
+    let negative = value < 0;
+    let digits = value.abs().to_string();
+    let scale = scale as usize;
+    if digits.len() <= scale {
+        let mut out = String::new();
+        if negative {
+            out.push('-');
+        }
+        out.push('0');
+        out.push('.');
+        for _ in 0..(scale - digits.len()) {
+            out.push('0');
+        }
+        out.push_str(&digits);
+        return out;
+    }
+    let split = digits.len() - scale;
+    let mut out = String::with_capacity(digits.len() + 1);
+    if negative {
+        out.push('-');
+    }
+    out.push_str(&digits[..split]);
+    out.push('.');
+    out.push_str(&digits[split..]);
+    out
 }
 
 pub struct RowPackDecoder {
@@ -2607,6 +2879,42 @@ fn decode_string(
                 Err(anyhow!("rowpack missing dict"))
             }
         }
+        StringEncoding::Alphabet { alphabet } => {
+            let len = read_varint(data)? as usize;
+            if len > MAX_FIELD_BYTES {
+                return Err(anyhow!("rowpack string too large"));
+            }
+            let bits = alphabet_bits(alphabet.len());
+            let total_bits = len.saturating_mul(bits as usize);
+            let byte_len = (total_bits + 7) / 8;
+            if data.len() < byte_len {
+                return Err(anyhow!("rowpack string truncated"));
+            }
+            let (head, tail) = data.split_at(byte_len);
+            *data = tail;
+            let mut reader = BitReader::new(head);
+            let mut out = Vec::with_capacity(len);
+            for _ in 0..len {
+                let idx = reader.read_bits(bits)? as usize;
+                let byte = alphabet
+                    .get(idx)
+                    .ok_or_else(|| anyhow!("rowpack alphabet index out of range"))?;
+                out.push(*byte);
+            }
+            Ok(String::from_utf8_lossy(&out).to_string())
+        }
+        StringEncoding::NumericInt => {
+            let value = zigzag_decode(read_varint(data)?);
+            Ok(value.to_string())
+        }
+        StringEncoding::NumericScaled => {
+            let value = zigzag_decode(read_varint(data)?);
+            let scale = read_varint(data)? as u32;
+            if scale > MAX_NUMERIC_SCALE {
+                return Err(anyhow!("rowpack numeric scale too large"));
+            }
+            Ok(format_scaled_i64(value, scale))
+        }
         StringEncoding::Hex { len, dashed, upper } => {
             let byte_len = len / 2;
             if data.len() < byte_len {
@@ -3106,6 +3414,266 @@ mod tests {
     }
 
     #[test]
+    fn alphabet_encoding_roundtrip() {
+        let ctx = RowPackContext {
+            version: ROWPACK_VERSION,
+            columns: vec![ColumnContext {
+                name: "code".to_string(),
+                logical_type: LogicalType::String,
+                encoding: ColumnEncoding::String {
+                    encoding: StringEncoding::Alphabet {
+                        alphabet: b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-".to_vec(),
+                    },
+                },
+            }],
+        estimated_row_bytes: 0,
+        };
+        let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
+        let row = vec![ValueRef::String("USER-0001")];
+        let encoded = encoder.encode_row(&row).unwrap();
+        let decoder = RowPackDecoder::new(ctx).unwrap();
+        let json = decoder.decode_json(&encoded).unwrap();
+        let JsonValue::Object(map) = json else {
+            panic!("expected object");
+        };
+        assert_eq!(map.get("code").and_then(|v| v.as_str()), Some("USER-0001"));
+    }
+
+    #[test]
+    fn alphabet_encoding_fallback() {
+        let ctx = RowPackContext {
+            version: ROWPACK_VERSION,
+            columns: vec![ColumnContext {
+                name: "code".to_string(),
+                logical_type: LogicalType::String,
+                encoding: ColumnEncoding::String {
+                    encoding: StringEncoding::Alphabet {
+                        alphabet: b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-".to_vec(),
+                    },
+                },
+            }],
+        estimated_row_bytes: 0,
+        };
+        let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
+        let row = vec![ValueRef::String("USER-0001?")];
+        let encoded = encoder.encode_row(&row).unwrap();
+        let decoder = RowPackDecoder::new(ctx).unwrap();
+        let json = decoder.decode_json(&encoded).unwrap();
+        let JsonValue::Object(map) = json else {
+            panic!("expected object");
+        };
+        assert_eq!(map.get("code").and_then(|v| v.as_str()), Some("USER-0001?"));
+    }
+
+    #[test]
+    fn alphabet_encoding_selected_for_short_strings() {
+        let mut builder = RowPackContextBuilder::new(
+            vec![RowPackColumn {
+                name: "code".to_string(),
+                logical_type: LogicalType::String,
+                fixed_len: None,
+                precision: None,
+                scale: None,
+            }],
+            RowPackConfig::default(),
+        );
+        for idx in 0..100 {
+            let value = format!("USER-{:04}", idx);
+            builder.observe_row(&[ValueRef::String(&value)]).unwrap();
+        }
+        let ctx = builder.finish().unwrap();
+        match &ctx.columns[0].encoding {
+            ColumnEncoding::String {
+                encoding: StringEncoding::Alphabet { .. },
+            } => {}
+            other => panic!("unexpected encoding: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn alphabet_encoding_selected_at_long_threshold() {
+        let config = RowPackConfig::default();
+        let max_len = config.string_long_min_len.unwrap_or(64);
+        let mut builder = RowPackContextBuilder::new(
+            vec![RowPackColumn {
+                name: "code".to_string(),
+                logical_type: LogicalType::String,
+                fixed_len: None,
+                precision: None,
+                scale: None,
+            }],
+            config,
+        );
+        let value = "ABCD".repeat((max_len + 3) / 4)[..max_len].to_string();
+        for _ in 0..50 {
+            builder.observe_row(&[ValueRef::String(&value)]).unwrap();
+        }
+        let ctx = builder.finish().unwrap();
+        match &ctx.columns[0].encoding {
+            ColumnEncoding::String {
+                encoding: StringEncoding::Alphabet { .. },
+            } => {}
+            other => panic!("unexpected encoding: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn numeric_int_encoding_roundtrip() {
+        let ctx = RowPackContext {
+            version: ROWPACK_VERSION,
+            columns: vec![ColumnContext {
+                name: "num".to_string(),
+                logical_type: LogicalType::String,
+                encoding: ColumnEncoding::String {
+                    encoding: StringEncoding::NumericInt,
+                },
+            }],
+        estimated_row_bytes: 0,
+        };
+        let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
+        let row = vec![ValueRef::String("12345")];
+        let encoded = encoder.encode_row(&row).unwrap();
+        let decoder = RowPackDecoder::new(ctx).unwrap();
+        let json = decoder.decode_json(&encoded).unwrap();
+        let JsonValue::Object(map) = json else {
+            panic!("expected object");
+        };
+        assert_eq!(map.get("num").and_then(|v| v.as_str()), Some("12345"));
+    }
+
+    #[test]
+    fn numeric_scaled_encoding_roundtrip() {
+        let ctx = RowPackContext {
+            version: ROWPACK_VERSION,
+            columns: vec![ColumnContext {
+                name: "num".to_string(),
+                logical_type: LogicalType::String,
+                encoding: ColumnEncoding::String {
+                    encoding: StringEncoding::NumericScaled,
+                },
+            }],
+        estimated_row_bytes: 0,
+        };
+        let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
+        let row = vec![ValueRef::String("-12.340")];
+        let encoded = encoder.encode_row(&row).unwrap();
+        let decoder = RowPackDecoder::new(ctx).unwrap();
+        let json = decoder.decode_json(&encoded).unwrap();
+        let JsonValue::Object(map) = json else {
+            panic!("expected object");
+        };
+        assert_eq!(map.get("num").and_then(|v| v.as_str()), Some("-12.340"));
+    }
+
+    #[test]
+    fn numeric_scaled_encoding_fallback() {
+        let ctx = RowPackContext {
+            version: ROWPACK_VERSION,
+            columns: vec![ColumnContext {
+                name: "num".to_string(),
+                logical_type: LogicalType::String,
+                encoding: ColumnEncoding::String {
+                    encoding: StringEncoding::NumericScaled,
+                },
+            }],
+        estimated_row_bytes: 0,
+        };
+        let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
+        let row = vec![ValueRef::String("12.3a")];
+        let encoded = encoder.encode_row(&row).unwrap();
+        let decoder = RowPackDecoder::new(ctx).unwrap();
+        let json = decoder.decode_json(&encoded).unwrap();
+        let JsonValue::Object(map) = json else {
+            panic!("expected object");
+        };
+        assert_eq!(map.get("num").and_then(|v| v.as_str()), Some("12.3a"));
+    }
+
+    #[test]
+    fn numeric_encoding_selected() {
+        let mut builder = RowPackContextBuilder::new(
+            vec![RowPackColumn {
+                name: "num".to_string(),
+                logical_type: LogicalType::String,
+                fixed_len: None,
+                precision: None,
+                scale: None,
+            }],
+            RowPackConfig::default(),
+        );
+        for idx in 0..100 {
+            let value = format!("{}", idx);
+            builder.observe_row(&[ValueRef::String(&value)]).unwrap();
+        }
+        let ctx = builder.finish().unwrap();
+        match &ctx.columns[0].encoding {
+            ColumnEncoding::String {
+                encoding: StringEncoding::NumericInt,
+            } => {}
+            other => panic!("unexpected encoding: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn numeric_scaled_selected() {
+        let mut builder = RowPackContextBuilder::new(
+            vec![RowPackColumn {
+                name: "num".to_string(),
+                logical_type: LogicalType::String,
+                fixed_len: None,
+                precision: None,
+                scale: None,
+            }],
+            RowPackConfig::default(),
+        );
+        for idx in 0..100 {
+            let value = format!("{}.{}", idx, idx % 10);
+            builder.observe_row(&[ValueRef::String(&value)]).unwrap();
+        }
+        let ctx = builder.finish().unwrap();
+        match &ctx.columns[0].encoding {
+            ColumnEncoding::String {
+                encoding: StringEncoding::NumericScaled,
+            } => {}
+            other => panic!("unexpected encoding: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn numeric_rejects_leading_or_trailing_dot() {
+        let ctx = RowPackContext {
+            version: ROWPACK_VERSION,
+            columns: vec![ColumnContext {
+                name: "num".to_string(),
+                logical_type: LogicalType::String,
+                encoding: ColumnEncoding::String {
+                    encoding: StringEncoding::NumericScaled,
+                },
+            }],
+        estimated_row_bytes: 0,
+        };
+        let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
+        let row = vec![ValueRef::String(".5")];
+        let encoded = encoder.encode_row(&row).unwrap();
+        let decoder = RowPackDecoder::new(ctx.clone()).unwrap();
+        let json = decoder.decode_json(&encoded).unwrap();
+        let JsonValue::Object(map) = json else {
+            panic!("expected object");
+        };
+        assert_eq!(map.get("num").and_then(|v| v.as_str()), Some(".5"));
+
+        let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
+        let row = vec![ValueRef::String("1.")];
+        let encoded = encoder.encode_row(&row).unwrap();
+        let decoder = RowPackDecoder::new(ctx).unwrap();
+        let json = decoder.decode_json(&encoded).unwrap();
+        let JsonValue::Object(map) = json else {
+            panic!("expected object");
+        };
+        assert_eq!(map.get("num").and_then(|v| v.as_str()), Some("1."));
+    }
+
+    #[test]
     fn hex_dashed_encoding() {
         let mut builder = RowPackContextBuilder::new(
             vec![RowPackColumn {
@@ -3507,7 +4075,7 @@ mod tests {
             }],
             config,
         );
-        let value = "x3f9A2kLmN8pQrStUvWxYz0123456789".to_string();
+        let value = "x3f9A2kLmN8pQrStUvWxYz0123456789-longer-string".to_string();
         builder.observe_row(&[ValueRef::String(&value)]).unwrap();
         let ctx = builder.finish().unwrap();
         match &ctx.columns[0].encoding {
