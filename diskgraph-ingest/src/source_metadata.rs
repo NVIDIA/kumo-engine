@@ -208,14 +208,18 @@ impl SourceMetadata {
                         | ColumnType::UInt16
                         | ColumnType::UInt64
                         | ColumnType::UInt32
+                        | ColumnType::Float32
+                        | ColumnType::Float64
+                        | ColumnType::Decimal128
+                        | ColumnType::Decimal256
                         | ColumnType::String
                         | ColumnType::Bytes
                 ) {
-                        errors.push(format!(
-                            "table {} primary_key {} must be int or string/bytes",
-                            table.name, pk
-                        ));
-                    }
+                    errors.push(format!(
+                        "table {} primary_key {} must be numeric or string/bytes",
+                        table.name, pk
+                    ));
+                }
                 }
             }
             if let Some(weight) = &table.weight {
@@ -314,13 +318,14 @@ impl SourceMetadata {
                         rel.src_table, rel.dst_table
                     ));
                 }
-                if !compatible_key_types(&src_col.dtype, &dst_col.dtype) {
+                if let Err(msg) = compatible_key_columns(src_col, dst_col) {
                     errors.push(format!(
-                        "relationship {}.{} and {}.{} have incompatible types",
+                        "relationship {}.{} and {}.{} {}",
                         rel.src_table,
                         rel.src_column,
                         rel.dst_table,
-                        rel.dst_column
+                        rel.dst_column,
+                        msg
                     ));
                 }
                 let key = format!(
@@ -366,6 +371,21 @@ impl SourceMetadata {
                             "edge table {} fk {} must reference primary key {}.{}",
                             table.name, fk.column, fk.ref_table, fk.ref_column
                         ));
+                        continue;
+                    }
+                    if let Some(fk_col) = table.columns.iter().find(|c| c.name == fk.column) {
+                        if let Some(pk_col) = ref_table.columns.iter().find(|c| c.name == fk.ref_column) {
+                            if let Err(msg) = compatible_key_columns(fk_col, pk_col) {
+                                errors.push(format!(
+                                    "edge table {} fk {} and {}.{} {}",
+                                    table.name,
+                                    fk.column,
+                                    fk.ref_table,
+                                    fk.ref_column,
+                                    msg
+                                ));
+                            }
+                        }
                     }
                 }
             }
@@ -379,13 +399,21 @@ impl SourceMetadata {
     }
 }
 
-fn compatible_key_types(a: &ColumnType, b: &ColumnType) -> bool {
+fn compatible_key_columns(a: &ColumnSpec, b: &ColumnSpec) -> Result<(), String> {
     use ColumnType::*;
-    match (a, b) {
-        (String, String) | (Bytes, Bytes) => true,
-        (a, b) if is_signed_int(a) && is_signed_int(b) => true,
-        (a, b) if is_unsigned_int(a) && is_unsigned_int(b) => true,
-        _ => false,
+    match (&a.dtype, &b.dtype) {
+        (String, String) | (Bytes, Bytes) | (String, Bytes) | (Bytes, String) => {
+            if let (Some(a_len), Some(b_len)) = (a.fixed_len, b.fixed_len) {
+                if a_len != b_len {
+                    return Err("have incompatible fixed_len".to_string());
+                }
+            }
+            Ok(())
+        }
+        (a, b) if is_numeric(a) && is_numeric(b) => Ok(()),
+        (a, b) if is_numeric(a) && matches!(b, String | Bytes) => Ok(()),
+        (a, b) if is_numeric(b) && matches!(a, String | Bytes) => Ok(()),
+        _ => Err("have incompatible types".to_string()),
     }
 }
 
@@ -395,4 +423,16 @@ fn is_signed_int(t: &ColumnType) -> bool {
 
 fn is_unsigned_int(t: &ColumnType) -> bool {
     matches!(t, ColumnType::UInt8 | ColumnType::UInt16 | ColumnType::UInt32 | ColumnType::UInt64)
+}
+
+fn is_numeric(t: &ColumnType) -> bool {
+    is_signed_int(t)
+        || is_unsigned_int(t)
+        || matches!(
+            t,
+            ColumnType::Float32
+                | ColumnType::Float64
+                | ColumnType::Decimal128
+                | ColumnType::Decimal256
+        )
 }

@@ -144,8 +144,8 @@ fn validate_string_pk_requires_fixed_len() {
 #[test]
 fn validate_pk_invalid_type() {
     let mut meta = base_metadata();
-    meta.tables[0].columns[0].dtype = ColumnType::Float32;
-    assert_err_contains(meta, "primary_key id must be int or string/bytes");
+    meta.tables[0].columns[0].dtype = ColumnType::Bool;
+    assert_err_contains(meta, "primary_key id must be numeric or string/bytes");
 }
 
 #[test]
@@ -392,8 +392,7 @@ fn validate_relationship_no_pk() {
 #[test]
 fn validate_relationship_incompatible_types() {
     let mut meta = base_metadata();
-    meta.tables[1].columns[0].dtype = ColumnType::String;
-    meta.tables[1].columns[0].fixed_len = Some(8);
+    meta.tables[1].columns[0].dtype = ColumnType::Bool;
     meta.relationships.push(RelationshipSpec {
         name: Some("bad".into()),
         src_table: "User".into(),
@@ -402,6 +401,398 @@ fn validate_relationship_incompatible_types() {
         dst_column: "id".into(),
     });
     assert_err_contains(meta, "have incompatible types");
+}
+
+#[test]
+fn validate_relationship_signed_unsigned_ok() {
+    let mut meta = base_metadata();
+    meta.tables[0].columns[0].dtype = ColumnType::Int32;
+    meta.tables[1].columns[0].dtype = ColumnType::UInt64;
+    meta.relationships.push(RelationshipSpec {
+        name: Some("mixed".into()),
+        src_table: "User".into(),
+        src_column: "id".into(),
+        dst_table: "Device".into(),
+        dst_column: "id".into(),
+    });
+    assert!(meta.validate().is_ok());
+}
+
+#[test]
+fn validate_relationship_string_bytes_ok() {
+    let mut meta = base_metadata();
+    meta.tables[0].columns[0].name = "pk".into();
+    meta.tables[0].columns[0].dtype = ColumnType::String;
+    meta.tables[0].columns[0].fixed_len = Some(8);
+    meta.tables[0].primary_key = Some("pk".into());
+    meta.tables[1].columns[0].name = "fk".into();
+    meta.tables[1].columns[0].dtype = ColumnType::Bytes;
+    meta.tables[1].columns[0].fixed_len = Some(8);
+    meta.tables[1].primary_key = None;
+    meta.relationships.push(RelationshipSpec {
+        name: Some("str_bytes".into()),
+        src_table: "Device".into(),
+        src_column: "fk".into(),
+        dst_table: "User".into(),
+        dst_column: "pk".into(),
+    });
+    assert!(meta.validate().is_ok());
+}
+
+#[test]
+fn validate_relationship_float_string_ok() {
+    let mut meta = base_metadata();
+    meta.tables[0].columns[0].dtype = ColumnType::Float64;
+    meta.tables[1].columns[0].dtype = ColumnType::String;
+    meta.tables[1].columns[0].fixed_len = Some(8);
+    meta.relationships.push(RelationshipSpec {
+        name: Some("float_string".into()),
+        src_table: "Device".into(),
+        src_column: "id".into(),
+        dst_table: "User".into(),
+        dst_column: "id".into(),
+    });
+    assert!(meta.validate().is_ok());
+}
+
+#[test]
+fn validate_relationship_decimal_int_ok() {
+    let mut meta = base_metadata();
+    meta.tables[0].columns[0].dtype = ColumnType::Decimal128;
+    meta.tables[0].columns[0].precision = Some(10);
+    meta.tables[0].columns[0].scale = Some(2);
+    meta.tables[1].columns[0].dtype = ColumnType::Int32;
+    meta.relationships.push(RelationshipSpec {
+        name: Some("decimal_int".into()),
+        src_table: "Device".into(),
+        src_column: "id".into(),
+        dst_table: "User".into(),
+        dst_column: "id".into(),
+    });
+    assert!(meta.validate().is_ok());
+}
+
+#[test]
+fn validate_relationship_string_bytes_len_mismatch() {
+    let mut meta = base_metadata();
+    meta.tables[0].columns[0].name = "pk".into();
+    meta.tables[0].columns[0].dtype = ColumnType::String;
+    meta.tables[0].columns[0].fixed_len = Some(8);
+    meta.tables[0].primary_key = Some("pk".into());
+    meta.tables[1].columns[0].name = "fk".into();
+    meta.tables[1].columns[0].dtype = ColumnType::Bytes;
+    meta.tables[1].columns[0].fixed_len = Some(4);
+    meta.tables[1].primary_key = None;
+    meta.relationships.push(RelationshipSpec {
+        name: Some("str_bytes".into()),
+        src_table: "Device".into(),
+        src_column: "fk".into(),
+        dst_table: "User".into(),
+        dst_column: "pk".into(),
+    });
+    assert_err_contains(meta, "incompatible fixed_len");
+}
+
+#[test]
+fn validate_relationship_int_string_ok() {
+    let mut meta = base_metadata();
+    meta.tables[1].columns.push(ColumnSpec {
+        name: "fk".into(),
+        dtype: ColumnType::String,
+        fixed_len: None,
+        precision: None,
+        scale: None,
+    });
+    meta.tables[1].primary_key = None;
+    meta.relationships.push(RelationshipSpec {
+        name: Some("int_string".into()),
+        src_table: "Device".into(),
+        src_column: "fk".into(),
+        dst_table: "User".into(),
+        dst_column: "id".into(),
+    });
+    assert!(meta.validate().is_ok());
+}
+
+#[test]
+fn validate_relationship_string_int_ok() {
+    let mut meta = base_metadata();
+    meta.tables[0].columns[0].name = "pk".into();
+    meta.tables[0].columns[0].dtype = ColumnType::String;
+    meta.tables[0].columns[0].fixed_len = Some(8);
+    meta.tables[0].primary_key = Some("pk".into());
+    meta.tables[1].columns[0].dtype = ColumnType::Int64;
+    meta.relationships.push(RelationshipSpec {
+        name: Some("string_int".into()),
+        src_table: "Device".into(),
+        src_column: "id".into(),
+        dst_table: "User".into(),
+        dst_column: "pk".into(),
+    });
+    assert!(meta.validate().is_ok());
+}
+
+#[test]
+fn validate_relationship_int_bytes_ok() {
+    let mut meta = base_metadata();
+    meta.tables[1].columns.push(ColumnSpec {
+        name: "fk".into(),
+        dtype: ColumnType::Bytes,
+        fixed_len: None,
+        precision: None,
+        scale: None,
+    });
+    meta.tables[1].primary_key = None;
+    meta.relationships.push(RelationshipSpec {
+        name: Some("int_bytes".into()),
+        src_table: "Device".into(),
+        src_column: "fk".into(),
+        dst_table: "User".into(),
+        dst_column: "id".into(),
+    });
+    assert!(meta.validate().is_ok());
+}
+
+#[test]
+fn validate_relationship_bytes_int_ok() {
+    let mut meta = base_metadata();
+    meta.tables[0].columns[0].name = "pk".into();
+    meta.tables[0].columns[0].dtype = ColumnType::Bytes;
+    meta.tables[0].columns[0].fixed_len = Some(8);
+    meta.tables[0].primary_key = Some("pk".into());
+    meta.tables[1].columns[0].dtype = ColumnType::Int64;
+    meta.relationships.push(RelationshipSpec {
+        name: Some("bytes_int".into()),
+        src_table: "Device".into(),
+        src_column: "id".into(),
+        dst_table: "User".into(),
+        dst_column: "pk".into(),
+    });
+    assert!(meta.validate().is_ok());
+}
+
+#[test]
+fn validate_edge_fk_int_string_ok() {
+    let mut meta = base_metadata();
+    meta.tables.push(TableSpec {
+        name: "Edge".into(),
+        format: TableFormat::Parquet,
+        paths: vec!["/tmp/edge.parquet".into()],
+        columns: vec![
+            ColumnSpec {
+                name: "src_id".into(),
+                dtype: ColumnType::String,
+                fixed_len: None,
+                precision: None,
+                scale: None,
+            },
+            ColumnSpec {
+                name: "dst_id".into(),
+                dtype: ColumnType::Int64,
+                fixed_len: None,
+                precision: None,
+                scale: None,
+            },
+        ],
+        primary_key: None,
+        create_time: None,
+        weight: None,
+        edge_table: Some(EdgeTableSpec {
+            src_fk: ForeignKeySpec {
+                column: "src_id".into(),
+                ref_table: "User".into(),
+                ref_column: "id".into(),
+            },
+            dst_fk: ForeignKeySpec {
+                column: "dst_id".into(),
+                ref_table: "Device".into(),
+                ref_column: "id".into(),
+            },
+        }),
+        rowpack: None,
+    });
+    assert!(meta.validate().is_ok());
+}
+
+#[test]
+fn validate_edge_fk_string_int_ok() {
+    let mut meta = base_metadata();
+    meta.tables.push(TableSpec {
+        name: "Edge".into(),
+        format: TableFormat::Parquet,
+        paths: vec!["/tmp/edge.parquet".into()],
+        columns: vec![
+            ColumnSpec {
+                name: "src_id".into(),
+                dtype: ColumnType::Int64,
+                fixed_len: None,
+                precision: None,
+                scale: None,
+            },
+            ColumnSpec {
+                name: "dst_id".into(),
+                dtype: ColumnType::String,
+                fixed_len: None,
+                precision: None,
+                scale: None,
+            },
+        ],
+        primary_key: None,
+        create_time: None,
+        weight: None,
+        edge_table: Some(EdgeTableSpec {
+            src_fk: ForeignKeySpec {
+                column: "src_id".into(),
+                ref_table: "User".into(),
+                ref_column: "id".into(),
+            },
+            dst_fk: ForeignKeySpec {
+                column: "dst_id".into(),
+                ref_table: "Device".into(),
+                ref_column: "id".into(),
+            },
+        }),
+        rowpack: None,
+    });
+    assert!(meta.validate().is_ok());
+}
+
+#[test]
+fn validate_relationship_string_float_ok() {
+    let mut meta = base_metadata();
+    meta.tables[0].columns[0].name = "pk".into();
+    meta.tables[0].columns[0].dtype = ColumnType::String;
+    meta.tables[0].columns[0].fixed_len = Some(8);
+    meta.tables[0].primary_key = Some("pk".into());
+    meta.tables[1].columns[0].dtype = ColumnType::Float64;
+    meta.relationships.push(RelationshipSpec {
+        name: Some("string_float".into()),
+        src_table: "Device".into(),
+        src_column: "id".into(),
+        dst_table: "User".into(),
+        dst_column: "pk".into(),
+    });
+    assert!(meta.validate().is_ok());
+}
+
+#[test]
+fn validate_relationship_int_decimal_ok() {
+    let mut meta = base_metadata();
+    meta.tables[0].columns[0].name = "pk".into();
+    meta.tables[0].columns[0].dtype = ColumnType::Int64;
+    meta.tables[0].primary_key = Some("pk".into());
+    meta.tables[1].columns[0].dtype = ColumnType::Decimal128;
+    meta.tables[1].columns[0].precision = Some(10);
+    meta.tables[1].columns[0].scale = Some(2);
+    meta.relationships.push(RelationshipSpec {
+        name: Some("int_decimal".into()),
+        src_table: "Device".into(),
+        src_column: "id".into(),
+        dst_table: "User".into(),
+        dst_column: "pk".into(),
+    });
+    assert!(meta.validate().is_ok());
+}
+#[test]
+fn validate_edge_fk_string_bytes_ok() {
+    let mut meta = base_metadata();
+    meta.tables[0].columns[0].name = "pk".into();
+    meta.tables[0].columns[0].dtype = ColumnType::Bytes;
+    meta.tables[0].columns[0].fixed_len = Some(8);
+    meta.tables[0].primary_key = Some("pk".into());
+    meta.tables[1].columns[0].name = "pk".into();
+    meta.tables[1].columns[0].dtype = ColumnType::String;
+    meta.tables[1].columns[0].fixed_len = Some(8);
+    meta.tables[1].primary_key = Some("pk".into());
+    meta.tables.push(TableSpec {
+        name: "Edge".into(),
+        format: TableFormat::Parquet,
+        paths: vec!["/tmp/edge.parquet".into()],
+        columns: vec![
+            ColumnSpec {
+                name: "src_id".into(),
+                dtype: ColumnType::String,
+                fixed_len: Some(8),
+                precision: None,
+                scale: None,
+            },
+            ColumnSpec {
+                name: "dst_id".into(),
+                dtype: ColumnType::Bytes,
+                fixed_len: Some(8),
+                precision: None,
+                scale: None,
+            },
+        ],
+        primary_key: None,
+        create_time: None,
+        weight: None,
+        edge_table: Some(EdgeTableSpec {
+            src_fk: ForeignKeySpec {
+                column: "src_id".into(),
+                ref_table: "Device".into(),
+                ref_column: "pk".into(),
+            },
+            dst_fk: ForeignKeySpec {
+                column: "dst_id".into(),
+                ref_table: "User".into(),
+                ref_column: "pk".into(),
+            },
+        }),
+        rowpack: None,
+    });
+    assert!(meta.validate().is_ok());
+}
+
+#[test]
+fn validate_edge_fk_string_bytes_len_mismatch() {
+    let mut meta = base_metadata();
+    meta.tables[0].columns[0].name = "pk".into();
+    meta.tables[0].columns[0].dtype = ColumnType::Bytes;
+    meta.tables[0].columns[0].fixed_len = Some(8);
+    meta.tables[0].primary_key = Some("pk".into());
+    meta.tables[1].columns[0].name = "pk".into();
+    meta.tables[1].columns[0].dtype = ColumnType::String;
+    meta.tables[1].columns[0].fixed_len = Some(8);
+    meta.tables[1].primary_key = Some("pk".into());
+    meta.tables.push(TableSpec {
+        name: "Edge".into(),
+        format: TableFormat::Parquet,
+        paths: vec!["/tmp/edge.parquet".into()],
+        columns: vec![
+            ColumnSpec {
+                name: "src_id".into(),
+                dtype: ColumnType::String,
+                fixed_len: Some(4),
+                precision: None,
+                scale: None,
+            },
+            ColumnSpec {
+                name: "dst_id".into(),
+                dtype: ColumnType::Bytes,
+                fixed_len: Some(8),
+                precision: None,
+                scale: None,
+            },
+        ],
+        primary_key: None,
+        create_time: None,
+        weight: None,
+        edge_table: Some(EdgeTableSpec {
+            src_fk: ForeignKeySpec {
+                column: "src_id".into(),
+                ref_table: "Device".into(),
+                ref_column: "pk".into(),
+            },
+            dst_fk: ForeignKeySpec {
+                column: "dst_id".into(),
+                ref_table: "User".into(),
+                ref_column: "pk".into(),
+            },
+        }),
+        rowpack: None,
+    });
+    assert_err_contains(meta, "incompatible fixed_len");
 }
 
 #[test]

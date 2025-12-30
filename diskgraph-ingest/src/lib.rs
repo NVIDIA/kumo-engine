@@ -46,6 +46,43 @@ pub use source_metadata::SourceMetadata;
 const NODE_BATCH_SIZE: usize = 100_000;
 const EDGE_BATCH_SIZE: usize = 400_000;
 const PROGRESS_STEP: u64 = 10_000;
+const MAX_KEY_FAILURE_SAMPLES: u64 = 10;
+const MAX_KEY_SAMPLE_LEN: usize = 64;
+
+#[derive(Clone, Copy, Debug)]
+enum KeyParseError {
+    TypeMismatch,
+    UnsupportedType,
+    LengthMismatch,
+    Empty,
+    TooLarge,
+    NotInteger,
+    NotBase10,
+    NotUtf8,
+    NotFinite,
+    Negative,
+    Null,
+}
+
+impl KeyParseError {
+    fn reason(self) -> &'static str {
+        match self {
+            KeyParseError::TypeMismatch => "type mismatch",
+            KeyParseError::UnsupportedType => "unsupported type",
+            KeyParseError::LengthMismatch => "length mismatch",
+            KeyParseError::Empty => "empty",
+            KeyParseError::TooLarge => "too large",
+            KeyParseError::NotInteger => "not an integer",
+            KeyParseError::NotBase10 => "not base10",
+            KeyParseError::NotUtf8 => "invalid utf8",
+            KeyParseError::NotFinite => "not finite",
+            KeyParseError::Negative => "negative",
+            KeyParseError::Null => "null",
+        }
+    }
+}
+
+type KeyParseResult<T> = std::result::Result<T, KeyParseError>;
 
 #[derive(Clone)]
 pub struct IngestOptions {
@@ -73,6 +110,9 @@ pub struct IngestStats {
     pub total_edges: u64,
     pub node_counts: HashMap<String, u64>,
     pub edge_counts: HashMap<String, u64>,
+    pub key_parse_failures: u64,
+    pub key_lookup_failures: u64,
+    pub key_failure_samples: Vec<String>,
     pub perf: PerfStats,
 }
 
@@ -215,6 +255,7 @@ struct IngestContext {
     relationships: Vec<RelationshipRuntime>,
     edge_counts: HashMap<String, u64>,
     output: String,
+    key_failures: std::sync::Arc<KeyFailureStats>,
     pk_map_task_ms: u64,
     build_task_ms: u64,
     node_task_ms: u64,
@@ -233,6 +274,58 @@ struct TableMapState {
     pk_dtype: ColumnType,
     fixed_len: Option<usize>,
     rowpack_builder: Option<diskgraph_rowpack::RowPackContextBuilder>,
+}
+
+struct KeyFailureStats {
+    parse_failures: std::sync::atomic::AtomicU64,
+    lookup_failures: std::sync::atomic::AtomicU64,
+    samples: std::sync::Mutex<Vec<String>>,
+}
+
+impl KeyFailureStats {
+    fn new() -> Self {
+        Self {
+            parse_failures: std::sync::atomic::AtomicU64::new(0),
+            lookup_failures: std::sync::atomic::AtomicU64::new(0),
+            samples: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    fn record_parse_failure<F>(&self, context: &str, err: KeyParseError, sample: F)
+    where
+        F: FnOnce() -> Option<String>,
+    {
+        let count = self
+            .parse_failures
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if count >= MAX_KEY_FAILURE_SAMPLES {
+            return;
+        }
+        if let Some(value) = sample() {
+            let mut samples = self.samples.lock().unwrap();
+            if samples.len() < MAX_KEY_FAILURE_SAMPLES as usize {
+                samples.push(format!("{context}: {} ({})", value, err.reason()));
+            }
+        }
+    }
+
+    fn record_lookup_failure<F>(&self, context: &str, sample: F)
+    where
+        F: FnOnce() -> Option<String>,
+    {
+        let count = self
+            .lookup_failures
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if count >= MAX_KEY_FAILURE_SAMPLES {
+            return;
+        }
+        if let Some(value) = sample() {
+            let mut samples = self.samples.lock().unwrap();
+            if samples.len() < MAX_KEY_FAILURE_SAMPLES as usize {
+                samples.push(format!("{context}: {} (missing key)", value));
+            }
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -368,6 +461,7 @@ impl IngestContext {
             relationships,
             edge_counts: HashMap::new(),
             output: output.to_string(),
+            key_failures: std::sync::Arc::new(KeyFailureStats::new()),
             pk_map_task_ms: 0,
             build_task_ms: 0,
             node_task_ms: 0,
@@ -426,7 +520,7 @@ impl IngestContext {
                     let mut arrays_f32: Vec<Vec<f32>> = Vec::new();
                     let mut arrays_f64: Vec<Vec<f64>> = Vec::new();
                     for_each_row(&table, |row| {
-                        let key = row.get_key(&pk_col, &pk)?;
+                        let key = row.get_key_for_target(&pk_col, &pk, &pk_col, key_type)?;
                         if let Some(sort_val) = row.sort_key(&table)? {
                             let sort_key = sort_key_to_u32(&sort_val)?;
                             let sort_map = sort_map
@@ -549,6 +643,7 @@ impl IngestContext {
         let task_time = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
         let node_task_time = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
         let edge_task_time = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let key_failures = std::sync::Arc::clone(&self.key_failures);
 
         let mut tasks = Vec::new();
 
@@ -619,6 +714,7 @@ impl IngestContext {
                 let table_rows_snapshot = std::sync::Arc::clone(&table_rows_snapshot);
                 let edge_counts = std::sync::Arc::clone(&edge_counts);
                 let edge_task_time = std::sync::Arc::clone(&edge_task_time);
+                let key_failures = std::sync::Arc::clone(&key_failures);
                 tasks.push(WorkItem {
                     bucket: Some(edge_task_time),
                     run: Box::new(move || {
@@ -663,18 +759,45 @@ impl IngestContext {
                         EdgeAccumulator::new(rel.reverse_sort != SortKeyMode::None);
                     let mut forward_count = 0u64;
                     let mut reverse_count = 0u64;
+                    let mut seen = 0u64;
                     let mut next_update = PROGRESS_STEP;
+                    let parse_context = format!("rel:{}:{}", rel.name_forward, rel.src_column);
                     for_each_row(src_table, |row| {
                         let src_id = row.row_id;
                         let array = row
                             .cols
                             .get(src_fk_idx)
                             .ok_or_else(|| anyhow!("missing column {}", rel.src_column))?;
-                        let fk_key = key_from_array(array, row.row, src_fk_col, &rel.src_column)?;
-                        let dst_id = dst_map
-                            .pk_map
-                            .lookup(&fk_key)
-                            .ok_or_else(|| anyhow!("fk value not found for {}", rel.dst_table))?;
+                        seen += 1;
+                        if progress_enabled && seen == next_update {
+                            emit_progress_advance(&progress, &forward_key, PROGRESS_STEP);
+                            emit_progress_advance(&progress, &reverse_key, PROGRESS_STEP);
+                            next_update = next_update.saturating_add(PROGRESS_STEP);
+                        }
+                        let fk_key = match key_from_array_for_target(
+                            array,
+                            row.row,
+                            src_fk_col,
+                            dst_pk_col,
+                            dst_key_type,
+                        ) {
+                            Ok(key) => key,
+                            Err(err) => {
+                                key_failures.record_parse_failure(&parse_context, err, || {
+                                    sample_key_value(array, row.row, src_fk_col)
+                                });
+                                return Ok(());
+                            }
+                        };
+                        let dst_id = match dst_map.pk_map.lookup(&fk_key) {
+                            Some(id) => id,
+                            None => {
+                                key_failures.record_lookup_failure(&parse_context, || {
+                                    sample_key(&fk_key)
+                                });
+                                return Ok(());
+                            }
+                        };
                         let forward_sort_key = match rel.forward_sort {
                             SortKeyMode::Weight | SortKeyMode::CreateTime => dst_sort_map
                                 .and_then(|m| m.lookup(&fk_key))
@@ -691,11 +814,6 @@ impl IngestContext {
                         reverse_edges.push(dst_id, src_id, reverse_sort_key);
                         forward_count += 1;
                         reverse_count += 1;
-                        if progress_enabled && forward_count == next_update {
-                            emit_progress_advance(&progress, &forward_key, PROGRESS_STEP);
-                            emit_progress_advance(&progress, &reverse_key, PROGRESS_STEP);
-                            next_update = next_update.saturating_add(PROGRESS_STEP);
-                        }
                         if forward_edges.len() >= EDGE_BATCH_SIZE {
                             flush_edge_batch(&forward_schema, &mut forward_writer, &forward_edges)?;
                             forward_edges.clear();
@@ -717,8 +835,8 @@ impl IngestContext {
                     let reverse_sink = reverse_writer.into_inner()?;
                     reverse_sink.finish()?;
                     if progress_enabled {
-                        emit_progress_finish(&progress, &forward_key, Some(forward_count));
-                        emit_progress_finish(&progress, &reverse_key, Some(reverse_count));
+                        emit_progress_finish(&progress, &forward_key, Some(seen));
+                        emit_progress_finish(&progress, &reverse_key, Some(seen));
                     }
                     edge_counts
                         .lock()
@@ -741,6 +859,7 @@ impl IngestContext {
                 let progress = progress.clone();
                 let edge_counts = std::sync::Arc::clone(&edge_counts);
                 let edge_task_time = std::sync::Arc::clone(&edge_task_time);
+                let key_failures = std::sync::Arc::clone(&key_failures);
                 tasks.push(WorkItem {
                     bucket: Some(edge_task_time),
                     run: Box::new(move || {
@@ -766,6 +885,8 @@ impl IngestContext {
                     let dst_fk_idx = column_index(&table, &edge.dst_fk.column)?;
                     let src_fk_col = &table.columns[src_fk_idx];
                     let dst_fk_col = &table.columns[dst_fk_idx];
+                    let src_key_type = src_map.key_type;
+                    let dst_key_type = dst_map.key_type;
                     let sort_mode = if table.weight.is_some() {
                         SortKeyMode::Weight
                     } else if table.create_time.is_some() {
@@ -782,6 +903,10 @@ impl IngestContext {
                     }
                     let mut next_update = PROGRESS_STEP;
                     let mut seen = 0u64;
+                    let parse_context_src =
+                        format!("edge:{}:{}", table.name, edge.src_fk.column);
+                    let parse_context_dst =
+                        format!("edge:{}:{}", table.name, edge.dst_fk.column);
                     let mut forward_records: Vec<EdgeRecord> = Vec::new();
                     let mut reverse_records: Vec<EdgeRecord> = Vec::new();
                     for_each_row(&table, |row| {
@@ -793,16 +918,59 @@ impl IngestContext {
                         .cols
                         .get(dst_fk_idx)
                         .ok_or_else(|| anyhow!("missing column {}", edge.dst_fk.column))?;
-                    let src_key =
-                        key_from_array(src_array, row.row, src_fk_col, &edge.src_fk.column)?;
-                    let dst_key =
-                        key_from_array(dst_array, row.row, dst_fk_col, &edge.dst_fk.column)?;
-                        let src_id = src_map.pk_map.lookup(&src_key).ok_or_else(|| {
-                            anyhow!("fk value not found for {}", edge.src_fk.ref_table)
-                        })?;
-                        let dst_id = dst_map.pk_map.lookup(&dst_key).ok_or_else(|| {
-                            anyhow!("fk value not found for {}", edge.dst_fk.ref_table)
-                        })?;
+                        seen += 1;
+                        if progress_enabled && seen == next_update {
+                            emit_progress_advance(&progress, &progress_key, PROGRESS_STEP);
+                            next_update = next_update.saturating_add(PROGRESS_STEP);
+                        }
+                        let src_key = match key_from_array_for_target(
+                            src_array,
+                            row.row,
+                            src_fk_col,
+                            _src_pk_col,
+                            src_key_type,
+                        ) {
+                            Ok(key) => key,
+                            Err(err) => {
+                                key_failures.record_parse_failure(&parse_context_src, err, || {
+                                    sample_key_value(src_array, row.row, src_fk_col)
+                                });
+                                return Ok(());
+                            }
+                        };
+                        let dst_key = match key_from_array_for_target(
+                            dst_array,
+                            row.row,
+                            dst_fk_col,
+                            _dst_pk_col,
+                            dst_key_type,
+                        ) {
+                            Ok(key) => key,
+                            Err(err) => {
+                                key_failures.record_parse_failure(&parse_context_dst, err, || {
+                                    sample_key_value(dst_array, row.row, dst_fk_col)
+                                });
+                                return Ok(());
+                            }
+                        };
+                        let src_id = match src_map.pk_map.lookup(&src_key) {
+                            Some(id) => id,
+                            None => {
+                                key_failures.record_lookup_failure(&parse_context_src, || {
+                                    sample_key(&src_key)
+                                });
+                                return Ok(());
+                            }
+                        };
+                        let dst_id = match dst_map.pk_map.lookup(&dst_key) {
+                            Some(id) => id,
+                            None => {
+                                key_failures.record_lookup_failure(&parse_context_dst, || {
+                                    sample_key(&dst_key)
+                                });
+                                return Ok(());
+                            }
+                        };
                         let sort_key = match sort_mode {
                             SortKeyMode::Weight | SortKeyMode::CreateTime => {
                                 row.sort_key(&table)?.map(|v| sort_key_to_u32(&v).unwrap_or(0))
@@ -811,11 +979,6 @@ impl IngestContext {
                         };
                         forward_records.push(EdgeRecord::new(src_id, dst_id, sort_key));
                         reverse_records.push(EdgeRecord::new(dst_id, src_id, sort_key));
-                        seen += 1;
-                        if progress_enabled && seen == next_update {
-                            emit_progress_advance(&progress, &progress_key, PROGRESS_STEP);
-                            next_update = next_update.saturating_add(PROGRESS_STEP);
-                        }
                         Ok(())
                     })?;
                     if progress_enabled {
@@ -992,6 +1155,20 @@ impl IngestContext {
         }
         let total_nodes = node_counts.values().sum();
         let total_edges = self.edge_counts.values().sum();
+        let key_parse_failures = self
+            .key_failures
+            .parse_failures
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let key_lookup_failures = self
+            .key_failures
+            .lookup_failures
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let key_failure_samples = self
+            .key_failures
+            .samples
+            .lock()
+            .unwrap()
+            .clone();
         IngestStats {
             output: self.output.clone(),
             node_tables: metadata.node_types.len(),
@@ -1000,6 +1177,9 @@ impl IngestContext {
             total_edges,
             node_counts,
             edge_counts: self.edge_counts.clone(),
+            key_parse_failures,
+            key_lookup_failures,
+            key_failure_samples,
             perf,
         }
     }
@@ -1433,8 +1613,19 @@ fn key_type_for_column(col: &ColumnSpec) -> Result<KeyType> {
     match col.dtype {
         ColumnType::Int64
         | ColumnType::Int32
+        | ColumnType::Int16
+        | ColumnType::Int8
         | ColumnType::UInt64
-        | ColumnType::UInt32 => Ok(KeyType::Int64),
+        | ColumnType::UInt32
+        | ColumnType::UInt16
+        | ColumnType::UInt8 => Ok(KeyType::Int64),
+        ColumnType::Float32 | ColumnType::Float64 | ColumnType::Decimal128 | ColumnType::Decimal256 => {
+            if let Some(len) = col.fixed_len {
+                Ok(KeyType::FixedBytes { len })
+            } else {
+                Ok(KeyType::Int64)
+            }
+        }
         ColumnType::String | ColumnType::Bytes => {
             let len = col.fixed_len.ok_or_else(|| anyhow!("fixed_len required"))?;
             Ok(KeyType::FixedBytes { len })
@@ -1451,16 +1642,41 @@ fn column_index(table: &TableSpec, name: &str) -> Result<usize> {
         .ok_or_else(|| anyhow!("missing column {}", name))
 }
 
-fn key_from_array(array: &ArrayRef, row: usize, col: &ColumnSpec, label: &str) -> Result<Key> {
+fn key_from_array(array: &ArrayRef, row: usize, col: &ColumnSpec) -> KeyParseResult<Key> {
+    if array.is_null(row) {
+        return Err(KeyParseError::Null);
+    }
     match col.dtype {
         ColumnType::Int64 => {
             let arr = array
                 .as_any()
                 .downcast_ref::<arrow_array::Int64Array>()
-                .ok_or_else(|| anyhow!("int64 cast"))?;
+                .ok_or(KeyParseError::TypeMismatch)?;
             let v = arr.value(row);
             if v < 0 {
-                return Err(anyhow!("{} key is negative", label));
+                return Err(KeyParseError::Negative);
+            }
+            Ok(Key::Int(v as u64))
+        }
+        ColumnType::Int16 => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::Int16Array>()
+                .ok_or(KeyParseError::TypeMismatch)?;
+            let v = arr.value(row);
+            if v < 0 {
+                return Err(KeyParseError::Negative);
+            }
+            Ok(Key::Int(v as u64))
+        }
+        ColumnType::Int8 => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::Int8Array>()
+                .ok_or(KeyParseError::TypeMismatch)?;
+            let v = arr.value(row);
+            if v < 0 {
+                return Err(KeyParseError::Negative);
             }
             Ok(Key::Int(v as u64))
         }
@@ -1468,10 +1684,10 @@ fn key_from_array(array: &ArrayRef, row: usize, col: &ColumnSpec, label: &str) -
             let arr = array
                 .as_any()
                 .downcast_ref::<arrow_array::Int32Array>()
-                .ok_or_else(|| anyhow!("int32 cast"))?;
+                .ok_or(KeyParseError::TypeMismatch)?;
             let v = arr.value(row);
             if v < 0 {
-                return Err(anyhow!("{} key is negative", label));
+                return Err(KeyParseError::Negative);
             }
             Ok(Key::Int(v as u64))
         }
@@ -1479,25 +1695,39 @@ fn key_from_array(array: &ArrayRef, row: usize, col: &ColumnSpec, label: &str) -
             let arr = array
                 .as_any()
                 .downcast_ref::<arrow_array::UInt64Array>()
-                .ok_or_else(|| anyhow!("uint64 cast"))?;
+                .ok_or(KeyParseError::TypeMismatch)?;
             Ok(Key::Int(arr.value(row)))
+        }
+        ColumnType::UInt16 => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::UInt16Array>()
+                .ok_or(KeyParseError::TypeMismatch)?;
+            Ok(Key::Int(arr.value(row) as u64))
+        }
+        ColumnType::UInt8 => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::UInt8Array>()
+                .ok_or(KeyParseError::TypeMismatch)?;
+            Ok(Key::Int(arr.value(row) as u64))
         }
         ColumnType::UInt32 => {
             let arr = array
                 .as_any()
                 .downcast_ref::<arrow_array::UInt32Array>()
-                .ok_or_else(|| anyhow!("uint32 cast"))?;
+                .ok_or(KeyParseError::TypeMismatch)?;
             Ok(Key::Int(arr.value(row) as u64))
         }
         ColumnType::String => {
             let arr = array
                 .as_any()
                 .downcast_ref::<arrow_array::StringArray>()
-                .ok_or_else(|| anyhow!("string cast"))?;
+                .ok_or(KeyParseError::TypeMismatch)?;
             let bytes = arr.value(row).as_bytes().to_vec();
             let len = col.fixed_len.unwrap_or(bytes.len());
             if bytes.len() != len {
-                return Err(anyhow!("{} key length mismatch", label));
+                return Err(KeyParseError::LengthMismatch);
             }
             Ok(Key::Bytes(bytes))
         }
@@ -1505,16 +1735,368 @@ fn key_from_array(array: &ArrayRef, row: usize, col: &ColumnSpec, label: &str) -
             let arr = array
                 .as_any()
                 .downcast_ref::<arrow_array::BinaryArray>()
-                .ok_or_else(|| anyhow!("binary cast"))?;
+                .ok_or(KeyParseError::TypeMismatch)?;
             let bytes = arr.value(row).to_vec();
             let len = col.fixed_len.unwrap_or(bytes.len());
             if bytes.len() != len {
-                return Err(anyhow!("{} key length mismatch", label));
+                return Err(KeyParseError::LengthMismatch);
             }
             Ok(Key::Bytes(bytes))
         }
-        _ => Err(anyhow!("unsupported key type")),
+        _ => Err(KeyParseError::UnsupportedType),
     }
+}
+
+fn key_from_array_for_target(
+    array: &ArrayRef,
+    row: usize,
+    col: &ColumnSpec,
+    target_col: &ColumnSpec,
+    target: KeyType,
+) -> KeyParseResult<Key> {
+    if array.is_null(row) {
+        return Err(KeyParseError::Null);
+    }
+    match target {
+        KeyType::Int64 => match col.dtype {
+            ColumnType::Int64
+            | ColumnType::Int32
+            | ColumnType::Int16
+            | ColumnType::Int8
+            | ColumnType::UInt64
+            | ColumnType::UInt32
+            | ColumnType::UInt16
+            | ColumnType::UInt8 => key_from_array(array, row, col),
+            ColumnType::Float32 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Float32Array>()
+                    .ok_or(KeyParseError::TypeMismatch)?;
+                let v = arr.value(row) as f64;
+                let s = format_float_base10(v, 7)?;
+                parse_base10_bytes(s.as_bytes()).map(Key::Int)
+            }
+            ColumnType::Float64 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Float64Array>()
+                    .ok_or(KeyParseError::TypeMismatch)?;
+                let v = arr.value(row);
+                let s = format_float_base10(v, 15)?;
+                parse_base10_bytes(s.as_bytes()).map(Key::Int)
+            }
+            ColumnType::Decimal128 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Decimal128Array>()
+                    .ok_or(KeyParseError::TypeMismatch)?;
+                let scale = target_col.scale.unwrap_or(0);
+                let s = decimal_to_string_i128(arr.value(row), scale);
+                parse_base10_bytes(s.as_bytes()).map(Key::Int)
+            }
+            ColumnType::Decimal256 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Decimal256Array>()
+                    .ok_or(KeyParseError::TypeMismatch)?;
+                let scale = target_col.scale.unwrap_or(0);
+                let s = decimal_to_string_i256(arr.value(row), scale);
+                parse_base10_bytes(s.as_bytes()).map(Key::Int)
+            }
+            ColumnType::String => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::StringArray>()
+                    .ok_or(KeyParseError::TypeMismatch)?;
+                let bytes = arr.value(row).as_bytes();
+                let v = parse_base10_bytes(bytes)?;
+                Ok(Key::Int(v))
+            }
+            ColumnType::Bytes => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::BinaryArray>()
+                    .ok_or(KeyParseError::TypeMismatch)?;
+                let bytes = arr.value(row);
+                let v = parse_base10_bytes(bytes)?;
+                Ok(Key::Int(v))
+            }
+            _ => Err(KeyParseError::UnsupportedType),
+        },
+        KeyType::FixedBytes { len } => match col.dtype {
+            ColumnType::String => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::StringArray>()
+                    .ok_or(KeyParseError::TypeMismatch)?;
+                let bytes = normalize_numeric_bytes(arr.value(row).as_bytes(), target_col)?;
+                if bytes.len() != len {
+                    return Err(KeyParseError::LengthMismatch);
+                }
+                Ok(Key::Bytes(bytes))
+            }
+            ColumnType::Bytes => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::BinaryArray>()
+                    .ok_or(KeyParseError::TypeMismatch)?;
+                let bytes = normalize_numeric_bytes(arr.value(row), target_col)?;
+                if bytes.len() != len {
+                    return Err(KeyParseError::LengthMismatch);
+                }
+                Ok(Key::Bytes(bytes))
+            }
+            ColumnType::Int64
+            | ColumnType::Int32
+            | ColumnType::Int16
+            | ColumnType::Int8
+            | ColumnType::UInt64
+            | ColumnType::UInt32
+            | ColumnType::UInt16
+            | ColumnType::UInt8 => {
+                let key = key_from_array(array, row, col)?;
+                let Key::Int(v) = key else {
+                    return Err(KeyParseError::TypeMismatch);
+                };
+                let bytes = v.to_string().into_bytes();
+                if bytes.len() != len {
+                    return Err(KeyParseError::LengthMismatch);
+                }
+                Ok(Key::Bytes(bytes))
+            }
+            ColumnType::Float32 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Float32Array>()
+                    .ok_or(KeyParseError::TypeMismatch)?;
+                let s = format_float_base10(arr.value(row) as f64, 7)?;
+                let bytes = normalize_numeric_bytes(s.as_bytes(), target_col)?;
+                if bytes.len() != len {
+                    return Err(KeyParseError::LengthMismatch);
+                }
+                Ok(Key::Bytes(bytes))
+            }
+            ColumnType::Float64 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Float64Array>()
+                    .ok_or(KeyParseError::TypeMismatch)?;
+                let s = format_float_base10(arr.value(row), 15)?;
+                let bytes = normalize_numeric_bytes(s.as_bytes(), target_col)?;
+                if bytes.len() != len {
+                    return Err(KeyParseError::LengthMismatch);
+                }
+                Ok(Key::Bytes(bytes))
+            }
+            ColumnType::Decimal128 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Decimal128Array>()
+                    .ok_or(KeyParseError::TypeMismatch)?;
+                let scale = target_col.scale.unwrap_or(0);
+                let s = decimal_to_string_i128(arr.value(row), scale);
+                let bytes = normalize_numeric_bytes(s.as_bytes(), target_col)?;
+                if bytes.len() != len {
+                    return Err(KeyParseError::LengthMismatch);
+                }
+                Ok(Key::Bytes(bytes))
+            }
+            ColumnType::Decimal256 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Decimal256Array>()
+                    .ok_or(KeyParseError::TypeMismatch)?;
+                let scale = target_col.scale.unwrap_or(0);
+                let s = decimal_to_string_i256(arr.value(row), scale);
+                let bytes = normalize_numeric_bytes(s.as_bytes(), target_col)?;
+                if bytes.len() != len {
+                    return Err(KeyParseError::LengthMismatch);
+                }
+                Ok(Key::Bytes(bytes))
+            }
+            _ => Err(KeyParseError::UnsupportedType),
+        },
+    }
+}
+
+fn parse_base10_bytes(bytes: &[u8]) -> KeyParseResult<u64> {
+    if bytes.is_empty() {
+        return Err(KeyParseError::Empty);
+    }
+    if bytes.len() > 20 {
+        return Err(KeyParseError::TooLarge);
+    }
+    if bytes.contains(&b'.') {
+        return Err(KeyParseError::NotInteger);
+    }
+    let mut value: u64 = 0;
+    for &b in bytes {
+        if !b.is_ascii_digit() {
+            return Err(KeyParseError::NotBase10);
+        }
+        let digit = (b - b'0') as u64;
+        value = value
+            .checked_mul(10)
+            .and_then(|v| v.checked_add(digit))
+            .ok_or(KeyParseError::TooLarge)?;
+    }
+    Ok(value)
+}
+
+fn normalize_numeric_bytes(bytes: &[u8], target_col: &ColumnSpec) -> KeyParseResult<Vec<u8>> {
+    if matches!(
+        target_col.dtype,
+        ColumnType::Float32
+            | ColumnType::Float64
+            | ColumnType::Decimal128
+            | ColumnType::Decimal256
+    ) {
+        return normalize_base10_bytes(bytes);
+    }
+    Ok(bytes.to_vec())
+}
+
+fn normalize_base10_bytes(bytes: &[u8]) -> KeyParseResult<Vec<u8>> {
+    let s = std::str::from_utf8(bytes).map_err(|_| KeyParseError::NotUtf8)?;
+    if s.is_empty() {
+        return Err(KeyParseError::Empty);
+    }
+    let mut parts = s.split('.');
+    let int_part = parts.next().unwrap();
+    if int_part.is_empty() {
+        return Err(KeyParseError::NotBase10);
+    }
+    let frac_part = parts.next();
+    if parts.next().is_some() {
+        return Err(KeyParseError::NotBase10);
+    }
+    if !int_part.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(KeyParseError::NotBase10);
+    }
+    if let Some(frac) = frac_part {
+        if !frac.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(KeyParseError::NotBase10);
+        }
+    }
+    let int_trimmed = int_part.trim_start_matches('0');
+    let int_out = if int_trimmed.is_empty() { "0" } else { int_trimmed };
+    let frac_out = frac_part
+        .unwrap_or("")
+        .trim_end_matches('0');
+    if frac_out.is_empty() {
+        return Ok(int_out.as_bytes().to_vec());
+    }
+    let mut out = Vec::with_capacity(int_out.len() + 1 + frac_out.len());
+    out.extend_from_slice(int_out.as_bytes());
+    out.push(b'.');
+    out.extend_from_slice(frac_out.as_bytes());
+    Ok(out)
+}
+
+fn format_float_base10(value: f64, precision: usize) -> KeyParseResult<String> {
+    if !value.is_finite() {
+        return Err(KeyParseError::NotFinite);
+    }
+    if value < 0.0 {
+        return Err(KeyParseError::Negative);
+    }
+    let mut s = format!("{:.*}", precision, value);
+    if let Some(dot) = s.find('.') {
+        while s.ends_with('0') {
+            s.pop();
+        }
+        if s.len() == dot + 1 {
+            s.pop();
+        }
+    }
+    Ok(s)
+}
+
+fn sample_key_value(array: &ArrayRef, row: usize, col: &ColumnSpec) -> Option<String> {
+    if array.is_null(row) {
+        return Some("<null>".to_string());
+    }
+    match col.dtype {
+        ColumnType::String => {
+            let arr = array.as_any().downcast_ref::<arrow_array::StringArray>()?;
+            Some(truncate_sample(arr.value(row)))
+        }
+        ColumnType::Bytes => {
+            let arr = array.as_any().downcast_ref::<arrow_array::BinaryArray>()?;
+            let value = String::from_utf8_lossy(arr.value(row));
+            Some(truncate_sample(value.as_ref()))
+        }
+        ColumnType::Int64 => {
+            let arr = array.as_any().downcast_ref::<arrow_array::Int64Array>()?;
+            Some(arr.value(row).to_string())
+        }
+        ColumnType::Int32 => {
+            let arr = array.as_any().downcast_ref::<arrow_array::Int32Array>()?;
+            Some(arr.value(row).to_string())
+        }
+        ColumnType::Int16 => {
+            let arr = array.as_any().downcast_ref::<arrow_array::Int16Array>()?;
+            Some(arr.value(row).to_string())
+        }
+        ColumnType::Int8 => {
+            let arr = array.as_any().downcast_ref::<arrow_array::Int8Array>()?;
+            Some(arr.value(row).to_string())
+        }
+        ColumnType::UInt64 => {
+            let arr = array.as_any().downcast_ref::<arrow_array::UInt64Array>()?;
+            Some(arr.value(row).to_string())
+        }
+        ColumnType::UInt32 => {
+            let arr = array.as_any().downcast_ref::<arrow_array::UInt32Array>()?;
+            Some(arr.value(row).to_string())
+        }
+        ColumnType::UInt16 => {
+            let arr = array.as_any().downcast_ref::<arrow_array::UInt16Array>()?;
+            Some(arr.value(row).to_string())
+        }
+        ColumnType::UInt8 => {
+            let arr = array.as_any().downcast_ref::<arrow_array::UInt8Array>()?;
+            Some(arr.value(row).to_string())
+        }
+        ColumnType::Float32 => {
+            let arr = array.as_any().downcast_ref::<arrow_array::Float32Array>()?;
+            Some(arr.value(row).to_string())
+        }
+        ColumnType::Float64 => {
+            let arr = array.as_any().downcast_ref::<arrow_array::Float64Array>()?;
+            Some(arr.value(row).to_string())
+        }
+        ColumnType::Decimal128 => {
+            let arr = array.as_any().downcast_ref::<arrow_array::Decimal128Array>()?;
+            let scale = col.scale.unwrap_or(0);
+            Some(decimal_to_string_i128(arr.value(row), scale))
+        }
+        ColumnType::Decimal256 => {
+            let arr = array.as_any().downcast_ref::<arrow_array::Decimal256Array>()?;
+            let scale = col.scale.unwrap_or(0);
+            Some(decimal_to_string_i256(arr.value(row), scale))
+        }
+        _ => None,
+    }
+}
+
+fn sample_key(key: &Key) -> Option<String> {
+    match key {
+        Key::Int(v) => Some(v.to_string()),
+        Key::Bytes(bytes) => {
+            let value = String::from_utf8_lossy(bytes);
+            Some(truncate_sample(value.as_ref()))
+        }
+    }
+}
+
+fn truncate_sample(input: &str) -> String {
+    if input.len() <= MAX_KEY_SAMPLE_LEN {
+        return input.to_string();
+    }
+    let mut out: String = input.chars().take(MAX_KEY_SAMPLE_LEN).collect();
+    out.push_str("...");
+    out
 }
 
 fn sort_key_to_u32(value: &JsonValue) -> Result<u32> {
@@ -1898,7 +2480,13 @@ impl<'a> RowView<'a> {
         value_from_array(col, self.row)
     }
 
-    fn get_key(&self, col: &ColumnSpec, label: &str) -> Result<Key> {
+    fn get_key_for_target(
+        &self,
+        col: &ColumnSpec,
+        label: &str,
+        target_col: &ColumnSpec,
+        target: KeyType,
+    ) -> Result<Key> {
         let idx = self
             .name_to_index
             .get(&col.name)
@@ -1907,7 +2495,8 @@ impl<'a> RowView<'a> {
             .cols
             .get(*idx)
             .ok_or_else(|| anyhow!("missing column {}", col.name))?;
-        key_from_array(array, self.row, col, label)
+        key_from_array_for_target(array, self.row, col, target_col, target)
+            .map_err(|err| anyhow!("{} key parse error: {}", label, err.reason()))
     }
 
     fn sort_key(&self, table: &TableSpec) -> Result<Option<JsonValue>> {
