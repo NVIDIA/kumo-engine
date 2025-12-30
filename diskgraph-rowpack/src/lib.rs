@@ -8,6 +8,8 @@ use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 
 const ROWPACK_VERSION: u8 = 1;
+const MAX_FIELD_BYTES: usize = 8 * 1024 * 1024;
+const MAX_ARRAY_LEN: usize = 1_000_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RowPackConfig {
@@ -253,19 +255,6 @@ impl BitWriter {
         }
     }
 
-    fn align_to_byte(&mut self) {
-        if self.used > 0 {
-            self.buf.push(self.cur);
-            self.cur = 0;
-            self.used = 0;
-        }
-    }
-
-    fn write_bytes(&mut self, bytes: &[u8]) {
-        self.align_to_byte();
-        self.buf.extend_from_slice(bytes);
-    }
-
     fn finish(mut self) -> Vec<u8> {
         if self.used > 0 {
             self.buf.push(self.cur);
@@ -320,17 +309,6 @@ impl<'a> BitReader<'a> {
         if self.used != 0 && self.used < 8 {
             self.used = 8;
         }
-    }
-
-    fn read_bytes(&mut self, len: usize) -> Result<&'a [u8]> {
-        self.align_to_byte();
-        let start = self.idx;
-        let end = start + len;
-        if end > self.buf.len() {
-            return Err(anyhow!("rowpack bytes truncated"));
-        }
-        self.idx = end;
-        Ok(&self.buf[start..end])
     }
 
     fn remaining_bytes(&self) -> usize {
@@ -431,25 +409,19 @@ fn parse_iso(value: &str) -> Option<(IsoFormat, i64, u32)> {
 fn format_iso(fmt: IsoFormat, secs: i64, nanos: u32) -> String {
     match fmt {
         IsoFormat::Rfc3339 => {
-            let dt = DateTime::<Utc>::from_utc(
-                chrono::NaiveDateTime::from_timestamp_opt(secs, nanos).unwrap_or_else(|| {
-                    chrono::NaiveDateTime::from_timestamp_opt(0, 0).unwrap()
-                }),
-                Utc,
-            );
+            let dt = DateTime::<Utc>::from_timestamp(secs, nanos)
+                .unwrap_or_else(|| DateTime::<Utc>::from_timestamp(0, 0).unwrap());
             dt.to_rfc3339()
         }
         IsoFormat::DateOnly => {
-            let dt = chrono::NaiveDateTime::from_timestamp_opt(secs, nanos).unwrap_or_else(|| {
-                chrono::NaiveDateTime::from_timestamp_opt(0, 0).unwrap()
-            });
-            dt.date().format("%Y-%m-%d").to_string()
+            let dt = DateTime::<Utc>::from_timestamp(secs, nanos)
+                .unwrap_or_else(|| DateTime::<Utc>::from_timestamp(0, 0).unwrap());
+            dt.date_naive().format("%Y-%m-%d").to_string()
         }
         IsoFormat::DateTimeSpace => {
-            let dt = chrono::NaiveDateTime::from_timestamp_opt(secs, nanos).unwrap_or_else(|| {
-                chrono::NaiveDateTime::from_timestamp_opt(0, 0).unwrap()
-            });
-            dt.format("%Y-%m-%d %H:%M:%S").to_string()
+            let dt = DateTime::<Utc>::from_timestamp(secs, nanos)
+                .unwrap_or_else(|| DateTime::<Utc>::from_timestamp(0, 0).unwrap());
+            dt.naive_utc().format("%Y-%m-%d %H:%M:%S").to_string()
         }
     }
 }
@@ -1425,6 +1397,23 @@ fn decode_value_msgpack(
         }
         ColumnEncoding::FloatArray { storage } => {
             let len = read_varint(data)? as usize;
+            let elem_bytes = if tag == 2 {
+                match col.logical_type {
+                    LogicalType::Float32Array => 4,
+                    LogicalType::Float64Array => 8,
+                    _ => return Err(anyhow!("rowpack invalid array type")),
+                }
+            } else {
+                match storage {
+                    FloatStorage::F16 => 2,
+                    FloatStorage::F32 => 4,
+                    FloatStorage::F64 => 8,
+                }
+            };
+            let max_len = data.len() / elem_bytes;
+            if len > MAX_ARRAY_LEN || len > max_len || len > u32::MAX as usize {
+                return Err(anyhow!("rowpack array length overflow"));
+            }
             mp::write_array_len(out, len as u32)?;
             for _ in 0..len {
                 let v = if tag == 2 {
@@ -1494,6 +1483,23 @@ fn decode_value_json(
         }
         ColumnEncoding::FloatArray { storage } => {
             let len = read_varint(data)? as usize;
+            let elem_bytes = if tag == 2 {
+                match col.logical_type {
+                    LogicalType::Float32Array => 4,
+                    LogicalType::Float64Array => 8,
+                    _ => return Err(anyhow!("rowpack invalid array type")),
+                }
+            } else {
+                match storage {
+                    FloatStorage::F16 => 2,
+                    FloatStorage::F32 => 4,
+                    FloatStorage::F64 => 8,
+                }
+            };
+            let max_len = data.len() / elem_bytes;
+            if len > MAX_ARRAY_LEN || len > max_len {
+                return Err(anyhow!("rowpack array length overflow"));
+            }
             let mut values = Vec::with_capacity(len);
             for _ in 0..len {
                 let v = if tag == 2 {
@@ -1639,6 +1645,9 @@ fn decode_bytes<'a>(data: &mut &'a [u8], fixed_len: Option<usize>) -> Result<&'a
     } else {
         read_varint(data)? as usize
     };
+    if len > MAX_FIELD_BYTES {
+        return Err(anyhow!("rowpack bytes too large"));
+    }
     if data.len() < len {
         return Err(anyhow!("rowpack bytes truncated"));
     }
@@ -1655,6 +1664,9 @@ fn decode_string(
     match encoding {
         StringEncoding::Raw => {
             let len = read_varint(data)? as usize;
+            if len > MAX_FIELD_BYTES {
+                return Err(anyhow!("rowpack string too large"));
+            }
             if data.len() < len {
                 return Err(anyhow!("rowpack string truncated"));
             }
@@ -1669,6 +1681,9 @@ fn decode_string(
                     Ok(String::from_utf8_lossy(bytes).to_string())
                 } else {
                     let len = read_varint(data)? as usize;
+                    if len > MAX_FIELD_BYTES {
+                        return Err(anyhow!("rowpack dict fallback too large"));
+                    }
                     if data.len() < len {
                         return Err(anyhow!("rowpack dict fallback truncated"));
                     }
@@ -1696,12 +1711,18 @@ fn decode_string(
         }
         StringEncoding::Snappy => {
             let len = read_varint(data)? as usize;
+            if len > MAX_FIELD_BYTES {
+                return Err(anyhow!("rowpack snappy too large"));
+            }
             if data.len() < len {
                 return Err(anyhow!("rowpack snappy truncated"));
             }
             let (head, tail) = data.split_at(len);
             *data = tail;
             let decoded = snap::raw::Decoder::new().decompress_vec(head)?;
+            if decoded.len() > MAX_FIELD_BYTES {
+                return Err(anyhow!("rowpack snappy too large"));
+            }
             Ok(String::from_utf8_lossy(&decoded).to_string())
         }
     }
@@ -1709,6 +1730,9 @@ fn decode_string(
 
 fn decode_string_fallback(data: &mut &[u8]) -> Result<String> {
     let len = read_varint(data)? as usize;
+    if len > MAX_FIELD_BYTES {
+        return Err(anyhow!("rowpack string fallback too large"));
+    }
     if data.len() < len {
         return Err(anyhow!("rowpack string fallback truncated"));
     }
@@ -1905,6 +1929,58 @@ mod tests {
     }
 
     #[test]
+    fn hex_dashed_encoding() {
+        let mut builder = RowPackContextBuilder::new(
+            vec![RowPackColumn {
+                name: "hex".to_string(),
+                logical_type: LogicalType::String,
+                fixed_len: None,
+            }],
+            RowPackConfig::default(),
+        );
+        builder
+            .observe_row(&[ValueRef::String(
+                "01234567-89ab-cdef-0123-456789abcdef",
+            )])
+            .unwrap();
+        let ctx = builder.finish().unwrap();
+        let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
+        let row = vec![ValueRef::String(
+            "01234567-89ab-cdef-0123-456789abcdef",
+        )];
+        let encoded = encoder.encode_row(&row).unwrap();
+        let decoder = RowPackDecoder::new(ctx).unwrap();
+        let json = decoder.decode_json(&encoded).unwrap();
+        assert!(json
+            .to_string()
+            .contains("01234567-89ab-cdef-0123-456789abcdef"));
+    }
+
+    #[test]
+    fn hex_fallback_non_hex() {
+        let ctx = RowPackContext {
+            version: ROWPACK_VERSION,
+            columns: vec![ColumnContext {
+                name: "hex".to_string(),
+                logical_type: LogicalType::String,
+                encoding: ColumnEncoding::String {
+                    encoding: StringEncoding::Hex {
+                        len: 32,
+                        dashed: false,
+                        upper: false,
+                    },
+                },
+            }],
+        };
+        let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
+        let row = vec![ValueRef::String("not-hex")];
+        let encoded = encoder.encode_row(&row).unwrap();
+        let decoder = RowPackDecoder::new(ctx).unwrap();
+        let json = decoder.decode_json(&encoded).unwrap();
+        assert!(json.to_string().contains("not-hex"));
+    }
+
+    #[test]
     fn float16_fallback() {
         let ctx = RowPackContext {
             version: ROWPACK_VERSION,
@@ -1925,6 +2001,56 @@ mod tests {
     }
 
     #[test]
+    fn float_array_float16_encoding() {
+        let mut builder = RowPackContextBuilder::new(
+            vec![RowPackColumn {
+                name: "embed".to_string(),
+                logical_type: LogicalType::Float32Array,
+                fixed_len: None,
+            }],
+            RowPackConfig::default(),
+        );
+        builder
+            .observe_row(&[ValueRef::Float32Array(&[0.1, 0.2, 0.3])])
+            .unwrap();
+        let ctx = builder.finish().unwrap();
+        match &ctx.columns[0].encoding {
+            ColumnEncoding::FloatArray { storage } => {
+                assert_eq!(*storage, FloatStorage::F16);
+            }
+            other => panic!("unexpected encoding: {:?}", other),
+        }
+        let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
+        let row = vec![ValueRef::Float32Array(&[0.1, 0.2, 0.3])];
+        let encoded = encoder.encode_row(&row).unwrap();
+        let decoder = RowPackDecoder::new(ctx).unwrap();
+        let json = decoder.decode_json(&encoded).unwrap();
+        assert!(json.to_string().contains("0.1"));
+    }
+
+    #[test]
+    fn float_force_float64_encoding() {
+        let mut config = RowPackConfig::default();
+        config.force_float64 = Some(true);
+        let mut builder = RowPackContextBuilder::new(
+            vec![RowPackColumn {
+                name: "score".to_string(),
+                logical_type: LogicalType::Float32,
+                fixed_len: None,
+            }],
+            config,
+        );
+        builder.observe_row(&[ValueRef::Float32(1.5)]).unwrap();
+        let ctx = builder.finish().unwrap();
+        match &ctx.columns[0].encoding {
+            ColumnEncoding::Float { storage } => {
+                assert_eq!(*storage, FloatStorage::F64);
+            }
+            other => panic!("unexpected encoding: {:?}", other),
+        }
+    }
+
+    #[test]
     fn bytes_roundtrip() {
         let ctx = RowPackContext {
             version: ROWPACK_VERSION,
@@ -1940,6 +2066,24 @@ mod tests {
         let decoder = RowPackDecoder::new(ctx).unwrap();
         let json = decoder.decode_json(&encoded).unwrap();
         assert!(json.to_string().contains("eHl6"));
+    }
+
+    #[test]
+    fn bytes_fixed_len_success() {
+        let ctx = RowPackContext {
+            version: ROWPACK_VERSION,
+            columns: vec![ColumnContext {
+                name: "blob".to_string(),
+                logical_type: LogicalType::Bytes,
+                encoding: ColumnEncoding::Bytes { fixed_len: Some(4) },
+            }],
+        };
+        let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
+        let row = vec![ValueRef::Bytes(b"ABCD")];
+        let encoded = encoder.encode_row(&row).unwrap();
+        let decoder = RowPackDecoder::new(ctx).unwrap();
+        let json = decoder.decode_json(&encoded).unwrap();
+        assert!(json.to_string().contains("QUJDRA=="));
     }
 
     #[test]
@@ -2020,6 +2164,28 @@ mod tests {
     }
 
     #[test]
+    fn varint_int32_negative() {
+        let ctx = RowPackContext {
+            version: ROWPACK_VERSION,
+            columns: vec![ColumnContext {
+                name: "i32".to_string(),
+                logical_type: LogicalType::Int32,
+                encoding: ColumnEncoding::Int {
+                    signed: true,
+                    varint: true,
+                    bits: 32,
+                },
+            }],
+        };
+        let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
+        let row = vec![ValueRef::Int32(-12345)];
+        let encoded = encoder.encode_row(&row).unwrap();
+        let decoder = RowPackDecoder::new(ctx).unwrap();
+        let json = decoder.decode_json(&encoded).unwrap();
+        assert!(json.to_string().contains("-12345"));
+    }
+
+    #[test]
     fn iso_fallback_string() {
         let ctx = RowPackContext {
             version: ROWPACK_VERSION,
@@ -2037,6 +2203,126 @@ mod tests {
         let decoder = RowPackDecoder::new(ctx).unwrap();
         let json = decoder.decode_json(&encoded).unwrap();
         assert!(json.to_string().contains("not-a-timestamp"));
+    }
+
+    #[test]
+    fn iso_date_only_encoding() {
+        let mut builder = RowPackContextBuilder::new(
+            vec![RowPackColumn {
+                name: "ts".to_string(),
+                logical_type: LogicalType::String,
+                fixed_len: None,
+            }],
+            RowPackConfig::default(),
+        );
+        builder.observe_row(&[ValueRef::String("2024-02-03")]).unwrap();
+        let ctx = builder.finish().unwrap();
+        match &ctx.columns[0].encoding {
+            ColumnEncoding::String {
+                encoding: StringEncoding::IsoTimestamp { fmt },
+            } => {
+                assert_eq!(*fmt, IsoFormat::DateOnly);
+            }
+            other => panic!("unexpected encoding: {:?}", other),
+        }
+        let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
+        let row = vec![ValueRef::String("2024-02-03")];
+        let encoded = encoder.encode_row(&row).unwrap();
+        let decoder = RowPackDecoder::new(ctx).unwrap();
+        let json = decoder.decode_json(&encoded).unwrap();
+        assert!(json.to_string().contains("2024-02-03"));
+    }
+
+    #[test]
+    fn iso_date_time_space_encoding() {
+        let mut builder = RowPackContextBuilder::new(
+            vec![RowPackColumn {
+                name: "ts".to_string(),
+                logical_type: LogicalType::String,
+                fixed_len: None,
+            }],
+            RowPackConfig::default(),
+        );
+        builder
+            .observe_row(&[ValueRef::String("2024-02-03 12:34:56")])
+            .unwrap();
+        let ctx = builder.finish().unwrap();
+        match &ctx.columns[0].encoding {
+            ColumnEncoding::String {
+                encoding: StringEncoding::IsoTimestamp { fmt },
+            } => {
+                assert_eq!(*fmt, IsoFormat::DateTimeSpace);
+            }
+            other => panic!("unexpected encoding: {:?}", other),
+        }
+        let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
+        let row = vec![ValueRef::String("2024-02-03 12:34:56")];
+        let encoded = encoder.encode_row(&row).unwrap();
+        let decoder = RowPackDecoder::new(ctx).unwrap();
+        let json = decoder.decode_json(&encoded).unwrap();
+        assert!(json.to_string().contains("2024-02-03 12:34:56"));
+    }
+
+    #[test]
+    fn snappy_encoding_selected() {
+        let mut config = RowPackConfig::default();
+        config.string_long_min_len = Some(8);
+        config.string_long_min_ratio = Some(0.9);
+        config.max_dict_entries = Some(0);
+        let mut builder = RowPackContextBuilder::new(
+            vec![RowPackColumn {
+                name: "text".to_string(),
+                logical_type: LogicalType::String,
+                fixed_len: None,
+            }],
+            config,
+        );
+        let value = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string();
+        builder.observe_row(&[ValueRef::String(&value)]).unwrap();
+        let ctx = builder.finish().unwrap();
+        match &ctx.columns[0].encoding {
+            ColumnEncoding::String {
+                encoding: StringEncoding::Snappy,
+            } => {}
+            other => panic!("unexpected encoding: {:?}", other),
+        }
+        let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
+        let row = vec![ValueRef::String(&value)];
+        let encoded = encoder.encode_row(&row).unwrap();
+        let decoder = RowPackDecoder::new(ctx).unwrap();
+        let json = decoder.decode_json(&encoded).unwrap();
+        assert!(json.to_string().contains("aaaaaaaa"));
+    }
+
+    #[test]
+    fn snappy_falls_back_to_raw() {
+        let mut config = RowPackConfig::default();
+        config.string_long_min_len = Some(8);
+        config.string_long_min_ratio = Some(0.5);
+        config.max_dict_entries = Some(0);
+        let mut builder = RowPackContextBuilder::new(
+            vec![RowPackColumn {
+                name: "text".to_string(),
+                logical_type: LogicalType::String,
+                fixed_len: None,
+            }],
+            config,
+        );
+        let value = "x3f9A2kLmN8pQrStUvWxYz0123456789".to_string();
+        builder.observe_row(&[ValueRef::String(&value)]).unwrap();
+        let ctx = builder.finish().unwrap();
+        match &ctx.columns[0].encoding {
+            ColumnEncoding::String {
+                encoding: StringEncoding::Raw,
+            } => {}
+            other => panic!("unexpected encoding: {:?}", other),
+        }
+        let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
+        let row = vec![ValueRef::String(&value)];
+        let encoded = encoder.encode_row(&row).unwrap();
+        let decoder = RowPackDecoder::new(ctx).unwrap();
+        let json = decoder.decode_json(&encoded).unwrap();
+        assert!(json.to_string().contains("x3f9A2k"));
     }
 
     #[test]
@@ -2090,5 +2376,55 @@ mod tests {
         let decoder = RowPackDecoder::new(ctx).unwrap();
         let json = decoder.decode_json(&encoded).unwrap();
         assert!(json.to_string().contains("null"));
+    }
+
+    #[test]
+    fn decode_rejects_oversize_string() {
+        let ctx = RowPackContext {
+            version: ROWPACK_VERSION,
+            columns: vec![ColumnContext {
+                name: "name".to_string(),
+                logical_type: LogicalType::String,
+                encoding: ColumnEncoding::String {
+                    encoding: StringEncoding::Raw,
+                },
+            }],
+        };
+        let decoder = RowPackDecoder::new(ctx).unwrap();
+        let mut tags = BitWriter::new();
+        tags.write_bits(1, 2);
+        let mut row = tags.finish();
+        row.push(0x80);
+        row.push(0x80);
+        row.push(0x80);
+        row.push(0x80);
+        row.push(0x10);
+        let err = decoder.decode_json(&row).unwrap_err();
+        assert!(err.to_string().contains("too large"));
+    }
+
+    #[test]
+    fn decode_rejects_oversize_array() {
+        let ctx = RowPackContext {
+            version: ROWPACK_VERSION,
+            columns: vec![ColumnContext {
+                name: "embed".to_string(),
+                logical_type: LogicalType::Float32Array,
+                encoding: ColumnEncoding::FloatArray {
+                    storage: FloatStorage::F32,
+                },
+            }],
+        };
+        let decoder = RowPackDecoder::new(ctx).unwrap();
+        let mut tags = BitWriter::new();
+        tags.write_bits(1, 2);
+        let mut row = tags.finish();
+        row.push(0xff);
+        row.push(0xff);
+        row.push(0xff);
+        row.push(0xff);
+        row.push(0x0f);
+        let err = decoder.decode_json(&row).unwrap_err();
+        assert!(err.to_string().contains("array length"));
     }
 }
