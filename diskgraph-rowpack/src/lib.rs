@@ -1163,7 +1163,11 @@ fn choose_string_encoding(stats: &ColumnStats, config: &RowPackConfig) -> Result
             values.push(value);
         }
         let coverage_ratio = coverage as f32 / total;
-        if coverage_ratio >= config.string_dict_coverage() && !values.is_empty() {
+        let avg_hits = coverage as f32 / values.len().max(1) as f32;
+        if coverage_ratio >= config.string_dict_coverage()
+            && avg_hits >= 2.0
+            && !values.is_empty()
+        {
             return Ok(StringEncoding::Dict { values });
         }
     }
