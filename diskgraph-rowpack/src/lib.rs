@@ -28,26 +28,25 @@ struct AlphabetMap {
 }
 
 struct BpeTrie {
-    next: Vec<[i32; 256]>,
+    next: Vec<i32>,
     value: Vec<Option<u16>>,
     dict_len: usize,
 }
 
 impl BpeTrie {
     fn from_dict(dict: &[Vec<u8>]) -> Self {
-        let mut next = Vec::new();
-        let mut value = Vec::new();
-        next.push([-1; 256]);
-        value.push(None);
+        let mut next = vec![-1; 256];
+        let mut value = vec![None];
         for (idx, entry) in dict.iter().enumerate() {
             let mut node = 0usize;
             for &b in entry {
-                let next_idx = next[node][b as usize];
+                let slot = node * 256 + b as usize;
+                let next_idx = next[slot];
                 if next_idx < 0 {
-                    next.push([-1; 256]);
+                    next.extend(std::iter::repeat(-1).take(256));
                     value.push(None);
-                    let new_idx = (next.len() - 1) as i32;
-                    next[node][b as usize] = new_idx;
+                    let new_idx = (value.len() - 1) as i32;
+                    next[slot] = new_idx;
                     node = new_idx as usize;
                 } else {
                     node = next_idx as usize;
@@ -60,6 +59,11 @@ impl BpeTrie {
             value,
             dict_len: dict.len(),
         }
+    }
+
+    #[inline]
+    fn next_index(&self, node: usize, byte: u8) -> i32 {
+        self.next[node * 256 + byte as usize]
     }
 }
 
@@ -2520,7 +2524,7 @@ fn tokenize_bpe(bytes: &[u8], trie: &BpeTrie, tokens: &mut Vec<u32>) {
         let mut j = i;
         let mut last = None;
         while j < bytes.len() {
-            let next_idx = trie.next[node][bytes[j] as usize];
+            let next_idx = trie.next_index(node, bytes[j]);
             if next_idx < 0 {
                 break;
             }
