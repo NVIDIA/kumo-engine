@@ -14,7 +14,7 @@ use diskgraph_index::graph::{
 };
 use diskgraph_index::layout::{EDGES_FILENAME, OFFSETS_FILENAME};
 use diskgraph_rowpack::{ColumnEncoding, DecimalStorage, FloatStorage, RowPackContext, StringEncoding};
-use object_store::ObjectStore;
+use object_store::{Error as ObjectStoreError, ObjectStore};
 use diskgraph_fs::{
     build_adls_client, build_gcs_client, build_s3_client, AdlsConfig, GcsConfig, S3Config,
 };
@@ -430,21 +430,31 @@ fn build_from_remote(
     };
     let cache_dir = cache_root.join(safe_prefix);
     let meta_path = cache_dir.join("index_metadata.json");
+    let prefix = match &remote {
+        RemoteStore::S3 { prefix, .. }
+        | RemoteStore::Gcs { prefix, .. }
+        | RemoteStore::Adls { prefix, .. } => prefix.trim_end_matches('/').to_string(),
+    };
     if cache_dir.join("nodes").exists() && meta_path.exists() {
         cache_spinner.finish_with_message("Cache hit");
         let metadata: DatasetMetadata = serde_json::from_slice(
             &fs::read(&meta_path).context("read cached metadata")?,
         )
         .context("parse cached metadata")?;
+        download_rowpack_contexts(rt, store_arc.as_ref(), &prefix, &cache_dir, &metadata)
+            .context("download rowpack contexts")?;
+        download_optional_object(
+            rt,
+            store_arc.as_ref(),
+            &prefix,
+            "ingest_stats.json",
+            &cache_dir,
+        )
+        .context("download ingest_stats.json")?;
         return Ok((metadata, cache_dir));
     }
     cache_spinner.finish_with_message("Cache miss");
     fs::create_dir_all(&cache_dir)?;
-    let prefix = match &remote {
-        RemoteStore::S3 { prefix, .. }
-        | RemoteStore::Gcs { prefix, .. }
-        | RemoteStore::Adls { prefix, .. } => prefix.trim_end_matches('/').to_string(),
-    };
     // Download metadata, then build using remote Parquet sources.
     let loc = if prefix.is_empty() {
         ObjectPath::from("index_metadata.json")
@@ -464,6 +474,14 @@ fn build_from_remote(
         serde_json::from_slice(&meta_bytes).context("parse index_metadata.json")?;
     download_rowpack_contexts(rt, store_arc.as_ref(), &prefix, &cache_dir, &metadata)
         .context("download rowpack contexts")?;
+    download_optional_object(
+        rt,
+        store_arc.as_ref(),
+        &prefix,
+        "ingest_stats.json",
+        &cache_dir,
+    )
+    .context("download ingest_stats.json")?;
 
     let data_source = match &remote {
         RemoteStore::S3 { bucket, client, prefix } => GraphDataSource::S3 {
@@ -576,6 +594,52 @@ fn download_rowpack_contexts(
         fs::write(&dst, &bytes)?;
     }
     Ok(())
+}
+
+fn copy_optional_local_file(source_root: &Path, filename: &str, cache_root: &Path) -> Result<bool> {
+    let src = source_root.join(filename);
+    if !src.exists() {
+        return Ok(false);
+    }
+    let dst = cache_root.join(filename);
+    if dst.exists() {
+        return Ok(true);
+    }
+    if let Some(parent) = dst.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::copy(&src, &dst)
+        .with_context(|| format!("copy {}", src.display()))?;
+    Ok(true)
+}
+
+fn download_optional_object(
+    rt: &Runtime,
+    store: &dyn ObjectStore,
+    prefix: &str,
+    filename: &str,
+    cache_root: &Path,
+) -> Result<bool> {
+    let key = if prefix.is_empty() {
+        filename.to_string()
+    } else {
+        format!("{}/{}", prefix, filename)
+    };
+    let dst = cache_root.join(filename);
+    if dst.exists() {
+        return Ok(true);
+    }
+    let obj = match rt.block_on(store.get(&ObjectPath::from(key.clone()))) {
+        Ok(obj) => obj,
+        Err(ObjectStoreError::NotFound { .. }) => return Ok(false),
+        Err(err) => return Err(anyhow!("download {}: {}", key, err)),
+    };
+    if let Some(parent) = dst.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let bytes = rt.block_on(obj.bytes()).context("buffer object")?;
+    fs::write(&dst, &bytes)?;
+    Ok(true)
 }
 
 fn cache_tempdir() -> Result<tempfile::TempDir> {
@@ -833,6 +897,10 @@ fn build_from_local_dataset(
     let cache_dir = cache_root.join(safe_prefix);
     let cached_meta = cache_dir.join("index_metadata.json");
     if cache_dir.join("nodes").exists() && cached_meta.exists() {
+        copy_rowpack_contexts_from_local(&metadata, source, &cache_dir)
+            .context("copy rowpack contexts")?;
+        copy_optional_local_file(source, "ingest_stats.json", &cache_dir)
+            .context("copy ingest_stats.json")?;
         return Ok((metadata, cache_dir));
     }
     fs::create_dir_all(&cache_dir)?;
@@ -851,6 +919,8 @@ fn build_from_local_dataset(
         .context("build graph from parquet")?;
     copy_rowpack_contexts_from_local(&metadata, source, &cache_dir)
         .context("copy rowpack contexts")?;
+    copy_optional_local_file(source, "ingest_stats.json", &cache_dir)
+        .context("copy ingest_stats.json")?;
     fs::write(&cached_meta, serde_json::to_vec_pretty(&metadata)?)?;
     Ok((metadata, cache_dir))
 }
@@ -1085,12 +1155,58 @@ fn read_ingest_report(root: &Path) -> Result<Option<IngestReport>> {
 fn read_build_report(root: &Path) -> Result<Option<BuildReport>> {
     let path = root.join("build_stats.json");
     if !path.exists() {
-        return Ok(None);
+        return read_build_reports_recursive(root);
     }
     let bytes = fs::read(&path).with_context(|| format!("read {}", path.display()))?;
     let report: BuildReport =
         serde_json::from_slice(&bytes).with_context(|| format!("parse {}", path.display()))?;
     Ok(Some(report))
+}
+
+fn read_build_reports_recursive(root: &Path) -> Result<Option<BuildReport>> {
+    let nodes_root = root.join("nodes");
+    if !nodes_root.exists() {
+        return Ok(None);
+    }
+    let mut stack = vec![nodes_root];
+    let mut agg = BuildStatsReport {
+        nodes_ingested: 0,
+        edges_ingested: 0,
+        truncated_nodes: 0,
+        truncated_edges_total: 0,
+        truncated_edges_per_relation: Vec::new(),
+        capped_edge_lists: 0,
+    };
+    let mut found = false;
+    while let Some(dir) = stack.pop() {
+        for entry in fs::read_dir(&dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.file_name().and_then(|n| n.to_str()) != Some("build_stats.json") {
+                continue;
+            }
+            let bytes = fs::read(&path).with_context(|| format!("read {}", path.display()))?;
+            let report: BuildReport =
+                serde_json::from_slice(&bytes).with_context(|| format!("parse {}", path.display()))?;
+            found = true;
+            agg.nodes_ingested = agg.nodes_ingested.saturating_add(report.build_stats.nodes_ingested);
+            agg.edges_ingested = agg.edges_ingested.saturating_add(report.build_stats.edges_ingested);
+            agg.truncated_nodes =
+                agg.truncated_nodes.saturating_add(report.build_stats.truncated_nodes);
+            agg.truncated_edges_total =
+                agg.truncated_edges_total.saturating_add(report.build_stats.truncated_edges_total);
+            agg.capped_edge_lists =
+                agg.capped_edge_lists.saturating_add(report.build_stats.capped_edge_lists);
+        }
+    }
+    if !found {
+        return Ok(None);
+    }
+    Ok(Some(BuildReport { build_stats: agg }))
 }
 
 fn print_ingest_report(report: &IngestReport) {
