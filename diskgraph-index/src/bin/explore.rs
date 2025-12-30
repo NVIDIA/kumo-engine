@@ -13,6 +13,7 @@ use diskgraph_index::graph::{
     GraphProgressSink, TableReader,
 };
 use diskgraph_index::layout::{EDGES_FILENAME, OFFSETS_FILENAME};
+use diskgraph_rowpack::{ColumnEncoding, DecimalStorage, FloatStorage, RowPackContext, StringEncoding};
 use object_store::ObjectStore;
 use diskgraph_fs::{
     build_adls_client, build_gcs_client, build_s3_client, AdlsConfig, GcsConfig, S3Config,
@@ -23,6 +24,7 @@ use pprof::protos::Message;
 use pprof::ProfilerGuard;
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
+use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Write, IsTerminal};
@@ -41,6 +43,95 @@ enum Source {
         container: String,
         prefix: String,
     },
+}
+
+#[derive(Debug, Deserialize)]
+struct IngestReport {
+    stats: IngestStatsReport,
+    source: SourceMetadataReport,
+}
+
+#[derive(Debug, Deserialize)]
+struct IngestStatsReport {
+    key_parse_failures: u64,
+    key_lookup_failures: u64,
+    key_failure_samples: Vec<String>,
+    key_failures_by_context: HashMap<String, KeyFailureCountsReport>,
+    pk_duplicate_counts: HashMap<String, u64>,
+    pk_duplicate_total: u64,
+    pk_duplicate_samples: HashMap<String, Vec<String>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct KeyFailureCountsReport {
+    parse_failures: u64,
+    lookup_failures: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct SourceMetadataReport {
+    dataset_name: String,
+    tables: Vec<TableSpecReport>,
+    #[serde(default)]
+    relationships: Vec<RelationshipSpecReport>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TableSpecReport {
+    name: String,
+    columns: Vec<ColumnSpecReport>,
+    #[serde(default)]
+    primary_key: Option<String>,
+    #[serde(default)]
+    edge_table: Option<EdgeTableSpecReport>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ColumnSpecReport {
+    name: String,
+    dtype: String,
+    #[serde(default)]
+    fixed_len: Option<usize>,
+    #[serde(default)]
+    key_mode: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct EdgeTableSpecReport {
+    src_fk: ForeignKeySpecReport,
+    dst_fk: ForeignKeySpecReport,
+}
+
+#[derive(Debug, Deserialize)]
+struct ForeignKeySpecReport {
+    column: String,
+    ref_table: String,
+    ref_column: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct RelationshipSpecReport {
+    #[serde(default)]
+    name: Option<String>,
+    src_table: String,
+    src_column: String,
+    dst_table: String,
+    dst_column: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct BuildReport {
+    build_stats: BuildStatsReport,
+}
+
+#[derive(Debug, Deserialize)]
+struct BuildStatsReport {
+    nodes_ingested: u64,
+    edges_ingested: u64,
+    truncated_nodes: u64,
+    truncated_edges_total: u64,
+    truncated_edges_per_relation: Vec<u64>,
+    capped_edge_lists: u64,
 }
 
 enum RemoteStore {
@@ -306,7 +397,7 @@ fn run_explore(source_str: &str, profile_enabled: bool) -> Result<()> {
         println!("  Edges/s: {}", format_number(eps.round() as u64));
         return Ok(());
     }
-    repl(reader, default_table)?;
+    repl(reader, default_table, index_root)?;
     Ok(())
 }
 
@@ -696,10 +787,10 @@ fn build_from_local_dataset(
     Ok((metadata, cache_dir))
 }
 
-fn repl(reader: Arc<GraphIndexReader>, default_table: String) -> Result<()> {
+fn repl(reader: Arc<GraphIndexReader>, default_table: String, index_root: PathBuf) -> Result<()> {
     let mut rl = DefaultEditor::new().context("init editor")?;
     let mut current_table = default_table;
-    println!("Commands: tables | use <table> | info | node <id> | benchmark <threads> [duration] | benchmarkall <threads> [duration] | quit");
+    println!("Commands: tables | use <table> | info | node <id> | formats | benchmark <threads> [duration] | benchmarkall <threads> [duration] | quit");
     loop {
         match rl.readline("explore> ") {
             Ok(line) => {
@@ -727,6 +818,10 @@ fn repl(reader: Arc<GraphIndexReader>, default_table: String) -> Result<()> {
                 }
                 if trimmed.eq_ignore_ascii_case("info") {
                     print_info(&reader, &current_table);
+                    continue;
+                }
+                if trimmed.eq_ignore_ascii_case("formats") {
+                    print_formats(reader.metadata(), &index_root)?;
                     continue;
                 }
                 if let Some(rest) = trimmed.strip_prefix("node ") {
@@ -810,7 +905,7 @@ fn repl(reader: Arc<GraphIndexReader>, default_table: String) -> Result<()> {
                     continue;
                 }
                 println!(
-                    "Unknown command. Use: tables | use <table> | info | node <id> | benchmark <threads> [duration] | benchmarkall <threads> [duration] | quit"
+                    "Unknown command. Use: tables | use <table> | info | node <id> | formats | benchmark <threads> [duration] | benchmarkall <threads> [duration] | quit"
                 );
             }
             Err(ReadlineError::Interrupted) | Err(ReadlineError::Eof) => break,
@@ -849,6 +944,309 @@ fn print_tables(reader: &GraphIndexReader) {
                 rel.name, rel.dst_type, sort_label
             );
         }
+    }
+}
+
+fn print_formats(metadata: &DatasetMetadata, root: &Path) -> Result<()> {
+    println!("Formats:");
+    for node in &metadata.node_types {
+        println!();
+        println!("Table: {}", node.name);
+        if let Some(pk) = &node.primary_key_map {
+            let key_mode = pk.key_mode.as_deref().unwrap_or("var");
+            let fixed = pk
+                .fixed_len
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "n/a".to_string());
+            println!(
+                "  Primary key: {} (dtype={}, mode={}, fixed_len={}, mapping={})",
+                pk.column, pk.dtype, key_mode, fixed, pk.mapping_kind
+            );
+        } else {
+            println!("  Primary key: none");
+        }
+        if let Some(compression) = &node.node_data_compression {
+            println!(
+                "  Node data: {} (ctx={})",
+                compression.codec, compression.context_path
+            );
+            if compression.codec == "rowpack" {
+                let ctx_path = root.join(&compression.context_path);
+                if let Ok(bytes) = fs::read(&ctx_path) {
+                    if let Ok(ctx) = RowPackContext::from_bytes(&bytes) {
+                        print_rowpack_summary(&ctx);
+                    } else {
+                        println!("    Rowpack: failed to parse {}", ctx_path.display());
+                    }
+                } else {
+                    println!("    Rowpack: missing {}", ctx_path.display());
+                }
+            }
+        } else {
+            println!("  Node data: none");
+        }
+    }
+
+    if let Some(report) = read_ingest_report(root)? {
+        print_ingest_report(&report);
+    } else {
+        println!();
+        println!("Ingest stats: ingest_stats.json not found");
+    }
+
+    if let Some(report) = read_build_report(root)? {
+        print_build_report(&report);
+    } else {
+        println!();
+        println!("Build stats: build_stats.json not found");
+    }
+    Ok(())
+}
+
+fn read_ingest_report(root: &Path) -> Result<Option<IngestReport>> {
+    let path = root.join("ingest_stats.json");
+    if !path.exists() {
+        return Ok(None);
+    }
+    let bytes = fs::read(&path).with_context(|| format!("read {}", path.display()))?;
+    let report: IngestReport = serde_json::from_slice(&bytes)
+        .with_context(|| format!("parse {}", path.display()))?;
+    Ok(Some(report))
+}
+
+fn read_build_report(root: &Path) -> Result<Option<BuildReport>> {
+    let path = root.join("build_stats.json");
+    if !path.exists() {
+        return Ok(None);
+    }
+    let bytes = fs::read(&path).with_context(|| format!("read {}", path.display()))?;
+    let report: BuildReport =
+        serde_json::from_slice(&bytes).with_context(|| format!("parse {}", path.display()))?;
+    Ok(Some(report))
+}
+
+fn print_ingest_report(report: &IngestReport) {
+    println!();
+    println!("Ingest stats:");
+    println!(
+        "  Key failures: parse={}, lookup={}",
+        report.stats.key_parse_failures, report.stats.key_lookup_failures
+    );
+    if !report.stats.key_failures_by_context.is_empty() {
+        let mut entries: Vec<_> = report.stats.key_failures_by_context.iter().collect();
+        entries.sort_by(|a, b| a.0.cmp(b.0));
+        println!("  Key failures by context:");
+        for (ctx, counts) in entries {
+            if counts.parse_failures == 0 && counts.lookup_failures == 0 {
+                continue;
+            }
+            println!(
+                "    {}: parse {}, lookup {}",
+                ctx, counts.parse_failures, counts.lookup_failures
+            );
+        }
+    }
+    if !report.stats.key_failure_samples.is_empty() {
+        println!("  Key failure samples:");
+        for sample in &report.stats.key_failure_samples {
+            println!("    {}", sample);
+        }
+    }
+    if report.stats.pk_duplicate_total > 0 {
+        println!("  Duplicate primary keys: {}", report.stats.pk_duplicate_total);
+        let mut entries: Vec<_> = report.stats.pk_duplicate_counts.iter().collect();
+        entries.sort_by(|a, b| a.0.cmp(b.0));
+        for (table, count) in entries {
+            println!("    {}: {}", table, count);
+            if let Some(samples) = report.stats.pk_duplicate_samples.get(table) {
+                if !samples.is_empty() {
+                    println!("      samples: {}", samples.join(", "));
+                }
+            }
+        }
+    }
+    print_source_schema(&report.source);
+}
+
+fn print_source_schema(source: &SourceMetadataReport) {
+    println!();
+    println!("Source schema: {}", source.dataset_name);
+    let mut tables: Vec<&TableSpecReport> = source.tables.iter().collect();
+    tables.sort_by(|a, b| a.name.cmp(&b.name));
+    let mut table_map: HashMap<&str, &TableSpecReport> = HashMap::new();
+    for table in &source.tables {
+        table_map.insert(table.name.as_str(), table);
+    }
+    for table in tables {
+        println!("  Table {}:", table.name);
+        if let Some(pk) = &table.primary_key {
+            if let Some(col) = table.columns.iter().find(|c| &c.name == pk) {
+                println!("    Primary key: {} ({})", pk, format_column(col));
+            } else {
+                println!("    Primary key: {}", pk);
+            }
+        } else {
+            println!("    Primary key: none");
+        }
+        if let Some(edge) = &table.edge_table {
+            println!(
+                "    Edge table: {} -> {}",
+                format_fk(&table, &edge.src_fk),
+                format_fk(&table, &edge.dst_fk)
+            );
+        }
+    }
+    if !source.relationships.is_empty() {
+        println!("  Relationships:");
+        for rel in &source.relationships {
+            let name = rel
+                .name
+                .as_deref()
+                .unwrap_or("unnamed");
+            let src = table_map
+                .get(rel.src_table.as_str())
+                .and_then(|t| t.columns.iter().find(|c| c.name == rel.src_column));
+            let dst = table_map
+                .get(rel.dst_table.as_str())
+                .and_then(|t| t.columns.iter().find(|c| c.name == rel.dst_column));
+            let src_desc = src.map(format_column).unwrap_or_else(|| "unknown".to_string());
+            let dst_desc = dst.map(format_column).unwrap_or_else(|| "unknown".to_string());
+            println!(
+                "    {}: {}.{} ({}) -> {}.{} ({})",
+                name,
+                rel.src_table,
+                rel.src_column,
+                src_desc,
+                rel.dst_table,
+                rel.dst_column,
+                dst_desc
+            );
+        }
+    }
+}
+
+fn format_fk(table: &TableSpecReport, fk: &ForeignKeySpecReport) -> String {
+    let col = table.columns.iter().find(|c| c.name == fk.column);
+    match col {
+        Some(col) => format!(
+            "{} ({} -> {}.{})",
+            fk.column,
+            format_column(col),
+            fk.ref_table,
+            fk.ref_column
+        ),
+        None => format!("{} -> {}.{}", fk.column, fk.ref_table, fk.ref_column),
+    }
+}
+
+fn format_column(col: &ColumnSpecReport) -> String {
+    let mut out = col.dtype.clone();
+    if let Some(mode) = &col.key_mode {
+        out.push_str(&format!(", mode={}", mode));
+    } else {
+        out.push_str(", mode=var");
+    }
+    if let Some(len) = col.fixed_len {
+        out.push_str(&format!(", fixed_len={}", len));
+    }
+    out
+}
+
+fn print_build_report(report: &BuildReport) {
+    let stats = &report.build_stats;
+    println!();
+    println!("Build stats:");
+    println!("  Nodes ingested: {}", stats.nodes_ingested);
+    println!("  Edges ingested: {}", stats.edges_ingested);
+    if stats.truncated_nodes > 0 || stats.truncated_edges_total > 0 {
+        println!("  Truncated nodes: {}", stats.truncated_nodes);
+        println!("  Truncated edges: {}", stats.truncated_edges_total);
+    }
+    if stats.capped_edge_lists > 0 {
+        println!("  Capped edge lists: {}", stats.capped_edge_lists);
+    }
+    if !stats.truncated_edges_per_relation.is_empty() {
+        let total: u64 = stats.truncated_edges_per_relation.iter().sum();
+        if total > 0 {
+            println!("  Truncated edges by relation: {}", format_count(total));
+        }
+    }
+}
+
+fn print_rowpack_summary(ctx: &RowPackContext) {
+    println!("    Rowpack: v{}, estimated_row_bytes={}", ctx.version, ctx.estimated_row_bytes);
+    println!("    Columns:");
+    for (idx, col) in ctx.columns.iter().enumerate() {
+        let encoding = format_rowpack_encoding(&col.encoding);
+        println!("      [{}] {} ({:?}) {}", idx, col.name, col.logical_type, encoding);
+    }
+}
+
+fn format_rowpack_encoding(encoding: &ColumnEncoding) -> String {
+    match encoding {
+        ColumnEncoding::Int { signed, varint, bits } => {
+            format!("int(signed={}, varint={}, bits={})", signed, varint, bits)
+        }
+        ColumnEncoding::Float { storage } => format!("float({})", format_float_storage(*storage)),
+        ColumnEncoding::Bool => "bool".to_string(),
+        ColumnEncoding::String { encoding } => format_string_encoding(encoding),
+        ColumnEncoding::Bytes { fixed_len } => match fixed_len {
+            Some(len) => format!("bytes(fixed_len={})", len),
+            None => "bytes".to_string(),
+        },
+        ColumnEncoding::Date { varint, bits } => {
+            format!("date(varint={}, bits={})", varint, bits)
+        }
+        ColumnEncoding::Timestamp => "timestamp".to_string(),
+        ColumnEncoding::Decimal {
+            precision,
+            scale,
+            bytes,
+            storage,
+        } => format!(
+            "decimal(precision={}, scale={}, bytes={}, storage={})",
+            precision,
+            scale,
+            bytes,
+            format_decimal_storage(storage)
+        ),
+        ColumnEncoding::FloatArray { storage } => {
+            format!("float_array({})", format_float_storage(*storage))
+        }
+    }
+}
+
+fn format_string_encoding(encoding: &StringEncoding) -> String {
+    match encoding {
+        StringEncoding::Raw => "string(raw)".to_string(),
+        StringEncoding::Dict { values } => format!("string(dict entries={})", values.len()),
+        StringEncoding::Alphabet { alphabet } => {
+            format!("string(alphabet len={})", alphabet.len())
+        }
+        StringEncoding::Bpe { dict } => format!("string(bpe entries={})", dict.len()),
+        StringEncoding::NumericInt => "string(numeric_int)".to_string(),
+        StringEncoding::NumericScaled => "string(numeric_scaled)".to_string(),
+        StringEncoding::Hex { len, dashed, upper } => {
+            format!("string(hex len={} dashed={} upper={})", len, dashed, upper)
+        }
+        StringEncoding::IsoTimestamp { fmt } => format!("string(iso_timestamp {:?})", fmt),
+        StringEncoding::Snappy => "string(snappy)".to_string(),
+    }
+}
+
+fn format_float_storage(storage: FloatStorage) -> &'static str {
+    match storage {
+        FloatStorage::F16 => "f16",
+        FloatStorage::F32 => "f32",
+        FloatStorage::F64 => "f64",
+    }
+}
+
+fn format_decimal_storage(storage: &DecimalStorage) -> String {
+    match storage {
+        DecimalStorage::Raw => "raw".to_string(),
+        DecimalStorage::Int { varint, bits } => format!("int(varint={}, bits={})", varint, bits),
+        DecimalStorage::Float { storage } => format!("float({})", format_float_storage(*storage)),
     }
 }
 

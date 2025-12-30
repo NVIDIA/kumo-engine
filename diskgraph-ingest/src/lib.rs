@@ -29,6 +29,7 @@ use parquet::file::properties::WriterProperties;
 use parquet::file::reader::FileReader;
 use pprof::protos::Message;
 use pprof::ProfilerGuard;
+use serde::Serialize;
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 use std::fs;
@@ -86,6 +87,12 @@ impl KeyParseError {
 
 type KeyParseResult<T> = std::result::Result<T, KeyParseError>;
 
+#[derive(Clone, Debug, Serialize)]
+pub struct IngestReport {
+    pub stats: IngestStats,
+    pub source: SourceMetadata,
+}
+
 #[derive(Clone)]
 pub struct IngestOptions {
     pub mapping_kind: MappingKind,
@@ -103,7 +110,7 @@ impl Default for IngestOptions {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
 pub struct IngestStats {
     pub output: String,
     pub node_tables: usize,
@@ -122,13 +129,13 @@ pub struct IngestStats {
     pub perf: PerfStats,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize)]
 pub struct KeyFailureCounts {
     pub parse_failures: u64,
     pub lookup_failures: u64,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize)]
 pub struct PerfStats {
     pub wall_time_ms: u64,
     pub pk_map_wall_ms: u64,
@@ -243,6 +250,12 @@ pub fn ingest_with_stats(
         bytes_written,
     };
     let stats = ctx.build_stats(&index_metadata, perf);
+    let report = IngestReport {
+        stats: stats.clone(),
+        source: ctx.source.clone(),
+    };
+    ctx.target
+        .write_bytes("ingest_stats.json", serde_json::to_vec_pretty(&report)?)?;
     Ok((index_metadata, stats))
 }
 
@@ -2270,12 +2283,11 @@ fn sample_key_value(array: &ArrayRef, row: usize, col: &ColumnSpec) -> Option<St
     match col.dtype {
         ColumnType::String => {
             let arr = array.as_any().downcast_ref::<arrow_array::StringArray>()?;
-            Some(truncate_sample(arr.value(row)))
+            Some(format_bytes_sample(arr.value(row).as_bytes()))
         }
         ColumnType::Bytes => {
             let arr = array.as_any().downcast_ref::<arrow_array::BinaryArray>()?;
-            let value = String::from_utf8_lossy(arr.value(row));
-            Some(truncate_sample(value.as_ref()))
+            Some(format_bytes_sample(arr.value(row)))
         }
         ColumnType::Int64 => {
             let arr = array.as_any().downcast_ref::<arrow_array::Int64Array>()?;
@@ -2334,12 +2346,18 @@ fn sample_key_value(array: &ArrayRef, row: usize, col: &ColumnSpec) -> Option<St
 fn sample_key(key: &Key) -> Option<String> {
     match key {
         Key::Int(v) => Some(v.to_string()),
-        Key::FixedBytes(bytes) | Key::Bytes(bytes) => {
-            let value = String::from_utf8_lossy(bytes);
-            Some(truncate_sample(value.as_ref()))
-        }
+        Key::FixedBytes(bytes) | Key::Bytes(bytes) => Some(format_bytes_sample(bytes)),
         Key::Uuid(bytes) => Some(hex_encode(bytes)),
     }
+}
+
+fn format_bytes_sample(bytes: &[u8]) -> String {
+    if let Ok(text) = std::str::from_utf8(bytes) {
+        if text.chars().all(|ch| ch.is_ascii_graphic() || ch == ' ') {
+            return truncate_sample(text);
+        }
+    }
+    format!("0x{}", hex_encode(bytes))
 }
 
 fn truncate_sample(input: &str) -> String {
