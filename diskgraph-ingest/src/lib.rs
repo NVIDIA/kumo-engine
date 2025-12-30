@@ -118,6 +118,7 @@ pub struct IngestStats {
     pub key_failures_by_context: HashMap<String, KeyFailureCounts>,
     pub pk_duplicate_counts: HashMap<String, u64>,
     pub pk_duplicate_total: u64,
+    pub pk_duplicate_samples: HashMap<String, Vec<String>>,
     pub perf: PerfStats,
 }
 
@@ -266,6 +267,7 @@ struct IngestContext {
     relationships: Vec<RelationshipRuntime>,
     edge_counts: HashMap<String, u64>,
     pk_duplicate_counts: HashMap<String, u64>,
+    pk_duplicate_samples: HashMap<String, Vec<String>>,
     output: String,
     key_failures: std::sync::Arc<KeyFailureCollector>,
     pk_map_task_ms: u64,
@@ -501,6 +503,7 @@ impl IngestContext {
             relationships,
             edge_counts: HashMap::new(),
             pk_duplicate_counts: HashMap::new(),
+            pk_duplicate_samples: HashMap::new(),
             output: output.to_string(),
             key_failures: std::sync::Arc::new(KeyFailureCollector::new()),
             pk_map_task_ms: 0,
@@ -527,6 +530,7 @@ impl IngestContext {
         let pk_maps = std::sync::Arc::new(std::sync::Mutex::new(HashMap::new()));
         let table_rows = std::sync::Arc::new(std::sync::Mutex::new(HashMap::new()));
         let pk_duplicate_counts = std::sync::Arc::new(std::sync::Mutex::new(HashMap::new()));
+        let pk_duplicate_samples = std::sync::Arc::new(std::sync::Mutex::new(HashMap::new()));
         let task_time = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
         let mut tasks = Vec::new();
         let source_rowpack = self.source.rowpack.clone();
@@ -534,6 +538,7 @@ impl IngestContext {
             let pk_maps = std::sync::Arc::clone(&pk_maps);
             let table_rows = std::sync::Arc::clone(&table_rows);
             let pk_duplicate_counts = std::sync::Arc::clone(&pk_duplicate_counts);
+            let pk_duplicate_samples = std::sync::Arc::clone(&pk_duplicate_samples);
             let progress = progress.clone();
             let source_rowpack = source_rowpack.clone();
             tasks.push(WorkItem {
@@ -621,6 +626,21 @@ impl IngestContext {
                             .lock()
                             .unwrap()
                             .insert(table.name.clone(), duplicate_count);
+                        let mut samples = Vec::new();
+                        for key in pk_map.duplicate_samples() {
+                            if samples.len() >= 10 {
+                                break;
+                            }
+                            if let Some(sample) = sample_key(key) {
+                                samples.push(sample);
+                            }
+                        }
+                        if !samples.is_empty() {
+                            pk_duplicate_samples
+                                .lock()
+                                .unwrap()
+                                .insert(table.name.clone(), samples);
+                        }
                     }
                     table_rows.lock().unwrap().insert(table.name.clone(), row_id);
                     pk_maps.lock().unwrap().insert(
@@ -655,6 +675,10 @@ impl IngestContext {
             .map_err(|_| anyhow!("pk map duplicate tasks still running"))?
             .into_inner()
             .unwrap();
+        let pk_duplicate_samples = std::sync::Arc::try_unwrap(pk_duplicate_samples)
+            .map_err(|_| anyhow!("pk map duplicate sample tasks still running"))?
+            .into_inner()
+            .unwrap();
         for (table_name, state) in &pk_maps {
             let map_path = format!("nodes/{}/pk_map.bin", table_name.to_lowercase());
             let target = self.target.join(&map_path);
@@ -680,6 +704,7 @@ impl IngestContext {
         self.pk_maps = pk_maps;
         self.table_rows = table_rows;
         self.pk_duplicate_counts = pk_duplicate_counts;
+        self.pk_duplicate_samples = pk_duplicate_samples;
         Ok(())
     }
 
@@ -1258,6 +1283,7 @@ impl IngestContext {
             key_failures_by_context,
             pk_duplicate_counts: self.pk_duplicate_counts.clone(),
             pk_duplicate_total,
+            pk_duplicate_samples: self.pk_duplicate_samples.clone(),
             perf,
         }
     }

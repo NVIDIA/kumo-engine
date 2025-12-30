@@ -122,6 +122,11 @@ fn main() -> Result<()> {
         entries.sort_by(|a, b| a.0.cmp(b.0));
         for (name, count) in entries {
             println!("  {}: {}", name, count);
+            if let Some(samples) = stats.pk_duplicate_samples.get(name) {
+                if !samples.is_empty() {
+                    println!("    Samples: {}", samples.join(", "));
+                }
+            }
         }
     }
     if stats.key_parse_failures > 0 || stats.key_lookup_failures > 0 {

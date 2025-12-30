@@ -60,6 +60,7 @@ pub struct PkMap {
     capacity: usize,
     hash_len: usize,
     duplicate_count: u64,
+    duplicate_samples: Vec<Key>,
     min_key: u64,
     max_key: u64,
     direct: Option<DirectMap>,
@@ -87,6 +88,7 @@ impl PkMap {
             capacity,
             hash_len: 0,
             duplicate_count: 0,
+            duplicate_samples: Vec::new(),
             min_key: u64::MAX,
             max_key: 0,
             direct: None,
@@ -127,6 +129,9 @@ impl PkMap {
                         }
                         Some((existing, _)) if keys_equal(existing, &key) => {
                             self.duplicate_count = self.duplicate_count.saturating_add(1);
+                            if self.duplicate_samples.len() < 10 {
+                                self.duplicate_samples.push(key);
+                            }
                             return Ok(());
                         }
                         _ => {
@@ -152,6 +157,9 @@ impl PkMap {
                     for entry in iter {
                         if compare_keys(&current.0, &entry.0) == Ordering::Equal {
                             self.duplicate_count = self.duplicate_count.saturating_add(1);
+                            if self.duplicate_samples.len() < 10 {
+                                self.duplicate_samples.push(current.0.clone());
+                            }
                             continue;
                         }
                         deduped.push(current);
@@ -169,6 +177,10 @@ impl PkMap {
 
     pub fn duplicate_count(&self) -> u64 {
         self.duplicate_count
+    }
+
+    pub fn duplicate_samples(&self) -> &[Key] {
+        &self.duplicate_samples
     }
 
     pub fn lookup(&self, key: &Key) -> Option<u64> {
