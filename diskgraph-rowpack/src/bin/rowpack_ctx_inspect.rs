@@ -109,6 +109,13 @@ fn print_string_encoding(encoding: &StringEncoding) -> Result<()> {
             println!("  Encoding: string alphabet (len={})", alphabet.len());
             println!("    Alphabet: {}", format_bytes(alphabet));
         }
+        StringEncoding::Bpe { dict } => {
+            println!("  Encoding: string bpe (entries={})", dict.len());
+            let preview = dict.iter().take(MAX_DICT_PREVIEW);
+            for (idx, value) in preview.enumerate() {
+                println!("    [{}] {}", idx, format_bytes(value));
+            }
+        }
         StringEncoding::NumericInt => {
             println!("  Encoding: string numeric_int");
         }

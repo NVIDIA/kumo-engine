@@ -84,6 +84,7 @@ Rowpack detects and chooses the most efficient strategy:
 
 - **Dictionary**: for categorical columns; dictionary entries stored in context.
 - **Alphabet**: for short strings with a small character set and high coverage (up to the snappy long-string threshold, default 128 bytes); length is varint-prefixed.
+- **BPE**: for strings with repeated substrings; uses a column dictionary of common byte sequences and encodes as token streams.
 - **Numeric**: for strings that are numeric (optional leading `-`, optional decimal point).
 - **Hex**: for UUIDs / hex IDs (upper or lower case per column).
 - **ISO timestamp**: encodes to int64 micros, tolerates non-ISO via fallback.
@@ -111,6 +112,7 @@ The builder samples a configurable number of rows per table and:
 - Computes cardinality for dictionary eligibility.
 - Detects hex/UUID and ISO timestamps in string columns.
 - Measures snappy compression ratio for long strings.
+- Trains a lightweight BPE dictionary for repeated substrings when it yields a size win (enabled for short-ish strings, default avg len >= 12 and below the snappy threshold).
 - Chooses integer varint vs fixed width based on average size.
 - Chooses float16 only when all samples are within a safe magnitude range.
 
