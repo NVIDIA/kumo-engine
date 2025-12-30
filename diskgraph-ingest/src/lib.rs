@@ -842,15 +842,9 @@ impl IngestContext {
                         &rel.name_forward,
                         rel.forward_sort != SortKeyMode::None,
                     )?;
-                    let (mut reverse_writer, reverse_schema) = create_edge_writer(
-                        &target,
-                        &rel.name_reverse,
-                        rel.reverse_sort != SortKeyMode::None,
-                    )?;
                     let mut forward_edges =
                         EdgeAccumulator::new(rel.forward_sort != SortKeyMode::None);
-                    let mut reverse_edges =
-                        EdgeAccumulator::new(rel.reverse_sort != SortKeyMode::None);
+                    let mut reverse_records: Vec<EdgeRecord> = Vec::new();
                     let mut forward_count = 0u64;
                     let mut reverse_count = 0u64;
                     let mut seen = 0u64;
@@ -906,29 +900,29 @@ impl IngestContext {
                                 .map(|v| sort_key_to_u32(&v).unwrap_or(0)),
                             SortKeyMode::None => None,
                         };
-                        reverse_edges.push(dst_id, src_id, reverse_sort_key);
+                        reverse_records.push(EdgeRecord::new(dst_id, src_id, reverse_sort_key));
                         forward_count += 1;
                         reverse_count += 1;
                         if forward_edges.len() >= EDGE_BATCH_SIZE {
                             flush_edge_batch(&forward_schema, &mut forward_writer, &forward_edges)?;
                             forward_edges.clear();
                         }
-                        if reverse_edges.len() >= EDGE_BATCH_SIZE {
-                            flush_edge_batch(&reverse_schema, &mut reverse_writer, &reverse_edges)?;
-                            reverse_edges.clear();
-                        }
                         Ok(())
                     })?;
                     if !forward_edges.is_empty() {
                         flush_edge_batch(&forward_schema, &mut forward_writer, &forward_edges)?;
                     }
-                    if !reverse_edges.is_empty() {
-                        flush_edge_batch(&reverse_schema, &mut reverse_writer, &reverse_edges)?;
-                    }
                     let forward_sink = forward_writer.into_inner()?;
                     forward_sink.finish()?;
-                    let reverse_sink = reverse_writer.into_inner()?;
-                    reverse_sink.finish()?;
+                    if !edge_records_sorted(&reverse_records) {
+                        reverse_records.sort_unstable_by(edge_record_cmp);
+                    }
+                    write_edge_records_to(
+                        &target,
+                        &rel.name_reverse,
+                        rel.reverse_sort != SortKeyMode::None,
+                        &reverse_records,
+                    )?;
                     if progress_enabled {
                         emit_progress_finish(&progress, &forward_key, Some(seen));
                         emit_progress_finish(&progress, &reverse_key, Some(seen));
