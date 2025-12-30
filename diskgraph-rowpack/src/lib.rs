@@ -1510,6 +1510,7 @@ pub struct RowPackScratch {
     tags: BitWriter,
     bools: BitWriter,
     data: Vec<u8>,
+    bpe_tokens: Vec<u32>,
 }
 
 impl RowPackScratch {
@@ -1525,6 +1526,7 @@ impl RowPackScratch {
             tags: BitWriter::with_capacity(tag_bytes),
             bools: BitWriter::with_capacity(bool_bytes),
             data: Vec::with_capacity(ctx.estimated_row_bytes as usize),
+            bpe_tokens: Vec::new(),
         }
     }
 
@@ -1549,6 +1551,7 @@ impl RowPackScratch {
         self.tags.reset();
         self.bools.reset();
         self.data.clear();
+        self.bpe_tokens.clear();
     }
 }
 
@@ -1624,6 +1627,7 @@ impl RowPackEncoder {
         let mut tags = BitWriter::with_capacity(tag_bytes);
         let mut bools = BitWriter::with_capacity(bool_bytes);
         let mut data = Vec::with_capacity(self.ctx.estimated_row_bytes as usize);
+        let mut bpe_tokens = Vec::new();
         for (idx, col) in self.ctx.columns.iter().enumerate() {
             let value = &values[idx];
             let tag = match value {
@@ -1643,6 +1647,7 @@ impl RowPackEncoder {
                     self.dict_maps[idx].as_ref(),
                     self.alphabet_maps[idx].as_ref(),
                     self.bpe_tries[idx].as_ref(),
+                    Some(&mut bpe_tokens),
                 )?,
             };
             tags.write_bits(tag, 2);
@@ -1683,6 +1688,7 @@ impl RowPackEncoder {
                     self.dict_maps[idx].as_ref(),
                     self.alphabet_maps[idx].as_ref(),
                     self.bpe_tries[idx].as_ref(),
+                    Some(&mut scratch.bpe_tokens),
                 )?,
             };
             scratch.tags.write_bits(tag, 2);
@@ -1837,6 +1843,7 @@ impl RowPackEncoder {
                                 self.dict_maps[idx].as_ref(),
                                 self.alphabet_maps[idx].as_ref(),
                                 self.bpe_tries[idx].as_ref(),
+                                Some(&mut scratch.bpe_tokens),
                             )?
                         } else {
                             return Err(anyhow!("rowpack string encoding mismatch"));
@@ -1966,6 +1973,7 @@ fn encode_value_with_tag<'a>(
     dict: Option<&FastHashMap<Vec<u8>, u32>>,
     alphabet: Option<&AlphabetMap>,
     bpe: Option<&BpeTrie>,
+    bpe_tokens: Option<&mut Vec<u32>>,
  ) -> Result<u8> {
     match (&col.encoding, value) {
         (ColumnEncoding::Int { signed, varint, bits }, ValueRef::Int64(v)) => {
@@ -2045,7 +2053,7 @@ fn encode_value_with_tag<'a>(
             encode_decimal_i256_with_tag(out, v, *scale, storage)
         }
         (ColumnEncoding::String { encoding }, ValueRef::String(v)) => {
-            encode_string_with_tag(out, encoding, v, dict, alphabet, bpe)
+            encode_string_with_tag(out, encoding, v, dict, alphabet, bpe, bpe_tokens)
         }
         (ColumnEncoding::FloatArray { storage }, ValueRef::Float32Array(values)) => {
             let tag = encode_float_array_f32_with_tag(
@@ -2300,6 +2308,7 @@ fn encode_string_with_tag(
     dict: Option<&FastHashMap<Vec<u8>, u32>>,
     alphabet: Option<&AlphabetMap>,
     bpe: Option<&BpeTrie>,
+    mut bpe_tokens: Option<&mut Vec<u32>>,
 ) -> Result<u8> {
     match encoding {
         StringEncoding::Raw => {
@@ -2340,10 +2349,17 @@ fn encode_string_with_tag(
         StringEncoding::Bpe { .. } => {
             let bytes = value.as_bytes();
             let trie = bpe.ok_or_else(|| anyhow!("rowpack missing bpe trie"))?;
-            let mut tokens = Vec::new();
-            tokenize_bpe(bytes, trie, &mut tokens);
+            let mut local_tokens = Vec::new();
+            let tokens = match bpe_tokens.as_deref_mut() {
+                Some(buf) => {
+                    buf.clear();
+                    buf
+                }
+                None => &mut local_tokens,
+            };
+            tokenize_bpe(bytes, trie, tokens);
             write_varint(tokens.len() as u64, out);
-            for token in tokens {
+            for token in tokens.iter().copied() {
                 write_varint(token as u64, out);
             }
             Ok(1)

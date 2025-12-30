@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
+use chrono::{DateTime, Datelike, Timelike, Utc};
 use arrow_array::builder::{Float32Builder, Int64Builder};
 use arrow_array::{ArrayRef, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
@@ -124,12 +125,15 @@ fn write_node_parquet(
         Field::new("name", DataType::Utf8, false),
         Field::new("weight", DataType::Float32, false),
         Field::new("created_at", DataType::Timestamp(arrow_schema::TimeUnit::Second, None), false),
-        Field::new(
-            "embedding",
-            DataType::List(Arc::new(Field::new("item", DataType::Float32, true))),
-            false,
-        ),
     ];
+    if name == "User" {
+        fields.push(Field::new("created_at_str", DataType::Utf8, false));
+    }
+    fields.push(Field::new(
+        "embedding",
+        DataType::List(Arc::new(Field::new("item", DataType::Float32, true))),
+        false,
+    ));
     if name == "Order" || name == "Session" {
         fields.push(Field::new("user_id", DataType::Int64, false));
     }
@@ -158,13 +162,22 @@ fn write_node_parquet(
         let mut name_builder = arrow_array::builder::StringBuilder::new();
         let mut weight_builder = arrow_array::builder::Float32Builder::new();
         let mut ts_builder = arrow_array::builder::TimestampSecondBuilder::new();
+        let mut ts_str_builder = if name == "User" {
+            Some(arrow_array::builder::StringBuilder::new())
+        } else {
+            None
+        };
         let mut list_builder = arrow_array::builder::ListBuilder::new(Float32Builder::new());
         for _ in 0..take {
             let id = next_id as i64;
             id_builder.append_value(id);
             name_builder.append_value(format!("{}-{:08}", name, id));
             weight_builder.append_value(rng.gen_range(0.0f32..100.0));
-            ts_builder.append_value(1_700_000_000 + id);
+            let ts = 1_700_000_000 + id;
+            ts_builder.append_value(ts);
+            if let Some(builder) = ts_str_builder.as_mut() {
+                builder.append_value(format_non_iso_ts(ts));
+            }
             list_builder.values().append_value(rng.gen_range(0.0..1.0));
             list_builder.values().append_value(rng.gen_range(0.0..1.0));
             list_builder.values().append_value(rng.gen_range(0.0..1.0));
@@ -176,8 +189,11 @@ fn write_node_parquet(
             Arc::new(name_builder.finish()) as ArrayRef,
             Arc::new(weight_builder.finish()) as ArrayRef,
             Arc::new(ts_builder.finish()) as ArrayRef,
-            Arc::new(list_builder.finish()) as ArrayRef,
         ];
+        if let Some(mut builder) = ts_str_builder {
+            cols.push(Arc::new(builder.finish()) as ArrayRef);
+        }
+        cols.push(Arc::new(list_builder.finish()) as ArrayRef);
         if name == "Order" || name == "Session" {
             let max_user = *counts.get("User").unwrap_or(&1);
             let mut user_builder = Int64Builder::new();
@@ -225,7 +241,11 @@ fn write_node_csv(
         }
     }
     let mut sink = target.sink(&path)?;
-    let mut headers = vec!["id", "name", "weight", "created_at", "embedding"];
+    let mut headers = vec!["id", "name", "weight", "created_at"];
+    if name == "User" {
+        headers.push("created_at_str");
+    }
+    headers.push("embedding");
     if name == "Order" || name == "Session" {
         headers.push("user_id");
     }
@@ -251,8 +271,11 @@ fn write_node_csv(
             name_val,
             weight.to_string(),
             ts.to_string(),
-            embedding,
         ];
+        if name == "User" {
+            row.push(format_non_iso_ts(ts as i64));
+        }
+        row.push(embedding);
         if name == "Order" || name == "Session" {
             let max_user = *counts.get("User").unwrap_or(&1);
             row.push(rng.gen_range(0..max_user).to_string());
@@ -374,6 +397,7 @@ fn write_source_metadata(target: &OutputTarget, format: OutputFormat) -> Result<
                     {"name": "name", "dtype": "string", "fixed_len": 12},
                     {"name": "weight", "dtype": "float32"},
                     {"name": "created_at", "dtype": "timestamp"},
+                    {"name": "created_at_str", "dtype": "string", "fixed_len": 19},
                     {"name": "embedding", "dtype": "float32_array"}
                 ]
             },
@@ -525,6 +549,21 @@ fn distribute_counts(total: u64, defs: &[NodeTypeDef]) -> Vec<u64> {
         }
     }
     counts
+}
+
+fn format_non_iso_ts(ts: i64) -> String {
+    let dt = DateTime::<Utc>::from_timestamp(ts, 0)
+        .map(|dt| dt.naive_utc())
+        .unwrap_or_else(|| DateTime::<Utc>::from_timestamp(0, 0).unwrap().naive_utc());
+    format!(
+        "{:02}/{:02}/{:04} {:02}:{:02}:{:02}",
+        dt.month(),
+        dt.day(),
+        dt.year(),
+        dt.hour(),
+        dt.minute(),
+        dt.second()
+    )
 }
 
 fn write_csv_row(mut sink: impl Write, fields: &[String]) -> io::Result<()> {
