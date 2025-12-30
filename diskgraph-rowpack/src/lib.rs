@@ -1473,7 +1473,30 @@ fn train_bpe_dict(samples: &[Vec<u8>], max_entries: usize, max_bytes: usize) -> 
             *seq = out;
         }
     }
-    dict_entries
+    let mut dict_counts = vec![0usize; dict_entries.len()];
+    let mut index_map = Vec::with_capacity(symbols.len());
+    for idx in 0..symbols.len() {
+        if idx < 256 {
+            index_map.push(None);
+        } else {
+            index_map.push(Some(idx - 256));
+        }
+    }
+    for seq in &sequences {
+        for &sym in seq {
+            if let Some(entry_idx) = index_map.get(sym as usize).and_then(|v| *v) {
+                if let Some(count) = dict_counts.get_mut(entry_idx) {
+                    *count += 1;
+                }
+            }
+        }
+    }
+    let mut entries: Vec<(Vec<u8>, usize)> = dict_entries
+        .into_iter()
+        .zip(dict_counts.into_iter())
+        .collect();
+    entries.sort_by(|a, b| b.1.cmp(&a.1));
+    entries.into_iter().map(|(bytes, _)| bytes).collect()
 }
 
 pub struct RowPackEncoder {
