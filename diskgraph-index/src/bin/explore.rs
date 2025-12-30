@@ -927,23 +927,23 @@ fn show_node(reader: &GraphIndexReader, table_name: &str, node: u64) -> Result<(
         }
     }
     match view.node_data() {
-        Ok(_) => match table.decode_node_data(&view) {
-            Ok(Some(bytes)) => {
-                match rmp_serde::from_slice::<JsonValue>(&bytes) {
-                    Ok(value) => match serde_json::to_string_pretty(&value) {
-                        Ok(pretty) => println!("  node_data:\n{pretty}"),
-                        Err(_) => {
-                            let escaped = escape_ascii(&bytes);
-                            println!("  node_data: \"{}\"", escaped);
-                        }
-                    },
-                    Err(_) => {
-                        let escaped = escape_ascii(&bytes);
-                        println!("  node_data: \"{}\"", escaped);
-                    }
+        Ok(_) => match table.decode_node_data_json(&view) {
+            Ok(Some(value)) => match serde_json::to_string_pretty(&value) {
+                Ok(pretty) => println!("  node_data:\n{pretty}"),
+                Err(_) => {
+                    println!("  node_data: <error: json encode>");
                 }
-            }
-            Ok(None) => {}
+            },
+            Ok(None) => match table.decode_node_data(&view) {
+                Ok(Some(bytes)) => {
+                    let escaped = escape_ascii(&bytes);
+                    println!("  node_data: \"{}\"", escaped);
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    println!("  node_data: <error: {}>", e);
+                }
+            },
             Err(e) => {
                 println!("  node_data: <error: {}>", e);
             }

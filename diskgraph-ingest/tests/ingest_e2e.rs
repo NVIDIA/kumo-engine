@@ -5,7 +5,7 @@ use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::arrow::ArrowWriter;
 use parquet::file::properties::WriterProperties;
 use std::fs;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
 use tempfile::tempdir;
@@ -53,7 +53,7 @@ fn count_parquet_rows(path: &Path) -> Result<usize> {
     Ok(rows)
 }
 
-fn read_first_node_value(path: &Path, dict: Option<&[u8]>) -> Result<serde_json::Value> {
+fn read_first_node_value(path: &Path, ctx: &[u8]) -> Result<serde_json::Value> {
     let file = fs::File::open(path)?;
     let mut reader = ParquetRecordBatchReaderBuilder::try_new(file)?
         .with_batch_size(1)
@@ -66,19 +66,13 @@ fn read_first_node_value(path: &Path, dict: Option<&[u8]>) -> Result<serde_json:
         .downcast_ref::<BinaryArray>()
         .ok_or_else(|| anyhow::anyhow!("data column not binary"))?;
     let raw = bin.value(0);
-    let decoded = if let Some(dict) = dict {
-        let mut decoder = zstd::stream::Decoder::with_dictionary(std::io::Cursor::new(raw), dict)?;
-        let mut out = Vec::new();
-        decoder.read_to_end(&mut out)?;
-        out
-    } else {
-        raw.to_vec()
-    };
-    Ok(rmp_serde::from_slice(&decoded)?)
+    let ctx = diskgraph_rowpack::RowPackContext::from_bytes(ctx)?;
+    let decoder = diskgraph_rowpack::RowPackDecoder::new(ctx)?;
+    Ok(decoder.decode_json(raw)?)
 }
 
 #[test]
-fn ingest_csv_with_edges_and_dict() -> Result<()> {
+fn ingest_csv_with_edges_and_rowpack() -> Result<()> {
     let dir = tempdir()?;
     let input_root = dir.path().join("input");
     let output_root = dir.path().join("output");
@@ -201,13 +195,13 @@ fn ingest_csv_with_edges_and_dict() -> Result<()> {
         .iter()
         .find(|n| n.name == "User")
         .unwrap();
-    let dict_path = output_root.join("nodes/user/node_data.dict");
-    if user.node_data_compression.is_some() {
-        assert!(dict_path.exists());
-    }
-    let dict = dict_path.exists().then(|| fs::read(&dict_path)).transpose()?;
+    let compression = user.node_data_compression.as_ref().unwrap();
+    assert_eq!(compression.codec, "rowpack");
+    let ctx_path = output_root.join(&compression.context_path);
+    assert!(ctx_path.exists());
+    let ctx_bytes = fs::read(&ctx_path)?;
     let node_data = output_root.join("nodes/user/part-00000.parquet");
-    let value = read_first_node_value(&node_data, dict.as_deref())?;
+    let value = read_first_node_value(&node_data, &ctx_bytes)?;
     assert_eq!(value["name"], "user0001");
 
     let order_user = disk_metadata

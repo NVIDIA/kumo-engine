@@ -376,7 +376,7 @@ impl GraphIndexReader {
             serde_json::from_slice(&bytes).context("parse index_metadata.json")?;
         let mut tables = HashMap::new();
         for node_type in &metadata.node_types {
-            let (node_data_compression, node_data_dict) = match &node_type.node_data_compression {
+            let (node_data_compression, node_data_decoder) = match &node_type.node_data_compression {
                 Some(cfg) => {
                     if !node_type.has_node_data {
                         return Err(anyhow!(
@@ -384,10 +384,12 @@ impl GraphIndexReader {
                             node_type.name
                         ));
                     }
-                    let dict_path = root.join(&cfg.dict_path);
-                    let dict = fs::read(&dict_path)
-                        .with_context(|| format!("read node data dict {}", dict_path.display()))?;
-                    (Some(cfg.clone()), Some(dict))
+                    let ctx_path = root.join(&cfg.context_path);
+                    let bytes = fs::read(&ctx_path)
+                        .with_context(|| format!("read node data ctx {}", ctx_path.display()))?;
+                    let ctx = diskgraph_rowpack::RowPackContext::from_bytes(&bytes)?;
+                    let decoder = diskgraph_rowpack::RowPackDecoder::new(ctx)?;
+                    (Some(cfg.clone()), Some(decoder))
                 }
                 None => (None, None),
             };
@@ -408,14 +410,14 @@ impl GraphIndexReader {
                 let reader = ShardReader::open(&dir, Arc::clone(&layouts), node_type.has_node_data)?;
                 shard_readers.push(reader);
             }
-            let table = TableReader::new(
-                node_type,
-                relations,
-                Arc::clone(&layouts),
-                shard_readers,
-                node_data_compression,
-                node_data_dict,
-            )?;
+                let table = TableReader::new(
+                    node_type,
+                    relations,
+                    Arc::clone(&layouts),
+                    shard_readers,
+                    node_data_compression,
+                    node_data_decoder,
+                )?;
             tables.insert(node_type.name.clone(), Arc::new(table));
         }
         Ok(Self { metadata, tables })
@@ -446,7 +448,7 @@ pub struct TableReader {
     shard_offsets: Vec<u64>,
     total_nodes: u64,
     node_data_compression: Option<NodeDataCompression>,
-    node_data_dict: Option<Vec<u8>>,
+    node_data_decoder: Option<diskgraph_rowpack::RowPackDecoder>,
 }
 
 impl TableReader {
@@ -456,7 +458,7 @@ impl TableReader {
         layouts: Arc<Vec<RelationLayout>>,
         shards: Vec<ShardReader>,
         node_data_compression: Option<NodeDataCompression>,
-        node_data_dict: Option<Vec<u8>>,
+        node_data_decoder: Option<diskgraph_rowpack::RowPackDecoder>,
     ) -> Result<Self> {
         let mut shard_offsets = Vec::with_capacity(node_type.shards.len());
         let mut offset = 0u64;
@@ -475,7 +477,7 @@ impl TableReader {
             shard_offsets,
             total_nodes: offset,
             node_data_compression,
-            node_data_dict,
+            node_data_decoder,
         })
     }
 
@@ -524,16 +526,35 @@ impl TableReader {
         let Some(compression) = &self.node_data_compression else {
             return Ok(Some(raw.to_vec()));
         };
-        if compression.codec != "zstd" {
+        if compression.codec != "rowpack" {
             return Err(anyhow!("unsupported node data codec {}", compression.codec));
         }
-        let dict = self
-            .node_data_dict
+        let decoder = self
+            .node_data_decoder
             .as_ref()
-            .ok_or_else(|| anyhow!("node data dict missing for {}", self.node_type))?;
-        let mut decoder = zstd::stream::Decoder::with_dictionary(raw, dict)?;
-        let mut out = Vec::new();
-        std::io::copy(&mut decoder, &mut out)?;
+            .ok_or_else(|| anyhow!("node data ctx missing for {}", self.node_type))?;
+        let out = decoder.decode_msgpack(raw)?;
+        Ok(Some(out))
+    }
+
+    pub fn decode_node_data_json(
+        &self,
+        view: &crate::layout::EdgeListView<'_>,
+    ) -> Result<Option<serde_json::Value>> {
+        let Some(raw) = view.node_data()? else {
+            return Ok(None);
+        };
+        let Some(compression) = &self.node_data_compression else {
+            return Ok(None);
+        };
+        if compression.codec != "rowpack" {
+            return Ok(None);
+        }
+        let decoder = self
+            .node_data_decoder
+            .as_ref()
+            .ok_or_else(|| anyhow!("node data ctx missing for {}", self.node_type))?;
+        let out = decoder.decode_json(raw)?;
         Ok(Some(out))
     }
 

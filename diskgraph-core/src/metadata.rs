@@ -6,7 +6,7 @@ use serde_with::serde_as;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeDataCompression {
     pub codec: String,
-    pub dict_path: String,
+    pub context_path: String,
 }
 
 /// Optional primary key mapping metadata for node tables.

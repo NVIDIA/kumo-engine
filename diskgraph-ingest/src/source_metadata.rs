@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Result};
+use diskgraph_rowpack::RowPackConfig;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
@@ -8,6 +9,8 @@ pub struct SourceMetadata {
     pub tables: Vec<TableSpec>,
     #[serde(default)]
     pub relationships: Vec<RelationshipSpec>,
+    #[serde(default)]
+    pub rowpack: Option<RowPackConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -24,6 +27,8 @@ pub struct TableSpec {
     pub weight: Option<String>,
     #[serde(default)]
     pub edge_table: Option<EdgeTableSpec>,
+    #[serde(default)]
+    pub rowpack: Option<RowPackConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -24,6 +24,7 @@ fn base_table(name: &str) -> TableSpec {
         create_time: None,
         weight: None,
         edge_table: None,
+        rowpack: None,
     }
 }
 
@@ -32,6 +33,7 @@ fn base_metadata() -> SourceMetadata {
         dataset_name: "test".into(),
         tables: vec![base_table("User"), base_table("Device")],
         relationships: Vec::new(),
+        rowpack: None,
     }
 }
 
@@ -52,6 +54,7 @@ fn validate_minimal_metadata() {
         dataset_name: "test".into(),
         tables: vec![base_table("User")],
         relationships: Vec::new(),
+        rowpack: None,
     };
     assert!(meta.validate().is_ok());
 }
@@ -73,8 +76,10 @@ fn validate_missing_pk_column() {
             create_time: None,
             weight: None,
             edge_table: None,
+            rowpack: None,
         }],
         relationships: Vec::new(),
+        rowpack: None,
     };
     assert!(meta.validate().is_err());
 }
@@ -176,6 +181,7 @@ fn validate_edge_fk_missing_column() {
                 ref_column: "id".into(),
             },
         }),
+        rowpack: None,
     });
     assert_err_contains(meta, "edge fk column dst_id not found");
 }
@@ -214,6 +220,7 @@ fn validate_edge_fk_missing_table() {
                 ref_column: "id".into(),
             },
         }),
+        rowpack: None,
     });
     assert_err_contains(meta, "edge table Edge references missing table Missing");
 }
@@ -253,6 +260,7 @@ fn validate_edge_fk_not_pk() {
                 ref_column: "id".into(),
             },
         }),
+        rowpack: None,
     });
     assert_err_contains(meta, "edge table Edge fk dst_id must reference primary key Device.id");
 }

@@ -16,6 +16,9 @@ use diskgraph_core::metadata::{
 use diskgraph_fs::{
     build_adls_client, build_gcs_client, build_s3_client, AdlsConfig, GcsConfig, S3Config,
 };
+use diskgraph_rowpack::{
+    LogicalType as RowpackType, RowPackConfig, RowPackContextBuilder, RowPackEncoder, ValueRef,
+};
 use object_store::{path::Path as ObjectPath, ObjectStore, WriteMultipart};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::arrow::ArrowWriter;
@@ -23,7 +26,6 @@ use parquet::file::properties::WriterProperties;
 use parquet::file::reader::FileReader;
 use pprof::protos::Message;
 use pprof::ProfilerGuard;
-use rmp::encode::{write_array_len, write_bool, write_f32, write_f64, write_map_len, write_nil, write_sint, write_str, write_uint};
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 use std::fs;
@@ -40,8 +42,6 @@ pub use source_metadata::SourceMetadata;
 
 const NODE_BATCH_SIZE: usize = 100_000;
 const EDGE_BATCH_SIZE: usize = 400_000;
-const ZSTD_DICT_SAMPLE_LIMIT: usize = 50_000;
-const ZSTD_DICT_SAMPLE_BYTES: usize = 8 * 1024 * 1024;
 const PROGRESS_STEP: u64 = 10_000;
 
 #[derive(Clone)]
@@ -207,7 +207,7 @@ struct IngestContext {
     profile_dir: Option<PathBuf>,
     pk_maps: HashMap<String, TableMapState>,
     table_rows: HashMap<String, u64>,
-    table_dicts: HashMap<String, String>,
+    table_contexts: HashMap<String, String>,
     relation_defs: Vec<RelationDef>,
     relationships: Vec<RelationshipRuntime>,
     edge_counts: HashMap<String, u64>,
@@ -229,8 +229,7 @@ struct TableMapState {
     pk_column: String,
     pk_dtype: ColumnType,
     fixed_len: Option<usize>,
-    dict_samples: Vec<Vec<u8>>,
-    dict_path: Option<String>,
+    rowpack_builder: Option<diskgraph_rowpack::RowPackContextBuilder>,
 }
 
 #[derive(Clone)]
@@ -361,7 +360,7 @@ impl IngestContext {
             profile_dir: options.profile_dir,
             pk_maps: HashMap::new(),
             table_rows: HashMap::new(),
-            table_dicts: HashMap::new(),
+            table_contexts: HashMap::new(),
             relation_defs,
             relationships,
             edge_counts: HashMap::new(),
@@ -391,10 +390,12 @@ impl IngestContext {
         let table_rows = std::sync::Arc::new(std::sync::Mutex::new(HashMap::new()));
         let task_time = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
         let mut tasks = Vec::new();
+        let source_rowpack = self.source.rowpack.clone();
         for table in tables {
             let pk_maps = std::sync::Arc::clone(&pk_maps);
             let table_rows = std::sync::Arc::clone(&table_rows);
             let progress = progress.clone();
+            let source_rowpack = source_rowpack.clone();
             tasks.push(WorkItem {
                 bucket: None,
                 run: Box::new(move || {
@@ -405,8 +406,10 @@ impl IngestContext {
                     let capacity_hint = estimate_rows(&table).max(total_hint as usize);
                     let mut pk_map = PkMap::new(mapping_kind, key_type, capacity_hint);
                     let mut sort_map = None;
-                    let mut dict_samples = Vec::new();
-                    let mut sample_bytes = 0usize;
+                    let rowpack_config = rowpack_config_for_table(source_rowpack.as_ref(), &table);
+                    let columns = rowpack_columns(&table)?;
+                    let mut rowpack_builder =
+                        RowPackContextBuilder::new(columns, rowpack_config);
                     let mut row_id = 0u64;
                     let progress_key = format!("pk_map:{}", table.name);
                     let total_opt = if total_hint > 0 { Some(total_hint) } else { None };
@@ -417,24 +420,30 @@ impl IngestContext {
                         });
                     }
                     let mut next_update = PROGRESS_STEP;
+                    let mut values = Vec::with_capacity(table.columns.len());
+                    let mut arrays_f32 = Vec::new();
+                    let mut arrays_f64 = Vec::new();
                     for_each_row(&table, |row| {
-                        let pk_value = row.get_value(&pk)?;
-                        let key = key_from_value(&pk_value, &pk_col, &pk)?;
+                        let key = row.get_key(&pk_col, &pk)?;
                         pk_map.insert(key, row_id)?;
                         if let Some(sort_val) = row.sort_key(&table)? {
                             let sort_key = sort_key_to_u32(&sort_val)?;
                             let sort_map = sort_map
                                 .get_or_insert_with(|| PkMap::new(mapping_kind, key_type, capacity_hint));
-                            let key = key_from_value(&pk_value, &pk_col, &pk)?;
+                            let key = row.get_key(&pk_col, &pk)?;
                             sort_map.insert(key, sort_key as u64)?;
                         }
-                        if dict_samples.len() < ZSTD_DICT_SAMPLE_LIMIT
-                            && sample_bytes < ZSTD_DICT_SAMPLE_BYTES
-                        {
-                            let msg = row.to_msgpack(&table)?;
-                            sample_bytes += msg.len();
-                            dict_samples.push(msg);
-                        }
+                        values.clear();
+                        arrays_f32.clear();
+                        arrays_f64.clear();
+                        row_values_from_row(
+                            row,
+                            &table,
+                            &mut values,
+                            &mut arrays_f32,
+                            &mut arrays_f64,
+                        )?;
+                        rowpack_builder.observe_row(&values)?;
                         row_id += 1;
                         if row_id == next_update {
                             if let Some(cb) = &progress {
@@ -478,8 +487,7 @@ impl IngestContext {
                             pk_column: pk.clone(),
                             pk_dtype: pk_col.dtype.clone(),
                             fixed_len: pk_col.fixed_len,
-                            dict_samples,
-                            dict_path: None,
+                            rowpack_builder: Some(rowpack_builder),
                         },
                     );
                     Ok(())
@@ -529,10 +537,11 @@ impl IngestContext {
         let target = std::sync::Arc::clone(&self.target);
         let source = std::sync::Arc::new(self.source.clone());
         let pk_maps = std::sync::Arc::new(std::mem::take(&mut self.pk_maps));
+        let source_rowpack = source.rowpack.clone();
         let table_rows_snapshot = std::sync::Arc::new(self.table_rows.clone());
         let table_rows = std::sync::Arc::new(std::sync::Mutex::new(self.table_rows.clone()));
-        let table_dicts = std::sync::Arc::new(std::sync::Mutex::new(self.table_dicts.clone()));
-        let dict_paths = std::sync::Arc::new(std::sync::Mutex::new(HashMap::new()));
+        let table_contexts =
+            std::sync::Arc::new(std::sync::Mutex::new(self.table_contexts.clone()));
         let edge_counts = std::sync::Arc::new(std::sync::Mutex::new(HashMap::new()));
         let relationships = self.relationships.clone();
         let relationships_len = relationships.len();
@@ -553,18 +562,27 @@ impl IngestContext {
                 let progress = progress.clone();
                 let table_rows_snapshot = std::sync::Arc::clone(&table_rows_snapshot);
                 let table_rows = std::sync::Arc::clone(&table_rows);
-                let table_dicts = std::sync::Arc::clone(&table_dicts);
-                let dict_paths = std::sync::Arc::clone(&dict_paths);
+                let table_contexts = std::sync::Arc::clone(&table_contexts);
+                let source_rowpack = source_rowpack.clone();
                 let node_task_time = std::sync::Arc::clone(&node_task_time);
                 tasks.push(WorkItem {
                     bucket: Some(node_task_time),
                     run: Box::new(move || {
-                        let (dict_path, dict_bytes) =
-                            train_dict_for_table(&target, &pk_maps, &table)?;
-                        if let Some(path) = dict_path.clone() {
-                            table_dicts.lock().unwrap().insert(table.name.clone(), path.clone());
-                            dict_paths.lock().unwrap().insert(table.name.clone(), path);
-                        }
+                        let rowpack_builder =
+                            pk_maps.get(table.name.as_str()).and_then(|s| s.rowpack_builder.clone());
+                        let context = if let Some(builder) = rowpack_builder {
+                            builder.finish()?
+                        } else {
+                            sample_rowpack_context(source_rowpack.as_ref(), &table)?
+                        };
+                        let context_path =
+                            format!("nodes/{}/node_data.ctx", table.name.to_lowercase());
+                        target.write_bytes(&context_path, context.to_bytes()?)?;
+                        table_contexts
+                            .lock()
+                            .unwrap()
+                            .insert(table.name.clone(), context_path.clone());
+                        let encoder = RowPackEncoder::new(context)?;
                         let progress_key = format!("nodes:{}", table.name);
                         let total = table_rows_snapshot
                             .get(table.name.as_str())
@@ -577,7 +595,7 @@ impl IngestContext {
                         let row_count = write_node_data_to(
                             &target,
                             &table,
-                            dict_bytes.as_deref(),
+                            &encoder,
                             progress.as_ref(),
                             progress_enabled.then_some(progress_key.as_str()),
                         )?;
@@ -645,8 +663,8 @@ impl IngestContext {
                     let mut next_update = PROGRESS_STEP;
                     for_each_row(src_table, |row| {
                         let src_id = row.row_id;
-                        let fk_val = row.get_value(&rel.src_column)?;
-                        let fk_key = key_from_value(&fk_val, dst_pk_col, &dst_pk)?;
+                    let src_fk_col = column_spec(src_table, &rel.src_column)?;
+                    let fk_key = row.get_key(src_fk_col, &rel.src_column)?;
                         let dst_id = dst_map
                             .pk_map
                             .lookup(&fk_key)
@@ -730,11 +748,11 @@ impl IngestContext {
                     let dst_map = pk_maps
                         .get(edge.dst_fk.ref_table.as_str())
                         .ok_or_else(|| anyhow!("missing pk map for {}", edge.dst_fk.ref_table))?;
-                    let src_pk_col = column_spec(
+                    let _src_pk_col = column_spec(
                         table_by_name(&source, &edge.src_fk.ref_table)?,
                         &edge.src_fk.ref_column,
                     )?;
-                    let dst_pk_col = column_spec(
+                    let _dst_pk_col = column_spec(
                         table_by_name(&source, &edge.dst_fk.ref_table)?,
                         &edge.dst_fk.ref_column,
                     )?;
@@ -757,10 +775,10 @@ impl IngestContext {
                     let mut forward_records: Vec<EdgeRecord> = Vec::new();
                     let mut reverse_records: Vec<EdgeRecord> = Vec::new();
                     for_each_row(&table, |row| {
-                        let src_val = row.get_value(&edge.src_fk.column)?;
-                        let dst_val = row.get_value(&edge.dst_fk.column)?;
-                        let src_key = key_from_value(&src_val, src_pk_col, &edge.src_fk.column)?;
-                        let dst_key = key_from_value(&dst_val, dst_pk_col, &edge.dst_fk.column)?;
+                    let src_fk_col = column_spec(&table, &edge.src_fk.column)?;
+                    let dst_fk_col = column_spec(&table, &edge.dst_fk.column)?;
+                    let src_key = row.get_key(src_fk_col, &edge.src_fk.column)?;
+                    let dst_key = row.get_key(dst_fk_col, &edge.dst_fk.column)?;
                         let src_id = src_map.pk_map.lookup(&src_key).ok_or_else(|| {
                             anyhow!("fk value not found for {}", edge.src_fk.ref_table)
                         })?;
@@ -839,25 +857,16 @@ impl IngestContext {
             .map_err(|_| anyhow!("node task row refs still running"))?
             .into_inner()
             .unwrap();
-        self.table_dicts = std::sync::Arc::try_unwrap(table_dicts)
-            .map_err(|_| anyhow!("node task dict refs still running"))?
-            .into_inner()
-            .unwrap();
         self.edge_counts = std::sync::Arc::try_unwrap(edge_counts)
             .map_err(|_| anyhow!("edge task refs still running"))?
             .into_inner()
             .unwrap();
-        let dict_paths = std::sync::Arc::try_unwrap(dict_paths)
-            .map_err(|_| anyhow!("dict path refs still running"))?
+        self.table_contexts = std::sync::Arc::try_unwrap(table_contexts)
+            .map_err(|_| anyhow!("node task context refs still running"))?
             .into_inner()
             .unwrap();
         self.pk_maps = std::sync::Arc::try_unwrap(pk_maps)
             .map_err(|_| anyhow!("pk map refs still running"))?;
-        for (table, path) in dict_paths {
-            if let Some(state) = self.pk_maps.get_mut(table.as_str()) {
-                state.dict_path = Some(path);
-            }
-        }
         Ok(())
     }
 
@@ -882,10 +891,10 @@ impl IngestContext {
                 )),
             };
             let (compression, pk_map) = if let Some(state) = map_state {
-                let dict_path = self.table_dicts.get(&table.name).cloned();
-                let compression = dict_path.map(|path| NodeDataCompression {
-                    codec: "zstd".to_string(),
-                    dict_path: path,
+                let context_path = self.table_contexts.get(&table.name).cloned();
+                let compression = context_path.map(|path| NodeDataCompression {
+                    codec: "rowpack".to_string(),
+                    context_path: path,
                 });
                 let pk_map = Some(PrimaryKeyMap {
                     column: state.pk_column.clone(),
@@ -902,10 +911,10 @@ impl IngestContext {
                 });
                 (compression, pk_map)
             } else {
-                let dict_path = self.table_dicts.get(&table.name).cloned();
-                let compression = dict_path.map(|path| NodeDataCompression {
-                    codec: "zstd".to_string(),
-                    dict_path: path,
+                let context_path = self.table_contexts.get(&table.name).cloned();
+                let compression = context_path.map(|path| NodeDataCompression {
+                    codec: "rowpack".to_string(),
+                    context_path: path,
                 });
                 (compression, None)
             };
@@ -1022,38 +1031,10 @@ fn profile_phase<T>(dir: &Path, name: &str, f: impl FnOnce() -> Result<T>) -> Re
     }
 }
 
-fn train_dict_for_table(
-    target: &OutputTarget,
-    pk_maps: &HashMap<String, TableMapState>,
-    table: &TableSpec,
-) -> Result<(Option<String>, Option<Vec<u8>>)> {
-    if table.columns.is_empty() {
-        return Ok((None, None));
-    }
-    let mut samples: Vec<Vec<u8>> = Vec::new();
-    if let Some(state) = pk_maps.get(table.name.as_str()) {
-        samples.extend(state.dict_samples.iter().cloned());
-    }
-    if samples.is_empty() {
-        samples = collect_samples(table)?;
-    }
-    let sample_refs: Vec<&[u8]> = samples.iter().map(|s| s.as_slice()).collect();
-    if sample_refs.is_empty() {
-        return Ok((None, None));
-    }
-    let dict = match zstd::dict::from_samples(&sample_refs, 64 * 1024) {
-        Ok(dict) => dict,
-        Err(_) => return Ok((None, None)),
-    };
-    let dict_path = format!("nodes/{}/node_data.dict", table.name.to_lowercase());
-    target.write_bytes(&dict_path, dict.clone())?;
-    Ok((Some(dict_path), Some(dict)))
-}
-
 fn write_node_data_to(
     target: &OutputTarget,
     table: &TableSpec,
-    dict: Option<&[u8]>,
+    encoder: &RowPackEncoder,
     progress: Option<&ProgressCallback>,
     progress_key: Option<&str>,
 ) -> Result<u64> {
@@ -1071,20 +1052,17 @@ fn write_node_data_to(
     let sink = target.sink(&path)?;
     let mut writer = ArrowWriter::try_new(sink, Arc::new(schema.clone()), Some(props))?;
     let mut batch = Vec::with_capacity(NODE_BATCH_SIZE);
-    let mut compressor = if let Some(dict) = dict {
-        Some(zstd::bulk::Compressor::with_dictionary(-5, dict)?)
-    } else {
-        None
-    };
     let mut rows = 0u64;
     let mut next_update = PROGRESS_STEP;
+    let mut values = Vec::with_capacity(table.columns.len());
+    let mut arrays_f32 = Vec::new();
+    let mut arrays_f64 = Vec::new();
     for_each_row(table, |row| {
-        let msg = row.to_msgpack(table)?;
-        let data = if let Some(compressor) = compressor.as_mut() {
-            compressor.compress(&msg)?
-        } else {
-            msg
-        };
+        values.clear();
+        arrays_f32.clear();
+        arrays_f64.clear();
+        row_values_from_row(row, table, &mut values, &mut arrays_f32, &mut arrays_f64)?;
+        let data = encoder.encode_row(&values)?;
         batch.push(data);
         rows += 1;
         if rows == next_update {
@@ -1432,22 +1410,50 @@ fn key_type_for_column(col: &ColumnSpec) -> Result<KeyType> {
     }
 }
 
-fn key_from_value(value: &JsonValue, col: &ColumnSpec, label: &str) -> Result<Key> {
+fn key_from_array(array: &ArrayRef, row: usize, col: &ColumnSpec, label: &str) -> Result<Key> {
     match col.dtype {
-        ColumnType::Int64 | ColumnType::Int32 | ColumnType::UInt64 | ColumnType::UInt32 => {
-            let v = value
-                .as_i64()
-                .ok_or_else(|| anyhow!("{} key is not integer", label))?;
+        ColumnType::Int64 => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::Int64Array>()
+                .ok_or_else(|| anyhow!("int64 cast"))?;
+            let v = arr.value(row);
             if v < 0 {
                 return Err(anyhow!("{} key is negative", label));
             }
             Ok(Key::Int(v as u64))
         }
+        ColumnType::Int32 => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::Int32Array>()
+                .ok_or_else(|| anyhow!("int32 cast"))?;
+            let v = arr.value(row);
+            if v < 0 {
+                return Err(anyhow!("{} key is negative", label));
+            }
+            Ok(Key::Int(v as u64))
+        }
+        ColumnType::UInt64 => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::UInt64Array>()
+                .ok_or_else(|| anyhow!("uint64 cast"))?;
+            Ok(Key::Int(arr.value(row)))
+        }
+        ColumnType::UInt32 => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::UInt32Array>()
+                .ok_or_else(|| anyhow!("uint32 cast"))?;
+            Ok(Key::Int(arr.value(row) as u64))
+        }
         ColumnType::String => {
-            let s = value
-                .as_str()
-                .ok_or_else(|| anyhow!("{} key is not string", label))?;
-            let bytes = s.as_bytes().to_vec();
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::StringArray>()
+                .ok_or_else(|| anyhow!("string cast"))?;
+            let bytes = arr.value(row).as_bytes().to_vec();
             let len = col.fixed_len.unwrap_or(bytes.len());
             if bytes.len() != len {
                 return Err(anyhow!("{} key length mismatch", label));
@@ -1455,10 +1461,11 @@ fn key_from_value(value: &JsonValue, col: &ColumnSpec, label: &str) -> Result<Ke
             Ok(Key::Bytes(bytes))
         }
         ColumnType::Bytes => {
-            let s = value
-                .as_str()
-                .ok_or_else(|| anyhow!("{} key is not bytes", label))?;
-            let bytes = BASE64.decode(s)?;
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::BinaryArray>()
+                .ok_or_else(|| anyhow!("binary cast"))?;
+            let bytes = arr.value(row).to_vec();
             let len = col.fixed_len.unwrap_or(bytes.len());
             if bytes.len() != len {
                 return Err(anyhow!("{} key length mismatch", label));
@@ -1487,21 +1494,6 @@ fn sort_key_to_u32(value: &JsonValue) -> Result<u32> {
         return Ok(mapped);
     }
     Err(anyhow!("unsupported sort key type"))
-}
-
-fn collect_samples(table: &TableSpec) -> Result<Vec<Vec<u8>>> {
-    let mut samples = Vec::new();
-    let mut sample_bytes = 0usize;
-    for_each_row(table, |row| {
-        if samples.len() >= ZSTD_DICT_SAMPLE_LIMIT || sample_bytes >= ZSTD_DICT_SAMPLE_BYTES {
-            return Ok(());
-        }
-        let msg = row.to_msgpack(table)?;
-        sample_bytes += msg.len();
-        samples.push(msg);
-        Ok(())
-    })?;
-    Ok(samples)
 }
 
 fn for_each_row(table: &TableSpec, mut f: impl FnMut(&RowView) -> Result<()>) -> Result<()> {
@@ -1608,6 +1600,148 @@ fn table_schema(table: &TableSpec) -> Result<Schema> {
     Ok(Schema::new(fields))
 }
 
+fn rowpack_config_for_table(
+    source_cfg: Option<&RowPackConfig>,
+    table: &TableSpec,
+) -> RowPackConfig {
+    RowPackConfig::merge(source_cfg, table.rowpack.as_ref())
+}
+
+fn rowpack_columns(table: &TableSpec) -> Result<Vec<diskgraph_rowpack::RowPackColumn>> {
+    let mut columns = Vec::with_capacity(table.columns.len());
+    for col in &table.columns {
+        let dtype = match col.dtype {
+            ColumnType::Int64 => RowpackType::Int64,
+            ColumnType::Int32 => RowpackType::Int32,
+            ColumnType::UInt64 => RowpackType::UInt64,
+            ColumnType::UInt32 => RowpackType::UInt32,
+            ColumnType::Float64 => RowpackType::Float64,
+            ColumnType::Float32 => RowpackType::Float32,
+            ColumnType::Bool => RowpackType::Bool,
+            ColumnType::String => RowpackType::String,
+            ColumnType::Bytes => RowpackType::Bytes,
+            ColumnType::Date => RowpackType::Date,
+            ColumnType::Timestamp => RowpackType::Timestamp,
+            ColumnType::Float32Array => RowpackType::Float32Array,
+            ColumnType::Float64Array => RowpackType::Float64Array,
+        };
+        columns.push(diskgraph_rowpack::RowPackColumn {
+            name: col.name.clone(),
+            logical_type: dtype,
+            fixed_len: col.fixed_len,
+        });
+    }
+    Ok(columns)
+}
+
+fn sample_rowpack_context(
+    source_cfg: Option<&RowPackConfig>,
+    table: &TableSpec,
+) -> Result<diskgraph_rowpack::RowPackContext> {
+    let config = rowpack_config_for_table(source_cfg, table);
+    let columns = rowpack_columns(table)?;
+    let mut builder = RowPackContextBuilder::new(columns, config.clone());
+    let limit = config.sample_rows();
+    let mut values = Vec::with_capacity(table.columns.len());
+    let mut arrays_f32 = Vec::new();
+    let mut arrays_f64 = Vec::new();
+    for_each_row_with_limit(table, limit, |row| {
+        values.clear();
+        arrays_f32.clear();
+        arrays_f64.clear();
+        row_values_from_row(row, table, &mut values, &mut arrays_f32, &mut arrays_f64)?;
+        builder.observe_row(&values)?;
+        Ok(())
+    })?;
+    builder.finish()
+}
+
+fn for_each_row_with_limit(
+    table: &TableSpec,
+    limit: usize,
+    mut f: impl FnMut(&RowView) -> Result<()>,
+) -> Result<u64> {
+    if limit == 0 {
+        return Ok(0);
+    }
+    let mut name_to_index = HashMap::with_capacity(table.columns.len());
+    for (idx, col) in table.columns.iter().enumerate() {
+        name_to_index.insert(col.name.clone(), idx);
+    }
+    let schema = table_schema(table)?;
+    let mut global_row = 0u64;
+    'paths: for path in &table.paths {
+        if !is_cloud_path(path) && !Path::new(path).exists() {
+            return Err(anyhow!("input path not found {}", path));
+        }
+        let local = localize_input(path)?;
+        match table.format {
+            TableFormat::Parquet => {
+                let file = fs::File::open(&local.path)
+                    .with_context(|| format!("open {}", local.path.display()))?;
+                let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
+                let reader = builder.with_batch_size(NODE_BATCH_SIZE).build()?;
+                for batch in reader {
+                    let batch = batch?;
+                    let mut cols = Vec::with_capacity(table.columns.len());
+                    for col in &table.columns {
+                        let idx = batch
+                            .schema()
+                            .index_of(&col.name)
+                            .context("missing column in batch")?;
+                        cols.push(batch.column(idx).clone());
+                    }
+                    for row in 0..batch.num_rows() {
+                        let row_view = RowView {
+                            row,
+                            row_id: global_row,
+                            cols: &cols,
+                            name_to_index: &name_to_index,
+                        };
+                        f(&row_view)?;
+                        global_row += 1;
+                        if global_row as usize >= limit {
+                            break 'paths;
+                        }
+                    }
+                }
+            }
+            TableFormat::Csv => {
+                let file = fs::File::open(&local.path)
+                    .with_context(|| format!("open {}", local.path.display()))?;
+                let builder = arrow_csv::ReaderBuilder::new(Arc::new(schema.clone()))
+                    .with_header(true);
+                let reader = builder.build(file)?;
+                for batch in reader {
+                    let batch = batch?;
+                    let mut cols = Vec::with_capacity(table.columns.len());
+                    for col in &table.columns {
+                        let idx = batch
+                            .schema()
+                            .index_of(&col.name)
+                            .context("missing column in batch")?;
+                        cols.push(batch.column(idx).clone());
+                    }
+                    for row in 0..batch.num_rows() {
+                        let row_view = RowView {
+                            row,
+                            row_id: global_row,
+                            cols: &cols,
+                            name_to_index: &name_to_index,
+                        };
+                        f(&row_view)?;
+                        global_row += 1;
+                        if global_row as usize >= limit {
+                            break 'paths;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(global_row)
+}
+
 struct RowView<'a> {
     row: usize,
     row_id: u64,
@@ -1628,6 +1762,18 @@ impl<'a> RowView<'a> {
         value_from_array(col, self.row)
     }
 
+    fn get_key(&self, col: &ColumnSpec, label: &str) -> Result<Key> {
+        let idx = self
+            .name_to_index
+            .get(&col.name)
+            .ok_or_else(|| anyhow!("missing column {}", col.name))?;
+        let array = self
+            .cols
+            .get(*idx)
+            .ok_or_else(|| anyhow!("missing column {}", col.name))?;
+        key_from_array(array, self.row, col, label)
+    }
+
     fn sort_key(&self, table: &TableSpec) -> Result<Option<JsonValue>> {
         if let Some(weight) = &table.weight {
             return Ok(Some(self.get_value(weight)?));
@@ -1638,15 +1784,165 @@ impl<'a> RowView<'a> {
         Ok(None)
     }
 
-    fn to_msgpack(&self, table: &TableSpec) -> Result<Vec<u8>> {
-        let mut out = Vec::with_capacity(table.columns.len() * 32);
-        write_map_len(&mut out, table.columns.len() as u32)?;
-        for (idx, col) in table.columns.iter().enumerate() {
-            write_str(&mut out, &col.name)?;
-            encode_value(&self.cols[idx], self.row, &mut out)?;
+}
+
+fn row_values_from_row<'a>(
+    row: &'a RowView<'a>,
+    table: &'a TableSpec,
+    values: &mut Vec<ValueRef<'a>>,
+    arrays_f32: &'a mut Vec<Vec<f32>>,
+    arrays_f64: &'a mut Vec<Vec<f64>>,
+) -> Result<()> {
+    for (idx, col) in table.columns.iter().enumerate() {
+        let array = row
+            .cols
+            .get(idx)
+            .ok_or_else(|| anyhow!("missing column {}", col.name))?;
+        if array.is_null(row.row) {
+            values.push(ValueRef::Null);
+            continue;
         }
-        Ok(out)
+        match col.dtype {
+            ColumnType::Int64 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Int64Array>()
+                    .ok_or_else(|| anyhow!("int64 cast"))?;
+                values.push(ValueRef::Int64(arr.value(row.row)));
+            }
+            ColumnType::Int32 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Int32Array>()
+                    .ok_or_else(|| anyhow!("int32 cast"))?;
+                values.push(ValueRef::Int32(arr.value(row.row)));
+            }
+            ColumnType::UInt64 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::UInt64Array>()
+                    .ok_or_else(|| anyhow!("uint64 cast"))?;
+                values.push(ValueRef::UInt64(arr.value(row.row)));
+            }
+            ColumnType::UInt32 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::UInt32Array>()
+                    .ok_or_else(|| anyhow!("uint32 cast"))?;
+                values.push(ValueRef::UInt32(arr.value(row.row)));
+            }
+            ColumnType::Float64 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Float64Array>()
+                    .ok_or_else(|| anyhow!("float64 cast"))?;
+                values.push(ValueRef::Float64(arr.value(row.row)));
+            }
+            ColumnType::Float32 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Float32Array>()
+                    .ok_or_else(|| anyhow!("float32 cast"))?;
+                values.push(ValueRef::Float32(arr.value(row.row)));
+            }
+            ColumnType::Bool => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::BooleanArray>()
+                    .ok_or_else(|| anyhow!("bool cast"))?;
+                values.push(ValueRef::Bool(arr.value(row.row)));
+            }
+            ColumnType::String => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::StringArray>()
+                    .ok_or_else(|| anyhow!("string cast"))?;
+                values.push(ValueRef::String(arr.value(row.row)));
+            }
+            ColumnType::Bytes => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::BinaryArray>()
+                    .ok_or_else(|| anyhow!("binary cast"))?;
+                values.push(ValueRef::Bytes(arr.value(row.row)));
+            }
+            ColumnType::Date => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Date32Array>()
+                    .ok_or_else(|| anyhow!("date cast"))?;
+                values.push(ValueRef::Date(arr.value(row.row)));
+            }
+            ColumnType::Timestamp => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::TimestampSecondArray>()
+                    .ok_or_else(|| anyhow!("timestamp cast"))?;
+                values.push(ValueRef::Timestamp(arr.value(row.row)));
+            }
+            ColumnType::Float32Array => {
+                let list = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::ListArray>()
+                    .ok_or_else(|| anyhow!("list cast"))?;
+                let values_arr = list
+                    .values()
+                    .as_any()
+                    .downcast_ref::<arrow_array::Float32Array>()
+                    .ok_or_else(|| anyhow!("float32 list cast"))?;
+                let offsets = list.value_offsets();
+                let start = offsets[row.row] as usize;
+                let end = offsets[row.row + 1] as usize;
+                if values_arr.null_count() == 0 {
+                    let slice = &values_arr.values().as_ref()[start..end];
+                    values.push(ValueRef::Float32Array(slice));
+                } else {
+                    let mut vec = Vec::with_capacity(end.saturating_sub(start));
+                    for idx in start..end {
+                        if values_arr.is_null(idx) {
+                            vec.push(0.0);
+                        } else {
+                            vec.push(values_arr.value(idx));
+                        }
+                    }
+                    arrays_f32.push(vec);
+                    let slice = arrays_f32.last().unwrap().as_slice();
+                    values.push(ValueRef::Float32Array(slice));
+                }
+            }
+            ColumnType::Float64Array => {
+                let list = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::ListArray>()
+                    .ok_or_else(|| anyhow!("list cast"))?;
+                let values_arr = list
+                    .values()
+                    .as_any()
+                    .downcast_ref::<arrow_array::Float64Array>()
+                    .ok_or_else(|| anyhow!("float64 list cast"))?;
+                let offsets = list.value_offsets();
+                let start = offsets[row.row] as usize;
+                let end = offsets[row.row + 1] as usize;
+                if values_arr.null_count() == 0 {
+                    let slice = &values_arr.values().as_ref()[start..end];
+                    values.push(ValueRef::Float64Array(slice));
+                } else {
+                    let mut vec = Vec::with_capacity(end.saturating_sub(start));
+                    for idx in start..end {
+                        if values_arr.is_null(idx) {
+                            vec.push(0.0);
+                        } else {
+                            vec.push(values_arr.value(idx));
+                        }
+                    }
+                    arrays_f64.push(vec);
+                    let slice = arrays_f64.last().unwrap().as_slice();
+                    values.push(ValueRef::Float64Array(slice));
+                }
+            }
+        }
     }
+    Ok(())
 }
 
 fn value_from_array(array: &ArrayRef, row: usize) -> Result<JsonValue> {
@@ -1748,105 +2044,6 @@ fn value_from_array(array: &ArrayRef, row: usize) -> Result<JsonValue> {
     }
 }
 
-fn encode_value(array: &ArrayRef, row: usize, out: &mut Vec<u8>) -> Result<()> {
-    if array.is_null(row) {
-        write_nil(out)?;
-        return Ok(());
-    }
-    match array.data_type() {
-        DataType::Int64 => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<arrow_array::Int64Array>()
-                .ok_or_else(|| anyhow!("int64 cast"))?;
-            write_sint(out, arr.value(row))?;
-        }
-        DataType::Int32 => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<arrow_array::Int32Array>()
-                .ok_or_else(|| anyhow!("int32 cast"))?;
-            write_sint(out, arr.value(row) as i64)?;
-        }
-        DataType::UInt64 => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<arrow_array::UInt64Array>()
-                .ok_or_else(|| anyhow!("uint64 cast"))?;
-            write_uint(out, arr.value(row))?;
-        }
-        DataType::UInt32 => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<arrow_array::UInt32Array>()
-                .ok_or_else(|| anyhow!("uint32 cast"))?;
-            write_uint(out, arr.value(row) as u64)?;
-        }
-        DataType::Float64 => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<arrow_array::Float64Array>()
-                .ok_or_else(|| anyhow!("float64 cast"))?;
-            write_f64(out, arr.value(row))?;
-        }
-        DataType::Float32 => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<arrow_array::Float32Array>()
-                .ok_or_else(|| anyhow!("float32 cast"))?;
-            write_f32(out, arr.value(row))?;
-        }
-        DataType::Boolean => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<arrow_array::BooleanArray>()
-                .ok_or_else(|| anyhow!("bool cast"))?;
-            write_bool(out, arr.value(row))?;
-        }
-        DataType::Utf8 => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<arrow_array::StringArray>()
-                .ok_or_else(|| anyhow!("string cast"))?;
-            write_str(out, arr.value(row))?;
-        }
-        DataType::Binary => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<arrow_array::BinaryArray>()
-                .ok_or_else(|| anyhow!("binary cast"))?;
-            let encoded = BASE64.encode(arr.value(row));
-            write_str(out, &encoded)?;
-        }
-        DataType::Date32 => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<arrow_array::Date32Array>()
-                .ok_or_else(|| anyhow!("date cast"))?;
-            write_sint(out, arr.value(row) as i64)?;
-        }
-        DataType::Timestamp(_, _) => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<arrow_array::TimestampSecondArray>()
-                .ok_or_else(|| anyhow!("timestamp cast"))?;
-            write_sint(out, arr.value(row))?;
-        }
-        DataType::List(_) => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<arrow_array::ListArray>()
-                .ok_or_else(|| anyhow!("list cast"))?;
-            let values = arr.value(row);
-            write_array_len(out, values.len() as u32)?;
-            for i in 0..values.len() {
-                encode_value(&values, i, out)?;
-            }
-        }
-        _ => return Err(anyhow!("unsupported array type")),
-    }
-    Ok(())
-}
 
 fn table_rows(ctx: &IngestContext, name: &str) -> u64 {
     ctx.table_rows.get(name).copied().unwrap_or(0)
