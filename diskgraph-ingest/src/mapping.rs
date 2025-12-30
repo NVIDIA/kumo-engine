@@ -51,6 +51,17 @@ pub struct PkMap {
     hash_table: Vec<Option<(Key, u64)>>,
     capacity: usize,
     hash_len: usize,
+    min_key: u64,
+    max_key: u64,
+    direct: Option<DirectMap>,
+    identity_base: Option<u64>,
+    identity_len: usize,
+}
+
+#[derive(Debug, Clone)]
+struct DirectMap {
+    base: u64,
+    values: Vec<u64>,
 }
 
 impl PkMap {
@@ -66,6 +77,11 @@ impl PkMap {
             hash_table: vec![None; capacity],
             capacity,
             hash_len: 0,
+            min_key: u64::MAX,
+            max_key: 0,
+            direct: None,
+            identity_base: None,
+            identity_len: 0,
         }
     }
 
@@ -73,6 +89,19 @@ impl PkMap {
         if key.key_type() != self.key_type {
             return Err(anyhow!("key type mismatch"));
         }
+        if let Key::Int(v) = key {
+            if v < self.min_key {
+                self.min_key = v;
+            }
+            if v > self.max_key {
+                self.max_key = v;
+            }
+            return self.insert_inner(Key::Int(v), value);
+        }
+        self.insert_inner(key, value)
+    }
+
+    fn insert_inner(&mut self, key: Key, value: u64) -> Result<()> {
         match self.kind {
             MappingKind::Hash => {
                 if (self.hash_len + 1) * 10 >= self.capacity * 7 {
@@ -106,10 +135,31 @@ impl PkMap {
         if let MappingKind::Sorted = self.kind {
             self.entries.sort_by(|a, b| compare_keys(&a.0, &b.0));
         }
+        if self.kind == MappingKind::Hash && self.key_type == KeyType::Int64 {
+            self.try_build_direct();
+        }
     }
 
     pub fn lookup(&self, key: &Key) -> Option<u64> {
         if key.key_type() != self.key_type {
+            return None;
+        }
+        if let (Some(base), Key::Int(v)) = (self.identity_base, key) {
+            if *v >= base {
+                let idx = (*v - base) as usize;
+                if idx < self.identity_len {
+                    return Some(idx as u64);
+                }
+            }
+            return None;
+        }
+        if let (Some(direct), Key::Int(v)) = (&self.direct, key) {
+            if *v >= direct.base {
+                let idx = (*v - direct.base) as usize;
+                if idx < direct.values.len() {
+                    return Some(direct.values[idx]);
+                }
+            }
             return None;
         }
         match self.kind {
@@ -133,6 +183,7 @@ impl PkMap {
             }
         }
     }
+
 
     pub fn write_to(&self, mut writer: impl Write) -> io::Result<()> {
         writer.write_all(MAGIC)?;
@@ -204,6 +255,40 @@ impl PkMap {
         }
         self.hash_table = new_table;
         self.capacity = new_capacity;
+    }
+
+    fn try_build_direct(&mut self) {
+        if self.hash_len == 0 {
+            return;
+        }
+        if self.min_key == u64::MAX {
+            return;
+        }
+        let range = self.max_key.saturating_sub(self.min_key).saturating_add(1);
+        if range as usize != self.hash_len {
+            return;
+        }
+        let mut values = vec![0u64; range as usize];
+        for entry in &self.hash_table {
+            if let Some((Key::Int(k), value)) = entry {
+                let idx = (*k - self.min_key) as usize;
+                values[idx] = *value;
+            }
+        }
+        let is_identity = values
+            .iter()
+            .enumerate()
+            .all(|(idx, value)| *value == idx as u64);
+        if is_identity {
+            self.identity_base = Some(self.min_key);
+            self.identity_len = values.len();
+            self.direct = None;
+        } else {
+            self.direct = Some(DirectMap {
+                base: self.min_key,
+                values,
+            });
+        }
     }
 }
 

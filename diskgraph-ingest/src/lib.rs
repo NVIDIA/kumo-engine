@@ -7,6 +7,7 @@ use crate::mapping::{Key, KeyType, PkMap};
 use crate::source_metadata::{ColumnSpec, ColumnType, TableFormat, TableSpec};
 use anyhow::{anyhow, Context, Result};
 use arrow_array::{Array, ArrayRef, RecordBatch};
+use arrow_array::builder::ArrayBuilder;
 use arrow_schema::{DataType, Field, Schema};
 use bytes::Bytes;
 use diskgraph_core::metadata::{
@@ -631,6 +632,8 @@ impl IngestContext {
                     if dst_key_type != dst_map.key_type {
                         return Err(anyhow!("pk map key type mismatch for {}", rel.dst_table));
                     }
+                    let src_fk_idx = column_index(src_table, &rel.src_column)?;
+                    let src_fk_col = &src_table.columns[src_fk_idx];
                     let dst_sort_map = dst_map.sort_map.as_ref();
                     if rel.forward_sort != SortKeyMode::None && dst_sort_map.is_none() {
                         return Err(anyhow!("missing sort key map for {}", rel.dst_table));
@@ -662,8 +665,11 @@ impl IngestContext {
                     let mut next_update = PROGRESS_STEP;
                     for_each_row(src_table, |row| {
                         let src_id = row.row_id;
-                    let src_fk_col = column_spec(src_table, &rel.src_column)?;
-                    let fk_key = row.get_key(src_fk_col, &rel.src_column)?;
+                        let array = row
+                            .cols
+                            .get(src_fk_idx)
+                            .ok_or_else(|| anyhow!("missing column {}", rel.src_column))?;
+                        let fk_key = key_from_array(array, row.row, src_fk_col, &rel.src_column)?;
                         let dst_id = dst_map
                             .pk_map
                             .lookup(&fk_key)
@@ -755,6 +761,10 @@ impl IngestContext {
                         table_by_name(&source, &edge.dst_fk.ref_table)?,
                         &edge.dst_fk.ref_column,
                     )?;
+                    let src_fk_idx = column_index(&table, &edge.src_fk.column)?;
+                    let dst_fk_idx = column_index(&table, &edge.dst_fk.column)?;
+                    let src_fk_col = &table.columns[src_fk_idx];
+                    let dst_fk_col = &table.columns[dst_fk_idx];
                     let sort_mode = if table.weight.is_some() {
                         SortKeyMode::Weight
                     } else if table.create_time.is_some() {
@@ -774,10 +784,18 @@ impl IngestContext {
                     let mut forward_records: Vec<EdgeRecord> = Vec::new();
                     let mut reverse_records: Vec<EdgeRecord> = Vec::new();
                     for_each_row(&table, |row| {
-                    let src_fk_col = column_spec(&table, &edge.src_fk.column)?;
-                    let dst_fk_col = column_spec(&table, &edge.dst_fk.column)?;
-                    let src_key = row.get_key(src_fk_col, &edge.src_fk.column)?;
-                    let dst_key = row.get_key(dst_fk_col, &edge.dst_fk.column)?;
+                    let src_array = row
+                        .cols
+                        .get(src_fk_idx)
+                        .ok_or_else(|| anyhow!("missing column {}", edge.src_fk.column))?;
+                    let dst_array = row
+                        .cols
+                        .get(dst_fk_idx)
+                        .ok_or_else(|| anyhow!("missing column {}", edge.dst_fk.column))?;
+                    let src_key =
+                        key_from_array(src_array, row.row, src_fk_col, &edge.src_fk.column)?;
+                    let dst_key =
+                        key_from_array(dst_array, row.row, dst_fk_col, &edge.dst_fk.column)?;
                         let src_id = src_map.pk_map.lookup(&src_key).ok_or_else(|| {
                             anyhow!("fk value not found for {}", edge.src_fk.ref_table)
                         })?;
@@ -805,8 +823,12 @@ impl IngestContext {
                             emit_progress_advance(&progress, &progress_key, delta);
                         }
                     }
-                    forward_records.sort_unstable_by(edge_record_cmp);
-                    reverse_records.sort_unstable_by(edge_record_cmp);
+                    if !edge_records_sorted(&forward_records) {
+                        forward_records.sort_unstable_by(edge_record_cmp);
+                    }
+                    if !edge_records_sorted(&reverse_records) {
+                        reverse_records.sort_unstable_by(edge_record_cmp);
+                    }
                     write_edge_records_to(
                         &target,
                         &format!("edge_{}_src_to_dst", table.name),
@@ -1050,9 +1072,11 @@ fn write_node_data_to(
         .build();
     let sink = target.sink(&path)?;
     let mut writer = ArrowWriter::try_new(sink, Arc::new(schema.clone()), Some(props))?;
-    let mut batch = Vec::with_capacity(NODE_BATCH_SIZE);
     let mut rows = 0u64;
     let mut next_update = PROGRESS_STEP;
+    let mut scratch = diskgraph_rowpack::RowPackScratch::new(encoder.context());
+    let mut encoded = Vec::with_capacity(encoder.context().estimated_row_bytes as usize);
+    let mut builder = arrow_array::builder::BinaryBuilder::new();
     let mut arrays_f32: Vec<Vec<f32>> = Vec::new();
     let mut arrays_f64: Vec<Vec<f64>> = Vec::new();
     for_each_row(table, |row| {
@@ -1060,8 +1084,8 @@ fn write_node_data_to(
         arrays_f64.clear();
         let mut values = Vec::with_capacity(table.columns.len());
         row_values_from_row(row, table, &mut values, &mut arrays_f32, &mut arrays_f64)?;
-        let data = encoder.encode_row(&values)?;
-        batch.push(data);
+        encoder.encode_row_into(&values, &mut encoded, &mut scratch)?;
+        builder.append_value(&encoded);
         rows += 1;
         if rows == next_update {
             if let (Some(progress), Some(key)) = (progress, progress_key) {
@@ -1072,8 +1096,9 @@ fn write_node_data_to(
             }
             next_update = next_update.saturating_add(PROGRESS_STEP);
         }
-        if batch.len() >= NODE_BATCH_SIZE {
-            flush_node_batch(&schema, &mut writer, &mut batch)?;
+        if builder.len() >= NODE_BATCH_SIZE {
+            flush_node_batch(&schema, &mut writer, &mut builder)?;
+            builder = arrow_array::builder::BinaryBuilder::new();
         }
         Ok(())
     })?;
@@ -1086,7 +1111,7 @@ fn write_node_data_to(
             });
         }
     }
-    flush_node_batch(&schema, &mut writer, &mut batch)?;
+    flush_node_batch(&schema, &mut writer, &mut builder)?;
     let sink = writer.into_inner()?;
     sink.finish()?;
     Ok(rows)
@@ -1205,6 +1230,12 @@ fn edge_record_cmp(a: &EdgeRecord, b: &EdgeRecord) -> std::cmp::Ordering {
     }
 }
 
+fn edge_records_sorted(records: &[EdgeRecord]) -> bool {
+    records
+        .windows(2)
+        .all(|w| edge_record_cmp(&w[0], &w[1]) != std::cmp::Ordering::Greater)
+}
+
 fn edge_schema(with_sort_key: bool) -> Schema {
     let mut fields = vec![
         Field::new("src_id", DataType::Int64, false),
@@ -1235,14 +1266,10 @@ fn flush_edge_batch(
 fn flush_node_batch(
     schema: &Schema,
     writer: &mut ArrowWriter<OutputSink>,
-    batch: &mut Vec<Vec<u8>>,
+    builder: &mut arrow_array::builder::BinaryBuilder,
 ) -> Result<()> {
-    if batch.is_empty() {
+    if builder.len() == 0 {
         return Ok(());
-    }
-    let mut builder = arrow_array::builder::BinaryBuilder::new();
-    for item in batch.drain(..) {
-        builder.append_value(&item);
     }
     let array = builder.finish();
     let batch = RecordBatch::try_new(Arc::new(schema.clone()), vec![Arc::new(array)])?;
@@ -1406,6 +1433,14 @@ fn key_type_for_column(col: &ColumnSpec) -> Result<KeyType> {
         }
         _ => Err(anyhow!("unsupported primary key type")),
     }
+}
+
+fn column_index(table: &TableSpec, name: &str) -> Result<usize> {
+    table
+        .columns
+        .iter()
+        .position(|col| col.name == name)
+        .ok_or_else(|| anyhow!("missing column {}", name))
 }
 
 fn key_from_array(array: &ArrayRef, row: usize, col: &ColumnSpec, label: &str) -> Result<Key> {

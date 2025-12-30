@@ -156,6 +156,7 @@ pub struct RowPackColumn {
 pub struct RowPackContext {
     pub version: u8,
     pub columns: Vec<ColumnContext>,
+    pub estimated_row_bytes: u32,
 }
 
 impl RowPackContext {
@@ -260,9 +261,18 @@ struct BitWriter {
 }
 
 impl BitWriter {
+    #[allow(dead_code)]
     fn new() -> Self {
         Self {
             buf: Vec::new(),
+            cur: 0,
+            used: 0,
+        }
+    }
+
+    fn with_capacity(capacity: usize) -> Self {
+        Self {
+            buf: Vec::with_capacity(capacity),
             cur: 0,
             used: 0,
         }
@@ -291,6 +301,22 @@ impl BitWriter {
             self.buf.push(self.cur);
         }
         self.buf
+    }
+
+    fn reset(&mut self) {
+        self.buf.clear();
+        self.cur = 0;
+        self.used = 0;
+    }
+
+    fn append_to(&mut self, out: &mut Vec<u8>) {
+        if self.used > 0 {
+            self.buf.push(self.cur);
+            self.cur = 0;
+            self.used = 0;
+        }
+        out.extend_from_slice(&self.buf);
+        self.buf.clear();
     }
 }
 
@@ -561,6 +587,8 @@ impl RowPackContextBuilder {
 
     pub fn finish(self) -> Result<RowPackContext> {
         let mut columns = Vec::with_capacity(self.columns.len());
+        let mut estimate = 0usize;
+        let mut bools = 0usize;
         for (idx, logical_type) in self.columns.iter().enumerate() {
             let encoding = match (logical_type, self.decimal_specs[idx]) {
                 (LogicalType::Decimal128, Some(spec)) | (LogicalType::Decimal256, Some(spec)) => {
@@ -584,16 +612,130 @@ impl RowPackContextBuilder {
                     self.fixed_lens[idx],
                 )?,
             };
+            estimate += estimate_column_bytes(&encoding, &self.stats[idx]);
+            if matches!(encoding, ColumnEncoding::Bool) {
+                bools += 1;
+            }
             columns.push(ColumnContext {
                 name: self.names[idx].clone(),
                 logical_type: *logical_type,
                 encoding,
             });
         }
+        let tag_bytes = (self.columns.len() * 2 + 7) / 8;
+        let bool_bytes = (bools + 7) / 8;
+        estimate += tag_bytes + bool_bytes;
         Ok(RowPackContext {
             version: ROWPACK_VERSION,
             columns,
+            estimated_row_bytes: estimate.min(u32::MAX as usize) as u32,
         })
+    }
+}
+
+fn estimate_column_bytes(encoding: &ColumnEncoding, stats: &ColumnStats) -> usize {
+    match encoding {
+        ColumnEncoding::Bool => 0,
+        ColumnEncoding::Int { varint, bits, .. } => {
+            if *varint {
+                varint_bytes(*bits)
+            } else {
+                ((*bits + 7) / 8) as usize
+            }
+        }
+        ColumnEncoding::Date { varint, bits } => {
+            if *varint {
+                varint_bytes(*bits)
+            } else {
+                ((*bits + 7) / 8) as usize
+            }
+        }
+        ColumnEncoding::Timestamp => {
+            let secs_bits = if stats.ts_seen {
+                int_bits(stats.ts_min, stats.ts_max)
+            } else {
+                64
+            };
+            varint_bytes(secs_bits) + 5
+        }
+        ColumnEncoding::Float { storage } => match storage {
+            FloatStorage::F16 => 2,
+            FloatStorage::F32 => 4,
+            FloatStorage::F64 => 8,
+        },
+        ColumnEncoding::Bytes { fixed_len } => {
+            let avg = avg_len(stats.bytes_total, stats.bytes_count);
+            let len = fixed_len.unwrap_or(avg);
+            if fixed_len.is_some() {
+                len
+            } else {
+                varint_bytes_u64(len as u64) + len
+            }
+        }
+        ColumnEncoding::String { encoding } => match encoding {
+            StringEncoding::Dict { .. } => varint_bytes_u64(1024),
+            StringEncoding::Hex { len, .. } => len / 2,
+            StringEncoding::IsoTimestamp { .. } => varint_bytes(64) + 5,
+            StringEncoding::Snappy => {
+                let avg = avg_len(stats.string_bytes, stats.string_total);
+                varint_bytes_u64(avg as u64) + avg
+            }
+            StringEncoding::Raw => {
+                let avg = avg_len(stats.string_bytes, stats.string_total);
+                varint_bytes_u64(avg as u64) + avg
+            }
+        },
+        ColumnEncoding::Decimal { bytes, storage, scale, .. } => match storage {
+            DecimalStorage::Raw => *bytes as usize,
+            DecimalStorage::Int { varint, bits } => {
+                if *scale == 0 {
+                    if *varint {
+                        varint_bytes(*bits)
+                    } else {
+                        ((*bits + 7) / 8) as usize
+                    }
+                } else {
+                    *bytes as usize
+                }
+            }
+            DecimalStorage::Float { storage } => match storage {
+                FloatStorage::F16 => 2,
+                FloatStorage::F32 => 4,
+                FloatStorage::F64 => 8,
+            },
+        },
+        ColumnEncoding::FloatArray { storage } => {
+            let avg_len = avg_len(stats.array_len_total, stats.array_count);
+            let elem = match storage {
+                FloatStorage::F16 => 2,
+                FloatStorage::F32 => 4,
+                FloatStorage::F64 => 8,
+            };
+            varint_bytes_u64(avg_len as u64) + avg_len * elem
+        }
+    }
+}
+
+fn varint_bytes(bits: u8) -> usize {
+    ((bits as usize) + 6) / 7
+}
+
+fn varint_bytes_u64(value: u64) -> usize {
+    let bits = 64 - value.leading_zeros() as usize;
+    ((bits.max(1)) + 6) / 7
+}
+
+fn int_bits(min: i64, max: i64) -> u8 {
+    let max_abs = min.abs().max(max.abs()) as u64;
+    let bits = 64 - max_abs.leading_zeros() as u8;
+    bits.max(1)
+}
+
+fn avg_len(total: usize, count: usize) -> usize {
+    if count == 0 {
+        0
+    } else {
+        total / count
     }
 }
 
@@ -640,6 +782,8 @@ struct ColumnStats {
     string_counts: HashMap<Vec<u8>, usize>,
     string_bytes: usize,
     string_total: usize,
+    bytes_total: usize,
+    bytes_count: usize,
     string_long_bytes: usize,
     string_long_raw: usize,
     string_long_compressed: usize,
@@ -652,6 +796,11 @@ struct ColumnStats {
     string_hex_dashed: bool,
     string_hex_upper: Option<bool>,
     string_hex_ok: bool,
+    array_len_total: usize,
+    array_count: usize,
+    ts_min: i64,
+    ts_max: i64,
+    ts_seen: bool,
 }
 
 impl ColumnStats {
@@ -670,6 +819,8 @@ impl ColumnStats {
             string_counts: HashMap::new(),
             string_bytes: 0,
             string_total: 0,
+            bytes_total: 0,
+            bytes_count: 0,
             string_long_bytes: 0,
             string_long_raw: 0,
             string_long_compressed: 0,
@@ -682,6 +833,11 @@ impl ColumnStats {
             string_hex_dashed: false,
             string_hex_upper: None,
             string_hex_ok: true,
+            array_len_total: 0,
+            array_count: 0,
+            ts_min: i64::MAX,
+            ts_max: i64::MIN,
+            ts_seen: false,
         }
     }
 
@@ -793,13 +949,20 @@ impl ColumnStats {
                 }
             }
             ValueRef::Bytes(v) => {
-                let _ = v;
+                self.bytes_total += v.len();
+                self.bytes_count += 1;
             }
             ValueRef::Date(_) => {}
-            ValueRef::Timestamp { .. } => {}
+            ValueRef::Timestamp { secs, .. } => {
+                self.ts_min = self.ts_min.min(*secs);
+                self.ts_max = self.ts_max.max(*secs);
+                self.ts_seen = true;
+            }
             ValueRef::Decimal128(_) => {}
             ValueRef::Decimal256(_) => {}
             ValueRef::Float32Array(values) => {
+                self.array_len_total += values.len();
+                self.array_count += 1;
                 for v in *values {
                     let v = *v as f64;
                     if v.is_nan() {
@@ -813,6 +976,8 @@ impl ColumnStats {
                 }
             }
             ValueRef::Float64Array(values) => {
+                self.array_len_total += values.len();
+                self.array_count += 1;
                 for v in *values {
                     if v.is_nan() {
                         self.float_has_nan = true;
@@ -995,6 +1160,52 @@ pub struct RowPackEncoder {
     dict_maps: Vec<Option<HashMap<Vec<u8>, u32>>>,
 }
 
+pub struct RowPackScratch {
+    tags: BitWriter,
+    bools: BitWriter,
+    data: Vec<u8>,
+}
+
+impl RowPackScratch {
+    pub fn new(ctx: &RowPackContext) -> Self {
+        let tag_bytes = (ctx.columns.len() * 2 + 7) / 8;
+        let bool_columns = ctx
+            .columns
+            .iter()
+            .filter(|c| matches!(c.encoding, ColumnEncoding::Bool))
+            .count();
+        let bool_bytes = (bool_columns + 7) / 8;
+        Self {
+            tags: BitWriter::with_capacity(tag_bytes),
+            bools: BitWriter::with_capacity(bool_bytes),
+            data: Vec::with_capacity(ctx.estimated_row_bytes as usize),
+        }
+    }
+
+    fn reset(&mut self, ctx: &RowPackContext) {
+        let tag_bytes = (ctx.columns.len() * 2 + 7) / 8;
+        if self.tags.buf.capacity() < tag_bytes {
+            self.tags.buf.reserve(tag_bytes - self.tags.buf.capacity());
+        }
+        let bool_columns = ctx
+            .columns
+            .iter()
+            .filter(|c| matches!(c.encoding, ColumnEncoding::Bool))
+            .count();
+        let bool_bytes = (bool_columns + 7) / 8;
+        if self.bools.buf.capacity() < bool_bytes {
+            self.bools.buf.reserve(bool_bytes - self.bools.buf.capacity());
+        }
+        if self.data.capacity() < ctx.estimated_row_bytes as usize {
+            self.data
+                .reserve(ctx.estimated_row_bytes as usize - self.data.capacity());
+        }
+        self.tags.reset();
+        self.bools.reset();
+        self.data.clear();
+    }
+}
+
 impl RowPackEncoder {
     pub fn new(ctx: RowPackContext) -> Result<Self> {
         let mut dict_maps = Vec::with_capacity(ctx.columns.len());
@@ -1023,9 +1234,17 @@ impl RowPackEncoder {
         if values.len() != self.ctx.columns.len() {
             return Err(anyhow!("rowpack column mismatch"));
         }
-        let mut tags = BitWriter::new();
-        let mut bools = BitWriter::new();
-        let mut data = Vec::new();
+        let tag_bytes = (self.ctx.columns.len() * 2 + 7) / 8;
+        let bool_columns = self
+            .ctx
+            .columns
+            .iter()
+            .filter(|c| matches!(c.encoding, ColumnEncoding::Bool))
+            .count();
+        let bool_bytes = (bool_columns + 7) / 8;
+        let mut tags = BitWriter::with_capacity(tag_bytes);
+        let mut bools = BitWriter::with_capacity(bool_bytes);
+        let mut data = Vec::with_capacity(self.ctx.estimated_row_bytes as usize);
         for (idx, col) in self.ctx.columns.iter().enumerate() {
             let value = &values[idx];
             let tag = match value {
@@ -1052,6 +1271,47 @@ impl RowPackEncoder {
         out.append(&mut bool_bytes);
         out.extend_from_slice(&data);
         Ok(out)
+    }
+
+    pub fn encode_row_into<'a>(
+        &self,
+        values: &[ValueRef<'a>],
+        out: &mut Vec<u8>,
+        scratch: &mut RowPackScratch,
+    ) -> Result<()> {
+        if values.len() != self.ctx.columns.len() {
+            return Err(anyhow!("rowpack column mismatch"));
+        }
+        scratch.reset(&self.ctx);
+        for (idx, col) in self.ctx.columns.iter().enumerate() {
+            let value = &values[idx];
+            let tag = match value {
+                ValueRef::Null => 0u8,
+                _ if matches!(col.encoding, ColumnEncoding::Bool) => {
+                    let v = match value {
+                        ValueRef::Bool(v) => *v,
+                        _ => return Err(anyhow!("rowpack bool mismatch")),
+                    };
+                    scratch.bools.write_bits(if v { 1 } else { 0 }, 1);
+                    1u8
+                }
+                _ => encode_value_with_tag(
+                    &mut scratch.data,
+                    col,
+                    value,
+                    self.dict_maps[idx].as_ref(),
+                )?,
+            };
+            scratch.tags.write_bits(tag, 2);
+        }
+        out.clear();
+        out.reserve(
+            scratch.tags.buf.len() + scratch.bools.buf.len() + scratch.data.len() + 8,
+        );
+        scratch.tags.append_to(out);
+        scratch.bools.append_to(out);
+        out.extend_from_slice(&scratch.data);
+        Ok(())
     }
 }
 
@@ -2162,6 +2422,7 @@ mod tests {
                     },
                 },
             ],
+            estimated_row_bytes: 0,
         }
     }
 
@@ -2208,6 +2469,7 @@ mod tests {
                 logical_type: LogicalType::Timestamp,
                 encoding: ColumnEncoding::Timestamp,
             }],
+        estimated_row_bytes: 0,
         };
         let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
         let row = vec![ValueRef::Timestamp {
@@ -2236,6 +2498,7 @@ mod tests {
                     },
                 },
             }],
+        estimated_row_bytes: 0,
         };
         let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
         let row = vec![ValueRef::Decimal128(-12345i128)];
@@ -2264,6 +2527,7 @@ mod tests {
                     },
                 },
             }],
+        estimated_row_bytes: 0,
         };
         let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
         let big = BigInt::parse_bytes(b"123456789012345678901234567890", 10).unwrap();
@@ -2425,6 +2689,7 @@ mod tests {
                     },
                 },
             }],
+        estimated_row_bytes: 0,
         };
         let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
         let big = i128::MAX;
@@ -2598,6 +2863,7 @@ mod tests {
                     },
                 },
             }],
+        estimated_row_bytes: 0,
         };
         let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
         let row = vec![ValueRef::String("not-hex")];
@@ -2618,6 +2884,7 @@ mod tests {
                     storage: FloatStorage::F16,
                 },
             }],
+        estimated_row_bytes: 0,
         };
         let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
         let row = vec![ValueRef::Float64(999.0)];
@@ -2690,6 +2957,7 @@ mod tests {
                 logical_type: LogicalType::Bytes,
                 encoding: ColumnEncoding::Bytes { fixed_len: None },
             }],
+        estimated_row_bytes: 0,
         };
         let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
         let row = vec![ValueRef::Bytes(b"xyz")];
@@ -2708,6 +2976,7 @@ mod tests {
                 logical_type: LogicalType::Bytes,
                 encoding: ColumnEncoding::Bytes { fixed_len: Some(4) },
             }],
+        estimated_row_bytes: 0,
         };
         let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
         let row = vec![ValueRef::Bytes(b"ABCD")];
@@ -2726,6 +2995,7 @@ mod tests {
                 logical_type: LogicalType::Bytes,
                 encoding: ColumnEncoding::Bytes { fixed_len: Some(4) },
             }],
+        estimated_row_bytes: 0,
         };
         let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
         let row = vec![ValueRef::Bytes(b"ABCDE")];
@@ -2777,6 +3047,7 @@ mod tests {
                     },
                 },
             ],
+        estimated_row_bytes: 0,
         };
         let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
         let row = vec![
@@ -2807,6 +3078,7 @@ mod tests {
                     bits: 32,
                 },
             }],
+        estimated_row_bytes: 0,
         };
         let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
         let row = vec![ValueRef::Int32(-12345)];
@@ -2827,6 +3099,7 @@ mod tests {
                     encoding: StringEncoding::IsoTimestamp { fmt: IsoFormat::Rfc3339 },
                 },
             }],
+        estimated_row_bytes: 0,
         };
         let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
         let row = vec![ValueRef::String("not-a-timestamp")];
@@ -2977,6 +3250,7 @@ mod tests {
                     },
                 },
             }],
+        estimated_row_bytes: 0,
         };
         let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
         let row = vec![ValueRef::String("carol")];
@@ -3008,6 +3282,7 @@ mod tests {
                     },
                 },
             ],
+        estimated_row_bytes: 0,
         };
         let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
         let row = vec![ValueRef::Null, ValueRef::Null];
@@ -3028,6 +3303,7 @@ mod tests {
                     encoding: StringEncoding::Raw,
                 },
             }],
+        estimated_row_bytes: 0,
         };
         let decoder = RowPackDecoder::new(ctx).unwrap();
         let mut tags = BitWriter::new();
@@ -3053,6 +3329,7 @@ mod tests {
                     storage: FloatStorage::F32,
                 },
             }],
+        estimated_row_bytes: 0,
         };
         let decoder = RowPackDecoder::new(ctx).unwrap();
         let mut tags = BitWriter::new();
@@ -3076,6 +3353,7 @@ mod tests {
                 logical_type: LogicalType::Bool,
                 encoding: ColumnEncoding::Bool,
             }],
+        estimated_row_bytes: 0,
         };
         let decoder = RowPackDecoder::new(ctx).unwrap();
         let mut tags = BitWriter::new();
@@ -3098,6 +3376,7 @@ mod tests {
                     bits: 64,
                 },
             }],
+        estimated_row_bytes: 0,
         };
         let decoder = RowPackDecoder::new(ctx).unwrap();
         let mut tags = BitWriter::new();
@@ -3118,6 +3397,7 @@ mod tests {
                     encoding: StringEncoding::Snappy,
                 },
             }],
+        estimated_row_bytes: 0,
         };
         let decoder = RowPackDecoder::new(ctx).unwrap();
         let mut tags = BitWriter::new();
