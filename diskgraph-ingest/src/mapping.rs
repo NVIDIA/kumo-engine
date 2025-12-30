@@ -59,6 +59,7 @@ pub struct PkMap {
     hash_table: Vec<Option<(Key, u64)>>,
     capacity: usize,
     hash_len: usize,
+    duplicate_count: u64,
     min_key: u64,
     max_key: u64,
     direct: Option<DirectMap>,
@@ -85,6 +86,7 @@ impl PkMap {
             hash_table: vec![None; capacity],
             capacity,
             hash_len: 0,
+            duplicate_count: 0,
             min_key: u64::MAX,
             max_key: 0,
             direct: None,
@@ -124,7 +126,8 @@ impl PkMap {
                             return Ok(());
                         }
                         Some((existing, _)) if keys_equal(existing, &key) => {
-                            return Err(anyhow!("duplicate primary key"));
+                            self.duplicate_count = self.duplicate_count.saturating_add(1);
+                            return Ok(());
                         }
                         _ => {
                             idx = (idx + 1) & (self.capacity - 1);
@@ -142,10 +145,30 @@ impl PkMap {
     pub fn finalize(&mut self) {
         if let MappingKind::Sorted = self.kind {
             self.entries.sort_by(|a, b| compare_keys(&a.0, &b.0));
+            if !self.entries.is_empty() {
+                let mut deduped = Vec::with_capacity(self.entries.len());
+                let mut iter = std::mem::take(&mut self.entries).into_iter();
+                if let Some(mut current) = iter.next() {
+                    for entry in iter {
+                        if compare_keys(&current.0, &entry.0) == Ordering::Equal {
+                            self.duplicate_count = self.duplicate_count.saturating_add(1);
+                            continue;
+                        }
+                        deduped.push(current);
+                        current = entry;
+                    }
+                    deduped.push(current);
+                }
+                self.entries = deduped;
+            }
         }
         if self.kind == MappingKind::Hash && self.key_type == KeyType::Int64 {
             self.try_build_direct();
         }
+    }
+
+    pub fn duplicate_count(&self) -> u64 {
+        self.duplicate_count
     }
 
     pub fn lookup(&self, key: &Key) -> Option<u64> {
@@ -365,4 +388,28 @@ fn hash_int(mut v: u64) -> u64 {
 
 fn next_pow2(value: usize) -> usize {
     value.next_power_of_two()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hash_map_skips_duplicate_keys() {
+        let mut map = PkMap::new(MappingKind::Hash, KeyType::VarBytes, 4);
+        map.insert(Key::Bytes(b"abc".to_vec()), 1).unwrap();
+        map.insert(Key::Bytes(b"abc".to_vec()), 2).unwrap();
+        assert_eq!(map.duplicate_count(), 1);
+        assert_eq!(map.lookup(&Key::Bytes(b"abc".to_vec())), Some(1));
+    }
+
+    #[test]
+    fn sorted_map_dedupes_on_finalize() {
+        let mut map = PkMap::new(MappingKind::Sorted, KeyType::FixedBytes { len: 3 }, 4);
+        map.insert(Key::FixedBytes(b"abc".to_vec()), 1).unwrap();
+        map.insert(Key::FixedBytes(b"abc".to_vec()), 2).unwrap();
+        map.finalize();
+        assert_eq!(map.duplicate_count(), 1);
+        assert_eq!(map.lookup(&Key::FixedBytes(b"abc".to_vec())), Some(1));
+    }
 }

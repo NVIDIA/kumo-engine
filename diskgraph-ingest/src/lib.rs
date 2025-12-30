@@ -116,6 +116,8 @@ pub struct IngestStats {
     pub key_lookup_failures: u64,
     pub key_failure_samples: Vec<String>,
     pub key_failures_by_context: HashMap<String, KeyFailureCounts>,
+    pub pk_duplicate_counts: HashMap<String, u64>,
+    pub pk_duplicate_total: u64,
     pub perf: PerfStats,
 }
 
@@ -263,6 +265,7 @@ struct IngestContext {
     relation_defs: Vec<RelationDef>,
     relationships: Vec<RelationshipRuntime>,
     edge_counts: HashMap<String, u64>,
+    pk_duplicate_counts: HashMap<String, u64>,
     output: String,
     key_failures: std::sync::Arc<KeyFailureCollector>,
     pk_map_task_ms: u64,
@@ -497,6 +500,7 @@ impl IngestContext {
             relation_defs,
             relationships,
             edge_counts: HashMap::new(),
+            pk_duplicate_counts: HashMap::new(),
             output: output.to_string(),
             key_failures: std::sync::Arc::new(KeyFailureCollector::new()),
             pk_map_task_ms: 0,
@@ -522,12 +526,14 @@ impl IngestContext {
             .collect();
         let pk_maps = std::sync::Arc::new(std::sync::Mutex::new(HashMap::new()));
         let table_rows = std::sync::Arc::new(std::sync::Mutex::new(HashMap::new()));
+        let pk_duplicate_counts = std::sync::Arc::new(std::sync::Mutex::new(HashMap::new()));
         let task_time = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
         let mut tasks = Vec::new();
         let source_rowpack = self.source.rowpack.clone();
         for table in tables {
             let pk_maps = std::sync::Arc::clone(&pk_maps);
             let table_rows = std::sync::Arc::clone(&table_rows);
+            let pk_duplicate_counts = std::sync::Arc::clone(&pk_duplicate_counts);
             let progress = progress.clone();
             let source_rowpack = source_rowpack.clone();
             tasks.push(WorkItem {
@@ -609,6 +615,13 @@ impl IngestContext {
                     if let Some(sort) = sort_map.as_mut() {
                         sort.finalize();
                     }
+                    let duplicate_count = pk_map.duplicate_count();
+                    if duplicate_count > 0 {
+                        pk_duplicate_counts
+                            .lock()
+                            .unwrap()
+                            .insert(table.name.clone(), duplicate_count);
+                    }
                     table_rows.lock().unwrap().insert(table.name.clone(), row_id);
                     pk_maps.lock().unwrap().insert(
                         table.name.clone(),
@@ -638,6 +651,10 @@ impl IngestContext {
             .map_err(|_| anyhow!("pk map row tasks still running"))?
             .into_inner()
             .unwrap();
+        let pk_duplicate_counts = std::sync::Arc::try_unwrap(pk_duplicate_counts)
+            .map_err(|_| anyhow!("pk map duplicate tasks still running"))?
+            .into_inner()
+            .unwrap();
         for (table_name, state) in &pk_maps {
             let map_path = format!("nodes/{}/pk_map.bin", table_name.to_lowercase());
             let target = self.target.join(&map_path);
@@ -662,6 +679,7 @@ impl IngestContext {
         }
         self.pk_maps = pk_maps;
         self.table_rows = table_rows;
+        self.pk_duplicate_counts = pk_duplicate_counts;
         Ok(())
     }
 
@@ -1225,6 +1243,7 @@ impl IngestContext {
                 },
             );
         }
+        let pk_duplicate_total: u64 = self.pk_duplicate_counts.values().sum();
         IngestStats {
             output: self.output.clone(),
             node_tables: metadata.node_types.len(),
@@ -1237,6 +1256,8 @@ impl IngestContext {
             key_lookup_failures,
             key_failure_samples,
             key_failures_by_context,
+            pk_duplicate_counts: self.pk_duplicate_counts.clone(),
+            pk_duplicate_total,
             perf,
         }
     }

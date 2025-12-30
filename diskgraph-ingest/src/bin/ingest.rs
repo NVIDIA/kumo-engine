@@ -115,6 +115,15 @@ fn main() -> Result<()> {
             println!("  {}: {}", name, count);
         }
     }
+    if stats.pk_duplicate_total > 0 {
+        println!("Duplicate primary keys:");
+        println!("  Total skipped: {}", stats.pk_duplicate_total);
+        let mut entries: Vec<_> = stats.pk_duplicate_counts.iter().collect();
+        entries.sort_by(|a, b| a.0.cmp(b.0));
+        for (name, count) in entries {
+            println!("  {}: {}", name, count);
+        }
+    }
     if stats.key_parse_failures > 0 || stats.key_lookup_failures > 0 {
         println!("Key matching failures:");
         println!("  Parse failures: {}", stats.key_parse_failures);

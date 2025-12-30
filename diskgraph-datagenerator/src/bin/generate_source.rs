@@ -235,19 +235,26 @@ fn write_node_parquet(
             let id = next_id;
             match name {
                 "User" => {
-                    let uuid = uuid_bytes_from_u64(id);
+                    let user_id = if should_inject_bad(id, 947, 7) { 0 } else { id };
+                    let uuid = uuid_bytes_from_u64(user_id);
                     if let Some(builder) = id_str_builder.as_mut() {
                         builder.append_value(uuid_string_from_bytes(&uuid));
                     }
                 }
                 "Session" | "Device" => {
+                    let sess_id = if name == "Device" && should_inject_bad(id, 947, 7) {
+                        0
+                    } else {
+                        id
+                    };
                     if let Some(builder) = id_str_builder.as_mut() {
-                        builder.append_value(format!("sess-{}", id));
+                        builder.append_value(format!("sess-{}", sess_id));
                     }
                 }
                 "Product" => {
                     if let Some(builder) = id_bin_builder.as_mut() {
-                        builder.append_value(product_bytes_from_u64(id));
+                        let product_id = if should_inject_bad(id, 941, 8) { 0 } else { id };
+                        builder.append_value(product_bytes_from_u64(product_id));
                     }
                 }
                 "Merchant" => {
@@ -414,11 +421,22 @@ fn write_node_csv(
         );
         let id_val = match name {
             "User" => {
-                let uuid = uuid_bytes_from_u64(id);
+                let user_id = if should_inject_bad(id, 947, 7) { 0 } else { id };
+                let uuid = uuid_bytes_from_u64(user_id);
                 uuid_string_from_bytes(&uuid)
             }
-            "Session" | "Device" => format!("sess-{}", id),
-            "Product" => BASE64.encode(product_bytes_from_u64(id)),
+            "Session" | "Device" => {
+                let sess_id = if name == "Device" && should_inject_bad(id, 947, 7) {
+                    0
+                } else {
+                    id
+                };
+                format!("sess-{}", sess_id)
+            }
+            "Product" => {
+                let product_id = if should_inject_bad(id, 941, 8) { 0 } else { id };
+                BASE64.encode(product_bytes_from_u64(product_id))
+            }
             "Merchant" => BASE64.encode(merchant_bytes_from_u64(id)),
             "Order" | "Category" => id.to_string(),
             _ => id.to_string(),
