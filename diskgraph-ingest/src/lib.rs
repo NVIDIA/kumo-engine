@@ -421,19 +421,20 @@ impl IngestContext {
                         });
                     }
                     let mut next_update = PROGRESS_STEP;
+                    let mut arrays_f32: Vec<Vec<f32>> = Vec::new();
+                    let mut arrays_f64: Vec<Vec<f64>> = Vec::new();
                     for_each_row(&table, |row| {
                         let key = row.get_key(&pk_col, &pk)?;
-                        pk_map.insert(key, row_id)?;
                         if let Some(sort_val) = row.sort_key(&table)? {
                             let sort_key = sort_key_to_u32(&sort_val)?;
                             let sort_map = sort_map
                                 .get_or_insert_with(|| PkMap::new(mapping_kind, key_type, capacity_hint));
-                            let key = row.get_key(&pk_col, &pk)?;
-                            sort_map.insert(key, sort_key as u64)?;
+                            sort_map.insert(key.clone(), sort_key as u64)?;
                         }
+                        pk_map.insert(key, row_id)?;
+                        arrays_f32.clear();
+                        arrays_f64.clear();
                         let mut values = Vec::with_capacity(table.columns.len());
-                        let mut arrays_f32 = Vec::new();
-                        let mut arrays_f64 = Vec::new();
                         row_values_from_row(
                             row,
                             &table,
@@ -1052,10 +1053,12 @@ fn write_node_data_to(
     let mut batch = Vec::with_capacity(NODE_BATCH_SIZE);
     let mut rows = 0u64;
     let mut next_update = PROGRESS_STEP;
+    let mut arrays_f32: Vec<Vec<f32>> = Vec::new();
+    let mut arrays_f64: Vec<Vec<f64>> = Vec::new();
     for_each_row(table, |row| {
+        arrays_f32.clear();
+        arrays_f64.clear();
         let mut values = Vec::with_capacity(table.columns.len());
-        let mut arrays_f32 = Vec::new();
-        let mut arrays_f64 = Vec::new();
         row_values_from_row(row, table, &mut values, &mut arrays_f32, &mut arrays_f64)?;
         let data = encoder.encode_row(&values)?;
         batch.push(data);
@@ -1675,10 +1678,12 @@ fn sample_rowpack_context(
     let columns = rowpack_columns(table)?;
     let mut builder = RowPackContextBuilder::new(columns, config.clone());
     let limit = config.sample_rows();
+    let mut arrays_f32: Vec<Vec<f32>> = Vec::new();
+    let mut arrays_f64: Vec<Vec<f64>> = Vec::new();
     for_each_row_with_limit(table, limit, |row| {
+        arrays_f32.clear();
+        arrays_f64.clear();
         let mut values = Vec::with_capacity(table.columns.len());
-        let mut arrays_f32 = Vec::new();
-        let mut arrays_f64 = Vec::new();
         row_values_from_row(row, table, &mut values, &mut arrays_f32, &mut arrays_f64)?;
         builder.observe_row(&values)?;
         Ok(())
