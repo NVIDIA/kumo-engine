@@ -4,7 +4,7 @@ mod mapping;
 pub mod source_metadata;
 
 use crate::mapping::{Key, KeyType, PkMap};
-use crate::source_metadata::{ColumnSpec, ColumnType, TableFormat, TableSpec};
+use crate::source_metadata::{ColumnSpec, ColumnType, KeyMode, TableFormat, TableSpec};
 use anyhow::{anyhow, Context, Result};
 use arrow_array::{Array, ArrayRef, RecordBatch};
 use arrow_array::builder::ArrayBuilder;
@@ -62,6 +62,7 @@ enum KeyParseError {
     NotFinite,
     Negative,
     Null,
+    InvalidUuid,
 }
 
 impl KeyParseError {
@@ -78,6 +79,7 @@ impl KeyParseError {
             KeyParseError::NotFinite => "not finite",
             KeyParseError::Negative => "negative",
             KeyParseError::Null => "null",
+            KeyParseError::InvalidUuid => "invalid uuid",
         }
     }
 }
@@ -280,6 +282,7 @@ struct TableMapState {
     pk_column: String,
     pk_dtype: ColumnType,
     fixed_len: Option<usize>,
+    key_mode: Option<KeyMode>,
     rowpack_builder: Option<diskgraph_rowpack::RowPackContextBuilder>,
 }
 
@@ -616,6 +619,7 @@ impl IngestContext {
                             pk_column: pk.clone(),
                             pk_dtype: pk_col.dtype.clone(),
                             fixed_len: pk_col.fixed_len,
+                            key_mode: pk_col.key_mode.clone(),
                             rowpack_builder: Some(rowpack_builder),
                         },
                     );
@@ -1119,6 +1123,11 @@ impl IngestContext {
                     codec: "rowpack".to_string(),
                     context_path: path,
                 });
+                let fixed_len = if state.key_mode == Some(KeyMode::Uuid) {
+                    Some(16)
+                } else {
+                    state.fixed_len
+                };
                 let pk_map = Some(PrimaryKeyMap {
                     column: state.pk_column.clone(),
                     dtype: format!("{:?}", state.pk_dtype).to_lowercase(),
@@ -1130,7 +1139,14 @@ impl IngestContext {
                         MappingKind::Hash => "hash".to_string(),
                         MappingKind::Sorted => "sorted".to_string(),
                     },
-                    fixed_len: state.fixed_len,
+                    fixed_len,
+                    key_mode: state
+                        .key_mode
+                        .as_ref()
+                        .and_then(|mode| match mode {
+                            KeyMode::Uuid => Some("uuid".to_string()),
+                            KeyMode::Fixed => None,
+                        }),
                 });
                 (compression, pk_map)
             } else {
@@ -1660,16 +1676,19 @@ fn key_type_for_column(col: &ColumnSpec) -> Result<KeyType> {
         | ColumnType::UInt32
         | ColumnType::UInt16
         | ColumnType::UInt8 => Ok(KeyType::Int64),
-        ColumnType::Float32 | ColumnType::Float64 | ColumnType::Decimal128 | ColumnType::Decimal256 => {
-            if let Some(len) = col.fixed_len {
-                Ok(KeyType::FixedBytes { len })
-            } else {
-                Ok(KeyType::Int64)
-            }
-        }
+        ColumnType::Float32
+        | ColumnType::Float64
+        | ColumnType::Decimal128
+        | ColumnType::Decimal256 => Ok(KeyType::Int64),
         ColumnType::String | ColumnType::Bytes => {
-            let len = col.fixed_len.ok_or_else(|| anyhow!("fixed_len required"))?;
-            Ok(KeyType::FixedBytes { len })
+            if col.key_mode == Some(KeyMode::Uuid) {
+                return Ok(KeyType::Uuid);
+            }
+            if col.key_mode == Some(KeyMode::Fixed) || col.fixed_len.is_some() {
+                let len = col.fixed_len.ok_or_else(|| anyhow!("fixed_len required"))?;
+                return Ok(KeyType::FixedBytes { len });
+            }
+            Ok(KeyType::VarBytes)
         }
         _ => Err(anyhow!("unsupported primary key type")),
     }
@@ -1765,10 +1784,18 @@ fn key_from_array(array: &ArrayRef, row: usize, col: &ColumnSpec) -> KeyParseRes
                 .as_any()
                 .downcast_ref::<arrow_array::StringArray>()
                 .ok_or(KeyParseError::TypeMismatch)?;
-            let bytes = arr.value(row).as_bytes().to_vec();
-            let len = col.fixed_len.unwrap_or(bytes.len());
-            if bytes.len() != len {
-                return Err(KeyParseError::LengthMismatch);
+            let value = arr.value(row).as_bytes();
+            if col.key_mode == Some(KeyMode::Uuid) {
+                let uuid = parse_uuid_string(value)?;
+                return Ok(Key::Uuid(uuid));
+            }
+            let bytes = value.to_vec();
+            if col.key_mode == Some(KeyMode::Fixed) || col.fixed_len.is_some() {
+                let len = col.fixed_len.unwrap_or(bytes.len());
+                if bytes.len() != len {
+                    return Err(KeyParseError::LengthMismatch);
+                }
+                return Ok(Key::FixedBytes(bytes));
             }
             Ok(Key::Bytes(bytes))
         }
@@ -1777,10 +1804,18 @@ fn key_from_array(array: &ArrayRef, row: usize, col: &ColumnSpec) -> KeyParseRes
                 .as_any()
                 .downcast_ref::<arrow_array::BinaryArray>()
                 .ok_or(KeyParseError::TypeMismatch)?;
-            let bytes = arr.value(row).to_vec();
-            let len = col.fixed_len.unwrap_or(bytes.len());
-            if bytes.len() != len {
-                return Err(KeyParseError::LengthMismatch);
+            let value = arr.value(row);
+            if col.key_mode == Some(KeyMode::Uuid) {
+                let uuid = parse_uuid_bytes(value)?;
+                return Ok(Key::Uuid(uuid));
+            }
+            let bytes = value.to_vec();
+            if col.key_mode == Some(KeyMode::Fixed) || col.fixed_len.is_some() {
+                let len = col.fixed_len.unwrap_or(bytes.len());
+                if bytes.len() != len {
+                    return Err(KeyParseError::LengthMismatch);
+                }
+                return Ok(Key::FixedBytes(bytes));
             }
             Ok(Key::Bytes(bytes))
         }
@@ -1849,6 +1884,12 @@ fn key_from_array_for_target(
                     .as_any()
                     .downcast_ref::<arrow_array::StringArray>()
                     .ok_or(KeyParseError::TypeMismatch)?;
+                if col.key_mode == Some(KeyMode::Uuid)
+                    || col.key_mode == Some(KeyMode::Fixed)
+                    || col.fixed_len.is_some()
+                {
+                    return Err(KeyParseError::TypeMismatch);
+                }
                 let bytes = arr.value(row).as_bytes();
                 let v = parse_base10_bytes(bytes)?;
                 Ok(Key::Int(v))
@@ -1858,6 +1899,12 @@ fn key_from_array_for_target(
                     .as_any()
                     .downcast_ref::<arrow_array::BinaryArray>()
                     .ok_or(KeyParseError::TypeMismatch)?;
+                if col.key_mode == Some(KeyMode::Uuid)
+                    || col.key_mode == Some(KeyMode::Fixed)
+                    || col.fixed_len.is_some()
+                {
+                    return Err(KeyParseError::TypeMismatch);
+                }
                 let bytes = arr.value(row);
                 let v = parse_base10_bytes(bytes)?;
                 Ok(Key::Int(v))
@@ -1870,22 +1917,63 @@ fn key_from_array_for_target(
                     .as_any()
                     .downcast_ref::<arrow_array::StringArray>()
                     .ok_or(KeyParseError::TypeMismatch)?;
+                if col.key_mode == Some(KeyMode::Uuid) {
+                    return Err(KeyParseError::TypeMismatch);
+                }
+                if col.key_mode.is_none() && col.fixed_len.is_none() {
+                    return Err(KeyParseError::TypeMismatch);
+                }
                 let bytes = normalize_numeric_bytes(arr.value(row).as_bytes(), target_col)?;
                 if bytes.len() != len {
                     return Err(KeyParseError::LengthMismatch);
                 }
-                Ok(Key::Bytes(bytes))
+                Ok(Key::FixedBytes(bytes))
             }
             ColumnType::Bytes => {
                 let arr = array
                     .as_any()
                     .downcast_ref::<arrow_array::BinaryArray>()
                     .ok_or(KeyParseError::TypeMismatch)?;
+                if col.key_mode == Some(KeyMode::Uuid) {
+                    return Err(KeyParseError::TypeMismatch);
+                }
+                if col.key_mode.is_none() && col.fixed_len.is_none() {
+                    return Err(KeyParseError::TypeMismatch);
+                }
                 let bytes = normalize_numeric_bytes(arr.value(row), target_col)?;
                 if bytes.len() != len {
                     return Err(KeyParseError::LengthMismatch);
                 }
-                Ok(Key::Bytes(bytes))
+                Ok(Key::FixedBytes(bytes))
+            }
+            _ => Err(KeyParseError::UnsupportedType),
+        },
+        KeyType::VarBytes => match col.dtype {
+            ColumnType::String => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::StringArray>()
+                    .ok_or(KeyParseError::TypeMismatch)?;
+                if col.key_mode == Some(KeyMode::Uuid)
+                    || col.key_mode == Some(KeyMode::Fixed)
+                    || col.fixed_len.is_some()
+                {
+                    return Err(KeyParseError::TypeMismatch);
+                }
+                Ok(Key::Bytes(arr.value(row).as_bytes().to_vec()))
+            }
+            ColumnType::Bytes => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::BinaryArray>()
+                    .ok_or(KeyParseError::TypeMismatch)?;
+                if col.key_mode == Some(KeyMode::Uuid)
+                    || col.key_mode == Some(KeyMode::Fixed)
+                    || col.fixed_len.is_some()
+                {
+                    return Err(KeyParseError::TypeMismatch);
+                }
+                Ok(Key::Bytes(arr.value(row).to_vec()))
             }
             ColumnType::Int64
             | ColumnType::Int32
@@ -1899,11 +1987,7 @@ fn key_from_array_for_target(
                 let Key::Int(v) = key else {
                     return Err(KeyParseError::TypeMismatch);
                 };
-                let bytes = v.to_string().into_bytes();
-                if bytes.len() != len {
-                    return Err(KeyParseError::LengthMismatch);
-                }
-                Ok(Key::Bytes(bytes))
+                Ok(Key::Bytes(v.to_string().into_bytes()))
             }
             ColumnType::Float32 => {
                 let arr = array
@@ -1912,9 +1996,6 @@ fn key_from_array_for_target(
                     .ok_or(KeyParseError::TypeMismatch)?;
                 let s = format_float_base10(arr.value(row) as f64, 7)?;
                 let bytes = normalize_numeric_bytes(s.as_bytes(), target_col)?;
-                if bytes.len() != len {
-                    return Err(KeyParseError::LengthMismatch);
-                }
                 Ok(Key::Bytes(bytes))
             }
             ColumnType::Float64 => {
@@ -1924,9 +2005,6 @@ fn key_from_array_for_target(
                     .ok_or(KeyParseError::TypeMismatch)?;
                 let s = format_float_base10(arr.value(row), 15)?;
                 let bytes = normalize_numeric_bytes(s.as_bytes(), target_col)?;
-                if bytes.len() != len {
-                    return Err(KeyParseError::LengthMismatch);
-                }
                 Ok(Key::Bytes(bytes))
             }
             ColumnType::Decimal128 => {
@@ -1937,9 +2015,6 @@ fn key_from_array_for_target(
                 let scale = target_col.scale.unwrap_or(0);
                 let s = decimal_to_string_i128(arr.value(row), scale);
                 let bytes = normalize_numeric_bytes(s.as_bytes(), target_col)?;
-                if bytes.len() != len {
-                    return Err(KeyParseError::LengthMismatch);
-                }
                 Ok(Key::Bytes(bytes))
             }
             ColumnType::Decimal256 => {
@@ -1950,10 +2025,32 @@ fn key_from_array_for_target(
                 let scale = target_col.scale.unwrap_or(0);
                 let s = decimal_to_string_i256(arr.value(row), scale);
                 let bytes = normalize_numeric_bytes(s.as_bytes(), target_col)?;
-                if bytes.len() != len {
-                    return Err(KeyParseError::LengthMismatch);
-                }
                 Ok(Key::Bytes(bytes))
+            }
+            _ => Err(KeyParseError::UnsupportedType),
+        },
+        KeyType::Uuid => match col.dtype {
+            ColumnType::String => {
+                if col.key_mode != Some(KeyMode::Uuid) {
+                    return Err(KeyParseError::TypeMismatch);
+                }
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::StringArray>()
+                    .ok_or(KeyParseError::TypeMismatch)?;
+                let uuid = parse_uuid_string(arr.value(row).as_bytes())?;
+                Ok(Key::Uuid(uuid))
+            }
+            ColumnType::Bytes => {
+                if col.key_mode != Some(KeyMode::Uuid) {
+                    return Err(KeyParseError::TypeMismatch);
+                }
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::BinaryArray>()
+                    .ok_or(KeyParseError::TypeMismatch)?;
+                let uuid = parse_uuid_bytes(arr.value(row))?;
+                Ok(Key::Uuid(uuid))
             }
             _ => Err(KeyParseError::UnsupportedType),
         },
@@ -1982,6 +2079,72 @@ fn parse_base10_bytes(bytes: &[u8]) -> KeyParseResult<u64> {
             .ok_or(KeyParseError::TooLarge)?;
     }
     Ok(value)
+}
+
+fn parse_uuid_bytes(bytes: &[u8]) -> KeyParseResult<[u8; 16]> {
+    if bytes.len() != 16 {
+        return Err(KeyParseError::InvalidUuid);
+    }
+    let mut out = [0u8; 16];
+    out.copy_from_slice(bytes);
+    Ok(out)
+}
+
+fn parse_uuid_string(bytes: &[u8]) -> KeyParseResult<[u8; 16]> {
+    let mut input = bytes;
+    if starts_with_case_insensitive(input, b"urn:uuid:") {
+        input = &input[9..];
+    }
+    if input.len() >= 2 {
+        let first = input[0];
+        let last = input[input.len() - 1];
+        if (first == b'{' && last == b'}') || (first == b'(' && last == b')') {
+            input = &input[1..input.len() - 1];
+        }
+    }
+    let mut out = [0u8; 16];
+    let mut idx = 0usize;
+    let mut high = true;
+    for &b in input {
+        if b == b'-' {
+            continue;
+        }
+        let val = hex_value(b).ok_or(KeyParseError::InvalidUuid)?;
+        if idx >= 16 {
+            return Err(KeyParseError::InvalidUuid);
+        }
+        if high {
+            out[idx] = val << 4;
+            high = false;
+        } else {
+            out[idx] |= val;
+            idx += 1;
+            high = true;
+        }
+    }
+    if idx != 16 || !high {
+        return Err(KeyParseError::InvalidUuid);
+    }
+    Ok(out)
+}
+
+fn hex_value(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn starts_with_case_insensitive(haystack: &[u8], needle: &[u8]) -> bool {
+    if haystack.len() < needle.len() {
+        return false;
+    }
+    haystack
+        .iter()
+        .zip(needle.iter())
+        .all(|(a, b)| a.to_ascii_lowercase() == b.to_ascii_lowercase())
 }
 
 fn normalize_numeric_bytes(bytes: &[u8], target_col: &ColumnSpec) -> KeyParseResult<Vec<u8>> {
@@ -2124,10 +2287,11 @@ fn sample_key_value(array: &ArrayRef, row: usize, col: &ColumnSpec) -> Option<St
 fn sample_key(key: &Key) -> Option<String> {
     match key {
         Key::Int(v) => Some(v.to_string()),
-        Key::Bytes(bytes) => {
+        Key::FixedBytes(bytes) | Key::Bytes(bytes) => {
             let value = String::from_utf8_lossy(bytes);
             Some(truncate_sample(value.as_ref()))
         }
+        Key::Uuid(bytes) => Some(hex_encode(bytes)),
     }
 }
 
@@ -2138,6 +2302,52 @@ fn truncate_sample(input: &str) -> String {
     let mut out: String = input.chars().take(MAX_KEY_SAMPLE_LEN).collect();
     out.push_str("...");
     out
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        out.push(hex_char(b >> 4));
+        out.push(hex_char(b & 0x0f));
+    }
+    out
+}
+
+fn hex_char(v: u8) -> char {
+    match v {
+        0..=9 => (b'0' + v) as char,
+        _ => (b'a' + (v - 10)) as char,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_uuid_string_formats() {
+        let raw = "00112233445566778899aabbccddeeff";
+        let dashed = "00112233-4455-6677-8899-aabbccddeeff";
+        let upper = "00112233-4455-6677-8899-AABBCCDDEEFF";
+        let urn = "urn:uuid:00112233-4455-6677-8899-aabbccddeeff";
+        let braced = "{00112233-4455-6677-8899-aabbccddeeff}";
+        let expected = [
+            0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb,
+            0xcc, 0xdd, 0xee, 0xff,
+        ];
+        assert_eq!(parse_uuid_string(raw.as_bytes()).unwrap(), expected);
+        assert_eq!(parse_uuid_string(dashed.as_bytes()).unwrap(), expected);
+        assert_eq!(parse_uuid_string(upper.as_bytes()).unwrap(), expected);
+        assert_eq!(parse_uuid_string(urn.as_bytes()).unwrap(), expected);
+        assert_eq!(parse_uuid_string(braced.as_bytes()).unwrap(), expected);
+    }
+
+    #[test]
+    fn parse_uuid_bytes_requires_len_16() {
+        assert!(parse_uuid_bytes(&[0u8; 15]).is_err());
+        assert!(parse_uuid_bytes(&[0u8; 17]).is_err());
+        assert!(parse_uuid_bytes(&[0u8; 16]).is_ok());
+    }
 }
 
 fn sort_key_to_u32(value: &JsonValue) -> Result<u32> {

@@ -5,7 +5,7 @@ use std::hash::Hasher;
 use std::io::{self, Write};
 
 const MAGIC: &[u8; 8] = b"DGPKMAP\0";
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MappingKind {
@@ -17,19 +17,25 @@ pub enum MappingKind {
 pub enum KeyType {
     Int64,
     FixedBytes { len: usize },
+    VarBytes,
+    Uuid,
 }
 
 #[derive(Debug, Clone)]
 pub enum Key {
     Int(u64),
+    FixedBytes(Vec<u8>),
     Bytes(Vec<u8>),
+    Uuid([u8; 16]),
 }
 
 impl Key {
     pub fn key_type(&self) -> KeyType {
         match self {
             Key::Int(_) => KeyType::Int64,
-            Key::Bytes(v) => KeyType::FixedBytes { len: v.len() },
+            Key::FixedBytes(v) => KeyType::FixedBytes { len: v.len() },
+            Key::Bytes(_) => KeyType::VarBytes,
+            Key::Uuid(_) => KeyType::Uuid,
         }
     }
 
@@ -38,7 +44,9 @@ impl Key {
             Key::Int(v) => unsafe {
                 std::slice::from_raw_parts(v as *const u64 as *const u8, 8)
             },
+            Key::FixedBytes(v) => v.as_slice(),
             Key::Bytes(v) => v.as_slice(),
+            Key::Uuid(v) => v.as_slice(),
         }
     }
 }
@@ -195,6 +203,8 @@ impl PkMap {
         let (key_type_tag, key_len) = match self.key_type {
             KeyType::Int64 => (0u8, 8u32),
             KeyType::FixedBytes { len } => (1u8, len as u32),
+            KeyType::VarBytes => (2u8, 0u32),
+            KeyType::Uuid => (3u8, 16u32),
         };
         writer.write_all(&[key_type_tag])?;
         writer.write_all(&key_len.to_le_bytes())?;
@@ -221,17 +231,35 @@ impl PkMap {
             writer.write_all(&bitmap)?;
             for entry in &self.hash_table {
                 if let Some((key, value)) = entry {
-                    writer.write_all(key.as_bytes())?;
+                    if self.key_type == KeyType::VarBytes {
+                        let bytes = key.as_bytes();
+                        let len = bytes.len() as u32;
+                        writer.write_all(&len.to_le_bytes())?;
+                        writer.write_all(bytes)?;
+                    } else {
+                        writer.write_all(key.as_bytes())?;
+                    }
                     writer.write_all(&value.to_le_bytes())?;
                 } else {
-                    let zero = vec![0u8; key_len as usize];
-                    writer.write_all(&zero)?;
+                    if self.key_type == KeyType::VarBytes {
+                        writer.write_all(&u32::MAX.to_le_bytes())?;
+                    } else {
+                        let zero = vec![0u8; key_len as usize];
+                        writer.write_all(&zero)?;
+                    }
                     writer.write_all(&0u64.to_le_bytes())?;
                 }
             }
         } else {
             for (key, value) in &self.entries {
-                writer.write_all(key.as_bytes())?;
+                if self.key_type == KeyType::VarBytes {
+                    let bytes = key.as_bytes();
+                    let len = bytes.len() as u32;
+                    writer.write_all(&len.to_le_bytes())?;
+                    writer.write_all(bytes)?;
+                } else {
+                    writer.write_all(key.as_bytes())?;
+                }
                 writer.write_all(&value.to_le_bytes())?;
             }
         }
@@ -295,7 +323,9 @@ impl PkMap {
 fn compare_keys(a: &Key, b: &Key) -> Ordering {
     match (a, b) {
         (Key::Int(a), Key::Int(b)) => a.cmp(b),
+        (Key::FixedBytes(a), Key::FixedBytes(b)) => a.cmp(b),
         (Key::Bytes(a), Key::Bytes(b)) => a.cmp(b),
+        (Key::Uuid(a), Key::Uuid(b)) => a.cmp(b),
         _ => Ordering::Equal,
     }
 }
@@ -303,7 +333,9 @@ fn compare_keys(a: &Key, b: &Key) -> Ordering {
 fn keys_equal(a: &Key, b: &Key) -> bool {
     match (a, b) {
         (Key::Int(a), Key::Int(b)) => a == b,
+        (Key::FixedBytes(a), Key::FixedBytes(b)) => a == b,
         (Key::Bytes(a), Key::Bytes(b)) => a == b,
+        (Key::Uuid(a), Key::Uuid(b)) => a == b,
         _ => false,
     }
 }
@@ -311,10 +343,15 @@ fn keys_equal(a: &Key, b: &Key) -> bool {
 fn hash_key(key: &Key) -> u64 {
     match key {
         Key::Int(v) => hash_int(*v),
-        Key::Bytes(v) => {
+        Key::FixedBytes(v) | Key::Bytes(v) => {
             let mut hasher = SeaHasher::new();
             hasher.write(v);
             hasher.finish()
+        }
+        Key::Uuid(v) => {
+            let hi = u64::from_be_bytes(v[0..8].try_into().unwrap());
+            let lo = u64::from_be_bytes(v[8..16].try_into().unwrap());
+            hash_int(hi) ^ hash_int(lo)
         }
     }
 }

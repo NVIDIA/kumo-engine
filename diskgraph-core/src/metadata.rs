@@ -18,6 +18,8 @@ pub struct PrimaryKeyMap {
     pub mapping_kind: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fixed_len: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_mode: Option<String>,
 }
 
 /// Per-shard node metadata to route lookups.

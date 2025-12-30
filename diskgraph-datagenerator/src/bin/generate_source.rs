@@ -8,8 +8,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
+use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine;
 use chrono::{DateTime, Datelike, Timelike, Utc};
-use arrow_array::builder::{Float32Builder, Int64Builder};
+use arrow_array::builder::{BinaryBuilder, Float32Builder, Int64Builder};
 use arrow_array::{ArrayRef, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
 use bytes::Bytes;
@@ -79,6 +81,7 @@ fn main() -> Result<()> {
         NodeTypeDef { name: "Product", weight: 25 },
         NodeTypeDef { name: "Order", weight: 15 },
         NodeTypeDef { name: "Session", weight: 10 },
+        NodeTypeDef { name: "Device", weight: 5 },
         NodeTypeDef { name: "Merchant", weight: 10 },
         NodeTypeDef { name: "Category", weight: 10 },
     ];
@@ -120,28 +123,42 @@ fn write_node_parquet(
     counts: &HashMap<&str, u64>,
     rng: &mut StdRng,
 ) -> Result<()> {
-    let mut fields = vec![
-        Field::new("id", DataType::Int64, false),
-        Field::new("name", DataType::Utf8, false),
-        Field::new("weight", DataType::Float32, false),
-        Field::new("created_at", DataType::Timestamp(arrow_schema::TimeUnit::Second, None), false),
-    ];
-    if name == "User" {
-        fields.push(Field::new("created_at_str", DataType::Utf8, false));
+    let mut fields = Vec::new();
+    match name {
+        "User" => fields.push(Field::new("id", DataType::Utf8, false)),
+        "Product" => fields.push(Field::new("id", DataType::Binary, false)),
+        "Order" => fields.push(Field::new("id", DataType::Int64, false)),
+        "Session" | "Device" => fields.push(Field::new("id", DataType::Utf8, false)),
+        "Merchant" => fields.push(Field::new("id", DataType::Binary, false)),
+        "Category" => fields.push(Field::new("id", DataType::Int64, false)),
+        _ => fields.push(Field::new("id", DataType::Int64, false)),
+    };
+    fields.push(Field::new("name", DataType::Utf8, false));
+    if name != "Category" {
+        fields.push(Field::new("weight", DataType::Float32, false));
+        fields.push(Field::new(
+            "created_at",
+            DataType::Timestamp(arrow_schema::TimeUnit::Second, None),
+            false,
+        ));
+        if name == "User" {
+            fields.push(Field::new("created_at_str", DataType::Utf8, false));
+        }
+        fields.push(Field::new(
+            "embedding",
+            DataType::List(Arc::new(Field::new("item", DataType::Float32, true))),
+            false,
+        ));
     }
-    fields.push(Field::new(
-        "embedding",
-        DataType::List(Arc::new(Field::new("item", DataType::Float32, true))),
-        false,
-    ));
     if name == "Order" || name == "Session" {
-        fields.push(Field::new("user_id", DataType::Int64, false));
+        fields.push(Field::new("user_id", DataType::Binary, false));
     }
-    if name == "Order" || name == "Product" {
-        fields.push(Field::new("merchant_id", DataType::Int64, false));
+    if name == "Order" {
+        fields.push(Field::new("merchant_id", DataType::Binary, false));
     }
     if name == "Product" {
-        fields.push(Field::new("category_id", DataType::Int64, false));
+        fields.push(Field::new("merchant_id", DataType::Utf8, false));
+        fields.push(Field::new("category_id", DataType::Utf8, false));
     }
     let schema = Schema::new(fields);
     let path = target.join(&format!("tables/{}/part-00000.parquet", name.to_lowercase()));
@@ -158,65 +175,190 @@ fn write_node_parquet(
     let mut next_id = 0u64;
     while remaining > 0 {
         let take = remaining.min(50_000) as usize;
-        let mut id_builder = Int64Builder::new();
+        let mut id_i64_builder = if matches!(name, "Order" | "Category") {
+            Some(Int64Builder::new())
+        } else {
+            None
+        };
+        let mut id_str_builder = if matches!(name, "User" | "Session" | "Device") {
+            Some(arrow_array::builder::StringBuilder::new())
+        } else {
+            None
+        };
+        let mut id_bin_builder = if matches!(name, "Product" | "Merchant") {
+            Some(BinaryBuilder::new())
+        } else {
+            None
+        };
         let mut name_builder = arrow_array::builder::StringBuilder::new();
-        let mut weight_builder = arrow_array::builder::Float32Builder::new();
-        let mut ts_builder = arrow_array::builder::TimestampSecondBuilder::new();
+        let mut weight_builder = if name != "Category" {
+            Some(arrow_array::builder::Float32Builder::new())
+        } else {
+            None
+        };
+        let mut ts_builder = if name != "Category" {
+            Some(arrow_array::builder::TimestampSecondBuilder::new())
+        } else {
+            None
+        };
         let mut ts_str_builder = if name == "User" {
             Some(arrow_array::builder::StringBuilder::new())
         } else {
             None
         };
-        let mut list_builder = arrow_array::builder::ListBuilder::new(Float32Builder::new());
+        let mut list_builder = if name != "Category" {
+            Some(arrow_array::builder::ListBuilder::new(Float32Builder::new()))
+        } else {
+            None
+        };
+        let mut user_id_builder = if name == "Order" || name == "Session" {
+            Some(BinaryBuilder::new())
+        } else {
+            None
+        };
+        let mut merchant_id_bin_builder = if name == "Order" {
+            Some(BinaryBuilder::new())
+        } else {
+            None
+        };
+        let mut merchant_id_str_builder = if name == "Product" {
+            Some(arrow_array::builder::StringBuilder::new())
+        } else {
+            None
+        };
+        let mut category_id_builder = if name == "Product" {
+            Some(arrow_array::builder::StringBuilder::new())
+        } else {
+            None
+        };
         for _ in 0..take {
-            let id = next_id as i64;
-            id_builder.append_value(id);
-            name_builder.append_value(format!("{}-{:08}", name, id));
-            weight_builder.append_value(rng.gen_range(0.0f32..100.0));
-            let ts = 1_700_000_000 + id;
-            ts_builder.append_value(ts);
-            if let Some(builder) = ts_str_builder.as_mut() {
-                builder.append_value(format_non_iso_ts(ts));
+            let id = next_id;
+            match name {
+                "User" => {
+                    let uuid = uuid_bytes_from_u64(id);
+                    if let Some(builder) = id_str_builder.as_mut() {
+                        builder.append_value(uuid_string_from_bytes(&uuid));
+                    }
+                }
+                "Session" | "Device" => {
+                    if let Some(builder) = id_str_builder.as_mut() {
+                        builder.append_value(format!("sess-{}", id));
+                    }
+                }
+                "Product" => {
+                    if let Some(builder) = id_bin_builder.as_mut() {
+                        builder.append_value(product_bytes_from_u64(id));
+                    }
+                }
+                "Merchant" => {
+                    if let Some(builder) = id_bin_builder.as_mut() {
+                        builder.append_value(merchant_bytes_from_u64(id));
+                    }
+                }
+                "Order" | "Category" => {
+                    if let Some(builder) = id_i64_builder.as_mut() {
+                        builder.append_value(id as i64);
+                    }
+                }
+                _ => {
+                    if let Some(builder) = id_i64_builder.as_mut() {
+                        builder.append_value(id as i64);
+                    }
+                }
             }
-            list_builder.values().append_value(rng.gen_range(0.0..1.0));
-            list_builder.values().append_value(rng.gen_range(0.0..1.0));
-            list_builder.values().append_value(rng.gen_range(0.0..1.0));
-            list_builder.append(true);
+            name_builder.append_value(format!("{}-{:08}", name, id));
+            if let Some(builder) = weight_builder.as_mut() {
+                builder.append_value(rng.gen_range(0.0f32..100.0));
+            }
+            if let Some(builder) = ts_builder.as_mut() {
+                let ts = 1_700_000_000 + id as i64;
+                builder.append_value(ts);
+                if let Some(str_builder) = ts_str_builder.as_mut() {
+                    str_builder.append_value(format_non_iso_ts(ts));
+                }
+            }
+            if let Some(builder) = list_builder.as_mut() {
+                builder.values().append_value(rng.gen_range(0.0..1.0));
+                builder.values().append_value(rng.gen_range(0.0..1.0));
+                builder.values().append_value(rng.gen_range(0.0..1.0));
+                builder.append(true);
+            }
+            if let Some(builder) = user_id_builder.as_mut() {
+                let max_user = *counts.get("User").unwrap_or(&1);
+                let user_id = rng.gen_range(0..max_user);
+                if should_inject_bad(id, 997, 0) {
+                    builder.append_value(&user_uuid_bytes(user_id)[..15]);
+                } else if should_inject_bad(id, 991, 1) {
+                    builder.append_value(user_uuid_bytes(max_user + 10));
+                } else {
+                    builder.append_value(user_uuid_bytes(user_id));
+                }
+            }
+            if let Some(builder) = merchant_id_bin_builder.as_mut() {
+                let max_merchant = *counts.get("Merchant").unwrap_or(&1);
+                let merchant_id = rng.gen_range(0..max_merchant);
+                if should_inject_bad(id, 983, 2) {
+                    builder.append_value(merchant_bytes_from_u64(max_merchant + 10));
+                } else {
+                    builder.append_value(merchant_bytes_from_u64(merchant_id));
+                }
+            }
+            if let Some(builder) = merchant_id_str_builder.as_mut() {
+                let max_merchant = *counts.get("Merchant").unwrap_or(&1);
+                let merchant_id = rng.gen_range(0..max_merchant);
+                if should_inject_bad(id, 977, 3) {
+                    builder.append_value("merchant-bad");
+                } else if should_inject_bad(id, 971, 4) {
+                    builder.append_value(merchant_string_from_u64(max_merchant + 10));
+                } else {
+                    builder.append_value(merchant_string_from_u64(merchant_id));
+                }
+            }
+            if let Some(builder) = category_id_builder.as_mut() {
+                let max_category = *counts.get("Category").unwrap_or(&1);
+                let category_id = rng.gen_range(0..max_category);
+                if should_inject_bad(id, 967, 5) {
+                    builder.append_value("not-a-number");
+                } else if should_inject_bad(id, 953, 6) {
+                    builder.append_value((max_category + 10).to_string());
+                } else {
+                    builder.append_value(category_id.to_string());
+                }
+            }
             next_id += 1;
         }
-        let mut cols: Vec<ArrayRef> = vec![
-            Arc::new(id_builder.finish()) as ArrayRef,
-            Arc::new(name_builder.finish()) as ArrayRef,
-            Arc::new(weight_builder.finish()) as ArrayRef,
-            Arc::new(ts_builder.finish()) as ArrayRef,
-        ];
+        let mut cols: Vec<ArrayRef> = Vec::new();
+        if let Some(mut builder) = id_i64_builder {
+            cols.push(Arc::new(builder.finish()) as ArrayRef);
+        } else if let Some(mut builder) = id_str_builder {
+            cols.push(Arc::new(builder.finish()) as ArrayRef);
+        } else if let Some(mut builder) = id_bin_builder {
+            cols.push(Arc::new(builder.finish()) as ArrayRef);
+        }
+        cols.push(Arc::new(name_builder.finish()) as ArrayRef);
+        if let Some(mut builder) = weight_builder {
+            cols.push(Arc::new(builder.finish()) as ArrayRef);
+        }
+        if let Some(mut builder) = ts_builder {
+            cols.push(Arc::new(builder.finish()) as ArrayRef);
+        }
         if let Some(mut builder) = ts_str_builder {
             cols.push(Arc::new(builder.finish()) as ArrayRef);
         }
-        cols.push(Arc::new(list_builder.finish()) as ArrayRef);
-        if name == "Order" || name == "Session" {
-            let max_user = *counts.get("User").unwrap_or(&1);
-            let mut user_builder = Int64Builder::new();
-            for _ in 0..take {
-                user_builder.append_value(rng.gen_range(0..max_user) as i64);
-            }
-            cols.push(Arc::new(user_builder.finish()) as ArrayRef);
+        if let Some(mut builder) = list_builder {
+            cols.push(Arc::new(builder.finish()) as ArrayRef);
         }
-        if name == "Order" || name == "Product" {
-            let max_merchant = *counts.get("Merchant").unwrap_or(&1);
-            let mut merchant_builder = Int64Builder::new();
-            for _ in 0..take {
-                merchant_builder.append_value(rng.gen_range(0..max_merchant) as i64);
-            }
-            cols.push(Arc::new(merchant_builder.finish()) as ArrayRef);
+        if let Some(mut builder) = user_id_builder {
+            cols.push(Arc::new(builder.finish()) as ArrayRef);
         }
-        if name == "Product" {
-            let max_category = *counts.get("Category").unwrap_or(&1);
-            let mut category_builder = Int64Builder::new();
-            for _ in 0..take {
-                category_builder.append_value(rng.gen_range(0..max_category) as i64);
-            }
-            cols.push(Arc::new(category_builder.finish()) as ArrayRef);
+        if let Some(mut builder) = merchant_id_bin_builder {
+            cols.push(Arc::new(builder.finish()) as ArrayRef);
+        }
+        if let Some(mut builder) = merchant_id_str_builder {
+            cols.push(Arc::new(builder.finish()) as ArrayRef);
+        }
+        if let Some(mut builder) = category_id_builder {
+            cols.push(Arc::new(builder.finish()) as ArrayRef);
         }
         let batch = RecordBatch::try_new(Arc::new(schema.clone()), cols)?;
         writer.write(&batch)?;
@@ -241,24 +383,28 @@ fn write_node_csv(
         }
     }
     let mut sink = target.sink(&path)?;
-    let mut headers = vec!["id", "name", "weight", "created_at"];
-    if name == "User" {
-        headers.push("created_at_str");
+    let mut headers = vec!["id", "name"];
+    if name != "Category" {
+        headers.push("weight");
+        headers.push("created_at");
+        if name == "User" {
+            headers.push("created_at_str");
+        }
+        headers.push("embedding");
     }
-    headers.push("embedding");
     if name == "Order" || name == "Session" {
         headers.push("user_id");
     }
-    if name == "Order" || name == "Product" {
+    if name == "Order" {
         headers.push("merchant_id");
     }
     if name == "Product" {
+        headers.push("merchant_id");
         headers.push("category_id");
     }
     writeln!(sink, "{}", headers.join(","))?;
     for id in 0..rows {
         let name_val = format!("{}-{:08}", name, id);
-        let weight = rng.gen_range(0.0f32..100.0);
         let ts = 1_700_000_000 + id;
         let embedding = format!(
             "[{:.3},{:.3},{:.3}]",
@@ -266,27 +412,65 @@ fn write_node_csv(
             rng.gen_range(0.0..1.0),
             rng.gen_range(0.0..1.0)
         );
-        let mut row = vec![
-            id.to_string(),
-            name_val,
-            weight.to_string(),
-            ts.to_string(),
-        ];
-        if name == "User" {
-            row.push(format_non_iso_ts(ts as i64));
+        let id_val = match name {
+            "User" => {
+                let uuid = uuid_bytes_from_u64(id);
+                uuid_string_from_bytes(&uuid)
+            }
+            "Session" | "Device" => format!("sess-{}", id),
+            "Product" => BASE64.encode(product_bytes_from_u64(id)),
+            "Merchant" => BASE64.encode(merchant_bytes_from_u64(id)),
+            "Order" | "Category" => id.to_string(),
+            _ => id.to_string(),
+        };
+        let mut row = vec![id_val, name_val];
+        if name != "Category" {
+            let weight = rng.gen_range(0.0f32..100.0);
+            row.push(weight.to_string());
+            row.push(ts.to_string());
+            if name == "User" {
+                row.push(format_non_iso_ts(ts as i64));
+            }
+            row.push(embedding);
         }
-        row.push(embedding);
         if name == "Order" || name == "Session" {
             let max_user = *counts.get("User").unwrap_or(&1);
-            row.push(rng.gen_range(0..max_user).to_string());
+            let user_id = rng.gen_range(0..max_user);
+            if should_inject_bad(id, 997, 0) {
+                row.push(BASE64.encode(&user_uuid_bytes(user_id)[..15]));
+            } else if should_inject_bad(id, 991, 1) {
+                row.push(BASE64.encode(user_uuid_bytes(max_user + 10)));
+            } else {
+                row.push(BASE64.encode(user_uuid_bytes(user_id)));
+            }
         }
-        if name == "Order" || name == "Product" {
+        if name == "Order" {
             let max_merchant = *counts.get("Merchant").unwrap_or(&1);
-            row.push(rng.gen_range(0..max_merchant).to_string());
+            let merchant_id = rng.gen_range(0..max_merchant);
+            if should_inject_bad(id, 983, 2) {
+                row.push(BASE64.encode(merchant_bytes_from_u64(max_merchant + 10)));
+            } else {
+                row.push(BASE64.encode(merchant_bytes_from_u64(merchant_id)));
+            }
         }
         if name == "Product" {
+            let max_merchant = *counts.get("Merchant").unwrap_or(&1);
+            let merchant_id = rng.gen_range(0..max_merchant);
+            if should_inject_bad(id, 977, 3) {
+                row.push("merchant-bad".to_string());
+            } else if should_inject_bad(id, 971, 4) {
+                row.push(merchant_string_from_u64(max_merchant + 10));
+            } else {
+                row.push(merchant_string_from_u64(merchant_id));
+            }
             let max_category = *counts.get("Category").unwrap_or(&1);
-            row.push(rng.gen_range(0..max_category).to_string());
+            if should_inject_bad(id, 967, 5) {
+                row.push("not-a-number".to_string());
+            } else if should_inject_bad(id, 953, 6) {
+                row.push((max_category + 10).to_string());
+            } else {
+                row.push(rng.gen_range(0..max_category).to_string());
+            }
         }
         write_csv_row(&mut sink, &row)?;
     }
@@ -302,7 +486,7 @@ fn write_edge_parquet(
 ) -> Result<()> {
     let schema = Schema::new(vec![
         Field::new("order_id", DataType::Int64, false),
-        Field::new("product_id", DataType::Int64, false),
+        Field::new("product_id", DataType::Binary, false),
         Field::new("weight", DataType::Int32, false),
         Field::new("created_at", DataType::Timestamp(arrow_schema::TimeUnit::Second, None), false),
     ]);
@@ -317,19 +501,34 @@ fn write_edge_parquet(
     let mut writer = ArrowWriter::try_new(sink, Arc::new(schema.clone()), Some(props))?;
 
     let mut remaining = rows;
+    let mut row_id = 0u64;
     while remaining > 0 {
         let take = remaining.min(100_000) as usize;
         let mut order_builder = Int64Builder::new();
-        let mut product_builder = Int64Builder::new();
+        let mut product_builder = BinaryBuilder::new();
         let mut weight_builder = arrow_array::builder::Int32Builder::new();
         let mut ts_builder = arrow_array::builder::TimestampSecondBuilder::new();
         for _ in 0..take {
             let max_order = *counts.get("Order").unwrap_or(&1);
             let max_product = *counts.get("Product").unwrap_or(&1);
-            order_builder.append_value(rng.gen_range(0..max_order) as i64);
-            product_builder.append_value(rng.gen_range(0..max_product) as i64);
+            let order_id = if should_inject_bad(row_id, 991, 1) {
+                max_order + 10
+            } else {
+                rng.gen_range(0..max_order)
+            };
+            order_builder.append_value(order_id as i64);
+            let product_id = rng.gen_range(0..max_product);
+            if should_inject_bad(row_id, 997, 0) {
+                let bytes = product_bytes_from_u64(product_id);
+                product_builder.append_value(&bytes[..7]);
+            } else if should_inject_bad(row_id, 983, 2) {
+                product_builder.append_value(product_bytes_from_u64(max_product + 10));
+            } else {
+                product_builder.append_value(product_bytes_from_u64(product_id));
+            }
             weight_builder.append_value(rng.gen_range(1..5));
             ts_builder.append_value(rng.gen_range(1_700_000_000..1_800_000_000));
+            row_id += 1;
         }
         let batch = RecordBatch::try_new(
             Arc::new(schema.clone()),
@@ -362,12 +561,28 @@ fn write_edge_csv(
     }
     let mut sink = target.sink(&path)?;
     writeln!(sink, "order_id,product_id,weight,created_at")?;
-    for _ in 0..rows {
+    for row_id in 0..rows {
+        let max_order = *counts.get("Order").unwrap_or(&1);
+        let max_product = *counts.get("Product").unwrap_or(&1);
+        let order_id = if should_inject_bad(row_id, 991, 1) {
+            max_order + 10
+        } else {
+            rng.gen_range(0..max_order)
+        };
+        let product_id = rng.gen_range(0..max_product);
+        let product_bytes = if should_inject_bad(row_id, 997, 0) {
+            let bytes = product_bytes_from_u64(product_id);
+            BASE64.encode(&bytes[..7])
+        } else if should_inject_bad(row_id, 983, 2) {
+            BASE64.encode(product_bytes_from_u64(max_product + 10))
+        } else {
+            BASE64.encode(product_bytes_from_u64(product_id))
+        };
         write_csv_row(
             &mut sink,
             &[
-                rng.gen_range(0..*counts.get("Order").unwrap_or(&1)).to_string(),
-                rng.gen_range(0..*counts.get("Product").unwrap_or(&1)).to_string(),
+                order_id.to_string(),
+                product_bytes,
                 rng.gen_range(1..5).to_string(),
                 rng.gen_range(1_700_000_000..1_800_000_000).to_string(),
             ],
@@ -393,11 +608,11 @@ fn write_source_metadata(target: &OutputTarget, format: OutputFormat) -> Result<
                 "weight": "weight",
                 "create_time": "created_at",
                 "columns": [
-                    {"name": "id", "dtype": "int64"},
-                    {"name": "name", "dtype": "string", "fixed_len": 12},
+                    {"name": "id", "dtype": "string", "key_mode": "uuid"},
+                    {"name": "name", "dtype": "string"},
                     {"name": "weight", "dtype": "float32"},
                     {"name": "created_at", "dtype": "timestamp"},
-                    {"name": "created_at_str", "dtype": "string", "fixed_len": 19},
+                    {"name": "created_at_str", "dtype": "string"},
                     {"name": "embedding", "dtype": "float32_array"}
                 ]
             },
@@ -409,13 +624,13 @@ fn write_source_metadata(target: &OutputTarget, format: OutputFormat) -> Result<
                 "weight": "weight",
                 "create_time": "created_at",
                 "columns": [
-                    {"name": "id", "dtype": "int64"},
-                    {"name": "name", "dtype": "string", "fixed_len": 12},
+                    {"name": "id", "dtype": "bytes", "fixed_len": 8, "key_mode": "fixed"},
+                    {"name": "name", "dtype": "string"},
                     {"name": "weight", "dtype": "float32"},
                     {"name": "created_at", "dtype": "timestamp"},
                     {"name": "embedding", "dtype": "float32_array"},
-                    {"name": "merchant_id", "dtype": "int64"},
-                    {"name": "category_id", "dtype": "int64"}
+                    {"name": "merchant_id", "dtype": "string"},
+                    {"name": "category_id", "dtype": "string"}
                 ]
             },
             {
@@ -426,12 +641,12 @@ fn write_source_metadata(target: &OutputTarget, format: OutputFormat) -> Result<
                 "create_time": "created_at",
                 "columns": [
                     {"name": "id", "dtype": "int64"},
-                    {"name": "name", "dtype": "string", "fixed_len": 12},
+                    {"name": "name", "dtype": "string"},
                     {"name": "weight", "dtype": "float32"},
                     {"name": "created_at", "dtype": "timestamp"},
                     {"name": "embedding", "dtype": "float32_array"},
-                    {"name": "user_id", "dtype": "int64"},
-                    {"name": "merchant_id", "dtype": "int64"}
+                    {"name": "user_id", "dtype": "bytes", "key_mode": "uuid"},
+                    {"name": "merchant_id", "dtype": "bytes"}
                 ]
             },
             {
@@ -441,12 +656,26 @@ fn write_source_metadata(target: &OutputTarget, format: OutputFormat) -> Result<
                 "primary_key": "id",
                 "create_time": "created_at",
                 "columns": [
-                    {"name": "id", "dtype": "int64"},
-                    {"name": "name", "dtype": "string", "fixed_len": 12},
+                    {"name": "id", "dtype": "string"},
+                    {"name": "name", "dtype": "string"},
                     {"name": "weight", "dtype": "float32"},
                     {"name": "created_at", "dtype": "timestamp"},
                     {"name": "embedding", "dtype": "float32_array"},
-                    {"name": "user_id", "dtype": "int64"}
+                    {"name": "user_id", "dtype": "bytes", "key_mode": "uuid"}
+                ]
+            },
+            {
+                "name": "Device",
+                "format": format!("{ext}"),
+                "paths": [format!("tables/device/part-00000.{ext}")],
+                "primary_key": "id",
+                "create_time": "created_at",
+                "columns": [
+                    {"name": "id", "dtype": "string"},
+                    {"name": "name", "dtype": "string"},
+                    {"name": "weight", "dtype": "float32"},
+                    {"name": "created_at", "dtype": "timestamp"},
+                    {"name": "embedding", "dtype": "float32_array"}
                 ]
             },
             {
@@ -457,8 +686,8 @@ fn write_source_metadata(target: &OutputTarget, format: OutputFormat) -> Result<
                 "weight": "weight",
                 "create_time": "created_at",
                 "columns": [
-                    {"name": "id", "dtype": "int64"},
-                    {"name": "name", "dtype": "string", "fixed_len": 12},
+                    {"name": "id", "dtype": "bytes"},
+                    {"name": "name", "dtype": "string"},
                     {"name": "weight", "dtype": "float32"},
                     {"name": "created_at", "dtype": "timestamp"},
                     {"name": "embedding", "dtype": "float32_array"}
@@ -471,7 +700,7 @@ fn write_source_metadata(target: &OutputTarget, format: OutputFormat) -> Result<
                 "primary_key": "id",
                 "columns": [
                     {"name": "id", "dtype": "int64"},
-                    {"name": "name", "dtype": "string", "fixed_len": 12}
+                    {"name": "name", "dtype": "string"}
                 ]
             },
             {
@@ -486,7 +715,7 @@ fn write_source_metadata(target: &OutputTarget, format: OutputFormat) -> Result<
                 "create_time": "created_at",
                 "columns": [
                     {"name": "order_id", "dtype": "int64"},
-                    {"name": "product_id", "dtype": "int64"},
+                    {"name": "product_id", "dtype": "bytes", "fixed_len": 8, "key_mode": "fixed"},
                     {"name": "weight", "dtype": "int32"},
                     {"name": "created_at", "dtype": "timestamp"}
                 ]
@@ -512,6 +741,13 @@ fn write_source_metadata(target: &OutputTarget, format: OutputFormat) -> Result<
                 "src_table": "Session",
                 "src_column": "user_id",
                 "dst_table": "User",
+                "dst_column": "id"
+            },
+            {
+                "name": "session_device",
+                "src_table": "Session",
+                "src_column": "id",
+                "dst_table": "Device",
                 "dst_column": "id"
             },
             {
@@ -549,6 +785,54 @@ fn distribute_counts(total: u64, defs: &[NodeTypeDef]) -> Vec<u64> {
         }
     }
     counts
+}
+
+fn uuid_bytes_from_u64(id: u64) -> [u8; 16] {
+    let mut out = [0u8; 16];
+    let hi = id.to_be_bytes();
+    let lo = (id ^ 0x9E3779B97F4A7C15).to_be_bytes();
+    out[..8].copy_from_slice(&hi);
+    out[8..].copy_from_slice(&lo);
+    out
+}
+
+fn user_uuid_bytes(id: u64) -> [u8; 16] {
+    uuid_bytes_from_u64(id)
+}
+
+fn uuid_string_from_bytes(bytes: &[u8; 16]) -> String {
+    let mut out = String::with_capacity(36);
+    for (idx, b) in bytes.iter().enumerate() {
+        if matches!(idx, 4 | 6 | 8 | 10) {
+            out.push('-');
+        }
+        out.push(hex_char(b >> 4));
+        out.push(hex_char(b & 0x0f));
+    }
+    out
+}
+
+fn product_bytes_from_u64(id: u64) -> [u8; 8] {
+    id.to_be_bytes()
+}
+
+fn merchant_string_from_u64(id: u64) -> String {
+    format!("merchant-{:08}", id)
+}
+
+fn merchant_bytes_from_u64(id: u64) -> Vec<u8> {
+    merchant_string_from_u64(id).into_bytes()
+}
+
+fn hex_char(v: u8) -> char {
+    match v {
+        0..=9 => (b'0' + v) as char,
+        _ => (b'a' + (v - 10)) as char,
+    }
+}
+
+fn should_inject_bad(id: u64, modulo: u64, offset: u64) -> bool {
+    id == offset || (modulo != 0 && id % modulo == 0)
 }
 
 fn format_non_iso_ts(ts: i64) -> String {
