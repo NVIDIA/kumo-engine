@@ -119,6 +119,20 @@ fn main() -> Result<()> {
         println!("Key matching failures:");
         println!("  Parse failures: {}", stats.key_parse_failures);
         println!("  Lookup misses: {}", stats.key_lookup_failures);
+        if !stats.key_failures_by_context.is_empty() {
+            println!("  By context:");
+            let mut entries: Vec<_> = stats.key_failures_by_context.iter().collect();
+            entries.sort_by(|a, b| a.0.cmp(b.0));
+            for (name, counts) in entries {
+                if counts.parse_failures == 0 && counts.lookup_failures == 0 {
+                    continue;
+                }
+                println!(
+                    "    {}: parse {}, lookup {}",
+                    name, counts.parse_failures, counts.lookup_failures
+                );
+            }
+        }
         if !stats.key_failure_samples.is_empty() {
             println!("  Examples:");
             for sample in &stats.key_failure_samples {

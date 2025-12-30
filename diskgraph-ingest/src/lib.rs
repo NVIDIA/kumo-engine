@@ -113,7 +113,14 @@ pub struct IngestStats {
     pub key_parse_failures: u64,
     pub key_lookup_failures: u64,
     pub key_failure_samples: Vec<String>,
+    pub key_failures_by_context: HashMap<String, KeyFailureCounts>,
     pub perf: PerfStats,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct KeyFailureCounts {
+    pub parse_failures: u64,
+    pub lookup_failures: u64,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -255,7 +262,7 @@ struct IngestContext {
     relationships: Vec<RelationshipRuntime>,
     edge_counts: HashMap<String, u64>,
     output: String,
-    key_failures: std::sync::Arc<KeyFailureStats>,
+    key_failures: std::sync::Arc<KeyFailureCollector>,
     pk_map_task_ms: u64,
     build_task_ms: u64,
     node_task_ms: u64,
@@ -276,53 +283,80 @@ struct TableMapState {
     rowpack_builder: Option<diskgraph_rowpack::RowPackContextBuilder>,
 }
 
-struct KeyFailureStats {
-    parse_failures: std::sync::atomic::AtomicU64,
-    lookup_failures: std::sync::atomic::AtomicU64,
+#[derive(Default)]
+struct KeyFailureContext {
+    parse_failures: u64,
+    lookup_failures: u64,
+}
+
+struct KeyFailureCollector {
+    contexts: std::sync::Mutex<HashMap<String, KeyFailureContext>>,
     samples: std::sync::Mutex<Vec<String>>,
 }
 
-impl KeyFailureStats {
+#[derive(Default)]
+struct KeyFailureLocal {
+    contexts: HashMap<String, KeyFailureContext>,
+    samples: Vec<String>,
+}
+
+impl KeyFailureCollector {
     fn new() -> Self {
         Self {
-            parse_failures: std::sync::atomic::AtomicU64::new(0),
-            lookup_failures: std::sync::atomic::AtomicU64::new(0),
+            contexts: std::sync::Mutex::new(HashMap::new()),
             samples: std::sync::Mutex::new(Vec::new()),
         }
     }
 
-    fn record_parse_failure<F>(&self, context: &str, err: KeyParseError, sample: F)
+    fn merge(&self, local: KeyFailureLocal) {
+        if !local.contexts.is_empty() {
+            let mut contexts = self.contexts.lock().unwrap();
+            for (name, counts) in local.contexts {
+                let entry = contexts.entry(name).or_default();
+                entry.parse_failures = entry.parse_failures.saturating_add(counts.parse_failures);
+                entry.lookup_failures =
+                    entry.lookup_failures.saturating_add(counts.lookup_failures);
+            }
+        }
+        if !local.samples.is_empty() {
+            let mut samples = self.samples.lock().unwrap();
+            if samples.len() < MAX_KEY_FAILURE_SAMPLES as usize {
+                for sample in local.samples {
+                    if samples.len() >= MAX_KEY_FAILURE_SAMPLES as usize {
+                        break;
+                    }
+                    samples.push(sample);
+                }
+            }
+        }
+    }
+}
+
+impl KeyFailureLocal {
+    fn record_parse_failure<F>(&mut self, context: &str, err: KeyParseError, sample: F)
     where
         F: FnOnce() -> Option<String>,
     {
-        let count = self
-            .parse_failures
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        if count >= MAX_KEY_FAILURE_SAMPLES {
-            return;
-        }
-        if let Some(value) = sample() {
-            let mut samples = self.samples.lock().unwrap();
-            if samples.len() < MAX_KEY_FAILURE_SAMPLES as usize {
-                samples.push(format!("{context}: {} ({})", value, err.reason()));
+        let entry = self.contexts.entry(context.to_string()).or_default();
+        entry.parse_failures = entry.parse_failures.saturating_add(1);
+        if self.samples.len() < MAX_KEY_FAILURE_SAMPLES as usize {
+            if let Some(value) = sample() {
+                self.samples
+                    .push(format!("{context}: {} ({})", value, err.reason()));
             }
         }
     }
 
-    fn record_lookup_failure<F>(&self, context: &str, sample: F)
+    fn record_lookup_failure<F>(&mut self, context: &str, sample: F)
     where
         F: FnOnce() -> Option<String>,
     {
-        let count = self
-            .lookup_failures
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        if count >= MAX_KEY_FAILURE_SAMPLES {
-            return;
-        }
-        if let Some(value) = sample() {
-            let mut samples = self.samples.lock().unwrap();
-            if samples.len() < MAX_KEY_FAILURE_SAMPLES as usize {
-                samples.push(format!("{context}: {} (missing key)", value));
+        let entry = self.contexts.entry(context.to_string()).or_default();
+        entry.lookup_failures = entry.lookup_failures.saturating_add(1);
+        if self.samples.len() < MAX_KEY_FAILURE_SAMPLES as usize {
+            if let Some(value) = sample() {
+                self.samples
+                    .push(format!("{context}: {} (missing key)", value));
             }
         }
     }
@@ -461,7 +495,7 @@ impl IngestContext {
             relationships,
             edge_counts: HashMap::new(),
             output: output.to_string(),
-            key_failures: std::sync::Arc::new(KeyFailureStats::new()),
+            key_failures: std::sync::Arc::new(KeyFailureCollector::new()),
             pk_map_task_ms: 0,
             build_task_ms: 0,
             node_task_ms: 0,
@@ -762,6 +796,7 @@ impl IngestContext {
                     let mut seen = 0u64;
                     let mut next_update = PROGRESS_STEP;
                     let parse_context = format!("rel:{}:{}", rel.name_forward, rel.src_column);
+                    let mut key_failures_local = KeyFailureLocal::default();
                     for_each_row(src_table, |row| {
                         let src_id = row.row_id;
                         let array = row
@@ -783,7 +818,7 @@ impl IngestContext {
                         ) {
                             Ok(key) => key,
                             Err(err) => {
-                                key_failures.record_parse_failure(&parse_context, err, || {
+                                key_failures_local.record_parse_failure(&parse_context, err, || {
                                     sample_key_value(array, row.row, src_fk_col)
                                 });
                                 return Ok(());
@@ -792,7 +827,7 @@ impl IngestContext {
                         let dst_id = match dst_map.pk_map.lookup(&fk_key) {
                             Some(id) => id,
                             None => {
-                                key_failures.record_lookup_failure(&parse_context, || {
+                                key_failures_local.record_lookup_failure(&parse_context, || {
                                     sample_key(&fk_key)
                                 });
                                 return Ok(());
@@ -846,6 +881,7 @@ impl IngestContext {
                         .lock()
                         .unwrap()
                         .insert(rel.name_reverse.clone(), reverse_count);
+                    key_failures.merge(key_failures_local);
                     Ok(())
                     }),
                 });
@@ -907,6 +943,7 @@ impl IngestContext {
                         format!("edge:{}:{}", table.name, edge.src_fk.column);
                     let parse_context_dst =
                         format!("edge:{}:{}", table.name, edge.dst_fk.column);
+                    let mut key_failures_local = KeyFailureLocal::default();
                     let mut forward_records: Vec<EdgeRecord> = Vec::new();
                     let mut reverse_records: Vec<EdgeRecord> = Vec::new();
                     for_each_row(&table, |row| {
@@ -932,7 +969,7 @@ impl IngestContext {
                         ) {
                             Ok(key) => key,
                             Err(err) => {
-                                key_failures.record_parse_failure(&parse_context_src, err, || {
+                                key_failures_local.record_parse_failure(&parse_context_src, err, || {
                                     sample_key_value(src_array, row.row, src_fk_col)
                                 });
                                 return Ok(());
@@ -947,7 +984,7 @@ impl IngestContext {
                         ) {
                             Ok(key) => key,
                             Err(err) => {
-                                key_failures.record_parse_failure(&parse_context_dst, err, || {
+                                key_failures_local.record_parse_failure(&parse_context_dst, err, || {
                                     sample_key_value(dst_array, row.row, dst_fk_col)
                                 });
                                 return Ok(());
@@ -956,7 +993,7 @@ impl IngestContext {
                         let src_id = match src_map.pk_map.lookup(&src_key) {
                             Some(id) => id,
                             None => {
-                                key_failures.record_lookup_failure(&parse_context_src, || {
+                                key_failures_local.record_lookup_failure(&parse_context_src, || {
                                     sample_key(&src_key)
                                 });
                                 return Ok(());
@@ -965,7 +1002,7 @@ impl IngestContext {
                         let dst_id = match dst_map.pk_map.lookup(&dst_key) {
                             Some(id) => id,
                             None => {
-                                key_failures.record_lookup_failure(&parse_context_dst, || {
+                                key_failures_local.record_lookup_failure(&parse_context_dst, || {
                                     sample_key(&dst_key)
                                 });
                                 return Ok(());
@@ -1016,6 +1053,7 @@ impl IngestContext {
                         format!("edge_{}_dst_to_src", table.name),
                         reverse_records.len() as u64,
                     );
+                    key_failures.merge(key_failures_local);
                     Ok(())
                     }),
                 });
@@ -1155,20 +1193,22 @@ impl IngestContext {
         }
         let total_nodes = node_counts.values().sum();
         let total_edges = self.edge_counts.values().sum();
-        let key_parse_failures = self
-            .key_failures
-            .parse_failures
-            .load(std::sync::atomic::Ordering::Relaxed);
-        let key_lookup_failures = self
-            .key_failures
-            .lookup_failures
-            .load(std::sync::atomic::Ordering::Relaxed);
-        let key_failure_samples = self
-            .key_failures
-            .samples
-            .lock()
-            .unwrap()
-            .clone();
+        let key_failure_samples = self.key_failures.samples.lock().unwrap().clone();
+        let contexts = self.key_failures.contexts.lock().unwrap();
+        let mut key_failures_by_context = HashMap::new();
+        let mut key_parse_failures = 0u64;
+        let mut key_lookup_failures = 0u64;
+        for (name, counts) in contexts.iter() {
+            key_parse_failures = key_parse_failures.saturating_add(counts.parse_failures);
+            key_lookup_failures = key_lookup_failures.saturating_add(counts.lookup_failures);
+            key_failures_by_context.insert(
+                name.clone(),
+                KeyFailureCounts {
+                    parse_failures: counts.parse_failures,
+                    lookup_failures: counts.lookup_failures,
+                },
+            );
+        }
         IngestStats {
             output: self.output.clone(),
             node_tables: metadata.node_types.len(),
@@ -1180,6 +1220,7 @@ impl IngestContext {
             key_parse_failures,
             key_lookup_failures,
             key_failure_samples,
+            key_failures_by_context,
             perf,
         }
     }
