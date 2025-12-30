@@ -462,6 +462,8 @@ fn build_from_remote(
     meta_spinner.finish_with_message("Downloaded index_metadata.json");
     let metadata: DatasetMetadata =
         serde_json::from_slice(&meta_bytes).context("parse index_metadata.json")?;
+    download_rowpack_contexts(rt, store_arc.as_ref(), &prefix, &cache_dir, &metadata)
+        .context("download rowpack contexts")?;
 
     let data_source = match &remote {
         RemoteStore::S3 { bucket, client, prefix } => GraphDataSource::S3 {
@@ -510,6 +512,70 @@ fn build_from_remote(
         .build(Some(&progress_reporter))
         .context("build graph from parquet")?;
     Ok((metadata, cache_dir))
+}
+
+fn copy_rowpack_contexts_from_local(
+    metadata: &DatasetMetadata,
+    source_root: &Path,
+    cache_root: &Path,
+) -> Result<()> {
+    for node in &metadata.node_types {
+        let compression = match &node.node_data_compression {
+            Some(compression) if compression.codec == "rowpack" => compression,
+            _ => continue,
+        };
+        if compression.context_path.is_empty() {
+            return Err(anyhow!("rowpack context_path is empty for {}", node.name));
+        }
+        let ctx_path = Path::new(&compression.context_path);
+        let src = source_root.join(ctx_path);
+        let dst = cache_root.join(ctx_path);
+        if dst.exists() {
+            continue;
+        }
+        if let Some(parent) = dst.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::copy(&src, &dst)
+            .with_context(|| format!("copy rowpack context {}", src.display()))?;
+    }
+    Ok(())
+}
+
+fn download_rowpack_contexts(
+    rt: &Runtime,
+    store: &dyn ObjectStore,
+    prefix: &str,
+    cache_root: &Path,
+    metadata: &DatasetMetadata,
+) -> Result<()> {
+    for node in &metadata.node_types {
+        let compression = match &node.node_data_compression {
+            Some(compression) if compression.codec == "rowpack" => compression,
+            _ => continue,
+        };
+        if compression.context_path.is_empty() {
+            return Err(anyhow!("rowpack context_path is empty for {}", node.name));
+        }
+        let key = if prefix.is_empty() {
+            compression.context_path.clone()
+        } else {
+            format!("{}/{}", prefix, compression.context_path)
+        };
+        let dst = cache_root.join(&compression.context_path);
+        if dst.exists() {
+            continue;
+        }
+        if let Some(parent) = dst.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let obj = rt
+            .block_on(store.get(&ObjectPath::from(key.clone())))
+            .with_context(|| format!("download rowpack context {}", key))?;
+        let bytes = rt.block_on(obj.bytes()).context("buffer rowpack context")?;
+        fs::write(&dst, &bytes)?;
+    }
+    Ok(())
 }
 
 fn cache_tempdir() -> Result<tempfile::TempDir> {
@@ -783,6 +849,8 @@ fn build_from_local_dataset(
     builder
         .build(Some(&progress_reporter))
         .context("build graph from parquet")?;
+    copy_rowpack_contexts_from_local(&metadata, source, &cache_dir)
+        .context("copy rowpack contexts")?;
     fs::write(&cached_meta, serde_json::to_vec_pretty(&metadata)?)?;
     Ok((metadata, cache_dir))
 }
