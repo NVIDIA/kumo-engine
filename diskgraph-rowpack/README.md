@@ -1,0 +1,114 @@
+# diskgraph-rowpack
+
+Rowpack is a fast, row-oriented compression codec for DiskGraph node payloads. It compresses each node independently while using a shared per-table context (built from a sample) to encode repeated values efficiently. Think of it as a compact, schema-aware alternative to messagepack where the decoder reuses column dictionaries and type hints from the context file.
+
+## Design goals
+
+- **Row-at-a-time:** each node encodes to a standalone binary blob.
+- **Shared context:** small, per-table context file drives encoding/decoding.
+- **Fast decode:** minimal branching, bit-packed tags, no per-row schema.
+- **Graceful fallback:** unexpected values are tolerated without failure.
+- **Deterministic schema:** decoding produces consistent types.
+
+## Context file (what gets stored)
+
+The context file is a binary format with:
+
+- **Schema**: column order, names, and logical types (int/float/string/bytes/bool/timestamp/array).
+- **Per-column strategy**:
+  - Nullability and tag width (2-bit tags).
+  - Integer strategy (fixed width vs varint; bit width).
+  - Float strategy (float16 vs float32/float64).
+  - String strategy (raw, dictionary, hex, ISO timestamp, snappy).
+  - Bytes strategy (raw, fixed length).
+  - Array strategy for float vectors (float16/float32/float64).
+- **Dictionaries**:
+  - String dictionaries for categorical columns (bounded size, configurable).
+  - Hex encoding parameters (upper/lower case).
+  - ISO timestamp parsing hints.
+- **Compression knobs**:
+  - Per-column thresholds used during sampling.
+  - Max dictionary size budget.
+
+The context is written once during ingestion (one per node table) and loaded by the index reader to decode node blobs.
+
+## Row encoding format
+
+Each row encodes columns in fixed schema order:
+
+1. **Tag bitstream**: 2 bits per column.
+   - `00`: null
+   - `01`: primary encoding for the column
+   - `10`: fallback encoding for the column (unexpected value)
+2. **Boolean bitset** (for bool columns only).
+3. **Column payloads**, in order:
+   - Primary payloads for tags `01`
+   - Fallback payloads for tags `10`
+
+This layout keeps parsing simple: read tags, then parse each column according to tag state.
+
+## Column strategies
+
+### Integers
+- **Int8/UInt8**: always stored as a single byte (no varint).
+- **Int16/UInt16**: stored as fixed 16-bit unless varint is smaller for samples.
+- **Int32/Int64**: choose varint when it reduces average size.
+
+Varint uses zigzag for signed values; fixed width uses little-endian.
+
+### Floats
+- Sample-based choice:
+  - float16 when all samples fit within [0.001, 1000] and precision loss is acceptable.
+  - float32 otherwise (or float64 if forced).
+- Fallback tag stores full float32/float64.
+
+### Strings
+Rowpack detects and chooses the most efficient strategy:
+
+- **Dictionary**: for categorical columns; dictionary entries stored in context.
+- **Hex**: for UUIDs / hex IDs (upper or lower case per column).
+- **ISO timestamp**: encodes to int64 micros, tolerates non-ISO via fallback.
+- **Snappy**: only used when sampled long strings compress well.
+- **Raw**: length-prefixed bytes.
+
+If a value does not match the inferred strategy (e.g., a non-ISO string in an ISO column), it is encoded with the fallback tag as raw bytes.
+
+### Bytes
+- Raw length-prefixed bytes.
+- Optional fixed-length enforcement; mismatches fall back to raw.
+
+### Arrays of floats
+Encodes length as a varint, followed by contiguous float payloads.
+Uses the same float16/float32/float64 strategy as scalar floats.
+
+### Nulls and fallback
+Nulls are stored only in the tag stream; no payload.
+Fallback payloads are always self-describing (length + bytes, or full-width numeric).
+
+## Sampling and strategy selection
+
+The builder samples a configurable number of rows per table and:
+
+- Computes cardinality for dictionary eligibility.
+- Detects hex/UUID and ISO timestamps in string columns.
+- Measures snappy compression ratio for long strings.
+- Chooses integer varint vs fixed width based on average size.
+- Chooses float16 only when all samples are within a safe magnitude range.
+
+Sample sizes and dictionary budgets are configurable via `SourceMetadata.rowpack`.
+
+## Decoding outputs
+
+Rowpack decodes into:
+
+- **MessagePack**: preserves original scalar types (including timestamp ext).
+- **JSON**: "reasonable" JSON renderings; timestamps formatted to RFC3339 and bytes encoded as base64.
+
+## Error handling
+
+Rowpack is resilient by design. Unsupported or unexpected values:
+- are encoded with fallback tags when writing,
+- decode to best-effort types when reading.
+
+It only errors on structural corruption (invalid tags, truncated payloads).
+
