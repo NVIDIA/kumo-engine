@@ -2427,4 +2427,66 @@ mod tests {
         let err = decoder.decode_json(&row).unwrap_err();
         assert!(err.to_string().contains("array length"));
     }
+
+    #[test]
+    fn decode_rejects_truncated_bool_bitstream() {
+        let ctx = RowPackContext {
+            version: ROWPACK_VERSION,
+            columns: vec![ColumnContext {
+                name: "active".to_string(),
+                logical_type: LogicalType::Bool,
+                encoding: ColumnEncoding::Bool,
+            }],
+        };
+        let decoder = RowPackDecoder::new(ctx).unwrap();
+        let mut tags = BitWriter::new();
+        tags.write_bits(1, 2);
+        let row = tags.finish();
+        let err = decoder.decode_json(&row).unwrap_err();
+        assert!(err.to_string().contains("truncated"));
+    }
+
+    #[test]
+    fn decode_rejects_invalid_tag() {
+        let ctx = RowPackContext {
+            version: ROWPACK_VERSION,
+            columns: vec![ColumnContext {
+                name: "id".to_string(),
+                logical_type: LogicalType::Int64,
+                encoding: ColumnEncoding::Int {
+                    signed: true,
+                    varint: true,
+                    bits: 64,
+                },
+            }],
+        };
+        let decoder = RowPackDecoder::new(ctx).unwrap();
+        let mut tags = BitWriter::new();
+        tags.write_bits(3, 2);
+        let row = tags.finish();
+        let err = decoder.decode_json(&row).unwrap_err();
+        assert!(err.to_string().contains("invalid tag"));
+    }
+
+    #[test]
+    fn decode_rejects_corrupt_snappy() {
+        let ctx = RowPackContext {
+            version: ROWPACK_VERSION,
+            columns: vec![ColumnContext {
+                name: "text".to_string(),
+                logical_type: LogicalType::String,
+                encoding: ColumnEncoding::String {
+                    encoding: StringEncoding::Snappy,
+                },
+            }],
+        };
+        let decoder = RowPackDecoder::new(ctx).unwrap();
+        let mut tags = BitWriter::new();
+        tags.write_bits(1, 2);
+        let mut row = tags.finish();
+        row.push(0x05);
+        row.extend_from_slice(&[0x00, 0x01, 0x02, 0x03, 0x04]);
+        let err = decoder.decode_json(&row).unwrap_err();
+        assert!(err.to_string().contains("snappy"));
+    }
 }
