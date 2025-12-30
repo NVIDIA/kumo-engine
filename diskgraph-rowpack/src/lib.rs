@@ -155,6 +155,24 @@ pub struct RowPackColumn {
     pub scale: Option<i32>,
 }
 
+pub trait RowValueAccess {
+    fn get_int64(&mut self, idx: usize) -> Result<Option<i64>>;
+    fn get_int32(&mut self, idx: usize) -> Result<Option<i32>>;
+    fn get_uint64(&mut self, idx: usize) -> Result<Option<u64>>;
+    fn get_uint32(&mut self, idx: usize) -> Result<Option<u32>>;
+    fn get_float64(&mut self, idx: usize) -> Result<Option<f64>>;
+    fn get_float32(&mut self, idx: usize) -> Result<Option<f32>>;
+    fn get_bool(&mut self, idx: usize) -> Result<Option<bool>>;
+    fn get_string(&mut self, idx: usize) -> Result<Option<&str>>;
+    fn get_bytes(&mut self, idx: usize) -> Result<Option<&[u8]>>;
+    fn get_date(&mut self, idx: usize) -> Result<Option<i32>>;
+    fn get_timestamp(&mut self, idx: usize) -> Result<Option<(i64, u32)>>;
+    fn get_decimal128(&mut self, idx: usize) -> Result<Option<i128>>;
+    fn get_decimal256(&mut self, idx: usize) -> Result<Option<[u8; 32]>>;
+    fn get_float32_array(&mut self, idx: usize) -> Result<Option<&[f32]>>;
+    fn get_float64_array(&mut self, idx: usize) -> Result<Option<&[f64]>>;
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RowPackContext {
     pub version: u8,
@@ -1307,6 +1325,265 @@ impl RowPackEncoder {
                     value,
                     self.dict_maps[idx].as_ref(),
                 )?,
+            };
+            scratch.tags.write_bits(tag, 2);
+        }
+        out.clear();
+        out.reserve(
+            scratch.tags.buf.len() + scratch.bools.buf.len() + scratch.data.len() + 8,
+        );
+        scratch.tags.append_to(out);
+        scratch.bools.append_to(out);
+        out.extend_from_slice(&scratch.data);
+        Ok(())
+    }
+
+    pub fn encode_row_from_access<A: RowValueAccess>(
+        &self,
+        access: &mut A,
+        out: &mut Vec<u8>,
+        scratch: &mut RowPackScratch,
+    ) -> Result<()> {
+        scratch.reset(&self.ctx);
+        for (idx, col) in self.ctx.columns.iter().enumerate() {
+            let tag = match col.logical_type {
+                LogicalType::Bool => match access.get_bool(idx)? {
+                    None => 0u8,
+                    Some(v) => {
+                        scratch.bools.write_bits(if v { 1 } else { 0 }, 1);
+                        1u8
+                    }
+                },
+                LogicalType::Int64 => match access.get_int64(idx)? {
+                    None => 0u8,
+                    Some(v) => {
+                        if let ColumnEncoding::Int { signed, varint, bits } = &col.encoding {
+                            encode_int(&mut scratch.data, *signed, *varint, *bits, v as i128)?;
+                            1u8
+                        } else {
+                            return Err(anyhow!("rowpack int64 encoding mismatch"));
+                        }
+                    }
+                },
+                LogicalType::Int16 => match access.get_int32(idx)? {
+                    None => 0u8,
+                    Some(v) => {
+                        if let ColumnEncoding::Int { signed, varint, bits } = &col.encoding {
+                            encode_int(&mut scratch.data, *signed, *varint, *bits, v as i128)?;
+                            1u8
+                        } else {
+                            return Err(anyhow!("rowpack int16 encoding mismatch"));
+                        }
+                    }
+                },
+                LogicalType::Int8 => match access.get_int32(idx)? {
+                    None => 0u8,
+                    Some(v) => {
+                        if let ColumnEncoding::Int { signed, varint, bits } = &col.encoding {
+                            encode_int(&mut scratch.data, *signed, *varint, *bits, v as i128)?;
+                            1u8
+                        } else {
+                            return Err(anyhow!("rowpack int8 encoding mismatch"));
+                        }
+                    }
+                },
+                LogicalType::Int32 => match access.get_int32(idx)? {
+                    None => 0u8,
+                    Some(v) => {
+                        if let ColumnEncoding::Int { signed, varint, bits } = &col.encoding {
+                            encode_int(&mut scratch.data, *signed, *varint, *bits, v as i128)?;
+                            1u8
+                        } else {
+                            return Err(anyhow!("rowpack int32 encoding mismatch"));
+                        }
+                    }
+                },
+                LogicalType::UInt64 => match access.get_uint64(idx)? {
+                    None => 0u8,
+                    Some(v) => {
+                        if let ColumnEncoding::Int { signed, varint, bits } = &col.encoding {
+                            encode_uint(&mut scratch.data, *signed, *varint, *bits, v)?;
+                            1u8
+                        } else {
+                            return Err(anyhow!("rowpack uint64 encoding mismatch"));
+                        }
+                    }
+                },
+                LogicalType::UInt16 => match access.get_uint32(idx)? {
+                    None => 0u8,
+                    Some(v) => {
+                        if let ColumnEncoding::Int { signed, varint, bits } = &col.encoding {
+                            encode_uint(&mut scratch.data, *signed, *varint, *bits, v as u64)?;
+                            1u8
+                        } else {
+                            return Err(anyhow!("rowpack uint16 encoding mismatch"));
+                        }
+                    }
+                },
+                LogicalType::UInt8 => match access.get_uint32(idx)? {
+                    None => 0u8,
+                    Some(v) => {
+                        if let ColumnEncoding::Int { signed, varint, bits } = &col.encoding {
+                            encode_uint(&mut scratch.data, *signed, *varint, *bits, v as u64)?;
+                            1u8
+                        } else {
+                            return Err(anyhow!("rowpack uint8 encoding mismatch"));
+                        }
+                    }
+                },
+                LogicalType::UInt32 => match access.get_uint32(idx)? {
+                    None => 0u8,
+                    Some(v) => {
+                        if let ColumnEncoding::Int { signed, varint, bits } = &col.encoding {
+                            encode_uint(&mut scratch.data, *signed, *varint, *bits, v as u64)?;
+                            1u8
+                        } else {
+                            return Err(anyhow!("rowpack uint32 encoding mismatch"));
+                        }
+                    }
+                },
+                LogicalType::Float64 => match access.get_float64(idx)? {
+                    None => 0u8,
+                    Some(v) => {
+                        if let ColumnEncoding::Float { storage } = &col.encoding {
+                            encode_float_with_tag(&mut scratch.data, col.logical_type, *storage, v)?
+                        } else {
+                            return Err(anyhow!("rowpack float64 encoding mismatch"));
+                        }
+                    }
+                },
+                LogicalType::Float32 => match access.get_float32(idx)? {
+                    None => 0u8,
+                    Some(v) => {
+                        if let ColumnEncoding::Float { storage } = &col.encoding {
+                            encode_float_with_tag(
+                                &mut scratch.data,
+                                col.logical_type,
+                                *storage,
+                                v as f64,
+                            )?
+                        } else {
+                            return Err(anyhow!("rowpack float32 encoding mismatch"));
+                        }
+                    }
+                },
+                LogicalType::String => match access.get_string(idx)? {
+                    None => 0u8,
+                    Some(v) => {
+                        if let ColumnEncoding::String { encoding } = &col.encoding {
+                            encode_string_with_tag(
+                                &mut scratch.data,
+                                encoding,
+                                v,
+                                self.dict_maps[idx].as_ref(),
+                            )?
+                        } else {
+                            return Err(anyhow!("rowpack string encoding mismatch"));
+                        }
+                    }
+                },
+                LogicalType::Bytes => match access.get_bytes(idx)? {
+                    None => 0u8,
+                    Some(v) => {
+                        if let ColumnEncoding::Bytes { fixed_len } = &col.encoding {
+                            if let Some(len) = fixed_len {
+                                if *len == v.len() {
+                                    scratch.data.extend_from_slice(v);
+                                    1u8
+                                } else {
+                                    write_varint(v.len() as u64, &mut scratch.data);
+                                    scratch.data.extend_from_slice(v);
+                                    2u8
+                                }
+                            } else {
+                                write_varint(v.len() as u64, &mut scratch.data);
+                                scratch.data.extend_from_slice(v);
+                                1u8
+                            }
+                        } else {
+                            return Err(anyhow!("rowpack bytes encoding mismatch"));
+                        }
+                    }
+                },
+                LogicalType::Date => match access.get_date(idx)? {
+                    None => 0u8,
+                    Some(v) => {
+                        if let ColumnEncoding::Date { varint, bits } = &col.encoding {
+                            encode_int(&mut scratch.data, true, *varint, *bits, v as i128)?;
+                            1u8
+                        } else {
+                            return Err(anyhow!("rowpack date encoding mismatch"));
+                        }
+                    }
+                },
+                LogicalType::Timestamp => match access.get_timestamp(idx)? {
+                    None => 0u8,
+                    Some((secs, nanos)) => {
+                        write_varint(zigzag_encode(secs), &mut scratch.data);
+                        write_varint(nanos as u64, &mut scratch.data);
+                        1u8
+                    }
+                },
+                LogicalType::Decimal128 => match access.get_decimal128(idx)? {
+                    None => 0u8,
+                    Some(v) => {
+                        if let ColumnEncoding::Decimal { bytes, scale, storage, .. } =
+                            &col.encoding
+                        {
+                            if *bytes != 16 {
+                                return Err(anyhow!("rowpack decimal size mismatch"));
+                            }
+                            encode_decimal_i128_with_tag(&mut scratch.data, v, *scale, storage)?
+                        } else {
+                            return Err(anyhow!("rowpack decimal128 encoding mismatch"));
+                        }
+                    }
+                },
+                LogicalType::Decimal256 => match access.get_decimal256(idx)? {
+                    None => 0u8,
+                    Some(v) => {
+                        if let ColumnEncoding::Decimal { bytes, scale, storage, .. } =
+                            &col.encoding
+                        {
+                            if *bytes != 32 {
+                                return Err(anyhow!("rowpack decimal size mismatch"));
+                            }
+                            encode_decimal_i256_with_tag(&mut scratch.data, &v, *scale, storage)?
+                        } else {
+                            return Err(anyhow!("rowpack decimal256 encoding mismatch"));
+                        }
+                    }
+                },
+                LogicalType::Float32Array => match access.get_float32_array(idx)? {
+                    None => 0u8,
+                    Some(values) => {
+                        if let ColumnEncoding::FloatArray { storage } = &col.encoding {
+                            encode_float_array_f32_with_tag(
+                                &mut scratch.data,
+                                col.logical_type,
+                                *storage,
+                                values,
+                            )?
+                        } else {
+                            return Err(anyhow!("rowpack float32 array encoding mismatch"));
+                        }
+                    }
+                },
+                LogicalType::Float64Array => match access.get_float64_array(idx)? {
+                    None => 0u8,
+                    Some(values) => {
+                        if let ColumnEncoding::FloatArray { storage } = &col.encoding {
+                            encode_float_array_f64_with_tag(
+                                &mut scratch.data,
+                                col.logical_type,
+                                *storage,
+                                values,
+                            )?
+                        } else {
+                            return Err(anyhow!("rowpack float64 array encoding mismatch"));
+                        }
+                    }
+                },
             };
             scratch.tags.write_bits(tag, 2);
         }

@@ -18,7 +18,8 @@ use diskgraph_fs::{
     build_adls_client, build_gcs_client, build_s3_client, AdlsConfig, GcsConfig, S3Config,
 };
 use diskgraph_rowpack::{
-    LogicalType as RowpackType, RowPackConfig, RowPackContextBuilder, RowPackEncoder, ValueRef,
+    LogicalType as RowpackType, RowPackConfig, RowPackContextBuilder, RowPackEncoder,
+    RowValueAccess, ValueRef,
 };
 use num_traits::Signed;
 use object_store::{path::Path as ObjectPath, ObjectStore, WriteMultipart};
@@ -1084,16 +1085,13 @@ fn write_node_data_to(
         for row in 0..batch_rows {
             arrays_f32.clear();
             arrays_f64.clear();
-            let mut values = Vec::with_capacity(table.columns.len());
-            row_values_from_accessors(
+            let mut access = RowAccessor {
                 row,
-                table,
-                &accessors,
-                &mut values,
-                &mut arrays_f32,
-                &mut arrays_f64,
-            )?;
-            encoder.encode_row_into(&values, &mut encoded, &mut scratch)?;
+                accessors: &accessors,
+                arrays_f32: &mut arrays_f32,
+                arrays_f64: &mut arrays_f64,
+            };
+            encoder.encode_row_from_access(&mut access, &mut encoded, &mut scratch)?;
             builder.append_value(&encoded);
             rows += 1;
             if rows == next_update {
@@ -1987,6 +1985,282 @@ enum ColumnAccessor<'a> {
     },
 }
 
+struct RowAccessor<'a> {
+    row: usize,
+    accessors: &'a [ColumnAccessor<'a>],
+    arrays_f32: &'a mut Vec<Vec<f32>>,
+    arrays_f64: &'a mut Vec<Vec<f64>>,
+}
+
+impl<'a> RowValueAccess for RowAccessor<'a> {
+    fn get_int64(&mut self, idx: usize) -> Result<Option<i64>> {
+        match self.accessors.get(idx) {
+            Some(ColumnAccessor::Int64(arr)) => {
+                if arr.is_null(self.row) {
+                    Ok(None)
+                } else {
+                    Ok(Some(arr.value(self.row)))
+                }
+            }
+            _ => Err(anyhow!("rowpack int64 accessor mismatch")),
+        }
+    }
+
+    fn get_int32(&mut self, idx: usize) -> Result<Option<i32>> {
+        match self.accessors.get(idx) {
+            Some(ColumnAccessor::Int32(arr)) => {
+                if arr.is_null(self.row) {
+                    Ok(None)
+                } else {
+                    Ok(Some(arr.value(self.row)))
+                }
+            }
+            Some(ColumnAccessor::Int16(arr)) => {
+                if arr.is_null(self.row) {
+                    Ok(None)
+                } else {
+                    Ok(Some(arr.value(self.row) as i32))
+                }
+            }
+            Some(ColumnAccessor::Int8(arr)) => {
+                if arr.is_null(self.row) {
+                    Ok(None)
+                } else {
+                    Ok(Some(arr.value(self.row) as i32))
+                }
+            }
+            _ => Err(anyhow!("rowpack int32 accessor mismatch")),
+        }
+    }
+
+    fn get_uint64(&mut self, idx: usize) -> Result<Option<u64>> {
+        match self.accessors.get(idx) {
+            Some(ColumnAccessor::UInt64(arr)) => {
+                if arr.is_null(self.row) {
+                    Ok(None)
+                } else {
+                    Ok(Some(arr.value(self.row)))
+                }
+            }
+            _ => Err(anyhow!("rowpack uint64 accessor mismatch")),
+        }
+    }
+
+    fn get_uint32(&mut self, idx: usize) -> Result<Option<u32>> {
+        match self.accessors.get(idx) {
+            Some(ColumnAccessor::UInt32(arr)) => {
+                if arr.is_null(self.row) {
+                    Ok(None)
+                } else {
+                    Ok(Some(arr.value(self.row)))
+                }
+            }
+            Some(ColumnAccessor::UInt16(arr)) => {
+                if arr.is_null(self.row) {
+                    Ok(None)
+                } else {
+                    Ok(Some(arr.value(self.row) as u32))
+                }
+            }
+            Some(ColumnAccessor::UInt8(arr)) => {
+                if arr.is_null(self.row) {
+                    Ok(None)
+                } else {
+                    Ok(Some(arr.value(self.row) as u32))
+                }
+            }
+            _ => Err(anyhow!("rowpack uint32 accessor mismatch")),
+        }
+    }
+
+    fn get_float64(&mut self, idx: usize) -> Result<Option<f64>> {
+        match self.accessors.get(idx) {
+            Some(ColumnAccessor::Float64(arr)) => {
+                if arr.is_null(self.row) {
+                    Ok(None)
+                } else {
+                    Ok(Some(arr.value(self.row)))
+                }
+            }
+            _ => Err(anyhow!("rowpack float64 accessor mismatch")),
+        }
+    }
+
+    fn get_float32(&mut self, idx: usize) -> Result<Option<f32>> {
+        match self.accessors.get(idx) {
+            Some(ColumnAccessor::Float32(arr)) => {
+                if arr.is_null(self.row) {
+                    Ok(None)
+                } else {
+                    Ok(Some(arr.value(self.row)))
+                }
+            }
+            _ => Err(anyhow!("rowpack float32 accessor mismatch")),
+        }
+    }
+
+    fn get_bool(&mut self, idx: usize) -> Result<Option<bool>> {
+        match self.accessors.get(idx) {
+            Some(ColumnAccessor::Bool(arr)) => {
+                if arr.is_null(self.row) {
+                    Ok(None)
+                } else {
+                    Ok(Some(arr.value(self.row)))
+                }
+            }
+            _ => Err(anyhow!("rowpack bool accessor mismatch")),
+        }
+    }
+
+    fn get_string(&mut self, idx: usize) -> Result<Option<&str>> {
+        match self.accessors.get(idx) {
+            Some(ColumnAccessor::String(arr)) => {
+                if arr.is_null(self.row) {
+                    Ok(None)
+                } else {
+                    Ok(Some(arr.value(self.row)))
+                }
+            }
+            _ => Err(anyhow!("rowpack string accessor mismatch")),
+        }
+    }
+
+    fn get_bytes(&mut self, idx: usize) -> Result<Option<&[u8]>> {
+        match self.accessors.get(idx) {
+            Some(ColumnAccessor::Bytes(arr)) => {
+                if arr.is_null(self.row) {
+                    Ok(None)
+                } else {
+                    Ok(Some(arr.value(self.row)))
+                }
+            }
+            _ => Err(anyhow!("rowpack bytes accessor mismatch")),
+        }
+    }
+
+    fn get_date(&mut self, idx: usize) -> Result<Option<i32>> {
+        match self.accessors.get(idx) {
+            Some(ColumnAccessor::Date(arr)) => {
+                if arr.is_null(self.row) {
+                    Ok(None)
+                } else {
+                    Ok(Some(arr.value(self.row)))
+                }
+            }
+            _ => Err(anyhow!("rowpack date accessor mismatch")),
+        }
+    }
+
+    fn get_timestamp(&mut self, idx: usize) -> Result<Option<(i64, u32)>> {
+        match self.accessors.get(idx) {
+            Some(ColumnAccessor::Timestamp(accessor)) => {
+                if accessor_is_null(accessor, self.row) {
+                    Ok(None)
+                } else {
+                    Ok(Some(accessor.value(self.row)))
+                }
+            }
+            _ => Err(anyhow!("rowpack timestamp accessor mismatch")),
+        }
+    }
+
+    fn get_decimal128(&mut self, idx: usize) -> Result<Option<i128>> {
+        match self.accessors.get(idx) {
+            Some(ColumnAccessor::Decimal128(arr)) => {
+                if arr.is_null(self.row) {
+                    Ok(None)
+                } else {
+                    Ok(Some(arr.value(self.row)))
+                }
+            }
+            _ => Err(anyhow!("rowpack decimal128 accessor mismatch")),
+        }
+    }
+
+    fn get_decimal256(&mut self, idx: usize) -> Result<Option<[u8; 32]>> {
+        match self.accessors.get(idx) {
+            Some(ColumnAccessor::Decimal256(arr)) => {
+                if arr.is_null(self.row) {
+                    Ok(None)
+                } else {
+                    Ok(Some(arr.value(self.row).to_le_bytes()))
+                }
+            }
+            _ => Err(anyhow!("rowpack decimal256 accessor mismatch")),
+        }
+    }
+
+    fn get_float32_array(&mut self, idx: usize) -> Result<Option<&[f32]>> {
+        match self.accessors.get(idx) {
+            Some(ColumnAccessor::Float32List {
+                list,
+                values,
+                values_has_nulls,
+            }) => {
+                if list.is_null(self.row) {
+                    return Ok(None);
+                }
+                let offsets = list.value_offsets();
+                let start = offsets[self.row] as usize;
+                let end = offsets[self.row + 1] as usize;
+                if !*values_has_nulls {
+                    let slice = &values.values().as_ref()[start..end];
+                    Ok(Some(slice))
+                } else {
+                    let mut vec = Vec::with_capacity(end.saturating_sub(start));
+                    for idx in start..end {
+                        if values.is_null(idx) {
+                            vec.push(0.0);
+                        } else {
+                            vec.push(values.value(idx));
+                        }
+                    }
+                    self.arrays_f32.push(vec);
+                    let slice_ptr = self.arrays_f32.last().unwrap().as_slice() as *const [f32];
+                    let slice = unsafe { &*slice_ptr };
+                    Ok(Some(slice))
+                }
+            }
+            _ => Err(anyhow!("rowpack float32 array accessor mismatch")),
+        }
+    }
+
+    fn get_float64_array(&mut self, idx: usize) -> Result<Option<&[f64]>> {
+        match self.accessors.get(idx) {
+            Some(ColumnAccessor::Float64List {
+                list,
+                values,
+                values_has_nulls,
+            }) => {
+                if list.is_null(self.row) {
+                    return Ok(None);
+                }
+                let offsets = list.value_offsets();
+                let start = offsets[self.row] as usize;
+                let end = offsets[self.row + 1] as usize;
+                if !*values_has_nulls {
+                    let slice = &values.values().as_ref()[start..end];
+                    Ok(Some(slice))
+                } else {
+                    let mut vec = Vec::with_capacity(end.saturating_sub(start));
+                    for idx in start..end {
+                        if values.is_null(idx) {
+                            vec.push(0.0);
+                        } else {
+                            vec.push(values.value(idx));
+                        }
+                    }
+                    self.arrays_f64.push(vec);
+                    let slice_ptr = self.arrays_f64.last().unwrap().as_slice() as *const [f64];
+                    let slice = unsafe { &*slice_ptr };
+                    Ok(Some(slice))
+                }
+            }
+            _ => Err(anyhow!("rowpack float64 array accessor mismatch")),
+        }
+    }
+}
+
 fn build_accessors<'a>(cols: &'a [ArrayRef], table: &TableSpec) -> Result<Vec<ColumnAccessor<'a>>> {
     if cols.len() != table.columns.len() {
         return Err(anyhow!("column count mismatch"));
@@ -2163,204 +2437,6 @@ fn build_accessors<'a>(cols: &'a [ArrayRef], table: &TableSpec) -> Result<Vec<Co
         accessors.push(accessor);
     }
     Ok(accessors)
-}
-
-fn row_values_from_accessors<'a>(
-    row: usize,
-    table: &'a TableSpec,
-    accessors: &'a [ColumnAccessor<'a>],
-    values: &mut Vec<ValueRef<'a>>,
-    arrays_f32: &'a mut Vec<Vec<f32>>,
-    arrays_f64: &'a mut Vec<Vec<f64>>,
-) -> Result<()> {
-    for (idx, col) in table.columns.iter().enumerate() {
-        let accessor = accessors
-            .get(idx)
-            .ok_or_else(|| anyhow!("missing column {}", col.name))?;
-        match accessor {
-            ColumnAccessor::Int64(arr) => {
-                if arr.is_null(row) {
-                    values.push(ValueRef::Null);
-                } else {
-                    values.push(ValueRef::Int64(arr.value(row)));
-                }
-            }
-            ColumnAccessor::Int32(arr) => {
-                if arr.is_null(row) {
-                    values.push(ValueRef::Null);
-                } else {
-                    values.push(ValueRef::Int32(arr.value(row)));
-                }
-            }
-            ColumnAccessor::Int16(arr) => {
-                if arr.is_null(row) {
-                    values.push(ValueRef::Null);
-                } else {
-                    values.push(ValueRef::Int32(arr.value(row) as i32));
-                }
-            }
-            ColumnAccessor::Int8(arr) => {
-                if arr.is_null(row) {
-                    values.push(ValueRef::Null);
-                } else {
-                    values.push(ValueRef::Int32(arr.value(row) as i32));
-                }
-            }
-            ColumnAccessor::UInt64(arr) => {
-                if arr.is_null(row) {
-                    values.push(ValueRef::Null);
-                } else {
-                    values.push(ValueRef::UInt64(arr.value(row)));
-                }
-            }
-            ColumnAccessor::UInt32(arr) => {
-                if arr.is_null(row) {
-                    values.push(ValueRef::Null);
-                } else {
-                    values.push(ValueRef::UInt32(arr.value(row)));
-                }
-            }
-            ColumnAccessor::UInt16(arr) => {
-                if arr.is_null(row) {
-                    values.push(ValueRef::Null);
-                } else {
-                    values.push(ValueRef::UInt32(arr.value(row) as u32));
-                }
-            }
-            ColumnAccessor::UInt8(arr) => {
-                if arr.is_null(row) {
-                    values.push(ValueRef::Null);
-                } else {
-                    values.push(ValueRef::UInt32(arr.value(row) as u32));
-                }
-            }
-            ColumnAccessor::Float64(arr) => {
-                if arr.is_null(row) {
-                    values.push(ValueRef::Null);
-                } else {
-                    values.push(ValueRef::Float64(arr.value(row)));
-                }
-            }
-            ColumnAccessor::Float32(arr) => {
-                if arr.is_null(row) {
-                    values.push(ValueRef::Null);
-                } else {
-                    values.push(ValueRef::Float32(arr.value(row)));
-                }
-            }
-            ColumnAccessor::Bool(arr) => {
-                if arr.is_null(row) {
-                    values.push(ValueRef::Null);
-                } else {
-                    values.push(ValueRef::Bool(arr.value(row)));
-                }
-            }
-            ColumnAccessor::String(arr) => {
-                if arr.is_null(row) {
-                    values.push(ValueRef::Null);
-                } else {
-                    values.push(ValueRef::String(arr.value(row)));
-                }
-            }
-            ColumnAccessor::Bytes(arr) => {
-                if arr.is_null(row) {
-                    values.push(ValueRef::Null);
-                } else {
-                    values.push(ValueRef::Bytes(arr.value(row)));
-                }
-            }
-            ColumnAccessor::Date(arr) => {
-                if arr.is_null(row) {
-                    values.push(ValueRef::Null);
-                } else {
-                    values.push(ValueRef::Date(arr.value(row)));
-                }
-            }
-            ColumnAccessor::Timestamp(accessor) => {
-                if accessor_is_null(accessor, row) {
-                    values.push(ValueRef::Null);
-                } else {
-                    let (secs, nanos) = accessor.value(row);
-                    values.push(ValueRef::Timestamp { secs, nanos });
-                }
-            }
-            ColumnAccessor::Decimal128(arr) => {
-                if arr.is_null(row) {
-                    values.push(ValueRef::Null);
-                } else {
-                    values.push(ValueRef::Decimal128(arr.value(row)));
-                }
-            }
-            ColumnAccessor::Decimal256(arr) => {
-                if arr.is_null(row) {
-                    values.push(ValueRef::Null);
-                } else {
-                    values.push(ValueRef::Decimal256(arr.value(row).to_le_bytes()));
-                }
-            }
-            ColumnAccessor::Float32List {
-                list,
-                values: values_arr,
-                values_has_nulls,
-            } => {
-                if list.is_null(row) {
-                    values.push(ValueRef::Null);
-                } else {
-                    let offsets = list.value_offsets();
-                    let start = offsets[row] as usize;
-                    let end = offsets[row + 1] as usize;
-                    if !*values_has_nulls {
-                        let slice = &values_arr.values().as_ref()[start..end];
-                        values.push(ValueRef::Float32Array(slice));
-                    } else {
-                        let mut vec = Vec::with_capacity(end.saturating_sub(start));
-                        for idx in start..end {
-                            if values_arr.is_null(idx) {
-                                vec.push(0.0);
-                            } else {
-                                vec.push(values_arr.value(idx));
-                            }
-                        }
-                        arrays_f32.push(vec);
-                        let slice_ptr = arrays_f32.last().unwrap().as_slice() as *const [f32];
-                        let slice = unsafe { &*slice_ptr };
-                        values.push(ValueRef::Float32Array(slice));
-                    }
-                }
-            }
-            ColumnAccessor::Float64List {
-                list,
-                values: values_arr,
-                values_has_nulls,
-            } => {
-                if list.is_null(row) {
-                    values.push(ValueRef::Null);
-                } else {
-                    let offsets = list.value_offsets();
-                    let start = offsets[row] as usize;
-                    let end = offsets[row + 1] as usize;
-                    if !*values_has_nulls {
-                        let slice = &values_arr.values().as_ref()[start..end];
-                        values.push(ValueRef::Float64Array(slice));
-                    } else {
-                        let mut vec = Vec::with_capacity(end.saturating_sub(start));
-                        for idx in start..end {
-                            if values_arr.is_null(idx) {
-                                vec.push(0.0);
-                            } else {
-                                vec.push(values_arr.value(idx));
-                            }
-                        }
-                        arrays_f64.push(vec);
-                        let slice_ptr = arrays_f64.last().unwrap().as_slice() as *const [f64];
-                        let slice = unsafe { &*slice_ptr };
-                        values.push(ValueRef::Float64Array(slice));
-                    }
-                }
-            }
-        }
-    }
-    Ok(())
 }
 
 fn accessor_is_null(accessor: &TimestampAccessor<'_>, row: usize) -> bool {
