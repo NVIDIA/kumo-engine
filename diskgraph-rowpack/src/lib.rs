@@ -8,11 +8,14 @@ use num_traits::Signed;
 use rmp::encode as mp;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
-use std::collections::HashMap;
+use ahash::RandomState;
+use hashbrown::HashMap;
 
 const ROWPACK_VERSION: u8 = 2;
 const MAX_FIELD_BYTES: usize = 8 * 1024 * 1024;
 const MAX_ARRAY_LEN: usize = 1_000_000;
+
+type FastHashMap<K, V> = HashMap<K, V, RandomState>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RowPackConfig {
@@ -779,7 +782,7 @@ struct ColumnStats {
     float_has_nan: bool,
     float_has_inf: bool,
     bool_seen: bool,
-    string_counts: HashMap<Vec<u8>, usize>,
+    string_counts: FastHashMap<Vec<u8>, usize>,
     string_bytes: usize,
     string_total: usize,
     bytes_total: usize,
@@ -816,7 +819,7 @@ impl ColumnStats {
             float_has_nan: false,
             float_has_inf: false,
             bool_seen: false,
-            string_counts: HashMap::new(),
+            string_counts: FastHashMap::default(),
             string_bytes: 0,
             string_total: 0,
             bytes_total: 0,
@@ -1157,7 +1160,7 @@ fn choose_string_encoding(stats: &ColumnStats, config: &RowPackConfig) -> Result
 
 pub struct RowPackEncoder {
     ctx: RowPackContext,
-    dict_maps: Vec<Option<HashMap<Vec<u8>, u32>>>,
+    dict_maps: Vec<Option<FastHashMap<Vec<u8>, u32>>>,
 }
 
 pub struct RowPackScratch {
@@ -1214,7 +1217,10 @@ impl RowPackEncoder {
                 ColumnEncoding::String {
                     encoding: StringEncoding::Dict { values },
                 } => {
-                    let mut map = HashMap::with_capacity(values.len());
+                    let mut map = FastHashMap::with_capacity_and_hasher(
+                        values.len(),
+                        RandomState::default(),
+                    );
                     for (idx, value) in values.iter().enumerate() {
                         map.insert(value.clone(), idx as u32);
                     }
@@ -1319,7 +1325,7 @@ fn encode_value_with_tag<'a>(
     out: &mut Vec<u8>,
     col: &ColumnContext,
     value: &ValueRef<'a>,
-    dict: Option<&HashMap<Vec<u8>, u32>>,
+    dict: Option<&FastHashMap<Vec<u8>, u32>>,
  ) -> Result<u8> {
     match (&col.encoding, value) {
         (ColumnEncoding::Int { signed, varint, bits }, ValueRef::Int64(v)) => {
@@ -1651,7 +1657,7 @@ fn encode_string_with_tag(
     out: &mut Vec<u8>,
     encoding: &StringEncoding,
     value: &str,
-    dict: Option<&HashMap<Vec<u8>, u32>>,
+    dict: Option<&FastHashMap<Vec<u8>, u32>>,
 ) -> Result<u8> {
     match encoding {
         StringEncoding::Raw => {
