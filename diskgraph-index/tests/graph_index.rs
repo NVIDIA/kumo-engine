@@ -63,6 +63,8 @@ fn graph_builder_and_reader_multi_table() {
                 name: "User".into(),
                 max_id: 3,
                 has_node_data: false,
+                node_data_compression: None,
+                primary_key_map: None,
                 shards: vec![
                     NodeShardMetadata {
                         min_id: 0,
@@ -80,6 +82,8 @@ fn graph_builder_and_reader_multi_table() {
                 name: "Item".into(),
                 max_id: 1,
                 has_node_data: false,
+                node_data_compression: None,
+                primary_key_map: None,
                 shards: vec![NodeShardMetadata {
                     min_id: 0,
                     max_id: 1,

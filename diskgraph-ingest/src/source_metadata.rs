@@ -42,8 +42,12 @@ pub struct ColumnSpec {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ColumnType {
+    Int8,
+    Int16,
     Int64,
     Int32,
+    UInt8,
+    UInt16,
     UInt64,
     UInt32,
     Float64,
@@ -137,15 +141,19 @@ impl SourceMetadata {
                 if !col_names.contains(pk.as_str()) {
                     errors.push(format!("table {} primary_key {} not found", table.name, pk));
                 } else if let Some(col) = table.columns.iter().find(|c| c.name == *pk) {
-                    if !matches!(
-                        col.dtype,
-                        ColumnType::Int64
-                            | ColumnType::Int32
-                            | ColumnType::UInt64
-                            | ColumnType::UInt32
-                            | ColumnType::String
-                            | ColumnType::Bytes
-                    ) {
+                if !matches!(
+                    col.dtype,
+                    ColumnType::Int8
+                        | ColumnType::Int16
+                        | ColumnType::Int64
+                        | ColumnType::Int32
+                        | ColumnType::UInt8
+                        | ColumnType::UInt16
+                        | ColumnType::UInt64
+                        | ColumnType::UInt32
+                        | ColumnType::String
+                        | ColumnType::Bytes
+                ) {
                         errors.push(format!(
                             "table {} primary_key {} must be int or string/bytes",
                             table.name, pk
@@ -159,8 +167,12 @@ impl SourceMetadata {
                 } else if let Some(col) = table.columns.iter().find(|c| c.name == *weight) {
                     if !matches!(
                         col.dtype,
-                        ColumnType::Int64
+                        ColumnType::Int8
+                            | ColumnType::Int16
+                            | ColumnType::Int64
                             | ColumnType::Int32
+                            | ColumnType::UInt8
+                            | ColumnType::UInt16
                             | ColumnType::UInt64
                             | ColumnType::UInt32
                             | ColumnType::Float64
@@ -312,17 +324,18 @@ impl SourceMetadata {
 
 fn compatible_key_types(a: &ColumnType, b: &ColumnType) -> bool {
     use ColumnType::*;
-    matches!(
-        (a, b),
-        (Int64, Int64)
-            | (Int32, Int32)
-            | (UInt64, UInt64)
-            | (UInt32, UInt32)
-            | (Int64, Int32)
-            | (Int32, Int64)
-            | (UInt64, UInt32)
-            | (UInt32, UInt64)
-            | (String, String)
-            | (Bytes, Bytes)
-    )
+    match (a, b) {
+        (String, String) | (Bytes, Bytes) => true,
+        (a, b) if is_signed_int(a) && is_signed_int(b) => true,
+        (a, b) if is_unsigned_int(a) && is_unsigned_int(b) => true,
+        _ => false,
+    }
+}
+
+fn is_signed_int(t: &ColumnType) -> bool {
+    matches!(t, ColumnType::Int8 | ColumnType::Int16 | ColumnType::Int32 | ColumnType::Int64)
+}
+
+fn is_unsigned_int(t: &ColumnType) -> bool {
+    matches!(t, ColumnType::UInt8 | ColumnType::UInt16 | ColumnType::UInt32 | ColumnType::UInt64)
 }

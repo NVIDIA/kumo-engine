@@ -6,7 +6,9 @@ This document captures the required on-disk layout and `index_metadata.json` sch
 
 - Dataset root contains:
   - `index_metadata.json`
-  - `edges/RELATION/part-00000.parquet ...` — sharded Parquet files per edge relation.
+- `edges/RELATION/part-00000.parquet ...` — sharded Parquet files per edge relation.
+- `nodes/TABLE/part-00000.parquet ...` — node tables containing rowpack-compressed node payloads (when enabled).
+- `nodes/TABLE/node_data.ctx` — rowpack context file for that node table (when node data is enabled).
 - Shard alignment: edge shard `N` only contains `src_id` values within the min/max range of node shard `N` for the relation’s source type. Node shard ranges are contiguous within a shard, but ranges for a given type may have gaps between shards.
 - Sorting:
   - Edge shards: sorted by `(src_id, dest_sort_key desc when present)`.
@@ -30,7 +32,11 @@ Column names are fixed and must adhere to this spec.
       "shards": [
         { "min_id": 0, "max_id": 49999 },
         { "min_id": 50000, "max_id": 99999 }
-      ]
+      ],
+      "node_data_compression": {
+        "codec": "rowpack",
+        "context_path": "nodes/User/node_data.ctx"
+      }
     }
   ],
   "edge_relations": [
@@ -53,6 +59,7 @@ Field notes:
 - `node_types[*].name`: logical node type name.
 - `node_types[*].max_id`: maximum node id observed for the type (may be greater than the total node count if there are gaps between shard ranges).
 - `node_types[*].shards`: contiguous ID ranges for node shards; ranges may be non-contiguous across shards of the same type. Gaps between shards are allowed and their widths are dataset-defined (no fixed spacing requirement).
+- `node_types[*].node_data_compression`: optional, describes node payload compression (rowpack context path).
 - `edge_relations[*].name`: logical relation name.
 - `edge_relations[*].src_type` / `dst_type`: refer to node type names.
 - `edge_relations[*].shards`: relative paths and source ID ranges for edge shards; shard count must align with the source node type shard count.

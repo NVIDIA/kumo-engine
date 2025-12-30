@@ -948,6 +948,8 @@ fn truncates_large_node_multi_relation() {
         name: "User".into(),
         max_id: u64::MAX - 1,
         has_node_data: false,
+        node_data_compression: None,
+        primary_key_map: None,
         shards: vec![NodeShardMetadata {
             min_id: 0,
             max_id: 1,
@@ -1322,6 +1324,8 @@ fn node_meta(name: &str, max_id: u64) -> NodeTypeMetadata {
         name: name.into(),
         max_id,
         has_node_data: false,
+        node_data_compression: None,
+        primary_key_map: None,
         shards: vec![NodeShardMetadata {
             min_id: 0,
             max_id,
@@ -1494,6 +1498,8 @@ fn builder_writes_node_data() {
         name: "User".into(),
         max_id: 2,
         has_node_data: true,
+        node_data_compression: None,
+        primary_key_map: None,
         shards: vec![NodeShardMetadata {
             min_id: 0,
             max_id: 2,
@@ -1543,6 +1549,8 @@ fn builder_errors_on_node_data_row_count_mismatch() {
         name: "User".into(),
         max_id: 2,
         has_node_data: true,
+        node_data_compression: None,
+        primary_key_map: None,
         shards: vec![NodeShardMetadata {
             min_id: 0,
             max_id: 2,

@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
 use half::f16;
+use base64::Engine;
 use rmp::encode as mp;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
@@ -108,8 +109,12 @@ impl RowPackConfig {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum LogicalType {
+    Int8,
+    Int16,
     Int64,
     Int32,
+    UInt8,
+    UInt16,
     UInt64,
     UInt32,
     Float64,
@@ -159,7 +164,7 @@ pub struct ColumnContext {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
 pub enum ColumnEncoding {
     Int { signed: bool, varint: bool, bits: u8 },
     Float { storage: FloatStorage },
@@ -180,7 +185,7 @@ pub enum FloatStorage {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
 pub enum StringEncoding {
     Raw,
     Dict { values: Vec<Vec<u8>> },
@@ -757,6 +762,16 @@ impl ColumnStats {
                 varint: int_use_varint(self.int_min, self.int_max),
                 bits: 32,
             }),
+            LogicalType::Int16 => Ok(ColumnEncoding::Int {
+                signed: true,
+                varint: int_use_varint(self.int_min, self.int_max),
+                bits: 16,
+            }),
+            LogicalType::Int8 => Ok(ColumnEncoding::Int {
+                signed: true,
+                varint: false,
+                bits: 8,
+            }),
             LogicalType::UInt64 => Ok(ColumnEncoding::Int {
                 signed: false,
                 varint: uint_use_varint(self.uint_max),
@@ -766,6 +781,16 @@ impl ColumnStats {
                 signed: false,
                 varint: uint_use_varint(self.uint_max),
                 bits: 32,
+            }),
+            LogicalType::UInt16 => Ok(ColumnEncoding::Int {
+                signed: false,
+                varint: uint_use_varint(self.uint_max),
+                bits: 16,
+            }),
+            LogicalType::UInt8 => Ok(ColumnEncoding::Int {
+                signed: false,
+                varint: false,
+                bits: 8,
             }),
             LogicalType::Float64 => Ok(ColumnEncoding::Float {
                 storage: choose_float_storage(config, self.float_min, self.float_max, true),
@@ -1116,44 +1141,15 @@ fn encode_float_array_f64_with_tag(
     }
     Ok(1)
 }
-                    write_varint(v.len() as u64, out);
-                    out.extend_from_slice(v);
-                }
-            } else {
-                write_varint(v.len() as u64, out);
-                out.extend_from_slice(v);
-            }
-        }
-        (ColumnEncoding::Date { varint, bits }, ValueRef::Date(v)) => {
-            encode_int(out, true, *varint, *bits, *v as i128)?;
-        }
-        (ColumnEncoding::Timestamp, ValueRef::Timestamp(v)) => {
-            write_varint(zigzag_encode(*v), out);
-        }
-        (ColumnEncoding::String { encoding }, ValueRef::String(v)) => {
-            encode_string(out, encoding, v, dict)?;
-        }
-        (ColumnEncoding::FloatArray { storage }, ValueRef::Float32Array(values)) => {
-            write_varint(values.len() as u64, out);
-            for v in *values {
-                encode_float(out, *storage, *v as f64)?;
-            }
-        }
-        (ColumnEncoding::FloatArray { storage }, ValueRef::Float64Array(values)) => {
-            write_varint(values.len() as u64, out);
-            for v in *values {
-                encode_float(out, *storage, *v)?;
-            }
-        }
-        _ => return Err(anyhow!("rowpack value type mismatch")),
-    }
-    Ok(())
-}
 
 fn encode_int(out: &mut Vec<u8>, signed: bool, varint: bool, bits: u8, v: i128) -> Result<()> {
     if signed {
         if varint {
             write_varint(zigzag_encode(v as i64), out);
+        } else if bits <= 8 {
+            out.extend_from_slice(&(v as i8).to_le_bytes());
+        } else if bits <= 16 {
+            out.extend_from_slice(&(v as i16).to_le_bytes());
         } else if bits <= 32 {
             out.extend_from_slice(&(v as i32).to_le_bytes());
         } else {
@@ -1168,6 +1164,10 @@ fn encode_int(out: &mut Vec<u8>, signed: bool, varint: bool, bits: u8, v: i128) 
 fn encode_uint(out: &mut Vec<u8>, _signed: bool, varint: bool, bits: u8, v: u64) -> Result<()> {
     if varint {
         write_varint(v, out);
+    } else if bits <= 8 {
+        out.extend_from_slice(&(v as u8).to_le_bytes());
+    } else if bits <= 16 {
+        out.extend_from_slice(&(v as u16).to_le_bytes());
     } else if bits <= 32 {
         out.extend_from_slice(&(v as u32).to_le_bytes());
     } else {
@@ -1517,6 +1517,20 @@ fn decode_int(data: &mut &[u8], varint: bool, bits: u8) -> Result<i64> {
     if varint {
         let v = read_varint(data)?;
         Ok(zigzag_decode(v))
+    } else if bits <= 8 {
+        if data.len() < 1 {
+            return Err(anyhow!("rowpack int truncated"));
+        }
+        let (head, tail) = data.split_at(1);
+        *data = tail;
+        Ok(i8::from_le_bytes(head.try_into().unwrap()) as i64)
+    } else if bits <= 16 {
+        if data.len() < 2 {
+            return Err(anyhow!("rowpack int truncated"));
+        }
+        let (head, tail) = data.split_at(2);
+        *data = tail;
+        Ok(i16::from_le_bytes(head.try_into().unwrap()) as i64)
     } else if bits <= 32 {
         if data.len() < 4 {
             return Err(anyhow!("rowpack int truncated"));
@@ -1537,6 +1551,20 @@ fn decode_int(data: &mut &[u8], varint: bool, bits: u8) -> Result<i64> {
 fn decode_uint(data: &mut &[u8], varint: bool, bits: u8) -> Result<u64> {
     if varint {
         read_varint(data)
+    } else if bits <= 8 {
+        if data.len() < 1 {
+            return Err(anyhow!("rowpack uint truncated"));
+        }
+        let (head, tail) = data.split_at(1);
+        *data = tail;
+        Ok(u8::from_le_bytes(head.try_into().unwrap()) as u64)
+    } else if bits <= 16 {
+        if data.len() < 2 {
+            return Err(anyhow!("rowpack uint truncated"));
+        }
+        let (head, tail) = data.split_at(2);
+        *data = tail;
+        Ok(u16::from_le_bytes(head.try_into().unwrap()) as u64)
     } else if bits <= 32 {
         if data.len() < 4 {
             return Err(anyhow!("rowpack uint truncated"));
@@ -1930,6 +1958,65 @@ mod tests {
         let decoder = RowPackDecoder::new(ctx).unwrap();
         let json = decoder.decode_json(&encoded).unwrap();
         assert!(json.to_string().contains("QUJDREU="));
+    }
+
+    #[test]
+    fn small_int_encodings() {
+        let ctx = RowPackContext {
+            version: ROWPACK_VERSION,
+            columns: vec![
+                ColumnContext {
+                    name: "i8".to_string(),
+                    logical_type: LogicalType::Int8,
+                    encoding: ColumnEncoding::Int {
+                        signed: true,
+                        varint: false,
+                        bits: 8,
+                    },
+                },
+                ColumnContext {
+                    name: "u8".to_string(),
+                    logical_type: LogicalType::UInt8,
+                    encoding: ColumnEncoding::Int {
+                        signed: false,
+                        varint: false,
+                        bits: 8,
+                    },
+                },
+                ColumnContext {
+                    name: "i16".to_string(),
+                    logical_type: LogicalType::Int16,
+                    encoding: ColumnEncoding::Int {
+                        signed: true,
+                        varint: false,
+                        bits: 16,
+                    },
+                },
+                ColumnContext {
+                    name: "u16".to_string(),
+                    logical_type: LogicalType::UInt16,
+                    encoding: ColumnEncoding::Int {
+                        signed: false,
+                        varint: false,
+                        bits: 16,
+                    },
+                },
+            ],
+        };
+        let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
+        let row = vec![
+            ValueRef::Int32(-7),
+            ValueRef::UInt32(200),
+            ValueRef::Int32(32000),
+            ValueRef::UInt32(65000),
+        ];
+        let encoded = encoder.encode_row(&row).unwrap();
+        let decoder = RowPackDecoder::new(ctx).unwrap();
+        let json = decoder.decode_json(&encoded).unwrap();
+        assert!(json.to_string().contains("-7"));
+        assert!(json.to_string().contains("200"));
+        assert!(json.to_string().contains("32000"));
+        assert!(json.to_string().contains("65000"));
     }
 
     #[test]

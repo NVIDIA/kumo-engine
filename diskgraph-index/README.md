@@ -4,7 +4,7 @@ Rust crate for building and reading per-shard on-disk indices for the Diskgraph 
 
 ## Overview
 
-`diskgraph-index` ingests node shard ranges (from metadata) and aligned edge shards, producing two files (plus optional node data). Node data is enabled per node type in metadata (`has_node_data`), with a `node_data_path` per shard.
+`diskgraph-index` ingests node shard ranges (from metadata) and aligned edge shards, producing two files (plus optional node data). Node data is enabled per node type in metadata (`has_node_data`), with a `node_data_path` per shard and a rowpack context file referenced by `node_data_compression.context_path`.
 
 - `offsets.bin`: delta-encoded byte offsets for each node’s edge blob.
 - `edges.bin`: packed edge blobs containing relation-prefixed counts and contiguous relation segments (and optional node data payloads).
@@ -23,7 +23,7 @@ At query time a shard is mmapped and edge lists are served zero-copy by slicing 
   - Otherwise: Prefix compact varint counts for every relation (fixed order), then optional node data length, then per relation `count * entry_bytes` packed edges, then optional node data payload.
     - Count encoding: 1 byte for 0–63 (`00xxxxxx`), 2 bytes for 64–16,383 (`01xxxxxx xxxxxxxx`). Higher values are truncated by the builder (hard cap at the encoding limit, 0x3FFF edges per relation per node).
     - Entry packing: `dst_id` masked to the minimum bits needed for the destination type, followed by optional `dest_sort_key` bits (if present for that relation). Relation IDs are implicit by position, not stored per edge.
-    - Node data length: `u16` byte length (little-endian) stored immediately after the counts when node data is enabled. Node data bytes follow all relation segments.
+    - Node data length: `u16` byte length (little-endian) stored immediately after the counts when node data is enabled. Node data bytes follow all relation segments (rowpack-compressed).
 
 All offsets are byte-based (not words).
 

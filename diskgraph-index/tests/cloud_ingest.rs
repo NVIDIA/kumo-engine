@@ -66,6 +66,8 @@ fn node_meta(name: &str, max_id: u64) -> diskgraph_core::metadata::NodeTypeMetad
         name: name.into(),
         max_id,
         has_node_data: false,
+        node_data_compression: None,
+        primary_key_map: None,
         shards: vec![diskgraph_core::metadata::NodeShardMetadata {
             min_id: 0,
             max_id,

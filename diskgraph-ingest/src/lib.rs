@@ -6,7 +6,7 @@ pub mod source_metadata;
 use crate::mapping::{Key, KeyType, PkMap};
 use crate::source_metadata::{ColumnSpec, ColumnType, TableFormat, TableSpec};
 use anyhow::{anyhow, Context, Result};
-use arrow_array::{ArrayRef, RecordBatch};
+use arrow_array::{Array, ArrayRef, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
 use bytes::Bytes;
 use diskgraph_core::metadata::{
@@ -420,9 +420,6 @@ impl IngestContext {
                         });
                     }
                     let mut next_update = PROGRESS_STEP;
-                    let mut values = Vec::with_capacity(table.columns.len());
-                    let mut arrays_f32 = Vec::new();
-                    let mut arrays_f64 = Vec::new();
                     for_each_row(&table, |row| {
                         let key = row.get_key(&pk_col, &pk)?;
                         pk_map.insert(key, row_id)?;
@@ -433,9 +430,9 @@ impl IngestContext {
                             let key = row.get_key(&pk_col, &pk)?;
                             sort_map.insert(key, sort_key as u64)?;
                         }
-                        values.clear();
-                        arrays_f32.clear();
-                        arrays_f64.clear();
+                        let mut values = Vec::with_capacity(table.columns.len());
+                        let mut arrays_f32 = Vec::new();
+                        let mut arrays_f64 = Vec::new();
                         row_values_from_row(
                             row,
                             &table,
@@ -1054,13 +1051,10 @@ fn write_node_data_to(
     let mut batch = Vec::with_capacity(NODE_BATCH_SIZE);
     let mut rows = 0u64;
     let mut next_update = PROGRESS_STEP;
-    let mut values = Vec::with_capacity(table.columns.len());
-    let mut arrays_f32 = Vec::new();
-    let mut arrays_f64 = Vec::new();
     for_each_row(table, |row| {
-        values.clear();
-        arrays_f32.clear();
-        arrays_f64.clear();
+        let mut values = Vec::with_capacity(table.columns.len());
+        let mut arrays_f32 = Vec::new();
+        let mut arrays_f64 = Vec::new();
         row_values_from_row(row, table, &mut values, &mut arrays_f32, &mut arrays_f64)?;
         let data = encoder.encode_row(&values)?;
         batch.push(data);
@@ -1573,8 +1567,12 @@ fn table_schema(table: &TableSpec) -> Result<Schema> {
     let mut fields = Vec::with_capacity(table.columns.len());
     for col in &table.columns {
         let dtype = match col.dtype {
+            ColumnType::Int8 => DataType::Int8,
+            ColumnType::Int16 => DataType::Int16,
             ColumnType::Int64 => DataType::Int64,
             ColumnType::Int32 => DataType::Int32,
+            ColumnType::UInt8 => DataType::UInt8,
+            ColumnType::UInt16 => DataType::UInt16,
             ColumnType::UInt64 => DataType::UInt64,
             ColumnType::UInt32 => DataType::UInt32,
             ColumnType::Float64 => DataType::Float64,
@@ -1611,8 +1609,12 @@ fn rowpack_columns(table: &TableSpec) -> Result<Vec<diskgraph_rowpack::RowPackCo
     let mut columns = Vec::with_capacity(table.columns.len());
     for col in &table.columns {
         let dtype = match col.dtype {
+            ColumnType::Int8 => RowpackType::Int8,
+            ColumnType::Int16 => RowpackType::Int16,
             ColumnType::Int64 => RowpackType::Int64,
             ColumnType::Int32 => RowpackType::Int32,
+            ColumnType::UInt8 => RowpackType::UInt8,
+            ColumnType::UInt16 => RowpackType::UInt16,
             ColumnType::UInt64 => RowpackType::UInt64,
             ColumnType::UInt32 => RowpackType::UInt32,
             ColumnType::Float64 => RowpackType::Float64,
@@ -1642,13 +1644,10 @@ fn sample_rowpack_context(
     let columns = rowpack_columns(table)?;
     let mut builder = RowPackContextBuilder::new(columns, config.clone());
     let limit = config.sample_rows();
-    let mut values = Vec::with_capacity(table.columns.len());
-    let mut arrays_f32 = Vec::new();
-    let mut arrays_f64 = Vec::new();
     for_each_row_with_limit(table, limit, |row| {
-        values.clear();
-        arrays_f32.clear();
-        arrays_f64.clear();
+        let mut values = Vec::with_capacity(table.columns.len());
+        let mut arrays_f32 = Vec::new();
+        let mut arrays_f64 = Vec::new();
         row_values_from_row(row, table, &mut values, &mut arrays_f32, &mut arrays_f64)?;
         builder.observe_row(&values)?;
         Ok(())
@@ -1810,6 +1809,20 @@ fn row_values_from_row<'a>(
                     .ok_or_else(|| anyhow!("int64 cast"))?;
                 values.push(ValueRef::Int64(arr.value(row.row)));
             }
+            ColumnType::Int8 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Int8Array>()
+                    .ok_or_else(|| anyhow!("int8 cast"))?;
+                values.push(ValueRef::Int32(arr.value(row.row) as i32));
+            }
+            ColumnType::Int16 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Int16Array>()
+                    .ok_or_else(|| anyhow!("int16 cast"))?;
+                values.push(ValueRef::Int32(arr.value(row.row) as i32));
+            }
             ColumnType::Int32 => {
                 let arr = array
                     .as_any()
@@ -1823,6 +1836,20 @@ fn row_values_from_row<'a>(
                     .downcast_ref::<arrow_array::UInt64Array>()
                     .ok_or_else(|| anyhow!("uint64 cast"))?;
                 values.push(ValueRef::UInt64(arr.value(row.row)));
+            }
+            ColumnType::UInt8 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::UInt8Array>()
+                    .ok_or_else(|| anyhow!("uint8 cast"))?;
+                values.push(ValueRef::UInt32(arr.value(row.row) as u32));
+            }
+            ColumnType::UInt16 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::UInt16Array>()
+                    .ok_or_else(|| anyhow!("uint16 cast"))?;
+                values.push(ValueRef::UInt32(arr.value(row.row) as u32));
             }
             ColumnType::UInt32 => {
                 let arr = array
@@ -1906,7 +1933,8 @@ fn row_values_from_row<'a>(
                         }
                     }
                     arrays_f32.push(vec);
-                    let slice = arrays_f32.last().unwrap().as_slice();
+                    let slice_ptr = arrays_f32.last().unwrap().as_slice() as *const [f32];
+                    let slice = unsafe { &*slice_ptr };
                     values.push(ValueRef::Float32Array(slice));
                 }
             }
@@ -1936,7 +1964,8 @@ fn row_values_from_row<'a>(
                         }
                     }
                     arrays_f64.push(vec);
-                    let slice = arrays_f64.last().unwrap().as_slice();
+                    let slice_ptr = arrays_f64.last().unwrap().as_slice() as *const [f64];
+                    let slice = unsafe { &*slice_ptr };
                     values.push(ValueRef::Float64Array(slice));
                 }
             }

@@ -13,7 +13,6 @@ use diskgraph_index::graph::{
     GraphProgressSink, TableReader,
 };
 use diskgraph_index::layout::{EDGES_FILENAME, OFFSETS_FILENAME};
-use serde_json::Value as JsonValue;
 use object_store::ObjectStore;
 use diskgraph_fs::{
     build_adls_client, build_gcs_client, build_s3_client, AdlsConfig, GcsConfig, S3Config,
