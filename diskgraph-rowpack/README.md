@@ -139,6 +139,12 @@ Use the built-in inspector to print a `.ctx` file summary:
 cargo run -p diskgraph-rowpack --bin rowpack_ctx_inspect -- /path/to/node_data.ctx
 ```
 
+## BPE defaults
+
+- `bpe_max_dict_entries`: 4096
+- `bpe_max_dict_bytes`: 1_000_000
+- `bpe_max_samples`: 5_000
+
 It only errors on structural corruption (invalid tags, truncated payloads).
 ### Timestamps
 - Encoded as `(secs, nanos)` varints for full unit fidelity.
