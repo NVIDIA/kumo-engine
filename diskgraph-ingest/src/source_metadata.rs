@@ -37,6 +37,10 @@ pub struct ColumnSpec {
     pub dtype: ColumnType,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fixed_len: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub precision: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scale: Option<i32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -57,6 +61,8 @@ pub enum ColumnType {
     Bytes,
     Date,
     Timestamp,
+    Decimal128,
+    Decimal256,
     Float32Array,
     Float64Array,
 }
@@ -135,6 +141,57 @@ impl SourceMetadata {
                             table.name, col.name
                         ));
                     }
+                }
+                let is_decimal = matches!(col.dtype, ColumnType::Decimal128 | ColumnType::Decimal256);
+                if is_decimal {
+                    let precision = match col.precision {
+                        Some(v) => v,
+                        None => {
+                            errors.push(format!(
+                                "table {} decimal column {} missing precision",
+                                table.name, col.name
+                            ));
+                            continue;
+                        }
+                    };
+                    let scale = match col.scale {
+                        Some(v) => v,
+                        None => {
+                            errors.push(format!(
+                                "table {} decimal column {} missing scale",
+                                table.name, col.name
+                            ));
+                            continue;
+                        }
+                    };
+                    let max_precision = match col.dtype {
+                        ColumnType::Decimal128 => 38,
+                        ColumnType::Decimal256 => 76,
+                        _ => 0,
+                    };
+                    if precision == 0 || precision > max_precision {
+                        errors.push(format!(
+                            "table {} decimal column {} precision out of range",
+                            table.name, col.name
+                        ));
+                    }
+                    if scale.unsigned_abs() > precision {
+                        errors.push(format!(
+                            "table {} decimal column {} scale out of range",
+                            table.name, col.name
+                        ));
+                    }
+                    if scale < i8::MIN as i32 || scale > i8::MAX as i32 {
+                        errors.push(format!(
+                            "table {} decimal column {} scale out of range",
+                            table.name, col.name
+                        ));
+                    }
+                } else if col.precision.is_some() || col.scale.is_some() {
+                    errors.push(format!(
+                        "table {} column {} precision/scale only valid for decimal",
+                        table.name, col.name
+                    ));
                 }
             }
             if let Some(pk) = &table.primary_key {

@@ -2,12 +2,15 @@ use anyhow::{anyhow, Result};
 use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
 use half::f16;
 use base64::Engine;
+use num_bigint::BigInt;
+use num_traits::ToPrimitive;
+use num_traits::Signed;
 use rmp::encode as mp;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 
-const ROWPACK_VERSION: u8 = 1;
+const ROWPACK_VERSION: u8 = 2;
 const MAX_FIELD_BYTES: usize = 8 * 1024 * 1024;
 const MAX_ARRAY_LEN: usize = 1_000_000;
 
@@ -31,6 +34,8 @@ pub struct RowPackConfig {
     pub enable_float16: Option<bool>,
     #[serde(default)]
     pub force_float64: Option<bool>,
+    #[serde(default)]
+    pub decimal_allow_lossy: Option<bool>,
 }
 
 impl Default for RowPackConfig {
@@ -45,6 +50,7 @@ impl Default for RowPackConfig {
             string_iso_threshold: Some(0.85),
             enable_float16: Some(true),
             force_float64: Some(false),
+            decimal_allow_lossy: Some(true),
         }
     }
 }
@@ -65,6 +71,7 @@ impl RowPackConfig {
                 string_iso_threshold: inner.string_iso_threshold.or(base.string_iso_threshold),
                 enable_float16: inner.enable_float16.or(base.enable_float16),
                 force_float64: inner.force_float64.or(base.force_float64),
+                decimal_allow_lossy: inner.decimal_allow_lossy.or(base.decimal_allow_lossy),
             }
         } else {
             base
@@ -106,6 +113,10 @@ impl RowPackConfig {
     fn force_float64(&self) -> bool {
         self.force_float64.unwrap_or(false)
     }
+
+    fn decimal_allow_lossy(&self) -> bool {
+        self.decimal_allow_lossy.unwrap_or(true)
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -126,6 +137,8 @@ pub enum LogicalType {
     Bytes,
     Date,
     Timestamp,
+    Decimal128,
+    Decimal256,
     Float32Array,
     Float64Array,
 }
@@ -135,6 +148,8 @@ pub struct RowPackColumn {
     pub name: String,
     pub logical_type: LogicalType,
     pub fixed_len: Option<usize>,
+    pub precision: Option<u32>,
+    pub scale: Option<i32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -175,7 +190,21 @@ pub enum ColumnEncoding {
     Bytes { fixed_len: Option<usize> },
     Date { varint: bool, bits: u8 },
     Timestamp,
+    Decimal {
+        precision: u32,
+        scale: i32,
+        bytes: u8,
+        storage: DecimalStorage,
+    },
     FloatArray { storage: FloatStorage },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DecimalStorage {
+    Raw,
+    Int { varint: bool, bits: u8 },
+    Float { storage: FloatStorage },
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -217,7 +246,9 @@ pub enum ValueRef<'a> {
     String(&'a str),
     Bytes(&'a [u8]),
     Date(i32),
-    Timestamp(i64),
+    Timestamp { secs: i64, nanos: u32 },
+    Decimal128(i128),
+    Decimal256([u8; 32]),
     Float32Array(&'a [f32]),
     Float64Array(&'a [f64]),
 }
@@ -458,8 +489,16 @@ pub struct RowPackContextBuilder {
     columns: Vec<LogicalType>,
     names: Vec<String>,
     fixed_lens: Vec<Option<usize>>,
+    decimal_specs: Vec<Option<DecimalSpec>>,
     samples_seen: usize,
     stats: Vec<ColumnStats>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DecimalSpec {
+    precision: u32,
+    scale: i32,
+    bytes: u8,
 }
 
 impl RowPackContextBuilder {
@@ -468,10 +507,31 @@ impl RowPackContextBuilder {
         let mut names = Vec::with_capacity(columns.len());
         let mut types = Vec::with_capacity(columns.len());
         let mut fixed_lens = Vec::with_capacity(columns.len());
+        let mut decimal_specs = Vec::with_capacity(columns.len());
         for col in columns {
             names.push(col.name);
             types.push(col.logical_type);
             fixed_lens.push(col.fixed_len);
+            let spec = match col.logical_type {
+                LogicalType::Decimal128 => match (col.precision, col.scale) {
+                    (Some(precision), Some(scale)) => Some(DecimalSpec {
+                        precision,
+                        scale,
+                        bytes: 16,
+                    }),
+                    _ => None,
+                },
+                LogicalType::Decimal256 => match (col.precision, col.scale) {
+                    (Some(precision), Some(scale)) => Some(DecimalSpec {
+                        precision,
+                        scale,
+                        bytes: 32,
+                    }),
+                    _ => None,
+                },
+                _ => None,
+            };
+            decimal_specs.push(spec);
             stats.push(ColumnStats::new());
         }
         Self {
@@ -479,6 +539,7 @@ impl RowPackContextBuilder {
             columns: types,
             names,
             fixed_lens,
+            decimal_specs,
             samples_seen: 0,
             stats,
         }
@@ -501,8 +562,28 @@ impl RowPackContextBuilder {
     pub fn finish(self) -> Result<RowPackContext> {
         let mut columns = Vec::with_capacity(self.columns.len());
         for (idx, logical_type) in self.columns.iter().enumerate() {
-            let encoding =
-                self.stats[idx].choose_encoding(*logical_type, &self.config, self.fixed_lens[idx])?;
+            let encoding = match (logical_type, self.decimal_specs[idx]) {
+                (LogicalType::Decimal128, Some(spec)) | (LogicalType::Decimal256, Some(spec)) => {
+                    if spec.precision == 0 {
+                        return Err(anyhow!("rowpack decimal precision missing"));
+                    }
+                    let storage = choose_decimal_storage(&self.config, spec.precision, spec.scale)?;
+                    ColumnEncoding::Decimal {
+                        precision: spec.precision,
+                        scale: spec.scale,
+                        bytes: spec.bytes,
+                        storage,
+                    }
+                }
+                (LogicalType::Decimal128, None) | (LogicalType::Decimal256, None) => {
+                    return Err(anyhow!("rowpack decimal precision missing"));
+                }
+                _ => self.stats[idx].choose_encoding(
+                    *logical_type,
+                    &self.config,
+                    self.fixed_lens[idx],
+                )?,
+            };
             columns.push(ColumnContext {
                 name: self.names[idx].clone(),
                 logical_type: *logical_type,
@@ -514,6 +595,34 @@ impl RowPackContextBuilder {
             columns,
         })
     }
+}
+
+fn choose_decimal_storage(
+    config: &RowPackConfig,
+    precision: u32,
+    scale: i32,
+) -> Result<DecimalStorage> {
+    if !config.decimal_allow_lossy() {
+        return Ok(DecimalStorage::Raw);
+    }
+    if scale == 0 {
+        if precision <= 9 {
+            return Ok(DecimalStorage::Int {
+                varint: true,
+                bits: 32,
+            });
+        }
+        if precision <= 18 {
+            return Ok(DecimalStorage::Int {
+                varint: false,
+                bits: 64,
+            });
+        }
+        return Ok(DecimalStorage::Raw);
+    }
+    Ok(DecimalStorage::Float {
+        storage: FloatStorage::F64,
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -687,7 +796,9 @@ impl ColumnStats {
                 let _ = v;
             }
             ValueRef::Date(_) => {}
-            ValueRef::Timestamp(_) => {}
+            ValueRef::Timestamp { .. } => {}
+            ValueRef::Decimal128(_) => {}
+            ValueRef::Decimal256(_) => {}
             ValueRef::Float32Array(values) => {
                 for v in *values {
                     let v = *v as f64;
@@ -780,6 +891,9 @@ impl ColumnStats {
                 bits: 32,
             }),
             LogicalType::Timestamp => Ok(ColumnEncoding::Timestamp),
+            LogicalType::Decimal128 | LogicalType::Decimal256 => {
+                Err(anyhow!("rowpack decimal encoding missing"))
+            }
             LogicalType::Float32Array => Ok(ColumnEncoding::FloatArray {
                 storage: choose_float_storage(config, self.float_min, self.float_max, false),
             }),
@@ -991,9 +1105,38 @@ fn encode_value_with_tag<'a>(
             encode_int(out, true, *varint, *bits, *v as i128)?;
             Ok(1)
         }
-        (ColumnEncoding::Timestamp, ValueRef::Timestamp(v)) => {
-            write_varint(zigzag_encode(*v), out);
+        (ColumnEncoding::Timestamp, ValueRef::Timestamp { secs, nanos }) => {
+            write_varint(zigzag_encode(*secs), out);
+            write_varint(*nanos as u64, out);
             Ok(1)
+        }
+        (
+            ColumnEncoding::Decimal {
+                bytes,
+                storage,
+                scale,
+                ..
+            },
+            ValueRef::Decimal128(v),
+        ) => {
+            if *bytes != 16 {
+                return Err(anyhow!("rowpack decimal size mismatch"));
+            }
+            encode_decimal_i128_with_tag(out, *v, *scale, storage)
+        }
+        (
+            ColumnEncoding::Decimal {
+                bytes,
+                storage,
+                scale,
+                ..
+            },
+            ValueRef::Decimal256(v),
+        ) => {
+            if *bytes != 32 {
+                return Err(anyhow!("rowpack decimal size mismatch"));
+            }
+            encode_decimal_i256_with_tag(out, v, *scale, storage)
         }
         (ColumnEncoding::String { encoding }, ValueRef::String(v)) => {
             encode_string_with_tag(out, encoding, v, dict)
@@ -1035,6 +1178,86 @@ fn encode_float_with_tag(
     }
     encode_float(out, storage, v)?;
     Ok(1)
+}
+
+fn encode_decimal_i128_with_tag(
+    out: &mut Vec<u8>,
+    value: i128,
+    scale: i32,
+    storage: &DecimalStorage,
+) -> Result<u8> {
+    match storage {
+        DecimalStorage::Raw => {
+            out.extend_from_slice(&value.to_le_bytes());
+            Ok(1)
+        }
+        DecimalStorage::Int { varint, bits } => {
+            if scale != 0 {
+                out.extend_from_slice(&value.to_le_bytes());
+                return Ok(2);
+            }
+            if value < i64::MIN as i128 || value > i64::MAX as i128 {
+                out.extend_from_slice(&value.to_le_bytes());
+                return Ok(2);
+            }
+            encode_int(out, true, *varint, *bits, value)?;
+            Ok(1)
+        }
+        DecimalStorage::Float { storage } => {
+            let divisor = 10f64.powi(scale);
+            let float_value = (value as f64) / divisor;
+            if !float_value.is_finite() {
+                out.extend_from_slice(&value.to_le_bytes());
+                return Ok(2);
+            }
+            let _ = encode_float_with_tag(out, LogicalType::Float64, *storage, float_value)?;
+            Ok(1)
+        }
+    }
+}
+
+fn encode_decimal_i256_with_tag(
+    out: &mut Vec<u8>,
+    value: &[u8; 32],
+    scale: i32,
+    storage: &DecimalStorage,
+) -> Result<u8> {
+    match storage {
+        DecimalStorage::Raw => {
+            out.extend_from_slice(value);
+            Ok(1)
+        }
+        DecimalStorage::Int { varint, bits } => {
+            if scale != 0 {
+                out.extend_from_slice(value);
+                return Ok(2);
+            }
+            let big = BigInt::from_signed_bytes_le(value);
+            if let Some(v) = big.to_i64() {
+                encode_int(out, true, *varint, *bits, v as i128)?;
+                Ok(1)
+            } else {
+                out.extend_from_slice(value);
+                Ok(2)
+            }
+        }
+        DecimalStorage::Float { storage } => {
+            let big = BigInt::from_signed_bytes_le(value);
+            let float_value = match big.to_f64() {
+                Some(v) => v / 10f64.powi(scale),
+                None => {
+                    out.extend_from_slice(value);
+                    return Ok(2);
+                }
+            };
+            if !float_value.is_finite() {
+                out.extend_from_slice(value);
+                return Ok(2);
+            }
+            let _ = encode_float_with_tag(out, LogicalType::Float64, *storage, float_value)?;
+            Ok(1)
+        }
+    }
 }
 
 fn encode_float_array_f32_with_tag(
@@ -1385,7 +1608,37 @@ fn decode_value_msgpack(
         }
         ColumnEncoding::Timestamp => {
             let secs = zigzag_decode(read_varint(data)?);
-            write_msgpack_timestamp(out, secs, 0)?;
+            let nanos = read_varint(data)? as u32;
+            write_msgpack_timestamp(out, secs, nanos)?;
+        }
+        ColumnEncoding::Decimal {
+            scale,
+            bytes,
+            storage,
+            ..
+        } => {
+            if tag == 2 || matches!(storage, DecimalStorage::Raw) {
+                let raw = decode_decimal_bytes(data, *bytes as usize)?;
+                let text = format_decimal_from_le(raw, *scale);
+                mp::write_str(out, &text)?;
+            } else {
+                match storage {
+                    DecimalStorage::Int { varint, bits } => {
+                        let v = decode_int(data, *varint, *bits)?;
+                        if *scale == 0 {
+                            mp::write_sint(out, v)?;
+                        } else {
+                            let text = format_decimal_i64(v, *scale);
+                            mp::write_str(out, &text)?;
+                        }
+                    }
+                    DecimalStorage::Float { storage } => {
+                        let v = decode_float(data, *storage)?;
+                        mp::write_f64(out, v)?;
+                    }
+                    DecimalStorage::Raw => {}
+                }
+            }
         }
         ColumnEncoding::String { encoding } => {
             let value = if tag == 2 {
@@ -1470,8 +1723,36 @@ fn decode_value_json(
         }
         ColumnEncoding::Timestamp => {
             let secs = zigzag_decode(read_varint(data)?);
-            let formatted = format_iso(IsoFormat::Rfc3339, secs, 0);
+            let nanos = read_varint(data)? as u32;
+            let formatted = format_iso(IsoFormat::Rfc3339, secs, nanos);
             JsonValue::from(formatted)
+        }
+        ColumnEncoding::Decimal {
+            scale,
+            bytes,
+            storage,
+            ..
+        } => {
+            if tag == 2 || matches!(storage, DecimalStorage::Raw) {
+                let raw = decode_decimal_bytes(data, *bytes as usize)?;
+                JsonValue::from(format_decimal_from_le(raw, *scale))
+            } else {
+                match storage {
+                    DecimalStorage::Int { varint, bits } => {
+                        let v = decode_int(data, *varint, *bits)?;
+                        if *scale == 0 {
+                            JsonValue::from(v)
+                        } else {
+                            JsonValue::from(format_decimal_i64(v, *scale))
+                        }
+                    }
+                    DecimalStorage::Float { storage } => {
+                        let v = decode_float(data, *storage)?;
+                        JsonValue::from(v)
+                    }
+                    DecimalStorage::Raw => JsonValue::Null,
+                }
+            }
         }
         ColumnEncoding::String { encoding } => {
             let value = if tag == 2 {
@@ -1656,6 +1937,90 @@ fn decode_bytes<'a>(data: &mut &'a [u8], fixed_len: Option<usize>) -> Result<&'a
     Ok(head)
 }
 
+fn decode_decimal_bytes<'a>(data: &mut &'a [u8], bytes: usize) -> Result<&'a [u8]> {
+    if data.len() < bytes {
+        return Err(anyhow!("rowpack decimal truncated"));
+    }
+    let (head, tail) = data.split_at(bytes);
+    *data = tail;
+    Ok(head)
+}
+
+fn format_decimal_from_le(bytes: &[u8], scale: i32) -> String {
+    let value = BigInt::from_signed_bytes_le(bytes);
+    let negative = value.is_negative();
+    let mut digits = value.abs().to_str_radix(10);
+    if scale <= 0 {
+        let zeros = (-scale) as usize;
+        if zeros > 0 {
+            digits.push_str(&"0".repeat(zeros));
+        }
+        return if negative {
+            format!("-{}", digits)
+        } else {
+            digits
+        };
+    }
+    let scale = scale as usize;
+    if digits.len() <= scale {
+        let pad = scale - digits.len();
+        let mut out = String::with_capacity(scale + 2);
+        if negative {
+            out.push('-');
+        }
+        out.push_str("0.");
+        out.push_str(&"0".repeat(pad));
+        out.push_str(&digits);
+        return out;
+    }
+    let split = digits.len() - scale;
+    let mut out = String::with_capacity(digits.len() + 1);
+    if negative {
+        out.push('-');
+    }
+    out.push_str(&digits[..split]);
+    out.push('.');
+    out.push_str(&digits[split..]);
+    out
+}
+
+fn format_decimal_i64(value: i64, scale: i32) -> String {
+    let negative = value.is_negative();
+    let mut digits = value.abs().to_string();
+    if scale <= 0 {
+        let zeros = (-scale) as usize;
+        if zeros > 0 {
+            digits.push_str(&"0".repeat(zeros));
+        }
+        return if negative {
+            format!("-{}", digits)
+        } else {
+            digits
+        };
+    }
+    let scale = scale as usize;
+    if digits.len() <= scale {
+        let pad = scale - digits.len();
+        let mut out = String::with_capacity(scale + 2);
+        if negative {
+            out.push('-');
+        }
+        out.push_str("0.");
+        out.push_str(&"0".repeat(pad));
+        out.push_str(&digits);
+        return out;
+    }
+    let split = digits.len() - scale;
+    let mut out = String::with_capacity(digits.len() + 1);
+    if negative {
+        out.push('-');
+    }
+    out.push_str(&digits[..split]);
+    out.push('.');
+    out.push_str(&digits[split..]);
+    out
+}
+
 fn decode_string(
     data: &mut &[u8],
     encoding: &StringEncoding,
@@ -1800,6 +2165,16 @@ mod tests {
         }
     }
 
+    fn decimal256_bytes(value: &BigInt) -> [u8; 32] {
+        let bytes = value.to_signed_bytes_le();
+        let fill = if value.is_negative() { 0xff } else { 0x00 };
+        let mut out = [fill; 32];
+        if !bytes.is_empty() {
+            out[..bytes.len()].copy_from_slice(&bytes);
+        }
+        out
+    }
+
     #[test]
     fn roundtrip_basic() {
         let ctx = build_context();
@@ -1810,7 +2185,10 @@ mod tests {
             ValueRef::Bool(true),
             ValueRef::Float32(3.5),
             ValueRef::Bytes(b"hello"),
-            ValueRef::Timestamp(1_700_000_000),
+            ValueRef::Timestamp {
+                secs: 1_700_000_000,
+                nanos: 123_000_000,
+            },
             ValueRef::Float32Array(&[0.1, 0.2, 0.3]),
         ];
         let encoded = encoder.encode_row(&row).unwrap();
@@ -1819,6 +2197,142 @@ mod tests {
         let json = decoder.decode_json(&encoded).unwrap();
         assert!(msg.len() > 0);
         assert!(json.is_object());
+    }
+
+    #[test]
+    fn timestamp_nanos_roundtrip() {
+        let ctx = RowPackContext {
+            version: ROWPACK_VERSION,
+            columns: vec![ColumnContext {
+                name: "ts".to_string(),
+                logical_type: LogicalType::Timestamp,
+                encoding: ColumnEncoding::Timestamp,
+            }],
+        };
+        let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
+        let row = vec![ValueRef::Timestamp {
+            secs: 1_700_000_000,
+            nanos: 123_000_000,
+        }];
+        let encoded = encoder.encode_row(&row).unwrap();
+        let decoder = RowPackDecoder::new(ctx).unwrap();
+        let json = decoder.decode_json(&encoded).unwrap();
+        assert!(json.to_string().contains(".123"));
+    }
+
+    #[test]
+    fn decimal128_roundtrip() {
+        let ctx = RowPackContext {
+            version: ROWPACK_VERSION,
+            columns: vec![ColumnContext {
+                name: "amount".to_string(),
+                logical_type: LogicalType::Decimal128,
+                encoding: ColumnEncoding::Decimal {
+                    precision: 10,
+                    scale: 2,
+                    bytes: 16,
+                    storage: DecimalStorage::Float {
+                        storage: FloatStorage::F64,
+                    },
+                },
+            }],
+        };
+        let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
+        let row = vec![ValueRef::Decimal128(-12345i128)];
+        let encoded = encoder.encode_row(&row).unwrap();
+        let decoder = RowPackDecoder::new(ctx).unwrap();
+        let json = decoder.decode_json(&encoded).unwrap();
+        let JsonValue::Object(map) = json else {
+            panic!("expected object");
+        };
+        assert_eq!(map.get("amount"), Some(&JsonValue::from(-123.45)));
+    }
+
+    #[test]
+    fn decimal256_roundtrip() {
+        let ctx = RowPackContext {
+            version: ROWPACK_VERSION,
+            columns: vec![ColumnContext {
+                name: "amount".to_string(),
+                logical_type: LogicalType::Decimal256,
+                encoding: ColumnEncoding::Decimal {
+                    precision: 50,
+                    scale: 4,
+                    bytes: 32,
+                    storage: DecimalStorage::Float {
+                        storage: FloatStorage::F64,
+                    },
+                },
+            }],
+        };
+        let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
+        let big = BigInt::parse_bytes(b"123456789012345678901234567890", 10).unwrap();
+        let row = vec![ValueRef::Decimal256(decimal256_bytes(&big))];
+        let encoded = encoder.encode_row(&row).unwrap();
+        let decoder = RowPackDecoder::new(ctx).unwrap();
+        let json = decoder.decode_json(&encoded).unwrap();
+        let JsonValue::Object(map) = json else {
+            panic!("expected object");
+        };
+        let value = map
+            .get("amount")
+            .and_then(|v| v.as_f64())
+            .unwrap();
+        assert!(value.is_finite());
+    }
+
+    #[test]
+    fn decimal_lossless_raw_encoding() {
+        let mut config = RowPackConfig::default();
+        config.decimal_allow_lossy = Some(false);
+        let mut builder = RowPackContextBuilder::new(
+            vec![RowPackColumn {
+                name: "amount".to_string(),
+                logical_type: LogicalType::Decimal128,
+                fixed_len: None,
+                precision: Some(10),
+                scale: Some(2),
+            }],
+            config,
+        );
+        builder
+            .observe_row(&[ValueRef::Decimal128(-12345i128)])
+            .unwrap();
+        let ctx = builder.finish().unwrap();
+        match &ctx.columns[0].encoding {
+            ColumnEncoding::Decimal {
+                storage: DecimalStorage::Raw,
+                ..
+            } => {}
+            other => panic!("unexpected encoding: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn decimal_int_encoding_scale_zero() {
+        let mut config = RowPackConfig::default();
+        config.decimal_allow_lossy = Some(true);
+        let mut builder = RowPackContextBuilder::new(
+            vec![RowPackColumn {
+                name: "amount".to_string(),
+                logical_type: LogicalType::Decimal128,
+                fixed_len: None,
+                precision: Some(10),
+                scale: Some(0),
+            }],
+            config,
+        );
+        builder
+            .observe_row(&[ValueRef::Decimal128(12345i128)])
+            .unwrap();
+        let ctx = builder.finish().unwrap();
+        match &ctx.columns[0].encoding {
+            ColumnEncoding::Decimal {
+                storage: DecimalStorage::Int { .. },
+                ..
+            } => {}
+            other => panic!("unexpected encoding: {:?}", other),
+        }
     }
 
     #[test]
@@ -1831,7 +2345,7 @@ mod tests {
             ValueRef::Bool(false),
             ValueRef::Float32(1.0),
             ValueRef::Bytes(b"data"),
-            ValueRef::Timestamp(0),
+            ValueRef::Timestamp { secs: 0, nanos: 0 },
             ValueRef::Float32Array(&[]),
         ];
         let encoded = encoder.encode_row(&row).unwrap();
@@ -1847,6 +2361,8 @@ mod tests {
                 name: "ts".to_string(),
                 logical_type: LogicalType::String,
                 fixed_len: None,
+                precision: None,
+                scale: None,
             }],
             RowPackConfig::default(),
         );
@@ -1869,6 +2385,8 @@ mod tests {
                 name: "hex".to_string(),
                 logical_type: LogicalType::String,
                 fixed_len: None,
+                precision: None,
+                scale: None,
             }],
             RowPackConfig::default(),
         );
@@ -1891,6 +2409,8 @@ mod tests {
                 name: "hex".to_string(),
                 logical_type: LogicalType::String,
                 fixed_len: None,
+                precision: None,
+                scale: None,
             }],
             RowPackConfig::default(),
         );
@@ -1913,6 +2433,8 @@ mod tests {
                 name: "hex".to_string(),
                 logical_type: LogicalType::String,
                 fixed_len: None,
+                precision: None,
+                scale: None,
             }],
             RowPackConfig::default(),
         );
@@ -1935,6 +2457,8 @@ mod tests {
                 name: "hex".to_string(),
                 logical_type: LogicalType::String,
                 fixed_len: None,
+                precision: None,
+                scale: None,
             }],
             RowPackConfig::default(),
         );
@@ -2007,6 +2531,8 @@ mod tests {
                 name: "embed".to_string(),
                 logical_type: LogicalType::Float32Array,
                 fixed_len: None,
+                precision: None,
+                scale: None,
             }],
             RowPackConfig::default(),
         );
@@ -2037,6 +2563,8 @@ mod tests {
                 name: "score".to_string(),
                 logical_type: LogicalType::Float32,
                 fixed_len: None,
+                precision: None,
+                scale: None,
             }],
             config,
         );
@@ -2212,6 +2740,8 @@ mod tests {
                 name: "ts".to_string(),
                 logical_type: LogicalType::String,
                 fixed_len: None,
+                precision: None,
+                scale: None,
             }],
             RowPackConfig::default(),
         );
@@ -2240,6 +2770,8 @@ mod tests {
                 name: "ts".to_string(),
                 logical_type: LogicalType::String,
                 fixed_len: None,
+                precision: None,
+                scale: None,
             }],
             RowPackConfig::default(),
         );
@@ -2274,6 +2806,8 @@ mod tests {
                 name: "text".to_string(),
                 logical_type: LogicalType::String,
                 fixed_len: None,
+                precision: None,
+                scale: None,
             }],
             config,
         );
@@ -2305,6 +2839,8 @@ mod tests {
                 name: "text".to_string(),
                 logical_type: LogicalType::String,
                 fixed_len: None,
+                precision: None,
+                scale: None,
             }],
             config,
         );

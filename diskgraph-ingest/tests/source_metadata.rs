@@ -13,11 +13,15 @@ fn base_table(name: &str) -> TableSpec {
                 name: "id".into(),
                 dtype: ColumnType::Int64,
                 fixed_len: None,
+                precision: None,
+                scale: None,
             },
             ColumnSpec {
                 name: "name".into(),
                 dtype: ColumnType::String,
                 fixed_len: Some(8),
+                precision: None,
+                scale: None,
             },
         ],
         primary_key: Some("id".into()),
@@ -71,6 +75,8 @@ fn validate_missing_pk_column() {
                 name: "name".into(),
                 dtype: ColumnType::String,
                 fixed_len: Some(8),
+                precision: None,
+                scale: None,
             }],
             primary_key: Some("id".into()),
             create_time: None,
@@ -119,6 +125,8 @@ fn validate_duplicate_column_names() {
         name: "id".into(),
         dtype: ColumnType::Int64,
         fixed_len: None,
+        precision: None,
+        scale: None,
     });
     assert_err_contains(meta, "table User has duplicate column id");
 }
@@ -155,6 +163,71 @@ fn validate_create_time_invalid_type() {
 }
 
 #[test]
+fn validate_decimal_missing_precision() {
+    let mut meta = base_metadata();
+    meta.tables[0].columns.push(ColumnSpec {
+        name: "amount".into(),
+        dtype: ColumnType::Decimal128,
+        fixed_len: None,
+        precision: None,
+        scale: Some(2),
+    });
+    assert_err_contains(meta, "missing precision");
+}
+
+#[test]
+fn validate_decimal_missing_scale() {
+    let mut meta = base_metadata();
+    meta.tables[0].columns.push(ColumnSpec {
+        name: "amount".into(),
+        dtype: ColumnType::Decimal128,
+        fixed_len: None,
+        precision: Some(10),
+        scale: None,
+    });
+    assert_err_contains(meta, "missing scale");
+}
+
+#[test]
+fn validate_decimal_precision_out_of_range() {
+    let mut meta = base_metadata();
+    meta.tables[0].columns.push(ColumnSpec {
+        name: "amount".into(),
+        dtype: ColumnType::Decimal128,
+        fixed_len: None,
+        precision: Some(50),
+        scale: Some(2),
+    });
+    assert_err_contains(meta, "precision out of range");
+}
+
+#[test]
+fn validate_decimal_scale_out_of_range() {
+    let mut meta = base_metadata();
+    meta.tables[0].columns.push(ColumnSpec {
+        name: "amount".into(),
+        dtype: ColumnType::Decimal128,
+        fixed_len: None,
+        precision: Some(10),
+        scale: Some(20),
+    });
+    assert_err_contains(meta, "scale out of range");
+}
+
+#[test]
+fn validate_decimal_precision_on_non_decimal() {
+    let mut meta = base_metadata();
+    meta.tables[0].columns.push(ColumnSpec {
+        name: "bad".into(),
+        dtype: ColumnType::Int64,
+        fixed_len: None,
+        precision: Some(10),
+        scale: None,
+    });
+    assert_err_contains(meta, "precision/scale only valid for decimal");
+}
+
+#[test]
 fn validate_edge_fk_missing_column() {
     let mut meta = base_metadata();
     meta.tables.push(TableSpec {
@@ -165,6 +238,8 @@ fn validate_edge_fk_missing_column() {
             name: "src_id".into(),
             dtype: ColumnType::Int64,
             fixed_len: None,
+            precision: None,
+            scale: None,
         }],
         primary_key: None,
         create_time: None,
@@ -198,11 +273,15 @@ fn validate_edge_fk_missing_table() {
                 name: "src_id".into(),
                 dtype: ColumnType::Int64,
                 fixed_len: None,
+                precision: None,
+                scale: None,
             },
             ColumnSpec {
                 name: "dst_id".into(),
                 dtype: ColumnType::Int64,
                 fixed_len: None,
+                precision: None,
+                scale: None,
             },
         ],
         primary_key: None,
@@ -238,11 +317,15 @@ fn validate_edge_fk_not_pk() {
                 name: "src_id".into(),
                 dtype: ColumnType::Int64,
                 fixed_len: None,
+                precision: None,
+                scale: None,
             },
             ColumnSpec {
                 name: "dst_id".into(),
                 dtype: ColumnType::Int64,
                 fixed_len: None,
+                precision: None,
+                scale: None,
             },
         ],
         primary_key: None,

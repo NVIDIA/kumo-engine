@@ -111,4 +111,11 @@ Rowpack is resilient by design. Unsupported or unexpected values:
 - decode to best-effort types when reading.
 
 It only errors on structural corruption (invalid tags, truncated payloads).
+### Timestamps
+- Encoded as `(secs, nanos)` varints for full unit fidelity.
+- Parquet timestamp units (s/ms/us/ns) are normalized at ingest; timezones are accepted and normalized to UTC on output.
 
+### Decimals
+- Stored as fixed-width two’s-complement bytes (16 for Decimal128, 32 for Decimal256) when lossless is required.
+- By default, decimals use integer encoding when `scale == 0` and float encoding when `scale != 0` (lossy).
+- Set `decimal_allow_lossy: false` to always store lossless raw bytes.

@@ -16,6 +16,7 @@ diskgraph-core = { path = "../diskgraph-core" }
 diskgraph-fs = { path = "../diskgraph-fs" }
 diskgraph-rowpack = { path = "../diskgraph-rowpack" }
 arrow-array = "57.1.0"
+arrow-buffer = "57.1.0"
 arrow-schema = "57.1.0"
 arrow-csv = "57.1.0"
 parquet = { version = "57.1.0", features = ["arrow"] }
@@ -25,6 +26,8 @@ url = "2"
 tempfile = "3"
 seahash = "4.1"
 base64 = "0.22"
+num-bigint = "0.4"
+num-traits = "0.2"
 clap = { version = "4.4", features = ["derive"] }
 indicatif = "0.17"
 pprof = { version = "0.13", features = ["flamegraph", "prost-codec"] }

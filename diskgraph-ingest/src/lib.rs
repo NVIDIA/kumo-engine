@@ -19,6 +19,7 @@ use diskgraph_fs::{
 use diskgraph_rowpack::{
     LogicalType as RowpackType, RowPackConfig, RowPackContextBuilder, RowPackEncoder, ValueRef,
 };
+use num_traits::Signed;
 use object_store::{path::Path as ObjectPath, ObjectStore, WriteMultipart};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::arrow::ArrowWriter;
@@ -1582,6 +1583,32 @@ fn table_schema(table: &TableSpec) -> Result<Schema> {
             ColumnType::Bytes => DataType::Binary,
             ColumnType::Date => DataType::Date32,
             ColumnType::Timestamp => DataType::Timestamp(arrow_schema::TimeUnit::Second, None),
+            ColumnType::Decimal128 => {
+                let precision = col
+                    .precision
+                    .ok_or_else(|| anyhow!("decimal128 column {} missing precision", col.name))?;
+                let scale = col
+                    .scale
+                    .ok_or_else(|| anyhow!("decimal128 column {} missing scale", col.name))?;
+                let precision = u8::try_from(precision)
+                    .map_err(|_| anyhow!("decimal128 column {} precision out of range", col.name))?;
+                let scale =
+                    i8::try_from(scale).map_err(|_| anyhow!("decimal128 column {} scale out of range", col.name))?;
+                DataType::Decimal128(precision, scale)
+            }
+            ColumnType::Decimal256 => {
+                let precision = col
+                    .precision
+                    .ok_or_else(|| anyhow!("decimal256 column {} missing precision", col.name))?;
+                let scale = col
+                    .scale
+                    .ok_or_else(|| anyhow!("decimal256 column {} missing scale", col.name))?;
+                let precision = u8::try_from(precision)
+                    .map_err(|_| anyhow!("decimal256 column {} precision out of range", col.name))?;
+                let scale =
+                    i8::try_from(scale).map_err(|_| anyhow!("decimal256 column {} scale out of range", col.name))?;
+                DataType::Decimal256(precision, scale)
+            }
             ColumnType::Float32Array => DataType::List(Arc::new(Field::new(
                 "item",
                 DataType::Float32,
@@ -1624,6 +1651,8 @@ fn rowpack_columns(table: &TableSpec) -> Result<Vec<diskgraph_rowpack::RowPackCo
             ColumnType::Bytes => RowpackType::Bytes,
             ColumnType::Date => RowpackType::Date,
             ColumnType::Timestamp => RowpackType::Timestamp,
+            ColumnType::Decimal128 => RowpackType::Decimal128,
+            ColumnType::Decimal256 => RowpackType::Decimal256,
             ColumnType::Float32Array => RowpackType::Float32Array,
             ColumnType::Float64Array => RowpackType::Float64Array,
         };
@@ -1631,6 +1660,8 @@ fn rowpack_columns(table: &TableSpec) -> Result<Vec<diskgraph_rowpack::RowPackCo
             name: col.name.clone(),
             logical_type: dtype,
             fixed_len: col.fixed_len,
+            precision: col.precision,
+            scale: col.scale,
         });
     }
     Ok(columns)
@@ -1901,11 +1932,22 @@ fn row_values_from_row<'a>(
                 values.push(ValueRef::Date(arr.value(row.row)));
             }
             ColumnType::Timestamp => {
+                let (secs, nanos) = timestamp_parts_from_array(array, row.row)?;
+                values.push(ValueRef::Timestamp { secs, nanos });
+            }
+            ColumnType::Decimal128 => {
                 let arr = array
                     .as_any()
-                    .downcast_ref::<arrow_array::TimestampSecondArray>()
-                    .ok_or_else(|| anyhow!("timestamp cast"))?;
-                values.push(ValueRef::Timestamp(arr.value(row.row)));
+                    .downcast_ref::<arrow_array::Decimal128Array>()
+                    .ok_or_else(|| anyhow!("decimal128 cast"))?;
+                values.push(ValueRef::Decimal128(arr.value(row.row)));
+            }
+            ColumnType::Decimal256 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Decimal256Array>()
+                    .ok_or_else(|| anyhow!("decimal256 cast"))?;
+                values.push(ValueRef::Decimal256(arr.value(row.row).to_le_bytes()));
             }
             ColumnType::Float32Array => {
                 let list = array
@@ -2050,11 +2092,28 @@ fn value_from_array(array: &ArrayRef, row: usize) -> Result<JsonValue> {
             Ok(JsonValue::from(arr.value(row)))
         }
         DataType::Timestamp(_, _) => {
+            let (secs, _) = timestamp_parts_from_array(array, row)?;
+            Ok(JsonValue::from(secs))
+        }
+        DataType::Decimal128(_, scale) => {
             let arr = array
                 .as_any()
-                .downcast_ref::<arrow_array::TimestampSecondArray>()
-                .ok_or_else(|| anyhow!("timestamp cast"))?;
-            Ok(JsonValue::from(arr.value(row)))
+                .downcast_ref::<arrow_array::Decimal128Array>()
+                .ok_or_else(|| anyhow!("decimal128 cast"))?;
+            Ok(JsonValue::from(decimal_to_string_i128(
+                arr.value(row),
+                i32::from(*scale),
+            )))
+        }
+        DataType::Decimal256(_, scale) => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::Decimal256Array>()
+                .ok_or_else(|| anyhow!("decimal256 cast"))?;
+            Ok(JsonValue::from(decimal_to_string_i256(
+                arr.value(row),
+                i32::from(*scale),
+            )))
         }
         DataType::List(_) => {
             let arr = array
@@ -2071,6 +2130,100 @@ fn value_from_array(array: &ArrayRef, row: usize) -> Result<JsonValue> {
         }
         _ => Err(anyhow!("unsupported array type")),
     }
+}
+
+fn timestamp_parts_from_array(array: &ArrayRef, row: usize) -> Result<(i64, u32)> {
+    let unit = match array.data_type() {
+        DataType::Timestamp(unit, _) => *unit,
+        _ => return Err(anyhow!("timestamp type mismatch")),
+    };
+    match unit {
+        arrow_schema::TimeUnit::Second => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::TimestampSecondArray>()
+                .ok_or_else(|| anyhow!("timestamp second cast"))?;
+            Ok((arr.value(row), 0))
+        }
+        arrow_schema::TimeUnit::Millisecond => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::TimestampMillisecondArray>()
+                .ok_or_else(|| anyhow!("timestamp millisecond cast"))?;
+            let value = arr.value(row);
+            let secs = value.div_euclid(1_000);
+            let millis = value.rem_euclid(1_000) as u32;
+            Ok((secs, millis * 1_000_000))
+        }
+        arrow_schema::TimeUnit::Microsecond => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::TimestampMicrosecondArray>()
+                .ok_or_else(|| anyhow!("timestamp microsecond cast"))?;
+            let value = arr.value(row);
+            let secs = value.div_euclid(1_000_000);
+            let micros = value.rem_euclid(1_000_000) as u32;
+            Ok((secs, micros * 1_000))
+        }
+        arrow_schema::TimeUnit::Nanosecond => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::TimestampNanosecondArray>()
+                .ok_or_else(|| anyhow!("timestamp nanosecond cast"))?;
+            let value = arr.value(row);
+            let secs = value.div_euclid(1_000_000_000);
+            let nanos = value.rem_euclid(1_000_000_000) as u32;
+            Ok((secs, nanos))
+        }
+    }
+}
+
+fn decimal_to_string_i128(value: i128, scale: i32) -> String {
+    let big = num_bigint::BigInt::from(value);
+    format_decimal_from_bigint(&big, scale)
+}
+
+fn decimal_to_string_i256(value: arrow_buffer::i256, scale: i32) -> String {
+    let bytes = value.to_le_bytes();
+    let big = num_bigint::BigInt::from_signed_bytes_le(&bytes);
+    format_decimal_from_bigint(&big, scale)
+}
+
+fn format_decimal_from_bigint(value: &num_bigint::BigInt, scale: i32) -> String {
+    let negative = value.is_negative();
+    let mut digits = value.abs().to_str_radix(10);
+    if scale <= 0 {
+        let zeros = (-scale) as usize;
+        if zeros > 0 {
+            digits.push_str(&"0".repeat(zeros));
+        }
+        return if negative {
+            format!("-{}", digits)
+        } else {
+            digits
+        };
+    }
+    let scale = scale as usize;
+    if digits.len() <= scale {
+        let pad = scale - digits.len();
+        let mut out = String::with_capacity(scale + 2);
+        if negative {
+            out.push('-');
+        }
+        out.push_str("0.");
+        out.push_str(&"0".repeat(pad));
+        out.push_str(&digits);
+        return out;
+    }
+    let split = digits.len() - scale;
+    let mut out = String::with_capacity(digits.len() + 1);
+    if negative {
+        out.push('-');
+    }
+    out.push_str(&digits[..split]);
+    out.push('.');
+    out.push_str(&digits[split..]);
+    out
 }
 
 
