@@ -225,13 +225,20 @@ fn keys_equal(a: &Key, b: &Key) -> bool {
 
 fn hash_key(key: &Key) -> u64 {
     match key {
-        Key::Int(v) => seahash::hash(&v.to_le_bytes()),
+        Key::Int(v) => hash_int(*v),
         Key::Bytes(v) => {
             let mut hasher = SeaHasher::new();
             hasher.write(v);
             hasher.finish()
         }
     }
+}
+
+fn hash_int(mut v: u64) -> u64 {
+    v = v.wrapping_add(0x9E3779B97F4A7C15);
+    v = (v ^ (v >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+    v = (v ^ (v >> 27)).wrapping_mul(0x94D049BB133111EB);
+    v ^ (v >> 31)
 }
 
 fn next_pow2(value: usize) -> usize {

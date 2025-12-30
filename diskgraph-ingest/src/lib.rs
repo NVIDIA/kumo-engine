@@ -23,7 +23,7 @@ use parquet::file::properties::WriterProperties;
 use parquet::file::reader::FileReader;
 use pprof::protos::Message;
 use pprof::ProfilerGuard;
-use rmp_serde::encode::to_vec_named;
+use rmp::encode::{write_array_len, write_bool, write_f32, write_f64, write_map_len, write_nil, write_sint, write_str, write_uint};
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 use std::fs;
@@ -38,8 +38,8 @@ use base64::Engine;
 pub use mapping::MappingKind;
 pub use source_metadata::SourceMetadata;
 
-const NODE_BATCH_SIZE: usize = 50_000;
-const EDGE_BATCH_SIZE: usize = 200_000;
+const NODE_BATCH_SIZE: usize = 100_000;
+const EDGE_BATCH_SIZE: usize = 400_000;
 const ZSTD_DICT_SAMPLE_LIMIT: usize = 50_000;
 const ZSTD_DICT_SAMPLE_BYTES: usize = 8 * 1024 * 1024;
 const PROGRESS_STEP: u64 = 10_000;
@@ -788,8 +788,8 @@ impl IngestContext {
                             emit_progress_advance(&progress, &progress_key, delta);
                         }
                     }
-                    forward_records.sort_by(edge_record_cmp);
-                    reverse_records.sort_by(edge_record_cmp);
+                    forward_records.sort_unstable_by(edge_record_cmp);
+                    reverse_records.sort_unstable_by(edge_record_cmp);
                     write_edge_records_to(
                         &target,
                         &format!("edge_{}_src_to_dst", table.name),
@@ -1072,7 +1072,7 @@ fn write_node_data_to(
     let mut writer = ArrowWriter::try_new(sink, Arc::new(schema.clone()), Some(props))?;
     let mut batch = Vec::with_capacity(NODE_BATCH_SIZE);
     let mut compressor = if let Some(dict) = dict {
-        Some(zstd::bulk::Compressor::with_dictionary(0, dict)?)
+        Some(zstd::bulk::Compressor::with_dictionary(-5, dict)?)
     } else {
         None
     };
@@ -1505,6 +1505,10 @@ fn collect_samples(table: &TableSpec) -> Result<Vec<Vec<u8>>> {
 }
 
 fn for_each_row(table: &TableSpec, mut f: impl FnMut(&RowView) -> Result<()>) -> Result<()> {
+    let mut name_to_index = HashMap::with_capacity(table.columns.len());
+    for (idx, col) in table.columns.iter().enumerate() {
+        name_to_index.insert(col.name.clone(), idx);
+    }
     let schema = table_schema(table)?;
     let mut global_row = 0u64;
     for path in &table.paths {
@@ -1520,8 +1524,21 @@ fn for_each_row(table: &TableSpec, mut f: impl FnMut(&RowView) -> Result<()>) ->
                 let reader = builder.with_batch_size(NODE_BATCH_SIZE).build()?;
                 for batch in reader {
                     let batch = batch?;
+                    let mut cols = Vec::with_capacity(table.columns.len());
+                    for col in &table.columns {
+                        let idx = batch
+                            .schema()
+                            .index_of(&col.name)
+                            .context("missing column in batch")?;
+                        cols.push(batch.column(idx).clone());
+                    }
                     for row in 0..batch.num_rows() {
-                        let row_view = RowView::new(&batch, table, row, global_row)?;
+                        let row_view = RowView {
+                            row,
+                            row_id: global_row,
+                            cols: &cols,
+                            name_to_index: &name_to_index,
+                        };
                         f(&row_view)?;
                         global_row += 1;
                     }
@@ -1535,8 +1552,21 @@ fn for_each_row(table: &TableSpec, mut f: impl FnMut(&RowView) -> Result<()>) ->
                 let reader = builder.build(file)?;
                 for batch in reader {
                     let batch = batch?;
+                    let mut cols = Vec::with_capacity(table.columns.len());
+                    for col in &table.columns {
+                        let idx = batch
+                            .schema()
+                            .index_of(&col.name)
+                            .context("missing column in batch")?;
+                        cols.push(batch.column(idx).clone());
+                    }
                     for row in 0..batch.num_rows() {
-                        let row_view = RowView::new(&batch, table, row, global_row)?;
+                        let row_view = RowView {
+                            row,
+                            row_id: global_row,
+                            cols: &cols,
+                            name_to_index: &name_to_index,
+                        };
                         f(&row_view)?;
                         global_row += 1;
                     }
@@ -1578,29 +1608,22 @@ fn table_schema(table: &TableSpec) -> Result<Schema> {
     Ok(Schema::new(fields))
 }
 
-struct RowView {
+struct RowView<'a> {
     row: usize,
     row_id: u64,
-    cols: HashMap<String, ArrayRef>,
+    cols: &'a [ArrayRef],
+    name_to_index: &'a HashMap<String, usize>,
 }
 
-impl RowView {
-    fn new(batch: &RecordBatch, table: &TableSpec, row: usize, row_id: u64) -> Result<Self> {
-        let mut cols = HashMap::new();
-        for col in &table.columns {
-            let idx = batch
-                .schema()
-                .index_of(&col.name)
-                .context("missing column in batch")?;
-            cols.insert(col.name.clone(), batch.column(idx).clone());
-        }
-        Ok(Self { row, row_id, cols })
-    }
-
+impl<'a> RowView<'a> {
     fn get_value(&self, name: &str) -> Result<JsonValue> {
+        let idx = self
+            .name_to_index
+            .get(name)
+            .ok_or_else(|| anyhow!("missing column {}", name))?;
         let col = self
             .cols
-            .get(name)
+            .get(*idx)
             .ok_or_else(|| anyhow!("missing column {}", name))?;
         value_from_array(col, self.row)
     }
@@ -1616,13 +1639,13 @@ impl RowView {
     }
 
     fn to_msgpack(&self, table: &TableSpec) -> Result<Vec<u8>> {
-        let mut map = serde_json::Map::with_capacity(table.columns.len());
-        for col in &table.columns {
-            let value = self.get_value(&col.name)?;
-            map.insert(col.name.clone(), value);
+        let mut out = Vec::with_capacity(table.columns.len() * 32);
+        write_map_len(&mut out, table.columns.len() as u32)?;
+        for (idx, col) in table.columns.iter().enumerate() {
+            write_str(&mut out, &col.name)?;
+            encode_value(&self.cols[idx], self.row, &mut out)?;
         }
-        let value = JsonValue::Object(map);
-        Ok(to_vec_named(&value)?)
+        Ok(out)
     }
 }
 
@@ -1723,6 +1746,106 @@ fn value_from_array(array: &ArrayRef, row: usize) -> Result<JsonValue> {
         }
         _ => Err(anyhow!("unsupported array type")),
     }
+}
+
+fn encode_value(array: &ArrayRef, row: usize, out: &mut Vec<u8>) -> Result<()> {
+    if array.is_null(row) {
+        write_nil(out)?;
+        return Ok(());
+    }
+    match array.data_type() {
+        DataType::Int64 => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::Int64Array>()
+                .ok_or_else(|| anyhow!("int64 cast"))?;
+            write_sint(out, arr.value(row))?;
+        }
+        DataType::Int32 => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::Int32Array>()
+                .ok_or_else(|| anyhow!("int32 cast"))?;
+            write_sint(out, arr.value(row) as i64)?;
+        }
+        DataType::UInt64 => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::UInt64Array>()
+                .ok_or_else(|| anyhow!("uint64 cast"))?;
+            write_uint(out, arr.value(row))?;
+        }
+        DataType::UInt32 => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::UInt32Array>()
+                .ok_or_else(|| anyhow!("uint32 cast"))?;
+            write_uint(out, arr.value(row) as u64)?;
+        }
+        DataType::Float64 => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::Float64Array>()
+                .ok_or_else(|| anyhow!("float64 cast"))?;
+            write_f64(out, arr.value(row))?;
+        }
+        DataType::Float32 => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::Float32Array>()
+                .ok_or_else(|| anyhow!("float32 cast"))?;
+            write_f32(out, arr.value(row))?;
+        }
+        DataType::Boolean => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::BooleanArray>()
+                .ok_or_else(|| anyhow!("bool cast"))?;
+            write_bool(out, arr.value(row))?;
+        }
+        DataType::Utf8 => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::StringArray>()
+                .ok_or_else(|| anyhow!("string cast"))?;
+            write_str(out, arr.value(row))?;
+        }
+        DataType::Binary => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::BinaryArray>()
+                .ok_or_else(|| anyhow!("binary cast"))?;
+            let encoded = BASE64.encode(arr.value(row));
+            write_str(out, &encoded)?;
+        }
+        DataType::Date32 => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::Date32Array>()
+                .ok_or_else(|| anyhow!("date cast"))?;
+            write_sint(out, arr.value(row) as i64)?;
+        }
+        DataType::Timestamp(_, _) => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::TimestampSecondArray>()
+                .ok_or_else(|| anyhow!("timestamp cast"))?;
+            write_sint(out, arr.value(row))?;
+        }
+        DataType::List(_) => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::ListArray>()
+                .ok_or_else(|| anyhow!("list cast"))?;
+            let values = arr.value(row);
+            write_array_len(out, values.len() as u32)?;
+            for i in 0..values.len() {
+                encode_value(&values, i, out)?;
+            }
+        }
+        _ => return Err(anyhow!("unsupported array type")),
+    }
+    Ok(())
 }
 
 fn table_rows(ctx: &IngestContext, name: &str) -> u64 {

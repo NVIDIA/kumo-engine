@@ -24,6 +24,7 @@ url = "2"
 tempfile = "3"
 zstd = "0.13"
 rmp-serde = "1"
+rmp = "0.8"
 seahash = "4.1"
 base64 = "0.22"
 clap = { version = "4.4", features = ["derive"] }
