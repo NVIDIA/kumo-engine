@@ -83,7 +83,7 @@ Varint uses zigzag for signed values; fixed width uses little-endian.
 Rowpack detects and chooses the most efficient strategy:
 
 - **Dictionary**: for categorical columns; dictionary entries stored in context.
-- **Alphabet**: for short strings with a small character set and high coverage (up to the snappy long-string threshold, default 64 bytes).
+- **Alphabet**: for short strings with a small character set and high coverage (up to the snappy long-string threshold, default 128 bytes); length is varint-prefixed.
 - **Numeric**: for strings that are numeric (optional leading `-`, optional decimal point).
 - **Hex**: for UUIDs / hex IDs (upper or lower case per column).
 - **ISO timestamp**: encodes to int64 micros, tolerates non-ISO via fallback.
@@ -128,6 +128,14 @@ Rowpack decodes into:
 Rowpack is resilient by design. Unsupported or unexpected values:
 - are encoded with fallback tags when writing,
 - decode to best-effort types when reading.
+
+## Context inspection utility
+
+Use the built-in inspector to print a `.ctx` file summary:
+
+```bash
+cargo run -p diskgraph-rowpack --bin rowpack_ctx_inspect -- /path/to/node_data.ctx
+```
 
 It only errors on structural corruption (invalid tags, truncated payloads).
 ### Timestamps

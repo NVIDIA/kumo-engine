@@ -58,7 +58,7 @@ impl Default for RowPackConfig {
             max_dict_bytes_per_col: Some(1_000_000),
             max_dict_entries: Some(50_000),
             string_dict_coverage: Some(0.7),
-            string_long_min_len: Some(64),
+            string_long_min_len: Some(128),
             string_long_min_ratio: Some(0.85),
             string_iso_threshold: Some(0.85),
             enable_float16: Some(true),
@@ -108,7 +108,7 @@ impl RowPackConfig {
     }
 
     fn string_long_min_len(&self) -> usize {
-        self.string_long_min_len.unwrap_or(64)
+        self.string_long_min_len.unwrap_or(128)
     }
 
     fn string_long_min_ratio(&self) -> f32 {
