@@ -83,7 +83,7 @@ Varint uses zigzag for signed values; fixed width uses little-endian.
 Rowpack detects and chooses the most efficient strategy:
 
 - **Dictionary**: for categorical columns; dictionary entries stored in context.
-- **Alphabet**: for short strings with a small character set and high coverage (up to the snappy long-string threshold, default 128 bytes); length is varint-prefixed.
+- **Alphabet**: for short strings with a small character set and high coverage (up to 64 distinct chars, and up to the snappy long-string threshold, default 128 bytes); length is varint-prefixed.
 - **BPE**: for strings with repeated substrings; uses a column dictionary of common byte sequences and encodes as token streams.
 - **Numeric**: for strings that are numeric (optional leading `-`, optional decimal point).
 - **Hex**: for UUIDs / hex IDs (upper or lower case per column).
@@ -141,7 +141,7 @@ cargo run -p diskgraph-rowpack --bin rowpack_ctx_inspect -- /path/to/node_data.c
 
 ## BPE defaults
 
-- `bpe_max_dict_entries`: 4096
+- `bpe_max_dict_entries`: 256
 - `bpe_max_dict_bytes`: 1_000_000
 - `bpe_max_samples`: 5_000
 

@@ -14,7 +14,7 @@ use hashbrown::HashMap;
 const ROWPACK_VERSION: u8 = 2;
 const MAX_FIELD_BYTES: usize = 8 * 1024 * 1024;
 const MAX_ARRAY_LEN: usize = 1_000_000;
-const ALPHABET_MAX_CHARS: usize = 32;
+const ALPHABET_MAX_CHARS: usize = 64;
 const ALPHABET_MIN_COVERAGE: f32 = 0.95;
 const NUMERIC_MIN_COVERAGE: f32 = 0.98;
 const MAX_NUMERIC_SCALE: u32 = 38;
@@ -30,6 +30,7 @@ struct AlphabetMap {
 struct BpeTrie {
     next: Vec<[i32; 256]>,
     value: Vec<Option<u16>>,
+    dict_len: usize,
 }
 
 impl BpeTrie {
@@ -54,7 +55,11 @@ impl BpeTrie {
             }
             value[node] = Some(256u16 + idx as u16);
         }
-        Self { next, value }
+        Self {
+            next,
+            value,
+            dict_len: dict.len(),
+        }
     }
 }
 
@@ -99,7 +104,7 @@ impl Default for RowPackConfig {
             max_dict_bytes_per_col: Some(1_000_000),
             max_dict_entries: Some(50_000),
             bpe_max_dict_bytes: Some(1_000_000),
-            bpe_max_dict_entries: Some(4096),
+            bpe_max_dict_entries: Some(256),
             bpe_max_samples: Some(5_000),
             bpe_min_gain_ratio: Some(0.95),
             bpe_min_avg_len: Some(12),
@@ -468,6 +473,34 @@ impl<'a> BitReader<'a> {
         Ok(out)
     }
 
+    fn read_bits_u32(&mut self, bits: u8) -> Result<u32> {
+        if bits > 32 {
+            return Err(anyhow!("rowpack bit width too large"));
+        }
+        let mut out = 0u32;
+        let mut offset = 0u8;
+        let mut remaining = bits;
+        while remaining > 0 {
+            if self.used == 8 {
+                if self.idx >= self.buf.len() {
+                    return Err(anyhow!("rowpack bitstream truncated"));
+                }
+                self.cur = self.buf[self.idx];
+                self.idx += 1;
+                self.used = 0;
+            }
+            let avail = 8 - self.used;
+            let take = remaining.min(avail);
+            let mask = (1u16 << take) - 1;
+            let chunk = (self.cur >> self.used) & mask as u8;
+            out |= (chunk as u32) << offset;
+            self.used += take;
+            remaining -= take;
+            offset += take;
+        }
+        Ok(out)
+    }
+
     fn align_to_byte(&mut self) {
         if self.used != 0 && self.used < 8 {
             self.used = 8;
@@ -788,7 +821,12 @@ fn estimate_column_bytes(encoding: &ColumnEncoding, stats: &ColumnStats) -> usiz
             }
             StringEncoding::Bpe { .. } => {
                 let avg = avg_len(stats.string_bytes, stats.string_total);
-                varint_bytes_u64(avg as u64) + (varint_bytes_u64(256) * 4)
+                let bits = bpe_token_bits(match encoding {
+                    StringEncoding::Bpe { dict } => dict.len(),
+                    _ => 0,
+                }) as usize;
+                let packed = ((avg * bits) + 7) / 8;
+                varint_bytes_u64(avg as u64) + packed
             }
             StringEncoding::NumericInt => varint_bytes(64),
             StringEncoding::NumericScaled => varint_bytes(64) + varint_bytes(16),
@@ -1474,19 +1512,17 @@ fn train_bpe_dict(samples: &[Vec<u8>], max_entries: usize, max_bytes: usize) -> 
         }
     }
     let mut dict_counts = vec![0usize; dict_entries.len()];
-    let mut index_map = Vec::with_capacity(symbols.len());
-    for idx in 0..symbols.len() {
-        if idx < 256 {
-            index_map.push(None);
-        } else {
-            index_map.push(Some(idx - 256));
-        }
-    }
-    for seq in &sequences {
-        for &sym in seq {
-            if let Some(entry_idx) = index_map.get(sym as usize).and_then(|v| *v) {
-                if let Some(count) = dict_counts.get_mut(entry_idx) {
-                    *count += 1;
+    if !dict_entries.is_empty() {
+        let trie = BpeTrie::from_dict(&dict_entries);
+        let mut tokens = Vec::new();
+        for sample in samples {
+            tokenize_bpe(sample, &trie, &mut tokens);
+            for token in tokens.iter().copied() {
+                if token >= 256 {
+                    let idx = (token - 256) as usize;
+                    if let Some(count) = dict_counts.get_mut(idx) {
+                        *count += 1;
+                    }
                 }
             }
         }
@@ -2359,9 +2395,8 @@ fn encode_string_with_tag(
             };
             tokenize_bpe(bytes, trie, tokens);
             write_varint(tokens.len() as u64, out);
-            for token in tokens.iter().copied() {
-                write_varint(token as u64, out);
-            }
+            let bits = bpe_token_bits(trie.dict_len);
+            write_tokens_packed(out, tokens, bits);
             Ok(1)
         }
         StringEncoding::NumericInt => {
@@ -2434,12 +2469,37 @@ fn alphabet_bits(len: usize) -> u8 {
     }
 }
 
+fn bpe_token_bits(dict_len: usize) -> u8 {
+    let space = 256usize.saturating_add(dict_len);
+    alphabet_bits(space.max(1))
+}
+
 fn write_alphabet_packed(out: &mut Vec<u8>, bytes: &[u8], map: &[i16; 256], bits: u8) {
     let mut cur: u64 = 0;
     let mut used: u8 = 0;
     for b in bytes {
         let idx = map[*b as usize] as u64;
         cur |= idx << used;
+        used = used.saturating_add(bits);
+        while used >= 8 {
+            out.push(cur as u8);
+            cur >>= 8;
+            used -= 8;
+        }
+    }
+    if used > 0 {
+        out.push(cur as u8);
+    }
+}
+
+fn write_tokens_packed(out: &mut Vec<u8>, tokens: &[u32], bits: u8) {
+    if bits == 0 {
+        return;
+    }
+    let mut cur: u64 = 0;
+    let mut used: u8 = 0;
+    for token in tokens.iter().copied() {
+        cur |= (token as u64) << used;
         used = used.saturating_add(bits);
         while used >= 8 {
             out.push(cur as u8);
@@ -2505,14 +2565,14 @@ fn estimate_bpe_bytes(samples: &[Vec<u8>], dict: &[Vec<u8>]) -> u64 {
         return u64::MAX;
     }
     let trie = BpeTrie::from_dict(dict);
+    let bits = bpe_token_bits(dict.len()) as usize;
     let mut tokens = Vec::new();
     let mut total = 0u64;
     for sample in samples {
         tokenize_bpe(sample, &trie, &mut tokens);
         total += varint_bytes_u64(tokens.len() as u64) as u64;
-        for token in &tokens {
-            total += varint_bytes_u64(*token as u64) as u64;
-        }
+        let packed = ((tokens.len() * bits) + 7) / 8;
+        total += packed as u64;
     }
     total
 }
@@ -3230,9 +3290,18 @@ fn decode_string(
             if token_count > MAX_ARRAY_LEN {
                 return Err(anyhow!("rowpack bpe token count too large"));
             }
+            let bits = bpe_token_bits(dict.len());
+            let total_bits = token_count.saturating_mul(bits as usize);
+            let byte_len = (total_bits + 7) / 8;
+            if data.len() < byte_len {
+                return Err(anyhow!("rowpack bpe truncated"));
+            }
+            let (head, tail) = data.split_at(byte_len);
+            *data = tail;
+            let mut reader = BitReader::new(head);
             let mut out = Vec::new();
             for _ in 0..token_count {
-                let token = read_varint(data)? as usize;
+                let token = reader.read_bits_u32(bits)? as usize;
                 if token < 256 {
                     out.push(token as u8);
                 } else {
@@ -3941,7 +4010,9 @@ mod tests {
         tags.write_bits(1, 2);
         let mut row = tags.finish();
         write_varint(1, &mut row);
-        write_varint(256 + 10, &mut row);
+        let tokens = vec![256 + 10];
+        let bits = bpe_token_bits(1);
+        write_tokens_packed(&mut row, &tokens, bits);
         let err = decoder.decode_json(&row).unwrap_err();
         assert!(err.to_string().contains("bpe token out of range"));
     }
@@ -3968,6 +4039,164 @@ mod tests {
         write_varint((MAX_ARRAY_LEN as u64) + 1, &mut row);
         let err = decoder.decode_json(&row).unwrap_err();
         assert!(err.to_string().contains("bpe token count too large"));
+    }
+
+    fn encode_string_size(encoding: StringEncoding, value: &str) -> usize {
+        let ctx = RowPackContext {
+            version: ROWPACK_VERSION,
+            columns: vec![ColumnContext {
+                name: "code".to_string(),
+                logical_type: LogicalType::String,
+                encoding: ColumnEncoding::String { encoding },
+            }],
+        estimated_row_bytes: 0,
+        };
+        let encoder = RowPackEncoder::new(ctx).unwrap();
+        let row = vec![ValueRef::String(value)];
+        let encoded = encoder.encode_row(&row).unwrap();
+        encoded.len()
+    }
+
+    #[test]
+    fn alphabet_beats_bpe_on_iso_timestamps() {
+        let samples = vec![
+            "2024-01-05T03:24:15Z",
+            "2024-02-11T14:09:26Z",
+            "2024-03-19T22:58:01Z",
+            "2024-04-07T08:03:44Z",
+            "2024-05-23T16:47:10Z",
+            "2024-06-30T01:11:59Z",
+            "2024-07-02T12:35:22Z",
+            "2024-08-14T19:00:05Z",
+            "2024-09-28T05:42:33Z",
+            "2024-10-31T23:59:59Z",
+        ];
+        let mut alpha_config = RowPackConfig::default();
+        alpha_config.max_dict_entries = Some(0);
+        alpha_config.bpe_max_dict_entries = Some(0);
+        alpha_config.bpe_max_dict_bytes = Some(0);
+        alpha_config.string_iso_threshold = Some(2.0);
+        let alphabet_encoding = build_string_encoding(&samples, alpha_config);
+        let StringEncoding::Alphabet { alphabet } = alphabet_encoding else {
+            panic!("expected alphabet encoding");
+        };
+        let bpe_config = RowPackConfig::default();
+        let bpe_dict = train_bpe_dict(
+            &samples.iter().map(|s| s.as_bytes().to_vec()).collect::<Vec<_>>(),
+            bpe_config.bpe_max_dict_entries(),
+            bpe_config.bpe_max_dict_bytes(),
+        );
+        for value in samples {
+            let alpha_size = encode_string_size(
+                StringEncoding::Alphabet {
+                    alphabet: alphabet.clone(),
+                },
+                value,
+            );
+            let bpe_size = encode_string_size(
+                StringEncoding::Bpe {
+                    dict: bpe_dict.clone(),
+                },
+                value,
+            );
+            assert!(
+                alpha_size < bpe_size,
+                "alphabet size {} not smaller than bpe size {} for {}",
+                alpha_size,
+                bpe_size,
+                value
+            );
+            assert!(
+                alpha_size < value.len(),
+                "alphabet size {} not smaller than raw size {} for {}",
+                alpha_size,
+                value.len(),
+                value
+            );
+        }
+    }
+
+    #[test]
+    fn bpe_beats_alphabet_on_english_sentences() {
+        let samples = vec![
+            "We left early for the concert and found a quiet seat near the aisle before the crowd arrived.",
+            "The pilot announced a smooth flight, and the cabin lights dimmed as everyone settled in.",
+            "She organized the pantry by date and labeled each jar so cooking would be quicker later.",
+            "A soft breeze moved through the trees while the hikers checked the map and shared water.",
+            "The mechanic explained the repair clearly, then showed the worn part to avoid confusion.",
+            "We wrote a short update for the team and included a timeline for the next review.",
+            "His sketchbook held dozens of city scenes, each capturing traffic, shadows, and street noise.",
+            "The festival opened at noon, and vendors arranged colorful tents along the main walkway.",
+            "She practiced the presentation aloud, adjusting pacing so each section felt balanced.",
+            "The museum tour ended with a restored mural that had been hidden behind the wall.",
+        ];
+        let mut alpha_config = RowPackConfig::default();
+        alpha_config.max_dict_entries = Some(0);
+        alpha_config.bpe_max_dict_entries = Some(0);
+        alpha_config.bpe_max_dict_bytes = Some(0);
+        alpha_config.string_iso_threshold = Some(2.0);
+        let alphabet_encoding = build_string_encoding(&samples, alpha_config);
+        let StringEncoding::Alphabet { alphabet } = alphabet_encoding else {
+            panic!("expected alphabet encoding");
+        };
+        let bpe_dict = train_bpe_dict(
+            &samples.iter().map(|s| s.as_bytes().to_vec()).collect::<Vec<_>>(),
+            256,
+            32 * 1024,
+        );
+        assert!(!bpe_dict.is_empty(), "expected bpe dict to be non-empty");
+        let mut total_alpha = 0usize;
+        let mut total_bpe = 0usize;
+        for value in samples {
+            let alpha_size = encode_string_size(
+                StringEncoding::Alphabet {
+                    alphabet: alphabet.clone(),
+                },
+                value,
+            );
+            let bpe_size = encode_string_size(
+                StringEncoding::Bpe {
+                    dict: bpe_dict.clone(),
+                },
+                value,
+            );
+            total_alpha += alpha_size;
+            total_bpe += bpe_size;
+            assert!(
+                bpe_size < value.len(),
+                "bpe size {} not smaller than raw size {} for {}",
+                bpe_size,
+                value.len(),
+                value
+            );
+        }
+        assert!(
+            total_bpe < total_alpha,
+            "bpe total {} not smaller than alphabet total {}",
+            total_bpe,
+            total_alpha
+        );
+    }
+
+    fn build_string_encoding(samples: &[&str], config: RowPackConfig) -> StringEncoding {
+        let mut builder = RowPackContextBuilder::new(
+            vec![RowPackColumn {
+                name: "code".to_string(),
+                logical_type: LogicalType::String,
+                fixed_len: None,
+                precision: None,
+                scale: None,
+            }],
+            config,
+        );
+        for value in samples {
+            builder.observe_row(&[ValueRef::String(value)]).unwrap();
+        }
+        let ctx = builder.finish().unwrap();
+        let ColumnEncoding::String { encoding } = ctx.columns[0].encoding.clone() else {
+            panic!("expected string encoding");
+        };
+        encoding
     }
 
     #[test]
