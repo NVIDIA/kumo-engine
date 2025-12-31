@@ -1324,6 +1324,48 @@ fn print_source_schema(source: &SourceMetadataReport) {
             );
         }
     }
+    let edge_tables: Vec<_> = source
+        .tables
+        .iter()
+        .filter_map(|table| table.edge_table.as_ref().map(|edge| (table, edge)))
+        .collect();
+    if !edge_tables.is_empty() {
+        println!("  Edge table relationships:");
+        for (table, edge) in edge_tables {
+            let src_col = table.columns.iter().find(|c| c.name == edge.src_fk.column);
+            let dst_col = table.columns.iter().find(|c| c.name == edge.dst_fk.column);
+            let src_desc = src_col.map(format_column).unwrap_or_else(|| "unknown".to_string());
+            let dst_desc = dst_col.map(format_column).unwrap_or_else(|| "unknown".to_string());
+            let src_ref_col = source
+                .tables
+                .iter()
+                .find(|t| t.name == edge.src_fk.ref_table)
+                .and_then(|t| t.columns.iter().find(|c| c.name == edge.src_fk.ref_column));
+            let dst_ref_col = source
+                .tables
+                .iter()
+                .find(|t| t.name == edge.dst_fk.ref_table)
+                .and_then(|t| t.columns.iter().find(|c| c.name == edge.dst_fk.ref_column));
+            let src_ref_desc =
+                src_ref_col.map(format_column).unwrap_or_else(|| "unknown".to_string());
+            let dst_ref_desc =
+                dst_ref_col.map(format_column).unwrap_or_else(|| "unknown".to_string());
+            println!(
+                "    {}: src {} ({}) -> {}.{} ({}); dst {} ({}) -> {}.{} ({})",
+                table.name,
+                edge.src_fk.column,
+                src_desc,
+                edge.src_fk.ref_table,
+                edge.src_fk.ref_column,
+                src_ref_desc,
+                edge.dst_fk.column,
+                dst_desc,
+                edge.dst_fk.ref_table,
+                edge.dst_fk.ref_column,
+                dst_ref_desc
+            );
+        }
+    }
 }
 
 fn format_fk(table: &TableSpecReport, fk: &ForeignKeySpecReport) -> String {
