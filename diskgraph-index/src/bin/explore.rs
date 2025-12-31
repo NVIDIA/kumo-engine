@@ -928,7 +928,7 @@ fn build_from_local_dataset(
 fn repl(reader: Arc<GraphIndexReader>, default_table: String, index_root: PathBuf) -> Result<()> {
     let mut rl = DefaultEditor::new().context("init editor")?;
     let mut current_table = default_table;
-    println!("Commands: tables | use <table> | info | node <id> | formats | benchmark <threads> [duration] | benchmarkall <threads> [duration] | quit");
+    println!("Commands: tables | use <table> | info | node <id> | formats | ingest | schema | benchmark <threads> [duration] | benchmarkall <threads> [duration] | quit");
     loop {
         match rl.readline("explore> ") {
             Ok(line) => {
@@ -960,6 +960,14 @@ fn repl(reader: Arc<GraphIndexReader>, default_table: String, index_root: PathBu
                 }
                 if trimmed.eq_ignore_ascii_case("formats") {
                     print_formats(reader.metadata(), &index_root)?;
+                    continue;
+                }
+                if trimmed.eq_ignore_ascii_case("ingest") {
+                    print_ingest_stats(&index_root)?;
+                    continue;
+                }
+                if trimmed.eq_ignore_ascii_case("schema") {
+                    print_source_schema_only(&index_root)?;
                     continue;
                 }
                 if let Some(rest) = trimmed.strip_prefix("node ") {
@@ -1043,7 +1051,7 @@ fn repl(reader: Arc<GraphIndexReader>, default_table: String, index_root: PathBu
                     continue;
                 }
                 println!(
-                    "Unknown command. Use: tables | use <table> | info | node <id> | formats | benchmark <threads> [duration] | benchmarkall <threads> [duration] | quit"
+                    "Unknown command. Use: tables | use <table> | info | node <id> | formats | ingest | schema | benchmark <threads> [duration] | benchmarkall <threads> [duration] | quit"
                 );
             }
             Err(ReadlineError::Interrupted) | Err(ReadlineError::Eof) => break,
@@ -1124,19 +1132,28 @@ fn print_formats(metadata: &DatasetMetadata, root: &Path) -> Result<()> {
             println!("  Node data: none");
         }
     }
+    Ok(())
+}
 
+fn print_ingest_stats(root: &Path) -> Result<()> {
     if let Some(report) = read_ingest_report(root)? {
         print_ingest_report(&report);
     } else {
-        println!();
         println!("Ingest stats: ingest_stats.json not found");
     }
-
     if let Some(report) = read_build_report(root)? {
         print_build_report(&report);
     } else {
-        println!();
         println!("Build stats: build_stats.json not found");
+    }
+    Ok(())
+}
+
+fn print_source_schema_only(root: &Path) -> Result<()> {
+    if let Some(report) = read_ingest_report(root)? {
+        print_source_schema(&report.source);
+    } else {
+        println!("Source schema: ingest_stats.json not found");
     }
     Ok(())
 }
