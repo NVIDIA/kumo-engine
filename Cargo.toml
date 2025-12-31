@@ -6,6 +6,7 @@ members = [
     "diskgraph-index",
     "diskgraph-fs",
     "diskgraph-rowpack",
+    "diskgraph-infer",
 ]
 resolver = "2"
 
