@@ -860,8 +860,15 @@ fn infer_foreign_keys(
     notes: &mut Vec<String>,
 ) {
     let mut table_map = HashMap::new();
+    let mut pk_name_map: HashMap<String, Vec<&TableSpec>> = HashMap::new();
     for table in tables {
         table_map.insert(table.name.to_lowercase(), table);
+        if let Some(pk) = &table.primary_key {
+            pk_name_map
+                .entry(pk.to_lowercase())
+                .or_default()
+                .push(table);
+        }
     }
     for table in tables {
         let table_pk = table.primary_key.as_deref();
@@ -873,6 +880,20 @@ fn infer_foreign_keys(
             }
             if table_pk == Some(col.name.as_str()) {
                 continue;
+            }
+            if let Some(dest_tables) = pk_name_map.get(&col_name) {
+                if let Some(best) =
+                    choose_best_fk_dest(table, col, dest_tables, &table_tokens, notes)
+                {
+                    rels.push(RelationshipSpec {
+                        name: None,
+                        src_table: table.name.clone(),
+                        src_column: col.name.clone(),
+                        dst_table: best.0,
+                        dst_column: best.1,
+                    });
+                    continue;
+                }
             }
             let mut best: Option<(String, String, i32)> = None;
             let mut tie = false;
@@ -952,6 +973,56 @@ fn infer_foreign_keys(
             }
         }
     }
+}
+
+fn choose_best_fk_dest(
+    src_table: &TableSpec,
+    src_col: &ColumnSpec,
+    dest_tables: &[&TableSpec],
+    src_tokens: &[String],
+    notes: &mut Vec<String>,
+) -> Option<(String, String)> {
+    let mut best: Option<(String, String, i32, usize)> = None;
+    let mut tie = false;
+    for dest_table in dest_tables {
+        let pk = match &dest_table.primary_key {
+            Some(pk) => pk,
+            None => continue,
+        };
+        if let Some(pk_col) = dest_table.columns.iter().find(|c| c.name == *pk) {
+            if !compatible_key_columns(src_col, pk_col) {
+                notes.push(format!(
+                    "skipped foreign key {}.{} -> {} (incompatible key types)",
+                    src_table.name, src_col.name, dest_table.name
+                ));
+                continue;
+            }
+            let dest_tokens = normalized_tokens(&dest_table.name);
+            let col_tokens = normalized_column_tokens(&src_col.name.to_lowercase());
+            let score = token_overlap_score(src_tokens, &col_tokens, &dest_tokens, &src_table.name);
+            let name_len = dest_table.name.len();
+            match &best {
+                Some((_, _, best_score, best_len))
+                    if score == *best_score && name_len == *best_len =>
+                {
+                    tie = true;
+                }
+                Some((_, _, best_score, best_len))
+                    if score < *best_score
+                        || (score == *best_score && name_len > *best_len) => {}
+                _ => {
+                    best = Some((
+                        dest_table.name.clone(),
+                        pk.clone(),
+                        score,
+                        name_len,
+                    ));
+                    tie = false;
+                }
+            }
+        }
+    }
+    best.and_then(|(name, pk, _score, _len)| if tie { None } else { Some((name, pk)) })
 }
 
 fn is_key_like_name(name: &str) -> bool {
@@ -1761,6 +1832,183 @@ mod tests {
         );
         infer_primary_keys(std::slice::from_mut(&mut t));
         assert_eq!(t.primary_key.as_deref(), Some("hadm_id"));
+    }
+
+    #[test]
+    fn infer_fk_prefers_shorter_table_on_tie() {
+        let tables = vec![
+            TableSpec {
+                name: "poe".to_string(),
+                format: TableFormat::Csv,
+                paths: vec![],
+                columns: vec![ColumnSpec {
+                    name: "poe_id".to_string(),
+                    dtype: ColumnType::String,
+                    fixed_len: None,
+                    key_mode: None,
+                    precision: None,
+                    scale: None,
+                }],
+                primary_key: Some("poe_id".to_string()),
+                create_time: None,
+                weight: None,
+                edge_table: None,
+                rowpack: None,
+            },
+            TableSpec {
+                name: "poe_detail".to_string(),
+                format: TableFormat::Csv,
+                paths: vec![],
+                columns: vec![ColumnSpec {
+                    name: "poe_id".to_string(),
+                    dtype: ColumnType::String,
+                    fixed_len: None,
+                    key_mode: None,
+                    precision: None,
+                    scale: None,
+                }],
+                primary_key: Some("poe_id".to_string()),
+                create_time: None,
+                weight: None,
+                edge_table: None,
+                rowpack: None,
+            },
+            TableSpec {
+                name: "emar".to_string(),
+                format: TableFormat::Csv,
+                paths: vec![],
+                columns: vec![ColumnSpec {
+                    name: "poe_id".to_string(),
+                    dtype: ColumnType::String,
+                    fixed_len: None,
+                    key_mode: None,
+                    precision: None,
+                    scale: None,
+                }],
+                primary_key: None,
+                create_time: None,
+                weight: None,
+                edge_table: None,
+                rowpack: None,
+            },
+        ];
+        let mut rels = Vec::new();
+        let mut notes = Vec::new();
+        infer_foreign_keys(&tables, &mut rels, &mut notes);
+        assert_eq!(rels.len(), 1);
+        assert_eq!(rels[0].dst_table, "poe");
+    }
+
+    #[test]
+    fn infer_fk_exact_pk_name_match() {
+        let tables = vec![
+            TableSpec {
+                name: "admits".to_string(),
+                format: TableFormat::Csv,
+                paths: vec![],
+                columns: vec![ColumnSpec {
+                    name: "hadm_id".to_string(),
+                    dtype: ColumnType::Int64,
+                    fixed_len: None,
+                    key_mode: None,
+                    precision: None,
+                    scale: None,
+                }],
+                primary_key: Some("hadm_id".to_string()),
+                create_time: None,
+                weight: None,
+                edge_table: None,
+                rowpack: None,
+            },
+            TableSpec {
+                name: "services".to_string(),
+                format: TableFormat::Csv,
+                paths: vec![],
+                columns: vec![ColumnSpec {
+                    name: "hadm_id".to_string(),
+                    dtype: ColumnType::Int64,
+                    fixed_len: None,
+                    key_mode: None,
+                    precision: None,
+                    scale: None,
+                }],
+                primary_key: None,
+                create_time: None,
+                weight: None,
+                edge_table: None,
+                rowpack: None,
+            },
+        ];
+        let mut rels = Vec::new();
+        let mut notes = Vec::new();
+        infer_foreign_keys(&tables, &mut rels, &mut notes);
+        assert_eq!(rels.len(), 1);
+        assert_eq!(rels[0].dst_table, "admits");
+    }
+
+    #[test]
+    fn infer_fk_itemid_prefers_lab_table() {
+        let tables = vec![
+            TableSpec {
+                name: "d_items".to_string(),
+                format: TableFormat::Csv,
+                paths: vec![],
+                columns: vec![ColumnSpec {
+                    name: "itemid".to_string(),
+                    dtype: ColumnType::Int64,
+                    fixed_len: None,
+                    key_mode: None,
+                    precision: None,
+                    scale: None,
+                }],
+                primary_key: Some("itemid".to_string()),
+                create_time: None,
+                weight: None,
+                edge_table: None,
+                rowpack: None,
+            },
+            TableSpec {
+                name: "d_lab".to_string(),
+                format: TableFormat::Csv,
+                paths: vec![],
+                columns: vec![ColumnSpec {
+                    name: "itemid".to_string(),
+                    dtype: ColumnType::Int64,
+                    fixed_len: None,
+                    key_mode: None,
+                    precision: None,
+                    scale: None,
+                }],
+                primary_key: Some("itemid".to_string()),
+                create_time: None,
+                weight: None,
+                edge_table: None,
+                rowpack: None,
+            },
+            TableSpec {
+                name: "labevents".to_string(),
+                format: TableFormat::Csv,
+                paths: vec![],
+                columns: vec![ColumnSpec {
+                    name: "itemid".to_string(),
+                    dtype: ColumnType::Int64,
+                    fixed_len: None,
+                    key_mode: None,
+                    precision: None,
+                    scale: None,
+                }],
+                primary_key: None,
+                create_time: None,
+                weight: None,
+                edge_table: None,
+                rowpack: None,
+            },
+        ];
+        let mut rels = Vec::new();
+        let mut notes = Vec::new();
+        infer_foreign_keys(&tables, &mut rels, &mut notes);
+        assert_eq!(rels.len(), 1);
+        assert_eq!(rels[0].dst_table, "d_lab");
     }
 
     #[test]
