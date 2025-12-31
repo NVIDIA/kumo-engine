@@ -780,78 +780,78 @@ fn parse_timestamp(value: &str) -> Option<NaiveDateTime> {
 }
 
 fn infer_primary_keys(tables: &mut [TableSpec]) {
+    let mut freq = HashMap::new();
+    for table in tables.iter() {
+        for col in &table.columns {
+            if !is_pk_dtype(&col.dtype) {
+                continue;
+            }
+            let lower = col.name.to_lowercase();
+            if is_key_like_name(&lower) {
+                *freq.entry(lower).or_insert(0usize) += 1;
+            }
+        }
+    }
+
     for table in tables.iter_mut() {
         if table.primary_key.is_some() {
             continue;
         }
-        let candidates = primary_key_candidates(table);
-        if let Some(pk) = candidates.first() {
-            table.primary_key = Some(pk.clone());
-        }
-    }
-}
-
-fn primary_key_candidates(table: &TableSpec) -> Vec<String> {
-    let name = table.name.to_lowercase();
-    let singular = singularize(&name);
-    let bases = table_name_bases(&name);
-    let tokens = table_name_tokens(&name);
-    let mut candidates = Vec::new();
-    let cols: Vec<String> = table.columns.iter().map(|c| c.name.to_lowercase()).collect();
-    let id_like_cols: Vec<String> = cols
-        .iter()
-        .filter(|c| c.ends_with("_id") || c.ends_with("id"))
-        .cloned()
-        .collect();
-    let mut pk_cols = Vec::new();
-    let allow_loose = id_like_cols.len() == 1;
-    let mut token_matches = Vec::new();
-    for col in &table.columns {
-        if !is_pk_dtype(&col.dtype) {
-            continue;
-        }
-        let lower = col.name.to_lowercase();
-        if lower == "id" || lower == "uuid" || lower == "pk" {
-            pk_cols.push(col.name.clone());
-        }
-        if lower == format!("{}_id", singular) || lower == format!("{}_id", name) {
-            pk_cols.push(col.name.clone());
-        }
-        if lower == format!("{}id", singular) {
-            pk_cols.push(col.name.clone());
-        }
-        if allow_loose {
-            for base in &bases {
-                if lower == format!("{}_id", base) {
-                    pk_cols.push(col.name.clone());
+        let mut best: Option<(String, i32)> = None;
+        let mut tie = false;
+        let table_tokens = normalized_tokens(&table.name);
+        let key_like_cols: Vec<String> = table
+            .columns
+            .iter()
+            .filter(|col| is_pk_dtype(&col.dtype))
+            .map(|col| col.name.to_lowercase())
+            .filter(|name| is_key_like_name(name))
+            .collect();
+        let has_many_key_like = key_like_cols.len() > 2;
+        let require_strong_for_small = key_like_cols.len() >= 2 && table.columns.len() <= 3;
+        for col in &table.columns {
+            if !is_pk_dtype(&col.dtype) {
+                continue;
+            }
+            let lower = col.name.to_lowercase();
+            if !is_key_like_name(&lower) {
+                continue;
+            }
+            if has_composite_code_version(&lower, &table.columns) {
+                continue;
+            }
+            let count = *freq.get(&lower).unwrap_or(&usize::MAX) as i32;
+            if count <= 0 {
+                continue;
+            }
+            let mut score = 1000 / count;
+            if is_strong_pk_match(&table.name, &lower) {
+                score += 12;
+            } else if has_many_key_like {
+                continue;
+            } else if require_strong_for_small {
+                continue;
+            }
+            if column_matches_tokens(&lower, &table_tokens) {
+                score += 3;
+            }
+            match &best {
+                Some((_, best_score)) if score == *best_score => {
+                    tie = true;
+                }
+                Some((_, best_score)) if score < *best_score => {}
+                _ => {
+                    best = Some((col.name.clone(), score));
+                    tie = false;
                 }
             }
         }
-        if tokens
-            .iter()
-            .any(|token| lower == format!("{}_id", token))
-        {
-            token_matches.push(col.name.clone());
-        }
-    }
-    if token_matches.len() == 1 {
-        pk_cols.push(token_matches[0].clone());
-    }
-    if !pk_cols.is_empty() {
-        pk_cols.sort();
-        pk_cols.dedup();
-        candidates.extend(pk_cols);
-    } else {
-        if cols.iter().any(|c| c == "id") {
-            candidates.push("id".to_string());
-        } else if id_like_cols.len() == 1 {
-            if let Some(col) = table.columns.iter().find(|c| c.name.to_lowercase() == id_like_cols[0])
-            {
-                candidates.push(col.name.clone());
+        if let Some((pk, _)) = best {
+            if !tie {
+                table.primary_key = Some(pk);
             }
         }
     }
-    candidates
 }
 
 fn infer_foreign_keys(
@@ -864,49 +864,234 @@ fn infer_foreign_keys(
         table_map.insert(table.name.to_lowercase(), table);
     }
     for table in tables {
+        let table_pk = table.primary_key.as_deref();
+        let table_tokens = normalized_tokens(&table.name);
         for col in &table.columns {
             let col_name = col.name.to_lowercase();
-            if !col_name.ends_with("_id") && !col_name.ends_with("id") {
+            if !is_key_like_name(&col_name) {
                 continue;
             }
+            if table_pk == Some(col.name.as_str()) {
+                continue;
+            }
+            let mut best: Option<(String, String, i32)> = None;
+            let mut tie = false;
             for (dest_name, dest_table) in &table_map {
-                if dest_name == &table.name.to_lowercase() {
+                let pk = match &dest_table.primary_key {
+                    Some(pk) => pk,
+                    None => continue,
+                };
+                let pk_lower = pk.to_lowercase();
+                let mut matches = col_name == pk_lower;
+                if !matches && pk_lower != "id" {
+                    matches = col_name.ends_with(&format!("_{}", pk_lower));
+                }
+                if !matches {
                     continue;
                 }
-                let candidates = table_name_fk_candidates(dest_name);
-                if candidates.iter().any(|c| c == &col_name) {
-                    if let Some(pk) = &dest_table.primary_key {
-                        if let Some(pk_col) = dest_table.columns.iter().find(|c| c.name == *pk) {
-                            if compatible_key_columns(col, pk_col) {
-                                rels.push(RelationshipSpec {
-                                    name: None,
-                                    src_table: table.name.clone(),
-                                    src_column: col.name.clone(),
-                                    dst_table: dest_table.name.clone(),
-                                    dst_column: pk.clone(),
-                                });
-                            } else {
-                                notes.push(format!(
-                                    "skipped foreign key {}.{} -> {} (incompatible key types)",
-                                    table.name, col.name, dest_table.name
-                                ));
-                            }
-                        } else {
-                            notes.push(format!(
-                                "skipped foreign key {}.{} -> {} (pk column not found)",
-                                table.name, col.name, dest_table.name
-                            ));
-                        }
-                    } else {
+                if let Some(pk_col) = dest_table.columns.iter().find(|c| c.name == *pk) {
+                    if !compatible_key_columns(col, pk_col) {
                         notes.push(format!(
-                            "skipped foreign key {}.{} -> {} (no primary key inferred)",
+                            "skipped foreign key {}.{} -> {} (incompatible key types)",
                             table.name, col.name, dest_table.name
                         ));
+                        continue;
                     }
+                    let dest_tokens = normalized_tokens(dest_name);
+                    let col_tokens = normalized_column_tokens(&col_name);
+                    let score =
+                        token_overlap_score(&table_tokens, &col_tokens, &dest_tokens, &table.name);
+                    match &best {
+                        Some((_, _, best_score)) if score == *best_score => {
+                            tie = true;
+                        }
+                        Some((_, _, best_score)) if score < *best_score => {}
+                        _ => {
+                            best = Some((
+                                dest_table.name.clone(),
+                                pk.clone(),
+                                score,
+                            ));
+                            tie = false;
+                        }
+                    }
+                } else {
+                    notes.push(format!(
+                        "skipped foreign key {}.{} -> {} (pk column not found)",
+                        table.name, col.name, dest_table.name
+                    ));
+                }
+            }
+            if let Some((dest_table, dest_pk, _)) = best {
+                if !tie {
+                    rels.push(RelationshipSpec {
+                        name: None,
+                        src_table: table.name.clone(),
+                        src_column: col.name.clone(),
+                        dst_table: dest_table,
+                        dst_column: dest_pk,
+                    });
                 }
             }
         }
     }
+}
+
+fn is_key_like_name(name: &str) -> bool {
+    name == "id"
+        || name == "uuid"
+        || name == "pk"
+        || name == "code"
+        || name == "key"
+        || name.ends_with("_id")
+        || name.ends_with("id")
+        || name.ends_with("_cd")
+        || name.ends_with("_code")
+        || name.ends_with("_key")
+}
+
+fn normalized_tokens(name: &str) -> Vec<String> {
+    let mut tokens: Vec<String> = name
+        .split('_')
+        .filter_map(|part| {
+            if part.is_empty() {
+                None
+            } else {
+                Some(part.to_string())
+            }
+        })
+        .collect();
+    if tokens.len() > 1 && tokens[0].len() <= 2 {
+        tokens.remove(0);
+    }
+    let mut out = Vec::new();
+    for token in tokens {
+        let lower = token.to_lowercase();
+        if lower == "id" || lower == "code" || lower == "key" {
+            continue;
+        }
+        out.push(lower.clone());
+        out.push(singularize(&lower));
+    }
+    out.retain(|t| !t.is_empty());
+    out.sort();
+    out.dedup();
+    out
+}
+
+fn normalized_column_tokens(name: &str) -> Vec<String> {
+    let mut tokens: Vec<String> = name
+        .split('_')
+        .filter_map(|part| {
+            if part.is_empty() {
+                None
+            } else {
+                Some(part.to_string())
+            }
+        })
+        .collect();
+    let mut out = Vec::new();
+    for token in tokens.drain(..) {
+        let mut lower = token.to_lowercase();
+        if lower == "id" || lower == "code" || lower == "key" {
+            continue;
+        }
+        if let Some(stripped) = lower.strip_suffix("id") {
+            if stripped.len() >= 2 {
+                lower = stripped.to_string();
+            }
+        } else if let Some(stripped) = lower.strip_suffix("code") {
+            if stripped.len() >= 2 {
+                lower = stripped.to_string();
+            }
+        } else if let Some(stripped) = lower.strip_suffix("cd") {
+            if stripped.len() >= 2 {
+                lower = stripped.to_string();
+            }
+        } else if let Some(stripped) = lower.strip_suffix("key") {
+            if stripped.len() >= 2 {
+                lower = stripped.to_string();
+            }
+        }
+        out.push(lower.clone());
+        out.push(singularize(&lower));
+    }
+    out.retain(|t| !t.is_empty());
+    out.sort();
+    out.dedup();
+    out
+}
+
+fn token_overlap_score(
+    source: &[String],
+    column: &[String],
+    dest: &[String],
+    source_name: &str,
+) -> i32 {
+    let source_lower = source_name.to_lowercase();
+    let mut score = 0;
+    for token in dest {
+        if source.binary_search(token).is_ok() {
+            score += 3;
+        }
+        if source_lower.starts_with(token) {
+            score += 4;
+        } else if source_lower.contains(token) {
+            score += 2;
+        }
+        if column.binary_search(token).is_ok() {
+            score += 2;
+        }
+    }
+    score
+}
+
+fn matches_table_key(table_name: &str, col_lower: &str) -> bool {
+    let name = table_name.to_lowercase();
+    let singular = singularize(&name);
+    col_lower == format!("{}_id", name)
+        || col_lower == format!("{}_id", singular)
+        || col_lower == format!("{}id", singular)
+}
+
+fn is_strong_pk_match(table_name: &str, col_lower: &str) -> bool {
+    if col_lower == "id" || col_lower == "uuid" || col_lower == "pk" {
+        return true;
+    }
+    if matches_table_key(table_name, col_lower) {
+        return true;
+    }
+    let name = table_name.to_lowercase().replace('_', "");
+    let singular = singularize(&name);
+    let col_compact = col_lower.replace('_', "");
+    if col_compact == name || col_compact == singular {
+        return true;
+    }
+    let tokens = normalized_tokens(table_name);
+    tokens
+        .iter()
+        .filter(|t| t.len() >= 3)
+        .any(|t| {
+            col_lower == format!("{}_id", t)
+                || col_lower == format!("{}_code", t)
+                || col_lower == format!("{}_cd", t)
+        })
+}
+
+fn column_matches_tokens(col_lower: &str, tokens: &[String]) -> bool {
+    for token in tokens {
+        if col_lower.contains(token) {
+            return true;
+        }
+    }
+    false
+}
+
+fn has_composite_code_version(candidate: &str, columns: &[ColumnSpec]) -> bool {
+    let Some(prefix) = candidate.strip_suffix("_code") else {
+        return false;
+    };
+    columns.iter().any(|col| col.name.to_lowercase() == format!("{}_version", prefix))
 }
 
 fn compatible_key_columns(a: &ColumnSpec, b: &ColumnSpec) -> bool {
@@ -1038,52 +1223,6 @@ fn singularize(name: &str) -> String {
     name.to_string()
 }
 
-fn table_name_bases(name: &str) -> Vec<String> {
-    let parts: Vec<&str> = name.split('_').collect();
-    let mut bases = Vec::new();
-    if let Some(last) = parts.last() {
-        bases.push(singularize(last));
-        bases.push(last.to_string());
-    }
-    let filtered: Vec<&str> = parts
-        .iter()
-        .copied()
-        .filter(|p| !matches!(*p, "train" | "test" | "data" | "dataset"))
-        .collect();
-    if let Some(last) = filtered.last() {
-        bases.push(singularize(last));
-        bases.push(last.to_string());
-    }
-    bases.sort();
-    bases.dedup();
-    bases
-}
-
-fn table_name_tokens(name: &str) -> Vec<String> {
-    let mut tokens = Vec::new();
-    for part in name.split('_') {
-        tokens.push(part.to_string());
-        tokens.push(singularize(part));
-    }
-    tokens.retain(|t| !t.is_empty());
-    tokens.sort();
-    tokens.dedup();
-    tokens
-}
-
-fn table_name_fk_candidates(name: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let singular = singularize(name);
-    out.push(format!("{}_id", name));
-    out.push(format!("{}_id", singular));
-    for base in table_name_bases(name) {
-        out.push(format!("{}_id", base));
-    }
-    out.sort();
-    out.dedup();
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1158,14 +1297,14 @@ mod tests {
                 format: TableFormat::Csv,
                 paths: vec![],
                 columns: vec![ColumnSpec {
-                    name: "id".to_string(),
+                    name: "user_id".to_string(),
                     dtype: ColumnType::Int64,
                     fixed_len: None,
                     key_mode: None,
                     precision: None,
                     scale: None,
                 }],
-                primary_key: Some("id".to_string()),
+                primary_key: Some("user_id".to_string()),
                 create_time: None,
                 weight: None,
                 edge_table: None,
@@ -1206,14 +1345,14 @@ mod tests {
                 format: TableFormat::Csv,
                 paths: vec![],
                 columns: vec![ColumnSpec {
-                    name: "id".to_string(),
+                    name: "device_id".to_string(),
                     dtype: ColumnType::Bytes,
                     fixed_len: Some(16),
                     key_mode: Some(KeyMode::Fixed),
                     precision: None,
                     scale: None,
                 }],
-                primary_key: Some("id".to_string()),
+                primary_key: Some("device_id".to_string()),
                 create_time: None,
                 weight: None,
                 edge_table: None,
@@ -1243,6 +1382,184 @@ mod tests {
         infer_foreign_keys(&tables, &mut rels, &mut notes);
         assert!(rels.is_empty());
         assert!(!notes.is_empty());
+    }
+
+    #[test]
+    fn infer_pk_prefers_rare_key() {
+        let admits = table(
+            "admits",
+            &[
+                ("subject_id", ColumnType::Int64),
+                ("hadm_id", ColumnType::Int64),
+                ("admittime", ColumnType::Timestamp),
+                ("dischtime", ColumnType::Timestamp),
+            ],
+        );
+        let pats = table("pats", &[("subject_id", ColumnType::Int64)]);
+        let encounters = table("encounters", &[("subject_id", ColumnType::Int64)]);
+        let mut tables = vec![admits, pats, encounters];
+        infer_primary_keys(&mut tables);
+        assert_eq!(tables[0].primary_key.as_deref(), Some("hadm_id"));
+    }
+
+    #[test]
+    fn infer_fk_prefers_best_token_match() {
+        let tables = vec![
+            TableSpec {
+                name: "d_items".to_string(),
+                format: TableFormat::Csv,
+                paths: vec![],
+                columns: vec![ColumnSpec {
+                    name: "itemid".to_string(),
+                    dtype: ColumnType::Int64,
+                    fixed_len: None,
+                    key_mode: None,
+                    precision: None,
+                    scale: None,
+                }],
+                primary_key: Some("itemid".to_string()),
+                create_time: None,
+                weight: None,
+                edge_table: None,
+                rowpack: None,
+            },
+            TableSpec {
+                name: "d_lab".to_string(),
+                format: TableFormat::Csv,
+                paths: vec![],
+                columns: vec![ColumnSpec {
+                    name: "itemid".to_string(),
+                    dtype: ColumnType::Int64,
+                    fixed_len: None,
+                    key_mode: None,
+                    precision: None,
+                    scale: None,
+                }],
+                primary_key: Some("itemid".to_string()),
+                create_time: None,
+                weight: None,
+                edge_table: None,
+                rowpack: None,
+            },
+            TableSpec {
+                name: "labevents".to_string(),
+                format: TableFormat::Csv,
+                paths: vec![],
+                columns: vec![ColumnSpec {
+                    name: "itemid".to_string(),
+                    dtype: ColumnType::Int64,
+                    fixed_len: None,
+                    key_mode: None,
+                    precision: None,
+                    scale: None,
+                }],
+                primary_key: None,
+                create_time: None,
+                weight: None,
+                edge_table: None,
+                rowpack: None,
+            },
+        ];
+        let mut rels = Vec::new();
+        let mut notes = Vec::new();
+        infer_foreign_keys(&tables, &mut rels, &mut notes);
+        assert_eq!(rels.len(), 1);
+        assert_eq!(rels[0].src_table, "labevents");
+        assert_eq!(rels[0].dst_table, "d_lab");
+    }
+
+    #[test]
+    fn infer_fk_self_reference_suffix() {
+        let tables = vec![TableSpec {
+            name: "poe".to_string(),
+            format: TableFormat::Csv,
+            paths: vec![],
+            columns: vec![
+                ColumnSpec {
+                    name: "poe_id".to_string(),
+                    dtype: ColumnType::String,
+                    fixed_len: None,
+                    key_mode: None,
+                    precision: None,
+                    scale: None,
+                },
+                ColumnSpec {
+                    name: "discontinue_of_poe_id".to_string(),
+                    dtype: ColumnType::String,
+                    fixed_len: None,
+                    key_mode: None,
+                    precision: None,
+                    scale: None,
+                },
+            ],
+            primary_key: Some("poe_id".to_string()),
+            create_time: None,
+            weight: None,
+            edge_table: None,
+            rowpack: None,
+        }];
+        let mut rels = Vec::new();
+        let mut notes = Vec::new();
+        infer_foreign_keys(&tables, &mut rels, &mut notes);
+        assert_eq!(rels.len(), 1);
+        assert_eq!(rels[0].src_table, "poe");
+        assert_eq!(rels[0].dst_table, "poe");
+        assert_eq!(rels[0].src_column, "discontinue_of_poe_id");
+    }
+
+    #[test]
+    fn infer_pk_skips_code_with_version() {
+        let mut t = table(
+            "d_icd_diag",
+            &[
+                ("icd_code", ColumnType::String),
+                ("icd_version", ColumnType::Int16),
+            ],
+        );
+        infer_primary_keys(std::slice::from_mut(&mut t));
+        assert_eq!(t.primary_key, None);
+    }
+
+    #[test]
+    fn infer_pk_token_id_match() {
+        let mut t = table(
+            "icu_stays",
+            &[
+                ("subject_id", ColumnType::Int64),
+                ("hadm_id", ColumnType::Int64),
+                ("stay_id", ColumnType::Int64),
+            ],
+        );
+        infer_primary_keys(std::slice::from_mut(&mut t));
+        assert_eq!(t.primary_key.as_deref(), Some("stay_id"));
+    }
+
+    #[test]
+    fn infer_pk_token_cd_match() {
+        let mut t = table(
+            "hcpcs",
+            &[
+                ("subject_id", ColumnType::Int64),
+                ("hadm_id", ColumnType::Int64),
+                ("hcpcs_cd", ColumnType::String),
+            ],
+        );
+        infer_primary_keys(std::slice::from_mut(&mut t));
+        assert_eq!(t.primary_key.as_deref(), Some("hcpcs_cd"));
+    }
+
+    #[test]
+    fn infer_pk_small_two_ids_requires_strong_match() {
+        let mut t = table(
+            "encounters",
+            &[
+                ("subject_id", ColumnType::Int64),
+                ("hadm_id", ColumnType::Int64),
+                ("date", ColumnType::Date),
+            ],
+        );
+        infer_primary_keys(std::slice::from_mut(&mut t));
+        assert_eq!(t.primary_key, None);
     }
 
     #[test]
