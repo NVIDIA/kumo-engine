@@ -15,6 +15,7 @@ diskgraph-fs = { path = "../diskgraph-fs" }
 object_store = { version = "0.12.4", features = ["aws", "gcp", "azure"] }
 parquet = { version = "57.1.0", features = ["arrow", "async", "object_store"] }
 arrow-schema = "57.1.0"
+arrow-array = "57.1.0"
 csv = "1.3"
 bytes = "1"
 url = "2"

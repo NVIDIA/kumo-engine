@@ -11,12 +11,14 @@ use diskgraph_fs::{
 use diskgraph_ingest::source_metadata::{
     ColumnSpec, ColumnType, KeyMode, RelationshipSpec, SourceMetadata, TableFormat, TableSpec,
 };
-use arrow_schema::{DataType, Schema};
+use arrow_array::{Array, LargeStringArray, RecordBatch, StringArray};
+use arrow_schema::{ArrowError, DataType, Schema};
 use futures::StreamExt;
 use object_store::{path::Path as ObjectPath, ObjectStore};
 use parquet::arrow::async_reader::ParquetObjectReader;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::arrow::ParquetRecordBatchStreamBuilder;
+use parquet::errors::ParquetError;
 use tokio::runtime::Runtime;
 use url::Url;
 
@@ -247,7 +249,7 @@ fn infer_file_table(name: &str, path: &Path, options: &InferOptions) -> Result<O
             }))
         }
         "parquet" => {
-            let columns = infer_parquet_schema_local(path)?;
+            let columns = infer_parquet_schema_local(path, options)?;
             Ok(Some(TableInput {
                 name: name.trim_end_matches(".parquet").to_string(),
                 format: TableFormat::Parquet,
@@ -285,7 +287,7 @@ fn infer_dir_table(
         };
         let columns = match format {
             TableFormat::Csv => infer_csv_schema(&path, options)?,
-            TableFormat::Parquet => infer_parquet_schema_local(&path)?,
+            TableFormat::Parquet => infer_parquet_schema_local(&path, options)?,
         };
         match &mut table {
             Some(existing) => {
@@ -355,6 +357,7 @@ fn infer_remote_tables(
                         Arc::clone(&store),
                         &obj.location,
                         obj.size,
+                        options,
                     )?,
                     TableFormat::Csv => infer_csv_schema_remote(
                         &rt,
@@ -395,6 +398,7 @@ fn infer_remote_tables(
                         Arc::clone(&store),
                         &obj.location,
                         obj.size,
+                        options,
                     )?,
                     TableFormat::Csv => infer_csv_schema_remote(
                         &rt,
@@ -523,11 +527,16 @@ fn build_store(root: &RootSource) -> Result<(Runtime, Arc<dyn ObjectStore>)> {
     Ok((rt, store))
 }
 
-fn infer_parquet_schema_local(path: &Path) -> Result<Vec<ColumnSpec>> {
+fn infer_parquet_schema_local(path: &Path, options: &InferOptions) -> Result<Vec<ColumnSpec>> {
     let file = std::fs::File::open(path)?;
     let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
     let schema = builder.schema();
-    infer_parquet_schema_from_arrow(schema.as_ref())
+    let mut columns = infer_parquet_schema_from_arrow(schema.as_ref())?;
+    if options.sample_rows > 0 {
+    let mut reader = builder.with_batch_size(1024).build()?;
+    apply_parquet_string_samples(&mut columns, &mut reader, options.sample_rows)?;
+    }
+    Ok(columns)
 }
 
 fn infer_parquet_schema_remote(
@@ -535,13 +544,27 @@ fn infer_parquet_schema_remote(
     store: Arc<dyn ObjectStore>,
     path: &ObjectPath,
     size: u64,
+    options: &InferOptions,
 ) -> Result<Vec<ColumnSpec>> {
     let reader = ParquetObjectReader::new(store, path.clone())
         .with_file_size(size)
         .with_runtime(rt.handle().clone());
     let builder = rt.block_on(ParquetRecordBatchStreamBuilder::new(reader))?;
     let schema = builder.schema();
-    infer_parquet_schema_from_arrow(schema.as_ref())
+    let mut columns = infer_parquet_schema_from_arrow(schema.as_ref())?;
+    if columns.is_empty() {
+        return Ok(columns);
+    }
+    let sample_rows = options.sample_rows;
+    if sample_rows > 0 {
+        let stream = builder.with_batch_size(1024).build()?;
+        rt.block_on(apply_parquet_string_samples_stream(
+            &mut columns,
+            stream,
+            sample_rows,
+        ))?;
+    }
+    Ok(columns)
 }
 
 fn infer_parquet_schema_from_arrow(schema: &Schema) -> Result<Vec<ColumnSpec>> {
@@ -558,6 +581,127 @@ fn infer_parquet_schema_from_arrow(schema: &Schema) -> Result<Vec<ColumnSpec>> {
         });
     }
     Ok(columns)
+}
+
+fn apply_parquet_string_samples<I>(
+    columns: &mut [ColumnSpec],
+    batches: &mut I,
+    sample_rows: usize,
+) -> Result<()>
+where
+    I: Iterator<Item = std::result::Result<RecordBatch, ArrowError>>,
+{
+    let mut stats: Vec<Option<ColumnStats>> = columns
+        .iter()
+        .map(|col| {
+            if matches!(col.dtype, ColumnType::String) {
+                Some(ColumnStats::default())
+            } else {
+                None
+            }
+        })
+        .collect();
+    let mut seen = 0usize;
+    while let Some(batch) = batches.next() {
+        let batch = batch.map_err(|err| anyhow!(err))?;
+        if seen >= sample_rows {
+            break;
+        }
+        let rows = batch.num_rows().min(sample_rows - seen);
+        for (idx, col) in columns.iter().enumerate() {
+            if !matches!(col.dtype, ColumnType::String) {
+                continue;
+            }
+            if let Some(st) = stats[idx].as_mut() {
+                let array = batch.column(idx);
+                if let Some(arr) = array.as_any().downcast_ref::<StringArray>() {
+                    sample_string_array(arr, rows, st);
+                } else if let Some(arr) = array.as_any().downcast_ref::<LargeStringArray>() {
+                    sample_large_string_array(arr, rows, st);
+                }
+            }
+        }
+        seen += rows;
+    }
+    apply_string_stats_overrides(columns, &stats);
+    Ok(())
+}
+
+async fn apply_parquet_string_samples_stream<S>(
+    columns: &mut [ColumnSpec],
+    mut stream: S,
+    sample_rows: usize,
+) -> Result<()>
+where
+    S: futures::Stream<Item = std::result::Result<RecordBatch, ParquetError>> + Unpin,
+{
+    let mut stats: Vec<Option<ColumnStats>> = columns
+        .iter()
+        .map(|col| {
+            if matches!(col.dtype, ColumnType::String) {
+                Some(ColumnStats::default())
+            } else {
+                None
+            }
+        })
+        .collect();
+    let mut seen = 0usize;
+    while let Some(batch) = stream.next().await {
+        let batch = batch.map_err(|err| anyhow!(err))?;
+        if seen >= sample_rows {
+            break;
+        }
+        let rows = batch.num_rows().min(sample_rows - seen);
+        for (idx, col) in columns.iter().enumerate() {
+            if !matches!(col.dtype, ColumnType::String) {
+                continue;
+            }
+            if let Some(st) = stats[idx].as_mut() {
+                let array = batch.column(idx);
+                if let Some(arr) = array.as_any().downcast_ref::<StringArray>() {
+                    sample_string_array(arr, rows, st);
+                } else if let Some(arr) = array.as_any().downcast_ref::<LargeStringArray>() {
+                    sample_large_string_array(arr, rows, st);
+                }
+            }
+        }
+        seen += rows;
+    }
+    apply_string_stats_overrides(columns, &stats);
+    Ok(())
+}
+
+fn sample_string_array(array: &StringArray, rows: usize, stats: &mut ColumnStats) {
+    for i in 0..rows {
+        if array.is_null(i) {
+            continue;
+        }
+        stats.observe(array.value(i));
+    }
+}
+
+fn sample_large_string_array(array: &LargeStringArray, rows: usize, stats: &mut ColumnStats) {
+    for i in 0..rows {
+        if array.is_null(i) {
+            continue;
+        }
+        stats.observe(array.value(i));
+    }
+}
+
+fn apply_string_stats_overrides(columns: &mut [ColumnSpec], stats: &[Option<ColumnStats>]) {
+    for (idx, col) in columns.iter_mut().enumerate() {
+        let Some(st) = stats[idx].as_ref() else {
+            continue;
+        };
+        if st.seen == 0 {
+            continue;
+        }
+        let inferred = st.to_column_spec(&col.name);
+        if matches!(inferred.dtype, ColumnType::Timestamp | ColumnType::Date) {
+            col.dtype = inferred.dtype;
+        }
+    }
 }
 
 fn arrow_type_to_column_type(
@@ -728,7 +872,7 @@ impl ColumnStats {
             ColumnType::Bool
         } else if self.ts_ok {
             ColumnType::Timestamp
-        } else if is_time_column_name(&name_lower)
+        } else if time_name_score(&name_lower) > 0
             && self.int_ok
             && int_looks_like_timestamp(self.int_min, self.int_max)
         {
@@ -775,6 +919,21 @@ fn parse_date(value: &str) -> Option<NaiveDate> {
 fn parse_timestamp(value: &str) -> Option<NaiveDateTime> {
     if let Ok(ts) = chrono::DateTime::parse_from_rfc3339(value) {
         return Some(ts.naive_utc());
+    }
+    if let Ok(ts) = NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S") {
+        return Some(ts);
+    }
+    if let Ok(ts) = NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S%.f") {
+        return Some(ts);
+    }
+    if let Ok(ts) = NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M") {
+        return Some(ts);
+    }
+    if let Ok(ts) = NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S") {
+        return Some(ts);
+    }
+    if let Ok(ts) = NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S%.f") {
+        return Some(ts);
     }
     None
 }
@@ -1341,26 +1500,221 @@ fn infer_create_time(tables: &mut [TableSpec]) {
             table.create_time = Some(time_cols[0].name.clone());
             continue;
         }
+        let mut best: Option<(String, i32)> = None;
+        let mut tie = false;
         for col in time_cols {
             let name = col.name.to_lowercase();
-            if is_time_column_name(&name) || name == "t_dat" || name == "t_date" {
-                table.create_time = Some(col.name.clone());
-                break;
+            let score = time_name_score(&name);
+            if score <= 0 {
+                continue;
+            }
+            match &best {
+                Some((_, best_score)) if score == *best_score => {
+                    tie = true;
+                }
+                Some((_, best_score)) if score < *best_score => {}
+                _ => {
+                    best = Some((col.name.clone(), score));
+                    tie = false;
+                }
+            }
+        }
+        if let Some((name, _)) = best {
+            if !tie {
+                table.create_time = Some(name);
             }
         }
     }
 }
 
-fn is_time_column_name(name: &str) -> bool {
-    name.contains("created")
-        || name.contains("create_time")
-        || name.contains("created_at")
-        || name.contains("timestamp")
-        || name.contains("date")
-        || name.contains("start_time")
-        || name.contains("end_time")
-        || name.ends_with("_at")
-        || name.ends_with("_time")
+fn time_name_score(name: &str) -> i32 {
+    let mut score = 0;
+    let positives = [
+        "create",
+        "created",
+        "creation",
+        "signup",
+        "onboard",
+        "onboarded",
+        "register",
+        "registered",
+        "acquire",
+        "acquired",
+        "activation",
+        "activated",
+        "install",
+        "installed",
+        "click",
+        "clicked",
+        "impression",
+        "view",
+        "viewed",
+        "session_start",
+        "lead",
+        "lead_created",
+        "conversion",
+        "converted",
+        "purchase",
+        "purchased",
+        "checkout",
+        "checkin",
+        "ship",
+        "shipped",
+        "fulfill",
+        "fulfilled",
+        "invoice",
+        "invoiced",
+        "bill",
+        "billed",
+        "pay",
+        "paid",
+        "capture",
+        "captured",
+        "funded",
+        "settle",
+        "settled",
+        "auth",
+        "authorize",
+        "authorized",
+        "credit",
+        "credited",
+        "debit",
+        "debited",
+        "risk",
+        "risked",
+        "approve",
+        "approved",
+        "accept",
+        "accepted",
+        "signed",
+        "signature",
+        "engage",
+        "engaged",
+        "assign",
+        "assigned",
+        "start",
+        "begin",
+        "open",
+        "opened",
+        "ingest",
+        "load",
+        "event",
+        "occur",
+        "request",
+        "submit",
+        "receive",
+        "received",
+        "posted",
+        "settled",
+        "cleared",
+        "authorized",
+        "authorize",
+        "entry",
+        "enter",
+        "insert",
+        "inserted",
+        "issue",
+        "effective",
+        "update",
+        "updated",
+        "modify",
+        "modified",
+        "record",
+        "recorded",
+        "first_seen",
+        "first",
+        "start_date",
+        "start_time",
+        "created_at",
+        "created_on",
+        "created_date",
+        "created_time",
+        "opened_at",
+        "opened_on",
+        "timestamp",
+        "time",
+        "date",
+    ];
+    let negatives = [
+        "end",
+        "stop",
+        "close",
+        "closed",
+        "out",
+        "exit",
+        "expire",
+        "expired",
+        "verify",
+        "verified",
+        "store",
+        "stored",
+        "finish",
+        "finished",
+        "complete",
+        "completed",
+        "cancel",
+        "canceled",
+        "abandon",
+        "abandoned",
+        "delete",
+        "deleted",
+        "void",
+        "voided",
+        "chargeback",
+        "refunded",
+        "refund",
+        "reversed",
+        "reverse",
+        "deny",
+        "denied",
+        "reject",
+        "rejected",
+        "fail",
+        "failed",
+        "bounce",
+        "bounced",
+        "unsub",
+        "unsubscribe",
+        "unsubscribed",
+        "churn",
+        "churned",
+        "return",
+        "returned",
+        "cancelled",
+        "last_seen",
+        "last",
+        "updated_at",
+        "updated_on",
+        "updated_date",
+        "closed_at",
+        "closed_on",
+        "closed_date",
+        "end_date",
+        "end_time",
+        "stop_date",
+        "stop_time",
+        "expire_date",
+        "expire_time",
+        "death",
+        "dod",
+    ];
+    for token in positives {
+        if name.contains(token) {
+            score += 2;
+        }
+    }
+    for token in negatives {
+        if name.contains(token) {
+            score -= 3;
+        }
+    }
+    if name.ends_with("_at") || name.ends_with("_time") || name.ends_with("_date") {
+        score += 1;
+    }
+    if name == "timestamp" || name == "time" || name == "date" {
+        score += 2;
+    }
+    score
 }
 
 fn int_looks_like_timestamp(min: Option<i64>, max: Option<i64>) -> bool {
@@ -2059,6 +2413,130 @@ mod tests {
         }
         let col = stats.to_column_spec("flag");
         assert!(matches!(col.dtype, ColumnType::Bool));
+    }
+
+    #[test]
+    fn csv_infers_timestamp_from_common_format() {
+        let mut stats = ColumnStats::default();
+        for v in ["2024-01-01 12:34:56", "2024-01-01 12:35:56"] {
+            stats.observe(v);
+        }
+        let col = stats.to_column_spec("charttime");
+        assert!(matches!(col.dtype, ColumnType::Timestamp));
+    }
+
+    #[test]
+    fn csv_infers_timestamp_from_fractional_seconds() {
+        let mut stats = ColumnStats::default();
+        for v in ["2024-01-01 12:34:56.123", "2024-01-01 12:35:56.987"] {
+            stats.observe(v);
+        }
+        let col = stats.to_column_spec("storetime");
+        assert!(matches!(col.dtype, ColumnType::Timestamp));
+    }
+
+    #[test]
+    fn infer_create_time_prefers_start_over_end() {
+        let mut t = table(
+            "events",
+            &[
+                ("start_time", ColumnType::Timestamp),
+                ("end_time", ColumnType::Timestamp),
+            ],
+        );
+        infer_create_time(std::slice::from_mut(&mut t));
+        assert_eq!(t.create_time.as_deref(), Some("start_time"));
+    }
+
+    #[test]
+    fn infer_create_time_skips_negative_only() {
+        let mut t = table(
+            "events",
+            &[
+                ("end_time", ColumnType::Timestamp),
+                ("stop_time", ColumnType::Timestamp),
+            ],
+        );
+        infer_create_time(std::slice::from_mut(&mut t));
+        assert_eq!(t.create_time, None);
+    }
+
+    #[test]
+    fn infer_create_time_prefers_created_over_updated() {
+        let mut t = table(
+            "accounts",
+            &[
+                ("created_at", ColumnType::Timestamp),
+                ("updated_at", ColumnType::Timestamp),
+            ],
+        );
+        infer_create_time(std::slice::from_mut(&mut t));
+        assert_eq!(t.create_time.as_deref(), Some("created_at"));
+    }
+
+    #[test]
+    fn infer_create_time_ignores_negative_token() {
+        let mut t = table(
+            "orders",
+            &[
+                ("authorized_time", ColumnType::Timestamp),
+                ("voided_time", ColumnType::Timestamp),
+            ],
+        );
+        infer_create_time(std::slice::from_mut(&mut t));
+        assert_eq!(t.create_time.as_deref(), Some("authorized_time"));
+    }
+
+    #[test]
+    fn infer_create_time_prefers_positive_when_present() {
+        let mut t = table(
+            "shipping",
+            &[
+                ("shipped_at", ColumnType::Timestamp),
+                ("returned_at", ColumnType::Timestamp),
+            ],
+        );
+        infer_create_time(std::slice::from_mut(&mut t));
+        assert_eq!(t.create_time.as_deref(), Some("shipped_at"));
+    }
+
+    #[test]
+    fn infer_create_time_prefers_chart_over_store() {
+        let mut t = table(
+            "chart",
+            &[
+                ("charttime", ColumnType::Timestamp),
+                ("storetime", ColumnType::Timestamp),
+            ],
+        );
+        infer_create_time(std::slice::from_mut(&mut t));
+        assert_eq!(t.create_time.as_deref(), Some("charttime"));
+    }
+
+    #[test]
+    fn infer_create_time_prefers_start_over_store() {
+        let mut t = table(
+            "inputevents",
+            &[
+                ("starttime", ColumnType::Timestamp),
+                ("storetime", ColumnType::Timestamp),
+            ],
+        );
+        infer_create_time(std::slice::from_mut(&mut t));
+        assert_eq!(t.create_time.as_deref(), Some("starttime"));
+    }
+
+    #[test]
+    fn infer_create_time_prefers_in_over_out() {
+        let mut t = table(
+            "transfers",
+            &[
+                ("intime", ColumnType::Timestamp),
+                ("outtime", ColumnType::Timestamp),
+            ],
+        );
+        infer_create_time(std::slice::from_mut(&mut t));
+        assert_eq!(t.create_time.as_deref(), Some("intime"));
     }
 
     #[test]
