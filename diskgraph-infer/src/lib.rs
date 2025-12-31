@@ -881,11 +881,28 @@ fn infer_foreign_keys(
                     Some(pk) => pk,
                     None => continue,
                 };
-                let pk_lower = pk.to_lowercase();
-                let mut matches = col_name == pk_lower;
-                if !matches && pk_lower != "id" {
-                    matches = col_name.ends_with(&format!("_{}", pk_lower));
-                }
+                    let pk_lower = pk.to_lowercase();
+                    let mut matches = col_name == pk_lower;
+                    if !matches && !is_generic_key_name(&pk_lower) {
+                        matches = col_name.ends_with(&format!("_{}", pk_lower));
+                    }
+                    if !matches {
+                        let col_base = key_name_base(&col_name).unwrap_or("");
+                        if !col_base.is_empty() {
+                            let dest_tokens = normalized_tokens(dest_name);
+                            let base_matches_dest =
+                                dest_tokens.iter().any(|t| overlap_ratio(col_base, t) >= 0.6);
+                            if base_matches_dest {
+                                if is_generic_key_name(&pk_lower) {
+                                    matches = true;
+                                } else if let Some(pk_base) = key_name_base(&pk_lower) {
+                                    if col_base == pk_base {
+                                        matches = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
                 if !matches {
                     continue;
                 }
@@ -948,6 +965,10 @@ fn is_key_like_name(name: &str) -> bool {
         || name.ends_with("_cd")
         || name.ends_with("_code")
         || name.ends_with("_key")
+}
+
+fn is_generic_key_name(name: &str) -> bool {
+    matches!(name, "id" | "code" | "cd" | "key")
 }
 
 fn normalized_tokens(name: &str) -> Vec<String> {
@@ -1068,7 +1089,7 @@ fn is_strong_pk_match(table_name: &str, col_lower: &str) -> bool {
         return true;
     }
     let tokens = normalized_tokens(table_name);
-    tokens
+    if tokens
         .iter()
         .filter(|t| t.len() >= 3)
         .any(|t| {
@@ -1076,6 +1097,77 @@ fn is_strong_pk_match(table_name: &str, col_lower: &str) -> bool {
                 || col_lower == format!("{}_code", t)
                 || col_lower == format!("{}_cd", t)
         })
+    {
+        return true;
+    }
+    if let Some(base) = key_like_base(col_lower) {
+        if tokens
+            .iter()
+            .any(|t| overlap_ratio(base, t) >= 0.6)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn key_like_base(name: &str) -> Option<&str> {
+    if let Some(base) = name.strip_suffix("_id") {
+        return Some(base);
+    }
+    if let Some(base) = name.strip_suffix("_code") {
+        return Some(base);
+    }
+    if let Some(base) = name.strip_suffix("_cd") {
+        return Some(base);
+    }
+    if let Some(base) = name.strip_suffix("_key") {
+        return Some(base);
+    }
+    None
+}
+
+fn key_name_base(name: &str) -> Option<&str> {
+    key_like_base(name).or_else(|| {
+        if name.ends_with("id") {
+            return name.strip_suffix("id");
+        }
+        if name.ends_with("code") {
+            return name.strip_suffix("code");
+        }
+        if name.ends_with("cd") {
+            return name.strip_suffix("cd");
+        }
+        if name.ends_with("key") {
+            return name.strip_suffix("key");
+        }
+        None
+    })
+}
+
+fn overlap_ratio(a: &str, b: &str) -> f32 {
+    let a_chars: Vec<char> = a.chars().collect();
+    let b_chars: Vec<char> = b.chars().collect();
+    if a_chars.is_empty() || b_chars.is_empty() {
+        return 0.0;
+    }
+    let mut best = 0usize;
+    for i in 0..a_chars.len() {
+        for j in 0..b_chars.len() {
+            let mut k = 0usize;
+            while i + k < a_chars.len()
+                && j + k < b_chars.len()
+                && a_chars[i + k] == b_chars[j + k]
+            {
+                k += 1;
+            }
+            if k > best {
+                best = k;
+            }
+        }
+    }
+    let denom = a_chars.len().max(b_chars.len());
+    best as f32 / denom as f32
 }
 
 fn column_matches_tokens(col_lower: &str, tokens: &[String]) -> bool {
@@ -1560,6 +1652,115 @@ mod tests {
         );
         infer_primary_keys(std::slice::from_mut(&mut t));
         assert_eq!(t.primary_key, None);
+    }
+
+    #[test]
+    fn infer_fk_base_match_allows_code() {
+        let tables = vec![
+            TableSpec {
+                name: "d_hcpcs".to_string(),
+                format: TableFormat::Csv,
+                paths: vec![],
+                columns: vec![ColumnSpec {
+                    name: "code".to_string(),
+                    dtype: ColumnType::String,
+                    fixed_len: None,
+                    key_mode: None,
+                    precision: None,
+                    scale: None,
+                }],
+                primary_key: Some("code".to_string()),
+                create_time: None,
+                weight: None,
+                edge_table: None,
+                rowpack: None,
+            },
+            TableSpec {
+                name: "hcpcs".to_string(),
+                format: TableFormat::Csv,
+                paths: vec![],
+                columns: vec![ColumnSpec {
+                    name: "hcpcs_cd".to_string(),
+                    dtype: ColumnType::String,
+                    fixed_len: None,
+                    key_mode: None,
+                    precision: None,
+                    scale: None,
+                }],
+                primary_key: None,
+                create_time: None,
+                weight: None,
+                edge_table: None,
+                rowpack: None,
+            },
+        ];
+        let mut rels = Vec::new();
+        let mut notes = Vec::new();
+        infer_foreign_keys(&tables, &mut rels, &mut notes);
+        assert_eq!(rels.len(), 1);
+        assert_eq!(rels[0].src_table, "hcpcs");
+        assert_eq!(rels[0].dst_table, "d_hcpcs");
+    }
+
+    #[test]
+    fn infer_fk_avoids_generic_code_match() {
+        let tables = vec![
+            TableSpec {
+                name: "d_hcpcs".to_string(),
+                format: TableFormat::Csv,
+                paths: vec![],
+                columns: vec![ColumnSpec {
+                    name: "code".to_string(),
+                    dtype: ColumnType::String,
+                    fixed_len: None,
+                    key_mode: None,
+                    precision: None,
+                    scale: None,
+                }],
+                primary_key: Some("code".to_string()),
+                create_time: None,
+                weight: None,
+                edge_table: None,
+                rowpack: None,
+            },
+            TableSpec {
+                name: "d_icd_diag".to_string(),
+                format: TableFormat::Csv,
+                paths: vec![],
+                columns: vec![ColumnSpec {
+                    name: "icd_code".to_string(),
+                    dtype: ColumnType::String,
+                    fixed_len: None,
+                    key_mode: None,
+                    precision: None,
+                    scale: None,
+                }],
+                primary_key: None,
+                create_time: None,
+                weight: None,
+                edge_table: None,
+                rowpack: None,
+            },
+        ];
+        let mut rels = Vec::new();
+        let mut notes = Vec::new();
+        infer_foreign_keys(&tables, &mut rels, &mut notes);
+        assert!(rels.is_empty());
+    }
+
+    #[test]
+    fn infer_pk_overlap_ratio_match() {
+        let mut t = table(
+            "admits",
+            &[
+                ("subject_id", ColumnType::Int64),
+                ("hadm_id", ColumnType::Int64),
+                ("admittime", ColumnType::Timestamp),
+                ("dischtime", ColumnType::Timestamp),
+            ],
+        );
+        infer_primary_keys(std::slice::from_mut(&mut t));
+        assert_eq!(t.primary_key.as_deref(), Some("hadm_id"));
     }
 
     #[test]
