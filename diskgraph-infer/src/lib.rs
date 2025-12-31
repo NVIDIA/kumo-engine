@@ -1282,12 +1282,16 @@ fn infer_primary_keys(tables: &mut [TableSpec]) {
                 continue;
             }
             let mut score = 1000 / count;
-            if is_strong_pk_match(&table.name, &lower) {
+            let strong_match = is_strong_pk_match(&table.name, &lower);
+            if strong_match {
                 score += 12;
             } else if has_many_key_like {
                 continue;
             } else if require_strong_for_small {
                 continue;
+            }
+            if strong_match {
+                score += 1000;
             }
             if column_matches_tokens(&lower, &table_tokens) {
                 score += 3;
@@ -2195,6 +2199,46 @@ mod tests {
         let mut t = table("sessions", &[("uuid", ColumnType::String)]);
         infer_primary_keys(std::slice::from_mut(&mut t));
         assert_eq!(t.primary_key.as_deref(), Some("uuid"));
+    }
+
+    #[test]
+    fn infer_pk_prefers_customer_id_over_postal_code() {
+        let mut t = TableSpec {
+            name: "kaggle_hm_customers".to_string(),
+            format: TableFormat::Parquet,
+            paths: vec!["/tmp/customers.parquet".to_string()],
+            columns: vec![
+                ColumnSpec {
+                    name: "customer_id".to_string(),
+                    source_dtype: ColumnType::String,
+                    ingested_dtype: ColumnType::String,
+                    timestamp_format: None,
+                    timestamp_unit: None,
+                    fixed_len: None,
+                    key_mode: None,
+                    precision: None,
+                    scale: None,
+                },
+                ColumnSpec {
+                    name: "postal_code".to_string(),
+                    source_dtype: ColumnType::String,
+                    ingested_dtype: ColumnType::String,
+                    timestamp_format: None,
+                    timestamp_unit: None,
+                    fixed_len: None,
+                    key_mode: None,
+                    precision: None,
+                    scale: None,
+                },
+            ],
+            primary_key: None,
+            create_time: None,
+            weight: None,
+            edge_table: None,
+            rowpack: None,
+        };
+        infer_primary_keys(std::slice::from_mut(&mut t));
+        assert_eq!(t.primary_key.as_deref(), Some("customer_id"));
     }
 
     #[test]

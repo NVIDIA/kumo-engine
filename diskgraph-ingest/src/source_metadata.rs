@@ -52,7 +52,7 @@ pub struct ColumnSpec {
     pub scale: Option<i32>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ColumnType {
     Int8,

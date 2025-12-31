@@ -4,12 +4,15 @@ mod mapping;
 pub mod source_metadata;
 
 use crate::mapping::{Key, KeyType, PkMap};
-use crate::source_metadata::{ColumnSpec, ColumnType, KeyMode, TableFormat, TableSpec};
+use crate::source_metadata::{
+    ColumnSpec, ColumnType, KeyMode, TableFormat, TableSpec, TimestampUnit,
+};
 use anyhow::{anyhow, Context, Result};
 use arrow_array::{Array, ArrayRef, RecordBatch};
 use arrow_array::builder::ArrayBuilder;
 use arrow_schema::{DataType, Field, Schema};
 use bytes::Bytes;
+use chrono::{NaiveDate, NaiveDateTime};
 use diskgraph_core::metadata::{
     DatasetMetadata, EdgeRelationMetadata, EdgeShardMetadata, NodeDataCompression,
     NodeShardMetadata, NodeTypeMetadata, PrimaryKeyMap,
@@ -583,6 +586,8 @@ impl IngestContext {
                     let mut next_update = PROGRESS_STEP;
                     let mut arrays_f32: Vec<Vec<f32>> = Vec::new();
                     let mut arrays_f64: Vec<Vec<f64>> = Vec::new();
+                    let mut strings: Vec<String> = Vec::new();
+                    let mut bytes: Vec<Vec<u8>> = Vec::new();
                     let mut key_failures_local = KeyFailureLocal::default();
                     let parse_context = format!("pk_map:{}:{}", table.name, pk);
                     for_each_row(&table, |row| {
@@ -622,6 +627,8 @@ impl IngestContext {
                         }
                         arrays_f32.clear();
                         arrays_f64.clear();
+                        strings.clear();
+                        bytes.clear();
                         let mut values = Vec::with_capacity(table.columns.len());
                         row_values_from_row(
                             row,
@@ -629,6 +636,8 @@ impl IngestContext {
                             &mut values,
                             &mut arrays_f32,
                             &mut arrays_f64,
+                            &mut strings,
+                            &mut bytes,
                         )?;
                         rowpack_builder.observe_row(&values)?;
                         row_id += 1;
@@ -1403,14 +1412,21 @@ fn write_node_data_to(
     let mut builder = arrow_array::builder::BinaryBuilder::new();
     let mut arrays_f32: Vec<Vec<f32>> = Vec::new();
     let mut arrays_f64: Vec<Vec<f64>> = Vec::new();
+    let mut strings: Vec<String> = Vec::new();
+    let mut bytes: Vec<Vec<u8>> = Vec::new();
     for_each_batch(table, |cols, batch_rows, _row_base| {
         let accessors = build_accessors(cols, table)?;
         for row in 0..batch_rows {
             arrays_f32.clear();
             arrays_f64.clear();
+            strings.clear();
+            bytes.clear();
             let mut access = RowAccessor {
                 row,
                 accessors: &accessors,
+                columns: &table.columns,
+                strings: &mut strings,
+                bytes: &mut bytes,
                 arrays_f32: &mut arrays_f32,
                 arrays_f64: &mut arrays_f64,
             };
@@ -1792,7 +1808,7 @@ fn key_from_array(array: &ArrayRef, row: usize, col: &ColumnSpec) -> KeyParseRes
     if array.is_null(row) {
         return Err(KeyParseError::Null);
     }
-    match col.ingested_dtype {
+    match col.source_dtype {
         ColumnType::Int64 => {
             let arr = array
                 .as_any()
@@ -1920,7 +1936,7 @@ fn key_from_array_for_target(
         return Err(KeyParseError::Null);
     }
     match target {
-        KeyType::Int64 => match col.ingested_dtype {
+        KeyType::Int64 => match col.source_dtype {
             ColumnType::Int64
             | ColumnType::Int32
             | ColumnType::Int16
@@ -1997,7 +2013,7 @@ fn key_from_array_for_target(
             }
             _ => Err(KeyParseError::UnsupportedType),
         },
-        KeyType::FixedBytes { len } => match col.ingested_dtype {
+        KeyType::FixedBytes { len } => match col.source_dtype {
             ColumnType::String => {
                 let arr = array
                     .as_any()
@@ -2034,7 +2050,7 @@ fn key_from_array_for_target(
             }
             _ => Err(KeyParseError::UnsupportedType),
         },
-        KeyType::VarBytes => match col.ingested_dtype {
+        KeyType::VarBytes => match col.source_dtype {
             ColumnType::String => {
                 let arr = array
                     .as_any()
@@ -2115,7 +2131,7 @@ fn key_from_array_for_target(
             }
             _ => Err(KeyParseError::UnsupportedType),
         },
-        KeyType::Uuid => match col.ingested_dtype {
+        KeyType::Uuid => match col.source_dtype {
             ColumnType::String => {
                 if col.key_mode != Some(KeyMode::Uuid) {
                     return Err(KeyParseError::TypeMismatch);
@@ -2306,7 +2322,7 @@ fn sample_key_value(array: &ArrayRef, row: usize, col: &ColumnSpec) -> Option<St
     if array.is_null(row) {
         return Some("<null>".to_string());
     }
-    match col.ingested_dtype {
+    match col.source_dtype {
         ColumnType::String => {
             let arr = array.as_any().downcast_ref::<arrow_array::StringArray>()?;
             Some(format_bytes_sample(arr.value(row).as_bytes()))
@@ -2414,6 +2430,8 @@ fn hex_char(v: u8) -> char {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arrow_array::{BinaryArray, Int64Array, StringArray};
+    use std::collections::HashMap;
 
     #[test]
     fn parse_uuid_string_formats() {
@@ -2438,6 +2456,310 @@ mod tests {
         assert!(parse_uuid_bytes(&[0u8; 15]).is_err());
         assert!(parse_uuid_bytes(&[0u8; 17]).is_err());
         assert!(parse_uuid_bytes(&[0u8; 16]).is_ok());
+    }
+
+    #[test]
+    fn convert_string_timestamp_to_rowpack_timestamp() {
+        let table = TableSpec {
+            name: "events".to_string(),
+            format: TableFormat::Parquet,
+            paths: vec![],
+            columns: vec![ColumnSpec {
+                name: "created_at".to_string(),
+                source_dtype: ColumnType::String,
+                ingested_dtype: ColumnType::Timestamp,
+                fixed_len: None,
+                timestamp_format: Some("rfc3339".to_string()),
+                timestamp_unit: None,
+                key_mode: None,
+                precision: None,
+                scale: None,
+            }],
+            primary_key: None,
+            create_time: None,
+            weight: None,
+            edge_table: None,
+            rowpack: None,
+        };
+        let arr = StringArray::from(vec!["2020-01-02T03:04:05Z"]);
+        let cols: Vec<ArrayRef> = vec![Arc::new(arr)];
+        let mut name_to_index = HashMap::new();
+        name_to_index.insert("created_at".to_string(), 0);
+        let row = RowView {
+            row: 0,
+            row_id: 0,
+            cols: &cols,
+            name_to_index: &name_to_index,
+        };
+        let mut values = Vec::new();
+        let mut arrays_f32 = Vec::new();
+        let mut arrays_f64 = Vec::new();
+        let mut strings = Vec::new();
+        let mut bytes = Vec::new();
+        row_values_from_row(
+            &row,
+            &table,
+            &mut values,
+            &mut arrays_f32,
+            &mut arrays_f64,
+            &mut strings,
+            &mut bytes,
+        )
+        .unwrap();
+        match values[0] {
+            ValueRef::Timestamp { secs, nanos } => {
+                assert_eq!(nanos, 0);
+                assert_eq!(secs, 1_577_934_245);
+            }
+            _ => panic!("expected timestamp"),
+        }
+    }
+
+    #[test]
+    fn convert_int_timestamp_with_unit() {
+        let table = TableSpec {
+            name: "events".to_string(),
+            format: TableFormat::Parquet,
+            paths: vec![],
+            columns: vec![ColumnSpec {
+                name: "created_at".to_string(),
+                source_dtype: ColumnType::Int64,
+                ingested_dtype: ColumnType::Timestamp,
+                fixed_len: None,
+                timestamp_format: None,
+                timestamp_unit: Some(TimestampUnit::Millis),
+                key_mode: None,
+                precision: None,
+                scale: None,
+            }],
+            primary_key: None,
+            create_time: None,
+            weight: None,
+            edge_table: None,
+            rowpack: None,
+        };
+        let arr = Int64Array::from(vec![1_500_000_i64]);
+        let cols: Vec<ArrayRef> = vec![Arc::new(arr)];
+        let mut name_to_index = HashMap::new();
+        name_to_index.insert("created_at".to_string(), 0);
+        let row = RowView {
+            row: 0,
+            row_id: 0,
+            cols: &cols,
+            name_to_index: &name_to_index,
+        };
+        let mut values = Vec::new();
+        let mut arrays_f32 = Vec::new();
+        let mut arrays_f64 = Vec::new();
+        let mut strings = Vec::new();
+        let mut bytes = Vec::new();
+        row_values_from_row(
+            &row,
+            &table,
+            &mut values,
+            &mut arrays_f32,
+            &mut arrays_f64,
+            &mut strings,
+            &mut bytes,
+        )
+        .unwrap();
+        match values[0] {
+            ValueRef::Timestamp { secs, nanos } => {
+                assert_eq!(secs, 1500);
+                assert_eq!(nanos, 0);
+            }
+            _ => panic!("expected timestamp"),
+        }
+    }
+
+    #[test]
+    fn convert_string_date_to_rowpack_date() {
+        let table = TableSpec {
+            name: "events".to_string(),
+            format: TableFormat::Parquet,
+            paths: vec![],
+            columns: vec![ColumnSpec {
+                name: "created_date".to_string(),
+                source_dtype: ColumnType::String,
+                ingested_dtype: ColumnType::Date,
+                fixed_len: None,
+                timestamp_format: Some("%Y-%m-%d".to_string()),
+                timestamp_unit: None,
+                key_mode: None,
+                precision: None,
+                scale: None,
+            }],
+            primary_key: None,
+            create_time: None,
+            weight: None,
+            edge_table: None,
+            rowpack: None,
+        };
+        let arr = StringArray::from(vec!["2024-02-03"]);
+        let cols: Vec<ArrayRef> = vec![Arc::new(arr)];
+        let mut name_to_index = HashMap::new();
+        name_to_index.insert("created_date".to_string(), 0);
+        let row = RowView {
+            row: 0,
+            row_id: 0,
+            cols: &cols,
+            name_to_index: &name_to_index,
+        };
+        let mut values = Vec::new();
+        let mut arrays_f32 = Vec::new();
+        let mut arrays_f64 = Vec::new();
+        let mut strings = Vec::new();
+        let mut bytes = Vec::new();
+        row_values_from_row(
+            &row,
+            &table,
+            &mut values,
+            &mut arrays_f32,
+            &mut arrays_f64,
+            &mut strings,
+            &mut bytes,
+        )
+        .unwrap();
+        match values[0] {
+            ValueRef::Date(days) => {
+                let expected = days_from_secs(
+                    NaiveDate::from_ymd_opt(2024, 2, 3)
+                        .unwrap()
+                        .and_hms_opt(0, 0, 0)
+                        .unwrap()
+                        .and_utc()
+                        .timestamp(),
+                );
+                assert_eq!(days, expected);
+            }
+            _ => panic!("expected date"),
+        }
+    }
+
+    #[test]
+    fn convert_numeric_to_string_for_rowpack() {
+        let table = TableSpec {
+            name: "events".to_string(),
+            format: TableFormat::Parquet,
+            paths: vec![],
+            columns: vec![ColumnSpec {
+                name: "id".to_string(),
+                source_dtype: ColumnType::Int64,
+                ingested_dtype: ColumnType::String,
+                fixed_len: None,
+                timestamp_format: None,
+                timestamp_unit: None,
+                key_mode: None,
+                precision: None,
+                scale: None,
+            }],
+            primary_key: None,
+            create_time: None,
+            weight: None,
+            edge_table: None,
+            rowpack: None,
+        };
+        let arr = Int64Array::from(vec![42_i64]);
+        let cols: Vec<ArrayRef> = vec![Arc::new(arr)];
+        let mut name_to_index = HashMap::new();
+        name_to_index.insert("id".to_string(), 0);
+        let row = RowView {
+            row: 0,
+            row_id: 0,
+            cols: &cols,
+            name_to_index: &name_to_index,
+        };
+        let mut values = Vec::new();
+        let mut arrays_f32 = Vec::new();
+        let mut arrays_f64 = Vec::new();
+        let mut strings = Vec::new();
+        let mut bytes = Vec::new();
+        row_values_from_row(
+            &row,
+            &table,
+            &mut values,
+            &mut arrays_f32,
+            &mut arrays_f64,
+            &mut strings,
+            &mut bytes,
+        )
+        .unwrap();
+        match values[0] {
+            ValueRef::String(value) => assert_eq!(value, "42"),
+            _ => panic!("expected string"),
+        }
+    }
+
+    #[test]
+    fn convert_bytes_to_int_for_rowpack() {
+        let table = TableSpec {
+            name: "events".to_string(),
+            format: TableFormat::Parquet,
+            paths: vec![],
+            columns: vec![ColumnSpec {
+                name: "id".to_string(),
+                source_dtype: ColumnType::Bytes,
+                ingested_dtype: ColumnType::Int32,
+                fixed_len: None,
+                timestamp_format: None,
+                timestamp_unit: None,
+                key_mode: None,
+                precision: None,
+                scale: None,
+            }],
+            primary_key: None,
+            create_time: None,
+            weight: None,
+            edge_table: None,
+            rowpack: None,
+        };
+        let arr = BinaryArray::from(vec![b"123".as_slice()]);
+        let cols: Vec<ArrayRef> = vec![Arc::new(arr)];
+        let mut name_to_index = HashMap::new();
+        name_to_index.insert("id".to_string(), 0);
+        let row = RowView {
+            row: 0,
+            row_id: 0,
+            cols: &cols,
+            name_to_index: &name_to_index,
+        };
+        let mut values = Vec::new();
+        let mut arrays_f32 = Vec::new();
+        let mut arrays_f64 = Vec::new();
+        let mut strings = Vec::new();
+        let mut bytes = Vec::new();
+        row_values_from_row(
+            &row,
+            &table,
+            &mut values,
+            &mut arrays_f32,
+            &mut arrays_f64,
+            &mut strings,
+            &mut bytes,
+        )
+        .unwrap();
+        match values[0] {
+            ValueRef::Int32(value) => assert_eq!(value, 123),
+            _ => panic!("expected int32"),
+        }
+    }
+
+    #[test]
+    fn convert_string_timestamp_for_sort_key() {
+        let col = ColumnSpec {
+            name: "created_at".to_string(),
+            source_dtype: ColumnType::String,
+            ingested_dtype: ColumnType::Timestamp,
+            fixed_len: None,
+            timestamp_format: Some("rfc3339".to_string()),
+            timestamp_unit: None,
+            key_mode: None,
+            precision: None,
+            scale: None,
+        };
+        let arr: ArrayRef = Arc::new(StringArray::from(vec!["2020-01-02T03:04:05Z"]));
+        let value = value_from_array_with_spec(&arr, 0, &col).unwrap();
+        assert_eq!(value.as_i64().unwrap(), 1_577_934_245);
     }
 }
 
@@ -2537,7 +2859,7 @@ fn for_each_row(table: &TableSpec, mut f: impl FnMut(&RowView) -> Result<()>) ->
 fn table_schema(table: &TableSpec) -> Result<Schema> {
     let mut fields = Vec::with_capacity(table.columns.len());
     for col in &table.columns {
-        let dtype = match col.ingested_dtype {
+        let dtype = match col.source_dtype {
             ColumnType::Int8 => DataType::Int8,
             ColumnType::Int16 => DataType::Int16,
             ColumnType::Int64 => DataType::Int64,
@@ -2647,11 +2969,23 @@ fn sample_rowpack_context(
     let limit = config.sample_rows();
     let mut arrays_f32: Vec<Vec<f32>> = Vec::new();
     let mut arrays_f64: Vec<Vec<f64>> = Vec::new();
+    let mut strings: Vec<String> = Vec::new();
+    let mut bytes: Vec<Vec<u8>> = Vec::new();
     for_each_row_with_limit(table, limit, |row| {
         arrays_f32.clear();
         arrays_f64.clear();
+        strings.clear();
+        bytes.clear();
         let mut values = Vec::with_capacity(table.columns.len());
-        row_values_from_row(row, table, &mut values, &mut arrays_f32, &mut arrays_f64)?;
+        row_values_from_row(
+            row,
+            table,
+            &mut values,
+            &mut arrays_f32,
+            &mut arrays_f64,
+            &mut strings,
+            &mut bytes,
+        )?;
         builder.observe_row(&values)?;
         Ok(())
     })?;
@@ -2810,24 +3144,34 @@ struct RowView<'a> {
 }
 
 impl<'a> RowView<'a> {
-    fn get_value(&self, name: &str) -> Result<JsonValue> {
+    fn get_value(&self, col: &ColumnSpec) -> Result<JsonValue> {
         let idx = self
             .name_to_index
-            .get(name)
-            .ok_or_else(|| anyhow!("missing column {}", name))?;
-        let col = self
+            .get(&col.name)
+            .ok_or_else(|| anyhow!("missing column {}", col.name))?;
+        let array = self
             .cols
             .get(*idx)
-            .ok_or_else(|| anyhow!("missing column {}", name))?;
-        value_from_array(col, self.row)
+            .ok_or_else(|| anyhow!("missing column {}", col.name))?;
+        value_from_array_with_spec(array, self.row, col)
     }
 
     fn sort_key(&self, table: &TableSpec) -> Result<Option<JsonValue>> {
         if let Some(weight) = &table.weight {
-            return Ok(Some(self.get_value(weight)?));
+            let col = column_spec(table, weight)?;
+            let value = self.get_value(col)?;
+            if value.is_null() {
+                return Ok(None);
+            }
+            return Ok(Some(value));
         }
         if let Some(ts) = &table.create_time {
-            return Ok(Some(self.get_value(ts)?));
+            let col = column_spec(table, ts)?;
+            let value = self.get_value(col)?;
+            if value.is_null() {
+                return Ok(None);
+            }
+            return Ok(Some(value));
         }
         Ok(None)
     }
@@ -2900,6 +3244,9 @@ enum ColumnAccessor<'a> {
 struct RowAccessor<'a> {
     row: usize,
     accessors: &'a [ColumnAccessor<'a>],
+    columns: &'a [ColumnSpec],
+    strings: &'a mut Vec<String>,
+    bytes: &'a mut Vec<Vec<u8>>,
     arrays_f32: &'a mut Vec<Vec<f32>>,
     arrays_f64: &'a mut Vec<Vec<f64>>,
 }
@@ -2912,6 +3259,53 @@ impl<'a> RowValueAccess for RowAccessor<'a> {
                     Ok(None)
                 } else {
                     Ok(Some(arr.value(self.row)))
+                }
+            }
+            Some(ColumnAccessor::String(arr)) => {
+                if arr.is_null(self.row) {
+                    Ok(None)
+                } else {
+                    Ok(parse_i64(arr.value(self.row)))
+                }
+            }
+            Some(ColumnAccessor::Bytes(arr)) => {
+                if arr.is_null(self.row) {
+                    Ok(None)
+                } else {
+                    let text = match std::str::from_utf8(arr.value(self.row)) {
+                        Ok(text) => text,
+                        Err(_) => return Ok(None),
+                    };
+                    Ok(parse_i64(text))
+                }
+            }
+            Some(ColumnAccessor::Float64(arr)) => {
+                if arr.is_null(self.row) {
+                    Ok(None)
+                } else {
+                    Ok(Some(arr.value(self.row) as i64))
+                }
+            }
+            Some(ColumnAccessor::Float32(arr)) => {
+                if arr.is_null(self.row) {
+                    Ok(None)
+                } else {
+                    Ok(Some(arr.value(self.row) as i64))
+                }
+            }
+            Some(ColumnAccessor::Decimal128(arr)) => {
+                if arr.is_null(self.row) {
+                    Ok(None)
+                } else {
+                    Ok(Some(arr.value(self.row) as i64))
+                }
+            }
+            Some(ColumnAccessor::Decimal256(arr)) => {
+                if arr.is_null(self.row) {
+                    Ok(None)
+                } else {
+                    let value = arr.value(self.row);
+                    Ok(value.to_i128().map(|v| v as i64))
                 }
             }
             _ => Err(anyhow!("rowpack int64 accessor mismatch")),
@@ -2941,6 +3335,31 @@ impl<'a> RowValueAccess for RowAccessor<'a> {
                     Ok(Some(arr.value(self.row) as i32))
                 }
             }
+            Some(ColumnAccessor::Int64(arr)) => {
+                if arr.is_null(self.row) {
+                    Ok(None)
+                } else {
+                    Ok(Some(arr.value(self.row) as i32))
+                }
+            }
+            Some(ColumnAccessor::String(arr)) => {
+                if arr.is_null(self.row) {
+                    Ok(None)
+                } else {
+                    Ok(parse_i32(arr.value(self.row)))
+                }
+            }
+            Some(ColumnAccessor::Bytes(arr)) => {
+                if arr.is_null(self.row) {
+                    Ok(None)
+                } else {
+                    let text = match std::str::from_utf8(arr.value(self.row)) {
+                        Ok(text) => text,
+                        Err(_) => return Ok(None),
+                    };
+                    Ok(parse_i32(text))
+                }
+            }
             _ => Err(anyhow!("rowpack int32 accessor mismatch")),
         }
     }
@@ -2952,6 +3371,45 @@ impl<'a> RowValueAccess for RowAccessor<'a> {
                     Ok(None)
                 } else {
                     Ok(Some(arr.value(self.row)))
+                }
+            }
+            Some(ColumnAccessor::UInt32(arr)) => {
+                if arr.is_null(self.row) {
+                    Ok(None)
+                } else {
+                    Ok(Some(arr.value(self.row) as u64))
+                }
+            }
+            Some(ColumnAccessor::UInt16(arr)) => {
+                if arr.is_null(self.row) {
+                    Ok(None)
+                } else {
+                    Ok(Some(arr.value(self.row) as u64))
+                }
+            }
+            Some(ColumnAccessor::UInt8(arr)) => {
+                if arr.is_null(self.row) {
+                    Ok(None)
+                } else {
+                    Ok(Some(arr.value(self.row) as u64))
+                }
+            }
+            Some(ColumnAccessor::String(arr)) => {
+                if arr.is_null(self.row) {
+                    Ok(None)
+                } else {
+                    Ok(parse_u64(arr.value(self.row)))
+                }
+            }
+            Some(ColumnAccessor::Bytes(arr)) => {
+                if arr.is_null(self.row) {
+                    Ok(None)
+                } else {
+                    let text = match std::str::from_utf8(arr.value(self.row)) {
+                        Ok(text) => text,
+                        Err(_) => return Ok(None),
+                    };
+                    Ok(parse_u64(text))
                 }
             }
             _ => Err(anyhow!("rowpack uint64 accessor mismatch")),
@@ -2981,6 +3439,31 @@ impl<'a> RowValueAccess for RowAccessor<'a> {
                     Ok(Some(arr.value(self.row) as u32))
                 }
             }
+            Some(ColumnAccessor::UInt64(arr)) => {
+                if arr.is_null(self.row) {
+                    Ok(None)
+                } else {
+                    Ok(Some(arr.value(self.row) as u32))
+                }
+            }
+            Some(ColumnAccessor::String(arr)) => {
+                if arr.is_null(self.row) {
+                    Ok(None)
+                } else {
+                    Ok(parse_u32(arr.value(self.row)))
+                }
+            }
+            Some(ColumnAccessor::Bytes(arr)) => {
+                if arr.is_null(self.row) {
+                    Ok(None)
+                } else {
+                    let text = match std::str::from_utf8(arr.value(self.row)) {
+                        Ok(text) => text,
+                        Err(_) => return Ok(None),
+                    };
+                    Ok(parse_u32(text))
+                }
+            }
             _ => Err(anyhow!("rowpack uint32 accessor mismatch")),
         }
     }
@@ -2992,6 +3475,31 @@ impl<'a> RowValueAccess for RowAccessor<'a> {
                     Ok(None)
                 } else {
                     Ok(Some(arr.value(self.row)))
+                }
+            }
+            Some(ColumnAccessor::Float32(arr)) => {
+                if arr.is_null(self.row) {
+                    Ok(None)
+                } else {
+                    Ok(Some(arr.value(self.row) as f64))
+                }
+            }
+            Some(ColumnAccessor::String(arr)) => {
+                if arr.is_null(self.row) {
+                    Ok(None)
+                } else {
+                    Ok(parse_f64(arr.value(self.row)))
+                }
+            }
+            Some(ColumnAccessor::Bytes(arr)) => {
+                if arr.is_null(self.row) {
+                    Ok(None)
+                } else {
+                    let text = match std::str::from_utf8(arr.value(self.row)) {
+                        Ok(text) => text,
+                        Err(_) => return Ok(None),
+                    };
+                    Ok(parse_f64(text))
                 }
             }
             _ => Err(anyhow!("rowpack float64 accessor mismatch")),
@@ -3007,6 +3515,31 @@ impl<'a> RowValueAccess for RowAccessor<'a> {
                     Ok(Some(arr.value(self.row)))
                 }
             }
+            Some(ColumnAccessor::Float64(arr)) => {
+                if arr.is_null(self.row) {
+                    Ok(None)
+                } else {
+                    Ok(Some(arr.value(self.row) as f32))
+                }
+            }
+            Some(ColumnAccessor::String(arr)) => {
+                if arr.is_null(self.row) {
+                    Ok(None)
+                } else {
+                    Ok(parse_f32(arr.value(self.row)))
+                }
+            }
+            Some(ColumnAccessor::Bytes(arr)) => {
+                if arr.is_null(self.row) {
+                    Ok(None)
+                } else {
+                    let text = match std::str::from_utf8(arr.value(self.row)) {
+                        Ok(text) => text,
+                        Err(_) => return Ok(None),
+                    };
+                    Ok(parse_f32(text))
+                }
+            }
             _ => Err(anyhow!("rowpack float32 accessor mismatch")),
         }
     }
@@ -3018,6 +3551,24 @@ impl<'a> RowValueAccess for RowAccessor<'a> {
                     Ok(None)
                 } else {
                     Ok(Some(arr.value(self.row)))
+                }
+            }
+            Some(ColumnAccessor::String(arr)) => {
+                if arr.is_null(self.row) {
+                    Ok(None)
+                } else {
+                    Ok(parse_bool(arr.value(self.row)))
+                }
+            }
+            Some(ColumnAccessor::Bytes(arr)) => {
+                if arr.is_null(self.row) {
+                    Ok(None)
+                } else {
+                    let text = match std::str::from_utf8(arr.value(self.row)) {
+                        Ok(text) => text,
+                        Err(_) => return Ok(None),
+                    };
+                    Ok(parse_bool(text))
                 }
             }
             _ => Err(anyhow!("rowpack bool accessor mismatch")),
@@ -3033,6 +3584,65 @@ impl<'a> RowValueAccess for RowAccessor<'a> {
                     Ok(Some(arr.value(self.row)))
                 }
             }
+            Some(ColumnAccessor::Bytes(arr)) => {
+                if arr.is_null(self.row) {
+                    Ok(None)
+                } else {
+                    let text = match std::str::from_utf8(arr.value(self.row)) {
+                        Ok(text) => text,
+                        Err(_) => return Ok(None),
+                    };
+                    Ok(Some(text))
+                }
+            }
+            Some(ColumnAccessor::Int64(arr)) => {
+                if arr.is_null(self.row) {
+                    Ok(None)
+                } else {
+                    self.strings.push(arr.value(self.row).to_string());
+                    Ok(self.strings.last().map(|s| s.as_str()))
+                }
+            }
+            Some(ColumnAccessor::Int32(arr)) => {
+                if arr.is_null(self.row) {
+                    Ok(None)
+                } else {
+                    self.strings.push(arr.value(self.row).to_string());
+                    Ok(self.strings.last().map(|s| s.as_str()))
+                }
+            }
+            Some(ColumnAccessor::UInt64(arr)) => {
+                if arr.is_null(self.row) {
+                    Ok(None)
+                } else {
+                    self.strings.push(arr.value(self.row).to_string());
+                    Ok(self.strings.last().map(|s| s.as_str()))
+                }
+            }
+            Some(ColumnAccessor::UInt32(arr)) => {
+                if arr.is_null(self.row) {
+                    Ok(None)
+                } else {
+                    self.strings.push(arr.value(self.row).to_string());
+                    Ok(self.strings.last().map(|s| s.as_str()))
+                }
+            }
+            Some(ColumnAccessor::Float64(arr)) => {
+                if arr.is_null(self.row) {
+                    Ok(None)
+                } else {
+                    self.strings.push(arr.value(self.row).to_string());
+                    Ok(self.strings.last().map(|s| s.as_str()))
+                }
+            }
+            Some(ColumnAccessor::Float32(arr)) => {
+                if arr.is_null(self.row) {
+                    Ok(None)
+                } else {
+                    self.strings.push(arr.value(self.row).to_string());
+                    Ok(self.strings.last().map(|s| s.as_str()))
+                }
+            }
             _ => Err(anyhow!("rowpack string accessor mismatch")),
         }
     }
@@ -3046,11 +3656,39 @@ impl<'a> RowValueAccess for RowAccessor<'a> {
                     Ok(Some(arr.value(self.row)))
                 }
             }
+            Some(ColumnAccessor::String(arr)) => {
+                if arr.is_null(self.row) {
+                    Ok(None)
+                } else {
+                    self.bytes.push(arr.value(self.row).as_bytes().to_vec());
+                    Ok(self.bytes.last().map(|v| v.as_slice()))
+                }
+            }
+            Some(ColumnAccessor::Int64(arr)) => {
+                if arr.is_null(self.row) {
+                    Ok(None)
+                } else {
+                    self.bytes.push(arr.value(self.row).to_string().into_bytes());
+                    Ok(self.bytes.last().map(|v| v.as_slice()))
+                }
+            }
+            Some(ColumnAccessor::UInt64(arr)) => {
+                if arr.is_null(self.row) {
+                    Ok(None)
+                } else {
+                    self.bytes.push(arr.value(self.row).to_string().into_bytes());
+                    Ok(self.bytes.last().map(|v| v.as_slice()))
+                }
+            }
             _ => Err(anyhow!("rowpack bytes accessor mismatch")),
         }
     }
 
     fn get_date(&mut self, idx: usize) -> Result<Option<i32>> {
+        let col = self
+            .columns
+            .get(idx)
+            .ok_or_else(|| anyhow!("rowpack date missing column"))?;
         match self.accessors.get(idx) {
             Some(ColumnAccessor::Date(arr)) => {
                 if arr.is_null(self.row) {
@@ -3059,11 +3697,55 @@ impl<'a> RowValueAccess for RowAccessor<'a> {
                     Ok(Some(arr.value(self.row)))
                 }
             }
+            Some(ColumnAccessor::Timestamp(accessor)) => {
+                if accessor_is_null(accessor, self.row) {
+                    Ok(None)
+                } else {
+                    let (secs, _) = accessor.value(self.row);
+                    Ok(Some(days_from_secs(secs)))
+                }
+            }
+            Some(ColumnAccessor::String(arr)) => {
+                if arr.is_null(self.row) {
+                    Ok(None)
+                } else {
+                    Ok(parse_date_text(arr.value(self.row), col.timestamp_format.as_deref()))
+                }
+            }
+            Some(ColumnAccessor::Bytes(arr)) => {
+                if arr.is_null(self.row) {
+                    Ok(None)
+                } else {
+                    let text = match std::str::from_utf8(arr.value(self.row)) {
+                        Ok(text) => text,
+                        Err(_) => return Ok(None),
+                    };
+                    Ok(parse_date_text(text, col.timestamp_format.as_deref()))
+                }
+            }
+            Some(ColumnAccessor::Int64(arr)) => {
+                if arr.is_null(self.row) {
+                    Ok(None)
+                } else {
+                    let value = arr.value(self.row);
+                    let days = if let Some(unit) = col.timestamp_unit.as_ref() {
+                        let (secs, _) = timestamp_from_int(value, unit.clone());
+                        days_from_secs(secs)
+                    } else {
+                        value as i32
+                    };
+                    Ok(Some(days))
+                }
+            }
             _ => Err(anyhow!("rowpack date accessor mismatch")),
         }
     }
 
     fn get_timestamp(&mut self, idx: usize) -> Result<Option<(i64, u32)>> {
+        let col = self
+            .columns
+            .get(idx)
+            .ok_or_else(|| anyhow!("rowpack timestamp missing column"))?;
         match self.accessors.get(idx) {
             Some(ColumnAccessor::Timestamp(accessor)) => {
                 if accessor_is_null(accessor, self.row) {
@@ -3072,11 +3754,58 @@ impl<'a> RowValueAccess for RowAccessor<'a> {
                     Ok(Some(accessor.value(self.row)))
                 }
             }
+            Some(ColumnAccessor::String(arr)) => {
+                if arr.is_null(self.row) {
+                    Ok(None)
+                } else {
+                    Ok(parse_timestamp_text(
+                        arr.value(self.row),
+                        col.timestamp_format.as_deref(),
+                    ))
+                }
+            }
+            Some(ColumnAccessor::Bytes(arr)) => {
+                if arr.is_null(self.row) {
+                    Ok(None)
+                } else {
+                    let text = match std::str::from_utf8(arr.value(self.row)) {
+                        Ok(text) => text,
+                        Err(_) => return Ok(None),
+                    };
+                    Ok(parse_timestamp_text(text, col.timestamp_format.as_deref()))
+                }
+            }
+            Some(ColumnAccessor::Int64(arr)) => {
+                if arr.is_null(self.row) {
+                    Ok(None)
+                } else {
+                    let unit = col
+                        .timestamp_unit
+                        .clone()
+                        .unwrap_or(TimestampUnit::Seconds);
+                    Ok(Some(timestamp_from_int(arr.value(self.row), unit)))
+                }
+            }
+            Some(ColumnAccessor::UInt64(arr)) => {
+                if arr.is_null(self.row) {
+                    Ok(None)
+                } else {
+                    let unit = col
+                        .timestamp_unit
+                        .clone()
+                        .unwrap_or(TimestampUnit::Seconds);
+                    Ok(Some(timestamp_from_int(arr.value(self.row) as i64, unit)))
+                }
+            }
             _ => Err(anyhow!("rowpack timestamp accessor mismatch")),
         }
     }
 
     fn get_decimal128(&mut self, idx: usize) -> Result<Option<i128>> {
+        let col = self
+            .columns
+            .get(idx)
+            .ok_or_else(|| anyhow!("rowpack decimal128 missing column"))?;
         match self.accessors.get(idx) {
             Some(ColumnAccessor::Decimal128(arr)) => {
                 if arr.is_null(self.row) {
@@ -3085,17 +3814,64 @@ impl<'a> RowValueAccess for RowAccessor<'a> {
                     Ok(Some(arr.value(self.row)))
                 }
             }
+            Some(ColumnAccessor::String(arr)) => {
+                if arr.is_null(self.row) {
+                    Ok(None)
+                } else {
+                    Ok(parse_decimal_i128(
+                        arr.value(self.row),
+                        col.scale.unwrap_or(0),
+                    ))
+                }
+            }
+            Some(ColumnAccessor::Bytes(arr)) => {
+                if arr.is_null(self.row) {
+                    Ok(None)
+                } else {
+                    let text = match std::str::from_utf8(arr.value(self.row)) {
+                        Ok(text) => text,
+                        Err(_) => return Ok(None),
+                    };
+                    Ok(parse_decimal_i128(text, col.scale.unwrap_or(0)))
+                }
+            }
             _ => Err(anyhow!("rowpack decimal128 accessor mismatch")),
         }
     }
 
     fn get_decimal256(&mut self, idx: usize) -> Result<Option<[u8; 32]>> {
+        let col = self
+            .columns
+            .get(idx)
+            .ok_or_else(|| anyhow!("rowpack decimal256 missing column"))?;
         match self.accessors.get(idx) {
             Some(ColumnAccessor::Decimal256(arr)) => {
                 if arr.is_null(self.row) {
                     Ok(None)
                 } else {
                     Ok(Some(arr.value(self.row).to_le_bytes()))
+                }
+            }
+            Some(ColumnAccessor::String(arr)) => {
+                if arr.is_null(self.row) {
+                    Ok(None)
+                } else {
+                    Ok(parse_decimal_i256(
+                        arr.value(self.row),
+                        col.scale.unwrap_or(0),
+                    )
+                    .map(|v| v.to_le_bytes()))
+                }
+            }
+            Some(ColumnAccessor::Bytes(arr)) => {
+                if arr.is_null(self.row) {
+                    Ok(None)
+                } else {
+                    let text = match std::str::from_utf8(arr.value(self.row)) {
+                        Ok(text) => text,
+                        Err(_) => return Ok(None),
+                    };
+                    Ok(parse_decimal_i256(text, col.scale.unwrap_or(0)).map(|v| v.to_le_bytes()))
                 }
             }
             _ => Err(anyhow!("rowpack decimal256 accessor mismatch")),
@@ -3182,7 +3958,7 @@ fn build_accessors<'a>(cols: &'a [ArrayRef], table: &TableSpec) -> Result<Vec<Co
         let array = cols
             .get(idx)
             .ok_or_else(|| anyhow!("missing column {}", col.name))?;
-        let accessor = match col.ingested_dtype {
+        let accessor = match col.source_dtype {
             ColumnType::Int64 => ColumnAccessor::Int64(
                 array
                     .as_any()
@@ -3366,6 +4142,8 @@ fn row_values_from_row<'a>(
     values: &mut Vec<ValueRef<'a>>,
     arrays_f32: &'a mut Vec<Vec<f32>>,
     arrays_f64: &'a mut Vec<Vec<f64>>,
+    strings: &'a mut Vec<String>,
+    bytes: &'a mut Vec<Vec<u8>>,
 ) -> Result<()> {
     for (idx, col) in table.columns.iter().enumerate() {
         let array = row
@@ -3376,188 +4154,767 @@ fn row_values_from_row<'a>(
             values.push(ValueRef::Null);
             continue;
         }
-        match col.ingested_dtype {
-            ColumnType::Int64 => {
-                let arr = array
-                    .as_any()
-                    .downcast_ref::<arrow_array::Int64Array>()
-                    .ok_or_else(|| anyhow!("int64 cast"))?;
-                values.push(ValueRef::Int64(arr.value(row.row)));
+        match (col.source_dtype.clone(), col.ingested_dtype.clone()) {
+            (source, ingested) if source == ingested => match source {
+                ColumnType::Int64 => {
+                    let arr = array
+                        .as_any()
+                        .downcast_ref::<arrow_array::Int64Array>()
+                        .ok_or_else(|| anyhow!("int64 cast"))?;
+                    values.push(ValueRef::Int64(arr.value(row.row)));
+                }
+                ColumnType::Int8 => {
+                    let arr = array
+                        .as_any()
+                        .downcast_ref::<arrow_array::Int8Array>()
+                        .ok_or_else(|| anyhow!("int8 cast"))?;
+                    values.push(ValueRef::Int32(arr.value(row.row) as i32));
+                }
+                ColumnType::Int16 => {
+                    let arr = array
+                        .as_any()
+                        .downcast_ref::<arrow_array::Int16Array>()
+                        .ok_or_else(|| anyhow!("int16 cast"))?;
+                    values.push(ValueRef::Int32(arr.value(row.row) as i32));
+                }
+                ColumnType::Int32 => {
+                    let arr = array
+                        .as_any()
+                        .downcast_ref::<arrow_array::Int32Array>()
+                        .ok_or_else(|| anyhow!("int32 cast"))?;
+                    values.push(ValueRef::Int32(arr.value(row.row)));
+                }
+                ColumnType::UInt64 => {
+                    let arr = array
+                        .as_any()
+                        .downcast_ref::<arrow_array::UInt64Array>()
+                        .ok_or_else(|| anyhow!("uint64 cast"))?;
+                    values.push(ValueRef::UInt64(arr.value(row.row)));
+                }
+                ColumnType::UInt8 => {
+                    let arr = array
+                        .as_any()
+                        .downcast_ref::<arrow_array::UInt8Array>()
+                        .ok_or_else(|| anyhow!("uint8 cast"))?;
+                    values.push(ValueRef::UInt32(arr.value(row.row) as u32));
+                }
+                ColumnType::UInt16 => {
+                    let arr = array
+                        .as_any()
+                        .downcast_ref::<arrow_array::UInt16Array>()
+                        .ok_or_else(|| anyhow!("uint16 cast"))?;
+                    values.push(ValueRef::UInt32(arr.value(row.row) as u32));
+                }
+                ColumnType::UInt32 => {
+                    let arr = array
+                        .as_any()
+                        .downcast_ref::<arrow_array::UInt32Array>()
+                        .ok_or_else(|| anyhow!("uint32 cast"))?;
+                    values.push(ValueRef::UInt32(arr.value(row.row)));
+                }
+                ColumnType::Float64 => {
+                    let arr = array
+                        .as_any()
+                        .downcast_ref::<arrow_array::Float64Array>()
+                        .ok_or_else(|| anyhow!("float64 cast"))?;
+                    values.push(ValueRef::Float64(arr.value(row.row)));
+                }
+                ColumnType::Float32 => {
+                    let arr = array
+                        .as_any()
+                        .downcast_ref::<arrow_array::Float32Array>()
+                        .ok_or_else(|| anyhow!("float32 cast"))?;
+                    values.push(ValueRef::Float32(arr.value(row.row)));
+                }
+                ColumnType::Bool => {
+                    let arr = array
+                        .as_any()
+                        .downcast_ref::<arrow_array::BooleanArray>()
+                        .ok_or_else(|| anyhow!("bool cast"))?;
+                    values.push(ValueRef::Bool(arr.value(row.row)));
+                }
+                ColumnType::String => {
+                    let arr = array
+                        .as_any()
+                        .downcast_ref::<arrow_array::StringArray>()
+                        .ok_or_else(|| anyhow!("string cast"))?;
+                    values.push(ValueRef::String(arr.value(row.row)));
+                }
+                ColumnType::Bytes => {
+                    let arr = array
+                        .as_any()
+                        .downcast_ref::<arrow_array::BinaryArray>()
+                        .ok_or_else(|| anyhow!("binary cast"))?;
+                    values.push(ValueRef::Bytes(arr.value(row.row)));
+                }
+                ColumnType::Date => {
+                    let arr = array
+                        .as_any()
+                        .downcast_ref::<arrow_array::Date32Array>()
+                        .ok_or_else(|| anyhow!("date cast"))?;
+                    values.push(ValueRef::Date(arr.value(row.row)));
+                }
+                ColumnType::Timestamp => {
+                    let (secs, nanos) = timestamp_parts_from_array(array, row.row)?;
+                    values.push(ValueRef::Timestamp { secs, nanos });
+                }
+                ColumnType::Decimal128 => {
+                    let arr = array
+                        .as_any()
+                        .downcast_ref::<arrow_array::Decimal128Array>()
+                        .ok_or_else(|| anyhow!("decimal128 cast"))?;
+                    values.push(ValueRef::Decimal128(arr.value(row.row)));
+                }
+                ColumnType::Decimal256 => {
+                    let arr = array
+                        .as_any()
+                        .downcast_ref::<arrow_array::Decimal256Array>()
+                        .ok_or_else(|| anyhow!("decimal256 cast"))?;
+                    values.push(ValueRef::Decimal256(arr.value(row.row).to_le_bytes()));
+                }
+                ColumnType::Float32Array => {
+                    let list = array
+                        .as_any()
+                        .downcast_ref::<arrow_array::ListArray>()
+                        .ok_or_else(|| anyhow!("list cast"))?;
+                    let values_arr = list
+                        .values()
+                        .as_any()
+                        .downcast_ref::<arrow_array::Float32Array>()
+                        .ok_or_else(|| anyhow!("float32 list cast"))?;
+                    let offsets = list.value_offsets();
+                    let start = offsets[row.row] as usize;
+                    let end = offsets[row.row + 1] as usize;
+                    if values_arr.null_count() == 0 {
+                        let slice = &values_arr.values().as_ref()[start..end];
+                        values.push(ValueRef::Float32Array(slice));
+                    } else {
+                        let mut vec = Vec::with_capacity(end.saturating_sub(start));
+                        for idx in start..end {
+                            if values_arr.is_null(idx) {
+                                vec.push(0.0);
+                            } else {
+                                vec.push(values_arr.value(idx));
+                            }
+                        }
+                        arrays_f32.push(vec);
+                        let slice_ptr = arrays_f32.last().unwrap().as_slice() as *const [f32];
+                        let slice = unsafe { &*slice_ptr };
+                        values.push(ValueRef::Float32Array(slice));
+                    }
+                }
+                ColumnType::Float64Array => {
+                    let list = array
+                        .as_any()
+                        .downcast_ref::<arrow_array::ListArray>()
+                        .ok_or_else(|| anyhow!("list cast"))?;
+                    let values_arr = list
+                        .values()
+                        .as_any()
+                        .downcast_ref::<arrow_array::Float64Array>()
+                        .ok_or_else(|| anyhow!("float64 list cast"))?;
+                    let offsets = list.value_offsets();
+                    let start = offsets[row.row] as usize;
+                    let end = offsets[row.row + 1] as usize;
+                    if values_arr.null_count() == 0 {
+                        let slice = &values_arr.values().as_ref()[start..end];
+                        values.push(ValueRef::Float64Array(slice));
+                    } else {
+                        let mut vec = Vec::with_capacity(end.saturating_sub(start));
+                        for idx in start..end {
+                            if values_arr.is_null(idx) {
+                                vec.push(0.0);
+                            } else {
+                                vec.push(values_arr.value(idx));
+                            }
+                        }
+                        arrays_f64.push(vec);
+                        let slice_ptr = arrays_f64.last().unwrap().as_slice() as *const [f64];
+                        let slice = unsafe { &*slice_ptr };
+                        values.push(ValueRef::Float64Array(slice));
+                    }
+                }
+            },
+            (ColumnType::String, ColumnType::Timestamp)
+            | (ColumnType::Bytes, ColumnType::Timestamp) => {
+                let text = read_utf8(array, row.row, &col.source_dtype)?;
+                if let Some((secs, nanos)) = parse_timestamp_text(text, col.timestamp_format.as_deref()) {
+                    values.push(ValueRef::Timestamp { secs, nanos });
+                } else {
+                    values.push(ValueRef::Null);
+                }
             }
-            ColumnType::Int8 => {
-                let arr = array
-                    .as_any()
-                    .downcast_ref::<arrow_array::Int8Array>()
-                    .ok_or_else(|| anyhow!("int8 cast"))?;
-                values.push(ValueRef::Int32(arr.value(row.row) as i32));
+            (ColumnType::String, ColumnType::Date)
+            | (ColumnType::Bytes, ColumnType::Date) => {
+                let text = read_utf8(array, row.row, &col.source_dtype)?;
+                if let Some(days) = parse_date_text(text, col.timestamp_format.as_deref()) {
+                    values.push(ValueRef::Date(days));
+                } else {
+                    values.push(ValueRef::Null);
+                }
             }
-            ColumnType::Int16 => {
-                let arr = array
-                    .as_any()
-                    .downcast_ref::<arrow_array::Int16Array>()
-                    .ok_or_else(|| anyhow!("int16 cast"))?;
-                values.push(ValueRef::Int32(arr.value(row.row) as i32));
-            }
-            ColumnType::Int32 => {
-                let arr = array
-                    .as_any()
-                    .downcast_ref::<arrow_array::Int32Array>()
-                    .ok_or_else(|| anyhow!("int32 cast"))?;
-                values.push(ValueRef::Int32(arr.value(row.row)));
-            }
-            ColumnType::UInt64 => {
-                let arr = array
-                    .as_any()
-                    .downcast_ref::<arrow_array::UInt64Array>()
-                    .ok_or_else(|| anyhow!("uint64 cast"))?;
-                values.push(ValueRef::UInt64(arr.value(row.row)));
-            }
-            ColumnType::UInt8 => {
-                let arr = array
-                    .as_any()
-                    .downcast_ref::<arrow_array::UInt8Array>()
-                    .ok_or_else(|| anyhow!("uint8 cast"))?;
-                values.push(ValueRef::UInt32(arr.value(row.row) as u32));
-            }
-            ColumnType::UInt16 => {
-                let arr = array
-                    .as_any()
-                    .downcast_ref::<arrow_array::UInt16Array>()
-                    .ok_or_else(|| anyhow!("uint16 cast"))?;
-                values.push(ValueRef::UInt32(arr.value(row.row) as u32));
-            }
-            ColumnType::UInt32 => {
-                let arr = array
-                    .as_any()
-                    .downcast_ref::<arrow_array::UInt32Array>()
-                    .ok_or_else(|| anyhow!("uint32 cast"))?;
-                values.push(ValueRef::UInt32(arr.value(row.row)));
-            }
-            ColumnType::Float64 => {
-                let arr = array
-                    .as_any()
-                    .downcast_ref::<arrow_array::Float64Array>()
-                    .ok_or_else(|| anyhow!("float64 cast"))?;
-                values.push(ValueRef::Float64(arr.value(row.row)));
-            }
-            ColumnType::Float32 => {
-                let arr = array
-                    .as_any()
-                    .downcast_ref::<arrow_array::Float32Array>()
-                    .ok_or_else(|| anyhow!("float32 cast"))?;
-                values.push(ValueRef::Float32(arr.value(row.row)));
-            }
-            ColumnType::Bool => {
-                let arr = array
-                    .as_any()
-                    .downcast_ref::<arrow_array::BooleanArray>()
-                    .ok_or_else(|| anyhow!("bool cast"))?;
-                values.push(ValueRef::Bool(arr.value(row.row)));
-            }
-            ColumnType::String => {
-                let arr = array
-                    .as_any()
-                    .downcast_ref::<arrow_array::StringArray>()
-                    .ok_or_else(|| anyhow!("string cast"))?;
-                values.push(ValueRef::String(arr.value(row.row)));
-            }
-            ColumnType::Bytes => {
-                let arr = array
-                    .as_any()
-                    .downcast_ref::<arrow_array::BinaryArray>()
-                    .ok_or_else(|| anyhow!("binary cast"))?;
-                values.push(ValueRef::Bytes(arr.value(row.row)));
-            }
-            ColumnType::Date => {
-                let arr = array
-                    .as_any()
-                    .downcast_ref::<arrow_array::Date32Array>()
-                    .ok_or_else(|| anyhow!("date cast"))?;
-                values.push(ValueRef::Date(arr.value(row.row)));
-            }
-            ColumnType::Timestamp => {
-                let (secs, nanos) = timestamp_parts_from_array(array, row.row)?;
+            (ColumnType::Int8, ColumnType::Timestamp)
+            | (ColumnType::Int16, ColumnType::Timestamp)
+            | (ColumnType::Int32, ColumnType::Timestamp)
+            | (ColumnType::Int64, ColumnType::Timestamp)
+            | (ColumnType::UInt8, ColumnType::Timestamp)
+            | (ColumnType::UInt16, ColumnType::Timestamp)
+            | (ColumnType::UInt32, ColumnType::Timestamp)
+            | (ColumnType::UInt64, ColumnType::Timestamp) => {
+                let value = read_i64(array, row.row, &col.source_dtype)?;
+                let unit = col
+                    .timestamp_unit
+                    .clone()
+                    .unwrap_or(TimestampUnit::Seconds);
+                let (secs, nanos) = timestamp_from_int(value, unit);
                 values.push(ValueRef::Timestamp { secs, nanos });
             }
-            ColumnType::Decimal128 => {
-                let arr = array
-                    .as_any()
-                    .downcast_ref::<arrow_array::Decimal128Array>()
-                    .ok_or_else(|| anyhow!("decimal128 cast"))?;
-                values.push(ValueRef::Decimal128(arr.value(row.row)));
-            }
-            ColumnType::Decimal256 => {
-                let arr = array
-                    .as_any()
-                    .downcast_ref::<arrow_array::Decimal256Array>()
-                    .ok_or_else(|| anyhow!("decimal256 cast"))?;
-                values.push(ValueRef::Decimal256(arr.value(row.row).to_le_bytes()));
-            }
-            ColumnType::Float32Array => {
-                let list = array
-                    .as_any()
-                    .downcast_ref::<arrow_array::ListArray>()
-                    .ok_or_else(|| anyhow!("list cast"))?;
-                let values_arr = list
-                    .values()
-                    .as_any()
-                    .downcast_ref::<arrow_array::Float32Array>()
-                    .ok_or_else(|| anyhow!("float32 list cast"))?;
-                let offsets = list.value_offsets();
-                let start = offsets[row.row] as usize;
-                let end = offsets[row.row + 1] as usize;
-                if values_arr.null_count() == 0 {
-                    let slice = &values_arr.values().as_ref()[start..end];
-                    values.push(ValueRef::Float32Array(slice));
+            (ColumnType::Int8, ColumnType::Date)
+            | (ColumnType::Int16, ColumnType::Date)
+            | (ColumnType::Int32, ColumnType::Date)
+            | (ColumnType::Int64, ColumnType::Date)
+            | (ColumnType::UInt8, ColumnType::Date)
+            | (ColumnType::UInt16, ColumnType::Date)
+            | (ColumnType::UInt32, ColumnType::Date)
+            | (ColumnType::UInt64, ColumnType::Date) => {
+                let value = read_i64(array, row.row, &col.source_dtype)?;
+                let days = if let Some(unit) = col.timestamp_unit.as_ref() {
+                    let (secs, _) = timestamp_from_int(value, unit.clone());
+                    days_from_secs(secs)
                 } else {
-                    let mut vec = Vec::with_capacity(end.saturating_sub(start));
-                    for idx in start..end {
-                        if values_arr.is_null(idx) {
-                            vec.push(0.0);
-                        } else {
-                            vec.push(values_arr.value(idx));
-                        }
-                    }
-                    arrays_f32.push(vec);
-                    let slice_ptr = arrays_f32.last().unwrap().as_slice() as *const [f32];
-                    let slice = unsafe { &*slice_ptr };
-                    values.push(ValueRef::Float32Array(slice));
+                    value as i32
+                };
+                values.push(ValueRef::Date(days));
+            }
+            (ColumnType::String, ColumnType::Int64)
+            | (ColumnType::Bytes, ColumnType::Int64) => {
+                let text = read_utf8(array, row.row, &col.source_dtype)?;
+                if let Some(v) = parse_i64(text) {
+                    values.push(ValueRef::Int64(v));
+                } else {
+                    values.push(ValueRef::Null);
                 }
             }
-            ColumnType::Float64Array => {
-                let list = array
-                    .as_any()
-                    .downcast_ref::<arrow_array::ListArray>()
-                    .ok_or_else(|| anyhow!("list cast"))?;
-                let values_arr = list
-                    .values()
-                    .as_any()
-                    .downcast_ref::<arrow_array::Float64Array>()
-                    .ok_or_else(|| anyhow!("float64 list cast"))?;
-                let offsets = list.value_offsets();
-                let start = offsets[row.row] as usize;
-                let end = offsets[row.row + 1] as usize;
-                if values_arr.null_count() == 0 {
-                    let slice = &values_arr.values().as_ref()[start..end];
-                    values.push(ValueRef::Float64Array(slice));
+            (ColumnType::String, ColumnType::Int32)
+            | (ColumnType::Bytes, ColumnType::Int32) => {
+                let text = read_utf8(array, row.row, &col.source_dtype)?;
+                if let Some(v) = parse_i32(text) {
+                    values.push(ValueRef::Int32(v));
                 } else {
-                    let mut vec = Vec::with_capacity(end.saturating_sub(start));
-                    for idx in start..end {
-                        if values_arr.is_null(idx) {
-                            vec.push(0.0);
-                        } else {
-                            vec.push(values_arr.value(idx));
-                        }
-                    }
-                    arrays_f64.push(vec);
-                    let slice_ptr = arrays_f64.last().unwrap().as_slice() as *const [f64];
-                    let slice = unsafe { &*slice_ptr };
-                    values.push(ValueRef::Float64Array(slice));
+                    values.push(ValueRef::Null);
                 }
+            }
+            (ColumnType::String, ColumnType::UInt64)
+            | (ColumnType::Bytes, ColumnType::UInt64) => {
+                let text = read_utf8(array, row.row, &col.source_dtype)?;
+                if let Some(v) = parse_u64(text) {
+                    values.push(ValueRef::UInt64(v));
+                } else {
+                    values.push(ValueRef::Null);
+                }
+            }
+            (ColumnType::String, ColumnType::UInt32)
+            | (ColumnType::Bytes, ColumnType::UInt32) => {
+                let text = read_utf8(array, row.row, &col.source_dtype)?;
+                if let Some(v) = parse_u32(text) {
+                    values.push(ValueRef::UInt32(v));
+                } else {
+                    values.push(ValueRef::Null);
+                }
+            }
+            (ColumnType::String, ColumnType::Float64)
+            | (ColumnType::Bytes, ColumnType::Float64) => {
+                let text = read_utf8(array, row.row, &col.source_dtype)?;
+                if let Some(v) = parse_f64(text) {
+                    values.push(ValueRef::Float64(v));
+                } else {
+                    values.push(ValueRef::Null);
+                }
+            }
+            (ColumnType::String, ColumnType::Float32)
+            | (ColumnType::Bytes, ColumnType::Float32) => {
+                let text = read_utf8(array, row.row, &col.source_dtype)?;
+                if let Some(v) = parse_f32(text) {
+                    values.push(ValueRef::Float32(v));
+                } else {
+                    values.push(ValueRef::Null);
+                }
+            }
+            (ColumnType::String, ColumnType::Bool)
+            | (ColumnType::Bytes, ColumnType::Bool) => {
+                let text = read_utf8(array, row.row, &col.source_dtype)?;
+                if let Some(v) = parse_bool(text) {
+                    values.push(ValueRef::Bool(v));
+                } else {
+                    values.push(ValueRef::Null);
+                }
+            }
+            (ColumnType::String, ColumnType::Decimal128)
+            | (ColumnType::Bytes, ColumnType::Decimal128) => {
+                let text = read_utf8(array, row.row, &col.source_dtype)?;
+                if let Some(v) = parse_decimal_i128(text, col.scale.unwrap_or(0)) {
+                    values.push(ValueRef::Decimal128(v));
+                } else {
+                    values.push(ValueRef::Null);
+                }
+            }
+            (ColumnType::String, ColumnType::Decimal256)
+            | (ColumnType::Bytes, ColumnType::Decimal256) => {
+                let text = read_utf8(array, row.row, &col.source_dtype)?;
+                if let Some(v) = parse_decimal_i256(text, col.scale.unwrap_or(0)) {
+                    values.push(ValueRef::Decimal256(v.to_le_bytes()));
+                } else {
+                    values.push(ValueRef::Null);
+                }
+            }
+            (ColumnType::Int64, ColumnType::String)
+            | (ColumnType::Int32, ColumnType::String)
+            | (ColumnType::Int16, ColumnType::String)
+            | (ColumnType::Int8, ColumnType::String)
+            | (ColumnType::UInt64, ColumnType::String)
+            | (ColumnType::UInt32, ColumnType::String)
+            | (ColumnType::UInt16, ColumnType::String)
+            | (ColumnType::UInt8, ColumnType::String)
+            | (ColumnType::Float64, ColumnType::String)
+            | (ColumnType::Float32, ColumnType::String)
+            | (ColumnType::Bool, ColumnType::String)
+            | (ColumnType::Date, ColumnType::String)
+            | (ColumnType::Timestamp, ColumnType::String)
+            | (ColumnType::Decimal128, ColumnType::String)
+            | (ColumnType::Decimal256, ColumnType::String) => {
+                let value = value_from_array(array, row.row)?;
+                let text = match value {
+                    JsonValue::Null => {
+                        values.push(ValueRef::Null);
+                        continue;
+                    }
+                    JsonValue::String(s) => s,
+                    JsonValue::Number(n) => n.to_string(),
+                    JsonValue::Bool(v) => v.to_string(),
+                    _ => {
+                        values.push(ValueRef::Null);
+                        continue;
+                    }
+                };
+                strings.push(text);
+                let slice_ptr = strings.last().unwrap().as_str() as *const str;
+                let slice = unsafe { &*slice_ptr };
+                values.push(ValueRef::String(slice));
+            }
+            (ColumnType::String, ColumnType::Bytes) | (ColumnType::Bytes, ColumnType::Bytes) => {
+                let data = read_bytes(array, row.row, &col.source_dtype)?;
+                bytes.push(data.to_vec());
+                let slice_ptr = bytes.last().unwrap().as_slice() as *const [u8];
+                let slice = unsafe { &*slice_ptr };
+                values.push(ValueRef::Bytes(slice));
+            }
+            _ => {
+                values.push(ValueRef::Null);
             }
         }
     }
     Ok(())
+}
+
+fn value_from_array_with_spec(
+    array: &ArrayRef,
+    row: usize,
+    col: &ColumnSpec,
+) -> Result<JsonValue> {
+    if array.is_null(row) {
+        return Ok(JsonValue::Null);
+    }
+    if col.source_dtype == col.ingested_dtype {
+        return value_from_array(array, row);
+    }
+    match (col.source_dtype.clone(), col.ingested_dtype.clone()) {
+        (ColumnType::String, ColumnType::Timestamp)
+        | (ColumnType::Bytes, ColumnType::Timestamp) => {
+            let text = read_utf8(array, row, &col.source_dtype)?;
+            if let Some((secs, _)) = parse_timestamp_text(text, col.timestamp_format.as_deref()) {
+                Ok(JsonValue::from(secs))
+            } else {
+                Ok(JsonValue::Null)
+            }
+        }
+        (ColumnType::String, ColumnType::Date) | (ColumnType::Bytes, ColumnType::Date) => {
+            let text = read_utf8(array, row, &col.source_dtype)?;
+            if let Some(days) = parse_date_text(text, col.timestamp_format.as_deref()) {
+                Ok(JsonValue::from(days))
+            } else {
+                Ok(JsonValue::Null)
+            }
+        }
+        (ColumnType::Int8, ColumnType::Timestamp)
+        | (ColumnType::Int16, ColumnType::Timestamp)
+        | (ColumnType::Int32, ColumnType::Timestamp)
+        | (ColumnType::Int64, ColumnType::Timestamp)
+        | (ColumnType::UInt8, ColumnType::Timestamp)
+        | (ColumnType::UInt16, ColumnType::Timestamp)
+        | (ColumnType::UInt32, ColumnType::Timestamp)
+        | (ColumnType::UInt64, ColumnType::Timestamp) => {
+            let value = read_i64(array, row, &col.source_dtype)?;
+            let unit = col
+                .timestamp_unit
+                .clone()
+                .unwrap_or(TimestampUnit::Seconds);
+            let (secs, _) = timestamp_from_int(value, unit);
+            Ok(JsonValue::from(secs))
+        }
+        (ColumnType::Int8, ColumnType::Date)
+        | (ColumnType::Int16, ColumnType::Date)
+        | (ColumnType::Int32, ColumnType::Date)
+        | (ColumnType::Int64, ColumnType::Date)
+        | (ColumnType::UInt8, ColumnType::Date)
+        | (ColumnType::UInt16, ColumnType::Date)
+        | (ColumnType::UInt32, ColumnType::Date)
+        | (ColumnType::UInt64, ColumnType::Date) => {
+            let value = read_i64(array, row, &col.source_dtype)?;
+            let days = if let Some(unit) = col.timestamp_unit.as_ref() {
+                let (secs, _) = timestamp_from_int(value, unit.clone());
+                days_from_secs(secs)
+            } else {
+                value as i32
+            };
+            Ok(JsonValue::from(days))
+        }
+        (ColumnType::String, ColumnType::Int64) | (ColumnType::Bytes, ColumnType::Int64) => {
+            let text = read_utf8(array, row, &col.source_dtype)?;
+            Ok(parse_i64(text).map(JsonValue::from).unwrap_or(JsonValue::Null))
+        }
+        (ColumnType::String, ColumnType::Int32) | (ColumnType::Bytes, ColumnType::Int32) => {
+            let text = read_utf8(array, row, &col.source_dtype)?;
+            Ok(parse_i32(text).map(JsonValue::from).unwrap_or(JsonValue::Null))
+        }
+        (ColumnType::String, ColumnType::UInt64) | (ColumnType::Bytes, ColumnType::UInt64) => {
+            let text = read_utf8(array, row, &col.source_dtype)?;
+            Ok(parse_u64(text).map(JsonValue::from).unwrap_or(JsonValue::Null))
+        }
+        (ColumnType::String, ColumnType::UInt32) | (ColumnType::Bytes, ColumnType::UInt32) => {
+            let text = read_utf8(array, row, &col.source_dtype)?;
+            Ok(parse_u32(text).map(JsonValue::from).unwrap_or(JsonValue::Null))
+        }
+        (ColumnType::String, ColumnType::Float64) | (ColumnType::Bytes, ColumnType::Float64) => {
+            let text = read_utf8(array, row, &col.source_dtype)?;
+            Ok(parse_f64(text).map(JsonValue::from).unwrap_or(JsonValue::Null))
+        }
+        (ColumnType::String, ColumnType::Float32) | (ColumnType::Bytes, ColumnType::Float32) => {
+            let text = read_utf8(array, row, &col.source_dtype)?;
+            Ok(parse_f32(text).map(JsonValue::from).unwrap_or(JsonValue::Null))
+        }
+        (ColumnType::String, ColumnType::Bool) | (ColumnType::Bytes, ColumnType::Bool) => {
+            let text = read_utf8(array, row, &col.source_dtype)?;
+            Ok(parse_bool(text).map(JsonValue::from).unwrap_or(JsonValue::Null))
+        }
+        (ColumnType::String, ColumnType::Decimal128)
+        | (ColumnType::Bytes, ColumnType::Decimal128) => {
+            let text = read_utf8(array, row, &col.source_dtype)?;
+            Ok(parse_decimal_i128(text, col.scale.unwrap_or(0))
+                .map(|v| JsonValue::from(v.to_string()))
+                .unwrap_or(JsonValue::Null))
+        }
+        (ColumnType::String, ColumnType::Decimal256)
+        | (ColumnType::Bytes, ColumnType::Decimal256) => {
+            let text = read_utf8(array, row, &col.source_dtype)?;
+            Ok(parse_decimal_i256(text, col.scale.unwrap_or(0))
+                .map(|v| JsonValue::from(v.to_string()))
+                .unwrap_or(JsonValue::Null))
+        }
+        (ColumnType::Int64, ColumnType::String)
+        | (ColumnType::Int32, ColumnType::String)
+        | (ColumnType::Int16, ColumnType::String)
+        | (ColumnType::Int8, ColumnType::String)
+        | (ColumnType::UInt64, ColumnType::String)
+        | (ColumnType::UInt32, ColumnType::String)
+        | (ColumnType::UInt16, ColumnType::String)
+        | (ColumnType::UInt8, ColumnType::String)
+        | (ColumnType::Float64, ColumnType::String)
+        | (ColumnType::Float32, ColumnType::String)
+        | (ColumnType::Bool, ColumnType::String)
+        | (ColumnType::Date, ColumnType::String)
+        | (ColumnType::Timestamp, ColumnType::String)
+        | (ColumnType::Decimal128, ColumnType::String)
+        | (ColumnType::Decimal256, ColumnType::String) => {
+            let value = value_from_array(array, row)?;
+            match value {
+                JsonValue::Null => Ok(JsonValue::Null),
+                JsonValue::String(s) => Ok(JsonValue::from(s)),
+                JsonValue::Number(n) => Ok(JsonValue::from(n.to_string())),
+                JsonValue::Bool(v) => Ok(JsonValue::from(v.to_string())),
+                other => Ok(JsonValue::from(other.to_string())),
+            }
+        }
+        _ => value_from_array(array, row),
+    }
+}
+
+fn read_utf8<'a>(array: &'a ArrayRef, row: usize, dtype: &ColumnType) -> Result<&'a str> {
+    match dtype {
+        ColumnType::String => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::StringArray>()
+                .ok_or_else(|| anyhow!("string cast"))?;
+            Ok(arr.value(row))
+        }
+        ColumnType::Bytes => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::BinaryArray>()
+                .ok_or_else(|| anyhow!("binary cast"))?;
+            std::str::from_utf8(arr.value(row)).map_err(|_| anyhow!("invalid utf8"))
+        }
+        _ => Err(anyhow!("unsupported utf8 source")),
+    }
+}
+
+fn read_bytes<'a>(array: &'a ArrayRef, row: usize, dtype: &ColumnType) -> Result<&'a [u8]> {
+    match dtype {
+        ColumnType::String => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::StringArray>()
+                .ok_or_else(|| anyhow!("string cast"))?;
+            Ok(arr.value(row).as_bytes())
+        }
+        ColumnType::Bytes => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::BinaryArray>()
+                .ok_or_else(|| anyhow!("binary cast"))?;
+            Ok(arr.value(row))
+        }
+        _ => Err(anyhow!("unsupported bytes source")),
+    }
+}
+
+fn read_i64(array: &ArrayRef, row: usize, dtype: &ColumnType) -> Result<i64> {
+    match dtype {
+        ColumnType::Int64 => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::Int64Array>()
+                .ok_or_else(|| anyhow!("int64 cast"))?;
+            Ok(arr.value(row))
+        }
+        ColumnType::Int32 => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::Int32Array>()
+                .ok_or_else(|| anyhow!("int32 cast"))?;
+            Ok(arr.value(row) as i64)
+        }
+        ColumnType::Int16 => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::Int16Array>()
+                .ok_or_else(|| anyhow!("int16 cast"))?;
+            Ok(arr.value(row) as i64)
+        }
+        ColumnType::Int8 => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::Int8Array>()
+                .ok_or_else(|| anyhow!("int8 cast"))?;
+            Ok(arr.value(row) as i64)
+        }
+        ColumnType::UInt64 => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::UInt64Array>()
+                .ok_or_else(|| anyhow!("uint64 cast"))?;
+            Ok(arr.value(row) as i64)
+        }
+        ColumnType::UInt32 => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::UInt32Array>()
+                .ok_or_else(|| anyhow!("uint32 cast"))?;
+            Ok(arr.value(row) as i64)
+        }
+        ColumnType::UInt16 => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::UInt16Array>()
+                .ok_or_else(|| anyhow!("uint16 cast"))?;
+            Ok(arr.value(row) as i64)
+        }
+        ColumnType::UInt8 => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::UInt8Array>()
+                .ok_or_else(|| anyhow!("uint8 cast"))?;
+            Ok(arr.value(row) as i64)
+        }
+        _ => Err(anyhow!("unsupported int source")),
+    }
+}
+
+fn parse_bool(value: &str) -> Option<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "true" | "1" => Some(true),
+        "false" | "0" => Some(false),
+        _ => None,
+    }
+}
+
+fn parse_i64(value: &str) -> Option<i64> {
+    value.trim().parse::<i64>().ok()
+}
+
+fn parse_i32(value: &str) -> Option<i32> {
+    value.trim().parse::<i32>().ok()
+}
+
+fn parse_u64(value: &str) -> Option<u64> {
+    value.trim().parse::<u64>().ok()
+}
+
+fn parse_u32(value: &str) -> Option<u32> {
+    value.trim().parse::<u32>().ok()
+}
+
+fn parse_f64(value: &str) -> Option<f64> {
+    value.trim().parse::<f64>().ok()
+}
+
+fn parse_f32(value: &str) -> Option<f32> {
+    value.trim().parse::<f32>().ok()
+}
+
+fn parse_timestamp_text(value: &str, format: Option<&str>) -> Option<(i64, u32)> {
+    let ts = if let Some(fmt) = format {
+        if fmt == "rfc3339" {
+            chrono::DateTime::parse_from_rfc3339(value)
+                .ok()
+                .map(|v| v.naive_utc())
+        } else {
+            NaiveDateTime::parse_from_str(value, fmt).ok().or_else(|| {
+                NaiveDate::parse_from_str(value, fmt)
+                    .ok()
+                    .map(|d| d.and_hms_opt(0, 0, 0).unwrap())
+            })
+        }
+    } else {
+        chrono::DateTime::parse_from_rfc3339(value)
+            .ok()
+            .map(|v| v.naive_utc())
+            .or_else(|| NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S").ok())
+            .or_else(|| NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S%.f").ok())
+            .or_else(|| NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M").ok())
+            .or_else(|| NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S").ok())
+            .or_else(|| NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S%.f").ok())
+            .or_else(|| NaiveDate::parse_from_str(value, "%Y-%m-%d").ok().map(|d| d.and_hms_opt(0, 0, 0).unwrap()))
+    }?;
+    let ts = ts.and_utc();
+    Some((ts.timestamp(), ts.timestamp_subsec_nanos()))
+}
+
+fn parse_date_text(value: &str, format: Option<&str>) -> Option<i32> {
+    let dt = if let Some(fmt) = format {
+        NaiveDate::parse_from_str(value, fmt)
+            .ok()
+            .or_else(|| NaiveDateTime::parse_from_str(value, fmt).ok().map(|v| v.date()))
+    } else {
+        NaiveDate::parse_from_str(value, "%Y-%m-%d")
+            .ok()
+            .or_else(|| NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S").ok().map(|v| v.date()))
+            .or_else(|| chrono::DateTime::parse_from_rfc3339(value).ok().map(|v| v.date_naive()))
+    }?;
+    let ts = dt.and_hms_opt(0, 0, 0)?.and_utc().timestamp();
+    Some(days_from_secs(ts))
+}
+
+fn timestamp_from_int(value: i64, unit: TimestampUnit) -> (i64, u32) {
+    match unit {
+        TimestampUnit::Seconds => (value, 0),
+        TimestampUnit::Millis => {
+            let secs = value.div_euclid(1_000);
+            let millis = value.rem_euclid(1_000) as u32;
+            (secs, millis * 1_000_000)
+        }
+        TimestampUnit::Micros => {
+            let secs = value.div_euclid(1_000_000);
+            let micros = value.rem_euclid(1_000_000) as u32;
+            (secs, micros * 1_000)
+        }
+        TimestampUnit::Nanos => {
+            let secs = value.div_euclid(1_000_000_000);
+            let nanos = value.rem_euclid(1_000_000_000) as u32;
+            (secs, nanos)
+        }
+    }
+}
+
+fn days_from_secs(secs: i64) -> i32 {
+    secs.div_euclid(86_400) as i32
+}
+
+fn parse_decimal_i128(value: &str, scale: i32) -> Option<i128> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    let negative = value.starts_with('-');
+    let digits = value
+        .strip_prefix('+')
+        .or_else(|| value.strip_prefix('-'))
+        .unwrap_or(value);
+    let mut parts = digits.split('.');
+    let whole = parts.next().unwrap_or("");
+    let frac = parts.next().unwrap_or("");
+    if parts.next().is_some() {
+        return None;
+    }
+    let scale = scale.max(0) as usize;
+    if frac.len() > scale {
+        return None;
+    }
+    let mut buf = String::with_capacity(whole.len() + scale);
+    buf.push_str(whole);
+    buf.push_str(frac);
+    for _ in frac.len()..scale {
+        buf.push('0');
+    }
+    let parsed = buf.parse::<i128>().ok()?;
+    if negative {
+        Some(-parsed)
+    } else {
+        Some(parsed)
+    }
+}
+
+fn parse_decimal_i256(value: &str, scale: i32) -> Option<arrow_buffer::i256> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    let negative = value.starts_with('-');
+    let digits = value
+        .strip_prefix('+')
+        .or_else(|| value.strip_prefix('-'))
+        .unwrap_or(value);
+    let mut parts = digits.split('.');
+    let whole = parts.next().unwrap_or("");
+    let frac = parts.next().unwrap_or("");
+    if parts.next().is_some() {
+        return None;
+    }
+    let scale = scale.max(0) as usize;
+    if frac.len() > scale {
+        return None;
+    }
+    let mut buf = String::with_capacity(whole.len() + scale);
+    buf.push_str(whole);
+    buf.push_str(frac);
+    for _ in frac.len()..scale {
+        buf.push('0');
+    }
+    let mut parsed = arrow_buffer::i256::from_string(&buf)?;
+    if negative {
+        parsed = parsed.checked_neg()?;
+    }
+    Some(parsed)
 }
 
 fn value_from_array(array: &ArrayRef, row: usize) -> Result<JsonValue> {
