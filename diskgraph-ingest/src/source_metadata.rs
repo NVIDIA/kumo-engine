@@ -34,9 +34,16 @@ pub struct TableSpec {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ColumnSpec {
     pub name: String,
-    pub dtype: ColumnType,
+    pub source_dtype: ColumnType,
+    pub ingested_dtype: ColumnType,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fixed_len: Option<usize>,
+    // For timestamp/date columns inferred from strings, this captures the parse format.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timestamp_format: Option<String>,
+    // For integer timestamps, indicates the epoch unit to interpret the value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timestamp_unit: Option<TimestampUnit>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key_mode: Option<KeyMode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -67,6 +74,15 @@ pub enum ColumnType {
     Decimal256,
     Float32Array,
     Float64Array,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TimestampUnit {
+    Seconds,
+    Millis,
+    Micros,
+    Nanos,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -144,7 +160,7 @@ impl SourceMetadata {
                 if let Some(mode) = &col.key_mode {
                     match mode {
                         KeyMode::Fixed => {
-                            if !matches!(col.dtype, ColumnType::String | ColumnType::Bytes) {
+                            if !matches!(col.ingested_dtype, ColumnType::String | ColumnType::Bytes) {
                                 errors.push(format!(
                                     "table {} column {} fixed key_mode only valid for string/bytes",
                                     table.name, col.name
@@ -157,7 +173,7 @@ impl SourceMetadata {
                             }
                         }
                         KeyMode::Uuid => {
-                            if !matches!(col.dtype, ColumnType::String | ColumnType::Bytes) {
+                            if !matches!(col.ingested_dtype, ColumnType::String | ColumnType::Bytes) {
                                 errors.push(format!(
                                     "table {} column {} uuid key_mode only valid for string/bytes",
                                     table.name, col.name
@@ -174,14 +190,14 @@ impl SourceMetadata {
                         }
                     }
                 } else if col.fixed_len.is_some()
-                    && !matches!(col.dtype, ColumnType::String | ColumnType::Bytes)
+                    && !matches!(col.ingested_dtype, ColumnType::String | ColumnType::Bytes)
                 {
                     errors.push(format!(
                         "table {} column {} fixed_len only valid for string/bytes",
                         table.name, col.name
                     ));
                 }
-                let is_decimal = matches!(col.dtype, ColumnType::Decimal128 | ColumnType::Decimal256);
+                let is_decimal = matches!(col.ingested_dtype, ColumnType::Decimal128 | ColumnType::Decimal256);
                 if is_decimal {
                     let precision = match col.precision {
                         Some(v) => v,
@@ -203,7 +219,7 @@ impl SourceMetadata {
                             continue;
                         }
                     };
-                    let max_precision = match col.dtype {
+                    let max_precision = match col.ingested_dtype {
                         ColumnType::Decimal128 => 38,
                         ColumnType::Decimal256 => 76,
                         _ => 0,
@@ -238,7 +254,7 @@ impl SourceMetadata {
                     errors.push(format!("table {} primary_key {} not found", table.name, pk));
                 } else if let Some(col) = table.columns.iter().find(|c| c.name == *pk) {
                 if !matches!(
-                    col.dtype,
+                    col.ingested_dtype,
                     ColumnType::Int8
                         | ColumnType::Int16
                         | ColumnType::Int64
@@ -266,7 +282,7 @@ impl SourceMetadata {
                     errors.push(format!("table {} weight column {} not found", table.name, weight));
                 } else if let Some(col) = table.columns.iter().find(|c| c.name == *weight) {
                     if !matches!(
-                        col.dtype,
+                        col.ingested_dtype,
                         ColumnType::Int8
                             | ColumnType::Int16
                             | ColumnType::Int64
@@ -292,7 +308,7 @@ impl SourceMetadata {
                         table.name, ts
                     ));
                 } else if let Some(col) = table.columns.iter().find(|c| c.name == *ts) {
-                    if !matches!(col.dtype, ColumnType::Date | ColumnType::Timestamp) {
+                    if !matches!(col.ingested_dtype, ColumnType::Date | ColumnType::Timestamp) {
                         errors.push(format!(
                             "table {} create_time column {} must be date/timestamp",
                             table.name, ts
@@ -440,7 +456,7 @@ impl SourceMetadata {
 
 fn compatible_key_columns(a: &ColumnSpec, b: &ColumnSpec) -> Result<(), String> {
     use ColumnType::*;
-    match (&a.dtype, &b.dtype) {
+    match (&a.ingested_dtype, &b.ingested_dtype) {
         (String, String) | (Bytes, Bytes) | (String, Bytes) | (Bytes, String) => {
             let a_mode = string_key_mode(a);
             let b_mode = string_key_mode(b);

@@ -11,7 +11,10 @@ fn base_table(name: &str) -> TableSpec {
         columns: vec![
             ColumnSpec {
                 name: "id".into(),
-                dtype: ColumnType::Int64,
+                source_dtype: ColumnType::Int64,
+                ingested_dtype: ColumnType::Int64,
+                timestamp_format: None,
+                timestamp_unit: None,
                 fixed_len: None,
                 key_mode: None,
                 precision: None,
@@ -19,7 +22,10 @@ fn base_table(name: &str) -> TableSpec {
             },
             ColumnSpec {
                 name: "name".into(),
-                dtype: ColumnType::String,
+                source_dtype: ColumnType::String,
+                ingested_dtype: ColumnType::String,
+                timestamp_format: None,
+                timestamp_unit: None,
                 fixed_len: Some(8),
                 key_mode: None,
                 precision: None,
@@ -75,7 +81,10 @@ fn validate_missing_pk_column() {
             paths: vec!["/tmp/user.parquet".into()],
             columns: vec![ColumnSpec {
                 name: "name".into(),
-                dtype: ColumnType::String,
+                source_dtype: ColumnType::String,
+                ingested_dtype: ColumnType::String,
+                timestamp_format: None,
+                timestamp_unit: None,
                 fixed_len: Some(8),
                 key_mode: None,
                 precision: None,
@@ -126,7 +135,10 @@ fn validate_duplicate_column_names() {
     let mut meta = base_metadata();
     meta.tables[0].columns.push(ColumnSpec {
         name: "id".into(),
-        dtype: ColumnType::Int64,
+        source_dtype: ColumnType::Int64,
+        ingested_dtype: ColumnType::Int64,
+        timestamp_format: None,
+        timestamp_unit: None,
         fixed_len: None,
         key_mode: None,
         precision: None,
@@ -139,7 +151,7 @@ fn validate_duplicate_column_names() {
 fn validate_fixed_key_mode_requires_fixed_len() {
     let mut meta = base_metadata();
     meta.tables[0].columns[0].name = "pk".into();
-    meta.tables[0].columns[0].dtype = ColumnType::String;
+    meta.tables[0].columns[0].ingested_dtype = ColumnType::String;
     meta.tables[0].columns[0].fixed_len = None;
     meta.tables[0].columns[0].key_mode = Some(KeyMode::Fixed);
     meta.tables[0].primary_key = Some("pk".into());
@@ -150,7 +162,7 @@ fn validate_fixed_key_mode_requires_fixed_len() {
 fn validate_uuid_key_mode_requires_string_bytes() {
     let mut meta = base_metadata();
     meta.tables[0].columns[0].key_mode = Some(KeyMode::Uuid);
-    meta.tables[0].columns[0].dtype = ColumnType::Int64;
+    meta.tables[0].columns[0].ingested_dtype = ColumnType::Int64;
     assert_err_contains(meta, "uuid key_mode only valid for string/bytes");
 }
 
@@ -158,7 +170,7 @@ fn validate_uuid_key_mode_requires_string_bytes() {
 fn validate_uuid_fixed_len_requires_16() {
     let mut meta = base_metadata();
     meta.tables[0].columns[0].key_mode = Some(KeyMode::Uuid);
-    meta.tables[0].columns[0].dtype = ColumnType::String;
+    meta.tables[0].columns[0].ingested_dtype = ColumnType::String;
     meta.tables[0].columns[0].fixed_len = Some(8);
     assert_err_contains(meta, "uuid key_mode requires fixed_len 16");
 }
@@ -167,14 +179,14 @@ fn validate_uuid_fixed_len_requires_16() {
 fn validate_fixed_len_requires_string_bytes() {
     let mut meta = base_metadata();
     meta.tables[0].columns[0].fixed_len = Some(8);
-    meta.tables[0].columns[0].dtype = ColumnType::Int64;
+    meta.tables[0].columns[0].ingested_dtype = ColumnType::Int64;
     assert_err_contains(meta, "fixed_len only valid for string/bytes");
 }
 
 #[test]
 fn validate_pk_invalid_type() {
     let mut meta = base_metadata();
-    meta.tables[0].columns[0].dtype = ColumnType::Bool;
+    meta.tables[0].columns[0].ingested_dtype = ColumnType::Bool;
     assert_err_contains(meta, "primary_key id must be numeric or string/bytes");
 }
 
@@ -197,7 +209,10 @@ fn validate_decimal_missing_precision() {
     let mut meta = base_metadata();
     meta.tables[0].columns.push(ColumnSpec {
         name: "amount".into(),
-        dtype: ColumnType::Decimal128,
+        source_dtype: ColumnType::Decimal128,
+        ingested_dtype: ColumnType::Decimal128,
+        timestamp_format: None,
+        timestamp_unit: None,
         fixed_len: None,
         key_mode: None,
         precision: None,
@@ -211,7 +226,10 @@ fn validate_decimal_missing_scale() {
     let mut meta = base_metadata();
     meta.tables[0].columns.push(ColumnSpec {
         name: "amount".into(),
-        dtype: ColumnType::Decimal128,
+        source_dtype: ColumnType::Decimal128,
+        ingested_dtype: ColumnType::Decimal128,
+        timestamp_format: None,
+        timestamp_unit: None,
         fixed_len: None,
         key_mode: None,
         precision: Some(10),
@@ -225,7 +243,10 @@ fn validate_decimal_precision_out_of_range() {
     let mut meta = base_metadata();
     meta.tables[0].columns.push(ColumnSpec {
         name: "amount".into(),
-        dtype: ColumnType::Decimal128,
+        source_dtype: ColumnType::Decimal128,
+        ingested_dtype: ColumnType::Decimal128,
+        timestamp_format: None,
+        timestamp_unit: None,
         fixed_len: None,
         key_mode: None,
         precision: Some(50),
@@ -239,7 +260,10 @@ fn validate_decimal_scale_out_of_range() {
     let mut meta = base_metadata();
     meta.tables[0].columns.push(ColumnSpec {
         name: "amount".into(),
-        dtype: ColumnType::Decimal128,
+        source_dtype: ColumnType::Decimal128,
+        ingested_dtype: ColumnType::Decimal128,
+        timestamp_format: None,
+        timestamp_unit: None,
         fixed_len: None,
         key_mode: None,
         precision: Some(10),
@@ -253,7 +277,10 @@ fn validate_decimal_precision_on_non_decimal() {
     let mut meta = base_metadata();
     meta.tables[0].columns.push(ColumnSpec {
         name: "bad".into(),
-        dtype: ColumnType::Int64,
+        source_dtype: ColumnType::Int64,
+        ingested_dtype: ColumnType::Int64,
+        timestamp_format: None,
+        timestamp_unit: None,
         fixed_len: None,
         key_mode: None,
         precision: Some(10),
@@ -271,7 +298,10 @@ fn validate_edge_fk_missing_column() {
         paths: vec!["/tmp/edge.parquet".into()],
         columns: vec![ColumnSpec {
             name: "src_id".into(),
-            dtype: ColumnType::Int64,
+            source_dtype: ColumnType::Int64,
+            ingested_dtype: ColumnType::Int64,
+            timestamp_format: None,
+            timestamp_unit: None,
             fixed_len: None,
             key_mode: None,
             precision: None,
@@ -307,7 +337,10 @@ fn validate_edge_fk_missing_table() {
         columns: vec![
             ColumnSpec {
                 name: "src_id".into(),
-                dtype: ColumnType::Int64,
+                source_dtype: ColumnType::Int64,
+                ingested_dtype: ColumnType::Int64,
+                timestamp_format: None,
+                timestamp_unit: None,
                 fixed_len: None,
                 key_mode: None,
                 precision: None,
@@ -315,7 +348,10 @@ fn validate_edge_fk_missing_table() {
             },
             ColumnSpec {
                 name: "dst_id".into(),
-                dtype: ColumnType::Int64,
+                source_dtype: ColumnType::Int64,
+                ingested_dtype: ColumnType::Int64,
+                timestamp_format: None,
+                timestamp_unit: None,
                 fixed_len: None,
                 key_mode: None,
                 precision: None,
@@ -353,7 +389,10 @@ fn validate_edge_fk_not_pk() {
         columns: vec![
             ColumnSpec {
                 name: "src_id".into(),
-                dtype: ColumnType::Int64,
+                source_dtype: ColumnType::Int64,
+                ingested_dtype: ColumnType::Int64,
+                timestamp_format: None,
+                timestamp_unit: None,
                 fixed_len: None,
                 key_mode: None,
                 precision: None,
@@ -361,7 +400,10 @@ fn validate_edge_fk_not_pk() {
             },
             ColumnSpec {
                 name: "dst_id".into(),
-                dtype: ColumnType::Int64,
+                source_dtype: ColumnType::Int64,
+                ingested_dtype: ColumnType::Int64,
+                timestamp_format: None,
+                timestamp_unit: None,
                 fixed_len: None,
                 key_mode: None,
                 precision: None,
@@ -432,7 +474,7 @@ fn validate_relationship_no_pk() {
 #[test]
 fn validate_relationship_incompatible_types() {
     let mut meta = base_metadata();
-    meta.tables[1].columns[0].dtype = ColumnType::Bool;
+    meta.tables[1].columns[0].ingested_dtype = ColumnType::Bool;
     meta.relationships.push(RelationshipSpec {
         name: Some("bad".into()),
         src_table: "User".into(),
@@ -446,8 +488,8 @@ fn validate_relationship_incompatible_types() {
 #[test]
 fn validate_relationship_signed_unsigned_ok() {
     let mut meta = base_metadata();
-    meta.tables[0].columns[0].dtype = ColumnType::Int32;
-    meta.tables[1].columns[0].dtype = ColumnType::UInt64;
+    meta.tables[0].columns[0].ingested_dtype = ColumnType::Int32;
+    meta.tables[1].columns[0].ingested_dtype = ColumnType::UInt64;
     meta.relationships.push(RelationshipSpec {
         name: Some("mixed".into()),
         src_table: "User".into(),
@@ -462,11 +504,11 @@ fn validate_relationship_signed_unsigned_ok() {
 fn validate_relationship_string_bytes_ok() {
     let mut meta = base_metadata();
     meta.tables[0].columns[0].name = "pk".into();
-    meta.tables[0].columns[0].dtype = ColumnType::String;
+    meta.tables[0].columns[0].ingested_dtype = ColumnType::String;
     meta.tables[0].columns[0].fixed_len = Some(8);
     meta.tables[0].primary_key = Some("pk".into());
     meta.tables[1].columns[0].name = "fk".into();
-    meta.tables[1].columns[0].dtype = ColumnType::Bytes;
+    meta.tables[1].columns[0].ingested_dtype = ColumnType::Bytes;
     meta.tables[1].columns[0].fixed_len = Some(8);
     meta.tables[1].primary_key = None;
     meta.relationships.push(RelationshipSpec {
@@ -482,8 +524,8 @@ fn validate_relationship_string_bytes_ok() {
 #[test]
 fn validate_relationship_float_string_ok() {
     let mut meta = base_metadata();
-    meta.tables[0].columns[0].dtype = ColumnType::Float64;
-    meta.tables[1].columns[0].dtype = ColumnType::String;
+    meta.tables[0].columns[0].ingested_dtype = ColumnType::Float64;
+    meta.tables[1].columns[0].ingested_dtype = ColumnType::String;
     meta.tables[1].columns[0].fixed_len = None;
     meta.relationships.push(RelationshipSpec {
         name: Some("float_string".into()),
@@ -498,10 +540,10 @@ fn validate_relationship_float_string_ok() {
 #[test]
 fn validate_relationship_decimal_int_ok() {
     let mut meta = base_metadata();
-    meta.tables[0].columns[0].dtype = ColumnType::Decimal128;
+    meta.tables[0].columns[0].ingested_dtype = ColumnType::Decimal128;
     meta.tables[0].columns[0].precision = Some(10);
     meta.tables[0].columns[0].scale = Some(2);
-    meta.tables[1].columns[0].dtype = ColumnType::Int32;
+    meta.tables[1].columns[0].ingested_dtype = ColumnType::Int32;
     meta.relationships.push(RelationshipSpec {
         name: Some("decimal_int".into()),
         src_table: "Device".into(),
@@ -516,11 +558,11 @@ fn validate_relationship_decimal_int_ok() {
 fn validate_relationship_string_bytes_len_mismatch() {
     let mut meta = base_metadata();
     meta.tables[0].columns[0].name = "pk".into();
-    meta.tables[0].columns[0].dtype = ColumnType::String;
+    meta.tables[0].columns[0].ingested_dtype = ColumnType::String;
     meta.tables[0].columns[0].fixed_len = Some(8);
     meta.tables[0].primary_key = Some("pk".into());
     meta.tables[1].columns[0].name = "fk".into();
-    meta.tables[1].columns[0].dtype = ColumnType::Bytes;
+    meta.tables[1].columns[0].ingested_dtype = ColumnType::Bytes;
     meta.tables[1].columns[0].fixed_len = Some(4);
     meta.tables[1].primary_key = None;
     meta.relationships.push(RelationshipSpec {
@@ -537,11 +579,11 @@ fn validate_relationship_string_bytes_len_mismatch() {
 fn validate_relationship_uuid_ok() {
     let mut meta = base_metadata();
     meta.tables[0].columns[0].name = "pk".into();
-    meta.tables[0].columns[0].dtype = ColumnType::String;
+    meta.tables[0].columns[0].ingested_dtype = ColumnType::String;
     meta.tables[0].columns[0].key_mode = Some(KeyMode::Uuid);
     meta.tables[0].primary_key = Some("pk".into());
     meta.tables[1].columns[0].name = "fk".into();
-    meta.tables[1].columns[0].dtype = ColumnType::Bytes;
+    meta.tables[1].columns[0].ingested_dtype = ColumnType::Bytes;
     meta.tables[1].columns[0].key_mode = Some(KeyMode::Uuid);
     meta.tables[1].primary_key = None;
     meta.relationships.push(RelationshipSpec {
@@ -558,11 +600,11 @@ fn validate_relationship_uuid_ok() {
 fn validate_relationship_uuid_mismatch() {
     let mut meta = base_metadata();
     meta.tables[0].columns[0].name = "pk".into();
-    meta.tables[0].columns[0].dtype = ColumnType::String;
+    meta.tables[0].columns[0].ingested_dtype = ColumnType::String;
     meta.tables[0].columns[0].key_mode = Some(KeyMode::Uuid);
     meta.tables[0].primary_key = Some("pk".into());
     meta.tables[1].columns[0].name = "fk".into();
-    meta.tables[1].columns[0].dtype = ColumnType::String;
+    meta.tables[1].columns[0].ingested_dtype = ColumnType::String;
     meta.tables[1].columns[0].fixed_len = None;
     meta.tables[1].primary_key = None;
     meta.relationships.push(RelationshipSpec {
@@ -579,12 +621,12 @@ fn validate_relationship_uuid_mismatch() {
 fn validate_relationship_fixed_to_var_mismatch() {
     let mut meta = base_metadata();
     meta.tables[0].columns[0].name = "pk".into();
-    meta.tables[0].columns[0].dtype = ColumnType::String;
+    meta.tables[0].columns[0].ingested_dtype = ColumnType::String;
     meta.tables[0].columns[0].fixed_len = Some(8);
     meta.tables[0].columns[0].key_mode = Some(KeyMode::Fixed);
     meta.tables[0].primary_key = Some("pk".into());
     meta.tables[1].columns[0].name = "fk".into();
-    meta.tables[1].columns[0].dtype = ColumnType::String;
+    meta.tables[1].columns[0].ingested_dtype = ColumnType::String;
     meta.tables[1].columns[0].fixed_len = None;
     meta.tables[1].primary_key = None;
     meta.relationships.push(RelationshipSpec {
@@ -601,11 +643,11 @@ fn validate_relationship_fixed_to_var_mismatch() {
 fn validate_relationship_fixed_string_to_int_mismatch() {
     let mut meta = base_metadata();
     meta.tables[0].columns[0].name = "pk".into();
-    meta.tables[0].columns[0].dtype = ColumnType::String;
+    meta.tables[0].columns[0].ingested_dtype = ColumnType::String;
     meta.tables[0].columns[0].fixed_len = Some(8);
     meta.tables[0].columns[0].key_mode = Some(KeyMode::Fixed);
     meta.tables[0].primary_key = Some("pk".into());
-    meta.tables[1].columns[0].dtype = ColumnType::Int64;
+    meta.tables[1].columns[0].ingested_dtype = ColumnType::Int64;
     meta.relationships.push(RelationshipSpec {
         name: Some("fixed_int".into()),
         src_table: "Device".into(),
@@ -620,11 +662,11 @@ fn validate_relationship_fixed_string_to_int_mismatch() {
 fn validate_relationship_var_bytes_string_ok() {
     let mut meta = base_metadata();
     meta.tables[0].columns[0].name = "pk".into();
-    meta.tables[0].columns[0].dtype = ColumnType::Bytes;
+    meta.tables[0].columns[0].ingested_dtype = ColumnType::Bytes;
     meta.tables[0].columns[0].fixed_len = None;
     meta.tables[0].primary_key = Some("pk".into());
     meta.tables[1].columns[0].name = "fk".into();
-    meta.tables[1].columns[0].dtype = ColumnType::String;
+    meta.tables[1].columns[0].ingested_dtype = ColumnType::String;
     meta.tables[1].columns[0].fixed_len = None;
     meta.tables[1].primary_key = None;
     meta.relationships.push(RelationshipSpec {
@@ -641,10 +683,10 @@ fn validate_relationship_var_bytes_string_ok() {
 fn validate_relationship_var_bytes_int_ok() {
     let mut meta = base_metadata();
     meta.tables[0].columns[0].name = "pk".into();
-    meta.tables[0].columns[0].dtype = ColumnType::Bytes;
+    meta.tables[0].columns[0].ingested_dtype = ColumnType::Bytes;
     meta.tables[0].columns[0].fixed_len = None;
     meta.tables[0].primary_key = Some("pk".into());
-    meta.tables[1].columns[0].dtype = ColumnType::Int64;
+    meta.tables[1].columns[0].ingested_dtype = ColumnType::Int64;
     meta.relationships.push(RelationshipSpec {
         name: Some("var_bytes_int".into()),
         src_table: "Device".into(),
@@ -660,7 +702,10 @@ fn validate_relationship_int_string_ok() {
     let mut meta = base_metadata();
     meta.tables[1].columns.push(ColumnSpec {
         name: "fk".into(),
-        dtype: ColumnType::String,
+        source_dtype: ColumnType::String,
+        ingested_dtype: ColumnType::String,
+        timestamp_format: None,
+        timestamp_unit: None,
         fixed_len: None,
         key_mode: None,
         precision: None,
@@ -681,10 +726,10 @@ fn validate_relationship_int_string_ok() {
 fn validate_relationship_string_int_ok() {
     let mut meta = base_metadata();
     meta.tables[0].columns[0].name = "pk".into();
-    meta.tables[0].columns[0].dtype = ColumnType::String;
+    meta.tables[0].columns[0].ingested_dtype = ColumnType::String;
     meta.tables[0].columns[0].fixed_len = None;
     meta.tables[0].primary_key = Some("pk".into());
-    meta.tables[1].columns[0].dtype = ColumnType::Int64;
+    meta.tables[1].columns[0].ingested_dtype = ColumnType::Int64;
     meta.relationships.push(RelationshipSpec {
         name: Some("string_int".into()),
         src_table: "Device".into(),
@@ -700,7 +745,10 @@ fn validate_relationship_int_bytes_ok() {
     let mut meta = base_metadata();
     meta.tables[1].columns.push(ColumnSpec {
         name: "fk".into(),
-        dtype: ColumnType::Bytes,
+        source_dtype: ColumnType::Bytes,
+        ingested_dtype: ColumnType::Bytes,
+        timestamp_format: None,
+        timestamp_unit: None,
         fixed_len: None,
         key_mode: None,
         precision: None,
@@ -721,10 +769,10 @@ fn validate_relationship_int_bytes_ok() {
 fn validate_relationship_bytes_int_ok() {
     let mut meta = base_metadata();
     meta.tables[0].columns[0].name = "pk".into();
-    meta.tables[0].columns[0].dtype = ColumnType::Bytes;
+    meta.tables[0].columns[0].ingested_dtype = ColumnType::Bytes;
     meta.tables[0].columns[0].fixed_len = None;
     meta.tables[0].primary_key = Some("pk".into());
-    meta.tables[1].columns[0].dtype = ColumnType::Int64;
+    meta.tables[1].columns[0].ingested_dtype = ColumnType::Int64;
     meta.relationships.push(RelationshipSpec {
         name: Some("bytes_int".into()),
         src_table: "Device".into(),
@@ -745,7 +793,10 @@ fn validate_edge_fk_int_string_ok() {
         columns: vec![
             ColumnSpec {
                 name: "src_id".into(),
-                dtype: ColumnType::String,
+                source_dtype: ColumnType::String,
+                ingested_dtype: ColumnType::String,
+                timestamp_format: None,
+                timestamp_unit: None,
                 fixed_len: None,
                 key_mode: None,
                 precision: None,
@@ -753,7 +804,10 @@ fn validate_edge_fk_int_string_ok() {
             },
             ColumnSpec {
                 name: "dst_id".into(),
-                dtype: ColumnType::Int64,
+                source_dtype: ColumnType::Int64,
+                ingested_dtype: ColumnType::Int64,
+                timestamp_format: None,
+                timestamp_unit: None,
                 fixed_len: None,
                 key_mode: None,
                 precision: None,
@@ -790,7 +844,10 @@ fn validate_edge_fk_string_int_ok() {
         columns: vec![
             ColumnSpec {
                 name: "src_id".into(),
-                dtype: ColumnType::Int64,
+                source_dtype: ColumnType::Int64,
+                ingested_dtype: ColumnType::Int64,
+                timestamp_format: None,
+                timestamp_unit: None,
                 fixed_len: None,
                 key_mode: None,
                 precision: None,
@@ -798,7 +855,10 @@ fn validate_edge_fk_string_int_ok() {
             },
             ColumnSpec {
                 name: "dst_id".into(),
-                dtype: ColumnType::String,
+                source_dtype: ColumnType::String,
+                ingested_dtype: ColumnType::String,
+                timestamp_format: None,
+                timestamp_unit: None,
                 fixed_len: None,
                 key_mode: None,
                 precision: None,
@@ -829,10 +889,10 @@ fn validate_edge_fk_string_int_ok() {
 fn validate_relationship_string_float_ok() {
     let mut meta = base_metadata();
     meta.tables[0].columns[0].name = "pk".into();
-    meta.tables[0].columns[0].dtype = ColumnType::String;
+    meta.tables[0].columns[0].ingested_dtype = ColumnType::String;
     meta.tables[0].columns[0].fixed_len = None;
     meta.tables[0].primary_key = Some("pk".into());
-    meta.tables[1].columns[0].dtype = ColumnType::Float64;
+    meta.tables[1].columns[0].ingested_dtype = ColumnType::Float64;
     meta.relationships.push(RelationshipSpec {
         name: Some("string_float".into()),
         src_table: "Device".into(),
@@ -847,9 +907,9 @@ fn validate_relationship_string_float_ok() {
 fn validate_relationship_int_decimal_ok() {
     let mut meta = base_metadata();
     meta.tables[0].columns[0].name = "pk".into();
-    meta.tables[0].columns[0].dtype = ColumnType::Int64;
+    meta.tables[0].columns[0].ingested_dtype = ColumnType::Int64;
     meta.tables[0].primary_key = Some("pk".into());
-    meta.tables[1].columns[0].dtype = ColumnType::Decimal128;
+    meta.tables[1].columns[0].ingested_dtype = ColumnType::Decimal128;
     meta.tables[1].columns[0].precision = Some(10);
     meta.tables[1].columns[0].scale = Some(2);
     meta.relationships.push(RelationshipSpec {
@@ -865,11 +925,11 @@ fn validate_relationship_int_decimal_ok() {
 fn validate_edge_fk_string_bytes_ok() {
     let mut meta = base_metadata();
     meta.tables[0].columns[0].name = "pk".into();
-    meta.tables[0].columns[0].dtype = ColumnType::Bytes;
+    meta.tables[0].columns[0].ingested_dtype = ColumnType::Bytes;
     meta.tables[0].columns[0].fixed_len = Some(8);
     meta.tables[0].primary_key = Some("pk".into());
     meta.tables[1].columns[0].name = "pk".into();
-    meta.tables[1].columns[0].dtype = ColumnType::String;
+    meta.tables[1].columns[0].ingested_dtype = ColumnType::String;
     meta.tables[1].columns[0].fixed_len = Some(8);
     meta.tables[1].primary_key = Some("pk".into());
     meta.tables.push(TableSpec {
@@ -879,7 +939,10 @@ fn validate_edge_fk_string_bytes_ok() {
         columns: vec![
             ColumnSpec {
                 name: "src_id".into(),
-                dtype: ColumnType::String,
+                source_dtype: ColumnType::String,
+                ingested_dtype: ColumnType::String,
+                timestamp_format: None,
+                timestamp_unit: None,
                 fixed_len: Some(8),
                 key_mode: None,
                 precision: None,
@@ -887,7 +950,10 @@ fn validate_edge_fk_string_bytes_ok() {
             },
             ColumnSpec {
                 name: "dst_id".into(),
-                dtype: ColumnType::Bytes,
+                source_dtype: ColumnType::Bytes,
+                ingested_dtype: ColumnType::Bytes,
+                timestamp_format: None,
+                timestamp_unit: None,
                 fixed_len: Some(8),
                 key_mode: None,
                 precision: None,
@@ -918,11 +984,11 @@ fn validate_edge_fk_string_bytes_ok() {
 fn validate_edge_fk_string_bytes_len_mismatch() {
     let mut meta = base_metadata();
     meta.tables[0].columns[0].name = "pk".into();
-    meta.tables[0].columns[0].dtype = ColumnType::Bytes;
+    meta.tables[0].columns[0].ingested_dtype = ColumnType::Bytes;
     meta.tables[0].columns[0].fixed_len = Some(8);
     meta.tables[0].primary_key = Some("pk".into());
     meta.tables[1].columns[0].name = "pk".into();
-    meta.tables[1].columns[0].dtype = ColumnType::String;
+    meta.tables[1].columns[0].ingested_dtype = ColumnType::String;
     meta.tables[1].columns[0].fixed_len = Some(8);
     meta.tables[1].primary_key = Some("pk".into());
     meta.tables.push(TableSpec {
@@ -932,7 +998,10 @@ fn validate_edge_fk_string_bytes_len_mismatch() {
         columns: vec![
             ColumnSpec {
                 name: "src_id".into(),
-                dtype: ColumnType::String,
+                source_dtype: ColumnType::String,
+                ingested_dtype: ColumnType::String,
+                timestamp_format: None,
+                timestamp_unit: None,
                 fixed_len: Some(4),
                 key_mode: None,
                 precision: None,
@@ -940,7 +1009,10 @@ fn validate_edge_fk_string_bytes_len_mismatch() {
             },
             ColumnSpec {
                 name: "dst_id".into(),
-                dtype: ColumnType::Bytes,
+                source_dtype: ColumnType::Bytes,
+                ingested_dtype: ColumnType::Bytes,
+                timestamp_format: None,
+                timestamp_unit: None,
                 fixed_len: Some(8),
                 key_mode: None,
                 precision: None,
@@ -971,7 +1043,7 @@ fn validate_edge_fk_string_bytes_len_mismatch() {
 fn validate_edge_fk_uuid_ok() {
     let mut meta = base_metadata();
     meta.tables[0].columns[0].name = "pk".into();
-    meta.tables[0].columns[0].dtype = ColumnType::String;
+    meta.tables[0].columns[0].ingested_dtype = ColumnType::String;
     meta.tables[0].columns[0].key_mode = Some(KeyMode::Uuid);
     meta.tables[0].primary_key = Some("pk".into());
     meta.tables.push(TableSpec {
@@ -980,7 +1052,10 @@ fn validate_edge_fk_uuid_ok() {
         paths: vec!["/tmp/edge.parquet".into()],
         columns: vec![ColumnSpec {
             name: "src_id".into(),
-            dtype: ColumnType::Bytes,
+            source_dtype: ColumnType::Bytes,
+            ingested_dtype: ColumnType::Bytes,
+            timestamp_format: None,
+            timestamp_unit: None,
             fixed_len: None,
             key_mode: Some(KeyMode::Uuid),
             precision: None,
@@ -1010,7 +1085,7 @@ fn validate_edge_fk_uuid_ok() {
 fn validate_edge_fk_uuid_mismatch() {
     let mut meta = base_metadata();
     meta.tables[0].columns[0].name = "pk".into();
-    meta.tables[0].columns[0].dtype = ColumnType::String;
+    meta.tables[0].columns[0].ingested_dtype = ColumnType::String;
     meta.tables[0].columns[0].key_mode = Some(KeyMode::Uuid);
     meta.tables[0].primary_key = Some("pk".into());
     meta.tables.push(TableSpec {
@@ -1019,7 +1094,10 @@ fn validate_edge_fk_uuid_mismatch() {
         paths: vec!["/tmp/edge.parquet".into()],
         columns: vec![ColumnSpec {
             name: "src_id".into(),
-            dtype: ColumnType::String,
+            source_dtype: ColumnType::String,
+            ingested_dtype: ColumnType::String,
+            timestamp_format: None,
+            timestamp_unit: None,
             fixed_len: None,
             key_mode: None,
             precision: None,

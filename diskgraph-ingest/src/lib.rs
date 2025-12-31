@@ -663,7 +663,7 @@ impl IngestContext {
                             pk_map,
                             sort_map,
                             pk_column: pk.clone(),
-                            pk_dtype: pk_col.dtype.clone(),
+                            pk_dtype: pk_col.ingested_dtype.clone(),
                             fixed_len: pk_col.fixed_len,
                             key_mode: pk_col.key_mode.clone(),
                             rowpack_builder: Some(rowpack_builder),
@@ -1721,7 +1721,7 @@ fn run_tasks(
 }
 
 fn key_type_for_column(col: &ColumnSpec) -> Result<KeyType> {
-    match col.dtype {
+    match col.ingested_dtype {
         ColumnType::Int64
         | ColumnType::Int32
         | ColumnType::Int16
@@ -1760,7 +1760,7 @@ fn key_from_array(array: &ArrayRef, row: usize, col: &ColumnSpec) -> KeyParseRes
     if array.is_null(row) {
         return Err(KeyParseError::Null);
     }
-    match col.dtype {
+    match col.ingested_dtype {
         ColumnType::Int64 => {
             let arr = array
                 .as_any()
@@ -1888,7 +1888,7 @@ fn key_from_array_for_target(
         return Err(KeyParseError::Null);
     }
     match target {
-        KeyType::Int64 => match col.dtype {
+        KeyType::Int64 => match col.ingested_dtype {
             ColumnType::Int64
             | ColumnType::Int32
             | ColumnType::Int16
@@ -1965,7 +1965,7 @@ fn key_from_array_for_target(
             }
             _ => Err(KeyParseError::UnsupportedType),
         },
-        KeyType::FixedBytes { len } => match col.dtype {
+        KeyType::FixedBytes { len } => match col.ingested_dtype {
             ColumnType::String => {
                 let arr = array
                     .as_any()
@@ -2002,7 +2002,7 @@ fn key_from_array_for_target(
             }
             _ => Err(KeyParseError::UnsupportedType),
         },
-        KeyType::VarBytes => match col.dtype {
+        KeyType::VarBytes => match col.ingested_dtype {
             ColumnType::String => {
                 let arr = array
                     .as_any()
@@ -2083,7 +2083,7 @@ fn key_from_array_for_target(
             }
             _ => Err(KeyParseError::UnsupportedType),
         },
-        KeyType::Uuid => match col.dtype {
+        KeyType::Uuid => match col.ingested_dtype {
             ColumnType::String => {
                 if col.key_mode != Some(KeyMode::Uuid) {
                     return Err(KeyParseError::TypeMismatch);
@@ -2203,7 +2203,7 @@ fn starts_with_case_insensitive(haystack: &[u8], needle: &[u8]) -> bool {
 
 fn normalize_numeric_bytes(bytes: &[u8], target_col: &ColumnSpec) -> KeyParseResult<Vec<u8>> {
     if matches!(
-        target_col.dtype,
+        target_col.ingested_dtype,
         ColumnType::Float32
             | ColumnType::Float64
             | ColumnType::Decimal128
@@ -2274,7 +2274,7 @@ fn sample_key_value(array: &ArrayRef, row: usize, col: &ColumnSpec) -> Option<St
     if array.is_null(row) {
         return Some("<null>".to_string());
     }
-    match col.dtype {
+    match col.ingested_dtype {
         ColumnType::String => {
             let arr = array.as_any().downcast_ref::<arrow_array::StringArray>()?;
             Some(format_bytes_sample(arr.value(row).as_bytes()))
@@ -2505,7 +2505,7 @@ fn for_each_row(table: &TableSpec, mut f: impl FnMut(&RowView) -> Result<()>) ->
 fn table_schema(table: &TableSpec) -> Result<Schema> {
     let mut fields = Vec::with_capacity(table.columns.len());
     for col in &table.columns {
-        let dtype = match col.dtype {
+        let dtype = match col.ingested_dtype {
             ColumnType::Int8 => DataType::Int8,
             ColumnType::Int16 => DataType::Int16,
             ColumnType::Int64 => DataType::Int64,
@@ -2573,7 +2573,7 @@ fn rowpack_config_for_table(
 fn rowpack_columns(table: &TableSpec) -> Result<Vec<diskgraph_rowpack::RowPackColumn>> {
     let mut columns = Vec::with_capacity(table.columns.len());
     for col in &table.columns {
-        let dtype = match col.dtype {
+        let dtype = match col.ingested_dtype {
             ColumnType::Int8 => RowpackType::Int8,
             ColumnType::Int16 => RowpackType::Int16,
             ColumnType::Int64 => RowpackType::Int64,
@@ -3169,7 +3169,7 @@ fn build_accessors<'a>(cols: &'a [ArrayRef], table: &TableSpec) -> Result<Vec<Co
         let array = cols
             .get(idx)
             .ok_or_else(|| anyhow!("missing column {}", col.name))?;
-        let accessor = match col.dtype {
+        let accessor = match col.ingested_dtype {
             ColumnType::Int64 => ColumnAccessor::Int64(
                 array
                     .as_any()
@@ -3363,7 +3363,7 @@ fn row_values_from_row<'a>(
             values.push(ValueRef::Null);
             continue;
         }
-        match col.dtype {
+        match col.ingested_dtype {
             ColumnType::Int64 => {
                 let arr = array
                     .as_any()
