@@ -1363,6 +1363,9 @@ fn print_rowpack_summary(ctx: &RowPackContext) {
     for (idx, col) in ctx.columns.iter().enumerate() {
         let encoding = format_rowpack_encoding(&col.encoding);
         println!("      [{}] {} ({:?}) {}", idx, col.name, col.logical_type, encoding);
+        if let ColumnEncoding::String { encoding } = &col.encoding {
+            print_rowpack_string_details(encoding);
+        }
     }
 }
 
@@ -1416,6 +1419,41 @@ fn format_string_encoding(encoding: &StringEncoding) -> String {
         StringEncoding::IsoTimestamp { fmt } => format!("string(iso_timestamp {:?})", fmt),
         StringEncoding::Snappy => "string(snappy)".to_string(),
     }
+}
+
+fn print_rowpack_string_details(encoding: &StringEncoding) {
+    match encoding {
+        StringEncoding::Dict { values } => {
+            let preview = values.iter().take(8);
+            for (idx, value) in preview.enumerate() {
+                println!("        dict[{}]={}", idx, format_rowpack_bytes(value));
+            }
+        }
+        StringEncoding::Alphabet { alphabet } => {
+            println!("        alphabet={}", format_rowpack_bytes(alphabet));
+        }
+        StringEncoding::Bpe { dict } => {
+            let preview = dict.iter().take(8);
+            for (idx, value) in preview.enumerate() {
+                println!("        bpe[{}]={}", idx, format_rowpack_bytes(value));
+            }
+        }
+        _ => {}
+    }
+}
+
+fn format_rowpack_bytes(bytes: &[u8]) -> String {
+    if let Ok(text) = std::str::from_utf8(bytes) {
+        if text.chars().all(|ch| ch.is_ascii_graphic() || ch == ' ') {
+            return format!("{:?}", text);
+        }
+    }
+    let mut out = String::with_capacity(bytes.len() * 2 + 2);
+    out.push_str("0x");
+    for b in bytes {
+        out.push_str(&format!("{:02x}", b));
+    }
+    out
 }
 
 fn format_float_storage(storage: FloatStorage) -> &'static str {
