@@ -34,7 +34,6 @@ fn main() -> Result<()> {
         std::fs::create_dir_all(parent)?;
     }
     std::fs::write(&output_path, serde_json::to_vec_pretty(&result.metadata)?)?;
-    println!("Wrote {}", output_path.display());
     println!("Tables:");
     for table in &result.metadata.tables {
         let format = match table.format {
@@ -67,12 +66,25 @@ fn main() -> Result<()> {
         for path in &result.warnings.ignored_files {
             println!("  {}", path);
         }
+        if !result.warnings.schema_mismatches.is_empty() {
+            println!("Schema diffs:");
+            for mismatch in &result.warnings.schema_mismatches {
+                println!("  {}", mismatch.path);
+                for diff in &mismatch.diffs {
+                    println!("    [{}] {} -> {}", diff.index, fmt_column(&diff.left), fmt_column(&diff.right));
+                }
+            }
+        }
     }
     if !result.warnings.notes.is_empty() {
         println!("Notes:");
         for note in &result.warnings.notes {
             println!("  {}", note);
         }
+    }
+    println!("Wrote {}", output_path.display());
+    if let Some(cmd) = ingest_command_hint(&root, &args.input) {
+        println!("Next: {}", cmd);
     }
     Ok(())
 }
@@ -86,4 +98,20 @@ fn default_output(input: &str, root: &diskgraph_infer::RootSource) -> Result<Pat
         return Err(anyhow!("invalid output for input {}", input));
     }
     Ok(path)
+}
+
+fn ingest_command_hint(root: &diskgraph_infer::RootSource, input: &str) -> Option<String> {
+    let script = match root {
+        diskgraph_infer::RootSource::Local(_) => "ingest_local.sh",
+        diskgraph_infer::RootSource::S3 { .. } => "ingest_s3.sh",
+        diskgraph_infer::RootSource::Gcs { .. } => "ingest_gcs.sh",
+        diskgraph_infer::RootSource::Adls { .. } => "ingest_adls.sh",
+    };
+    Some(format!("./diskgraph-ingest/scripts/{} {}", script, input))
+}
+fn fmt_column(col: &Option<diskgraph_ingest::source_metadata::ColumnSpec>) -> String {
+    match col {
+        Some(spec) => format!("{}:{:?}", spec.name, spec.source_dtype),
+        None => "<missing>".to_string(),
+    }
 }

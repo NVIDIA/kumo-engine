@@ -52,6 +52,7 @@ impl Default for InferOptions {
 #[derive(Clone, Debug)]
 pub struct InferWarnings {
     pub ignored_files: Vec<String>,
+    pub schema_mismatches: Vec<SchemaMismatch>,
     pub notes: Vec<String>,
 }
 
@@ -59,6 +60,19 @@ pub struct InferWarnings {
 pub struct InferenceResult {
     pub metadata: SourceMetadata,
     pub warnings: InferWarnings,
+}
+
+#[derive(Clone, Debug)]
+pub struct SchemaMismatch {
+    pub path: String,
+    pub diffs: Vec<SchemaDiff>,
+}
+
+#[derive(Clone, Debug)]
+pub struct SchemaDiff {
+    pub index: usize,
+    pub left: Option<ColumnSpec>,
+    pub right: Option<ColumnSpec>,
 }
 
 #[derive(Clone, Debug)]
@@ -113,6 +127,7 @@ pub fn parse_root_source(input: &str) -> Result<RootSource> {
 pub fn infer_source_metadata(root: &RootSource, options: InferOptions) -> Result<InferenceResult> {
     let mut warnings = InferWarnings {
         ignored_files: Vec::new(),
+        schema_mismatches: Vec::new(),
         notes: Vec::new(),
     };
     let tables = match root {
@@ -300,6 +315,10 @@ fn infer_dir_table(
                     || !columns_match(&existing.columns, &columns)
                 {
                     if options.validate_dir_schemas {
+                        warnings.schema_mismatches.push(SchemaMismatch {
+                            path: path.to_string_lossy().to_string(),
+                            diffs: schema_diffs(&existing.columns, &columns),
+                        });
                         warnings
                             .ignored_files
                             .push(path.to_string_lossy().to_string());
@@ -381,6 +400,10 @@ fn infer_remote_tables(
                 if !same_table_format(&entry.format, &format)
                     || !columns_match(&entry.columns, &columns)
                 {
+                    warnings.schema_mismatches.push(SchemaMismatch {
+                        path: path_str.clone(),
+                        diffs: schema_diffs(&entry.columns, &columns),
+                    });
                     warnings.ignored_files.push(path_str);
                 } else {
                     entry.paths.push(format!(
@@ -422,6 +445,10 @@ fn infer_remote_tables(
                 if !same_table_format(&entry.format, &format)
                     || !columns_match(&entry.columns, &columns)
                 {
+                    warnings.schema_mismatches.push(SchemaMismatch {
+                        path: path_str.clone(),
+                        diffs: schema_diffs(&entry.columns, &columns),
+                    });
                     warnings.ignored_files.push(path_str);
                 } else {
                     entry.paths.push(format!(
@@ -465,20 +492,52 @@ fn columns_match(a: &[ColumnSpec], b: &[ColumnSpec]) -> bool {
         return false;
     }
     for (lhs, rhs) in a.iter().zip(b.iter()) {
-        if lhs.name != rhs.name
-            || !column_type_eq(&lhs.source_dtype, &rhs.source_dtype)
-            || !column_type_eq(&lhs.ingested_dtype, &rhs.ingested_dtype)
-            || lhs.fixed_len != rhs.fixed_len
-            || lhs.timestamp_format != rhs.timestamp_format
-            || lhs.timestamp_unit != rhs.timestamp_unit
-            || lhs.key_mode != rhs.key_mode
-            || lhs.precision != rhs.precision
-            || lhs.scale != rhs.scale
-        {
+        if !columns_equivalent(lhs, rhs) {
             return false;
         }
     }
     true
+}
+
+fn columns_equivalent(lhs: &ColumnSpec, rhs: &ColumnSpec) -> bool {
+    lhs.name == rhs.name
+        && column_type_eq(&lhs.source_dtype, &rhs.source_dtype)
+        && lhs.fixed_len == rhs.fixed_len
+        && lhs.key_mode == rhs.key_mode
+        && lhs.precision == rhs.precision
+        && lhs.scale == rhs.scale
+}
+
+fn schema_diffs(a: &[ColumnSpec], b: &[ColumnSpec]) -> Vec<SchemaDiff> {
+    let mut diffs = Vec::new();
+    let min_len = a.len().min(b.len());
+    for idx in 0..min_len {
+        if !columns_equivalent(&a[idx], &b[idx]) {
+            diffs.push(SchemaDiff {
+                index: idx,
+                left: Some(a[idx].clone()),
+                right: Some(b[idx].clone()),
+            });
+        }
+    }
+    if a.len() > min_len {
+        for idx in min_len..a.len() {
+            diffs.push(SchemaDiff {
+                index: idx,
+                left: Some(a[idx].clone()),
+                right: None,
+            });
+        }
+    } else if b.len() > min_len {
+        for idx in min_len..b.len() {
+            diffs.push(SchemaDiff {
+                index: idx,
+                left: None,
+                right: Some(b[idx].clone()),
+            });
+        }
+    }
+    diffs
 }
 
 fn same_table_format(a: &TableFormat, b: &TableFormat) -> bool {
