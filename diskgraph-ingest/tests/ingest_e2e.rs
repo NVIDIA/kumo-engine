@@ -120,9 +120,9 @@ fn ingest_csv_with_edges_and_rowpack() -> Result<()> {
                 "primary_key": "id",
                 "weight": "weight",
                 "columns": [
-                    {"name": "id", "dtype": "int64"},
-                    {"name": "name", "dtype": "string"},
-                    {"name": "weight", "dtype": "float32"}
+                    {"name": "id", "source_dtype": "int64", "ingested_dtype": "int64"},
+                    {"name": "name", "source_dtype": "string", "ingested_dtype": "string"},
+                    {"name": "weight", "source_dtype": "float32", "ingested_dtype": "float32"}
                 ]
             },
             {
@@ -131,8 +131,8 @@ fn ingest_csv_with_edges_and_rowpack() -> Result<()> {
                 "paths": [input_root.join("orders.csv").to_string_lossy()],
                 "primary_key": "id",
                 "columns": [
-                    {"name": "id", "dtype": "int64"},
-                    {"name": "user_id", "dtype": "int64"}
+                    {"name": "id", "source_dtype": "int64", "ingested_dtype": "int64"},
+                    {"name": "user_id", "source_dtype": "int64", "ingested_dtype": "int64"}
                 ]
             },
             {
@@ -142,8 +142,8 @@ fn ingest_csv_with_edges_and_rowpack() -> Result<()> {
                 "primary_key": "id",
                 "weight": "weight",
                 "columns": [
-                    {"name": "id", "dtype": "int64"},
-                    {"name": "weight", "dtype": "float32"}
+                    {"name": "id", "source_dtype": "int64", "ingested_dtype": "int64"},
+                    {"name": "weight", "source_dtype": "float32", "ingested_dtype": "float32"}
                 ]
             },
             {
@@ -156,9 +156,9 @@ fn ingest_csv_with_edges_and_rowpack() -> Result<()> {
                 },
                 "weight": "weight",
                 "columns": [
-                    {"name": "order_id", "dtype": "int64"},
-                    {"name": "product_id", "dtype": "int64"},
-                    {"name": "weight", "dtype": "int32"}
+                    {"name": "order_id", "source_dtype": "int64", "ingested_dtype": "int64"},
+                    {"name": "product_id", "source_dtype": "int64", "ingested_dtype": "int64"},
+                    {"name": "weight", "source_dtype": "int32", "ingested_dtype": "int32"}
                 ]
             }
         ],
@@ -276,8 +276,8 @@ fn ingest_parquet_with_sorted_mapping() -> Result<()> {
                 "primary_key": "id",
                 "weight": "weight",
                 "columns": [
-                    {"name": "id", "dtype": "string", "fixed_len": 8},
-                    {"name": "weight", "dtype": "float32"}
+                    {"name": "id", "source_dtype": "string", "ingested_dtype": "string", "fixed_len": 8},
+                    {"name": "weight", "source_dtype": "float32", "ingested_dtype": "float32"}
                 ]
             }
         ],
@@ -334,8 +334,8 @@ fn ingest_csv_with_bytes_pk_mapping() -> Result<()> {
                 "paths": [table_path.to_string_lossy()],
                 "primary_key": "id",
                 "columns": [
-                    {"name": "id", "dtype": "bytes", "fixed_len": 4},
-                    {"name": "name", "dtype": "string"}
+                    {"name": "id", "source_dtype": "bytes", "ingested_dtype": "bytes", "fixed_len": 4},
+                    {"name": "name", "source_dtype": "string", "ingested_dtype": "string"}
                 ]
             }
         ],
@@ -403,8 +403,8 @@ fn ingest_relationship_uses_dest_timestamp_sort_key() -> Result<()> {
                 "paths": [event_path.to_string_lossy()],
                 "primary_key": "id",
                 "columns": [
-                    {"name": "id", "dtype": "int64"},
-                    {"name": "session_id", "dtype": "int64"}
+                    {"name": "id", "source_dtype": "int64", "ingested_dtype": "int64"},
+                    {"name": "session_id", "source_dtype": "int64", "ingested_dtype": "int64"}
                 ]
             },
             {
@@ -414,8 +414,8 @@ fn ingest_relationship_uses_dest_timestamp_sort_key() -> Result<()> {
                 "primary_key": "id",
                 "create_time": "created_at",
                 "columns": [
-                    {"name": "id", "dtype": "int64"},
-                    {"name": "created_at", "dtype": "timestamp"}
+                    {"name": "id", "source_dtype": "int64", "ingested_dtype": "int64"},
+                    {"name": "created_at", "source_dtype": "timestamp", "ingested_dtype": "timestamp"}
                 ]
             }
         ],

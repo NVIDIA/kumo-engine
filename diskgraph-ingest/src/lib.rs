@@ -545,6 +545,7 @@ impl IngestContext {
         let pk_duplicate_counts = std::sync::Arc::new(std::sync::Mutex::new(HashMap::new()));
         let pk_duplicate_samples = std::sync::Arc::new(std::sync::Mutex::new(HashMap::new()));
         let task_time = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let key_failures = std::sync::Arc::clone(&self.key_failures);
         let mut tasks = Vec::new();
         let source_rowpack = self.source.rowpack.clone();
         for table in tables {
@@ -553,6 +554,7 @@ impl IngestContext {
             let pk_duplicate_counts = std::sync::Arc::clone(&pk_duplicate_counts);
             let pk_duplicate_samples = std::sync::Arc::clone(&pk_duplicate_samples);
             let progress = progress.clone();
+            let key_failures = std::sync::Arc::clone(&key_failures);
             let source_rowpack = source_rowpack.clone();
             tasks.push(WorkItem {
                 bucket: None,
@@ -560,6 +562,7 @@ impl IngestContext {
                     let pk = table.primary_key.clone().unwrap_or_default();
                     let pk_col = column_spec(&table, &pk)?;
                     let key_type = key_type_for_column(&pk_col)?;
+                    let pk_idx = column_index(&table, &pk)?;
                     let total_hint = row_count_hint(&table).unwrap_or(0);
                     let capacity_hint = estimate_rows(&table).max(total_hint as usize);
                     let mut pk_map = PkMap::new(mapping_kind, key_type, capacity_hint);
@@ -580,15 +583,43 @@ impl IngestContext {
                     let mut next_update = PROGRESS_STEP;
                     let mut arrays_f32: Vec<Vec<f32>> = Vec::new();
                     let mut arrays_f64: Vec<Vec<f64>> = Vec::new();
+                    let mut key_failures_local = KeyFailureLocal::default();
+                    let parse_context = format!("pk_map:{}:{}", table.name, pk);
                     for_each_row(&table, |row| {
-                        let key = row.get_key_for_target(&pk_col, &pk, &pk_col, key_type)?;
-                        if let Some(sort_val) = row.sort_key(&table)? {
+                        let array = row
+                            .cols
+                            .get(pk_idx)
+                            .ok_or_else(|| anyhow!("missing column {}", pk))?;
+                        let key = match key_from_array_for_target(
+                            array,
+                            row.row,
+                            &pk_col,
+                            &pk_col,
+                            key_type,
+                        ) {
+                            Ok(key) => Some(key),
+                            Err(err) => {
+                                if matches!(
+                                    err,
+                                    KeyParseError::TypeMismatch | KeyParseError::UnsupportedType
+                                ) {
+                                    return Err(anyhow!("{} key parse error: {}", pk, err.reason()));
+                                }
+                                key_failures_local.record_parse_failure(&parse_context, err, || {
+                                    sample_key_value(array, row.row, &pk_col)
+                                });
+                                None
+                            }
+                        };
+                        if let (Some(key), Some(sort_val)) = (key.as_ref(), row.sort_key(&table)?) {
                             let sort_key = sort_key_to_u32(&sort_val)?;
                             let sort_map = sort_map
                                 .get_or_insert_with(|| PkMap::new(mapping_kind, key_type, capacity_hint));
                             sort_map.insert(key.clone(), sort_key as u64)?;
                         }
-                        pk_map.insert(key, row_id)?;
+                        if let Some(key) = key {
+                            pk_map.insert(key, row_id)?;
+                        }
                         arrays_f32.clear();
                         arrays_f64.clear();
                         let mut values = Vec::with_capacity(table.columns.len());
@@ -629,6 +660,7 @@ impl IngestContext {
                             total: Some(row_id),
                         });
                     }
+                    key_failures.merge(key_failures_local);
                     pk_map.finalize();
                     if let Some(sort) = sort_map.as_mut() {
                         sort.finalize();
@@ -2788,25 +2820,6 @@ impl<'a> RowView<'a> {
             .get(*idx)
             .ok_or_else(|| anyhow!("missing column {}", name))?;
         value_from_array(col, self.row)
-    }
-
-    fn get_key_for_target(
-        &self,
-        col: &ColumnSpec,
-        label: &str,
-        target_col: &ColumnSpec,
-        target: KeyType,
-    ) -> Result<Key> {
-        let idx = self
-            .name_to_index
-            .get(&col.name)
-            .ok_or_else(|| anyhow!("missing column {}", col.name))?;
-        let array = self
-            .cols
-            .get(*idx)
-            .ok_or_else(|| anyhow!("missing column {}", col.name))?;
-        key_from_array_for_target(array, self.row, col, target_col, target)
-            .map_err(|err| anyhow!("{} key parse error: {}", label, err.reason()))
     }
 
     fn sort_key(&self, table: &TableSpec) -> Result<Option<JsonValue>> {
