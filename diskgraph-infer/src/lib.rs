@@ -1,0 +1,1360 @@
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use anyhow::{anyhow, Context, Result};
+use bytes::Bytes;
+use chrono::{NaiveDate, NaiveDateTime};
+use diskgraph_fs::{
+    build_adls_client, build_gcs_client, build_s3_client, AdlsConfig, GcsConfig, S3Config,
+};
+use diskgraph_ingest::source_metadata::{
+    ColumnSpec, ColumnType, KeyMode, RelationshipSpec, SourceMetadata, TableFormat, TableSpec,
+};
+use arrow_schema::{DataType, Schema};
+use futures::StreamExt;
+use object_store::{path::Path as ObjectPath, ObjectStore};
+use parquet::arrow::async_reader::ParquetObjectReader;
+use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use parquet::arrow::ParquetRecordBatchStreamBuilder;
+use tokio::runtime::Runtime;
+use url::Url;
+
+const DEFAULT_SAMPLE_ROWS: usize = 2_000;
+const DEFAULT_CSV_SAMPLE_BYTES: u64 = 256 * 1024;
+const DEFAULT_CSV_SAMPLE_ROWS: usize = 2_000;
+
+#[derive(Clone, Debug)]
+pub struct InferOptions {
+    pub sample_rows: usize,
+    pub csv_sample_bytes: u64,
+    pub csv_sample_rows: usize,
+    pub validate_dir_schemas: bool,
+}
+
+impl Default for InferOptions {
+    fn default() -> Self {
+        Self {
+            sample_rows: DEFAULT_SAMPLE_ROWS,
+            csv_sample_bytes: DEFAULT_CSV_SAMPLE_BYTES,
+            csv_sample_rows: DEFAULT_CSV_SAMPLE_ROWS,
+            validate_dir_schemas: true,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct InferWarnings {
+    pub ignored_files: Vec<String>,
+    pub notes: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct InferenceResult {
+    pub metadata: SourceMetadata,
+    pub warnings: InferWarnings,
+}
+
+#[derive(Clone, Debug)]
+struct TableInput {
+    name: String,
+    format: TableFormat,
+    paths: Vec<String>,
+    columns: Vec<ColumnSpec>,
+}
+
+#[derive(Clone, Debug)]
+pub enum RootSource {
+    Local(PathBuf),
+    S3 { bucket: String, prefix: String },
+    Gcs { bucket: String, prefix: String },
+    Adls { account: String, container: String, prefix: String },
+}
+
+pub fn parse_root_source(input: &str) -> Result<RootSource> {
+    if let Ok(url) = Url::parse(input) {
+        match url.scheme() {
+            "s3" => Ok(RootSource::S3 {
+                bucket: url.host_str().unwrap_or_default().to_string(),
+                prefix: url.path().trim_start_matches('/').to_string(),
+            }),
+            "gs" | "gcs" => Ok(RootSource::Gcs {
+                bucket: url.host_str().unwrap_or_default().to_string(),
+                prefix: url.path().trim_start_matches('/').to_string(),
+            }),
+            "az" | "adls" => {
+                let account = url.host_str().unwrap_or_default().to_string();
+                let mut parts = url.path().trim_start_matches('/').splitn(2, '/');
+                let container = parts.next().unwrap_or_default().to_string();
+                let prefix = parts.next().unwrap_or("").to_string();
+                Ok(RootSource::Adls {
+                    account,
+                    container,
+                    prefix,
+                })
+            }
+            "file" => Ok(RootSource::Local(PathBuf::from(
+                url.to_file_path()
+                    .map_err(|_| anyhow!("invalid file url {}", input))?,
+            ))),
+            _ => Err(anyhow!("unsupported source scheme {}", url.scheme())),
+        }
+    } else {
+        Ok(RootSource::Local(PathBuf::from(input)))
+    }
+}
+
+pub fn infer_source_metadata(root: &RootSource, options: InferOptions) -> Result<InferenceResult> {
+    let mut warnings = InferWarnings {
+        ignored_files: Vec::new(),
+        notes: Vec::new(),
+    };
+    let tables = match root {
+        RootSource::Local(path) => infer_local_tables(path, &options, &mut warnings)?,
+        RootSource::S3 { bucket, prefix } => infer_remote_tables(
+            root,
+            bucket,
+            prefix,
+            &options,
+            &mut warnings,
+        )?,
+        RootSource::Gcs { bucket, prefix } => infer_remote_tables(
+            root,
+            bucket,
+            prefix,
+            &options,
+            &mut warnings,
+        )?,
+        RootSource::Adls {
+            account,
+            container,
+            prefix,
+        } => infer_remote_tables(
+            root,
+            &format!("{}/{}", account, container),
+            prefix,
+            &options,
+            &mut warnings,
+        )?,
+    };
+
+    let mut table_specs: Vec<TableSpec> = tables
+        .iter()
+        .map(|table| TableSpec {
+            name: table.name.clone(),
+            format: table.format.clone(),
+            paths: table.paths.clone(),
+            columns: table.columns.clone(),
+            primary_key: None,
+            create_time: None,
+            weight: None,
+            edge_table: None,
+            rowpack: None,
+        })
+        .collect();
+
+    let mut relationships = Vec::new();
+    infer_primary_keys(&mut table_specs);
+    infer_create_time(&mut table_specs);
+    infer_foreign_keys(&table_specs, &mut relationships, &mut warnings.notes);
+
+    let metadata = SourceMetadata {
+        dataset_name: root_dataset_name(root),
+        tables: table_specs,
+        relationships,
+        rowpack: None,
+    };
+    metadata.validate()?;
+
+    Ok(InferenceResult { metadata, warnings })
+}
+
+fn root_dataset_name(root: &RootSource) -> String {
+    match root {
+        RootSource::Local(path) => path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("dataset")
+            .to_string(),
+        RootSource::S3 { bucket, prefix }
+        | RootSource::Gcs { bucket, prefix } => {
+            if prefix.is_empty() {
+                bucket.clone()
+            } else {
+                prefix
+                    .trim_end_matches('/')
+                    .split('/')
+                    .last()
+                    .unwrap_or(bucket)
+                    .to_string()
+            }
+        }
+        RootSource::Adls { prefix, .. } => {
+            if prefix.is_empty() {
+                "dataset".to_string()
+            } else {
+                prefix
+                    .trim_end_matches('/')
+                    .split('/')
+                    .last()
+                    .unwrap_or("dataset")
+                    .to_string()
+            }
+        }
+    }
+}
+
+fn infer_local_tables(
+    root: &Path,
+    options: &InferOptions,
+    warnings: &mut InferWarnings,
+) -> Result<Vec<TableInput>> {
+    let mut tables = Vec::new();
+    let entries = std::fs::read_dir(root).with_context(|| format!("read {}", root.display()))?;
+    for entry in entries {
+        let entry = entry?;
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().to_string();
+        if path.is_dir() {
+            let table = infer_dir_table(&name, &path, options, warnings)?;
+            if let Some(table) = table {
+                tables.push(table);
+            }
+        } else if let Some(table) = infer_file_table(&name, &path, options)? {
+            tables.push(table);
+        }
+    }
+    if tables.is_empty() {
+        return Err(anyhow!("no tables found under {}", root.display()));
+    }
+    Ok(tables)
+}
+
+fn infer_file_table(name: &str, path: &Path, options: &InferOptions) -> Result<Option<TableInput>> {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    match ext.as_str() {
+        "csv" => {
+            let columns = infer_csv_schema(path, options)?;
+            Ok(Some(TableInput {
+                name: name.trim_end_matches(".csv").to_string(),
+                format: TableFormat::Csv,
+                paths: vec![path.to_string_lossy().to_string()],
+                columns,
+            }))
+        }
+        "parquet" => {
+            let columns = infer_parquet_schema_local(path)?;
+            Ok(Some(TableInput {
+                name: name.trim_end_matches(".parquet").to_string(),
+                format: TableFormat::Parquet,
+                paths: vec![path.to_string_lossy().to_string()],
+                columns,
+            }))
+        }
+        _ => Ok(None),
+    }
+}
+
+fn infer_dir_table(
+    name: &str,
+    dir: &Path,
+    options: &InferOptions,
+    warnings: &mut InferWarnings,
+) -> Result<Option<TableInput>> {
+    let mut table: Option<TableInput> = None;
+    let entries = std::fs::read_dir(dir).with_context(|| format!("read {}", dir.display()))?;
+    for entry in entries {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+        let format = match ext.as_str() {
+            "csv" => TableFormat::Csv,
+            "parquet" => TableFormat::Parquet,
+            _ => continue,
+        };
+        let columns = match format {
+            TableFormat::Csv => infer_csv_schema(&path, options)?,
+            TableFormat::Parquet => infer_parquet_schema_local(&path)?,
+        };
+        match &mut table {
+            Some(existing) => {
+                if !same_table_format(&existing.format, &format)
+                    || !columns_match(&existing.columns, &columns)
+                {
+                    if options.validate_dir_schemas {
+                        warnings
+                            .ignored_files
+                            .push(path.to_string_lossy().to_string());
+                        continue;
+                    }
+                }
+                existing.paths.push(path.to_string_lossy().to_string());
+            }
+            None => {
+                table = Some(TableInput {
+                    name: name.to_string(),
+                    format,
+                    paths: vec![path.to_string_lossy().to_string()],
+                    columns,
+                });
+            }
+        }
+    }
+    Ok(table)
+}
+
+fn infer_remote_tables(
+    root: &RootSource,
+    bucket: &str,
+    prefix: &str,
+    options: &InferOptions,
+    warnings: &mut InferWarnings,
+) -> Result<Vec<TableInput>> {
+    let (rt, store) = build_store(root)?;
+    let mut tables: HashMap<String, TableInput> = HashMap::new();
+    let mut prefixes = HashSet::new();
+    let normalized = prefix.trim_matches('/');
+    let list_prefix = if normalized.is_empty() {
+        None
+    } else {
+        Some(ObjectPath::from(normalized))
+    };
+    let mut stream = store.list(list_prefix.as_ref());
+    while let Some(obj) = rt.block_on(stream.next()) {
+        let obj = obj?;
+        let path_str = obj.location.to_string();
+        let rel_path = if normalized.is_empty() {
+            path_str.clone()
+        } else {
+            path_str
+                .strip_prefix(&format!("{}/", normalized))
+                .unwrap_or(&path_str)
+                .to_string()
+        };
+        let parts: Vec<&str> = rel_path.split('/').collect();
+        if parts.is_empty() {
+            continue;
+        }
+        if parts.len() == 1 {
+            if let Some((table_name, format)) = split_table_file(parts[0]) {
+                let format_clone = format.clone();
+                let columns = match format {
+                    TableFormat::Parquet => infer_parquet_schema_remote(
+                        &rt,
+                        Arc::clone(&store),
+                        &obj.location,
+                        obj.size,
+                    )?,
+                    TableFormat::Csv => infer_csv_schema_remote(
+                        &rt,
+                        store.as_ref(),
+                        &obj.location,
+                        obj.size,
+                        options,
+                    )?,
+                };
+                let entry = tables.entry(table_name.to_string()).or_insert_with(|| TableInput {
+                    name: table_name.to_string(),
+                    format: format_clone,
+                    paths: Vec::new(),
+                    columns: columns.clone(),
+                });
+                if !same_table_format(&entry.format, &format)
+                    || !columns_match(&entry.columns, &columns)
+                {
+                    warnings.ignored_files.push(path_str);
+                } else {
+                    entry.paths.push(format!(
+                        "{}://{}/{}",
+                        root_scheme(root),
+                        bucket,
+                        rel_path
+                    ));
+                }
+            }
+        } else {
+            prefixes.insert(parts[0].to_string());
+            let file = parts.last().unwrap_or(&"");
+            if let Some((_, format)) = split_table_file(file) {
+                let table_name = parts[0];
+                let format_clone = format.clone();
+                let columns = match format {
+                    TableFormat::Parquet => infer_parquet_schema_remote(
+                        &rt,
+                        Arc::clone(&store),
+                        &obj.location,
+                        obj.size,
+                    )?,
+                    TableFormat::Csv => infer_csv_schema_remote(
+                        &rt,
+                        store.as_ref(),
+                        &obj.location,
+                        obj.size,
+                        options,
+                    )?,
+                };
+                let entry = tables.entry(table_name.to_string()).or_insert_with(|| TableInput {
+                    name: table_name.to_string(),
+                    format: format_clone,
+                    paths: Vec::new(),
+                    columns: columns.clone(),
+                });
+                if !same_table_format(&entry.format, &format)
+                    || !columns_match(&entry.columns, &columns)
+                {
+                    warnings.ignored_files.push(path_str);
+                } else {
+                    entry.paths.push(format!(
+                        "{}://{}/{}",
+                        root_scheme(root),
+                        bucket,
+                        rel_path
+                    ));
+                }
+            }
+        }
+    }
+    if tables.is_empty() {
+        return Err(anyhow!("no tables found under {}", prefix));
+    }
+    Ok(tables.into_values().collect())
+}
+
+fn root_scheme(root: &RootSource) -> &'static str {
+    match root {
+        RootSource::Local(_) => "file",
+        RootSource::S3 { .. } => "s3",
+        RootSource::Gcs { .. } => "gs",
+        RootSource::Adls { .. } => "az",
+    }
+}
+
+fn split_table_file(file: &str) -> Option<(&str, TableFormat)> {
+    let lower = file.to_lowercase();
+    if lower.ends_with(".parquet") {
+        Some((file.trim_end_matches(".parquet"), TableFormat::Parquet))
+    } else if lower.ends_with(".csv") {
+        Some((file.trim_end_matches(".csv"), TableFormat::Csv))
+    } else {
+        None
+    }
+}
+
+fn columns_match(a: &[ColumnSpec], b: &[ColumnSpec]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    for (lhs, rhs) in a.iter().zip(b.iter()) {
+        if lhs.name != rhs.name
+            || !column_type_eq(&lhs.dtype, &rhs.dtype)
+            || lhs.fixed_len != rhs.fixed_len
+            || lhs.key_mode != rhs.key_mode
+            || lhs.precision != rhs.precision
+            || lhs.scale != rhs.scale
+        {
+            return false;
+        }
+    }
+    true
+}
+
+fn same_table_format(a: &TableFormat, b: &TableFormat) -> bool {
+    matches!(
+        (a, b),
+        (TableFormat::Csv, TableFormat::Csv) | (TableFormat::Parquet, TableFormat::Parquet)
+    )
+}
+
+fn column_type_eq(a: &ColumnType, b: &ColumnType) -> bool {
+    std::mem::discriminant(a) == std::mem::discriminant(b)
+}
+
+fn build_store(root: &RootSource) -> Result<(Runtime, Arc<dyn ObjectStore>)> {
+    let rt = Runtime::new()?;
+    let store: Arc<dyn ObjectStore> = match root {
+        RootSource::S3 { bucket, .. } => {
+            let client = build_s3_client(S3Config {
+                bucket: bucket.clone(),
+                region: None,
+                endpoint: None,
+                allow_http: None,
+                virtual_hosted: None,
+                profile: None,
+                access_key_id: None,
+                secret_access_key: None,
+                session_token: None,
+            })?;
+            client.store
+        }
+        RootSource::Gcs { bucket, .. } => {
+            let client = build_gcs_client(GcsConfig {
+                bucket: bucket.clone(),
+            })?;
+            client.store
+        }
+        RootSource::Adls { account, container, .. } => {
+            let client = build_adls_client(AdlsConfig {
+                account: account.clone(),
+                container: container.clone(),
+                endpoint: None,
+                allow_http: None,
+                access_key: None,
+                sas_key: None,
+                bearer_token: None,
+                client_id: None,
+                client_secret: None,
+                tenant_id: None,
+            })?;
+            client.store
+        }
+        RootSource::Local(_) => return Err(anyhow!("local root does not need object store")),
+    };
+    Ok((rt, store))
+}
+
+fn infer_parquet_schema_local(path: &Path) -> Result<Vec<ColumnSpec>> {
+    let file = std::fs::File::open(path)?;
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
+    let schema = builder.schema();
+    infer_parquet_schema_from_arrow(schema.as_ref())
+}
+
+fn infer_parquet_schema_remote(
+    rt: &Runtime,
+    store: Arc<dyn ObjectStore>,
+    path: &ObjectPath,
+    size: u64,
+) -> Result<Vec<ColumnSpec>> {
+    let reader = ParquetObjectReader::new(store, path.clone())
+        .with_file_size(size)
+        .with_runtime(rt.handle().clone());
+    let builder = rt.block_on(ParquetRecordBatchStreamBuilder::new(reader))?;
+    let schema = builder.schema();
+    infer_parquet_schema_from_arrow(schema.as_ref())
+}
+
+fn infer_parquet_schema_from_arrow(schema: &Schema) -> Result<Vec<ColumnSpec>> {
+    let mut columns = Vec::new();
+    for field in schema.fields() {
+        let (dtype, fixed_len, precision, scale) = arrow_type_to_column_type(field.data_type())?;
+        columns.push(ColumnSpec {
+            name: field.name().to_string(),
+            dtype,
+            fixed_len,
+            key_mode: None,
+            precision,
+            scale,
+        });
+    }
+    Ok(columns)
+}
+
+fn arrow_type_to_column_type(
+    dtype: &DataType,
+) -> Result<(ColumnType, Option<usize>, Option<u32>, Option<i32>)> {
+    let mut precision = None;
+    let mut scale = None;
+    let mut fixed_len = None;
+    let out = match dtype {
+        DataType::Int8 => ColumnType::Int8,
+        DataType::Int16 => ColumnType::Int16,
+        DataType::Int32 => ColumnType::Int32,
+        DataType::Int64 => ColumnType::Int64,
+        DataType::UInt8 => ColumnType::UInt8,
+        DataType::UInt16 => ColumnType::UInt16,
+        DataType::UInt32 => ColumnType::UInt32,
+        DataType::UInt64 => ColumnType::UInt64,
+        DataType::Float32 => ColumnType::Float32,
+        DataType::Float64 => ColumnType::Float64,
+        DataType::Boolean => ColumnType::Bool,
+        DataType::Utf8 | DataType::LargeUtf8 => ColumnType::String,
+        DataType::Binary | DataType::LargeBinary => ColumnType::Bytes,
+        DataType::FixedSizeBinary(len) => {
+            fixed_len = Some(*len as usize);
+            ColumnType::Bytes
+        }
+        DataType::Date32 => ColumnType::Date,
+        DataType::Timestamp(_, _) => ColumnType::Timestamp,
+        DataType::Decimal128(p, s) => {
+            precision = Some(*p as u32);
+            scale = Some(*s as i32);
+            ColumnType::Decimal128
+        }
+        DataType::Decimal256(p, s) => {
+            precision = Some(*p as u32);
+            scale = Some(*s as i32);
+            ColumnType::Decimal256
+        }
+        DataType::List(field) | DataType::LargeList(field) => match field.data_type() {
+            DataType::Float32 => ColumnType::Float32Array,
+            DataType::Float64 => ColumnType::Float64Array,
+            _ => return Err(anyhow!("unsupported list type {}", field.data_type())),
+        },
+        _ => return Err(anyhow!("unsupported parquet type {}", dtype)),
+    };
+    Ok((out, fixed_len, precision, scale))
+}
+
+fn infer_csv_schema(path: &Path, options: &InferOptions) -> Result<Vec<ColumnSpec>> {
+    let mut reader = csv::ReaderBuilder::new()
+        .has_headers(true)
+        .flexible(true)
+        .from_path(path)?;
+    let headers = reader
+        .headers()
+        .context("csv headers")?
+        .iter()
+        .map(|h| h.to_string())
+        .collect::<Vec<_>>();
+    let mut stats: Vec<ColumnStats> = headers.iter().map(|_| ColumnStats::default()).collect();
+    for result in reader.records().take(options.csv_sample_rows) {
+        let record = result?;
+        for (idx, value) in record.iter().enumerate() {
+            if idx >= stats.len() {
+                continue;
+            }
+            stats[idx].observe(value);
+        }
+    }
+    Ok(headers
+        .iter()
+        .zip(stats.iter())
+        .map(|(name, st)| st.to_column_spec(name))
+        .collect())
+}
+
+fn infer_csv_schema_remote(
+    rt: &Runtime,
+    store: &dyn ObjectStore,
+    path: &ObjectPath,
+    size: u64,
+    options: &InferOptions,
+) -> Result<Vec<ColumnSpec>> {
+    let max = size.min(options.csv_sample_bytes);
+    let range = 0..max;
+    let bytes = rt.block_on(store.get_range(path, range))?;
+    infer_csv_schema_from_bytes(&bytes, options)
+}
+
+fn infer_csv_schema_from_bytes(bytes: &Bytes, options: &InferOptions) -> Result<Vec<ColumnSpec>> {
+    let mut reader = csv::ReaderBuilder::new()
+        .has_headers(true)
+        .flexible(true)
+        .from_reader(bytes.as_ref());
+    let headers = reader
+        .headers()
+        .context("csv headers")?
+        .iter()
+        .map(|h| h.to_string())
+        .collect::<Vec<_>>();
+    let mut stats: Vec<ColumnStats> = headers.iter().map(|_| ColumnStats::default()).collect();
+    for result in reader.records().take(options.csv_sample_rows) {
+        let record = result?;
+        for (idx, value) in record.iter().enumerate() {
+            if idx >= stats.len() {
+                continue;
+            }
+            stats[idx].observe(value);
+        }
+    }
+    Ok(headers
+        .iter()
+        .zip(stats.iter())
+        .map(|(name, st)| st.to_column_spec(name))
+        .collect())
+}
+
+#[derive(Clone, Default)]
+struct ColumnStats {
+    seen: usize,
+    int_ok: bool,
+    float_ok: bool,
+    date_ok: bool,
+    ts_ok: bool,
+    bool_ok: bool,
+    int_min: Option<i64>,
+    int_max: Option<i64>,
+}
+
+impl ColumnStats {
+    fn observe(&mut self, value: &str) {
+        if value.trim().is_empty() {
+            return;
+        }
+        self.seen += 1;
+        if self.seen == 1 {
+            self.int_ok = true;
+            self.float_ok = true;
+            self.date_ok = true;
+            self.ts_ok = true;
+            self.bool_ok = true;
+        }
+        if self.int_ok {
+            if let Some(v) = parse_int(value) {
+                self.int_min = Some(self.int_min.map(|m| m.min(v)).unwrap_or(v));
+                self.int_max = Some(self.int_max.map(|m| m.max(v)).unwrap_or(v));
+            } else {
+                self.int_ok = false;
+            }
+        }
+        if self.float_ok && parse_float(value).is_none() {
+            self.float_ok = false;
+        }
+        if self.date_ok && parse_date(value).is_none() {
+            self.date_ok = false;
+        }
+        if self.ts_ok && parse_timestamp(value).is_none() {
+            self.ts_ok = false;
+        }
+        if self.bool_ok && parse_bool(value).is_none() {
+            self.bool_ok = false;
+        }
+    }
+
+    fn to_column_spec(&self, name: &str) -> ColumnSpec {
+        let name_lower = name.to_lowercase();
+        let dtype = if self.bool_ok {
+            ColumnType::Bool
+        } else if self.ts_ok {
+            ColumnType::Timestamp
+        } else if is_time_column_name(&name_lower)
+            && self.int_ok
+            && int_looks_like_timestamp(self.int_min, self.int_max)
+        {
+            ColumnType::Timestamp
+        } else if self.date_ok {
+            ColumnType::Date
+        } else if self.int_ok {
+            ColumnType::Int64
+        } else if self.float_ok {
+            ColumnType::Float64
+        } else {
+            ColumnType::String
+        };
+        ColumnSpec {
+            name: name.to_string(),
+            dtype,
+            fixed_len: None,
+            key_mode: None,
+            precision: None,
+            scale: None,
+        }
+    }
+}
+
+fn parse_int(value: &str) -> Option<i64> {
+    value.parse::<i64>().ok()
+}
+
+fn parse_float(value: &str) -> Option<f64> {
+    value.parse::<f64>().ok()
+}
+
+fn parse_bool(value: &str) -> Option<bool> {
+    match value.to_ascii_lowercase().as_str() {
+        "true" | "false" | "1" | "0" | "yes" | "no" => Some(true),
+        _ => None,
+    }
+}
+
+fn parse_date(value: &str) -> Option<NaiveDate> {
+    NaiveDate::parse_from_str(value, "%Y-%m-%d").ok()
+}
+
+fn parse_timestamp(value: &str) -> Option<NaiveDateTime> {
+    if let Ok(ts) = chrono::DateTime::parse_from_rfc3339(value) {
+        return Some(ts.naive_utc());
+    }
+    None
+}
+
+fn infer_primary_keys(tables: &mut [TableSpec]) {
+    for table in tables.iter_mut() {
+        if table.primary_key.is_some() {
+            continue;
+        }
+        let candidates = primary_key_candidates(table);
+        if let Some(pk) = candidates.first() {
+            table.primary_key = Some(pk.clone());
+        }
+    }
+}
+
+fn primary_key_candidates(table: &TableSpec) -> Vec<String> {
+    let name = table.name.to_lowercase();
+    let singular = singularize(&name);
+    let bases = table_name_bases(&name);
+    let tokens = table_name_tokens(&name);
+    let mut candidates = Vec::new();
+    let cols: Vec<String> = table.columns.iter().map(|c| c.name.to_lowercase()).collect();
+    let id_like_cols: Vec<String> = cols
+        .iter()
+        .filter(|c| c.ends_with("_id") || c.ends_with("id"))
+        .cloned()
+        .collect();
+    let mut pk_cols = Vec::new();
+    let allow_loose = id_like_cols.len() == 1;
+    let mut token_matches = Vec::new();
+    for col in &table.columns {
+        if !is_pk_dtype(&col.dtype) {
+            continue;
+        }
+        let lower = col.name.to_lowercase();
+        if lower == "id" || lower == "uuid" || lower == "pk" {
+            pk_cols.push(col.name.clone());
+        }
+        if lower == format!("{}_id", singular) || lower == format!("{}_id", name) {
+            pk_cols.push(col.name.clone());
+        }
+        if lower == format!("{}id", singular) {
+            pk_cols.push(col.name.clone());
+        }
+        if allow_loose {
+            for base in &bases {
+                if lower == format!("{}_id", base) {
+                    pk_cols.push(col.name.clone());
+                }
+            }
+        }
+        if tokens
+            .iter()
+            .any(|token| lower == format!("{}_id", token))
+        {
+            token_matches.push(col.name.clone());
+        }
+    }
+    if token_matches.len() == 1 {
+        pk_cols.push(token_matches[0].clone());
+    }
+    if !pk_cols.is_empty() {
+        pk_cols.sort();
+        pk_cols.dedup();
+        candidates.extend(pk_cols);
+    } else {
+        if cols.iter().any(|c| c == "id") {
+            candidates.push("id".to_string());
+        } else if id_like_cols.len() == 1 {
+            if let Some(col) = table.columns.iter().find(|c| c.name.to_lowercase() == id_like_cols[0])
+            {
+                candidates.push(col.name.clone());
+            }
+        }
+    }
+    candidates
+}
+
+fn infer_foreign_keys(
+    tables: &[TableSpec],
+    rels: &mut Vec<RelationshipSpec>,
+    notes: &mut Vec<String>,
+) {
+    let mut table_map = HashMap::new();
+    for table in tables {
+        table_map.insert(table.name.to_lowercase(), table);
+    }
+    for table in tables {
+        for col in &table.columns {
+            let col_name = col.name.to_lowercase();
+            if !col_name.ends_with("_id") && !col_name.ends_with("id") {
+                continue;
+            }
+            for (dest_name, dest_table) in &table_map {
+                if dest_name == &table.name.to_lowercase() {
+                    continue;
+                }
+                let candidates = table_name_fk_candidates(dest_name);
+                if candidates.iter().any(|c| c == &col_name) {
+                    if let Some(pk) = &dest_table.primary_key {
+                        if let Some(pk_col) = dest_table.columns.iter().find(|c| c.name == *pk) {
+                            if compatible_key_columns(col, pk_col) {
+                                rels.push(RelationshipSpec {
+                                    name: None,
+                                    src_table: table.name.clone(),
+                                    src_column: col.name.clone(),
+                                    dst_table: dest_table.name.clone(),
+                                    dst_column: pk.clone(),
+                                });
+                            } else {
+                                notes.push(format!(
+                                    "skipped foreign key {}.{} -> {} (incompatible key types)",
+                                    table.name, col.name, dest_table.name
+                                ));
+                            }
+                        } else {
+                            notes.push(format!(
+                                "skipped foreign key {}.{} -> {} (pk column not found)",
+                                table.name, col.name, dest_table.name
+                            ));
+                        }
+                    } else {
+                        notes.push(format!(
+                            "skipped foreign key {}.{} -> {} (no primary key inferred)",
+                            table.name, col.name, dest_table.name
+                        ));
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn compatible_key_columns(a: &ColumnSpec, b: &ColumnSpec) -> bool {
+    use ColumnType::*;
+    match (&a.dtype, &b.dtype) {
+        (String, String) | (Bytes, Bytes) | (String, Bytes) | (Bytes, String) => {
+            let a_mode = string_key_mode(a);
+            let b_mode = string_key_mode(b);
+            match (a_mode, b_mode) {
+                (KeyStringMode::Uuid, KeyStringMode::Uuid) => true,
+                (KeyStringMode::Fixed(a_len), KeyStringMode::Fixed(b_len)) => a_len == b_len,
+                (KeyStringMode::Var, KeyStringMode::Var) => true,
+                _ => false,
+            }
+        }
+        (a_type, b_type) if is_numeric(a_type) && is_numeric(b_type) => true,
+        (a_type, b_type) if is_numeric(a_type) && matches!(b_type, String | Bytes) => {
+            string_key_mode(b).is_var()
+        }
+        (a_type, b_type) if is_numeric(b_type) && matches!(a_type, String | Bytes) => {
+            string_key_mode(a).is_var()
+        }
+        _ => false,
+    }
+}
+
+fn is_pk_dtype(t: &ColumnType) -> bool {
+    matches!(t, ColumnType::String | ColumnType::Bytes) || is_numeric(t)
+}
+
+#[derive(Clone, Copy)]
+enum KeyStringMode {
+    Var,
+    Fixed(usize),
+    Uuid,
+}
+
+impl KeyStringMode {
+    fn is_var(self) -> bool {
+        matches!(self, KeyStringMode::Var)
+    }
+}
+
+fn string_key_mode(col: &ColumnSpec) -> KeyStringMode {
+    if col.key_mode == Some(KeyMode::Uuid) {
+        return KeyStringMode::Uuid;
+    }
+    let len = col.fixed_len;
+    if col.key_mode == Some(KeyMode::Fixed) || len.is_some() {
+        return KeyStringMode::Fixed(len.unwrap_or(0));
+    }
+    KeyStringMode::Var
+}
+
+fn is_numeric(t: &ColumnType) -> bool {
+    matches!(
+        t,
+        ColumnType::Int8
+            | ColumnType::Int16
+            | ColumnType::Int32
+            | ColumnType::Int64
+            | ColumnType::UInt8
+            | ColumnType::UInt16
+            | ColumnType::UInt32
+            | ColumnType::UInt64
+            | ColumnType::Float32
+            | ColumnType::Float64
+            | ColumnType::Decimal128
+            | ColumnType::Decimal256
+    )
+}
+
+fn infer_create_time(tables: &mut [TableSpec]) {
+    for table in tables.iter_mut() {
+        if table.create_time.is_some() {
+            continue;
+        }
+        let time_cols: Vec<&ColumnSpec> = table
+            .columns
+            .iter()
+            .filter(|col| matches!(col.dtype, ColumnType::Timestamp | ColumnType::Date))
+            .collect();
+        if time_cols.len() == 1 {
+            table.create_time = Some(time_cols[0].name.clone());
+            continue;
+        }
+        for col in time_cols {
+            let name = col.name.to_lowercase();
+            if is_time_column_name(&name) || name == "t_dat" || name == "t_date" {
+                table.create_time = Some(col.name.clone());
+                break;
+            }
+        }
+    }
+}
+
+fn is_time_column_name(name: &str) -> bool {
+    name.contains("created")
+        || name.contains("create_time")
+        || name.contains("created_at")
+        || name.contains("timestamp")
+        || name.contains("date")
+        || name.contains("start_time")
+        || name.contains("end_time")
+        || name.ends_with("_at")
+        || name.ends_with("_time")
+}
+
+fn int_looks_like_timestamp(min: Option<i64>, max: Option<i64>) -> bool {
+    let (Some(min), Some(max)) = (min, max) else {
+        return false;
+    };
+    let ranges = [
+        (946_684_800i64, 4_102_444_800i64),
+        (946_684_800_000i64, 4_102_444_800_000i64),
+        (946_684_800_000_000i64, 4_102_444_800_000_000i64),
+        (946_684_800_000_000_000i64, 4_102_444_800_000_000_000i64),
+    ];
+    ranges.iter().any(|(lo, hi)| min >= *lo && max <= *hi)
+}
+
+fn singularize(name: &str) -> String {
+    if name.ends_with("ies") {
+        return format!("{}y", &name[..name.len() - 3]);
+    }
+    if name.ends_with('s') && name.len() > 1 {
+        return name[..name.len() - 1].to_string();
+    }
+    name.to_string()
+}
+
+fn table_name_bases(name: &str) -> Vec<String> {
+    let parts: Vec<&str> = name.split('_').collect();
+    let mut bases = Vec::new();
+    if let Some(last) = parts.last() {
+        bases.push(singularize(last));
+        bases.push(last.to_string());
+    }
+    let filtered: Vec<&str> = parts
+        .iter()
+        .copied()
+        .filter(|p| !matches!(*p, "train" | "test" | "data" | "dataset"))
+        .collect();
+    if let Some(last) = filtered.last() {
+        bases.push(singularize(last));
+        bases.push(last.to_string());
+    }
+    bases.sort();
+    bases.dedup();
+    bases
+}
+
+fn table_name_tokens(name: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    for part in name.split('_') {
+        tokens.push(part.to_string());
+        tokens.push(singularize(part));
+    }
+    tokens.retain(|t| !t.is_empty());
+    tokens.sort();
+    tokens.dedup();
+    tokens
+}
+
+fn table_name_fk_candidates(name: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let singular = singularize(name);
+    out.push(format!("{}_id", name));
+    out.push(format!("{}_id", singular));
+    for base in table_name_bases(name) {
+        out.push(format!("{}_id", base));
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn table(name: &str, cols: &[(&str, ColumnType)]) -> TableSpec {
+        TableSpec {
+            name: name.to_string(),
+            format: TableFormat::Csv,
+            paths: vec![],
+            columns: cols
+                .iter()
+                .map(|(n, t)| ColumnSpec {
+                    name: n.to_string(),
+                    dtype: t.clone(),
+                    fixed_len: None,
+                    key_mode: None,
+                    precision: None,
+                    scale: None,
+                })
+                .collect(),
+            primary_key: None,
+            create_time: None,
+            weight: None,
+            edge_table: None,
+            rowpack: None,
+        }
+    }
+
+    #[test]
+    fn infer_pk_id() {
+        let mut t = table("users", &[("id", ColumnType::Int64)]);
+        infer_primary_keys(std::slice::from_mut(&mut t));
+        assert_eq!(t.primary_key.as_deref(), Some("id"));
+    }
+
+    #[test]
+    fn infer_pk_table_id() {
+        let mut t = table("orders", &[("order_id", ColumnType::Int64)]);
+        infer_primary_keys(std::slice::from_mut(&mut t));
+        assert_eq!(t.primary_key.as_deref(), Some("order_id"));
+    }
+
+    #[test]
+    fn infer_pk_last_token_only_when_single_id() {
+        let mut t = table("kaggle_hm_articles", &[("article_id", ColumnType::Int64)]);
+        infer_primary_keys(std::slice::from_mut(&mut t));
+        assert_eq!(t.primary_key.as_deref(), Some("article_id"));
+    }
+
+    #[test]
+    fn infer_pk_uuid() {
+        let mut t = table("sessions", &[("uuid", ColumnType::String)]);
+        infer_primary_keys(std::slice::from_mut(&mut t));
+        assert_eq!(t.primary_key.as_deref(), Some("uuid"));
+    }
+
+    #[test]
+    fn infer_pk_ignores_user_id_in_join_table() {
+        let mut t = table(
+            "user_interest",
+            &[("user_id", ColumnType::Int64), ("interest_id", ColumnType::Int64)],
+        );
+        infer_primary_keys(std::slice::from_mut(&mut t));
+        assert_eq!(t.primary_key, None);
+    }
+
+    #[test]
+    fn infer_fk_relationship() {
+        let tables = vec![
+            TableSpec {
+                name: "users".to_string(),
+                format: TableFormat::Csv,
+                paths: vec![],
+                columns: vec![ColumnSpec {
+                    name: "id".to_string(),
+                    dtype: ColumnType::Int64,
+                    fixed_len: None,
+                    key_mode: None,
+                    precision: None,
+                    scale: None,
+                }],
+                primary_key: Some("id".to_string()),
+                create_time: None,
+                weight: None,
+                edge_table: None,
+                rowpack: None,
+            },
+            TableSpec {
+                name: "orders".to_string(),
+                format: TableFormat::Csv,
+                paths: vec![],
+                columns: vec![ColumnSpec {
+                    name: "user_id".to_string(),
+                    dtype: ColumnType::Int64,
+                    fixed_len: None,
+                    key_mode: None,
+                    precision: None,
+                    scale: None,
+                }],
+                primary_key: None,
+                create_time: None,
+                weight: None,
+                edge_table: None,
+                rowpack: None,
+            },
+        ];
+        let mut rels = Vec::new();
+        let mut notes = Vec::new();
+        infer_foreign_keys(&tables, &mut rels, &mut notes);
+        assert_eq!(rels.len(), 1);
+        assert_eq!(rels[0].src_table, "orders");
+        assert_eq!(rels[0].dst_table, "users");
+    }
+
+    #[test]
+    fn infer_fk_skips_incompatible() {
+        let tables = vec![
+            TableSpec {
+                name: "devices".to_string(),
+                format: TableFormat::Csv,
+                paths: vec![],
+                columns: vec![ColumnSpec {
+                    name: "id".to_string(),
+                    dtype: ColumnType::Bytes,
+                    fixed_len: Some(16),
+                    key_mode: Some(KeyMode::Fixed),
+                    precision: None,
+                    scale: None,
+                }],
+                primary_key: Some("id".to_string()),
+                create_time: None,
+                weight: None,
+                edge_table: None,
+                rowpack: None,
+            },
+            TableSpec {
+                name: "sessions".to_string(),
+                format: TableFormat::Csv,
+                paths: vec![],
+                columns: vec![ColumnSpec {
+                    name: "device_id".to_string(),
+                    dtype: ColumnType::String,
+                    fixed_len: None,
+                    key_mode: None,
+                    precision: None,
+                    scale: None,
+                }],
+                primary_key: None,
+                create_time: None,
+                weight: None,
+                edge_table: None,
+                rowpack: None,
+            },
+        ];
+        let mut rels = Vec::new();
+        let mut notes = Vec::new();
+        infer_foreign_keys(&tables, &mut rels, &mut notes);
+        assert!(rels.is_empty());
+        assert!(!notes.is_empty());
+    }
+
+    #[test]
+    fn infer_create_time_from_timestamp_col() {
+        let mut t = table(
+            "events",
+            &[("created_at", ColumnType::Timestamp), ("id", ColumnType::Int64)],
+        );
+        infer_create_time(std::slice::from_mut(&mut t));
+        assert_eq!(t.create_time.as_deref(), Some("created_at"));
+    }
+
+    #[test]
+    fn csv_infers_timestamp_from_name_and_ints() {
+        let mut stats = ColumnStats::default();
+        for v in ["1693526400", "1693612800", "1693699200"] {
+            stats.observe(v);
+        }
+        let col = stats.to_column_spec("created_at");
+        assert!(matches!(col.dtype, ColumnType::Timestamp));
+    }
+
+    #[test]
+    fn csv_rejects_timestamp_out_of_range() {
+        let mut stats = ColumnStats::default();
+        for v in ["12", "13", "14"] {
+            stats.observe(v);
+        }
+        let col = stats.to_column_spec("created_at");
+        assert!(matches!(col.dtype, ColumnType::Int64));
+    }
+
+    #[test]
+    fn csv_infers_date_from_iso() {
+        let mut stats = ColumnStats::default();
+        for v in ["2024-01-01", "2024-01-02"] {
+            stats.observe(v);
+        }
+        let col = stats.to_column_spec("event_date");
+        assert!(matches!(col.dtype, ColumnType::Date));
+    }
+
+    #[test]
+    fn csv_infers_bool() {
+        let mut stats = ColumnStats::default();
+        for v in ["true", "false", "true"] {
+            stats.observe(v);
+        }
+        let col = stats.to_column_spec("flag");
+        assert!(matches!(col.dtype, ColumnType::Bool));
+    }
+
+    #[test]
+    fn compatible_numeric_to_var_string() {
+        let a = ColumnSpec {
+            name: "user_id".to_string(),
+            dtype: ColumnType::Int64,
+            fixed_len: None,
+            key_mode: None,
+            precision: None,
+            scale: None,
+        };
+        let b = ColumnSpec {
+            name: "id".to_string(),
+            dtype: ColumnType::String,
+            fixed_len: None,
+            key_mode: None,
+            precision: None,
+            scale: None,
+        };
+        assert!(compatible_key_columns(&a, &b));
+    }
+
+    #[test]
+    fn incompatible_fixed_vs_var() {
+        let a = ColumnSpec {
+            name: "device_id".to_string(),
+            dtype: ColumnType::Bytes,
+            fixed_len: Some(16),
+            key_mode: Some(KeyMode::Fixed),
+            precision: None,
+            scale: None,
+        };
+        let b = ColumnSpec {
+            name: "id".to_string(),
+            dtype: ColumnType::Bytes,
+            fixed_len: None,
+            key_mode: None,
+            precision: None,
+            scale: None,
+        };
+        assert!(!compatible_key_columns(&a, &b));
+    }
+
+    #[test]
+    fn compatible_uuid() {
+        let a = ColumnSpec {
+            name: "id".to_string(),
+            dtype: ColumnType::String,
+            fixed_len: Some(16),
+            key_mode: Some(KeyMode::Uuid),
+            precision: None,
+            scale: None,
+        };
+        let b = ColumnSpec {
+            name: "id".to_string(),
+            dtype: ColumnType::Bytes,
+            fixed_len: Some(16),
+            key_mode: Some(KeyMode::Uuid),
+            precision: None,
+            scale: None,
+        };
+        assert!(compatible_key_columns(&a, &b));
+    }
+}
