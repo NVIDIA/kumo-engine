@@ -163,6 +163,7 @@ pub fn infer_source_metadata(root: &RootSource, options: InferOptions) -> Result
     infer_primary_keys(&mut table_specs);
     infer_create_time(&mut table_specs);
     infer_foreign_keys(&table_specs, &mut relationships, &mut warnings.notes);
+    infer_primary_key_relationships(&table_specs, &mut relationships);
 
     let metadata = SourceMetadata {
         dataset_name: root_dataset_name(root),
@@ -1370,6 +1371,85 @@ fn infer_foreign_keys(
             }
         }
     }
+}
+
+fn infer_primary_key_relationships(tables: &[TableSpec], rels: &mut Vec<RelationshipSpec>) {
+    let mut pk_map: HashMap<String, Vec<&TableSpec>> = HashMap::new();
+    for table in tables {
+        if let Some(pk) = &table.primary_key {
+            pk_map
+                .entry(pk.to_lowercase())
+                .or_default()
+                .push(table);
+        }
+    }
+    for (pk_name, tables_with_pk) in pk_map {
+        if tables_with_pk.len() < 2 {
+            continue;
+        }
+        if is_generic_key_name(&pk_name) {
+            continue;
+        }
+        let base = key_name_base(&pk_name).unwrap_or("");
+        for i in 0..tables_with_pk.len() {
+            for j in (i + 1)..tables_with_pk.len() {
+                let a = tables_with_pk[i];
+                let b = tables_with_pk[j];
+                if relationship_exists(rels, &a.name, &a.primary_key, &b.name, &b.primary_key) {
+                    continue;
+                }
+                let a_pk = a.primary_key.as_ref().unwrap();
+                let b_pk = b.primary_key.as_ref().unwrap();
+                let a_col = a.columns.iter().find(|c| c.name == *a_pk);
+                let b_col = b.columns.iter().find(|c| c.name == *b_pk);
+                let (Some(a_col), Some(b_col)) = (a_col, b_col) else {
+                    continue;
+                };
+                if !compatible_key_columns(a_col, b_col) {
+                    continue;
+                }
+                let a_name = a.name.to_lowercase();
+                let b_name = b.name.to_lowercase();
+                let a_tokens = normalized_tokens(&a.name);
+                let b_tokens = normalized_tokens(&b.name);
+                let table_overlap = overlap_ratio(&a_name, &b_name) >= 0.6;
+                let base_overlap = !base.is_empty()
+                    && a_tokens.iter().any(|t| overlap_ratio(base, t) >= 0.6)
+                    && b_tokens.iter().any(|t| overlap_ratio(base, t) >= 0.6);
+                if !(table_overlap || base_overlap) {
+                    continue;
+                }
+                let (src, dst) = if a.name <= b.name { (a, b) } else { (b, a) };
+                rels.push(RelationshipSpec {
+                    name: None,
+                    src_table: src.name.clone(),
+                    src_column: src.primary_key.clone().unwrap(),
+                    dst_table: dst.name.clone(),
+                    dst_column: dst.primary_key.clone().unwrap(),
+                });
+            }
+        }
+    }
+}
+
+fn relationship_exists(
+    rels: &[RelationshipSpec],
+    src_table: &str,
+    src_col: &Option<String>,
+    dst_table: &str,
+    dst_col: &Option<String>,
+) -> bool {
+    let (Some(src_col), Some(dst_col)) = (src_col, dst_col) else {
+        return false;
+    };
+    rels.iter().any(|rel| {
+        (rel.src_table == src_table && rel.src_column == *src_col && rel.dst_table == dst_table
+            && rel.dst_column == *dst_col)
+            || (rel.src_table == dst_table
+                && rel.src_column == *dst_col
+                && rel.dst_table == src_table
+                && rel.dst_column == *src_col)
+    })
 }
 
 fn choose_best_fk_dest(
@@ -2688,6 +2768,113 @@ mod tests {
         infer_foreign_keys(&tables, &mut rels, &mut notes);
         assert_eq!(rels.len(), 1);
         assert_eq!(rels[0].dst_table, "d_lab");
+    }
+
+    #[test]
+    fn infer_pk_pk_relationship_when_table_names_overlap() {
+        let tables = vec![
+            TableSpec {
+                name: "user".to_string(),
+                format: TableFormat::Csv,
+                paths: vec![],
+                columns: vec![ColumnSpec {
+                    name: "user_id".to_string(),
+                    source_dtype: ColumnType::Int64,
+                    ingested_dtype: ColumnType::Int64,
+                    fixed_len: None,
+                    timestamp_format: None,
+                    timestamp_unit: None,
+                    key_mode: None,
+                    precision: None,
+                    scale: None,
+                }],
+                primary_key: Some("user_id".to_string()),
+                create_time: None,
+                weight: None,
+                edge_table: None,
+                rowpack: None,
+            },
+            TableSpec {
+                name: "user_profile".to_string(),
+                format: TableFormat::Csv,
+                paths: vec![],
+                columns: vec![ColumnSpec {
+                    name: "user_id".to_string(),
+                    source_dtype: ColumnType::Int64,
+                    ingested_dtype: ColumnType::Int64,
+                    fixed_len: None,
+                    timestamp_format: None,
+                    timestamp_unit: None,
+                    key_mode: None,
+                    precision: None,
+                    scale: None,
+                }],
+                primary_key: Some("user_id".to_string()),
+                create_time: None,
+                weight: None,
+                edge_table: None,
+                rowpack: None,
+            },
+        ];
+        let mut rels = Vec::new();
+        let mut notes = Vec::new();
+        infer_foreign_keys(&tables, &mut rels, &mut notes);
+        infer_primary_key_relationships(&tables, &mut rels);
+        assert_eq!(rels.len(), 1);
+        assert!(rels[0].src_table == "user" || rels[0].src_table == "user_profile");
+    }
+
+    #[test]
+    fn infer_pk_pk_skips_generic_id() {
+        let tables = vec![
+            TableSpec {
+                name: "alpha".to_string(),
+                format: TableFormat::Csv,
+                paths: vec![],
+                columns: vec![ColumnSpec {
+                    name: "id".to_string(),
+                    source_dtype: ColumnType::Int64,
+                    ingested_dtype: ColumnType::Int64,
+                    fixed_len: None,
+                    timestamp_format: None,
+                    timestamp_unit: None,
+                    key_mode: None,
+                    precision: None,
+                    scale: None,
+                }],
+                primary_key: Some("id".to_string()),
+                create_time: None,
+                weight: None,
+                edge_table: None,
+                rowpack: None,
+            },
+            TableSpec {
+                name: "beta".to_string(),
+                format: TableFormat::Csv,
+                paths: vec![],
+                columns: vec![ColumnSpec {
+                    name: "id".to_string(),
+                    source_dtype: ColumnType::Int64,
+                    ingested_dtype: ColumnType::Int64,
+                    fixed_len: None,
+                    timestamp_format: None,
+                    timestamp_unit: None,
+                    key_mode: None,
+                    precision: None,
+                    scale: None,
+                }],
+                primary_key: Some("id".to_string()),
+                create_time: None,
+                weight: None,
+                edge_table: None,
+                rowpack: None,
+            },
+        ];
+        let mut rels = Vec::new();
+        let mut notes = Vec::new();
+        infer_foreign_keys(&tables, &mut rels, &mut notes);
+        infer_primary_key_relationships(&tables, &mut rels);
+        assert!(rels.is_empty());
     }
 
     #[test]
