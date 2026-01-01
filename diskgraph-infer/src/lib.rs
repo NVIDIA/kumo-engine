@@ -178,6 +178,7 @@ pub fn infer_source_metadata(root: &RootSource, options: InferOptions) -> Result
     infer_primary_keys(&mut table_specs);
     infer_create_time(&mut table_specs);
     infer_foreign_keys(&table_specs, &mut relationships, &mut warnings.notes);
+    drop_join_table_primary_keys(&mut table_specs, &relationships);
     infer_primary_key_relationships(&table_specs, &mut relationships);
 
     let metadata = SourceMetadata {
@@ -1254,6 +1255,12 @@ fn infer_primary_keys(tables: &mut [TableSpec]) {
         if table.primary_key.is_some() {
             continue;
         }
+        if should_prefer_generic_id(table) {
+            if let Some(id_col) = generic_id_column(table) {
+                table.primary_key = Some(id_col);
+                continue;
+            }
+        }
         let mut best: Option<(String, i32)> = None;
         let mut tie = false;
         let table_tokens = normalized_tokens(&table.name);
@@ -1271,18 +1278,26 @@ fn infer_primary_keys(tables: &mut [TableSpec]) {
                 continue;
             }
             let lower = col.name.to_lowercase();
-            if !is_key_like_name(&lower) {
+            let matches_table = column_matches_table_name(&table.name, &lower);
+            if !is_key_like_name(&lower) && !matches_table {
                 continue;
             }
             if has_composite_code_version(&lower, &table.columns) {
                 continue;
             }
-            let count = *freq.get(&lower).unwrap_or(&usize::MAX) as i32;
+            let count = if matches_table {
+                1
+            } else {
+                *freq.get(&lower).unwrap_or(&usize::MAX) as i32
+            };
             if count <= 0 {
                 continue;
             }
             let mut score = 1000 / count;
             let strong_match = is_strong_pk_match(&table.name, &lower);
+            if matches_table {
+                score += 900;
+            }
             if strong_match {
                 score += 12;
             } else if has_many_key_like {
@@ -1312,6 +1327,11 @@ fn infer_primary_keys(tables: &mut [TableSpec]) {
                 table.primary_key = Some(pk);
             }
         }
+        if table.primary_key.is_none() {
+            if let Some(pk) = table_name_column(table) {
+                table.primary_key = Some(pk);
+            }
+        }
     }
 }
 
@@ -1322,6 +1342,7 @@ fn infer_foreign_keys(
 ) {
     let mut table_map = HashMap::new();
     let mut pk_name_map: HashMap<String, Vec<&TableSpec>> = HashMap::new();
+    let mut name_alias_map: HashMap<String, Vec<&TableSpec>> = HashMap::new();
     for table in tables {
         table_map.insert(table.name.to_lowercase(), table);
         if let Some(pk) = &table.primary_key {
@@ -1330,21 +1351,50 @@ fn infer_foreign_keys(
                 .or_default()
                 .push(table);
         }
+        let lower = table.name.to_lowercase();
+        name_alias_map.entry(lower.clone()).or_default().push(table);
+        let singular = singularize(&lower);
+        name_alias_map.entry(singular).or_default().push(table);
     }
     for table in tables {
         let table_pk = table.primary_key.as_deref();
         let table_tokens = normalized_tokens(&table.name);
+        let fk_candidate_count = table
+            .columns
+            .iter()
+            .filter(|col| {
+                let lower = col.name.to_lowercase();
+                is_key_like_name(&lower) || name_alias_map.contains_key(&lower)
+            })
+            .count();
         for col in &table.columns {
             let col_name = col.name.to_lowercase();
-            if !is_key_like_name(&col_name) {
+            let is_key_like = is_key_like_name(&col_name);
+            if !is_key_like {
+                let matches_alias = name_alias_map.contains_key(&col_name);
+                if !matches_alias {
+                    continue;
+                }
+            } else if matches!(col_name.as_str(), "id" | "uuid" | "pk")
+                && fk_candidate_count >= 2
+            {
                 continue;
             }
-            if table_pk == Some(col.name.as_str()) {
+            if table_pk == Some(col.name.as_str()) && fk_candidate_count < 2 {
                 continue;
             }
             if let Some(dest_tables) = pk_name_map.get(&col_name) {
+                let candidates: Vec<&TableSpec> = if table_pk == Some(col.name.as_str()) {
+                    dest_tables
+                        .iter()
+                        .copied()
+                        .filter(|t| !t.name.eq_ignore_ascii_case(&table.name))
+                        .collect()
+                } else {
+                    dest_tables.clone()
+                };
                 if let Some(best) =
-                    choose_best_fk_dest(table, col, dest_tables, &table_tokens, notes)
+                    choose_best_fk_dest(table, col, &candidates, &table_tokens, notes)
                 {
                     rels.push(RelationshipSpec {
                         name: None,
@@ -1356,6 +1406,22 @@ fn infer_foreign_keys(
                     continue;
                 }
             }
+            if !is_key_like {
+                if let Some(dest_tables) = name_alias_map.get(&col_name) {
+                    if let Some(best) =
+                        choose_best_fk_dest(table, col, dest_tables, &table_tokens, notes)
+                    {
+                        rels.push(RelationshipSpec {
+                            name: None,
+                            src_table: table.name.clone(),
+                            src_column: col.name.clone(),
+                            dst_table: best.0,
+                            dst_column: best.1,
+                        });
+                    }
+                    continue;
+                }
+            }
             let mut best: Option<(String, String, i32)> = None;
             let mut tie = false;
             for (dest_name, dest_table) in &table_map {
@@ -1363,11 +1429,27 @@ fn infer_foreign_keys(
                     Some(pk) => pk,
                     None => continue,
                 };
-                    let pk_lower = pk.to_lowercase();
-                    let mut matches = col_name == pk_lower;
-                    if !matches && !is_generic_key_name(&pk_lower) {
+                if dest_table.name.eq_ignore_ascii_case(&table.name)
+                    && table_pk == Some(col.name.as_str())
+                {
+                    continue;
+                }
+                if dest_table.name.eq_ignore_ascii_case(&table.name) {
+                    let table_lower = table.name.to_lowercase();
+                    let singular = singularize(&table_lower);
+                    if !col_name.contains(&table_lower) && !col_name.contains(&singular) {
+                        continue;
+                    }
+                }
+                let pk_lower = pk.to_lowercase();
+                let mut matches = col_name == pk_lower;
+                if !matches {
+                    if is_generic_key_name(&pk_lower) {
+                        matches = generic_pk_column_match(&col.name, dest_name);
+                    } else {
                         matches = col_name.ends_with(&format!("_{}", pk_lower));
                     }
+                }
                     if !matches {
                         let col_base = key_name_base(&col_name).unwrap_or("");
                         if !col_base.is_empty() {
@@ -1376,7 +1458,9 @@ fn infer_foreign_keys(
                                 dest_tokens.iter().any(|t| overlap_ratio(col_base, t) >= 0.6);
                             if base_matches_dest {
                                 if is_generic_key_name(&pk_lower) {
-                                    matches = true;
+                                    if !column_has_type_like(&col.name) {
+                                        matches = true;
+                                    }
                                 } else if let Some(pk_base) = key_name_base(&pk_lower) {
                                     if col_base == pk_base {
                                         matches = true;
@@ -1495,6 +1579,24 @@ fn infer_primary_key_relationships(tables: &[TableSpec], rels: &mut Vec<Relation
     }
 }
 
+fn drop_join_table_primary_keys(tables: &mut [TableSpec], rels: &[RelationshipSpec]) {
+    let mut fk_counts: HashMap<&str, usize> = HashMap::new();
+    let mut fk_cols: HashSet<(&str, &str)> = HashSet::new();
+    for rel in rels {
+        *fk_counts.entry(rel.src_table.as_str()).or_default() += 1;
+        fk_cols.insert((rel.src_table.as_str(), rel.src_column.as_str()));
+    }
+    for table in tables {
+        let Some(pk) = table.primary_key.as_deref() else {
+            continue;
+        };
+        let fk_count = fk_counts.get(table.name.as_str()).copied().unwrap_or(0);
+        if fk_count >= 2 && fk_cols.contains(&(table.name.as_str(), pk)) {
+            table.primary_key = None;
+        }
+    }
+}
+
 fn relationship_exists(
     rels: &[RelationshipSpec],
     src_table: &str,
@@ -1583,16 +1685,7 @@ fn is_generic_key_name(name: &str) -> bool {
 }
 
 fn normalized_tokens(name: &str) -> Vec<String> {
-    let mut tokens: Vec<String> = name
-        .split('_')
-        .filter_map(|part| {
-            if part.is_empty() {
-                None
-            } else {
-                Some(part.to_string())
-            }
-        })
-        .collect();
+    let mut tokens = split_tokens(name);
     if tokens.len() > 1 && tokens[0].len() <= 2 {
         tokens.remove(0);
     }
@@ -1612,16 +1705,7 @@ fn normalized_tokens(name: &str) -> Vec<String> {
 }
 
 fn normalized_column_tokens(name: &str) -> Vec<String> {
-    let mut tokens: Vec<String> = name
-        .split('_')
-        .filter_map(|part| {
-            if part.is_empty() {
-                None
-            } else {
-                Some(part.to_string())
-            }
-        })
-        .collect();
+    let mut tokens = split_tokens(name);
     let mut out = Vec::new();
     for token in tokens.drain(..) {
         let mut lower = token.to_lowercase();
@@ -1711,7 +1795,7 @@ fn is_strong_pk_match(table_name: &str, col_lower: &str) -> bool {
     {
         return true;
     }
-    if let Some(base) = key_like_base(col_lower) {
+    if let Some(base) = key_name_base(col_lower) {
         if tokens
             .iter()
             .any(|t| overlap_ratio(base, t) >= 0.6)
@@ -1736,6 +1820,41 @@ fn key_like_base(name: &str) -> Option<&str> {
         return Some(base);
     }
     None
+}
+
+fn split_tokens(name: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut prev_is_lower = false;
+    let mut prev_is_digit = false;
+    for ch in name.chars() {
+        if ch == '_' || ch == '-' || ch == ' ' {
+            if !current.is_empty() {
+                tokens.push(current);
+                current = String::new();
+            }
+            prev_is_lower = false;
+            prev_is_digit = false;
+            continue;
+        }
+        let is_upper = ch.is_ascii_uppercase();
+        let is_lower = ch.is_ascii_lowercase();
+        let is_digit = ch.is_ascii_digit();
+        if !current.is_empty() {
+            if (is_upper && prev_is_lower) || (is_digit && !prev_is_digit) || (!is_digit && prev_is_digit)
+            {
+                tokens.push(current);
+                current = String::new();
+            }
+        }
+        current.push(ch);
+        prev_is_lower = is_lower;
+        prev_is_digit = is_digit;
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+    tokens
 }
 
 fn key_name_base(name: &str) -> Option<&str> {
@@ -1788,6 +1907,100 @@ fn column_matches_tokens(col_lower: &str, tokens: &[String]) -> bool {
         }
     }
     false
+}
+
+fn table_name_column(table: &TableSpec) -> Option<String> {
+    let table_lower = table.name.to_lowercase();
+    let singular = singularize(&table_lower);
+    for col in &table.columns {
+        let lower = col.name.to_lowercase();
+        if lower == table_lower || lower == singular {
+            if is_pk_dtype(&col.ingested_dtype) {
+                return Some(col.name.clone());
+            }
+        }
+    }
+    None
+}
+
+fn column_matches_table_name(table_name: &str, col_lower: &str) -> bool {
+    let table_lower = table_name.to_lowercase();
+    let singular = singularize(&table_lower);
+    col_lower == table_lower || col_lower == singular
+}
+
+fn table_has_specific_key(table: &TableSpec) -> bool {
+    table.columns.iter().any(|col| {
+        let lower = col.name.to_lowercase();
+        matches_table_key(&table.name, &lower) || column_matches_table_name(&table.name, &lower)
+    })
+}
+
+fn generic_id_column(table: &TableSpec) -> Option<String> {
+    for col in &table.columns {
+        let lower = col.name.to_lowercase();
+        if matches!(lower.as_str(), "id" | "uuid" | "pk") && is_pk_dtype(&col.ingested_dtype) {
+            return Some(col.name.clone());
+        }
+    }
+    None
+}
+
+fn should_prefer_generic_id(table: &TableSpec) -> bool {
+    if table_has_specific_key(table) {
+        return false;
+    }
+    if table.name.contains('_') || table.name.contains('-') || table.name.contains(' ') {
+        return false;
+    }
+    generic_id_column(table).is_some()
+}
+
+fn generic_pk_column_match(col_name: &str, dest_table: &str) -> bool {
+    let col_tokens = normalized_column_tokens(col_name);
+    let dest_tokens = normalized_primary_tokens(dest_table);
+    if col_tokens.is_empty() || dest_tokens.is_empty() {
+        return false;
+    }
+    if has_type_like_token(&col_tokens)
+        && !dest_tokens.iter().any(|t| is_type_like_token(t))
+    {
+        return false;
+    }
+    dest_tokens
+        .iter()
+        .all(|t| col_tokens.binary_search(t).is_ok())
+}
+
+fn has_type_like_token(tokens: &[String]) -> bool {
+    tokens.iter().any(|t| is_type_like_token(t))
+}
+
+fn is_type_like_token(token: &str) -> bool {
+    matches!(
+        token,
+        "type" | "kind" | "class" | "category" | "status" | "level" | "role"
+    )
+}
+
+fn column_has_type_like(name: &str) -> bool {
+    let tokens = normalized_column_tokens(name);
+    has_type_like_token(&tokens)
+}
+
+fn normalized_primary_tokens(name: &str) -> Vec<String> {
+    let mut tokens = split_tokens(name);
+    let mut out = Vec::new();
+    for token in tokens.drain(..) {
+        let lower = token.to_lowercase();
+        let singular = singularize(&lower);
+        if !singular.is_empty() {
+            out.push(singular);
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
 }
 
 fn has_composite_code_version(candidate: &str, columns: &[ColumnSpec]) -> bool {
@@ -2173,6 +2386,21 @@ mod tests {
         }
     }
 
+    fn rel_exists(
+        rels: &[RelationshipSpec],
+        src_table: &str,
+        src_col: &str,
+        dst_table: &str,
+        dst_col: &str,
+    ) -> bool {
+        rels.iter().any(|rel| {
+            rel.src_table == src_table
+                && rel.src_column == src_col
+                && rel.dst_table == dst_table
+                && rel.dst_column == dst_col
+        })
+    }
+
     #[test]
     fn infer_pk_id() {
         let mut t = table("users", &[("id", ColumnType::Int64)]);
@@ -2249,6 +2477,243 @@ mod tests {
         );
         infer_primary_keys(std::slice::from_mut(&mut t));
         assert_eq!(t.primary_key, None);
+    }
+
+    #[test]
+    fn rel_avito_infers_ads_and_users_primary_keys() {
+        let mut tables = vec![
+            table(
+                "AdsInfo",
+                &[
+                    ("AdID", ColumnType::Int64),
+                    ("LocationID", ColumnType::Int64),
+                    ("CategoryID", ColumnType::Int64),
+                ],
+            ),
+            table(
+                "UserInfo",
+                &[
+                    ("UserID", ColumnType::Int64),
+                    ("UserAgentID", ColumnType::Int64),
+                    ("UserDeviceID", ColumnType::Int64),
+                ],
+            ),
+        ];
+        infer_primary_keys(&mut tables);
+        let ads = tables.iter().find(|t| t.name == "AdsInfo").unwrap();
+        let users = tables.iter().find(|t| t.name == "UserInfo").unwrap();
+        assert_eq!(ads.primary_key.as_deref(), Some("AdID"));
+        assert_eq!(users.primary_key.as_deref(), Some("UserID"));
+    }
+
+    #[test]
+    fn rel_event_infers_join_keys_and_foreign_keys() {
+        let mut tables = vec![
+            table(
+                "events",
+                &[
+                    ("event_id", ColumnType::Int64),
+                    ("user_id", ColumnType::Int64),
+                    ("start_time", ColumnType::Timestamp),
+                ],
+            ),
+            table(
+                "users",
+                &[
+                    ("user_id", ColumnType::Int64),
+                    ("joinedAt", ColumnType::Timestamp),
+                ],
+            ),
+            table(
+                "event_attendees",
+                &[
+                    ("event", ColumnType::Int64),
+                    ("user_id", ColumnType::Int64),
+                    ("start_time", ColumnType::Timestamp),
+                ],
+            ),
+            table(
+                "event_interest",
+                &[
+                    ("user", ColumnType::Int64),
+                    ("event", ColumnType::Int64),
+                    ("timestamp", ColumnType::Timestamp),
+                ],
+            ),
+        ];
+        infer_primary_keys(&mut tables);
+        infer_create_time(&mut tables);
+        let mut rels = Vec::new();
+        let mut notes = Vec::new();
+        infer_foreign_keys(&tables, &mut rels, &mut notes);
+        drop_join_table_primary_keys(&mut tables, &rels);
+        infer_primary_key_relationships(&tables, &mut rels);
+
+        let attendees = tables
+            .iter()
+            .find(|t| t.name == "event_attendees")
+            .unwrap();
+        assert_eq!(attendees.primary_key, None);
+        assert!(rel_exists(
+            &rels,
+            "event_attendees",
+            "event",
+            "events",
+            "event_id"
+        ));
+        assert!(rel_exists(
+            &rels,
+            "event_attendees",
+            "user_id",
+            "users",
+            "user_id"
+        ));
+        assert!(rel_exists(
+            &rels,
+            "event_interest",
+            "event",
+            "events",
+            "event_id"
+        ));
+        assert!(rel_exists(
+            &rels,
+            "event_interest",
+            "user",
+            "users",
+            "user_id"
+        ));
+    }
+
+    #[test]
+    fn rel_salt_prefers_customer_id_and_address_fk() {
+        let mut tables = vec![
+            table("address", &[("ADDRESSID", ColumnType::Int64)]),
+            table(
+                "customer",
+                &[
+                    ("CUSTOMER", ColumnType::Int64),
+                    ("ADDRESSID", ColumnType::Int64),
+                ],
+            ),
+        ];
+        infer_primary_keys(&mut tables);
+        let mut rels = Vec::new();
+        let mut notes = Vec::new();
+        infer_foreign_keys(&tables, &mut rels, &mut notes);
+
+        let customer = tables.iter().find(|t| t.name == "customer").unwrap();
+        assert_eq!(customer.primary_key.as_deref(), Some("CUSTOMER"));
+        assert!(rel_exists(
+            &rels,
+            "customer",
+            "ADDRESSID",
+            "address",
+            "ADDRESSID"
+        ));
+    }
+
+    #[test]
+    fn rel_stack_adds_related_post_fk_and_skips_history_type_fk() {
+        let mut tables = vec![
+            table("posts", &[("Id", ColumnType::Int64)]),
+            table("users", &[("Id", ColumnType::Int64)]),
+            table(
+                "postLinks",
+                &[
+                    ("Id", ColumnType::Int64),
+                    ("PostId", ColumnType::Int64),
+                    ("RelatedPostId", ColumnType::Int64),
+                    ("CreationDate", ColumnType::Timestamp),
+                ],
+            ),
+            table(
+                "postHistory",
+                &[
+                    ("Id", ColumnType::Int64),
+                    ("PostId", ColumnType::Int64),
+                    ("UserId", ColumnType::Int64),
+                    ("PostHistoryTypeId", ColumnType::Int64),
+                    ("CreationDate", ColumnType::Timestamp),
+                ],
+            ),
+        ];
+        infer_primary_keys(&mut tables);
+        infer_create_time(&mut tables);
+        let mut rels = Vec::new();
+        let mut notes = Vec::new();
+        infer_foreign_keys(&tables, &mut rels, &mut notes);
+        drop_join_table_primary_keys(&mut tables, &rels);
+        infer_primary_key_relationships(&tables, &mut rels);
+
+        assert!(rel_exists(
+            &rels,
+            "postLinks",
+            "RelatedPostId",
+            "posts",
+            "Id"
+        ));
+        assert!(!rel_exists(
+            &rels,
+            "postHistory",
+            "PostHistoryTypeId",
+            "postHistory",
+            "Id"
+        ));
+    }
+
+    #[test]
+    fn rel_trial_handles_join_tables_and_fk_direction() {
+        let mut tables = vec![
+            table("conditions", &[("condition_id", ColumnType::Int64)]),
+            table("studies", &[("nct_id", ColumnType::String)]),
+            table(
+                "designs",
+                &[("id", ColumnType::Int64), ("nct_id", ColumnType::String)],
+            ),
+            table(
+                "conditions_studies",
+                &[
+                    ("id", ColumnType::Int64),
+                    ("nct_id", ColumnType::String),
+                    ("condition_id", ColumnType::Int64),
+                    ("date", ColumnType::Date),
+                ],
+            ),
+        ];
+        infer_primary_keys(&mut tables);
+        infer_create_time(&mut tables);
+        let mut rels = Vec::new();
+        let mut notes = Vec::new();
+        infer_foreign_keys(&tables, &mut rels, &mut notes);
+        drop_join_table_primary_keys(&mut tables, &rels);
+        infer_primary_key_relationships(&tables, &mut rels);
+
+        let join = tables
+            .iter()
+            .find(|t| t.name == "conditions_studies")
+            .unwrap();
+        assert_eq!(join.primary_key, None);
+        assert!(rel_exists(
+            &rels,
+            "conditions_studies",
+            "condition_id",
+            "conditions",
+            "condition_id"
+        ));
+        assert!(rel_exists(
+            &rels,
+            "conditions_studies",
+            "nct_id",
+            "studies",
+            "nct_id"
+        ));
+        assert!(!rel_exists(
+            &rels,
+            "conditions_studies",
+            "id",
+            "designs",
+            "id"
+        ));
     }
 
     #[test]
