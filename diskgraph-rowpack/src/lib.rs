@@ -2485,15 +2485,45 @@ fn write_alphabet_packed_checked(
     bits: u8,
 ) -> bool {
     let payload_start = out.len();
+    match bits {
+        1 => pack_bits_1(out, bytes, map, payload_start),
+        2 => pack_bits_2(out, bytes, map, payload_start),
+        3 => pack_bits_3(out, bytes, map, payload_start),
+        4 => pack_bits_4(out, bytes, map, payload_start),
+        5 => pack_bits_5(out, bytes, map, payload_start),
+        6 => pack_bits_6(out, bytes, map, payload_start),
+        _ => pack_bits_generic(out, bytes, map, bits, payload_start),
+    }
+}
+
+#[inline]
+fn alphabet_index(map: &[u8; 256], b: u8) -> Option<u8> {
+    let idx = map[b as usize];
+    if idx == ALPHABET_INVALID {
+        None
+    } else {
+        Some(idx)
+    }
+}
+
+fn pack_bits_generic(
+    out: &mut Vec<u8>,
+    bytes: &[u8],
+    map: &[u8; 256],
+    bits: u8,
+    payload_start: usize,
+) -> bool {
     let mut cur: u64 = 0;
     let mut used: u8 = 0;
     for b in bytes {
-        let idx = map[*b as usize];
-        if idx == ALPHABET_INVALID {
-            out.truncate(payload_start);
-            return false;
-        }
-        cur |= (idx as u64) << used;
+        let idx = match alphabet_index(map, *b) {
+            Some(idx) => idx as u64,
+            None => {
+                out.truncate(payload_start);
+                return false;
+            }
+        };
+        cur |= idx << used;
         used = used.saturating_add(bits);
         while used >= 8 {
             out.push(cur as u8);
@@ -2503,6 +2533,207 @@ fn write_alphabet_packed_checked(
     }
     if used > 0 {
         out.push(cur as u8);
+    }
+    true
+}
+
+fn pack_bits_1(
+    out: &mut Vec<u8>,
+    bytes: &[u8],
+    map: &[u8; 256],
+    payload_start: usize,
+) -> bool {
+    let mut i = 0usize;
+    while i + 8 <= bytes.len() {
+        let mut cur: u8 = 0;
+        for bit in 0..8 {
+            let idx = match alphabet_index(map, bytes[i + bit]) {
+                Some(idx) => idx,
+                None => {
+                    out.truncate(payload_start);
+                    return false;
+                }
+            };
+            cur |= (idx & 1) << bit;
+        }
+        out.push(cur);
+        i += 8;
+    }
+    if i < bytes.len() {
+        return pack_bits_generic(out, &bytes[i..], map, 1, payload_start);
+    }
+    true
+}
+
+fn pack_bits_2(
+    out: &mut Vec<u8>,
+    bytes: &[u8],
+    map: &[u8; 256],
+    payload_start: usize,
+) -> bool {
+    let mut i = 0usize;
+    while i + 4 <= bytes.len() {
+        let b0 = match alphabet_index(map, bytes[i]) {
+            Some(idx) => idx,
+            None => {
+                out.truncate(payload_start);
+                return false;
+            }
+        };
+        let b1 = match alphabet_index(map, bytes[i + 1]) {
+            Some(idx) => idx,
+            None => {
+                out.truncate(payload_start);
+                return false;
+            }
+        };
+        let b2 = match alphabet_index(map, bytes[i + 2]) {
+            Some(idx) => idx,
+            None => {
+                out.truncate(payload_start);
+                return false;
+            }
+        };
+        let b3 = match alphabet_index(map, bytes[i + 3]) {
+            Some(idx) => idx,
+            None => {
+                out.truncate(payload_start);
+                return false;
+            }
+        };
+        let cur = (b0 & 0x3)
+            | ((b1 & 0x3) << 2)
+            | ((b2 & 0x3) << 4)
+            | ((b3 & 0x3) << 6);
+        out.push(cur);
+        i += 4;
+    }
+    if i < bytes.len() {
+        return pack_bits_generic(out, &bytes[i..], map, 2, payload_start);
+    }
+    true
+}
+
+fn pack_bits_3(
+    out: &mut Vec<u8>,
+    bytes: &[u8],
+    map: &[u8; 256],
+    payload_start: usize,
+) -> bool {
+    let mut i = 0usize;
+    while i + 8 <= bytes.len() {
+        let mut cur: u32 = 0;
+        for offset in 0..8 {
+            let idx = match alphabet_index(map, bytes[i + offset]) {
+                Some(idx) => idx as u32,
+                None => {
+                    out.truncate(payload_start);
+                    return false;
+                }
+            };
+            cur |= (idx & 0x7) << (offset * 3);
+        }
+        out.push(cur as u8);
+        out.push((cur >> 8) as u8);
+        out.push((cur >> 16) as u8);
+        i += 8;
+    }
+    if i < bytes.len() {
+        return pack_bits_generic(out, &bytes[i..], map, 3, payload_start);
+    }
+    true
+}
+
+fn pack_bits_4(
+    out: &mut Vec<u8>,
+    bytes: &[u8],
+    map: &[u8; 256],
+    payload_start: usize,
+) -> bool {
+    let mut i = 0usize;
+    while i + 2 <= bytes.len() {
+        let b0 = match alphabet_index(map, bytes[i]) {
+            Some(idx) => idx,
+            None => {
+                out.truncate(payload_start);
+                return false;
+            }
+        };
+        let b1 = match alphabet_index(map, bytes[i + 1]) {
+            Some(idx) => idx,
+            None => {
+                out.truncate(payload_start);
+                return false;
+            }
+        };
+        let cur = (b0 & 0x0f) | ((b1 & 0x0f) << 4);
+        out.push(cur);
+        i += 2;
+    }
+    if i < bytes.len() {
+        return pack_bits_generic(out, &bytes[i..], map, 4, payload_start);
+    }
+    true
+}
+
+fn pack_bits_5(
+    out: &mut Vec<u8>,
+    bytes: &[u8],
+    map: &[u8; 256],
+    payload_start: usize,
+) -> bool {
+    let mut i = 0usize;
+    while i + 8 <= bytes.len() {
+        let mut cur: u64 = 0;
+        for offset in 0..8 {
+            let idx = match alphabet_index(map, bytes[i + offset]) {
+                Some(idx) => idx as u64,
+                None => {
+                    out.truncate(payload_start);
+                    return false;
+                }
+            };
+            cur |= (idx & 0x1f) << (offset * 5);
+        }
+        out.push(cur as u8);
+        out.push((cur >> 8) as u8);
+        out.push((cur >> 16) as u8);
+        out.push((cur >> 24) as u8);
+        out.push((cur >> 32) as u8);
+        i += 8;
+    }
+    if i < bytes.len() {
+        return pack_bits_generic(out, &bytes[i..], map, 5, payload_start);
+    }
+    true
+}
+
+fn pack_bits_6(
+    out: &mut Vec<u8>,
+    bytes: &[u8],
+    map: &[u8; 256],
+    payload_start: usize,
+) -> bool {
+    let mut i = 0usize;
+    while i + 4 <= bytes.len() {
+        let mut cur: u32 = 0;
+        for offset in 0..4 {
+            let idx = match alphabet_index(map, bytes[i + offset]) {
+                Some(idx) => idx as u32,
+                None => {
+                    out.truncate(payload_start);
+                    return false;
+                }
+            };
+            cur |= (idx & 0x3f) << (offset * 6);
+        }
+        out.push(cur as u8);
+        out.push((cur >> 8) as u8);
+        out.push((cur >> 16) as u8);
+        i += 4;
+    }
+    if i < bytes.len() {
+        return pack_bits_generic(out, &bytes[i..], map, 6, payload_start);
     }
     true
 }
