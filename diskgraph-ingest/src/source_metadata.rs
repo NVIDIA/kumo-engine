@@ -13,6 +13,8 @@ pub struct SourceMetadata {
     #[serde(default)]
     pub rowpack: Option<RowPackConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub num_shards: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub edge_format: Option<EdgeStorageFormat>,
 }
 
@@ -133,6 +135,16 @@ impl SourceMetadata {
         }
         if self.tables.is_empty() {
             errors.push("at least one table is required".to_string());
+        }
+        if let Some(shards) = self.num_shards {
+            if shards == 0 {
+                errors.push("num_shards must be >= 1".to_string());
+            }
+        }
+        if let Some(format) = self.edge_format {
+            if matches!(format, EdgeStorageFormat::Parquet) {
+                errors.push("parquet output format is no longer supported".to_string());
+            }
         }
         let mut table_names = HashSet::new();
         let mut table_map: HashMap<&str, &TableSpec> = HashMap::new();

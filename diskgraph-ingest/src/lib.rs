@@ -21,8 +21,8 @@ use diskgraph_fs::{
     build_adls_client, build_gcs_client, build_s3_client, AdlsConfig, GcsConfig, S3Config,
 };
 use diskgraph_rowpack::{
-    LogicalType as RowpackType, RowPackConfig, RowPackContextBuilder, RowPackEncoder,
-    RowValueAccess, ValueRef,
+    LogicalType as RowpackType, RowPackConfig, RowPackContextBuilder, RowPackDecoder,
+    RowPackEncoder, RowValueAccess, ValueRef,
 };
 use num_traits::Signed;
 use object_store::{path::Path as ObjectPath, ObjectStore, WriteMultipart};
@@ -36,11 +36,13 @@ use serde::Serialize;
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 use std::fs;
-use std::io::{self, BufWriter, Write};
+use std::io::{self, BufWriter, Read, Write};
+use std::hash::Hasher;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Condvar, Mutex};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
+use twox_hash::XxHash64;
 use tokio::runtime::Runtime;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
@@ -54,6 +56,13 @@ const PROGRESS_STEP: u64 = 10_000;
 const MAX_KEY_FAILURE_SAMPLES: u64 = 10;
 const MAX_KEY_SAMPLE_LEN: usize = 64;
 const MAX_INPUT_STRING_BYTES: usize = 32 * 1024;
+const TEMP_DIR_NAME: &str = "_tmp";
+const TEMP_META_MAGIC: [u8; 4] = *b"DGTP";
+const TEMP_META_VERSION: u8 = 1;
+const TEMP_ROW_LEN_WIDTH: u8 = 4;
+const SAMPLE_ROW_LIMIT: usize = 100_000;
+const SAMPLE_ROW_TARGET: usize = 10_000;
+const PK_MAP_MEMORY_BUDGET: usize = 1024 * 1024 * 1024;
 const EDGE_BIN_MAGIC: [u8; 4] = *b"DGED";
 const EDGE_BIN_VERSION: u8 = 2;
 const EDGE_BIN_FLAG_SORT: u8 = 1;
@@ -210,36 +219,31 @@ pub fn ingest_with_stats(
     if let Some(profile_dir) = &profile_dir {
         fs::create_dir_all(profile_dir)?;
     }
+    let mut build_wall = std::time::Duration::from_millis(0);
+    let temp_start = std::time::Instant::now();
+    if let Some(profile_dir) = &profile_dir {
+        profile_phase(profile_dir, "temp", || ctx.build_temp_shards())?;
+    } else {
+        ctx.build_temp_shards()?;
+    }
+    build_wall += temp_start.elapsed();
     let pk_map_start = std::time::Instant::now();
     if let Some(profile_dir) = &profile_dir {
-        profile_phase(profile_dir, "pk_map", || ctx.build_pk_maps())?;
+        profile_phase(profile_dir, "pk_map", || ctx.build_sharded_pk_maps())?;
     } else {
-        ctx.build_pk_maps()?;
+        ctx.build_sharded_pk_maps()?;
     }
     let pk_map_wall = pk_map_start.elapsed();
-    let mut build_wall = std::time::Duration::from_millis(0);
+    let final_start = std::time::Instant::now();
     if let Some(profile_dir) = &profile_dir {
-        let node_start = std::time::Instant::now();
-        profile_phase(profile_dir, "nodes", || ctx.build_node_data_and_edges(BuildPhase::Nodes))?;
-        build_wall += node_start.elapsed();
-        let node_task_ms = ctx.node_task_ms;
-        let node_tasks = ctx.node_tasks;
-        let build_task_ms = ctx.build_task_ms;
-        let build_tasks = ctx.build_tasks;
-        let edge_start = std::time::Instant::now();
-        profile_phase(profile_dir, "edges", || ctx.build_node_data_and_edges(BuildPhase::Edges))?;
-        build_wall += edge_start.elapsed();
-        ctx.node_task_ms = node_task_ms;
-        ctx.node_tasks = node_tasks;
-        ctx.build_task_ms = build_task_ms + ctx.build_task_ms;
-        ctx.build_tasks = build_tasks + ctx.build_tasks;
+        profile_phase(profile_dir, "build", || ctx.build_final_index())?;
     } else {
-        let build_start = std::time::Instant::now();
-        ctx.build_node_data_and_edges(BuildPhase::All)?;
-        build_wall = build_start.elapsed();
+        ctx.build_final_index()?;
     }
+    build_wall += final_start.elapsed();
     let finalize_start = std::time::Instant::now();
     let index_metadata = ctx.finalize_metadata()?;
+    ctx.cleanup_temp()?;
     let finalize_wall = finalize_start.elapsed();
     let wall_time = wall_start.elapsed();
     let bytes_read = sum_input_bytes(&ctx.source);
@@ -287,9 +291,13 @@ struct IngestContext {
     mapping_kind: MappingKind,
     progress: Option<ProgressCallback>,
     profile_dir: Option<PathBuf>,
+    num_shards: usize,
     pk_maps: HashMap<String, TableMapState>,
     table_rows: HashMap<String, u64>,
     table_contexts: HashMap<String, String>,
+    shard_rows: HashMap<String, Vec<u64>>,
+    shard_offsets: HashMap<String, Vec<u64>>,
+    pk_map_paths: HashMap<String, Vec<String>>,
     relation_defs: Vec<RelationDef>,
     relationships: Vec<RelationshipRuntime>,
     edge_counts: HashMap<String, u64>,
@@ -306,6 +314,87 @@ struct IngestContext {
     build_tasks: u64,
     node_tasks: u64,
     edge_tasks: u64,
+}
+
+struct TempRowpackMeta {
+    row_count: u64,
+    context: Vec<u8>,
+}
+
+struct TempRowWriter {
+    writer: BufWriter<OutputSink>,
+    row_count: u64,
+}
+
+#[derive(Clone)]
+enum OwnedValue {
+    Null,
+    Int64(i64),
+    Int32(i32),
+    UInt64(u64),
+    UInt32(u32),
+    Float64(f64),
+    Float32(f32),
+    Bool(bool),
+    String(String),
+    Bytes(Vec<u8>),
+    Date(i32),
+    Timestamp { secs: i64, nanos: u32 },
+    Decimal128(i128),
+    Decimal256([u8; 32]),
+    Float32Array(Vec<f32>),
+    Float64Array(Vec<f64>),
+}
+
+#[derive(Clone)]
+struct OwnedRow {
+    values: Vec<OwnedValue>,
+}
+
+impl OwnedValue {
+    fn as_value_ref(&self) -> ValueRef<'_> {
+        match self {
+            OwnedValue::Null => ValueRef::Null,
+            OwnedValue::Int64(v) => ValueRef::Int64(*v),
+            OwnedValue::Int32(v) => ValueRef::Int32(*v),
+            OwnedValue::UInt64(v) => ValueRef::UInt64(*v),
+            OwnedValue::UInt32(v) => ValueRef::UInt32(*v),
+            OwnedValue::Float64(v) => ValueRef::Float64(*v),
+            OwnedValue::Float32(v) => ValueRef::Float32(*v),
+            OwnedValue::Bool(v) => ValueRef::Bool(*v),
+            OwnedValue::String(v) => ValueRef::String(v.as_str()),
+            OwnedValue::Bytes(v) => ValueRef::Bytes(v.as_slice()),
+            OwnedValue::Date(v) => ValueRef::Date(*v),
+            OwnedValue::Timestamp { secs, nanos } => ValueRef::Timestamp {
+                secs: *secs,
+                nanos: *nanos,
+            },
+            OwnedValue::Decimal128(v) => ValueRef::Decimal128(*v),
+            OwnedValue::Decimal256(v) => ValueRef::Decimal256(*v),
+            OwnedValue::Float32Array(v) => ValueRef::Float32Array(v.as_slice()),
+            OwnedValue::Float64Array(v) => ValueRef::Float64Array(v.as_slice()),
+        }
+    }
+}
+
+impl OwnedRow {
+    fn as_value_refs<'a>(&'a self, out: &mut Vec<ValueRef<'a>>) {
+        out.clear();
+        out.reserve(self.values.len());
+        for value in &self.values {
+            out.push(value.as_value_ref());
+        }
+    }
+
+    fn as_value_refs_for_indices<'a>(&'a self, indices: &[usize], out: &mut Vec<ValueRef<'a>>) {
+        out.clear();
+        out.reserve(indices.len());
+        for idx in indices {
+            if let Some(value) = self.values.get(*idx) {
+                out.push(value.as_value_ref());
+            }
+        }
+    }
 }
 
 struct TableMapState {
@@ -438,6 +527,7 @@ impl IngestContext {
         options: IngestOptions,
         output: &str,
     ) -> Result<Self> {
+        let num_shards = source.num_shards.unwrap_or(1).max(1);
         let mut relation_defs = Vec::new();
         let mut relationships = Vec::new();
         for rel in &source.relationships {
@@ -524,9 +614,13 @@ impl IngestContext {
             mapping_kind: options.mapping_kind,
             progress: options.progress,
             profile_dir: options.profile_dir,
+            num_shards,
             pk_maps: HashMap::new(),
             table_rows: HashMap::new(),
             table_contexts: HashMap::new(),
+            shard_rows: HashMap::new(),
+            shard_offsets: HashMap::new(),
+            pk_map_paths: HashMap::new(),
             relation_defs,
             relationships,
             edge_counts: HashMap::new(),
@@ -772,6 +866,1421 @@ impl IngestContext {
         self.table_rows = table_rows;
         self.pk_duplicate_counts = pk_duplicate_counts;
         self.pk_duplicate_samples = pk_duplicate_samples;
+        Ok(())
+    }
+
+    fn build_temp_shards(&mut self) -> Result<()> {
+        let root = require_local_output(&self.target)?.to_path_buf();
+        let temp_root = root.join(TEMP_DIR_NAME);
+        fs::create_dir_all(&temp_root)?;
+        let mut table_rows = HashMap::new();
+        let tables = self.source.tables.clone();
+        for table in &tables {
+            if table.edge_table.is_some() {
+                self.build_temp_edge_table(table)?;
+            } else {
+                let rows = self.build_temp_node_table(table)?;
+                table_rows.insert(table.name.clone(), rows);
+            }
+        }
+        self.table_rows = table_rows;
+        Ok(())
+    }
+
+    fn build_temp_node_table(&mut self, table: &TableSpec) -> Result<u64> {
+        let name_to_index: HashMap<String, usize> = table
+            .columns
+            .iter()
+            .enumerate()
+            .map(|(idx, col)| (col.name.clone(), idx))
+            .collect();
+        let pk_col = table.primary_key.as_ref().and_then(|pk| column_spec(table, pk).ok());
+        let pk_idx = table
+            .primary_key
+            .as_ref()
+            .and_then(|pk| column_index(table, pk).ok());
+        let relations: Vec<RelationshipRuntime> = self
+            .relationships
+            .iter()
+            .filter(|rel| rel.src_table == table.name)
+            .cloned()
+            .collect();
+        let mut rel_specs = Vec::new();
+        for rel in &relations {
+            let idx = column_index(table, &rel.src_column)?;
+            rel_specs.push((rel.name_forward.clone(), idx));
+        }
+        let rowpack_config = rowpack_config_for_table(self.source.rowpack.as_ref(), table);
+        let mut buffered_rows: Vec<OwnedRow> = Vec::new();
+        let mut total_seen = 0usize;
+        let mut total_rows = 0u64;
+        let mut context_ready = false;
+        let mut node_context: Option<diskgraph_rowpack::RowPackContext> = None;
+        let mut pkey_context: Option<diskgraph_rowpack::RowPackContext> = None;
+        let mut fkey_contexts: HashMap<String, diskgraph_rowpack::RowPackContext> = HashMap::new();
+        let mut node_encoder: Option<RowPackEncoder> = None;
+        let mut pkey_encoder: Option<RowPackEncoder> = None;
+        let mut fkey_encoders: HashMap<String, RowPackEncoder> = HashMap::new();
+        let mut node_writers: Vec<TempRowWriter> = Vec::new();
+        let mut pkey_writers: Option<Vec<TempRowWriter>> = None;
+        let mut fkey_writers: HashMap<String, Vec<TempRowWriter>> = HashMap::new();
+        let mut row_id = 0u64;
+        let mut values = Vec::with_capacity(table.columns.len());
+        let mut arrays_f32: Vec<Vec<f32>> = Vec::new();
+        let mut arrays_f64: Vec<Vec<f64>> = Vec::new();
+        let mut strings: Vec<String> = Vec::new();
+        let mut bytes: Vec<Vec<u8>> = Vec::new();
+        let schema = table_schema(table)?;
+        for path in &table.paths {
+            if !is_cloud_path(path) && !Path::new(path).exists() {
+                return Err(anyhow!("input path not found {}", path));
+            }
+            let local = localize_input(path)?;
+            match table.format {
+                TableFormat::Parquet => {
+                    let file = fs::File::open(&local.path)
+                        .with_context(|| format!("open {}", local.path.display()))?;
+                    let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
+                    let reader = builder.with_batch_size(NODE_BATCH_SIZE).build()?;
+                    for batch in reader {
+                        let batch = batch?;
+                        let mut cols = Vec::with_capacity(table.columns.len());
+                        for col in &table.columns {
+                            let idx = batch
+                                .schema()
+                                .index_of(&col.name)
+                                .context("missing column in batch")?;
+                            cols.push(batch.column(idx).clone());
+                        }
+                        for row in 0..batch.num_rows() {
+                            let row_view = RowView {
+                                row,
+                                row_id,
+                                cols: &cols,
+                                name_to_index: &name_to_index,
+                            };
+                            let owned = owned_row_from_row(
+                                &row_view,
+                                table,
+                                &mut values,
+                                &mut arrays_f32,
+                                &mut arrays_f64,
+                                &mut strings,
+                                &mut bytes,
+                                &self.trimmed_strings,
+                            )?;
+                            total_seen += 1;
+                            total_rows += 1;
+                            if !context_ready {
+                                buffered_rows.push(owned);
+                                if total_seen >= SAMPLE_ROW_LIMIT {
+                                    self.build_node_contexts_from_samples(
+                                        table,
+                                        pk_col,
+                                        pk_idx,
+                                        &rel_specs,
+                                        &rowpack_config,
+                                        &buffered_rows,
+                                        &mut node_context,
+                                        &mut pkey_context,
+                                        &mut fkey_contexts,
+                                    )?;
+                                    self.init_node_temp_writers(
+                                        table,
+                                        &node_context,
+                                        &pkey_context,
+                                        &fkey_contexts,
+                                        &mut node_encoder,
+                                        &mut pkey_encoder,
+                                        &mut fkey_encoders,
+                                        &mut node_writers,
+                                        &mut pkey_writers,
+                                        &mut fkey_writers,
+                                    )?;
+                                    self.flush_buffered_node_rows(
+                                        table,
+                                        pk_idx,
+                                        &rel_specs,
+                                        &mut buffered_rows,
+                                        &node_encoder,
+                                        &pkey_encoder,
+                                        &fkey_encoders,
+                                        &mut node_writers,
+                                        &mut pkey_writers,
+                                        &mut fkey_writers,
+                                        &mut row_id,
+                                    )?;
+                                    context_ready = true;
+                                }
+                            } else {
+                                self.write_node_row(
+                                    table,
+                                    pk_idx,
+                                    &rel_specs,
+                                    owned,
+                                    &node_encoder,
+                                    &pkey_encoder,
+                                    &fkey_encoders,
+                                    &mut node_writers,
+                                    &mut pkey_writers,
+                                    &mut fkey_writers,
+                                    &mut row_id,
+                                )?;
+                            }
+                        }
+                    }
+                }
+                TableFormat::Csv => {
+                    let file = fs::File::open(&local.path)
+                        .with_context(|| format!("open {}", local.path.display()))?;
+                    let builder = arrow_csv::ReaderBuilder::new(Arc::new(schema.clone()))
+                        .with_header(true);
+                    let reader = builder.build(file)?;
+                    for batch in reader {
+                        let batch = batch?;
+                        let mut cols = Vec::with_capacity(table.columns.len());
+                        for col in &table.columns {
+                            let idx = batch
+                                .schema()
+                                .index_of(&col.name)
+                                .context("missing column in batch")?;
+                            cols.push(batch.column(idx).clone());
+                        }
+                        for row in 0..batch.num_rows() {
+                            let row_view = RowView {
+                                row,
+                                row_id,
+                                cols: &cols,
+                                name_to_index: &name_to_index,
+                            };
+                            let owned = owned_row_from_row(
+                                &row_view,
+                                table,
+                                &mut values,
+                                &mut arrays_f32,
+                                &mut arrays_f64,
+                                &mut strings,
+                                &mut bytes,
+                                &self.trimmed_strings,
+                            )?;
+                            total_seen += 1;
+                            total_rows += 1;
+                            if !context_ready {
+                                buffered_rows.push(owned);
+                                if total_seen >= SAMPLE_ROW_LIMIT {
+                                    self.build_node_contexts_from_samples(
+                                        table,
+                                        pk_col,
+                                        pk_idx,
+                                        &rel_specs,
+                                        &rowpack_config,
+                                        &buffered_rows,
+                                        &mut node_context,
+                                        &mut pkey_context,
+                                        &mut fkey_contexts,
+                                    )?;
+                                    self.init_node_temp_writers(
+                                        table,
+                                        &node_context,
+                                        &pkey_context,
+                                        &fkey_contexts,
+                                        &mut node_encoder,
+                                        &mut pkey_encoder,
+                                        &mut fkey_encoders,
+                                        &mut node_writers,
+                                        &mut pkey_writers,
+                                        &mut fkey_writers,
+                                    )?;
+                                    self.flush_buffered_node_rows(
+                                        table,
+                                        pk_idx,
+                                        &rel_specs,
+                                        &mut buffered_rows,
+                                        &node_encoder,
+                                        &pkey_encoder,
+                                        &fkey_encoders,
+                                        &mut node_writers,
+                                        &mut pkey_writers,
+                                        &mut fkey_writers,
+                                        &mut row_id,
+                                    )?;
+                                    context_ready = true;
+                                }
+                            } else {
+                                self.write_node_row(
+                                    table,
+                                    pk_idx,
+                                    &rel_specs,
+                                    owned,
+                                    &node_encoder,
+                                    &pkey_encoder,
+                                    &fkey_encoders,
+                                    &mut node_writers,
+                                    &mut pkey_writers,
+                                    &mut fkey_writers,
+                                    &mut row_id,
+                                )?;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if !context_ready {
+            self.build_node_contexts_from_samples(
+                table,
+                pk_col,
+                pk_idx,
+                &rel_specs,
+                &rowpack_config,
+                &buffered_rows,
+                &mut node_context,
+                &mut pkey_context,
+                &mut fkey_contexts,
+            )?;
+            self.init_node_temp_writers(
+                table,
+                &node_context,
+                &pkey_context,
+                &fkey_contexts,
+                &mut node_encoder,
+                &mut pkey_encoder,
+                &mut fkey_encoders,
+                &mut node_writers,
+                &mut pkey_writers,
+                &mut fkey_writers,
+            )?;
+            self.flush_buffered_node_rows(
+                table,
+                pk_idx,
+                &rel_specs,
+                &mut buffered_rows,
+                &node_encoder,
+                &pkey_encoder,
+                &fkey_encoders,
+                &mut node_writers,
+                &mut pkey_writers,
+                &mut fkey_writers,
+                &mut row_id,
+            )?;
+        }
+
+        let node_ctx = node_context.ok_or_else(|| anyhow!("missing node context"))?;
+        let node_ctx_bytes = node_ctx.to_bytes()?;
+        let mut shard_rows = Vec::with_capacity(self.num_shards);
+        for shard in 0..self.num_shards {
+            let node_rows = finish_temp_writer(node_writers.remove(0))?;
+            shard_rows.push(node_rows);
+            let node_meta_path = temp_node_data_meta_path(&table.name, shard);
+            write_temp_meta(&self.target, &node_meta_path, node_rows, &node_ctx_bytes)?;
+        }
+        if let Some(writers) = pkey_writers.take() {
+            let pkey_ctx = pkey_context.ok_or_else(|| anyhow!("missing pkey context"))?;
+            let pkey_ctx_bytes = pkey_ctx.to_bytes()?;
+            for (shard, writer) in writers.into_iter().enumerate() {
+                let rows = finish_temp_writer(writer)?;
+                let meta_path = temp_pkey_meta_path(&table.name, shard);
+                write_temp_meta(&self.target, &meta_path, rows, &pkey_ctx_bytes)?;
+            }
+        }
+        for (rel, writers) in fkey_writers.into_iter() {
+            let ctx = fkey_contexts
+                .get(&rel)
+                .ok_or_else(|| anyhow!("missing fkey context {}", rel))?;
+            let ctx_bytes = ctx.to_bytes()?;
+            for (shard, writer) in writers.into_iter().enumerate() {
+                let rows = finish_temp_writer(writer)?;
+                let meta_path = temp_fkey_meta_path(&table.name, &rel, shard);
+                write_temp_meta(&self.target, &meta_path, rows, &ctx_bytes)?;
+            }
+        }
+        self.shard_rows.insert(table.name.clone(), shard_rows);
+        self.table_contexts.insert(
+            table.name.clone(),
+            format!("nodes/{}/node_data.ctx", table.name.to_lowercase()),
+        );
+        Ok(total_rows)
+    }
+
+    fn build_node_contexts_from_samples(
+        &self,
+        table: &TableSpec,
+        pk_col: Option<&ColumnSpec>,
+        pk_idx: Option<usize>,
+        rel_specs: &[(String, usize)],
+        rowpack_config: &RowPackConfig,
+        rows: &[OwnedRow],
+        node_context: &mut Option<diskgraph_rowpack::RowPackContext>,
+        pkey_context: &mut Option<diskgraph_rowpack::RowPackContext>,
+        fkey_contexts: &mut HashMap<String, diskgraph_rowpack::RowPackContext>,
+    ) -> Result<()> {
+        let sample_idxs = sample_indices(rows.len(), SAMPLE_ROW_TARGET);
+        let mut value_refs = Vec::new();
+        let node_columns = rowpack_columns(table)?;
+        let mut node_builder = RowPackContextBuilder::new(node_columns, rowpack_config.clone());
+        for idx in &sample_idxs {
+            rows[*idx].as_value_refs(&mut value_refs);
+            node_builder.observe_row(&value_refs)?;
+        }
+        *node_context = Some(node_builder.finish()?);
+
+        if let (Some(pk_col), Some(pk_idx)) = (pk_col, pk_idx) {
+            let columns = rowpack_columns_for_specs(&[pk_col.clone()])?;
+            let mut pk_builder = RowPackContextBuilder::new(columns, rowpack_config.clone());
+            for idx in &sample_idxs {
+                rows[*idx].as_value_refs_for_indices(&[pk_idx], &mut value_refs);
+                pk_builder.observe_row(&value_refs)?;
+            }
+            *pkey_context = Some(pk_builder.finish()?);
+        }
+
+        for (rel_name, rel_idx) in rel_specs {
+            let fk_col = table
+                .columns
+                .get(*rel_idx)
+                .ok_or_else(|| anyhow!("missing fk column index {}", rel_idx))?;
+            let mut columns = rowpack_columns_for_specs(&[fk_col.clone()])?;
+            columns.push(diskgraph_rowpack::RowPackColumn {
+                name: "src_sortkey".to_string(),
+                logical_type: RowpackType::UInt32,
+                fixed_len: None,
+                precision: None,
+                scale: None,
+            });
+            let mut fk_builder = RowPackContextBuilder::new(columns, rowpack_config.clone());
+            for idx in &sample_idxs {
+                rows[*idx].as_value_refs_for_indices(&[*rel_idx], &mut value_refs);
+                value_refs.push(ValueRef::Null);
+                fk_builder.observe_row(&value_refs)?;
+            }
+            fkey_contexts.insert(rel_name.clone(), fk_builder.finish()?);
+        }
+        Ok(())
+    }
+
+    fn init_node_temp_writers(
+        &self,
+        table: &TableSpec,
+        node_context: &Option<diskgraph_rowpack::RowPackContext>,
+        pkey_context: &Option<diskgraph_rowpack::RowPackContext>,
+        fkey_contexts: &HashMap<String, diskgraph_rowpack::RowPackContext>,
+        node_encoder: &mut Option<RowPackEncoder>,
+        pkey_encoder: &mut Option<RowPackEncoder>,
+        fkey_encoders: &mut HashMap<String, RowPackEncoder>,
+        node_writers: &mut Vec<TempRowWriter>,
+        pkey_writers: &mut Option<Vec<TempRowWriter>>,
+        fkey_writers: &mut HashMap<String, Vec<TempRowWriter>>,
+    ) -> Result<()> {
+        let node_ctx = node_context.as_ref().ok_or_else(|| anyhow!("missing node context"))?;
+        *node_encoder = Some(RowPackEncoder::new(node_ctx.clone())?);
+        for shard in 0..self.num_shards {
+            node_writers.push(open_temp_row_writer(
+                &self.target,
+                &temp_node_data_path(&table.name, shard),
+            )?);
+        }
+        if let Some(ctx) = pkey_context.as_ref() {
+            *pkey_encoder = Some(RowPackEncoder::new(ctx.clone())?);
+            let mut writers = Vec::with_capacity(self.num_shards);
+            for shard in 0..self.num_shards {
+                writers.push(open_temp_row_writer(
+                    &self.target,
+                    &temp_pkey_path(&table.name, shard),
+                )?);
+            }
+            *pkey_writers = Some(writers);
+        }
+        for (rel, ctx) in fkey_contexts {
+            fkey_encoders.insert(rel.clone(), RowPackEncoder::new(ctx.clone())?);
+            let mut writers = Vec::with_capacity(self.num_shards);
+            for shard in 0..self.num_shards {
+                writers.push(open_temp_row_writer(
+                    &self.target,
+                    &temp_fkey_path(&table.name, rel, shard),
+                )?);
+            }
+            fkey_writers.insert(rel.clone(), writers);
+        }
+        Ok(())
+    }
+
+    fn flush_buffered_node_rows(
+        &self,
+        table: &TableSpec,
+        pk_idx: Option<usize>,
+        rel_specs: &[(String, usize)],
+        rows: &mut Vec<OwnedRow>,
+        node_encoder: &Option<RowPackEncoder>,
+        pkey_encoder: &Option<RowPackEncoder>,
+        fkey_encoders: &HashMap<String, RowPackEncoder>,
+        node_writers: &mut Vec<TempRowWriter>,
+        pkey_writers: &mut Option<Vec<TempRowWriter>>,
+        fkey_writers: &mut HashMap<String, Vec<TempRowWriter>>,
+        row_id: &mut u64,
+    ) -> Result<()> {
+        let rows_taken = std::mem::take(rows);
+        for row in rows_taken {
+            self.write_node_row(
+                table,
+                pk_idx,
+                rel_specs,
+                row,
+                node_encoder,
+                pkey_encoder,
+                fkey_encoders,
+                node_writers,
+                pkey_writers,
+                fkey_writers,
+                row_id,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn write_node_row(
+        &self,
+        _table: &TableSpec,
+        pk_idx: Option<usize>,
+        rel_specs: &[(String, usize)],
+        row: OwnedRow,
+        node_encoder: &Option<RowPackEncoder>,
+        pkey_encoder: &Option<RowPackEncoder>,
+        fkey_encoders: &HashMap<String, RowPackEncoder>,
+        node_writers: &mut Vec<TempRowWriter>,
+        pkey_writers: &mut Option<Vec<TempRowWriter>>,
+        fkey_writers: &mut HashMap<String, Vec<TempRowWriter>>,
+        row_id: &mut u64,
+    ) -> Result<()> {
+        let mut value_refs = Vec::new();
+        row.as_value_refs(&mut value_refs);
+        let node_row = node_encoder
+            .as_ref()
+            .ok_or_else(|| anyhow!("missing node encoder"))?
+            .encode_row(&value_refs)?;
+        let shard = if let (Some(idx), Some(pkey_encoder)) = (pk_idx, pkey_encoder.as_ref()) {
+            row.as_value_refs_for_indices(&[idx], &mut value_refs);
+            let pkey_row = pkey_encoder.encode_row(&value_refs)?;
+            let shard = shard_for_key(&pkey_row, self.num_shards);
+            if let Some(writers) = pkey_writers.as_mut() {
+                write_temp_row(&mut writers[shard], &pkey_row)?;
+            }
+            shard
+        } else {
+            (*row_id as usize) % self.num_shards
+        };
+        write_temp_row(&mut node_writers[shard], &node_row)?;
+        for (rel_name, rel_idx) in rel_specs {
+            if let Some(encoder) = fkey_encoders.get(rel_name) {
+                row.as_value_refs_for_indices(&[*rel_idx], &mut value_refs);
+                value_refs.push(ValueRef::Null);
+                let fk_row = encoder.encode_row(&value_refs)?;
+                if let Some(writers) = fkey_writers.get_mut(rel_name) {
+                    write_temp_row(&mut writers[shard], &fk_row)?;
+                }
+            }
+        }
+        *row_id = row_id.saturating_add(1);
+        Ok(())
+    }
+
+    fn build_temp_edge_table(&mut self, table: &TableSpec) -> Result<()> {
+        let edge = table
+            .edge_table
+            .as_ref()
+            .ok_or_else(|| anyhow!("missing edge table spec for {}", table.name))?;
+        let src_fk_idx = column_index(table, &edge.src_fk.column)?;
+        let dst_fk_idx = column_index(table, &edge.dst_fk.column)?;
+        let src_fk_col = column_spec(table, &edge.src_fk.column)?;
+        let dst_fk_col = column_spec(table, &edge.dst_fk.column)?;
+        let rowpack_config = rowpack_config_for_table(self.source.rowpack.as_ref(), table);
+        let mut edge_columns = rowpack_columns_for_specs(&[src_fk_col.clone(), dst_fk_col.clone()])?;
+        edge_columns.push(diskgraph_rowpack::RowPackColumn {
+            name: "sortkey".to_string(),
+            logical_type: RowpackType::UInt32,
+            fixed_len: None,
+            precision: None,
+            scale: None,
+        });
+        let mut buffered_rows: Vec<OwnedRow> = Vec::new();
+        let mut total_seen = 0usize;
+        let mut edge_context: Option<diskgraph_rowpack::RowPackContext> = None;
+        let mut edge_encoder: Option<RowPackEncoder> = None;
+        let mut forward_writers: Vec<TempRowWriter> = Vec::new();
+        let mut reverse_writers: Vec<TempRowWriter> = Vec::new();
+        let mut values = Vec::with_capacity(table.columns.len());
+        let mut arrays_f32: Vec<Vec<f32>> = Vec::new();
+        let mut arrays_f64: Vec<Vec<f64>> = Vec::new();
+        let mut strings: Vec<String> = Vec::new();
+        let mut bytes: Vec<Vec<u8>> = Vec::new();
+        let schema = table_schema(table)?;
+        let name_to_index: HashMap<String, usize> = table
+            .columns
+            .iter()
+            .enumerate()
+            .map(|(idx, col)| (col.name.clone(), idx))
+            .collect();
+
+        for path in &table.paths {
+            if !is_cloud_path(path) && !Path::new(path).exists() {
+                return Err(anyhow!("input path not found {}", path));
+            }
+            let local = localize_input(path)?;
+            match table.format {
+                TableFormat::Parquet => {
+                    let file = fs::File::open(&local.path)
+                        .with_context(|| format!("open {}", local.path.display()))?;
+                    let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
+                    let reader = builder.with_batch_size(NODE_BATCH_SIZE).build()?;
+                    for batch in reader {
+                        let batch = batch?;
+                        let mut cols = Vec::with_capacity(table.columns.len());
+                        for col in &table.columns {
+                            let idx = batch
+                                .schema()
+                                .index_of(&col.name)
+                                .context("missing column in batch")?;
+                            cols.push(batch.column(idx).clone());
+                        }
+                        for row in 0..batch.num_rows() {
+                            let row_view = RowView {
+                                row,
+                                row_id: 0,
+                                cols: &cols,
+                                name_to_index: &name_to_index,
+                            };
+                            let owned = owned_row_from_row(
+                                &row_view,
+                                table,
+                                &mut values,
+                                &mut arrays_f32,
+                                &mut arrays_f64,
+                                &mut strings,
+                                &mut bytes,
+                                &self.trimmed_strings,
+                            )?;
+                            total_seen += 1;
+                            if edge_context.is_none() {
+                                buffered_rows.push(owned);
+                                if total_seen >= SAMPLE_ROW_LIMIT {
+                                    self.build_edge_context_from_samples(
+                                        &edge_columns,
+                                        &rowpack_config,
+                                        src_fk_idx,
+                                        dst_fk_idx,
+                                        &buffered_rows,
+                                        &mut edge_context,
+                                    )?;
+                                    self.init_edge_temp_writers(
+                                        &table.name,
+                                        &edge_context,
+                                        &mut edge_encoder,
+                                        &mut forward_writers,
+                                        &mut reverse_writers,
+                                    )?;
+                                    self.flush_buffered_edge_rows(
+                                        src_fk_idx,
+                                        dst_fk_idx,
+                                        &mut buffered_rows,
+                                        edge_encoder.as_ref(),
+                                        &mut forward_writers,
+                                        &mut reverse_writers,
+                                    )?;
+                                }
+                            } else {
+                                self.write_edge_row(
+                                    src_fk_idx,
+                                    dst_fk_idx,
+                                    owned,
+                                    edge_encoder.as_ref(),
+                                    &mut forward_writers,
+                                    &mut reverse_writers,
+                                )?;
+                            }
+                        }
+                    }
+                }
+                TableFormat::Csv => {
+                    let file = fs::File::open(&local.path)
+                        .with_context(|| format!("open {}", local.path.display()))?;
+                    let builder = arrow_csv::ReaderBuilder::new(Arc::new(schema.clone()))
+                        .with_header(true);
+                    let reader = builder.build(file)?;
+                    for batch in reader {
+                        let batch = batch?;
+                        let mut cols = Vec::with_capacity(table.columns.len());
+                        for col in &table.columns {
+                            let idx = batch
+                                .schema()
+                                .index_of(&col.name)
+                                .context("missing column in batch")?;
+                            cols.push(batch.column(idx).clone());
+                        }
+                        for row in 0..batch.num_rows() {
+                            let row_view = RowView {
+                                row,
+                                row_id: 0,
+                                cols: &cols,
+                                name_to_index: &name_to_index,
+                            };
+                            let owned = owned_row_from_row(
+                                &row_view,
+                                table,
+                                &mut values,
+                                &mut arrays_f32,
+                                &mut arrays_f64,
+                                &mut strings,
+                                &mut bytes,
+                                &self.trimmed_strings,
+                            )?;
+                            total_seen += 1;
+                            if edge_context.is_none() {
+                                buffered_rows.push(owned);
+                                if total_seen >= SAMPLE_ROW_LIMIT {
+                                    self.build_edge_context_from_samples(
+                                        &edge_columns,
+                                        &rowpack_config,
+                                        src_fk_idx,
+                                        dst_fk_idx,
+                                        &buffered_rows,
+                                        &mut edge_context,
+                                    )?;
+                                    self.init_edge_temp_writers(
+                                        &table.name,
+                                        &edge_context,
+                                        &mut edge_encoder,
+                                        &mut forward_writers,
+                                        &mut reverse_writers,
+                                    )?;
+                                    self.flush_buffered_edge_rows(
+                                        src_fk_idx,
+                                        dst_fk_idx,
+                                        &mut buffered_rows,
+                                        edge_encoder.as_ref(),
+                                        &mut forward_writers,
+                                        &mut reverse_writers,
+                                    )?;
+                                }
+                            } else {
+                                self.write_edge_row(
+                                    src_fk_idx,
+                                    dst_fk_idx,
+                                    owned,
+                                    edge_encoder.as_ref(),
+                                    &mut forward_writers,
+                                    &mut reverse_writers,
+                                )?;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if edge_context.is_none() {
+            self.build_edge_context_from_samples(
+                &edge_columns,
+                &rowpack_config,
+                src_fk_idx,
+                dst_fk_idx,
+                &buffered_rows,
+                &mut edge_context,
+            )?;
+            self.init_edge_temp_writers(
+                &table.name,
+                &edge_context,
+                &mut edge_encoder,
+                &mut forward_writers,
+                &mut reverse_writers,
+            )?;
+            self.flush_buffered_edge_rows(
+                src_fk_idx,
+                dst_fk_idx,
+                &mut buffered_rows,
+                edge_encoder.as_ref(),
+                &mut forward_writers,
+                &mut reverse_writers,
+            )?;
+        }
+
+        let edge_ctx = edge_context.ok_or_else(|| anyhow!("missing edge context"))?;
+        let ctx_bytes = edge_ctx.to_bytes()?;
+        for shard in 0..self.num_shards {
+            let rows = finish_temp_writer(forward_writers.remove(0))?;
+            let meta_path = temp_edge_meta_path(&format!("edge_{}_src_to_dst", table.name), shard);
+            write_temp_meta(&self.target, &meta_path, rows, &ctx_bytes)?;
+        }
+        for shard in 0..self.num_shards {
+            let rows = finish_temp_writer(reverse_writers.remove(0))?;
+            let meta_path = temp_edge_meta_path(&format!("edge_{}_dst_to_src", table.name), shard);
+            write_temp_meta(&self.target, &meta_path, rows, &ctx_bytes)?;
+        }
+        Ok(())
+    }
+
+    fn build_edge_context_from_samples(
+        &self,
+        edge_columns: &[diskgraph_rowpack::RowPackColumn],
+        rowpack_config: &RowPackConfig,
+        src_idx: usize,
+        dst_idx: usize,
+        rows: &[OwnedRow],
+        edge_context: &mut Option<diskgraph_rowpack::RowPackContext>,
+    ) -> Result<()> {
+        let sample_idxs = sample_indices(rows.len(), SAMPLE_ROW_TARGET);
+        let mut value_refs = Vec::new();
+        let mut builder = RowPackContextBuilder::new(edge_columns.to_vec(), rowpack_config.clone());
+        for idx in &sample_idxs {
+            rows[*idx].as_value_refs_for_indices(&[src_idx, dst_idx], &mut value_refs);
+            value_refs.push(ValueRef::Null);
+            builder.observe_row(&value_refs)?;
+        }
+        *edge_context = Some(builder.finish()?);
+        Ok(())
+    }
+
+    fn init_edge_temp_writers(
+        &self,
+        table_name: &str,
+        edge_context: &Option<diskgraph_rowpack::RowPackContext>,
+        edge_encoder: &mut Option<RowPackEncoder>,
+        forward_writers: &mut Vec<TempRowWriter>,
+        reverse_writers: &mut Vec<TempRowWriter>,
+    ) -> Result<()> {
+        let ctx = edge_context.as_ref().ok_or_else(|| anyhow!("missing edge context"))?;
+        *edge_encoder = Some(RowPackEncoder::new(ctx.clone())?);
+        let forward_name = format!("edge_{}_src_to_dst", table_name);
+        let reverse_name = format!("edge_{}_dst_to_src", table_name);
+        for shard in 0..self.num_shards {
+            forward_writers.push(open_temp_row_writer(
+                &self.target,
+                &temp_edge_path(&forward_name, shard),
+            )?);
+            reverse_writers.push(open_temp_row_writer(
+                &self.target,
+                &temp_edge_path(&reverse_name, shard),
+            )?);
+        }
+        Ok(())
+    }
+
+    fn flush_buffered_edge_rows(
+        &self,
+        src_idx: usize,
+        dst_idx: usize,
+        rows: &mut Vec<OwnedRow>,
+        edge_encoder: Option<&RowPackEncoder>,
+        forward_writers: &mut Vec<TempRowWriter>,
+        reverse_writers: &mut Vec<TempRowWriter>,
+    ) -> Result<()> {
+        let rows_taken = std::mem::take(rows);
+        for row in rows_taken {
+            self.write_edge_row(
+                src_idx,
+                dst_idx,
+                row,
+                edge_encoder,
+                forward_writers,
+                reverse_writers,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn write_edge_row(
+        &self,
+        src_idx: usize,
+        dst_idx: usize,
+        row: OwnedRow,
+        edge_encoder: Option<&RowPackEncoder>,
+        forward_writers: &mut Vec<TempRowWriter>,
+        reverse_writers: &mut Vec<TempRowWriter>,
+    ) -> Result<()> {
+        let encoder = edge_encoder.ok_or_else(|| anyhow!("missing edge encoder"))?;
+        let mut value_refs = Vec::new();
+        row.as_value_refs_for_indices(&[src_idx, dst_idx], &mut value_refs);
+        value_refs.push(ValueRef::Null);
+        let forward_row = encoder.encode_row(&value_refs)?;
+        let src_value = row
+            .values
+            .get(src_idx)
+            .ok_or_else(|| anyhow!("missing src value"))?;
+        let dst_value = row
+            .values
+            .get(dst_idx)
+            .ok_or_else(|| anyhow!("missing dst value"))?;
+        let forward_shard = shard_for_owned_value(src_value, self.num_shards);
+        write_temp_row(&mut forward_writers[forward_shard], &forward_row)?;
+        value_refs.clear();
+        value_refs.push(dst_value.as_value_ref());
+        value_refs.push(src_value.as_value_ref());
+        value_refs.push(ValueRef::Null);
+        let reverse_row = encoder.encode_row(&value_refs)?;
+        let reverse_shard = shard_for_owned_value(dst_value, self.num_shards);
+        write_temp_row(&mut reverse_writers[reverse_shard], &reverse_row)?;
+        Ok(())
+    }
+
+    fn build_sharded_pk_maps(&mut self) -> Result<()> {
+        let root = require_local_output(&self.target)?.to_path_buf();
+        let limiter = Arc::new(MemoryLimiter::new(PK_MAP_MEMORY_BUDGET));
+        let pk_map_time = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let duplicate_counts = std::sync::Arc::new(std::sync::Mutex::new(HashMap::new()));
+        let duplicate_samples = std::sync::Arc::new(std::sync::Mutex::new(HashMap::new()));
+        let mut tasks = Vec::new();
+        for table in &self.source.tables {
+            if table.edge_table.is_some() || table.primary_key.is_none() {
+                continue;
+            }
+            let pk_name = table.primary_key.clone().unwrap();
+            let pk_col = column_spec(table, &pk_name)?;
+            let shard_rows = self
+                .shard_rows
+                .get(&table.name)
+                .cloned()
+                .unwrap_or_else(|| vec![0; self.num_shards]);
+            let pk_map_paths = std::sync::Arc::new(std::sync::Mutex::new(vec![
+                None;
+                self.num_shards
+            ]));
+            for shard in 0..self.num_shards {
+                let limiter = Arc::clone(&limiter);
+                let target = std::sync::Arc::clone(&self.target);
+                let table_name = table.name.clone();
+                let pk_col = pk_col.clone();
+                let pk_map_paths = std::sync::Arc::clone(&pk_map_paths);
+                let duplicate_counts = std::sync::Arc::clone(&duplicate_counts);
+                let duplicate_samples = std::sync::Arc::clone(&duplicate_samples);
+                let estimate = estimate_pk_map_bytes(&pk_col, shard_rows[shard] as usize);
+                let root = root.clone();
+                tasks.push(WorkItem {
+                    bucket: Some(pk_map_time.clone()),
+                    run: Box::new(move || {
+                        let _permit = limiter.acquire(estimate);
+                        let pkey_path = temp_pkey_path(&table_name, shard);
+                        let pkey_meta = temp_pkey_meta_path(&table_name, shard);
+                        let meta_path = root.join(&pkey_meta);
+                        let meta = read_temp_meta(&meta_path)?;
+                        let ctx = diskgraph_rowpack::RowPackContext::from_bytes(&meta.context)?;
+                        let decoder = RowPackDecoder::new(ctx)?;
+                        let key_type = key_type_for_column(&pk_col)?;
+                        let mapping_kind = match key_type {
+                            KeyType::VarBytes => MappingKind::Hash,
+                            _ => MappingKind::Sorted,
+                        };
+                        let mut pk_map =
+                            PkMap::new(mapping_kind, key_type, meta.row_count as usize);
+                        let data_path = root.join(&pkey_path);
+                        let mut row_id = 0u64;
+                        read_temp_rows(&data_path, |row| {
+                            let json = decoder.decode_json(row)?;
+                            let value = json
+                                .as_object()
+                                .and_then(|m| m.values().next())
+                                .ok_or_else(|| anyhow!("missing pk value"))?;
+                            if let Ok(key) = key_from_json_value(value, &pk_col) {
+                                pk_map.insert(key, row_id)?;
+                            }
+                            row_id += 1;
+                            Ok(())
+                        })?;
+                        pk_map.finalize();
+                        if pk_map.duplicate_count() > 0 {
+                            let key = format!("{}:shard-{:05}", table_name, shard);
+                            duplicate_counts
+                                .lock()
+                                .unwrap()
+                                .insert(key.clone(), pk_map.duplicate_count());
+                            let mut samples = Vec::new();
+                            for key in pk_map.duplicate_samples() {
+                                if let Some(sample) = sample_key(key) {
+                                    samples.push(sample);
+                                }
+                            }
+                            if !samples.is_empty() {
+                                duplicate_samples.lock().unwrap().insert(key, samples);
+                            }
+                        }
+                        let map_rel = format!(
+                            "nodes/{}/pk_map-{:05}.bin",
+                            table_name.to_lowercase(),
+                            shard
+                        );
+                        let out_path = target.join(&map_rel);
+                        if let OutputTarget::Local { .. } = &*target {
+                            if let Some(parent) = out_path.parent() {
+                                fs::create_dir_all(parent)?;
+                            }
+                        }
+                        let mut writer = BufWriter::new(target.sink(&out_path)?);
+                        pk_map.write_to(&mut writer)?;
+                        writer.flush()?;
+                        let sink = writer.into_inner().map_err(|_| anyhow!("pk map flush failed"))?;
+                        sink.finish()?;
+                        let dup_meta = format!(
+                            "nodes/{}/pk_map-{:05}.meta.json",
+                            table_name.to_lowercase(),
+                            shard
+                        );
+                        let mut samples = Vec::new();
+                        for key in pk_map.duplicate_samples() {
+                            if let Some(sample) = sample_key(key) {
+                                samples.push(sample);
+                            }
+                        }
+                        let meta = serde_json::json!({
+                            "duplicate_count": pk_map.duplicate_count(),
+                            "duplicate_samples": samples,
+                        });
+                        target.write_bytes(&dup_meta, serde_json::to_vec_pretty(&meta)?)?;
+                        let mut guard = pk_map_paths.lock().unwrap();
+                        guard[shard] = Some(map_rel);
+                        Ok(())
+                    }),
+                });
+            }
+            run_tasks(tasks.drain(..).collect(), default_threads(), Some(pk_map_time.clone()))?;
+            let paths = std::sync::Arc::try_unwrap(pk_map_paths)
+                .unwrap()
+                .into_inner()
+                .unwrap()
+                .into_iter()
+                .map(|p| p.ok_or_else(|| anyhow!("missing pk map path for {}", table.name)))
+                .collect::<Result<Vec<_>>>()?;
+            self.pk_map_paths.insert(table.name.clone(), paths);
+        }
+        self.pk_map_task_ms = pk_map_time.load(Ordering::Relaxed) / 1_000_000;
+        self.pk_map_tasks = self.pk_map_paths.values().map(|v| v.len() as u64).sum();
+        if let Ok(counts) = std::sync::Arc::try_unwrap(duplicate_counts) {
+            self.pk_duplicate_counts = counts.into_inner().unwrap();
+        }
+        if let Ok(samples) = std::sync::Arc::try_unwrap(duplicate_samples) {
+            self.pk_duplicate_samples = samples.into_inner().unwrap();
+        }
+        Ok(())
+    }
+
+    fn build_final_index(&mut self) -> Result<()> {
+        let root = require_local_output(&self.target)?.to_path_buf();
+        self.build_shard_offsets();
+        let mut edge_counts = HashMap::new();
+        let mut pk_maps_by_table: HashMap<String, Vec<PkMap>> = HashMap::new();
+        for (table, paths) in &self.pk_map_paths {
+            let mut maps = Vec::with_capacity(paths.len());
+            for path in paths {
+                let full = root.join(path);
+                let data = fs::read(&full).with_context(|| format!("read {}", full.display()))?;
+                maps.push(PkMap::read_from(&data)?);
+            }
+            pk_maps_by_table.insert(table.clone(), maps);
+        }
+        let mut pkey_encoders: HashMap<String, RowPackEncoder> = HashMap::new();
+        for table in &self.source.tables {
+            if table.edge_table.is_some() || table.primary_key.is_none() {
+                continue;
+            }
+            let meta_path = root.join(temp_pkey_meta_path(&table.name, 0));
+            let meta = read_temp_meta(&meta_path)?;
+            let ctx = diskgraph_rowpack::RowPackContext::from_bytes(&meta.context)?;
+            pkey_encoders.insert(table.name.clone(), RowPackEncoder::new(ctx)?);
+        }
+        let mut max_ids = HashMap::new();
+        for (table, counts) in &self.shard_rows {
+            let total: u64 = counts.iter().sum();
+            let max_id = total.saturating_sub(1);
+            max_ids.insert(table.clone(), max_id);
+        }
+        for table in &self.source.tables {
+            if table.edge_table.is_some() {
+                continue;
+            }
+            let shard_rows = self
+                .shard_rows
+                .get(&table.name)
+                .cloned()
+                .unwrap_or_else(|| vec![0; self.num_shards]);
+            for shard in 0..self.num_shards {
+                let temp_path = root.join(temp_node_data_path(&table.name, shard));
+                let meta_path = root.join(temp_node_data_meta_path(&table.name, shard));
+                let meta = read_temp_meta(&meta_path)?;
+                let node_ctx = diskgraph_rowpack::RowPackContext::from_bytes(&meta.context)?;
+                let out_rel = node_shard_output_path(&table.name, shard);
+                let out_path = self.target.join(&out_rel);
+                if let OutputTarget::Local { .. } = &*self.target {
+                    if let Some(parent) = out_path.parent() {
+                        fs::create_dir_all(parent)?;
+                    }
+                }
+                let mut writer = BufWriter::new(self.target.sink(&out_path)?);
+                writer.write_all(&NODE_BIN_MAGIC)?;
+                writer.write_all(&[NODE_BIN_VERSION, NODE_BIN_LEN_WIDTH, 0u8, 0u8])?;
+                let mut dropped = 0u64;
+                read_temp_rows(&temp_path, |row| {
+                    let len = if row.len() > MAX_NODE_DATA_LEN { 0u16 } else { row.len() as u16 };
+                    if len == 0 {
+                        dropped = dropped.saturating_add(1);
+                    }
+                    writer.write_all(&len.to_le_bytes())?;
+                    if len > 0 {
+                        writer.write_all(row)?;
+                    }
+                    Ok(())
+                })?;
+                writer.flush()?;
+                let sink = writer.into_inner().map_err(|_| anyhow!("node data flush failed"))?;
+                sink.finish()?;
+                if shard == 0 {
+                    let ctx_path = format!("nodes/{}/node_data.ctx", table.name.to_lowercase());
+                    self.target.write_bytes(&ctx_path, node_ctx.to_bytes()?)?;
+                }
+                if dropped > 0 {
+                    self.pk_duplicate_counts
+                        .insert(format!("node_data_dropped:{}", table.name), dropped);
+                }
+            }
+            self.table_rows
+                .insert(table.name.clone(), shard_rows.iter().sum());
+        }
+
+        for rel in &self.relationships {
+            let src_table = table_by_name(&self.source, &rel.src_table)?;
+            let dst_table = table_by_name(&self.source, &rel.dst_table)?;
+            let src_pk = src_table
+                .primary_key
+                .as_ref()
+                .ok_or_else(|| anyhow!("missing pk for {}", rel.src_table))?;
+            let dst_pk = dst_table
+                .primary_key
+                .as_ref()
+                .ok_or_else(|| anyhow!("missing pk for {}", rel.dst_table))?;
+            let _src_pk_col = column_spec(src_table, src_pk)?;
+            let dst_pk_col = column_spec(dst_table, dst_pk)?;
+            let src_offsets = self
+                .shard_offsets
+                .get(&rel.src_table)
+                .cloned()
+                .unwrap_or_else(|| vec![0; self.num_shards]);
+            let dst_offsets = self
+                .shard_offsets
+                .get(&rel.dst_table)
+                .cloned()
+                .unwrap_or_else(|| vec![0; self.num_shards]);
+            let dst_encoder = pkey_encoders
+                .get(&rel.dst_table)
+                .ok_or_else(|| anyhow!("missing pkey encoder for {}", rel.dst_table))?;
+            let dst_maps = pk_maps_by_table
+                .get(&rel.dst_table)
+                .ok_or_else(|| anyhow!("missing pk maps for {}", rel.dst_table))?;
+            for shard in 0..self.num_shards {
+                let fkey_path =
+                    root.join(temp_fkey_path(&rel.src_table, &rel.name_forward, shard));
+                let fkey_meta =
+                    root.join(temp_fkey_meta_path(&rel.src_table, &rel.name_forward, shard));
+                let meta = read_temp_meta(&fkey_meta)?;
+                let ctx = diskgraph_rowpack::RowPackContext::from_bytes(&meta.context)?;
+                let decoder = RowPackDecoder::new(ctx)?;
+                let forward_rel = edge_shard_output_path(&rel.name_forward, shard);
+                let reverse_rel = edge_shard_output_path(&rel.name_reverse, shard);
+                let forward_path = self.target.join(&forward_rel);
+                let reverse_path = self.target.join(&reverse_rel);
+                if let OutputTarget::Local { .. } = &*self.target {
+                    if let Some(parent) = forward_path.parent() {
+                        fs::create_dir_all(parent)?;
+                    }
+                    if let Some(parent) = reverse_path.parent() {
+                        fs::create_dir_all(parent)?;
+                    }
+                }
+                let mut forward_writer = BufWriter::new(self.target.sink(&forward_path)?);
+                let mut reverse_writer = BufWriter::new(self.target.sink(&reverse_path)?);
+                let forward_spec = edge_binary_spec(
+                    max_ids.get(&rel.src_table).copied().unwrap_or(0),
+                    max_ids.get(&rel.dst_table).copied().unwrap_or(0),
+                    None,
+                );
+                let reverse_spec = edge_binary_spec(
+                    max_ids.get(&rel.dst_table).copied().unwrap_or(0),
+                    max_ids.get(&rel.src_table).copied().unwrap_or(0),
+                    None,
+                );
+                write_edge_bin_header(&mut forward_writer, false, forward_spec)?;
+                write_edge_bin_header(&mut reverse_writer, false, reverse_spec)?;
+                let mut count = 0u64;
+                read_temp_rows(&fkey_path, |row| {
+                    let json = decoder.decode_json(row)?;
+                    let obj = json.as_object().ok_or_else(|| anyhow!("invalid fkey row"))?;
+                    let mut iter = obj.values();
+                    let dst_val = iter.next().ok_or_else(|| anyhow!("missing dst key"))?;
+                    let dst_key = key_from_json_value(dst_val, dst_pk_col)
+                        .map_err(|_| anyhow!("fk parse"))?;
+                    let dst_row = encode_pkey_row(dst_encoder, dst_val, dst_pk_col)?;
+                    let dst_shard = shard_for_key(&dst_row, self.num_shards);
+                    let src_id = src_offsets[shard].saturating_add(count);
+                    let dst_local = dst_maps
+                        .get(dst_shard)
+                        .and_then(|map| map.lookup(&dst_key))
+                        .ok_or_else(|| anyhow!("missing dst key"))?;
+                    let dst_id = dst_offsets
+                        .get(dst_shard)
+                        .copied()
+                        .unwrap_or(0)
+                        .saturating_add(dst_local);
+                    write_u64_width(
+                        &mut forward_writer,
+                        src_id as u64,
+                        forward_spec.src_width,
+                    )?;
+                    write_u64_width(
+                        &mut forward_writer,
+                        dst_id as u64,
+                        forward_spec.dst_width,
+                    )?;
+                    write_u64_width(
+                        &mut reverse_writer,
+                        dst_id as u64,
+                        reverse_spec.src_width,
+                    )?;
+                    write_u64_width(
+                        &mut reverse_writer,
+                        src_id as u64,
+                        reverse_spec.dst_width,
+                    )?;
+                    count += 1;
+                    Ok(())
+                })?;
+                forward_writer.flush()?;
+                reverse_writer.flush()?;
+                let forward_sink = forward_writer
+                    .into_inner()
+                    .map_err(|_| anyhow!("edge flush failed"))?;
+                let reverse_sink = reverse_writer
+                    .into_inner()
+                    .map_err(|_| anyhow!("edge flush failed"))?;
+                forward_sink.finish()?;
+                reverse_sink.finish()?;
+                edge_counts.insert(rel.name_forward.clone(), count);
+                edge_counts.insert(rel.name_reverse.clone(), count);
+            }
+        }
+
+        for table in self.source.tables.iter().filter(|t| t.edge_table.is_some()) {
+            let edge = table
+                .edge_table
+                .as_ref()
+                .ok_or_else(|| anyhow!("missing edge table spec for {}", table.name))?;
+            let src_table = table_by_name(&self.source, &edge.src_fk.ref_table)?;
+            let dst_table = table_by_name(&self.source, &edge.dst_fk.ref_table)?;
+            let src_pk = src_table
+                .primary_key
+                .as_ref()
+                .ok_or_else(|| anyhow!("missing pk for {}", edge.src_fk.ref_table))?;
+            let dst_pk = dst_table
+                .primary_key
+                .as_ref()
+                .ok_or_else(|| anyhow!("missing pk for {}", edge.dst_fk.ref_table))?;
+            let src_pk_col = column_spec(src_table, src_pk)?;
+            let dst_pk_col = column_spec(dst_table, dst_pk)?;
+            let src_encoder = pkey_encoders
+                .get(&edge.src_fk.ref_table)
+                .ok_or_else(|| anyhow!("missing pkey encoder for {}", edge.src_fk.ref_table))?;
+            let dst_encoder = pkey_encoders
+                .get(&edge.dst_fk.ref_table)
+                .ok_or_else(|| anyhow!("missing pkey encoder for {}", edge.dst_fk.ref_table))?;
+            let src_maps = pk_maps_by_table
+                .get(&edge.src_fk.ref_table)
+                .ok_or_else(|| anyhow!("missing pk maps for {}", edge.src_fk.ref_table))?;
+            let dst_maps = pk_maps_by_table
+                .get(&edge.dst_fk.ref_table)
+                .ok_or_else(|| anyhow!("missing pk maps for {}", edge.dst_fk.ref_table))?;
+            let src_offsets = self
+                .shard_offsets
+                .get(&edge.src_fk.ref_table)
+                .cloned()
+                .unwrap_or_else(|| vec![0; self.num_shards]);
+            let dst_offsets = self
+                .shard_offsets
+                .get(&edge.dst_fk.ref_table)
+                .cloned()
+                .unwrap_or_else(|| vec![0; self.num_shards]);
+            for shard in 0..self.num_shards {
+                let forward_name = format!("edge_{}_src_to_dst", table.name);
+                let reverse_name = format!("edge_{}_dst_to_src", table.name);
+                let forward_path = root.join(temp_edge_path(&forward_name, shard));
+                let forward_meta = root.join(temp_edge_meta_path(&forward_name, shard));
+                let meta = read_temp_meta(&forward_meta)?;
+                let ctx = diskgraph_rowpack::RowPackContext::from_bytes(&meta.context)?;
+                let decoder = RowPackDecoder::new(ctx)?;
+                let out_rel = edge_shard_output_path(&forward_name, shard);
+                let out_path = self.target.join(&out_rel);
+                if let OutputTarget::Local { .. } = &*self.target {
+                    if let Some(parent) = out_path.parent() {
+                        fs::create_dir_all(parent)?;
+                    }
+                }
+                let mut writer = BufWriter::new(self.target.sink(&out_path)?);
+                let spec = edge_binary_spec(
+                    max_ids
+                        .get(&edge.src_fk.ref_table)
+                        .copied()
+                        .unwrap_or(0),
+                    max_ids
+                        .get(&edge.dst_fk.ref_table)
+                        .copied()
+                        .unwrap_or(0),
+                    None,
+                );
+                write_edge_bin_header(&mut writer, false, spec)?;
+                let mut count = 0u64;
+                read_temp_rows(&forward_path, |row| {
+                    let json = decoder.decode_json(row)?;
+                    let obj = json.as_object().ok_or_else(|| anyhow!("invalid edge row"))?;
+                    let mut iter = obj.values();
+                    let src_val = iter.next().ok_or_else(|| anyhow!("missing src key"))?;
+                    let dst_val = iter.next().ok_or_else(|| anyhow!("missing dst key"))?;
+                    let src_key = key_from_json_value(src_val, src_pk_col)
+                        .map_err(|_| anyhow!("src key parse"))?;
+                    let dst_key = key_from_json_value(dst_val, dst_pk_col)
+                        .map_err(|_| anyhow!("dst key parse"))?;
+                    let src_row = encode_pkey_row(src_encoder, src_val, src_pk_col)?;
+                    let dst_row = encode_pkey_row(dst_encoder, dst_val, dst_pk_col)?;
+                    let src_shard = shard_for_key(&src_row, self.num_shards);
+                    let dst_shard = shard_for_key(&dst_row, self.num_shards);
+                    let src_local = src_maps
+                        .get(src_shard)
+                        .and_then(|map| map.lookup(&src_key))
+                        .ok_or_else(|| anyhow!("missing src key"))?;
+                    let dst_local = dst_maps
+                        .get(dst_shard)
+                        .and_then(|map| map.lookup(&dst_key))
+                        .ok_or_else(|| anyhow!("missing dst key"))?;
+                    let src_id = src_offsets
+                        .get(src_shard)
+                        .copied()
+                        .unwrap_or(0)
+                        .saturating_add(src_local);
+                    let dst_id = dst_offsets
+                        .get(dst_shard)
+                        .copied()
+                        .unwrap_or(0)
+                        .saturating_add(dst_local);
+                    write_u64_width(&mut writer, src_id, spec.src_width)?;
+                    write_u64_width(&mut writer, dst_id, spec.dst_width)?;
+                    count += 1;
+                    Ok(())
+                })?;
+                writer.flush()?;
+                let sink = writer.into_inner().map_err(|_| anyhow!("edge flush failed"))?;
+                sink.finish()?;
+                edge_counts.insert(forward_name.clone(), count);
+
+                let reverse_path = root.join(temp_edge_path(&reverse_name, shard));
+                let reverse_meta = root.join(temp_edge_meta_path(&reverse_name, shard));
+                let meta = read_temp_meta(&reverse_meta)?;
+                let ctx = diskgraph_rowpack::RowPackContext::from_bytes(&meta.context)?;
+                let decoder = RowPackDecoder::new(ctx)?;
+                let out_rel = edge_shard_output_path(&reverse_name, shard);
+                let out_path = self.target.join(&out_rel);
+                if let OutputTarget::Local { .. } = &*self.target {
+                    if let Some(parent) = out_path.parent() {
+                        fs::create_dir_all(parent)?;
+                    }
+                }
+                let mut writer = BufWriter::new(self.target.sink(&out_path)?);
+                let spec = edge_binary_spec(
+                    max_ids
+                        .get(&edge.dst_fk.ref_table)
+                        .copied()
+                        .unwrap_or(0),
+                    max_ids
+                        .get(&edge.src_fk.ref_table)
+                        .copied()
+                        .unwrap_or(0),
+                    None,
+                );
+                write_edge_bin_header(&mut writer, false, spec)?;
+                let mut count = 0u64;
+                read_temp_rows(&reverse_path, |row| {
+                    let json = decoder.decode_json(row)?;
+                    let obj = json.as_object().ok_or_else(|| anyhow!("invalid edge row"))?;
+                    let mut iter = obj.values();
+                    let dst_val = iter.next().ok_or_else(|| anyhow!("missing dst key"))?;
+                    let src_val = iter.next().ok_or_else(|| anyhow!("missing src key"))?;
+                    let dst_key = key_from_json_value(dst_val, dst_pk_col)
+                        .map_err(|_| anyhow!("dst key parse"))?;
+                    let src_key = key_from_json_value(src_val, src_pk_col)
+                        .map_err(|_| anyhow!("src key parse"))?;
+                    let dst_row = encode_pkey_row(dst_encoder, dst_val, dst_pk_col)?;
+                    let src_row = encode_pkey_row(src_encoder, src_val, src_pk_col)?;
+                    let dst_shard = shard_for_key(&dst_row, self.num_shards);
+                    let src_shard = shard_for_key(&src_row, self.num_shards);
+                    let dst_local = dst_maps
+                        .get(dst_shard)
+                        .and_then(|map| map.lookup(&dst_key))
+                        .ok_or_else(|| anyhow!("missing dst key"))?;
+                    let src_local = src_maps
+                        .get(src_shard)
+                        .and_then(|map| map.lookup(&src_key))
+                        .ok_or_else(|| anyhow!("missing src key"))?;
+                    let dst_id = dst_offsets
+                        .get(dst_shard)
+                        .copied()
+                        .unwrap_or(0)
+                        .saturating_add(dst_local);
+                    let src_id = src_offsets
+                        .get(src_shard)
+                        .copied()
+                        .unwrap_or(0)
+                        .saturating_add(src_local);
+                    write_u64_width(&mut writer, dst_id, spec.src_width)?;
+                    write_u64_width(&mut writer, src_id, spec.dst_width)?;
+                    count += 1;
+                    Ok(())
+                })?;
+                writer.flush()?;
+                let sink = writer.into_inner().map_err(|_| anyhow!("edge flush failed"))?;
+                sink.finish()?;
+                edge_counts.insert(reverse_name.clone(), count);
+            }
+        }
+        self.edge_counts = edge_counts;
+        Ok(())
+    }
+
+    fn build_shard_offsets(&mut self) {
+        let mut offsets = HashMap::new();
+        for (table, counts) in &self.shard_rows {
+            let mut shard_offsets = Vec::with_capacity(counts.len());
+            let mut acc = 0u64;
+            for count in counts {
+                shard_offsets.push(acc);
+                acc = acc.saturating_add(*count);
+            }
+            offsets.insert(table.clone(), shard_offsets);
+        }
+        self.shard_offsets = offsets;
+    }
+
+    fn lookup_pk_map(&self, table: &str, shard: usize, key: &Key) -> Result<u64> {
+        let paths = self
+            .pk_map_paths
+            .get(table)
+            .ok_or_else(|| anyhow!("missing pk map for {}", table))?;
+        let path = paths
+            .get(shard)
+            .ok_or_else(|| anyhow!("missing pk map shard {} for {}", shard, table))?;
+        let full = require_local_output(&self.target)?.join(path);
+        let data = fs::read(&full).with_context(|| format!("read {}", full.display()))?;
+        let map = PkMap::read_from(&data)?;
+        map.lookup(key).ok_or_else(|| anyhow!("missing key"))
+    }
+
+    fn cleanup_temp(&self) -> Result<()> {
+        if let OutputTarget::Local { root } = &*self.target {
+            let temp_root = root.join(TEMP_DIR_NAME);
+            if temp_root.exists() {
+                fs::remove_dir_all(temp_root)?;
+            }
+        }
         Ok(())
     }
 
@@ -1259,91 +2768,114 @@ impl IngestContext {
     }
 
     fn finalize_metadata(&self) -> Result<DatasetMetadata> {
-    let mut node_types = Vec::new();
-    let node_data_format = edge_output_format(&self.source);
+        let mut node_types = Vec::new();
         for table in &self.source.tables {
             if table.edge_table.is_some() {
                 continue;
             }
-            let map_state = self.pk_maps.get(table.name.as_str());
-            let row_count = self
-                .table_rows
-                .get(table.name.as_str())
-                .copied()
-                .unwrap_or(0);
-            let shard = NodeShardMetadata {
-                min_id: 0,
-                max_id: row_count.saturating_sub(1),
-                node_data_path: Some(node_data_path(&table.name, node_data_format)),
-            };
-            let (compression, pk_map) = if let Some(state) = map_state {
-                let context_path = self.table_contexts.get(&table.name).cloned();
-                let compression = context_path.map(|path| NodeDataCompression {
-                    codec: "rowpack".to_string(),
-                    context_path: path,
-                });
-                let fixed_len = if state.key_mode == Some(KeyMode::Uuid) {
-                    Some(16)
+            let shard_rows = self
+                .shard_rows
+                .get(&table.name)
+                .cloned()
+                .unwrap_or_else(|| vec![0; self.num_shards]);
+            let shard_offsets = self
+                .shard_offsets
+                .get(&table.name)
+                .cloned()
+                .unwrap_or_else(|| vec![0; self.num_shards]);
+            let mut shards = Vec::new();
+            for shard in 0..self.num_shards {
+                let count = shard_rows.get(shard).copied().unwrap_or(0);
+                let min_id = shard_offsets.get(shard).copied().unwrap_or(0);
+                let max_id = if count == 0 {
+                    min_id.saturating_sub(1)
                 } else {
-                    state.fixed_len
+                    min_id.saturating_add(count.saturating_sub(1))
                 };
-                let pk_map = Some(PrimaryKeyMap {
-                    column: state.pk_column.clone(),
-                    dtype: format!("{:?}", state.pk_dtype).to_lowercase(),
-                    mapping_path: format!(
-                        "nodes/{}/pk_map.bin",
-                        table.name.to_lowercase()
-                    ),
-                    mapping_kind: match self.mapping_kind {
-                        MappingKind::Hash => "hash".to_string(),
-                        MappingKind::Sorted => "sorted".to_string(),
-                    },
-                    fixed_len,
-                    key_mode: state
-                        .key_mode
-                        .as_ref()
-                        .and_then(|mode| match mode {
-                            KeyMode::Uuid => Some("uuid".to_string()),
-                            KeyMode::Fixed => None,
-                        }),
+                shards.push(NodeShardMetadata {
+                    min_id,
+                    max_id,
+                    node_data_path: Some(node_shard_output_path(&table.name, shard)),
                 });
-                (compression, pk_map)
-            } else {
-                let context_path = self.table_contexts.get(&table.name).cloned();
-                let compression = context_path.map(|path| NodeDataCompression {
-                    codec: "rowpack".to_string(),
-                    context_path: path,
-                });
-                (compression, None)
-            };
+            }
+            let context_path = self.table_contexts.get(&table.name).cloned();
+            let compression = context_path.map(|path| NodeDataCompression {
+                codec: "rowpack".to_string(),
+                context_path: path,
+            });
+            let pk_map = table.primary_key.as_ref().map(|pk| PrimaryKeyMap {
+                column: pk.clone(),
+                dtype: table
+                    .columns
+                    .iter()
+                    .find(|c| c.name == *pk)
+                    .map(|c| format!("{:?}", c.ingested_dtype).to_lowercase())
+                    .unwrap_or_else(|| "unknown".to_string()),
+                mapping_path: format!("nodes/{}/pk_map-{{shard}}.bin", table.name.to_lowercase()),
+                mapping_kind: "sharded".to_string(),
+                fixed_len: table
+                    .columns
+                    .iter()
+                    .find(|c| c.name == *pk)
+                    .and_then(|c| c.fixed_len),
+                key_mode: table
+                    .columns
+                    .iter()
+                    .find(|c| c.name == *pk)
+                    .and_then(|c| c.key_mode.as_ref())
+                    .and_then(|mode| match mode {
+                        KeyMode::Uuid => Some("uuid".to_string()),
+                        KeyMode::Fixed => None,
+                    }),
+            });
+            let max_id = shard_rows.iter().sum::<u64>().saturating_sub(1);
             node_types.push(NodeTypeMetadata {
                 name: table.name.clone(),
-                max_id: shard.max_id,
+                max_id,
                 has_node_data: true,
                 node_data_compression: compression,
                 primary_key_map: pk_map,
-                shards: vec![shard],
+                shards,
             });
         }
 
         let mut edge_relations = Vec::new();
-    let edge_format = edge_output_format(&self.source);
-    for rel in &self.relation_defs {
-        let rel_path = edge_shard_path(&rel.name, edge_format);
-        edge_relations.push(EdgeRelationMetadata {
-            name: rel.name.clone(),
-            src_type: rel.src_table.clone(),
+        for rel in &self.relation_defs {
+            let src_shards = self
+                .shard_offsets
+                .get(&rel.src_table)
+                .cloned()
+                .unwrap_or_else(|| vec![0; self.num_shards]);
+            let src_counts = self
+                .shard_rows
+                .get(&rel.src_table)
+                .cloned()
+                .unwrap_or_else(|| vec![0; self.num_shards]);
+            let mut shards = Vec::new();
+            for shard in 0..self.num_shards {
+                let min_id = src_shards.get(shard).copied().unwrap_or(0);
+                let count = src_counts.get(shard).copied().unwrap_or(0);
+                let max_id = if count == 0 {
+                    min_id.saturating_sub(1)
+                } else {
+                    min_id.saturating_add(count.saturating_sub(1))
+                };
+                shards.push(EdgeShardMetadata {
+                    path: edge_shard_output_path(&rel.name, shard),
+                    src_min_id: min_id,
+                    src_max_id: max_id,
+                });
+            }
+            edge_relations.push(EdgeRelationMetadata {
+                name: rel.name.clone(),
+                src_type: rel.src_table.clone(),
                 dst_type: rel.dst_table.clone(),
-                shards: vec![EdgeShardMetadata {
-                    path: rel_path,
-                    src_min_id: 0,
-                    src_max_id: table_rows(self, &rel.src_table).saturating_sub(1),
-                }],
+                shards,
                 dest_sort_key_bits: match rel.sort_key {
                     SortKeyMode::None => None,
                     _ => Some(32),
                 },
-                format: edge_format,
+                format: EdgeStorageFormat::Binary,
             });
         }
 
@@ -1645,6 +3177,170 @@ fn node_data_path(name: &str, format: EdgeStorageFormat) -> String {
             format!("nodes/{}/part-00000.parquet", name.to_lowercase())
         }
         EdgeStorageFormat::Binary => format!("nodes/{}/part-00000.bin", name.to_lowercase()),
+    }
+}
+
+fn node_shard_output_path(name: &str, shard: usize) -> String {
+    format!(
+        "nodes/{}/shard-{:05}/part-00000.bin",
+        name.to_lowercase(),
+        shard
+    )
+}
+
+fn edge_shard_output_path(name: &str, shard: usize) -> String {
+    format!(
+        "edges/{}/shard-{:05}/part-00000.bin",
+        name.to_lowercase(),
+        shard
+    )
+}
+
+fn temp_node_shard_dir(name: &str, shard: usize) -> String {
+    format!(
+        "{}/nodes/{}/shard-{:05}",
+        TEMP_DIR_NAME,
+        name.to_lowercase(),
+        shard
+    )
+}
+
+fn temp_node_data_path(name: &str, shard: usize) -> String {
+    format!("{}/node_data.bin", temp_node_shard_dir(name, shard))
+}
+
+fn temp_node_data_meta_path(name: &str, shard: usize) -> String {
+    format!("{}/node_data.ctx", temp_node_shard_dir(name, shard))
+}
+
+fn temp_pkey_path(name: &str, shard: usize) -> String {
+    format!("{}/pkey.bin", temp_node_shard_dir(name, shard))
+}
+
+fn temp_pkey_meta_path(name: &str, shard: usize) -> String {
+    format!("{}/pkey.ctx", temp_node_shard_dir(name, shard))
+}
+
+fn temp_fkey_shard_dir(table: &str, rel: &str, shard: usize) -> String {
+    format!(
+        "{}/nodes/{}/fkeys/{}/shard-{:05}",
+        TEMP_DIR_NAME,
+        table.to_lowercase(),
+        rel.to_lowercase(),
+        shard
+    )
+}
+
+fn temp_fkey_path(table: &str, rel: &str, shard: usize) -> String {
+    format!("{}/rows.bin", temp_fkey_shard_dir(table, rel, shard))
+}
+
+fn temp_fkey_meta_path(table: &str, rel: &str, shard: usize) -> String {
+    format!("{}/rows.ctx", temp_fkey_shard_dir(table, rel, shard))
+}
+
+fn temp_edge_shard_dir(rel: &str, shard: usize) -> String {
+    format!(
+        "{}/edges/{}/shard-{:05}",
+        TEMP_DIR_NAME,
+        rel.to_lowercase(),
+        shard
+    )
+}
+
+fn temp_edge_path(rel: &str, shard: usize) -> String {
+    format!("{}/rows.bin", temp_edge_shard_dir(rel, shard))
+}
+
+fn temp_edge_meta_path(rel: &str, shard: usize) -> String {
+    format!("{}/rows.ctx", temp_edge_shard_dir(rel, shard))
+}
+
+fn write_temp_meta(
+    target: &OutputTarget,
+    rel_path: &str,
+    row_count: u64,
+    context: &[u8],
+) -> Result<()> {
+    let mut payload = Vec::with_capacity(16 + context.len());
+    payload.extend_from_slice(&TEMP_META_MAGIC);
+    payload.push(TEMP_META_VERSION);
+    payload.push(0u8);
+    payload.extend_from_slice(&row_count.to_le_bytes());
+    let ctx_len = context.len() as u32;
+    payload.extend_from_slice(&ctx_len.to_le_bytes());
+    payload.extend_from_slice(context);
+    target.write_bytes(rel_path, payload)
+}
+
+fn read_temp_meta(path: &Path) -> Result<TempRowpackMeta> {
+    let bytes = fs::read(path).with_context(|| format!("read {}", path.display()))?;
+    if bytes.len() < 4 + 1 + 1 + 8 + 4 {
+        return Err(anyhow!("temp meta truncated"));
+    }
+    if bytes[0..4] != TEMP_META_MAGIC {
+        return Err(anyhow!("temp meta magic mismatch"));
+    }
+    if bytes[4] != TEMP_META_VERSION {
+        return Err(anyhow!("temp meta version mismatch"));
+    }
+    let row_count = u64::from_le_bytes(bytes[6..14].try_into().unwrap());
+    let ctx_len = u32::from_le_bytes(bytes[14..18].try_into().unwrap()) as usize;
+    if bytes.len() < 18 + ctx_len {
+        return Err(anyhow!("temp meta context truncated"));
+    }
+    Ok(TempRowpackMeta {
+        row_count,
+        context: bytes[18..18 + ctx_len].to_vec(),
+    })
+}
+
+fn open_temp_row_writer(target: &OutputTarget, rel_path: &str) -> Result<TempRowWriter> {
+    let path = target.join(rel_path);
+    if let OutputTarget::Local { .. } = target {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+    }
+    let sink = target.sink(&path)?;
+    Ok(TempRowWriter {
+        writer: BufWriter::new(sink),
+        row_count: 0,
+    })
+}
+
+fn write_temp_row(writer: &mut TempRowWriter, row: &[u8]) -> Result<()> {
+    let len = row.len() as u32;
+    writer.writer.write_all(&len.to_le_bytes())?;
+    writer.writer.write_all(row)?;
+    writer.row_count = writer.row_count.saturating_add(1);
+    Ok(())
+}
+
+fn finish_temp_writer(writer: TempRowWriter) -> Result<u64> {
+    let mut writer = writer;
+    writer.writer.flush()?;
+    let sink = writer
+        .writer
+        .into_inner()
+        .map_err(|_| anyhow!("temp writer flush failed"))?;
+    sink.finish()?;
+    Ok(writer.row_count)
+}
+
+fn read_temp_rows(path: &Path, mut f: impl FnMut(&[u8]) -> Result<()>) -> Result<()> {
+    let mut file = fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
+    let mut len_buf = [0u8; 4];
+    loop {
+        match file.read_exact(&mut len_buf) {
+            Ok(()) => {}
+            Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => return Ok(()),
+            Err(err) => return Err(err.into()),
+        }
+        let len = u32::from_le_bytes(len_buf) as usize;
+        let mut data = vec![0u8; len];
+        file.read_exact(&mut data)?;
+        f(&data)?;
     }
 }
 
@@ -1960,6 +3656,49 @@ fn sum_dir_bytes(path: &Path) -> Result<u64> {
 struct WorkItem {
     run: Box<dyn FnOnce() -> Result<()> + Send>,
     bucket: Option<std::sync::Arc<std::sync::atomic::AtomicU64>>,
+}
+
+struct MemoryLimiter {
+    available: Mutex<usize>,
+    cvar: Condvar,
+}
+
+struct MemoryPermit {
+    limiter: Arc<MemoryLimiter>,
+    amount: usize,
+}
+
+impl MemoryLimiter {
+    fn new(total: usize) -> Self {
+        Self {
+            available: Mutex::new(total),
+            cvar: Condvar::new(),
+        }
+    }
+
+    fn acquire(self: &Arc<Self>, amount: usize) -> MemoryPermit {
+        let mut available = self.available.lock().unwrap();
+        while *available < amount {
+            available = self.cvar.wait(available).unwrap();
+        }
+        *available -= amount;
+        MemoryPermit {
+            limiter: Arc::clone(self),
+            amount,
+        }
+    }
+
+    fn release(&self, amount: usize) {
+        let mut available = self.available.lock().unwrap();
+        *available = available.saturating_add(amount);
+        self.cvar.notify_all();
+    }
+}
+
+impl Drop for MemoryPermit {
+    fn drop(&mut self) {
+        self.limiter.release(self.amount);
+    }
 }
 
 fn default_threads() -> usize {
@@ -2416,6 +4155,162 @@ fn key_from_array_for_target(
             _ => Err(KeyParseError::UnsupportedType),
         },
     }
+}
+
+fn key_from_json_value(value: &JsonValue, col: &ColumnSpec) -> KeyParseResult<Key> {
+    let key_type = key_type_for_column(col).map_err(|_| KeyParseError::UnsupportedType)?;
+    match key_type {
+        KeyType::Int64 => match value {
+            JsonValue::Number(num) => {
+                if let Some(v) = num.as_i64() {
+                    if v < 0 {
+                        return Err(KeyParseError::Negative);
+                    }
+                    Ok(Key::Int(v as u64))
+                } else if let Some(v) = num.as_u64() {
+                    Ok(Key::Int(v))
+                } else {
+                    Err(KeyParseError::NotInteger)
+                }
+            }
+            JsonValue::String(s) => {
+                if col.key_mode == Some(KeyMode::Uuid)
+                    || col.key_mode == Some(KeyMode::Fixed)
+                    || col.fixed_len.is_some()
+                {
+                    return Err(KeyParseError::TypeMismatch);
+                }
+                parse_base10_bytes(s.as_bytes()).map(Key::Int)
+            }
+            _ => Err(KeyParseError::TypeMismatch),
+        },
+        KeyType::FixedBytes { len } => match value {
+            JsonValue::String(s) => {
+                if col.key_mode == Some(KeyMode::Uuid) {
+                    return Err(KeyParseError::TypeMismatch);
+                }
+                let bytes = if matches!(col.ingested_dtype, ColumnType::Bytes) {
+                    BASE64.decode(s.as_bytes()).map_err(|_| KeyParseError::NotUtf8)?
+                } else {
+                    normalize_numeric_bytes(s.as_bytes(), col)?
+                };
+                if bytes.len() != len {
+                    return Err(KeyParseError::LengthMismatch);
+                }
+                Ok(Key::FixedBytes(bytes))
+            }
+            _ => Err(KeyParseError::TypeMismatch),
+        },
+        KeyType::VarBytes => match value {
+            JsonValue::String(s) => {
+                if col.key_mode == Some(KeyMode::Uuid)
+                    || col.key_mode == Some(KeyMode::Fixed)
+                    || col.fixed_len.is_some()
+                {
+                    return Err(KeyParseError::TypeMismatch);
+                }
+                let bytes = if matches!(col.ingested_dtype, ColumnType::Bytes) {
+                    BASE64.decode(s.as_bytes()).map_err(|_| KeyParseError::NotUtf8)?
+                } else {
+                    normalize_numeric_bytes(s.as_bytes(), col)?
+                };
+                Ok(Key::Bytes(bytes))
+            }
+            JsonValue::Number(num) => {
+                let v = num
+                    .as_u64()
+                    .or_else(|| num.as_i64().and_then(|v| if v >= 0 { Some(v as u64) } else { None }))
+                    .ok_or(KeyParseError::NotInteger)?;
+                Ok(Key::Bytes(v.to_string().into_bytes()))
+            }
+            _ => Err(KeyParseError::TypeMismatch),
+        },
+        KeyType::Uuid => match value {
+            JsonValue::String(s) => {
+                if col.key_mode != Some(KeyMode::Uuid) {
+                    return Err(KeyParseError::TypeMismatch);
+                }
+                let uuid = parse_uuid_string(s.as_bytes())?;
+                Ok(Key::Uuid(uuid))
+            }
+            _ => Err(KeyParseError::TypeMismatch),
+        },
+    }
+}
+
+fn owned_value_from_json(value: &JsonValue, col: &ColumnSpec) -> Result<OwnedValue> {
+    match col.ingested_dtype {
+        ColumnType::String => match value {
+            JsonValue::String(s) => Ok(OwnedValue::String(s.clone())),
+            JsonValue::Number(n) => Ok(OwnedValue::String(n.to_string())),
+            _ => Err(anyhow!("string value mismatch")),
+        },
+        ColumnType::Bytes => match value {
+            JsonValue::String(s) => {
+                let bytes = BASE64.decode(s.as_bytes()).map_err(|_| anyhow!("base64"))?;
+                Ok(OwnedValue::Bytes(bytes))
+            }
+            _ => Err(anyhow!("bytes value mismatch")),
+        },
+        ColumnType::Int64 | ColumnType::Int32 | ColumnType::Int16 | ColumnType::Int8 => {
+            let v = value
+                .as_i64()
+                .or_else(|| value.as_u64().map(|v| v as i64))
+                .ok_or_else(|| anyhow!("int value mismatch"))?;
+            if matches!(col.ingested_dtype, ColumnType::Int64) {
+                Ok(OwnedValue::Int64(v))
+            } else {
+                Ok(OwnedValue::Int32(v as i32))
+            }
+        }
+        ColumnType::UInt64 | ColumnType::UInt32 | ColumnType::UInt16 | ColumnType::UInt8 => {
+            let v = value
+                .as_u64()
+                .or_else(|| value.as_i64().and_then(|v| if v >= 0 { Some(v as u64) } else { None }))
+                .ok_or_else(|| anyhow!("uint value mismatch"))?;
+            if matches!(col.ingested_dtype, ColumnType::UInt64) {
+                Ok(OwnedValue::UInt64(v))
+            } else {
+                Ok(OwnedValue::UInt32(v as u32))
+            }
+        }
+        ColumnType::Float64 => value
+            .as_f64()
+            .map(OwnedValue::Float64)
+            .ok_or_else(|| anyhow!("float64 value mismatch")),
+        ColumnType::Float32 => value
+            .as_f64()
+            .map(|v| OwnedValue::Float32(v as f32))
+            .ok_or_else(|| anyhow!("float32 value mismatch")),
+        ColumnType::Bool => value
+            .as_bool()
+            .map(OwnedValue::Bool)
+            .ok_or_else(|| anyhow!("bool value mismatch")),
+        ColumnType::Date => value
+            .as_i64()
+            .map(|v| OwnedValue::Date(v as i32))
+            .ok_or_else(|| anyhow!("date value mismatch")),
+        ColumnType::Timestamp => value
+            .as_i64()
+            .map(|v| OwnedValue::Timestamp { secs: v, nanos: 0 })
+            .ok_or_else(|| anyhow!("timestamp value mismatch")),
+        ColumnType::Decimal128 => value
+            .as_i64()
+            .map(|v| OwnedValue::Decimal128(v as i128))
+            .ok_or_else(|| anyhow!("decimal128 value mismatch")),
+        ColumnType::Decimal256 => Err(anyhow!("decimal256 value mismatch")),
+        _ => Err(anyhow!("unsupported json value type")),
+    }
+}
+
+fn encode_pkey_row(
+    encoder: &RowPackEncoder,
+    value: &JsonValue,
+    col: &ColumnSpec,
+) -> Result<Vec<u8>> {
+    let owned = owned_value_from_json(value, col)?;
+    let value_ref = owned.as_value_ref();
+    encoder.encode_row(std::slice::from_ref(&value_ref))
 }
 
 fn parse_base10_bytes(bytes: &[u8]) -> KeyParseResult<u64> {
@@ -3216,6 +5111,112 @@ fn rowpack_columns(table: &TableSpec) -> Result<Vec<diskgraph_rowpack::RowPackCo
         });
     }
     Ok(columns)
+}
+
+fn rowpack_columns_for_specs(
+    cols: &[ColumnSpec],
+) -> Result<Vec<diskgraph_rowpack::RowPackColumn>> {
+    let mut columns = Vec::with_capacity(cols.len());
+    for col in cols {
+        let dtype = match col.ingested_dtype {
+            ColumnType::Int8 => RowpackType::Int8,
+            ColumnType::Int16 => RowpackType::Int16,
+            ColumnType::Int64 => RowpackType::Int64,
+            ColumnType::Int32 => RowpackType::Int32,
+            ColumnType::UInt8 => RowpackType::UInt8,
+            ColumnType::UInt16 => RowpackType::UInt16,
+            ColumnType::UInt64 => RowpackType::UInt64,
+            ColumnType::UInt32 => RowpackType::UInt32,
+            ColumnType::Float64 => RowpackType::Float64,
+            ColumnType::Float32 => RowpackType::Float32,
+            ColumnType::Bool => RowpackType::Bool,
+            ColumnType::String => RowpackType::String,
+            ColumnType::Bytes => RowpackType::Bytes,
+            ColumnType::Date => RowpackType::Date,
+            ColumnType::Timestamp => RowpackType::Timestamp,
+            ColumnType::Decimal128 => RowpackType::Decimal128,
+            ColumnType::Decimal256 => RowpackType::Decimal256,
+            ColumnType::Float32Array => RowpackType::Float32Array,
+            ColumnType::Float64Array => RowpackType::Float64Array,
+        };
+        columns.push(diskgraph_rowpack::RowPackColumn {
+            name: col.name.clone(),
+            logical_type: dtype,
+            fixed_len: col.fixed_len,
+            precision: col.precision,
+            scale: col.scale,
+        });
+    }
+    Ok(columns)
+}
+
+fn sample_indices(total: usize, target: usize) -> Vec<usize> {
+    if total == 0 {
+        return Vec::new();
+    }
+    if total <= target {
+        return (0..total).collect();
+    }
+    let stride = (total as f64 / target as f64).ceil() as usize;
+    (0..total).step_by(stride).take(target).collect()
+}
+
+fn shard_for_key(bytes: &[u8], num_shards: usize) -> usize {
+    if num_shards <= 1 {
+        return 0;
+    }
+    let mut hasher = XxHash64::with_seed(0);
+    hasher.write(bytes);
+    (hasher.finish() as usize) % num_shards
+}
+
+fn shard_for_owned_value(value: &OwnedValue, num_shards: usize) -> usize {
+    match value {
+        OwnedValue::Null => 0,
+        OwnedValue::Int64(v) => shard_for_key(&v.to_le_bytes(), num_shards),
+        OwnedValue::Int32(v) => shard_for_key(&v.to_le_bytes(), num_shards),
+        OwnedValue::UInt64(v) => shard_for_key(&v.to_le_bytes(), num_shards),
+        OwnedValue::UInt32(v) => shard_for_key(&v.to_le_bytes(), num_shards),
+        OwnedValue::Float64(v) => shard_for_key(&v.to_le_bytes(), num_shards),
+        OwnedValue::Float32(v) => shard_for_key(&v.to_le_bytes(), num_shards),
+        OwnedValue::Bool(v) => shard_for_key(&[*v as u8], num_shards),
+        OwnedValue::String(v) => shard_for_key(v.as_bytes(), num_shards),
+        OwnedValue::Bytes(v) => shard_for_key(v.as_slice(), num_shards),
+        OwnedValue::Date(v) => shard_for_key(&v.to_le_bytes(), num_shards),
+        OwnedValue::Timestamp { secs, nanos } => {
+            let mut buf = [0u8; 12];
+            buf[..8].copy_from_slice(&secs.to_le_bytes());
+            buf[8..].copy_from_slice(&nanos.to_le_bytes());
+            shard_for_key(&buf, num_shards)
+        }
+        OwnedValue::Decimal128(v) => shard_for_key(&v.to_le_bytes(), num_shards),
+        OwnedValue::Decimal256(v) => shard_for_key(v, num_shards),
+        OwnedValue::Float32Array(v) => {
+            let mut hasher = XxHash64::with_seed(0);
+            for val in v {
+                hasher.write(&val.to_le_bytes());
+            }
+            (hasher.finish() as usize) % num_shards.max(1)
+        }
+        OwnedValue::Float64Array(v) => {
+            let mut hasher = XxHash64::with_seed(0);
+            for val in v {
+                hasher.write(&val.to_le_bytes());
+            }
+            (hasher.finish() as usize) % num_shards.max(1)
+        }
+    }
+}
+
+fn estimate_pk_map_bytes(col: &ColumnSpec, rows: usize) -> usize {
+    let key_type = key_type_for_column(col).unwrap_or(KeyType::VarBytes);
+    let key_len = match key_type {
+        KeyType::Int64 => 8,
+        KeyType::FixedBytes { len } => len,
+        KeyType::Uuid => 16,
+        KeyType::VarBytes => col.fixed_len.unwrap_or(32),
+    };
+    rows.saturating_mul(key_len + 16)
 }
 
 fn sample_rowpack_context(
@@ -4426,15 +6427,25 @@ fn accessor_is_null(accessor: &TimestampAccessor<'_>, row: usize) -> bool {
     }
 }
 
-fn row_values_from_row<'a>(
-    row: &'a RowView<'a>,
-    table: &'a TableSpec,
-    values: &mut Vec<ValueRef<'a>>,
-    arrays_f32: &'a mut Vec<Vec<f32>>,
-    arrays_f64: &'a mut Vec<Vec<f64>>,
-    strings: &'a mut Vec<String>,
-    bytes: &'a mut Vec<Vec<u8>>,
+fn row_values_from_row(
+    row: &RowView<'_>,
+    table: &TableSpec,
+    values: &mut Vec<ValueRef<'_>>,
+    arrays_f32: &mut Vec<Vec<f32>>,
+    arrays_f64: &mut Vec<Vec<f64>>,
+    strings: &mut Vec<String>,
+    bytes: &mut Vec<Vec<u8>>,
 ) -> Result<()> {
+    values.clear();
+    arrays_f32.clear();
+    arrays_f64.clear();
+    strings.clear();
+    bytes.clear();
+    let reserve = table.columns.len();
+    strings.reserve(reserve);
+    bytes.reserve(reserve);
+    arrays_f32.reserve(reserve);
+    arrays_f64.reserve(reserve);
     for (idx, col) in table.columns.iter().enumerate() {
         let array = row
             .cols
@@ -4528,14 +6539,20 @@ fn row_values_from_row<'a>(
                         .as_any()
                         .downcast_ref::<arrow_array::StringArray>()
                         .ok_or_else(|| anyhow!("string cast"))?;
-                    values.push(ValueRef::String(arr.value(row.row)));
+                    strings.push(arr.value(row.row).to_string());
+                    let slice_ptr = strings.last().unwrap().as_str() as *const str;
+                    let slice = unsafe { &*slice_ptr };
+                    values.push(ValueRef::String(slice));
                 }
                 ColumnType::Bytes => {
                     let arr = array
                         .as_any()
                         .downcast_ref::<arrow_array::BinaryArray>()
                         .ok_or_else(|| anyhow!("binary cast"))?;
-                    values.push(ValueRef::Bytes(arr.value(row.row)));
+                    bytes.push(arr.value(row.row).to_vec());
+                    let slice_ptr = bytes.last().unwrap().as_slice() as *const [u8];
+                    let slice = unsafe { &*slice_ptr };
+                    values.push(ValueRef::Bytes(slice));
                 }
                 ColumnType::Date => {
                     let arr = array
@@ -4575,23 +6592,18 @@ fn row_values_from_row<'a>(
                     let offsets = list.value_offsets();
                     let start = offsets[row.row] as usize;
                     let end = offsets[row.row + 1] as usize;
-                    if values_arr.null_count() == 0 {
-                        let slice = &values_arr.values().as_ref()[start..end];
-                        values.push(ValueRef::Float32Array(slice));
-                    } else {
-                        let mut vec = Vec::with_capacity(end.saturating_sub(start));
-                        for idx in start..end {
-                            if values_arr.is_null(idx) {
-                                vec.push(0.0);
-                            } else {
-                                vec.push(values_arr.value(idx));
-                            }
+                    let mut vec = Vec::with_capacity(end.saturating_sub(start));
+                    for idx in start..end {
+                        if values_arr.is_null(idx) {
+                            vec.push(0.0);
+                        } else {
+                            vec.push(values_arr.value(idx));
                         }
-                        arrays_f32.push(vec);
-                        let slice_ptr = arrays_f32.last().unwrap().as_slice() as *const [f32];
-                        let slice = unsafe { &*slice_ptr };
-                        values.push(ValueRef::Float32Array(slice));
                     }
+                    arrays_f32.push(vec);
+                    let slice_ptr = arrays_f32.last().unwrap().as_slice() as *const [f32];
+                    let slice = unsafe { &*slice_ptr };
+                    values.push(ValueRef::Float32Array(slice));
                 }
                 ColumnType::Float64Array => {
                     let list = array
@@ -4606,23 +6618,18 @@ fn row_values_from_row<'a>(
                     let offsets = list.value_offsets();
                     let start = offsets[row.row] as usize;
                     let end = offsets[row.row + 1] as usize;
-                    if values_arr.null_count() == 0 {
-                        let slice = &values_arr.values().as_ref()[start..end];
-                        values.push(ValueRef::Float64Array(slice));
-                    } else {
-                        let mut vec = Vec::with_capacity(end.saturating_sub(start));
-                        for idx in start..end {
-                            if values_arr.is_null(idx) {
-                                vec.push(0.0);
-                            } else {
-                                vec.push(values_arr.value(idx));
-                            }
+                    let mut vec = Vec::with_capacity(end.saturating_sub(start));
+                    for idx in start..end {
+                        if values_arr.is_null(idx) {
+                            vec.push(0.0);
+                        } else {
+                            vec.push(values_arr.value(idx));
                         }
-                        arrays_f64.push(vec);
-                        let slice_ptr = arrays_f64.last().unwrap().as_slice() as *const [f64];
-                        let slice = unsafe { &*slice_ptr };
-                        values.push(ValueRef::Float64Array(slice));
                     }
+                    arrays_f64.push(vec);
+                    let slice_ptr = arrays_f64.last().unwrap().as_slice() as *const [f64];
+                    let slice = unsafe { &*slice_ptr };
+                    values.push(ValueRef::Float64Array(slice));
                 }
             },
             (ColumnType::String, ColumnType::Timestamp)
@@ -4804,6 +6811,80 @@ fn row_values_from_row<'a>(
         }
     }
     Ok(())
+}
+
+fn owned_row_from_refs(
+    values: &[ValueRef<'_>],
+    trimmed_strings: &std::sync::Arc<AtomicU64>,
+) -> OwnedRow {
+    let mut owned = Vec::with_capacity(values.len());
+    for value in values {
+        let out = match value {
+            ValueRef::Null => OwnedValue::Null,
+            ValueRef::Int64(v) => OwnedValue::Int64(*v),
+            ValueRef::Int32(v) => OwnedValue::Int32(*v),
+            ValueRef::UInt64(v) => OwnedValue::UInt64(*v),
+            ValueRef::UInt32(v) => OwnedValue::UInt32(*v),
+            ValueRef::Float64(v) => OwnedValue::Float64(*v),
+            ValueRef::Float32(v) => OwnedValue::Float32(*v),
+            ValueRef::Bool(v) => OwnedValue::Bool(*v),
+            ValueRef::String(v) => {
+                if v.len() > MAX_INPUT_STRING_BYTES {
+                    let trimmed = trim_str_bytes(v, MAX_INPUT_STRING_BYTES).to_string();
+                    trimmed_strings.fetch_add(1, Ordering::Relaxed);
+                    OwnedValue::String(trimmed)
+                } else {
+                    OwnedValue::String((*v).to_string())
+                }
+            }
+            ValueRef::Bytes(v) => {
+                if v.len() > MAX_INPUT_STRING_BYTES {
+                    trimmed_strings.fetch_add(1, Ordering::Relaxed);
+                    OwnedValue::Bytes(v[..MAX_INPUT_STRING_BYTES].to_vec())
+                } else {
+                    OwnedValue::Bytes((*v).to_vec())
+                }
+            }
+            ValueRef::Date(v) => OwnedValue::Date(*v),
+            ValueRef::Timestamp { secs, nanos } => OwnedValue::Timestamp {
+                secs: *secs,
+                nanos: *nanos,
+            },
+            ValueRef::Decimal128(v) => OwnedValue::Decimal128(*v),
+            ValueRef::Decimal256(v) => OwnedValue::Decimal256(*v),
+            ValueRef::Float32Array(v) => OwnedValue::Float32Array((*v).to_vec()),
+            ValueRef::Float64Array(v) => OwnedValue::Float64Array((*v).to_vec()),
+        };
+        owned.push(out);
+    }
+    OwnedRow { values: owned }
+}
+
+fn owned_row_from_row(
+    row: &RowView<'_>,
+    table: &TableSpec,
+    values: &mut Vec<ValueRef<'_>>,
+    arrays_f32: &mut Vec<Vec<f32>>,
+    arrays_f64: &mut Vec<Vec<f64>>,
+    strings: &mut Vec<String>,
+    bytes: &mut Vec<Vec<u8>>,
+    trimmed_strings: &std::sync::Arc<AtomicU64>,
+) -> Result<OwnedRow> {
+    values.clear();
+    arrays_f32.clear();
+    arrays_f64.clear();
+    strings.clear();
+    bytes.clear();
+    row_values_from_row(
+        row,
+        table,
+        values,
+        arrays_f32,
+        arrays_f64,
+        strings,
+        bytes,
+    )?;
+    Ok(owned_row_from_refs(values, trimmed_strings))
 }
 
 fn value_from_array_with_spec(
@@ -5570,6 +7651,13 @@ fn resolve_local_paths(source: &mut SourceMetadata, base_dir: &Path) {
 
 fn is_cloud_path(path: &str) -> bool {
     path.starts_with("s3://") || path.starts_with("gs://") || path.starts_with("az://")
+}
+
+fn require_local_output(target: &OutputTarget) -> Result<&Path> {
+    match target {
+        OutputTarget::Local { root } => Ok(root.as_path()),
+        _ => Err(anyhow!("sharded ingest requires a local output path")),
+    }
 }
 
 enum OutputTarget {

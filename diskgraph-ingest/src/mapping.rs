@@ -301,6 +301,167 @@ impl PkMap {
         Ok(())
     }
 
+    pub fn read_from(bytes: &[u8]) -> Result<Self> {
+        if bytes.len() < MAGIC.len() + 4 + 1 + 1 + 4 + 8 + 8 {
+            return Err(anyhow!("pk map truncated"));
+        }
+        let mut offset = 0usize;
+        if &bytes[offset..offset + MAGIC.len()] != MAGIC {
+            return Err(anyhow!("pk map magic mismatch"));
+        }
+        offset += MAGIC.len();
+        let version = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
+        offset += 4;
+        if version != VERSION {
+            return Err(anyhow!("pk map version mismatch"));
+        }
+        let kind = match bytes[offset] {
+            0 => MappingKind::Hash,
+            1 => MappingKind::Sorted,
+            _ => return Err(anyhow!("pk map kind invalid")),
+        };
+        offset += 1;
+        let key_type = match bytes[offset] {
+            0 => KeyType::Int64,
+            1 => KeyType::FixedBytes { len: 0 },
+            2 => KeyType::VarBytes,
+            3 => KeyType::Uuid,
+            _ => return Err(anyhow!("pk map key type invalid")),
+        };
+        offset += 1;
+        let key_len = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap()) as usize;
+        offset += 4;
+        let capacity = u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap()) as usize;
+        offset += 8;
+        let count = u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap()) as usize;
+        offset += 8;
+        let key_type = match key_type {
+            KeyType::FixedBytes { .. } => KeyType::FixedBytes { len: key_len },
+            other => other,
+        };
+        let mut map = PkMap::new(kind, key_type, count);
+        if kind == MappingKind::Hash {
+            map.capacity = capacity.max(1);
+            map.hash_table = vec![None; map.capacity];
+            map.hash_len = count;
+            let bitmap_len = (map.capacity + 7) / 8;
+            if bytes.len() < offset + bitmap_len {
+                return Err(anyhow!("pk map bitmap truncated"));
+            }
+            let bitmap = &bytes[offset..offset + bitmap_len];
+            offset += bitmap_len;
+            for slot in 0..map.capacity {
+                let present = (bitmap[slot / 8] >> (slot % 8)) & 1 == 1;
+                let (key, value) = if key_type == KeyType::VarBytes {
+                    if bytes.len() < offset + 4 {
+                        return Err(anyhow!("pk map entry truncated"));
+                    }
+                    let len =
+                        u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap()) as usize;
+                    offset += 4;
+                    if len == u32::MAX as usize {
+                        if bytes.len() < offset + 8 {
+                            return Err(anyhow!("pk map entry truncated"));
+                        }
+                        let value = u64::from_le_bytes(
+                            bytes[offset..offset + 8].try_into().unwrap(),
+                        );
+                        offset += 8;
+                        (None, value)
+                    } else {
+                        if bytes.len() < offset + len + 8 {
+                            return Err(anyhow!("pk map entry truncated"));
+                        }
+                        let key_bytes = &bytes[offset..offset + len];
+                        offset += len;
+                        let value = u64::from_le_bytes(
+                            bytes[offset..offset + 8].try_into().unwrap(),
+                        );
+                        offset += 8;
+                        let key = Key::Bytes(key_bytes.to_vec());
+                        (Some(key), value)
+                    }
+                } else {
+                    if bytes.len() < offset + key_len + 8 {
+                        return Err(anyhow!("pk map entry truncated"));
+                    }
+                    let key_bytes = &bytes[offset..offset + key_len];
+                    offset += key_len;
+                    let value =
+                        u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap());
+                    offset += 8;
+                    let key = match key_type {
+                        KeyType::Int64 => {
+                            let mut buf = [0u8; 8];
+                            buf[..key_len].copy_from_slice(key_bytes);
+                            let v = u64::from_le_bytes(buf);
+                            Key::Int(v)
+                        }
+                        KeyType::FixedBytes { .. } => Key::FixedBytes(key_bytes.to_vec()),
+                        KeyType::Uuid => {
+                            let mut buf = [0u8; 16];
+                            buf.copy_from_slice(&key_bytes[..16]);
+                            Key::Uuid(buf)
+                        }
+                        KeyType::VarBytes => Key::Bytes(key_bytes.to_vec()),
+                    };
+                    (Some(key), value)
+                };
+                if present {
+                    if let Some(key) = key {
+                        map.hash_table[slot] = Some((key, value));
+                    }
+                }
+            }
+        } else {
+            let mut entries = Vec::with_capacity(count);
+            for _ in 0..count {
+                let key = if key_type == KeyType::VarBytes {
+                    if bytes.len() < offset + 4 {
+                        return Err(anyhow!("pk map entry truncated"));
+                    }
+                    let len =
+                        u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap()) as usize;
+                    offset += 4;
+                    if bytes.len() < offset + len {
+                        return Err(anyhow!("pk map entry truncated"));
+                    }
+                    let key_bytes = &bytes[offset..offset + len];
+                    offset += len;
+                    Key::Bytes(key_bytes.to_vec())
+                } else {
+                    if bytes.len() < offset + key_len {
+                        return Err(anyhow!("pk map entry truncated"));
+                    }
+                    let key_bytes = &bytes[offset..offset + key_len];
+                    offset += key_len;
+                    match key_type {
+                        KeyType::Int64 => {
+                            let mut buf = [0u8; 8];
+                            buf[..key_len].copy_from_slice(key_bytes);
+                            Key::Int(u64::from_le_bytes(buf))
+                        }
+                        KeyType::FixedBytes { .. } => Key::FixedBytes(key_bytes.to_vec()),
+                        KeyType::Uuid => {
+                            let mut buf = [0u8; 16];
+                            buf.copy_from_slice(&key_bytes[..16]);
+                            Key::Uuid(buf)
+                        }
+                        KeyType::VarBytes => Key::Bytes(key_bytes.to_vec()),
+                    }
+                };
+                if bytes.len() < offset + 8 {
+                    return Err(anyhow!("pk map entry truncated"));
+                }
+                let value = u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap());
+                offset += 8;
+                entries.push((key, value));
+            }
+            map.entries = entries;
+        }
+        Ok(map)
+    }
+
     fn grow_hash(&mut self) {
         let new_capacity = (self.capacity * 2).max(8);
         let mut new_table = vec![None; new_capacity];

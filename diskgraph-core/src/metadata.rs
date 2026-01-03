@@ -63,7 +63,7 @@ pub enum EdgeStorageFormat {
 }
 
 fn default_edge_storage_format() -> EdgeStorageFormat {
-    EdgeStorageFormat::Parquet
+    EdgeStorageFormat::Binary
 }
 
 /// Edge relation definition pulled from index_metadata.json.
