@@ -339,7 +339,7 @@ pub enum StringEncoding {
     NumericScaled,
     Hex { len: usize, dashed: bool, upper: bool },
     IsoTimestamp { fmt: IsoFormat },
-    Snappy,
+    Lz4,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -837,9 +837,9 @@ fn estimate_column_bytes(encoding: &ColumnEncoding, stats: &ColumnStats) -> usiz
             StringEncoding::NumericScaled => varint_bytes(64) + varint_bytes(16),
             StringEncoding::Hex { len, .. } => len / 2,
             StringEncoding::IsoTimestamp { .. } => varint_bytes(64) + 5,
-            StringEncoding::Snappy => {
+            StringEncoding::Lz4 => {
                 let avg = avg_len(stats.string_bytes, stats.string_total);
-                varint_bytes_u64(avg as u64) + avg
+                varint_bytes_u64(avg as u64) + varint_bytes_u64(avg as u64) + avg
             }
             StringEncoding::Raw => {
                 let avg = avg_len(stats.string_bytes, stats.string_total);
@@ -1176,10 +1176,18 @@ impl ColumnStats {
                     }
                 }
                 if bytes.len() >= config.string_long_min_len() {
-                    self.string_long_bytes += bytes.len();
-                    self.string_long_raw += bytes.len();
-                    let compressed = snap::raw::Encoder::new().compress_vec(bytes)?;
-                    self.string_long_compressed += compressed.len();
+                    let raw_len = bytes.len();
+                    let raw_total = varint_bytes_u64(raw_len as u64) + raw_len;
+                    self.string_long_bytes += raw_len;
+                    self.string_long_raw += raw_total;
+                    let max = lz4_flex::block::get_maximum_output_size(raw_len);
+                    let mut buf = vec![0u8; max];
+                    let written = lz4_flex::block::compress_into(bytes, &mut buf)
+                        .unwrap_or(raw_len);
+                    let compressed_total = varint_bytes_u64(raw_len as u64)
+                        + varint_bytes_u64(written as u64)
+                        + written;
+                    self.string_long_compressed += compressed_total;
                 }
             }
             ValueRef::Bytes(v) => {
@@ -1446,7 +1454,7 @@ fn choose_string_encoding(stats: &ColumnStats, config: &RowPackConfig) -> Result
     if stats.string_long_bytes > 0 {
         let ratio = stats.string_long_compressed as f32 / stats.string_long_raw as f32;
         if ratio <= config.string_long_min_ratio() {
-            return Ok(StringEncoding::Snappy);
+            return Ok(StringEncoding::Lz4);
         }
     }
     Ok(StringEncoding::Raw)
@@ -1552,6 +1560,7 @@ pub struct RowPackScratch {
     bools: BitWriter,
     data: Vec<u8>,
     bpe_tokens: Vec<u32>,
+    lz4_buf: Vec<u8>,
 }
 
 impl RowPackScratch {
@@ -1568,6 +1577,7 @@ impl RowPackScratch {
             bools: BitWriter::with_capacity(bool_bytes),
             data: Vec::with_capacity(ctx.estimated_row_bytes as usize),
             bpe_tokens: Vec::new(),
+            lz4_buf: Vec::new(),
         }
     }
 
@@ -1593,6 +1603,7 @@ impl RowPackScratch {
         self.bools.reset();
         self.data.clear();
         self.bpe_tokens.clear();
+        self.lz4_buf.clear();
     }
 }
 
@@ -1689,6 +1700,7 @@ impl RowPackEncoder {
                     self.alphabet_maps[idx].as_ref(),
                     self.bpe_tries[idx].as_ref(),
                     Some(&mut bpe_tokens),
+                    None,
                 )?,
             };
             tags.write_bits(tag, 2);
@@ -1712,7 +1724,7 @@ impl RowPackEncoder {
         scratch.reset(&self.ctx);
         for (idx, col) in self.ctx.columns.iter().enumerate() {
             let value = &values[idx];
-            let tag = match value {
+                let tag = match value {
                 ValueRef::Null => 0u8,
                 _ if matches!(col.encoding, ColumnEncoding::Bool) => {
                     let v = match value {
@@ -1730,6 +1742,7 @@ impl RowPackEncoder {
                     self.alphabet_maps[idx].as_ref(),
                     self.bpe_tries[idx].as_ref(),
                     Some(&mut scratch.bpe_tokens),
+                    Some(&mut scratch.lz4_buf),
                 )?,
             };
             scratch.tags.write_bits(tag, 2);
@@ -1885,6 +1898,7 @@ impl RowPackEncoder {
                                 self.alphabet_maps[idx].as_ref(),
                                 self.bpe_tries[idx].as_ref(),
                                 Some(&mut scratch.bpe_tokens),
+                                Some(&mut scratch.lz4_buf),
                             )?
                         } else {
                             return Err(anyhow!("rowpack string encoding mismatch"));
@@ -2015,7 +2029,8 @@ fn encode_value_with_tag<'a>(
     alphabet: Option<&AlphabetMap>,
     bpe: Option<&BpeTrie>,
     bpe_tokens: Option<&mut Vec<u32>>,
- ) -> Result<u8> {
+    lz4_buf: Option<&mut Vec<u8>>,
+) -> Result<u8> {
     match (&col.encoding, value) {
         (ColumnEncoding::Int { signed, varint, bits }, ValueRef::Int64(v)) => {
             encode_int(out, *signed, *varint, *bits, *v as i128)?;
@@ -2094,7 +2109,7 @@ fn encode_value_with_tag<'a>(
             encode_decimal_i256_with_tag(out, v, *scale, storage)
         }
         (ColumnEncoding::String { encoding }, ValueRef::String(v)) => {
-            encode_string_with_tag(out, encoding, v, dict, alphabet, bpe, bpe_tokens)
+            encode_string_with_tag(out, encoding, v, dict, alphabet, bpe, bpe_tokens, lz4_buf)
         }
         (ColumnEncoding::FloatArray { storage }, ValueRef::Float32Array(values)) => {
             let tag = encode_float_array_f32_with_tag(
@@ -2350,6 +2365,7 @@ fn encode_string_with_tag(
     alphabet: Option<&AlphabetMap>,
     bpe: Option<&BpeTrie>,
     mut bpe_tokens: Option<&mut Vec<u32>>,
+    mut lz4_buf: Option<&mut Vec<u8>>,
 ) -> Result<u8> {
     match encoding {
         StringEncoding::Raw => {
@@ -2449,15 +2465,35 @@ fn encode_string_with_tag(
                 Ok(2)
             }
         }
-        StringEncoding::Snappy => {
+        StringEncoding::Lz4 => {
             let bytes = value.as_bytes();
-            let compressed = snap::raw::Encoder::new().compress_vec(bytes)?;
-            if compressed.len() < bytes.len() {
+            let raw_len = bytes.len();
+            let mut local_buf = Vec::new();
+            let buf = match lz4_buf.as_deref_mut() {
+                Some(buf) => {
+                    buf.clear();
+                    buf
+                }
+                None => &mut local_buf,
+            };
+            let max = lz4_flex::block::get_maximum_output_size(raw_len);
+            if buf.capacity() < max {
+                buf.reserve(max - buf.capacity());
+            }
+            buf.resize(max, 0);
+            let written = lz4_flex::block::compress_into(bytes, buf)?;
+            let compressed = &buf[..written];
+            let raw_total = varint_bytes_u64(raw_len as u64) + raw_len;
+            let compressed_total = varint_bytes_u64(raw_len as u64)
+                + varint_bytes_u64(compressed.len() as u64)
+                + compressed.len();
+            if compressed_total < raw_total {
+                write_varint(raw_len as u64, out);
                 write_varint(compressed.len() as u64, out);
-                out.extend_from_slice(&compressed);
+                out.extend_from_slice(compressed);
                 Ok(1)
             } else {
-                write_varint(bytes.len() as u64, out);
+                write_varint(raw_len as u64, out);
                 out.extend_from_slice(bytes);
                 Ok(2)
             }
@@ -3589,19 +3625,21 @@ fn decode_string(
             let nanos = read_varint(data)? as u32;
             Ok(format_iso(*fmt, secs, nanos))
         }
-        StringEncoding::Snappy => {
-            let len = read_varint(data)? as usize;
-            if len > MAX_FIELD_BYTES {
-                return Err(anyhow!("rowpack snappy too large"));
+        StringEncoding::Lz4 => {
+            let raw_len = read_varint(data)? as usize;
+            if raw_len > MAX_FIELD_BYTES {
+                return Err(anyhow!("rowpack lz4 too large"));
             }
-            if data.len() < len {
-                return Err(anyhow!("rowpack snappy truncated"));
+            let compressed_len = read_varint(data)? as usize;
+            if data.len() < compressed_len {
+                return Err(anyhow!("rowpack lz4 truncated"));
             }
-            let (head, tail) = data.split_at(len);
+            let (head, tail) = data.split_at(compressed_len);
             *data = tail;
-            let decoded = snap::raw::Decoder::new().decompress_vec(head)?;
-            if decoded.len() > MAX_FIELD_BYTES {
-                return Err(anyhow!("rowpack snappy too large"));
+            let decoded = lz4_flex::block::decompress(head, raw_len)
+                .map_err(|_| anyhow!("rowpack lz4 decode failed"))?;
+            if decoded.len() != raw_len || decoded.len() > MAX_FIELD_BYTES {
+                return Err(anyhow!("rowpack lz4 too large"));
             }
             Ok(String::from_utf8_lossy(&decoded).to_string())
         }
@@ -4955,7 +4993,7 @@ mod tests {
     }
 
     #[test]
-    fn snappy_encoding_selected() {
+    fn lz4_encoding_selected() {
         let mut config = RowPackConfig::default();
         config.string_long_min_len = Some(8);
         config.string_long_min_ratio = Some(0.9);
@@ -4975,7 +5013,7 @@ mod tests {
         let ctx = builder.finish().unwrap();
         match &ctx.columns[0].encoding {
             ColumnEncoding::String {
-                encoding: StringEncoding::Snappy,
+                encoding: StringEncoding::Lz4,
             } => {}
             other => panic!("unexpected encoding: {:?}", other),
         }
@@ -4988,7 +5026,7 @@ mod tests {
     }
 
     #[test]
-    fn snappy_falls_back_to_raw() {
+    fn lz4_falls_back_to_raw() {
         let mut config = RowPackConfig::default();
         config.string_long_min_len = Some(8);
         config.string_long_min_ratio = Some(0.5);
@@ -5170,14 +5208,14 @@ mod tests {
     }
 
     #[test]
-    fn decode_rejects_corrupt_snappy() {
+    fn decode_rejects_corrupt_lz4() {
         let ctx = RowPackContext {
             version: ROWPACK_VERSION,
             columns: vec![ColumnContext {
                 name: "text".to_string(),
                 logical_type: LogicalType::String,
                 encoding: ColumnEncoding::String {
-                    encoding: StringEncoding::Snappy,
+                    encoding: StringEncoding::Lz4,
                 },
             }],
         estimated_row_bytes: 0,
@@ -5187,8 +5225,9 @@ mod tests {
         tags.write_bits(1, 2);
         let mut row = tags.finish();
         row.push(0x05);
+        row.push(0x05);
         row.extend_from_slice(&[0x00, 0x01, 0x02, 0x03, 0x04]);
         let err = decoder.decode_json(&row).unwrap_err();
-        assert!(err.to_string().contains("snappy"));
+        assert!(err.to_string().contains("lz4"));
     }
 }

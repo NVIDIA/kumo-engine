@@ -1484,7 +1484,7 @@ fn format_string_encoding(encoding: &StringEncoding) -> String {
             format!("string(hex len={} dashed={} upper={})", len, dashed, upper)
         }
         StringEncoding::IsoTimestamp { fmt } => format!("string(iso_timestamp {:?})", fmt),
-        StringEncoding::Snappy => "string(snappy)".to_string(),
+        StringEncoding::Lz4 => "string(lz4)".to_string(),
     }
 }
 

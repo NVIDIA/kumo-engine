@@ -131,8 +131,8 @@ fn print_string_encoding(encoding: &StringEncoding) -> Result<()> {
         StringEncoding::IsoTimestamp { fmt } => {
             println!("  Encoding: string iso_timestamp ({:?})", fmt);
         }
-        StringEncoding::Snappy => {
-            println!("  Encoding: string snappy");
+        StringEncoding::Lz4 => {
+            println!("  Encoding: string lz4");
         }
     }
     Ok(())
