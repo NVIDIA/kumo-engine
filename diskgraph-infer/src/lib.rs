@@ -179,6 +179,7 @@ pub fn infer_source_metadata(root: &RootSource, options: InferOptions) -> Result
     infer_create_time(&mut table_specs);
     infer_foreign_keys(&table_specs, &mut relationships, &mut warnings.notes);
     drop_join_table_primary_keys(&mut table_specs, &relationships);
+    prune_relationships_without_primary_key(&table_specs, &mut relationships);
     infer_primary_key_relationships(&table_specs, &mut relationships);
 
     let metadata = SourceMetadata {
@@ -1396,13 +1397,21 @@ fn infer_foreign_keys(
                 if let Some(best) =
                     choose_best_fk_dest(table, col, &candidates, &table_tokens, notes)
                 {
-                    rels.push(RelationshipSpec {
-                        name: None,
-                        src_table: table.name.clone(),
-                        src_column: col.name.clone(),
-                        dst_table: best.0,
-                        dst_column: best.1,
-                    });
+                    if !relationship_already_declared(
+                        rels,
+                        &table.name,
+                        &col.name,
+                        &best.0,
+                        &best.1,
+                    ) {
+                        rels.push(RelationshipSpec {
+                            name: None,
+                            src_table: table.name.clone(),
+                            src_column: col.name.clone(),
+                            dst_table: best.0,
+                            dst_column: best.1,
+                        });
+                    }
                     continue;
                 }
             }
@@ -1411,13 +1420,21 @@ fn infer_foreign_keys(
                     if let Some(best) =
                         choose_best_fk_dest(table, col, dest_tables, &table_tokens, notes)
                     {
-                        rels.push(RelationshipSpec {
-                            name: None,
-                            src_table: table.name.clone(),
-                            src_column: col.name.clone(),
-                            dst_table: best.0,
-                            dst_column: best.1,
-                        });
+                        if !relationship_already_declared(
+                            rels,
+                            &table.name,
+                            &col.name,
+                            &best.0,
+                            &best.1,
+                        ) {
+                            rels.push(RelationshipSpec {
+                                name: None,
+                                src_table: table.name.clone(),
+                                src_column: col.name.clone(),
+                                dst_table: best.0,
+                                dst_column: best.1,
+                            });
+                        }
                     }
                     continue;
                 }
@@ -1507,13 +1524,21 @@ fn infer_foreign_keys(
             }
             if let Some((dest_table, dest_pk, _)) = best {
                 if !tie {
-                    rels.push(RelationshipSpec {
-                        name: None,
-                        src_table: table.name.clone(),
-                        src_column: col.name.clone(),
-                        dst_table: dest_table,
-                        dst_column: dest_pk,
-                    });
+                    if !relationship_already_declared(
+                        rels,
+                        &table.name,
+                        &col.name,
+                        &dest_table,
+                        &dest_pk,
+                    ) {
+                        rels.push(RelationshipSpec {
+                            name: None,
+                            src_table: table.name.clone(),
+                            src_column: col.name.clone(),
+                            dst_table: dest_table,
+                            dst_column: dest_pk,
+                        });
+                    }
                 }
             }
         }
@@ -1590,11 +1615,30 @@ fn drop_join_table_primary_keys(tables: &mut [TableSpec], rels: &[RelationshipSp
         let Some(pk) = table.primary_key.as_deref() else {
             continue;
         };
+        if !is_join_table_name(&table.name) {
+            continue;
+        }
         let fk_count = fk_counts.get(table.name.as_str()).copied().unwrap_or(0);
         if fk_count >= 2 && fk_cols.contains(&(table.name.as_str(), pk)) {
             table.primary_key = None;
         }
     }
+}
+
+fn prune_relationships_without_primary_key(tables: &[TableSpec], rels: &mut Vec<RelationshipSpec>) {
+    let mut pk_map: HashMap<&str, &str> = HashMap::new();
+    for table in tables {
+        if let Some(pk) = table.primary_key.as_deref() {
+            pk_map.insert(table.name.as_str(), pk);
+        }
+    }
+    rels.retain(|rel| {
+        let src_pk = pk_map.get(rel.src_table.as_str());
+        let dst_pk = pk_map.get(rel.dst_table.as_str());
+        let src_ok = src_pk.map_or(false, |pk| *pk == rel.src_column);
+        let dst_ok = dst_pk.map_or(false, |pk| *pk == rel.dst_column);
+        src_ok || dst_ok
+    });
 }
 
 fn relationship_exists(
@@ -1614,6 +1658,25 @@ fn relationship_exists(
                 && rel.src_column == *dst_col
                 && rel.dst_table == src_table
                 && rel.dst_column == *src_col)
+    })
+}
+
+fn relationship_already_declared(
+    rels: &[RelationshipSpec],
+    src_table: &str,
+    src_col: &str,
+    dst_table: &str,
+    dst_col: &str,
+) -> bool {
+    rels.iter().any(|rel| {
+        (rel.src_table == src_table
+            && rel.src_column == src_col
+            && rel.dst_table == dst_table
+            && rel.dst_column == dst_col)
+            || (rel.src_table == dst_table
+                && rel.src_column == dst_col
+                && rel.dst_table == src_table
+                && rel.dst_column == src_col)
     })
 }
 
@@ -1927,6 +1990,10 @@ fn column_matches_table_name(table_name: &str, col_lower: &str) -> bool {
     let table_lower = table_name.to_lowercase();
     let singular = singularize(&table_lower);
     col_lower == table_lower || col_lower == singular
+}
+
+fn is_join_table_name(name: &str) -> bool {
+    name.contains('_') || name.contains('-') || name.contains(' ')
 }
 
 fn table_has_specific_key(table: &TableSpec) -> bool {

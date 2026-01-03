@@ -18,12 +18,13 @@ const ALPHABET_MAX_CHARS: usize = 64;
 const ALPHABET_MIN_COVERAGE: f32 = 0.95;
 const NUMERIC_MIN_COVERAGE: f32 = 0.98;
 const MAX_NUMERIC_SCALE: u32 = 38;
+const ALPHABET_INVALID: u8 = u8::MAX;
 
 type FastHashMap<K, V> = HashMap<K, V, RandomState>;
 
 #[derive(Clone)]
 struct AlphabetMap {
-    map: [i16; 256],
+    map: [u8; 256],
     bits: u8,
 }
 
@@ -1620,9 +1621,9 @@ impl RowPackEncoder {
                 ColumnEncoding::String {
                     encoding: StringEncoding::Alphabet { alphabet },
                 } => {
-                    let mut map = [-1i16; 256];
+                    let mut map = [ALPHABET_INVALID; 256];
                     for (idx, b) in alphabet.iter().enumerate() {
-                        map[*b as usize] = idx as i16;
+                        map[*b as usize] = idx as u8;
                     }
                     alphabet_maps.push(Some(AlphabetMap {
                         map,
@@ -2375,16 +2376,15 @@ fn encode_string_with_tag(
         StringEncoding::Alphabet { .. } => {
             let bytes = value.as_bytes();
             let map = alphabet.ok_or_else(|| anyhow!("rowpack missing alphabet map"))?;
-            for b in bytes {
-                if map.map[*b as usize] < 0 {
-                    write_varint(bytes.len() as u64, out);
-                    out.extend_from_slice(bytes);
-                    return Ok(2);
-                }
-            }
             write_varint(bytes.len() as u64, out);
-            write_alphabet_packed(out, bytes, &map.map, map.bits);
-            Ok(1)
+            let packed_len = ((bytes.len() * map.bits as usize) + 7) / 8;
+            out.reserve(packed_len);
+            if write_alphabet_packed_checked(out, bytes, &map.map, map.bits) {
+                Ok(1)
+            } else {
+                out.extend_from_slice(bytes);
+                Ok(2)
+            }
         }
         StringEncoding::Bpe { .. } => {
             let bytes = value.as_bytes();
@@ -2478,12 +2478,22 @@ fn bpe_token_bits(dict_len: usize) -> u8 {
     alphabet_bits(space.max(1))
 }
 
-fn write_alphabet_packed(out: &mut Vec<u8>, bytes: &[u8], map: &[i16; 256], bits: u8) {
+fn write_alphabet_packed_checked(
+    out: &mut Vec<u8>,
+    bytes: &[u8],
+    map: &[u8; 256],
+    bits: u8,
+) -> bool {
+    let payload_start = out.len();
     let mut cur: u64 = 0;
     let mut used: u8 = 0;
     for b in bytes {
-        let idx = map[*b as usize] as u64;
-        cur |= idx << used;
+        let idx = map[*b as usize];
+        if idx == ALPHABET_INVALID {
+            out.truncate(payload_start);
+            return false;
+        }
+        cur |= (idx as u64) << used;
         used = used.saturating_add(bits);
         while used >= 8 {
             out.push(cur as u8);
@@ -2494,6 +2504,7 @@ fn write_alphabet_packed(out: &mut Vec<u8>, bytes: &[u8], map: &[i16; 256], bits
     if used > 0 {
         out.push(cur as u8);
     }
+    true
 }
 
 fn write_tokens_packed(out: &mut Vec<u8>, tokens: &[u32], bits: u8) {
