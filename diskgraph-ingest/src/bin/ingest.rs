@@ -154,6 +154,9 @@ fn main() -> Result<()> {
             }
         }
     }
+    if let Some(trimmed) = stats.trimmed_strings {
+        println!("Trimmed strings (>32KB): {}", trimmed);
+    }
     let total_bytes = stats.perf.bytes_read.saturating_add(stats.perf.bytes_written);
     let wall_secs = (stats.perf.wall_time_ms as f64) / 1000.0;
     let bytes_per_sec = if wall_secs > 0.0 {

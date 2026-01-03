@@ -132,6 +132,8 @@ struct BuildStatsReport {
     truncated_edges_total: u64,
     truncated_edges_per_relation: Vec<u64>,
     capped_edge_lists: u64,
+    #[serde(default)]
+    node_data_trimmed: u64,
 }
 
 enum RemoteStore {
@@ -1193,6 +1195,7 @@ fn read_build_reports_recursive(root: &Path) -> Result<Option<BuildReport>> {
         truncated_edges_total: 0,
         truncated_edges_per_relation: Vec::new(),
         capped_edge_lists: 0,
+        node_data_trimmed: 0,
     };
     let mut found = false;
     while let Some(dir) = stack.pop() {
@@ -1218,6 +1221,8 @@ fn read_build_reports_recursive(root: &Path) -> Result<Option<BuildReport>> {
                 agg.truncated_edges_total.saturating_add(report.build_stats.truncated_edges_total);
             agg.capped_edge_lists =
                 agg.capped_edge_lists.saturating_add(report.build_stats.capped_edge_lists);
+            agg.node_data_trimmed =
+                agg.node_data_trimmed.saturating_add(report.build_stats.node_data_trimmed);
         }
     }
     if !found {
@@ -1407,6 +1412,9 @@ fn print_build_report(report: &BuildReport) {
     }
     if stats.capped_edge_lists > 0 {
         println!("  Capped edge lists: {}", stats.capped_edge_lists);
+    }
+    if stats.node_data_trimmed > 0 {
+        println!("  Dropped oversized node data: {}", stats.node_data_trimmed);
     }
     if !stats.truncated_edges_per_relation.is_empty() {
         let total: u64 = stats.truncated_edges_per_relation.iter().sum();

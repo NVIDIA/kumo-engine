@@ -37,6 +37,7 @@ use tracing::info;
 /// Compact varint supports up to 14 bits (0x3FFF). We cap relation edge lists
 /// at that limit to guarantee counts fit the encoding without overflow.
 const MAX_RELATION_EDGE_COUNT: usize = 0x3FFF;
+const MAX_NODE_DATA_LEN: usize = 60 * 1024;
 
 #[derive(Debug, Clone)]
 pub struct ParquetDownloadOptions {
@@ -616,10 +617,13 @@ impl ShardBuilder {
             let mut node_data_len: Option<usize> = None;
             if let Some(stream) = node_data_stream.as_mut() {
                 let len = stream.next_into(&mut node_data_buf)?;
-                if len > u16::MAX as usize {
-                    return Err(IndexBuildError::ValueOutOfRange("node_data_len").into());
+                if len > MAX_NODE_DATA_LEN {
+                    node_data_buf.clear();
+                    build_stats.node_data_trimmed =
+                        build_stats.node_data_trimmed.saturating_add(1);
+                } else {
+                    node_data_len = Some(len);
                 }
-                node_data_len = Some(len);
             }
             // Collect edges for this node by relation.
             for (i, bucket) in buckets.iter_mut().enumerate() {
@@ -787,6 +791,8 @@ pub struct BuildStats {
     pub truncated_edges_per_relation: Vec<u64>,
     /// Number of per-relation edge lists that were capped at MAX_RELATION_EDGE_COUNT.
     pub capped_edge_lists: u64,
+    /// Number of nodes whose payload exceeded MAX_NODE_DATA_LEN and was dropped.
+    pub node_data_trimmed: u64,
 }
 
 #[derive(Serialize)]

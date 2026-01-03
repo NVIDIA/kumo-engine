@@ -39,6 +39,7 @@ use std::fs;
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::runtime::Runtime;
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -52,6 +53,7 @@ const EDGE_BATCH_SIZE: usize = 400_000;
 const PROGRESS_STEP: u64 = 10_000;
 const MAX_KEY_FAILURE_SAMPLES: u64 = 10;
 const MAX_KEY_SAMPLE_LEN: usize = 64;
+const MAX_INPUT_STRING_BYTES: usize = 32 * 1024;
 const EDGE_BIN_MAGIC: [u8; 4] = *b"DGED";
 const EDGE_BIN_VERSION: u8 = 2;
 const EDGE_BIN_FLAG_SORT: u8 = 1;
@@ -132,6 +134,8 @@ pub struct IngestStats {
     pub pk_duplicate_counts: HashMap<String, u64>,
     pub pk_duplicate_total: u64,
     pub pk_duplicate_samples: HashMap<String, Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trimmed_strings: Option<u64>,
     pub perf: PerfStats,
 }
 
@@ -289,6 +293,7 @@ struct IngestContext {
     pk_duplicate_samples: HashMap<String, Vec<String>>,
     output: String,
     key_failures: std::sync::Arc<KeyFailureCollector>,
+    trimmed_strings: std::sync::Arc<AtomicU64>,
     pk_map_task_ms: u64,
     build_task_ms: u64,
     node_task_ms: u64,
@@ -525,6 +530,7 @@ impl IngestContext {
             pk_duplicate_samples: HashMap::new(),
             output: output.to_string(),
             key_failures: std::sync::Arc::new(KeyFailureCollector::new()),
+            trimmed_strings: std::sync::Arc::new(AtomicU64::new(0)),
             pk_map_task_ms: 0,
             build_task_ms: 0,
             node_task_ms: 0,
@@ -799,6 +805,7 @@ impl IngestContext {
                 let table_contexts = std::sync::Arc::clone(&table_contexts);
                 let source_rowpack = source_rowpack.clone();
                 let node_task_time = std::sync::Arc::clone(&node_task_time);
+                let trimmed_strings = std::sync::Arc::clone(&self.trimmed_strings);
                 tasks.push(WorkItem {
                     bucket: Some(node_task_time),
                     run: Box::new(move || {
@@ -830,6 +837,7 @@ impl IngestContext {
                             &target,
                             &table,
                             &encoder,
+                            &trimmed_strings,
                             progress.as_ref(),
                             progress_enabled.then_some(progress_key.as_str()),
                         )?;
@@ -1374,6 +1382,7 @@ impl IngestContext {
             );
         }
         let pk_duplicate_total: u64 = self.pk_duplicate_counts.values().sum();
+        let trimmed_strings = self.trimmed_strings.load(Ordering::Relaxed);
         IngestStats {
             output: self.output.clone(),
             node_tables: metadata.node_types.len(),
@@ -1389,6 +1398,11 @@ impl IngestContext {
             pk_duplicate_counts: self.pk_duplicate_counts.clone(),
             pk_duplicate_total,
             pk_duplicate_samples: self.pk_duplicate_samples.clone(),
+            trimmed_strings: if trimmed_strings > 0 {
+                Some(trimmed_strings)
+            } else {
+                None
+            },
             perf,
         }
     }
@@ -1446,6 +1460,7 @@ fn write_node_data_to(
     target: &OutputTarget,
     table: &TableSpec,
     encoder: &RowPackEncoder,
+    trimmed_strings: &std::sync::Arc<AtomicU64>,
     progress: Option<&ProgressCallback>,
     progress_key: Option<&str>,
 ) -> Result<u64> {
@@ -1486,6 +1501,7 @@ fn write_node_data_to(
                 bytes: &mut bytes,
                 arrays_f32: &mut arrays_f32,
                 arrays_f64: &mut arrays_f64,
+                trimmed_strings,
             };
             encoder.encode_row_from_access(&mut access, &mut encoded, &mut scratch)?;
             builder.append_value(&encoded);
@@ -3425,6 +3441,7 @@ struct RowAccessor<'a> {
     bytes: &'a mut Vec<Vec<u8>>,
     arrays_f32: &'a mut Vec<Vec<f32>>,
     arrays_f64: &'a mut Vec<Vec<f64>>,
+    trimmed_strings: &'a std::sync::Arc<AtomicU64>,
 }
 
 impl<'a> RowValueAccess for RowAccessor<'a> {
@@ -3757,7 +3774,15 @@ impl<'a> RowValueAccess for RowAccessor<'a> {
                 if arr.is_null(self.row) {
                     Ok(None)
                 } else {
-                    Ok(Some(arr.value(self.row)))
+                    let value = arr.value(self.row);
+                    if value.len() <= MAX_INPUT_STRING_BYTES {
+                        Ok(Some(value))
+                    } else {
+                        let trimmed = trim_str_bytes(value, MAX_INPUT_STRING_BYTES);
+                        self.strings.push(trimmed.to_string());
+                        self.trimmed_strings.fetch_add(1, Ordering::Relaxed);
+                        Ok(self.strings.last().map(|s| s.as_str()))
+                    }
                 }
             }
             Some(ColumnAccessor::Bytes(arr)) => {
@@ -3768,7 +3793,14 @@ impl<'a> RowValueAccess for RowAccessor<'a> {
                         Ok(text) => text,
                         Err(_) => return Ok(None),
                     };
-                    Ok(Some(text))
+                    if text.len() <= MAX_INPUT_STRING_BYTES {
+                        Ok(Some(text))
+                    } else {
+                        let trimmed = trim_str_bytes(text, MAX_INPUT_STRING_BYTES);
+                        self.strings.push(trimmed.to_string());
+                        self.trimmed_strings.fetch_add(1, Ordering::Relaxed);
+                        Ok(self.strings.last().map(|s| s.as_str()))
+                    }
                 }
             }
             Some(ColumnAccessor::Int64(arr)) => {
@@ -3829,14 +3861,29 @@ impl<'a> RowValueAccess for RowAccessor<'a> {
                 if arr.is_null(self.row) {
                     Ok(None)
                 } else {
-                    Ok(Some(arr.value(self.row)))
+                    let value = arr.value(self.row);
+                    if value.len() <= MAX_INPUT_STRING_BYTES {
+                        Ok(Some(value))
+                    } else {
+                        let trimmed = &value[..MAX_INPUT_STRING_BYTES];
+                        self.bytes.push(trimmed.to_vec());
+                        self.trimmed_strings.fetch_add(1, Ordering::Relaxed);
+                        Ok(self.bytes.last().map(|v| v.as_slice()))
+                    }
                 }
             }
             Some(ColumnAccessor::String(arr)) => {
                 if arr.is_null(self.row) {
                     Ok(None)
                 } else {
-                    self.bytes.push(arr.value(self.row).as_bytes().to_vec());
+                    let value = arr.value(self.row);
+                    if value.len() <= MAX_INPUT_STRING_BYTES {
+                        self.bytes.push(value.as_bytes().to_vec());
+                    } else {
+                        let trimmed = trim_str_bytes(value, MAX_INPUT_STRING_BYTES);
+                        self.bytes.push(trimmed.as_bytes().to_vec());
+                        self.trimmed_strings.fetch_add(1, Ordering::Relaxed);
+                    }
                     Ok(self.bytes.last().map(|v| v.as_slice()))
                 }
             }
@@ -4956,6 +5003,17 @@ fn parse_f64(value: &str) -> Option<f64> {
 
 fn parse_f32(value: &str) -> Option<f32> {
     value.trim().parse::<f32>().ok()
+}
+
+fn trim_str_bytes(value: &str, max: usize) -> &str {
+    if value.len() <= max {
+        return value;
+    }
+    let mut end = max;
+    while end > 0 && !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    &value[..end]
 }
 
 fn parse_timestamp_text(value: &str, format: Option<&str>) -> Option<(i64, u32)> {
