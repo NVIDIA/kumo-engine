@@ -57,6 +57,10 @@ const MAX_INPUT_STRING_BYTES: usize = 32 * 1024;
 const EDGE_BIN_MAGIC: [u8; 4] = *b"DGED";
 const EDGE_BIN_VERSION: u8 = 2;
 const EDGE_BIN_FLAG_SORT: u8 = 1;
+const NODE_BIN_MAGIC: [u8; 4] = *b"DGND";
+const NODE_BIN_VERSION: u8 = 1;
+const NODE_BIN_LEN_WIDTH: u8 = 2;
+const MAX_NODE_DATA_LEN: usize = 60 * 1024;
 
 #[derive(Clone, Copy, Debug)]
 enum KeyParseError {
@@ -797,6 +801,7 @@ impl IngestContext {
         if include_nodes {
             for table in source.tables.iter().filter(|t| t.edge_table.is_none()) {
                 let table = table.clone();
+                let source = std::sync::Arc::clone(&source);
                 let pk_maps = std::sync::Arc::clone(&pk_maps);
                 let target = std::sync::Arc::clone(&target);
                 let progress = progress.clone();
@@ -833,10 +838,12 @@ impl IngestContext {
                         if progress_enabled {
                             emit_progress_start(&progress, &progress_key, total);
                         }
+                        let data_format = edge_output_format(&source);
                         let row_count = write_node_data_to(
                             &target,
                             &table,
                             &encoder,
+                            data_format,
                             &trimmed_strings,
                             progress.as_ref(),
                             progress_enabled.then_some(progress_key.as_str()),
@@ -1252,7 +1259,8 @@ impl IngestContext {
     }
 
     fn finalize_metadata(&self) -> Result<DatasetMetadata> {
-        let mut node_types = Vec::new();
+    let mut node_types = Vec::new();
+    let node_data_format = edge_output_format(&self.source);
         for table in &self.source.tables {
             if table.edge_table.is_some() {
                 continue;
@@ -1266,10 +1274,7 @@ impl IngestContext {
             let shard = NodeShardMetadata {
                 min_id: 0,
                 max_id: row_count.saturating_sub(1),
-                node_data_path: Some(format!(
-                    "nodes/{}/part-00000.parquet",
-                    table.name.to_lowercase()
-                )),
+                node_data_path: Some(node_data_path(&table.name, node_data_format)),
             };
             let (compression, pk_map) = if let Some(state) = map_state {
                 let context_path = self.table_contexts.get(&table.name).cloned();
@@ -1460,23 +1465,47 @@ fn write_node_data_to(
     target: &OutputTarget,
     table: &TableSpec,
     encoder: &RowPackEncoder,
+    data_format: EdgeStorageFormat,
     trimmed_strings: &std::sync::Arc<AtomicU64>,
     progress: Option<&ProgressCallback>,
     progress_key: Option<&str>,
 ) -> Result<u64> {
-    let rel_path = format!("nodes/{}/part-00000.parquet", table.name.to_lowercase());
+    let rel_path = node_data_path(&table.name, data_format);
     let path = target.join(&rel_path);
     if let OutputTarget::Local { .. } = target {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
     }
-    let schema = Schema::new(vec![Field::new("data", DataType::Binary, false)]);
-    let props = WriterProperties::builder()
-        .set_max_row_group_size(NODE_BATCH_SIZE)
-        .build();
-    let sink = target.sink(&path)?;
-    let mut writer = ArrowWriter::try_new(sink, Arc::new(schema.clone()), Some(props))?;
+    let schema = if let EdgeStorageFormat::Parquet = data_format {
+        Some(Schema::new(vec![Field::new("data", DataType::Binary, false)]))
+    } else {
+        None
+    };
+    let mut writer = match data_format {
+        EdgeStorageFormat::Parquet => {
+            let props = WriterProperties::builder()
+                .set_max_row_group_size(NODE_BATCH_SIZE)
+                .build();
+            let sink = target.sink(&path)?;
+            Some(ArrowWriter::try_new(
+                sink,
+                Arc::new(schema.clone().unwrap()),
+                Some(props),
+            )?)
+        }
+        EdgeStorageFormat::Binary => None,
+    };
+    let mut bin_writer = match data_format {
+        EdgeStorageFormat::Binary => {
+            let sink = target.sink(&path)?;
+            let mut writer = BufWriter::new(sink);
+            writer.write_all(&NODE_BIN_MAGIC)?;
+            writer.write_all(&[NODE_BIN_VERSION, NODE_BIN_LEN_WIDTH, 0u8, 0u8])?;
+            Some(writer)
+        }
+        EdgeStorageFormat::Parquet => None,
+    };
     let mut rows = 0u64;
     let mut next_update = PROGRESS_STEP;
     let mut scratch = diskgraph_rowpack::RowPackScratch::new(encoder.context());
@@ -1504,7 +1533,24 @@ fn write_node_data_to(
                 trimmed_strings,
             };
             encoder.encode_row_from_access(&mut access, &mut encoded, &mut scratch)?;
-            builder.append_value(&encoded);
+            match data_format {
+                EdgeStorageFormat::Parquet => {
+                    builder.append_value(&encoded);
+                }
+                EdgeStorageFormat::Binary => {
+                    let len = if encoded.len() > MAX_NODE_DATA_LEN {
+                        0u16
+                    } else {
+                        encoded.len() as u16
+                    };
+                    if let Some(writer) = bin_writer.as_mut() {
+                        writer.write_all(&len.to_le_bytes())?;
+                        if len > 0 {
+                            writer.write_all(&encoded)?;
+                        }
+                    }
+                }
+            }
             rows += 1;
             if rows == next_update {
                 if let (Some(progress), Some(key)) = (progress, progress_key) {
@@ -1515,9 +1561,13 @@ fn write_node_data_to(
                 }
                 next_update = next_update.saturating_add(PROGRESS_STEP);
             }
-            if builder.len() >= NODE_BATCH_SIZE {
-                flush_node_batch(&schema, &mut writer, &mut builder)?;
-                builder = arrow_array::builder::BinaryBuilder::new();
+            if let EdgeStorageFormat::Parquet = data_format {
+                if builder.len() >= NODE_BATCH_SIZE {
+                    if let (Some(schema), Some(writer)) = (schema.as_ref(), writer.as_mut()) {
+                        flush_node_batch(schema, writer, &mut builder)?;
+                        builder = arrow_array::builder::BinaryBuilder::new();
+                    }
+                }
             }
         }
         Ok(())
@@ -1531,9 +1581,17 @@ fn write_node_data_to(
             });
         }
     }
-    flush_node_batch(&schema, &mut writer, &mut builder)?;
-    let sink = writer.into_inner()?;
-    sink.finish()?;
+    if let EdgeStorageFormat::Parquet = data_format {
+        if let (Some(schema), Some(mut writer)) = (schema.as_ref(), writer) {
+            flush_node_batch(schema, &mut writer, &mut builder)?;
+            let sink = writer.into_inner()?;
+            sink.finish()?;
+        }
+    } else if let Some(mut writer) = bin_writer {
+        writer.flush()?;
+        let sink = writer.into_inner().map_err(|_| anyhow!("node data flush failed"))?;
+        sink.finish()?;
+    }
     Ok(rows)
 }
 
@@ -1578,6 +1636,15 @@ fn edge_shard_path(name: &str, format: EdgeStorageFormat) -> String {
             format!("edges/{}/part-00000.parquet", name.to_lowercase())
         }
         EdgeStorageFormat::Binary => format!("edges/{}/part-00000.bin", name.to_lowercase()),
+    }
+}
+
+fn node_data_path(name: &str, format: EdgeStorageFormat) -> String {
+    match format {
+        EdgeStorageFormat::Parquet => {
+            format!("nodes/{}/part-00000.parquet", name.to_lowercase())
+        }
+        EdgeStorageFormat::Binary => format!("nodes/{}/part-00000.bin", name.to_lowercase()),
     }
 }
 

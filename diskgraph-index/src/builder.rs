@@ -1569,7 +1569,12 @@ fn read_u64_width(reader: &mut std::io::BufReader<std::fs::File>, width: u8) -> 
     Ok(u64::from_le_bytes(buf))
 }
 
-struct NodeDataStream {
+enum NodeDataStream {
+    Parquet(ParquetNodeDataStream),
+    Binary(BinaryNodeDataStream),
+}
+
+struct ParquetNodeDataStream {
     batch: Option<arrow_array::RecordBatch>,
     idx_in_batch: usize,
     batch_len: usize,
@@ -1580,8 +1585,59 @@ struct NodeDataStream {
     seen_rows: u64,
 }
 
+struct BinaryNodeDataStream {
+    reader: std::io::BufReader<std::fs::File>,
+    expected_rows: u64,
+    seen_rows: u64,
+    len_width: u8,
+}
+
 impl NodeDataStream {
     fn try_new(rt: Arc<Runtime>, source: &ParquetSource, expected_rows: u64) -> Result<Self> {
+        let is_binary = match source {
+            ParquetSource::LocalFile(path) => path.extension().and_then(|e| e.to_str()) == Some("bin"),
+            _ => false,
+        };
+        if is_binary {
+            let path = match source {
+                ParquetSource::LocalFile(path) => path,
+                _ => {
+                    return Err(IndexBuildError::NotImplemented(
+                        "binary node data sources must be localized before reading",
+                    )
+                    .into())
+                }
+            };
+            let mut reader = std::io::BufReader::new(std::fs::File::open(path)?);
+            let mut header = [0u8; 8];
+            reader.read_exact(&mut header)?;
+            if &header[0..4] != b"DGND" {
+                return Err(IndexBuildError::NotImplemented(
+                    "invalid node data binary header",
+                )
+                .into());
+            }
+            if header[4] != 1 {
+                return Err(IndexBuildError::NotImplemented(
+                    "unsupported node data binary version",
+                )
+                .into());
+            }
+            let len_width = header[5];
+            if len_width != 2 && len_width != 4 {
+                return Err(IndexBuildError::NotImplemented(
+                    "unsupported node data length width",
+                )
+                .into());
+            }
+            return Ok(NodeDataStream::Binary(BinaryNodeDataStream {
+                reader,
+                expected_rows,
+                seen_rows: 0,
+                len_width,
+            }));
+        }
+
         if let ParquetSource::LocalFile(path) = source {
             let file = std::fs::File::open(path)?;
             let reader = SerializedFileReader::new(file)?;
@@ -1633,7 +1689,7 @@ impl NodeDataStream {
             });
             Ok::<_, parquet::errors::ParquetError>(idx)
         })?;
-        Ok(Self {
+        Ok(NodeDataStream::Parquet(ParquetNodeDataStream {
             batch: None,
             idx_in_batch: 0,
             batch_len: 0,
@@ -1642,9 +1698,18 @@ impl NodeDataStream {
             rx,
             expected_rows,
             seen_rows: 0,
-        })
+        }))
     }
 
+    fn next_into(&mut self, out: &mut Vec<u8>) -> Result<usize> {
+        match self {
+            NodeDataStream::Parquet(inner) => inner.next_into(out),
+            NodeDataStream::Binary(inner) => inner.next_into(out),
+        }
+    }
+}
+
+impl ParquetNodeDataStream {
     fn next_into(&mut self, out: &mut Vec<u8>) -> Result<usize> {
         loop {
             if let Some(_) = &self.batch {
@@ -1699,6 +1764,47 @@ impl NodeDataStream {
                 }
             }
         }
+    }
+}
+
+impl BinaryNodeDataStream {
+    fn next_into(&mut self, out: &mut Vec<u8>) -> Result<usize> {
+        if self.seen_rows >= self.expected_rows {
+            return Err(IndexBuildError::NotImplemented(
+                "node data row count exceeds shard range",
+            )
+            .into());
+        }
+        let len = match self.len_width {
+            2 => {
+                let mut buf = [0u8; 2];
+                self.reader.read_exact(&mut buf)?;
+                u16::from_le_bytes(buf) as usize
+            }
+            4 => {
+                let mut buf = [0u8; 4];
+                self.reader.read_exact(&mut buf)?;
+                u32::from_le_bytes(buf) as usize
+            }
+            _ => {
+                return Err(IndexBuildError::NotImplemented(
+                    "node data length width unsupported",
+                )
+                .into())
+            }
+        };
+        out.clear();
+        if len > 0 {
+            out.resize(len, 0u8);
+            if let Err(_) = self.reader.read_exact(out.as_mut_slice()) {
+                return Err(IndexBuildError::NotImplemented(
+                    "node data row count shorter than shard range",
+                )
+                .into());
+            }
+        }
+        self.seen_rows += 1;
+        Ok(len)
     }
 }
 

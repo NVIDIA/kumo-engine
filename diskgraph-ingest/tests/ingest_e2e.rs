@@ -67,21 +67,47 @@ fn count_binary_edges(path: &Path) -> Result<usize> {
     Ok((payload / record_size) as usize)
 }
 fn read_first_node_value(path: &Path, ctx: &[u8]) -> Result<serde_json::Value> {
-    let file = fs::File::open(path)?;
-    let mut reader = ParquetRecordBatchReaderBuilder::try_new(file)?
-        .with_batch_size(1)
-        .build()?;
-    let batch = reader.next().unwrap()?;
-    let idx = batch.schema().index_of("data")?;
-    let array = batch.column(idx);
-    let bin = array
-        .as_any()
-        .downcast_ref::<BinaryArray>()
-        .ok_or_else(|| anyhow::anyhow!("data column not binary"))?;
-    let raw = bin.value(0);
+    let raw = if path.extension().and_then(|e| e.to_str()) == Some("bin") {
+        let mut file = fs::File::open(path)?;
+        let mut header = [0u8; 8];
+        file.read_exact(&mut header)?;
+        if &header[0..4] != b"DGND" || header[4] != 1 {
+            return Err(anyhow!("invalid node data header"));
+        }
+        let len_width = header[5];
+        let len = match len_width {
+            2 => {
+                let mut buf = [0u8; 2];
+                file.read_exact(&mut buf)?;
+                u16::from_le_bytes(buf) as usize
+            }
+            4 => {
+                let mut buf = [0u8; 4];
+                file.read_exact(&mut buf)?;
+                u32::from_le_bytes(buf) as usize
+            }
+            _ => return Err(anyhow!("unsupported node data length width")),
+        };
+        let mut buf = vec![0u8; len];
+        file.read_exact(&mut buf)?;
+        buf
+    } else {
+        let file = fs::File::open(path)?;
+        let mut reader = ParquetRecordBatchReaderBuilder::try_new(file)?
+            .with_batch_size(1)
+            .build()?;
+        let batch = reader.next().unwrap()?;
+        let idx = batch.schema().index_of("data")?;
+        let array = batch.column(idx);
+        let bin = array
+            .as_any()
+            .downcast_ref::<BinaryArray>()
+            .ok_or_else(|| anyhow::anyhow!("data column not binary"))?;
+        bin.value(0).to_vec()
+    };
     let ctx = diskgraph_rowpack::RowPackContext::from_bytes(ctx)?;
     let decoder = diskgraph_rowpack::RowPackDecoder::new(ctx)?;
-    Ok(decoder.decode_json(raw)?)
+    Ok(decoder.decode_json(&raw)?)
 }
 
 #[test]
@@ -213,7 +239,7 @@ fn ingest_csv_with_edges_and_rowpack() -> Result<()> {
     let ctx_path = output_root.join(&compression.context_path);
     assert!(ctx_path.exists());
     let ctx_bytes = fs::read(&ctx_path)?;
-    let node_data = output_root.join("nodes/user/part-00000.parquet");
+    let node_data = output_root.join("nodes/user/part-00000.bin");
     let value = read_first_node_value(&node_data, &ctx_bytes)?;
     assert_eq!(value["name"], "user0001");
 
