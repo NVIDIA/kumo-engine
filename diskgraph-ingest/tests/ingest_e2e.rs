@@ -44,14 +44,23 @@ fn write_parquet(path: &Path, schema: Schema, columns: Vec<ArrayRef>) -> Result<
 fn count_binary_edges(path: &Path) -> Result<usize> {
     let mut file = std::fs::File::open(path)?;
     let len = file.metadata()?.len();
-    let mut header = [0u8; 8];
-    file.read_exact(&mut header)?;
-    if &header[0..4] != b"DGED" || header[4] != 1 {
+    let mut header = [0u8; 12];
+    file.read_exact(&mut header[..8])?;
+    if &header[0..4] != b"DGED" {
         return Err(anyhow!("invalid edge binary header"));
     }
+    let version = header[4];
     let with_sort = (header[5] & 1) != 0;
-    let record_size = if with_sort { 20u64 } else { 16u64 };
-    let payload = len.saturating_sub(8);
+    let (src_w, dst_w, sort_w, header_len) = if version == 1 {
+        (8u8, 8u8, if with_sort { 4u8 } else { 0u8 }, 8u64)
+    } else if version == 2 {
+        file.read_exact(&mut header[8..12])?;
+        (header[6], header[7], header[8], 12u64)
+    } else {
+        return Err(anyhow!("unsupported edge binary version"));
+    };
+    let record_size = src_w as u64 + dst_w as u64 + sort_w as u64;
+    let payload = len.saturating_sub(header_len);
     if payload % record_size != 0 {
         return Err(anyhow!("edge binary payload size mismatch"));
     }

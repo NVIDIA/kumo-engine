@@ -1162,6 +1162,9 @@ struct BinaryEdgeSubStream {
     remaining: u64,
     relation_id: u16,
     with_sort: bool,
+    src_width: u8,
+    dst_width: u8,
+    sort_width: u8,
     next_record: Option<BinaryEdgeRecord>,
 }
 
@@ -1235,29 +1238,59 @@ impl EdgeSubStream {
                     .into());
                 }
                 let mut reader = std::io::BufReader::new(file);
-                let mut header = [0u8; 8];
-                reader.read_exact(&mut header)?;
+                let mut header = [0u8; 12];
+                reader.read_exact(&mut header[..8])?;
                 if header[0..4] != *b"DGED" {
                     return Err(IndexBuildError::NotImplemented(
                         "invalid binary edge magic",
                     )
                     .into());
                 }
-                if header[4] != 1 {
+                let version = header[4];
+                if version != 1 && version != 2 {
                     return Err(IndexBuildError::NotImplemented(
                         "unsupported binary edge version",
                     )
                     .into());
                 }
                 let with_sort = (header[5] & 1) != 0;
+                let (src_width, dst_width, sort_width, header_len) = if version == 1 {
+                    let sort_width = if with_sort { 4 } else { 0 };
+                    (8u8, 8u8, sort_width, 8u64)
+                } else {
+                    reader.read_exact(&mut header[8..12])?;
+                    let src_width = header[6];
+                    let dst_width = header[7];
+                    let sort_width = header[8];
+                    if src_width == 0 || dst_width == 0 || src_width > 8 || dst_width > 8 {
+                        return Err(IndexBuildError::NotImplemented(
+                            "invalid binary edge width",
+                        )
+                        .into());
+                    }
+                    if with_sort && sort_width == 0 {
+                        return Err(IndexBuildError::NotImplemented(
+                            "binary edge missing dest_sort_key width",
+                        )
+                        .into());
+                    }
+                    if sort_width > 4 {
+                        return Err(IndexBuildError::NotImplemented(
+                            "binary edge sort key width too large",
+                        )
+                        .into());
+                    }
+                    (src_width, dst_width, sort_width, 12u64)
+                };
                 if dest_sort_key_bits.is_some() && !with_sort {
                     return Err(IndexBuildError::NotImplemented(
                         "binary edge missing dest_sort_key",
                     )
                     .into());
                 }
-                let record_size = if with_sort { 20u64 } else { 16u64 };
-                let payload = file_len - 8;
+                let record_size =
+                    src_width as u64 + dst_width as u64 + sort_width as u64;
+                let payload = file_len - header_len;
                 if payload % record_size != 0 {
                     return Err(IndexBuildError::NotImplemented(
                         "binary edge file size mismatch",
@@ -1270,6 +1303,9 @@ impl EdgeSubStream {
                     remaining,
                     relation_id,
                     with_sort,
+                    src_width,
+                    dst_width,
+                    sort_width,
                     next_record: None,
                 }))
             }
@@ -1505,16 +1541,10 @@ impl BinaryEdgeSubStream {
         if self.remaining == 0 {
             return Ok(None);
         }
-        let mut src_buf = [0u8; 8];
-        let mut dst_buf = [0u8; 8];
-        self.reader.read_exact(&mut src_buf)?;
-        self.reader.read_exact(&mut dst_buf)?;
-        let src_id = i64::from_le_bytes(src_buf) as u64;
-        let dst_id = i64::from_le_bytes(dst_buf) as u64;
+        let src_id = read_u64_width(&mut self.reader, self.src_width)?;
+        let dst_id = read_u64_width(&mut self.reader, self.dst_width)?;
         let sort_key = if self.with_sort {
-            let mut sort_buf = [0u8; 4];
-            self.reader.read_exact(&mut sort_buf)?;
-            Some(u32::from_le_bytes(sort_buf) as u64)
+            Some(read_u64_width(&mut self.reader, self.sort_width)?)
         } else {
             None
         };
@@ -1525,6 +1555,12 @@ impl BinaryEdgeSubStream {
             sort_key,
         }))
     }
+}
+
+fn read_u64_width(reader: &mut std::io::BufReader<std::fs::File>, width: u8) -> Result<u64> {
+    let mut buf = [0u8; 8];
+    reader.read_exact(&mut buf[..width as usize])?;
+    Ok(u64::from_le_bytes(buf))
 }
 
 struct NodeDataStream {

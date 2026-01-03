@@ -53,7 +53,7 @@ const PROGRESS_STEP: u64 = 10_000;
 const MAX_KEY_FAILURE_SAMPLES: u64 = 10;
 const MAX_KEY_SAMPLE_LEN: usize = 64;
 const EDGE_BIN_MAGIC: [u8; 4] = *b"DGED";
-const EDGE_BIN_VERSION: u8 = 1;
+const EDGE_BIN_VERSION: u8 = 2;
 const EDGE_BIN_FLAG_SORT: u8 = 1;
 
 #[derive(Clone, Copy, Debug)]
@@ -882,11 +882,38 @@ impl IngestContext {
                         emit_progress_start(&progress, &reverse_key, total);
                     }
                     let edge_format = edge_output_format(&source);
+                    let src_max_id = table_rows_snapshot
+                        .get(rel.src_table.as_str())
+                        .copied()
+                        .unwrap_or(0)
+                        .saturating_sub(1);
+                    let dst_max_id = table_rows_snapshot
+                        .get(rel.dst_table.as_str())
+                        .copied()
+                        .unwrap_or(0)
+                        .saturating_sub(1);
+                    let forward_spec = edge_binary_spec(
+                        src_max_id,
+                        dst_max_id,
+                        match rel.forward_sort {
+                            SortKeyMode::None => None,
+                            _ => Some(32),
+                        },
+                    );
+                    let reverse_spec = edge_binary_spec(
+                        dst_max_id,
+                        src_max_id,
+                        match rel.reverse_sort {
+                            SortKeyMode::None => None,
+                            _ => Some(32),
+                        },
+                    );
                     let mut forward_writer = create_edge_writer(
                         &target,
                         &rel.name_forward,
                         rel.forward_sort != SortKeyMode::None,
                         edge_format,
+                        forward_spec,
                     )?;
                     let mut forward_edges =
                         EdgeAccumulator::new(rel.forward_sort != SortKeyMode::None);
@@ -967,6 +994,7 @@ impl IngestContext {
                         &rel.name_reverse,
                         rel.reverse_sort != SortKeyMode::None,
                         edge_format,
+                        reverse_spec,
                         &reverse_records,
                     )?;
                     if progress_enabled {
@@ -996,6 +1024,7 @@ impl IngestContext {
                 let edge_counts = std::sync::Arc::clone(&edge_counts);
                 let edge_task_time = std::sync::Arc::clone(&edge_task_time);
                 let key_failures = std::sync::Arc::clone(&key_failures);
+                let table_rows_snapshot = std::sync::Arc::clone(&table_rows_snapshot);
                 tasks.push(WorkItem {
                     bucket: Some(edge_task_time),
                     run: Box::new(move || {
@@ -1125,6 +1154,22 @@ impl IngestContext {
                         }
                     }
                     let edge_format = edge_output_format(&source);
+                    let src_max_id = table_rows_snapshot
+                        .get(edge.src_fk.ref_table.as_str())
+                        .copied()
+                        .unwrap_or(0)
+                        .saturating_sub(1);
+                    let dst_max_id = table_rows_snapshot
+                        .get(edge.dst_fk.ref_table.as_str())
+                        .copied()
+                        .unwrap_or(0)
+                        .saturating_sub(1);
+                    let sort_bits = match sort_mode {
+                        SortKeyMode::None => None,
+                        _ => Some(32),
+                    };
+                    let forward_spec = edge_binary_spec(src_max_id, dst_max_id, sort_bits);
+                    let reverse_spec = edge_binary_spec(dst_max_id, src_max_id, sort_bits);
                     if !edge_records_sorted(&forward_records) {
                         forward_records.sort_unstable_by(edge_record_cmp);
                     }
@@ -1136,6 +1181,7 @@ impl IngestContext {
                         &format!("edge_{}_src_to_dst", table.name),
                         sort_mode != SortKeyMode::None,
                         edge_format,
+                        forward_spec,
                         &forward_records,
                     )?;
                     write_edge_records_to(
@@ -1143,6 +1189,7 @@ impl IngestContext {
                         &format!("edge_{}_dst_to_src", table.name),
                         sort_mode != SortKeyMode::None,
                         edge_format,
+                        reverse_spec,
                         &reverse_records,
                     )?;
                     if progress_enabled {
@@ -1267,12 +1314,12 @@ impl IngestContext {
         }
 
         let mut edge_relations = Vec::new();
-        let edge_format = edge_output_format(&self.source);
-        for rel in &self.relation_defs {
-            let rel_path = edge_shard_path(&rel.name, edge_format);
-            edge_relations.push(EdgeRelationMetadata {
-                name: rel.name.clone(),
-                src_type: rel.src_table.clone(),
+    let edge_format = edge_output_format(&self.source);
+    for rel in &self.relation_defs {
+        let rel_path = edge_shard_path(&rel.name, edge_format);
+        edge_relations.push(EdgeRelationMetadata {
+            name: rel.name.clone(),
+            src_type: rel.src_table.clone(),
                 dst_type: rel.dst_table.clone(),
                 shards: vec![EdgeShardMetadata {
                     path: rel_path,
@@ -1474,13 +1521,39 @@ fn write_node_data_to(
     Ok(rows)
 }
 
+#[derive(Clone, Copy)]
+struct EdgeBinarySpec {
+    src_width: u8,
+    dst_width: u8,
+    sort_width: u8,
+}
+
 enum EdgeWriter {
     Parquet { writer: ArrowWriter<OutputSink>, schema: Schema },
-    Binary { writer: BufWriter<OutputSink>, with_sort: bool },
+    Binary { writer: BufWriter<OutputSink>, spec: EdgeBinarySpec },
 }
 
 fn edge_output_format(source: &SourceMetadata) -> EdgeStorageFormat {
     source.edge_format.unwrap_or(EdgeStorageFormat::Binary)
+}
+
+fn edge_id_width(max_id: u64) -> u8 {
+    let bits = 64 - max_id.leading_zeros();
+    let bytes = ((bits + 7) / 8).max(1) as u8;
+    bytes.min(8)
+}
+
+fn edge_binary_spec(
+    src_max_id: u64,
+    dst_max_id: u64,
+    sort_bits: Option<u8>,
+) -> EdgeBinarySpec {
+    let sort_width = sort_bits.map(|b| ((b as u16 + 7) / 8) as u8).unwrap_or(0);
+    EdgeBinarySpec {
+        src_width: edge_id_width(src_max_id),
+        dst_width: edge_id_width(dst_max_id),
+        sort_width,
+    }
 }
 
 fn edge_shard_path(name: &str, format: EdgeStorageFormat) -> String {
@@ -1497,6 +1570,7 @@ fn create_edge_writer(
     name: &str,
     with_sort: bool,
     format: EdgeStorageFormat,
+    spec: EdgeBinarySpec,
 ) -> Result<EdgeWriter> {
     let path = edge_shard_path(name, format);
     let out_path = target.join(&path);
@@ -1518,8 +1592,8 @@ fn create_edge_writer(
         EdgeStorageFormat::Binary => {
             let sink = target.sink(&out_path)?;
             let mut writer = BufWriter::new(sink);
-            write_edge_bin_header(&mut writer, with_sort)?;
-            Ok(EdgeWriter::Binary { writer, with_sort })
+            write_edge_bin_header(&mut writer, with_sort, spec)?;
+            Ok(EdgeWriter::Binary { writer, spec })
         }
     }
 }
@@ -1529,9 +1603,10 @@ fn write_edge_records_to(
     name: &str,
     with_sort: bool,
     format: EdgeStorageFormat,
+    spec: EdgeBinarySpec,
     records: &[EdgeRecord],
 ) -> Result<()> {
-    let mut writer = create_edge_writer(target, name, with_sort, format)?;
+    let mut writer = create_edge_writer(target, name, with_sort, format, spec)?;
     let mut batch = EdgeAccumulator::new(with_sort);
     for record in records {
         batch.push(record.src_id, record.dst_id, record.sort_key);
@@ -1636,9 +1711,7 @@ fn edge_schema(with_sort_key: bool) -> Schema {
 fn flush_edge_batch(writer: &mut EdgeWriter, data: &EdgeAccumulator) -> Result<()> {
     match writer {
         EdgeWriter::Parquet { writer, schema } => flush_edge_batch_parquet(schema, writer, data),
-        EdgeWriter::Binary { writer, with_sort } => {
-            write_edge_batch_binary(writer, *with_sort, data)
-        }
+        EdgeWriter::Binary { writer, spec } => write_edge_batch_binary(writer, *spec, data),
     }
 }
 
@@ -1659,29 +1732,40 @@ fn flush_edge_batch_parquet(
     Ok(())
 }
 
-fn write_edge_bin_header(writer: &mut BufWriter<OutputSink>, with_sort: bool) -> Result<()> {
+fn write_edge_bin_header(
+    writer: &mut BufWriter<OutputSink>,
+    with_sort: bool,
+    spec: EdgeBinarySpec,
+) -> Result<()> {
     writer.write_all(&EDGE_BIN_MAGIC)?;
     writer.write_all(&[EDGE_BIN_VERSION])?;
     let flags = if with_sort { EDGE_BIN_FLAG_SORT } else { 0 };
     writer.write_all(&[flags])?;
-    writer.write_all(&[0u8, 0u8])?;
+    writer.write_all(&[spec.src_width, spec.dst_width, spec.sort_width])?;
+    writer.write_all(&[0u8, 0u8, 0u8])?;
+    Ok(())
+}
+
+fn write_u64_width(writer: &mut BufWriter<OutputSink>, value: u64, width: u8) -> Result<()> {
+    let bytes = value.to_le_bytes();
+    writer.write_all(&bytes[..width as usize])?;
     Ok(())
 }
 
 fn write_edge_batch_binary(
     writer: &mut BufWriter<OutputSink>,
-    with_sort: bool,
+    spec: EdgeBinarySpec,
     data: &EdgeAccumulator,
 ) -> Result<()> {
-    if with_sort && data.sort.len() != data.src.len() {
+    if spec.sort_width > 0 && data.sort.len() != data.src.len() {
         return Err(anyhow!("edge sort buffer length mismatch"));
     }
     for idx in 0..data.src.len() {
-        writer.write_all(&data.src[idx].to_le_bytes())?;
-        writer.write_all(&data.dst[idx].to_le_bytes())?;
-        if with_sort {
+        write_u64_width(writer, data.src[idx] as u64, spec.src_width)?;
+        write_u64_width(writer, data.dst[idx] as u64, spec.dst_width)?;
+        if spec.sort_width > 0 {
             let sort = data.sort[idx] as u32;
-            writer.write_all(&sort.to_le_bytes())?;
+            write_u64_width(writer, sort as u64, spec.sort_width)?;
         }
     }
     Ok(())
