@@ -23,7 +23,7 @@ use serde::Serialize;
 use diskgraph_fs::{build_s3_client, S3Config as FsS3Config};
 use std::sync::mpsc::{self, Receiver};
 use std::fs::{self, File};
-use std::io::{BufWriter, Seek, SeekFrom, Write};
+use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -1130,7 +1130,12 @@ pub(crate) fn shard_node_count(node_meta: &NodeTypeMetadata, shard_index: usize)
     Ok(shard.max_id - shard.min_id + 1)
 }
 
-struct EdgeSubStream {
+enum EdgeSubStream {
+    Parquet(ParquetEdgeSubStream),
+    Binary(BinaryEdgeSubStream),
+}
+
+struct ParquetEdgeSubStream {
     _schema: SchemaRef,
     batch: Option<arrow_array::RecordBatch>,
     idx_in_batch: usize,
@@ -1146,6 +1151,20 @@ struct EdgeSubStream {
     rx: Receiver<PrefetchBatch>,
 }
 
+struct BinaryEdgeRecord {
+    src_id: u64,
+    dst_id: u64,
+    sort_key: Option<u64>,
+}
+
+struct BinaryEdgeSubStream {
+    reader: std::io::BufReader<std::fs::File>,
+    remaining: u64,
+    relation_id: u16,
+    with_sort: bool,
+    next_record: Option<BinaryEdgeRecord>,
+}
+
 impl EdgeSubStream {
     fn try_new(
         rt: Arc<Runtime>,
@@ -1153,49 +1172,130 @@ impl EdgeSubStream {
         relation_id: u16,
         dest_sort_key_bits: Option<u8>,
     ) -> Result<Self> {
-        let reader = object_reader_from_source(&input.parquet, &rt)?;
-        let (tx, rx) = mpsc::sync_channel(32);
-        let schema = rt.block_on(async move {
-            let mut builder = ParquetRecordBatchStreamBuilder::new(reader).await?;
-            builder = builder.with_batch_size(256_000);
-            let stream = builder.build()?;
-            let schema = stream.schema().clone();
-            tokio::spawn(async move {
-                futures::pin_mut!(stream);
-                while let Some(item) = stream.next().await {
-                    match item {
-                        Ok(batch) => {
-                            if tx.send(Ok(Some(batch))).is_err() {
-                                return;
+        match input.format {
+            diskgraph_core::metadata::EdgeStorageFormat::Parquet => {
+                let reader = object_reader_from_source(&input.parquet, &rt)?;
+                let (tx, rx) = mpsc::sync_channel(32);
+                let schema = rt.block_on(async move {
+                    let mut builder = ParquetRecordBatchStreamBuilder::new(reader).await?;
+                    builder = builder.with_batch_size(256_000);
+                    let stream = builder.build()?;
+                    let schema = stream.schema().clone();
+                    tokio::spawn(async move {
+                        futures::pin_mut!(stream);
+                        while let Some(item) = stream.next().await {
+                            match item {
+                                Ok(batch) => {
+                                    if tx.send(Ok(Some(batch))).is_err() {
+                                        return;
+                                    }
+                                }
+                                Err(e) => {
+                                    let _ = tx.send(Err(e));
+                                    return;
+                                }
                             }
                         }
-                        Err(e) => {
-                            let _ = tx.send(Err(e));
-                            return;
-                        }
+                        let _ = tx.send(Ok(None));
+                    });
+                    Ok::<_, parquet::errors::ParquetError>(schema)
+                })?;
+                Ok(EdgeSubStream::Parquet(ParquetEdgeSubStream {
+                    _schema: schema,
+                    batch: None,
+                    idx_in_batch: 0,
+                    batch_len: 0,
+                    dest_sort_key_bits,
+                    relation_id,
+                    src_idx: 0,
+                    dst_idx: 0,
+                    sort_idx: None,
+                    current_src: None,
+                    current_dst: None,
+                    current_sort: None,
+                    rx,
+                }))
+            }
+            diskgraph_core::metadata::EdgeStorageFormat::Binary => {
+                let local_path = match &input.parquet {
+                    ParquetSource::LocalFile(path) => path.clone(),
+                    _ => {
+                        return Err(IndexBuildError::NotImplemented(
+                            "binary edge sources must be localized before reading",
+                        )
+                        .into())
                     }
+                };
+                let file = std::fs::File::open(&local_path)?;
+                let file_len = file.metadata()?.len();
+                if file_len < 8 {
+                    return Err(IndexBuildError::NotImplemented(
+                        "binary edge file too small",
+                    )
+                    .into());
                 }
-                let _ = tx.send(Ok(None));
-            });
-            Ok::<_, parquet::errors::ParquetError>(schema)
-        })?;
-        Ok(Self {
-            _schema: schema,
-            batch: None,
-            idx_in_batch: 0,
-            batch_len: 0,
-            dest_sort_key_bits,
-            relation_id,
-            src_idx: 0,
-            dst_idx: 0,
-            sort_idx: None,
-            current_src: None,
-            current_dst: None,
-            current_sort: None,
-            rx,
-        })
+                let mut reader = std::io::BufReader::new(file);
+                let mut header = [0u8; 8];
+                reader.read_exact(&mut header)?;
+                if header[0..4] != *b"DGED" {
+                    return Err(IndexBuildError::NotImplemented(
+                        "invalid binary edge magic",
+                    )
+                    .into());
+                }
+                if header[4] != 1 {
+                    return Err(IndexBuildError::NotImplemented(
+                        "unsupported binary edge version",
+                    )
+                    .into());
+                }
+                let with_sort = (header[5] & 1) != 0;
+                if dest_sort_key_bits.is_some() && !with_sort {
+                    return Err(IndexBuildError::NotImplemented(
+                        "binary edge missing dest_sort_key",
+                    )
+                    .into());
+                }
+                let record_size = if with_sort { 20u64 } else { 16u64 };
+                let payload = file_len - 8;
+                if payload % record_size != 0 {
+                    return Err(IndexBuildError::NotImplemented(
+                        "binary edge file size mismatch",
+                    )
+                    .into());
+                }
+                let remaining = payload / record_size;
+                Ok(EdgeSubStream::Binary(BinaryEdgeSubStream {
+                    reader,
+                    remaining,
+                    relation_id,
+                    with_sort,
+                    next_record: None,
+                }))
+            }
+        }
     }
 
+    fn peek_src(&mut self) -> Result<Option<u64>> {
+        match self {
+            EdgeSubStream::Parquet(inner) => inner.peek_src(),
+            EdgeSubStream::Binary(inner) => inner.peek_src(),
+        }
+    }
+
+    fn drain_edges(
+        &mut self,
+        node_id: u64,
+        buckets: &mut [Vec<EdgeRec>],
+    ) -> Result<Option<u64>> {
+        match self {
+            EdgeSubStream::Parquet(inner) => inner.drain_edges(node_id, buckets),
+            EdgeSubStream::Binary(inner) => inner.drain_edges(node_id, buckets),
+        }
+    }
+}
+
+impl ParquetEdgeSubStream {
     fn peek_src(&mut self) -> Result<Option<u64>> {
         loop {
             if let Some(_) = &self.batch {
@@ -1365,6 +1465,65 @@ impl EdgeSubStream {
                 }
             }
         }
+    }
+}
+
+impl BinaryEdgeSubStream {
+    fn peek_src(&mut self) -> Result<Option<u64>> {
+        if self.next_record.is_none() {
+            self.next_record = self.read_next_record()?;
+        }
+        Ok(self.next_record.as_ref().map(|r| r.src_id))
+    }
+
+    fn drain_edges(
+        &mut self,
+        node_id: u64,
+        buckets: &mut [Vec<EdgeRec>],
+    ) -> Result<Option<u64>> {
+        loop {
+            if self.next_record.is_none() {
+                self.next_record = self.read_next_record()?;
+            }
+            let Some(record) = self.next_record.take() else {
+                return Ok(None);
+            };
+            if record.src_id != node_id {
+                self.next_record = Some(record);
+                return Ok(self.next_record.as_ref().map(|r| r.src_id));
+            }
+            buckets[self.relation_id as usize].push(EdgeRec {
+                src: record.src_id,
+                dst: record.dst_id,
+                dest_sort_key: record.sort_key,
+                relation_id: self.relation_id,
+            });
+        }
+    }
+
+    fn read_next_record(&mut self) -> Result<Option<BinaryEdgeRecord>> {
+        if self.remaining == 0 {
+            return Ok(None);
+        }
+        let mut src_buf = [0u8; 8];
+        let mut dst_buf = [0u8; 8];
+        self.reader.read_exact(&mut src_buf)?;
+        self.reader.read_exact(&mut dst_buf)?;
+        let src_id = i64::from_le_bytes(src_buf) as u64;
+        let dst_id = i64::from_le_bytes(dst_buf) as u64;
+        let sort_key = if self.with_sort {
+            let mut sort_buf = [0u8; 4];
+            self.reader.read_exact(&mut sort_buf)?;
+            Some(u32::from_le_bytes(sort_buf) as u64)
+        } else {
+            None
+        };
+        self.remaining = self.remaining.saturating_sub(1);
+        Ok(Some(BinaryEdgeRecord {
+            src_id,
+            dst_id,
+            sort_key,
+        }))
     }
 }
 

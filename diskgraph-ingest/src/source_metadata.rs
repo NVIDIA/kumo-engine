@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Result};
+use diskgraph_core::metadata::EdgeStorageFormat;
 use diskgraph_rowpack::RowPackConfig;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -11,6 +12,8 @@ pub struct SourceMetadata {
     pub relationships: Vec<RelationshipSpec>,
     #[serde(default)]
     pub rowpack: Option<RowPackConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edge_format: Option<EdgeStorageFormat>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -205,6 +205,7 @@ impl GraphIndexBuilder {
                             source_shard_index: shard_idx,
                             parquet: self.resolve_parquet(&shard.path),
                             has_dest_sort_key: rel.dest_sort_key_bits.is_some(),
+                            format: rel.format,
                         })
                     })
                     .collect::<Result<Vec<_>>>()?;

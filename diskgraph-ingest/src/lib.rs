@@ -14,7 +14,7 @@ use arrow_schema::{DataType, Field, Schema};
 use bytes::Bytes;
 use chrono::{NaiveDate, NaiveDateTime};
 use diskgraph_core::metadata::{
-    DatasetMetadata, EdgeRelationMetadata, EdgeShardMetadata, NodeDataCompression,
+    DatasetMetadata, EdgeRelationMetadata, EdgeShardMetadata, EdgeStorageFormat, NodeDataCompression,
     NodeShardMetadata, NodeTypeMetadata, PrimaryKeyMap,
 };
 use diskgraph_fs::{
@@ -36,7 +36,7 @@ use serde::Serialize;
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -52,6 +52,9 @@ const EDGE_BATCH_SIZE: usize = 400_000;
 const PROGRESS_STEP: u64 = 10_000;
 const MAX_KEY_FAILURE_SAMPLES: u64 = 10;
 const MAX_KEY_SAMPLE_LEN: usize = 64;
+const EDGE_BIN_MAGIC: [u8; 4] = *b"DGED";
+const EDGE_BIN_VERSION: u8 = 1;
+const EDGE_BIN_FLAG_SORT: u8 = 1;
 
 #[derive(Clone, Copy, Debug)]
 enum KeyParseError {
@@ -878,10 +881,12 @@ impl IngestContext {
                         emit_progress_start(&progress, &forward_key, total);
                         emit_progress_start(&progress, &reverse_key, total);
                     }
-                    let (mut forward_writer, forward_schema) = create_edge_writer(
+                    let edge_format = edge_output_format(&source);
+                    let mut forward_writer = create_edge_writer(
                         &target,
                         &rel.name_forward,
                         rel.forward_sort != SortKeyMode::None,
+                        edge_format,
                     )?;
                     let mut forward_edges =
                         EdgeAccumulator::new(rel.forward_sort != SortKeyMode::None);
@@ -945,16 +950,15 @@ impl IngestContext {
                         forward_count += 1;
                         reverse_count += 1;
                         if forward_edges.len() >= EDGE_BATCH_SIZE {
-                            flush_edge_batch(&forward_schema, &mut forward_writer, &forward_edges)?;
+                            flush_edge_batch(&mut forward_writer, &forward_edges)?;
                             forward_edges.clear();
                         }
                         Ok(())
                     })?;
                     if !forward_edges.is_empty() {
-                        flush_edge_batch(&forward_schema, &mut forward_writer, &forward_edges)?;
+                        flush_edge_batch(&mut forward_writer, &forward_edges)?;
                     }
-                    let forward_sink = forward_writer.into_inner()?;
-                    forward_sink.finish()?;
+                    finish_edge_writer(forward_writer)?;
                     if !edge_records_sorted(&reverse_records) {
                         reverse_records.sort_unstable_by(edge_record_cmp);
                     }
@@ -962,6 +966,7 @@ impl IngestContext {
                         &target,
                         &rel.name_reverse,
                         rel.reverse_sort != SortKeyMode::None,
+                        edge_format,
                         &reverse_records,
                     )?;
                     if progress_enabled {
@@ -1119,6 +1124,7 @@ impl IngestContext {
                             emit_progress_advance(&progress, &progress_key, delta);
                         }
                     }
+                    let edge_format = edge_output_format(&source);
                     if !edge_records_sorted(&forward_records) {
                         forward_records.sort_unstable_by(edge_record_cmp);
                     }
@@ -1129,12 +1135,14 @@ impl IngestContext {
                         &target,
                         &format!("edge_{}_src_to_dst", table.name),
                         sort_mode != SortKeyMode::None,
+                        edge_format,
                         &forward_records,
                     )?;
                     write_edge_records_to(
                         &target,
                         &format!("edge_{}_dst_to_src", table.name),
                         sort_mode != SortKeyMode::None,
+                        edge_format,
                         &reverse_records,
                     )?;
                     if progress_enabled {
@@ -1259,8 +1267,9 @@ impl IngestContext {
         }
 
         let mut edge_relations = Vec::new();
+        let edge_format = edge_output_format(&self.source);
         for rel in &self.relation_defs {
-            let rel_path = format!("edges/{}/part-00000.parquet", rel.name.to_lowercase());
+            let rel_path = edge_shard_path(&rel.name, edge_format);
             edge_relations.push(EdgeRelationMetadata {
                 name: rel.name.clone(),
                 src_type: rel.src_table.clone(),
@@ -1274,6 +1283,7 @@ impl IngestContext {
                     SortKeyMode::None => None,
                     _ => Some(32),
                 },
+                format: edge_format,
             });
         }
 
@@ -1464,47 +1474,76 @@ fn write_node_data_to(
     Ok(rows)
 }
 
+enum EdgeWriter {
+    Parquet { writer: ArrowWriter<OutputSink>, schema: Schema },
+    Binary { writer: BufWriter<OutputSink>, with_sort: bool },
+}
+
+fn edge_output_format(source: &SourceMetadata) -> EdgeStorageFormat {
+    source.edge_format.unwrap_or(EdgeStorageFormat::Binary)
+}
+
+fn edge_shard_path(name: &str, format: EdgeStorageFormat) -> String {
+    match format {
+        EdgeStorageFormat::Parquet => {
+            format!("edges/{}/part-00000.parquet", name.to_lowercase())
+        }
+        EdgeStorageFormat::Binary => format!("edges/{}/part-00000.bin", name.to_lowercase()),
+    }
+}
+
 fn create_edge_writer(
     target: &OutputTarget,
     name: &str,
     with_sort: bool,
-) -> Result<(ArrowWriter<OutputSink>, Schema)> {
-    let path = format!("edges/{}/part-00000.parquet", name.to_lowercase());
+    format: EdgeStorageFormat,
+) -> Result<EdgeWriter> {
+    let path = edge_shard_path(name, format);
     let out_path = target.join(&path);
     if let OutputTarget::Local { .. } = target {
         if let Some(parent) = out_path.parent() {
             fs::create_dir_all(parent)?;
         }
     }
-    let schema = edge_schema(with_sort);
-    let props = WriterProperties::builder()
-        .set_max_row_group_size(EDGE_BATCH_SIZE)
-        .build();
-    let sink = target.sink(&out_path)?;
-    let writer = ArrowWriter::try_new(sink, Arc::new(schema.clone()), Some(props))?;
-    Ok((writer, schema))
+    match format {
+        EdgeStorageFormat::Parquet => {
+            let schema = edge_schema(with_sort);
+            let props = WriterProperties::builder()
+                .set_max_row_group_size(EDGE_BATCH_SIZE)
+                .build();
+            let sink = target.sink(&out_path)?;
+            let writer = ArrowWriter::try_new(sink, Arc::new(schema.clone()), Some(props))?;
+            Ok(EdgeWriter::Parquet { writer, schema })
+        }
+        EdgeStorageFormat::Binary => {
+            let sink = target.sink(&out_path)?;
+            let mut writer = BufWriter::new(sink);
+            write_edge_bin_header(&mut writer, with_sort)?;
+            Ok(EdgeWriter::Binary { writer, with_sort })
+        }
+    }
 }
 
 fn write_edge_records_to(
     target: &OutputTarget,
     name: &str,
     with_sort: bool,
+    format: EdgeStorageFormat,
     records: &[EdgeRecord],
 ) -> Result<()> {
-    let (mut writer, schema) = create_edge_writer(target, name, with_sort)?;
+    let mut writer = create_edge_writer(target, name, with_sort, format)?;
     let mut batch = EdgeAccumulator::new(with_sort);
     for record in records {
         batch.push(record.src_id, record.dst_id, record.sort_key);
         if batch.len() >= EDGE_BATCH_SIZE {
-            flush_edge_batch(&schema, &mut writer, &batch)?;
+            flush_edge_batch(&mut writer, &batch)?;
             batch.clear();
         }
     }
     if !batch.is_empty() {
-        flush_edge_batch(&schema, &mut writer, &batch)?;
+        flush_edge_batch(&mut writer, &batch)?;
     }
-    let sink = writer.into_inner()?;
-    sink.finish()?;
+    finish_edge_writer(writer)?;
     Ok(())
 }
 
@@ -1594,12 +1633,22 @@ fn edge_schema(with_sort_key: bool) -> Schema {
     Schema::new(fields)
 }
 
-fn flush_edge_batch(
+fn flush_edge_batch(writer: &mut EdgeWriter, data: &EdgeAccumulator) -> Result<()> {
+    match writer {
+        EdgeWriter::Parquet { writer, schema } => flush_edge_batch_parquet(schema, writer, data),
+        EdgeWriter::Binary { writer, with_sort } => {
+            write_edge_batch_binary(writer, *with_sort, data)
+        }
+    }
+}
+
+fn flush_edge_batch_parquet(
     schema: &Schema,
     writer: &mut ArrowWriter<OutputSink>,
     data: &EdgeAccumulator,
 ) -> Result<()> {
-    let mut cols: Vec<ArrayRef> = Vec::with_capacity(if schema.fields().len() == 3 { 3 } else { 2 });
+    let mut cols: Vec<ArrayRef> =
+        Vec::with_capacity(if schema.fields().len() == 3 { 3 } else { 2 });
     cols.push(Arc::new(arrow_array::Int64Array::from(data.src.clone())) as ArrayRef);
     cols.push(Arc::new(arrow_array::Int64Array::from(data.dst.clone())) as ArrayRef);
     if schema.field_with_name("dest_sort_key").is_ok() {
@@ -1607,6 +1656,49 @@ fn flush_edge_batch(
     }
     let batch = RecordBatch::try_new(Arc::new(schema.clone()), cols)?;
     writer.write(&batch)?;
+    Ok(())
+}
+
+fn write_edge_bin_header(writer: &mut BufWriter<OutputSink>, with_sort: bool) -> Result<()> {
+    writer.write_all(&EDGE_BIN_MAGIC)?;
+    writer.write_all(&[EDGE_BIN_VERSION])?;
+    let flags = if with_sort { EDGE_BIN_FLAG_SORT } else { 0 };
+    writer.write_all(&[flags])?;
+    writer.write_all(&[0u8, 0u8])?;
+    Ok(())
+}
+
+fn write_edge_batch_binary(
+    writer: &mut BufWriter<OutputSink>,
+    with_sort: bool,
+    data: &EdgeAccumulator,
+) -> Result<()> {
+    if with_sort && data.sort.len() != data.src.len() {
+        return Err(anyhow!("edge sort buffer length mismatch"));
+    }
+    for idx in 0..data.src.len() {
+        writer.write_all(&data.src[idx].to_le_bytes())?;
+        writer.write_all(&data.dst[idx].to_le_bytes())?;
+        if with_sort {
+            let sort = data.sort[idx] as u32;
+            writer.write_all(&sort.to_le_bytes())?;
+        }
+    }
+    Ok(())
+}
+
+fn finish_edge_writer(writer: EdgeWriter) -> Result<()> {
+    match writer {
+        EdgeWriter::Parquet { writer, .. } => {
+            let sink = writer.into_inner()?;
+            sink.finish()?;
+        }
+        EdgeWriter::Binary { mut writer, .. } => {
+            writer.flush()?;
+            let sink = writer.into_inner().map_err(|_| anyhow!("edge sink flush failed"))?;
+            sink.finish()?;
+        }
+    }
     Ok(())
 }
 

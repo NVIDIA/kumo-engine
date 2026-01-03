@@ -55,6 +55,17 @@ pub struct EdgeShardMetadata {
     pub src_max_id: u64,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum EdgeStorageFormat {
+    Parquet,
+    Binary,
+}
+
+fn default_edge_storage_format() -> EdgeStorageFormat {
+    EdgeStorageFormat::Parquet
+}
+
 /// Edge relation definition pulled from index_metadata.json.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EdgeRelationMetadata {
@@ -63,10 +74,12 @@ pub struct EdgeRelationMetadata {
     pub src_type: String,
     /// Destination node type name.
     pub dst_type: String,
-    /// Relative paths to the Parquet shards from the dataset root.
+    /// Relative paths to the edge shards from the dataset root.
     pub shards: Vec<EdgeShardMetadata>,
     /// Optional dest_sort_key configuration (bit width when present).
     pub dest_sort_key_bits: Option<u8>,
+    #[serde(default = "default_edge_storage_format")]
+    pub format: EdgeStorageFormat,
 }
 
 /// Root metadata payload found in index_metadata.json.

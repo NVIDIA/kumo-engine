@@ -18,7 +18,8 @@ use arrow_schema::{DataType, Field, Schema};
 use bytes::Bytes;
 use clap::{Parser, ValueEnum};
 use diskgraph_core::metadata::{
-    DatasetMetadata, EdgeRelationMetadata, EdgeShardMetadata, NodeShardMetadata, NodeTypeMetadata,
+    DatasetMetadata, EdgeRelationMetadata, EdgeShardMetadata, EdgeStorageFormat, NodeShardMetadata,
+    NodeTypeMetadata,
 };
 use diskgraph_fs::{
     build_adls_client, build_gcs_client, build_s3_client, AdlsConfig, GcsConfig, S3Config,
@@ -375,6 +376,7 @@ fn write_metadata(
             dst_type: node_type_name.into(),
             shards: vec![edge0],
             dest_sort_key_bits: rel0.dest_sort_key_bits,
+            format: EdgeStorageFormat::Parquet,
         },
         EdgeRelationMetadata {
             name: rel1.name.clone(),
@@ -382,6 +384,7 @@ fn write_metadata(
             dst_type: node_type_name.into(),
             shards: vec![edge1],
             dest_sort_key_bits: rel1.dest_sort_key_bits,
+            format: EdgeStorageFormat::Parquet,
         },
     ];
     let metadata = DatasetMetadata {

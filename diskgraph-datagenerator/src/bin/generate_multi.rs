@@ -17,7 +17,8 @@ use arrow_schema::{DataType, Field, Schema};
 use bytes::Bytes;
 use clap::{Parser, ValueEnum};
 use diskgraph_core::metadata::{
-    DatasetMetadata, EdgeRelationMetadata, EdgeShardMetadata, NodeShardMetadata, NodeTypeMetadata,
+    DatasetMetadata, EdgeRelationMetadata, EdgeShardMetadata, EdgeStorageFormat, NodeShardMetadata,
+    NodeTypeMetadata,
 };
 use diskgraph_fs::{
     build_adls_client, build_gcs_client, build_s3_client, AdlsConfig, GcsConfig, S3Config,
@@ -250,6 +251,7 @@ fn main() -> Result<()> {
             dst_type: rel.dst.to_string(),
             shards: edge_meta,
             dest_sort_key_bits: rel.dest_sort_key_bits,
+            format: EdgeStorageFormat::Parquet,
         });
     }
 

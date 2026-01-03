@@ -46,6 +46,7 @@ fn base_metadata() -> SourceMetadata {
         tables: vec![base_table("User"), base_table("Device")],
         relationships: Vec::new(),
         rowpack: None,
+        edge_format: None,
     }
 }
 
@@ -67,6 +68,7 @@ fn validate_minimal_metadata() {
         tables: vec![base_table("User")],
         relationships: Vec::new(),
         rowpack: None,
+        edge_format: None,
     };
     assert!(meta.validate().is_ok());
 }
@@ -98,6 +100,7 @@ fn validate_missing_pk_column() {
         }],
         relationships: Vec::new(),
         rowpack: None,
+        edge_format: None,
     };
     assert!(meta.validate().is_err());
 }

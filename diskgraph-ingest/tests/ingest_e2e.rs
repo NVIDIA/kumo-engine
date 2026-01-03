@@ -1,11 +1,11 @@
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use diskgraph_core::metadata::DatasetMetadata;
 use diskgraph_ingest::{ingest, Dest, IngestOptions, MappingKind};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::arrow::ArrowWriter;
 use parquet::file::properties::WriterProperties;
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::Arc;
 use tempfile::tempdir;
@@ -41,18 +41,22 @@ fn write_parquet(path: &Path, schema: Schema, columns: Vec<ArrayRef>) -> Result<
     Ok(())
 }
 
-fn count_parquet_rows(path: &Path) -> Result<usize> {
-    let file = fs::File::open(path)?;
-    let reader = ParquetRecordBatchReaderBuilder::try_new(file)?
-        .with_batch_size(1024)
-        .build()?;
-    let mut rows = 0usize;
-    for batch in reader {
-        rows += batch?.num_rows();
+fn count_binary_edges(path: &Path) -> Result<usize> {
+    let mut file = std::fs::File::open(path)?;
+    let len = file.metadata()?.len();
+    let mut header = [0u8; 8];
+    file.read_exact(&mut header)?;
+    if &header[0..4] != b"DGED" || header[4] != 1 {
+        return Err(anyhow!("invalid edge binary header"));
     }
-    Ok(rows)
+    let with_sort = (header[5] & 1) != 0;
+    let record_size = if with_sort { 20u64 } else { 16u64 };
+    let payload = len.saturating_sub(8);
+    if payload % record_size != 0 {
+        return Err(anyhow!("edge binary payload size mismatch"));
+    }
+    Ok((payload / record_size) as usize)
 }
-
 fn read_first_node_value(path: &Path, ctx: &[u8]) -> Result<serde_json::Value> {
     let file = fs::File::open(path)?;
     let mut reader = ParquetRecordBatchReaderBuilder::try_new(file)?
@@ -230,20 +234,20 @@ fn ingest_csv_with_edges_and_rowpack() -> Result<()> {
     assert_eq!(edge_src.dest_sort_key_bits, Some(32));
     assert_eq!(edge_dst.dest_sort_key_bits, Some(32));
 
-    let order_user_rows = count_parquet_rows(
-        &output_root.join("edges/order_user/part-00000.parquet"),
+    let order_user_rows = count_binary_edges(
+        &output_root.join("edges/order_user/part-00000.bin"),
     )?;
-    let order_user_rev_rows = count_parquet_rows(
-        &output_root.join("edges/order_user_reverse/part-00000.parquet"),
+    let order_user_rev_rows = count_binary_edges(
+        &output_root.join("edges/order_user_reverse/part-00000.bin"),
     )?;
     assert_eq!(order_user_rows, 2);
     assert_eq!(order_user_rev_rows, 2);
 
-    let edge_src_rows = count_parquet_rows(
-        &output_root.join("edges/edge_orderitem_src_to_dst/part-00000.parquet"),
+    let edge_src_rows = count_binary_edges(
+        &output_root.join("edges/edge_orderitem_src_to_dst/part-00000.bin"),
     )?;
-    let edge_dst_rows = count_parquet_rows(
-        &output_root.join("edges/edge_orderitem_dst_to_src/part-00000.parquet"),
+    let edge_dst_rows = count_binary_edges(
+        &output_root.join("edges/edge_orderitem_dst_to_src/part-00000.bin"),
     )?;
     assert_eq!(edge_src_rows, 2);
     assert_eq!(edge_dst_rows, 2);
@@ -454,11 +458,11 @@ fn ingest_relationship_uses_dest_timestamp_sort_key() -> Result<()> {
         .unwrap();
     assert_eq!(forward.dest_sort_key_bits, Some(32));
     assert_eq!(reverse.dest_sort_key_bits, None);
-    let forward_rows = count_parquet_rows(
-        &output_root.join("edges/event_session/part-00000.parquet"),
+    let forward_rows = count_binary_edges(
+        &output_root.join("edges/event_session/part-00000.bin"),
     )?;
-    let reverse_rows = count_parquet_rows(
-        &output_root.join("edges/event_session_reverse/part-00000.parquet"),
+    let reverse_rows = count_binary_edges(
+        &output_root.join("edges/event_session_reverse/part-00000.bin"),
     )?;
     assert_eq!(forward_rows, 2);
     assert_eq!(reverse_rows, 2);

@@ -88,6 +88,7 @@ fn relation_meta(
         dst_type: dst.into(),
         shards: vec![],
         dest_sort_key_bits,
+        format: diskgraph_core::metadata::EdgeStorageFormat::Parquet,
     }
 }
 
@@ -451,6 +452,7 @@ fn s3_ingest_round_trip() {
                     virtual_hosted_style_request: Some(resolved.virtual_hosted),
                 }),
                 has_dest_sort_key: true,
+                format: diskgraph_core::metadata::EdgeStorageFormat::Parquet,
             },
             EdgeShardInput {
                 relation: "Blocks".into(),
@@ -466,6 +468,7 @@ fn s3_ingest_round_trip() {
                     virtual_hosted_style_request: Some(resolved.virtual_hosted),
                 }),
                 has_dest_sort_key: false,
+                format: diskgraph_core::metadata::EdgeStorageFormat::Parquet,
             },
         ])
         .expect("S3 build");
@@ -540,6 +543,7 @@ fn gcs_ingest_round_trip() {
                     application_credentials_path: None,
                 }),
                 has_dest_sort_key: true,
+                format: diskgraph_core::metadata::EdgeStorageFormat::Parquet,
             },
             EdgeShardInput {
                 relation: "Blocks".into(),
@@ -552,6 +556,7 @@ fn gcs_ingest_round_trip() {
                     application_credentials_path: None,
                 }),
                 has_dest_sort_key: false,
+                format: diskgraph_core::metadata::EdgeStorageFormat::Parquet,
             },
         ])
         .expect("GCS build");
@@ -645,6 +650,7 @@ fn adls_ingest_round_trip() {
                     endpoint: resolved.endpoint.clone(),
                 }),
                 has_dest_sort_key: true,
+                format: diskgraph_core::metadata::EdgeStorageFormat::Parquet,
             },
             EdgeShardInput {
                 relation: "Blocks".into(),
@@ -662,6 +668,7 @@ fn adls_ingest_round_trip() {
                     endpoint: resolved.endpoint.clone(),
                 }),
                 has_dest_sort_key: false,
+                format: diskgraph_core::metadata::EdgeStorageFormat::Parquet,
             },
         ])
         .expect("ADLS build");

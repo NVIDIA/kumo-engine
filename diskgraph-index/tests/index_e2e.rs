@@ -4,7 +4,9 @@ use std::sync::Arc;
 
 use arrow_array::{ArrayRef, BinaryArray, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
-use diskgraph_core::metadata::{EdgeRelationMetadata, NodeShardMetadata, NodeTypeMetadata};
+use diskgraph_core::metadata::{
+    EdgeRelationMetadata, EdgeStorageFormat, NodeShardMetadata, NodeTypeMetadata,
+};
 use diskgraph_index::{
     builder::{ShardBuildParams, ShardBuilder},
     layout::RelationSegment,
@@ -67,6 +69,7 @@ fn build_and_read_round_trip_basic() {
                 source_shard_index: 0,
                 parquet: ParquetSource::LocalFile(edge_path),
                 has_dest_sort_key: false,
+                format: EdgeStorageFormat::Parquet,
             }],
         )
         .unwrap();
@@ -149,6 +152,7 @@ fn build_rejects_dangling_edges() {
             source_shard_index: 0,
             parquet: ParquetSource::LocalFile(edge_path),
             has_dest_sort_key: false,
+            format: EdgeStorageFormat::Parquet,
         }],
     ) {
         Ok(_) => panic!("expected DanglingEdges error"),
@@ -200,6 +204,7 @@ fn build_rejects_edge_ordering_violation() {
             source_shard_index: 0,
             parquet: ParquetSource::LocalFile(edge_path),
             has_dest_sort_key: false,
+            format: EdgeStorageFormat::Parquet,
         }],
     ) {
         Ok(_) => panic!("expected EdgeOrderingViolation error"),
@@ -272,6 +277,7 @@ fn offsets_span_multiple_chunks_and_edges_decode_correctly() {
                 source_shard_index: 0,
                 parquet: ParquetSource::LocalFile(edge_path),
                 has_dest_sort_key: false,
+                format: EdgeStorageFormat::Parquet,
             }],
         )
         .unwrap();
@@ -337,6 +343,7 @@ fn sort_key_round_trip_decodes_correctly() {
                 source_shard_index: 0,
                 parquet: ParquetSource::LocalFile(edge_path),
                 has_dest_sort_key: true,
+                format: EdgeStorageFormat::Parquet,
             }],
         )
         .unwrap();
@@ -409,12 +416,14 @@ fn multi_relation_counts_and_edges_decode_correctly() {
                     source_shard_index: 0,
                     parquet: ParquetSource::LocalFile(edge_path_a),
                     has_dest_sort_key: false,
+                    format: EdgeStorageFormat::Parquet,
                 },
                 EdgeShardInput {
                     relation: "Temporal".into(),
                     source_shard_index: 0,
                     parquet: ParquetSource::LocalFile(edge_path_b),
                     has_dest_sort_key: true,
+                    format: EdgeStorageFormat::Parquet,
                 },
             ],
         )
@@ -493,12 +502,14 @@ fn multi_relation_mixed_dst_widths_and_partial_edges() {
                     source_shard_index: 0,
                     parquet: ParquetSource::LocalFile(edge_path_a),
                     has_dest_sort_key: false,
+                    format: EdgeStorageFormat::Parquet,
                 },
                 EdgeShardInput {
                     relation: "Temporal".into(),
                     source_shard_index: 0,
                     parquet: ParquetSource::LocalFile(edge_path_b),
                     has_dest_sort_key: true,
+                    format: EdgeStorageFormat::Parquet,
                 },
             ],
         )
@@ -558,6 +569,7 @@ fn truncates_large_node_without_sort_key() {
                 source_shard_index: 0,
                 parquet: ParquetSource::LocalFile(edge_path),
                 has_dest_sort_key: false,
+                format: EdgeStorageFormat::Parquet,
             }],
         )
         .unwrap();
@@ -636,6 +648,7 @@ fn truncates_large_node_with_sort_key() {
                 source_shard_index: 0,
                 parquet: ParquetSource::LocalFile(edge_path),
                 has_dest_sort_key: true,
+                format: EdgeStorageFormat::Parquet,
             }],
         )
         .unwrap();
@@ -705,6 +718,7 @@ fn caps_relation_edge_count_at_varint_limit() {
                 source_shard_index: 0,
                 parquet: ParquetSource::LocalFile(edge_path),
                 has_dest_sort_key: false,
+                format: EdgeStorageFormat::Parquet,
             }],
         )
         .unwrap();
@@ -891,6 +905,7 @@ fn offsets_many_chunks_sparse_edges() {
                 source_shard_index: 0,
                 parquet: ParquetSource::LocalFile(edge_path),
                 has_dest_sort_key: false,
+                format: EdgeStorageFormat::Parquet,
             }],
         )
         .unwrap();
@@ -975,12 +990,14 @@ fn truncates_large_node_multi_relation() {
                     source_shard_index: 0,
                     parquet: ParquetSource::LocalFile(edge_path_a),
                     has_dest_sort_key: false,
+                    format: EdgeStorageFormat::Parquet,
                 },
                 EdgeShardInput {
                     relation: "Temporal".into(),
                     source_shard_index: 0,
                     parquet: ParquetSource::LocalFile(edge_path_b),
                     has_dest_sort_key: true,
+                    format: EdgeStorageFormat::Parquet,
                 },
             ],
         )
@@ -1041,6 +1058,7 @@ fn builder_errors_when_edge_columns_missing() {
             source_shard_index: 0,
             parquet: ParquetSource::LocalFile(edge_path),
             has_dest_sort_key: true,
+            format: EdgeStorageFormat::Parquet,
         }],
     ) {
         Ok(_) => panic!("expected missing dest_sort_key error"),
@@ -1074,6 +1092,7 @@ fn builder_errors_when_edge_column_wrong_type() {
             source_shard_index: 0,
             parquet: ParquetSource::LocalFile(edge_path),
             has_dest_sort_key: false,
+            format: EdgeStorageFormat::Parquet,
         }],
     ) {
         Ok(_) => panic!("expected invalid column type error"),
@@ -1117,6 +1136,7 @@ fn builder_errors_when_dst_id_exceeds_mask() {
             source_shard_index: 0,
             parquet: ParquetSource::LocalFile(edge_path),
             has_dest_sort_key: false,
+            format: EdgeStorageFormat::Parquet,
         }],
     ) {
         Ok(_) => panic!("expected dst_id out of range error"),
@@ -1160,6 +1180,7 @@ fn builder_errors_when_dest_sort_key_exceeds_mask() {
             source_shard_index: 0,
             parquet: ParquetSource::LocalFile(edge_path),
             has_dest_sort_key: true,
+            format: EdgeStorageFormat::Parquet,
         }],
     ) {
         Ok(_) => panic!("expected dest_sort_key out of range error"),
@@ -1202,6 +1223,7 @@ fn builder_errors_on_unknown_relation_name() {
             source_shard_index: 0,
             parquet: ParquetSource::LocalFile(edge_path),
             has_dest_sort_key: false,
+            format: EdgeStorageFormat::Parquet,
         }],
     ) {
         Ok(_) => panic!("expected UnknownRelation error"),
@@ -1236,6 +1258,7 @@ fn builder_errors_on_corrupted_parquet() {
             source_shard_index: 0,
             parquet: ParquetSource::LocalFile(edge_path),
             has_dest_sort_key: false,
+            format: EdgeStorageFormat::Parquet,
         }],
     ) {
         Ok(_) => panic!("expected parquet error"),
@@ -1278,6 +1301,7 @@ fn builder_errors_on_shard_index_mismatch() {
             source_shard_index: 1,
             parquet: ParquetSource::LocalFile(edge_path),
             has_dest_sort_key: false,
+            format: EdgeStorageFormat::Parquet,
         }],
     ) {
         Ok(_) => panic!("expected shard index mismatch"),
@@ -1308,6 +1332,7 @@ fn builder_fails_on_missing_edge_file() {
             source_shard_index: 0,
             parquet: ParquetSource::LocalFile(dir.path().join("missing.parquet")),
             has_dest_sort_key: false,
+            format: EdgeStorageFormat::Parquet,
         }],
     ) {
         Ok(_) => panic!("expected IO error for missing edge file"),
@@ -1346,6 +1371,7 @@ pub fn relation_meta(
         dst_type: dst.into(),
         shards: vec![],
         dest_sort_key_bits,
+        format: EdgeStorageFormat::Parquet,
     }
 }
 
@@ -1467,6 +1493,7 @@ fn build_simple_shard(
                 source_shard_index: 0,
                 parquet: ParquetSource::LocalFile(edge_path),
                 has_dest_sort_key: false,
+                format: EdgeStorageFormat::Parquet,
             }],
         )
         .unwrap();
@@ -1523,6 +1550,7 @@ fn builder_writes_node_data() {
                 source_shard_index: 0,
                 parquet: ParquetSource::LocalFile(edge_path),
                 has_dest_sort_key: false,
+                format: EdgeStorageFormat::Parquet,
             }],
         )
         .unwrap();
@@ -1573,6 +1601,7 @@ fn builder_errors_on_node_data_row_count_mismatch() {
             source_shard_index: 0,
             parquet: ParquetSource::LocalFile(edge_path),
             has_dest_sort_key: false,
+            format: EdgeStorageFormat::Parquet,
         }],
     ) {
         Ok(_) => panic!("expected node data row count error"),

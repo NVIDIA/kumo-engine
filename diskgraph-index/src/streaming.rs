@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use diskgraph_core::metadata::EdgeStorageFormat;
 
 /// Abstraction over input Parquet sources. This supports local files and remote
 /// object storage backends.
@@ -18,6 +19,7 @@ pub struct EdgeShardInput {
     pub parquet: ParquetSource,
     /// Whether this edge shard carries dest_sort_key in its schema.
     pub has_dest_sort_key: bool,
+    pub format: EdgeStorageFormat,
 }
 
 /// S3 location and optional configuration for fetching Parquet.

@@ -5,7 +5,8 @@ use std::sync::Arc;
 use arrow_array::{ArrayRef, Int64Array, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
 use diskgraph_core::metadata::{
-    DatasetMetadata, EdgeRelationMetadata, EdgeShardMetadata, NodeShardMetadata, NodeTypeMetadata,
+    DatasetMetadata, EdgeRelationMetadata, EdgeShardMetadata, EdgeStorageFormat, NodeShardMetadata,
+    NodeTypeMetadata,
 };
 use diskgraph_index::graph::{GraphIndexBuilder, GraphIndexReader};
 use parquet::arrow::ArrowWriter;
@@ -109,6 +110,7 @@ fn graph_builder_and_reader_multi_table() {
                     },
                 ],
                 dest_sort_key_bits: None,
+                format: EdgeStorageFormat::Parquet,
             },
             EdgeRelationMetadata {
                 name: "Likes".into(),
@@ -127,6 +129,7 @@ fn graph_builder_and_reader_multi_table() {
                     },
                 ],
                 dest_sort_key_bits: None,
+                format: EdgeStorageFormat::Parquet,
             },
             EdgeRelationMetadata {
                 name: "Tagged".into(),
@@ -138,6 +141,7 @@ fn graph_builder_and_reader_multi_table() {
                     src_max_id: 1,
                 }],
                 dest_sort_key_bits: None,
+                format: EdgeStorageFormat::Parquet,
             },
         ],
     };

@@ -16,7 +16,8 @@ use arrow_array::{ArrayRef, Int64Array, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
 use clap::{Parser, ValueEnum};
 use diskgraph_core::metadata::{
-    DatasetMetadata, EdgeRelationMetadata, EdgeShardMetadata, NodeShardMetadata, NodeTypeMetadata,
+    DatasetMetadata, EdgeRelationMetadata, EdgeShardMetadata, EdgeStorageFormat, NodeShardMetadata,
+    NodeTypeMetadata,
 };
 use parquet::arrow::ArrowWriter;
 use parquet::file::properties::WriterProperties;
@@ -180,6 +181,7 @@ fn build_simple(
         dst_type: "User".into(),
         shards: Vec::new(),
         dest_sort_key_bits: None,
+        format: EdgeStorageFormat::Parquet,
     }];
     (node_types, relations, edge_counts)
 }
@@ -208,6 +210,7 @@ fn build_temporal_presorted(
         dst_type: "Account".into(),
         shards: Vec::new(),
         dest_sort_key_bits: Some(32),
+        format: EdgeStorageFormat::Parquet,
     }];
     (node_types, relations, edge_counts)
 }
@@ -236,6 +239,7 @@ fn build_temporal_weighted(
         dst_type: "Device".into(),
         shards: Vec::new(),
         dest_sort_key_bits: Some(16),
+        format: EdgeStorageFormat::Parquet,
     }];
     (node_types, relations, edge_counts)
 }
@@ -264,6 +268,7 @@ fn build_weighted_only(
         dst_type: "Item".into(),
         shards: Vec::new(),
         dest_sort_key_bits: Some(8),
+        format: EdgeStorageFormat::Parquet,
     }];
     (node_types, relations, edge_counts)
 }
@@ -314,6 +319,7 @@ fn build_mixed(
             dst_type: "Ip".into(),
             shards: Vec::new(),
             dest_sort_key_bits: Some(32),
+            format: EdgeStorageFormat::Parquet,
         },
         EdgeRelationMetadata {
             name: "Purchases".into(),
@@ -321,6 +327,7 @@ fn build_mixed(
             dst_type: "Merchant".into(),
             shards: Vec::new(),
             dest_sort_key_bits: None,
+            format: EdgeStorageFormat::Parquet,
         },
     ];
     (node_types, relations, edge_counts)

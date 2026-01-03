@@ -1,6 +1,6 @@
 # diskgraph-ingest
 
-`diskgraph-ingest` converts raw CSV/Parquet source tables into DiskGraph-ready outputs: `index_metadata.json`, node parquet files, edge parquet files, and rowpack context files for node payloads.
+`diskgraph-ingest` converts raw CSV/Parquet source tables into DiskGraph-ready outputs: `index_metadata.json`, node parquet files, edge shard files (binary by default, parquet optional), and rowpack context files for node payloads.
 
 ## Inputs
 
@@ -21,7 +21,8 @@ Top-level schema (all fields optional except `dataset_name` and `tables`):
   "dataset_name": "example",
   "tables": [/* TableSpec */],
   "relationships": [/* RelationshipSpec */],
-  "rowpack": { /* RowPackConfig */ }
+  "rowpack": { /* RowPackConfig */ },
+  "edge_format": "binary"
 }
 ```
 
@@ -52,6 +53,7 @@ Rules:
 - `weight` (optional): must be numeric.
 - `edge_table` (optional): marks the table as an explicit edge list. Both FKs must reference a primary key on the destination table.
 - `rowpack` (optional): per-table overrides for rowpack configuration. When present, it is merged with the top-level `rowpack` (table values override dataset values).
+- `edge_format` (optional): `binary` (default) or `parquet`. Controls the output format for edge shards.
 
 ### ColumnSpec
 
@@ -132,7 +134,7 @@ Other Parquet/Arrow types are rejected during ingest.
   - rowpack `node_data_compression` per node table
   - primary key map paths (when configured)
 - Node parquet files with rowpack-compressed node payloads
-- Edge parquet files (bidirectional)
+- Edge shard files (bidirectional), written as binary by default or Parquet if configured
 - Rowpack context files per node table (`node_data.ctx` by default)
 - `ingest_stats.json` with ingest stats (key failures, duplicate keys, schema echo)
 
