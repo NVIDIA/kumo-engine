@@ -171,7 +171,7 @@ fn main() -> Result<()> {
         "    finalize: {}",
         format_duration(stats.perf.finalize_wall_ms)
     );
-    println!("  Stage timings (summed across tasks):");
+    println!("  Stage timings (summed across threads):");
     println!(
         "    pk_map: {} ({} tasks)",
         format_duration(stats.perf.pk_map_task_ms),
@@ -287,12 +287,21 @@ fn build_progress() -> Option<ProgressCallback> {
                     }
                 };
                 bar.set_message(label);
+                if let Some(total) = event.total {
+                    bar.set_suffix(format!("({}/{})", format_count(0), format_count(total)));
+                }
                 guard.bars.insert(key, bar);
             }
             ProgressKind::Advance => {
                 if let Some(bar) = guard.bars.get(&key) {
                     bar.inc(event.delta);
-                    if event.total.is_none() {
+                    if let Some(total) = bar.length() {
+                        bar.set_suffix(format!(
+                            "({}/{})",
+                            format_count(bar.position()),
+                            format_count(total)
+                        ));
+                    } else {
                         let count = format_count(bar.position());
                         bar.set_message(format!("{} {}", label, count));
                     }
@@ -300,11 +309,14 @@ fn build_progress() -> Option<ProgressCallback> {
             }
             ProgressKind::Finish => {
                 if let Some(bar) = guard.bars.remove(&key) {
-                    let msg = match event.total.or_else(|| Some(bar.position())) {
-                        Some(count) => format!("{} {}", label, format_count(count)),
-                        None => label,
-                    };
-                    bar.finish_with_message(msg);
+                    if let Some(total) = event.total.or_else(|| bar.length()) {
+                        bar.set_suffix(format!(
+                            "({}/{})",
+                            format_count(bar.position()),
+                            format_count(total)
+                        ));
+                    }
+                    bar.finish_with_message(label);
                 }
             }
         }
@@ -325,7 +337,7 @@ fn progress_label(event: &ProgressEvent) -> String {
 }
 
 fn bar_style() -> ProgressStyle {
-    ProgressStyle::with_template("{msg} {bar:40.cyan/blue} {percent}%")
+    ProgressStyle::with_template("{msg} {bar:40.cyan/blue} {percent}% {suffix}")
         .unwrap_or_else(|_| ProgressStyle::default_bar())
 }
 

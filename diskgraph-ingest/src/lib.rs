@@ -1558,6 +1558,7 @@ impl IngestContext {
     }
 
     fn build_final_nodes(&mut self) -> Result<()> {
+        let phase_start = std::time::Instant::now();
         let root = require_local_output(&self.target)?.to_path_buf();
         self.build_shard_offsets();
         for table in &self.source.tables {
@@ -1655,10 +1656,20 @@ impl IngestContext {
                 total: Some(total_rows),
             });
         }
+        let elapsed = phase_start.elapsed();
+        self.node_task_ms = self
+            .node_task_ms
+            .saturating_add(elapsed.as_millis() as u64);
+        self.build_task_ms = self
+            .build_task_ms
+            .saturating_add(elapsed.as_millis() as u64);
+        self.node_tasks = self.node_tasks.saturating_add(1);
+        self.build_tasks = self.build_tasks.saturating_add(1);
         Ok(())
     }
 
     fn build_final_edges(&mut self) -> Result<()> {
+        let phase_start = std::time::Instant::now();
         let root = require_local_output(&self.target)?.to_path_buf();
         self.build_shard_offsets();
         let mut edge_counts = HashMap::new();
@@ -2156,6 +2167,15 @@ impl IngestContext {
             });
         }
         self.edge_counts = edge_counts;
+        let elapsed = phase_start.elapsed();
+        self.edge_task_ms = self
+            .edge_task_ms
+            .saturating_add(elapsed.as_millis() as u64);
+        self.build_task_ms = self
+            .build_task_ms
+            .saturating_add(elapsed.as_millis() as u64);
+        self.edge_tasks = self.edge_tasks.saturating_add(1);
+        self.build_tasks = self.build_tasks.saturating_add(1);
         Ok(())
     }
 
