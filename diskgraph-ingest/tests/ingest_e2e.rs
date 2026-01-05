@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Result};
 use diskgraph_core::metadata::DatasetMetadata;
-use diskgraph_ingest::{ingest, Dest, IngestOptions, MappingKind};
+use diskgraph_ingest::{ingest, Dest, IngestOptions};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::arrow::ArrowWriter;
 use parquet::file::properties::WriterProperties;
@@ -219,8 +219,6 @@ fn ingest_csv_with_edges_and_rowpack() -> Result<()> {
         output_root.to_str().unwrap(),
         Dest::Local,
         IngestOptions {
-            mapping_kind: MappingKind::Hash,
-            progress: None,
             profile_dir: None,
         },
     )?;
@@ -239,7 +237,7 @@ fn ingest_csv_with_edges_and_rowpack() -> Result<()> {
     let ctx_path = output_root.join(&compression.context_path);
     assert!(ctx_path.exists());
     let ctx_bytes = fs::read(&ctx_path)?;
-    let node_data = output_root.join("nodes/user/part-00000.bin");
+    let node_data = output_root.join("nodes/user/shard-00000/part-00000.bin");
     let value = read_first_node_value(&node_data, &ctx_bytes)?;
     assert_eq!(value["name"], "user0001");
 
@@ -270,19 +268,19 @@ fn ingest_csv_with_edges_and_rowpack() -> Result<()> {
     assert_eq!(edge_dst.dest_sort_key_bits, Some(32));
 
     let order_user_rows = count_binary_edges(
-        &output_root.join("edges/order_user/part-00000.bin"),
+        &output_root.join("edges/order_user/shard-00000/part-00000.bin"),
     )?;
     let order_user_rev_rows = count_binary_edges(
-        &output_root.join("edges/order_user_reverse/part-00000.bin"),
+        &output_root.join("edges/order_user_reverse/shard-00000/part-00000.bin"),
     )?;
     assert_eq!(order_user_rows, 2);
     assert_eq!(order_user_rev_rows, 2);
 
     let edge_src_rows = count_binary_edges(
-        &output_root.join("edges/edge_orderitem_src_to_dst/part-00000.bin"),
+        &output_root.join("edges/edge_orderitem_src_to_dst/shard-00000/part-00000.bin"),
     )?;
     let edge_dst_rows = count_binary_edges(
-        &output_root.join("edges/edge_orderitem_dst_to_src/part-00000.bin"),
+        &output_root.join("edges/edge_orderitem_dst_to_src/shard-00000/part-00000.bin"),
     )?;
     assert_eq!(edge_src_rows, 2);
     assert_eq!(edge_dst_rows, 2);
@@ -325,11 +323,7 @@ fn ingest_parquet_with_sorted_mapping() -> Result<()> {
     let source_path = dir.path().join("source_metadata.json");
     fs::write(&source_path, serde_json::to_vec_pretty(&source)?)?;
 
-    let options = IngestOptions {
-        mapping_kind: MappingKind::Sorted,
-        progress: None,
-        profile_dir: None,
-    };
+    let options = IngestOptions { profile_dir: None };
     let metadata = ingest(&source_path, output_root.to_str().unwrap(), Dest::Local, options)?;
     assert_eq!(metadata.node_types.len(), 1);
     assert!(metadata.edge_relations.is_empty());
@@ -340,9 +334,9 @@ fn ingest_parquet_with_sorted_mapping() -> Result<()> {
         .find(|n| n.name == "Sku")
         .unwrap();
     let pk = sku.primary_key_map.as_ref().unwrap();
-    assert_eq!(pk.mapping_kind, "sorted");
+    assert_eq!(pk.mapping_kind, "sharded");
     assert_eq!(pk.fixed_len, Some(8));
-    let map_path = output_root.join("nodes/sku/pk_map.bin");
+    let map_path = output_root.join("nodes/sku/pk_map-00000.bin");
     assert!(map_path.exists());
     assert!(fs::metadata(map_path)?.len() > 0);
 
@@ -383,11 +377,7 @@ fn ingest_csv_with_bytes_pk_mapping() -> Result<()> {
     let source_path = dir.path().join("source_metadata.json");
     fs::write(&source_path, serde_json::to_vec_pretty(&source)?)?;
 
-    let options = IngestOptions {
-        mapping_kind: MappingKind::Hash,
-        progress: None,
-        profile_dir: None,
-    };
+    let options = IngestOptions { profile_dir: None };
     let metadata = ingest(&source_path, output_root.to_str().unwrap(), Dest::Local, options)?;
     let asset = metadata
         .node_types
@@ -395,9 +385,9 @@ fn ingest_csv_with_bytes_pk_mapping() -> Result<()> {
         .find(|n| n.name == "Asset")
         .unwrap();
     let pk = asset.primary_key_map.as_ref().unwrap();
-    assert_eq!(pk.mapping_kind, "hash");
+    assert_eq!(pk.mapping_kind, "sharded");
     assert_eq!(pk.fixed_len, Some(4));
-    let map_path = output_root.join("nodes/asset/pk_map.bin");
+    let map_path = output_root.join("nodes/asset/pk_map-00000.bin");
     assert!(map_path.exists());
     assert!(fs::metadata(map_path)?.len() > 0);
 
@@ -476,8 +466,6 @@ fn ingest_relationship_uses_dest_timestamp_sort_key() -> Result<()> {
         output_root.to_str().unwrap(),
         Dest::Local,
         IngestOptions {
-            mapping_kind: MappingKind::Hash,
-            progress: None,
             profile_dir: None,
         },
     )?;
@@ -494,10 +482,10 @@ fn ingest_relationship_uses_dest_timestamp_sort_key() -> Result<()> {
     assert_eq!(forward.dest_sort_key_bits, Some(32));
     assert_eq!(reverse.dest_sort_key_bits, None);
     let forward_rows = count_binary_edges(
-        &output_root.join("edges/event_session/part-00000.bin"),
+        &output_root.join("edges/event_session/shard-00000/part-00000.bin"),
     )?;
     let reverse_rows = count_binary_edges(
-        &output_root.join("edges/event_session_reverse/part-00000.bin"),
+        &output_root.join("edges/event_session_reverse/shard-00000/part-00000.bin"),
     )?;
     assert_eq!(forward_rows, 2);
     assert_eq!(reverse_rows, 2);
