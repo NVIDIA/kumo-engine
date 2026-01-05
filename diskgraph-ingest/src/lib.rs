@@ -1329,7 +1329,8 @@ impl IngestContext {
                                 fs::create_dir_all(parent)?;
                             }
                         }
-                        let mut writer = BufWriter::new(target.sink(&out_path)?);
+                        let mut writer =
+                            BufWriter::with_capacity(1024 * 1024, target.sink(&out_path)?);
                         pk_map.write_to(&mut writer)?;
                         writer.flush()?;
                         let sink = writer.into_inner().map_err(|_| anyhow!("pk map flush failed"))?;
@@ -1433,7 +1434,8 @@ impl IngestContext {
                         fs::create_dir_all(parent)?;
                     }
                 }
-                let mut writer = BufWriter::new(self.target.sink(&out_path)?);
+                let mut writer =
+                    BufWriter::with_capacity(1024 * 1024, self.target.sink(&out_path)?);
                 writer.write_all(&NODE_BIN_MAGIC)?;
                 writer.write_all(&[NODE_BIN_VERSION, NODE_BIN_LEN_WIDTH, 0u8, 0u8])?;
                 let mut dropped = 0u64;
@@ -2398,7 +2400,7 @@ fn open_temp_row_writer(target: &OutputTarget, rel_path: &str) -> Result<TempRow
     }
     let sink = target.sink(&path)?;
     Ok(TempRowWriter {
-        writer: BufWriter::new(sink),
+        writer: BufWriter::with_capacity(1024 * 1024, sink),
         row_count: 0,
     })
 }
@@ -2473,7 +2475,7 @@ fn write_edge_records(
     if !already_sorted {
         radix_sort_edge_records(&mut records, spec.src_width);
     }
-    let mut writer = BufWriter::new(target.sink(path)?);
+    let mut writer = BufWriter::with_capacity(1024 * 1024, target.sink(path)?);
     write_edge_bin_header(&mut writer, spec.sort_width > 0, spec)?;
     for record in records {
         write_u64_width(&mut writer, record.src_id, spec.src_width)?;
@@ -2606,6 +2608,20 @@ struct MemoryLimiter {
 struct MemoryPermit {
     limiter: Arc<MemoryLimiter>,
     amount: usize,
+}
+
+struct TempNodeScratch {
+    value_refs: Vec<ValueRef<'static>>,
+    key_buf: Vec<u8>,
+}
+
+impl TempNodeScratch {
+    fn new() -> Self {
+        Self {
+            value_refs: Vec::new(),
+            key_buf: Vec::new(),
+        }
+    }
 }
 
 impl MemoryLimiter {

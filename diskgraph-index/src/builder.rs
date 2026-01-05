@@ -1243,7 +1243,7 @@ impl EdgeSubStream {
                     )
                     .into());
                 }
-                let mut reader = std::io::BufReader::new(file);
+                let mut reader = std::io::BufReader::with_capacity(1024 * 1024, file);
                 let mut header = [0u8; 12];
                 reader.read_exact(&mut header[..8])?;
                 if header[0..4] != *b"DGED" {
@@ -1608,7 +1608,8 @@ impl NodeDataStream {
                     .into())
                 }
             };
-            let mut reader = std::io::BufReader::new(std::fs::File::open(path)?);
+            let mut reader =
+                std::io::BufReader::with_capacity(1024 * 1024, std::fs::File::open(path)?);
             let mut header = [0u8; 8];
             reader.read_exact(&mut header)?;
             if &header[0..4] != b"DGND" {
