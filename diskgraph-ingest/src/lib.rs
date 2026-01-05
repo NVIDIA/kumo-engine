@@ -21,7 +21,7 @@ use diskgraph_fs::{
 };
 use diskgraph_rowpack::{
     LogicalType as RowpackType, RowPackConfig, RowPackContextBuilder, RowPackDecodeScratch,
-    RowPackDecoder, RowPackEncoder, ValueRef,
+    RowPackDecoder, RowPackEncoder, RowPackScratch, ValueRef,
 };
 use num_traits::Signed;
 use object_store::{path::Path as ObjectPath, ObjectStore, WriteMultipart};
@@ -605,6 +605,10 @@ impl IngestContext {
         let mut pkey_context: Option<diskgraph_rowpack::RowPackContext> = None;
         let mut node_encoder: Option<RowPackEncoder> = None;
         let mut pkey_encoder: Option<RowPackEncoder> = None;
+        let mut node_scratch: Option<RowPackScratch> = None;
+        let mut pkey_scratch: Option<RowPackScratch> = None;
+        let mut node_out: Vec<u8> = Vec::new();
+        let mut pkey_out: Vec<u8> = Vec::new();
         let mut node_writers: Vec<TempRowWriter> = Vec::new();
         let mut pkey_writers: Option<Vec<TempRowWriter>> = None;
         let mut fkey_writers: HashMap<String, Vec<TempRowWriter>> = HashMap::new();
@@ -637,8 +641,7 @@ impl IngestContext {
                         let mut arrays_f64: Vec<Vec<f64>> = Vec::new();
                         let mut strings: Vec<String> = Vec::new();
                         let mut bytes: Vec<Vec<u8>> = Vec::new();
-                        let mut value_refs: Vec<ValueRef<'_>> =
-                            Vec::with_capacity(table.columns.len());
+                        let mut access = RowAccess::new(table, &cols, &self.trimmed_strings);
                         for row in 0..batch.num_rows() {
                             let row_view = RowView {
                                 row,
@@ -679,6 +682,12 @@ impl IngestContext {
                                         &mut fkey_writers,
                                         &rel_specs,
                                     )?;
+                                    if let Some(encoder) = node_encoder.as_ref() {
+                                        node_scratch = Some(RowPackScratch::new(encoder.context()));
+                                    }
+                                    if let Some(encoder) = pkey_encoder.as_ref() {
+                                        pkey_scratch = Some(RowPackScratch::new(encoder.context()));
+                                    }
                                     self.flush_buffered_node_rows(
                                         table,
                                         pk_idx,
@@ -686,6 +695,10 @@ impl IngestContext {
                                         &mut buffered_rows,
                                         &node_encoder,
                                         &pkey_encoder,
+                                        &mut node_scratch,
+                                        &mut pkey_scratch,
+                                        &mut node_out,
+                                        &mut pkey_out,
                                         &mut node_writers,
                                         &mut pkey_writers,
                                         &mut fkey_writers,
@@ -696,23 +709,18 @@ impl IngestContext {
                                     context_ready = true;
                                 }
                             } else {
-                                row_values_from_row(
-                                    &row_view,
-                                    table,
-                                    &mut value_refs,
-                                    &mut arrays_f32,
-                                    &mut arrays_f64,
-                                    &mut strings,
-                                    &mut bytes,
-                                    &self.trimmed_strings,
-                                )?;
-                                self.write_node_row_from_values(
+                                access.reset(row);
+                                self.write_node_row_from_access(
                                     table,
                                     pk_idx,
                                     &rel_specs,
-                                    &value_refs,
+                                    &mut access,
                                     &node_encoder,
                                     &pkey_encoder,
+                                    &mut node_scratch,
+                                    &mut pkey_scratch,
+                                    &mut node_out,
+                                    &mut pkey_out,
                                     &mut node_writers,
                                     &mut pkey_writers,
                                     &mut fkey_writers,
@@ -745,8 +753,7 @@ impl IngestContext {
                         let mut arrays_f64: Vec<Vec<f64>> = Vec::new();
                         let mut strings: Vec<String> = Vec::new();
                         let mut bytes: Vec<Vec<u8>> = Vec::new();
-                        let mut value_refs: Vec<ValueRef<'_>> =
-                            Vec::with_capacity(table.columns.len());
+                        let mut access = RowAccess::new(table, &cols, &self.trimmed_strings);
                         for row in 0..batch.num_rows() {
                             let row_view = RowView {
                                 row,
@@ -787,6 +794,12 @@ impl IngestContext {
                                         &mut fkey_writers,
                                         &rel_specs,
                                     )?;
+                                    if let Some(encoder) = node_encoder.as_ref() {
+                                        node_scratch = Some(RowPackScratch::new(encoder.context()));
+                                    }
+                                    if let Some(encoder) = pkey_encoder.as_ref() {
+                                        pkey_scratch = Some(RowPackScratch::new(encoder.context()));
+                                    }
                                     self.flush_buffered_node_rows(
                                         table,
                                         pk_idx,
@@ -794,6 +807,10 @@ impl IngestContext {
                                         &mut buffered_rows,
                                         &node_encoder,
                                         &pkey_encoder,
+                                        &mut node_scratch,
+                                        &mut pkey_scratch,
+                                        &mut node_out,
+                                        &mut pkey_out,
                                         &mut node_writers,
                                         &mut pkey_writers,
                                         &mut fkey_writers,
@@ -804,23 +821,18 @@ impl IngestContext {
                                     context_ready = true;
                                 }
                             } else {
-                                row_values_from_row(
-                                    &row_view,
-                                    table,
-                                    &mut value_refs,
-                                    &mut arrays_f32,
-                                    &mut arrays_f64,
-                                    &mut strings,
-                                    &mut bytes,
-                                    &self.trimmed_strings,
-                                )?;
-                                self.write_node_row_from_values(
+                                access.reset(row);
+                                self.write_node_row_from_access(
                                     table,
                                     pk_idx,
                                     &rel_specs,
-                                    &value_refs,
+                                    &mut access,
                                     &node_encoder,
                                     &pkey_encoder,
+                                    &mut node_scratch,
+                                    &mut pkey_scratch,
+                                    &mut node_out,
+                                    &mut pkey_out,
                                     &mut node_writers,
                                     &mut pkey_writers,
                                     &mut fkey_writers,
@@ -864,6 +876,12 @@ impl IngestContext {
                 &mut fkey_writers,
                 &rel_specs,
             )?;
+            if let Some(encoder) = node_encoder.as_ref() {
+                node_scratch = Some(RowPackScratch::new(encoder.context()));
+            }
+            if let Some(encoder) = pkey_encoder.as_ref() {
+                pkey_scratch = Some(RowPackScratch::new(encoder.context()));
+            }
             self.flush_buffered_node_rows(
                 table,
                 pk_idx,
@@ -871,6 +889,10 @@ impl IngestContext {
                 &mut buffered_rows,
                 &node_encoder,
                 &pkey_encoder,
+                &mut node_scratch,
+                &mut pkey_scratch,
+                &mut node_out,
+                &mut pkey_out,
                 &mut node_writers,
                 &mut pkey_writers,
                 &mut fkey_writers,
@@ -999,6 +1021,10 @@ impl IngestContext {
         rows: &mut Vec<OwnedRow>,
         node_encoder: &Option<RowPackEncoder>,
         pkey_encoder: &Option<RowPackEncoder>,
+        node_scratch: &mut Option<RowPackScratch>,
+        pkey_scratch: &mut Option<RowPackScratch>,
+        node_out: &mut Vec<u8>,
+        pkey_out: &mut Vec<u8>,
         node_writers: &mut Vec<TempRowWriter>,
         pkey_writers: &mut Option<Vec<TempRowWriter>>,
         fkey_writers: &mut HashMap<String, Vec<TempRowWriter>>,
@@ -1015,6 +1041,10 @@ impl IngestContext {
                 row,
                 node_encoder,
                 pkey_encoder,
+                node_scratch,
+                pkey_scratch,
+                node_out,
+                pkey_out,
                 node_writers,
                 pkey_writers,
                 fkey_writers,
@@ -1034,6 +1064,10 @@ impl IngestContext {
         row: OwnedRow,
         node_encoder: &Option<RowPackEncoder>,
         pkey_encoder: &Option<RowPackEncoder>,
+        node_scratch: &mut Option<RowPackScratch>,
+        pkey_scratch: &mut Option<RowPackScratch>,
+        node_out: &mut Vec<u8>,
+        pkey_out: &mut Vec<u8>,
         node_writers: &mut Vec<TempRowWriter>,
         pkey_writers: &mut Option<Vec<TempRowWriter>>,
         fkey_writers: &mut HashMap<String, Vec<TempRowWriter>>,
@@ -1043,10 +1077,13 @@ impl IngestContext {
     ) -> Result<()> {
         let mut value_refs = Vec::new();
         row.as_value_refs(&mut value_refs);
-        let node_row = node_encoder
+        let encoder = node_encoder
             .as_ref()
-            .ok_or_else(|| anyhow!("missing node encoder"))?
-            .encode_row(&value_refs)?;
+            .ok_or_else(|| anyhow!("missing node encoder"))?;
+        let scratch = node_scratch
+            .as_mut()
+            .ok_or_else(|| anyhow!("missing node scratch"))?;
+        encoder.encode_row_into(&value_refs, node_out, scratch)?;
         let shard = if let (Some(idx), Some(pkey_encoder), Some(pk_col)) =
             (pk_idx, pkey_encoder.as_ref(), pk_col)
         {
@@ -1055,15 +1092,18 @@ impl IngestContext {
                 .map_err(|_| anyhow!("pk parse"))?;
             let mut scratch = [0u8; 16];
             let shard = shard_for_key(key_hash_bytes(&key, &mut scratch), self.num_shards);
-            let pkey_row = pkey_encoder.encode_row(&value_refs)?;
+            let pkey_scratch = pkey_scratch
+                .as_mut()
+                .ok_or_else(|| anyhow!("missing pkey scratch"))?;
+            pkey_encoder.encode_row_into(&value_refs, pkey_out, pkey_scratch)?;
             if let Some(writers) = pkey_writers.as_mut() {
-                write_temp_row(&mut writers[shard], &pkey_row)?;
+                write_temp_row(&mut writers[shard], pkey_out)?;
             }
             shard
         } else {
             (*row_id as usize) % self.num_shards
         };
-        write_temp_row(&mut node_writers[shard], &node_row)?;
+        write_temp_row(&mut node_writers[shard], node_out)?;
         for (rel_name, rel_idx) in rel_specs {
             if let Some(writers) = fkey_writers.get_mut(rel_name) {
                 let col = table
@@ -1082,14 +1122,18 @@ impl IngestContext {
         Ok(())
     }
 
-    fn write_node_row_from_values(
+    fn write_node_row_from_access(
         &self,
         table: &TableSpec,
         pk_idx: Option<usize>,
         rel_specs: &[(String, usize)],
-        value_refs: &[ValueRef<'_>],
+        access: &mut RowAccess<'_>,
         node_encoder: &Option<RowPackEncoder>,
         pkey_encoder: &Option<RowPackEncoder>,
+        node_scratch: &mut Option<RowPackScratch>,
+        pkey_scratch: &mut Option<RowPackScratch>,
+        node_out: &mut Vec<u8>,
+        pkey_out: &mut Vec<u8>,
         node_writers: &mut Vec<TempRowWriter>,
         pkey_writers: &mut Option<Vec<TempRowWriter>>,
         fkey_writers: &mut HashMap<String, Vec<TempRowWriter>>,
@@ -1097,36 +1141,40 @@ impl IngestContext {
         pk_col: Option<&ColumnSpec>,
         key_buf: &mut Vec<u8>,
     ) -> Result<()> {
-        let node_row = node_encoder
+        let encoder = node_encoder
             .as_ref()
-            .ok_or_else(|| anyhow!("missing node encoder"))?
-            .encode_row(value_refs)?;
+            .ok_or_else(|| anyhow!("missing node encoder"))?;
+        let scratch = node_scratch
+            .as_mut()
+            .ok_or_else(|| anyhow!("missing node scratch"))?;
+        encoder.encode_row_from_access(access, node_out, scratch)?;
         let shard = if let (Some(idx), Some(pkey_encoder), Some(pk_col)) =
             (pk_idx, pkey_encoder.as_ref(), pk_col)
         {
-            let pk_value = value_refs.get(idx).ok_or_else(|| anyhow!("missing pk value"))?;
-            let key = key_from_value_ref(pk_value, pk_col).map_err(|_| anyhow!("pk parse"))?;
+            let pk_value = access.value_ref(idx)?;
+            let key = key_from_value_ref(&pk_value, pk_col).map_err(|_| anyhow!("pk parse"))?;
             let mut scratch = [0u8; 16];
             let shard = shard_for_key(key_hash_bytes(&key, &mut scratch), self.num_shards);
-            let pkey_row = pkey_encoder.encode_row(std::slice::from_ref(pk_value))?;
+            let pkey_scratch = pkey_scratch
+                .as_mut()
+                .ok_or_else(|| anyhow!("missing pkey scratch"))?;
+            pkey_encoder.encode_row_into(std::slice::from_ref(&pk_value), pkey_out, pkey_scratch)?;
             if let Some(writers) = pkey_writers.as_mut() {
-                write_temp_row(&mut writers[shard], &pkey_row)?;
+                write_temp_row(&mut writers[shard], pkey_out)?;
             }
             shard
         } else {
             (*row_id as usize) % self.num_shards
         };
-        write_temp_row(&mut node_writers[shard], &node_row)?;
+        write_temp_row(&mut node_writers[shard], node_out)?;
         for (rel_name, rel_idx) in rel_specs {
             if let Some(writers) = fkey_writers.get_mut(rel_name) {
                 let col = table
                     .columns
                     .get(*rel_idx)
                     .ok_or_else(|| anyhow!("missing fk column"))?;
-                let value = value_refs
-                    .get(*rel_idx)
-                    .ok_or_else(|| anyhow!("missing fk value"))?;
-                let key = key_from_value_ref(value, col).map_err(|_| anyhow!("fk parse"))?;
+                let value = access.value_ref(*rel_idx)?;
+                let key = key_from_value_ref(&value, col).map_err(|_| anyhow!("fk parse"))?;
                 key_buf.clear();
                 write_key_to_buf(key_buf, &key)?;
                 write_temp_row(&mut writers[shard], key_buf)?;
@@ -3720,6 +3768,622 @@ struct RowView<'a> {
     cols: &'a [ArrayRef],
 }
 
+struct RowAccess<'a> {
+    row: usize,
+    cols: &'a [ArrayRef],
+    table: &'a TableSpec,
+    pools: RowValuePools,
+    trimmed_strings: &'a Arc<AtomicU64>,
+}
+
+impl<'a> RowAccess<'a> {
+    fn new(
+        table: &'a TableSpec,
+        cols: &'a [ArrayRef],
+        trimmed_strings: &'a Arc<AtomicU64>,
+    ) -> Self {
+        Self {
+            row: 0,
+            cols,
+            table,
+            pools: RowValuePools::new(),
+            trimmed_strings,
+        }
+    }
+
+    fn reset(&mut self, row: usize) {
+        self.row = row;
+        self.pools.reset();
+    }
+
+    fn pool_str(&mut self, value: String) -> &'a str {
+        let slice = self.pools.take_string_owned(value);
+        unsafe { std::mem::transmute::<&str, &'a str>(slice) }
+    }
+
+    fn pool_bytes(&mut self, value: Vec<u8>) -> &'a [u8] {
+        let slice = self.pools.take_bytes_owned(value);
+        unsafe { std::mem::transmute::<&[u8], &'a [u8]>(slice) }
+    }
+
+    fn value_ref(&mut self, idx: usize) -> Result<ValueRef<'a>> {
+        let col = self
+            .table
+            .columns
+            .get(idx)
+            .ok_or_else(|| anyhow!("missing column {}", idx))?;
+        let array = self
+            .cols
+            .get(idx)
+            .ok_or_else(|| anyhow!("missing column {}", col.name))?;
+        if array.is_null(self.row) {
+            return Ok(ValueRef::Null);
+        }
+        match (col.source_dtype.clone(), col.ingested_dtype.clone()) {
+            (source, ingested) if source == ingested => match source {
+                ColumnType::Int64 => {
+                    let arr = array
+                        .as_any()
+                        .downcast_ref::<arrow_array::Int64Array>()
+                        .ok_or_else(|| anyhow!("int64 cast"))?;
+                    Ok(ValueRef::Int64(arr.value(self.row)))
+                }
+                ColumnType::Int8 => {
+                    let arr = array
+                        .as_any()
+                        .downcast_ref::<arrow_array::Int8Array>()
+                        .ok_or_else(|| anyhow!("int8 cast"))?;
+                    Ok(ValueRef::Int32(arr.value(self.row) as i32))
+                }
+                ColumnType::Int16 => {
+                    let arr = array
+                        .as_any()
+                        .downcast_ref::<arrow_array::Int16Array>()
+                        .ok_or_else(|| anyhow!("int16 cast"))?;
+                    Ok(ValueRef::Int32(arr.value(self.row) as i32))
+                }
+                ColumnType::Int32 => {
+                    let arr = array
+                        .as_any()
+                        .downcast_ref::<arrow_array::Int32Array>()
+                        .ok_or_else(|| anyhow!("int32 cast"))?;
+                    Ok(ValueRef::Int32(arr.value(self.row)))
+                }
+                ColumnType::UInt64 => {
+                    let arr = array
+                        .as_any()
+                        .downcast_ref::<arrow_array::UInt64Array>()
+                        .ok_or_else(|| anyhow!("uint64 cast"))?;
+                    Ok(ValueRef::UInt64(arr.value(self.row)))
+                }
+                ColumnType::UInt8 => {
+                    let arr = array
+                        .as_any()
+                        .downcast_ref::<arrow_array::UInt8Array>()
+                        .ok_or_else(|| anyhow!("uint8 cast"))?;
+                    Ok(ValueRef::UInt32(arr.value(self.row) as u32))
+                }
+                ColumnType::UInt16 => {
+                    let arr = array
+                        .as_any()
+                        .downcast_ref::<arrow_array::UInt16Array>()
+                        .ok_or_else(|| anyhow!("uint16 cast"))?;
+                    Ok(ValueRef::UInt32(arr.value(self.row) as u32))
+                }
+                ColumnType::UInt32 => {
+                    let arr = array
+                        .as_any()
+                        .downcast_ref::<arrow_array::UInt32Array>()
+                        .ok_or_else(|| anyhow!("uint32 cast"))?;
+                    Ok(ValueRef::UInt32(arr.value(self.row)))
+                }
+                ColumnType::Float64 => {
+                    let arr = array
+                        .as_any()
+                        .downcast_ref::<arrow_array::Float64Array>()
+                        .ok_or_else(|| anyhow!("float64 cast"))?;
+                    Ok(ValueRef::Float64(arr.value(self.row)))
+                }
+                ColumnType::Float32 => {
+                    let arr = array
+                        .as_any()
+                        .downcast_ref::<arrow_array::Float32Array>()
+                        .ok_or_else(|| anyhow!("float32 cast"))?;
+                    Ok(ValueRef::Float32(arr.value(self.row)))
+                }
+                ColumnType::Bool => {
+                    let arr = array
+                        .as_any()
+                        .downcast_ref::<arrow_array::BooleanArray>()
+                        .ok_or_else(|| anyhow!("bool cast"))?;
+                    Ok(ValueRef::Bool(arr.value(self.row)))
+                }
+                ColumnType::String => {
+                    let arr = array
+                        .as_any()
+                        .downcast_ref::<arrow_array::StringArray>()
+                        .ok_or_else(|| anyhow!("string cast"))?;
+                    let text = arr.value(self.row);
+                    if text.len() > MAX_INPUT_STRING_BYTES {
+                        let trimmed = trim_str_bytes(text, MAX_INPUT_STRING_BYTES).to_string();
+                        self.trimmed_strings.fetch_add(1, Ordering::Relaxed);
+                        Ok(ValueRef::String(self.pool_str(trimmed)))
+                    } else {
+                        Ok(ValueRef::String(text))
+                    }
+                }
+                ColumnType::Bytes => {
+                    let arr = array
+                        .as_any()
+                        .downcast_ref::<arrow_array::BinaryArray>()
+                        .ok_or_else(|| anyhow!("binary cast"))?;
+                    let data = arr.value(self.row);
+                    if data.len() > MAX_INPUT_STRING_BYTES {
+                        self.trimmed_strings.fetch_add(1, Ordering::Relaxed);
+                        Ok(ValueRef::Bytes(self.pool_bytes(
+                            data[..MAX_INPUT_STRING_BYTES].to_vec(),
+                        )))
+                    } else {
+                        Ok(ValueRef::Bytes(data))
+                    }
+                }
+                ColumnType::Date => {
+                    let arr = array
+                        .as_any()
+                        .downcast_ref::<arrow_array::Date32Array>()
+                        .ok_or_else(|| anyhow!("date cast"))?;
+                    Ok(ValueRef::Date(arr.value(self.row)))
+                }
+                ColumnType::Timestamp => {
+                    let (secs, nanos) = timestamp_parts_from_array(array, self.row)?;
+                    Ok(ValueRef::Timestamp { secs, nanos })
+                }
+                ColumnType::Decimal128 => {
+                    let arr = array
+                        .as_any()
+                        .downcast_ref::<arrow_array::Decimal128Array>()
+                        .ok_or_else(|| anyhow!("decimal128 cast"))?;
+                    Ok(ValueRef::Decimal128(arr.value(self.row)))
+                }
+                ColumnType::Decimal256 => {
+                    let arr = array
+                        .as_any()
+                        .downcast_ref::<arrow_array::Decimal256Array>()
+                        .ok_or_else(|| anyhow!("decimal256 cast"))?;
+                    Ok(ValueRef::Decimal256(arr.value(self.row).to_le_bytes()))
+                }
+                ColumnType::Float32Array => {
+                    let list = array
+                        .as_any()
+                        .downcast_ref::<arrow_array::ListArray>()
+                        .ok_or_else(|| anyhow!("list cast"))?;
+                    let values_arr = list
+                        .values()
+                        .as_any()
+                        .downcast_ref::<arrow_array::Float32Array>()
+                        .ok_or_else(|| anyhow!("float32 list cast"))?;
+                    let offsets = list.value_offsets();
+                    let start = offsets[self.row] as usize;
+                    let end = offsets[self.row + 1] as usize;
+                    let vec = self.pools.take_f32_vec(end.saturating_sub(start));
+                    for idx in start..end {
+                        if values_arr.is_null(idx) {
+                            vec.push(0.0);
+                        } else {
+                            vec.push(values_arr.value(idx));
+                        }
+                    }
+                    Ok(ValueRef::Float32Array(unsafe {
+                        std::mem::transmute::<&[f32], &'a [f32]>(vec.as_slice())
+                    }))
+                }
+                ColumnType::Float64Array => {
+                    let list = array
+                        .as_any()
+                        .downcast_ref::<arrow_array::ListArray>()
+                        .ok_or_else(|| anyhow!("list cast"))?;
+                    let values_arr = list
+                        .values()
+                        .as_any()
+                        .downcast_ref::<arrow_array::Float64Array>()
+                        .ok_or_else(|| anyhow!("float64 list cast"))?;
+                    let offsets = list.value_offsets();
+                    let start = offsets[self.row] as usize;
+                    let end = offsets[self.row + 1] as usize;
+                    let vec = self.pools.take_f64_vec(end.saturating_sub(start));
+                    for idx in start..end {
+                        if values_arr.is_null(idx) {
+                            vec.push(0.0);
+                        } else {
+                            vec.push(values_arr.value(idx));
+                        }
+                    }
+                    Ok(ValueRef::Float64Array(unsafe {
+                        std::mem::transmute::<&[f64], &'a [f64]>(vec.as_slice())
+                    }))
+                }
+            },
+            (ColumnType::String, ColumnType::Timestamp)
+            | (ColumnType::Bytes, ColumnType::Timestamp) => {
+                let text = read_utf8(array, self.row, &col.source_dtype)?;
+                if let Some((secs, nanos)) = parse_timestamp_text(text, col.timestamp_format.as_deref()) {
+                    Ok(ValueRef::Timestamp { secs, nanos })
+                } else {
+                    Ok(ValueRef::Null)
+                }
+            }
+            (ColumnType::String, ColumnType::Date)
+            | (ColumnType::Bytes, ColumnType::Date) => {
+                let text = read_utf8(array, self.row, &col.source_dtype)?;
+                if let Some(days) = parse_date_text(text, col.timestamp_format.as_deref()) {
+                    Ok(ValueRef::Date(days))
+                } else {
+                    Ok(ValueRef::Null)
+                }
+            }
+            (ColumnType::Int8, ColumnType::Timestamp)
+            | (ColumnType::Int16, ColumnType::Timestamp)
+            | (ColumnType::Int32, ColumnType::Timestamp)
+            | (ColumnType::Int64, ColumnType::Timestamp)
+            | (ColumnType::UInt8, ColumnType::Timestamp)
+            | (ColumnType::UInt16, ColumnType::Timestamp)
+            | (ColumnType::UInt32, ColumnType::Timestamp)
+            | (ColumnType::UInt64, ColumnType::Timestamp) => {
+                let value = read_i64(array, self.row, &col.source_dtype)?;
+                let unit = col
+                    .timestamp_unit
+                    .clone()
+                    .unwrap_or(TimestampUnit::Seconds);
+                let (secs, nanos) = timestamp_from_int(value, unit);
+                Ok(ValueRef::Timestamp { secs, nanos })
+            }
+            (ColumnType::Int8, ColumnType::Date)
+            | (ColumnType::Int16, ColumnType::Date)
+            | (ColumnType::Int32, ColumnType::Date)
+            | (ColumnType::Int64, ColumnType::Date)
+            | (ColumnType::UInt8, ColumnType::Date)
+            | (ColumnType::UInt16, ColumnType::Date)
+            | (ColumnType::UInt32, ColumnType::Date)
+            | (ColumnType::UInt64, ColumnType::Date) => {
+                let value = read_i64(array, self.row, &col.source_dtype)?;
+                let days = if let Some(unit) = col.timestamp_unit.as_ref() {
+                    let (secs, _) = timestamp_from_int(value, unit.clone());
+                    days_from_secs(secs)
+                } else {
+                    value as i32
+                };
+                Ok(ValueRef::Date(days))
+            }
+            (ColumnType::String, ColumnType::Int64)
+            | (ColumnType::Bytes, ColumnType::Int64) => {
+                let text = read_utf8(array, self.row, &col.source_dtype)?;
+                if let Some(v) = parse_i64(text) {
+                    Ok(ValueRef::Int64(v))
+                } else {
+                    Ok(ValueRef::Null)
+                }
+            }
+            (ColumnType::String, ColumnType::Int32)
+            | (ColumnType::Bytes, ColumnType::Int32) => {
+                let text = read_utf8(array, self.row, &col.source_dtype)?;
+                if let Some(v) = parse_i32(text) {
+                    Ok(ValueRef::Int32(v))
+                } else {
+                    Ok(ValueRef::Null)
+                }
+            }
+            (ColumnType::String, ColumnType::UInt64)
+            | (ColumnType::Bytes, ColumnType::UInt64) => {
+                let text = read_utf8(array, self.row, &col.source_dtype)?;
+                if let Some(v) = parse_u64(text) {
+                    Ok(ValueRef::UInt64(v))
+                } else {
+                    Ok(ValueRef::Null)
+                }
+            }
+            (ColumnType::String, ColumnType::UInt32)
+            | (ColumnType::Bytes, ColumnType::UInt32) => {
+                let text = read_utf8(array, self.row, &col.source_dtype)?;
+                if let Some(v) = parse_u32(text) {
+                    Ok(ValueRef::UInt32(v))
+                } else {
+                    Ok(ValueRef::Null)
+                }
+            }
+            (ColumnType::String, ColumnType::Float64)
+            | (ColumnType::Bytes, ColumnType::Float64) => {
+                let text = read_utf8(array, self.row, &col.source_dtype)?;
+                if let Some(v) = parse_f64(text) {
+                    Ok(ValueRef::Float64(v))
+                } else {
+                    Ok(ValueRef::Null)
+                }
+            }
+            (ColumnType::String, ColumnType::Float32)
+            | (ColumnType::Bytes, ColumnType::Float32) => {
+                let text = read_utf8(array, self.row, &col.source_dtype)?;
+                if let Some(v) = parse_f32(text) {
+                    Ok(ValueRef::Float32(v))
+                } else {
+                    Ok(ValueRef::Null)
+                }
+            }
+            (ColumnType::String, ColumnType::Bool)
+            | (ColumnType::Bytes, ColumnType::Bool) => {
+                let text = read_utf8(array, self.row, &col.source_dtype)?;
+                if let Some(v) = parse_bool(text) {
+                    Ok(ValueRef::Bool(v))
+                } else {
+                    Ok(ValueRef::Null)
+                }
+            }
+            (ColumnType::String, ColumnType::Decimal128)
+            | (ColumnType::Bytes, ColumnType::Decimal128) => {
+                let text = read_utf8(array, self.row, &col.source_dtype)?;
+                if let Some(v) = parse_decimal_i128(text, col.scale.unwrap_or(0)) {
+                    Ok(ValueRef::Decimal128(v))
+                } else {
+                    Ok(ValueRef::Null)
+                }
+            }
+            (ColumnType::String, ColumnType::Decimal256)
+            | (ColumnType::Bytes, ColumnType::Decimal256) => {
+                let text = read_utf8(array, self.row, &col.source_dtype)?;
+                if let Some(v) = parse_decimal_i256(text, col.scale.unwrap_or(0)) {
+                    Ok(ValueRef::Decimal256(v.to_le_bytes()))
+                } else {
+                    Ok(ValueRef::Null)
+                }
+            }
+            (ColumnType::Int64, ColumnType::String)
+            | (ColumnType::Int32, ColumnType::String)
+            | (ColumnType::Int16, ColumnType::String)
+            | (ColumnType::Int8, ColumnType::String)
+            | (ColumnType::UInt64, ColumnType::String)
+            | (ColumnType::UInt32, ColumnType::String)
+            | (ColumnType::UInt16, ColumnType::String)
+            | (ColumnType::UInt8, ColumnType::String)
+            | (ColumnType::Float64, ColumnType::String)
+            | (ColumnType::Float32, ColumnType::String)
+            | (ColumnType::Bool, ColumnType::String)
+            | (ColumnType::Date, ColumnType::String)
+            | (ColumnType::Timestamp, ColumnType::String)
+            | (ColumnType::Decimal128, ColumnType::String)
+            | (ColumnType::Decimal256, ColumnType::String) => {
+                let value = value_from_array(array, self.row)?;
+                let text = match value {
+                    JsonValue::Null => return Ok(ValueRef::Null),
+                    JsonValue::String(s) => s,
+                    JsonValue::Number(n) => n.to_string(),
+                    JsonValue::Bool(v) => v.to_string(),
+                    _ => return Ok(ValueRef::Null),
+                };
+                Ok(ValueRef::String(self.pool_str(text)))
+            }
+            (ColumnType::String, ColumnType::Bytes) | (ColumnType::Bytes, ColumnType::Bytes) => {
+                let data = read_bytes(array, self.row, &col.source_dtype)?;
+                if data.len() > MAX_INPUT_STRING_BYTES {
+                    self.trimmed_strings.fetch_add(1, Ordering::Relaxed);
+                    Ok(ValueRef::Bytes(self.pool_bytes(
+                        data[..MAX_INPUT_STRING_BYTES].to_vec(),
+                    )))
+                } else {
+                    Ok(ValueRef::Bytes(data))
+                }
+            }
+            _ => Ok(ValueRef::Null),
+        }
+    }
+}
+
+impl<'a> diskgraph_rowpack::RowValueAccess for RowAccess<'a> {
+    fn get_int64(&mut self, idx: usize) -> Result<Option<i64>> {
+        match self.value_ref(idx)? {
+            ValueRef::Null => Ok(None),
+            ValueRef::Int64(v) => Ok(Some(v)),
+            _ => Err(anyhow!("rowpack int64 mismatch")),
+        }
+    }
+
+    fn get_int32(&mut self, idx: usize) -> Result<Option<i32>> {
+        match self.value_ref(idx)? {
+            ValueRef::Null => Ok(None),
+            ValueRef::Int32(v) => Ok(Some(v)),
+            _ => Err(anyhow!("rowpack int32 mismatch")),
+        }
+    }
+
+    fn get_uint64(&mut self, idx: usize) -> Result<Option<u64>> {
+        match self.value_ref(idx)? {
+            ValueRef::Null => Ok(None),
+            ValueRef::UInt64(v) => Ok(Some(v)),
+            _ => Err(anyhow!("rowpack uint64 mismatch")),
+        }
+    }
+
+    fn get_uint32(&mut self, idx: usize) -> Result<Option<u32>> {
+        match self.value_ref(idx)? {
+            ValueRef::Null => Ok(None),
+            ValueRef::UInt32(v) => Ok(Some(v)),
+            _ => Err(anyhow!("rowpack uint32 mismatch")),
+        }
+    }
+
+    fn get_float64(&mut self, idx: usize) -> Result<Option<f64>> {
+        match self.value_ref(idx)? {
+            ValueRef::Null => Ok(None),
+            ValueRef::Float64(v) => Ok(Some(v)),
+            _ => Err(anyhow!("rowpack float64 mismatch")),
+        }
+    }
+
+    fn get_float32(&mut self, idx: usize) -> Result<Option<f32>> {
+        match self.value_ref(idx)? {
+            ValueRef::Null => Ok(None),
+            ValueRef::Float32(v) => Ok(Some(v)),
+            _ => Err(anyhow!("rowpack float32 mismatch")),
+        }
+    }
+
+    fn get_bool(&mut self, idx: usize) -> Result<Option<bool>> {
+        match self.value_ref(idx)? {
+            ValueRef::Null => Ok(None),
+            ValueRef::Bool(v) => Ok(Some(v)),
+            _ => Err(anyhow!("rowpack bool mismatch")),
+        }
+    }
+
+    fn get_string(&mut self, idx: usize) -> Result<Option<&str>> {
+        match self.value_ref(idx)? {
+            ValueRef::Null => Ok(None),
+            ValueRef::String(v) => Ok(Some(v)),
+            _ => Err(anyhow!("rowpack string mismatch")),
+        }
+    }
+
+    fn get_bytes(&mut self, idx: usize) -> Result<Option<&[u8]>> {
+        match self.value_ref(idx)? {
+            ValueRef::Null => Ok(None),
+            ValueRef::Bytes(v) => Ok(Some(v)),
+            _ => Err(anyhow!("rowpack bytes mismatch")),
+        }
+    }
+
+    fn get_date(&mut self, idx: usize) -> Result<Option<i32>> {
+        match self.value_ref(idx)? {
+            ValueRef::Null => Ok(None),
+            ValueRef::Date(v) => Ok(Some(v)),
+            _ => Err(anyhow!("rowpack date mismatch")),
+        }
+    }
+
+    fn get_timestamp(&mut self, idx: usize) -> Result<Option<(i64, u32)>> {
+        match self.value_ref(idx)? {
+            ValueRef::Null => Ok(None),
+            ValueRef::Timestamp { secs, nanos } => Ok(Some((secs, nanos))),
+            _ => Err(anyhow!("rowpack timestamp mismatch")),
+        }
+    }
+
+    fn get_decimal128(&mut self, idx: usize) -> Result<Option<i128>> {
+        match self.value_ref(idx)? {
+            ValueRef::Null => Ok(None),
+            ValueRef::Decimal128(v) => Ok(Some(v)),
+            _ => Err(anyhow!("rowpack decimal128 mismatch")),
+        }
+    }
+
+    fn get_decimal256(&mut self, idx: usize) -> Result<Option<[u8; 32]>> {
+        match self.value_ref(idx)? {
+            ValueRef::Null => Ok(None),
+            ValueRef::Decimal256(v) => Ok(Some(v)),
+            _ => Err(anyhow!("rowpack decimal256 mismatch")),
+        }
+    }
+
+    fn get_float32_array(&mut self, idx: usize) -> Result<Option<&[f32]>> {
+        match self.value_ref(idx)? {
+            ValueRef::Null => Ok(None),
+            ValueRef::Float32Array(v) => Ok(Some(v)),
+            _ => Err(anyhow!("rowpack float32 array mismatch")),
+        }
+    }
+
+    fn get_float64_array(&mut self, idx: usize) -> Result<Option<&[f64]>> {
+        match self.value_ref(idx)? {
+            ValueRef::Null => Ok(None),
+            ValueRef::Float64Array(v) => Ok(Some(v)),
+            _ => Err(anyhow!("rowpack float64 array mismatch")),
+        }
+    }
+}
+struct RowValuePools {
+    strings: Vec<String>,
+    bytes: Vec<Vec<u8>>,
+    arrays_f32: Vec<Vec<f32>>,
+    arrays_f64: Vec<Vec<f64>>,
+    strings_len: usize,
+    bytes_len: usize,
+    arrays_f32_len: usize,
+    arrays_f64_len: usize,
+}
+
+impl RowValuePools {
+    fn new() -> Self {
+        Self {
+            strings: Vec::new(),
+            bytes: Vec::new(),
+            arrays_f32: Vec::new(),
+            arrays_f64: Vec::new(),
+            strings_len: 0,
+            bytes_len: 0,
+            arrays_f32_len: 0,
+            arrays_f64_len: 0,
+        }
+    }
+
+    fn reset(&mut self) {
+        self.strings_len = 0;
+        self.bytes_len = 0;
+        self.arrays_f32_len = 0;
+        self.arrays_f64_len = 0;
+    }
+
+    fn take_string_owned(&mut self, value: String) -> &str {
+        if self.strings_len < self.strings.len() {
+            self.strings[self.strings_len] = value;
+            let out = self.strings[self.strings_len].as_str();
+            self.strings_len += 1;
+            out
+        } else {
+            self.strings.push(value);
+            self.strings_len += 1;
+            self.strings.last().unwrap().as_str()
+        }
+    }
+
+    fn take_bytes_owned(&mut self, value: Vec<u8>) -> &[u8] {
+        if self.bytes_len < self.bytes.len() {
+            self.bytes[self.bytes_len] = value;
+            let out = self.bytes[self.bytes_len].as_slice();
+            self.bytes_len += 1;
+            out
+        } else {
+            self.bytes.push(value);
+            self.bytes_len += 1;
+            self.bytes.last().unwrap().as_slice()
+        }
+    }
+
+    fn take_f32_vec(&mut self, capacity: usize) -> &mut Vec<f32> {
+        if self.arrays_f32_len < self.arrays_f32.len() {
+            let slot = &mut self.arrays_f32[self.arrays_f32_len];
+            slot.clear();
+            slot.reserve(capacity);
+            self.arrays_f32_len += 1;
+            slot
+        } else {
+            self.arrays_f32.push(Vec::with_capacity(capacity));
+            self.arrays_f32_len += 1;
+            self.arrays_f32.last_mut().unwrap()
+        }
+    }
+
+    fn take_f64_vec(&mut self, capacity: usize) -> &mut Vec<f64> {
+        if self.arrays_f64_len < self.arrays_f64.len() {
+            let slot = &mut self.arrays_f64[self.arrays_f64_len];
+            slot.clear();
+            slot.reserve(capacity);
+            self.arrays_f64_len += 1;
+            slot
+        } else {
+            self.arrays_f64.push(Vec::with_capacity(capacity));
+            self.arrays_f64_len += 1;
+            self.arrays_f64.last_mut().unwrap()
+        }
+    }
+}
+
  
 fn row_values_from_row<'a>(
     row: &RowView<'a>,
@@ -4171,11 +4835,6 @@ fn owned_row_from_row<'a>(
     bytes: &mut Vec<Vec<u8>>,
     trimmed_strings: &std::sync::Arc<AtomicU64>,
 ) -> Result<OwnedRow> {
-    values.clear();
-    arrays_f32.clear();
-    arrays_f64.clear();
-    strings.clear();
-    bytes.clear();
     row_values_from_row(
         row,
         table,
