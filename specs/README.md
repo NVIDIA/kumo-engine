@@ -63,7 +63,7 @@ Field notes:
 - `edge_relations[*].name`: logical relation name.
 - `edge_relations[*].src_type` / `dst_type`: refer to node type names.
 - `edge_relations[*].shards`: relative paths and source ID ranges for edge shards; shard count must align with the source node type shard count.
-- `edge_relations[*].dest_sort_key_bits`: one of `4|8|16|32` (bit width) or null to indicate presence/width of `dest_sort_key`.
+- `edge_relations[*].dest_sort_key_bits`: one of `4|8|16|32|64` (bit width) or null to indicate presence/width of `dest_sort_key`.
 
 ## Validation Rules
 

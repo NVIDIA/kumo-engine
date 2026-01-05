@@ -1280,7 +1280,7 @@ impl EdgeSubStream {
                         )
                         .into());
                     }
-                    if sort_width > 4 {
+                    if sort_width > 8 {
                         return Err(IndexBuildError::NotImplemented(
                             "binary edge sort key width too large",
                         )

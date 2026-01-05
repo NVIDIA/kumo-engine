@@ -1,4 +1,5 @@
 use std::fs;
+use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -1105,6 +1106,45 @@ fn builder_errors_when_edge_column_wrong_type() {
 }
 
 #[test]
+fn builder_accepts_binary_edges_with_64bit_sort_key() {
+    let dir = tempdir().unwrap();
+    let edge_path = dir.path().join("edges.bin");
+    let edges = vec![EdgeRow {
+        src: 0,
+        dst: 1,
+        dest_sort_key: Some(5_000_000_000),
+    }];
+    write_binary_edges(&edge_path, &edges, 1, 1, 8).unwrap();
+
+    let node_meta = node_meta("User", 1);
+    let relation_meta = relation_meta("Temporal", "User", "User", Some(64));
+    let output_dir = dir.path().join("out");
+    let builder = ShardBuilder::new(ShardBuildParams {
+        output_dir: output_dir.clone(),
+        node_meta: node_meta.clone(),
+        node_types: vec![node_meta.clone()],
+        relation_metas: vec![relation_meta.clone()],
+        shard_index: 0,
+        node_data: None,
+    });
+    let built = builder
+        .build(
+            &[EdgeShardInput {
+                relation: "Temporal".into(),
+                source_shard_index: 0,
+                parquet: ParquetSource::LocalFile(edge_path),
+                has_dest_sort_key: true,
+                format: EdgeStorageFormat::Binary,
+            }],
+        )
+        .unwrap();
+
+    let reader = ShardReader::open(&output_dir, built.layouts.clone(), false).unwrap();
+    let decoded = decode_relation(&reader, 0, 0);
+    assert_eq!(decoded, vec![(1, Some(5_000_000_000))]);
+}
+
+#[test]
 fn builder_errors_when_dst_id_exceeds_mask() {
     let dir = tempdir().unwrap();
     let edge_path = dir.path().join("edges.parquet");
@@ -1400,6 +1440,41 @@ pub fn write_edges(path: &Path, edges: &[EdgeRow], with_sort_key: bool) -> anyho
     }
     let batch = RecordBatch::try_new(Arc::new(schema.clone()), cols)?;
     write_parquet(path, &schema, &[batch])
+}
+
+pub fn write_binary_edges(
+    path: &Path,
+    edges: &[EdgeRow],
+    src_width: u8,
+    dst_width: u8,
+    sort_width: u8,
+) -> anyhow::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let mut writer = std::io::BufWriter::new(fs::File::create(path)?);
+    writer.write_all(b"DGED")?;
+    writer.write_all(&[2u8])?;
+    let flags = if sort_width > 0 { 1u8 } else { 0u8 };
+    writer.write_all(&[flags])?;
+    writer.write_all(&[src_width, dst_width, sort_width])?;
+    writer.write_all(&[0u8, 0u8, 0u8])?;
+    for edge in edges {
+        write_u64_width(&mut writer, edge.src as u64, src_width)?;
+        write_u64_width(&mut writer, edge.dst as u64, dst_width)?;
+        if sort_width > 0 {
+            let sort = edge.dest_sort_key.unwrap_or_default() as u64;
+            write_u64_width(&mut writer, sort, sort_width)?;
+        }
+    }
+    writer.flush()?;
+    Ok(())
+}
+
+fn write_u64_width(writer: &mut std::io::BufWriter<std::fs::File>, value: u64, width: u8) -> anyhow::Result<()> {
+    let bytes = value.to_le_bytes();
+    writer.write_all(&bytes[..width as usize])?;
+    Ok(())
 }
 
 pub fn write_node_data(path: &Path, rows: &[Vec<u8>]) -> anyhow::Result<()> {

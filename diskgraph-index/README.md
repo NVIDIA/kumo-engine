@@ -71,7 +71,7 @@ Steps:
 1. Precompute relation layouts:
    - `dst_bits` = min bits to hold `max_id` of destination node type (fallback 64).
    - Masks for `dst_id` and optional `dest_sort_key`.
-   - `entry_bytes` = ceil((dst_bits + sort_bits)/8).
+   - `entry_bytes` = ceil((dst_bits + sort_bits)/8); `dest_sort_key_bits` supports up to 64.
 2. Stream edges and generate node ids:
    - Node ids are generated from the shard range in metadata.
    - Each edge stream is an async Parquet reader (`ParquetRecordBatchStreamBuilder`), caching column indices and downcast arrays per batch.
