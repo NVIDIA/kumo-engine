@@ -144,6 +144,7 @@ Other Parquet/Arrow types are rejected during ingest.
    - Read each input file and sample rows to build the rowpack context (one context per table).
    - Rowpack-encode the table primary key into a temp pkey file per shard (or round-robin when no PK).
    - Rowpack-encode node payloads into temp node data files per shard.
+   - Enforce node data size limits at write time; oversized payloads are written as empty and counted.
    - For each outgoing FK, write temp files containing the encoded FK key (and optional sort key).
    - For explicit edge tables, write temp edge files for forward and reverse directions.
 
@@ -155,7 +156,6 @@ Other Parquet/Arrow types are rejected during ingest.
 
 3) Final nodes (per table, per shard)
    - Convert temp node data into the final node binary format.
-   - Enforce node data size limits; oversize node payloads are replaced with empty payloads and counted.
 
 4) Final edges (per relation, per shard)
    - Use pk maps to translate temp edge/FK keys into local IDs.

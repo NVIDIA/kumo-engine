@@ -614,6 +614,7 @@ impl IngestContext {
         let mut fkey_writers: HashMap<String, Vec<TempRowWriter>> = HashMap::new();
         let mut row_id = 0u64;
         let mut key_buf: Vec<u8> = Vec::new();
+        let mut node_data_dropped = 0u64;
         let schema = table_schema(table)?;
         for path in &table.paths {
             if !is_cloud_path(path) && !Path::new(path).exists() {
@@ -705,6 +706,7 @@ impl IngestContext {
                                         &mut row_id,
                                         pk_col,
                                         &mut key_buf,
+                                        &mut node_data_dropped,
                                     )?;
                                     context_ready = true;
                                 }
@@ -727,6 +729,7 @@ impl IngestContext {
                                     &mut row_id,
                                     pk_col,
                                     &mut key_buf,
+                                    &mut node_data_dropped,
                                 )?;
                             }
                         }
@@ -817,6 +820,7 @@ impl IngestContext {
                                         &mut row_id,
                                         pk_col,
                                         &mut key_buf,
+                                        &mut node_data_dropped,
                                     )?;
                                     context_ready = true;
                                 }
@@ -839,6 +843,7 @@ impl IngestContext {
                                     &mut row_id,
                                     pk_col,
                                     &mut key_buf,
+                                    &mut node_data_dropped,
                                 )?;
                             }
                         }
@@ -899,6 +904,7 @@ impl IngestContext {
                 &mut row_id,
                 pk_col,
                 &mut key_buf,
+                &mut node_data_dropped,
             )?;
         }
 
@@ -927,6 +933,12 @@ impl IngestContext {
                 let meta_path = temp_fkey_meta_path(&table.name, &rel, shard);
                 write_temp_meta(&self.target, &meta_path, rows, &ctx_bytes)?;
             }
+        }
+        if node_data_dropped > 0 {
+            self.pk_duplicate_counts.insert(
+                format!("node_data_dropped:{}", table.name),
+                node_data_dropped,
+            );
         }
         self.shard_rows.insert(table.name.clone(), shard_rows);
         self.table_contexts.insert(
@@ -1031,6 +1043,7 @@ impl IngestContext {
         row_id: &mut u64,
         pk_col: Option<&ColumnSpec>,
         key_buf: &mut Vec<u8>,
+        node_data_dropped: &mut u64,
     ) -> Result<()> {
         let rows_taken = std::mem::take(rows);
         for row in rows_taken {
@@ -1051,6 +1064,7 @@ impl IngestContext {
                 row_id,
                 pk_col,
                 key_buf,
+                node_data_dropped,
             )?;
         }
         Ok(())
@@ -1074,6 +1088,7 @@ impl IngestContext {
         row_id: &mut u64,
         pk_col: Option<&ColumnSpec>,
         key_buf: &mut Vec<u8>,
+        node_data_dropped: &mut u64,
     ) -> Result<()> {
         let mut value_refs = Vec::new();
         row.as_value_refs(&mut value_refs);
@@ -1103,7 +1118,12 @@ impl IngestContext {
         } else {
             (*row_id as usize) % self.num_shards
         };
-        write_temp_row(&mut node_writers[shard], node_out)?;
+        if node_out.len() > MAX_NODE_DATA_LEN {
+            *node_data_dropped = node_data_dropped.saturating_add(1);
+            write_temp_row(&mut node_writers[shard], &[])?;
+        } else {
+            write_temp_row(&mut node_writers[shard], node_out)?;
+        }
         for (rel_name, rel_idx) in rel_specs {
             if let Some(writers) = fkey_writers.get_mut(rel_name) {
                 let col = table
@@ -1140,6 +1160,7 @@ impl IngestContext {
         row_id: &mut u64,
         pk_col: Option<&ColumnSpec>,
         key_buf: &mut Vec<u8>,
+        node_data_dropped: &mut u64,
     ) -> Result<()> {
         let encoder = node_encoder
             .as_ref()
@@ -1166,7 +1187,12 @@ impl IngestContext {
         } else {
             (*row_id as usize) % self.num_shards
         };
-        write_temp_row(&mut node_writers[shard], node_out)?;
+        if node_out.len() > MAX_NODE_DATA_LEN {
+            *node_data_dropped = node_data_dropped.saturating_add(1);
+            write_temp_row(&mut node_writers[shard], &[])?;
+        } else {
+            write_temp_row(&mut node_writers[shard], node_out)?;
+        }
         for (rel_name, rel_idx) in rel_specs {
             if let Some(writers) = fkey_writers.get_mut(rel_name) {
                 let col = table
@@ -1583,7 +1609,6 @@ impl IngestContext {
                     BufWriter::with_capacity(1024 * 1024, self.target.sink(&out_path)?);
                 writer.write_all(&NODE_BIN_MAGIC)?;
                 writer.write_all(&[NODE_BIN_VERSION, NODE_BIN_LEN_WIDTH, 0u8, 0u8])?;
-                let mut dropped = 0u64;
                 let mut pending = 0u64;
                 read_temp_rows(&temp_path, |row| {
                     pending = pending.saturating_add(1);
@@ -1598,10 +1623,11 @@ impl IngestContext {
                         });
                         pending = 0;
                     }
-                    let len = if row.len() > MAX_NODE_DATA_LEN { 0u16 } else { row.len() as u16 };
-                    if len == 0 {
-                        dropped = dropped.saturating_add(1);
+                    if row.len() > MAX_NODE_DATA_LEN {
+                        return Err(anyhow!("temp node data exceeds limit"));
                     }
+                    let len = u16::try_from(row.len())
+                        .map_err(|_| anyhow!("temp node data too large"))?;
                     writer.write_all(&len.to_le_bytes())?;
                     if len > 0 {
                         writer.write_all(row)?;
@@ -1624,10 +1650,6 @@ impl IngestContext {
                 if shard == 0 {
                     let ctx_path = format!("nodes/{}/node_data.ctx", table.name.to_lowercase());
                     self.target.write_bytes(&ctx_path, node_ctx.to_bytes()?)?;
-                }
-                if dropped > 0 {
-                    self.pk_duplicate_counts
-                        .insert(format!("node_data_dropped:{}", table.name), dropped);
                 }
             }
             self.table_rows
