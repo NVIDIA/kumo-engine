@@ -614,6 +614,7 @@ impl IngestContext {
         let mut arrays_f64: Vec<Vec<f64>> = Vec::new();
         let mut strings: Vec<String> = Vec::new();
         let mut bytes: Vec<Vec<u8>> = Vec::new();
+        let mut key_buf: Vec<u8> = Vec::new();
         let schema = table_schema(table)?;
         for path in &table.paths {
             if !is_cloud_path(path) && !Path::new(path).exists() {
@@ -688,6 +689,7 @@ impl IngestContext {
                                         &mut fkey_writers,
                                         &mut row_id,
                                         pk_col,
+                                        &mut key_buf,
                                     )?;
                                     context_ready = true;
                                 }
@@ -704,6 +706,7 @@ impl IngestContext {
                                     &mut fkey_writers,
                                     &mut row_id,
                                     pk_col,
+                                    &mut key_buf,
                                 )?;
                             }
                         }
@@ -777,6 +780,7 @@ impl IngestContext {
                                         &mut fkey_writers,
                                         &mut row_id,
                                         pk_col,
+                                        &mut key_buf,
                                     )?;
                                     context_ready = true;
                                 }
@@ -793,6 +797,7 @@ impl IngestContext {
                                     &mut fkey_writers,
                                     &mut row_id,
                                     pk_col,
+                                    &mut key_buf,
                                 )?;
                             }
                         }
@@ -842,6 +847,7 @@ impl IngestContext {
                 &mut fkey_writers,
                 &mut row_id,
                 pk_col,
+                &mut key_buf,
             )?;
         }
 
@@ -969,6 +975,7 @@ impl IngestContext {
         fkey_writers: &mut HashMap<String, Vec<TempRowWriter>>,
         row_id: &mut u64,
         pk_col: Option<&ColumnSpec>,
+        key_buf: &mut Vec<u8>,
     ) -> Result<()> {
         let rows_taken = std::mem::take(rows);
         for row in rows_taken {
@@ -984,6 +991,7 @@ impl IngestContext {
                 fkey_writers,
                 row_id,
                 pk_col,
+                key_buf,
             )?;
         }
         Ok(())
@@ -1002,6 +1010,7 @@ impl IngestContext {
         fkey_writers: &mut HashMap<String, Vec<TempRowWriter>>,
         row_id: &mut u64,
         pk_col: Option<&ColumnSpec>,
+        key_buf: &mut Vec<u8>,
     ) -> Result<()> {
         let mut value_refs = Vec::new();
         row.as_value_refs(&mut value_refs);
@@ -1035,9 +1044,9 @@ impl IngestContext {
                 row.as_value_refs_for_indices(&[*rel_idx], &mut value_refs);
                 let key = key_from_value_ref(&value_refs[0], col)
                     .map_err(|_| anyhow!("fk parse"))?;
-                let mut buf = Vec::new();
-                write_key_to_buf(&mut buf, &key)?;
-                write_temp_row(&mut writers[shard], &buf)?;
+                key_buf.clear();
+                write_key_to_buf(key_buf, &key)?;
+                write_temp_row(&mut writers[shard], key_buf)?;
             }
         }
         *row_id = row_id.saturating_add(1);
@@ -2610,19 +2619,6 @@ struct MemoryPermit {
     amount: usize,
 }
 
-struct TempNodeScratch {
-    value_refs: Vec<ValueRef<'static>>,
-    key_buf: Vec<u8>,
-}
-
-impl TempNodeScratch {
-    fn new() -> Self {
-        Self {
-            value_refs: Vec::new(),
-            key_buf: Vec::new(),
-        }
-    }
-}
 
 impl MemoryLimiter {
     fn new(total: usize) -> Self {
