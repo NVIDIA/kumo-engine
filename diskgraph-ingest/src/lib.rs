@@ -609,11 +609,6 @@ impl IngestContext {
         let mut pkey_writers: Option<Vec<TempRowWriter>> = None;
         let mut fkey_writers: HashMap<String, Vec<TempRowWriter>> = HashMap::new();
         let mut row_id = 0u64;
-        let mut values = Vec::with_capacity(table.columns.len());
-        let mut arrays_f32: Vec<Vec<f32>> = Vec::new();
-        let mut arrays_f64: Vec<Vec<f64>> = Vec::new();
-        let mut strings: Vec<String> = Vec::new();
-        let mut bytes: Vec<Vec<u8>> = Vec::new();
         let mut key_buf: Vec<u8> = Vec::new();
         let schema = table_schema(table)?;
         for path in &table.paths {
@@ -637,24 +632,31 @@ impl IngestContext {
                                 .context("missing column in batch")?;
                             cols.push(batch.column(idx).clone());
                         }
+                        let mut values = Vec::with_capacity(table.columns.len());
+                        let mut arrays_f32: Vec<Vec<f32>> = Vec::new();
+                        let mut arrays_f64: Vec<Vec<f64>> = Vec::new();
+                        let mut strings: Vec<String> = Vec::new();
+                        let mut bytes: Vec<Vec<u8>> = Vec::new();
+                        let mut value_refs: Vec<ValueRef<'_>> =
+                            Vec::with_capacity(table.columns.len());
                         for row in 0..batch.num_rows() {
                             let row_view = RowView {
                                 row,
                                 cols: &cols,
                             };
-                            let owned = owned_row_from_row(
-                                &row_view,
-                                table,
-                                &mut values,
-                                &mut arrays_f32,
-                                &mut arrays_f64,
-                                &mut strings,
-                                &mut bytes,
-                                &self.trimmed_strings,
-                            )?;
                             total_seen += 1;
                             total_rows += 1;
                             if !context_ready {
+                                let owned = owned_row_from_row(
+                                    &row_view,
+                                    table,
+                                    &mut values,
+                                    &mut arrays_f32,
+                                    &mut arrays_f64,
+                                    &mut strings,
+                                    &mut bytes,
+                                    &self.trimmed_strings,
+                                )?;
                                 buffered_rows.push(owned);
                                 if total_seen >= SAMPLE_ROW_LIMIT {
                                     self.build_node_contexts_from_samples(
@@ -694,11 +696,21 @@ impl IngestContext {
                                     context_ready = true;
                                 }
                             } else {
-                                self.write_node_row(
+                                row_values_from_row(
+                                    &row_view,
+                                    table,
+                                    &mut value_refs,
+                                    &mut arrays_f32,
+                                    &mut arrays_f64,
+                                    &mut strings,
+                                    &mut bytes,
+                                    &self.trimmed_strings,
+                                )?;
+                                self.write_node_row_from_values(
                                     table,
                                     pk_idx,
                                     &rel_specs,
-                                    owned,
+                                    &value_refs,
                                     &node_encoder,
                                     &pkey_encoder,
                                     &mut node_writers,
@@ -728,24 +740,31 @@ impl IngestContext {
                                 .context("missing column in batch")?;
                             cols.push(batch.column(idx).clone());
                         }
+                        let mut values = Vec::with_capacity(table.columns.len());
+                        let mut arrays_f32: Vec<Vec<f32>> = Vec::new();
+                        let mut arrays_f64: Vec<Vec<f64>> = Vec::new();
+                        let mut strings: Vec<String> = Vec::new();
+                        let mut bytes: Vec<Vec<u8>> = Vec::new();
+                        let mut value_refs: Vec<ValueRef<'_>> =
+                            Vec::with_capacity(table.columns.len());
                         for row in 0..batch.num_rows() {
                             let row_view = RowView {
                                 row,
                                 cols: &cols,
                             };
-                            let owned = owned_row_from_row(
-                                &row_view,
-                                table,
-                                &mut values,
-                                &mut arrays_f32,
-                                &mut arrays_f64,
-                                &mut strings,
-                                &mut bytes,
-                                &self.trimmed_strings,
-                            )?;
                             total_seen += 1;
                             total_rows += 1;
                             if !context_ready {
+                                let owned = owned_row_from_row(
+                                    &row_view,
+                                    table,
+                                    &mut values,
+                                    &mut arrays_f32,
+                                    &mut arrays_f64,
+                                    &mut strings,
+                                    &mut bytes,
+                                    &self.trimmed_strings,
+                                )?;
                                 buffered_rows.push(owned);
                                 if total_seen >= SAMPLE_ROW_LIMIT {
                                     self.build_node_contexts_from_samples(
@@ -785,11 +804,21 @@ impl IngestContext {
                                     context_ready = true;
                                 }
                             } else {
-                                self.write_node_row(
+                                row_values_from_row(
+                                    &row_view,
+                                    table,
+                                    &mut value_refs,
+                                    &mut arrays_f32,
+                                    &mut arrays_f64,
+                                    &mut strings,
+                                    &mut bytes,
+                                    &self.trimmed_strings,
+                                )?;
+                                self.write_node_row_from_values(
                                     table,
                                     pk_idx,
                                     &rel_specs,
-                                    owned,
+                                    &value_refs,
                                     &node_encoder,
                                     &pkey_encoder,
                                     &mut node_writers,
@@ -1053,6 +1082,60 @@ impl IngestContext {
         Ok(())
     }
 
+    fn write_node_row_from_values(
+        &self,
+        table: &TableSpec,
+        pk_idx: Option<usize>,
+        rel_specs: &[(String, usize)],
+        value_refs: &[ValueRef<'_>],
+        node_encoder: &Option<RowPackEncoder>,
+        pkey_encoder: &Option<RowPackEncoder>,
+        node_writers: &mut Vec<TempRowWriter>,
+        pkey_writers: &mut Option<Vec<TempRowWriter>>,
+        fkey_writers: &mut HashMap<String, Vec<TempRowWriter>>,
+        row_id: &mut u64,
+        pk_col: Option<&ColumnSpec>,
+        key_buf: &mut Vec<u8>,
+    ) -> Result<()> {
+        let node_row = node_encoder
+            .as_ref()
+            .ok_or_else(|| anyhow!("missing node encoder"))?
+            .encode_row(value_refs)?;
+        let shard = if let (Some(idx), Some(pkey_encoder), Some(pk_col)) =
+            (pk_idx, pkey_encoder.as_ref(), pk_col)
+        {
+            let pk_value = value_refs.get(idx).ok_or_else(|| anyhow!("missing pk value"))?;
+            let key = key_from_value_ref(pk_value, pk_col).map_err(|_| anyhow!("pk parse"))?;
+            let mut scratch = [0u8; 16];
+            let shard = shard_for_key(key_hash_bytes(&key, &mut scratch), self.num_shards);
+            let pkey_row = pkey_encoder.encode_row(std::slice::from_ref(pk_value))?;
+            if let Some(writers) = pkey_writers.as_mut() {
+                write_temp_row(&mut writers[shard], &pkey_row)?;
+            }
+            shard
+        } else {
+            (*row_id as usize) % self.num_shards
+        };
+        write_temp_row(&mut node_writers[shard], &node_row)?;
+        for (rel_name, rel_idx) in rel_specs {
+            if let Some(writers) = fkey_writers.get_mut(rel_name) {
+                let col = table
+                    .columns
+                    .get(*rel_idx)
+                    .ok_or_else(|| anyhow!("missing fk column"))?;
+                let value = value_refs
+                    .get(*rel_idx)
+                    .ok_or_else(|| anyhow!("missing fk value"))?;
+                let key = key_from_value_ref(value, col).map_err(|_| anyhow!("fk parse"))?;
+                key_buf.clear();
+                write_key_to_buf(key_buf, &key)?;
+                write_temp_row(&mut writers[shard], key_buf)?;
+            }
+        }
+        *row_id = row_id.saturating_add(1);
+        Ok(())
+    }
+
     fn build_temp_edge_table(&mut self, table: &TableSpec) -> Result<()> {
         let edge = table
             .edge_table
@@ -1065,11 +1148,6 @@ impl IngestContext {
         let mut forward_writers: Vec<TempRowWriter> = Vec::new();
         let mut reverse_writers: Vec<TempRowWriter> = Vec::new();
         self.init_edge_temp_writers(&table.name, &mut forward_writers, &mut reverse_writers)?;
-        let mut values = Vec::with_capacity(table.columns.len());
-        let mut arrays_f32: Vec<Vec<f32>> = Vec::new();
-        let mut arrays_f64: Vec<Vec<f64>> = Vec::new();
-        let mut strings: Vec<String> = Vec::new();
-        let mut bytes: Vec<Vec<u8>> = Vec::new();
         let schema = table_schema(table)?;
 
         for path in &table.paths {
@@ -1093,6 +1171,11 @@ impl IngestContext {
                                 .context("missing column in batch")?;
                             cols.push(batch.column(idx).clone());
                         }
+                        let mut values = Vec::with_capacity(table.columns.len());
+                        let mut arrays_f32: Vec<Vec<f32>> = Vec::new();
+                        let mut arrays_f64: Vec<Vec<f64>> = Vec::new();
+                        let mut strings: Vec<String> = Vec::new();
+                        let mut bytes: Vec<Vec<u8>> = Vec::new();
                         for row in 0..batch.num_rows() {
                             let row_view = RowView {
                                 row,
@@ -1136,6 +1219,11 @@ impl IngestContext {
                                 .context("missing column in batch")?;
                             cols.push(batch.column(idx).clone());
                         }
+                        let mut values = Vec::with_capacity(table.columns.len());
+                        let mut arrays_f32: Vec<Vec<f32>> = Vec::new();
+                        let mut arrays_f64: Vec<Vec<f64>> = Vec::new();
+                        let mut strings: Vec<String> = Vec::new();
+                        let mut bytes: Vec<Vec<u8>> = Vec::new();
                         for row in 0..batch.num_rows() {
                             let row_view = RowView {
                                 row,
@@ -3224,6 +3312,7 @@ mod tests {
             &mut arrays_f64,
             &mut strings,
             &mut bytes,
+            &std::sync::Arc::new(AtomicU64::new(0)),
         )
         .unwrap();
         match values[0] {
@@ -3277,6 +3366,7 @@ mod tests {
             &mut arrays_f64,
             &mut strings,
             &mut bytes,
+            &std::sync::Arc::new(AtomicU64::new(0)),
         )
         .unwrap();
         match values[0] {
@@ -3330,6 +3420,7 @@ mod tests {
             &mut arrays_f64,
             &mut strings,
             &mut bytes,
+            &std::sync::Arc::new(AtomicU64::new(0)),
         )
         .unwrap();
         match values[0] {
@@ -3390,6 +3481,7 @@ mod tests {
             &mut arrays_f64,
             &mut strings,
             &mut bytes,
+            &std::sync::Arc::new(AtomicU64::new(0)),
         )
         .unwrap();
         match values[0] {
@@ -3440,6 +3532,7 @@ mod tests {
             &mut arrays_f64,
             &mut strings,
             &mut bytes,
+            &std::sync::Arc::new(AtomicU64::new(0)),
         )
         .unwrap();
         match values[0] {
@@ -3628,14 +3721,15 @@ struct RowView<'a> {
 }
 
  
-fn row_values_from_row(
-    row: &RowView<'_>,
+fn row_values_from_row<'a>(
+    row: &RowView<'a>,
     table: &TableSpec,
-    values: &mut Vec<ValueRef<'_>>,
+    values: &mut Vec<ValueRef<'a>>,
     arrays_f32: &mut Vec<Vec<f32>>,
     arrays_f64: &mut Vec<Vec<f64>>,
     strings: &mut Vec<String>,
     bytes: &mut Vec<Vec<u8>>,
+    trimmed_strings: &std::sync::Arc<AtomicU64>,
 ) -> Result<()> {
     values.clear();
     arrays_f32.clear();
@@ -3740,20 +3834,33 @@ fn row_values_from_row(
                         .as_any()
                         .downcast_ref::<arrow_array::StringArray>()
                         .ok_or_else(|| anyhow!("string cast"))?;
-                    strings.push(arr.value(row.row).to_string());
-                    let slice_ptr = strings.last().unwrap().as_str() as *const str;
-                    let slice = unsafe { &*slice_ptr };
-                    values.push(ValueRef::String(slice));
+                    let text = arr.value(row.row);
+                    if text.len() > MAX_INPUT_STRING_BYTES {
+                        let trimmed = trim_str_bytes(text, MAX_INPUT_STRING_BYTES).to_string();
+                        trimmed_strings.fetch_add(1, Ordering::Relaxed);
+                        strings.push(trimmed);
+                        let slice_ptr = strings.last().unwrap().as_str() as *const str;
+                        let slice = unsafe { &*slice_ptr };
+                        values.push(ValueRef::String(slice));
+                    } else {
+                        values.push(ValueRef::String(text));
+                    }
                 }
                 ColumnType::Bytes => {
                     let arr = array
                         .as_any()
                         .downcast_ref::<arrow_array::BinaryArray>()
                         .ok_or_else(|| anyhow!("binary cast"))?;
-                    bytes.push(arr.value(row.row).to_vec());
-                    let slice_ptr = bytes.last().unwrap().as_slice() as *const [u8];
-                    let slice = unsafe { &*slice_ptr };
-                    values.push(ValueRef::Bytes(slice));
+                    let data = arr.value(row.row);
+                    if data.len() > MAX_INPUT_STRING_BYTES {
+                        trimmed_strings.fetch_add(1, Ordering::Relaxed);
+                        bytes.push(data[..MAX_INPUT_STRING_BYTES].to_vec());
+                        let slice_ptr = bytes.last().unwrap().as_slice() as *const [u8];
+                        let slice = unsafe { &*slice_ptr };
+                        values.push(ValueRef::Bytes(slice));
+                    } else {
+                        values.push(ValueRef::Bytes(data));
+                    }
                 }
                 ColumnType::Date => {
                     let arr = array
@@ -4001,10 +4108,15 @@ fn row_values_from_row(
             }
             (ColumnType::String, ColumnType::Bytes) | (ColumnType::Bytes, ColumnType::Bytes) => {
                 let data = read_bytes(array, row.row, &col.source_dtype)?;
-                bytes.push(data.to_vec());
-                let slice_ptr = bytes.last().unwrap().as_slice() as *const [u8];
-                let slice = unsafe { &*slice_ptr };
-                values.push(ValueRef::Bytes(slice));
+                if data.len() > MAX_INPUT_STRING_BYTES {
+                    trimmed_strings.fetch_add(1, Ordering::Relaxed);
+                    bytes.push(data[..MAX_INPUT_STRING_BYTES].to_vec());
+                    let slice_ptr = bytes.last().unwrap().as_slice() as *const [u8];
+                    let slice = unsafe { &*slice_ptr };
+                    values.push(ValueRef::Bytes(slice));
+                } else {
+                    values.push(ValueRef::Bytes(data));
+                }
             }
             _ => {
                 values.push(ValueRef::Null);
@@ -4016,7 +4128,6 @@ fn row_values_from_row(
 
 fn owned_row_from_refs(
     values: &[ValueRef<'_>],
-    trimmed_strings: &std::sync::Arc<AtomicU64>,
 ) -> OwnedRow {
     let mut owned = Vec::with_capacity(values.len());
     for value in values {
@@ -4030,21 +4141,10 @@ fn owned_row_from_refs(
             ValueRef::Float32(v) => OwnedValue::Float32(*v),
             ValueRef::Bool(v) => OwnedValue::Bool(*v),
             ValueRef::String(v) => {
-                if v.len() > MAX_INPUT_STRING_BYTES {
-                    let trimmed = trim_str_bytes(v, MAX_INPUT_STRING_BYTES).to_string();
-                    trimmed_strings.fetch_add(1, Ordering::Relaxed);
-                    OwnedValue::String(trimmed)
-                } else {
-                    OwnedValue::String((*v).to_string())
-                }
+                OwnedValue::String((*v).to_string())
             }
             ValueRef::Bytes(v) => {
-                if v.len() > MAX_INPUT_STRING_BYTES {
-                    trimmed_strings.fetch_add(1, Ordering::Relaxed);
-                    OwnedValue::Bytes(v[..MAX_INPUT_STRING_BYTES].to_vec())
-                } else {
-                    OwnedValue::Bytes((*v).to_vec())
-                }
+                OwnedValue::Bytes((*v).to_vec())
             }
             ValueRef::Date(v) => OwnedValue::Date(*v),
             ValueRef::Timestamp { secs, nanos } => OwnedValue::Timestamp {
@@ -4061,10 +4161,10 @@ fn owned_row_from_refs(
     OwnedRow { values: owned }
 }
 
-fn owned_row_from_row(
-    row: &RowView<'_>,
+fn owned_row_from_row<'a>(
+    row: &RowView<'a>,
     table: &TableSpec,
-    values: &mut Vec<ValueRef<'_>>,
+    values: &mut Vec<ValueRef<'a>>,
     arrays_f32: &mut Vec<Vec<f32>>,
     arrays_f64: &mut Vec<Vec<f64>>,
     strings: &mut Vec<String>,
@@ -4084,8 +4184,9 @@ fn owned_row_from_row(
         arrays_f64,
         strings,
         bytes,
+        trimmed_strings,
     )?;
-    Ok(owned_row_from_refs(values, trimmed_strings))
+    Ok(owned_row_from_refs(values))
 }
 
 fn read_utf8<'a>(array: &'a ArrayRef, row: usize, dtype: &ColumnType) -> Result<&'a str> {
