@@ -2506,26 +2506,35 @@ fn radix_sort_edge_records(records: &mut [EdgeRecord], src_width: u8) {
         };
         records.len()
     ];
-    for pass in 0..passes {
-        let shift = pass * 8;
-        let mut counts = [0usize; 256];
-        for rec in records.iter() {
-            let byte = ((rec.src_id >> shift) & 0xFF) as usize;
-            counts[byte] += 1;
+    let mut swapped = false;
+    {
+        let mut from: &mut [EdgeRecord] = records;
+        let mut to: &mut [EdgeRecord] = tmp.as_mut_slice();
+        for pass in 0..passes {
+            let shift = pass * 8;
+            let mut counts = [0usize; 256];
+            for rec in from.iter() {
+                let byte = ((rec.src_id >> shift) & 0xFF) as usize;
+                counts[byte] += 1;
+            }
+            let mut sum = 0usize;
+            for count in counts.iter_mut() {
+                let current = *count;
+                *count = sum;
+                sum = sum.saturating_add(current);
+            }
+            for rec in from.iter() {
+                let byte = ((rec.src_id >> shift) & 0xFF) as usize;
+                let idx = counts[byte];
+                to[idx] = *rec;
+                counts[byte] = idx + 1;
+            }
+            std::mem::swap(&mut from, &mut to);
+            swapped = !swapped;
         }
-        let mut sum = 0usize;
-        for count in counts.iter_mut() {
-            let current = *count;
-            *count = sum;
-            sum = sum.saturating_add(current);
+        if swapped {
+            to.copy_from_slice(from);
         }
-        for rec in records.iter() {
-            let byte = ((rec.src_id >> shift) & 0xFF) as usize;
-            let idx = counts[byte];
-            tmp[idx] = *rec;
-            counts[byte] = idx + 1;
-        }
-        records.copy_from_slice(&tmp);
     }
 }
 
