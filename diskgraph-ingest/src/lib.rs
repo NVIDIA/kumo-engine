@@ -2471,7 +2471,7 @@ fn write_edge_records(
     already_sorted: bool,
 ) -> Result<()> {
     if !already_sorted {
-        records.sort_unstable_by(|a, b| a.src_id.cmp(&b.src_id));
+        radix_sort_edge_records(&mut records, spec.src_width);
     }
     let mut writer = BufWriter::new(target.sink(path)?);
     write_edge_bin_header(&mut writer, spec.sort_width > 0, spec)?;
@@ -2488,6 +2488,45 @@ fn write_edge_records(
         .map_err(|_| anyhow!("edge flush failed"))?;
     sink.finish()?;
     Ok(())
+}
+
+fn radix_sort_edge_records(records: &mut [EdgeRecord], src_width: u8) {
+    if records.len() <= 1 {
+        return;
+    }
+    let passes = (src_width as usize).min(8);
+    if passes == 0 {
+        return;
+    }
+    let mut tmp = vec![
+        EdgeRecord {
+            src_id: 0,
+            dst_id: 0,
+            sort_key: 0,
+        };
+        records.len()
+    ];
+    for pass in 0..passes {
+        let shift = pass * 8;
+        let mut counts = [0usize; 256];
+        for rec in records.iter() {
+            let byte = ((rec.src_id >> shift) & 0xFF) as usize;
+            counts[byte] += 1;
+        }
+        let mut sum = 0usize;
+        for count in counts.iter_mut() {
+            let current = *count;
+            *count = sum;
+            sum = sum.saturating_add(current);
+        }
+        for rec in records.iter() {
+            let byte = ((rec.src_id >> shift) & 0xFF) as usize;
+            let idx = counts[byte];
+            tmp[idx] = *rec;
+            counts[byte] = idx + 1;
+        }
+        records.copy_from_slice(&tmp);
+    }
 }
 
 fn column_spec<'a>(table: &'a TableSpec, name: &str) -> Result<&'a ColumnSpec> {
