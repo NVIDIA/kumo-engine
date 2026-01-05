@@ -288,7 +288,7 @@ fn build_progress() -> Option<ProgressCallback> {
                 };
                 bar.set_message(label);
                 if let Some(total) = event.total {
-                    bar.set_suffix(format!("({}/{})", format_count(0), format_count(total)));
+                    bar.set_prefix(format!("({}/{})", format_count(0), format_count(total)));
                 }
                 guard.bars.insert(key, bar);
             }
@@ -296,7 +296,7 @@ fn build_progress() -> Option<ProgressCallback> {
                 if let Some(bar) = guard.bars.get(&key) {
                     bar.inc(event.delta);
                     if let Some(total) = bar.length() {
-                        bar.set_suffix(format!(
+                        bar.set_prefix(format!(
                             "({}/{})",
                             format_count(bar.position()),
                             format_count(total)
@@ -310,7 +310,7 @@ fn build_progress() -> Option<ProgressCallback> {
             ProgressKind::Finish => {
                 if let Some(bar) = guard.bars.remove(&key) {
                     if let Some(total) = event.total.or_else(|| bar.length()) {
-                        bar.set_suffix(format!(
+                        bar.set_prefix(format!(
                             "({}/{})",
                             format_count(bar.position()),
                             format_count(total)
@@ -337,7 +337,7 @@ fn progress_label(event: &ProgressEvent) -> String {
 }
 
 fn bar_style() -> ProgressStyle {
-    ProgressStyle::with_template("{msg} {bar:40.cyan/blue} {percent}% {suffix}")
+    ProgressStyle::with_template("{msg} {bar:40.cyan/blue} {percent}% {prefix}")
         .unwrap_or_else(|_| ProgressStyle::default_bar())
 }
 
