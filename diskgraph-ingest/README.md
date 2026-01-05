@@ -138,6 +138,34 @@ Other Parquet/Arrow types are rejected during ingest.
 - Rowpack context files per node table (`node_data.ctx` by default)
 - `ingest_stats.json` with ingest stats (key failures, duplicate keys, schema echo)
 
+## Ingestion stages
+
+1) Temp (per table)
+   - Read each input file and sample rows to build the rowpack context (one context per table).
+   - Rowpack-encode the table primary key into a temp pkey file per shard (or round-robin when no PK).
+   - Rowpack-encode node payloads into temp node data files per shard.
+   - For each outgoing FK, write temp files containing the encoded FK key (and optional sort key).
+   - For explicit edge tables, write temp edge files for forward and reverse directions.
+
+2) PK map (per table, per shard)
+   - Build on-disk pk maps that map encoded PKs to shard-local IDs.
+   - Fixed-width keys become sorted (key,id) files for binary search.
+   - Variable-width keys become hash maps.
+   - Duplicate PKs are dropped and counted; up to 10 samples are recorded.
+
+3) Final nodes (per table, per shard)
+   - Convert temp node data into the final node binary format.
+   - Enforce node data size limits; oversize node payloads are replaced with empty payloads and counted.
+
+4) Final edges (per relation, per shard)
+   - Use pk maps to translate temp edge/FK keys into local IDs.
+   - Emit forward and reverse edge shard files in the final binary format.
+   - Ensure edges are sorted by src_id (per relation and direction).
+
+5) Finalize
+   - Write `index_metadata.json` and `ingest_stats.json`.
+   - Remove temporary files and directories.
+
 ## Usage (CLI)
 
 ```bash
