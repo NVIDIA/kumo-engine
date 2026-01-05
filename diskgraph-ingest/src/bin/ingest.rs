@@ -7,7 +7,7 @@ use diskgraph_ingest::{
     ProgressPhase,
 };
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
-use std::collections::HashMap;
+use ahash::AHashMap as HashMap;
 use std::fs;
 use std::io::IsTerminal;
 use std::sync::{Arc, Mutex};

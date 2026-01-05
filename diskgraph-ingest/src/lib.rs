@@ -30,7 +30,7 @@ use pprof::protos::Message;
 use pprof::ProfilerGuard;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
-use std::collections::HashMap;
+use ahash::AHashMap as HashMap;
 use std::fs;
 use std::io::{self, BufWriter, Read, Write};
 use std::hash::Hasher;

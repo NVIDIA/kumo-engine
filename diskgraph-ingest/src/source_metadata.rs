@@ -2,7 +2,8 @@ use anyhow::{anyhow, Result};
 use diskgraph_core::metadata::EdgeStorageFormat;
 use diskgraph_rowpack::RowPackConfig;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use ahash::AHashMap as HashMap;
+use std::collections::HashSet;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceMetadata {
