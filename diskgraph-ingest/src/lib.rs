@@ -34,6 +34,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::{self, BufWriter, Read, Write};
 use std::hash::Hasher;
+use std::mem::MaybeUninit;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -2498,43 +2499,58 @@ fn radix_sort_edge_records(records: &mut [EdgeRecord], src_width: u8) {
     if passes == 0 {
         return;
     }
-    let mut tmp = vec![
-        EdgeRecord {
-            src_id: 0,
-            dst_id: 0,
-            sort_key: 0,
-        };
-        records.len()
-    ];
-    let mut swapped = false;
-    {
-        let mut from: &mut [EdgeRecord] = records;
-        let mut to: &mut [EdgeRecord] = tmp.as_mut_slice();
-        for pass in 0..passes {
-            let shift = pass * 8;
-            let mut counts = [0usize; 256];
+    let len = records.len();
+    let mut tmp: Vec<MaybeUninit<EdgeRecord>> = Vec::with_capacity(len);
+    unsafe {
+        tmp.set_len(len);
+    }
+    let mut from_records = true;
+    for pass in 0..passes {
+        let shift = pass * 8;
+        let mut counts = [0usize; 256];
+        if from_records {
+            for rec in records.iter() {
+                let byte = ((rec.src_id >> shift) & 0xFF) as usize;
+                counts[byte] += 1;
+            }
+        } else {
+            let from = unsafe {
+                std::slice::from_raw_parts(tmp.as_ptr() as *const EdgeRecord, len)
+            };
             for rec in from.iter() {
                 let byte = ((rec.src_id >> shift) & 0xFF) as usize;
                 counts[byte] += 1;
             }
-            let mut sum = 0usize;
-            for count in counts.iter_mut() {
-                let current = *count;
-                *count = sum;
-                sum = sum.saturating_add(current);
+        }
+        let mut sum = 0usize;
+        for count in counts.iter_mut() {
+            let current = *count;
+            *count = sum;
+            sum = sum.saturating_add(current);
+        }
+        if from_records {
+            for rec in records.iter() {
+                let byte = ((rec.src_id >> shift) & 0xFF) as usize;
+                let idx = counts[byte];
+                tmp[idx].write(*rec);
+                counts[byte] = idx + 1;
             }
+        } else {
+            let from = unsafe {
+                std::slice::from_raw_parts(tmp.as_ptr() as *const EdgeRecord, len)
+            };
             for rec in from.iter() {
                 let byte = ((rec.src_id >> shift) & 0xFF) as usize;
                 let idx = counts[byte];
-                to[idx] = *rec;
+                records[idx] = *rec;
                 counts[byte] = idx + 1;
             }
-            std::mem::swap(&mut from, &mut to);
-            swapped = !swapped;
         }
-        if swapped {
-            to.copy_from_slice(from);
-        }
+        from_records = !from_records;
+    }
+    if !from_records {
+        let from = unsafe { std::slice::from_raw_parts(tmp.as_ptr() as *const EdgeRecord, len) };
+        records.copy_from_slice(from);
     }
 }
 
