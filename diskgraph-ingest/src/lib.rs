@@ -20,8 +20,8 @@ use diskgraph_fs::{
     build_adls_client, build_gcs_client, build_s3_client, AdlsConfig, GcsConfig, S3Config,
 };
 use diskgraph_rowpack::{
-    LogicalType as RowpackType, RowPackConfig, RowPackContextBuilder, RowPackDecoder,
-    RowPackEncoder, ValueRef,
+    LogicalType as RowpackType, RowPackConfig, RowPackContextBuilder, RowPackDecodeScratch,
+    RowPackDecoder, RowPackEncoder, ValueRef,
 };
 use num_traits::Signed;
 use object_store::{path::Path as ObjectPath, ObjectStore, WriteMultipart};
@@ -1474,13 +1474,10 @@ impl IngestContext {
                             PkMap::new(mapping_kind, key_type, meta.row_count as usize);
                         let data_path = root.join(&pkey_path);
                         let mut row_id = 0u64;
+                        let mut scratch = RowPackDecodeScratch::default();
                         read_temp_rows(&data_path, |row| {
-                            let json = decoder.decode_json(row)?;
-                            let value = json
-                                .as_object()
-                                .and_then(|m| m.values().next())
-                                .ok_or_else(|| anyhow!("missing pk value"))?;
-                            if let Ok(key) = key_from_json_value(value, &pk_col) {
+                            let value = decoder.decode_column_value(row, 0, &mut scratch)?;
+                            if let Ok(key) = key_from_value_ref(&value, &pk_col) {
                                 pk_map.insert(key, row_id)?;
                             }
                             row_id += 1;
@@ -1792,6 +1789,7 @@ impl IngestContext {
                 write_edge_bin_header(&mut forward_writer, false, forward_spec)?;
                 write_edge_bin_header(&mut reverse_writer, false, reverse_spec)?;
                 let mut count = 0u64;
+                let mut scratch = RowPackDecodeScratch::default();
                 let mut pending = 0u64;
                 read_temp_rows(&fkey_path, |row| {
                     pending = pending.saturating_add(1);
@@ -1814,14 +1812,13 @@ impl IngestContext {
                         });
                         pending = 0;
                     }
-                    let json = decoder.decode_json(row)?;
-                    let obj = json.as_object().ok_or_else(|| anyhow!("invalid fkey row"))?;
-                    let dst_val = obj
-                        .get(&rel.src_column)
-                        .ok_or_else(|| anyhow!("missing dst key"))?;
-                    let dst_key = key_from_json_value(dst_val, dst_pk_col)
+                    let dst_val = decoder.decode_column_value(row, 0, &mut scratch)?;
+                    let dst_key = key_from_value_ref(&dst_val, dst_pk_col)
                         .map_err(|_| anyhow!("fk parse"))?;
-                    let dst_row = encode_pkey_row(dst_encoder, dst_val, dst_pk_col)?;
+                    let dst_row = {
+                        let values = [dst_val];
+                        dst_encoder.encode_row(&values)?
+                    };
                     let dst_shard = shard_for_key(&dst_row, self.num_shards);
                     let src_id = src_offsets[shard].saturating_add(count);
                     let dst_local = dst_maps
@@ -1997,6 +1994,7 @@ impl IngestContext {
                 );
                 write_edge_bin_header(&mut writer, false, spec)?;
                 let mut count = 0u64;
+                let mut scratch = RowPackDecodeScratch::default();
                 let mut pending = 0u64;
                 read_temp_rows(&forward_path, |row| {
                     pending = pending.saturating_add(1);
@@ -2011,17 +2009,20 @@ impl IngestContext {
                         });
                         pending = 0;
                     }
-                    let json = decoder.decode_json(row)?;
-                    let obj = json.as_object().ok_or_else(|| anyhow!("invalid edge row"))?;
-                    let mut iter = obj.values();
-                    let src_val = iter.next().ok_or_else(|| anyhow!("missing src key"))?;
-                    let dst_val = iter.next().ok_or_else(|| anyhow!("missing dst key"))?;
-                    let src_key = key_from_json_value(src_val, src_pk_col)
+                    let src_val = decoder.decode_column_value(row, 0, &mut scratch)?;
+                    let src_key = key_from_value_ref(&src_val, src_pk_col)
                         .map_err(|_| anyhow!("src key parse"))?;
-                    let dst_key = key_from_json_value(dst_val, dst_pk_col)
+                    let src_row = {
+                        let values = [src_val];
+                        src_encoder.encode_row(&values)?
+                    };
+                    let dst_val = decoder.decode_column_value(row, 1, &mut scratch)?;
+                    let dst_key = key_from_value_ref(&dst_val, dst_pk_col)
                         .map_err(|_| anyhow!("dst key parse"))?;
-                    let src_row = encode_pkey_row(src_encoder, src_val, src_pk_col)?;
-                    let dst_row = encode_pkey_row(dst_encoder, dst_val, dst_pk_col)?;
+                    let dst_row = {
+                        let values = [dst_val];
+                        dst_encoder.encode_row(&values)?
+                    };
                     let src_shard = shard_for_key(&src_row, self.num_shards);
                     let dst_shard = shard_for_key(&dst_row, self.num_shards);
                     let src_local = src_maps
@@ -2088,6 +2089,7 @@ impl IngestContext {
                 );
                 write_edge_bin_header(&mut writer, false, spec)?;
                 let mut count = 0u64;
+                let mut scratch = RowPackDecodeScratch::default();
                 let mut pending = 0u64;
                 read_temp_rows(&reverse_path, |row| {
                     pending = pending.saturating_add(1);
@@ -2102,17 +2104,20 @@ impl IngestContext {
                         });
                         pending = 0;
                     }
-                    let json = decoder.decode_json(row)?;
-                    let obj = json.as_object().ok_or_else(|| anyhow!("invalid edge row"))?;
-                    let mut iter = obj.values();
-                    let dst_val = iter.next().ok_or_else(|| anyhow!("missing dst key"))?;
-                    let src_val = iter.next().ok_or_else(|| anyhow!("missing src key"))?;
-                    let dst_key = key_from_json_value(dst_val, dst_pk_col)
+                    let dst_val = decoder.decode_column_value(row, 0, &mut scratch)?;
+                    let dst_key = key_from_value_ref(&dst_val, dst_pk_col)
                         .map_err(|_| anyhow!("dst key parse"))?;
-                    let src_key = key_from_json_value(src_val, src_pk_col)
+                    let dst_row = {
+                        let values = [dst_val];
+                        dst_encoder.encode_row(&values)?
+                    };
+                    let src_val = decoder.decode_column_value(row, 1, &mut scratch)?;
+                    let src_key = key_from_value_ref(&src_val, src_pk_col)
                         .map_err(|_| anyhow!("src key parse"))?;
-                    let dst_row = encode_pkey_row(dst_encoder, dst_val, dst_pk_col)?;
-                    let src_row = encode_pkey_row(src_encoder, src_val, src_pk_col)?;
+                    let src_row = {
+                        let values = [src_val];
+                        src_encoder.encode_row(&values)?
+                    };
                     let dst_shard = shard_for_key(&dst_row, self.num_shards);
                     let src_shard = shard_for_key(&src_row, self.num_shards);
                     let dst_local = dst_maps
@@ -2799,23 +2804,27 @@ fn column_index(table: &TableSpec, name: &str) -> Result<usize> {
         .ok_or_else(|| anyhow!("missing column {}", name))
 }
 
-fn key_from_json_value(value: &JsonValue, col: &ColumnSpec) -> KeyParseResult<Key> {
+fn key_from_value_ref(value: &ValueRef<'_>, col: &ColumnSpec) -> KeyParseResult<Key> {
     let key_type = key_type_for_column(col).map_err(|_| KeyParseError::UnsupportedType)?;
     match key_type {
         KeyType::Int64 => match value {
-            JsonValue::Number(num) => {
-                if let Some(v) = num.as_i64() {
-                    if v < 0 {
-                        return Err(KeyParseError::Negative);
-                    }
-                    Ok(Key::Int(v as u64))
-                } else if let Some(v) = num.as_u64() {
-                    Ok(Key::Int(v))
+            ValueRef::Int64(v) => {
+                if *v < 0 {
+                    Err(KeyParseError::Negative)
                 } else {
-                    Err(KeyParseError::NotInteger)
+                    Ok(Key::Int(*v as u64))
                 }
             }
-            JsonValue::String(s) => {
+            ValueRef::Int32(v) => {
+                if *v < 0 {
+                    Err(KeyParseError::Negative)
+                } else {
+                    Ok(Key::Int(*v as u64))
+                }
+            }
+            ValueRef::UInt64(v) => Ok(Key::Int(*v)),
+            ValueRef::UInt32(v) => Ok(Key::Int(*v as u64)),
+            ValueRef::String(s) => {
                 if col.key_mode == Some(KeyMode::Uuid)
                     || col.key_mode == Some(KeyMode::Fixed)
                     || col.fixed_len.is_some()
@@ -2824,18 +2833,24 @@ fn key_from_json_value(value: &JsonValue, col: &ColumnSpec) -> KeyParseResult<Ke
                 }
                 parse_base10_bytes(s.as_bytes()).map(Key::Int)
             }
+            ValueRef::Bytes(b) => parse_base10_bytes(b).map(Key::Int),
             _ => Err(KeyParseError::TypeMismatch),
         },
         KeyType::FixedBytes { len } => match value {
-            JsonValue::String(s) => {
+            ValueRef::Bytes(b) => {
                 if col.key_mode == Some(KeyMode::Uuid) {
                     return Err(KeyParseError::TypeMismatch);
                 }
-                let bytes = if matches!(col.ingested_dtype, ColumnType::Bytes) {
-                    BASE64.decode(s.as_bytes()).map_err(|_| KeyParseError::NotUtf8)?
-                } else {
-                    normalize_numeric_bytes(s.as_bytes(), col)?
-                };
+                if b.len() != len {
+                    return Err(KeyParseError::LengthMismatch);
+                }
+                Ok(Key::FixedBytes(b.to_vec()))
+            }
+            ValueRef::String(s) => {
+                if col.key_mode == Some(KeyMode::Uuid) {
+                    return Err(KeyParseError::TypeMismatch);
+                }
+                let bytes = normalize_numeric_bytes(s.as_bytes(), col)?;
                 if bytes.len() != len {
                     return Err(KeyParseError::LengthMismatch);
                 }
@@ -2844,28 +2859,59 @@ fn key_from_json_value(value: &JsonValue, col: &ColumnSpec) -> KeyParseResult<Ke
             _ => Err(KeyParseError::TypeMismatch),
         },
         KeyType::VarBytes => match value {
-            JsonValue::String(s) => {
+            ValueRef::Bytes(b) => {
                 if col.key_mode == Some(KeyMode::Uuid)
                     || col.key_mode == Some(KeyMode::Fixed)
                     || col.fixed_len.is_some()
                 {
                     return Err(KeyParseError::TypeMismatch);
                 }
-                let bytes = if matches!(col.ingested_dtype, ColumnType::Bytes) {
-                    BASE64.decode(s.as_bytes()).map_err(|_| KeyParseError::NotUtf8)?
-                } else {
-                    normalize_numeric_bytes(s.as_bytes(), col)?
-                };
+                if b.len() > MAX_VAR_KEY_LEN {
+                    return Err(KeyParseError::TooLarge);
+                }
+                Ok(Key::Bytes(b.to_vec()))
+            }
+            ValueRef::String(s) => {
+                if col.key_mode == Some(KeyMode::Uuid)
+                    || col.key_mode == Some(KeyMode::Fixed)
+                    || col.fixed_len.is_some()
+                {
+                    return Err(KeyParseError::TypeMismatch);
+                }
+                let bytes = normalize_numeric_bytes(s.as_bytes(), col)?;
                 if bytes.len() > MAX_VAR_KEY_LEN {
                     return Err(KeyParseError::TooLarge);
                 }
                 Ok(Key::Bytes(bytes))
             }
-            JsonValue::Number(num) => {
-                let v = num
-                    .as_u64()
-                    .or_else(|| num.as_i64().and_then(|v| if v >= 0 { Some(v as u64) } else { None }))
-                    .ok_or(KeyParseError::NotInteger)?;
+            ValueRef::Int64(v) => {
+                if *v < 0 {
+                    return Err(KeyParseError::Negative);
+                }
+                let bytes = v.to_string().into_bytes();
+                if bytes.len() > MAX_VAR_KEY_LEN {
+                    return Err(KeyParseError::TooLarge);
+                }
+                Ok(Key::Bytes(bytes))
+            }
+            ValueRef::Int32(v) => {
+                if *v < 0 {
+                    return Err(KeyParseError::Negative);
+                }
+                let bytes = v.to_string().into_bytes();
+                if bytes.len() > MAX_VAR_KEY_LEN {
+                    return Err(KeyParseError::TooLarge);
+                }
+                Ok(Key::Bytes(bytes))
+            }
+            ValueRef::UInt64(v) => {
+                let bytes = v.to_string().into_bytes();
+                if bytes.len() > MAX_VAR_KEY_LEN {
+                    return Err(KeyParseError::TooLarge);
+                }
+                Ok(Key::Bytes(bytes))
+            }
+            ValueRef::UInt32(v) => {
                 let bytes = v.to_string().into_bytes();
                 if bytes.len() > MAX_VAR_KEY_LEN {
                     return Err(KeyParseError::TooLarge);
@@ -2875,91 +2921,27 @@ fn key_from_json_value(value: &JsonValue, col: &ColumnSpec) -> KeyParseResult<Ke
             _ => Err(KeyParseError::TypeMismatch),
         },
         KeyType::Uuid => match value {
-            JsonValue::String(s) => {
+            ValueRef::String(s) => {
                 if col.key_mode != Some(KeyMode::Uuid) {
                     return Err(KeyParseError::TypeMismatch);
                 }
                 let uuid = parse_uuid_string(s.as_bytes())?;
                 Ok(Key::Uuid(uuid))
             }
+            ValueRef::Bytes(b) => {
+                if col.key_mode != Some(KeyMode::Uuid) {
+                    return Err(KeyParseError::TypeMismatch);
+                }
+                if b.len() != 16 {
+                    return Err(KeyParseError::LengthMismatch);
+                }
+                let mut buf = [0u8; 16];
+                buf.copy_from_slice(b);
+                Ok(Key::Uuid(buf))
+            }
             _ => Err(KeyParseError::TypeMismatch),
         },
     }
-}
-
-fn owned_value_from_json(value: &JsonValue, col: &ColumnSpec) -> Result<OwnedValue> {
-    match col.ingested_dtype {
-        ColumnType::String => match value {
-            JsonValue::String(s) => Ok(OwnedValue::String(s.clone())),
-            JsonValue::Number(n) => Ok(OwnedValue::String(n.to_string())),
-            _ => Err(anyhow!("string value mismatch")),
-        },
-        ColumnType::Bytes => match value {
-            JsonValue::String(s) => {
-                let bytes = BASE64.decode(s.as_bytes()).map_err(|_| anyhow!("base64"))?;
-                Ok(OwnedValue::Bytes(bytes))
-            }
-            _ => Err(anyhow!("bytes value mismatch")),
-        },
-        ColumnType::Int64 | ColumnType::Int32 | ColumnType::Int16 | ColumnType::Int8 => {
-            let v = value
-                .as_i64()
-                .or_else(|| value.as_u64().map(|v| v as i64))
-                .ok_or_else(|| anyhow!("int value mismatch"))?;
-            if matches!(col.ingested_dtype, ColumnType::Int64) {
-                Ok(OwnedValue::Int64(v))
-            } else {
-                Ok(OwnedValue::Int32(v as i32))
-            }
-        }
-        ColumnType::UInt64 | ColumnType::UInt32 | ColumnType::UInt16 | ColumnType::UInt8 => {
-            let v = value
-                .as_u64()
-                .or_else(|| value.as_i64().and_then(|v| if v >= 0 { Some(v as u64) } else { None }))
-                .ok_or_else(|| anyhow!("uint value mismatch"))?;
-            if matches!(col.ingested_dtype, ColumnType::UInt64) {
-                Ok(OwnedValue::UInt64(v))
-            } else {
-                Ok(OwnedValue::UInt32(v as u32))
-            }
-        }
-        ColumnType::Float64 => value
-            .as_f64()
-            .map(OwnedValue::Float64)
-            .ok_or_else(|| anyhow!("float64 value mismatch")),
-        ColumnType::Float32 => value
-            .as_f64()
-            .map(|v| OwnedValue::Float32(v as f32))
-            .ok_or_else(|| anyhow!("float32 value mismatch")),
-        ColumnType::Bool => value
-            .as_bool()
-            .map(OwnedValue::Bool)
-            .ok_or_else(|| anyhow!("bool value mismatch")),
-        ColumnType::Date => value
-            .as_i64()
-            .map(|v| OwnedValue::Date(v as i32))
-            .ok_or_else(|| anyhow!("date value mismatch")),
-        ColumnType::Timestamp => value
-            .as_i64()
-            .map(|v| OwnedValue::Timestamp { secs: v, nanos: 0 })
-            .ok_or_else(|| anyhow!("timestamp value mismatch")),
-        ColumnType::Decimal128 => value
-            .as_i64()
-            .map(|v| OwnedValue::Decimal128(v as i128))
-            .ok_or_else(|| anyhow!("decimal128 value mismatch")),
-        ColumnType::Decimal256 => Err(anyhow!("decimal256 value mismatch")),
-        _ => Err(anyhow!("unsupported json value type")),
-    }
-}
-
-fn encode_pkey_row(
-    encoder: &RowPackEncoder,
-    value: &JsonValue,
-    col: &ColumnSpec,
-) -> Result<Vec<u8>> {
-    let owned = owned_value_from_json(value, col)?;
-    let value_ref = owned.as_value_ref();
-    encoder.encode_row(std::slice::from_ref(&value_ref))
 }
 
 fn parse_base10_bytes(bytes: &[u8]) -> KeyParseResult<u64> {

@@ -2942,6 +2942,13 @@ pub struct RowPackDecoder {
     dict_values: Vec<Option<Vec<Vec<u8>>>>,
 }
 
+#[derive(Default)]
+pub struct RowPackDecodeScratch {
+    string: String,
+    float32: Vec<f32>,
+    float64: Vec<f64>,
+}
+
 impl RowPackDecoder {
     pub fn new(ctx: RowPackContext) -> Result<Self> {
         let mut dict_values = Vec::with_capacity(ctx.columns.len());
@@ -3046,6 +3053,58 @@ impl RowPackDecoder {
             map.insert(col.name.clone(), value);
         }
         Ok(JsonValue::Object(map))
+    }
+
+    pub fn decode_column_value<'a>(
+        &self,
+        row: &'a [u8],
+        col_idx: usize,
+        scratch: &'a mut RowPackDecodeScratch,
+    ) -> Result<ValueRef<'a>> {
+        let mut reader = BitReader::new(row);
+        let col_count = self.ctx.columns.len();
+        if col_idx >= col_count {
+            return Err(anyhow!("rowpack column index out of range"));
+        }
+        let mut tags = Vec::with_capacity(col_count);
+        for _ in 0..col_count {
+            tags.push(reader.read_bits(2)?);
+        }
+        reader.align_to_byte();
+        let mut bools = Vec::new();
+        for (idx, col) in self.ctx.columns.iter().enumerate() {
+            if matches!(col.encoding, ColumnEncoding::Bool) && tags[idx] != 0 {
+                bools.push(reader.read_bits(1)?);
+            }
+        }
+        reader.align_to_byte();
+        let mut data = &row[row.len() - reader.remaining_bytes()..];
+        let mut bool_idx = 0usize;
+        for (idx, col) in self.ctx.columns.iter().enumerate() {
+            let tag = tags[idx];
+            if tag > 2 {
+                return Err(anyhow!("rowpack invalid tag {}", tag));
+            }
+            if tag == 0 {
+                if idx == col_idx {
+                    return Ok(ValueRef::Null);
+                }
+                continue;
+            }
+            if matches!(col.encoding, ColumnEncoding::Bool) {
+                let v = bools.get(bool_idx).copied().unwrap_or(0) != 0;
+                bool_idx += 1;
+                if idx == col_idx {
+                    return Ok(ValueRef::Bool(v));
+                }
+                continue;
+            }
+            if idx == col_idx {
+                return decode_value_ref(col, tag, &mut data, self.dict_values[idx].as_ref(), scratch);
+            }
+            decode_value_skip(col, tag, &mut data, self.dict_values[idx].as_ref())?;
+        }
+        Err(anyhow!("rowpack column index out of range"))
     }
 }
 
@@ -3281,6 +3340,299 @@ fn decode_value_json(
         ColumnEncoding::Bool => JsonValue::Null,
     };
     Ok(value)
+}
+
+fn decode_value_ref<'a>(
+    col: &ColumnContext,
+    tag: u8,
+    data: &mut &'a [u8],
+    dict: Option<&Vec<Vec<u8>>>,
+    scratch: &'a mut RowPackDecodeScratch,
+) -> Result<ValueRef<'a>> {
+    match &col.encoding {
+        ColumnEncoding::Int { signed, varint, bits } => {
+            if *signed {
+                Ok(ValueRef::Int64(decode_int(data, *varint, *bits)?))
+            } else {
+                Ok(ValueRef::UInt64(decode_uint(data, *varint, *bits)?))
+            }
+        }
+        ColumnEncoding::Float { storage } => {
+            let v = if tag == 2 {
+                decode_float_fallback(data, col.logical_type)?
+            } else {
+                decode_float(data, *storage)?
+            };
+            match col.logical_type {
+                LogicalType::Float32 => Ok(ValueRef::Float32(v as f32)),
+                _ => Ok(ValueRef::Float64(v)),
+            }
+        }
+        ColumnEncoding::Bytes { fixed_len } => {
+            let bytes = if tag == 2 {
+                decode_bytes(data, None)?
+            } else {
+                decode_bytes(data, *fixed_len)?
+            };
+            Ok(ValueRef::Bytes(bytes))
+        }
+        ColumnEncoding::Date { varint, bits } => {
+            Ok(ValueRef::Date(decode_int(data, *varint, *bits)? as i32))
+        }
+        ColumnEncoding::Timestamp => {
+            let secs = zigzag_decode(read_varint(data)?);
+            let nanos = read_varint(data)? as u32;
+            Ok(ValueRef::Timestamp { secs, nanos })
+        }
+        ColumnEncoding::Decimal {
+            scale,
+            bytes,
+            storage,
+            ..
+        } => {
+            let text = if tag == 2 || matches!(storage, DecimalStorage::Raw) {
+                let raw = decode_decimal_bytes(data, *bytes as usize)?;
+                format_decimal_from_le(raw, *scale)
+            } else {
+                match storage {
+                    DecimalStorage::Int { varint, bits } => {
+                        let v = decode_int(data, *varint, *bits)?;
+                        if *scale == 0 {
+                            v.to_string()
+                        } else {
+                            format_decimal_i64(v, *scale)
+                        }
+                    }
+                    DecimalStorage::Float { storage } => {
+                        let v = decode_float(data, *storage)?;
+                        v.to_string()
+                    }
+                    DecimalStorage::Raw => unreachable!(),
+                }
+            };
+            scratch.string.clear();
+            scratch.string.push_str(&text);
+            Ok(ValueRef::String(&scratch.string))
+        }
+        ColumnEncoding::String { encoding } => {
+            let value = if tag == 2 {
+                decode_string_fallback(data)?
+            } else {
+                decode_string(data, encoding, dict)?
+            };
+            scratch.string.clear();
+            scratch.string.push_str(&value);
+            Ok(ValueRef::String(&scratch.string))
+        }
+        ColumnEncoding::FloatArray { storage } => {
+            let len = read_varint(data)? as usize;
+            let elem_bytes = if tag == 2 {
+                match col.logical_type {
+                    LogicalType::Float32Array => 4,
+                    LogicalType::Float64Array => 8,
+                    _ => return Err(anyhow!("rowpack invalid array type")),
+                }
+            } else {
+                match storage {
+                    FloatStorage::F16 => 2,
+                    FloatStorage::F32 => 4,
+                    FloatStorage::F64 => 8,
+                }
+            };
+            let max_len = data.len() / elem_bytes;
+            if len > MAX_ARRAY_LEN || len > max_len {
+                return Err(anyhow!("rowpack array length overflow"));
+            }
+            match col.logical_type {
+                LogicalType::Float32Array => {
+                    scratch.float32.clear();
+                    for _ in 0..len {
+                        let v = if tag == 2 {
+                            decode_float_fallback(data, col.logical_type)?
+                        } else {
+                            decode_float(data, *storage)?
+                        };
+                        scratch.float32.push(v as f32);
+                    }
+                    Ok(ValueRef::Float32Array(&scratch.float32))
+                }
+                LogicalType::Float64Array => {
+                    scratch.float64.clear();
+                    for _ in 0..len {
+                        let v = if tag == 2 {
+                            decode_float_fallback(data, col.logical_type)?
+                        } else {
+                            decode_float(data, *storage)?
+                        };
+                        scratch.float64.push(v);
+                    }
+                    Ok(ValueRef::Float64Array(&scratch.float64))
+                }
+                _ => Err(anyhow!("rowpack invalid array type")),
+            }
+        }
+        ColumnEncoding::Bool => Err(anyhow!("rowpack bool unexpected")),
+    }
+}
+
+fn decode_value_skip(
+    col: &ColumnContext,
+    tag: u8,
+    data: &mut &[u8],
+    dict: Option<&Vec<Vec<u8>>>,
+) -> Result<()> {
+    match &col.encoding {
+        ColumnEncoding::Int { signed, varint, bits } => {
+            if *signed {
+                let _ = decode_int(data, *varint, *bits)?;
+            } else {
+                let _ = decode_uint(data, *varint, *bits)?;
+            }
+        }
+        ColumnEncoding::Float { storage } => {
+            if tag == 2 {
+                let _ = decode_float_fallback(data, col.logical_type)?;
+            } else {
+                let _ = decode_float(data, *storage)?;
+            }
+        }
+        ColumnEncoding::Bytes { fixed_len } => {
+            let _ = if tag == 2 {
+                decode_bytes(data, None)?
+            } else {
+                decode_bytes(data, *fixed_len)?
+            };
+        }
+        ColumnEncoding::Date { varint, bits } => {
+            let _ = decode_int(data, *varint, *bits)?;
+        }
+        ColumnEncoding::Timestamp => {
+            let _ = read_varint(data)?;
+            let _ = read_varint(data)?;
+        }
+        ColumnEncoding::Decimal { scale, bytes, storage, .. } => {
+            if tag == 2 || matches!(storage, DecimalStorage::Raw) {
+                let _ = decode_decimal_bytes(data, *bytes as usize)?;
+            } else {
+                match storage {
+                    DecimalStorage::Int { varint, bits } => {
+                        let _ = decode_int(data, *varint, *bits)?;
+                    }
+                    DecimalStorage::Float { storage } => {
+                        let _ = decode_float(data, *storage)?;
+                    }
+                    DecimalStorage::Raw => {}
+                }
+            }
+            let _ = scale;
+        }
+        ColumnEncoding::String { encoding } => match encoding {
+            StringEncoding::Raw => {
+                let len = read_varint(data)? as usize;
+                if len > MAX_FIELD_BYTES {
+                    return Err(anyhow!("rowpack string too large"));
+                }
+                if data.len() < len {
+                    return Err(anyhow!("rowpack string truncated"));
+                }
+                *data = &data[len..];
+            }
+            StringEncoding::Dict { .. } => {
+                let idx = read_varint(data)? as usize;
+                if let Some(values) = dict {
+                    if idx < values.len() {
+                        return Ok(());
+                    }
+                }
+                let len = read_varint(data)? as usize;
+                if len > MAX_FIELD_BYTES {
+                    return Err(anyhow!("rowpack dict fallback too large"));
+                }
+                if data.len() < len {
+                    return Err(anyhow!("rowpack dict fallback truncated"));
+                }
+                *data = &data[len..];
+            }
+            StringEncoding::Alphabet { alphabet } => {
+                let len = read_varint(data)? as usize;
+                if len > MAX_FIELD_BYTES {
+                    return Err(anyhow!("rowpack string too large"));
+                }
+                let bits = alphabet_bits(alphabet.len());
+                let total_bits = len.saturating_mul(bits as usize);
+                let byte_len = (total_bits + 7) / 8;
+                if data.len() < byte_len {
+                    return Err(anyhow!("rowpack string truncated"));
+                }
+                *data = &data[byte_len..];
+            }
+            StringEncoding::Bpe { dict } => {
+                let token_count = read_varint(data)? as usize;
+                if token_count > MAX_ARRAY_LEN {
+                    return Err(anyhow!("rowpack bpe token count too large"));
+                }
+                let bits = bpe_token_bits(dict.len());
+                let total_bits = token_count.saturating_mul(bits as usize);
+                let byte_len = (total_bits + 7) / 8;
+                if data.len() < byte_len {
+                    return Err(anyhow!("rowpack bpe truncated"));
+                }
+                *data = &data[byte_len..];
+            }
+            StringEncoding::NumericInt => {
+                let _ = read_varint(data)?;
+            }
+            StringEncoding::NumericScaled => {
+                let _ = read_varint(data)?;
+                let _ = read_varint(data)?;
+            }
+            StringEncoding::Hex { len, .. } => {
+                let byte_len = len / 2;
+                if data.len() < byte_len {
+                    return Err(anyhow!("rowpack hex truncated"));
+                }
+                *data = &data[byte_len..];
+            }
+            StringEncoding::IsoTimestamp { .. } => {
+                let _ = read_varint(data)?;
+                let _ = read_varint(data)?;
+            }
+            StringEncoding::Lz4 => {
+                let raw_len = read_varint(data)? as usize;
+                if raw_len > MAX_FIELD_BYTES {
+                    return Err(anyhow!("rowpack lz4 too large"));
+                }
+                let compressed_len = read_varint(data)? as usize;
+                if data.len() < compressed_len {
+                    return Err(anyhow!("rowpack lz4 truncated"));
+                }
+                *data = &data[compressed_len..];
+            }
+        },
+        ColumnEncoding::FloatArray { storage } => {
+            let len = read_varint(data)? as usize;
+            let elem_bytes = if tag == 2 {
+                match col.logical_type {
+                    LogicalType::Float32Array => 4,
+                    LogicalType::Float64Array => 8,
+                    _ => return Err(anyhow!("rowpack invalid array type")),
+                }
+            } else {
+                match storage {
+                    FloatStorage::F16 => 2,
+                    FloatStorage::F32 => 4,
+                    FloatStorage::F64 => 8,
+                }
+            };
+            let total = len.saturating_mul(elem_bytes);
+            if data.len() < total {
+                return Err(anyhow!("rowpack array truncated"));
+            }
+            *data = &data[total..];
+        }
+        ColumnEncoding::Bool => {}
+    }
+    Ok(())
 }
 
 fn decode_int(data: &mut &[u8], varint: bool, bits: u8) -> Result<i64> {
