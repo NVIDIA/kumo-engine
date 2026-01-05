@@ -223,9 +223,11 @@ pub fn ingest_with_stats(
     let pk_map_wall = pk_map_start.elapsed();
     let final_start = std::time::Instant::now();
     if let Some(profile_dir) = &profile_dir {
-        profile_phase(profile_dir, "build", || ctx.build_final_index())?;
+        profile_phase(profile_dir, "nodes", || ctx.build_final_nodes())?;
+        profile_phase(profile_dir, "edges", || ctx.build_final_edges())?;
     } else {
-        ctx.build_final_index()?;
+        ctx.build_final_nodes()?;
+        ctx.build_final_edges()?;
     }
     build_wall += final_start.elapsed();
     let finalize_start = std::time::Instant::now();
@@ -1577,36 +1579,9 @@ impl IngestContext {
         Ok(())
     }
 
-    fn build_final_index(&mut self) -> Result<()> {
+    fn build_final_nodes(&mut self) -> Result<()> {
         let root = require_local_output(&self.target)?.to_path_buf();
         self.build_shard_offsets();
-        let mut edge_counts = HashMap::new();
-        let mut pk_maps_by_table: HashMap<String, Vec<PkMap>> = HashMap::new();
-        for (table, paths) in &self.pk_map_paths {
-            let mut maps = Vec::with_capacity(paths.len());
-            for path in paths {
-                let full = root.join(path);
-                let data = fs::read(&full).with_context(|| format!("read {}", full.display()))?;
-                maps.push(PkMap::read_from(&data)?);
-            }
-            pk_maps_by_table.insert(table.clone(), maps);
-        }
-        let mut pkey_encoders: HashMap<String, RowPackEncoder> = HashMap::new();
-        for table in &self.source.tables {
-            if table.edge_table.is_some() || table.primary_key.is_none() {
-                continue;
-            }
-            let meta_path = root.join(temp_pkey_meta_path(&table.name, 0));
-            let meta = read_temp_meta(&meta_path)?;
-            let ctx = diskgraph_rowpack::RowPackContext::from_bytes(&meta.context)?;
-            pkey_encoders.insert(table.name.clone(), RowPackEncoder::new(ctx)?);
-        }
-        let mut max_ids = HashMap::new();
-        for (table, counts) in &self.shard_rows {
-            let total: u64 = counts.iter().sum();
-            let max_id = total.saturating_sub(1);
-            max_ids.insert(table.clone(), max_id);
-        }
         for table in &self.source.tables {
             if table.edge_table.is_some() {
                 continue;
@@ -1699,10 +1674,42 @@ impl IngestContext {
                 shard: None,
                 kind: ProgressKind::Finish,
                 delta: 0,
-                total: Some(self.num_shards as u64),
+                total: Some(total_rows),
             });
         }
+        Ok(())
+    }
 
+    fn build_final_edges(&mut self) -> Result<()> {
+        let root = require_local_output(&self.target)?.to_path_buf();
+        self.build_shard_offsets();
+        let mut edge_counts = HashMap::new();
+        let mut pk_maps_by_table: HashMap<String, Vec<PkMap>> = HashMap::new();
+        for (table, paths) in &self.pk_map_paths {
+            let mut maps = Vec::with_capacity(paths.len());
+            for path in paths {
+                let full = root.join(path);
+                let data = fs::read(&full).with_context(|| format!("read {}", full.display()))?;
+                maps.push(PkMap::read_from(&data)?);
+            }
+            pk_maps_by_table.insert(table.clone(), maps);
+        }
+        let mut pkey_encoders: HashMap<String, RowPackEncoder> = HashMap::new();
+        for table in &self.source.tables {
+            if table.edge_table.is_some() || table.primary_key.is_none() {
+                continue;
+            }
+            let meta_path = root.join(temp_pkey_meta_path(&table.name, 0));
+            let meta = read_temp_meta(&meta_path)?;
+            let ctx = diskgraph_rowpack::RowPackContext::from_bytes(&meta.context)?;
+            pkey_encoders.insert(table.name.clone(), RowPackEncoder::new(ctx)?);
+        }
+        let mut max_ids = HashMap::new();
+        for (table, counts) in &self.shard_rows {
+            let total: u64 = counts.iter().sum();
+            let max_id = total.saturating_sub(1);
+            max_ids.insert(table.clone(), max_id);
+        }
         for rel in &self.relationships {
             self.emit_progress(ProgressEvent {
                 phase: ProgressPhase::Build,
