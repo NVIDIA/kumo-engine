@@ -62,6 +62,7 @@ const NODE_BIN_MAGIC: [u8; 4] = *b"DGND";
 const NODE_BIN_VERSION: u8 = 1;
 const NODE_BIN_LEN_WIDTH: u8 = 2;
 const MAX_NODE_DATA_LEN: usize = 60 * 1024;
+const PROGRESS_ROW_BATCH: u64 = 100_000;
 
 #[derive(Clone, Copy, Debug)]
 enum KeyParseError {
@@ -1610,13 +1611,18 @@ impl IngestContext {
             if table.edge_table.is_some() {
                 continue;
             }
+            let total_rows = self
+                .shard_rows
+                .get(&table.name)
+                .map(|rows| rows.iter().sum())
+                .unwrap_or(0);
             self.emit_progress(ProgressEvent {
                 phase: ProgressPhase::Build,
                 table: table.name.clone(),
                 shard: None,
                 kind: ProgressKind::Start,
                 delta: 0,
-                total: Some(self.num_shards as u64),
+                total: Some(total_rows),
             });
             let shard_rows = self
                 .shard_rows
@@ -1639,7 +1645,20 @@ impl IngestContext {
                 writer.write_all(&NODE_BIN_MAGIC)?;
                 writer.write_all(&[NODE_BIN_VERSION, NODE_BIN_LEN_WIDTH, 0u8, 0u8])?;
                 let mut dropped = 0u64;
+                let mut pending = 0u64;
                 read_temp_rows(&temp_path, |row| {
+                    pending = pending.saturating_add(1);
+                    if pending >= PROGRESS_ROW_BATCH {
+                        self.emit_progress(ProgressEvent {
+                            phase: ProgressPhase::Build,
+                            table: table.name.clone(),
+                            shard: None,
+                            kind: ProgressKind::Advance,
+                            delta: pending,
+                            total: Some(total_rows),
+                        });
+                        pending = 0;
+                    }
                     let len = if row.len() > MAX_NODE_DATA_LEN { 0u16 } else { row.len() as u16 };
                     if len == 0 {
                         dropped = dropped.saturating_add(1);
@@ -1650,6 +1669,16 @@ impl IngestContext {
                     }
                     Ok(())
                 })?;
+                if pending > 0 {
+                    self.emit_progress(ProgressEvent {
+                        phase: ProgressPhase::Build,
+                        table: table.name.clone(),
+                        shard: None,
+                        kind: ProgressKind::Advance,
+                        delta: pending,
+                        total: Some(total_rows),
+                    });
+                }
                 writer.flush()?;
                 let sink = writer.into_inner().map_err(|_| anyhow!("node data flush failed"))?;
                 sink.finish()?;
@@ -1661,14 +1690,6 @@ impl IngestContext {
                     self.pk_duplicate_counts
                         .insert(format!("node_data_dropped:{}", table.name), dropped);
                 }
-                self.emit_progress(ProgressEvent {
-                    phase: ProgressPhase::Build,
-                    table: table.name.clone(),
-                    shard: Some(shard),
-                    kind: ProgressKind::Advance,
-                    delta: 1,
-                    total: Some(self.num_shards as u64),
-                });
             }
             self.table_rows
                 .insert(table.name.clone(), shard_rows.iter().sum());
