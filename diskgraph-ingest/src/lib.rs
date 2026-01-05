@@ -2559,8 +2559,10 @@ fn finish_temp_writer(writer: TempRowWriter) -> Result<u64> {
 }
 
 fn read_temp_rows(path: &Path, mut f: impl FnMut(&[u8]) -> Result<()>) -> Result<()> {
-    let mut file = fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
+    let file = fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
+    let mut file = io::BufReader::with_capacity(1024 * 1024, file);
     let mut len_buf = [0u8; 4];
+    let mut data = Vec::new();
     loop {
         match file.read_exact(&mut len_buf) {
             Ok(()) => {}
@@ -2568,9 +2570,12 @@ fn read_temp_rows(path: &Path, mut f: impl FnMut(&[u8]) -> Result<()>) -> Result
             Err(err) => return Err(err.into()),
         }
         let len = u32::from_le_bytes(len_buf) as usize;
-        let mut data = vec![0u8; len];
-        file.read_exact(&mut data)?;
-        f(&data)?;
+        if data.len() < len {
+            data.resize(len, 0u8);
+        }
+        let slice = &mut data[..len];
+        file.read_exact(slice)?;
+        f(slice)?;
     }
 }
 
