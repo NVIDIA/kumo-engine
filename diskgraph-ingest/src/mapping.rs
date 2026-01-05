@@ -5,7 +5,7 @@ use std::hash::Hasher;
 use std::io::{self, Write};
 
 const MAGIC: &[u8; 8] = b"DGPKMAP\0";
-const VERSION: u32 = 2;
+const VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MappingKind {
@@ -268,7 +268,12 @@ impl PkMap {
                 if let Some((key, value)) = entry {
                     if self.key_type == KeyType::VarBytes {
                         let bytes = key.as_bytes();
-                        let len = bytes.len() as u32;
+                        let len = u16::try_from(bytes.len()).map_err(|_| {
+                            io::Error::new(
+                                io::ErrorKind::InvalidInput,
+                                "pk map key too large",
+                            )
+                        })?;
                         writer.write_all(&len.to_le_bytes())?;
                         writer.write_all(bytes)?;
                     } else {
@@ -277,7 +282,7 @@ impl PkMap {
                     writer.write_all(&value.to_le_bytes())?;
                 } else {
                     if self.key_type == KeyType::VarBytes {
-                        writer.write_all(&u32::MAX.to_le_bytes())?;
+                        writer.write_all(&u16::MAX.to_le_bytes())?;
                     } else {
                         let zero = vec![0u8; key_len as usize];
                         writer.write_all(&zero)?;
@@ -289,7 +294,9 @@ impl PkMap {
             for (key, value) in &self.entries {
                 if self.key_type == KeyType::VarBytes {
                     let bytes = key.as_bytes();
-                    let len = bytes.len() as u32;
+                    let len = u16::try_from(bytes.len()).map_err(|_| {
+                        io::Error::new(io::ErrorKind::InvalidInput, "pk map key too large")
+                    })?;
                     writer.write_all(&len.to_le_bytes())?;
                     writer.write_all(bytes)?;
                 } else {
@@ -312,9 +319,11 @@ impl PkMap {
         offset += MAGIC.len();
         let version = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
         offset += 4;
-        if version != VERSION {
-            return Err(anyhow!("pk map version mismatch"));
-        }
+        let var_len_width = match version {
+            2 => 4usize,
+            3 => 2usize,
+            _ => return Err(anyhow!("pk map version mismatch")),
+        };
         let kind = match bytes[offset] {
             0 => MappingKind::Hash,
             1 => MappingKind::Sorted,
@@ -353,13 +362,28 @@ impl PkMap {
             for slot in 0..map.capacity {
                 let present = (bitmap[slot / 8] >> (slot % 8)) & 1 == 1;
                 let (key, value) = if key_type == KeyType::VarBytes {
-                    if bytes.len() < offset + 4 {
+                    if bytes.len() < offset + var_len_width {
                         return Err(anyhow!("pk map entry truncated"));
                     }
-                    let len =
-                        u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap()) as usize;
-                    offset += 4;
-                    if len == u32::MAX as usize {
+                    let len = if var_len_width == 2 {
+                        let raw = u16::from_le_bytes(
+                            bytes[offset..offset + 2].try_into().unwrap(),
+                        ) as usize;
+                        offset += 2;
+                        raw
+                    } else {
+                        let raw = u32::from_le_bytes(
+                            bytes[offset..offset + 4].try_into().unwrap(),
+                        ) as usize;
+                        offset += 4;
+                        raw
+                    };
+                    let empty = if var_len_width == 2 {
+                        u16::MAX as usize
+                    } else {
+                        u32::MAX as usize
+                    };
+                    if len == empty {
                         if bytes.len() < offset + 8 {
                             return Err(anyhow!("pk map entry truncated"));
                         }
@@ -417,12 +441,22 @@ impl PkMap {
             let mut entries = Vec::with_capacity(count);
             for _ in 0..count {
                 let key = if key_type == KeyType::VarBytes {
-                    if bytes.len() < offset + 4 {
+                    if bytes.len() < offset + var_len_width {
                         return Err(anyhow!("pk map entry truncated"));
                     }
-                    let len =
-                        u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap()) as usize;
-                    offset += 4;
+                    let len = if var_len_width == 2 {
+                        let raw = u16::from_le_bytes(
+                            bytes[offset..offset + 2].try_into().unwrap(),
+                        ) as usize;
+                        offset += 2;
+                        raw
+                    } else {
+                        let raw = u32::from_le_bytes(
+                            bytes[offset..offset + 4].try_into().unwrap(),
+                        ) as usize;
+                        offset += 4;
+                        raw
+                    };
                     if bytes.len() < offset + len {
                         return Err(anyhow!("pk map entry truncated"));
                     }

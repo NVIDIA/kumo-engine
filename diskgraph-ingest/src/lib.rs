@@ -63,6 +63,7 @@ const NODE_BIN_VERSION: u8 = 1;
 const NODE_BIN_LEN_WIDTH: u8 = 2;
 const MAX_NODE_DATA_LEN: usize = 60 * 1024;
 const PROGRESS_ROW_BATCH: u64 = 100_000;
+const MAX_VAR_KEY_LEN: usize = u16::MAX as usize;
 
 #[derive(Clone, Copy, Debug)]
 enum KeyParseError {
@@ -2855,6 +2856,9 @@ fn key_from_json_value(value: &JsonValue, col: &ColumnSpec) -> KeyParseResult<Ke
                 } else {
                     normalize_numeric_bytes(s.as_bytes(), col)?
                 };
+                if bytes.len() > MAX_VAR_KEY_LEN {
+                    return Err(KeyParseError::TooLarge);
+                }
                 Ok(Key::Bytes(bytes))
             }
             JsonValue::Number(num) => {
@@ -2862,7 +2866,11 @@ fn key_from_json_value(value: &JsonValue, col: &ColumnSpec) -> KeyParseResult<Ke
                     .as_u64()
                     .or_else(|| num.as_i64().and_then(|v| if v >= 0 { Some(v as u64) } else { None }))
                     .ok_or(KeyParseError::NotInteger)?;
-                Ok(Key::Bytes(v.to_string().into_bytes()))
+                let bytes = v.to_string().into_bytes();
+                if bytes.len() > MAX_VAR_KEY_LEN {
+                    return Err(KeyParseError::TooLarge);
+                }
+                Ok(Key::Bytes(bytes))
             }
             _ => Err(KeyParseError::TypeMismatch),
         },
