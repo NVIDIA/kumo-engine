@@ -220,6 +220,7 @@ fn ingest_csv_with_edges_and_rowpack() -> Result<()> {
         Dest::Local,
         IngestOptions {
             profile_dir: None,
+            progress: None,
         },
     )?;
     let index_path = output_root.join("index_metadata.json");
@@ -323,7 +324,10 @@ fn ingest_parquet_with_sorted_mapping() -> Result<()> {
     let source_path = dir.path().join("source_metadata.json");
     fs::write(&source_path, serde_json::to_vec_pretty(&source)?)?;
 
-    let options = IngestOptions { profile_dir: None };
+    let options = IngestOptions {
+        profile_dir: None,
+        progress: None,
+    };
     let metadata = ingest(&source_path, output_root.to_str().unwrap(), Dest::Local, options)?;
     assert_eq!(metadata.node_types.len(), 1);
     assert!(metadata.edge_relations.is_empty());
@@ -377,7 +381,10 @@ fn ingest_csv_with_bytes_pk_mapping() -> Result<()> {
     let source_path = dir.path().join("source_metadata.json");
     fs::write(&source_path, serde_json::to_vec_pretty(&source)?)?;
 
-    let options = IngestOptions { profile_dir: None };
+    let options = IngestOptions {
+        profile_dir: None,
+        progress: None,
+    };
     let metadata = ingest(&source_path, output_root.to_str().unwrap(), Dest::Local, options)?;
     let asset = metadata
         .node_types
@@ -467,6 +474,7 @@ fn ingest_relationship_uses_dest_timestamp_sort_key() -> Result<()> {
         Dest::Local,
         IngestOptions {
             profile_dir: None,
+            progress: None,
         },
     )?;
     let forward = metadata

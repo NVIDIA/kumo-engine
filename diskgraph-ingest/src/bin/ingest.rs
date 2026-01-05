@@ -2,8 +2,15 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::{Parser, ValueEnum};
-use diskgraph_ingest::{ingest_with_stats, Dest, IngestOptions};
+use diskgraph_ingest::{
+    ingest_with_stats, Dest, IngestOptions, ProgressCallback, ProgressEvent, ProgressKind,
+    ProgressPhase,
+};
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use std::collections::HashMap;
 use std::fs;
+use std::io::IsTerminal;
+use std::sync::{Arc, Mutex};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about = "Ingest raw CSV/Parquet into diskgraph index format.")]
@@ -56,6 +63,7 @@ fn main() -> Result<()> {
     }
     let options = IngestOptions {
         profile_dir: args.profile.clone(),
+        progress: build_progress(),
     };
     let dest = match args.dest {
         DestArg::Local => Dest::Local,
@@ -233,6 +241,99 @@ fn explore_command_hint(dest: &DestArg, output: &str) -> String {
     format!("./diskgraph-index/scripts/{} {}", script, output)
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct ProgressKey {
+    phase: ProgressPhase,
+    table: String,
+    shard: Option<usize>,
+}
+
+struct ProgressState {
+    mp: MultiProgress,
+    bars: HashMap<ProgressKey, ProgressBar>,
+}
+
+fn build_progress() -> Option<ProgressCallback> {
+    if !std::io::stderr().is_terminal() {
+        return None;
+    }
+    let state = Arc::new(Mutex::new(ProgressState {
+        mp: MultiProgress::new(),
+        bars: HashMap::new(),
+    }));
+    let cb = Arc::new(move |event: ProgressEvent| {
+        let mut guard = state.lock().unwrap();
+        let label = progress_label(&event);
+        let key = ProgressKey {
+            phase: event.phase,
+            table: event.table.clone(),
+            shard: event.shard,
+        };
+        match event.kind {
+            ProgressKind::Start => {
+                if guard.bars.contains_key(&key) {
+                    return;
+                }
+                let bar = match event.total {
+                    Some(total) => {
+                        let bar = guard.mp.add(ProgressBar::new(total));
+                        bar.set_style(bar_style());
+                        bar
+                    }
+                    None => {
+                        let bar = guard.mp.add(ProgressBar::new_spinner());
+                        bar.set_style(spinner_style());
+                        bar
+                    }
+                };
+                bar.set_message(label);
+                guard.bars.insert(key, bar);
+            }
+            ProgressKind::Advance => {
+                if let Some(bar) = guard.bars.get(&key) {
+                    bar.inc(event.delta);
+                    if event.total.is_none() {
+                        let count = format_count(bar.position());
+                        bar.set_message(format!("{} {}", label, count));
+                    }
+                }
+            }
+            ProgressKind::Finish => {
+                if let Some(bar) = guard.bars.remove(&key) {
+                    let msg = match event.total.or_else(|| Some(bar.position())) {
+                        Some(count) => format!("{} {}", label, format_count(count)),
+                        None => label,
+                    };
+                    bar.finish_with_message(msg);
+                }
+            }
+        }
+    });
+    Some(cb)
+}
+
+fn progress_label(event: &ProgressEvent) -> String {
+    let phase = match event.phase {
+        ProgressPhase::Temp => "temp",
+        ProgressPhase::PkMap => "pk_map",
+        ProgressPhase::Build => "build",
+    };
+    match event.shard {
+        Some(shard) => format!("{} {} shard-{:05}", phase, event.table, shard),
+        None => format!("{} {}", phase, event.table),
+    }
+}
+
+fn bar_style() -> ProgressStyle {
+    ProgressStyle::with_template("{msg} {bar:40.cyan/blue} {percent}%")
+        .unwrap_or_else(|_| ProgressStyle::default_bar())
+}
+
+fn spinner_style() -> ProgressStyle {
+    ProgressStyle::with_template("{spinner} {msg}")
+        .unwrap_or_else(|_| ProgressStyle::default_spinner())
+}
+
 fn format_bytes(bytes: u64) -> String {
     let units = ["B", "KB", "MB", "GB", "TB", "PB"];
     let mut value = bytes as f64;
@@ -263,4 +364,16 @@ fn format_duration(ms: u64) -> String {
     let mins = secs / 60;
     let rem_secs = secs % 60;
     format!("{}m {}s", mins, rem_secs)
+}
+
+fn format_count(value: u64) -> String {
+    if value >= 1_000_000_000 {
+        format!("{:.1}B", value as f64 / 1_000_000_000.0)
+    } else if value >= 1_000_000 {
+        format!("{:.1}M", value as f64 / 1_000_000.0)
+    } else if value >= 1_000 {
+        format!("{:.1}K", value as f64 / 1_000.0)
+    } else {
+        value.to_string()
+    }
 }

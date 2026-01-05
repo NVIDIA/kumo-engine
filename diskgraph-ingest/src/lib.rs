@@ -88,15 +88,43 @@ pub struct IngestReport {
 #[derive(Clone)]
 pub struct IngestOptions {
     pub profile_dir: Option<PathBuf>,
+    pub progress: Option<ProgressCallback>,
 }
 
 impl Default for IngestOptions {
     fn default() -> Self {
         Self {
             profile_dir: None,
+            progress: None,
         }
     }
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ProgressPhase {
+    Temp,
+    PkMap,
+    Build,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProgressKind {
+    Start,
+    Advance,
+    Finish,
+}
+
+#[derive(Clone, Debug)]
+pub struct ProgressEvent {
+    pub phase: ProgressPhase,
+    pub table: String,
+    pub shard: Option<usize>,
+    pub kind: ProgressKind,
+    pub delta: u64,
+    pub total: Option<u64>,
+}
+
+pub type ProgressCallback = std::sync::Arc<dyn Fn(ProgressEvent) + Send + Sync>;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct IngestStats {
@@ -260,6 +288,7 @@ struct IngestContext {
     pk_duplicate_samples: HashMap<String, Vec<String>>,
     output: String,
     trimmed_strings: std::sync::Arc<AtomicU64>,
+    progress: Option<ProgressCallback>,
     pk_map_task_ms: u64,
     build_task_ms: u64,
     node_task_ms: u64,
@@ -377,6 +406,11 @@ enum SortKeyMode {
 }
 
 impl IngestContext {
+    fn emit_progress(&self, event: ProgressEvent) {
+        if let Some(cb) = &self.progress {
+            cb(event);
+        }
+    }
     fn new(
         source: SourceMetadata,
         target: std::sync::Arc<OutputTarget>,
@@ -479,6 +513,7 @@ impl IngestContext {
             pk_duplicate_samples: HashMap::new(),
             output: output.to_string(),
             trimmed_strings: std::sync::Arc::new(AtomicU64::new(0)),
+            progress: options.progress,
             pk_map_task_ms: 0,
             build_task_ms: 0,
             node_task_ms: 0,
@@ -497,12 +532,29 @@ impl IngestContext {
         let mut table_rows = HashMap::new();
         let tables = self.source.tables.clone();
         for table in &tables {
+            self.emit_progress(ProgressEvent {
+                phase: ProgressPhase::Temp,
+                table: table.name.clone(),
+                shard: None,
+                kind: ProgressKind::Start,
+                delta: 0,
+                total: None,
+            });
             if table.edge_table.is_some() {
                 self.build_temp_edge_table(table)?;
             } else {
                 let rows = self.build_temp_node_table(table)?;
                 table_rows.insert(table.name.clone(), rows);
             }
+            let total = table_rows.get(&table.name).copied();
+            self.emit_progress(ProgressEvent {
+                phase: ProgressPhase::Temp,
+                table: table.name.clone(),
+                shard: None,
+                kind: ProgressKind::Finish,
+                delta: 0,
+                total,
+            });
         }
         self.table_rows = table_rows;
         Ok(())
@@ -559,6 +611,7 @@ impl IngestContext {
                     let reader = builder.with_batch_size(NODE_BATCH_SIZE).build()?;
                     for batch in reader {
                         let batch = batch?;
+                        let batch_rows = batch.num_rows() as u64;
                         let mut cols = Vec::with_capacity(table.columns.len());
                         for col in &table.columns {
                             let idx = batch
@@ -641,6 +694,14 @@ impl IngestContext {
                                 )?;
                             }
                         }
+                        self.emit_progress(ProgressEvent {
+                            phase: ProgressPhase::Temp,
+                            table: table.name.clone(),
+                            shard: None,
+                            kind: ProgressKind::Advance,
+                            delta: batch_rows,
+                            total: None,
+                        });
                     }
                 }
                 TableFormat::Csv => {
@@ -651,6 +712,7 @@ impl IngestContext {
                     let reader = builder.build(file)?;
                     for batch in reader {
                         let batch = batch?;
+                        let batch_rows = batch.num_rows() as u64;
                         let mut cols = Vec::with_capacity(table.columns.len());
                         for col in &table.columns {
                             let idx = batch
@@ -733,6 +795,14 @@ impl IngestContext {
                                 )?;
                             }
                         }
+                        self.emit_progress(ProgressEvent {
+                            phase: ProgressPhase::Temp,
+                            table: table.name.clone(),
+                            shard: None,
+                            kind: ProgressKind::Advance,
+                            delta: batch_rows,
+                            total: None,
+                        });
                     }
                 }
             }
@@ -1039,6 +1109,7 @@ impl IngestContext {
                     let reader = builder.with_batch_size(NODE_BATCH_SIZE).build()?;
                     for batch in reader {
                         let batch = batch?;
+                        let batch_rows = batch.num_rows() as u64;
                         let mut cols = Vec::with_capacity(table.columns.len());
                         for col in &table.columns {
                             let idx = batch
@@ -1101,6 +1172,14 @@ impl IngestContext {
                                 )?;
                             }
                         }
+                        self.emit_progress(ProgressEvent {
+                            phase: ProgressPhase::Temp,
+                            table: table.name.clone(),
+                            shard: None,
+                            kind: ProgressKind::Advance,
+                            delta: batch_rows,
+                            total: None,
+                        });
                     }
                 }
                 TableFormat::Csv => {
@@ -1111,6 +1190,7 @@ impl IngestContext {
                     let reader = builder.build(file)?;
                     for batch in reader {
                         let batch = batch?;
+                        let batch_rows = batch.num_rows() as u64;
                         let mut cols = Vec::with_capacity(table.columns.len());
                         for col in &table.columns {
                             let idx = batch
@@ -1173,6 +1253,14 @@ impl IngestContext {
                                 )?;
                             }
                         }
+                        self.emit_progress(ProgressEvent {
+                            phase: ProgressPhase::Temp,
+                            table: table.name.clone(),
+                            shard: None,
+                            kind: ProgressKind::Advance,
+                            delta: batch_rows,
+                            total: None,
+                        });
                     }
                 }
             }
@@ -1333,6 +1421,14 @@ impl IngestContext {
             if table.edge_table.is_some() || table.primary_key.is_none() {
                 continue;
             }
+            self.emit_progress(ProgressEvent {
+                phase: ProgressPhase::PkMap,
+                table: table.name.clone(),
+                shard: None,
+                kind: ProgressKind::Start,
+                delta: 0,
+                total: Some(self.num_shards as u64),
+            });
             let pk_name = table.primary_key.clone().unwrap();
             let pk_col = column_spec(table, &pk_name)?;
             let shard_rows = self
@@ -1349,6 +1445,7 @@ impl IngestContext {
                 let target = std::sync::Arc::clone(&self.target);
                 let table_name = table.name.clone();
                 let pk_col = pk_col.clone();
+                let progress = self.progress.clone();
                 let pk_map_paths = std::sync::Arc::clone(&pk_map_paths);
                 let duplicate_counts = std::sync::Arc::clone(&duplicate_counts);
                 let duplicate_samples = std::sync::Arc::clone(&duplicate_samples);
@@ -1436,6 +1533,16 @@ impl IngestContext {
                         target.write_bytes(&dup_meta, serde_json::to_vec_pretty(&meta)?)?;
                         let mut guard = pk_map_paths.lock().unwrap();
                         guard[shard] = Some(map_rel);
+                        if let Some(cb) = &progress {
+                            cb(ProgressEvent {
+                                phase: ProgressPhase::PkMap,
+                                table: table_name.clone(),
+                                shard: Some(shard),
+                                kind: ProgressKind::Advance,
+                                delta: 1,
+                                total: Some(1),
+                            });
+                        }
                         Ok(())
                     }),
                 });
@@ -1449,6 +1556,14 @@ impl IngestContext {
                 .map(|p| p.ok_or_else(|| anyhow!("missing pk map path for {}", table.name)))
                 .collect::<Result<Vec<_>>>()?;
             self.pk_map_paths.insert(table.name.clone(), paths);
+            self.emit_progress(ProgressEvent {
+                phase: ProgressPhase::PkMap,
+                table: table.name.clone(),
+                shard: None,
+                kind: ProgressKind::Finish,
+                delta: 0,
+                total: Some(self.num_shards as u64),
+            });
         }
         self.pk_map_task_ms = pk_map_time.load(Ordering::Relaxed) / 1_000_000;
         self.pk_map_tasks = self.pk_map_paths.values().map(|v| v.len() as u64).sum();
@@ -1495,6 +1610,14 @@ impl IngestContext {
             if table.edge_table.is_some() {
                 continue;
             }
+            self.emit_progress(ProgressEvent {
+                phase: ProgressPhase::Build,
+                table: table.name.clone(),
+                shard: None,
+                kind: ProgressKind::Start,
+                delta: 0,
+                total: Some(self.num_shards as u64),
+            });
             let shard_rows = self
                 .shard_rows
                 .get(&table.name)
@@ -1538,12 +1661,44 @@ impl IngestContext {
                     self.pk_duplicate_counts
                         .insert(format!("node_data_dropped:{}", table.name), dropped);
                 }
+                self.emit_progress(ProgressEvent {
+                    phase: ProgressPhase::Build,
+                    table: table.name.clone(),
+                    shard: Some(shard),
+                    kind: ProgressKind::Advance,
+                    delta: 1,
+                    total: Some(self.num_shards as u64),
+                });
             }
             self.table_rows
                 .insert(table.name.clone(), shard_rows.iter().sum());
+            self.emit_progress(ProgressEvent {
+                phase: ProgressPhase::Build,
+                table: table.name.clone(),
+                shard: None,
+                kind: ProgressKind::Finish,
+                delta: 0,
+                total: Some(self.num_shards as u64),
+            });
         }
 
         for rel in &self.relationships {
+            self.emit_progress(ProgressEvent {
+                phase: ProgressPhase::Build,
+                table: rel.name_forward.clone(),
+                shard: None,
+                kind: ProgressKind::Start,
+                delta: 0,
+                total: Some(self.num_shards as u64),
+            });
+            self.emit_progress(ProgressEvent {
+                phase: ProgressPhase::Build,
+                table: rel.name_reverse.clone(),
+                shard: None,
+                kind: ProgressKind::Start,
+                delta: 0,
+                total: Some(self.num_shards as u64),
+            });
             let src_table = table_by_name(&self.source, &rel.src_table)?;
             let dst_table = table_by_name(&self.source, &rel.dst_table)?;
             let src_pk = src_table
@@ -1662,7 +1817,39 @@ impl IngestContext {
                 reverse_sink.finish()?;
                 edge_counts.insert(rel.name_forward.clone(), count);
                 edge_counts.insert(rel.name_reverse.clone(), count);
+                self.emit_progress(ProgressEvent {
+                    phase: ProgressPhase::Build,
+                    table: rel.name_forward.clone(),
+                    shard: Some(shard),
+                    kind: ProgressKind::Advance,
+                    delta: 1,
+                    total: Some(self.num_shards as u64),
+                });
+                self.emit_progress(ProgressEvent {
+                    phase: ProgressPhase::Build,
+                    table: rel.name_reverse.clone(),
+                    shard: Some(shard),
+                    kind: ProgressKind::Advance,
+                    delta: 1,
+                    total: Some(self.num_shards as u64),
+                });
             }
+            self.emit_progress(ProgressEvent {
+                phase: ProgressPhase::Build,
+                table: rel.name_forward.clone(),
+                shard: None,
+                kind: ProgressKind::Finish,
+                delta: 0,
+                total: Some(self.num_shards as u64),
+            });
+            self.emit_progress(ProgressEvent {
+                phase: ProgressPhase::Build,
+                table: rel.name_reverse.clone(),
+                shard: None,
+                kind: ProgressKind::Finish,
+                delta: 0,
+                total: Some(self.num_shards as u64),
+            });
         }
 
         for table in self.source.tables.iter().filter(|t| t.edge_table.is_some()) {
@@ -1670,6 +1857,24 @@ impl IngestContext {
                 .edge_table
                 .as_ref()
                 .ok_or_else(|| anyhow!("missing edge table spec for {}", table.name))?;
+            let forward_name = format!("edge_{}_src_to_dst", table.name);
+            let reverse_name = format!("edge_{}_dst_to_src", table.name);
+            self.emit_progress(ProgressEvent {
+                phase: ProgressPhase::Build,
+                table: forward_name.clone(),
+                shard: None,
+                kind: ProgressKind::Start,
+                delta: 0,
+                total: Some(self.num_shards as u64),
+            });
+            self.emit_progress(ProgressEvent {
+                phase: ProgressPhase::Build,
+                table: reverse_name.clone(),
+                shard: None,
+                kind: ProgressKind::Start,
+                delta: 0,
+                total: Some(self.num_shards as u64),
+            });
             let src_table = table_by_name(&self.source, &edge.src_fk.ref_table)?;
             let dst_table = table_by_name(&self.source, &edge.dst_fk.ref_table)?;
             let src_pk = src_table
@@ -1705,8 +1910,6 @@ impl IngestContext {
                 .cloned()
                 .unwrap_or_else(|| vec![0; self.num_shards]);
             for shard in 0..self.num_shards {
-                let forward_name = format!("edge_{}_src_to_dst", table.name);
-                let reverse_name = format!("edge_{}_dst_to_src", table.name);
                 let forward_path = root.join(temp_edge_path(&forward_name, shard));
                 let forward_meta = root.join(temp_edge_meta_path(&forward_name, shard));
                 let meta = read_temp_meta(&forward_meta)?;
@@ -1842,7 +2045,39 @@ impl IngestContext {
                 let sink = writer.into_inner().map_err(|_| anyhow!("edge flush failed"))?;
                 sink.finish()?;
                 edge_counts.insert(reverse_name.clone(), count);
+                self.emit_progress(ProgressEvent {
+                    phase: ProgressPhase::Build,
+                    table: forward_name.clone(),
+                    shard: Some(shard),
+                    kind: ProgressKind::Advance,
+                    delta: 1,
+                    total: Some(self.num_shards as u64),
+                });
+                self.emit_progress(ProgressEvent {
+                    phase: ProgressPhase::Build,
+                    table: reverse_name.clone(),
+                    shard: Some(shard),
+                    kind: ProgressKind::Advance,
+                    delta: 1,
+                    total: Some(self.num_shards as u64),
+                });
             }
+            self.emit_progress(ProgressEvent {
+                phase: ProgressPhase::Build,
+                table: forward_name.clone(),
+                shard: None,
+                kind: ProgressKind::Finish,
+                delta: 0,
+                total: Some(self.num_shards as u64),
+            });
+            self.emit_progress(ProgressEvent {
+                phase: ProgressPhase::Build,
+                table: reverse_name.clone(),
+                shard: None,
+                kind: ProgressKind::Finish,
+                delta: 0,
+                total: Some(self.num_shards as u64),
+            });
         }
         self.edge_counts = edge_counts;
         Ok(())
