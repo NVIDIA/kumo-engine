@@ -588,10 +588,8 @@ impl IngestContext {
         let mut context_ready = false;
         let mut node_context: Option<diskgraph_rowpack::RowPackContext> = None;
         let mut pkey_context: Option<diskgraph_rowpack::RowPackContext> = None;
-        let mut fkey_contexts: HashMap<String, diskgraph_rowpack::RowPackContext> = HashMap::new();
         let mut node_encoder: Option<RowPackEncoder> = None;
         let mut pkey_encoder: Option<RowPackEncoder> = None;
-        let mut fkey_encoders: HashMap<String, RowPackEncoder> = HashMap::new();
         let mut node_writers: Vec<TempRowWriter> = Vec::new();
         let mut pkey_writers: Option<Vec<TempRowWriter>> = None;
         let mut fkey_writers: HashMap<String, Vec<TempRowWriter>> = HashMap::new();
@@ -647,24 +645,21 @@ impl IngestContext {
                                         table,
                                         pk_col,
                                         pk_idx,
-                                        &rel_specs,
                                         &rowpack_config,
                                         &buffered_rows,
                                         &mut node_context,
                                         &mut pkey_context,
-                                        &mut fkey_contexts,
                                     )?;
                                     self.init_node_temp_writers(
                                         table,
                                         &node_context,
                                         &pkey_context,
-                                        &fkey_contexts,
                                         &mut node_encoder,
                                         &mut pkey_encoder,
-                                        &mut fkey_encoders,
                                         &mut node_writers,
                                         &mut pkey_writers,
                                         &mut fkey_writers,
+                                        &rel_specs,
                                     )?;
                                     self.flush_buffered_node_rows(
                                         table,
@@ -673,11 +668,11 @@ impl IngestContext {
                                         &mut buffered_rows,
                                         &node_encoder,
                                         &pkey_encoder,
-                                        &fkey_encoders,
                                         &mut node_writers,
                                         &mut pkey_writers,
                                         &mut fkey_writers,
                                         &mut row_id,
+                                        pk_col,
                                     )?;
                                     context_ready = true;
                                 }
@@ -689,11 +684,11 @@ impl IngestContext {
                                     owned,
                                     &node_encoder,
                                     &pkey_encoder,
-                                    &fkey_encoders,
                                     &mut node_writers,
                                     &mut pkey_writers,
                                     &mut fkey_writers,
                                     &mut row_id,
+                                    pk_col,
                                 )?;
                             }
                         }
@@ -739,24 +734,21 @@ impl IngestContext {
                                         table,
                                         pk_col,
                                         pk_idx,
-                                        &rel_specs,
                                         &rowpack_config,
                                         &buffered_rows,
                                         &mut node_context,
                                         &mut pkey_context,
-                                        &mut fkey_contexts,
                                     )?;
                                     self.init_node_temp_writers(
                                         table,
                                         &node_context,
                                         &pkey_context,
-                                        &fkey_contexts,
                                         &mut node_encoder,
                                         &mut pkey_encoder,
-                                        &mut fkey_encoders,
                                         &mut node_writers,
                                         &mut pkey_writers,
                                         &mut fkey_writers,
+                                        &rel_specs,
                                     )?;
                                     self.flush_buffered_node_rows(
                                         table,
@@ -765,11 +757,11 @@ impl IngestContext {
                                         &mut buffered_rows,
                                         &node_encoder,
                                         &pkey_encoder,
-                                        &fkey_encoders,
                                         &mut node_writers,
                                         &mut pkey_writers,
                                         &mut fkey_writers,
                                         &mut row_id,
+                                        pk_col,
                                     )?;
                                     context_ready = true;
                                 }
@@ -781,11 +773,11 @@ impl IngestContext {
                                     owned,
                                     &node_encoder,
                                     &pkey_encoder,
-                                    &fkey_encoders,
                                     &mut node_writers,
                                     &mut pkey_writers,
                                     &mut fkey_writers,
                                     &mut row_id,
+                                    pk_col,
                                 )?;
                             }
                         }
@@ -807,24 +799,21 @@ impl IngestContext {
                 table,
                 pk_col,
                 pk_idx,
-                &rel_specs,
                 &rowpack_config,
                 &buffered_rows,
                 &mut node_context,
                 &mut pkey_context,
-                &mut fkey_contexts,
             )?;
             self.init_node_temp_writers(
                 table,
                 &node_context,
                 &pkey_context,
-                &fkey_contexts,
                 &mut node_encoder,
                 &mut pkey_encoder,
-                &mut fkey_encoders,
                 &mut node_writers,
                 &mut pkey_writers,
                 &mut fkey_writers,
+                &rel_specs,
             )?;
             self.flush_buffered_node_rows(
                 table,
@@ -833,11 +822,11 @@ impl IngestContext {
                 &mut buffered_rows,
                 &node_encoder,
                 &pkey_encoder,
-                &fkey_encoders,
                 &mut node_writers,
                 &mut pkey_writers,
                 &mut fkey_writers,
                 &mut row_id,
+                pk_col,
             )?;
         }
 
@@ -860,10 +849,7 @@ impl IngestContext {
             }
         }
         for (rel, writers) in fkey_writers.into_iter() {
-            let ctx = fkey_contexts
-                .get(&rel)
-                .ok_or_else(|| anyhow!("missing fkey context {}", rel))?;
-            let ctx_bytes = ctx.to_bytes()?;
+            let ctx_bytes: [u8; 0] = [];
             for (shard, writer) in writers.into_iter().enumerate() {
                 let rows = finish_temp_writer(writer)?;
                 let meta_path = temp_fkey_meta_path(&table.name, &rel, shard);
@@ -883,12 +869,10 @@ impl IngestContext {
         table: &TableSpec,
         pk_col: Option<&ColumnSpec>,
         pk_idx: Option<usize>,
-        rel_specs: &[(String, usize)],
         rowpack_config: &RowPackConfig,
         rows: &[OwnedRow],
         node_context: &mut Option<diskgraph_rowpack::RowPackContext>,
         pkey_context: &mut Option<diskgraph_rowpack::RowPackContext>,
-        fkey_contexts: &mut HashMap<String, diskgraph_rowpack::RowPackContext>,
     ) -> Result<()> {
         let sample_idxs = sample_indices(rows.len(), SAMPLE_ROW_TARGET);
         let mut value_refs = Vec::new();
@@ -910,27 +894,6 @@ impl IngestContext {
             *pkey_context = Some(pk_builder.finish()?);
         }
 
-        for (rel_name, rel_idx) in rel_specs {
-            let fk_col = table
-                .columns
-                .get(*rel_idx)
-                .ok_or_else(|| anyhow!("missing fk column index {}", rel_idx))?;
-            let mut columns = rowpack_columns_for_specs(&[fk_col.clone()])?;
-            columns.push(diskgraph_rowpack::RowPackColumn {
-                name: "src_sortkey".to_string(),
-                logical_type: RowpackType::UInt32,
-                fixed_len: None,
-                precision: None,
-                scale: None,
-            });
-            let mut fk_builder = RowPackContextBuilder::new(columns, rowpack_config.clone());
-            for idx in &sample_idxs {
-                rows[*idx].as_value_refs_for_indices(&[*rel_idx], &mut value_refs);
-                value_refs.push(ValueRef::Null);
-                fk_builder.observe_row(&value_refs)?;
-            }
-            fkey_contexts.insert(rel_name.clone(), fk_builder.finish()?);
-        }
         Ok(())
     }
 
@@ -939,13 +902,12 @@ impl IngestContext {
         table: &TableSpec,
         node_context: &Option<diskgraph_rowpack::RowPackContext>,
         pkey_context: &Option<diskgraph_rowpack::RowPackContext>,
-        fkey_contexts: &HashMap<String, diskgraph_rowpack::RowPackContext>,
         node_encoder: &mut Option<RowPackEncoder>,
         pkey_encoder: &mut Option<RowPackEncoder>,
-        fkey_encoders: &mut HashMap<String, RowPackEncoder>,
         node_writers: &mut Vec<TempRowWriter>,
         pkey_writers: &mut Option<Vec<TempRowWriter>>,
         fkey_writers: &mut HashMap<String, Vec<TempRowWriter>>,
+        rel_specs: &[(String, usize)],
     ) -> Result<()> {
         let node_ctx = node_context.as_ref().ok_or_else(|| anyhow!("missing node context"))?;
         *node_encoder = Some(RowPackEncoder::new(node_ctx.clone())?);
@@ -966,8 +928,7 @@ impl IngestContext {
             }
             *pkey_writers = Some(writers);
         }
-        for (rel, ctx) in fkey_contexts {
-            fkey_encoders.insert(rel.clone(), RowPackEncoder::new(ctx.clone())?);
+        for (rel, _) in rel_specs {
             let mut writers = Vec::with_capacity(self.num_shards);
             for shard in 0..self.num_shards {
                 writers.push(open_temp_row_writer(
@@ -988,11 +949,11 @@ impl IngestContext {
         rows: &mut Vec<OwnedRow>,
         node_encoder: &Option<RowPackEncoder>,
         pkey_encoder: &Option<RowPackEncoder>,
-        fkey_encoders: &HashMap<String, RowPackEncoder>,
         node_writers: &mut Vec<TempRowWriter>,
         pkey_writers: &mut Option<Vec<TempRowWriter>>,
         fkey_writers: &mut HashMap<String, Vec<TempRowWriter>>,
         row_id: &mut u64,
+        pk_col: Option<&ColumnSpec>,
     ) -> Result<()> {
         let rows_taken = std::mem::take(rows);
         for row in rows_taken {
@@ -1003,11 +964,11 @@ impl IngestContext {
                 row,
                 node_encoder,
                 pkey_encoder,
-                fkey_encoders,
                 node_writers,
                 pkey_writers,
                 fkey_writers,
                 row_id,
+                pk_col,
             )?;
         }
         Ok(())
@@ -1015,17 +976,17 @@ impl IngestContext {
 
     fn write_node_row(
         &self,
-        _table: &TableSpec,
+        table: &TableSpec,
         pk_idx: Option<usize>,
         rel_specs: &[(String, usize)],
         row: OwnedRow,
         node_encoder: &Option<RowPackEncoder>,
         pkey_encoder: &Option<RowPackEncoder>,
-        fkey_encoders: &HashMap<String, RowPackEncoder>,
         node_writers: &mut Vec<TempRowWriter>,
         pkey_writers: &mut Option<Vec<TempRowWriter>>,
         fkey_writers: &mut HashMap<String, Vec<TempRowWriter>>,
         row_id: &mut u64,
+        pk_col: Option<&ColumnSpec>,
     ) -> Result<()> {
         let mut value_refs = Vec::new();
         row.as_value_refs(&mut value_refs);
@@ -1033,10 +994,15 @@ impl IngestContext {
             .as_ref()
             .ok_or_else(|| anyhow!("missing node encoder"))?
             .encode_row(&value_refs)?;
-        let shard = if let (Some(idx), Some(pkey_encoder)) = (pk_idx, pkey_encoder.as_ref()) {
+        let shard = if let (Some(idx), Some(pkey_encoder), Some(pk_col)) =
+            (pk_idx, pkey_encoder.as_ref(), pk_col)
+        {
             row.as_value_refs_for_indices(&[idx], &mut value_refs);
+            let key = key_from_value_ref(&value_refs[0], pk_col)
+                .map_err(|_| anyhow!("pk parse"))?;
+            let mut scratch = [0u8; 16];
+            let shard = shard_for_key(key_hash_bytes(&key, &mut scratch), self.num_shards);
             let pkey_row = pkey_encoder.encode_row(&value_refs)?;
-            let shard = shard_for_key(&pkey_row, self.num_shards);
             if let Some(writers) = pkey_writers.as_mut() {
                 write_temp_row(&mut writers[shard], &pkey_row)?;
             }
@@ -1046,13 +1012,17 @@ impl IngestContext {
         };
         write_temp_row(&mut node_writers[shard], &node_row)?;
         for (rel_name, rel_idx) in rel_specs {
-            if let Some(encoder) = fkey_encoders.get(rel_name) {
+            if let Some(writers) = fkey_writers.get_mut(rel_name) {
+                let col = table
+                    .columns
+                    .get(*rel_idx)
+                    .ok_or_else(|| anyhow!("missing fk column"))?;
                 row.as_value_refs_for_indices(&[*rel_idx], &mut value_refs);
-                value_refs.push(ValueRef::Null);
-                let fk_row = encoder.encode_row(&value_refs)?;
-                if let Some(writers) = fkey_writers.get_mut(rel_name) {
-                    write_temp_row(&mut writers[shard], &fk_row)?;
-                }
+                let key = key_from_value_ref(&value_refs[0], col)
+                    .map_err(|_| anyhow!("fk parse"))?;
+                let mut buf = Vec::new();
+                write_key_to_buf(&mut buf, &key)?;
+                write_temp_row(&mut writers[shard], &buf)?;
             }
         }
         *row_id = row_id.saturating_add(1);
@@ -1068,21 +1038,9 @@ impl IngestContext {
         let dst_fk_idx = column_index(table, &edge.dst_fk.column)?;
         let src_fk_col = column_spec(table, &edge.src_fk.column)?;
         let dst_fk_col = column_spec(table, &edge.dst_fk.column)?;
-        let rowpack_config = rowpack_config_for_table(self.source.rowpack.as_ref(), table);
-        let mut edge_columns = rowpack_columns_for_specs(&[src_fk_col.clone(), dst_fk_col.clone()])?;
-        edge_columns.push(diskgraph_rowpack::RowPackColumn {
-            name: "sortkey".to_string(),
-            logical_type: RowpackType::UInt32,
-            fixed_len: None,
-            precision: None,
-            scale: None,
-        });
-        let mut buffered_rows: Vec<OwnedRow> = Vec::new();
-        let mut total_seen = 0usize;
-        let mut edge_context: Option<diskgraph_rowpack::RowPackContext> = None;
-        let mut edge_encoder: Option<RowPackEncoder> = None;
         let mut forward_writers: Vec<TempRowWriter> = Vec::new();
         let mut reverse_writers: Vec<TempRowWriter> = Vec::new();
+        self.init_edge_temp_writers(&table.name, &mut forward_writers, &mut reverse_writers)?;
         let mut values = Vec::with_capacity(table.columns.len());
         let mut arrays_f32: Vec<Vec<f32>> = Vec::new();
         let mut arrays_f64: Vec<Vec<f64>> = Vec::new();
@@ -1126,44 +1084,15 @@ impl IngestContext {
                                 &mut bytes,
                                 &self.trimmed_strings,
                             )?;
-                            total_seen += 1;
-                            if edge_context.is_none() {
-                                buffered_rows.push(owned);
-                                if total_seen >= SAMPLE_ROW_LIMIT {
-                                    self.build_edge_context_from_samples(
-                                        &edge_columns,
-                                        &rowpack_config,
-                                        src_fk_idx,
-                                        dst_fk_idx,
-                                        &buffered_rows,
-                                        &mut edge_context,
-                                    )?;
-                                    self.init_edge_temp_writers(
-                                        &table.name,
-                                        &edge_context,
-                                        &mut edge_encoder,
-                                        &mut forward_writers,
-                                        &mut reverse_writers,
-                                    )?;
-                                    self.flush_buffered_edge_rows(
-                                        src_fk_idx,
-                                        dst_fk_idx,
-                                        &mut buffered_rows,
-                                        edge_encoder.as_ref(),
-                                        &mut forward_writers,
-                                        &mut reverse_writers,
-                                    )?;
-                                }
-                            } else {
-                                self.write_edge_row(
-                                    src_fk_idx,
-                                    dst_fk_idx,
-                                    owned,
-                                    edge_encoder.as_ref(),
-                                    &mut forward_writers,
-                                    &mut reverse_writers,
-                                )?;
-                            }
+                            self.write_edge_row(
+                                src_fk_idx,
+                                dst_fk_idx,
+                                src_fk_col,
+                                dst_fk_col,
+                                owned,
+                                &mut forward_writers,
+                                &mut reverse_writers,
+                            )?;
                         }
                     }
                 }
@@ -1198,44 +1127,15 @@ impl IngestContext {
                                 &mut bytes,
                                 &self.trimmed_strings,
                             )?;
-                            total_seen += 1;
-                            if edge_context.is_none() {
-                                buffered_rows.push(owned);
-                                if total_seen >= SAMPLE_ROW_LIMIT {
-                                    self.build_edge_context_from_samples(
-                                        &edge_columns,
-                                        &rowpack_config,
-                                        src_fk_idx,
-                                        dst_fk_idx,
-                                        &buffered_rows,
-                                        &mut edge_context,
-                                    )?;
-                                    self.init_edge_temp_writers(
-                                        &table.name,
-                                        &edge_context,
-                                        &mut edge_encoder,
-                                        &mut forward_writers,
-                                        &mut reverse_writers,
-                                    )?;
-                                    self.flush_buffered_edge_rows(
-                                        src_fk_idx,
-                                        dst_fk_idx,
-                                        &mut buffered_rows,
-                                        edge_encoder.as_ref(),
-                                        &mut forward_writers,
-                                        &mut reverse_writers,
-                                    )?;
-                                }
-                            } else {
-                                self.write_edge_row(
-                                    src_fk_idx,
-                                    dst_fk_idx,
-                                    owned,
-                                    edge_encoder.as_ref(),
-                                    &mut forward_writers,
-                                    &mut reverse_writers,
-                                )?;
-                            }
+                            self.write_edge_row(
+                                src_fk_idx,
+                                dst_fk_idx,
+                                src_fk_col,
+                                dst_fk_col,
+                                owned,
+                                &mut forward_writers,
+                                &mut reverse_writers,
+                            )?;
                         }
                     }
                 }
@@ -1250,34 +1150,7 @@ impl IngestContext {
             });
         }
 
-        if edge_context.is_none() {
-            self.build_edge_context_from_samples(
-                &edge_columns,
-                &rowpack_config,
-                src_fk_idx,
-                dst_fk_idx,
-                &buffered_rows,
-                &mut edge_context,
-            )?;
-            self.init_edge_temp_writers(
-                &table.name,
-                &edge_context,
-                &mut edge_encoder,
-                &mut forward_writers,
-                &mut reverse_writers,
-            )?;
-            self.flush_buffered_edge_rows(
-                src_fk_idx,
-                dst_fk_idx,
-                &mut buffered_rows,
-                edge_encoder.as_ref(),
-                &mut forward_writers,
-                &mut reverse_writers,
-            )?;
-        }
-
-        let edge_ctx = edge_context.ok_or_else(|| anyhow!("missing edge context"))?;
-        let ctx_bytes = edge_ctx.to_bytes()?;
+        let ctx_bytes: [u8; 0] = [];
         for shard in 0..self.num_shards {
             let rows = finish_temp_writer(forward_writers.remove(0))?;
             let meta_path = temp_edge_meta_path(&format!("edge_{}_src_to_dst", table.name), shard);
@@ -1291,37 +1164,12 @@ impl IngestContext {
         Ok(())
     }
 
-    fn build_edge_context_from_samples(
-        &self,
-        edge_columns: &[diskgraph_rowpack::RowPackColumn],
-        rowpack_config: &RowPackConfig,
-        src_idx: usize,
-        dst_idx: usize,
-        rows: &[OwnedRow],
-        edge_context: &mut Option<diskgraph_rowpack::RowPackContext>,
-    ) -> Result<()> {
-        let sample_idxs = sample_indices(rows.len(), SAMPLE_ROW_TARGET);
-        let mut value_refs = Vec::new();
-        let mut builder = RowPackContextBuilder::new(edge_columns.to_vec(), rowpack_config.clone());
-        for idx in &sample_idxs {
-            rows[*idx].as_value_refs_for_indices(&[src_idx, dst_idx], &mut value_refs);
-            value_refs.push(ValueRef::Null);
-            builder.observe_row(&value_refs)?;
-        }
-        *edge_context = Some(builder.finish()?);
-        Ok(())
-    }
-
     fn init_edge_temp_writers(
         &self,
         table_name: &str,
-        edge_context: &Option<diskgraph_rowpack::RowPackContext>,
-        edge_encoder: &mut Option<RowPackEncoder>,
         forward_writers: &mut Vec<TempRowWriter>,
         reverse_writers: &mut Vec<TempRowWriter>,
     ) -> Result<()> {
-        let ctx = edge_context.as_ref().ok_or_else(|| anyhow!("missing edge context"))?;
-        *edge_encoder = Some(RowPackEncoder::new(ctx.clone())?);
         let forward_name = format!("edge_{}_src_to_dst", table_name);
         let reverse_name = format!("edge_{}_dst_to_src", table_name);
         for shard in 0..self.num_shards {
@@ -1337,59 +1185,34 @@ impl IngestContext {
         Ok(())
     }
 
-    fn flush_buffered_edge_rows(
-        &self,
-        src_idx: usize,
-        dst_idx: usize,
-        rows: &mut Vec<OwnedRow>,
-        edge_encoder: Option<&RowPackEncoder>,
-        forward_writers: &mut Vec<TempRowWriter>,
-        reverse_writers: &mut Vec<TempRowWriter>,
-    ) -> Result<()> {
-        let rows_taken = std::mem::take(rows);
-        for row in rows_taken {
-            self.write_edge_row(
-                src_idx,
-                dst_idx,
-                row,
-                edge_encoder,
-                forward_writers,
-                reverse_writers,
-            )?;
-        }
-        Ok(())
-    }
-
     fn write_edge_row(
         &self,
         src_idx: usize,
         dst_idx: usize,
+        src_col: &ColumnSpec,
+        dst_col: &ColumnSpec,
         row: OwnedRow,
-        edge_encoder: Option<&RowPackEncoder>,
         forward_writers: &mut Vec<TempRowWriter>,
         reverse_writers: &mut Vec<TempRowWriter>,
     ) -> Result<()> {
-        let encoder = edge_encoder.ok_or_else(|| anyhow!("missing edge encoder"))?;
         let mut value_refs = Vec::new();
-        row.as_value_refs_for_indices(&[src_idx, dst_idx], &mut value_refs);
-        value_refs.push(ValueRef::Null);
-        let forward_row = encoder.encode_row(&value_refs)?;
-        let src_value = row
-            .values
-            .get(src_idx)
-            .ok_or_else(|| anyhow!("missing src value"))?;
-        let dst_value = row
-            .values
-            .get(dst_idx)
-            .ok_or_else(|| anyhow!("missing dst value"))?;
-        let forward_shard = shard_for_owned_value(src_value, self.num_shards);
+        row.as_value_refs_for_indices(&[src_idx], &mut value_refs);
+        let src_key = key_from_value_ref(&value_refs[0], src_col)
+            .map_err(|_| anyhow!("src key parse"))?;
+        row.as_value_refs_for_indices(&[dst_idx], &mut value_refs);
+        let dst_key = key_from_value_ref(&value_refs[0], dst_col)
+            .map_err(|_| anyhow!("dst key parse"))?;
+        let mut scratch = [0u8; 16];
+        let forward_shard = shard_for_key(key_hash_bytes(&src_key, &mut scratch), self.num_shards);
+        let reverse_shard =
+            shard_for_key(key_hash_bytes(&dst_key, &mut scratch), self.num_shards);
+        let mut forward_row = Vec::new();
+        write_key_to_buf(&mut forward_row, &src_key)?;
+        write_key_to_buf(&mut forward_row, &dst_key)?;
         write_temp_row(&mut forward_writers[forward_shard], &forward_row)?;
-        value_refs.clear();
-        value_refs.push(dst_value.as_value_ref());
-        value_refs.push(src_value.as_value_ref());
-        value_refs.push(ValueRef::Null);
-        let reverse_row = encoder.encode_row(&value_refs)?;
-        let reverse_shard = shard_for_owned_value(dst_value, self.num_shards);
+        let mut reverse_row = Vec::new();
+        write_key_to_buf(&mut reverse_row, &dst_key)?;
+        write_key_to_buf(&mut reverse_row, &src_key)?;
         write_temp_row(&mut reverse_writers[reverse_shard], &reverse_row)?;
         Ok(())
     }
@@ -1683,16 +1506,6 @@ impl IngestContext {
             }
             pk_maps_by_table.insert(table.clone(), maps);
         }
-        let mut pkey_encoders: HashMap<String, RowPackEncoder> = HashMap::new();
-        for table in &self.source.tables {
-            if table.edge_table.is_some() || table.primary_key.is_none() {
-                continue;
-            }
-            let meta_path = root.join(temp_pkey_meta_path(&table.name, 0));
-            let meta = read_temp_meta(&meta_path)?;
-            let ctx = diskgraph_rowpack::RowPackContext::from_bytes(&meta.context)?;
-            pkey_encoders.insert(table.name.clone(), RowPackEncoder::new(ctx)?);
-        }
         let mut max_ids = HashMap::new();
         for (table, counts) in &self.shard_rows {
             let total: u64 = counts.iter().sum();
@@ -1723,12 +1536,8 @@ impl IngestContext {
                 delta: 0,
                 total: Some(rel_total_rows),
             });
-            let dst_table = table_by_name(&self.source, &rel.dst_table)?;
-            let dst_pk = dst_table
-                .primary_key
-                .as_ref()
-                .ok_or_else(|| anyhow!("missing pk for {}", rel.dst_table))?;
-            let dst_pk_col = column_spec(dst_table, dst_pk)?;
+            let src_table = table_by_name(&self.source, &rel.src_table)?;
+            let src_fk_col = column_spec(src_table, &rel.src_column)?;
             let src_offsets = self
                 .shard_offsets
                 .get(&rel.src_table)
@@ -1739,20 +1548,12 @@ impl IngestContext {
                 .get(&rel.dst_table)
                 .cloned()
                 .unwrap_or_else(|| vec![0; self.num_shards]);
-            let dst_encoder = pkey_encoders
-                .get(&rel.dst_table)
-                .ok_or_else(|| anyhow!("missing pkey encoder for {}", rel.dst_table))?;
             let dst_maps = pk_maps_by_table
                 .get(&rel.dst_table)
                 .ok_or_else(|| anyhow!("missing pk maps for {}", rel.dst_table))?;
             for shard in 0..self.num_shards {
                 let fkey_path =
                     root.join(temp_fkey_path(&rel.src_table, &rel.name_forward, shard));
-                let fkey_meta =
-                    root.join(temp_fkey_meta_path(&rel.src_table, &rel.name_forward, shard));
-                let meta = read_temp_meta(&fkey_meta)?;
-                let ctx = diskgraph_rowpack::RowPackContext::from_bytes(&meta.context)?;
-                let decoder = RowPackDecoder::new(ctx)?;
                 let forward_rel = edge_shard_output_path(&rel.name_forward, shard);
                 let reverse_rel = edge_shard_output_path(&rel.name_reverse, shard);
                 let forward_path = self.target.join(&forward_rel);
@@ -1780,7 +1581,7 @@ impl IngestContext {
                 write_edge_bin_header(&mut forward_writer, false, forward_spec)?;
                 write_edge_bin_header(&mut reverse_writer, false, reverse_spec)?;
                 let mut count = 0u64;
-                let mut scratch = RowPackDecodeScratch::default();
+                let mut scratch = [0u8; 16];
                 let mut pending = 0u64;
                 read_temp_rows(&fkey_path, |row| {
                     pending = pending.saturating_add(1);
@@ -1803,14 +1604,10 @@ impl IngestContext {
                         });
                         pending = 0;
                     }
-                    let dst_val = decoder.decode_column_value(row, 0, &mut scratch)?;
-                    let dst_key = key_from_value_ref(&dst_val, dst_pk_col)
+                    let mut data = row;
+                    let dst_key = read_key_from_buf(&mut data, src_fk_col)
                         .map_err(|_| anyhow!("fk parse"))?;
-                    let dst_row = {
-                        let values = [dst_val];
-                        dst_encoder.encode_row(&values)?
-                    };
-                    let dst_shard = shard_for_key(&dst_row, self.num_shards);
+                    let dst_shard = shard_for_key(key_hash_bytes(&dst_key, &mut scratch), self.num_shards);
                     let src_id = src_offsets[shard].saturating_add(count);
                     let dst_local = dst_maps
                         .get(dst_shard)
@@ -1936,12 +1733,6 @@ impl IngestContext {
                 .ok_or_else(|| anyhow!("missing pk for {}", edge.dst_fk.ref_table))?;
             let src_pk_col = column_spec(src_table, src_pk)?;
             let dst_pk_col = column_spec(dst_table, dst_pk)?;
-            let src_encoder = pkey_encoders
-                .get(&edge.src_fk.ref_table)
-                .ok_or_else(|| anyhow!("missing pkey encoder for {}", edge.src_fk.ref_table))?;
-            let dst_encoder = pkey_encoders
-                .get(&edge.dst_fk.ref_table)
-                .ok_or_else(|| anyhow!("missing pkey encoder for {}", edge.dst_fk.ref_table))?;
             let src_maps = pk_maps_by_table
                 .get(&edge.src_fk.ref_table)
                 .ok_or_else(|| anyhow!("missing pk maps for {}", edge.src_fk.ref_table))?;
@@ -1960,10 +1751,6 @@ impl IngestContext {
                 .unwrap_or_else(|| vec![0; self.num_shards]);
             for shard in 0..self.num_shards {
                 let forward_path = root.join(temp_edge_path(&forward_name, shard));
-                let forward_meta = root.join(temp_edge_meta_path(&forward_name, shard));
-                let meta = read_temp_meta(&forward_meta)?;
-                let ctx = diskgraph_rowpack::RowPackContext::from_bytes(&meta.context)?;
-                let decoder = RowPackDecoder::new(ctx)?;
                 let out_rel = edge_shard_output_path(&forward_name, shard);
                 let out_path = self.target.join(&out_rel);
                 if let OutputTarget::Local { .. } = &*self.target {
@@ -1985,7 +1772,7 @@ impl IngestContext {
                 );
                 write_edge_bin_header(&mut writer, false, spec)?;
                 let mut count = 0u64;
-                let mut scratch = RowPackDecodeScratch::default();
+                let mut scratch = [0u8; 16];
                 let mut pending = 0u64;
                 read_temp_rows(&forward_path, |row| {
                     pending = pending.saturating_add(1);
@@ -2000,22 +1787,15 @@ impl IngestContext {
                         });
                         pending = 0;
                     }
-                    let src_val = decoder.decode_column_value(row, 0, &mut scratch)?;
-                    let src_key = key_from_value_ref(&src_val, src_pk_col)
+                    let mut data = row;
+                    let src_key = read_key_from_buf(&mut data, src_pk_col)
                         .map_err(|_| anyhow!("src key parse"))?;
-                    let src_row = {
-                        let values = [src_val];
-                        src_encoder.encode_row(&values)?
-                    };
-                    let dst_val = decoder.decode_column_value(row, 1, &mut scratch)?;
-                    let dst_key = key_from_value_ref(&dst_val, dst_pk_col)
+                    let dst_key = read_key_from_buf(&mut data, dst_pk_col)
                         .map_err(|_| anyhow!("dst key parse"))?;
-                    let dst_row = {
-                        let values = [dst_val];
-                        dst_encoder.encode_row(&values)?
-                    };
-                    let src_shard = shard_for_key(&src_row, self.num_shards);
-                    let dst_shard = shard_for_key(&dst_row, self.num_shards);
+                    let src_shard =
+                        shard_for_key(key_hash_bytes(&src_key, &mut scratch), self.num_shards);
+                    let dst_shard =
+                        shard_for_key(key_hash_bytes(&dst_key, &mut scratch), self.num_shards);
                     let src_local = src_maps
                         .get(src_shard)
                         .and_then(|map| map.lookup(&src_key))
@@ -2055,10 +1835,6 @@ impl IngestContext {
                 edge_counts.insert(forward_name.clone(), count);
 
                 let reverse_path = root.join(temp_edge_path(&reverse_name, shard));
-                let reverse_meta = root.join(temp_edge_meta_path(&reverse_name, shard));
-                let meta = read_temp_meta(&reverse_meta)?;
-                let ctx = diskgraph_rowpack::RowPackContext::from_bytes(&meta.context)?;
-                let decoder = RowPackDecoder::new(ctx)?;
                 let out_rel = edge_shard_output_path(&reverse_name, shard);
                 let out_path = self.target.join(&out_rel);
                 if let OutputTarget::Local { .. } = &*self.target {
@@ -2080,7 +1856,7 @@ impl IngestContext {
                 );
                 write_edge_bin_header(&mut writer, false, spec)?;
                 let mut count = 0u64;
-                let mut scratch = RowPackDecodeScratch::default();
+                let mut scratch = [0u8; 16];
                 let mut pending = 0u64;
                 read_temp_rows(&reverse_path, |row| {
                     pending = pending.saturating_add(1);
@@ -2095,22 +1871,15 @@ impl IngestContext {
                         });
                         pending = 0;
                     }
-                    let dst_val = decoder.decode_column_value(row, 0, &mut scratch)?;
-                    let dst_key = key_from_value_ref(&dst_val, dst_pk_col)
+                    let mut data = row;
+                    let dst_key = read_key_from_buf(&mut data, dst_pk_col)
                         .map_err(|_| anyhow!("dst key parse"))?;
-                    let dst_row = {
-                        let values = [dst_val];
-                        dst_encoder.encode_row(&values)?
-                    };
-                    let src_val = decoder.decode_column_value(row, 1, &mut scratch)?;
-                    let src_key = key_from_value_ref(&src_val, src_pk_col)
+                    let src_key = read_key_from_buf(&mut data, src_pk_col)
                         .map_err(|_| anyhow!("src key parse"))?;
-                    let src_row = {
-                        let values = [src_val];
-                        src_encoder.encode_row(&values)?
-                    };
-                    let dst_shard = shard_for_key(&dst_row, self.num_shards);
-                    let src_shard = shard_for_key(&src_row, self.num_shards);
+                    let dst_shard =
+                        shard_for_key(key_hash_bytes(&dst_key, &mut scratch), self.num_shards);
+                    let src_shard =
+                        shard_for_key(key_hash_bytes(&src_key, &mut scratch), self.num_shards);
                     let dst_local = dst_maps
                         .get(dst_shard)
                         .and_then(|map| map.lookup(&dst_key))
@@ -2944,6 +2713,81 @@ fn key_from_value_ref(value: &ValueRef<'_>, col: &ColumnSpec) -> KeyParseResult<
     }
 }
 
+fn key_hash_bytes<'a>(key: &'a Key, scratch: &'a mut [u8; 16]) -> &'a [u8] {
+    match key {
+        Key::Int(v) => {
+            scratch[..8].copy_from_slice(&v.to_le_bytes());
+            &scratch[..8]
+        }
+        Key::Uuid(v) => v.as_slice(),
+        Key::FixedBytes(v) => v.as_slice(),
+        Key::Bytes(v) => v.as_slice(),
+    }
+}
+
+fn write_key_to_buf(buf: &mut Vec<u8>, key: &Key) -> Result<()> {
+    match key {
+        Key::Int(v) => buf.extend_from_slice(&v.to_le_bytes()),
+        Key::Uuid(v) => buf.extend_from_slice(v),
+        Key::FixedBytes(v) => buf.extend_from_slice(v),
+        Key::Bytes(v) => {
+            let len = u16::try_from(v.len())
+                .map_err(|_| anyhow!("temp key too large"))?;
+            buf.extend_from_slice(&len.to_le_bytes());
+            buf.extend_from_slice(v);
+        }
+    }
+    Ok(())
+}
+
+fn read_key_from_buf(data: &mut &[u8], col: &ColumnSpec) -> Result<Key> {
+    let key_type = key_type_for_column(col)?;
+    match key_type {
+        KeyType::Int64 => {
+            if data.len() < 8 {
+                return Err(anyhow!("temp key truncated"));
+            }
+            let mut buf = [0u8; 8];
+            buf.copy_from_slice(&data[..8]);
+            *data = &data[8..];
+            Ok(Key::Int(u64::from_le_bytes(buf)))
+        }
+        KeyType::Uuid => {
+            if data.len() < 16 {
+                return Err(anyhow!("temp key truncated"));
+            }
+            let mut buf = [0u8; 16];
+            buf.copy_from_slice(&data[..16]);
+            *data = &data[16..];
+            Ok(Key::Uuid(buf))
+        }
+        KeyType::FixedBytes { len } => {
+            if data.len() < len {
+                return Err(anyhow!("temp key truncated"));
+            }
+            let bytes = data[..len].to_vec();
+            *data = &data[len..];
+            Ok(Key::FixedBytes(bytes))
+        }
+        KeyType::VarBytes => {
+            if data.len() < 2 {
+                return Err(anyhow!("temp key truncated"));
+            }
+            let len = u16::from_le_bytes(data[..2].try_into().unwrap()) as usize;
+            *data = &data[2..];
+            if data.len() < len {
+                return Err(anyhow!("temp key truncated"));
+            }
+            if len > MAX_VAR_KEY_LEN {
+                return Err(anyhow!("temp key too large"));
+            }
+            let bytes = data[..len].to_vec();
+            *data = &data[len..];
+            Ok(Key::Bytes(bytes))
+        }
+    }
+}
+
 fn parse_base10_bytes(bytes: &[u8]) -> KeyParseResult<u64> {
     if bytes.is_empty() {
         return Err(KeyParseError::Empty);
@@ -3584,44 +3428,6 @@ fn shard_for_key(bytes: &[u8], num_shards: usize) -> usize {
     let mut hasher = XxHash64::with_seed(0);
     hasher.write(bytes);
     (hasher.finish() as usize) % num_shards
-}
-
-fn shard_for_owned_value(value: &OwnedValue, num_shards: usize) -> usize {
-    match value {
-        OwnedValue::Null => 0,
-        OwnedValue::Int64(v) => shard_for_key(&v.to_le_bytes(), num_shards),
-        OwnedValue::Int32(v) => shard_for_key(&v.to_le_bytes(), num_shards),
-        OwnedValue::UInt64(v) => shard_for_key(&v.to_le_bytes(), num_shards),
-        OwnedValue::UInt32(v) => shard_for_key(&v.to_le_bytes(), num_shards),
-        OwnedValue::Float64(v) => shard_for_key(&v.to_le_bytes(), num_shards),
-        OwnedValue::Float32(v) => shard_for_key(&v.to_le_bytes(), num_shards),
-        OwnedValue::Bool(v) => shard_for_key(&[*v as u8], num_shards),
-        OwnedValue::String(v) => shard_for_key(v.as_bytes(), num_shards),
-        OwnedValue::Bytes(v) => shard_for_key(v.as_slice(), num_shards),
-        OwnedValue::Date(v) => shard_for_key(&v.to_le_bytes(), num_shards),
-        OwnedValue::Timestamp { secs, nanos } => {
-            let mut buf = [0u8; 12];
-            buf[..8].copy_from_slice(&secs.to_le_bytes());
-            buf[8..].copy_from_slice(&nanos.to_le_bytes());
-            shard_for_key(&buf, num_shards)
-        }
-        OwnedValue::Decimal128(v) => shard_for_key(&v.to_le_bytes(), num_shards),
-        OwnedValue::Decimal256(v) => shard_for_key(v, num_shards),
-        OwnedValue::Float32Array(v) => {
-            let mut hasher = XxHash64::with_seed(0);
-            for val in v {
-                hasher.write(&val.to_le_bytes());
-            }
-            (hasher.finish() as usize) % num_shards.max(1)
-        }
-        OwnedValue::Float64Array(v) => {
-            let mut hasher = XxHash64::with_seed(0);
-            for val in v {
-                hasher.write(&val.to_le_bytes());
-            }
-            (hasher.finish() as usize) % num_shards.max(1)
-        }
-    }
 }
 
 fn estimate_pk_map_bytes(col: &ColumnSpec, rows: usize) -> usize {
