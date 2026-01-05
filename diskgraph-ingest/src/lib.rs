@@ -542,7 +542,7 @@ impl IngestContext {
                 shard: None,
                 kind: ProgressKind::Start,
                 delta: 0,
-                total: None,
+                total: Some(table.paths.len() as u64),
             });
             if table.edge_table.is_some() {
                 self.build_temp_edge_table(table)?;
@@ -550,7 +550,7 @@ impl IngestContext {
                 let rows = self.build_temp_node_table(table)?;
                 table_rows.insert(table.name.clone(), rows);
             }
-            let total = table_rows.get(&table.name).copied();
+            let total = Some(table.paths.len() as u64);
             self.emit_progress(ProgressEvent {
                 phase: ProgressPhase::Temp,
                 table: table.name.clone(),
@@ -615,7 +615,6 @@ impl IngestContext {
                     let reader = builder.with_batch_size(NODE_BATCH_SIZE).build()?;
                     for batch in reader {
                         let batch = batch?;
-                        let batch_rows = batch.num_rows() as u64;
                         let mut cols = Vec::with_capacity(table.columns.len());
                         for col in &table.columns {
                             let idx = batch
@@ -698,14 +697,6 @@ impl IngestContext {
                                 )?;
                             }
                         }
-                        self.emit_progress(ProgressEvent {
-                            phase: ProgressPhase::Temp,
-                            table: table.name.clone(),
-                            shard: None,
-                            kind: ProgressKind::Advance,
-                            delta: batch_rows,
-                            total: None,
-                        });
                     }
                 }
                 TableFormat::Csv => {
@@ -716,7 +707,6 @@ impl IngestContext {
                     let reader = builder.build(file)?;
                     for batch in reader {
                         let batch = batch?;
-                        let batch_rows = batch.num_rows() as u64;
                         let mut cols = Vec::with_capacity(table.columns.len());
                         for col in &table.columns {
                             let idx = batch
@@ -799,17 +789,17 @@ impl IngestContext {
                                 )?;
                             }
                         }
-                        self.emit_progress(ProgressEvent {
-                            phase: ProgressPhase::Temp,
-                            table: table.name.clone(),
-                            shard: None,
-                            kind: ProgressKind::Advance,
-                            delta: batch_rows,
-                            total: None,
-                        });
                     }
                 }
             }
+            self.emit_progress(ProgressEvent {
+                phase: ProgressPhase::Temp,
+                table: table.name.clone(),
+                shard: None,
+                kind: ProgressKind::Advance,
+                delta: 1,
+                total: Some(table.paths.len() as u64),
+            });
         }
 
         if !context_ready {
@@ -1113,7 +1103,6 @@ impl IngestContext {
                     let reader = builder.with_batch_size(NODE_BATCH_SIZE).build()?;
                     for batch in reader {
                         let batch = batch?;
-                        let batch_rows = batch.num_rows() as u64;
                         let mut cols = Vec::with_capacity(table.columns.len());
                         for col in &table.columns {
                             let idx = batch
@@ -1176,14 +1165,6 @@ impl IngestContext {
                                 )?;
                             }
                         }
-                        self.emit_progress(ProgressEvent {
-                            phase: ProgressPhase::Temp,
-                            table: table.name.clone(),
-                            shard: None,
-                            kind: ProgressKind::Advance,
-                            delta: batch_rows,
-                            total: None,
-                        });
                     }
                 }
                 TableFormat::Csv => {
@@ -1194,7 +1175,6 @@ impl IngestContext {
                     let reader = builder.build(file)?;
                     for batch in reader {
                         let batch = batch?;
-                        let batch_rows = batch.num_rows() as u64;
                         let mut cols = Vec::with_capacity(table.columns.len());
                         for col in &table.columns {
                             let idx = batch
@@ -1257,17 +1237,17 @@ impl IngestContext {
                                 )?;
                             }
                         }
-                        self.emit_progress(ProgressEvent {
-                            phase: ProgressPhase::Temp,
-                            table: table.name.clone(),
-                            shard: None,
-                            kind: ProgressKind::Advance,
-                            delta: batch_rows,
-                            total: None,
-                        });
                     }
                 }
             }
+            self.emit_progress(ProgressEvent {
+                phase: ProgressPhase::Temp,
+                table: table.name.clone(),
+                shard: None,
+                kind: ProgressKind::Advance,
+                delta: 1,
+                total: Some(table.paths.len() as u64),
+            });
         }
 
         if edge_context.is_none() {
