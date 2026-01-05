@@ -19,10 +19,9 @@ set -- "${POSITIONAL[@]}"
 
 SOURCE="${SOURCE:-${1:-}}"
 OUTPUT="${OUTPUT:-${2:-}}"
-MAPPING="${MAPPING:-hash}"
 
 if [[ -z "${SOURCE}" || -z "${OUTPUT}" ]]; then
-  echo "Usage: SOURCE=path OUTPUT=az://account/container/prefix [MAPPING=hash|sorted] $0 [-p]" >&2
+  echo "Usage: SOURCE=path OUTPUT=az://account/container/prefix $0 [-p]" >&2
   exit 1
 fi
 
@@ -31,12 +30,10 @@ if [[ "${PROFILE_ENABLED}" == "true" ]]; then
     --profile \
     --source "${SOURCE}" \
     --output "${OUTPUT}" \
-    --dest adls \
-    --mapping "${MAPPING}"
+    --dest adls
 else
   cargo run -p diskgraph-ingest --bin ingest --release -- \
     --source "${SOURCE}" \
     --output "${OUTPUT}" \
-    --dest adls \
-    --mapping "${MAPPING}"
+    --dest adls
 fi

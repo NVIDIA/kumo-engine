@@ -19,10 +19,9 @@ set -- "${POSITIONAL[@]}"
 
 SOURCE="${SOURCE:-${1:-}}"
 OUTPUT="${OUTPUT:-${2:-}}"
-MAPPING="${MAPPING:-hash}"
 
 if [[ -z "${SOURCE}" ]]; then
-  echo "Usage: SOURCE=/path/to/source_dir_or_metadata [OUTPUT=path] [MAPPING=hash|sorted] $0 [-p]" >&2
+  echo "Usage: SOURCE=/path/to/source_dir_or_metadata [OUTPUT=path] $0 [-p]" >&2
   exit 1
 fi
 
@@ -45,12 +44,10 @@ if [[ "${PROFILE_ENABLED}" == "true" ]]; then
     --profile \
     --source "${SOURCE}" \
     --output "${OUTPUT}" \
-    --dest local \
-    --mapping "${MAPPING}"
+    --dest local
 else
   cargo run -p diskgraph-ingest --bin ingest --release -- \
     --source "${SOURCE}" \
     --output "${OUTPUT}" \
-    --dest local \
-    --mapping "${MAPPING}"
+    --dest local
 fi

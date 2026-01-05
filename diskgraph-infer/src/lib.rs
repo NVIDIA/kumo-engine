@@ -187,6 +187,8 @@ pub fn infer_source_metadata(root: &RootSource, options: InferOptions) -> Result
         tables: table_specs,
         relationships,
         rowpack: None,
+        num_shards: None,
+        edge_format: None,
     };
     metadata.validate()?;
 
