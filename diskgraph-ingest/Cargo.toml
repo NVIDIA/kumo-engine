@@ -25,7 +25,6 @@ bytes = "1"
 url = "2"
 tempfile = "3"
 ahash = { version = "0.8", features = ["serde"] }
-seahash = "4.1"
 twox-hash = "1.6"
 base64 = "0.22"
 num-bigint = "0.4"

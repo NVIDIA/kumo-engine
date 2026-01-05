@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Result};
-use seahash::SeaHasher;
+use ahash::AHasher;
 use std::cmp::Ordering;
 use std::hash::Hasher;
 use std::io::{self, Write};
@@ -574,7 +574,7 @@ fn hash_key(key: &Key) -> u64 {
     match key {
         Key::Int(v) => hash_int(*v),
         Key::FixedBytes(v) | Key::Bytes(v) => {
-            let mut hasher = SeaHasher::new();
+            let mut hasher = AHasher::default();
             hasher.write(v);
             hasher.finish()
         }
