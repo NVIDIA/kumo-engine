@@ -194,7 +194,7 @@ fn main() -> Result<()> {
     );
     if let Some(profile_dir) = args.profile.as_ref() {
         let mut profiles = Vec::new();
-        for name in ["pk_map", "nodes", "edges"] {
+        for name in ["temp", "pk_map", "nodes", "edges"] {
             let svg = profile_dir.join(format!("{name}-profile.svg"));
             let pb = profile_dir.join(format!("{name}-profile.pb"));
             if svg.exists() {
@@ -210,7 +210,7 @@ fn main() -> Result<()> {
                 println!("  {}", path.display());
             }
             let mut pb_paths = Vec::new();
-            for name in ["pk_map", "nodes", "edges"] {
+            for name in ["temp", "pk_map", "nodes", "edges"] {
                 let pb = profile_dir.join(format!("{name}-profile.pb"));
                 if pb.exists() {
                     pb_paths.push(pb);
