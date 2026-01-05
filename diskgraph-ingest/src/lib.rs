@@ -1699,17 +1699,11 @@ impl IngestContext {
                 delta: 0,
                 total: Some(self.num_shards as u64),
             });
-            let src_table = table_by_name(&self.source, &rel.src_table)?;
             let dst_table = table_by_name(&self.source, &rel.dst_table)?;
-            let src_pk = src_table
-                .primary_key
-                .as_ref()
-                .ok_or_else(|| anyhow!("missing pk for {}", rel.src_table))?;
             let dst_pk = dst_table
                 .primary_key
                 .as_ref()
                 .ok_or_else(|| anyhow!("missing pk for {}", rel.dst_table))?;
-            let _src_pk_col = column_spec(src_table, src_pk)?;
             let dst_pk_col = column_spec(dst_table, dst_pk)?;
             let src_offsets = self
                 .shard_offsets
