@@ -2494,7 +2494,12 @@ fn radix_sort_edge_records(records: &mut [EdgeRecord], src_width: u8) {
     if records.len() <= 1 {
         return;
     }
-    let passes = (src_width as usize).min(8);
+    let mut or_src = 0u64;
+    for rec in records.iter() {
+        or_src |= rec.src_id;
+    }
+    let mut passes = ((64 - or_src.leading_zeros() + 7) / 8) as usize;
+    passes = passes.max(1).min(src_width as usize).min(8);
     if passes == 0 {
         return;
     }
