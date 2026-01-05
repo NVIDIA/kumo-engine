@@ -1577,6 +1577,9 @@ impl IngestContext {
             for shard in 0..self.num_shards {
                 let fkey_path =
                     root.join(temp_fkey_path(&rel.src_table, &rel.name_forward, shard));
+                let fkey_meta =
+                    root.join(temp_fkey_meta_path(&rel.src_table, &rel.name_forward, shard));
+                let meta = read_temp_meta(&fkey_meta)?;
                 let forward_rel = edge_shard_output_path(&rel.name_forward, shard);
                 let reverse_rel = edge_shard_output_path(&rel.name_reverse, shard);
                 let forward_path = self.target.join(&forward_rel);
@@ -1589,8 +1592,6 @@ impl IngestContext {
                         fs::create_dir_all(parent)?;
                     }
                 }
-                let mut forward_writer = BufWriter::new(self.target.sink(&forward_path)?);
-                let mut reverse_writer = BufWriter::new(self.target.sink(&reverse_path)?);
                 let forward_sort_bits = rel_sort_bits.get(&rel.name_forward).copied().flatten();
                 let reverse_sort_bits = rel_sort_bits.get(&rel.name_reverse).copied().flatten();
                 let forward_spec = edge_binary_spec(
@@ -1603,16 +1604,16 @@ impl IngestContext {
                     max_ids.get(&rel.src_table).copied().unwrap_or(0),
                     reverse_sort_bits,
                 );
-                write_edge_bin_header(
-                    &mut forward_writer,
-                    forward_spec.sort_width > 0,
-                    forward_spec,
-                )?;
-                write_edge_bin_header(
-                    &mut reverse_writer,
-                    reverse_spec.sort_width > 0,
-                    reverse_spec,
-                )?;
+                let mut forward_edges = Vec::new();
+                let mut reverse_edges = Vec::new();
+                if let Ok(capacity) = usize::try_from(meta.row_count) {
+                    forward_edges.reserve(capacity);
+                    reverse_edges.reserve(capacity);
+                }
+                let mut forward_sorted = true;
+                let mut reverse_sorted = true;
+                let mut forward_prev_src: Option<u64> = None;
+                let mut reverse_prev_src: Option<u64> = None;
                 let mut count = 0u64;
                 let mut scratch = [0u8; 16];
                 let mut pending = 0u64;
@@ -1651,32 +1652,28 @@ impl IngestContext {
                         .copied()
                         .unwrap_or(0)
                         .saturating_add(dst_local);
-                    write_u64_width(
-                        &mut forward_writer,
-                        src_id as u64,
-                        forward_spec.src_width,
-                    )?;
-                    write_u64_width(
-                        &mut forward_writer,
-                        dst_id as u64,
-                        forward_spec.dst_width,
-                    )?;
-                    if forward_spec.sort_width > 0 {
-                        write_u64_width(&mut forward_writer, 0, forward_spec.sort_width)?;
+                    if let Some(prev) = forward_prev_src {
+                        if src_id < prev {
+                            forward_sorted = false;
+                        }
                     }
-                    write_u64_width(
-                        &mut reverse_writer,
-                        dst_id as u64,
-                        reverse_spec.src_width,
-                    )?;
-                    write_u64_width(
-                        &mut reverse_writer,
-                        src_id as u64,
-                        reverse_spec.dst_width,
-                    )?;
-                    if reverse_spec.sort_width > 0 {
-                        write_u64_width(&mut reverse_writer, 0, reverse_spec.sort_width)?;
+                    forward_prev_src = Some(src_id);
+                    forward_edges.push(EdgeRecord {
+                        src_id,
+                        dst_id,
+                        sort_key: 0,
+                    });
+                    if let Some(prev) = reverse_prev_src {
+                        if dst_id < prev {
+                            reverse_sorted = false;
+                        }
                     }
+                    reverse_prev_src = Some(dst_id);
+                    reverse_edges.push(EdgeRecord {
+                        src_id: dst_id,
+                        dst_id: src_id,
+                        sort_key: 0,
+                    });
                     count += 1;
                     Ok(())
                 })?;
@@ -1698,16 +1695,20 @@ impl IngestContext {
                         total: Some(rel_total_rows),
                     });
                 }
-                forward_writer.flush()?;
-                reverse_writer.flush()?;
-                let forward_sink = forward_writer
-                    .into_inner()
-                    .map_err(|_| anyhow!("edge flush failed"))?;
-                let reverse_sink = reverse_writer
-                    .into_inner()
-                    .map_err(|_| anyhow!("edge flush failed"))?;
-                forward_sink.finish()?;
-                reverse_sink.finish()?;
+                write_edge_records(
+                    &self.target,
+                    &forward_path,
+                    forward_spec,
+                    forward_edges,
+                    forward_sorted,
+                )?;
+                write_edge_records(
+                    &self.target,
+                    &reverse_path,
+                    reverse_spec,
+                    reverse_edges,
+                    reverse_sorted,
+                )?;
                 edge_counts.insert(rel.name_forward.clone(), count);
                 edge_counts.insert(rel.name_reverse.clone(), count);
             }
@@ -1790,6 +1791,8 @@ impl IngestContext {
                 .unwrap_or_else(|| vec![0; self.num_shards]);
             for shard in 0..self.num_shards {
                 let forward_path = root.join(temp_edge_path(&forward_name, shard));
+                let forward_meta =
+                    read_temp_meta(&root.join(temp_edge_meta_path(&forward_name, shard)))?;
                 let out_rel = edge_shard_output_path(&forward_name, shard);
                 let out_path = self.target.join(&out_rel);
                 if let OutputTarget::Local { .. } = &*self.target {
@@ -1797,7 +1800,6 @@ impl IngestContext {
                         fs::create_dir_all(parent)?;
                     }
                 }
-                let mut writer = BufWriter::new(self.target.sink(&out_path)?);
                 let forward_sort_bits = rel_sort_bits.get(&forward_name).copied().flatten();
                 let spec = edge_binary_spec(
                     max_ids
@@ -1810,7 +1812,12 @@ impl IngestContext {
                         .unwrap_or(0),
                     forward_sort_bits,
                 );
-                write_edge_bin_header(&mut writer, spec.sort_width > 0, spec)?;
+                let mut forward_edges = Vec::new();
+                if let Ok(capacity) = usize::try_from(forward_meta.row_count) {
+                    forward_edges.reserve(capacity);
+                }
+                let mut forward_sorted = true;
+                let mut forward_prev_src: Option<u64> = None;
                 let mut count = 0u64;
                 let mut scratch = [0u8; 16];
                 let mut pending = 0u64;
@@ -1854,11 +1861,17 @@ impl IngestContext {
                         .copied()
                         .unwrap_or(0)
                         .saturating_add(dst_local);
-                    write_u64_width(&mut writer, src_id, spec.src_width)?;
-                    write_u64_width(&mut writer, dst_id, spec.dst_width)?;
-                    if spec.sort_width > 0 {
-                        write_u64_width(&mut writer, 0, spec.sort_width)?;
+                    if let Some(prev) = forward_prev_src {
+                        if src_id < prev {
+                            forward_sorted = false;
+                        }
                     }
+                    forward_prev_src = Some(src_id);
+                    forward_edges.push(EdgeRecord {
+                        src_id,
+                        dst_id,
+                        sort_key: 0,
+                    });
                     count += 1;
                     Ok(())
                 })?;
@@ -1872,12 +1885,18 @@ impl IngestContext {
                         total: Some(forward_total),
                     });
                 }
-                writer.flush()?;
-                let sink = writer.into_inner().map_err(|_| anyhow!("edge flush failed"))?;
-                sink.finish()?;
+                write_edge_records(
+                    &self.target,
+                    &out_path,
+                    spec,
+                    forward_edges,
+                    forward_sorted,
+                )?;
                 edge_counts.insert(forward_name.clone(), count);
 
                 let reverse_path = root.join(temp_edge_path(&reverse_name, shard));
+                let reverse_meta =
+                    read_temp_meta(&root.join(temp_edge_meta_path(&reverse_name, shard)))?;
                 let out_rel = edge_shard_output_path(&reverse_name, shard);
                 let out_path = self.target.join(&out_rel);
                 if let OutputTarget::Local { .. } = &*self.target {
@@ -1885,7 +1904,6 @@ impl IngestContext {
                         fs::create_dir_all(parent)?;
                     }
                 }
-                let mut writer = BufWriter::new(self.target.sink(&out_path)?);
                 let reverse_sort_bits = rel_sort_bits.get(&reverse_name).copied().flatten();
                 let spec = edge_binary_spec(
                     max_ids
@@ -1898,7 +1916,12 @@ impl IngestContext {
                         .unwrap_or(0),
                     reverse_sort_bits,
                 );
-                write_edge_bin_header(&mut writer, spec.sort_width > 0, spec)?;
+                let mut reverse_edges = Vec::new();
+                if let Ok(capacity) = usize::try_from(reverse_meta.row_count) {
+                    reverse_edges.reserve(capacity);
+                }
+                let mut reverse_sorted = true;
+                let mut reverse_prev_src: Option<u64> = None;
                 let mut count = 0u64;
                 let mut scratch = [0u8; 16];
                 let mut pending = 0u64;
@@ -1942,11 +1965,17 @@ impl IngestContext {
                         .copied()
                         .unwrap_or(0)
                         .saturating_add(src_local);
-                    write_u64_width(&mut writer, dst_id, spec.src_width)?;
-                    write_u64_width(&mut writer, src_id, spec.dst_width)?;
-                    if spec.sort_width > 0 {
-                        write_u64_width(&mut writer, 0, spec.sort_width)?;
+                    if let Some(prev) = reverse_prev_src {
+                        if dst_id < prev {
+                            reverse_sorted = false;
+                        }
                     }
+                    reverse_prev_src = Some(dst_id);
+                    reverse_edges.push(EdgeRecord {
+                        src_id: dst_id,
+                        dst_id: src_id,
+                        sort_key: 0,
+                    });
                     count += 1;
                     Ok(())
                 })?;
@@ -1960,9 +1989,13 @@ impl IngestContext {
                         total: Some(reverse_total),
                     });
                 }
-                writer.flush()?;
-                let sink = writer.into_inner().map_err(|_| anyhow!("edge flush failed"))?;
-                sink.finish()?;
+                write_edge_records(
+                    &self.target,
+                    &out_path,
+                    spec,
+                    reverse_edges,
+                    reverse_sorted,
+                )?;
                 edge_counts.insert(reverse_name.clone(), count);
             }
             self.emit_progress(ProgressEvent {
@@ -2234,6 +2267,13 @@ struct EdgeBinarySpec {
     sort_width: u8,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct EdgeRecord {
+    src_id: u64,
+    dst_id: u64,
+    sort_key: u64,
+}
+
 fn node_shard_output_path(name: &str, shard: usize) -> String {
     format!(
         "nodes/{}/shard-{:05}/part-00000.bin",
@@ -2420,6 +2460,38 @@ fn write_edge_bin_header(
 fn write_u64_width(writer: &mut BufWriter<OutputSink>, value: u64, width: u8) -> Result<()> {
     let bytes = value.to_le_bytes();
     writer.write_all(&bytes[..width as usize])?;
+    Ok(())
+}
+
+fn write_edge_records(
+    target: &OutputTarget,
+    path: &Path,
+    spec: EdgeBinarySpec,
+    mut records: Vec<EdgeRecord>,
+    already_sorted: bool,
+) -> Result<()> {
+    if !already_sorted {
+        records.sort_unstable_by(|a, b| {
+            a.src_id
+                .cmp(&b.src_id)
+                .then_with(|| b.sort_key.cmp(&a.sort_key))
+                .then_with(|| a.dst_id.cmp(&b.dst_id))
+        });
+    }
+    let mut writer = BufWriter::new(target.sink(path)?);
+    write_edge_bin_header(&mut writer, spec.sort_width > 0, spec)?;
+    for record in records {
+        write_u64_width(&mut writer, record.src_id, spec.src_width)?;
+        write_u64_width(&mut writer, record.dst_id, spec.dst_width)?;
+        if spec.sort_width > 0 {
+            write_u64_width(&mut writer, record.sort_key, spec.sort_width)?;
+        }
+    }
+    writer.flush()?;
+    let sink = writer
+        .into_inner()
+        .map_err(|_| anyhow!("edge flush failed"))?;
+    sink.finish()?;
     Ok(())
 }
 
