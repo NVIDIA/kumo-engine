@@ -160,6 +160,10 @@ fn main() -> Result<()> {
     println!("  Throughput: {}/s", format_bytes(bytes_per_sec as u64));
     println!("  Stage timings (wall):");
     println!(
+        "    temp: {}",
+        format_duration(stats.perf.temp_wall_ms)
+    );
+    println!(
         "    pk_map: {}",
         format_duration(stats.perf.pk_map_wall_ms)
     );
@@ -172,6 +176,11 @@ fn main() -> Result<()> {
         format_duration(stats.perf.finalize_wall_ms)
     );
     println!("  Stage timings (summed across threads):");
+    println!(
+        "    temp: {} ({} tasks)",
+        format_duration(stats.perf.temp_task_ms),
+        stats.perf.temp_tasks
+    );
     println!(
         "    pk_map: {} ({} tasks)",
         format_duration(stats.perf.pk_map_task_ms),

@@ -158,13 +158,16 @@ pub struct KeyFailureCounts {
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct PerfStats {
     pub wall_time_ms: u64,
+    pub temp_wall_ms: u64,
     pub pk_map_wall_ms: u64,
     pub build_wall_ms: u64,
     pub finalize_wall_ms: u64,
+    pub temp_task_ms: u64,
     pub pk_map_task_ms: u64,
     pub build_task_ms: u64,
     pub node_task_ms: u64,
     pub edge_task_ms: u64,
+    pub temp_tasks: u64,
     pub pk_map_tasks: u64,
     pub build_tasks: u64,
     pub node_tasks: u64,
@@ -207,14 +210,13 @@ pub fn ingest_with_stats(
     if let Some(profile_dir) = &profile_dir {
         fs::create_dir_all(profile_dir)?;
     }
-    let mut build_wall = std::time::Duration::from_millis(0);
     let temp_start = std::time::Instant::now();
     if let Some(profile_dir) = &profile_dir {
         profile_phase(profile_dir, "temp", || ctx.build_temp_shards())?;
     } else {
         ctx.build_temp_shards()?;
     }
-    build_wall += temp_start.elapsed();
+    let temp_wall = temp_start.elapsed();
     let pk_map_start = std::time::Instant::now();
     if let Some(profile_dir) = &profile_dir {
         profile_phase(profile_dir, "pk_map", || ctx.build_sharded_pk_maps())?;
@@ -230,7 +232,7 @@ pub fn ingest_with_stats(
         ctx.build_final_nodes()?;
         ctx.build_final_edges()?;
     }
-    build_wall += final_start.elapsed();
+    let build_wall = final_start.elapsed();
     let finalize_start = std::time::Instant::now();
     let index_metadata = ctx.finalize_metadata()?;
     ctx.cleanup_temp()?;
@@ -243,13 +245,16 @@ pub fn ingest_with_stats(
     };
     let perf = PerfStats {
         wall_time_ms: wall_time.as_millis() as u64,
+        temp_wall_ms: temp_wall.as_millis() as u64,
         pk_map_wall_ms: pk_map_wall.as_millis() as u64,
         build_wall_ms: build_wall.as_millis() as u64,
         finalize_wall_ms: finalize_wall.as_millis() as u64,
+        temp_task_ms: ctx.temp_task_ms,
         pk_map_task_ms: ctx.pk_map_task_ms,
         build_task_ms: ctx.build_task_ms,
         node_task_ms: ctx.node_task_ms,
         edge_task_ms: ctx.edge_task_ms,
+        temp_tasks: ctx.temp_tasks,
         pk_map_tasks: ctx.pk_map_tasks,
         build_tasks: ctx.build_tasks,
         node_tasks: ctx.node_tasks,
@@ -293,10 +298,12 @@ struct IngestContext {
     output: String,
     trimmed_strings: std::sync::Arc<AtomicU64>,
     progress: Option<ProgressCallback>,
+    temp_task_ms: u64,
     pk_map_task_ms: u64,
     build_task_ms: u64,
     node_task_ms: u64,
     edge_task_ms: u64,
+    temp_tasks: u64,
     pk_map_tasks: u64,
     build_tasks: u64,
     node_tasks: u64,
@@ -518,10 +525,12 @@ impl IngestContext {
             output: output.to_string(),
             trimmed_strings: std::sync::Arc::new(AtomicU64::new(0)),
             progress: options.progress,
+            temp_task_ms: 0,
             pk_map_task_ms: 0,
             build_task_ms: 0,
             node_task_ms: 0,
             edge_task_ms: 0,
+            temp_tasks: 0,
             pk_map_tasks: 0,
             build_tasks: 0,
             node_tasks: 0,
@@ -530,6 +539,7 @@ impl IngestContext {
     }
 
     fn build_temp_shards(&mut self) -> Result<()> {
+        let phase_start = std::time::Instant::now();
         let root = require_local_output(&self.target)?.to_path_buf();
         let temp_root = root.join(TEMP_DIR_NAME);
         fs::create_dir_all(&temp_root)?;
@@ -561,6 +571,11 @@ impl IngestContext {
             });
         }
         self.table_rows = table_rows;
+        let elapsed = phase_start.elapsed();
+        self.temp_task_ms = self
+            .temp_task_ms
+            .saturating_add(elapsed.as_millis() as u64);
+        self.temp_tasks = self.temp_tasks.saturating_add(1);
         Ok(())
     }
 
@@ -1495,6 +1510,14 @@ impl IngestContext {
         let phase_start = std::time::Instant::now();
         let root = require_local_output(&self.target)?.to_path_buf();
         self.build_shard_offsets();
+        let mut rel_sort_bits = HashMap::new();
+        for rel in &self.relation_defs {
+            let sort_bits = match rel.sort_key {
+                SortKeyMode::None => None,
+                _ => Some(32),
+            };
+            rel_sort_bits.insert(rel.name.clone(), sort_bits);
+        }
         let mut edge_counts = HashMap::new();
         let mut pk_maps_by_table: HashMap<String, Vec<PkMap>> = HashMap::new();
         for (table, paths) in &self.pk_map_paths {
@@ -1568,18 +1591,28 @@ impl IngestContext {
                 }
                 let mut forward_writer = BufWriter::new(self.target.sink(&forward_path)?);
                 let mut reverse_writer = BufWriter::new(self.target.sink(&reverse_path)?);
+                let forward_sort_bits = rel_sort_bits.get(&rel.name_forward).copied().flatten();
+                let reverse_sort_bits = rel_sort_bits.get(&rel.name_reverse).copied().flatten();
                 let forward_spec = edge_binary_spec(
                     max_ids.get(&rel.src_table).copied().unwrap_or(0),
                     max_ids.get(&rel.dst_table).copied().unwrap_or(0),
-                    None,
+                    forward_sort_bits,
                 );
                 let reverse_spec = edge_binary_spec(
                     max_ids.get(&rel.dst_table).copied().unwrap_or(0),
                     max_ids.get(&rel.src_table).copied().unwrap_or(0),
-                    None,
+                    reverse_sort_bits,
                 );
-                write_edge_bin_header(&mut forward_writer, false, forward_spec)?;
-                write_edge_bin_header(&mut reverse_writer, false, reverse_spec)?;
+                write_edge_bin_header(
+                    &mut forward_writer,
+                    forward_spec.sort_width > 0,
+                    forward_spec,
+                )?;
+                write_edge_bin_header(
+                    &mut reverse_writer,
+                    reverse_spec.sort_width > 0,
+                    reverse_spec,
+                )?;
                 let mut count = 0u64;
                 let mut scratch = [0u8; 16];
                 let mut pending = 0u64;
@@ -1628,6 +1661,9 @@ impl IngestContext {
                         dst_id as u64,
                         forward_spec.dst_width,
                     )?;
+                    if forward_spec.sort_width > 0 {
+                        write_u64_width(&mut forward_writer, 0, forward_spec.sort_width)?;
+                    }
                     write_u64_width(
                         &mut reverse_writer,
                         dst_id as u64,
@@ -1638,6 +1674,9 @@ impl IngestContext {
                         src_id as u64,
                         reverse_spec.dst_width,
                     )?;
+                    if reverse_spec.sort_width > 0 {
+                        write_u64_width(&mut reverse_writer, 0, reverse_spec.sort_width)?;
+                    }
                     count += 1;
                     Ok(())
                 })?;
@@ -1759,6 +1798,7 @@ impl IngestContext {
                     }
                 }
                 let mut writer = BufWriter::new(self.target.sink(&out_path)?);
+                let forward_sort_bits = rel_sort_bits.get(&forward_name).copied().flatten();
                 let spec = edge_binary_spec(
                     max_ids
                         .get(&edge.src_fk.ref_table)
@@ -1768,9 +1808,9 @@ impl IngestContext {
                         .get(&edge.dst_fk.ref_table)
                         .copied()
                         .unwrap_or(0),
-                    None,
+                    forward_sort_bits,
                 );
-                write_edge_bin_header(&mut writer, false, spec)?;
+                write_edge_bin_header(&mut writer, spec.sort_width > 0, spec)?;
                 let mut count = 0u64;
                 let mut scratch = [0u8; 16];
                 let mut pending = 0u64;
@@ -1816,6 +1856,9 @@ impl IngestContext {
                         .saturating_add(dst_local);
                     write_u64_width(&mut writer, src_id, spec.src_width)?;
                     write_u64_width(&mut writer, dst_id, spec.dst_width)?;
+                    if spec.sort_width > 0 {
+                        write_u64_width(&mut writer, 0, spec.sort_width)?;
+                    }
                     count += 1;
                     Ok(())
                 })?;
@@ -1843,6 +1886,7 @@ impl IngestContext {
                     }
                 }
                 let mut writer = BufWriter::new(self.target.sink(&out_path)?);
+                let reverse_sort_bits = rel_sort_bits.get(&reverse_name).copied().flatten();
                 let spec = edge_binary_spec(
                     max_ids
                         .get(&edge.dst_fk.ref_table)
@@ -1852,9 +1896,9 @@ impl IngestContext {
                         .get(&edge.src_fk.ref_table)
                         .copied()
                         .unwrap_or(0),
-                    None,
+                    reverse_sort_bits,
                 );
-                write_edge_bin_header(&mut writer, false, spec)?;
+                write_edge_bin_header(&mut writer, spec.sort_width > 0, spec)?;
                 let mut count = 0u64;
                 let mut scratch = [0u8; 16];
                 let mut pending = 0u64;
@@ -1900,6 +1944,9 @@ impl IngestContext {
                         .saturating_add(src_local);
                     write_u64_width(&mut writer, dst_id, spec.src_width)?;
                     write_u64_width(&mut writer, src_id, spec.dst_width)?;
+                    if spec.sort_width > 0 {
+                        write_u64_width(&mut writer, 0, spec.sort_width)?;
+                    }
                     count += 1;
                     Ok(())
                 })?;
@@ -2096,8 +2143,10 @@ impl IngestContext {
     }
 
     fn build_stats(&self, metadata: &DatasetMetadata, mut perf: PerfStats) -> IngestStats {
+        perf.temp_task_ms = self.temp_task_ms;
         perf.node_task_ms = self.node_task_ms;
         perf.edge_task_ms = self.edge_task_ms;
+        perf.temp_tasks = self.temp_tasks;
         perf.node_tasks = self.node_tasks;
         perf.edge_tasks = self.edge_tasks;
         let mut node_counts = HashMap::new();
