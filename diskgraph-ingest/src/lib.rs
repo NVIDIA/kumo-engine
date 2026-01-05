@@ -2471,12 +2471,7 @@ fn write_edge_records(
     already_sorted: bool,
 ) -> Result<()> {
     if !already_sorted {
-        records.sort_unstable_by(|a, b| {
-            a.src_id
-                .cmp(&b.src_id)
-                .then_with(|| b.sort_key.cmp(&a.sort_key))
-                .then_with(|| a.dst_id.cmp(&b.dst_id))
-        });
+        records.sort_unstable_by(|a, b| a.src_id.cmp(&b.src_id));
     }
     let mut writer = BufWriter::new(target.sink(path)?);
     write_edge_bin_header(&mut writer, spec.sort_width > 0, spec)?;
