@@ -66,37 +66,6 @@ const MAX_NODE_DATA_LEN: usize = 60 * 1024;
 const PROGRESS_ROW_BATCH: u64 = 100_000;
 const MAX_VAR_KEY_LEN: usize = u16::MAX as usize;
 
-struct BufferedFile {
-    file_idx: usize,
-    rows: Vec<OwnedRow>,
-}
-
-fn buffered_rows_for_file<'a>(
-    buffered_files: &'a mut Vec<BufferedFile>,
-    file_idx: usize,
-) -> &'a mut Vec<OwnedRow> {
-    if let Some(pos) = buffered_files.iter().position(|buf| buf.file_idx == file_idx) {
-        return &mut buffered_files[pos].rows;
-    }
-    buffered_files.push(BufferedFile {
-        file_idx,
-        rows: Vec::new(),
-    });
-    let last = buffered_files.len() - 1;
-    &mut buffered_files[last].rows
-}
-
-fn buffered_rows_refs(buffered_files: &[BufferedFile]) -> Vec<&OwnedRow> {
-    let total_rows: usize = buffered_files.iter().map(|buf| buf.rows.len()).sum();
-    let mut rows = Vec::with_capacity(total_rows);
-    for buffered in buffered_files {
-        for row in &buffered.rows {
-            rows.push(row);
-        }
-    }
-    rows
-}
-
 #[derive(Clone, Copy, Debug)]
 enum KeyParseError {
     TypeMismatch,
@@ -136,6 +105,7 @@ impl Default for IngestOptions {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ProgressPhase {
+    Context,
     Temp,
     PkMap,
     Build,
@@ -190,15 +160,18 @@ pub struct KeyFailureCounts {
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct PerfStats {
     pub wall_time_ms: u64,
+    pub context_wall_ms: u64,
     pub temp_wall_ms: u64,
     pub pk_map_wall_ms: u64,
     pub build_wall_ms: u64,
     pub finalize_wall_ms: u64,
+    pub context_task_ms: u64,
     pub temp_task_ms: u64,
     pub pk_map_task_ms: u64,
     pub build_task_ms: u64,
     pub node_task_ms: u64,
     pub edge_task_ms: u64,
+    pub context_tasks: u64,
     pub temp_tasks: u64,
     pub pk_map_tasks: u64,
     pub build_tasks: u64,
@@ -245,6 +218,13 @@ pub fn ingest_with_stats(
     if let Some(profile_dir) = &profile_dir {
         fs::create_dir_all(profile_dir)?;
     }
+    let context_start = std::time::Instant::now();
+    if let Some(profile_dir) = &profile_dir {
+        profile_phase(profile_dir, "context", || ctx.build_node_contexts())?;
+    } else {
+        ctx.build_node_contexts()?;
+    }
+    let context_wall = context_start.elapsed();
     let temp_start = std::time::Instant::now();
     if let Some(profile_dir) = &profile_dir {
         profile_phase(profile_dir, "temp", || ctx.build_temp_shards())?;
@@ -285,15 +265,18 @@ pub fn ingest_with_stats(
     };
     let perf = PerfStats {
         wall_time_ms: wall_time.as_millis() as u64,
+        context_wall_ms: context_wall.as_millis() as u64,
         temp_wall_ms: temp_wall.as_millis() as u64,
         pk_map_wall_ms: pk_map_wall.as_millis() as u64,
         build_wall_ms: build_wall.as_millis() as u64,
         finalize_wall_ms: finalize_wall.as_millis() as u64,
+        context_task_ms: ctx.context_task_ms,
         temp_task_ms: ctx.temp_task_ms,
         pk_map_task_ms: ctx.pk_map_task_ms,
         build_task_ms: ctx.build_task_ms,
         node_task_ms: ctx.node_task_ms,
         edge_task_ms: ctx.edge_task_ms,
+        context_tasks: ctx.context_tasks,
         temp_tasks: ctx.temp_tasks,
         pk_map_tasks: ctx.pk_map_tasks,
         build_tasks: ctx.build_tasks,
@@ -343,11 +326,13 @@ struct IngestContext {
     build_task_ms: u64,
     node_task_ms: u64,
     edge_task_ms: u64,
+    context_task_ms: u64,
     temp_tasks: u64,
     pk_map_tasks: u64,
     build_tasks: u64,
     node_tasks: u64,
     edge_tasks: u64,
+    context_tasks: u64,
 }
 
 struct TempRowpackMeta {
@@ -569,12 +554,201 @@ impl IngestContext {
             build_task_ms: 0,
             node_task_ms: 0,
             edge_task_ms: 0,
+            context_task_ms: 0,
             temp_tasks: 0,
             pk_map_tasks: 0,
             build_tasks: 0,
             node_tasks: 0,
             edge_tasks: 0,
+            context_tasks: 0,
         })
+    }
+
+    fn build_node_contexts(&mut self) -> Result<()> {
+        let phase_start = std::time::Instant::now();
+        let tables = self.source.tables.clone();
+        for table in &tables {
+            if table.edge_table.is_some() {
+                continue;
+            }
+            self.emit_progress(ProgressEvent {
+                phase: ProgressPhase::Context,
+                table: table.name.clone(),
+                shard: None,
+                kind: ProgressKind::Start,
+                delta: 0,
+                total: Some(table.paths.len() as u64),
+            });
+            let pk_col = table.primary_key.as_ref().and_then(|pk| column_spec(table, pk).ok());
+            let pk_idx = table
+                .primary_key
+                .as_ref()
+                .and_then(|pk| column_index(table, pk).ok());
+            let rowpack_config = rowpack_config_for_table(self.source.rowpack.as_ref(), table);
+            let mut buffered_rows: Vec<OwnedRow> = Vec::new();
+            let mut buffered_total = 0usize;
+            let mut reached_limit = false;
+            if table.paths.is_empty() {
+                return Err(anyhow!("no input files for table {}", table.name));
+            }
+            'file_loop: for (_file_idx, path) in table.paths.iter().enumerate() {
+                if !is_cloud_path(path) && !Path::new(path).exists() {
+                    return Err(anyhow!("input path not found {}", path));
+                }
+                let local = localize_input(path)?;
+                match table.format {
+                    TableFormat::Parquet => {
+                        let file = fs::File::open(&local.path)
+                            .with_context(|| format!("open {}", local.path.display()))?;
+                        let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
+                        let reader = builder.with_batch_size(NODE_BATCH_SIZE).build()?;
+                        for batch in reader {
+                            let batch = batch?;
+                            let mut cols = Vec::with_capacity(table.columns.len());
+                            for col in &table.columns {
+                                let idx = batch
+                                    .schema()
+                                    .index_of(&col.name)
+                                    .context("missing column in batch")?;
+                                cols.push(batch.column(idx).clone());
+                            }
+                            let mut values = Vec::with_capacity(table.columns.len());
+                            let mut arrays_f32: Vec<Vec<f32>> = Vec::new();
+                            let mut arrays_f64: Vec<Vec<f64>> = Vec::new();
+                            let mut strings: Vec<String> = Vec::new();
+                            let mut bytes: Vec<Vec<u8>> = Vec::new();
+                            for row in 0..batch.num_rows() {
+                                if buffered_total >= SAMPLE_ROW_LIMIT {
+                                    reached_limit = true;
+                                    break;
+                                }
+                                let row_view = RowView {
+                                    row,
+                                    cols: &cols,
+                                };
+                                let owned = owned_row_from_row(
+                                    &row_view,
+                                    table,
+                                    &mut values,
+                                    &mut arrays_f32,
+                                    &mut arrays_f64,
+                                    &mut strings,
+                                    &mut bytes,
+                                    &self.trimmed_strings,
+                                )?;
+                                buffered_rows.push(owned);
+                                buffered_total = buffered_total.saturating_add(1);
+                            }
+                            if reached_limit {
+                                break;
+                            }
+                        }
+                    }
+                    TableFormat::Csv => {
+                        let file = fs::File::open(&local.path)
+                            .with_context(|| format!("open {}", local.path.display()))?;
+                        let schema = table_schema(table)?;
+                        let builder = arrow_csv::ReaderBuilder::new(Arc::new(schema))
+                            .with_header(true);
+                        let reader = builder.build(file)?;
+                        for batch in reader {
+                            let batch = batch?;
+                            let mut cols = Vec::with_capacity(table.columns.len());
+                            for col in &table.columns {
+                                let idx = batch
+                                    .schema()
+                                    .index_of(&col.name)
+                                    .context("missing column in batch")?;
+                                cols.push(batch.column(idx).clone());
+                            }
+                            let mut values = Vec::with_capacity(table.columns.len());
+                            let mut arrays_f32: Vec<Vec<f32>> = Vec::new();
+                            let mut arrays_f64: Vec<Vec<f64>> = Vec::new();
+                            let mut strings: Vec<String> = Vec::new();
+                            let mut bytes: Vec<Vec<u8>> = Vec::new();
+                            for row in 0..batch.num_rows() {
+                                if buffered_total >= SAMPLE_ROW_LIMIT {
+                                    reached_limit = true;
+                                    break;
+                                }
+                                let row_view = RowView {
+                                    row,
+                                    cols: &cols,
+                                };
+                                let owned = owned_row_from_row(
+                                    &row_view,
+                                    table,
+                                    &mut values,
+                                    &mut arrays_f32,
+                                    &mut arrays_f64,
+                                    &mut strings,
+                                    &mut bytes,
+                                    &self.trimmed_strings,
+                                )?;
+                                buffered_rows.push(owned);
+                                buffered_total = buffered_total.saturating_add(1);
+                            }
+                            if reached_limit {
+                                break;
+                            }
+                        }
+                    }
+                }
+                self.emit_progress(ProgressEvent {
+                    phase: ProgressPhase::Context,
+                    table: table.name.clone(),
+                    shard: None,
+                    kind: ProgressKind::Advance,
+                    delta: 1,
+                    total: Some(table.paths.len() as u64),
+                });
+                if reached_limit {
+                    break 'file_loop;
+                }
+            }
+            let mut node_context = None;
+            let mut pkey_context = None;
+            self.build_node_contexts_from_samples(
+                table,
+                pk_col,
+                pk_idx,
+                &rowpack_config,
+                &buffered_rows,
+                &mut node_context,
+                &mut pkey_context,
+            )?;
+            let ctx_bytes = node_context
+                .as_ref()
+                .ok_or_else(|| anyhow!("missing node context"))?
+                .to_bytes()?;
+            self.target
+                .write_bytes(&temp_node_context_path(&table.name), ctx_bytes.clone())?;
+            self.target
+                .write_bytes(&node_context_output_path(&table.name), ctx_bytes)?;
+            if let Some(ctx) = pkey_context.as_ref() {
+                let bytes = ctx.to_bytes()?;
+                self.target
+                    .write_bytes(&temp_pkey_context_path(&table.name), bytes)?;
+            }
+            self.table_contexts.insert(
+                table.name.clone(),
+                format!("nodes/{}/node_data.ctx", table.name.to_lowercase()),
+            );
+            self.emit_progress(ProgressEvent {
+                phase: ProgressPhase::Context,
+                table: table.name.clone(),
+                shard: None,
+                kind: ProgressKind::Finish,
+                delta: 0,
+                total: Some(table.paths.len() as u64),
+            });
+        }
+        let elapsed = phase_start.elapsed();
+        self.context_task_ms = self
+            .context_task_ms
+            .saturating_add(elapsed.as_millis() as u64);
+        self.context_tasks = self.context_tasks.saturating_add(1);
+        Ok(())
     }
 
     fn build_temp_shards(&mut self) -> Result<()> {
@@ -635,27 +809,35 @@ impl IngestContext {
             let idx = column_index(table, &rel.src_column)?;
             rel_specs.push((rel.name_forward.clone(), idx));
         }
-        let rowpack_config = rowpack_config_for_table(self.source.rowpack.as_ref(), table);
-        let file_count = table.paths.len();
-        let mut buffered_files: Vec<BufferedFile> = Vec::new();
-        let mut buffered_total = 0usize;
         let mut total_rows = 0u64;
-        let mut context_ready = false;
-        let mut node_context: Option<diskgraph_rowpack::RowPackContext> = None;
-        let mut pkey_context: Option<diskgraph_rowpack::RowPackContext> = None;
-        let mut node_encoder: Option<RowPackEncoder> = None;
+        let root = require_local_output(&self.target)?.to_path_buf();
+        let ctx_path = root.join(temp_node_context_path(&table.name));
+        let ctx_bytes =
+            fs::read(&ctx_path).with_context(|| format!("read {}", ctx_path.display()))?;
+        let node_context = diskgraph_rowpack::RowPackContext::from_bytes(&ctx_bytes)?;
+        let node_encoder = Some(RowPackEncoder::new(node_context)?);
+        let mut node_scratch = Some(RowPackScratch::new(
+            node_encoder.as_ref().unwrap().context(),
+        ));
         let mut pkey_encoder: Option<RowPackEncoder> = None;
-        let mut node_scratch: Option<RowPackScratch> = None;
         let mut pkey_scratch: Option<RowPackScratch> = None;
         let mut node_out: Vec<u8> = Vec::new();
         let mut pkey_out: Vec<u8> = Vec::new();
         let mut row_id = 0u64;
         let mut key_buf: Vec<u8> = Vec::new();
         let mut node_data_dropped = 0u64;
-        let schema = table_schema(table)?;
         let has_pkey = pk_col.is_some() && pk_idx.is_some();
         let mut shard_rows = vec![0u64; self.num_shards];
-        let mut ctx_written = false;
+        if has_pkey {
+            let pkey_ctx_path = root.join(temp_pkey_context_path(&table.name));
+            let ctx_bytes = fs::read(&pkey_ctx_path)
+                .with_context(|| format!("read {}", pkey_ctx_path.display()))?;
+            let pkey_context = diskgraph_rowpack::RowPackContext::from_bytes(&ctx_bytes)?;
+            pkey_encoder = Some(RowPackEncoder::new(pkey_context)?);
+            pkey_scratch = Some(RowPackScratch::new(
+                pkey_encoder.as_ref().unwrap().context(),
+            ));
+        }
 
         struct NodeTempWriters {
             node: Vec<TempRowWriter>,
@@ -687,12 +869,25 @@ impl IngestContext {
             Ok(())
         };
 
-        let mut current_writers: Option<NodeTempWriters> = None;
         for (file_idx, path) in table.paths.iter().enumerate() {
             if !is_cloud_path(path) && !Path::new(path).exists() {
                 return Err(anyhow!("input path not found {}", path));
             }
             let local = localize_input(path)?;
+            let mut writers = NodeTempWriters {
+                node: Vec::new(),
+                pkey: None,
+                fkey: HashMap::new(),
+            };
+            self.init_node_temp_writers(
+                table,
+                file_idx,
+                &mut writers.node,
+                &mut writers.pkey,
+                &mut writers.fkey,
+                &rel_specs,
+                has_pkey,
+            )?;
             match table.format {
                 TableFormat::Parquet => {
                     let file = fs::File::open(&local.path)
@@ -709,164 +904,37 @@ impl IngestContext {
                                 .context("missing column in batch")?;
                             cols.push(batch.column(idx).clone());
                         }
-                        let mut values = Vec::with_capacity(table.columns.len());
-                        let mut arrays_f32: Vec<Vec<f32>> = Vec::new();
-                        let mut arrays_f64: Vec<Vec<f64>> = Vec::new();
-                        let mut strings: Vec<String> = Vec::new();
-                        let mut bytes: Vec<Vec<u8>> = Vec::new();
                         let mut access = RowAccess::new(table, &cols, &self.trimmed_strings);
                         for row in 0..batch.num_rows() {
-                            let row_view = RowView {
-                                row,
-                                cols: &cols,
-                            };
                             total_rows += 1;
-                            if !context_ready {
-                                if buffered_total < SAMPLE_ROW_LIMIT {
-                                    let owned = owned_row_from_row(
-                                        &row_view,
-                                        table,
-                                        &mut values,
-                                        &mut arrays_f32,
-                                        &mut arrays_f64,
-                                        &mut strings,
-                                        &mut bytes,
-                                        &self.trimmed_strings,
-                                    )?;
-                                    buffered_total = buffered_total.saturating_add(1);
-                                    buffered_rows_for_file(&mut buffered_files, file_idx).push(owned);
-                                }
-                                if buffered_total >= SAMPLE_ROW_LIMIT {
-                                    let buffered_refs = buffered_rows_refs(&buffered_files);
-                                    self.build_node_contexts_from_samples(
-                                        table,
-                                        pk_col,
-                                        pk_idx,
-                                        &rowpack_config,
-                                        &buffered_refs,
-                                        &mut node_context,
-                                        &mut pkey_context,
-                                    )?;
-                                    self.init_node_encoders(
-                                        &node_context,
-                                        &pkey_context,
-                                        &mut node_encoder,
-                                        &mut pkey_encoder,
-                                    )?;
-                                    if let Some(encoder) = node_encoder.as_ref() {
-                                        node_scratch = Some(RowPackScratch::new(encoder.context()));
-                                    }
-                                    if let Some(encoder) = pkey_encoder.as_ref() {
-                                        pkey_scratch = Some(RowPackScratch::new(encoder.context()));
-                                    }
-                                    if !ctx_written {
-                                        let ctx_bytes = node_context
-                                            .as_ref()
-                                            .ok_or_else(|| anyhow!("missing node context"))?
-                                            .to_bytes()?;
-                                        self.target
-                                            .write_bytes(&temp_node_context_path(&table.name), ctx_bytes.clone())?;
-                                        self.target
-                                            .write_bytes(&node_context_output_path(&table.name), ctx_bytes)?;
-                                        if let Some(ctx) = pkey_context.as_ref() {
-                                            let bytes = ctx.to_bytes()?;
-                                            self.target.write_bytes(
-                                                &temp_pkey_context_path(&table.name),
-                                                bytes,
-                                            )?;
-                                        }
-                                        ctx_written = true;
-                                    }
-                                    for buffered in buffered_files.iter_mut() {
-                                        let mut writers = NodeTempWriters {
-                                            node: Vec::new(),
-                                            pkey: None,
-                                            fkey: HashMap::new(),
-                                        };
-                                        self.init_node_temp_writers(
-                                            table,
-                                            buffered.file_idx,
-                                            &mut writers.node,
-                                            &mut writers.pkey,
-                                            &mut writers.fkey,
-                                            &rel_specs,
-                                            has_pkey,
-                                        )?;
-                                        self.flush_buffered_node_rows(
-                                            table,
-                                            pk_idx,
-                                            &rel_specs,
-                                            &mut buffered.rows,
-                                            &node_encoder,
-                                            &pkey_encoder,
-                                            &mut node_scratch,
-                                            &mut pkey_scratch,
-                                            &mut node_out,
-                                            &mut pkey_out,
-                                            &mut writers.node,
-                                            &mut writers.pkey,
-                                            &mut writers.fkey,
-                                            &mut row_id,
-                                            pk_col,
-                                            &mut key_buf,
-                                            &mut node_data_dropped,
-                                        )?;
-                                        if buffered.file_idx == file_idx {
-                                            current_writers = Some(writers);
-                                        } else {
-                                            finish_writers(buffered.file_idx, writers)?;
-                                        }
-                                    }
-                                    buffered_files.clear();
-                                    context_ready = true;
-                                }
-                            } else {
-                                access.reset(row);
-                                if current_writers.is_none() {
-                                    let mut writers = NodeTempWriters {
-                                        node: Vec::new(),
-                                        pkey: None,
-                                        fkey: HashMap::new(),
-                                    };
-                                    self.init_node_temp_writers(
-                                        table,
-                                        file_idx,
-                                        &mut writers.node,
-                                        &mut writers.pkey,
-                                        &mut writers.fkey,
-                                        &rel_specs,
-                                        has_pkey,
-                                    )?;
-                                    current_writers = Some(writers);
-                                }
-                                let writers = current_writers.as_mut().ok_or_else(|| anyhow!("missing temp writers"))?;
-                                self.write_node_row_from_access(
-                                    table,
-                                    pk_idx,
-                                    &rel_specs,
-                                    &mut access,
-                                    &node_encoder,
-                                    &pkey_encoder,
-                                    &mut node_scratch,
-                                    &mut pkey_scratch,
-                                    &mut node_out,
-                                    &mut pkey_out,
-                                    &mut writers.node,
-                                    &mut writers.pkey,
-                                    &mut writers.fkey,
-                                    &mut row_id,
-                                    pk_col,
-                                    &mut key_buf,
-                                    &mut node_data_dropped,
-                                )?;
-                            }
+                            access.reset(row);
+                            self.write_node_row_from_access(
+                                table,
+                                pk_idx,
+                                &rel_specs,
+                                &mut access,
+                                &node_encoder,
+                                &pkey_encoder,
+                                &mut node_scratch,
+                                &mut pkey_scratch,
+                                &mut node_out,
+                                &mut pkey_out,
+                                &mut writers.node,
+                                &mut writers.pkey,
+                                &mut writers.fkey,
+                                &mut row_id,
+                                pk_col,
+                                &mut key_buf,
+                                &mut node_data_dropped,
+                            )?;
                         }
                     }
                 }
                 TableFormat::Csv => {
                     let file = fs::File::open(&local.path)
                         .with_context(|| format!("open {}", local.path.display()))?;
-                    let builder = arrow_csv::ReaderBuilder::new(Arc::new(schema.clone()))
+                    let schema = table_schema(table)?;
+                    let builder = arrow_csv::ReaderBuilder::new(Arc::new(schema))
                         .with_header(true);
                     let reader = builder.build(file)?;
                     for batch in reader {
@@ -879,166 +947,34 @@ impl IngestContext {
                                 .context("missing column in batch")?;
                             cols.push(batch.column(idx).clone());
                         }
-                        let mut values = Vec::with_capacity(table.columns.len());
-                        let mut arrays_f32: Vec<Vec<f32>> = Vec::new();
-                        let mut arrays_f64: Vec<Vec<f64>> = Vec::new();
-                        let mut strings: Vec<String> = Vec::new();
-                        let mut bytes: Vec<Vec<u8>> = Vec::new();
                         let mut access = RowAccess::new(table, &cols, &self.trimmed_strings);
                         for row in 0..batch.num_rows() {
-                            let row_view = RowView {
-                                row,
-                                cols: &cols,
-                            };
                             total_rows += 1;
-                            if !context_ready {
-                                if buffered_total < SAMPLE_ROW_LIMIT {
-                                    let owned = owned_row_from_row(
-                                        &row_view,
-                                        table,
-                                        &mut values,
-                                        &mut arrays_f32,
-                                        &mut arrays_f64,
-                                        &mut strings,
-                                        &mut bytes,
-                                        &self.trimmed_strings,
-                                    )?;
-                                    buffered_total = buffered_total.saturating_add(1);
-                                    buffered_rows_for_file(&mut buffered_files, file_idx).push(owned);
-                                }
-                                if buffered_total >= SAMPLE_ROW_LIMIT {
-                                    let buffered_refs = buffered_rows_refs(&buffered_files);
-                                    self.build_node_contexts_from_samples(
-                                        table,
-                                        pk_col,
-                                        pk_idx,
-                                        &rowpack_config,
-                                        &buffered_refs,
-                                        &mut node_context,
-                                        &mut pkey_context,
-                                    )?;
-                                    self.init_node_encoders(
-                                        &node_context,
-                                        &pkey_context,
-                                        &mut node_encoder,
-                                        &mut pkey_encoder,
-                                    )?;
-                                    if let Some(encoder) = node_encoder.as_ref() {
-                                        node_scratch = Some(RowPackScratch::new(encoder.context()));
-                                    }
-                                    if let Some(encoder) = pkey_encoder.as_ref() {
-                                        pkey_scratch = Some(RowPackScratch::new(encoder.context()));
-                                    }
-                                    if !ctx_written {
-                                        let ctx_bytes = node_context
-                                            .as_ref()
-                                            .ok_or_else(|| anyhow!("missing node context"))?
-                                            .to_bytes()?;
-                                        self.target
-                                            .write_bytes(&temp_node_context_path(&table.name), ctx_bytes.clone())?;
-                                        self.target
-                                            .write_bytes(&node_context_output_path(&table.name), ctx_bytes)?;
-                                        if let Some(ctx) = pkey_context.as_ref() {
-                                            let bytes = ctx.to_bytes()?;
-                                            self.target.write_bytes(
-                                                &temp_pkey_context_path(&table.name),
-                                                bytes,
-                                            )?;
-                                        }
-                                        ctx_written = true;
-                                    }
-                                    for buffered in buffered_files.iter_mut() {
-                                        let mut writers = NodeTempWriters {
-                                            node: Vec::new(),
-                                            pkey: None,
-                                            fkey: HashMap::new(),
-                                        };
-                                        self.init_node_temp_writers(
-                                            table,
-                                            buffered.file_idx,
-                                            &mut writers.node,
-                                            &mut writers.pkey,
-                                            &mut writers.fkey,
-                                            &rel_specs,
-                                            has_pkey,
-                                        )?;
-                                        self.flush_buffered_node_rows(
-                                            table,
-                                            pk_idx,
-                                            &rel_specs,
-                                            &mut buffered.rows,
-                                            &node_encoder,
-                                            &pkey_encoder,
-                                            &mut node_scratch,
-                                            &mut pkey_scratch,
-                                            &mut node_out,
-                                            &mut pkey_out,
-                                            &mut writers.node,
-                                            &mut writers.pkey,
-                                            &mut writers.fkey,
-                                            &mut row_id,
-                                            pk_col,
-                                            &mut key_buf,
-                                            &mut node_data_dropped,
-                                        )?;
-                                        if buffered.file_idx == file_idx {
-                                            current_writers = Some(writers);
-                                        } else {
-                                            finish_writers(buffered.file_idx, writers)?;
-                                        }
-                                    }
-                                    buffered_files.clear();
-                                    context_ready = true;
-                                }
-                            } else {
-                                access.reset(row);
-                                if current_writers.is_none() {
-                                    let mut writers = NodeTempWriters {
-                                        node: Vec::new(),
-                                        pkey: None,
-                                        fkey: HashMap::new(),
-                                    };
-                                    self.init_node_temp_writers(
-                                        table,
-                                        file_idx,
-                                        &mut writers.node,
-                                        &mut writers.pkey,
-                                        &mut writers.fkey,
-                                        &rel_specs,
-                                        has_pkey,
-                                    )?;
-                                    current_writers = Some(writers);
-                                }
-                                let writers = current_writers.as_mut().ok_or_else(|| anyhow!("missing temp writers"))?;
-                                self.write_node_row_from_access(
-                                    table,
-                                    pk_idx,
-                                    &rel_specs,
-                                    &mut access,
-                                    &node_encoder,
-                                    &pkey_encoder,
-                                    &mut node_scratch,
-                                    &mut pkey_scratch,
-                                    &mut node_out,
-                                    &mut pkey_out,
-                                    &mut writers.node,
-                                    &mut writers.pkey,
-                                    &mut writers.fkey,
-                                    &mut row_id,
-                                    pk_col,
-                                    &mut key_buf,
-                                    &mut node_data_dropped,
-                                )?;
-                            }
+                            access.reset(row);
+                            self.write_node_row_from_access(
+                                table,
+                                pk_idx,
+                                &rel_specs,
+                                &mut access,
+                                &node_encoder,
+                                &pkey_encoder,
+                                &mut node_scratch,
+                                &mut pkey_scratch,
+                                &mut node_out,
+                                &mut pkey_out,
+                                &mut writers.node,
+                                &mut writers.pkey,
+                                &mut writers.fkey,
+                                &mut row_id,
+                                pk_col,
+                                &mut key_buf,
+                                &mut node_data_dropped,
+                            )?;
                         }
                     }
                 }
             }
-            if context_ready {
-                if let Some(writers) = current_writers.take() {
-                    finish_writers(file_idx, writers)?;
-                }
-            }
+            finish_writers(file_idx, writers)?;
             self.emit_progress(ProgressEvent {
                 phase: ProgressPhase::Temp,
                 table: table.name.clone(),
@@ -1049,85 +985,6 @@ impl IngestContext {
             });
         }
 
-        if !context_ready {
-            if file_count == 0 {
-                return Err(anyhow!("no input files for table {}", table.name));
-            }
-            let buffered_refs = buffered_rows_refs(&buffered_files);
-            self.build_node_contexts_from_samples(
-                table,
-                pk_col,
-                pk_idx,
-                &rowpack_config,
-                &buffered_refs,
-                &mut node_context,
-                &mut pkey_context,
-            )?;
-            self.init_node_encoders(
-                &node_context,
-                &pkey_context,
-                &mut node_encoder,
-                &mut pkey_encoder,
-            )?;
-            if let Some(encoder) = node_encoder.as_ref() {
-                node_scratch = Some(RowPackScratch::new(encoder.context()));
-            }
-            if let Some(encoder) = pkey_encoder.as_ref() {
-                pkey_scratch = Some(RowPackScratch::new(encoder.context()));
-            }
-            if !ctx_written {
-                let ctx_bytes = node_context
-                    .as_ref()
-                    .ok_or_else(|| anyhow!("missing node context"))?
-                    .to_bytes()?;
-                self.target
-                    .write_bytes(&temp_node_context_path(&table.name), ctx_bytes.clone())?;
-                self.target
-                    .write_bytes(&node_context_output_path(&table.name), ctx_bytes)?;
-                if let Some(ctx) = pkey_context.as_ref() {
-                    let bytes = ctx.to_bytes()?;
-                    self.target
-                        .write_bytes(&temp_pkey_context_path(&table.name), bytes)?;
-                }
-            }
-            for buffered in buffered_files.iter_mut() {
-                let mut writers = NodeTempWriters {
-                    node: Vec::new(),
-                    pkey: None,
-                    fkey: HashMap::new(),
-                };
-                self.init_node_temp_writers(
-                    table,
-                    buffered.file_idx,
-                    &mut writers.node,
-                    &mut writers.pkey,
-                    &mut writers.fkey,
-                    &rel_specs,
-                    has_pkey,
-                )?;
-                self.flush_buffered_node_rows(
-                    table,
-                    pk_idx,
-                    &rel_specs,
-                    &mut buffered.rows,
-                    &node_encoder,
-                    &pkey_encoder,
-                    &mut node_scratch,
-                    &mut pkey_scratch,
-                    &mut node_out,
-                    &mut pkey_out,
-                    &mut writers.node,
-                    &mut writers.pkey,
-                    &mut writers.fkey,
-                    &mut row_id,
-                    pk_col,
-                    &mut key_buf,
-                    &mut node_data_dropped,
-                )?;
-                finish_writers(buffered.file_idx, writers)?;
-            }
-        }
-
         if node_data_dropped > 0 {
             self.pk_duplicate_counts.insert(
                 format!("node_data_dropped:{}", table.name),
@@ -1135,10 +992,6 @@ impl IngestContext {
             );
         }
         self.shard_rows.insert(table.name.clone(), shard_rows);
-        self.table_contexts.insert(
-            table.name.clone(),
-            format!("nodes/{}/node_data.ctx", table.name.to_lowercase()),
-        );
         Ok(total_rows)
     }
 
@@ -1148,7 +1001,7 @@ impl IngestContext {
         pk_col: Option<&ColumnSpec>,
         pk_idx: Option<usize>,
         rowpack_config: &RowPackConfig,
-        rows: &[&OwnedRow],
+        rows: &[OwnedRow],
         node_context: &mut Option<diskgraph_rowpack::RowPackContext>,
         pkey_context: &mut Option<diskgraph_rowpack::RowPackContext>,
     ) -> Result<()> {
@@ -1172,21 +1025,6 @@ impl IngestContext {
             *pkey_context = Some(pk_builder.finish()?);
         }
 
-        Ok(())
-    }
-
-    fn init_node_encoders(
-        &self,
-        node_context: &Option<diskgraph_rowpack::RowPackContext>,
-        pkey_context: &Option<diskgraph_rowpack::RowPackContext>,
-        node_encoder: &mut Option<RowPackEncoder>,
-        pkey_encoder: &mut Option<RowPackEncoder>,
-    ) -> Result<()> {
-        let node_ctx = node_context.as_ref().ok_or_else(|| anyhow!("missing node context"))?;
-        *node_encoder = Some(RowPackEncoder::new(node_ctx.clone())?);
-        if let Some(ctx) = pkey_context.as_ref() {
-            *pkey_encoder = Some(RowPackEncoder::new(ctx.clone())?);
-        }
         Ok(())
     }
 
@@ -1226,123 +1064,6 @@ impl IngestContext {
             }
             fkey_writers.insert(rel.clone(), writers);
         }
-        Ok(())
-    }
-
-    fn flush_buffered_node_rows(
-        &self,
-        table: &TableSpec,
-        pk_idx: Option<usize>,
-        rel_specs: &[(String, usize)],
-        rows: &mut Vec<OwnedRow>,
-        node_encoder: &Option<RowPackEncoder>,
-        pkey_encoder: &Option<RowPackEncoder>,
-        node_scratch: &mut Option<RowPackScratch>,
-        pkey_scratch: &mut Option<RowPackScratch>,
-        node_out: &mut Vec<u8>,
-        pkey_out: &mut Vec<u8>,
-        node_writers: &mut Vec<TempRowWriter>,
-        pkey_writers: &mut Option<Vec<TempRowWriter>>,
-        fkey_writers: &mut HashMap<String, Vec<TempRowWriter>>,
-        row_id: &mut u64,
-        pk_col: Option<&ColumnSpec>,
-        key_buf: &mut Vec<u8>,
-        node_data_dropped: &mut u64,
-    ) -> Result<()> {
-        let rows_taken = std::mem::take(rows);
-        for row in rows_taken {
-            self.write_node_row(
-                table,
-                pk_idx,
-                rel_specs,
-                row,
-                node_encoder,
-                pkey_encoder,
-                node_scratch,
-                pkey_scratch,
-                node_out,
-                pkey_out,
-                node_writers,
-                pkey_writers,
-                fkey_writers,
-                row_id,
-                pk_col,
-                key_buf,
-                node_data_dropped,
-            )?;
-        }
-        Ok(())
-    }
-
-    fn write_node_row(
-        &self,
-        table: &TableSpec,
-        pk_idx: Option<usize>,
-        rel_specs: &[(String, usize)],
-        row: OwnedRow,
-        node_encoder: &Option<RowPackEncoder>,
-        pkey_encoder: &Option<RowPackEncoder>,
-        node_scratch: &mut Option<RowPackScratch>,
-        pkey_scratch: &mut Option<RowPackScratch>,
-        node_out: &mut Vec<u8>,
-        pkey_out: &mut Vec<u8>,
-        node_writers: &mut Vec<TempRowWriter>,
-        pkey_writers: &mut Option<Vec<TempRowWriter>>,
-        fkey_writers: &mut HashMap<String, Vec<TempRowWriter>>,
-        row_id: &mut u64,
-        pk_col: Option<&ColumnSpec>,
-        key_buf: &mut Vec<u8>,
-        node_data_dropped: &mut u64,
-    ) -> Result<()> {
-        let mut value_refs = Vec::new();
-        row.as_value_refs(&mut value_refs);
-        let encoder = node_encoder
-            .as_ref()
-            .ok_or_else(|| anyhow!("missing node encoder"))?;
-        let scratch = node_scratch
-            .as_mut()
-            .ok_or_else(|| anyhow!("missing node scratch"))?;
-        encoder.encode_row_into(&value_refs, node_out, scratch)?;
-        let shard = if let (Some(idx), Some(pkey_encoder), Some(pk_col)) =
-            (pk_idx, pkey_encoder.as_ref(), pk_col)
-        {
-            row.as_value_refs_for_indices(&[idx], &mut value_refs);
-            let key = key_from_value_ref(&value_refs[0], pk_col)
-                .map_err(|_| anyhow!("pk parse"))?;
-            let mut scratch = [0u8; 16];
-            let shard = shard_for_key(key_hash_bytes(&key, &mut scratch), self.num_shards);
-            let pkey_scratch = pkey_scratch
-                .as_mut()
-                .ok_or_else(|| anyhow!("missing pkey scratch"))?;
-            pkey_encoder.encode_row_into(&value_refs, pkey_out, pkey_scratch)?;
-            if let Some(writers) = pkey_writers.as_mut() {
-                write_temp_row(&mut writers[shard], pkey_out)?;
-            }
-            shard
-        } else {
-            (*row_id as usize) % self.num_shards
-        };
-        if node_out.len() > MAX_NODE_DATA_LEN {
-            *node_data_dropped = node_data_dropped.saturating_add(1);
-            write_temp_row(&mut node_writers[shard], &[])?;
-        } else {
-            write_temp_row(&mut node_writers[shard], node_out)?;
-        }
-        for (rel_name, rel_idx) in rel_specs {
-            if let Some(writers) = fkey_writers.get_mut(rel_name) {
-                let col = table
-                    .columns
-                    .get(*rel_idx)
-                    .ok_or_else(|| anyhow!("missing fk column"))?;
-                row.as_value_refs_for_indices(&[*rel_idx], &mut value_refs);
-                let key = key_from_value_ref(&value_refs[0], col)
-                    .map_err(|_| anyhow!("fk parse"))?;
-                key_buf.clear();
-                write_key_to_buf(key_buf, &key)?;
-                write_temp_row(&mut writers[shard], key_buf)?;
-            }
-        }
-        *row_id = row_id.saturating_add(1);
         Ok(())
     }
 
@@ -2686,9 +2407,11 @@ impl IngestContext {
     }
 
     fn build_stats(&self, metadata: &DatasetMetadata, mut perf: PerfStats) -> IngestStats {
+        perf.context_task_ms = self.context_task_ms;
         perf.temp_task_ms = self.temp_task_ms;
         perf.node_task_ms = self.node_task_ms;
         perf.edge_task_ms = self.edge_task_ms;
+        perf.context_tasks = self.context_tasks;
         perf.temp_tasks = self.temp_tasks;
         perf.node_tasks = self.node_tasks;
         perf.edge_tasks = self.edge_tasks;
