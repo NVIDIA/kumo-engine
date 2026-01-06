@@ -9,10 +9,6 @@ use arrow_schema::{DataType, SchemaRef};
 use bytes::Bytes;
 use diskgraph_core::metadata::{EdgeRelationMetadata, NodeTypeMetadata};
 use futures::{future::BoxFuture, StreamExt};
-use object_store::azure::{AzureConfigKey, MicrosoftAzureBuilder};
-use object_store::gcp::GoogleCloudStorageBuilder;
-use object_store::path::Path as ObjectPath;
-use object_store::ObjectStore;
 use parquet::arrow::async_reader::{AsyncFileReader, ParquetRecordBatchStreamBuilder};
 use parquet::arrow::arrow_reader::ArrowReaderOptions;
 use parquet::file::metadata::ParquetMetaData;
@@ -20,17 +16,14 @@ use parquet::file::reader::FileReader;
 use parquet::file::serialized_reader::SerializedFileReader;
 use serde_json;
 use serde::Serialize;
-use diskgraph_fs::{build_s3_client, S3Config as FsS3Config};
 use std::sync::mpsc::{self, Receiver};
 use std::fs::{self, File};
 use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
-use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::cell::RefCell;
 use thiserror::Error;
 use tokio::runtime::Runtime;
-use tokio::task;
 use tracing::info;
 
 /// Hard cap on edges per relation for a single node to keep varint encoding small.
@@ -39,28 +32,8 @@ use tracing::info;
 const MAX_RELATION_EDGE_COUNT: usize = 0x3FFF;
 const MAX_NODE_DATA_LEN: usize = 60 * 1024;
 
-#[derive(Debug, Clone)]
-pub struct ParquetDownloadOptions {
-    pub chunk_size: u64,
-    pub concurrency: usize,
-}
-
-impl Default for ParquetDownloadOptions {
-    fn default() -> Self {
-        Self {
-            chunk_size: 64 * 1024 * 1024,
-            concurrency: 8,
-        }
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BuildStage {
-    Download {
-        file: Arc<str>,
-        index: usize,
-        total: usize,
-    },
     BuildIndex,
 }
 
@@ -122,355 +95,14 @@ pub enum IndexBuildError {
     NodeShardMissing { index: usize },
     #[error("parquet error: {0}")]
     Parquet(#[from] parquet::errors::ParquetError),
-    #[error("object store error: {0}")]
-    ObjectStore(String),
     #[error("build aborted")]
     Aborted,
 }
-
-pub fn download_parquet_to_local(
-    rt: &Runtime,
-    store: &Arc<dyn ObjectStore>,
-    key: &str,
-    local_path: &Path,
-    opts: &ParquetDownloadOptions,
-    progress: Option<&dyn ProgressSink>,
-    stage: Option<BuildStage>,
-) -> Result<()> {
-    if local_path.exists() {
-        return Ok(());
-    }
-    if let Some(parent) = local_path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let loc = ObjectPath::from(key.to_string());
-    let total = rt.block_on(async { store.head(&loc).await.map(|m| m.size) })?;
-    if let (Some(progress), Some(stage)) = (progress, stage.clone()) {
-        progress.report(BuildProgress {
-            stage,
-            current: 0,
-            total: Some(total),
-        });
-    }
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .read(true)
-        .open(local_path)?;
-    file.set_len(total)?;
-    let file = Arc::new(file);
-    let mut ranges = Vec::new();
-    let mut offset = 0u64;
-    while offset < total {
-        let end = (offset + opts.chunk_size).min(total);
-        ranges.push(offset..end);
-        offset = end;
-    }
-    rt.block_on(async {
-        let mut downloaded = 0u64;
-        let mut stream = futures::stream::iter(ranges)
-            .map(|range| {
-                let store = Arc::clone(store);
-                let loc = loc.clone();
-                let file = Arc::clone(&file);
-                async move {
-                    let bytes = store.get_range(&loc, range.clone()).await?;
-                    let len = bytes.len() as u64;
-                    task::spawn_blocking(move || {
-                        file.write_all_at(&bytes, range.start)?;
-                        Ok::<(), std::io::Error>(())
-                    })
-                    .await??;
-                    Ok::<u64, anyhow::Error>(len)
-                }
-            })
-            .buffer_unordered(opts.concurrency);
-        while let Some(res) = stream.next().await {
-            let len = res?;
-            downloaded = downloaded.saturating_add(len);
-            if let (Some(progress), Some(stage)) = (progress, stage.clone()) {
-                progress.report(BuildProgress {
-                    stage,
-                    current: downloaded,
-                    total: Some(total),
-                });
-            }
-        }
-        Ok::<(), anyhow::Error>(())
-    })?;
-    Ok(())
-}
-
-pub fn cleanup_parquet_cache(parquet_root: &Path) -> Result<()> {
-    if parquet_root.exists() {
-        fs::remove_dir_all(parquet_root)?;
-    }
-    Ok(())
-}
-
 fn localize_edge_inputs(
-    rt: &Runtime,
     edge_shards: &[EdgeShardInput],
     node_data: Option<&ParquetSource>,
-    download_root: &Path,
-    progress: Option<&dyn ProgressSink>,
-) -> Result<(Vec<EdgeShardInput>, Option<PathBuf>, Option<ParquetSource>)> {
-    let mut localized = Vec::with_capacity(edge_shards.len());
-    let mut used_remote = false;
-    let opts = ParquetDownloadOptions::default();
-    let mut total_remote = edge_shards
-        .iter()
-        .filter(|e| !matches!(e.parquet, ParquetSource::LocalFile(_)))
-        .count();
-    if let Some(source) = node_data {
-        if !matches!(source, ParquetSource::LocalFile(_)) {
-            total_remote += 1;
-        }
-    }
-    let mut remote_index = 0usize;
-    for edge in edge_shards {
-        match &edge.parquet {
-            ParquetSource::LocalFile(_) => localized.push(edge.clone()),
-            ParquetSource::S3(cfg) => {
-                used_remote = true;
-                remote_index += 1;
-                let stage = BuildStage::Download {
-                    file: Arc::from(cfg.key.as_str()),
-                    index: remote_index,
-                    total: total_remote,
-                };
-                let localized_parquet = localize_parquet_source(
-                    rt,
-                    &edge.parquet,
-                    download_root,
-                    progress,
-                    Some(stage),
-                    "edges",
-                    &opts,
-                )?;
-                let mut localized_edge = edge.clone();
-                localized_edge.parquet = localized_parquet;
-                localized.push(localized_edge);
-            }
-            ParquetSource::Gcs(cfg) => {
-                used_remote = true;
-                remote_index += 1;
-                let stage = BuildStage::Download {
-                    file: Arc::from(cfg.key.as_str()),
-                    index: remote_index,
-                    total: total_remote,
-                };
-                let localized_parquet = localize_parquet_source(
-                    rt,
-                    &edge.parquet,
-                    download_root,
-                    progress,
-                    Some(stage),
-                    "edges",
-                    &opts,
-                )?;
-                let mut localized_edge = edge.clone();
-                localized_edge.parquet = localized_parquet;
-                localized.push(localized_edge);
-            }
-            ParquetSource::Adls(cfg) => {
-                used_remote = true;
-                remote_index += 1;
-                let stage = BuildStage::Download {
-                    file: Arc::from(cfg.key.as_str()),
-                    index: remote_index,
-                    total: total_remote,
-                };
-                let localized_parquet = localize_parquet_source(
-                    rt,
-                    &edge.parquet,
-                    download_root,
-                    progress,
-                    Some(stage),
-                    "edges",
-                    &opts,
-                )?;
-                let mut localized_edge = edge.clone();
-                localized_edge.parquet = localized_parquet;
-                localized.push(localized_edge);
-            }
-        }
-    }
-    let localized_node_data = if let Some(source) = node_data {
-        if matches!(source, ParquetSource::LocalFile(_)) {
-            Some(source.clone())
-        } else {
-            used_remote = true;
-            remote_index += 1;
-            let stage = BuildStage::Download {
-                file: Arc::from(parquet_source_name(source)),
-                index: remote_index,
-                total: total_remote,
-            };
-            Some(localize_parquet_source(
-                rt,
-                source,
-                download_root,
-                progress,
-                Some(stage),
-                "node_data",
-                &opts,
-            )?)
-        }
-    } else {
-        None
-    };
-    Ok((
-        localized,
-        if used_remote {
-            Some(download_root.to_path_buf())
-        } else {
-            None
-        },
-        localized_node_data,
-    ))
-}
-
-fn download_gcs_store(
-    rt: &Runtime,
-    cfg: &crate::streaming::GcsLocation,
-    local_path: &Path,
-    opts: &ParquetDownloadOptions,
-    progress: Option<&dyn ProgressSink>,
-    stage: Option<BuildStage>,
-) -> Result<()> {
-    let mut builder = GoogleCloudStorageBuilder::new().with_bucket_name(&cfg.bucket);
-    if let Some(sa_path) = &cfg.service_account_path {
-        builder = builder.with_service_account_path(sa_path);
-    } else if let Some(sa_key) = &cfg.service_account_key {
-        builder = builder.with_service_account_key(sa_key);
-    } else if let Some(app_creds) = &cfg.application_credentials_path {
-        builder = builder.with_application_credentials(app_creds);
-    }
-    let store = builder
-        .build()
-        .map_err(|e| IndexBuildError::ObjectStore(e.to_string()))?;
-    let store: Arc<dyn ObjectStore> = Arc::new(store);
-    download_parquet_to_local(
-        rt,
-        &store,
-        &cfg.key,
-        local_path,
-        opts,
-        progress,
-        stage,
-    )
-}
-
-fn parquet_source_name(source: &ParquetSource) -> String {
-    match source {
-        ParquetSource::LocalFile(path) => path.display().to_string(),
-        ParquetSource::S3(cfg) => cfg.key.clone(),
-        ParquetSource::Gcs(cfg) => cfg.key.clone(),
-        ParquetSource::Adls(cfg) => cfg.key.clone(),
-    }
-}
-
-fn localize_parquet_source(
-    rt: &Runtime,
-    source: &ParquetSource,
-    download_root: &Path,
-    progress: Option<&dyn ProgressSink>,
-    stage: Option<BuildStage>,
-    subdir: &str,
-    opts: &ParquetDownloadOptions,
-) -> Result<ParquetSource> {
-    match source {
-        ParquetSource::LocalFile(path) => Ok(ParquetSource::LocalFile(path.clone())),
-        ParquetSource::S3(cfg) => {
-            let s3 = build_s3_client(FsS3Config {
-                bucket: cfg.bucket.clone(),
-                region: cfg.region.clone(),
-                endpoint: cfg.endpoint.clone(),
-                allow_http: cfg
-                    .endpoint
-                    .as_deref()
-                    .map(|e| e.starts_with("http://")),
-                virtual_hosted: cfg.virtual_hosted_style_request,
-                profile: None,
-                access_key_id: cfg.access_key_id.clone(),
-                secret_access_key: cfg.secret_access_key.clone(),
-                session_token: cfg.session_token.clone(),
-            })
-            .map_err(|e| IndexBuildError::ObjectStore(e.to_string()))?;
-            let store = s3.store.clone();
-            let local_path = download_root
-                .join(subdir)
-                .join("s3")
-                .join(&cfg.bucket)
-                .join(&cfg.key);
-            download_parquet_to_local(
-                rt,
-                &store,
-                &cfg.key,
-                &local_path,
-                opts,
-                progress,
-                stage,
-            )?;
-            Ok(ParquetSource::LocalFile(local_path))
-        }
-        ParquetSource::Gcs(cfg) => {
-            let local_path = download_root
-                .join(subdir)
-                .join("gcs")
-                .join(&cfg.bucket)
-                .join(&cfg.key);
-            download_gcs_store(rt, cfg, &local_path, opts, progress, stage)?;
-            Ok(ParquetSource::LocalFile(local_path))
-        }
-        ParquetSource::Adls(cfg) => {
-            let mut builder = MicrosoftAzureBuilder::new()
-                .with_account(&cfg.account)
-                .with_container_name(&cfg.container);
-            if let Some(endpoint) = &cfg.endpoint {
-                builder = builder.with_endpoint(endpoint.to_string());
-            }
-            if let Some(access_key) = &cfg.access_key {
-                builder = builder.with_access_key(access_key);
-            }
-            if let Some(sas) = &cfg.sas_key {
-                builder = builder.with_config(AzureConfigKey::SasKey, sas);
-            }
-            if let Some(bearer) = &cfg.bearer_token {
-                builder = builder.with_bearer_token_authorization(bearer);
-            }
-            if let Some(client_id) = &cfg.client_id {
-                builder = builder.with_client_id(client_id);
-            }
-            if let Some(client_secret) = &cfg.client_secret {
-                builder = builder.with_client_secret(client_secret);
-            }
-            if let Some(tenant_id) = &cfg.tenant_id {
-                builder = builder.with_tenant_id(tenant_id);
-            }
-            let store = builder
-                .build()
-                .map_err(|e| IndexBuildError::ObjectStore(e.to_string()))?;
-            let store: Arc<dyn ObjectStore> = Arc::new(store);
-            let local_path = download_root
-                .join(subdir)
-                .join("az")
-                .join(&cfg.account)
-                .join(&cfg.container)
-                .join(&cfg.key);
-            download_parquet_to_local(
-                rt,
-                &store,
-                &cfg.key,
-                &local_path,
-                opts,
-                progress,
-                stage,
-            )?;
-            Ok(ParquetSource::LocalFile(local_path))
-        }
-    }
+) -> Result<(Vec<EdgeShardInput>, Option<ParquetSource>)> {
+    Ok((edge_shards.to_vec(), node_data.cloned()))
 }
 
 /// Parameters for building a single shard index.
@@ -527,14 +159,8 @@ impl ShardBuilder {
         let edges_path = self.params.output_dir.join(EDGES_FILENAME);
 
         let rt = Arc::new(Runtime::new()?);
-        let download_root = self.params.output_dir.join("parquet_downloads");
-        let (edge_inputs, download_root, localized_node_data) = localize_edge_inputs(
-            &rt,
-            edge_shards,
-            self.params.node_data.as_ref(),
-            &download_root,
-            progress,
-        )?;
+        let (edge_inputs, localized_node_data) =
+            localize_edge_inputs(edge_shards, self.params.node_data.as_ref())?;
 
         let layouts = Arc::new(compute_relation_layouts(
             &self.params.relation_metas,
@@ -764,9 +390,6 @@ impl ShardBuilder {
                 build_stats,
             })
         })();
-        if let Some(root) = download_root {
-            let _ = cleanup_parquet_cache(&root);
-        }
         result
     }
 }
@@ -1228,12 +851,6 @@ impl EdgeSubStream {
             diskgraph_core::metadata::EdgeStorageFormat::Binary => {
                 let local_path = match &input.parquet {
                     ParquetSource::LocalFile(path) => path.clone(),
-                    _ => {
-                        return Err(IndexBuildError::NotImplemented(
-                            "binary edge sources must be localized before reading",
-                        )
-                        .into())
-                    }
                 };
                 let file = std::fs::File::open(&local_path)?;
                 let file_len = file.metadata()?.len();
@@ -1594,20 +1211,11 @@ struct BinaryNodeDataStream {
 
 impl NodeDataStream {
     fn try_new(rt: Arc<Runtime>, source: &ParquetSource, expected_rows: u64) -> Result<Self> {
-        let is_binary = match source {
-            ParquetSource::LocalFile(path) => path.extension().and_then(|e| e.to_str()) == Some("bin"),
-            _ => false,
+        let path = match source {
+            ParquetSource::LocalFile(path) => path,
         };
+        let is_binary = path.extension().and_then(|e| e.to_str()) == Some("bin");
         if is_binary {
-            let path = match source {
-                ParquetSource::LocalFile(path) => path,
-                _ => {
-                    return Err(IndexBuildError::NotImplemented(
-                        "binary node data sources must be localized before reading",
-                    )
-                    .into())
-                }
-            };
             let mut reader =
                 std::io::BufReader::with_capacity(1024 * 1024, std::fs::File::open(path)?);
             let mut header = [0u8; 8];
@@ -1639,16 +1247,17 @@ impl NodeDataStream {
             }));
         }
 
-        if let ParquetSource::LocalFile(path) = source {
-            let file = std::fs::File::open(path)?;
-            let reader = SerializedFileReader::new(file)?;
-            let rows = reader.metadata().file_metadata().num_rows() as u64;
-            if rows != expected_rows {
-                return Err(IndexBuildError::NotImplemented(
-                    "node data row count mismatch",
-                )
-                .into());
-            }
+        let path = match source {
+            ParquetSource::LocalFile(path) => path,
+        };
+        let file = std::fs::File::open(path)?;
+        let reader = SerializedFileReader::new(file)?;
+        let rows = reader.metadata().file_metadata().num_rows() as u64;
+        if rows != expected_rows {
+            return Err(IndexBuildError::NotImplemented(
+                "node data row count mismatch",
+            )
+            .into());
         }
         let reader = object_reader_from_source(source, &rt)?;
         let (tx, rx) = mpsc::sync_channel(32);
@@ -1863,15 +1472,12 @@ impl MergedEdgeStream {
 }
 
 fn object_reader_from_source(source: &ParquetSource, _rt: &Runtime) -> Result<AnyParquetReader> {
-    match source {
-        ParquetSource::LocalFile(path) => Ok(AnyParquetReader::Local(
-            LocalParquetObjectReader::new(LocalAsyncFileReader { path: path.clone() }),
-        )),
-        _ => Err(IndexBuildError::NotImplemented(
-            "remote parquet sources must be localized before reading",
-        )
-        .into()),
-    }
+    let path = match source {
+        ParquetSource::LocalFile(path) => path,
+    };
+    Ok(AnyParquetReader::Local(
+        LocalParquetObjectReader::new(LocalAsyncFileReader { path: path.clone() }),
+    ))
 }
 
 enum AnyParquetReader {

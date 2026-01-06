@@ -1,25 +1,19 @@
 //! Interactive shard explorer for diskgraph-index.
 //!
-//! Supports local graphs or remote graphs on S3/GCS/ADLS by streaming Parquet
-//! shards through `GraphIndexBuilder` into a temp cache (derived from the remote
-//! path) and opening a `GraphIndexReader`. Provides a simple REPL for inspecting
-//! edge lists by node id.
+//! Supports local graphs by building Parquet shards through `GraphIndexBuilder`
+//! into a temp cache and opening a `GraphIndexReader`. Provides a simple REPL
+//! for inspecting edge lists by node id.
 
 use anyhow::{anyhow, Context, Result};
 use diskgraph_core::metadata::DatasetMetadata;
 use diskgraph_index::builder::IndexBuildError;
 use diskgraph_index::graph::{
-    GraphBuildProgress, GraphBuildStage, GraphDataSource, GraphIndexBuilder, GraphIndexReader,
-    GraphProgressSink, TableReader,
+    GraphBuildProgress, GraphBuildStage, GraphIndexBuilder, GraphIndexReader, GraphProgressSink,
+    TableReader,
 };
 use diskgraph_index::layout::{EDGES_FILENAME, OFFSETS_FILENAME};
 use diskgraph_rowpack::{ColumnEncoding, DecimalStorage, FloatStorage, RowPackContext, StringEncoding};
-use object_store::{Error as ObjectStoreError, ObjectStore};
-use diskgraph_fs::{
-    build_adls_client, build_gcs_client, build_s3_client, AdlsConfig, GcsConfig, S3Config,
-};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
-use object_store::path::Path as ObjectPath;
 use pprof::protos::Message;
 use pprof::ProfilerGuard;
 use rustyline::error::ReadlineError;
@@ -31,18 +25,10 @@ use std::io::{self, Write, IsTerminal};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU64, Ordering};
-use tokio::runtime::Runtime;
 
 #[derive(Clone, Debug)]
 enum Source {
     Local(PathBuf),
-    S3 { bucket: String, prefix: String },
-    Gcs { bucket: String, prefix: String },
-    Adls {
-        account: String,
-        container: String,
-        prefix: String,
-    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -136,25 +122,6 @@ struct BuildStatsReport {
     node_data_trimmed: u64,
 }
 
-enum RemoteStore {
-    S3 {
-        bucket: String,
-        prefix: String,
-        client: diskgraph_fs::S3Client,
-    },
-    Gcs {
-        bucket: String,
-        prefix: String,
-        client: diskgraph_fs::GcsClient,
-    },
-    Adls {
-        account: String,
-        container: String,
-        prefix: String,
-        client: diskgraph_fs::AdlsClient,
-    },
-}
-
 fn main() -> Result<()> {
     let mut args = std::env::args().skip(1).peekable();
     let mut profile_out_base: Option<PathBuf> = None;
@@ -177,7 +144,7 @@ fn main() -> Result<()> {
     }
     let source_str = source_str.ok_or_else(|| {
         anyhow!(
-            "usage: explore [--profile [base]] <source> (local path or s3:// gs:// az://)"
+            "usage: explore [--profile [base]] <source> (local path)"
         )
     })?;
     let profile_enabled = profile_out_base.is_some();
@@ -228,7 +195,6 @@ fn main() -> Result<()> {
 
 fn run_explore(source_str: &str, profile_enabled: bool) -> Result<()> {
     let source = parse_source(source_str)?;
-    let rt = Runtime::new().context("init tokio runtime")?;
     let tmp = cache_tempdir().context("create cache tempdir")?;
     let load_start = std::time::Instant::now();
     let (metadata, index_root) = match &source {
@@ -252,76 +218,6 @@ fn run_explore(source_str: &str, profile_enabled: bool) -> Result<()> {
             } else {
                 build_from_local_dataset(p, tmp.path())?
             }
-        }
-        Source::S3 { bucket, prefix } => {
-            let profile = std::env::var("S3_PROFILE")
-                .ok()
-                .or_else(|| std::env::var("AWS_PROFILE").ok());
-            let s3 = build_s3_client(S3Config {
-                bucket: bucket.clone(),
-                region: std::env::var("S3_REGION").ok(),
-                endpoint: std::env::var("S3_ENDPOINT").ok(),
-                allow_http: env_flag("S3_ALLOW_HTTP").or_else(|| env_flag("AWS_ALLOW_HTTP")),
-                virtual_hosted: env_flag("S3_VIRTUAL_HOSTED"),
-                profile,
-                access_key_id: None,
-                secret_access_key: None,
-                session_token: None,
-            })?;
-            let (metadata, dir) = build_from_remote(
-                &rt,
-                RemoteStore::S3 {
-                    bucket: bucket.clone(),
-                    prefix: prefix.clone(),
-                    client: s3,
-                },
-                tmp.path(),
-            )?;
-            (metadata, dir)
-        }
-        Source::Gcs { bucket, prefix } => {
-            let gcs = build_gcs_client(GcsConfig {
-                bucket: bucket.clone(),
-            })?;
-            let (metadata, dir) = build_from_remote(
-                &rt,
-                RemoteStore::Gcs {
-                    bucket: bucket.clone(),
-                    prefix: prefix.clone(),
-                    client: gcs,
-                },
-                tmp.path(),
-            )?;
-            (metadata, dir)
-        }
-        Source::Adls {
-            account,
-            container,
-            prefix,
-        } => {
-            let adls = build_adls_client(AdlsConfig {
-                account: account.clone(),
-                container: container.clone(),
-                endpoint: std::env::var("AZURE_ENDPOINT").ok(),
-                allow_http: env_flag("AZURE_ALLOW_HTTP"),
-                access_key: std::env::var("AZURE_ACCESS_KEY").ok(),
-                sas_key: std::env::var("AZURE_SAS_KEY").ok(),
-                bearer_token: std::env::var("AZURE_BEARER_TOKEN").ok(),
-                client_id: std::env::var("AZURE_CLIENT_ID").ok(),
-                client_secret: std::env::var("AZURE_CLIENT_SECRET").ok(),
-                tenant_id: std::env::var("AZURE_TENANT_ID").ok(),
-            })?;
-            let (metadata, dir) = build_from_remote(
-                &rt,
-                RemoteStore::Adls {
-                    account: account.clone(),
-                    container: container.clone(),
-                    prefix: prefix.clone(),
-                    client: adls,
-                },
-                tmp.path(),
-            )?;
-            (metadata, dir)
         }
     };
     let elapsed = load_start.elapsed().as_secs_f64();
@@ -403,137 +299,6 @@ fn run_explore(source_str: &str, profile_enabled: bool) -> Result<()> {
     Ok(())
 }
 
-fn build_from_remote(
-    rt: &Runtime,
-    remote: RemoteStore,
-    cache_root: &Path,
-) -> Result<(DatasetMetadata, PathBuf)> {
-    let cache_spinner = start_spinner("Checking cache");
-    let (safe_prefix, store_arc) = {
-        match &remote {
-            RemoteStore::S3 { bucket, prefix, client } => (
-                format!("s3_{}_{}", bucket, prefix).replace(['/', ':'], "_"),
-                client.store.clone(),
-            ),
-            RemoteStore::Gcs { bucket, prefix, client } => (
-                format!("gcs_{}_{}", bucket, prefix).replace(['/', ':'], "_"),
-                client.store.clone(),
-            ),
-            RemoteStore::Adls {
-                account,
-                container,
-                prefix,
-                client,
-            } => (
-                format!("az_{}_{}_{}", account, container, prefix).replace(['/', ':'], "_"),
-                client.store.clone(),
-            ),
-        }
-    };
-    let cache_dir = cache_root.join(safe_prefix);
-    let meta_path = cache_dir.join("index_metadata.json");
-    let prefix = match &remote {
-        RemoteStore::S3 { prefix, .. }
-        | RemoteStore::Gcs { prefix, .. }
-        | RemoteStore::Adls { prefix, .. } => prefix.trim_end_matches('/').to_string(),
-    };
-    if cache_dir.join("nodes").exists() && meta_path.exists() {
-        cache_spinner.finish_with_message("Cache hit");
-        let metadata: DatasetMetadata = serde_json::from_slice(
-            &fs::read(&meta_path).context("read cached metadata")?,
-        )
-        .context("parse cached metadata")?;
-        download_rowpack_contexts(rt, store_arc.as_ref(), &prefix, &cache_dir, &metadata)
-            .context("download rowpack contexts")?;
-        download_optional_object(
-            rt,
-            store_arc.as_ref(),
-            &prefix,
-            "ingest_stats.json",
-            &cache_dir,
-        )
-        .context("download ingest_stats.json")?;
-        return Ok((metadata, cache_dir));
-    }
-    cache_spinner.finish_with_message("Cache miss");
-    fs::create_dir_all(&cache_dir)?;
-    // Download metadata, then build using remote Parquet sources.
-    let loc = if prefix.is_empty() {
-        ObjectPath::from("index_metadata.json")
-    } else {
-        ObjectPath::from(format!("{}/{}", prefix, "index_metadata.json"))
-    };
-    let meta_spinner = start_spinner("Downloading index_metadata.json");
-    let meta_obj = rt
-        .block_on(store_arc.get(&loc))
-        .with_context(|| format!("download index_metadata.json from {prefix}"))?;
-    let meta_bytes = rt
-        .block_on(meta_obj.bytes())
-        .context("buffer index_metadata.json")?;
-    fs::write(&meta_path, &meta_bytes)?;
-    meta_spinner.finish_with_message("Downloaded index_metadata.json");
-    let metadata: DatasetMetadata =
-        serde_json::from_slice(&meta_bytes).context("parse index_metadata.json")?;
-    download_rowpack_contexts(rt, store_arc.as_ref(), &prefix, &cache_dir, &metadata)
-        .context("download rowpack contexts")?;
-    download_optional_object(
-        rt,
-        store_arc.as_ref(),
-        &prefix,
-        "ingest_stats.json",
-        &cache_dir,
-    )
-    .context("download ingest_stats.json")?;
-
-    let data_source = match &remote {
-        RemoteStore::S3 { bucket, client, prefix } => GraphDataSource::S3 {
-            bucket: bucket.clone(),
-            prefix: prefix.clone(),
-            region: Some(client.resolved.region.clone()),
-            endpoint: client.resolved.endpoint.clone(),
-            access_key_id: Some(client.resolved.access_key_id.clone()),
-            secret_access_key: Some(client.resolved.secret_access_key.clone()),
-            session_token: client.resolved.session_token.clone(),
-            virtual_hosted_style_request: Some(client.resolved.virtual_hosted),
-        },
-        RemoteStore::Gcs { bucket, prefix, .. } => GraphDataSource::Gcs {
-            bucket: bucket.clone(),
-            prefix: prefix.clone(),
-        },
-        RemoteStore::Adls {
-            account,
-            container,
-            prefix,
-            client,
-        } => GraphDataSource::Adls {
-            account: account.clone(),
-            container: container.clone(),
-            prefix: prefix.clone(),
-            access_key: client.resolved.access_key.clone(),
-            sas_key: client.resolved.sas_key.clone(),
-            bearer_token: client.resolved.bearer_token.clone(),
-            client_id: client.resolved.client_id.clone(),
-            client_secret: client.resolved.client_secret.clone(),
-            tenant_id: client.resolved.tenant_id.clone(),
-            endpoint: client.resolved.endpoint.clone(),
-        },
-    };
-
-    let builder = GraphIndexBuilder::from_metadata(metadata.clone(), data_source, &cache_dir);
-    let total_nodes = builder
-        .metadata()
-        .node_types
-        .iter()
-        .flat_map(|t| t.shards.iter())
-        .map(|s| s.max_id.saturating_sub(s.min_id).saturating_add(1))
-        .sum::<u64>();
-    let (_mp, progress_reporter) = make_graph_progress_handler(total_nodes);
-    builder
-        .build(Some(&progress_reporter))
-        .context("build graph from parquet")?;
-    Ok((metadata, cache_dir))
-}
-
 fn copy_rowpack_contexts_from_local(
     metadata: &DatasetMetadata,
     source_root: &Path,
@@ -562,42 +327,6 @@ fn copy_rowpack_contexts_from_local(
     Ok(())
 }
 
-fn download_rowpack_contexts(
-    rt: &Runtime,
-    store: &dyn ObjectStore,
-    prefix: &str,
-    cache_root: &Path,
-    metadata: &DatasetMetadata,
-) -> Result<()> {
-    for node in &metadata.node_types {
-        let compression = match &node.node_data_compression {
-            Some(compression) if compression.codec == "rowpack" => compression,
-            _ => continue,
-        };
-        if compression.context_path.is_empty() {
-            return Err(anyhow!("rowpack context_path is empty for {}", node.name));
-        }
-        let key = if prefix.is_empty() {
-            compression.context_path.clone()
-        } else {
-            format!("{}/{}", prefix, compression.context_path)
-        };
-        let dst = cache_root.join(&compression.context_path);
-        if dst.exists() {
-            continue;
-        }
-        if let Some(parent) = dst.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        let obj = rt
-            .block_on(store.get(&ObjectPath::from(key.clone())))
-            .with_context(|| format!("download rowpack context {}", key))?;
-        let bytes = rt.block_on(obj.bytes()).context("buffer rowpack context")?;
-        fs::write(&dst, &bytes)?;
-    }
-    Ok(())
-}
-
 fn copy_optional_local_file(source_root: &Path, filename: &str, cache_root: &Path) -> Result<bool> {
     let src = source_root.join(filename);
     if !src.exists() {
@@ -612,35 +341,6 @@ fn copy_optional_local_file(source_root: &Path, filename: &str, cache_root: &Pat
     }
     fs::copy(&src, &dst)
         .with_context(|| format!("copy {}", src.display()))?;
-    Ok(true)
-}
-
-fn download_optional_object(
-    rt: &Runtime,
-    store: &dyn ObjectStore,
-    prefix: &str,
-    filename: &str,
-    cache_root: &Path,
-) -> Result<bool> {
-    let key = if prefix.is_empty() {
-        filename.to_string()
-    } else {
-        format!("{}/{}", prefix, filename)
-    };
-    let dst = cache_root.join(filename);
-    if dst.exists() {
-        return Ok(true);
-    }
-    let obj = match rt.block_on(store.get(&ObjectPath::from(key.clone()))) {
-        Ok(obj) => obj,
-        Err(ObjectStoreError::NotFound { .. }) => return Ok(false),
-        Err(err) => return Err(anyhow!("download {}: {}", key, err)),
-    };
-    if let Some(parent) = dst.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let bytes = rt.block_on(obj.bytes()).context("buffer object")?;
-    fs::write(&dst, &bytes)?;
     Ok(true)
 }
 
@@ -727,27 +427,6 @@ impl GraphProgressReporter {
 impl GraphProgressSink for GraphProgressReporter {
     fn report(&self, update: GraphBuildProgress) {
         match update.stage {
-            GraphBuildStage::Download {
-                shard,
-                file,
-                index,
-                total,
-            } => {
-                let pb = self.bar_for(shard.as_ref());
-                pb.set_style(bar_style());
-                pb.set_message(format!("Downloading {file} ({index}/{total})"));
-                if let Some(total) = update.total {
-                    pb.set_length(total);
-                    pb.set_position(update.current.min(total));
-                    pb.set_prefix(format!(
-                        "{} / {}",
-                        format_bytes(update.current),
-                        format_bytes(total),
-                    ));
-                } else {
-                    pb.tick();
-                }
-            }
             GraphBuildStage::BuildShard { shard } => {
                 let pb = self.bar_for(shard.as_ref());
                 pb.set_message(format!("Building {shard}"));
@@ -2225,86 +1904,5 @@ fn escape_ascii(bytes: &[u8]) -> String {
 }
 
 fn parse_source(raw: &str) -> Result<Source> {
-    if raw.starts_with("s3://") {
-        let (bucket, key) = parse_s3_url(raw)?;
-        Ok(Source::S3 { bucket, prefix: key })
-    } else if raw.starts_with("gs://") {
-        let (bucket, key) = parse_gs_url(raw)?;
-        Ok(Source::Gcs { bucket, prefix: key })
-    } else if raw.starts_with("az://") {
-        let (account, container, key) = parse_az_url(raw)?;
-        Ok(Source::Adls {
-            account,
-            container,
-            prefix: key,
-        })
-    } else {
-        Ok(Source::Local(PathBuf::from(raw)))
-    }
-}
-
-fn parse_s3_url(raw: &str) -> Result<(String, String)> {
-    let url = url::Url::parse(raw)
-        .map_err(|e| anyhow::anyhow!("invalid s3 url {raw}: {e}"))?;
-    if url.scheme() != "s3" {
-        anyhow::bail!("expected s3:// url, got {raw}");
-    }
-    let bucket = url
-        .host_str()
-        .ok_or_else(|| anyhow::anyhow!("missing bucket in s3 url"))?
-        .to_string();
-    let mut key = url.path().trim_start_matches('/').to_string();
-    if key.ends_with('/') {
-        key.pop();
-    }
-    Ok((bucket, key))
-}
-
-fn parse_gs_url(raw: &str) -> Result<(String, String)> {
-    let url = url::Url::parse(raw)
-        .map_err(|e| anyhow::anyhow!("invalid gs url {raw}: {e}"))?;
-    if url.scheme() != "gs" {
-        anyhow::bail!("expected gs:// url, got {raw}");
-    }
-    let bucket = url
-        .host_str()
-        .ok_or_else(|| anyhow::anyhow!("missing bucket in gs url"))?
-        .to_string();
-    let mut key = url.path().trim_start_matches('/').to_string();
-    if key.ends_with('/') {
-        key.pop();
-    }
-    Ok((bucket, key))
-}
-
-fn parse_az_url(raw: &str) -> Result<(String, String, String)> {
-    let url = url::Url::parse(raw)
-        .map_err(|e| anyhow::anyhow!("invalid az url {raw}: {e}"))?;
-    if url.scheme() != "az" {
-        anyhow::bail!("expected az:// url, got {raw}");
-    }
-    let account = url
-        .host_str()
-        .ok_or_else(|| anyhow::anyhow!("missing account in az url"))?
-        .to_string();
-    let mut segments = url
-        .path()
-        .trim_start_matches('/')
-        .split('/')
-        .filter(|s| !s.is_empty());
-    let container = segments
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("missing container in az url"))?
-        .to_string();
-    let mut key = segments.collect::<Vec<_>>().join("/");
-    if key.ends_with('/') {
-        key.pop();
-    }
-    Ok((account, container, key))
-}
-
-fn env_flag(name: &str) -> Option<bool> {
-    std::env::var(name)
-        .ok()
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+    Ok(Source::Local(PathBuf::from(raw)))
 }

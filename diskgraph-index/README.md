@@ -137,26 +137,9 @@ Steps:
 - Sparse shards: empty edge lists are encoded as zero counts; offsets remain monotonic.
 - Destination ID width: minimized per relation using destination type `max_id`; masks precomputed.
 
-## Cloud ingest tests
-
-We support end-to-end ingest/read tests against S3, GCS, and ADLS using real cloud endpoints. Tests fail fast if misconfigured and actually read/write data for two relations per shard with multiple row groups and multiple offset chunks.
-
-Scripts live in `diskgraph-index/scripts`:
-
-- Real clouds (IAM/ADC/MSI preferred; omit keys to use ambient creds):
-  - `scripts/run_cloud_s3.sh` (default `S3_PREFIX=s3://kumo-unit-test/diskgraph-index`; override to your bucket/prefix; per-run `S3_URL` is generated; optional `S3_ENDPOINT`/`S3_REGION`; ensure AWS creds/role are active, e.g., `aws sso login`)
-  - `scripts/run_cloud_gcs.sh` (default `GCS_PREFIX=gs://kumo-unit-test/diskgraph-index`; override to your bucket/prefix; per-run `GCS_URL` is generated; ensure `gcloud auth login`/ADC is configured)
-  - `scripts/run_cloud_adls.sh` (set `AZURE_URL=az://account/container/path` or `AZURE_ACCOUNT`/`AZURE_CONTAINER`; optional `AZURE_ENDPOINT`)
-
-Notes:
-- Tests require `RUN_CLOUD_TESTS=1` and the relevant `S3_*`, `GCS_*`, or `AZURE_*` vars. With `RUN_CLOUD_TESTS=1`, missing vars panic instead of silently skipping.
-- For real clouds, prefer role-based auth: AWS IAM (omit `S3_ACCESS_KEY`/`S3_SECRET_KEY`), GCP ADC/workload identity (omit `GCS_SERVICE_ACCOUNT_*`), Azure MSI/client creds (omit `AZURE_ACCESS_KEY`/`AZURE_SAS_KEY`).
-- Object keys (paths) are generated in the tests: if a URL/prefix is provided it is used; otherwise a per-run prefix is synthesized under `diskgraph-index/<cloud>/run-<timestamp>`.
-- Data sets include two relations (with and without `dest_sort_key`), enough nodes to span multiple offset chunks, and row groups to exercise multi-group Parquet reads.
-
 ## Shard explorer (TUI)
 
-`cargo run -p diskgraph-index --bin explore -- <path|s3://...|gs://...|az://...>` opens a REPL to inspect a graph built from Parquet. It streams the Parquet shards through `GraphIndexBuilder` into a temp cache derived from the source path, and reuses that cache within the same run if already present. Expected layout matches the massive generator output: `index_metadata.json` and `edges_<relation>.parquet` under the provided prefix.
+`cargo run -p diskgraph-index --bin explore -- <path>` opens a REPL to inspect a graph built from Parquet. It streams the Parquet shards through `GraphIndexBuilder` into a temp cache derived from the source path, and reuses that cache within the same run if already present. Expected layout matches the massive generator output: `index_metadata.json` and `edges_<relation>.parquet` under the provided prefix.
 
 Profiling: `--profile [base]` writes `base.svg` and `base.pb` (defaults to `explore-profile`).
 
@@ -171,9 +154,6 @@ Commands inside the REPL:
 
 Helper scripts wrap auth/env checks:
 - `scripts/explore_local.sh [-p] /path/to/shard` (`-p` writes `./explore-profile.svg` and `./explore-profile.pb`)
-- `scripts/explore_s3.sh [-p] s3://bucket/prefix` (auto-picks an AWS profile like the cloud tests, sets `AWS_EC2_METADATA_DISABLED=1`, uses `aws_config::from_env` to avoid IMDS).
-- `scripts/explore_gcs.sh [-p] gs://bucket/prefix` (ADC/gcloud).
-- `scripts/explore_adls.sh [-p] az://account/container/prefix` (`AZURE_*` env vars).
 
 ## Expectations and assumptions
 - Input Parquet shards are already sorted:

@@ -24,42 +24,10 @@ pub struct GraphIndexBuilder {
 #[derive(Clone)]
 pub enum GraphDataSource {
     Local { root: PathBuf },
-    S3 {
-        bucket: String,
-        prefix: String,
-        region: Option<String>,
-        endpoint: Option<String>,
-        access_key_id: Option<String>,
-        secret_access_key: Option<String>,
-        session_token: Option<String>,
-        virtual_hosted_style_request: Option<bool>,
-    },
-    Gcs {
-        bucket: String,
-        prefix: String,
-    },
-    Adls {
-        account: String,
-        container: String,
-        prefix: String,
-        access_key: Option<String>,
-        sas_key: Option<String>,
-        bearer_token: Option<String>,
-        client_id: Option<String>,
-        client_secret: Option<String>,
-        tenant_id: Option<String>,
-        endpoint: Option<String>,
-    },
 }
 
 #[derive(Clone, Debug)]
 pub enum GraphBuildStage {
-    Download {
-        shard: Arc<str>,
-        file: Arc<str>,
-        index: usize,
-        total: usize,
-    },
     BuildShard {
         shard: Arc<str>,
     },
@@ -231,55 +199,6 @@ impl GraphIndexBuilder {
             GraphDataSource::Local { root } => {
                 ParquetSource::LocalFile(root.join(rel_path))
             }
-            GraphDataSource::S3 {
-                bucket,
-                prefix,
-                region,
-                endpoint,
-                access_key_id,
-                secret_access_key,
-                session_token,
-                virtual_hosted_style_request,
-            } => ParquetSource::S3(crate::streaming::S3Location {
-                bucket: bucket.clone(),
-                key: join_prefix(prefix, rel_path),
-                region: region.clone(),
-                endpoint: endpoint.clone(),
-                access_key_id: access_key_id.clone(),
-                secret_access_key: secret_access_key.clone(),
-                session_token: session_token.clone(),
-                virtual_hosted_style_request: *virtual_hosted_style_request,
-            }),
-            GraphDataSource::Gcs { bucket, prefix } => ParquetSource::Gcs(crate::streaming::GcsLocation {
-                bucket: bucket.clone(),
-                key: join_prefix(prefix, rel_path),
-                service_account_path: None,
-                service_account_key: None,
-                application_credentials_path: None,
-            }),
-            GraphDataSource::Adls {
-                account,
-                container,
-                prefix,
-                access_key,
-                sas_key,
-                bearer_token,
-                client_id,
-                client_secret,
-                tenant_id,
-                endpoint,
-            } => ParquetSource::Adls(crate::streaming::AdlsLocation {
-                account: account.clone(),
-                container: container.clone(),
-                key: join_prefix(prefix, rel_path),
-                access_key: access_key.clone(),
-                sas_key: sas_key.clone(),
-                bearer_token: bearer_token.clone(),
-                client_id: client_id.clone(),
-                client_secret: client_secret.clone(),
-                tenant_id: tenant_id.clone(),
-                endpoint: endpoint.clone(),
-            }),
         }
     }
 }
@@ -345,14 +264,6 @@ impl<'a> ShardProgressAdapter<'a> {
 impl<'a> crate::builder::ProgressSink for ShardProgressAdapter<'a> {
     fn report(&self, update: crate::builder::BuildProgress) {
         let stage = match update.stage {
-            crate::builder::BuildStage::Download { file, index, total } => {
-                GraphBuildStage::Download {
-                    shard: Arc::clone(&self.shard),
-                    file,
-                    index,
-                    total,
-                }
-            }
             crate::builder::BuildStage::BuildIndex => GraphBuildStage::BuildShard {
                 shard: Arc::clone(&self.shard),
             },
@@ -586,13 +497,4 @@ impl TableReader {
         }
         None
     }
-}
-
-fn join_prefix(prefix: &str, path: &str) -> String {
-    if prefix.is_empty() {
-        return path.to_string();
-    }
-    let trimmed = prefix.trim_end_matches('/');
-    let rel = path.trim_start_matches('/');
-    format!("{}/{}", trimmed, rel)
 }
