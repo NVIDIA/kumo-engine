@@ -1,16 +1,16 @@
 # diskgraph-ingest
 
-`diskgraph-ingest` converts raw CSV/Parquet source tables into DiskGraph-ready outputs: `index_metadata.json`, node data shards (binary by default, parquet optional), edge shard files (binary by default, parquet optional), and rowpack context files for node payloads.
+`diskgraph-ingest` turns CSV/Parquet source tables plus `source_metadata.json` into a local DiskGraph index. It builds rowpack contexts, sharded primary key maps, edge shards, and then runs the index builder to produce `edges.bin`/`offsets.bin` under the output directory.
 
 ## Inputs
 
 - A `source_metadata.json` file describing:
   - node tables and schemas
-  - edge tables (explicit edges)
+  - explicit edge tables (optional)
   - foreign-key / primary-key relationships (implicit edges)
-  - optional primary keys, timestamps, and weights
-  - optional rowpack configuration per table
-- Source data files (CSV or Parquet), local or cloud paths.
+  - optional primary keys, timestamps, weights
+  - optional rowpack configuration
+- Source data files (CSV or Parquet). Paths may be local or `s3://`, `gs://`, `az://`.
 
 ## source_metadata.json
 
@@ -22,7 +22,7 @@ Top-level schema (all fields optional except `dataset_name` and `tables`):
   "tables": [/* TableSpec */],
   "relationships": [/* RelationshipSpec */],
   "rowpack": { /* RowPackConfig */ },
-  "edge_format": "binary"
+  "num_shards": 8
 }
 ```
 
@@ -48,19 +48,19 @@ Top-level schema (all fields optional except `dataset_name` and `tables`):
 Rules:
 - `format`: `csv` or `parquet`.
 - `paths`: one or more files, all same schema.
-- `primary_key` is optional; when present it must reference a numeric or string/bytes column.
-- `create_time` (optional): must be `date` or `timestamp`.
-- `weight` (optional): must be numeric.
+- `primary_key` (optional): numeric or string/bytes column.
+- `create_time` (optional): `date` or `timestamp` column.
+- `weight` (optional): numeric column.
 - `edge_table` (optional): marks the table as an explicit edge list. Both FKs must reference a primary key on the destination table.
 - `rowpack` (optional): per-table overrides for rowpack configuration. When present, it is merged with the top-level `rowpack` (table values override dataset values).
-- `edge_format` (optional): `binary` (default) or `parquet`. Controls the output format for both edge shards and node data shards.
 
 ### ColumnSpec
 
 ```json
 {
   "name": "id",
-  "dtype": "string",
+  "source_dtype": "string",
+  "ingested_dtype": "string",
   "fixed_len": 16,
   "key_mode": "uuid",
   "precision": 10,
@@ -69,9 +69,11 @@ Rules:
 ```
 
 Fields:
-- `dtype` (required): `int8|int16|int32|int64|uint8|uint16|uint32|uint64|float32|float64|bool|string|bytes|date|timestamp|decimal128|decimal256|float32_array|float64_array`
-- `fixed_len` (optional): only valid for `string`/`bytes`. Fixed length in bytes.
-- `key_mode` (optional): `fixed` or `uuid` (string/bytes only). Default is variable-length.
+- `source_dtype` / `ingested_dtype` (required): `int8|int16|int32|int64|uint8|uint16|uint32|uint64|float32|float64|bool|string|bytes|date|timestamp|decimal128|decimal256|float32_array|float64_array`
+- `fixed_len` (optional): only valid for `string`/`bytes`.
+- `key_mode` (optional): `fixed` or `uuid` (string/bytes only).
+- `timestamp_format` (optional): format string for string timestamps.
+- `timestamp_unit` (optional): `seconds|millis|micros|nanos` for integer timestamps.
 - `precision`/`scale` (optional): required for decimal columns and rejected for non-decimals.
 
 ### RelationshipSpec (implicit edges)
@@ -127,68 +129,51 @@ Ingestion expects schemas to match `source_metadata.json` and supports:
 
 Other Parquet/Arrow types are rejected during ingest.
 
-## Outputs
+## Outputs (local only)
 
-- `index_metadata.json` with:
-  - node/edge tables and shard ranges
-  - rowpack `node_data_compression` per node table
-  - primary key map paths (when configured)
-- Per-shard index files under `nodes/<table>/shard-<id>/`:
-  - `edges.bin` (edge blobs + optional node data)
-  - `offsets.bin` (edge blob offsets)
-- Rowpack context files per node table (`node_data.ctx` by default)
-- `ingest_stats.json` with ingest stats (key failures, duplicate keys, schema echo)
+`diskgraph-ingest` requires a local output directory and builds a DiskGraph index:
 
-## Ingestion stages
+- `index_metadata.json`
+- `ingest_stats.json`
+- `nodes/<table>/shard-<id>/offsets.bin`
+- `nodes/<table>/shard-<id>/edges.bin`
+- `nodes/<table>/pk_map-<id>.bin` and `nodes/<table>/pk_map-<id>.meta.json`
+- `nodes/<table>/node_data.ctx` (rowpack context)
 
-1) Encode (per table)
-   - Read each input file and sample rows to build the rowpack context (one context per table).
-   - Sampling uses only the first input file for that table.
-   - Parse primary keys and foreign keys; invalid keys are skipped and recorded in stats.
-   - Rowpack-encode the table primary key into a temp pkey file per shard (or round-robin when no PK).
-   - Rowpack-encode node payloads into temp node data files per shard (written under `_tmp/`).
-   - When a table has multiple input files, temp outputs are split per-file and numbered within each shard.
-   - Enforce node data size limits at write time; oversized payloads are written as empty and counted.
-   - For each outgoing FK, write temp files containing the encoded FK key (and optional sort key).
-   - For explicit edge tables, write temp edge files for forward and reverse directions.
+Temporary files are written under `_tmp/` and removed after finalize. The final `index_metadata.json` intentionally clears temporary paths.
 
-2) PK map (per table, per shard)
-   - Build on-disk pk maps that map encoded PKs to shard-local IDs.
-   - Fixed-width keys become sorted (key,id) files for binary search.
-   - Variable-width keys become hash maps.
-   - Duplicate PKs are dropped and counted; up to 10 samples are recorded.
+## Ingestion stages (high level)
 
-3) Final nodes (per table, per shard)
-   - Convert temp node data into the node binary format (stored under `_tmp/`).
-
-4) Final edges (per relation, per shard)
-   - Use pk maps to translate temp edge/FK keys into local IDs.
-   - Emit forward and reverse edge shard files in the binary format under `_tmp/`.
-   - Ensure edges are sorted by src_id (per relation and direction).
-
-5) Finalize
-   - Build the final per-shard index (`edges.bin` + `offsets.bin`) from the temp node/edge shards.
-   - Write `index_metadata.json` and `ingest_stats.json`.
-   - Remove temporary files and directories.
+1) **Rowpack contexts**
+   - Sample rows per node table and write `node_data.ctx`.
+2) **Temp shards**
+   - Encode node payloads and FK/edge keys into temp shard files under `_tmp/`.
+3) **Primary key maps**
+   - Build sharded PK maps (`pk_map-<id>.bin`).
+4) **Edge passes**
+   - Resolve implicit and explicit edges, translate keys to IDs, and write temp edge shards.
+5) **Index build**
+   - Run the DiskGraph index builder to produce `edges.bin` and `offsets.bin`.
+6) **Finalize**
+   - Write `index_metadata.json` and `ingest_stats.json`, then delete `_tmp/`.
 
 ## Usage (CLI)
 
 ```bash
-cargo run -p diskgraph-ingest -- --source /path/to/source_dir --output /path/to/index_dir --dest local --mapping hash
+cargo run -p diskgraph-ingest --bin ingest --release -- \
+  --source /path/to/source_dir_or_metadata \
+  --output /path/to/index_dir \
+  --dest local
 ```
 
 Flags:
-- `--source`: directory containing `source_metadata.json` or the path to `source_metadata.json` directly.
-- `--output`: output directory for `index_metadata.json` and parquet files.
+- `--source`: directory containing `source_metadata.json` or the path to it.
+- `--output`: local output directory for the index.
 - `--dest`: must be `local` (index build requires local output).
-- `--mapping`: `hash|sorted` (primary key map strategy).
-- `--profile [base]`: enable CPU profiling and emit `*-profile.pb`/`*-profile.svg` (ingest only; explore no longer supports profiling).
+- `--profile [dir]`: enable CPU profiling and emit `*-profile.pb`/`*-profile.svg`.
 
-Helper scripts (release mode):
+Helper script:
 - `scripts/ingest_local.sh`
-- `scripts/ingest_s3.sh`
-- `scripts/ingest_gcs.sh`
-- `scripts/ingest_adls.sh`
 
 ## Rowpack configuration
 
@@ -196,9 +181,7 @@ Rowpack settings are optional and can appear at:
 - top-level (`rowpack`): default for all node tables.
 - per table (`tables[].rowpack`): override for that table only.
 
-When both are provided, the effective config is a merge where table values override top-level values.
-
-Rowpack is a row-oriented compression format used for node payloads. It samples columns to pick fast encodings (dictionary, alphabet, BPE, numeric, timestamp, etc.) and writes a small context file that the reader uses to decode quickly. You typically only need to tune it when you want smaller node payloads (larger dictionaries, stricter thresholds) or faster encoding (smaller samples, lower dictionary budgets). The defaults are usually good enough.
+Rowpack is a row-oriented compression format used for node payloads. It samples columns to pick fast encodings (dictionary, alphabet, BPE, numeric, timestamp, etc.) and writes a small context file that the reader uses to decode quickly. Defaults are usually good enough.
 
 RowPackConfig fields (all optional):
 - `sample_rows` (int): rows to sample when building the context (default 10,000)
