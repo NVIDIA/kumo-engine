@@ -49,6 +49,8 @@ pub trait GraphProgressSink: Send + Sync {
 
 pub struct GraphBuildOutput {
     pub shard_stats: HashMap<String, BuildStats>,
+    pub total_shard_ms: u64,
+    pub total_shards: u64,
 }
 
 impl GraphIndexBuilder {
@@ -128,11 +130,19 @@ impl GraphIndexBuilder {
         drop(tx);
 
         let mut shard_stats = HashMap::new();
+        let mut total_shard_ms = 0u64;
+        let mut total_shards = 0u64;
         for (shard_key, result) in rx {
             let output = result?;
             shard_stats.insert(shard_key, output.build_stats);
+            total_shard_ms = total_shard_ms.saturating_add(output.wall_ms);
+            total_shards = total_shards.saturating_add(1);
         }
-        Ok(GraphBuildOutput { shard_stats })
+        Ok(GraphBuildOutput {
+            shard_stats,
+            total_shard_ms,
+            total_shards,
+        })
     }
 
     fn prepare_jobs(&self) -> Result<Vec<ShardBuildJob>> {
@@ -217,6 +227,7 @@ impl ShardBuildJob {
         progress: Option<&dyn GraphProgressSink>,
         abort: &AtomicBool,
     ) -> Result<crate::builder::ShardBuildOutput> {
+        let start = std::time::Instant::now();
         fs::create_dir_all(&self.output_dir)?;
         let params = ShardBuildParams {
             output_dir: self.output_dir.clone(),
@@ -242,7 +253,10 @@ impl ShardBuildJob {
                 total: None,
             });
         }
-        result
+        result.map(|mut output| {
+            output.wall_ms = start.elapsed().as_millis() as u64;
+            output
+        })
     }
 }
 

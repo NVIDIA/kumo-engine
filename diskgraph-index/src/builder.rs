@@ -357,9 +357,10 @@ impl ShardBuilder {
             offsets_path,
             edges_path,
             stats,
-                layouts,
-                build_stats,
-            })
+            layouts,
+            build_stats,
+            wall_ms: 0,
+        })
         })();
         result
     }
@@ -372,6 +373,7 @@ pub struct ShardBuildOutput {
     pub stats: NodeEdgeStats,
     pub build_stats: BuildStats,
     pub layouts: Arc<Vec<RelationLayout>>,
+    pub wall_ms: u64,
 }
 
 /// Counters gathered during build. These are non-fatal events that help

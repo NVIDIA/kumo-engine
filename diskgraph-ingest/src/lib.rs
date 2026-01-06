@@ -364,13 +364,13 @@ pub fn ingest_with_stats(
         pk_map_task_ms: ctx.pk_map_task_ms,
         build_task_ms: ctx.build_task_ms,
         edge_task_ms: ctx.edge_task_ms,
-        index_task_ms: index_wall.as_millis() as u64,
+        index_task_ms: ctx.index_task_ms,
         context_tasks: ctx.context_tasks,
         shuffle_tasks: ctx.shuffle_tasks,
         pk_map_tasks: ctx.pk_map_tasks,
         build_tasks: ctx.build_tasks,
         edge_tasks: ctx.edge_tasks,
-        index_tasks: 1,
+        index_tasks: ctx.index_tasks,
         bytes_read,
         bytes_written,
     };
@@ -414,11 +414,13 @@ struct IngestContext {
     pk_map_task_ms: u64,
     build_task_ms: u64,
     edge_task_ms: u64,
+    index_task_ms: u64,
     context_task_ms: u64,
     shuffle_tasks: u64,
     pk_map_tasks: u64,
     build_tasks: u64,
     edge_tasks: u64,
+    index_tasks: u64,
     context_tasks: u64,
 }
 
@@ -640,11 +642,13 @@ impl IngestContext {
             pk_map_task_ms: 0,
             build_task_ms: 0,
             edge_task_ms: 0,
+            index_task_ms: 0,
             context_task_ms: 0,
             shuffle_tasks: 0,
             pk_map_tasks: 0,
             build_tasks: 0,
             edge_tasks: 0,
+            index_tasks: 0,
             context_tasks: 0,
         })
     }
@@ -2184,7 +2188,7 @@ impl IngestContext {
         Ok(())
     }
 
-    fn build_index(&self, metadata: DatasetMetadata) -> Result<()> {
+    fn build_index(&mut self, metadata: DatasetMetadata) -> Result<()> {
         let root = require_local_output(&self.target)?.to_path_buf();
         let builder = GraphIndexBuilder::from_metadata(
             metadata,
@@ -2193,9 +2197,13 @@ impl IngestContext {
         );
         if let Some(progress) = self.progress.clone() {
             let adapter = IndexProgressAdapter::new(progress);
-            builder.build(Some(&adapter))?;
+            let output = builder.build(Some(&adapter))?;
+            self.index_task_ms = output.total_shard_ms;
+            self.index_tasks = output.total_shards;
         } else {
-            builder.build(None)?;
+            let output = builder.build(None)?;
+            self.index_task_ms = output.total_shard_ms;
+            self.index_tasks = output.total_shards;
         }
         Ok(())
     }
@@ -2345,9 +2353,11 @@ impl IngestContext {
         perf.context_task_ms = self.context_task_ms;
         perf.shuffle_task_ms = self.shuffle_task_ms;
         perf.edge_task_ms = self.edge_task_ms;
+        perf.index_task_ms = self.index_task_ms;
         perf.context_tasks = self.context_tasks;
         perf.shuffle_tasks = self.shuffle_tasks;
         perf.edge_tasks = self.edge_tasks;
+        perf.index_tasks = self.index_tasks;
         let mut node_counts = HashMap::new();
         for node in metadata.node_types.iter() {
             let count = node.max_id.saturating_add(1);
