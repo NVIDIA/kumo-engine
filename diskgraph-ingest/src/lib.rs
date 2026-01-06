@@ -467,6 +467,10 @@ struct IngestContext {
     edge_counts: HashMap<String, u64>,
     pk_duplicate_counts: HashMap<String, u64>,
     pk_duplicate_samples: HashMap<String, Vec<String>>,
+    key_parse_failures: u64,
+    key_lookup_failures: u64,
+    key_failure_samples: Vec<String>,
+    key_failures_by_context: HashMap<String, KeyFailureCounts>,
     output: String,
     trimmed_strings: std::sync::Arc<AtomicU64>,
     progress: Option<ProgressCallback>,
@@ -704,6 +708,10 @@ impl IngestContext {
             edge_counts: fixed_hash_map(),
             pk_duplicate_counts: fixed_hash_map(),
             pk_duplicate_samples: fixed_hash_map(),
+            key_parse_failures: 0,
+            key_lookup_failures: 0,
+            key_failure_samples: Vec::new(),
+            key_failures_by_context: fixed_hash_map(),
             output: output.to_string(),
             trimmed_strings: std::sync::Arc::new(AtomicU64::new(0)),
             progress: options.progress,
@@ -1005,25 +1013,27 @@ impl IngestContext {
             fkey: HashMap<String, Vec<TempRowWriter>>,
         }
 
+        let target = self.target.clone();
+        let num_shards = self.num_shards;
         let mut finish_writers = |file_idx: usize, mut writers: NodeTempWriters| -> Result<()> {
-            for shard in 0..self.num_shards {
+            for shard in 0..num_shards {
                 let rows = finish_temp_writer(writers.node.remove(0))?;
                 shard_rows[shard] = shard_rows[shard].saturating_add(rows);
                 let meta_path = temp_node_data_meta_path(&table.name, shard, file_idx);
-                write_temp_meta(&self.target, &meta_path, rows)?;
+                write_temp_meta(&target, &meta_path, rows)?;
             }
             if let Some(mut writers) = writers.pkey.take() {
-                for shard in 0..self.num_shards {
+                for shard in 0..num_shards {
                     let rows = finish_temp_writer(writers.remove(0))?;
                     let meta_path = temp_pkey_meta_path(&table.name, shard, file_idx);
-                    write_temp_meta(&self.target, &meta_path, rows)?;
+                    write_temp_meta(&target, &meta_path, rows)?;
                 }
             }
             for (rel, mut writers) in writers.fkey {
-                for shard in 0..self.num_shards {
+                for shard in 0..num_shards {
                     let rows = finish_temp_writer(writers.remove(0))?;
                     let meta_path = temp_fkey_meta_path(&table.name, &rel, shard, file_idx);
-                    write_temp_meta(&self.target, &meta_path, rows)?;
+                    write_temp_meta(&target, &meta_path, rows)?;
                 }
             }
             Ok(())
@@ -1064,7 +1074,8 @@ impl IngestContext {
                                 .context("missing column in batch")?;
                             cols.push(batch.column(idx).clone());
                         }
-                        let mut access = RowAccess::new(table, &cols, &self.trimmed_strings);
+                        let trimmed_strings = self.trimmed_strings.clone();
+                        let mut access = RowAccess::new(table, &cols, &trimmed_strings);
                         for row in 0..batch.num_rows() {
                             total_rows += 1;
                             access.reset(row);
@@ -1107,7 +1118,8 @@ impl IngestContext {
                                 .context("missing column in batch")?;
                             cols.push(batch.column(idx).clone());
                         }
-                        let mut access = RowAccess::new(table, &cols, &self.trimmed_strings);
+                        let trimmed_strings = self.trimmed_strings.clone();
+                        let mut access = RowAccess::new(table, &cols, &trimmed_strings);
                         for row in 0..batch.num_rows() {
                             total_rows += 1;
                             access.reset(row);
@@ -1228,7 +1240,7 @@ impl IngestContext {
     }
 
     fn write_node_row_from_access(
-        &self,
+        &mut self,
         table: &TableSpec,
         pk_idx: Option<usize>,
         rel_specs: &[(String, usize)],
@@ -1247,6 +1259,30 @@ impl IngestContext {
         key_buf: &mut Vec<u8>,
         node_data_dropped: &mut u64,
     ) -> Result<()> {
+        let mut pk_value = None;
+        let shard = if let (Some(idx), Some(pk_col)) = (pk_idx, pk_col)
+        {
+            let value = access.value_ref(idx)?;
+            let key = match key_from_value_ref(&value, pk_col) {
+                Ok(key) => key,
+                Err(_) => {
+                    let context = format!("pkey:{}.{}", table.name, pk_col.name);
+                    record_key_parse_failure_value(
+                        &mut self.key_parse_failures,
+                        &mut self.key_failure_samples,
+                        &mut self.key_failures_by_context,
+                        &context,
+                        &value,
+                    );
+                    return Ok(());
+                }
+            };
+            pk_value = Some(value);
+            let mut scratch = [0u8; 16];
+            shard_for_key(key_hash_bytes(&key, &mut scratch), self.num_shards)
+        } else {
+            (*row_id as usize) % self.num_shards
+        };
         let encoder = node_encoder
             .as_ref()
             .ok_or_else(|| anyhow!("missing node encoder"))?;
@@ -1254,24 +1290,15 @@ impl IngestContext {
             .as_mut()
             .ok_or_else(|| anyhow!("missing node scratch"))?;
         encoder.encode_row_from_access(access, node_out, scratch)?;
-        let shard = if let (Some(idx), Some(pkey_encoder), Some(pk_col)) =
-            (pk_idx, pkey_encoder.as_ref(), pk_col)
-        {
-            let pk_value = access.value_ref(idx)?;
-            let key = key_from_value_ref(&pk_value, pk_col).map_err(|_| anyhow!("pk parse"))?;
-            let mut scratch = [0u8; 16];
-            let shard = shard_for_key(key_hash_bytes(&key, &mut scratch), self.num_shards);
+        if let (Some(pkey_encoder), Some(pk_value)) = (pkey_encoder.as_ref(), pk_value.as_ref()) {
             let pkey_scratch = pkey_scratch
                 .as_mut()
                 .ok_or_else(|| anyhow!("missing pkey scratch"))?;
-            pkey_encoder.encode_row_into(std::slice::from_ref(&pk_value), pkey_out, pkey_scratch)?;
+            pkey_encoder.encode_row_into(std::slice::from_ref(pk_value), pkey_out, pkey_scratch)?;
             if let Some(writers) = pkey_writers.as_mut() {
                 write_temp_row(&mut writers[shard], pkey_out)?;
             }
-            shard
-        } else {
-            (*row_id as usize) % self.num_shards
-        };
+        }
         if node_out.len() > MAX_NODE_DATA_LEN {
             *node_data_dropped = node_data_dropped.saturating_add(1);
             write_temp_row_u16(&mut node_writers[shard], &[])?;
@@ -1285,7 +1312,20 @@ impl IngestContext {
                     .get(*rel_idx)
                     .ok_or_else(|| anyhow!("missing fk column"))?;
                 let value = access.value_ref(*rel_idx)?;
-                let key = key_from_value_ref(&value, col).map_err(|_| anyhow!("fk parse"))?;
+                let key = match key_from_value_ref(&value, col) {
+                    Ok(key) => key,
+                    Err(_) => {
+                        let context = format!("fkey:{}.{}", table.name, col.name);
+                        record_key_parse_failure_value(
+                            &mut self.key_parse_failures,
+                            &mut self.key_failure_samples,
+                            &mut self.key_failures_by_context,
+                            &context,
+                            &value,
+                        );
+                        continue;
+                    }
+                };
                 key_buf.clear();
                 write_key_to_buf(key_buf, &key)?;
                 write_temp_row(&mut writers[shard], key_buf)?;
@@ -1304,6 +1344,8 @@ impl IngestContext {
         let dst_fk_idx = column_index(table, &edge.dst_fk.column)?;
         let src_fk_col = column_spec(table, &edge.src_fk.column)?;
         let dst_fk_col = column_spec(table, &edge.dst_fk.column)?;
+        let src_context = format!("edge_fk:{}.{}", table.name, edge.src_fk.column);
+        let dst_context = format!("edge_fk:{}.{}", table.name, edge.dst_fk.column);
         let schema = table_schema(table)?;
 
         for (file_idx, path) in table.paths.iter().enumerate() {
@@ -1354,6 +1396,8 @@ impl IngestContext {
                                 dst_fk_idx,
                                 src_fk_col,
                                 dst_fk_col,
+                                &src_context,
+                                &dst_context,
                                 owned,
                                 &mut forward_writers,
                             )?;
@@ -1401,6 +1445,8 @@ impl IngestContext {
                                 dst_fk_idx,
                                 src_fk_col,
                                 dst_fk_col,
+                                &src_context,
+                                &dst_context,
                                 owned,
                                 &mut forward_writers,
                             )?;
@@ -1446,21 +1492,45 @@ impl IngestContext {
     }
 
     fn write_edge_row(
-        &self,
+        &mut self,
         src_idx: usize,
         dst_idx: usize,
         src_col: &ColumnSpec,
         dst_col: &ColumnSpec,
+        src_context: &str,
+        dst_context: &str,
         row: OwnedRow,
         forward_writers: &mut Vec<TempRowWriter>,
     ) -> Result<()> {
         let mut value_refs = Vec::new();
         row.as_value_refs_for_indices(&[src_idx], &mut value_refs);
-        let src_key = key_from_value_ref(&value_refs[0], src_col)
-            .map_err(|_| anyhow!("src key parse"))?;
+        let src_key = match key_from_value_ref(&value_refs[0], src_col) {
+            Ok(key) => key,
+            Err(_) => {
+                record_key_parse_failure_value(
+                    &mut self.key_parse_failures,
+                    &mut self.key_failure_samples,
+                    &mut self.key_failures_by_context,
+                    src_context,
+                    &value_refs[0],
+                );
+                return Ok(());
+            }
+        };
         row.as_value_refs_for_indices(&[dst_idx], &mut value_refs);
-        let dst_key = key_from_value_ref(&value_refs[0], dst_col)
-            .map_err(|_| anyhow!("dst key parse"))?;
+        let dst_key = match key_from_value_ref(&value_refs[0], dst_col) {
+            Ok(key) => key,
+            Err(_) => {
+                record_key_parse_failure_value(
+                    &mut self.key_parse_failures,
+                    &mut self.key_failure_samples,
+                    &mut self.key_failures_by_context,
+                    dst_context,
+                    &value_refs[0],
+                );
+                return Ok(());
+            }
+        };
         let mut scratch = [0u8; 16];
         let forward_shard = shard_for_key(key_hash_bytes(&src_key, &mut scratch), self.num_shards);
         let mut forward_row = Vec::new();
@@ -1685,6 +1755,7 @@ impl IngestContext {
         let root = &edge_ctx.root;
 
         for rel in &self.relationships {
+            let failure_context = format!("fkey:{}.{}", rel.src_table, rel.src_column);
             let file_count = table_by_name(&self.source, &rel.src_table)?.paths.len();
             let mut rel_total_rows = 0u64;
             for shard in 0..self.num_shards {
@@ -1699,7 +1770,13 @@ impl IngestContext {
                     rel_total_rows = rel_total_rows.saturating_add(meta.row_count);
                 }
             }
-            self.emit_progress(ProgressEvent {
+            let progress = self.progress.clone();
+            let emit_progress = |event: ProgressEvent| {
+                if let Some(cb) = &progress {
+                    cb(event);
+                }
+            };
+            emit_progress(ProgressEvent {
                 phase: ProgressPhase::EdgesPassA,
                 table: rel.name_forward.clone(),
                 shard: None,
@@ -1715,13 +1792,18 @@ impl IngestContext {
                 .cloned()
                 .unwrap_or_else(|| vec![0; self.num_shards]);
             let mut pending = 0u64;
-            for shard in 0..self.num_shards {
+            let num_shards = self.num_shards;
+            let target = self.target.clone();
+            let key_parse_failures = &mut self.key_parse_failures;
+            let key_failure_samples = &mut self.key_failure_samples;
+            let key_failures_by_context = &mut self.key_failures_by_context;
+            for shard in 0..num_shards {
                 let mut local_count = 0u64;
                 for file_idx in 0..file_count {
-                    let mut writers = Vec::with_capacity(self.num_shards);
-                    for dst_shard in 0..self.num_shards {
+                    let mut writers = Vec::with_capacity(num_shards);
+                    for dst_shard in 0..num_shards {
                         writers.push(open_temp_row_writer(
-                            &self.target,
+                            &target,
                             &temp_edge_pass_a_path(
                                 &rel.name_forward,
                                 dst_shard,
@@ -1741,7 +1823,7 @@ impl IngestContext {
                     read_temp_rows(&fkey_path, |row| {
                         pending = pending.saturating_add(1);
                         if pending >= PROGRESS_ROW_BATCH {
-                            self.emit_progress(ProgressEvent {
+                            emit_progress(ProgressEvent {
                                 phase: ProgressPhase::EdgesPassA,
                                 table: rel.name_forward.clone(),
                                 shard: None,
@@ -1751,13 +1833,24 @@ impl IngestContext {
                             });
                             pending = 0;
                         }
-                        let mut data = row;
-                        let dst_key = read_key_ref_from_buf(&mut data, src_fk_col)
-                            .map_err(|_| anyhow!("fk parse"))?;
-                        let dst_shard =
-                            shard_for_key(key_ref_hash_bytes(&dst_key, &mut scratch), self.num_shards);
                         let src_id = src_offsets[shard].saturating_add(local_count);
                         local_count = local_count.saturating_add(1);
+                        let mut data = row;
+                        let dst_key = match read_key_ref_from_buf(&mut data, src_fk_col) {
+                            Ok(key) => key,
+                            Err(_) => {
+                                record_key_parse_failure(
+                                    key_parse_failures,
+                                    key_failure_samples,
+                                    key_failures_by_context,
+                                    &failure_context,
+                                    row,
+                                );
+                                return Ok(());
+                            }
+                        };
+                        let dst_shard =
+                            shard_for_key(key_ref_hash_bytes(&dst_key, &mut scratch), num_shards);
                         row_buf.clear();
                         write_u64_to_buf(&mut row_buf, src_id);
                         reserve_key_ref(&mut row_buf, &dst_key);
@@ -1765,10 +1858,10 @@ impl IngestContext {
                         write_temp_row(&mut writers[dst_shard], &row_buf)?;
                         Ok(())
                     })?;
-                    for dst_shard in 0..self.num_shards {
+                    for dst_shard in 0..num_shards {
                         let rows = finish_temp_writer(writers.remove(0))?;
                         write_temp_meta(
-                            &self.target,
+                            &target,
                             &temp_edge_pass_a_meta_path(
                                 &rel.name_forward,
                                 dst_shard,
@@ -1781,7 +1874,7 @@ impl IngestContext {
                 }
             }
             if pending > 0 {
-                self.emit_progress(ProgressEvent {
+                emit_progress(ProgressEvent {
                     phase: ProgressPhase::EdgesPassA,
                     table: rel.name_forward.clone(),
                     shard: None,
@@ -1790,7 +1883,7 @@ impl IngestContext {
                     total: Some(rel_total_rows),
                 });
             }
-            self.emit_progress(ProgressEvent {
+            emit_progress(ProgressEvent {
                 phase: ProgressPhase::EdgesPassA,
                 table: rel.name_forward.clone(),
                 shard: None,
@@ -2512,10 +2605,6 @@ impl IngestContext {
         }
         let total_nodes = node_counts.values().sum();
         let total_edges = self.edge_counts.values().sum();
-        let key_failure_samples = Vec::new();
-        let key_failures_by_context = fixed_hash_map();
-        let key_parse_failures = 0u64;
-        let key_lookup_failures = 0u64;
         let pk_duplicate_total: u64 = self.pk_duplicate_counts.values().sum();
         let trimmed_strings = self.trimmed_strings.load(Ordering::Relaxed);
         IngestStats {
@@ -2526,10 +2615,10 @@ impl IngestContext {
             total_edges,
             node_counts,
             edge_counts: self.edge_counts.clone(),
-            key_parse_failures,
-            key_lookup_failures,
-            key_failure_samples,
-            key_failures_by_context,
+            key_parse_failures: self.key_parse_failures,
+            key_lookup_failures: self.key_lookup_failures,
+            key_failure_samples: self.key_failure_samples.clone(),
+            key_failures_by_context: self.key_failures_by_context.clone(),
             pk_duplicate_counts: self.pk_duplicate_counts.clone(),
             pk_duplicate_total,
             pk_duplicate_samples: self.pk_duplicate_samples.clone(),
@@ -3728,6 +3817,37 @@ fn format_bytes_sample(bytes: &[u8]) -> String {
     format!("0x{}", hex_encode(bytes))
 }
 
+fn format_bytes_sample_prefix(bytes: &[u8]) -> String {
+    let limit = bytes.len().min(MAX_KEY_SAMPLE_LEN);
+    let sample = format_bytes_sample(&bytes[..limit]);
+    if bytes.len() > limit {
+        format!("{sample}...")
+    } else {
+        sample
+    }
+}
+
+fn format_value_ref_sample(value: &ValueRef<'_>) -> String {
+    match value {
+        ValueRef::Null => "null".to_string(),
+        ValueRef::Int64(v) => v.to_string(),
+        ValueRef::Int32(v) => v.to_string(),
+        ValueRef::UInt64(v) => v.to_string(),
+        ValueRef::UInt32(v) => v.to_string(),
+        ValueRef::Float64(v) => v.to_string(),
+        ValueRef::Float32(v) => v.to_string(),
+        ValueRef::Bool(v) => v.to_string(),
+        ValueRef::String(v) => truncate_sample(v),
+        ValueRef::Bytes(v) => format_bytes_sample_prefix(v),
+        ValueRef::Date(v) => v.to_string(),
+        ValueRef::Timestamp { secs, nanos } => format!("{secs}.{nanos:09}"),
+        ValueRef::Decimal128(v) => v.to_string(),
+        ValueRef::Decimal256(v) => format!("0x{}", hex_encode(v)),
+        ValueRef::Float32Array(v) => format!("[{} f32]", v.len()),
+        ValueRef::Float64Array(v) => format!("[{} f64]", v.len()),
+    }
+}
+
 fn truncate_sample(input: &str) -> String {
     if input.len() <= MAX_KEY_SAMPLE_LEN {
         return input.to_string();
@@ -3750,6 +3870,38 @@ fn hex_char(v: u8) -> char {
     match v {
         0..=9 => (b'0' + v) as char,
         _ => (b'a' + (v - 10)) as char,
+    }
+}
+
+fn record_key_parse_failure(
+    total: &mut u64,
+    samples: &mut Vec<String>,
+    by_context: &mut HashMap<String, KeyFailureCounts>,
+    context: &str,
+    row: &[u8],
+) {
+    *total = total.saturating_add(1);
+    let entry = by_context.entry(context.to_string()).or_default();
+    entry.parse_failures = entry.parse_failures.saturating_add(1);
+    if samples.len() < 10 {
+        let sample = format_bytes_sample_prefix(row);
+        samples.push(format!("{context}: len={} {sample}", row.len()));
+    }
+}
+
+fn record_key_parse_failure_value(
+    total: &mut u64,
+    samples: &mut Vec<String>,
+    by_context: &mut HashMap<String, KeyFailureCounts>,
+    context: &str,
+    value: &ValueRef<'_>,
+) {
+    *total = total.saturating_add(1);
+    let entry = by_context.entry(context.to_string()).or_default();
+    entry.parse_failures = entry.parse_failures.saturating_add(1);
+    if samples.len() < 10 {
+        let sample = format_value_ref_sample(value);
+        samples.push(format!("{context}: {sample}"));
     }
 }
 

@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Result};
 use diskgraph_core::metadata::DatasetMetadata;
-use diskgraph_ingest::{ingest, Dest, IngestOptions};
+use diskgraph_ingest::{ingest, ingest_with_stats, Dest, IngestOptions};
 use diskgraph_index::graph::GraphIndexReader;
 use parquet::arrow::ArrowWriter;
 use parquet::file::properties::WriterProperties;
@@ -665,6 +665,126 @@ fn ingest_relationship_uses_dest_timestamp_sort_key() -> Result<()> {
     let reverse_rows = sum_relation_edges(&session_table, "event_session_reverse")?;
     assert_eq!(forward_rows, 2);
     assert_eq!(reverse_rows, 2);
+
+    Ok(())
+}
+
+#[test]
+fn ingest_invalid_fields_records_failures_and_builds() -> Result<()> {
+    let dir = tempdir()?;
+    let input_root = dir.path().join("input");
+    let output_root = dir.path().join("output");
+
+    write_csv(
+        &input_root.join("users.csv"),
+        &["id", "name", "created_at"],
+        &[
+            vec!["1".into(), "alice".into(), "2020-01-01T00:00:00Z".into()],
+            vec!["2".into(), "bob".into(), "not-a-time".into()],
+            vec!["bad".into(), "carol".into(), "2020-01-03T00:00:00Z".into()],
+        ],
+    )?;
+    write_csv(
+        &input_root.join("visits.csv"),
+        &["id", "user_id", "created_at"],
+        &[
+            vec!["10".into(), "1".into(), "2020-02-01T00:00:00Z".into()],
+            vec!["11".into(), "oops".into(), "2020-02-02T00:00:00Z".into()],
+            vec!["12".into(), "2".into(), "not-a-time".into()],
+        ],
+    )?;
+    write_csv(
+        &input_root.join("user_visit_edges.csv"),
+        &["src_user_id", "dst_visit_id"],
+        &[
+            vec!["1".into(), "10".into()],
+            vec!["nope".into(), "11".into()],
+            vec!["2".into(), "bad".into()],
+        ],
+    )?;
+
+    let source = serde_json::json!({
+        "dataset_name": "invalid_fields_test",
+        "tables": [
+            {
+                "name": "User",
+                "format": "csv",
+                "paths": [input_root.join("users.csv").to_string_lossy()],
+                "primary_key": "id",
+                "create_time": "created_at",
+                "columns": [
+                    {"name": "id", "source_dtype": "string", "ingested_dtype": "int64"},
+                    {"name": "name", "source_dtype": "string", "ingested_dtype": "string"},
+                    {"name": "created_at", "source_dtype": "string", "ingested_dtype": "timestamp"}
+                ]
+            },
+            {
+                "name": "Visit",
+                "format": "csv",
+                "paths": [input_root.join("visits.csv").to_string_lossy()],
+                "primary_key": "id",
+                "create_time": "created_at",
+                "columns": [
+                    {"name": "id", "source_dtype": "string", "ingested_dtype": "int64"},
+                    {"name": "user_id", "source_dtype": "string", "ingested_dtype": "int64"},
+                    {"name": "created_at", "source_dtype": "string", "ingested_dtype": "timestamp"}
+                ]
+            },
+            {
+                "name": "UserVisitEdge",
+                "format": "csv",
+                "paths": [input_root.join("user_visit_edges.csv").to_string_lossy()],
+                "edge_table": {
+                    "src_fk": {"column": "src_user_id", "ref_table": "User", "ref_column": "id"},
+                    "dst_fk": {"column": "dst_visit_id", "ref_table": "Visit", "ref_column": "id"}
+                },
+                "columns": [
+                    {"name": "src_user_id", "source_dtype": "string", "ingested_dtype": "int64"},
+                    {"name": "dst_visit_id", "source_dtype": "string", "ingested_dtype": "int64"}
+                ]
+            }
+        ],
+        "relationships": [
+            {
+                "name": "visit_user",
+                "src_table": "Visit",
+                "src_column": "user_id",
+                "dst_table": "User",
+                "dst_column": "id"
+            }
+        ]
+    });
+    let source_path = dir.path().join("source_metadata.json");
+    fs::write(&source_path, serde_json::to_vec_pretty(&source)?)?;
+
+    let (_metadata, stats) = ingest_with_stats(
+        &source_path,
+        output_root.to_str().unwrap(),
+        Dest::Local,
+        IngestOptions::default(),
+    )?;
+
+    let reader = GraphIndexReader::open(&output_root.join("index_metadata.json"), &output_root)?;
+    let user_table = reader.table("User").unwrap();
+    let visit_table = reader.table("Visit").unwrap();
+    assert_eq!(user_table.node_count(), 2);
+    assert_eq!(visit_table.node_count(), 3);
+
+    assert!(stats.key_parse_failures >= 4);
+    for context in [
+        "pkey:User.id",
+        "fkey:Visit.user_id",
+        "edge_fk:UserVisitEdge.src_user_id",
+        "edge_fk:UserVisitEdge.dst_visit_id",
+    ] {
+        let count = stats
+            .key_failures_by_context
+            .get(context)
+            .map(|c| c.parse_failures)
+            .unwrap_or(0);
+        assert!(count > 0);
+    }
+    assert!(!stats.key_failure_samples.is_empty());
 
     Ok(())
 }
