@@ -250,13 +250,8 @@ fn main() -> Result<()> {
 }
 
 fn explore_command_hint(dest: &DestArg, output: &str) -> String {
-    let script = match dest {
-        DestArg::Local => "explore_local.sh",
-        DestArg::S3 => "explore_s3.sh",
-        DestArg::Gcs => "explore_gcs.sh",
-        DestArg::Adls => "explore_adls.sh",
-    };
-    format!("./diskgraph-index/scripts/{} {}", script, output)
+    let _ = dest;
+    format!("./diskgraph-index/scripts/explore_local.sh {}", output)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]

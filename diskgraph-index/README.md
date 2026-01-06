@@ -139,9 +139,7 @@ Steps:
 
 ## Shard explorer (TUI)
 
-`cargo run -p diskgraph-index --bin explore -- <path>` opens a REPL to inspect a graph built from Parquet. It streams the Parquet shards through `GraphIndexBuilder` into a temp cache derived from the source path, and reuses that cache within the same run if already present. Expected layout matches the massive generator output: `index_metadata.json` and `edges_<relation>.parquet` under the provided prefix.
-
-Profiling: `--profile [base]` writes `base.svg` and `base.pb` (defaults to `explore-profile`).
+`cargo run -p diskgraph-index --bin explore -- <path>` opens a REPL to inspect a pre-built index. Expected layout includes `index_metadata.json` plus `nodes/` and `edges/` shards.
 
 Commands inside the REPL:
 - `tables` — list node types with shard and node counts.
@@ -152,8 +150,8 @@ Commands inside the REPL:
 - `benchmarkall <threads> [duration]` — run a 20s random lookup benchmark across all tables (round robin).
 - `quit` / `exit` / `Ctrl+D` — leave the explorer.
 
-Helper scripts wrap auth/env checks:
-- `scripts/explore_local.sh [-p] /path/to/shard` (`-p` writes `./explore-profile.svg` and `./explore-profile.pb`)
+Helper script:
+- `scripts/explore_local.sh /path/to/index`
 
 ## Expectations and assumptions
 - Input Parquet shards are already sorted:

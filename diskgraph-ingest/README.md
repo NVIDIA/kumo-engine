@@ -181,7 +181,7 @@ Flags:
 - `--output`: output directory for `index_metadata.json` and parquet files.
 - `--dest`: must be `local` (index build requires local output).
 - `--mapping`: `hash|sorted` (primary key map strategy).
-- `--profile [base]`: enable CPU profiling and emit `*-profile.pb`/`*-profile.svg`.
+- `--profile [base]`: enable CPU profiling and emit `*-profile.pb`/`*-profile.svg` (ingest only; explore no longer supports profiling).
 
 Helper scripts (release mode):
 - `scripts/ingest_local.sh`

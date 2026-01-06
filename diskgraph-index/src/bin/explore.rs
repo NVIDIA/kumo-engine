@@ -1,21 +1,13 @@
 //! Interactive shard explorer for diskgraph-index.
 //!
-//! Supports local graphs by building Parquet shards through `GraphIndexBuilder`
-//! into a temp cache and opening a `GraphIndexReader`. Provides a simple REPL
-//! for inspecting edge lists by node id.
+//! Supports local graphs by opening a pre-built index and providing a simple
+//! REPL for inspecting edge lists by node id.
 
 use anyhow::{anyhow, Context, Result};
 use diskgraph_core::metadata::DatasetMetadata;
-use diskgraph_index::builder::IndexBuildError;
-use diskgraph_index::graph::{
-    GraphBuildProgress, GraphBuildStage, GraphIndexBuilder, GraphIndexReader, GraphProgressSink,
-    TableReader,
-};
+use diskgraph_index::graph::{GraphIndexReader, TableReader};
 use diskgraph_index::layout::{EDGES_FILENAME, OFFSETS_FILENAME};
 use diskgraph_rowpack::{ColumnEncoding, DecimalStorage, FloatStorage, RowPackContext, StringEncoding};
-use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
-use pprof::protos::Message;
-use pprof::ProfilerGuard;
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
 use serde::Deserialize;
@@ -23,7 +15,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Write, IsTerminal};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Clone, Debug)]
@@ -124,17 +116,8 @@ struct BuildStatsReport {
 
 fn main() -> Result<()> {
     let mut args = std::env::args().skip(1).peekable();
-    let mut profile_out_base: Option<PathBuf> = None;
     let mut source_str: Option<String> = None;
     while let Some(arg) = args.next() {
-        if arg == "--profile" {
-            let base = match args.peek() {
-                Some(next) if !next.starts_with("--") => args.next().unwrap(),
-                _ => "explore-profile".to_string(),
-            };
-            profile_out_base = Some(PathBuf::from(base));
-            continue;
-        }
         if arg.starts_with("--") {
             return Err(anyhow!("unknown flag: {arg}"));
         }
@@ -143,81 +126,31 @@ fn main() -> Result<()> {
         }
     }
     let source_str = source_str.ok_or_else(|| {
-        anyhow!(
-            "usage: explore [--profile [base]] <source> (local path)"
-        )
+        anyhow!("usage: explore <source> (local path)")
     })?;
-    let profile_enabled = profile_out_base.is_some();
-    if profile_enabled && cfg!(debug_assertions) && cfg!(target_arch = "aarch64") {
-        return Err(anyhow!(
-            "pprof profiling in debug builds can panic on aarch64; rerun with `--release`"
-        ));
-    }
-    let _guard = profile_out_base
-        .as_ref()
-        .map(|_| ProfilerGuard::new(500))
-        .transpose()
-        .context("start profiler")?;
-    let run_result = run_explore(&source_str, profile_enabled);
-    if let Some(guard) = _guard.as_ref() {
-        let report = guard.report().build().context("build profile report")?;
-        if let Some(base) = profile_out_base.as_ref() {
-            let svg_path = PathBuf::from(format!("{}.svg", base.display()));
-            let pb_path = PathBuf::from(format!("{}.pb", base.display()));
-            let file = fs::File::create(&svg_path).context("create profile output")?;
-            report
-                .flamegraph(file)
-                .context("write flamegraph profile")?;
-            println!("Wrote profile to {}", svg_path.display());
-            let profile = report.pprof().context("build pprof profile")?;
-            let mut file = fs::File::create(&pb_path).context("create pprof output")?;
-            let bytes = profile.encode_to_vec();
-            file.write_all(&bytes).context("write pprof profile")?;
-            println!("Wrote pprof profile to {}", pb_path.display());
-        }
-    }
-    match run_result {
-        Ok(()) => Ok(()),
-        Err(err) => {
-            let aborted = err
-                .downcast_ref::<IndexBuildError>()
-                .map(|e| matches!(e, IndexBuildError::Aborted))
-                .unwrap_or(false);
-            if aborted {
-                println!("Profile aborted.");
-                Ok(())
-            } else {
-                Err(err)
-            }
-        }
-    }
+    run_explore(&source_str)
 }
 
-fn run_explore(source_str: &str, profile_enabled: bool) -> Result<()> {
+fn run_explore(source_str: &str) -> Result<()> {
     let source = parse_source(source_str)?;
-    let tmp = cache_tempdir().context("create cache tempdir")?;
     let load_start = std::time::Instant::now();
     let (metadata, index_root) = match &source {
         Source::Local(p) => {
-            if p.is_file() && p.file_name().map(|n| n == "index_metadata.json").unwrap_or(false) {
+            let (root, meta_path) = if p.is_file()
+                && p.file_name().map(|n| n == "index_metadata.json").unwrap_or(false)
+            {
                 let root = p.parent().unwrap_or(p).to_path_buf();
-                if is_indexed_graph(&root) {
-                    let metadata: DatasetMetadata =
-                        serde_json::from_slice(&fs::read(p).context("read index_metadata.json")?)
-                            .context("parse index_metadata.json")?;
-                    (metadata, root)
-                } else {
-                    build_from_local_dataset(&root, tmp.path())?
-                }
-            } else if is_indexed_graph(p) {
-                let metadata: DatasetMetadata = serde_json::from_slice(
-                    &fs::read(p.join("index_metadata.json")).context("read index_metadata.json")?,
-                )
-                .context("parse index_metadata.json")?;
-                (metadata, p.clone())
+                (root, p.to_path_buf())
             } else {
-                build_from_local_dataset(p, tmp.path())?
+                (p.to_path_buf(), p.join("index_metadata.json"))
+            };
+            if !is_indexed_graph(&root) {
+                return Err(anyhow!("expected a pre-built index at {}", root.display()));
             }
+            let metadata: DatasetMetadata =
+                serde_json::from_slice(&fs::read(&meta_path).context("read index_metadata.json")?)
+                    .context("parse index_metadata.json")?;
+            (metadata, root)
         }
     };
     let elapsed = load_start.elapsed().as_secs_f64();
@@ -266,208 +199,8 @@ fn run_explore(source_str: &str, profile_enabled: bool) -> Result<()> {
         .map(|n| n.name.clone())
         .unwrap_or_else(|| "unknown".to_string());
     print_header(&metadata, &reader, &default_table);
-    if profile_enabled {
-        let mut offsets_size = 0u64;
-        let mut edges_size = 0u64;
-        let mut nodes = 0u64;
-        let mut edges = 0u64;
-        for table in reader.tables() {
-            for idx in 0..table.shard_count() {
-                if let Some(shard) = table.shard(idx) {
-                    offsets_size += shard.offsets_len();
-                    edges_size += shard.edges_len();
-                    nodes += shard.header().nodes;
-                    edges += shard.edge_count();
-                }
-            }
-        }
-        let bytes_total = offsets_size + edges_size;
-        let bps = bytes_total as f64 / elapsed.max(0.0001);
-        let nps = nodes as f64 / elapsed.max(0.0001);
-        let eps = edges as f64 / elapsed.max(0.0001);
-        println!("Profile mode summary:");
-        println!("  Nodes: {}", format_number(nodes));
-        println!("  Edges: {}", format_number(edges));
-        println!("  Time: {:.2}s", elapsed);
-        println!("  Data: {:.2} GB", bytes_total as f64 / (1024.0 * 1024.0 * 1024.0));
-        println!("  Throughput: {:.2} MB/s", bps / (1024.0 * 1024.0));
-        println!("  Nodes/s: {}", format_number(nps.round() as u64));
-        println!("  Edges/s: {}", format_number(eps.round() as u64));
-        return Ok(());
-    }
     repl(reader, default_table, index_root)?;
     Ok(())
-}
-
-fn copy_rowpack_contexts_from_local(
-    metadata: &DatasetMetadata,
-    source_root: &Path,
-    cache_root: &Path,
-) -> Result<()> {
-    for node in &metadata.node_types {
-        let compression = match &node.node_data_compression {
-            Some(compression) if compression.codec == "rowpack" => compression,
-            _ => continue,
-        };
-        if compression.context_path.is_empty() {
-            return Err(anyhow!("rowpack context_path is empty for {}", node.name));
-        }
-        let ctx_path = Path::new(&compression.context_path);
-        let src = source_root.join(ctx_path);
-        let dst = cache_root.join(ctx_path);
-        if dst.exists() {
-            continue;
-        }
-        if let Some(parent) = dst.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        fs::copy(&src, &dst)
-            .with_context(|| format!("copy rowpack context {}", src.display()))?;
-    }
-    Ok(())
-}
-
-fn copy_optional_local_file(source_root: &Path, filename: &str, cache_root: &Path) -> Result<bool> {
-    let src = source_root.join(filename);
-    if !src.exists() {
-        return Ok(false);
-    }
-    let dst = cache_root.join(filename);
-    if dst.exists() {
-        return Ok(true);
-    }
-    if let Some(parent) = dst.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::copy(&src, &dst)
-        .with_context(|| format!("copy {}", src.display()))?;
-    Ok(true)
-}
-
-fn cache_tempdir() -> Result<tempfile::TempDir> {
-    if let Some(root) = cache_root_dir() {
-        tempfile::Builder::new()
-            .prefix("diskgraph-explore-")
-            .tempdir_in(root)
-            .context("create tempdir in /mnt/localssd")
-    } else {
-        tempfile::Builder::new()
-            .prefix("diskgraph-explore-")
-            .tempdir()
-            .context("create tempdir in system temp")
-    }
-}
-
-fn cache_root_dir() -> Option<PathBuf> {
-    let root = PathBuf::from("/mnt/localssd/diskgraph-index-cache");
-    if root.exists() {
-        return Some(root);
-    }
-    if let Some(parent) = root.parent() {
-        if parent.exists() && fs::create_dir_all(&root).is_ok() {
-            return Some(root);
-        }
-    }
-    None
-}
-
-fn bar_style() -> ProgressStyle {
-    ProgressStyle::with_template("{msg} {bar:40.cyan/blue} {percent}% {prefix} ({eta})")
-        .unwrap_or_else(|_| ProgressStyle::default_bar())
-}
-
-fn spinner_style() -> ProgressStyle {
-    ProgressStyle::with_template("{spinner} {msg}")
-        .unwrap_or_else(|_| ProgressStyle::default_spinner())
-}
-
-struct GraphProgressReporter {
-    multi: Arc<MultiProgress>,
-    bars: Mutex<HashMap<String, ProgressBar>>,
-    global: ProgressBar,
-    total_nodes: u64,
-    shard_progress: Mutex<HashMap<String, u64>>,
-}
-
-impl GraphProgressReporter {
-    fn new(multi: Arc<MultiProgress>, total_nodes: u64) -> Self {
-        let global = multi.add(ProgressBar::new(total_nodes));
-        global.set_style(bar_style());
-        global.set_message("Overall nodes");
-        global.set_prefix(format!("0 / {}", format_count(total_nodes)));
-        Self {
-            multi,
-            bars: Mutex::new(HashMap::new()),
-            global,
-            total_nodes,
-            shard_progress: Mutex::new(HashMap::new()),
-        }
-    }
-
-    fn bar_for(&self, key: &str) -> ProgressBar {
-        let mut bars = self.bars.lock().unwrap();
-        if let Some(pb) = bars.get(key) {
-            return pb.clone();
-        }
-        let pb = self.multi.insert_before(&self.global, ProgressBar::new(0));
-        pb.set_style(spinner_style());
-        pb.set_message(format!("Building {key}"));
-        bars.insert(key.to_string(), pb.clone());
-        pb
-    }
-
-    fn finish_bar(&self, key: &str) {
-        let mut bars = self.bars.lock().unwrap();
-        if let Some(pb) = bars.remove(key) {
-            pb.finish_with_message(format!("Built {key}"));
-        }
-    }
-}
-
-impl GraphProgressSink for GraphProgressReporter {
-    fn report(&self, update: GraphBuildProgress) {
-        match update.stage {
-            GraphBuildStage::BuildShard { shard } => {
-                let pb = self.bar_for(shard.as_ref());
-                pb.set_message(format!("Building {shard}"));
-                if let Some(total) = update.total {
-                    pb.set_style(bar_style());
-                    pb.set_length(total);
-                    pb.set_position(update.current.min(total));
-                    pb.set_prefix(format!(
-                        "{} / {}",
-                        format_count(update.current),
-                        format_count(total),
-                    ));
-                } else {
-                    pb.set_style(spinner_style());
-                    pb.tick();
-                }
-                let mut shard_progress = self.shard_progress.lock().unwrap();
-                shard_progress.insert(shard.as_ref().to_string(), update.current);
-                let total_done: u64 = shard_progress.values().sum();
-                self.global.set_position(total_done.min(self.total_nodes));
-                self.global.set_prefix(format!(
-                    "{} / {}",
-                    format_count(total_done),
-                    format_count(self.total_nodes),
-                ));
-            }
-            GraphBuildStage::Complete { shard } => {
-                if let Some(total) = update.total {
-                    let mut shard_progress = self.shard_progress.lock().unwrap();
-                    shard_progress.insert(shard.as_ref().to_string(), total);
-                }
-                self.finish_bar(shard.as_ref());
-            }
-        }
-    }
-}
-
-fn make_graph_progress_handler(total_nodes: u64) -> (Arc<MultiProgress>, GraphProgressReporter) {
-    let multi = Arc::new(MultiProgress::new());
-    let reporter = GraphProgressReporter::new(Arc::clone(&multi), total_nodes);
-    (multi, reporter)
 }
 
 fn format_bytes(value: u64) -> String {
@@ -516,17 +249,6 @@ fn format_number(value: u64) -> String {
     out.chars().rev().collect()
 }
 
-fn start_spinner(message: &str) -> ProgressBar {
-    let pb = ProgressBar::new_spinner();
-    pb.set_style(
-        ProgressStyle::with_template("{spinner} {msg}")
-            .unwrap_or_else(|_| ProgressStyle::default_spinner()),
-    );
-    pb.set_message(message.to_string());
-    pb.enable_steady_tick(std::time::Duration::from_millis(120));
-    pb
-}
-
 fn is_indexed_graph(dir: &Path) -> bool {
     let meta_path = dir.join("index_metadata.json");
     if !meta_path.exists() || !dir.join("nodes").exists() {
@@ -554,56 +276,6 @@ fn is_indexed_graph(dir: &Path) -> bool {
         }
     }
     true
-}
-
-fn sanitize_cache_name(input: &str) -> String {
-    input
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
-        .collect()
-}
-
-fn build_from_local_dataset(
-    source: &Path,
-    cache_root: &Path,
-) -> Result<(DatasetMetadata, PathBuf)> {
-    let meta_path = source.join("index_metadata.json");
-    let meta_spinner = start_spinner("Loading index_metadata.json");
-    let meta_bytes = fs::read(&meta_path).context("read index_metadata.json")?;
-    meta_spinner.finish_with_message("Loaded index_metadata.json");
-    let metadata: DatasetMetadata =
-        serde_json::from_slice(&meta_bytes).context("parse index_metadata.json")?;
-
-    let safe_prefix = format!("local_{}", sanitize_cache_name(&source.display().to_string()));
-    let cache_dir = cache_root.join(safe_prefix);
-    let cached_meta = cache_dir.join("index_metadata.json");
-    if cache_dir.join("nodes").exists() && cached_meta.exists() {
-        copy_rowpack_contexts_from_local(&metadata, source, &cache_dir)
-            .context("copy rowpack contexts")?;
-        copy_optional_local_file(source, "ingest_stats.json", &cache_dir)
-            .context("copy ingest_stats.json")?;
-        return Ok((metadata, cache_dir));
-    }
-    fs::create_dir_all(&cache_dir)?;
-
-    let builder = GraphIndexBuilder::from_metadata_path(&meta_path, &cache_dir)?;
-    let total_nodes = builder
-        .metadata()
-        .node_types
-        .iter()
-        .flat_map(|t| t.shards.iter())
-        .map(|s| s.max_id.saturating_sub(s.min_id).saturating_add(1))
-        .sum::<u64>();
-    let (_mp, progress_reporter) = make_graph_progress_handler(total_nodes);
-    builder
-        .build(Some(&progress_reporter))
-        .context("build graph from parquet")?;
-    copy_rowpack_contexts_from_local(&metadata, source, &cache_dir)
-        .context("copy rowpack contexts")?;
-    copy_optional_local_file(source, "ingest_stats.json", &cache_dir)
-        .context("copy ingest_stats.json")?;
-    fs::write(&cached_meta, serde_json::to_vec_pretty(&metadata)?)?;
-    Ok((metadata, cache_dir))
 }
 
 fn repl(reader: Arc<GraphIndexReader>, default_table: String, index_root: PathBuf) -> Result<()> {
