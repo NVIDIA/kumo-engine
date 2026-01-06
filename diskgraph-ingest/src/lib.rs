@@ -2033,8 +2033,6 @@ impl IngestContext {
             );
             for dst_shard in 0..self.num_shards {
                 let mut reverse_edges = Vec::new();
-                let mut reverse_sorted = true;
-                let mut reverse_prev_src: Option<u64> = None;
                 let mut count = 0u64;
                 for src_shard in 0..self.num_shards {
                     for file_idx in 0..info.file_count {
@@ -2081,12 +2079,6 @@ impl IngestContext {
                                 .copied()
                                 .unwrap_or(0)
                                 .saturating_add(dst_local);
-                            if let Some(prev) = reverse_prev_src {
-                                if dst_id < prev {
-                                    reverse_sorted = false;
-                                }
-                            }
-                            reverse_prev_src = Some(dst_id);
                             reverse_edges.push(EdgeRecord {
                                 src_id: dst_id,
                                 dst_id: src_id,
@@ -2124,7 +2116,7 @@ impl IngestContext {
                     &out_path,
                     reverse_spec,
                     reverse_edges,
-                    reverse_sorted,
+                    false,
                 )?;
                 let entry = self
                     .edge_counts
@@ -2240,8 +2232,6 @@ impl IngestContext {
                     let reserve = usize::try_from(reserve).unwrap_or(usize::MAX);
                     forward_edges.reserve(reserve);
                 }
-                let mut forward_sorted = true;
-                let mut forward_prev_src: Option<u64> = None;
                 let mut count = 0u64;
                 for dst_shard in 0..self.num_shards {
                     for file_idx in 0..info.file_count {
@@ -2267,12 +2257,6 @@ impl IngestContext {
                             let mut data = row;
                             let src_id = read_u64_from_buf(&mut data)?;
                             let dst_id = read_u64_from_buf(&mut data)?;
-                            if let Some(prev) = forward_prev_src {
-                                if src_id < prev {
-                                    forward_sorted = false;
-                                }
-                            }
-                            forward_prev_src = Some(src_id);
                             forward_edges.push(EdgeRecord {
                                 src_id,
                                 dst_id,
@@ -2295,7 +2279,7 @@ impl IngestContext {
                     &out_path,
                     forward_spec,
                     forward_edges,
-                    forward_sorted,
+                    false,
                 )?;
                 let entry = self
                     .edge_counts
