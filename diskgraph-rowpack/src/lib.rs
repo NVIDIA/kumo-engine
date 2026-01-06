@@ -2957,6 +2957,7 @@ pub struct RowPackDecoder {
 #[derive(Default)]
 pub struct RowPackDecodeScratch {
     string: String,
+    bytes: Vec<u8>,
     float32: Vec<f32>,
     float64: Vec<f64>,
 }
@@ -3427,13 +3428,12 @@ fn decode_value_ref<'a>(
             Ok(ValueRef::String(&scratch.string))
         }
         ColumnEncoding::String { encoding } => {
-            let value = if tag == 2 {
-                decode_string_fallback(data)?
-            } else {
-                decode_string(data, encoding, dict)?
-            };
             scratch.string.clear();
-            scratch.string.push_str(&value);
+            if tag == 2 {
+                decode_string_fallback_into(data, &mut scratch.string)?;
+            } else {
+                decode_string_into(data, encoding, dict, scratch)?;
+            }
             Ok(ValueRef::String(&scratch.string))
         }
         ColumnEncoding::FloatArray { storage } => {
@@ -4010,6 +4010,154 @@ fn decode_string(
     }
 }
 
+fn decode_string_into(
+    data: &mut &[u8],
+    encoding: &StringEncoding,
+    dict: Option<&Vec<Vec<u8>>>,
+    scratch: &mut RowPackDecodeScratch,
+) -> Result<()> {
+    scratch.string.clear();
+    match encoding {
+        StringEncoding::Raw => {
+            let len = read_varint(data)? as usize;
+            if len > MAX_FIELD_BYTES {
+                return Err(anyhow!("rowpack string too large"));
+            }
+            if data.len() < len {
+                return Err(anyhow!("rowpack string truncated"));
+            }
+            let (head, tail) = data.split_at(len);
+            *data = tail;
+            push_utf8_lossy(&mut scratch.string, head);
+            Ok(())
+        }
+        StringEncoding::Dict { .. } => {
+            let idx = read_varint(data)? as usize;
+            if let Some(values) = dict {
+                if let Some(bytes) = values.get(idx) {
+                    push_utf8_lossy(&mut scratch.string, bytes);
+                    Ok(())
+                } else {
+                    decode_string_fallback_into(data, &mut scratch.string)
+                }
+            } else {
+                Err(anyhow!("rowpack missing dict"))
+            }
+        }
+        StringEncoding::Alphabet { alphabet } => {
+            let len = read_varint(data)? as usize;
+            if len > MAX_FIELD_BYTES {
+                return Err(anyhow!("rowpack string too large"));
+            }
+            let bits = alphabet_bits(alphabet.len());
+            let total_bits = len.saturating_mul(bits as usize);
+            let byte_len = (total_bits + 7) / 8;
+            if data.len() < byte_len {
+                return Err(anyhow!("rowpack string truncated"));
+            }
+            let (head, tail) = data.split_at(byte_len);
+            *data = tail;
+            let mut reader = BitReader::new(head);
+            scratch.bytes.clear();
+            scratch.bytes.reserve(len);
+            for _ in 0..len {
+                let idx = reader.read_bits(bits)? as usize;
+                let byte = alphabet
+                    .get(idx)
+                    .ok_or_else(|| anyhow!("rowpack alphabet index out of range"))?;
+                scratch.bytes.push(*byte);
+            }
+            push_utf8_lossy(&mut scratch.string, &scratch.bytes);
+            Ok(())
+        }
+        StringEncoding::Bpe { dict } => {
+            let token_count = read_varint(data)? as usize;
+            if token_count > MAX_ARRAY_LEN {
+                return Err(anyhow!("rowpack bpe token count too large"));
+            }
+            let bits = bpe_token_bits(dict.len());
+            let total_bits = token_count.saturating_mul(bits as usize);
+            let byte_len = (total_bits + 7) / 8;
+            if data.len() < byte_len {
+                return Err(anyhow!("rowpack bpe truncated"));
+            }
+            let (head, tail) = data.split_at(byte_len);
+            *data = tail;
+            let mut reader = BitReader::new(head);
+            scratch.bytes.clear();
+            for _ in 0..token_count {
+                let token = reader.read_bits_u32(bits)? as usize;
+                if token < 256 {
+                    scratch.bytes.push(token as u8);
+                } else {
+                    let idx = token - 256;
+                    let bytes = dict
+                        .get(idx)
+                        .ok_or_else(|| anyhow!("rowpack bpe token out of range"))?;
+                    scratch.bytes.extend_from_slice(bytes);
+                }
+                if scratch.bytes.len() > MAX_FIELD_BYTES {
+                    return Err(anyhow!("rowpack string too large"));
+                }
+            }
+            push_utf8_lossy(&mut scratch.string, &scratch.bytes);
+            Ok(())
+        }
+        StringEncoding::NumericInt => {
+            let value = zigzag_decode(read_varint(data)?);
+            use core::fmt::Write;
+            let _ = write!(scratch.string, "{value}");
+            Ok(())
+        }
+        StringEncoding::NumericScaled => {
+            let value = zigzag_decode(read_varint(data)?);
+            let scale = read_varint(data)? as u32;
+            if scale > MAX_NUMERIC_SCALE {
+                return Err(anyhow!("rowpack numeric scale too large"));
+            }
+            scratch
+                .string
+                .push_str(&format_scaled_i64(value, scale));
+            Ok(())
+        }
+        StringEncoding::Hex { len, dashed, upper } => {
+            let byte_len = len / 2;
+            if data.len() < byte_len {
+                return Err(anyhow!("rowpack hex truncated"));
+            }
+            let (head, tail) = data.split_at(byte_len);
+            *data = tail;
+            scratch.string.push_str(&decode_hex(head, *len, *dashed, *upper));
+            Ok(())
+        }
+        StringEncoding::IsoTimestamp { fmt } => {
+            let secs = zigzag_decode(read_varint(data)?);
+            let nanos = read_varint(data)? as u32;
+            scratch.string.push_str(&format_iso(*fmt, secs, nanos));
+            Ok(())
+        }
+        StringEncoding::Lz4 => {
+            let raw_len = read_varint(data)? as usize;
+            if raw_len > MAX_FIELD_BYTES {
+                return Err(anyhow!("rowpack lz4 too large"));
+            }
+            let compressed_len = read_varint(data)? as usize;
+            if data.len() < compressed_len {
+                return Err(anyhow!("rowpack lz4 truncated"));
+            }
+            let (head, tail) = data.split_at(compressed_len);
+            *data = tail;
+            let decoded = lz4_flex::block::decompress(head, raw_len)
+                .map_err(|_| anyhow!("rowpack lz4 decode failed"))?;
+            if decoded.len() != raw_len || decoded.len() > MAX_FIELD_BYTES {
+                return Err(anyhow!("rowpack lz4 too large"));
+            }
+            push_utf8_lossy(&mut scratch.string, &decoded);
+            Ok(())
+        }
+    }
+}
+
 fn decode_string_fallback(data: &mut &[u8]) -> Result<String> {
     let len = read_varint(data)? as usize;
     if len > MAX_FIELD_BYTES {
@@ -4021,6 +4169,29 @@ fn decode_string_fallback(data: &mut &[u8]) -> Result<String> {
     let (head, tail) = data.split_at(len);
     *data = tail;
     Ok(String::from_utf8_lossy(head).to_string())
+}
+
+fn decode_string_fallback_into(data: &mut &[u8], out: &mut String) -> Result<()> {
+    let len = read_varint(data)? as usize;
+    if len > MAX_FIELD_BYTES {
+        return Err(anyhow!("rowpack string fallback too large"));
+    }
+    if data.len() < len {
+        return Err(anyhow!("rowpack string fallback truncated"));
+    }
+    let (head, tail) = data.split_at(len);
+    *data = tail;
+    out.clear();
+    push_utf8_lossy(out, head);
+    Ok(())
+}
+
+fn push_utf8_lossy(out: &mut String, bytes: &[u8]) {
+    if let Ok(text) = std::str::from_utf8(bytes) {
+        out.push_str(text);
+    } else {
+        out.push_str(&String::from_utf8_lossy(bytes));
+    }
 }
 
 #[cfg(test)]
