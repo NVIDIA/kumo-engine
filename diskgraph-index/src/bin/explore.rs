@@ -158,36 +158,29 @@ fn run_explore(source_str: &str) -> Result<()> {
         .context("open graph reader")?;
 
     println!("Loaded graph from {}", source_str);
-    if elapsed > 0.0 {
-        let mut offsets_size = 0u64;
-        let mut edges_size = 0u64;
-        let mut nodes = 0u64;
-        let mut edges = 0u64;
-        for table in reader.tables() {
-            for idx in 0..table.shard_count() {
-                if let Some(shard) = table.shard(idx) {
-                    offsets_size += shard.offsets_len();
-                    edges_size += shard.edges_len();
-                    nodes += shard.header().nodes;
-                    edges += shard.edge_count();
-                }
+    let mut offsets_size = 0u64;
+    let mut edges_size = 0u64;
+    let mut nodes = 0u64;
+    let mut edges = 0u64;
+    for table in reader.tables() {
+        for idx in 0..table.shard_count() {
+            if let Some(shard) = table.shard(idx) {
+                offsets_size += shard.offsets_len();
+                edges_size += shard.edges_len();
+                nodes += shard.header().nodes;
+                edges += shard.edge_count();
             }
         }
-        let bytes_total = offsets_size + edges_size;
-        let bps = bytes_total as f64 / elapsed;
-        let nps = nodes as f64 / elapsed;
-        let eps = edges as f64 / elapsed;
-        let duration_display = format_duration_seconds(elapsed);
-        println!(
-            "Load stats: {}, {}, {}/s, {} nodes/s, {} edges/s, {} (nodes+edges)/s",
-            duration_display,
-            format_bytes(bytes_total),
-            format_bytes(bps.round() as u64),
-            format_number(nps.round() as u64),
-            format_number(eps.round() as u64),
-            format_number(((nodes + edges) as f64 / elapsed).round() as u64),
-        );
     }
+    let bytes_total = offsets_size + edges_size;
+    let duration_display = format_duration_seconds(elapsed);
+    println!(
+        "Load stats: {}, {} bytes, {} nodes, {} edges",
+        duration_display,
+        format_bytes(bytes_total),
+        format_number(nodes),
+        format_number(edges),
+    );
     let reader = Arc::new(reader);
     if metadata.node_types.is_empty() {
         println!("No tables found in metadata.");
