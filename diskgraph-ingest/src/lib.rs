@@ -2198,6 +2198,7 @@ impl IngestContext {
 
         for info in &infos {
             let mut total_rows = 0u64;
+            let mut src_shard_rows = vec![0u64; self.num_shards];
             for src_shard in 0..self.num_shards {
                 for dst_shard in 0..self.num_shards {
                     for file_idx in 0..info.file_count {
@@ -2208,6 +2209,8 @@ impl IngestContext {
                             file_idx,
                         )))?;
                         total_rows = total_rows.saturating_add(meta.row_count);
+                        src_shard_rows[src_shard] =
+                            src_shard_rows[src_shard].saturating_add(meta.row_count);
                     }
                 }
             }
@@ -2232,6 +2235,11 @@ impl IngestContext {
             let mut pending = 0u64;
             for src_shard in 0..self.num_shards {
                 let mut forward_edges = Vec::new();
+                let reserve = src_shard_rows.get(src_shard).copied().unwrap_or(0);
+                if reserve > 0 {
+                    let reserve = usize::try_from(reserve).unwrap_or(usize::MAX);
+                    forward_edges.reserve(reserve);
+                }
                 let mut forward_sorted = true;
                 let mut forward_prev_src: Option<u64> = None;
                 let mut count = 0u64;
