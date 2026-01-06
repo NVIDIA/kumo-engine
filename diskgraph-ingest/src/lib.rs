@@ -2206,11 +2206,7 @@ impl IngestContext {
             for shard in 0..self.num_shards {
                 let count = shard_rows.get(shard).copied().unwrap_or(0);
                 let min_id = shard_offsets.get(shard).copied().unwrap_or(0);
-                let max_id = if count == 0 {
-                    min_id.saturating_sub(1)
-                } else {
-                    min_id.saturating_add(count.saturating_sub(1))
-                };
+                let (min_id, max_id) = shard_range(min_id, count);
                 let mut node_data_paths = Vec::with_capacity(file_count);
                 for file_idx in 0..file_count {
                     node_data_paths.push(temp_node_data_path(&table.name, shard, file_idx));
@@ -2278,11 +2274,7 @@ impl IngestContext {
             for shard in 0..self.num_shards {
                 let min_id = src_shards.get(shard).copied().unwrap_or(0);
                 let count = src_counts.get(shard).copied().unwrap_or(0);
-                let max_id = if count == 0 {
-                    min_id.saturating_sub(1)
-                } else {
-                    min_id.saturating_add(count.saturating_sub(1))
-                };
+                let (min_id, max_id) = shard_range(min_id, count);
                 shards.push(EdgeShardMetadata {
                     path: temp_edge_shard_output_path(&rel.name, shard),
                     src_min_id: min_id,
@@ -2398,6 +2390,14 @@ fn edge_id_width(max_id: u64) -> u8 {
     let bits = 64 - max_id.leading_zeros();
     let bytes = ((bits + 7) / 8).max(1) as u8;
     bytes.min(8)
+}
+
+fn shard_range(min_id: u64, count: u64) -> (u64, u64) {
+    if count == 0 {
+        return (1, 0);
+    }
+    let max_id = min_id.saturating_add(count.saturating_sub(1));
+    (min_id, max_id)
 }
 
 fn edge_binary_spec(
