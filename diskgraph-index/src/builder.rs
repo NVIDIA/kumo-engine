@@ -733,7 +733,8 @@ pub(crate) fn shard_node_count(node_meta: &NodeTypeMetadata, shard_index: usize)
 }
 
 enum EdgeSubStream {
-    Binary(BinaryEdgeSubStream),
+    BinaryNoSort(BinaryEdgeSubStreamNoSort),
+    BinaryWithSort(BinaryEdgeSubStreamWithSort),
 }
 
 struct BinaryEdgeRecord {
@@ -742,11 +743,19 @@ struct BinaryEdgeRecord {
     sort_key: Option<u64>,
 }
 
-struct BinaryEdgeSubStream {
+struct BinaryEdgeSubStreamNoSort {
     reader: std::io::BufReader<std::fs::File>,
     remaining: u64,
     relation_id: u16,
-    with_sort: bool,
+    src_width: u8,
+    dst_width: u8,
+    next_record: Option<BinaryEdgeRecord>,
+}
+
+struct BinaryEdgeSubStreamWithSort {
+    reader: std::io::BufReader<std::fs::File>,
+    remaining: u64,
+    relation_id: u16,
     src_width: u8,
     dst_width: u8,
     sort_width: u8,
@@ -798,21 +807,32 @@ impl EdgeSubStream {
             .into());
         }
         let remaining = payload / record_size;
-        Ok(EdgeSubStream::Binary(BinaryEdgeSubStream {
-            reader,
-            remaining,
-            relation_id,
-            with_sort,
-            src_width,
-            dst_width,
-            sort_width,
-            next_record: None,
-        }))
+        if with_sort {
+            Ok(EdgeSubStream::BinaryWithSort(BinaryEdgeSubStreamWithSort {
+                reader,
+                remaining,
+                relation_id,
+                src_width,
+                dst_width,
+                sort_width,
+                next_record: None,
+            }))
+        } else {
+            Ok(EdgeSubStream::BinaryNoSort(BinaryEdgeSubStreamNoSort {
+                reader,
+                remaining,
+                relation_id,
+                src_width,
+                dst_width,
+                next_record: None,
+            }))
+        }
     }
 
     fn peek_src(&mut self) -> Result<Option<u64>> {
         match self {
-            EdgeSubStream::Binary(inner) => inner.peek_src(),
+            EdgeSubStream::BinaryNoSort(inner) => inner.peek_src(),
+            EdgeSubStream::BinaryWithSort(inner) => inner.peek_src(),
         }
     }
 
@@ -822,12 +842,13 @@ impl EdgeSubStream {
         buckets: &mut [Vec<EdgeRec>],
     ) -> Result<Option<u64>> {
         match self {
-            EdgeSubStream::Binary(inner) => inner.drain_edges(node_id, buckets),
+            EdgeSubStream::BinaryNoSort(inner) => inner.drain_edges(node_id, buckets),
+            EdgeSubStream::BinaryWithSort(inner) => inner.drain_edges(node_id, buckets),
         }
     }
 }
 
-impl BinaryEdgeSubStream {
+impl BinaryEdgeSubStreamNoSort {
     fn peek_src(&mut self) -> Result<Option<u64>> {
         if self.next_record.is_none() {
             self.next_record = self.read_next_record()?;
@@ -864,26 +885,87 @@ impl BinaryEdgeSubStream {
         if self.remaining == 0 {
             return Ok(None);
         }
-        let src_id = read_u64_width(&mut self.reader, self.src_width)?;
-        let dst_id = read_u64_width(&mut self.reader, self.dst_width)?;
-        let sort_key = if self.with_sort {
-            Some(read_u64_width(&mut self.reader, self.sort_width)?)
-        } else {
-            None
-        };
+        let record_size = (self.src_width + self.dst_width) as usize;
+        let mut buf = [0u8; 24];
+        self.reader.read_exact(&mut buf[..record_size])?;
+        let src_id = read_u64_width_slice(&buf[..self.src_width as usize], self.src_width);
+        let dst_id = read_u64_width_slice(
+            &buf[self.src_width as usize..record_size],
+            self.dst_width,
+        );
         self.remaining = self.remaining.saturating_sub(1);
         Ok(Some(BinaryEdgeRecord {
             src_id,
             dst_id,
-            sort_key,
+            sort_key: None,
         }))
     }
 }
 
-fn read_u64_width(reader: &mut std::io::BufReader<std::fs::File>, width: u8) -> Result<u64> {
-    let mut buf = [0u8; 8];
-    reader.read_exact(&mut buf[..width as usize])?;
-    Ok(u64::from_le_bytes(buf))
+impl BinaryEdgeSubStreamWithSort {
+    fn peek_src(&mut self) -> Result<Option<u64>> {
+        if self.next_record.is_none() {
+            self.next_record = self.read_next_record()?;
+        }
+        Ok(self.next_record.as_ref().map(|r| r.src_id))
+    }
+
+    fn drain_edges(
+        &mut self,
+        node_id: u64,
+        buckets: &mut [Vec<EdgeRec>],
+    ) -> Result<Option<u64>> {
+        loop {
+            if self.next_record.is_none() {
+                self.next_record = self.read_next_record()?;
+            }
+            let Some(record) = self.next_record.take() else {
+                return Ok(None);
+            };
+            if record.src_id != node_id {
+                self.next_record = Some(record);
+                return Ok(self.next_record.as_ref().map(|r| r.src_id));
+            }
+            buckets[self.relation_id as usize].push(EdgeRec {
+                src: record.src_id,
+                dst: record.dst_id,
+                dest_sort_key: record.sort_key,
+                relation_id: self.relation_id,
+            });
+        }
+    }
+
+    fn read_next_record(&mut self) -> Result<Option<BinaryEdgeRecord>> {
+        if self.remaining == 0 {
+            return Ok(None);
+        }
+        let record_size = (self.src_width + self.dst_width + self.sort_width) as usize;
+        let mut buf = [0u8; 24];
+        self.reader.read_exact(&mut buf[..record_size])?;
+        let src_id = read_u64_width_slice(&buf[..self.src_width as usize], self.src_width);
+        let dst_off = self.src_width as usize;
+        let dst_id = read_u64_width_slice(
+            &buf[dst_off..dst_off + self.dst_width as usize],
+            self.dst_width,
+        );
+        let sort_off = dst_off + self.dst_width as usize;
+        let sort_key = read_u64_width_slice(
+            &buf[sort_off..sort_off + self.sort_width as usize],
+            self.sort_width,
+        );
+        self.remaining = self.remaining.saturating_sub(1);
+        Ok(Some(BinaryEdgeRecord {
+            src_id,
+            dst_id,
+            sort_key: Some(sort_key),
+        }))
+    }
+}
+
+fn read_u64_width_slice(buf: &[u8], width: u8) -> u64 {
+    let mut tmp = [0u8; 8];
+    tmp[..width as usize].copy_from_slice(buf);
+    u64::from_le_bytes(tmp)
 }
 
 enum NodeDataStream {
