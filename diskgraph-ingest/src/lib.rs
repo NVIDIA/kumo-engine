@@ -1581,6 +1581,7 @@ impl IngestContext {
                 self.num_shards
             ]));
             let file_count = table.paths.len();
+            let num_shards = self.num_shards as u64;
             for shard in 0..self.num_shards {
                 let limiter = Arc::clone(&limiter);
                 let target = std::sync::Arc::clone(&self.target);
@@ -1686,10 +1687,10 @@ impl IngestContext {
                             cb(ProgressEvent {
                                 phase: ProgressPhase::PkMap,
                                 table: table_name.clone(),
-                                shard: Some(shard),
+                                shard: None,
                                 kind: ProgressKind::Advance,
                                 delta: 1,
-                                total: Some(1),
+                                total: Some(num_shards),
                             });
                         }
                         Ok(())
