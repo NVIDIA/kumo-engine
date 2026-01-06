@@ -977,6 +977,7 @@ impl IngestContext {
             rel_specs.push((rel.name_forward.clone(), idx));
         }
         let mut total_rows = 0u64;
+        let column_runtimes = build_column_runtimes(table);
         let root = require_local_output(&self.target)?.to_path_buf();
         let ctx_path = root.join(temp_node_context_path(&table.name));
         let ctx_bytes =
@@ -1074,7 +1075,12 @@ impl IngestContext {
                             cols.push(batch.column(idx).clone());
                         }
                         let trimmed_strings = self.trimmed_strings.clone();
-                        let mut access = RowAccess::new(table, &cols, &trimmed_strings);
+                        let mut access = RowAccess::new(
+                            table,
+                            &cols,
+                            &column_runtimes,
+                            &trimmed_strings,
+                        );
                         for row in 0..batch.num_rows() {
                             total_rows += 1;
                             access.reset(row);
@@ -1118,7 +1124,12 @@ impl IngestContext {
                             cols.push(batch.column(idx).clone());
                         }
                         let trimmed_strings = self.trimmed_strings.clone();
-                        let mut access = RowAccess::new(table, &cols, &trimmed_strings);
+                        let mut access = RowAccess::new(
+                            table,
+                            &cols,
+                            &column_runtimes,
+                            &trimmed_strings,
+                        );
                         for row in 0..batch.num_rows() {
                             total_rows += 1;
                             access.reset(row);
@@ -4310,6 +4321,28 @@ fn rowpack_config_for_table(
     RowPackConfig::merge(source_cfg, table.rowpack.as_ref())
 }
 
+fn build_column_runtimes(table: &TableSpec) -> Vec<ColumnRuntime> {
+    table
+        .columns
+        .iter()
+        .map(|col| {
+            let use_format = matches!(col.source_dtype, ColumnType::String | ColumnType::Bytes)
+                && matches!(col.ingested_dtype, ColumnType::Timestamp | ColumnType::Date);
+            let parser = if use_format {
+                col.timestamp_format
+                    .as_deref()
+                    .and_then(TimestampFormatParser::compile)
+            } else {
+                None
+            };
+            ColumnRuntime {
+                timestamp_parser: parser.clone(),
+                date_parser: parser,
+            }
+        })
+        .collect()
+}
+
 fn rowpack_columns(table: &TableSpec) -> Result<Vec<diskgraph_rowpack::RowPackColumn>> {
     let mut columns = Vec::with_capacity(table.columns.len());
     for col in &table.columns {
@@ -4419,10 +4452,16 @@ struct RowView<'a> {
     cols: &'a [ArrayRef],
 }
 
+struct ColumnRuntime {
+    timestamp_parser: Option<TimestampFormatParser>,
+    date_parser: Option<TimestampFormatParser>,
+}
+
 struct RowAccess<'a> {
     row: usize,
     cols: &'a [ArrayRef],
     table: &'a TableSpec,
+    runtimes: &'a [ColumnRuntime],
     pools: RowValuePools,
     trimmed_strings: &'a Arc<AtomicU64>,
 }
@@ -4431,12 +4470,14 @@ impl<'a> RowAccess<'a> {
     fn new(
         table: &'a TableSpec,
         cols: &'a [ArrayRef],
+        runtimes: &'a [ColumnRuntime],
         trimmed_strings: &'a Arc<AtomicU64>,
     ) -> Self {
         Self {
             row: 0,
             cols,
             table,
+            runtimes,
             pools: RowValuePools::new(),
             trimmed_strings,
         }
@@ -4657,7 +4698,18 @@ impl<'a> RowAccess<'a> {
             (ColumnType::String, ColumnType::Timestamp)
             | (ColumnType::Bytes, ColumnType::Timestamp) => {
                 let text = read_utf8(array, self.row, &col.source_dtype)?;
-                if let Some((secs, nanos)) = parse_timestamp_text(text, col.timestamp_format.as_deref()) {
+                if let Some(parser) = self
+                    .runtimes
+                    .get(idx)
+                    .and_then(|r| r.timestamp_parser.as_ref())
+                {
+                    if let Some((secs, nanos)) = parser.parse_timestamp(text) {
+                        return Ok(ValueRef::Timestamp { secs, nanos });
+                    }
+                }
+                if let Some((secs, nanos)) =
+                    parse_timestamp_text(text, col.timestamp_format.as_deref())
+                {
                     Ok(ValueRef::Timestamp { secs, nanos })
                 } else {
                     Ok(ValueRef::Null)
@@ -4666,6 +4718,15 @@ impl<'a> RowAccess<'a> {
             (ColumnType::String, ColumnType::Date)
             | (ColumnType::Bytes, ColumnType::Date) => {
                 let text = read_utf8(array, self.row, &col.source_dtype)?;
+                if let Some(parser) = self
+                    .runtimes
+                    .get(idx)
+                    .and_then(|r| r.date_parser.as_ref())
+                {
+                    if let Some(days) = parser.parse_date(text) {
+                        return Ok(ValueRef::Date(days));
+                    }
+                }
                 if let Some(days) = parse_date_text(text, col.timestamp_format.as_deref()) {
                     Ok(ValueRef::Date(days))
                 } else {
@@ -5685,6 +5746,231 @@ fn parse_date_text(value: &str, format: Option<&str>) -> Option<i32> {
     }?;
     let ts = dt.and_hms_opt(0, 0, 0)?.and_utc().timestamp();
     Some(days_from_secs(ts))
+}
+
+#[derive(Clone, Debug)]
+enum TimestampToken {
+    Literal(Vec<u8>),
+    Year,
+    Month,
+    Day,
+    Hour,
+    Minute,
+    Second,
+    Fraction,
+}
+
+#[derive(Clone, Debug)]
+struct TimestampFormatParser {
+    tokens: Vec<TimestampToken>,
+    has_date: bool,
+}
+
+impl TimestampFormatParser {
+    fn compile(format: &str) -> Option<Self> {
+        let mut tokens = Vec::new();
+        let mut literal = Vec::new();
+        let mut chars = format.chars().peekable();
+        let mut has_date = false;
+        let mut has_time = false;
+        while let Some(ch) = chars.next() {
+            if ch == '%' {
+                if let Some(spec) = chars.next() {
+                    if !literal.is_empty() {
+                        tokens.push(TimestampToken::Literal(std::mem::take(&mut literal)));
+                    }
+                    match spec {
+                        '%' => literal.push(b'%'),
+                        'Y' => {
+                            tokens.push(TimestampToken::Year);
+                            has_date = true;
+                        }
+                        'm' => {
+                            tokens.push(TimestampToken::Month);
+                            has_date = true;
+                        }
+                        'd' => {
+                            tokens.push(TimestampToken::Day);
+                            has_date = true;
+                        }
+                        'H' => {
+                            tokens.push(TimestampToken::Hour);
+                            has_time = true;
+                        }
+                        'M' => {
+                            tokens.push(TimestampToken::Minute);
+                            has_time = true;
+                        }
+                        'S' => {
+                            tokens.push(TimestampToken::Second);
+                            has_time = true;
+                        }
+                        'f' => {
+                            tokens.push(TimestampToken::Fraction);
+                            has_time = true;
+                        }
+                        'F' => {
+                            tokens.push(TimestampToken::Year);
+                            tokens.push(TimestampToken::Literal(vec![b'-']));
+                            tokens.push(TimestampToken::Month);
+                            tokens.push(TimestampToken::Literal(vec![b'-']));
+                            tokens.push(TimestampToken::Day);
+                            has_date = true;
+                        }
+                        'T' => {
+                            tokens.push(TimestampToken::Hour);
+                            tokens.push(TimestampToken::Literal(vec![b':']));
+                            tokens.push(TimestampToken::Minute);
+                            tokens.push(TimestampToken::Literal(vec![b':']));
+                            tokens.push(TimestampToken::Second);
+                            has_time = true;
+                        }
+                        _ => return None,
+                    }
+                } else {
+                    return None;
+                }
+            } else if ch.is_ascii() {
+                literal.push(ch as u8);
+            } else {
+                return None;
+            }
+        }
+        if !literal.is_empty() {
+            tokens.push(TimestampToken::Literal(literal));
+        }
+        let _ = has_time;
+        Some(Self { tokens, has_date })
+    }
+
+    fn parse_timestamp(&self, value: &str) -> Option<(i64, u32)> {
+        if !self.has_date {
+            return None;
+        }
+        let bytes = value.as_bytes();
+        let mut pos = 0usize;
+        let mut year: i32 = 0;
+        let mut month: u32 = 1;
+        let mut day: u32 = 1;
+        let mut hour: u32 = 0;
+        let mut minute: u32 = 0;
+        let mut second: u32 = 0;
+        let mut nanos: u32 = 0;
+        for token in &self.tokens {
+            match token {
+                TimestampToken::Literal(lit) => {
+                    if pos + lit.len() > bytes.len() {
+                        return None;
+                    }
+                    if &bytes[pos..pos + lit.len()] != lit.as_slice() {
+                        return None;
+                    }
+                    pos += lit.len();
+                }
+                TimestampToken::Year => {
+                    let (val, next) = parse_fixed_u32(bytes, pos, 4)?;
+                    year = val as i32;
+                    pos = next;
+                }
+                TimestampToken::Month => {
+                    let (val, next) = parse_fixed_u32(bytes, pos, 2)?;
+                    month = val;
+                    pos = next;
+                }
+                TimestampToken::Day => {
+                    let (val, next) = parse_fixed_u32(bytes, pos, 2)?;
+                    day = val;
+                    pos = next;
+                }
+                TimestampToken::Hour => {
+                    let (val, next) = parse_fixed_u32(bytes, pos, 2)?;
+                    hour = val;
+                    pos = next;
+                }
+                TimestampToken::Minute => {
+                    let (val, next) = parse_fixed_u32(bytes, pos, 2)?;
+                    minute = val;
+                    pos = next;
+                }
+                TimestampToken::Second => {
+                    let (val, next) = parse_fixed_u32(bytes, pos, 2)?;
+                    second = val;
+                    pos = next;
+                }
+                TimestampToken::Fraction => {
+                    let (val, digits, next) = parse_fraction(bytes, pos)?;
+                    nanos = fraction_to_nanos(val, digits);
+                    pos = next;
+                }
+            }
+        }
+        if pos != bytes.len() {
+            return None;
+        }
+        let date = chrono::NaiveDate::from_ymd_opt(year, month, day)?;
+        let time = chrono::NaiveTime::from_hms_nano_opt(hour, minute, second, nanos)?;
+        let dt = chrono::NaiveDateTime::new(date, time);
+        Some((dt.and_utc().timestamp(), nanos))
+    }
+
+    fn parse_date(&self, value: &str) -> Option<i32> {
+        let (secs, _nanos) = self.parse_timestamp(value)?;
+        Some(days_from_secs(secs))
+    }
+}
+
+fn parse_fixed_u32(bytes: &[u8], pos: usize, len: usize) -> Option<(u32, usize)> {
+    if pos + len > bytes.len() {
+        return None;
+    }
+    let mut val: u32 = 0;
+    for idx in pos..pos + len {
+        let b = bytes[idx];
+        if !b.is_ascii_digit() {
+            return None;
+        }
+        val = val.saturating_mul(10).saturating_add((b - b'0') as u32);
+    }
+    Some((val, pos + len))
+}
+
+fn parse_fraction(bytes: &[u8], pos: usize) -> Option<(u32, usize, usize)> {
+    let mut idx = pos;
+    let mut val: u32 = 0;
+    let mut digits = 0usize;
+    while idx < bytes.len() && bytes[idx].is_ascii_digit() {
+        if digits < 9 {
+            val = val.saturating_mul(10).saturating_add((bytes[idx] - b'0') as u32);
+        }
+        digits += 1;
+        idx += 1;
+    }
+    if digits == 0 {
+        return None;
+    }
+    Some((val, digits.min(9), idx))
+}
+
+fn fraction_to_nanos(value: u32, digits: usize) -> u32 {
+    const POW10: [u32; 10] = [
+        1_000_000_000,
+        100_000_000,
+        10_000_000,
+        1_000_000,
+        100_000,
+        10_000,
+        1_000,
+        100,
+        10,
+        1,
+    ];
+    if digits == 0 {
+        0
+    } else if digits >= 9 {
+        value
+    } else {
+        value.saturating_mul(POW10[digits])
+    }
 }
 
 fn timestamp_from_int(value: i64, unit: TimestampUnit) -> (i64, u32) {
