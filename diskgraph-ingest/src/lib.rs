@@ -166,13 +166,11 @@ pub struct PerfStats {
     pub shuffle_task_ms: u64,
     pub pk_map_task_ms: u64,
     pub build_task_ms: u64,
-    pub node_task_ms: u64,
     pub edge_task_ms: u64,
     pub context_tasks: u64,
     pub shuffle_tasks: u64,
     pub pk_map_tasks: u64,
     pub build_tasks: u64,
-    pub node_tasks: u64,
     pub edge_tasks: u64,
     pub bytes_read: u64,
     pub bytes_written: u64,
@@ -269,13 +267,11 @@ pub fn ingest_with_stats(
         shuffle_task_ms: ctx.shuffle_task_ms,
         pk_map_task_ms: ctx.pk_map_task_ms,
         build_task_ms: ctx.build_task_ms,
-        node_task_ms: ctx.node_task_ms,
         edge_task_ms: ctx.edge_task_ms,
         context_tasks: ctx.context_tasks,
         shuffle_tasks: ctx.shuffle_tasks,
         pk_map_tasks: ctx.pk_map_tasks,
         build_tasks: ctx.build_tasks,
-        node_tasks: ctx.node_tasks,
         edge_tasks: ctx.edge_tasks,
         bytes_read,
         bytes_written,
@@ -319,13 +315,11 @@ struct IngestContext {
     shuffle_task_ms: u64,
     pk_map_task_ms: u64,
     build_task_ms: u64,
-    node_task_ms: u64,
     edge_task_ms: u64,
     context_task_ms: u64,
     shuffle_tasks: u64,
     pk_map_tasks: u64,
     build_tasks: u64,
-    node_tasks: u64,
     edge_tasks: u64,
     context_tasks: u64,
 }
@@ -547,13 +541,11 @@ impl IngestContext {
             shuffle_task_ms: 0,
             pk_map_task_ms: 0,
             build_task_ms: 0,
-            node_task_ms: 0,
             edge_task_ms: 0,
             context_task_ms: 0,
             shuffle_tasks: 0,
             pk_map_tasks: 0,
             build_tasks: 0,
-            node_tasks: 0,
             edge_tasks: 0,
             context_tasks: 0,
         })
@@ -2298,11 +2290,9 @@ impl IngestContext {
     fn build_stats(&self, metadata: &DatasetMetadata, mut perf: PerfStats) -> IngestStats {
         perf.context_task_ms = self.context_task_ms;
         perf.shuffle_task_ms = self.shuffle_task_ms;
-        perf.node_task_ms = self.node_task_ms;
         perf.edge_task_ms = self.edge_task_ms;
         perf.context_tasks = self.context_tasks;
         perf.shuffle_tasks = self.shuffle_tasks;
-        perf.node_tasks = self.node_tasks;
         perf.edge_tasks = self.edge_tasks;
         let mut node_counts = HashMap::new();
         for node in metadata.node_types.iter() {

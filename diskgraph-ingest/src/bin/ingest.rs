@@ -201,18 +201,13 @@ fn main() -> Result<()> {
         stats.perf.build_tasks
     );
     println!(
-        "      nodes: {} ({} tasks)",
-        format_duration(stats.perf.node_task_ms),
-        stats.perf.node_tasks
-    );
-    println!(
         "      edges: {} ({} tasks)",
         format_duration(stats.perf.edge_task_ms),
         stats.perf.edge_tasks
     );
     if let Some(profile_dir) = args.profile.as_ref() {
         let mut profiles = Vec::new();
-        for name in ["context", "shuffle", "pk_map", "nodes", "edges"] {
+        for name in ["context", "shuffle", "pk_map", "edges"] {
             let svg = profile_dir.join(format!("{name}-profile.svg"));
             let pb = profile_dir.join(format!("{name}-profile.pb"));
             if svg.exists() {
@@ -228,7 +223,7 @@ fn main() -> Result<()> {
                 println!("  {}", path.display());
             }
             let mut pb_paths = Vec::new();
-            for name in ["context", "shuffle", "pk_map", "nodes", "edges"] {
+            for name in ["context", "shuffle", "pk_map", "edges"] {
                 let pb = profile_dir.join(format!("{name}-profile.pb"));
                 if pb.exists() {
                     pb_paths.push(pb);
