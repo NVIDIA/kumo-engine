@@ -10,15 +10,13 @@ use diskgraph_core::metadata::{
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use serde_json;
 
 pub struct GraphIndexBuilder {
     metadata: DatasetMetadata,
     source: GraphDataSource,
     output_root: PathBuf,
-    max_workers: usize,
 }
 
 #[derive(Clone)]
@@ -78,15 +76,7 @@ impl GraphIndexBuilder {
             metadata,
             source,
             output_root: output_root.to_path_buf(),
-            max_workers: std::thread::available_parallelism()
-                .map(|n| n.get())
-                .unwrap_or(1),
         }
-    }
-
-    pub fn with_max_workers(mut self, workers: usize) -> Self {
-        self.max_workers = workers.max(1);
-        self
     }
 
     pub fn metadata(&self) -> &DatasetMetadata {
@@ -99,41 +89,12 @@ impl GraphIndexBuilder {
         fs::write(metadata_path, serde_json::to_vec_pretty(&self.metadata)?)?;
 
         let jobs = self.prepare_jobs()?;
-        let jobs = Arc::new(Mutex::new(jobs));
-        let abort = Arc::new(AtomicBool::new(false));
-        let (tx, rx) = std::sync::mpsc::channel();
-
-        std::thread::scope(|scope| {
-            for _ in 0..self.max_workers {
-                let jobs = Arc::clone(&jobs);
-                let tx = tx.clone();
-                let abort = Arc::clone(&abort);
-                scope.spawn(move || {
-                    loop {
-                        if abort.load(Ordering::Relaxed) {
-                            break;
-                        }
-                        let job = {
-                            let mut guard = jobs.lock().unwrap();
-                            guard.pop()
-                        };
-                        let Some(job) = job else { break };
-                        let result = job.run(progress, &abort);
-                        if result.is_err() {
-                            abort.store(true, Ordering::Relaxed);
-                        }
-                        let _ = tx.send((job.shard_key.clone(), result));
-                    }
-                });
-            }
-        });
-        drop(tx);
-
         let mut shard_stats = HashMap::new();
         let mut total_shard_ms = 0u64;
         let mut total_shards = 0u64;
-        for (shard_key, result) in rx {
-            let output = result?;
+        for job in jobs {
+            let shard_key = job.shard_key.clone();
+            let output = job.run(progress)?;
             shard_stats.insert(shard_key, output.build_stats);
             total_shard_ms = total_shard_ms.saturating_add(output.wall_ms);
             total_shards = total_shards.saturating_add(1);
@@ -222,11 +183,7 @@ struct ShardBuildJob {
 }
 
 impl ShardBuildJob {
-    fn run(
-        &self,
-        progress: Option<&dyn GraphProgressSink>,
-        abort: &AtomicBool,
-    ) -> Result<crate::builder::ShardBuildOutput> {
+    fn run(&self, progress: Option<&dyn GraphProgressSink>) -> Result<crate::builder::ShardBuildOutput> {
         let start = std::time::Instant::now();
         fs::create_dir_all(&self.output_dir)?;
         let params = ShardBuildParams {
@@ -244,7 +201,7 @@ impl ShardBuildJob {
             &self.edge_inputs,
             Some(self.expected_nodes),
             adapter.as_ref().map(|a| a as &dyn crate::builder::ProgressSink),
-            Some(&|| abort.load(Ordering::Relaxed)),
+            None,
         );
         if let Some(sink) = progress {
             sink.report(GraphBuildProgress {
