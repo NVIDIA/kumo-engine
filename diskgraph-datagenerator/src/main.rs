@@ -523,6 +523,7 @@ fn assign_node_shards(
                     min_id: 0,
                     max_id: 0,
                     node_data_path: None,
+                    node_data_paths: None,
                 });
                 continue;
             }
@@ -531,6 +532,7 @@ fn assign_node_shards(
                 min_id: range.start,
                 max_id: range.end,
                 node_data_path: None,
+                node_data_paths: None,
             });
         }
     }

@@ -301,6 +301,7 @@ fn shard_plan(total_nodes: u64, shards: usize) -> Vec<NodeShardMetadata> {
                 min_id: 0,
                 max_id: 0,
                 node_data_path: None,
+                node_data_paths: None,
             };
             shard_count as usize
         ];
@@ -315,6 +316,7 @@ fn shard_plan(total_nodes: u64, shards: usize) -> Vec<NodeShardMetadata> {
                 min_id: 0,
                 max_id: 0,
                 node_data_path: None,
+                node_data_paths: None,
             });
             continue;
         }
@@ -324,6 +326,7 @@ fn shard_plan(total_nodes: u64, shards: usize) -> Vec<NodeShardMetadata> {
             min_id: start,
             max_id: end,
             node_data_path: None,
+            node_data_paths: None,
         });
         remaining -= len;
         start = end + 1;

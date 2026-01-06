@@ -177,6 +177,7 @@ fn main() -> Result<()> {
         min_id: 0,
         max_id: args.nodes.saturating_sub(1),
         node_data_path: None,
+        node_data_paths: None,
     };
 
     let rel0_cfg = RelationConfig {
