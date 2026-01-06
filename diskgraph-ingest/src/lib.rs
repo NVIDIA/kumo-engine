@@ -60,7 +60,7 @@ const SAMPLE_ROW_LIMIT: usize = 100_000;
 const SAMPLE_ROW_TARGET: usize = 10_000;
 const PK_MAP_MEMORY_BUDGET: usize = 1024 * 1024 * 1024;
 const MAX_NODE_DATA_LEN: usize = 60 * 1024;
-const PROGRESS_ROW_BATCH: u64 = 100_000;
+const PROGRESS_ROW_BATCH: u64 = 1_000_000;
 const MAX_VAR_KEY_LEN: usize = u16::MAX as usize;
 
 #[derive(Clone, Copy, Debug)]
@@ -130,7 +130,13 @@ pub type ProgressCallback = std::sync::Arc<dyn Fn(ProgressEvent) + Send + Sync>;
 
 struct IndexProgressAdapter {
     cb: ProgressCallback,
-    last: Mutex<HashMap<(String, Option<usize>), u64>>,
+    last: Mutex<HashMap<(String, Option<usize>), IndexProgressState>>,
+}
+
+#[derive(Clone, Copy)]
+struct IndexProgressState {
+    current: u64,
+    total: Option<u64>,
 }
 
 impl IndexProgressAdapter {
@@ -161,6 +167,11 @@ impl GraphProgressSink for IndexProgressAdapter {
         let mut last = self.last.lock().unwrap();
         match update.stage {
             GraphBuildStage::BuildShard { .. } => {
+                let total = update.total;
+                let effective_current = match total {
+                    Some(total) if total > 0 && update.current >= total => total - 1,
+                    _ => update.current,
+                };
                 match last.entry(key.clone()) {
                     Entry::Vacant(v) => {
                         (self.cb)(ProgressEvent {
@@ -169,46 +180,55 @@ impl GraphProgressSink for IndexProgressAdapter {
                             shard,
                             kind: ProgressKind::Start,
                             delta: 0,
-                            total: update.total,
+                            total,
                         });
-                        v.insert(update.current);
-                        if update.current > 0 {
+                        v.insert(IndexProgressState {
+                            current: effective_current,
+                            total,
+                        });
+                        if effective_current > 0 {
                             (self.cb)(ProgressEvent {
                                 phase: ProgressPhase::Index,
                                 table,
                                 shard,
                                 kind: ProgressKind::Advance,
-                                delta: update.current,
-                                total: update.total,
+                                delta: effective_current,
+                                total,
                             });
                         }
                     }
                     Entry::Occupied(mut o) => {
-                        let prev = *o.get();
-                        if update.current > prev {
-                            let delta = update.current.saturating_sub(prev);
-                            o.insert(update.current);
+                        let prev = o.get().current;
+                        let total = o.get().total.or(update.total);
+                        if effective_current > prev {
+                            let delta = effective_current.saturating_sub(prev);
+                            o.insert(IndexProgressState {
+                                current: effective_current,
+                                total,
+                            });
                             (self.cb)(ProgressEvent {
                                 phase: ProgressPhase::Index,
                                 table,
                                 shard,
                                 kind: ProgressKind::Advance,
                                 delta,
-                                total: update.total,
+                                total,
                             });
                         }
                     }
                 }
             }
             GraphBuildStage::Complete { .. } => {
-                let prev = last.get(&key).copied().unwrap_or(0);
+                let state = last.remove(&key);
+                let prev = state.map(|s| s.current).unwrap_or(0);
+                let total = state.and_then(|s| s.total);
                 (self.cb)(ProgressEvent {
                     phase: ProgressPhase::Index,
                     table,
                     shard,
                     kind: ProgressKind::Finish,
                     delta: 0,
-                    total: update.total.or(Some(prev)),
+                    total: total.or(Some(prev)),
                 });
             }
         }
