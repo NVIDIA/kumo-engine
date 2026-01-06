@@ -66,6 +66,37 @@ const MAX_NODE_DATA_LEN: usize = 60 * 1024;
 const PROGRESS_ROW_BATCH: u64 = 100_000;
 const MAX_VAR_KEY_LEN: usize = u16::MAX as usize;
 
+struct BufferedFile {
+    file_idx: usize,
+    rows: Vec<OwnedRow>,
+}
+
+fn buffered_rows_for_file<'a>(
+    buffered_files: &'a mut Vec<BufferedFile>,
+    file_idx: usize,
+) -> &'a mut Vec<OwnedRow> {
+    if let Some(pos) = buffered_files.iter().position(|buf| buf.file_idx == file_idx) {
+        return &mut buffered_files[pos].rows;
+    }
+    buffered_files.push(BufferedFile {
+        file_idx,
+        rows: Vec::new(),
+    });
+    let last = buffered_files.len() - 1;
+    &mut buffered_files[last].rows
+}
+
+fn buffered_rows_refs(buffered_files: &[BufferedFile]) -> Vec<&OwnedRow> {
+    let total_rows: usize = buffered_files.iter().map(|buf| buf.rows.len()).sum();
+    let mut rows = Vec::with_capacity(total_rows);
+    for buffered in buffered_files {
+        for row in &buffered.rows {
+            rows.push(row);
+        }
+    }
+    rows
+}
+
 #[derive(Clone, Copy, Debug)]
 enum KeyParseError {
     TypeMismatch,
@@ -321,7 +352,6 @@ struct IngestContext {
 
 struct TempRowpackMeta {
     row_count: u64,
-    context: Vec<u8>,
 }
 
 struct TempRowWriter {
@@ -606,8 +636,9 @@ impl IngestContext {
             rel_specs.push((rel.name_forward.clone(), idx));
         }
         let rowpack_config = rowpack_config_for_table(self.source.rowpack.as_ref(), table);
-        let mut buffered_rows: Vec<OwnedRow> = Vec::new();
-        let mut total_seen = 0usize;
+        let file_count = table.paths.len();
+        let mut buffered_files: Vec<BufferedFile> = Vec::new();
+        let mut buffered_total = 0usize;
         let mut total_rows = 0u64;
         let mut context_ready = false;
         let mut node_context: Option<diskgraph_rowpack::RowPackContext> = None;
@@ -618,14 +649,46 @@ impl IngestContext {
         let mut pkey_scratch: Option<RowPackScratch> = None;
         let mut node_out: Vec<u8> = Vec::new();
         let mut pkey_out: Vec<u8> = Vec::new();
-        let mut node_writers: Vec<TempRowWriter> = Vec::new();
-        let mut pkey_writers: Option<Vec<TempRowWriter>> = None;
-        let mut fkey_writers: HashMap<String, Vec<TempRowWriter>> = HashMap::new();
         let mut row_id = 0u64;
         let mut key_buf: Vec<u8> = Vec::new();
         let mut node_data_dropped = 0u64;
         let schema = table_schema(table)?;
-        for path in &table.paths {
+        let has_pkey = pk_col.is_some() && pk_idx.is_some();
+        let mut shard_rows = vec![0u64; self.num_shards];
+        let mut ctx_written = false;
+
+        struct NodeTempWriters {
+            node: Vec<TempRowWriter>,
+            pkey: Option<Vec<TempRowWriter>>,
+            fkey: HashMap<String, Vec<TempRowWriter>>,
+        }
+
+        let mut finish_writers = |file_idx: usize, mut writers: NodeTempWriters| -> Result<()> {
+            for shard in 0..self.num_shards {
+                let rows = finish_temp_writer(writers.node.remove(0))?;
+                shard_rows[shard] = shard_rows[shard].saturating_add(rows);
+                let meta_path = temp_node_data_meta_path(&table.name, shard, file_idx);
+                write_temp_meta(&self.target, &meta_path, rows)?;
+            }
+            if let Some(mut writers) = writers.pkey.take() {
+                for shard in 0..self.num_shards {
+                    let rows = finish_temp_writer(writers.remove(0))?;
+                    let meta_path = temp_pkey_meta_path(&table.name, shard, file_idx);
+                    write_temp_meta(&self.target, &meta_path, rows)?;
+                }
+            }
+            for (rel, mut writers) in writers.fkey {
+                for shard in 0..self.num_shards {
+                    let rows = finish_temp_writer(writers.remove(0))?;
+                    let meta_path = temp_fkey_meta_path(&table.name, &rel, shard, file_idx);
+                    write_temp_meta(&self.target, &meta_path, rows)?;
+                }
+            }
+            Ok(())
+        };
+
+        let mut current_writers: Option<NodeTempWriters> = None;
+        for (file_idx, path) in table.paths.iter().enumerate() {
             if !is_cloud_path(path) && !Path::new(path).exists() {
                 return Err(anyhow!("input path not found {}", path));
             }
@@ -657,40 +720,38 @@ impl IngestContext {
                                 row,
                                 cols: &cols,
                             };
-                            total_seen += 1;
                             total_rows += 1;
                             if !context_ready {
-                                let owned = owned_row_from_row(
-                                    &row_view,
-                                    table,
-                                    &mut values,
-                                    &mut arrays_f32,
-                                    &mut arrays_f64,
-                                    &mut strings,
-                                    &mut bytes,
-                                    &self.trimmed_strings,
-                                )?;
-                                buffered_rows.push(owned);
-                                if total_seen >= SAMPLE_ROW_LIMIT {
+                                if buffered_total < SAMPLE_ROW_LIMIT {
+                                    let owned = owned_row_from_row(
+                                        &row_view,
+                                        table,
+                                        &mut values,
+                                        &mut arrays_f32,
+                                        &mut arrays_f64,
+                                        &mut strings,
+                                        &mut bytes,
+                                        &self.trimmed_strings,
+                                    )?;
+                                    buffered_total = buffered_total.saturating_add(1);
+                                    buffered_rows_for_file(&mut buffered_files, file_idx).push(owned);
+                                }
+                                if buffered_total >= SAMPLE_ROW_LIMIT {
+                                    let buffered_refs = buffered_rows_refs(&buffered_files);
                                     self.build_node_contexts_from_samples(
                                         table,
                                         pk_col,
                                         pk_idx,
                                         &rowpack_config,
-                                        &buffered_rows,
+                                        &buffered_refs,
                                         &mut node_context,
                                         &mut pkey_context,
                                     )?;
-                                    self.init_node_temp_writers(
-                                        table,
+                                    self.init_node_encoders(
                                         &node_context,
                                         &pkey_context,
                                         &mut node_encoder,
                                         &mut pkey_encoder,
-                                        &mut node_writers,
-                                        &mut pkey_writers,
-                                        &mut fkey_writers,
-                                        &rel_specs,
                                     )?;
                                     if let Some(encoder) = node_encoder.as_ref() {
                                         node_scratch = Some(RowPackScratch::new(encoder.context()));
@@ -698,29 +759,87 @@ impl IngestContext {
                                     if let Some(encoder) = pkey_encoder.as_ref() {
                                         pkey_scratch = Some(RowPackScratch::new(encoder.context()));
                                     }
-                                    self.flush_buffered_node_rows(
-                                        table,
-                                        pk_idx,
-                                        &rel_specs,
-                                        &mut buffered_rows,
-                                        &node_encoder,
-                                        &pkey_encoder,
-                                        &mut node_scratch,
-                                        &mut pkey_scratch,
-                                        &mut node_out,
-                                        &mut pkey_out,
-                                        &mut node_writers,
-                                        &mut pkey_writers,
-                                        &mut fkey_writers,
-                                        &mut row_id,
-                                        pk_col,
-                                        &mut key_buf,
-                                        &mut node_data_dropped,
-                                    )?;
+                                    if !ctx_written {
+                                        let ctx_bytes = node_context
+                                            .as_ref()
+                                            .ok_or_else(|| anyhow!("missing node context"))?
+                                            .to_bytes()?;
+                                        self.target
+                                            .write_bytes(&temp_node_context_path(&table.name), ctx_bytes.clone())?;
+                                        self.target
+                                            .write_bytes(&node_context_output_path(&table.name), ctx_bytes)?;
+                                        if let Some(ctx) = pkey_context.as_ref() {
+                                            let bytes = ctx.to_bytes()?;
+                                            self.target.write_bytes(
+                                                &temp_pkey_context_path(&table.name),
+                                                bytes,
+                                            )?;
+                                        }
+                                        ctx_written = true;
+                                    }
+                                    for buffered in buffered_files.iter_mut() {
+                                        let mut writers = NodeTempWriters {
+                                            node: Vec::new(),
+                                            pkey: None,
+                                            fkey: HashMap::new(),
+                                        };
+                                        self.init_node_temp_writers(
+                                            table,
+                                            buffered.file_idx,
+                                            &mut writers.node,
+                                            &mut writers.pkey,
+                                            &mut writers.fkey,
+                                            &rel_specs,
+                                            has_pkey,
+                                        )?;
+                                        self.flush_buffered_node_rows(
+                                            table,
+                                            pk_idx,
+                                            &rel_specs,
+                                            &mut buffered.rows,
+                                            &node_encoder,
+                                            &pkey_encoder,
+                                            &mut node_scratch,
+                                            &mut pkey_scratch,
+                                            &mut node_out,
+                                            &mut pkey_out,
+                                            &mut writers.node,
+                                            &mut writers.pkey,
+                                            &mut writers.fkey,
+                                            &mut row_id,
+                                            pk_col,
+                                            &mut key_buf,
+                                            &mut node_data_dropped,
+                                        )?;
+                                        if buffered.file_idx == file_idx {
+                                            current_writers = Some(writers);
+                                        } else {
+                                            finish_writers(buffered.file_idx, writers)?;
+                                        }
+                                    }
+                                    buffered_files.clear();
                                     context_ready = true;
                                 }
                             } else {
                                 access.reset(row);
+                                if current_writers.is_none() {
+                                    let mut writers = NodeTempWriters {
+                                        node: Vec::new(),
+                                        pkey: None,
+                                        fkey: HashMap::new(),
+                                    };
+                                    self.init_node_temp_writers(
+                                        table,
+                                        file_idx,
+                                        &mut writers.node,
+                                        &mut writers.pkey,
+                                        &mut writers.fkey,
+                                        &rel_specs,
+                                        has_pkey,
+                                    )?;
+                                    current_writers = Some(writers);
+                                }
+                                let writers = current_writers.as_mut().ok_or_else(|| anyhow!("missing temp writers"))?;
                                 self.write_node_row_from_access(
                                     table,
                                     pk_idx,
@@ -732,9 +851,9 @@ impl IngestContext {
                                     &mut pkey_scratch,
                                     &mut node_out,
                                     &mut pkey_out,
-                                    &mut node_writers,
-                                    &mut pkey_writers,
-                                    &mut fkey_writers,
+                                    &mut writers.node,
+                                    &mut writers.pkey,
+                                    &mut writers.fkey,
                                     &mut row_id,
                                     pk_col,
                                     &mut key_buf,
@@ -771,40 +890,38 @@ impl IngestContext {
                                 row,
                                 cols: &cols,
                             };
-                            total_seen += 1;
                             total_rows += 1;
                             if !context_ready {
-                                let owned = owned_row_from_row(
-                                    &row_view,
-                                    table,
-                                    &mut values,
-                                    &mut arrays_f32,
-                                    &mut arrays_f64,
-                                    &mut strings,
-                                    &mut bytes,
-                                    &self.trimmed_strings,
-                                )?;
-                                buffered_rows.push(owned);
-                                if total_seen >= SAMPLE_ROW_LIMIT {
+                                if buffered_total < SAMPLE_ROW_LIMIT {
+                                    let owned = owned_row_from_row(
+                                        &row_view,
+                                        table,
+                                        &mut values,
+                                        &mut arrays_f32,
+                                        &mut arrays_f64,
+                                        &mut strings,
+                                        &mut bytes,
+                                        &self.trimmed_strings,
+                                    )?;
+                                    buffered_total = buffered_total.saturating_add(1);
+                                    buffered_rows_for_file(&mut buffered_files, file_idx).push(owned);
+                                }
+                                if buffered_total >= SAMPLE_ROW_LIMIT {
+                                    let buffered_refs = buffered_rows_refs(&buffered_files);
                                     self.build_node_contexts_from_samples(
                                         table,
                                         pk_col,
                                         pk_idx,
                                         &rowpack_config,
-                                        &buffered_rows,
+                                        &buffered_refs,
                                         &mut node_context,
                                         &mut pkey_context,
                                     )?;
-                                    self.init_node_temp_writers(
-                                        table,
+                                    self.init_node_encoders(
                                         &node_context,
                                         &pkey_context,
                                         &mut node_encoder,
                                         &mut pkey_encoder,
-                                        &mut node_writers,
-                                        &mut pkey_writers,
-                                        &mut fkey_writers,
-                                        &rel_specs,
                                     )?;
                                     if let Some(encoder) = node_encoder.as_ref() {
                                         node_scratch = Some(RowPackScratch::new(encoder.context()));
@@ -812,29 +929,87 @@ impl IngestContext {
                                     if let Some(encoder) = pkey_encoder.as_ref() {
                                         pkey_scratch = Some(RowPackScratch::new(encoder.context()));
                                     }
-                                    self.flush_buffered_node_rows(
-                                        table,
-                                        pk_idx,
-                                        &rel_specs,
-                                        &mut buffered_rows,
-                                        &node_encoder,
-                                        &pkey_encoder,
-                                        &mut node_scratch,
-                                        &mut pkey_scratch,
-                                        &mut node_out,
-                                        &mut pkey_out,
-                                        &mut node_writers,
-                                        &mut pkey_writers,
-                                        &mut fkey_writers,
-                                        &mut row_id,
-                                        pk_col,
-                                        &mut key_buf,
-                                        &mut node_data_dropped,
-                                    )?;
+                                    if !ctx_written {
+                                        let ctx_bytes = node_context
+                                            .as_ref()
+                                            .ok_or_else(|| anyhow!("missing node context"))?
+                                            .to_bytes()?;
+                                        self.target
+                                            .write_bytes(&temp_node_context_path(&table.name), ctx_bytes.clone())?;
+                                        self.target
+                                            .write_bytes(&node_context_output_path(&table.name), ctx_bytes)?;
+                                        if let Some(ctx) = pkey_context.as_ref() {
+                                            let bytes = ctx.to_bytes()?;
+                                            self.target.write_bytes(
+                                                &temp_pkey_context_path(&table.name),
+                                                bytes,
+                                            )?;
+                                        }
+                                        ctx_written = true;
+                                    }
+                                    for buffered in buffered_files.iter_mut() {
+                                        let mut writers = NodeTempWriters {
+                                            node: Vec::new(),
+                                            pkey: None,
+                                            fkey: HashMap::new(),
+                                        };
+                                        self.init_node_temp_writers(
+                                            table,
+                                            buffered.file_idx,
+                                            &mut writers.node,
+                                            &mut writers.pkey,
+                                            &mut writers.fkey,
+                                            &rel_specs,
+                                            has_pkey,
+                                        )?;
+                                        self.flush_buffered_node_rows(
+                                            table,
+                                            pk_idx,
+                                            &rel_specs,
+                                            &mut buffered.rows,
+                                            &node_encoder,
+                                            &pkey_encoder,
+                                            &mut node_scratch,
+                                            &mut pkey_scratch,
+                                            &mut node_out,
+                                            &mut pkey_out,
+                                            &mut writers.node,
+                                            &mut writers.pkey,
+                                            &mut writers.fkey,
+                                            &mut row_id,
+                                            pk_col,
+                                            &mut key_buf,
+                                            &mut node_data_dropped,
+                                        )?;
+                                        if buffered.file_idx == file_idx {
+                                            current_writers = Some(writers);
+                                        } else {
+                                            finish_writers(buffered.file_idx, writers)?;
+                                        }
+                                    }
+                                    buffered_files.clear();
                                     context_ready = true;
                                 }
                             } else {
                                 access.reset(row);
+                                if current_writers.is_none() {
+                                    let mut writers = NodeTempWriters {
+                                        node: Vec::new(),
+                                        pkey: None,
+                                        fkey: HashMap::new(),
+                                    };
+                                    self.init_node_temp_writers(
+                                        table,
+                                        file_idx,
+                                        &mut writers.node,
+                                        &mut writers.pkey,
+                                        &mut writers.fkey,
+                                        &rel_specs,
+                                        has_pkey,
+                                    )?;
+                                    current_writers = Some(writers);
+                                }
+                                let writers = current_writers.as_mut().ok_or_else(|| anyhow!("missing temp writers"))?;
                                 self.write_node_row_from_access(
                                     table,
                                     pk_idx,
@@ -846,9 +1021,9 @@ impl IngestContext {
                                     &mut pkey_scratch,
                                     &mut node_out,
                                     &mut pkey_out,
-                                    &mut node_writers,
-                                    &mut pkey_writers,
-                                    &mut fkey_writers,
+                                    &mut writers.node,
+                                    &mut writers.pkey,
+                                    &mut writers.fkey,
                                     &mut row_id,
                                     pk_col,
                                     &mut key_buf,
@@ -857,6 +1032,11 @@ impl IngestContext {
                             }
                         }
                     }
+                }
+            }
+            if context_ready {
+                if let Some(writers) = current_writers.take() {
+                    finish_writers(file_idx, writers)?;
                 }
             }
             self.emit_progress(ProgressEvent {
@@ -870,25 +1050,24 @@ impl IngestContext {
         }
 
         if !context_ready {
+            if file_count == 0 {
+                return Err(anyhow!("no input files for table {}", table.name));
+            }
+            let buffered_refs = buffered_rows_refs(&buffered_files);
             self.build_node_contexts_from_samples(
                 table,
                 pk_col,
                 pk_idx,
                 &rowpack_config,
-                &buffered_rows,
+                &buffered_refs,
                 &mut node_context,
                 &mut pkey_context,
             )?;
-            self.init_node_temp_writers(
-                table,
+            self.init_node_encoders(
                 &node_context,
                 &pkey_context,
                 &mut node_encoder,
                 &mut pkey_encoder,
-                &mut node_writers,
-                &mut pkey_writers,
-                &mut fkey_writers,
-                &rel_specs,
             )?;
             if let Some(encoder) = node_encoder.as_ref() {
                 node_scratch = Some(RowPackScratch::new(encoder.context()));
@@ -896,53 +1075,59 @@ impl IngestContext {
             if let Some(encoder) = pkey_encoder.as_ref() {
                 pkey_scratch = Some(RowPackScratch::new(encoder.context()));
             }
-            self.flush_buffered_node_rows(
-                table,
-                pk_idx,
-                &rel_specs,
-                &mut buffered_rows,
-                &node_encoder,
-                &pkey_encoder,
-                &mut node_scratch,
-                &mut pkey_scratch,
-                &mut node_out,
-                &mut pkey_out,
-                &mut node_writers,
-                &mut pkey_writers,
-                &mut fkey_writers,
-                &mut row_id,
-                pk_col,
-                &mut key_buf,
-                &mut node_data_dropped,
-            )?;
+            if !ctx_written {
+                let ctx_bytes = node_context
+                    .as_ref()
+                    .ok_or_else(|| anyhow!("missing node context"))?
+                    .to_bytes()?;
+                self.target
+                    .write_bytes(&temp_node_context_path(&table.name), ctx_bytes.clone())?;
+                self.target
+                    .write_bytes(&node_context_output_path(&table.name), ctx_bytes)?;
+                if let Some(ctx) = pkey_context.as_ref() {
+                    let bytes = ctx.to_bytes()?;
+                    self.target
+                        .write_bytes(&temp_pkey_context_path(&table.name), bytes)?;
+                }
+            }
+            for buffered in buffered_files.iter_mut() {
+                let mut writers = NodeTempWriters {
+                    node: Vec::new(),
+                    pkey: None,
+                    fkey: HashMap::new(),
+                };
+                self.init_node_temp_writers(
+                    table,
+                    buffered.file_idx,
+                    &mut writers.node,
+                    &mut writers.pkey,
+                    &mut writers.fkey,
+                    &rel_specs,
+                    has_pkey,
+                )?;
+                self.flush_buffered_node_rows(
+                    table,
+                    pk_idx,
+                    &rel_specs,
+                    &mut buffered.rows,
+                    &node_encoder,
+                    &pkey_encoder,
+                    &mut node_scratch,
+                    &mut pkey_scratch,
+                    &mut node_out,
+                    &mut pkey_out,
+                    &mut writers.node,
+                    &mut writers.pkey,
+                    &mut writers.fkey,
+                    &mut row_id,
+                    pk_col,
+                    &mut key_buf,
+                    &mut node_data_dropped,
+                )?;
+                finish_writers(buffered.file_idx, writers)?;
+            }
         }
 
-        let node_ctx = node_context.ok_or_else(|| anyhow!("missing node context"))?;
-        let node_ctx_bytes = node_ctx.to_bytes()?;
-        let mut shard_rows = Vec::with_capacity(self.num_shards);
-        for shard in 0..self.num_shards {
-            let node_rows = finish_temp_writer(node_writers.remove(0))?;
-            shard_rows.push(node_rows);
-            let node_meta_path = temp_node_data_meta_path(&table.name, shard);
-            write_temp_meta(&self.target, &node_meta_path, node_rows, &node_ctx_bytes)?;
-        }
-        if let Some(writers) = pkey_writers.take() {
-            let pkey_ctx = pkey_context.ok_or_else(|| anyhow!("missing pkey context"))?;
-            let pkey_ctx_bytes = pkey_ctx.to_bytes()?;
-            for (shard, writer) in writers.into_iter().enumerate() {
-                let rows = finish_temp_writer(writer)?;
-                let meta_path = temp_pkey_meta_path(&table.name, shard);
-                write_temp_meta(&self.target, &meta_path, rows, &pkey_ctx_bytes)?;
-            }
-        }
-        for (rel, writers) in fkey_writers.into_iter() {
-            let ctx_bytes: [u8; 0] = [];
-            for (shard, writer) in writers.into_iter().enumerate() {
-                let rows = finish_temp_writer(writer)?;
-                let meta_path = temp_fkey_meta_path(&table.name, &rel, shard);
-                write_temp_meta(&self.target, &meta_path, rows, &ctx_bytes)?;
-            }
-        }
         if node_data_dropped > 0 {
             self.pk_duplicate_counts.insert(
                 format!("node_data_dropped:{}", table.name),
@@ -963,7 +1148,7 @@ impl IngestContext {
         pk_col: Option<&ColumnSpec>,
         pk_idx: Option<usize>,
         rowpack_config: &RowPackConfig,
-        rows: &[OwnedRow],
+        rows: &[&OwnedRow],
         node_context: &mut Option<diskgraph_rowpack::RowPackContext>,
         pkey_context: &mut Option<diskgraph_rowpack::RowPackContext>,
     ) -> Result<()> {
@@ -990,33 +1175,43 @@ impl IngestContext {
         Ok(())
     }
 
-    fn init_node_temp_writers(
+    fn init_node_encoders(
         &self,
-        table: &TableSpec,
         node_context: &Option<diskgraph_rowpack::RowPackContext>,
         pkey_context: &Option<diskgraph_rowpack::RowPackContext>,
         node_encoder: &mut Option<RowPackEncoder>,
         pkey_encoder: &mut Option<RowPackEncoder>,
+    ) -> Result<()> {
+        let node_ctx = node_context.as_ref().ok_or_else(|| anyhow!("missing node context"))?;
+        *node_encoder = Some(RowPackEncoder::new(node_ctx.clone())?);
+        if let Some(ctx) = pkey_context.as_ref() {
+            *pkey_encoder = Some(RowPackEncoder::new(ctx.clone())?);
+        }
+        Ok(())
+    }
+
+    fn init_node_temp_writers(
+        &self,
+        table: &TableSpec,
+        file_idx: usize,
         node_writers: &mut Vec<TempRowWriter>,
         pkey_writers: &mut Option<Vec<TempRowWriter>>,
         fkey_writers: &mut HashMap<String, Vec<TempRowWriter>>,
         rel_specs: &[(String, usize)],
+        has_pkey: bool,
     ) -> Result<()> {
-        let node_ctx = node_context.as_ref().ok_or_else(|| anyhow!("missing node context"))?;
-        *node_encoder = Some(RowPackEncoder::new(node_ctx.clone())?);
         for shard in 0..self.num_shards {
             node_writers.push(open_temp_row_writer(
                 &self.target,
-                &temp_node_data_path(&table.name, shard),
+                &temp_node_data_path(&table.name, shard, file_idx),
             )?);
         }
-        if let Some(ctx) = pkey_context.as_ref() {
-            *pkey_encoder = Some(RowPackEncoder::new(ctx.clone())?);
+        if has_pkey {
             let mut writers = Vec::with_capacity(self.num_shards);
             for shard in 0..self.num_shards {
                 writers.push(open_temp_row_writer(
                     &self.target,
-                    &temp_pkey_path(&table.name, shard),
+                    &temp_pkey_path(&table.name, shard, file_idx),
                 )?);
             }
             *pkey_writers = Some(writers);
@@ -1026,7 +1221,7 @@ impl IngestContext {
             for shard in 0..self.num_shards {
                 writers.push(open_temp_row_writer(
                     &self.target,
-                    &temp_fkey_path(&table.name, rel, shard),
+                    &temp_fkey_path(&table.name, rel, shard, file_idx),
                 )?);
             }
             fkey_writers.insert(rel.clone(), writers);
@@ -1228,16 +1423,21 @@ impl IngestContext {
         let dst_fk_idx = column_index(table, &edge.dst_fk.column)?;
         let src_fk_col = column_spec(table, &edge.src_fk.column)?;
         let dst_fk_col = column_spec(table, &edge.dst_fk.column)?;
-        let mut forward_writers: Vec<TempRowWriter> = Vec::new();
-        let mut reverse_writers: Vec<TempRowWriter> = Vec::new();
-        self.init_edge_temp_writers(&table.name, &mut forward_writers, &mut reverse_writers)?;
         let schema = table_schema(table)?;
 
-        for path in &table.paths {
+        for (file_idx, path) in table.paths.iter().enumerate() {
             if !is_cloud_path(path) && !Path::new(path).exists() {
                 return Err(anyhow!("input path not found {}", path));
             }
             let local = localize_input(path)?;
+            let mut forward_writers: Vec<TempRowWriter> = Vec::new();
+            let mut reverse_writers: Vec<TempRowWriter> = Vec::new();
+            self.init_edge_temp_writers(
+                &table.name,
+                file_idx,
+                &mut forward_writers,
+                &mut reverse_writers,
+            )?;
             match table.format {
                 TableFormat::Parquet => {
                     let file = fs::File::open(&local.path)
@@ -1335,6 +1535,24 @@ impl IngestContext {
                     }
                 }
             }
+            for shard in 0..self.num_shards {
+                let rows = finish_temp_writer(forward_writers.remove(0))?;
+                let meta_path = temp_edge_meta_path(
+                    &format!("edge_{}_src_to_dst", table.name),
+                    shard,
+                    file_idx,
+                );
+                write_temp_meta(&self.target, &meta_path, rows)?;
+            }
+            for shard in 0..self.num_shards {
+                let rows = finish_temp_writer(reverse_writers.remove(0))?;
+                let meta_path = temp_edge_meta_path(
+                    &format!("edge_{}_dst_to_src", table.name),
+                    shard,
+                    file_idx,
+                );
+                write_temp_meta(&self.target, &meta_path, rows)?;
+            }
             self.emit_progress(ProgressEvent {
                 phase: ProgressPhase::Temp,
                 table: table.name.clone(),
@@ -1344,24 +1562,13 @@ impl IngestContext {
                 total: Some(table.paths.len() as u64),
             });
         }
-
-        let ctx_bytes: [u8; 0] = [];
-        for shard in 0..self.num_shards {
-            let rows = finish_temp_writer(forward_writers.remove(0))?;
-            let meta_path = temp_edge_meta_path(&format!("edge_{}_src_to_dst", table.name), shard);
-            write_temp_meta(&self.target, &meta_path, rows, &ctx_bytes)?;
-        }
-        for shard in 0..self.num_shards {
-            let rows = finish_temp_writer(reverse_writers.remove(0))?;
-            let meta_path = temp_edge_meta_path(&format!("edge_{}_dst_to_src", table.name), shard);
-            write_temp_meta(&self.target, &meta_path, rows, &ctx_bytes)?;
-        }
         Ok(())
     }
 
     fn init_edge_temp_writers(
         &self,
         table_name: &str,
+        file_idx: usize,
         forward_writers: &mut Vec<TempRowWriter>,
         reverse_writers: &mut Vec<TempRowWriter>,
     ) -> Result<()> {
@@ -1370,11 +1577,11 @@ impl IngestContext {
         for shard in 0..self.num_shards {
             forward_writers.push(open_temp_row_writer(
                 &self.target,
-                &temp_edge_path(&forward_name, shard),
+                &temp_edge_path(&forward_name, shard, file_idx),
             )?);
             reverse_writers.push(open_temp_row_writer(
                 &self.target,
-                &temp_edge_path(&reverse_name, shard),
+                &temp_edge_path(&reverse_name, shard, file_idx),
             )?);
         }
         Ok(())
@@ -1442,6 +1649,7 @@ impl IngestContext {
                 None;
                 self.num_shards
             ]));
+            let file_count = table.paths.len();
             for shard in 0..self.num_shards {
                 let limiter = Arc::clone(&limiter);
                 let target = std::sync::Arc::clone(&self.target);
@@ -1453,34 +1661,44 @@ impl IngestContext {
                 let duplicate_samples = std::sync::Arc::clone(&duplicate_samples);
                 let estimate = estimate_pk_map_bytes(&pk_col, shard_rows[shard] as usize);
                 let root = root.clone();
+                let pkey_ctx_rel = temp_pkey_context_path(&table.name);
                 tasks.push(WorkItem {
                     bucket: Some(pk_map_time.clone()),
                     run: Box::new(move || {
                         let _permit = limiter.acquire(estimate);
-                        let pkey_path = temp_pkey_path(&table_name, shard);
-                        let pkey_meta = temp_pkey_meta_path(&table_name, shard);
-                        let meta_path = root.join(&pkey_meta);
-                        let meta = read_temp_meta(&meta_path)?;
-                        let ctx = diskgraph_rowpack::RowPackContext::from_bytes(&meta.context)?;
+                        let ctx_path = root.join(&pkey_ctx_rel);
+                        let ctx_bytes = fs::read(&ctx_path)
+                            .with_context(|| format!("read {}", ctx_path.display()))?;
+                        let ctx = diskgraph_rowpack::RowPackContext::from_bytes(&ctx_bytes)?;
                         let decoder = RowPackDecoder::new(ctx)?;
                         let key_type = key_type_for_column(&pk_col)?;
                         let mapping_kind = match key_type {
                             KeyType::VarBytes => MappingKind::Hash,
                             _ => MappingKind::Sorted,
                         };
+                        let mut total_rows = 0u64;
+                        for file_idx in 0..file_count {
+                            let meta_path =
+                                root.join(temp_pkey_meta_path(&table_name, shard, file_idx));
+                            let meta = read_temp_meta(&meta_path)?;
+                            total_rows = total_rows.saturating_add(meta.row_count);
+                        }
                         let mut pk_map =
-                            PkMap::new(mapping_kind, key_type, meta.row_count as usize);
-                        let data_path = root.join(&pkey_path);
+                            PkMap::new(mapping_kind, key_type, total_rows as usize);
                         let mut row_id = 0u64;
                         let mut scratch = RowPackDecodeScratch::default();
-                        read_temp_rows(&data_path, |row| {
-                            let value = decoder.decode_column_value(row, 0, &mut scratch)?;
-                            if let Ok(key) = key_from_value_ref(&value, &pk_col) {
-                                pk_map.insert(key, row_id)?;
-                            }
-                            row_id += 1;
-                            Ok(())
-                        })?;
+                        for file_idx in 0..file_count {
+                            let data_path =
+                                root.join(temp_pkey_path(&table_name, shard, file_idx));
+                            read_temp_rows(&data_path, |row| {
+                                let value = decoder.decode_column_value(row, 0, &mut scratch)?;
+                                if let Ok(key) = key_from_value_ref(&value, &pk_col) {
+                                    pk_map.insert(key, row_id)?;
+                                }
+                                row_id += 1;
+                                Ok(())
+                            })?;
+                        }
                         pk_map.finalize();
                         if pk_map.duplicate_count() > 0 {
                             let key = format!("{}:shard-{:05}", table_name, shard);
@@ -1602,11 +1820,12 @@ impl IngestContext {
                 .get(&table.name)
                 .cloned()
                 .unwrap_or_else(|| vec![0; self.num_shards]);
+            let ctx_path = root.join(temp_node_context_path(&table.name));
+            let ctx_bytes = fs::read(&ctx_path)
+                .with_context(|| format!("read {}", ctx_path.display()))?;
+            let node_ctx = diskgraph_rowpack::RowPackContext::from_bytes(&ctx_bytes)?;
+            let file_count = table.paths.len();
             for shard in 0..self.num_shards {
-                let temp_path = root.join(temp_node_data_path(&table.name, shard));
-                let meta_path = root.join(temp_node_data_meta_path(&table.name, shard));
-                let meta = read_temp_meta(&meta_path)?;
-                let node_ctx = diskgraph_rowpack::RowPackContext::from_bytes(&meta.context)?;
                 let out_rel = temp_node_shard_output_path(&table.name, shard);
                 let out_path = self.target.join(&out_rel);
                 if let OutputTarget::Local { .. } = &*self.target {
@@ -1619,30 +1838,34 @@ impl IngestContext {
                 writer.write_all(&NODE_BIN_MAGIC)?;
                 writer.write_all(&[NODE_BIN_VERSION, NODE_BIN_LEN_WIDTH, 0u8, 0u8])?;
                 let mut pending = 0u64;
-                read_temp_rows(&temp_path, |row| {
-                    pending = pending.saturating_add(1);
-                    if pending >= PROGRESS_ROW_BATCH {
-                        self.emit_progress(ProgressEvent {
-                            phase: ProgressPhase::Build,
-                            table: table.name.clone(),
-                            shard: None,
-                            kind: ProgressKind::Advance,
-                            delta: pending,
-                            total: Some(total_rows),
-                        });
-                        pending = 0;
-                    }
-                    if row.len() > MAX_NODE_DATA_LEN {
-                        return Err(anyhow!("temp node data exceeds limit"));
-                    }
-                    let len = u16::try_from(row.len())
-                        .map_err(|_| anyhow!("temp node data too large"))?;
-                    writer.write_all(&len.to_le_bytes())?;
-                    if len > 0 {
-                        writer.write_all(row)?;
-                    }
-                    Ok(())
-                })?;
+                for file_idx in 0..file_count {
+                    let temp_path =
+                        root.join(temp_node_data_path(&table.name, shard, file_idx));
+                    read_temp_rows(&temp_path, |row| {
+                        pending = pending.saturating_add(1);
+                        if pending >= PROGRESS_ROW_BATCH {
+                            self.emit_progress(ProgressEvent {
+                                phase: ProgressPhase::Build,
+                                table: table.name.clone(),
+                                shard: None,
+                                kind: ProgressKind::Advance,
+                                delta: pending,
+                                total: Some(total_rows),
+                            });
+                            pending = 0;
+                        }
+                        if row.len() > MAX_NODE_DATA_LEN {
+                            return Err(anyhow!("temp node data exceeds limit"));
+                        }
+                        let len = u16::try_from(row.len())
+                            .map_err(|_| anyhow!("temp node data too large"))?;
+                        writer.write_all(&len.to_le_bytes())?;
+                        if len > 0 {
+                            writer.write_all(row)?;
+                        }
+                        Ok(())
+                    })?;
+                }
                 if pending > 0 {
                     self.emit_progress(ProgressEvent {
                         phase: ProgressPhase::Build,
@@ -1714,12 +1937,19 @@ impl IngestContext {
             max_ids.insert(table.clone(), max_id);
         }
         for rel in &self.relationships {
+            let file_count = table_by_name(&self.source, &rel.src_table)?.paths.len();
             let mut rel_total_rows = 0u64;
             for shard in 0..self.num_shards {
-                let fkey_meta =
-                    root.join(temp_fkey_meta_path(&rel.src_table, &rel.name_forward, shard));
-                let meta = read_temp_meta(&fkey_meta)?;
-                rel_total_rows = rel_total_rows.saturating_add(meta.row_count);
+                for file_idx in 0..file_count {
+                    let fkey_meta = root.join(temp_fkey_meta_path(
+                        &rel.src_table,
+                        &rel.name_forward,
+                        shard,
+                        file_idx,
+                    ));
+                    let meta = read_temp_meta(&fkey_meta)?;
+                    rel_total_rows = rel_total_rows.saturating_add(meta.row_count);
+                }
             }
             self.emit_progress(ProgressEvent {
                 phase: ProgressPhase::Build,
@@ -1753,11 +1983,17 @@ impl IngestContext {
                 .get(&rel.dst_table)
                 .ok_or_else(|| anyhow!("missing pk maps for {}", rel.dst_table))?;
             for shard in 0..self.num_shards {
-                let fkey_path =
-                    root.join(temp_fkey_path(&rel.src_table, &rel.name_forward, shard));
-                let fkey_meta =
-                    root.join(temp_fkey_meta_path(&rel.src_table, &rel.name_forward, shard));
-                let meta = read_temp_meta(&fkey_meta)?;
+                let mut total_rows = 0u64;
+                for file_idx in 0..file_count {
+                    let fkey_meta = root.join(temp_fkey_meta_path(
+                        &rel.src_table,
+                        &rel.name_forward,
+                        shard,
+                        file_idx,
+                    ));
+                    let meta = read_temp_meta(&fkey_meta)?;
+                    total_rows = total_rows.saturating_add(meta.row_count);
+                }
                 let forward_rel = temp_edge_shard_output_path(&rel.name_forward, shard);
                 let reverse_rel = temp_edge_shard_output_path(&rel.name_reverse, shard);
                 let forward_path = self.target.join(&forward_rel);
@@ -1784,7 +2020,7 @@ impl IngestContext {
                 );
                 let mut forward_edges = Vec::new();
                 let mut reverse_edges = Vec::new();
-                if let Ok(capacity) = usize::try_from(meta.row_count) {
+                if let Ok(capacity) = usize::try_from(total_rows) {
                     forward_edges.reserve(capacity);
                     reverse_edges.reserve(capacity);
                 }
@@ -1795,66 +2031,75 @@ impl IngestContext {
                 let mut count = 0u64;
                 let mut scratch = [0u8; 16];
                 let mut pending = 0u64;
-                read_temp_rows(&fkey_path, |row| {
-                    pending = pending.saturating_add(1);
-                    if pending >= PROGRESS_ROW_BATCH {
-                        self.emit_progress(ProgressEvent {
-                            phase: ProgressPhase::Build,
-                            table: rel.name_forward.clone(),
-                            shard: None,
-                            kind: ProgressKind::Advance,
-                            delta: pending,
-                            total: Some(rel_total_rows),
-                        });
-                        self.emit_progress(ProgressEvent {
-                            phase: ProgressPhase::Build,
-                            table: rel.name_reverse.clone(),
-                            shard: None,
-                            kind: ProgressKind::Advance,
-                            delta: pending,
-                            total: Some(rel_total_rows),
-                        });
-                        pending = 0;
-                    }
-                    let mut data = row;
-                    let dst_key = read_key_from_buf(&mut data, src_fk_col)
-                        .map_err(|_| anyhow!("fk parse"))?;
-                    let dst_shard = shard_for_key(key_hash_bytes(&dst_key, &mut scratch), self.num_shards);
-                    let src_id = src_offsets[shard].saturating_add(count);
-                    let dst_local = dst_maps
-                        .get(dst_shard)
-                        .and_then(|map| map.lookup(&dst_key))
-                        .ok_or_else(|| anyhow!("missing dst key"))?;
-                    let dst_id = dst_offsets
-                        .get(dst_shard)
-                        .copied()
-                        .unwrap_or(0)
-                        .saturating_add(dst_local);
-                    if let Some(prev) = forward_prev_src {
-                        if src_id < prev {
-                            forward_sorted = false;
+                for file_idx in 0..file_count {
+                    let fkey_path = root.join(temp_fkey_path(
+                        &rel.src_table,
+                        &rel.name_forward,
+                        shard,
+                        file_idx,
+                    ));
+                    read_temp_rows(&fkey_path, |row| {
+                        pending = pending.saturating_add(1);
+                        if pending >= PROGRESS_ROW_BATCH {
+                            self.emit_progress(ProgressEvent {
+                                phase: ProgressPhase::Build,
+                                table: rel.name_forward.clone(),
+                                shard: None,
+                                kind: ProgressKind::Advance,
+                                delta: pending,
+                                total: Some(rel_total_rows),
+                            });
+                            self.emit_progress(ProgressEvent {
+                                phase: ProgressPhase::Build,
+                                table: rel.name_reverse.clone(),
+                                shard: None,
+                                kind: ProgressKind::Advance,
+                                delta: pending,
+                                total: Some(rel_total_rows),
+                            });
+                            pending = 0;
                         }
-                    }
-                    forward_prev_src = Some(src_id);
-                    forward_edges.push(EdgeRecord {
-                        src_id,
-                        dst_id,
-                        sort_key: 0,
-                    });
-                    if let Some(prev) = reverse_prev_src {
-                        if dst_id < prev {
-                            reverse_sorted = false;
+                        let mut data = row;
+                        let dst_key = read_key_from_buf(&mut data, src_fk_col)
+                            .map_err(|_| anyhow!("fk parse"))?;
+                        let dst_shard =
+                            shard_for_key(key_hash_bytes(&dst_key, &mut scratch), self.num_shards);
+                        let src_id = src_offsets[shard].saturating_add(count);
+                        let dst_local = dst_maps
+                            .get(dst_shard)
+                            .and_then(|map| map.lookup(&dst_key))
+                            .ok_or_else(|| anyhow!("missing dst key"))?;
+                        let dst_id = dst_offsets
+                            .get(dst_shard)
+                            .copied()
+                            .unwrap_or(0)
+                            .saturating_add(dst_local);
+                        if let Some(prev) = forward_prev_src {
+                            if src_id < prev {
+                                forward_sorted = false;
+                            }
                         }
-                    }
-                    reverse_prev_src = Some(dst_id);
-                    reverse_edges.push(EdgeRecord {
-                        src_id: dst_id,
-                        dst_id: src_id,
-                        sort_key: 0,
-                    });
-                    count += 1;
-                    Ok(())
-                })?;
+                        forward_prev_src = Some(src_id);
+                        forward_edges.push(EdgeRecord {
+                            src_id,
+                            dst_id,
+                            sort_key: 0,
+                        });
+                        if let Some(prev) = reverse_prev_src {
+                            if dst_id < prev {
+                                reverse_sorted = false;
+                            }
+                        }
+                        reverse_prev_src = Some(dst_id);
+                        reverse_edges.push(EdgeRecord {
+                            src_id: dst_id,
+                            dst_id: src_id,
+                            sort_key: 0,
+                        });
+                        count += 1;
+                        Ok(())
+                    })?;
+                }
                 if pending > 0 {
                     self.emit_progress(ProgressEvent {
                         phase: ProgressPhase::Build,
@@ -1915,13 +2160,20 @@ impl IngestContext {
                 .ok_or_else(|| anyhow!("missing edge table spec for {}", table.name))?;
             let forward_name = format!("edge_{}_src_to_dst", table.name);
             let reverse_name = format!("edge_{}_dst_to_src", table.name);
+            let file_count = table.paths.len();
             let mut forward_total = 0u64;
             let mut reverse_total = 0u64;
             for shard in 0..self.num_shards {
-                let meta = read_temp_meta(&root.join(temp_edge_meta_path(&forward_name, shard)))?;
-                forward_total = forward_total.saturating_add(meta.row_count);
-                let meta = read_temp_meta(&root.join(temp_edge_meta_path(&reverse_name, shard)))?;
-                reverse_total = reverse_total.saturating_add(meta.row_count);
+                for file_idx in 0..file_count {
+                    let meta = read_temp_meta(
+                        &root.join(temp_edge_meta_path(&forward_name, shard, file_idx)),
+                    )?;
+                    forward_total = forward_total.saturating_add(meta.row_count);
+                    let meta = read_temp_meta(
+                        &root.join(temp_edge_meta_path(&reverse_name, shard, file_idx)),
+                    )?;
+                    reverse_total = reverse_total.saturating_add(meta.row_count);
+                }
             }
             self.emit_progress(ProgressEvent {
                 phase: ProgressPhase::Build,
@@ -1968,9 +2220,13 @@ impl IngestContext {
                 .cloned()
                 .unwrap_or_else(|| vec![0; self.num_shards]);
             for shard in 0..self.num_shards {
-                let forward_path = root.join(temp_edge_path(&forward_name, shard));
-                let forward_meta =
-                    read_temp_meta(&root.join(temp_edge_meta_path(&forward_name, shard)))?;
+                let mut forward_rows = 0u64;
+                for file_idx in 0..file_count {
+                    let meta = read_temp_meta(
+                        &root.join(temp_edge_meta_path(&forward_name, shard, file_idx)),
+                    )?;
+                    forward_rows = forward_rows.saturating_add(meta.row_count);
+                }
                 let out_rel = temp_edge_shard_output_path(&forward_name, shard);
                 let out_path = self.target.join(&out_rel);
                 if let OutputTarget::Local { .. } = &*self.target {
@@ -1991,7 +2247,7 @@ impl IngestContext {
                     forward_sort_bits,
                 );
                 let mut forward_edges = Vec::new();
-                if let Ok(capacity) = usize::try_from(forward_meta.row_count) {
+                if let Ok(capacity) = usize::try_from(forward_rows) {
                     forward_edges.reserve(capacity);
                 }
                 let mut forward_sorted = true;
@@ -1999,60 +2255,63 @@ impl IngestContext {
                 let mut count = 0u64;
                 let mut scratch = [0u8; 16];
                 let mut pending = 0u64;
-                read_temp_rows(&forward_path, |row| {
-                    pending = pending.saturating_add(1);
-                    if pending >= PROGRESS_ROW_BATCH {
-                        self.emit_progress(ProgressEvent {
-                            phase: ProgressPhase::Build,
-                            table: forward_name.clone(),
-                            shard: None,
-                            kind: ProgressKind::Advance,
-                            delta: pending,
-                            total: Some(forward_total),
-                        });
-                        pending = 0;
-                    }
-                    let mut data = row;
-                    let src_key = read_key_from_buf(&mut data, src_pk_col)
-                        .map_err(|_| anyhow!("src key parse"))?;
-                    let dst_key = read_key_from_buf(&mut data, dst_pk_col)
-                        .map_err(|_| anyhow!("dst key parse"))?;
-                    let src_shard =
-                        shard_for_key(key_hash_bytes(&src_key, &mut scratch), self.num_shards);
-                    let dst_shard =
-                        shard_for_key(key_hash_bytes(&dst_key, &mut scratch), self.num_shards);
-                    let src_local = src_maps
-                        .get(src_shard)
-                        .and_then(|map| map.lookup(&src_key))
-                        .ok_or_else(|| anyhow!("missing src key"))?;
-                    let dst_local = dst_maps
-                        .get(dst_shard)
-                        .and_then(|map| map.lookup(&dst_key))
-                        .ok_or_else(|| anyhow!("missing dst key"))?;
-                    let src_id = src_offsets
-                        .get(src_shard)
-                        .copied()
-                        .unwrap_or(0)
-                        .saturating_add(src_local);
-                    let dst_id = dst_offsets
-                        .get(dst_shard)
-                        .copied()
-                        .unwrap_or(0)
-                        .saturating_add(dst_local);
-                    if let Some(prev) = forward_prev_src {
-                        if src_id < prev {
-                            forward_sorted = false;
+                for file_idx in 0..file_count {
+                    let forward_path = root.join(temp_edge_path(&forward_name, shard, file_idx));
+                    read_temp_rows(&forward_path, |row| {
+                        pending = pending.saturating_add(1);
+                        if pending >= PROGRESS_ROW_BATCH {
+                            self.emit_progress(ProgressEvent {
+                                phase: ProgressPhase::Build,
+                                table: forward_name.clone(),
+                                shard: None,
+                                kind: ProgressKind::Advance,
+                                delta: pending,
+                                total: Some(forward_total),
+                            });
+                            pending = 0;
                         }
-                    }
-                    forward_prev_src = Some(src_id);
-                    forward_edges.push(EdgeRecord {
-                        src_id,
-                        dst_id,
-                        sort_key: 0,
-                    });
-                    count += 1;
-                    Ok(())
-                })?;
+                        let mut data = row;
+                        let src_key = read_key_from_buf(&mut data, src_pk_col)
+                            .map_err(|_| anyhow!("src key parse"))?;
+                        let dst_key = read_key_from_buf(&mut data, dst_pk_col)
+                            .map_err(|_| anyhow!("dst key parse"))?;
+                        let src_shard =
+                            shard_for_key(key_hash_bytes(&src_key, &mut scratch), self.num_shards);
+                        let dst_shard =
+                            shard_for_key(key_hash_bytes(&dst_key, &mut scratch), self.num_shards);
+                        let src_local = src_maps
+                            .get(src_shard)
+                            .and_then(|map| map.lookup(&src_key))
+                            .ok_or_else(|| anyhow!("missing src key"))?;
+                        let dst_local = dst_maps
+                            .get(dst_shard)
+                            .and_then(|map| map.lookup(&dst_key))
+                            .ok_or_else(|| anyhow!("missing dst key"))?;
+                        let src_id = src_offsets
+                            .get(src_shard)
+                            .copied()
+                            .unwrap_or(0)
+                            .saturating_add(src_local);
+                        let dst_id = dst_offsets
+                            .get(dst_shard)
+                            .copied()
+                            .unwrap_or(0)
+                            .saturating_add(dst_local);
+                        if let Some(prev) = forward_prev_src {
+                            if src_id < prev {
+                                forward_sorted = false;
+                            }
+                        }
+                        forward_prev_src = Some(src_id);
+                        forward_edges.push(EdgeRecord {
+                            src_id,
+                            dst_id,
+                            sort_key: 0,
+                        });
+                        count += 1;
+                        Ok(())
+                    })?;
+                }
                 if pending > 0 {
                     self.emit_progress(ProgressEvent {
                         phase: ProgressPhase::Build,
@@ -2072,9 +2331,13 @@ impl IngestContext {
                 )?;
                 edge_counts.insert(forward_name.clone(), count);
 
-                let reverse_path = root.join(temp_edge_path(&reverse_name, shard));
-                let reverse_meta =
-                    read_temp_meta(&root.join(temp_edge_meta_path(&reverse_name, shard)))?;
+                let mut reverse_rows = 0u64;
+                for file_idx in 0..file_count {
+                    let meta = read_temp_meta(
+                        &root.join(temp_edge_meta_path(&reverse_name, shard, file_idx)),
+                    )?;
+                    reverse_rows = reverse_rows.saturating_add(meta.row_count);
+                }
                 let out_rel = temp_edge_shard_output_path(&reverse_name, shard);
                 let out_path = self.target.join(&out_rel);
                 if let OutputTarget::Local { .. } = &*self.target {
@@ -2095,7 +2358,7 @@ impl IngestContext {
                     reverse_sort_bits,
                 );
                 let mut reverse_edges = Vec::new();
-                if let Ok(capacity) = usize::try_from(reverse_meta.row_count) {
+                if let Ok(capacity) = usize::try_from(reverse_rows) {
                     reverse_edges.reserve(capacity);
                 }
                 let mut reverse_sorted = true;
@@ -2103,60 +2366,63 @@ impl IngestContext {
                 let mut count = 0u64;
                 let mut scratch = [0u8; 16];
                 let mut pending = 0u64;
-                read_temp_rows(&reverse_path, |row| {
-                    pending = pending.saturating_add(1);
-                    if pending >= PROGRESS_ROW_BATCH {
-                        self.emit_progress(ProgressEvent {
-                            phase: ProgressPhase::Build,
-                            table: reverse_name.clone(),
-                            shard: None,
-                            kind: ProgressKind::Advance,
-                            delta: pending,
-                            total: Some(reverse_total),
-                        });
-                        pending = 0;
-                    }
-                    let mut data = row;
-                    let dst_key = read_key_from_buf(&mut data, dst_pk_col)
-                        .map_err(|_| anyhow!("dst key parse"))?;
-                    let src_key = read_key_from_buf(&mut data, src_pk_col)
-                        .map_err(|_| anyhow!("src key parse"))?;
-                    let dst_shard =
-                        shard_for_key(key_hash_bytes(&dst_key, &mut scratch), self.num_shards);
-                    let src_shard =
-                        shard_for_key(key_hash_bytes(&src_key, &mut scratch), self.num_shards);
-                    let dst_local = dst_maps
-                        .get(dst_shard)
-                        .and_then(|map| map.lookup(&dst_key))
-                        .ok_or_else(|| anyhow!("missing dst key"))?;
-                    let src_local = src_maps
-                        .get(src_shard)
-                        .and_then(|map| map.lookup(&src_key))
-                        .ok_or_else(|| anyhow!("missing src key"))?;
-                    let dst_id = dst_offsets
-                        .get(dst_shard)
-                        .copied()
-                        .unwrap_or(0)
-                        .saturating_add(dst_local);
-                    let src_id = src_offsets
-                        .get(src_shard)
-                        .copied()
-                        .unwrap_or(0)
-                        .saturating_add(src_local);
-                    if let Some(prev) = reverse_prev_src {
-                        if dst_id < prev {
-                            reverse_sorted = false;
+                for file_idx in 0..file_count {
+                    let reverse_path = root.join(temp_edge_path(&reverse_name, shard, file_idx));
+                    read_temp_rows(&reverse_path, |row| {
+                        pending = pending.saturating_add(1);
+                        if pending >= PROGRESS_ROW_BATCH {
+                            self.emit_progress(ProgressEvent {
+                                phase: ProgressPhase::Build,
+                                table: reverse_name.clone(),
+                                shard: None,
+                                kind: ProgressKind::Advance,
+                                delta: pending,
+                                total: Some(reverse_total),
+                            });
+                            pending = 0;
                         }
-                    }
-                    reverse_prev_src = Some(dst_id);
-                    reverse_edges.push(EdgeRecord {
-                        src_id: dst_id,
-                        dst_id: src_id,
-                        sort_key: 0,
-                    });
-                    count += 1;
-                    Ok(())
-                })?;
+                        let mut data = row;
+                        let dst_key = read_key_from_buf(&mut data, dst_pk_col)
+                            .map_err(|_| anyhow!("dst key parse"))?;
+                        let src_key = read_key_from_buf(&mut data, src_pk_col)
+                            .map_err(|_| anyhow!("src key parse"))?;
+                        let dst_shard =
+                            shard_for_key(key_hash_bytes(&dst_key, &mut scratch), self.num_shards);
+                        let src_shard =
+                            shard_for_key(key_hash_bytes(&src_key, &mut scratch), self.num_shards);
+                        let dst_local = dst_maps
+                            .get(dst_shard)
+                            .and_then(|map| map.lookup(&dst_key))
+                            .ok_or_else(|| anyhow!("missing dst key"))?;
+                        let src_local = src_maps
+                            .get(src_shard)
+                            .and_then(|map| map.lookup(&src_key))
+                            .ok_or_else(|| anyhow!("missing src key"))?;
+                        let dst_id = dst_offsets
+                            .get(dst_shard)
+                            .copied()
+                            .unwrap_or(0)
+                            .saturating_add(dst_local);
+                        let src_id = src_offsets
+                            .get(src_shard)
+                            .copied()
+                            .unwrap_or(0)
+                            .saturating_add(src_local);
+                        if let Some(prev) = reverse_prev_src {
+                            if dst_id < prev {
+                                reverse_sorted = false;
+                            }
+                        }
+                        reverse_prev_src = Some(dst_id);
+                        reverse_edges.push(EdgeRecord {
+                            src_id: dst_id,
+                            dst_id: src_id,
+                            sort_key: 0,
+                        });
+                        count += 1;
+                        Ok(())
+                    })?;
+                }
                 if pending > 0 {
                     self.emit_progress(ProgressEvent {
                         phase: ProgressPhase::Build,
@@ -2248,8 +2514,14 @@ impl IngestContext {
                     None => continue,
                 };
                 match name {
-                    "node_data.bin" | "node_data.ctx" | "pkey.bin" | "pkey.ctx" | "rows.bin"
-                    | "rows.ctx" => {
+                    "node_data.bin"
+                    | "node_data.ctx"
+                    | "node_data.meta"
+                    | "pkey.bin"
+                    | "pkey.ctx"
+                    | "pkey.meta"
+                    | "rows.bin"
+                    | "rows.meta" => {
                         let _ = fs::remove_file(&path);
                     }
                     _ => {}
@@ -2539,20 +2811,48 @@ fn temp_node_shard_dir(name: &str, shard: usize) -> String {
     )
 }
 
-fn temp_node_data_path(name: &str, shard: usize) -> String {
-    format!("{}/node_data.bin", temp_node_shard_dir(name, shard))
+fn temp_node_data_path(name: &str, shard: usize, file_idx: usize) -> String {
+    format!(
+        "{}/file-{:05}/node_data.bin",
+        temp_node_shard_dir(name, shard),
+        file_idx
+    )
 }
 
-fn temp_node_data_meta_path(name: &str, shard: usize) -> String {
-    format!("{}/node_data.ctx", temp_node_shard_dir(name, shard))
+fn temp_node_data_meta_path(name: &str, shard: usize, file_idx: usize) -> String {
+    format!(
+        "{}/file-{:05}/node_data.meta",
+        temp_node_shard_dir(name, shard),
+        file_idx
+    )
 }
 
-fn temp_pkey_path(name: &str, shard: usize) -> String {
-    format!("{}/pkey.bin", temp_node_shard_dir(name, shard))
+fn temp_node_context_path(name: &str) -> String {
+    format!("{}/nodes/{}/node_data.ctx", TEMP_DIR_NAME, name.to_lowercase())
 }
 
-fn temp_pkey_meta_path(name: &str, shard: usize) -> String {
-    format!("{}/pkey.ctx", temp_node_shard_dir(name, shard))
+fn node_context_output_path(name: &str) -> String {
+    format!("nodes/{}/node_data.ctx", name.to_lowercase())
+}
+
+fn temp_pkey_path(name: &str, shard: usize, file_idx: usize) -> String {
+    format!(
+        "{}/file-{:05}/pkey.bin",
+        temp_node_shard_dir(name, shard),
+        file_idx
+    )
+}
+
+fn temp_pkey_meta_path(name: &str, shard: usize, file_idx: usize) -> String {
+    format!(
+        "{}/file-{:05}/pkey.meta",
+        temp_node_shard_dir(name, shard),
+        file_idx
+    )
+}
+
+fn temp_pkey_context_path(name: &str) -> String {
+    format!("{}/nodes/{}/pkey.ctx", TEMP_DIR_NAME, name.to_lowercase())
 }
 
 fn temp_fkey_shard_dir(table: &str, rel: &str, shard: usize) -> String {
@@ -2565,12 +2865,20 @@ fn temp_fkey_shard_dir(table: &str, rel: &str, shard: usize) -> String {
     )
 }
 
-fn temp_fkey_path(table: &str, rel: &str, shard: usize) -> String {
-    format!("{}/rows.bin", temp_fkey_shard_dir(table, rel, shard))
+fn temp_fkey_path(table: &str, rel: &str, shard: usize, file_idx: usize) -> String {
+    format!(
+        "{}/file-{:05}/rows.bin",
+        temp_fkey_shard_dir(table, rel, shard),
+        file_idx
+    )
 }
 
-fn temp_fkey_meta_path(table: &str, rel: &str, shard: usize) -> String {
-    format!("{}/rows.ctx", temp_fkey_shard_dir(table, rel, shard))
+fn temp_fkey_meta_path(table: &str, rel: &str, shard: usize, file_idx: usize) -> String {
+    format!(
+        "{}/file-{:05}/rows.meta",
+        temp_fkey_shard_dir(table, rel, shard),
+        file_idx
+    )
 }
 
 fn temp_edge_shard_dir(rel: &str, shard: usize) -> String {
@@ -2582,28 +2890,30 @@ fn temp_edge_shard_dir(rel: &str, shard: usize) -> String {
     )
 }
 
-fn temp_edge_path(rel: &str, shard: usize) -> String {
-    format!("{}/rows.bin", temp_edge_shard_dir(rel, shard))
+fn temp_edge_path(rel: &str, shard: usize, file_idx: usize) -> String {
+    format!(
+        "{}/file-{:05}/rows.bin",
+        temp_edge_shard_dir(rel, shard),
+        file_idx
+    )
 }
 
-fn temp_edge_meta_path(rel: &str, shard: usize) -> String {
-    format!("{}/rows.ctx", temp_edge_shard_dir(rel, shard))
+fn temp_edge_meta_path(rel: &str, shard: usize, file_idx: usize) -> String {
+    format!(
+        "{}/file-{:05}/rows.meta",
+        temp_edge_shard_dir(rel, shard),
+        file_idx
+    )
 }
 
-fn write_temp_meta(
-    target: &OutputTarget,
-    rel_path: &str,
-    row_count: u64,
-    context: &[u8],
-) -> Result<()> {
-    let mut payload = Vec::with_capacity(16 + context.len());
+fn write_temp_meta(target: &OutputTarget, rel_path: &str, row_count: u64) -> Result<()> {
+    let mut payload = Vec::with_capacity(16);
     payload.extend_from_slice(&TEMP_META_MAGIC);
     payload.push(TEMP_META_VERSION);
     payload.push(0u8);
     payload.extend_from_slice(&row_count.to_le_bytes());
-    let ctx_len = context.len() as u32;
+    let ctx_len = 0u32;
     payload.extend_from_slice(&ctx_len.to_le_bytes());
-    payload.extend_from_slice(context);
     target.write_bytes(rel_path, payload)
 }
 
@@ -2623,10 +2933,7 @@ fn read_temp_meta(path: &Path) -> Result<TempRowpackMeta> {
     if bytes.len() < 18 + ctx_len {
         return Err(anyhow!("temp meta context truncated"));
     }
-    Ok(TempRowpackMeta {
-        row_count,
-        context: bytes[18..18 + ctx_len].to_vec(),
-    })
+    Ok(TempRowpackMeta { row_count })
 }
 
 fn open_temp_row_writer(target: &OutputTarget, rel_path: &str) -> Result<TempRowWriter> {

@@ -143,8 +143,10 @@ Other Parquet/Arrow types are rejected during ingest.
 
 1) Temp (per table)
    - Read each input file and sample rows to build the rowpack context (one context per table).
+   - Sampling uses only the first input file for that table.
    - Rowpack-encode the table primary key into a temp pkey file per shard (or round-robin when no PK).
    - Rowpack-encode node payloads into temp node data files per shard (written under `_tmp/`).
+   - When a table has multiple input files, temp outputs are split per-file and numbered within each shard.
    - Enforce node data size limits at write time; oversized payloads are written as empty and counted.
    - For each outgoing FK, write temp files containing the encoded FK key (and optional sort key).
    - For explicit edge tables, write temp edge files for forward and reverse directions.
