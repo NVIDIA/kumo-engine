@@ -235,6 +235,91 @@ fn ingest_csv_with_edges_and_rowpack() -> Result<()> {
 }
 
 #[test]
+fn ingest_csv_multi_file_table_with_two_shards() -> Result<()> {
+    let dir = tempdir()?;
+    let input_root = dir.path().join("input");
+    let output_root = dir.path().join("output");
+
+    write_csv(
+        &input_root.join("users_part1.csv"),
+        &["id", "name"],
+        &[
+            vec!["0".into(), "user0001".into()],
+            vec!["1".into(), "user0002".into()],
+        ],
+    )?;
+    write_csv(
+        &input_root.join("users_part2.csv"),
+        &["id", "name"],
+        &[
+            vec!["2".into(), "user0003".into()],
+            vec!["3".into(), "user0004".into()],
+        ],
+    )?;
+    write_csv(
+        &input_root.join("orders.csv"),
+        &["id", "user_id"],
+        &[
+            vec!["0".into(), "1".into()],
+            vec!["1".into(), "3".into()],
+        ],
+    )?;
+
+    let source = serde_json::json!({
+        "dataset_name": "csv_shards_multi_file",
+        "num_shards": 2,
+        "tables": [
+            {
+                "name": "User",
+                "format": "csv",
+                "paths": [
+                    input_root.join("users_part1.csv").to_string_lossy(),
+                    input_root.join("users_part2.csv").to_string_lossy()
+                ],
+                "primary_key": "id",
+                "columns": [
+                    {"name": "id", "source_dtype": "int64", "ingested_dtype": "int64"},
+                    {"name": "name", "source_dtype": "string", "ingested_dtype": "string"}
+                ]
+            },
+            {
+                "name": "Order",
+                "format": "csv",
+                "paths": [input_root.join("orders.csv").to_string_lossy()],
+                "primary_key": "id",
+                "columns": [
+                    {"name": "id", "source_dtype": "int64", "ingested_dtype": "int64"},
+                    {"name": "user_id", "source_dtype": "int64", "ingested_dtype": "int64"}
+                ]
+            }
+        ],
+        "relationships": [
+            {
+                "name": "order_user",
+                "src_table": "Order",
+                "src_column": "user_id",
+                "dst_table": "User",
+                "dst_column": "id"
+            }
+        ]
+    });
+    let source_path = dir.path().join("source_metadata.json");
+    fs::write(&source_path, serde_json::to_vec_pretty(&source)?)?;
+
+    let metadata = ingest(
+        &source_path,
+        output_root.to_str().unwrap(),
+        Dest::Local,
+        IngestOptions {
+            profile_dir: None,
+            progress: None,
+        },
+    )?;
+    assert_eq!(metadata.node_types.len(), 2);
+    Ok(())
+}
+
+#[test]
 fn ingest_parquet_with_sorted_mapping() -> Result<()> {
     let dir = tempdir()?;
     let input_root = dir.path().join("input");
