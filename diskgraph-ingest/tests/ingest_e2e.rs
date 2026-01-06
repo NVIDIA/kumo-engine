@@ -5,10 +5,12 @@ use diskgraph_index::graph::GraphIndexReader;
 use parquet::arrow::ArrowWriter;
 use parquet::file::properties::WriterProperties;
 use std::fs;
+use std::hash::Hasher;
 use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
 use tempfile::tempdir;
+use twox_hash::XxHash64;
 
 use arrow_array::{
     ArrayRef, BinaryArray, Float32Array, Int64Array, RecordBatch, StringArray,
@@ -39,6 +41,35 @@ fn write_parquet(path: &Path, schema: Schema, columns: Vec<ArrayRef>) -> Result<
     writer.write(&batch)?;
     writer.close()?;
     Ok(())
+}
+
+fn build_global_ids(sharded_files: &[Vec<u64>], num_shards: usize) -> std::collections::HashMap<u64, u64> {
+    let mut shard_counts = vec![0u64; num_shards];
+    let mut shard_maps: Vec<std::collections::HashMap<u64, u64>> =
+        (0..num_shards).map(|_| std::collections::HashMap::new()).collect();
+    for file in sharded_files {
+        for &key in file {
+            let mut hasher = XxHash64::with_seed(0);
+            hasher.write(&key.to_le_bytes());
+            let shard = (hasher.finish() as usize) % num_shards;
+            let local = shard_counts[shard];
+            shard_counts[shard] = shard_counts[shard].saturating_add(1);
+            shard_maps[shard].insert(key, local);
+        }
+    }
+    let mut offsets = vec![0u64; num_shards];
+    let mut acc = 0u64;
+    for (idx, count) in shard_counts.iter().enumerate() {
+        offsets[idx] = acc;
+        acc = acc.saturating_add(*count);
+    }
+    let mut out = std::collections::HashMap::new();
+    for shard in 0..num_shards {
+        for (key, local) in shard_maps[shard].iter() {
+            out.insert(*key, offsets[shard].saturating_add(*local));
+        }
+    }
+    out
 }
 
 fn sum_relation_edges(
@@ -240,37 +271,66 @@ fn ingest_csv_multi_file_table_with_two_shards() -> Result<()> {
     let input_root = dir.path().join("input");
     let output_root = dir.path().join("output");
 
+    let mut user_rows_1 = Vec::new();
+    let mut user_rows_2 = Vec::new();
+    for id in 0..10 {
+        user_rows_1.push(vec![id.to_string(), format!("user{:04}", id)]);
+    }
+    for id in 10..20 {
+        user_rows_2.push(vec![id.to_string(), format!("user{:04}", id)]);
+    }
+    let mut order_rows_1 = Vec::new();
+    let mut order_rows_2 = Vec::new();
+    for id in 0..10 {
+        let user_id = (id + 1) % 20;
+        order_rows_1.push(vec![id.to_string(), user_id.to_string()]);
+    }
+    for id in 10..20 {
+        let user_id = (id + 3) % 20;
+        order_rows_2.push(vec![id.to_string(), user_id.to_string()]);
+    }
+    let mut edge_rows_1 = Vec::new();
+    let mut edge_rows_2 = Vec::new();
+    for id in 0..10 {
+        let user_id = (id * 2) % 20;
+        let order_id = (id + 5) % 20;
+        edge_rows_1.push(vec![user_id.to_string(), order_id.to_string()]);
+    }
+    for id in 10..20 {
+        let user_id = (id * 3) % 20;
+        let order_id = (id + 7) % 20;
+        edge_rows_2.push(vec![user_id.to_string(), order_id.to_string()]);
+    }
+
     write_csv(
         &input_root.join("users_part1.csv"),
         &["id", "name"],
-        &[
-            vec!["0".into(), "user0001".into()],
-            vec!["1".into(), "user0002".into()],
-        ],
+        &user_rows_1,
     )?;
     write_csv(
         &input_root.join("users_part2.csv"),
         &["id", "name"],
-        &[
-            vec!["2".into(), "user0003".into()],
-            vec!["3".into(), "user0004".into()],
-        ],
+        &user_rows_2,
     )?;
     write_csv(
         &input_root.join("orders_part1.csv"),
         &["id", "user_id"],
-        &[
-            vec!["0".into(), "1".into()],
-            vec!["1".into(), "2".into()],
-        ],
+        &order_rows_1,
     )?;
     write_csv(
         &input_root.join("orders_part2.csv"),
         &["id", "user_id"],
-        &[
-            vec!["2".into(), "3".into()],
-            vec!["3".into(), "0".into()],
-        ],
+        &order_rows_2,
+    )?;
+    write_csv(
+        &input_root.join("order_links_part1.csv"),
+        &["user_id", "order_id"],
+        &edge_rows_1,
+    )?;
+    write_csv(
+        &input_root.join("order_links_part2.csv"),
+        &["user_id", "order_id"],
+        &edge_rows_2,
     )?;
 
     let source = serde_json::json!({
@@ -302,6 +362,22 @@ fn ingest_csv_multi_file_table_with_two_shards() -> Result<()> {
                     {"name": "id", "source_dtype": "int64", "ingested_dtype": "int64"},
                     {"name": "user_id", "source_dtype": "int64", "ingested_dtype": "int64"}
                 ]
+            },
+            {
+                "name": "OrderLink",
+                "format": "csv",
+                "paths": [
+                    input_root.join("order_links_part1.csv").to_string_lossy(),
+                    input_root.join("order_links_part2.csv").to_string_lossy()
+                ],
+                "edge_table": {
+                    "src_fk": {"column": "user_id", "ref_table": "User", "ref_column": "id"},
+                    "dst_fk": {"column": "order_id", "ref_table": "Order", "ref_column": "id"}
+                },
+                "columns": [
+                    {"name": "user_id", "source_dtype": "int64", "ingested_dtype": "int64"},
+                    {"name": "order_id", "source_dtype": "int64", "ingested_dtype": "int64"}
+                ]
             }
         ],
         "relationships": [
@@ -327,6 +403,48 @@ fn ingest_csv_multi_file_table_with_two_shards() -> Result<()> {
         },
     )?;
     assert_eq!(metadata.node_types.len(), 2);
+    let reader = GraphIndexReader::open(&output_root.join("index_metadata.json"), &output_root)?;
+    let user_table = reader.table("User").unwrap();
+    let order_table = reader.table("Order").unwrap();
+    assert_eq!(user_table.node_count(), 20);
+    assert_eq!(order_table.node_count(), 20);
+    let user_ids = build_global_ids(&[user_rows_1.iter().map(|r| r[0].parse().unwrap()).collect(),
+        user_rows_2.iter().map(|r| r[0].parse().unwrap()).collect()], 2);
+    let order_ids = build_global_ids(&[order_rows_1.iter().map(|r| r[0].parse().unwrap()).collect(),
+        order_rows_2.iter().map(|r| r[0].parse().unwrap()).collect()], 2);
+    let mut expected_edges = 0u64;
+    let rel_idx = user_table
+        .relations()
+        .iter()
+        .position(|rel| rel.name == "edge_OrderLink_src_to_dst")
+        .ok_or_else(|| anyhow!("missing edge relation"))?;
+    for row in edge_rows_1.iter().chain(edge_rows_2.iter()) {
+        let user_key: u64 = row[0].parse().unwrap();
+        let order_key: u64 = row[1].parse().unwrap();
+        let user_id = *user_ids.get(&user_key).unwrap();
+        let order_id = *order_ids.get(&order_key).unwrap();
+        let view = user_table.edges_for_node(user_id)?;
+        let segments = view.relation_segments()?;
+        let segment = &segments[rel_idx];
+        let mut found = false;
+        let entry_bytes = segment.layout.entry_bytes;
+        let mask = segment.layout.dst_mask as u128;
+        for chunk in segment.data.chunks_exact(entry_bytes) {
+            let mut acc: u128 = 0;
+            for (idx, byte) in chunk.iter().enumerate() {
+                acc |= (*byte as u128) << (8 * idx);
+            }
+            let dst_id = (acc & mask) as u64;
+            if dst_id == order_id {
+                found = true;
+                break;
+            }
+        }
+        assert!(found, "missing edge user_id={} order_id={}", user_id, order_id);
+        expected_edges += 1;
+    }
+    let total = sum_relation_edges(&user_table, "edge_OrderLink_src_to_dst")?;
+    assert_eq!(total, expected_edges);
     Ok(())
 }
 
