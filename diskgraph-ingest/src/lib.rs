@@ -2054,6 +2054,7 @@ impl IngestContext {
                             file_idx,
                         ));
                         let mut dst_key = init_key_for_column(&info.dst_pk_col)?;
+                        let mut row_buf: Vec<u8> = Vec::with_capacity(16);
                         read_temp_rows(&pass_a_path, |row| {
                             pending = pending.saturating_add(1);
                             if pending >= PROGRESS_ROW_BATCH {
@@ -2091,10 +2092,10 @@ impl IngestContext {
                                 dst_id: src_id,
                                 sort_key: 0,
                             });
-                            let mut buf = Vec::with_capacity(16);
-                            write_u64_to_buf(&mut buf, src_id);
-                            write_u64_to_buf(&mut buf, dst_id);
-                            write_temp_row(&mut writer, &buf)?;
+                            row_buf.clear();
+                            write_u64_to_buf(&mut row_buf, src_id);
+                            write_u64_to_buf(&mut row_buf, dst_id);
+                            write_temp_row(&mut writer, &row_buf)?;
                             count = count.saturating_add(1);
                             Ok(())
                         })?;
