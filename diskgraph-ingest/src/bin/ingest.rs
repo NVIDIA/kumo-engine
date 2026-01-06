@@ -172,7 +172,7 @@ fn main() -> Result<()> {
         format_duration(stats.perf.pk_map_wall_ms)
     );
     println!(
-        "    build: {}",
+        "    edges: {}",
         format_duration(stats.perf.build_wall_ms)
     );
     println!(
@@ -196,7 +196,7 @@ fn main() -> Result<()> {
         stats.perf.pk_map_tasks
     );
     println!(
-        "    build: {} ({} tasks)",
+        "    edges: {} ({} tasks)",
         format_duration(stats.perf.build_task_ms),
         stats.perf.build_tasks
     );
@@ -207,7 +207,7 @@ fn main() -> Result<()> {
     );
     if let Some(profile_dir) = args.profile.as_ref() {
         let mut profiles = Vec::new();
-        for name in ["context", "shuffle", "pk_map", "edges"] {
+        for name in ["context", "shuffle", "pk_map", "edges", "index"] {
             let svg = profile_dir.join(format!("{name}-profile.svg"));
             let pb = profile_dir.join(format!("{name}-profile.pb"));
             if svg.exists() {
@@ -223,7 +223,7 @@ fn main() -> Result<()> {
                 println!("  {}", path.display());
             }
             let mut pb_paths = Vec::new();
-            for name in ["context", "shuffle", "pk_map", "edges"] {
+            for name in ["context", "shuffle", "pk_map", "edges", "index"] {
                 let pb = profile_dir.join(format!("{name}-profile.pb"));
                 if pb.exists() {
                     pb_paths.push(pb);
@@ -337,7 +337,8 @@ fn progress_label(event: &ProgressEvent) -> String {
         ProgressPhase::Context => "context",
         ProgressPhase::Shuffle => "shuffle",
         ProgressPhase::PkMap => "pk_map",
-        ProgressPhase::Build => "build",
+        ProgressPhase::Edges => "edges",
+        ProgressPhase::Index => "index",
     };
     match event.shard {
         Some(shard) => format!("{} {} shard-{:05}", phase, event.table, shard),

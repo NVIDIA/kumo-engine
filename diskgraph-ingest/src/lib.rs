@@ -23,7 +23,9 @@ use diskgraph_rowpack::{
     LogicalType as RowpackType, RowPackConfig, RowPackContextBuilder, RowPackDecodeScratch,
     RowPackDecoder, RowPackEncoder, RowPackScratch, ValueRef,
 };
-use diskgraph_index::graph::{GraphDataSource, GraphIndexBuilder};
+use diskgraph_index::graph::{
+    GraphBuildProgress, GraphBuildStage, GraphDataSource, GraphIndexBuilder, GraphProgressSink,
+};
 use num_traits::Signed;
 use object_store::{path::Path as ObjectPath, ObjectStore, WriteMultipart};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
@@ -38,6 +40,7 @@ use std::hash::Hasher;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::collections::hash_map::Entry;
 use std::time::Duration;
 use twox_hash::XxHash64;
 use tokio::runtime::Runtime;
@@ -102,7 +105,8 @@ pub enum ProgressPhase {
     Context,
     Shuffle,
     PkMap,
-    Build,
+    Edges,
+    Index,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -123,6 +127,93 @@ pub struct ProgressEvent {
 }
 
 pub type ProgressCallback = std::sync::Arc<dyn Fn(ProgressEvent) + Send + Sync>;
+
+struct IndexProgressAdapter {
+    cb: ProgressCallback,
+    last: Mutex<HashMap<(String, Option<usize>), u64>>,
+}
+
+impl IndexProgressAdapter {
+    fn new(cb: ProgressCallback) -> Self {
+        Self {
+            cb,
+            last: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn shard_key(shard: &str) -> (String, Option<usize>) {
+        if let Some((table, rest)) = shard.split_once("/shard-") {
+            if let Ok(idx) = rest.parse::<usize>() {
+                return (table.to_string(), Some(idx));
+            }
+        }
+        (shard.to_string(), None)
+    }
+}
+
+impl GraphProgressSink for IndexProgressAdapter {
+    fn report(&self, update: GraphBuildProgress) {
+        let (table, shard) = match &update.stage {
+            GraphBuildStage::BuildShard { shard }
+            | GraphBuildStage::Complete { shard } => Self::shard_key(shard.as_ref()),
+        };
+        let key = (table.clone(), shard);
+        let mut last = self.last.lock().unwrap();
+        match update.stage {
+            GraphBuildStage::BuildShard { .. } => {
+                match last.entry(key.clone()) {
+                    Entry::Vacant(v) => {
+                        (self.cb)(ProgressEvent {
+                            phase: ProgressPhase::Index,
+                            table: table.clone(),
+                            shard,
+                            kind: ProgressKind::Start,
+                            delta: 0,
+                            total: update.total,
+                        });
+                        v.insert(update.current);
+                        if update.current > 0 {
+                            (self.cb)(ProgressEvent {
+                                phase: ProgressPhase::Index,
+                                table,
+                                shard,
+                                kind: ProgressKind::Advance,
+                                delta: update.current,
+                                total: update.total,
+                            });
+                        }
+                    }
+                    Entry::Occupied(mut o) => {
+                        let prev = *o.get();
+                        if update.current > prev {
+                            let delta = update.current.saturating_sub(prev);
+                            o.insert(update.current);
+                            (self.cb)(ProgressEvent {
+                                phase: ProgressPhase::Index,
+                                table,
+                                shard,
+                                kind: ProgressKind::Advance,
+                                delta,
+                                total: update.total,
+                            });
+                        }
+                    }
+                }
+            }
+            GraphBuildStage::Complete { .. } => {
+                let prev = last.get(&key).copied().unwrap_or(0);
+                (self.cb)(ProgressEvent {
+                    phase: ProgressPhase::Index,
+                    table,
+                    shard,
+                    kind: ProgressKind::Finish,
+                    delta: 0,
+                    total: update.total.or(Some(prev)),
+                });
+            }
+        }
+    }
+}
 
 #[derive(Clone, Debug, Serialize)]
 pub struct IngestStats {
@@ -240,7 +331,11 @@ pub fn ingest_with_stats(
     let build_wall = final_start.elapsed();
     let index_start = std::time::Instant::now();
     let index_metadata = ctx.build_index_metadata()?;
-    ctx.build_index(index_metadata.clone())?;
+    if let Some(profile_dir) = &profile_dir {
+        profile_phase(profile_dir, "index", || ctx.build_index(index_metadata.clone()))?;
+    } else {
+        ctx.build_index(index_metadata.clone())?;
+    }
     ctx.cleanup_temp_inputs()?;
     let _index_wall = index_start.elapsed();
     let finalize_start = std::time::Instant::now();
@@ -1544,7 +1639,7 @@ impl IngestContext {
                 }
             }
             self.emit_progress(ProgressEvent {
-                phase: ProgressPhase::Build,
+                phase: ProgressPhase::Edges,
                 table: rel.name_forward.clone(),
                 shard: None,
                 kind: ProgressKind::Start,
@@ -1552,7 +1647,7 @@ impl IngestContext {
                 total: Some(rel_total_rows),
             });
             self.emit_progress(ProgressEvent {
-                phase: ProgressPhase::Build,
+                phase: ProgressPhase::Edges,
                 table: rel.name_reverse.clone(),
                 shard: None,
                 kind: ProgressKind::Start,
@@ -1634,7 +1729,7 @@ impl IngestContext {
                         pending = pending.saturating_add(1);
                         if pending >= PROGRESS_ROW_BATCH {
                             self.emit_progress(ProgressEvent {
-                                phase: ProgressPhase::Build,
+                                phase: ProgressPhase::Edges,
                                 table: rel.name_forward.clone(),
                                 shard: None,
                                 kind: ProgressKind::Advance,
@@ -1642,7 +1737,7 @@ impl IngestContext {
                                 total: Some(rel_total_rows),
                             });
                             self.emit_progress(ProgressEvent {
-                                phase: ProgressPhase::Build,
+                                phase: ProgressPhase::Edges,
                                 table: rel.name_reverse.clone(),
                                 shard: None,
                                 kind: ProgressKind::Advance,
@@ -1694,7 +1789,7 @@ impl IngestContext {
                 }
                 if pending > 0 {
                     self.emit_progress(ProgressEvent {
-                        phase: ProgressPhase::Build,
+                        phase: ProgressPhase::Edges,
                         table: rel.name_forward.clone(),
                         shard: None,
                         kind: ProgressKind::Advance,
@@ -1702,7 +1797,7 @@ impl IngestContext {
                         total: Some(rel_total_rows),
                     });
                     self.emit_progress(ProgressEvent {
-                        phase: ProgressPhase::Build,
+                        phase: ProgressPhase::Edges,
                         table: rel.name_reverse.clone(),
                         shard: None,
                         kind: ProgressKind::Advance,
@@ -1728,7 +1823,7 @@ impl IngestContext {
                 edge_counts.insert(rel.name_reverse.clone(), count);
             }
             self.emit_progress(ProgressEvent {
-                phase: ProgressPhase::Build,
+                phase: ProgressPhase::Edges,
                 table: rel.name_forward.clone(),
                 shard: None,
                 kind: ProgressKind::Finish,
@@ -1736,7 +1831,7 @@ impl IngestContext {
                 total: Some(rel_total_rows),
             });
             self.emit_progress(ProgressEvent {
-                phase: ProgressPhase::Build,
+                phase: ProgressPhase::Edges,
                 table: rel.name_reverse.clone(),
                 shard: None,
                 kind: ProgressKind::Finish,
@@ -1768,7 +1863,7 @@ impl IngestContext {
                 }
             }
             self.emit_progress(ProgressEvent {
-                phase: ProgressPhase::Build,
+                phase: ProgressPhase::Edges,
                 table: forward_name.clone(),
                 shard: None,
                 kind: ProgressKind::Start,
@@ -1776,7 +1871,7 @@ impl IngestContext {
                 total: Some(forward_total),
             });
             self.emit_progress(ProgressEvent {
-                phase: ProgressPhase::Build,
+                phase: ProgressPhase::Edges,
                 table: reverse_name.clone(),
                 shard: None,
                 kind: ProgressKind::Start,
@@ -1853,7 +1948,7 @@ impl IngestContext {
                         pending = pending.saturating_add(1);
                         if pending >= PROGRESS_ROW_BATCH {
                             self.emit_progress(ProgressEvent {
-                                phase: ProgressPhase::Build,
+                                phase: ProgressPhase::Edges,
                                 table: forward_name.clone(),
                                 shard: None,
                                 kind: ProgressKind::Advance,
@@ -1906,7 +2001,7 @@ impl IngestContext {
                 }
                 if pending > 0 {
                     self.emit_progress(ProgressEvent {
-                        phase: ProgressPhase::Build,
+                        phase: ProgressPhase::Edges,
                         table: forward_name.clone(),
                         shard: None,
                         kind: ProgressKind::Advance,
@@ -1964,7 +2059,7 @@ impl IngestContext {
                         pending = pending.saturating_add(1);
                         if pending >= PROGRESS_ROW_BATCH {
                             self.emit_progress(ProgressEvent {
-                                phase: ProgressPhase::Build,
+                                phase: ProgressPhase::Edges,
                                 table: reverse_name.clone(),
                                 shard: None,
                                 kind: ProgressKind::Advance,
@@ -2017,7 +2112,7 @@ impl IngestContext {
                 }
                 if pending > 0 {
                     self.emit_progress(ProgressEvent {
-                        phase: ProgressPhase::Build,
+                        phase: ProgressPhase::Edges,
                         table: reverse_name.clone(),
                         shard: None,
                         kind: ProgressKind::Advance,
@@ -2035,7 +2130,7 @@ impl IngestContext {
                 edge_counts.insert(reverse_name.clone(), count);
             }
             self.emit_progress(ProgressEvent {
-                phase: ProgressPhase::Build,
+                phase: ProgressPhase::Edges,
                 table: forward_name.clone(),
                 shard: None,
                 kind: ProgressKind::Finish,
@@ -2043,7 +2138,7 @@ impl IngestContext {
                 total: Some(forward_total),
             });
             self.emit_progress(ProgressEvent {
-                phase: ProgressPhase::Build,
+                phase: ProgressPhase::Edges,
                 table: reverse_name.clone(),
                 shard: None,
                 kind: ProgressKind::Finish,
@@ -2137,7 +2232,12 @@ impl IngestContext {
             GraphDataSource::Local { root: root.clone() },
             &root,
         );
-        builder.build(None)?;
+        if let Some(progress) = self.progress.clone() {
+            let adapter = IndexProgressAdapter::new(progress);
+            builder.build(Some(&adapter))?;
+        } else {
+            builder.build(None)?;
+        }
         Ok(())
     }
 
