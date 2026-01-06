@@ -1736,16 +1736,16 @@ impl IngestContext {
                             pending = 0;
                         }
                         let mut data = row;
-                        let dst_key = read_key_from_buf(&mut data, src_fk_col)
+                        let dst_key = read_key_ref_from_buf(&mut data, src_fk_col)
                             .map_err(|_| anyhow!("fk parse"))?;
                         let dst_shard =
-                            shard_for_key(key_hash_bytes(&dst_key, &mut scratch), self.num_shards);
+                            shard_for_key(key_ref_hash_bytes(&dst_key, &mut scratch), self.num_shards);
                         let src_id = src_offsets[shard].saturating_add(local_count);
                         local_count = local_count.saturating_add(1);
                         row_buf.clear();
                         write_u64_to_buf(&mut row_buf, src_id);
-                        row_buf.reserve(24);
-                        write_key_to_buf(&mut row_buf, &dst_key)?;
+                        reserve_key_ref(&mut row_buf, &dst_key);
+                        write_key_ref_to_buf(&mut row_buf, &dst_key);
                         write_temp_row(&mut writers[dst_shard], &row_buf)?;
                         Ok(())
                     })?;
@@ -1858,10 +1858,10 @@ impl IngestContext {
                         let mut data = row;
                         let src_key = read_key_from_buf(&mut data, src_pk_col)
                             .map_err(|_| anyhow!("src key parse"))?;
-                        let dst_key = read_key_from_buf(&mut data, dst_pk_col)
+                        let dst_key = read_key_ref_from_buf(&mut data, dst_pk_col)
                             .map_err(|_| anyhow!("dst key parse"))?;
                         let dst_shard =
-                            shard_for_key(key_hash_bytes(&dst_key, &mut scratch), self.num_shards);
+                            shard_for_key(key_ref_hash_bytes(&dst_key, &mut scratch), self.num_shards);
                         let src_local = src_maps
                             .get(shard)
                             .and_then(|map| map.lookup(&src_key))
@@ -1873,8 +1873,8 @@ impl IngestContext {
                             .saturating_add(src_local);
                         row_buf.clear();
                         write_u64_to_buf(&mut row_buf, src_id);
-                        row_buf.reserve(24);
-                        write_key_to_buf(&mut row_buf, &dst_key)?;
+                        reserve_key_ref(&mut row_buf, &dst_key);
+                        write_key_ref_to_buf(&mut row_buf, &dst_key);
                         write_temp_row(&mut writers[dst_shard], &row_buf)?;
                         Ok(())
                     })?;
@@ -2834,6 +2834,85 @@ fn read_u64_from_buf(data: &mut &[u8]) -> Result<u64> {
     buf.copy_from_slice(&data[..8]);
     *data = &data[8..];
     Ok(u64::from_le_bytes(buf))
+}
+
+enum KeyRef<'a> {
+    Int(u64),
+    Uuid(&'a [u8]),
+    FixedBytes(&'a [u8]),
+    Bytes(&'a [u8]),
+}
+
+fn read_key_ref_from_buf<'a>(data: &mut &'a [u8], col: &ColumnSpec) -> Result<KeyRef<'a>> {
+    let key_type = key_type_for_column(col)?;
+    match key_type {
+        KeyType::Int64 => Ok(KeyRef::Int(read_u64_from_buf(data)?)),
+        KeyType::Uuid => {
+            if data.len() < 16 {
+                return Err(anyhow!("temp key truncated"));
+            }
+            let slice = &data[..16];
+            *data = &data[16..];
+            Ok(KeyRef::Uuid(slice))
+        }
+        KeyType::FixedBytes { len } => {
+            if data.len() < len {
+                return Err(anyhow!("temp key truncated"));
+            }
+            let slice = &data[..len];
+            *data = &data[len..];
+            Ok(KeyRef::FixedBytes(slice))
+        }
+        KeyType::VarBytes => {
+            if data.len() < 2 {
+                return Err(anyhow!("temp key truncated"));
+            }
+            let mut len_buf = [0u8; 2];
+            len_buf.copy_from_slice(&data[..2]);
+            *data = &data[2..];
+            let len = u16::from_le_bytes(len_buf) as usize;
+            if data.len() < len {
+                return Err(anyhow!("temp key truncated"));
+            }
+            let slice = &data[..len];
+            *data = &data[len..];
+            Ok(KeyRef::Bytes(slice))
+        }
+    }
+}
+
+fn key_ref_hash_bytes<'a>(key: &'a KeyRef<'a>, scratch: &'a mut [u8; 16]) -> &'a [u8] {
+    match key {
+        KeyRef::Int(v) => {
+            scratch[..8].copy_from_slice(&v.to_le_bytes());
+            &scratch[..8]
+        }
+        KeyRef::Uuid(v) => v,
+        KeyRef::FixedBytes(v) => v,
+        KeyRef::Bytes(v) => v,
+    }
+}
+
+fn reserve_key_ref(buf: &mut Vec<u8>, key: &KeyRef<'_>) {
+    let extra = match key {
+        KeyRef::Int(_) => 8,
+        KeyRef::Uuid(_) => 16,
+        KeyRef::FixedBytes(bytes) => bytes.len(),
+        KeyRef::Bytes(bytes) => 2 + bytes.len(),
+    };
+    buf.reserve(extra);
+}
+
+fn write_key_ref_to_buf(buf: &mut Vec<u8>, key: &KeyRef<'_>) {
+    match key {
+        KeyRef::Int(v) => buf.extend_from_slice(&v.to_le_bytes()),
+        KeyRef::Uuid(bytes) | KeyRef::FixedBytes(bytes) => buf.extend_from_slice(bytes),
+        KeyRef::Bytes(bytes) => {
+            let len = bytes.len() as u16;
+            buf.extend_from_slice(&len.to_le_bytes());
+            buf.extend_from_slice(bytes);
+        }
+    }
 }
 
 fn finish_temp_writer(writer: TempRowWriter) -> Result<u64> {
