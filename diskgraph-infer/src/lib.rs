@@ -81,6 +81,7 @@ struct TableInput {
     format: TableFormat,
     paths: Vec<String>,
     columns: Vec<ColumnSpec>,
+    total_bytes: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -182,12 +183,14 @@ pub fn infer_source_metadata(root: &RootSource, options: InferOptions) -> Result
     prune_relationships_without_primary_key(&table_specs, &mut relationships);
     infer_primary_key_relationships(&table_specs, &mut relationships);
 
+    let total_bytes: u64 = tables.iter().map(|table| table.total_bytes).sum();
+    let num_shards = estimate_num_shards(total_bytes);
     let metadata = SourceMetadata {
         dataset_name: root_dataset_name(root),
         tables: table_specs,
         relationships,
         rowpack: None,
-        num_shards: None,
+        num_shards: Some(num_shards),
         edge_format: None,
     };
     metadata.validate()?;
@@ -230,6 +233,14 @@ fn root_dataset_name(root: &RootSource) -> String {
     }
 }
 
+fn estimate_num_shards(total_bytes: u64) -> usize {
+    const SHARD_BYTES: u64 = 1024 * 1024 * 1024;
+    if total_bytes == 0 {
+        return 1;
+    }
+    ((total_bytes + SHARD_BYTES - 1) / SHARD_BYTES) as usize
+}
+
 fn infer_local_tables(
     root: &Path,
     options: &InferOptions,
@@ -264,21 +275,25 @@ fn infer_file_table(name: &str, path: &Path, options: &InferOptions) -> Result<O
         .to_lowercase();
     match ext.as_str() {
         "csv" => {
+            let size = std::fs::metadata(path)?.len();
             let columns = infer_csv_schema(path, options)?;
             Ok(Some(TableInput {
                 name: name.trim_end_matches(".csv").to_string(),
                 format: TableFormat::Csv,
                 paths: vec![path.to_string_lossy().to_string()],
                 columns,
+                total_bytes: size,
             }))
         }
         "parquet" => {
+            let size = std::fs::metadata(path)?.len();
             let columns = infer_parquet_schema_local(path, options)?;
             Ok(Some(TableInput {
                 name: name.trim_end_matches(".parquet").to_string(),
                 format: TableFormat::Parquet,
                 paths: vec![path.to_string_lossy().to_string()],
                 columns,
+                total_bytes: size,
             }))
         }
         _ => Ok(None),
@@ -309,6 +324,7 @@ fn infer_dir_table(
             "parquet" => TableFormat::Parquet,
             _ => continue,
         };
+        let size = path.metadata()?.len();
         let columns = match format {
             TableFormat::Csv => infer_csv_schema(&path, options)?,
             TableFormat::Parquet => infer_parquet_schema_local(&path, options)?,
@@ -330,6 +346,7 @@ fn infer_dir_table(
                     }
                 }
                 existing.paths.push(path.to_string_lossy().to_string());
+                existing.total_bytes = existing.total_bytes.saturating_add(size);
             }
             None => {
                 table = Some(TableInput {
@@ -337,6 +354,7 @@ fn infer_dir_table(
                     format,
                     paths: vec![path.to_string_lossy().to_string()],
                     columns,
+                    total_bytes: size,
                 });
             }
         }
@@ -400,6 +418,7 @@ fn infer_remote_tables(
                     format: format_clone,
                     paths: Vec::new(),
                     columns: columns.clone(),
+                    total_bytes: 0,
                 });
                 if !same_table_format(&entry.format, &format)
                     || !columns_match(&entry.columns, &columns)
@@ -416,6 +435,7 @@ fn infer_remote_tables(
                         bucket,
                         rel_path
                     ));
+                    entry.total_bytes = entry.total_bytes.saturating_add(obj.size);
                 }
             }
         } else {
@@ -445,6 +465,7 @@ fn infer_remote_tables(
                     format: format_clone,
                     paths: Vec::new(),
                     columns: columns.clone(),
+                    total_bytes: 0,
                 });
                 if !same_table_format(&entry.format, &format)
                     || !columns_match(&entry.columns, &columns)
@@ -461,6 +482,7 @@ fn infer_remote_tables(
                         bucket,
                         rel_path
                     ));
+                    entry.total_bytes = entry.total_bytes.saturating_add(obj.size);
                 }
             }
         }
