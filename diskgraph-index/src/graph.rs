@@ -172,8 +172,6 @@ impl GraphIndexBuilder {
                             relation: rel.name.clone(),
                             source_shard_index: shard_idx,
                             path: self.resolve_path(&shard.path),
-                            has_dest_sort_key: rel.dest_sort_key_bits.is_some(),
-                            format: rel.format,
                         })
                     })
                     .collect::<Result<Vec<_>>>()?;

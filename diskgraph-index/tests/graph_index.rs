@@ -2,8 +2,7 @@ use std::fs;
 use std::io::Write;
 use std::path::Path;
 use diskgraph_core::metadata::{
-    DatasetMetadata, EdgeRelationMetadata, EdgeShardMetadata, EdgeStorageFormat, NodeShardMetadata,
-    NodeTypeMetadata,
+    DatasetMetadata, EdgeRelationMetadata, EdgeShardMetadata, NodeShardMetadata, NodeTypeMetadata,
 };
 use diskgraph_index::graph::{GraphIndexBuilder, GraphIndexReader};
 use tempfile::tempdir;
@@ -105,7 +104,7 @@ fn graph_builder_and_reader_multi_table() {
                     },
                 ],
                 dest_sort_key_bits: None,
-                format: EdgeStorageFormat::Binary,
+                format: diskgraph_core::metadata::EdgeStorageFormat::Binary,
             },
             EdgeRelationMetadata {
                 name: "Likes".into(),
@@ -124,7 +123,7 @@ fn graph_builder_and_reader_multi_table() {
                     },
                 ],
                 dest_sort_key_bits: None,
-                format: EdgeStorageFormat::Binary,
+                format: diskgraph_core::metadata::EdgeStorageFormat::Binary,
             },
             EdgeRelationMetadata {
                 name: "Tagged".into(),
@@ -136,7 +135,7 @@ fn graph_builder_and_reader_multi_table() {
                     src_max_id: 1,
                 }],
                 dest_sort_key_bits: None,
-                format: EdgeStorageFormat::Binary,
+                format: diskgraph_core::metadata::EdgeStorageFormat::Binary,
             },
         ],
     };

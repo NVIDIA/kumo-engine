@@ -3,7 +3,7 @@ use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
 use diskgraph_core::metadata::{
-    EdgeRelationMetadata, EdgeStorageFormat, NodeShardMetadata, NodeTypeMetadata,
+    EdgeRelationMetadata, NodeShardMetadata, NodeTypeMetadata,
 };
 use diskgraph_index::{
     builder::{ShardBuildParams, ShardBuilder},
@@ -63,10 +63,7 @@ fn build_and_read_round_trip_basic() {
             &[EdgeShardInput {
                 relation: "Follows".into(),
                 source_shard_index: 0,
-                path: edge_path,
-                has_dest_sort_key: false,
-                format: EdgeStorageFormat::Binary,
-            }],
+                path: edge_path,            }],
         )
         .unwrap();
 
@@ -146,10 +143,7 @@ fn build_rejects_dangling_edges() {
         &[EdgeShardInput {
             relation: "Follows".into(),
             source_shard_index: 0,
-            path: edge_path,
-            has_dest_sort_key: false,
-            format: EdgeStorageFormat::Binary,
-        }],
+            path: edge_path,        }],
     ) {
         Ok(_) => panic!("expected DanglingEdges error"),
         Err(err) => err.to_string(),
@@ -198,10 +192,7 @@ fn build_rejects_edge_ordering_violation() {
         &[EdgeShardInput {
             relation: "Follows".into(),
             source_shard_index: 0,
-            path: edge_path,
-            has_dest_sort_key: false,
-            format: EdgeStorageFormat::Binary,
-        }],
+            path: edge_path,        }],
     ) {
         Ok(_) => panic!("expected EdgeOrderingViolation error"),
         Err(err) => err.to_string(),
@@ -271,10 +262,7 @@ fn offsets_span_multiple_chunks_and_edges_decode_correctly() {
             &[EdgeShardInput {
                 relation: "Follows".into(),
                 source_shard_index: 0,
-                path: edge_path,
-                has_dest_sort_key: false,
-                format: EdgeStorageFormat::Binary,
-            }],
+                path: edge_path,            }],
         )
         .unwrap();
     let reader = ShardReader::open(&output_dir, built.layouts.clone(), false).unwrap();
@@ -337,10 +325,7 @@ fn sort_key_round_trip_decodes_correctly() {
             &[EdgeShardInput {
                 relation: "Temporal".into(),
                 source_shard_index: 0,
-                path: edge_path,
-                has_dest_sort_key: true,
-                format: EdgeStorageFormat::Binary,
-            }],
+                path: edge_path,            }],
         )
         .unwrap();
     let reader = ShardReader::open(&output_dir, built.layouts.clone(), false).unwrap();
@@ -410,17 +395,11 @@ fn multi_relation_counts_and_edges_decode_correctly() {
                 EdgeShardInput {
                     relation: "Follows".into(),
                     source_shard_index: 0,
-                    path: edge_path_a,
-                    has_dest_sort_key: false,
-                    format: EdgeStorageFormat::Binary,
-                },
+                    path: edge_path_a,                },
                 EdgeShardInput {
                     relation: "Temporal".into(),
                     source_shard_index: 0,
-                    path: edge_path_b,
-                    has_dest_sort_key: true,
-                    format: EdgeStorageFormat::Binary,
-                },
+                    path: edge_path_b,                },
             ],
         )
         .unwrap();
@@ -496,17 +475,11 @@ fn multi_relation_mixed_dst_widths_and_partial_edges() {
                 EdgeShardInput {
                     relation: "Follows".into(),
                     source_shard_index: 0,
-                    path: edge_path_a,
-                    has_dest_sort_key: false,
-                    format: EdgeStorageFormat::Binary,
-                },
+                    path: edge_path_a,                },
                 EdgeShardInput {
                     relation: "Temporal".into(),
                     source_shard_index: 0,
-                    path: edge_path_b,
-                    has_dest_sort_key: true,
-                    format: EdgeStorageFormat::Binary,
-                },
+                    path: edge_path_b,                },
             ],
         )
         .unwrap();
@@ -563,10 +536,7 @@ fn truncates_large_node_without_sort_key() {
             &[EdgeShardInput {
                 relation: "Follows".into(),
                 source_shard_index: 0,
-                path: edge_path,
-                has_dest_sort_key: false,
-                format: EdgeStorageFormat::Binary,
-            }],
+                path: edge_path,            }],
         )
         .unwrap();
     let reader = ShardReader::open(&output_dir, built.layouts.clone(), false).unwrap();
@@ -642,10 +612,7 @@ fn truncates_large_node_with_sort_key() {
             &[EdgeShardInput {
                 relation: "Temporal".into(),
                 source_shard_index: 0,
-                path: edge_path,
-                has_dest_sort_key: true,
-                format: EdgeStorageFormat::Binary,
-            }],
+                path: edge_path,            }],
         )
         .unwrap();
     let reader = ShardReader::open(&output_dir, built.layouts.clone(), false).unwrap();
@@ -712,10 +679,7 @@ fn caps_relation_edge_count_at_varint_limit() {
             &[EdgeShardInput {
                 relation: "Follows".into(),
                 source_shard_index: 0,
-                path: edge_path,
-                has_dest_sort_key: false,
-                format: EdgeStorageFormat::Binary,
-            }],
+                path: edge_path,            }],
         )
         .unwrap();
 
@@ -899,10 +863,7 @@ fn offsets_many_chunks_sparse_edges() {
             &[EdgeShardInput {
                 relation: "Follows".into(),
                 source_shard_index: 0,
-                path: edge_path,
-                has_dest_sort_key: false,
-                format: EdgeStorageFormat::Binary,
-            }],
+                path: edge_path,            }],
         )
         .unwrap();
     let reader = ShardReader::open(&output_dir, built.layouts.clone(), false).unwrap();
@@ -984,17 +945,11 @@ fn truncates_large_node_multi_relation() {
                 EdgeShardInput {
                     relation: "Follows".into(),
                     source_shard_index: 0,
-                    path: edge_path_a,
-                    has_dest_sort_key: false,
-                    format: EdgeStorageFormat::Binary,
-                },
+                    path: edge_path_a,                },
                 EdgeShardInput {
                     relation: "Temporal".into(),
                     source_shard_index: 0,
-                    path: edge_path_b,
-                    has_dest_sort_key: true,
-                    format: EdgeStorageFormat::Binary,
-                },
+                    path: edge_path_b,                },
             ],
         )
         .unwrap();
@@ -1052,10 +1007,7 @@ fn builder_errors_when_missing_dest_sort_key() {
         &[EdgeShardInput {
             relation: "Temporal".into(),
             source_shard_index: 0,
-            path: edge_path,
-            has_dest_sort_key: true,
-            format: EdgeStorageFormat::Binary,
-        }],
+            path: edge_path,        }],
     ) {
         Ok(_) => panic!("expected missing dest_sort_key error"),
         Err(err) => err.to_string(),
@@ -1063,49 +1015,6 @@ fn builder_errors_when_missing_dest_sort_key() {
     assert!(
         msg.contains("binary edge missing dest_sort_key"),
         "expected missing dest_sort_key error, got {msg}"
-    );
-}
-
-#[test]
-fn builder_errors_on_unsupported_edge_format() {
-    let dir = tempdir().unwrap();
-    let edge_path = dir.path().join("edges.bin");
-    write_edges(
-        &edge_path,
-        &[EdgeRow {
-            src: 0,
-            dst: 1,
-            dest_sort_key: None,
-        }],
-        false,
-    )
-    .unwrap();
-
-    let node_meta = node_meta("User", 1);
-    let relation_meta = relation_meta("Follows", "User", "User", None);
-    let builder = ShardBuilder::new(ShardBuildParams {
-        output_dir: dir.path().join("out"),
-        node_meta: node_meta.clone(),
-        node_types: vec![node_meta.clone()],
-        relation_metas: vec![relation_meta.clone()],
-        shard_index: 0,
-        node_data_paths: None,
-    });
-    let msg = match builder.build(
-        &[EdgeShardInput {
-            relation: "Follows".into(),
-            source_shard_index: 0,
-            path: edge_path,
-            has_dest_sort_key: false,
-            format: EdgeStorageFormat::Parquet,
-        }],
-    ) {
-        Ok(_) => panic!("expected unsupported format error"),
-        Err(err) => err.to_string(),
-    };
-    assert!(
-        msg.contains("edge input format not supported"),
-        "expected unsupported format error, got {msg}"
     );
 }
 
@@ -1136,10 +1045,7 @@ fn builder_accepts_binary_edges_with_64bit_sort_key() {
             &[EdgeShardInput {
                 relation: "Temporal".into(),
                 source_shard_index: 0,
-                path: edge_path,
-                has_dest_sort_key: true,
-                format: EdgeStorageFormat::Binary,
-            }],
+                path: edge_path,            }],
         )
         .unwrap();
 
@@ -1178,10 +1084,7 @@ fn builder_errors_when_dst_id_exceeds_mask() {
         &[EdgeShardInput {
             relation: "Follows".into(),
             source_shard_index: 0,
-            path: edge_path,
-            has_dest_sort_key: false,
-            format: EdgeStorageFormat::Binary,
-        }],
+            path: edge_path,        }],
     ) {
         Ok(_) => panic!("expected dst_id out of range error"),
         Err(err) => err.to_string(),
@@ -1222,10 +1125,7 @@ fn builder_errors_when_dest_sort_key_exceeds_mask() {
         &[EdgeShardInput {
             relation: "Temporal".into(),
             source_shard_index: 0,
-            path: edge_path,
-            has_dest_sort_key: true,
-            format: EdgeStorageFormat::Binary,
-        }],
+            path: edge_path,        }],
     ) {
         Ok(_) => panic!("expected dest_sort_key out of range error"),
         Err(err) => err.to_string(),
@@ -1265,10 +1165,7 @@ fn builder_errors_on_unknown_relation_name() {
         &[EdgeShardInput {
             relation: "Unknown".into(),
             source_shard_index: 0,
-            path: edge_path,
-            has_dest_sort_key: false,
-            format: EdgeStorageFormat::Binary,
-        }],
+            path: edge_path,        }],
     ) {
         Ok(_) => panic!("expected UnknownRelation error"),
         Err(err) => err.to_string(),
@@ -1300,10 +1197,7 @@ fn builder_errors_on_corrupted_binary() {
         &[EdgeShardInput {
             relation: "Follows".into(),
             source_shard_index: 0,
-            path: edge_path,
-            has_dest_sort_key: false,
-            format: EdgeStorageFormat::Binary,
-        }],
+            path: edge_path,        }],
     ) {
         Ok(_) => panic!("expected binary error"),
         Err(err) => err.to_string(),
@@ -1343,10 +1237,7 @@ fn builder_errors_on_shard_index_mismatch() {
         &[EdgeShardInput {
             relation: "Follows".into(),
             source_shard_index: 1,
-            path: edge_path,
-            has_dest_sort_key: false,
-            format: EdgeStorageFormat::Binary,
-        }],
+            path: edge_path,        }],
     ) {
         Ok(_) => panic!("expected shard index mismatch"),
         Err(err) => err.to_string(),
@@ -1374,10 +1265,7 @@ fn builder_fails_on_missing_edge_file() {
         &[EdgeShardInput {
             relation: "Follows".into(),
             source_shard_index: 0,
-            path: dir.path().join("missing.bin"),
-            has_dest_sort_key: false,
-            format: EdgeStorageFormat::Binary,
-        }],
+            path: dir.path().join("missing.bin"),        }],
     ) {
         Ok(_) => panic!("expected IO error for missing edge file"),
         Err(err) => err.to_string(),
@@ -1415,7 +1303,7 @@ pub fn relation_meta(
         dst_type: dst.into(),
         shards: vec![],
         dest_sort_key_bits,
-        format: EdgeStorageFormat::Binary,
+        format: diskgraph_core::metadata::EdgeStorageFormat::Binary,
     }
 }
 
@@ -1542,10 +1430,7 @@ fn build_simple_shard(
             &[EdgeShardInput {
                 relation: "Follows".into(),
                 source_shard_index: 0,
-                path: edge_path,
-                has_dest_sort_key: false,
-                format: EdgeStorageFormat::Binary,
-            }],
+                path: edge_path,            }],
         )
         .unwrap();
     (dir, output_dir, built.layouts.clone())
@@ -1599,10 +1484,7 @@ fn builder_writes_node_data() {
             &[EdgeShardInput {
                 relation: "Follows".into(),
                 source_shard_index: 0,
-                path: edge_path,
-                has_dest_sort_key: false,
-                format: EdgeStorageFormat::Binary,
-            }],
+                path: edge_path,            }],
         )
         .unwrap();
 
@@ -1650,10 +1532,7 @@ fn builder_errors_on_node_data_row_count_mismatch() {
         &[EdgeShardInput {
             relation: "Follows".into(),
             source_shard_index: 0,
-            path: edge_path,
-            has_dest_sort_key: false,
-            format: EdgeStorageFormat::Binary,
-        }],
+            path: edge_path,        }],
     ) {
         Ok(_) => panic!("expected node data row count error"),
         Err(err) => err.to_string(),

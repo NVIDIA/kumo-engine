@@ -768,12 +768,6 @@ impl EdgeSubStream {
         relation_id: u16,
         dest_sort_key_bits: Option<u8>,
     ) -> Result<Self> {
-        if input.format != diskgraph_core::metadata::EdgeStorageFormat::Binary {
-            return Err(IndexBuildError::NotImplemented(
-                "edge input format not supported",
-            )
-            .into());
-        }
         let file = std::fs::File::open(&input.path)?;
         let file_len = file.metadata()?.len();
         if file_len < 8 {
