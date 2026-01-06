@@ -1203,7 +1203,7 @@ fn builder_errors_on_corrupted_binary() {
         Err(err) => err.to_string(),
     };
     assert!(
-        msg.contains("invalid binary edge magic"),
+        msg.contains("invalid binary edge width"),
         "expected binary error, got {msg}"
     );
 }
@@ -1324,12 +1324,7 @@ pub fn write_binary_edges(
         fs::create_dir_all(parent)?;
     }
     let mut writer = std::io::BufWriter::new(fs::File::create(path)?);
-    writer.write_all(b"DGED")?;
-    writer.write_all(&[2u8])?;
-    let flags = if sort_width > 0 { 1u8 } else { 0u8 };
-    writer.write_all(&[flags])?;
     writer.write_all(&[src_width, dst_width, sort_width])?;
-    writer.write_all(&[0u8, 0u8, 0u8])?;
     for edge in edges {
         write_u64_width(&mut writer, edge.src as u64, src_width)?;
         write_u64_width(&mut writer, edge.dst as u64, dst_width)?;
@@ -1354,7 +1349,7 @@ pub fn write_node_data(path: &Path, rows: &[Vec<u8>]) -> anyhow::Result<()> {
     }
     let mut writer = std::io::BufWriter::new(fs::File::create(path)?);
     for row in rows {
-        let len = row.len() as u32;
+        let len = u16::try_from(row.len()).map_err(|_| anyhow::anyhow!("node data too large"))?;
         writer.write_all(&len.to_le_bytes())?;
         writer.write_all(row)?;
     }

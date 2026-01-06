@@ -56,9 +56,6 @@ const TEMP_META_VERSION: u8 = 1;
 const SAMPLE_ROW_LIMIT: usize = 100_000;
 const SAMPLE_ROW_TARGET: usize = 10_000;
 const PK_MAP_MEMORY_BUDGET: usize = 1024 * 1024 * 1024;
-const EDGE_BIN_MAGIC: [u8; 4] = *b"DGED";
-const EDGE_BIN_VERSION: u8 = 2;
-const EDGE_BIN_FLAG_SORT: u8 = 1;
 const MAX_NODE_DATA_LEN: usize = 60 * 1024;
 const PROGRESS_ROW_BATCH: u64 = 100_000;
 const MAX_VAR_KEY_LEN: usize = u16::MAX as usize;
@@ -1101,9 +1098,9 @@ impl IngestContext {
         };
         if node_out.len() > MAX_NODE_DATA_LEN {
             *node_data_dropped = node_data_dropped.saturating_add(1);
-            write_temp_row(&mut node_writers[shard], &[])?;
+            write_temp_row_u16(&mut node_writers[shard], &[])?;
         } else {
-            write_temp_row(&mut node_writers[shard], node_out)?;
+            write_temp_row_u16(&mut node_writers[shard], node_out)?;
         }
         for (rel_name, rel_idx) in rel_specs {
             if let Some(writers) = fkey_writers.get_mut(rel_name) {
@@ -2549,6 +2546,14 @@ fn write_temp_row(writer: &mut TempRowWriter, row: &[u8]) -> Result<()> {
     Ok(())
 }
 
+fn write_temp_row_u16(writer: &mut TempRowWriter, row: &[u8]) -> Result<()> {
+    let len = u16::try_from(row.len()).map_err(|_| anyhow!("temp row too large"))?;
+    writer.writer.write_all(&len.to_le_bytes())?;
+    writer.writer.write_all(row)?;
+    writer.row_count = writer.row_count.saturating_add(1);
+    Ok(())
+}
+
 fn finish_temp_writer(writer: TempRowWriter) -> Result<u64> {
     let mut writer = writer;
     writer.writer.flush()?;
@@ -2581,17 +2586,8 @@ fn read_temp_rows(path: &Path, mut f: impl FnMut(&[u8]) -> Result<()>) -> Result
     }
 }
 
-fn write_edge_bin_header(
-    writer: &mut BufWriter<OutputSink>,
-    with_sort: bool,
-    spec: EdgeBinarySpec,
-) -> Result<()> {
-    writer.write_all(&EDGE_BIN_MAGIC)?;
-    writer.write_all(&[EDGE_BIN_VERSION])?;
-    let flags = if with_sort { EDGE_BIN_FLAG_SORT } else { 0 };
-    writer.write_all(&[flags])?;
+fn write_edge_bin_header(writer: &mut BufWriter<OutputSink>, spec: EdgeBinarySpec) -> Result<()> {
     writer.write_all(&[spec.src_width, spec.dst_width, spec.sort_width])?;
-    writer.write_all(&[0u8, 0u8, 0u8])?;
     Ok(())
 }
 
@@ -2615,7 +2611,7 @@ fn write_edge_records(
         }
     }
     let mut writer = BufWriter::with_capacity(1024 * 1024, target.sink(path)?);
-    write_edge_bin_header(&mut writer, spec.sort_width > 0, spec)?;
+    write_edge_bin_header(&mut writer, spec)?;
     for record in records {
         write_u64_width(&mut writer, record.src_id, spec.src_width)?;
         write_u64_width(&mut writer, record.dst_id, spec.dst_width)?;

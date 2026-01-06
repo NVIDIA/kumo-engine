@@ -770,57 +770,28 @@ impl EdgeSubStream {
     ) -> Result<Self> {
         let file = std::fs::File::open(&input.path)?;
         let file_len = file.metadata()?.len();
-        if file_len < 8 {
+        if file_len < 3 {
             return Err(IndexBuildError::NotImplemented(
                 "binary edge file too small",
             )
             .into());
         }
         let mut reader = std::io::BufReader::with_capacity(1024 * 1024, file);
-        let mut header = [0u8; 12];
-        reader.read_exact(&mut header[..8])?;
-        if header[0..4] != *b"DGED" {
+        let mut header = [0u8; 3];
+        reader.read_exact(&mut header)?;
+        let src_width = header[0];
+        let dst_width = header[1];
+        let sort_width = header[2];
+        if src_width == 0 || dst_width == 0 || src_width > 8 || dst_width > 8 {
+            return Err(IndexBuildError::NotImplemented("invalid binary edge width").into());
+        }
+        if sort_width > 8 {
             return Err(IndexBuildError::NotImplemented(
-                "invalid binary edge magic",
+                "binary edge sort key width too large",
             )
             .into());
         }
-        let version = header[4];
-        if version != 1 && version != 2 {
-            return Err(IndexBuildError::NotImplemented(
-                "unsupported binary edge version",
-            )
-            .into());
-        }
-        let with_sort = (header[5] & 1) != 0;
-        let (src_width, dst_width, sort_width, header_len) = if version == 1 {
-            let sort_width = if with_sort { 4 } else { 0 };
-            (8u8, 8u8, sort_width, 8u64)
-        } else {
-            reader.read_exact(&mut header[8..12])?;
-            let src_width = header[6];
-            let dst_width = header[7];
-            let sort_width = header[8];
-            if src_width == 0 || dst_width == 0 || src_width > 8 || dst_width > 8 {
-                return Err(IndexBuildError::NotImplemented(
-                    "invalid binary edge width",
-                )
-                .into());
-            }
-            if with_sort && sort_width == 0 {
-                return Err(IndexBuildError::NotImplemented(
-                    "binary edge missing dest_sort_key width",
-                )
-                .into());
-            }
-            if sort_width > 8 {
-                return Err(IndexBuildError::NotImplemented(
-                    "binary edge sort key width too large",
-                )
-                .into());
-            }
-            (src_width, dst_width, sort_width, 12u64)
-        };
+        let with_sort = sort_width > 0;
         if dest_sort_key_bits.is_some() && !with_sort {
             return Err(IndexBuildError::NotImplemented(
                 "binary edge missing dest_sort_key",
@@ -828,7 +799,7 @@ impl EdgeSubStream {
             .into());
         }
         let record_size = src_width as u64 + dst_width as u64 + sort_width as u64;
-        let payload = file_len - header_len;
+        let payload = file_len - 3;
         if payload % record_size != 0 {
             return Err(IndexBuildError::NotImplemented(
                 "binary edge file size mismatch",
@@ -988,7 +959,7 @@ impl MultiBinaryNodeDataStream {
                 .reader
                 .as_mut()
                 .ok_or(IndexBuildError::NotImplemented("node data reader missing"))?;
-            match read_u32_len(reader) {
+            match read_u16_len(reader) {
                 Ok(Some(len)) => {
                     out.clear();
                     if len > 0 {
@@ -1013,8 +984,8 @@ impl MultiBinaryNodeDataStream {
     }
 }
 
-fn read_u32_len(reader: &mut std::io::BufReader<std::fs::File>) -> Result<Option<u32>> {
-    let mut buf = [0u8; 4];
+fn read_u16_len(reader: &mut std::io::BufReader<std::fs::File>) -> Result<Option<u16>> {
+    let mut buf = [0u8; 2];
     let mut read = 0usize;
     while read < buf.len() {
         let n = reader.read(&mut buf[read..])?;
@@ -1026,7 +997,7 @@ fn read_u32_len(reader: &mut std::io::BufReader<std::fs::File>) -> Result<Option
         }
         read += n;
     }
-    Ok(Some(u32::from_le_bytes(buf)))
+    Ok(Some(u16::from_le_bytes(buf)))
 }
 
 struct MergedEdgeStream {

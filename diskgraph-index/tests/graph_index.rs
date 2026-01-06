@@ -179,11 +179,7 @@ fn write_edges(path: &Path, edges: &[EdgeRow]) -> anyhow::Result<()> {
         fs::create_dir_all(parent)?;
     }
     let mut writer = std::io::BufWriter::new(fs::File::create(path)?);
-    writer.write_all(b"DGED")?;
-    writer.write_all(&[2u8])?;
-    writer.write_all(&[0u8])?;
     writer.write_all(&[8u8, 8u8, 0u8])?;
-    writer.write_all(&[0u8, 0u8, 0u8])?;
     for edge in edges {
         write_u64_width(&mut writer, edge.src as u64, 8)?;
         write_u64_width(&mut writer, edge.dst as u64, 8)?;
