@@ -2082,6 +2082,13 @@ impl IngestContext {
         }
 
         for info in &infos {
+            let lookup_context = format!("dst_lookup:{}", info.forward_name);
+            let progress = self.progress.clone();
+            let emit_progress = |event: ProgressEvent| {
+                if let Some(cb) = &progress {
+                    cb(event);
+                }
+            };
             let mut total_rows = 0u64;
             for dst_shard in 0..self.num_shards {
                 for src_shard in 0..self.num_shards {
@@ -2096,7 +2103,7 @@ impl IngestContext {
                     }
                 }
             }
-            self.emit_progress(ProgressEvent {
+            emit_progress(ProgressEvent {
                 phase: ProgressPhase::EdgesPassB,
                 table: info.forward_name.clone(),
                 shard: None,
@@ -2114,6 +2121,9 @@ impl IngestContext {
                 .cloned()
                 .unwrap_or_else(|| vec![0; self.num_shards]);
             let mut pending = 0u64;
+            let key_lookup_failures = &mut self.key_lookup_failures;
+            let key_failure_samples = &mut self.key_failure_samples;
+            let key_failures_by_context = &mut self.key_failures_by_context;
             let reverse_sort_bits = edge_ctx
                 .rel_sort_bits
                 .get(&info.reverse_name)
@@ -2149,7 +2159,7 @@ impl IngestContext {
                         read_temp_rows(&pass_a_path, |row| {
                             pending = pending.saturating_add(1);
                             if pending >= PROGRESS_ROW_BATCH {
-                                self.emit_progress(ProgressEvent {
+                                emit_progress(ProgressEvent {
                                     phase: ProgressPhase::EdgesPassB,
                                     table: info.forward_name.clone(),
                                     shard: None,
@@ -2163,10 +2173,22 @@ impl IngestContext {
                             let src_id = read_u64_from_buf(&mut data)?;
                             read_key_into_buf(&mut data, &info.dst_pk_col, &mut dst_key)
                                 .map_err(|_| anyhow!("dst key parse"))?;
-                            let dst_local = dst_maps
+                            let dst_local = match dst_maps
                                 .get(dst_shard)
                                 .and_then(|map| map.lookup(&dst_key))
-                                .ok_or_else(|| anyhow!("missing dst key"))?;
+                            {
+                                Some(id) => id,
+                                None => {
+                                    record_key_lookup_failure_key(
+                                        key_lookup_failures,
+                                        key_failure_samples,
+                                        key_failures_by_context,
+                                        &lookup_context,
+                                        &dst_key,
+                                    );
+                                    return Ok(());
+                                }
+                            };
                             let dst_id = dst_offsets
                                 .get(dst_shard)
                                 .copied()
@@ -2218,7 +2240,7 @@ impl IngestContext {
                 *entry = entry.saturating_add(count);
             }
             if pending > 0 {
-                self.emit_progress(ProgressEvent {
+                emit_progress(ProgressEvent {
                     phase: ProgressPhase::EdgesPassB,
                     table: info.forward_name.clone(),
                     shard: None,
@@ -2227,7 +2249,7 @@ impl IngestContext {
                     total: Some(total_rows),
                 });
             }
-            self.emit_progress(ProgressEvent {
+            emit_progress(ProgressEvent {
                 phase: ProgressPhase::EdgesPassB,
                 table: info.forward_name.clone(),
                 shard: None,
@@ -3901,6 +3923,22 @@ fn record_key_parse_failure_value(
     entry.parse_failures = entry.parse_failures.saturating_add(1);
     if samples.len() < 10 {
         let sample = format_value_ref_sample(value);
+        samples.push(format!("{context}: {sample}"));
+    }
+}
+
+fn record_key_lookup_failure_key(
+    total: &mut u64,
+    samples: &mut Vec<String>,
+    by_context: &mut HashMap<String, KeyFailureCounts>,
+    context: &str,
+    key: &Key,
+) {
+    *total = total.saturating_add(1);
+    let entry = by_context.entry(context.to_string()).or_default();
+    entry.lookup_failures = entry.lookup_failures.saturating_add(1);
+    if samples.len() < 10 {
+        let sample = sample_key(key).unwrap_or_else(|| "unknown".to_string());
         samples.push(format!("{context}: {sample}"));
     }
 }

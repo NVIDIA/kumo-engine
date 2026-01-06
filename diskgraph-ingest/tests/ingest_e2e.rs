@@ -788,3 +788,86 @@ fn ingest_invalid_fields_records_failures_and_builds() -> Result<()> {
 
     Ok(())
 }
+
+#[test]
+fn ingest_missing_dst_key_records_lookup() -> Result<()> {
+    let dir = tempdir()?;
+    let input_root = dir.path().join("input");
+    let output_root = dir.path().join("output");
+
+    write_csv(
+        &input_root.join("users.csv"),
+        &["id"],
+        &[
+            vec!["1".into()],
+            vec!["2".into()],
+        ],
+    )?;
+    write_csv(
+        &input_root.join("visits.csv"),
+        &["id", "user_id"],
+        &[
+            vec!["10".into(), "1".into()],
+            vec!["11".into(), "2".into()],
+            vec!["12".into(), "999".into()],
+        ],
+    )?;
+
+    let source = serde_json::json!({
+        "dataset_name": "missing_dst_key_test",
+        "tables": [
+            {
+                "name": "User",
+                "format": "csv",
+                "paths": [input_root.join("users.csv").to_string_lossy()],
+                "primary_key": "id",
+                "columns": [
+                    {"name": "id", "source_dtype": "int64", "ingested_dtype": "int64"}
+                ]
+            },
+            {
+                "name": "Visit",
+                "format": "csv",
+                "paths": [input_root.join("visits.csv").to_string_lossy()],
+                "primary_key": "id",
+                "columns": [
+                    {"name": "id", "source_dtype": "int64", "ingested_dtype": "int64"},
+                    {"name": "user_id", "source_dtype": "int64", "ingested_dtype": "int64"}
+                ]
+            }
+        ],
+        "relationships": [
+            {
+                "name": "visit_user",
+                "src_table": "Visit",
+                "src_column": "user_id",
+                "dst_table": "User",
+                "dst_column": "id"
+            }
+        ]
+    });
+    let source_path = dir.path().join("source_metadata.json");
+    fs::write(&source_path, serde_json::to_vec_pretty(&source)?)?;
+
+    let (_metadata, stats) = ingest_with_stats(
+        &source_path,
+        output_root.to_str().unwrap(),
+        Dest::Local,
+        IngestOptions::default(),
+    )?;
+
+    let reader = GraphIndexReader::open(&output_root.join("index_metadata.json"), &output_root)?;
+    let visit_table = reader.table("Visit").unwrap();
+    let forward_rows = sum_relation_edges(&visit_table, "visit_user")?;
+    assert_eq!(forward_rows, 2);
+
+    assert!(stats.key_lookup_failures >= 1);
+    let lookup = stats
+        .key_failures_by_context
+        .get("dst_lookup:visit_user")
+        .map(|c| c.lookup_failures)
+        .unwrap_or(0);
+    assert!(lookup > 0);
+
+    Ok(())
+}
