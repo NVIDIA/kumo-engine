@@ -3236,6 +3236,7 @@ struct WorkItem {
 }
 
 struct MemoryLimiter {
+    total: usize,
     available: Mutex<usize>,
     cvar: Condvar,
 }
@@ -3249,12 +3250,14 @@ struct MemoryPermit {
 impl MemoryLimiter {
     fn new(total: usize) -> Self {
         Self {
+            total,
             available: Mutex::new(total),
             cvar: Condvar::new(),
         }
     }
 
     fn acquire(self: &Arc<Self>, amount: usize) -> MemoryPermit {
+        let amount = amount.min(self.total);
         let mut available = self.available.lock().unwrap();
         while *available < amount {
             available = self.cvar.wait(available).unwrap();
