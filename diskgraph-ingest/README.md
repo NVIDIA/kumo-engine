@@ -1,6 +1,6 @@
 # diskgraph-ingest
 
-`diskgraph-ingest` turns CSV/Parquet source tables plus `source_metadata.json` into a local DiskGraph index. It builds rowpack contexts, sharded primary key maps, edge shards, and then runs the index builder to produce `edges.bin`/`offsets.bin` under the output directory.
+`diskgraph-ingest` turns CSV/Parquet source tables plus `source_metadata.json` into a local DiskGraph index. It builds rowpack contexts, sharded primary key maps, and edge shards, then runs the index builder to produce the binary `edges.bin`/`offsets.bin` files under the output directory.
 
 ## Inputs
 
