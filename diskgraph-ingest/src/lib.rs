@@ -2641,6 +2641,9 @@ fn write_edge_records(
 ) -> Result<()> {
     if !already_sorted {
         radix_sort_edge_records(&mut records, spec.src_width);
+        if spec.sort_width > 0 {
+            sort_edge_ranges_by_sort_key(&mut records);
+        }
     }
     let mut writer = BufWriter::with_capacity(1024 * 1024, target.sink(path)?);
     write_edge_bin_header(&mut writer, spec.sort_width > 0, spec)?;
@@ -2657,6 +2660,24 @@ fn write_edge_records(
         .map_err(|_| anyhow!("edge flush failed"))?;
     sink.finish()?;
     Ok(())
+}
+
+fn sort_edge_ranges_by_sort_key(records: &mut [EdgeRecord]) {
+    if records.len() <= 1 {
+        return;
+    }
+    let mut start = 0usize;
+    while start < records.len() {
+        let src_id = records[start].src_id;
+        let mut end = start + 1;
+        while end < records.len() && records[end].src_id == src_id {
+            end += 1;
+        }
+        if end - start > 1 {
+            records[start..end].sort_unstable_by(|a, b| b.sort_key.cmp(&a.sort_key));
+        }
+        start = end;
+    }
 }
 
 fn radix_sort_edge_records(records: &mut [EdgeRecord], src_width: u8) {
