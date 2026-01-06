@@ -61,7 +61,7 @@ fn build_and_read_round_trip_basic() {
         node_types: vec![node_meta.clone()],
         relation_metas: vec![relation_meta.clone()],
         shard_index: 0,
-        node_data: None,
+        node_data_paths: None,
     });
     let built = builder
         .build(
@@ -105,7 +105,7 @@ fn build_handles_all_zero_edges() {
         node_types: vec![node_meta.clone()],
         relation_metas: vec![relation_meta.clone()],
         shard_index: 0,
-        node_data: None,
+        node_data_paths: None,
     });
     let built = builder
         .build(
@@ -145,7 +145,7 @@ fn build_rejects_dangling_edges() {
         node_types: vec![node_meta.clone()],
         relation_metas: vec![relation_meta.clone()],
         shard_index: 0,
-        node_data: None,
+        node_data_paths: None,
     });
     let msg = match builder.build(
         &[EdgeShardInput {
@@ -197,7 +197,7 @@ fn build_rejects_edge_ordering_violation() {
         node_types: vec![node_meta.clone()],
         relation_metas: vec![relation_meta.clone()],
         shard_index: 0,
-        node_data: None,
+        node_data_paths: None,
     });
     let msg = match builder.build(
         &[EdgeShardInput {
@@ -269,7 +269,7 @@ fn offsets_span_multiple_chunks_and_edges_decode_correctly() {
         node_types: vec![node_meta.clone()],
         relation_metas: vec![relation_meta.clone()],
         shard_index: 0,
-        node_data: None,
+        node_data_paths: None,
     });
     let built = builder
         .build(
@@ -335,7 +335,7 @@ fn sort_key_round_trip_decodes_correctly() {
         node_types: vec![node_meta.clone()],
         relation_metas: vec![relation_meta.clone()],
         shard_index: 0,
-        node_data: None,
+        node_data_paths: None,
     });
     let built = builder
         .build(
@@ -407,7 +407,7 @@ fn multi_relation_counts_and_edges_decode_correctly() {
         node_types: vec![node_meta.clone()],
         relation_metas: vec![follows.clone(), temporal.clone()],
         shard_index: 0,
-        node_data: None,
+        node_data_paths: None,
     });
     let built = builder
         .build(
@@ -493,7 +493,7 @@ fn multi_relation_mixed_dst_widths_and_partial_edges() {
         node_types: vec![node_meta.clone()],
         relation_metas: vec![follows.clone(), temporal.clone()],
         shard_index: 0,
-        node_data: None,
+        node_data_paths: None,
     });
     let built = builder
         .build(
@@ -561,7 +561,7 @@ fn truncates_large_node_without_sort_key() {
         node_types: vec![node_meta.clone()],
         relation_metas: vec![relation_meta.clone()],
         shard_index: 0,
-        node_data: None,
+        node_data_paths: None,
     });
     let built = builder
         .build(
@@ -640,7 +640,7 @@ fn truncates_large_node_with_sort_key() {
         node_types: vec![node_meta.clone()],
         relation_metas: vec![relation_meta.clone()],
         shard_index: 0,
-        node_data: None,
+        node_data_paths: None,
     });
     let built = builder
         .build(
@@ -710,7 +710,7 @@ fn caps_relation_edge_count_at_varint_limit() {
         node_types: vec![node_meta.clone()],
         relation_metas: vec![relation_meta.clone()],
         shard_index: 0,
-        node_data: None,
+        node_data_paths: None,
     });
     let built = builder
         .build(
@@ -897,7 +897,7 @@ fn offsets_many_chunks_sparse_edges() {
         node_types: vec![node_meta.clone()],
         relation_metas: vec![relation_meta.clone()],
         shard_index: 0,
-        node_data: None,
+        node_data_paths: None,
     });
     let built = builder
         .build(
@@ -970,6 +970,7 @@ fn truncates_large_node_multi_relation() {
             min_id: 0,
             max_id: 1,
             node_data_path: None,
+            node_data_paths: None,
         }],
     };
     let follows = relation_meta("Follows", "User", "User", None);
@@ -981,7 +982,7 @@ fn truncates_large_node_multi_relation() {
         node_types: vec![node_meta.clone()],
         relation_metas: vec![follows.clone(), temporal.clone()],
         shard_index: 0,
-        node_data: None,
+        node_data_paths: None,
     });
     let built = builder
         .build(
@@ -1051,7 +1052,7 @@ fn builder_errors_when_edge_columns_missing() {
         node_types: vec![node_meta.clone()],
         relation_metas: vec![relation_meta.clone()],
         shard_index: 0,
-        node_data: None,
+        node_data_paths: None,
     });
     let msg = match builder.build(
         &[EdgeShardInput {
@@ -1085,7 +1086,7 @@ fn builder_errors_when_edge_column_wrong_type() {
         node_types: vec![node_meta.clone()],
         relation_metas: vec![relation_meta.clone()],
         shard_index: 0,
-        node_data: None,
+        node_data_paths: None,
     });
     let msg = match builder.build(
         &[EdgeShardInput {
@@ -1125,7 +1126,7 @@ fn builder_accepts_binary_edges_with_64bit_sort_key() {
         node_types: vec![node_meta.clone()],
         relation_metas: vec![relation_meta.clone()],
         shard_index: 0,
-        node_data: None,
+        node_data_paths: None,
     });
     let built = builder
         .build(
@@ -1168,7 +1169,7 @@ fn builder_errors_when_dst_id_exceeds_mask() {
         node_types: vec![node_meta.clone()],
         relation_metas: vec![relation_meta.clone()],
         shard_index: 0,
-        node_data: None,
+        node_data_paths: None,
     });
     let msg = match builder.build(
         &[EdgeShardInput {
@@ -1212,7 +1213,7 @@ fn builder_errors_when_dest_sort_key_exceeds_mask() {
         node_types: vec![node_meta.clone()],
         relation_metas: vec![relation_meta.clone()],
         shard_index: 0,
-        node_data: None,
+        node_data_paths: None,
     });
     let msg = match builder.build(
         &[EdgeShardInput {
@@ -1255,7 +1256,7 @@ fn builder_errors_on_unknown_relation_name() {
         node_types: vec![node_meta.clone()],
         relation_metas: vec![relation_meta.clone()],
         shard_index: 0,
-        node_data: None,
+        node_data_paths: None,
     });
     let msg = match builder.build(
         &[EdgeShardInput {
@@ -1290,7 +1291,7 @@ fn builder_errors_on_corrupted_parquet() {
         node_types: vec![node_meta.clone()],
         relation_metas: vec![relation_meta.clone()],
         shard_index: 0,
-        node_data: None,
+        node_data_paths: None,
     });
     let msg = match builder.build(
         &[EdgeShardInput {
@@ -1333,7 +1334,7 @@ fn builder_errors_on_shard_index_mismatch() {
         node_types: vec![node_meta.clone()],
         relation_metas: vec![relation_meta.clone()],
         shard_index: 0,
-        node_data: None,
+        node_data_paths: None,
     });
     let msg = match builder.build(
         &[EdgeShardInput {
@@ -1364,7 +1365,7 @@ fn builder_fails_on_missing_edge_file() {
         node_types: vec![node_meta.clone()],
         relation_metas: vec![relation_meta.clone()],
         shard_index: 0,
-        node_data: None,
+        node_data_paths: None,
     });
     let msg = match builder.build(
         &[EdgeShardInput {
@@ -1395,6 +1396,7 @@ fn node_meta(name: &str, max_id: u64) -> NodeTypeMetadata {
             min_id: 0,
             max_id,
             node_data_path: None,
+            node_data_paths: None,
         }],
     }
 }
@@ -1559,7 +1561,7 @@ fn build_simple_shard(
         node_types: vec![node_meta.clone()],
         relation_metas: vec![relation_meta.clone()],
         shard_index: 0,
-        node_data: None,
+        node_data_paths: None,
     });
     let built = builder
         .build(
@@ -1606,6 +1608,7 @@ fn builder_writes_node_data() {
             min_id: 0,
             max_id: 2,
             node_data_path: Some("nodes.parquet".into()),
+            node_data_paths: None,
         }],
     };
     let relation_meta = relation_meta("Follows", "User", "User", None);
@@ -1616,7 +1619,7 @@ fn builder_writes_node_data() {
         node_types: vec![node_meta.clone()],
         relation_metas: vec![relation_meta.clone()],
         shard_index: 0,
-        node_data: Some(ParquetSource::LocalFile(node_data_path)),
+        node_data_paths: Some(vec![ParquetSource::LocalFile(node_data_path)]),
     });
     let built = builder
         .build(
@@ -1658,6 +1661,7 @@ fn builder_errors_on_node_data_row_count_mismatch() {
             min_id: 0,
             max_id: 2,
             node_data_path: Some("nodes.parquet".into()),
+            node_data_paths: None,
         }],
     };
     let relation_meta = relation_meta("Follows", "User", "User", None);
@@ -1668,7 +1672,7 @@ fn builder_errors_on_node_data_row_count_mismatch() {
         node_types: vec![node_meta.clone()],
         relation_metas: vec![relation_meta.clone()],
         shard_index: 0,
-        node_data: Some(ParquetSource::LocalFile(node_data_path)),
+        node_data_paths: Some(vec![ParquetSource::LocalFile(node_data_path)]),
     });
     let msg = match builder.build(
         &[EdgeShardInput {

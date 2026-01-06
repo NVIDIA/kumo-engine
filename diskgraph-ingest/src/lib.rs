@@ -59,9 +59,6 @@ const PK_MAP_MEMORY_BUDGET: usize = 1024 * 1024 * 1024;
 const EDGE_BIN_MAGIC: [u8; 4] = *b"DGED";
 const EDGE_BIN_VERSION: u8 = 2;
 const EDGE_BIN_FLAG_SORT: u8 = 1;
-const NODE_BIN_MAGIC: [u8; 4] = *b"DGND";
-const NODE_BIN_VERSION: u8 = 1;
-const NODE_BIN_LEN_WIDTH: u8 = 2;
 const MAX_NODE_DATA_LEN: usize = 60 * 1024;
 const PROGRESS_ROW_BATCH: u64 = 100_000;
 const MAX_VAR_KEY_LEN: usize = u16::MAX as usize;
@@ -241,17 +238,15 @@ pub fn ingest_with_stats(
     let pk_map_wall = pk_map_start.elapsed();
     let final_start = std::time::Instant::now();
     if let Some(profile_dir) = &profile_dir {
-        profile_phase(profile_dir, "nodes", || ctx.build_final_nodes())?;
         profile_phase(profile_dir, "edges", || ctx.build_final_edges())?;
     } else {
-        ctx.build_final_nodes()?;
         ctx.build_final_edges()?;
     }
     let build_wall = final_start.elapsed();
-    ctx.cleanup_temp_inputs()?;
     let index_start = std::time::Instant::now();
     let index_metadata = ctx.build_index_metadata()?;
     ctx.build_index(index_metadata.clone())?;
+    ctx.cleanup_temp_inputs()?;
     let _index_wall = index_start.elapsed();
     let finalize_start = std::time::Instant::now();
     let index_metadata = ctx.finalize_metadata(index_metadata)?;
@@ -1515,119 +1510,6 @@ impl IngestContext {
         Ok(())
     }
 
-    fn build_final_nodes(&mut self) -> Result<()> {
-        let phase_start = std::time::Instant::now();
-        let root = require_local_output(&self.target)?.to_path_buf();
-        self.build_shard_offsets();
-        for table in &self.source.tables {
-            if table.edge_table.is_some() {
-                continue;
-            }
-            let total_rows = self
-                .shard_rows
-                .get(&table.name)
-                .map(|rows| rows.iter().sum())
-                .unwrap_or(0);
-            self.emit_progress(ProgressEvent {
-                phase: ProgressPhase::Build,
-                table: table.name.clone(),
-                shard: None,
-                kind: ProgressKind::Start,
-                delta: 0,
-                total: Some(total_rows),
-            });
-            let shard_rows = self
-                .shard_rows
-                .get(&table.name)
-                .cloned()
-                .unwrap_or_else(|| vec![0; self.num_shards]);
-            let ctx_path = root.join(temp_node_context_path(&table.name));
-            let ctx_bytes = fs::read(&ctx_path)
-                .with_context(|| format!("read {}", ctx_path.display()))?;
-            let node_ctx = diskgraph_rowpack::RowPackContext::from_bytes(&ctx_bytes)?;
-            let file_count = table.paths.len();
-            for shard in 0..self.num_shards {
-                let out_rel = temp_node_shard_output_path(&table.name, shard);
-                let out_path = self.target.join(&out_rel);
-                if let OutputTarget::Local { .. } = &*self.target {
-                    if let Some(parent) = out_path.parent() {
-                        fs::create_dir_all(parent)?;
-                    }
-                }
-                let mut writer =
-                    BufWriter::with_capacity(1024 * 1024, self.target.sink(&out_path)?);
-                writer.write_all(&NODE_BIN_MAGIC)?;
-                writer.write_all(&[NODE_BIN_VERSION, NODE_BIN_LEN_WIDTH, 0u8, 0u8])?;
-                let mut pending = 0u64;
-                for file_idx in 0..file_count {
-                    let temp_path =
-                        root.join(temp_node_data_path(&table.name, shard, file_idx));
-                    read_temp_rows(&temp_path, |row| {
-                        pending = pending.saturating_add(1);
-                        if pending >= PROGRESS_ROW_BATCH {
-                            self.emit_progress(ProgressEvent {
-                                phase: ProgressPhase::Build,
-                                table: table.name.clone(),
-                                shard: None,
-                                kind: ProgressKind::Advance,
-                                delta: pending,
-                                total: Some(total_rows),
-                            });
-                            pending = 0;
-                        }
-                        if row.len() > MAX_NODE_DATA_LEN {
-                            return Err(anyhow!("temp node data exceeds limit"));
-                        }
-                        let len = u16::try_from(row.len())
-                            .map_err(|_| anyhow!("temp node data too large"))?;
-                        writer.write_all(&len.to_le_bytes())?;
-                        if len > 0 {
-                            writer.write_all(row)?;
-                        }
-                        Ok(())
-                    })?;
-                }
-                if pending > 0 {
-                    self.emit_progress(ProgressEvent {
-                        phase: ProgressPhase::Build,
-                        table: table.name.clone(),
-                        shard: None,
-                        kind: ProgressKind::Advance,
-                        delta: pending,
-                        total: Some(total_rows),
-                    });
-                }
-                writer.flush()?;
-                let sink = writer.into_inner().map_err(|_| anyhow!("node data flush failed"))?;
-                sink.finish()?;
-                if shard == 0 {
-                    let ctx_path = format!("nodes/{}/node_data.ctx", table.name.to_lowercase());
-                    self.target.write_bytes(&ctx_path, node_ctx.to_bytes()?)?;
-                }
-            }
-            self.table_rows
-                .insert(table.name.clone(), shard_rows.iter().sum());
-            self.emit_progress(ProgressEvent {
-                phase: ProgressPhase::Build,
-                table: table.name.clone(),
-                shard: None,
-                kind: ProgressKind::Finish,
-                delta: 0,
-                total: Some(total_rows),
-            });
-        }
-        let elapsed = phase_start.elapsed();
-        self.node_task_ms = self
-            .node_task_ms
-            .saturating_add(elapsed.as_millis() as u64);
-        self.build_task_ms = self
-            .build_task_ms
-            .saturating_add(elapsed.as_millis() as u64);
-        self.node_tasks = self.node_tasks.saturating_add(1);
-        self.build_tasks = self.build_tasks.saturating_add(1);
-        Ok(())
-    }
-
     fn build_final_edges(&mut self) -> Result<()> {
         let phase_start = std::time::Instant::now();
         let root = require_local_output(&self.target)?.to_path_buf();
@@ -2286,6 +2168,7 @@ impl IngestContext {
                 .get(&table.name)
                 .cloned()
                 .unwrap_or_else(|| vec![0; self.num_shards]);
+            let file_count = table.paths.len();
             let mut shards = Vec::new();
             for shard in 0..self.num_shards {
                 let count = shard_rows.get(shard).copied().unwrap_or(0);
@@ -2295,10 +2178,15 @@ impl IngestContext {
                 } else {
                     min_id.saturating_add(count.saturating_sub(1))
                 };
+                let mut node_data_paths = Vec::with_capacity(file_count);
+                for file_idx in 0..file_count {
+                    node_data_paths.push(temp_node_data_path(&table.name, shard, file_idx));
+                }
                 shards.push(NodeShardMetadata {
                     min_id,
                     max_id,
-                    node_data_path: Some(temp_node_shard_output_path(&table.name, shard)),
+                    node_data_path: None,
+                    node_data_paths: Some(node_data_paths),
                 });
             }
             let context_path = self.table_contexts.get(&table.name).cloned();
@@ -2394,6 +2282,7 @@ impl IngestContext {
         for node in &mut metadata.node_types {
             for shard in &mut node.shards {
                 shard.node_data_path = None;
+                shard.node_data_paths = None;
             }
         }
         for rel in &mut metadata.edge_relations {
@@ -2505,15 +2394,6 @@ struct EdgeRecord {
     src_id: u64,
     dst_id: u64,
     sort_key: u64,
-}
-
-fn temp_node_shard_output_path(name: &str, shard: usize) -> String {
-    format!(
-        "{}/nodes/{}/shard-{:05}/part-00000.bin",
-        TEMP_DIR_NAME,
-        name.to_lowercase(),
-        shard
-    )
 }
 
 fn temp_edge_shard_output_path(name: &str, shard: usize) -> String {

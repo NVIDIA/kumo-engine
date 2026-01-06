@@ -29,6 +29,8 @@ pub struct NodeShardMetadata {
     pub max_id: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node_data_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_data_paths: Option<Vec<String>>,
 }
 
 /// Node type definition pulled from index_metadata.json.

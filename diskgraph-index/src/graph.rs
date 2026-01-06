@@ -153,11 +153,19 @@ impl GraphIndexBuilder {
                     .join(&node_type.name)
                     .join(format!("shard-{:05}", shard_idx));
                 let node_data = if node_type.has_node_data {
-                    let path = shard_meta
-                        .node_data_path
-                        .clone()
-                        .ok_or_else(|| anyhow!("node data path missing for {shard_key}"))?;
-                    Some(self.resolve_parquet(&path))
+                    let paths = if let Some(paths) = &shard_meta.node_data_paths {
+                        paths.clone()
+                    } else if let Some(path) = &shard_meta.node_data_path {
+                        vec![path.clone()]
+                    } else {
+                        return Err(anyhow!("node data path missing for {shard_key}"));
+                    };
+                    Some(
+                        paths
+                            .into_iter()
+                            .map(|path| self.resolve_parquet(&path))
+                            .collect(),
+                    )
                 } else {
                     None
                 };
@@ -184,7 +192,7 @@ impl GraphIndexBuilder {
                     node_types: self.metadata.node_types.clone(),
                     relation_metas: relations.clone(),
                     shard_index: shard_idx,
-                    node_data,
+                    node_data_paths: node_data,
                     edge_inputs,
                     expected_nodes: shard_node_count(node_type, shard_idx)?,
                 };
@@ -210,7 +218,7 @@ struct ShardBuildJob {
     node_types: Vec<NodeTypeMetadata>,
     relation_metas: Vec<EdgeRelationMetadata>,
     shard_index: usize,
-    node_data: Option<ParquetSource>,
+    node_data_paths: Option<Vec<ParquetSource>>,
     edge_inputs: Vec<EdgeShardInput>,
     expected_nodes: u64,
 }
@@ -228,7 +236,7 @@ impl ShardBuildJob {
             node_types: self.node_types.clone(),
             relation_metas: self.relation_metas.clone(),
             shard_index: self.shard_index,
-            node_data: self.node_data.clone(),
+            node_data_paths: self.node_data_paths.clone(),
         };
         let builder = ShardBuilder::new(params);
         let shard_key: Arc<str> = Arc::from(self.shard_key.as_str());

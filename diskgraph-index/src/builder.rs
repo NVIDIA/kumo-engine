@@ -100,9 +100,9 @@ pub enum IndexBuildError {
 }
 fn localize_edge_inputs(
     edge_shards: &[EdgeShardInput],
-    node_data: Option<&ParquetSource>,
-) -> Result<(Vec<EdgeShardInput>, Option<ParquetSource>)> {
-    Ok((edge_shards.to_vec(), node_data.cloned()))
+    node_data: Option<&[ParquetSource]>,
+) -> Result<(Vec<EdgeShardInput>, Option<Vec<ParquetSource>>)> {
+    Ok((edge_shards.to_vec(), node_data.map(|paths| paths.to_vec())))
 }
 
 /// Parameters for building a single shard index.
@@ -116,7 +116,7 @@ pub struct ShardBuildParams {
     /// Shard index we are building (used for selecting aligned edge shards).
     pub shard_index: usize,
     /// Optional node data Parquet source for this shard.
-    pub node_data: Option<ParquetSource>,
+    pub node_data_paths: Option<Vec<ParquetSource>>,
 }
 
 /// Consumes node shard metadata and all aligned edge shards (across relations) and emits two files:
@@ -160,7 +160,7 @@ impl ShardBuilder {
 
         let rt = Arc::new(Runtime::new()?);
         let (edge_inputs, localized_node_data) =
-            localize_edge_inputs(edge_shards, self.params.node_data.as_ref())?;
+            localize_edge_inputs(edge_shards, self.params.node_data_paths.as_deref())?;
 
         let layouts = Arc::new(compute_relation_layouts(
             &self.params.relation_metas,
@@ -172,19 +172,19 @@ impl ShardBuilder {
         let mut edge_stream =
             MergedEdgeStream::try_new(rt.clone(), &edge_inputs, &self.params.relation_metas)?;
         let expected_nodes = shard_node_count(&self.params.node_meta, self.params.shard_index)?;
-        if !self.params.node_meta.has_node_data && self.params.node_data.is_some() {
+        if !self.params.node_meta.has_node_data && self.params.node_data_paths.is_some() {
             return Err(IndexBuildError::NotImplemented(
                 "node data provided but metadata disables it",
             )
             .into());
         }
         let mut node_data_stream = if self.params.node_meta.has_node_data {
-            let source = localized_node_data
+            let sources = localized_node_data
                 .as_ref()
                 .ok_or(IndexBuildError::NotImplemented("node data missing for shard"))?;
             Some(NodeDataStream::try_new(
                 rt.clone(),
-                source,
+                sources,
                 expected_nodes,
             )?)
         } else {
@@ -1188,7 +1188,7 @@ fn read_u64_width(reader: &mut std::io::BufReader<std::fs::File>, width: u8) -> 
 
 enum NodeDataStream {
     Parquet(ParquetNodeDataStream),
-    Binary(BinaryNodeDataStream),
+    MultiBinary(MultiBinaryNodeDataStream),
 }
 
 struct ParquetNodeDataStream {
@@ -1202,119 +1202,106 @@ struct ParquetNodeDataStream {
     seen_rows: u64,
 }
 
-struct BinaryNodeDataStream {
-    reader: std::io::BufReader<std::fs::File>,
+struct MultiBinaryNodeDataStream {
+    files: Vec<PathBuf>,
+    current_idx: usize,
+    reader: Option<std::io::BufReader<std::fs::File>>,
     expected_rows: u64,
     seen_rows: u64,
-    len_width: u8,
 }
 
 impl NodeDataStream {
-    fn try_new(rt: Arc<Runtime>, source: &ParquetSource, expected_rows: u64) -> Result<Self> {
-        let path = match source {
-            ParquetSource::LocalFile(path) => path,
-        };
-        let is_binary = path.extension().and_then(|e| e.to_str()) == Some("bin");
-        if is_binary {
-            let mut reader =
-                std::io::BufReader::with_capacity(1024 * 1024, std::fs::File::open(path)?);
-            let mut header = [0u8; 8];
-            reader.read_exact(&mut header)?;
-            if &header[0..4] != b"DGND" {
-                return Err(IndexBuildError::NotImplemented(
-                    "invalid node data binary header",
-                )
-                .into());
-            }
-            if header[4] != 1 {
-                return Err(IndexBuildError::NotImplemented(
-                    "unsupported node data binary version",
-                )
-                .into());
-            }
-            let len_width = header[5];
-            if len_width != 2 && len_width != 4 {
-                return Err(IndexBuildError::NotImplemented(
-                    "unsupported node data length width",
-                )
-                .into());
-            }
-            return Ok(NodeDataStream::Binary(BinaryNodeDataStream {
-                reader,
-                expected_rows,
-                seen_rows: 0,
-                len_width,
-            }));
+    fn try_new(rt: Arc<Runtime>, sources: &[ParquetSource], expected_rows: u64) -> Result<Self> {
+        if sources.is_empty() {
+            return Err(IndexBuildError::NotImplemented("node data missing for shard").into());
         }
-
-        let path = match source {
-            ParquetSource::LocalFile(path) => path,
-        };
-        let file = std::fs::File::open(path)?;
-        let reader = SerializedFileReader::new(file)?;
-        let rows = reader.metadata().file_metadata().num_rows() as u64;
-        if rows != expected_rows {
-            return Err(IndexBuildError::NotImplemented(
-                "node data row count mismatch",
-            )
-            .into());
-        }
-        let reader = object_reader_from_source(source, &rt)?;
-        let (tx, rx) = mpsc::sync_channel(32);
-        let data_idx = rt.block_on(async move {
-            let mut builder = ParquetRecordBatchStreamBuilder::new(reader).await?;
-            builder = builder.with_batch_size(256_000);
-            let stream = builder.build()?;
-            let schema = stream.schema().clone();
-            if schema.fields().len() != 1 {
-                return Err(parquet::errors::ParquetError::General(
-                    "node data parquet must have exactly one column".into(),
-                ));
+        let paths: Vec<PathBuf> = sources
+            .iter()
+            .map(|source| match source {
+                ParquetSource::LocalFile(path) => path.clone(),
+            })
+            .collect();
+        if paths.len() == 1 && paths[0].extension().and_then(|e| e.to_str()) != Some("bin") {
+            let file = std::fs::File::open(&paths[0])?;
+            let reader = SerializedFileReader::new(file)?;
+            let rows = reader.metadata().file_metadata().num_rows() as u64;
+            if rows != expected_rows {
+                return Err(IndexBuildError::NotImplemented(
+                    "node data row count mismatch",
+                )
+                .into());
             }
-            let idx = schema
-                .index_of("data")
-                .map_err(|_| parquet::errors::ParquetError::General("missing data column".into()))?;
-            let field = schema.field(idx);
-            if !matches!(field.data_type(), DataType::Binary) {
-                return Err(parquet::errors::ParquetError::General(
-                    "node data column must be binary".into(),
-                ));
-            }
-            tokio::spawn(async move {
-                futures::pin_mut!(stream);
-                while let Some(item) = stream.next().await {
-                    match item {
-                        Ok(batch) => {
-                            if tx.send(Ok(Some(batch))).is_err() {
+            let reader = object_reader_from_source(&sources[0], &rt)?;
+            let (tx, rx) = mpsc::sync_channel(32);
+            let data_idx = rt.block_on(async move {
+                let mut builder = ParquetRecordBatchStreamBuilder::new(reader).await?;
+                builder = builder.with_batch_size(256_000);
+                let stream = builder.build()?;
+                let schema = stream.schema().clone();
+                if schema.fields().len() != 1 {
+                    return Err(parquet::errors::ParquetError::General(
+                        "node data parquet must have exactly one column".into(),
+                    ));
+                }
+                let idx = schema.index_of("data").map_err(|_| {
+                    parquet::errors::ParquetError::General("missing data column".into())
+                })?;
+                let field = schema.field(idx);
+                if !matches!(field.data_type(), DataType::Binary) {
+                    return Err(parquet::errors::ParquetError::General(
+                        "node data column must be binary".into(),
+                    ));
+                }
+                tokio::spawn(async move {
+                    futures::pin_mut!(stream);
+                    while let Some(item) = stream.next().await {
+                        match item {
+                            Ok(batch) => {
+                                if tx.send(Ok(Some(batch))).is_err() {
+                                    return;
+                                }
+                            }
+                            Err(e) => {
+                                let _ = tx.send(Err(e));
                                 return;
                             }
                         }
-                        Err(e) => {
-                            let _ = tx.send(Err(e));
-                            return;
-                        }
                     }
-                }
-                let _ = tx.send(Ok(None));
-            });
-            Ok::<_, parquet::errors::ParquetError>(idx)
-        })?;
-        Ok(NodeDataStream::Parquet(ParquetNodeDataStream {
-            batch: None,
-            idx_in_batch: 0,
-            batch_len: 0,
-            data_idx,
-            current_data: None,
-            rx,
+                    let _ = tx.send(Ok(None));
+                });
+                Ok::<_, parquet::errors::ParquetError>(idx)
+            })?;
+            return Ok(NodeDataStream::Parquet(ParquetNodeDataStream {
+                batch: None,
+                idx_in_batch: 0,
+                batch_len: 0,
+                data_idx,
+                current_data: None,
+                rx,
+                expected_rows,
+                seen_rows: 0,
+            }));
+        }
+        for path in &paths {
+            if path.extension().and_then(|e| e.to_str()) != Some("bin") {
+                return Err(IndexBuildError::NotImplemented(
+                    "node data parts must be .bin files",
+                )
+                .into());
+            }
+        }
+        Ok(NodeDataStream::MultiBinary(MultiBinaryNodeDataStream {
+            files: paths,
+            current_idx: 0,
+            reader: None,
             expected_rows,
             seen_rows: 0,
         }))
     }
-
     fn next_into(&mut self, out: &mut Vec<u8>) -> Result<usize> {
         match self {
             NodeDataStream::Parquet(inner) => inner.next_into(out),
-            NodeDataStream::Binary(inner) => inner.next_into(out),
+            NodeDataStream::MultiBinary(inner) => inner.next_into(out),
         }
     }
 }
@@ -1377,7 +1364,7 @@ impl ParquetNodeDataStream {
     }
 }
 
-impl BinaryNodeDataStream {
+impl MultiBinaryNodeDataStream {
     fn next_into(&mut self, out: &mut Vec<u8>) -> Result<usize> {
         if self.seen_rows >= self.expected_rows {
             return Err(IndexBuildError::NotImplemented(
@@ -1385,37 +1372,61 @@ impl BinaryNodeDataStream {
             )
             .into());
         }
-        let len = match self.len_width {
-            2 => {
-                let mut buf = [0u8; 2];
-                self.reader.read_exact(&mut buf)?;
-                u16::from_le_bytes(buf) as usize
+        loop {
+            if self.reader.is_none() {
+                if self.current_idx >= self.files.len() {
+                    return Err(IndexBuildError::NotImplemented(
+                        "node data row count shorter than shard range",
+                    )
+                    .into());
+                }
+                let path = &self.files[self.current_idx];
+                let file = std::fs::File::open(path)?;
+                self.reader = Some(std::io::BufReader::with_capacity(1024 * 1024, file));
             }
-            4 => {
-                let mut buf = [0u8; 4];
-                self.reader.read_exact(&mut buf)?;
-                u32::from_le_bytes(buf) as usize
-            }
-            _ => {
-                return Err(IndexBuildError::NotImplemented(
-                    "node data length width unsupported",
-                )
-                .into())
-            }
-        };
-        out.clear();
-        if len > 0 {
-            out.resize(len, 0u8);
-            if let Err(_) = self.reader.read_exact(out.as_mut_slice()) {
-                return Err(IndexBuildError::NotImplemented(
-                    "node data row count shorter than shard range",
-                )
-                .into());
+            let reader = self
+                .reader
+                .as_mut()
+                .ok_or(IndexBuildError::NotImplemented("node data reader missing"))?;
+            match read_u32_len(reader) {
+                Ok(Some(len)) => {
+                    out.clear();
+                    if len > 0 {
+                        out.resize(len as usize, 0u8);
+                        if let Err(_) = reader.read_exact(out.as_mut_slice()) {
+                            return Err(IndexBuildError::NotImplemented(
+                                "node data row truncated",
+                            )
+                            .into());
+                        }
+                    }
+                    self.seen_rows += 1;
+                    return Ok(len as usize);
+                }
+                Ok(None) => {
+                    self.reader = None;
+                    self.current_idx += 1;
+                }
+                Err(err) => return Err(err),
             }
         }
-        self.seen_rows += 1;
-        Ok(len)
     }
+}
+
+fn read_u32_len(reader: &mut std::io::BufReader<std::fs::File>) -> Result<Option<u32>> {
+    let mut buf = [0u8; 4];
+    let mut read = 0usize;
+    while read < buf.len() {
+        let n = reader.read(&mut buf[read..])?;
+        if n == 0 {
+            if read == 0 {
+                return Ok(None);
+            }
+            return Err(IndexBuildError::NotImplemented("node data length truncated").into());
+        }
+        read += n;
+    }
+    Ok(Some(u32::from_le_bytes(buf)))
 }
 
 struct MergedEdgeStream {
