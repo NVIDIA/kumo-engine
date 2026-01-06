@@ -359,7 +359,6 @@ pub fn ingest_with_stats(
     } else {
         ctx.build_index(index_metadata.clone())?;
     }
-    ctx.cleanup_temp_inputs()?;
     let index_wall = index_start.elapsed();
     let finalize_start = std::time::Instant::now();
     let index_metadata = ctx.finalize_metadata(index_metadata)?;
@@ -2161,48 +2160,6 @@ impl IngestContext {
             let temp_root = root.join(TEMP_DIR_NAME);
             if temp_root.exists() {
                 fs::remove_dir_all(temp_root)?;
-            }
-        }
-        Ok(())
-    }
-
-    fn cleanup_temp_inputs(&self) -> Result<()> {
-        fn purge_dir(dir: &Path) -> Result<()> {
-            let mut entries = fs::read_dir(dir)?;
-            while let Some(entry) = entries.next() {
-                let entry = entry?;
-                let path = entry.path();
-                if path.is_dir() {
-                    purge_dir(&path)?;
-                    if fs::read_dir(&path)?.next().is_none() {
-                        fs::remove_dir(&path)?;
-                    }
-                    continue;
-                }
-                let name = match path.file_name().and_then(|n| n.to_str()) {
-                    Some(name) => name,
-                    None => continue,
-                };
-                match name {
-                    "node_data.bin"
-                    | "node_data.ctx"
-                    | "node_data.meta"
-                    | "pkey.bin"
-                    | "pkey.ctx"
-                    | "pkey.meta"
-                    | "rows.bin"
-                    | "rows.meta" => {
-                        let _ = fs::remove_file(&path);
-                    }
-                    _ => {}
-                }
-            }
-            Ok(())
-        }
-        if let OutputTarget::Local { root } = &*self.target {
-            let temp_root = root.join(TEMP_DIR_NAME);
-            if temp_root.exists() {
-                purge_dir(&temp_root)?;
             }
         }
         Ok(())
