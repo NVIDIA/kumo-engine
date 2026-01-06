@@ -493,7 +493,6 @@ struct IngestContext {
 struct EdgeBuildContext {
     root: PathBuf,
     rel_sort_bits: HashMap<String, Option<u8>>,
-    pk_maps_by_table: HashMap<String, Vec<PkMap>>,
     max_ids: HashMap<String, u64>,
 }
 
@@ -1726,16 +1725,6 @@ impl IngestContext {
             };
             rel_sort_bits.insert(rel.name.clone(), sort_bits);
         }
-        let mut pk_maps_by_table: HashMap<String, Vec<PkMap>> = fixed_hash_map();
-        for (table, paths) in &self.pk_map_paths {
-            let mut maps = Vec::with_capacity(paths.len());
-            for path in paths {
-                let full = root.join(path);
-                let data = fs::read(&full).with_context(|| format!("read {}", full.display()))?;
-                maps.push(PkMap::read_from(&data)?);
-            }
-            pk_maps_by_table.insert(table.clone(), maps);
-        }
         let mut max_ids = fixed_hash_map();
         for (table, counts) in &self.shard_rows {
             let total: u64 = counts.iter().sum();
@@ -1745,9 +1734,21 @@ impl IngestContext {
         Ok(EdgeBuildContext {
             root,
             rel_sort_bits,
-            pk_maps_by_table,
             max_ids,
         })
+    }
+
+    fn read_pk_map(&self, root: &Path, table: &str, shard: usize) -> Result<PkMap> {
+        let paths = self
+            .pk_map_paths
+            .get(table)
+            .ok_or_else(|| anyhow!("missing pk map paths for {}", table))?;
+        let rel = paths
+            .get(shard)
+            .ok_or_else(|| anyhow!("missing pk map path for {} shard {}", table, shard))?;
+        let full = root.join(rel);
+        let data = fs::read(&full).with_context(|| format!("read {}", full.display()))?;
+        PkMap::read_from(&data)
     }
 
     fn build_edges_pass_a(&mut self, edge_ctx: &EdgeBuildContext) -> Result<()> {
@@ -1929,10 +1930,6 @@ impl IngestContext {
                 .ok_or_else(|| anyhow!("missing pk for {}", edge.dst_fk.ref_table))?;
             let src_pk_col = column_spec(src_table, src_pk)?;
             let dst_pk_col = column_spec(dst_table, dst_pk)?;
-            let src_maps = edge_ctx
-                .pk_maps_by_table
-                .get(&edge.src_fk.ref_table)
-                .ok_or_else(|| anyhow!("missing pk maps for {}", edge.src_fk.ref_table))?;
             let src_offsets = self
                 .shard_offsets
                 .get(&edge.src_fk.ref_table)
@@ -1940,6 +1937,7 @@ impl IngestContext {
                 .unwrap_or_else(|| vec![0; self.num_shards]);
             let mut pending = 0u64;
             for shard in 0..self.num_shards {
+                let src_map = self.read_pk_map(root, &edge.src_fk.ref_table, shard)?;
                 for file_idx in 0..file_count {
                     let mut writers = Vec::with_capacity(self.num_shards);
                     for dst_shard in 0..self.num_shards {
@@ -1971,9 +1969,8 @@ impl IngestContext {
                             .map_err(|_| anyhow!("dst key parse"))?;
                         let dst_shard =
                             shard_for_key(key_ref_hash_bytes(&dst_key, &mut scratch), self.num_shards);
-                        let src_local = src_maps
-                            .get(shard)
-                            .and_then(|map| map.lookup(&src_key))
+                        let src_local = src_map
+                            .lookup(&src_key)
                             .ok_or_else(|| anyhow!("missing src key"))?;
                         let src_id = src_offsets
                             .get(shard)
@@ -2111,19 +2108,12 @@ impl IngestContext {
                 delta: 0,
                 total: Some(total_rows),
             });
-            let dst_maps = edge_ctx
-                .pk_maps_by_table
-                .get(&info.dst_table)
-                .ok_or_else(|| anyhow!("missing pk maps for {}", info.dst_table))?;
             let dst_offsets = self
                 .shard_offsets
                 .get(&info.dst_table)
                 .cloned()
                 .unwrap_or_else(|| vec![0; self.num_shards]);
             let mut pending = 0u64;
-            let key_lookup_failures = &mut self.key_lookup_failures;
-            let key_failure_samples = &mut self.key_failure_samples;
-            let key_failures_by_context = &mut self.key_failures_by_context;
             let reverse_sort_bits = edge_ctx
                 .rel_sort_bits
                 .get(&info.reverse_name)
@@ -2135,6 +2125,9 @@ impl IngestContext {
                 reverse_sort_bits,
             );
             for dst_shard in 0..self.num_shards {
+                let dst_map = self.read_pk_map(root, &info.dst_table, dst_shard)?;
+                let mut lookup_failures = 0u64;
+                let mut lookup_samples_local = Vec::new();
                 let mut reverse_edges = Vec::new();
                 let mut count = 0u64;
                 for src_shard in 0..self.num_shards {
@@ -2173,19 +2166,16 @@ impl IngestContext {
                             let src_id = read_u64_from_buf(&mut data)?;
                             read_key_into_buf(&mut data, &info.dst_pk_col, &mut dst_key)
                                 .map_err(|_| anyhow!("dst key parse"))?;
-                            let dst_local = match dst_maps
-                                .get(dst_shard)
-                                .and_then(|map| map.lookup(&dst_key))
-                            {
+                            let dst_local = match dst_map.lookup(&dst_key) {
                                 Some(id) => id,
                                 None => {
-                                    record_key_lookup_failure_key(
-                                        key_lookup_failures,
-                                        key_failure_samples,
-                                        key_failures_by_context,
-                                        &lookup_context,
-                                        &dst_key,
-                                    );
+                                    if lookup_samples_local.len() < 10 {
+                                        if let Some(sample) = sample_key(&dst_key) {
+                                            lookup_samples_local
+                                                .push(format!("{lookup_context}: {sample}"));
+                                        }
+                                    }
+                                    lookup_failures = lookup_failures.saturating_add(1);
                                     return Ok(());
                                 }
                             };
@@ -2233,6 +2223,23 @@ impl IngestContext {
                     reverse_edges,
                     false,
                 )?;
+                if lookup_failures > 0 {
+                    self.key_lookup_failures =
+                        self.key_lookup_failures.saturating_add(lookup_failures);
+                    let entry = self
+                        .key_failures_by_context
+                        .entry(lookup_context.clone())
+                        .or_default();
+                    entry.lookup_failures =
+                        entry.lookup_failures.saturating_add(lookup_failures);
+                    for sample in lookup_samples_local {
+                        if self.key_failure_samples.len() < 10 {
+                            self.key_failure_samples.push(sample);
+                        } else {
+                            break;
+                        }
+                    }
+                }
                 let entry = self
                     .edge_counts
                     .entry(info.reverse_name.clone())
@@ -3930,21 +3937,6 @@ fn record_key_parse_failure_value(
     }
 }
 
-fn record_key_lookup_failure_key(
-    total: &mut u64,
-    samples: &mut Vec<String>,
-    by_context: &mut HashMap<String, KeyFailureCounts>,
-    context: &str,
-    key: &Key,
-) {
-    *total = total.saturating_add(1);
-    let entry = by_context.entry(context.to_string()).or_default();
-    entry.lookup_failures = entry.lookup_failures.saturating_add(1);
-    if samples.len() < 10 {
-        let sample = sample_key(key).unwrap_or_else(|| "unknown".to_string());
-        samples.push(format!("{context}: {sample}"));
-    }
-}
 
 #[cfg(test)]
 mod tests {
