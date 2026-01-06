@@ -2053,6 +2053,7 @@ impl IngestContext {
                             src_shard,
                             file_idx,
                         ));
+                        let mut dst_key = init_key_for_column(&info.dst_pk_col)?;
                         read_temp_rows(&pass_a_path, |row| {
                             pending = pending.saturating_add(1);
                             if pending >= PROGRESS_ROW_BATCH {
@@ -2068,7 +2069,7 @@ impl IngestContext {
                             }
                             let mut data = row;
                             let src_id = read_u64_from_buf(&mut data)?;
-                            let dst_key = read_key_from_buf(&mut data, &info.dst_pk_col)
+                            read_key_into_buf(&mut data, &info.dst_pk_col, &mut dst_key)
                                 .map_err(|_| anyhow!("dst key parse"))?;
                             let dst_local = dst_maps
                                 .get(dst_shard)
@@ -3486,6 +3487,92 @@ fn read_key_from_buf(data: &mut &[u8], col: &ColumnSpec) -> Result<Key> {
             let bytes = data[..len].to_vec();
             *data = &data[len..];
             Ok(Key::Bytes(bytes))
+        }
+    }
+}
+
+fn init_key_for_column(col: &ColumnSpec) -> Result<Key> {
+    let key_type = key_type_for_column(col)?;
+    Ok(match key_type {
+        KeyType::Int64 => Key::Int(0),
+        KeyType::Uuid => Key::Uuid([0u8; 16]),
+        KeyType::FixedBytes { len } => Key::FixedBytes(Vec::with_capacity(len)),
+        KeyType::VarBytes => Key::Bytes(Vec::new()),
+    })
+}
+
+fn read_key_into_buf(data: &mut &[u8], col: &ColumnSpec, key: &mut Key) -> Result<()> {
+    let key_type = key_type_for_column(col)?;
+    match key_type {
+        KeyType::Int64 => {
+            if data.len() < 8 {
+                return Err(anyhow!("temp key truncated"));
+            }
+            let mut buf = [0u8; 8];
+            buf.copy_from_slice(&data[..8]);
+            *data = &data[8..];
+            *key = Key::Int(u64::from_le_bytes(buf));
+            Ok(())
+        }
+        KeyType::Uuid => {
+            if data.len() < 16 {
+                return Err(anyhow!("temp key truncated"));
+            }
+            let mut buf = [0u8; 16];
+            buf.copy_from_slice(&data[..16]);
+            *data = &data[16..];
+            *key = Key::Uuid(buf);
+            Ok(())
+        }
+        KeyType::FixedBytes { len } => {
+            if data.len() < len {
+                return Err(anyhow!("temp key truncated"));
+            }
+            match key {
+                Key::FixedBytes(buf) => {
+                    if buf.capacity() < len {
+                        buf.reserve(len - buf.capacity());
+                    }
+                    buf.clear();
+                    buf.extend_from_slice(&data[..len]);
+                }
+                _ => {
+                    let mut buf = Vec::with_capacity(len);
+                    buf.extend_from_slice(&data[..len]);
+                    *key = Key::FixedBytes(buf);
+                }
+            }
+            *data = &data[len..];
+            Ok(())
+        }
+        KeyType::VarBytes => {
+            if data.len() < 2 {
+                return Err(anyhow!("temp key truncated"));
+            }
+            let len = u16::from_le_bytes(data[..2].try_into().unwrap()) as usize;
+            *data = &data[2..];
+            if data.len() < len {
+                return Err(anyhow!("temp key truncated"));
+            }
+            if len > MAX_VAR_KEY_LEN {
+                return Err(anyhow!("temp key too large"));
+            }
+            match key {
+                Key::Bytes(buf) => {
+                    if buf.capacity() < len {
+                        buf.reserve(len - buf.capacity());
+                    }
+                    buf.clear();
+                    buf.extend_from_slice(&data[..len]);
+                }
+                _ => {
+                    let mut buf = Vec::with_capacity(len);
+                    buf.extend_from_slice(&data[..len]);
+                    *key = Key::Bytes(buf);
+                }
+            }
+            *data = &data[len..];
+            Ok(())
         }
     }
 }
