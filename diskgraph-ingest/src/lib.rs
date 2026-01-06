@@ -1721,6 +1721,7 @@ impl IngestContext {
                         file_idx,
                     ));
                     let mut scratch = [0u8; 16];
+                    let mut row_buf: Vec<u8> = Vec::with_capacity(64);
                     read_temp_rows(&fkey_path, |row| {
                         pending = pending.saturating_add(1);
                         if pending >= PROGRESS_ROW_BATCH {
@@ -1741,10 +1742,11 @@ impl IngestContext {
                             shard_for_key(key_hash_bytes(&dst_key, &mut scratch), self.num_shards);
                         let src_id = src_offsets[shard].saturating_add(local_count);
                         local_count = local_count.saturating_add(1);
-                        let mut buf = Vec::new();
-                        write_u64_to_buf(&mut buf, src_id);
-                        write_key_to_buf(&mut buf, &dst_key)?;
-                        write_temp_row(&mut writers[dst_shard], &buf)?;
+                        row_buf.clear();
+                        write_u64_to_buf(&mut row_buf, src_id);
+                        row_buf.reserve(24);
+                        write_key_to_buf(&mut row_buf, &dst_key)?;
+                        write_temp_row(&mut writers[dst_shard], &row_buf)?;
                         Ok(())
                     })?;
                     for dst_shard in 0..self.num_shards {
@@ -1839,6 +1841,7 @@ impl IngestContext {
                     }
                     let forward_path = root.join(temp_edge_path(&forward_name, shard, file_idx));
                     let mut scratch = [0u8; 16];
+                    let mut row_buf: Vec<u8> = Vec::with_capacity(64);
                     read_temp_rows(&forward_path, |row| {
                         pending = pending.saturating_add(1);
                         if pending >= PROGRESS_ROW_BATCH {
@@ -1868,10 +1871,11 @@ impl IngestContext {
                             .copied()
                             .unwrap_or(0)
                             .saturating_add(src_local);
-                        let mut buf = Vec::new();
-                        write_u64_to_buf(&mut buf, src_id);
-                        write_key_to_buf(&mut buf, &dst_key)?;
-                        write_temp_row(&mut writers[dst_shard], &buf)?;
+                        row_buf.clear();
+                        write_u64_to_buf(&mut row_buf, src_id);
+                        row_buf.reserve(24);
+                        write_key_to_buf(&mut row_buf, &dst_key)?;
+                        write_temp_row(&mut writers[dst_shard], &row_buf)?;
                         Ok(())
                     })?;
                     for dst_shard in 0..self.num_shards {
