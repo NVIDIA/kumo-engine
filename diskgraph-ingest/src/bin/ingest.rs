@@ -178,8 +178,8 @@ fn main() -> Result<()> {
         format_duration(stats.perf.context_wall_ms)
     );
     println!(
-        "    shuffle: {}",
-        format_duration(stats.perf.shuffle_wall_ms)
+        "    encode: {}",
+        format_duration(stats.perf.encode_wall_ms)
     );
     println!(
         "    pk_map: {}",
@@ -212,9 +212,9 @@ fn main() -> Result<()> {
         stats.perf.context_tasks
     );
     println!(
-        "    shuffle: {} ({} tasks)",
-        format_duration(stats.perf.shuffle_task_ms),
-        stats.perf.shuffle_tasks
+        "    encode: {} ({} tasks)",
+        format_duration(stats.perf.encode_task_ms),
+        stats.perf.encode_tasks
     );
     println!(
         "    pk_map: {} ({} tasks)",
@@ -243,7 +243,7 @@ fn main() -> Result<()> {
     );
     if let Some(profile_dir) = args.profile.as_ref() {
         let mut profiles = Vec::new();
-        for name in ["context", "shuffle", "pk_map", "edges_a", "edges_b", "edges_c", "index"] {
+        for name in ["context", "encode", "pk_map", "edges_a", "edges_b", "edges_c", "index"] {
             let svg = profile_dir.join(format!("{name}-profile.svg"));
             let pb = profile_dir.join(format!("{name}-profile.pb"));
             if svg.exists() {
@@ -259,7 +259,7 @@ fn main() -> Result<()> {
                 println!("  {}", path.display());
             }
             let mut pb_paths = Vec::new();
-            for name in ["context", "shuffle", "pk_map", "edges_a", "edges_b", "edges_c", "index"] {
+            for name in ["context", "encode", "pk_map", "edges_a", "edges_b", "edges_c", "index"] {
                 let pb = profile_dir.join(format!("{name}-profile.pb"));
                 if pb.exists() {
                     pb_paths.push(pb);
@@ -371,7 +371,7 @@ fn build_progress() -> Option<ProgressCallback> {
 fn progress_label(event: &ProgressEvent) -> String {
     let phase = match event.phase {
         ProgressPhase::Context => "context",
-        ProgressPhase::Shuffle => "shuffle",
+        ProgressPhase::Encode => "encode",
         ProgressPhase::PkMap => "pk_map",
         ProgressPhase::EdgesPassA => "edges_a",
         ProgressPhase::EdgesPassB => "edges_b",

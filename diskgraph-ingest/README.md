@@ -141,9 +141,10 @@ Other Parquet/Arrow types are rejected during ingest.
 
 ## Ingestion stages
 
-1) Temp (per table)
+1) Encode (per table)
    - Read each input file and sample rows to build the rowpack context (one context per table).
    - Sampling uses only the first input file for that table.
+   - Parse primary keys and foreign keys; invalid keys are skipped and recorded in stats.
    - Rowpack-encode the table primary key into a temp pkey file per shard (or round-robin when no PK).
    - Rowpack-encode node payloads into temp node data files per shard (written under `_tmp/`).
    - When a table has multiple input files, temp outputs are split per-file and numbered within each shard.

@@ -119,7 +119,7 @@ impl Default for IngestOptions {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ProgressPhase {
     Context,
-    Shuffle,
+    Encode,
     PkMap,
     EdgesPassA,
     EdgesPassB,
@@ -284,7 +284,7 @@ pub struct KeyFailureCounts {
 pub struct PerfStats {
     pub wall_time_ms: u64,
     pub context_wall_ms: u64,
-    pub shuffle_wall_ms: u64,
+    pub encode_wall_ms: u64,
     pub pk_map_wall_ms: u64,
     pub edges_a_wall_ms: u64,
     pub edges_b_wall_ms: u64,
@@ -292,14 +292,14 @@ pub struct PerfStats {
     pub index_wall_ms: u64,
     pub finalize_wall_ms: u64,
     pub context_task_ms: u64,
-    pub shuffle_task_ms: u64,
+    pub encode_task_ms: u64,
     pub pk_map_task_ms: u64,
     pub edges_a_task_ms: u64,
     pub edges_b_task_ms: u64,
     pub edges_c_task_ms: u64,
     pub index_task_ms: u64,
     pub context_tasks: u64,
-    pub shuffle_tasks: u64,
+    pub encode_tasks: u64,
     pub pk_map_tasks: u64,
     pub edges_a_tasks: u64,
     pub edges_b_tasks: u64,
@@ -353,13 +353,13 @@ pub fn ingest_with_stats(
         ctx.build_node_contexts()?;
     }
     let context_wall = context_start.elapsed();
-    let shuffle_start = std::time::Instant::now();
+    let encode_start = std::time::Instant::now();
     if let Some(profile_dir) = &profile_dir {
-        profile_phase(profile_dir, "shuffle", || ctx.build_temp_shards())?;
+        profile_phase(profile_dir, "encode", || ctx.build_temp_shards())?;
     } else {
         ctx.build_temp_shards()?;
     }
-    let shuffle_wall = shuffle_start.elapsed();
+    let encode_wall = encode_start.elapsed();
     let pk_map_start = std::time::Instant::now();
     if let Some(profile_dir) = &profile_dir {
         profile_phase(profile_dir, "pk_map", || ctx.build_sharded_pk_maps())?;
@@ -410,7 +410,7 @@ pub fn ingest_with_stats(
     let perf = PerfStats {
         wall_time_ms: wall_time.as_millis() as u64,
         context_wall_ms: context_wall.as_millis() as u64,
-        shuffle_wall_ms: shuffle_wall.as_millis() as u64,
+        encode_wall_ms: encode_wall.as_millis() as u64,
         pk_map_wall_ms: pk_map_wall.as_millis() as u64,
         edges_a_wall_ms: edges_a_wall.as_millis() as u64,
         edges_b_wall_ms: edges_b_wall.as_millis() as u64,
@@ -418,14 +418,14 @@ pub fn ingest_with_stats(
         index_wall_ms: index_wall.as_millis() as u64,
         finalize_wall_ms: finalize_wall.as_millis() as u64,
         context_task_ms: ctx.context_task_ms,
-        shuffle_task_ms: ctx.shuffle_task_ms,
+        encode_task_ms: ctx.encode_task_ms,
         pk_map_task_ms: ctx.pk_map_task_ms,
         edges_a_task_ms: ctx.edges_a_task_ms,
         edges_b_task_ms: ctx.edges_b_task_ms,
         edges_c_task_ms: ctx.edges_c_task_ms,
         index_task_ms: ctx.index_task_ms,
         context_tasks: ctx.context_tasks,
-        shuffle_tasks: ctx.shuffle_tasks,
+        encode_tasks: ctx.encode_tasks,
         pk_map_tasks: ctx.pk_map_tasks,
         edges_a_tasks: ctx.edges_a_tasks,
         edges_b_tasks: ctx.edges_b_tasks,
@@ -474,14 +474,14 @@ struct IngestContext {
     output: String,
     trimmed_strings: std::sync::Arc<AtomicU64>,
     progress: Option<ProgressCallback>,
-    shuffle_task_ms: u64,
+    encode_task_ms: u64,
     pk_map_task_ms: u64,
     edges_a_task_ms: u64,
     edges_b_task_ms: u64,
     edges_c_task_ms: u64,
     index_task_ms: u64,
     context_task_ms: u64,
-    shuffle_tasks: u64,
+    encode_tasks: u64,
     pk_map_tasks: u64,
     edges_a_tasks: u64,
     edges_b_tasks: u64,
@@ -715,14 +715,14 @@ impl IngestContext {
             output: output.to_string(),
             trimmed_strings: std::sync::Arc::new(AtomicU64::new(0)),
             progress: options.progress,
-            shuffle_task_ms: 0,
+            encode_task_ms: 0,
             pk_map_task_ms: 0,
             edges_a_task_ms: 0,
             edges_b_task_ms: 0,
             edges_c_task_ms: 0,
             index_task_ms: 0,
             context_task_ms: 0,
-            shuffle_tasks: 0,
+            encode_tasks: 0,
             pk_map_tasks: 0,
             edges_a_tasks: 0,
             edges_b_tasks: 0,
@@ -928,7 +928,7 @@ impl IngestContext {
         let tables = self.source.tables.clone();
         for table in &tables {
             self.emit_progress(ProgressEvent {
-                phase: ProgressPhase::Shuffle,
+                phase: ProgressPhase::Encode,
                 table: table.name.clone(),
                 shard: None,
                 kind: ProgressKind::Start,
@@ -943,7 +943,7 @@ impl IngestContext {
             }
             let total = Some(table.paths.len() as u64);
             self.emit_progress(ProgressEvent {
-                phase: ProgressPhase::Shuffle,
+                phase: ProgressPhase::Encode,
                 table: table.name.clone(),
                 shard: None,
                 kind: ProgressKind::Finish,
@@ -953,10 +953,10 @@ impl IngestContext {
         }
         self.table_rows = table_rows;
         let elapsed = phase_start.elapsed();
-        self.shuffle_task_ms = self
-            .shuffle_task_ms
+        self.encode_task_ms = self
+            .encode_task_ms
             .saturating_add(elapsed.as_millis() as u64);
-        self.shuffle_tasks = self.shuffle_tasks.saturating_add(1);
+        self.encode_tasks = self.encode_tasks.saturating_add(1);
         Ok(())
     }
 
@@ -1148,7 +1148,7 @@ impl IngestContext {
             }
             finish_writers(file_idx, writers)?;
             self.emit_progress(ProgressEvent {
-                phase: ProgressPhase::Shuffle,
+                phase: ProgressPhase::Encode,
                 table: table.name.clone(),
                 shard: None,
                 kind: ProgressKind::Advance,
@@ -1464,7 +1464,7 @@ impl IngestContext {
                 write_temp_meta(&self.target, &meta_path, rows)?;
             }
             self.emit_progress(ProgressEvent {
-                phase: ProgressPhase::Shuffle,
+                phase: ProgressPhase::Encode,
                 table: table.name.clone(),
                 shard: None,
                 kind: ProgressKind::Advance,
@@ -2587,13 +2587,13 @@ impl IngestContext {
 
     fn build_stats(&self, metadata: &DatasetMetadata, mut perf: PerfStats) -> IngestStats {
         perf.context_task_ms = self.context_task_ms;
-        perf.shuffle_task_ms = self.shuffle_task_ms;
+        perf.encode_task_ms = self.encode_task_ms;
         perf.edges_a_task_ms = self.edges_a_task_ms;
         perf.edges_b_task_ms = self.edges_b_task_ms;
         perf.edges_c_task_ms = self.edges_c_task_ms;
         perf.index_task_ms = self.index_task_ms;
         perf.context_tasks = self.context_tasks;
-        perf.shuffle_tasks = self.shuffle_tasks;
+        perf.encode_tasks = self.encode_tasks;
         perf.edges_a_tasks = self.edges_a_tasks;
         perf.edges_b_tasks = self.edges_b_tasks;
         perf.edges_c_tasks = self.edges_c_tasks;
