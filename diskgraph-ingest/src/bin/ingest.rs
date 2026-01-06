@@ -176,6 +176,10 @@ fn main() -> Result<()> {
         format_duration(stats.perf.build_wall_ms)
     );
     println!(
+        "    index: {}",
+        format_duration(stats.perf.index_wall_ms)
+    );
+    println!(
         "    finalize: {}",
         format_duration(stats.perf.finalize_wall_ms)
     );
@@ -201,9 +205,9 @@ fn main() -> Result<()> {
         stats.perf.build_tasks
     );
     println!(
-        "      edges: {} ({} tasks)",
-        format_duration(stats.perf.edge_task_ms),
-        stats.perf.edge_tasks
+        "    index: {} ({} tasks)",
+        format_duration(stats.perf.index_task_ms),
+        stats.perf.index_tasks
     );
     if let Some(profile_dir) = args.profile.as_ref() {
         let mut profiles = Vec::new();

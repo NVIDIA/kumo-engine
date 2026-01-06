@@ -249,17 +249,20 @@ pub struct PerfStats {
     pub shuffle_wall_ms: u64,
     pub pk_map_wall_ms: u64,
     pub build_wall_ms: u64,
+    pub index_wall_ms: u64,
     pub finalize_wall_ms: u64,
     pub context_task_ms: u64,
     pub shuffle_task_ms: u64,
     pub pk_map_task_ms: u64,
     pub build_task_ms: u64,
     pub edge_task_ms: u64,
+    pub index_task_ms: u64,
     pub context_tasks: u64,
     pub shuffle_tasks: u64,
     pub pk_map_tasks: u64,
     pub build_tasks: u64,
     pub edge_tasks: u64,
+    pub index_tasks: u64,
     pub bytes_read: u64,
     pub bytes_written: u64,
 }
@@ -337,7 +340,7 @@ pub fn ingest_with_stats(
         ctx.build_index(index_metadata.clone())?;
     }
     ctx.cleanup_temp_inputs()?;
-    let _index_wall = index_start.elapsed();
+    let index_wall = index_start.elapsed();
     let finalize_start = std::time::Instant::now();
     let index_metadata = ctx.finalize_metadata(index_metadata)?;
     ctx.cleanup_temp()?;
@@ -354,17 +357,20 @@ pub fn ingest_with_stats(
         shuffle_wall_ms: shuffle_wall.as_millis() as u64,
         pk_map_wall_ms: pk_map_wall.as_millis() as u64,
         build_wall_ms: build_wall.as_millis() as u64,
+        index_wall_ms: index_wall.as_millis() as u64,
         finalize_wall_ms: finalize_wall.as_millis() as u64,
         context_task_ms: ctx.context_task_ms,
         shuffle_task_ms: ctx.shuffle_task_ms,
         pk_map_task_ms: ctx.pk_map_task_ms,
         build_task_ms: ctx.build_task_ms,
         edge_task_ms: ctx.edge_task_ms,
+        index_task_ms: index_wall.as_millis() as u64,
         context_tasks: ctx.context_tasks,
         shuffle_tasks: ctx.shuffle_tasks,
         pk_map_tasks: ctx.pk_map_tasks,
         build_tasks: ctx.build_tasks,
         edge_tasks: ctx.edge_tasks,
+        index_tasks: 1,
         bytes_read,
         bytes_written,
     };
@@ -1646,14 +1652,6 @@ impl IngestContext {
                 delta: 0,
                 total: Some(rel_total_rows),
             });
-            self.emit_progress(ProgressEvent {
-                phase: ProgressPhase::Edges,
-                table: rel.name_reverse.clone(),
-                shard: None,
-                kind: ProgressKind::Start,
-                delta: 0,
-                total: Some(rel_total_rows),
-            });
             let src_table = table_by_name(&self.source, &rel.src_table)?;
             let src_fk_col = column_spec(src_table, &rel.src_column)?;
             let src_offsets = self
@@ -1736,14 +1734,6 @@ impl IngestContext {
                                 delta: pending,
                                 total: Some(rel_total_rows),
                             });
-                            self.emit_progress(ProgressEvent {
-                                phase: ProgressPhase::Edges,
-                                table: rel.name_reverse.clone(),
-                                shard: None,
-                                kind: ProgressKind::Advance,
-                                delta: pending,
-                                total: Some(rel_total_rows),
-                            });
                             pending = 0;
                         }
                         let mut data = row;
@@ -1796,14 +1786,6 @@ impl IngestContext {
                         delta: pending,
                         total: Some(rel_total_rows),
                     });
-                    self.emit_progress(ProgressEvent {
-                        phase: ProgressPhase::Edges,
-                        table: rel.name_reverse.clone(),
-                        shard: None,
-                        kind: ProgressKind::Advance,
-                        delta: pending,
-                        total: Some(rel_total_rows),
-                    });
                 }
                 write_edge_records(
                     &self.target,
@@ -1825,14 +1807,6 @@ impl IngestContext {
             self.emit_progress(ProgressEvent {
                 phase: ProgressPhase::Edges,
                 table: rel.name_forward.clone(),
-                shard: None,
-                kind: ProgressKind::Finish,
-                delta: 0,
-                total: Some(rel_total_rows),
-            });
-            self.emit_progress(ProgressEvent {
-                phase: ProgressPhase::Edges,
-                table: rel.name_reverse.clone(),
                 shard: None,
                 kind: ProgressKind::Finish,
                 delta: 0,
@@ -1862,21 +1836,14 @@ impl IngestContext {
                     reverse_total = reverse_total.saturating_add(meta.row_count);
                 }
             }
+            let total_rows = forward_total.saturating_add(reverse_total);
             self.emit_progress(ProgressEvent {
                 phase: ProgressPhase::Edges,
                 table: forward_name.clone(),
                 shard: None,
                 kind: ProgressKind::Start,
                 delta: 0,
-                total: Some(forward_total),
-            });
-            self.emit_progress(ProgressEvent {
-                phase: ProgressPhase::Edges,
-                table: reverse_name.clone(),
-                shard: None,
-                kind: ProgressKind::Start,
-                delta: 0,
-                total: Some(reverse_total),
+                total: Some(total_rows),
             });
             let src_table = table_by_name(&self.source, &edge.src_fk.ref_table)?;
             let dst_table = table_by_name(&self.source, &edge.dst_fk.ref_table)?;
@@ -1953,7 +1920,7 @@ impl IngestContext {
                                 shard: None,
                                 kind: ProgressKind::Advance,
                                 delta: pending,
-                                total: Some(forward_total),
+                                total: Some(total_rows),
                             });
                             pending = 0;
                         }
@@ -2006,7 +1973,7 @@ impl IngestContext {
                         shard: None,
                         kind: ProgressKind::Advance,
                         delta: pending,
-                        total: Some(forward_total),
+                        total: Some(total_rows),
                     });
                 }
                 write_edge_records(
@@ -2060,11 +2027,11 @@ impl IngestContext {
                         if pending >= PROGRESS_ROW_BATCH {
                             self.emit_progress(ProgressEvent {
                                 phase: ProgressPhase::Edges,
-                                table: reverse_name.clone(),
+                                table: forward_name.clone(),
                                 shard: None,
                                 kind: ProgressKind::Advance,
                                 delta: pending,
-                                total: Some(reverse_total),
+                                total: Some(total_rows),
                             });
                             pending = 0;
                         }
@@ -2113,11 +2080,11 @@ impl IngestContext {
                 if pending > 0 {
                     self.emit_progress(ProgressEvent {
                         phase: ProgressPhase::Edges,
-                        table: reverse_name.clone(),
+                        table: forward_name.clone(),
                         shard: None,
                         kind: ProgressKind::Advance,
                         delta: pending,
-                        total: Some(reverse_total),
+                        total: Some(total_rows),
                     });
                 }
                 write_edge_records(
@@ -2135,15 +2102,7 @@ impl IngestContext {
                 shard: None,
                 kind: ProgressKind::Finish,
                 delta: 0,
-                total: Some(forward_total),
-            });
-            self.emit_progress(ProgressEvent {
-                phase: ProgressPhase::Edges,
-                table: reverse_name.clone(),
-                shard: None,
-                kind: ProgressKind::Finish,
-                delta: 0,
-                total: Some(reverse_total),
+                total: Some(total_rows),
             });
         }
         self.edge_counts = edge_counts;
