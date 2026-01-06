@@ -172,8 +172,16 @@ fn main() -> Result<()> {
         format_duration(stats.perf.pk_map_wall_ms)
     );
     println!(
-        "    edges: {}",
-        format_duration(stats.perf.build_wall_ms)
+        "    edges_a: {}",
+        format_duration(stats.perf.edges_a_wall_ms)
+    );
+    println!(
+        "    edges_b: {}",
+        format_duration(stats.perf.edges_b_wall_ms)
+    );
+    println!(
+        "    edges_c: {}",
+        format_duration(stats.perf.edges_c_wall_ms)
     );
     println!(
         "    index: {}",
@@ -200,9 +208,19 @@ fn main() -> Result<()> {
         stats.perf.pk_map_tasks
     );
     println!(
-        "    edges: {} ({} tasks)",
-        format_duration(stats.perf.build_task_ms),
-        stats.perf.build_tasks
+        "    edges_a: {} ({} tasks)",
+        format_duration(stats.perf.edges_a_task_ms),
+        stats.perf.edges_a_tasks
+    );
+    println!(
+        "    edges_b: {} ({} tasks)",
+        format_duration(stats.perf.edges_b_task_ms),
+        stats.perf.edges_b_tasks
+    );
+    println!(
+        "    edges_c: {} ({} tasks)",
+        format_duration(stats.perf.edges_c_task_ms),
+        stats.perf.edges_c_tasks
     );
     println!(
         "    index: {} ({} tasks)",
@@ -211,7 +229,7 @@ fn main() -> Result<()> {
     );
     if let Some(profile_dir) = args.profile.as_ref() {
         let mut profiles = Vec::new();
-        for name in ["context", "shuffle", "pk_map", "edges", "index"] {
+        for name in ["context", "shuffle", "pk_map", "edges_a", "edges_b", "edges_c", "index"] {
             let svg = profile_dir.join(format!("{name}-profile.svg"));
             let pb = profile_dir.join(format!("{name}-profile.pb"));
             if svg.exists() {
@@ -227,7 +245,7 @@ fn main() -> Result<()> {
                 println!("  {}", path.display());
             }
             let mut pb_paths = Vec::new();
-            for name in ["context", "shuffle", "pk_map", "edges", "index"] {
+            for name in ["context", "shuffle", "pk_map", "edges_a", "edges_b", "edges_c", "index"] {
                 let pb = profile_dir.join(format!("{name}-profile.pb"));
                 if pb.exists() {
                     pb_paths.push(pb);
@@ -341,7 +359,9 @@ fn progress_label(event: &ProgressEvent) -> String {
         ProgressPhase::Context => "context",
         ProgressPhase::Shuffle => "shuffle",
         ProgressPhase::PkMap => "pk_map",
-        ProgressPhase::Edges => "edges",
+        ProgressPhase::EdgesPassA => "edges_a",
+        ProgressPhase::EdgesPassB => "edges_b",
+        ProgressPhase::EdgesPassC => "edges_c",
         ProgressPhase::Index => "index",
     };
     match event.shard {

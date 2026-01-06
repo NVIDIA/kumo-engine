@@ -257,11 +257,19 @@ fn ingest_csv_multi_file_table_with_two_shards() -> Result<()> {
         ],
     )?;
     write_csv(
-        &input_root.join("orders.csv"),
+        &input_root.join("orders_part1.csv"),
         &["id", "user_id"],
         &[
             vec!["0".into(), "1".into()],
-            vec!["1".into(), "3".into()],
+            vec!["1".into(), "2".into()],
+        ],
+    )?;
+    write_csv(
+        &input_root.join("orders_part2.csv"),
+        &["id", "user_id"],
+        &[
+            vec!["2".into(), "3".into()],
+            vec!["3".into(), "0".into()],
         ],
     )?;
 
@@ -285,7 +293,10 @@ fn ingest_csv_multi_file_table_with_two_shards() -> Result<()> {
             {
                 "name": "Order",
                 "format": "csv",
-                "paths": [input_root.join("orders.csv").to_string_lossy()],
+                "paths": [
+                    input_root.join("orders_part1.csv").to_string_lossy(),
+                    input_root.join("orders_part2.csv").to_string_lossy()
+                ],
                 "primary_key": "id",
                 "columns": [
                     {"name": "id", "source_dtype": "int64", "ingested_dtype": "int64"},
