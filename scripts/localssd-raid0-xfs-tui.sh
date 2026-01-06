@@ -206,7 +206,7 @@ main() {
 
   mkdir -p "$mountpoint"
 
-  mount -o noatime,nodiratime "$target" "$mountpoint"
+  mount -o noatime,nodiratime,allocsize=1m "$target" "$mountpoint"
   chmod 0777 "$mountpoint"
 
   echo "Done."
