@@ -22,9 +22,14 @@ Top-level schema (all fields optional except `dataset_name` and `tables`):
   "tables": [/* TableSpec */],
   "relationships": [/* RelationshipSpec */],
   "rowpack": { /* RowPackConfig */ },
-  "num_shards": 8
+  "num_shards": 8,
+  "edge_format": "binary"
 }
 ```
+
+Notes:
+- `num_shards` defaults to `1` when omitted.
+- `edge_format` exists but only `binary` is accepted (parquet output is rejected).
 
 ### TableSpec
 
