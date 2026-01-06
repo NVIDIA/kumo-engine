@@ -164,8 +164,8 @@ fn main() -> Result<()> {
         format_duration(stats.perf.context_wall_ms)
     );
     println!(
-        "    temp: {}",
-        format_duration(stats.perf.temp_wall_ms)
+        "    shuffle: {}",
+        format_duration(stats.perf.shuffle_wall_ms)
     );
     println!(
         "    pk_map: {}",
@@ -186,9 +186,9 @@ fn main() -> Result<()> {
         stats.perf.context_tasks
     );
     println!(
-        "    temp: {} ({} tasks)",
-        format_duration(stats.perf.temp_task_ms),
-        stats.perf.temp_tasks
+        "    shuffle: {} ({} tasks)",
+        format_duration(stats.perf.shuffle_task_ms),
+        stats.perf.shuffle_tasks
     );
     println!(
         "    pk_map: {} ({} tasks)",
@@ -212,7 +212,7 @@ fn main() -> Result<()> {
     );
     if let Some(profile_dir) = args.profile.as_ref() {
         let mut profiles = Vec::new();
-        for name in ["context", "temp", "pk_map", "nodes", "edges"] {
+        for name in ["context", "shuffle", "pk_map", "nodes", "edges"] {
             let svg = profile_dir.join(format!("{name}-profile.svg"));
             let pb = profile_dir.join(format!("{name}-profile.pb"));
             if svg.exists() {
@@ -228,7 +228,7 @@ fn main() -> Result<()> {
                 println!("  {}", path.display());
             }
             let mut pb_paths = Vec::new();
-            for name in ["context", "temp", "pk_map", "nodes", "edges"] {
+            for name in ["context", "shuffle", "pk_map", "nodes", "edges"] {
                 let pb = profile_dir.join(format!("{name}-profile.pb"));
                 if pb.exists() {
                     pb_paths.push(pb);
@@ -345,7 +345,7 @@ fn build_progress() -> Option<ProgressCallback> {
 fn progress_label(event: &ProgressEvent) -> String {
     let phase = match event.phase {
         ProgressPhase::Context => "context",
-        ProgressPhase::Temp => "temp",
+        ProgressPhase::Shuffle => "shuffle",
         ProgressPhase::PkMap => "pk_map",
         ProgressPhase::Build => "build",
     };

@@ -106,7 +106,7 @@ impl Default for IngestOptions {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ProgressPhase {
     Context,
-    Temp,
+    Shuffle,
     PkMap,
     Build,
 }
@@ -161,18 +161,18 @@ pub struct KeyFailureCounts {
 pub struct PerfStats {
     pub wall_time_ms: u64,
     pub context_wall_ms: u64,
-    pub temp_wall_ms: u64,
+    pub shuffle_wall_ms: u64,
     pub pk_map_wall_ms: u64,
     pub build_wall_ms: u64,
     pub finalize_wall_ms: u64,
     pub context_task_ms: u64,
-    pub temp_task_ms: u64,
+    pub shuffle_task_ms: u64,
     pub pk_map_task_ms: u64,
     pub build_task_ms: u64,
     pub node_task_ms: u64,
     pub edge_task_ms: u64,
     pub context_tasks: u64,
-    pub temp_tasks: u64,
+    pub shuffle_tasks: u64,
     pub pk_map_tasks: u64,
     pub build_tasks: u64,
     pub node_tasks: u64,
@@ -225,13 +225,13 @@ pub fn ingest_with_stats(
         ctx.build_node_contexts()?;
     }
     let context_wall = context_start.elapsed();
-    let temp_start = std::time::Instant::now();
+    let shuffle_start = std::time::Instant::now();
     if let Some(profile_dir) = &profile_dir {
-        profile_phase(profile_dir, "temp", || ctx.build_temp_shards())?;
+        profile_phase(profile_dir, "shuffle", || ctx.build_temp_shards())?;
     } else {
         ctx.build_temp_shards()?;
     }
-    let temp_wall = temp_start.elapsed();
+    let shuffle_wall = shuffle_start.elapsed();
     let pk_map_start = std::time::Instant::now();
     if let Some(profile_dir) = &profile_dir {
         profile_phase(profile_dir, "pk_map", || ctx.build_sharded_pk_maps())?;
@@ -266,18 +266,18 @@ pub fn ingest_with_stats(
     let perf = PerfStats {
         wall_time_ms: wall_time.as_millis() as u64,
         context_wall_ms: context_wall.as_millis() as u64,
-        temp_wall_ms: temp_wall.as_millis() as u64,
+        shuffle_wall_ms: shuffle_wall.as_millis() as u64,
         pk_map_wall_ms: pk_map_wall.as_millis() as u64,
         build_wall_ms: build_wall.as_millis() as u64,
         finalize_wall_ms: finalize_wall.as_millis() as u64,
         context_task_ms: ctx.context_task_ms,
-        temp_task_ms: ctx.temp_task_ms,
+        shuffle_task_ms: ctx.shuffle_task_ms,
         pk_map_task_ms: ctx.pk_map_task_ms,
         build_task_ms: ctx.build_task_ms,
         node_task_ms: ctx.node_task_ms,
         edge_task_ms: ctx.edge_task_ms,
         context_tasks: ctx.context_tasks,
-        temp_tasks: ctx.temp_tasks,
+        shuffle_tasks: ctx.shuffle_tasks,
         pk_map_tasks: ctx.pk_map_tasks,
         build_tasks: ctx.build_tasks,
         node_tasks: ctx.node_tasks,
@@ -321,13 +321,13 @@ struct IngestContext {
     output: String,
     trimmed_strings: std::sync::Arc<AtomicU64>,
     progress: Option<ProgressCallback>,
-    temp_task_ms: u64,
+    shuffle_task_ms: u64,
     pk_map_task_ms: u64,
     build_task_ms: u64,
     node_task_ms: u64,
     edge_task_ms: u64,
     context_task_ms: u64,
-    temp_tasks: u64,
+    shuffle_tasks: u64,
     pk_map_tasks: u64,
     build_tasks: u64,
     node_tasks: u64,
@@ -549,13 +549,13 @@ impl IngestContext {
             output: output.to_string(),
             trimmed_strings: std::sync::Arc::new(AtomicU64::new(0)),
             progress: options.progress,
-            temp_task_ms: 0,
+            shuffle_task_ms: 0,
             pk_map_task_ms: 0,
             build_task_ms: 0,
             node_task_ms: 0,
             edge_task_ms: 0,
             context_task_ms: 0,
-            temp_tasks: 0,
+            shuffle_tasks: 0,
             pk_map_tasks: 0,
             build_tasks: 0,
             node_tasks: 0,
@@ -760,7 +760,7 @@ impl IngestContext {
         let tables = self.source.tables.clone();
         for table in &tables {
             self.emit_progress(ProgressEvent {
-                phase: ProgressPhase::Temp,
+                phase: ProgressPhase::Shuffle,
                 table: table.name.clone(),
                 shard: None,
                 kind: ProgressKind::Start,
@@ -775,7 +775,7 @@ impl IngestContext {
             }
             let total = Some(table.paths.len() as u64);
             self.emit_progress(ProgressEvent {
-                phase: ProgressPhase::Temp,
+                phase: ProgressPhase::Shuffle,
                 table: table.name.clone(),
                 shard: None,
                 kind: ProgressKind::Finish,
@@ -785,10 +785,10 @@ impl IngestContext {
         }
         self.table_rows = table_rows;
         let elapsed = phase_start.elapsed();
-        self.temp_task_ms = self
-            .temp_task_ms
+        self.shuffle_task_ms = self
+            .shuffle_task_ms
             .saturating_add(elapsed.as_millis() as u64);
-        self.temp_tasks = self.temp_tasks.saturating_add(1);
+        self.shuffle_tasks = self.shuffle_tasks.saturating_add(1);
         Ok(())
     }
 
@@ -976,7 +976,7 @@ impl IngestContext {
             }
             finish_writers(file_idx, writers)?;
             self.emit_progress(ProgressEvent {
-                phase: ProgressPhase::Temp,
+                phase: ProgressPhase::Shuffle,
                 table: table.name.clone(),
                 shard: None,
                 kind: ProgressKind::Advance,
@@ -1275,7 +1275,7 @@ impl IngestContext {
                 write_temp_meta(&self.target, &meta_path, rows)?;
             }
             self.emit_progress(ProgressEvent {
-                phase: ProgressPhase::Temp,
+                phase: ProgressPhase::Shuffle,
                 table: table.name.clone(),
                 shard: None,
                 kind: ProgressKind::Advance,
@@ -2408,11 +2408,11 @@ impl IngestContext {
 
     fn build_stats(&self, metadata: &DatasetMetadata, mut perf: PerfStats) -> IngestStats {
         perf.context_task_ms = self.context_task_ms;
-        perf.temp_task_ms = self.temp_task_ms;
+        perf.shuffle_task_ms = self.shuffle_task_ms;
         perf.node_task_ms = self.node_task_ms;
         perf.edge_task_ms = self.edge_task_ms;
         perf.context_tasks = self.context_tasks;
-        perf.temp_tasks = self.temp_tasks;
+        perf.shuffle_tasks = self.shuffle_tasks;
         perf.node_tasks = self.node_tasks;
         perf.edge_tasks = self.edge_tasks;
         let mut node_counts = HashMap::new();
