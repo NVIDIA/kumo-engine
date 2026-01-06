@@ -208,7 +208,7 @@ fn main() -> Result<()> {
                     def.name.to_lowercase(),
                     idx
                 );
-                shard.node_data_path = Some(rel_path);
+                shard.node_data_paths = Some(vec![rel_path]);
             }
         }
         shard_ranges_by_type.insert(def.name.to_string(), shards.clone());
@@ -300,7 +300,6 @@ fn shard_plan(total_nodes: u64, shards: usize) -> Vec<NodeShardMetadata> {
             NodeShardMetadata {
                 min_id: 0,
                 max_id: 0,
-                node_data_path: None,
                 node_data_paths: None,
             };
             shard_count as usize
@@ -315,7 +314,6 @@ fn shard_plan(total_nodes: u64, shards: usize) -> Vec<NodeShardMetadata> {
             shards_out.push(NodeShardMetadata {
                 min_id: 0,
                 max_id: 0,
-                node_data_path: None,
                 node_data_paths: None,
             });
             continue;
@@ -325,7 +323,6 @@ fn shard_plan(total_nodes: u64, shards: usize) -> Vec<NodeShardMetadata> {
         shards_out.push(NodeShardMetadata {
             min_id: start,
             max_id: end,
-            node_data_path: None,
             node_data_paths: None,
         });
         remaining -= len;
@@ -343,9 +340,13 @@ fn plan_node_data(
         for (idx, shard) in node_type.shards.iter().enumerate() {
             let rows = shard.max_id.saturating_sub(shard.min_id).saturating_add(1);
             let rel_path = shard
-                .node_data_path
-                .clone()
-                .unwrap_or_else(|| format!("nodes/{}/part-{:05}.parquet", node_type.name.to_lowercase(), idx));
+                .node_data_paths
+                .as_ref()
+                .and_then(|paths| paths.first())
+                .cloned()
+                .unwrap_or_else(|| {
+                    format!("nodes/{}/part-{:05}.parquet", node_type.name.to_lowercase(), idx)
+                });
             let path = target.join(&rel_path);
             if let OutputTarget::Local { .. } = target {
                 if let Some(parent) = path.parent() {

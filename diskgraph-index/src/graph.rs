@@ -153,13 +153,10 @@ impl GraphIndexBuilder {
                     .join(&node_type.name)
                     .join(format!("shard-{:05}", shard_idx));
                 let node_data = if node_type.has_node_data {
-                    let paths = if let Some(paths) = &shard_meta.node_data_paths {
-                        paths.clone()
-                    } else if let Some(path) = &shard_meta.node_data_path {
-                        vec![path.clone()]
-                    } else {
-                        return Err(anyhow!("node data path missing for {shard_key}"));
-                    };
+                    let paths = shard_meta
+                        .node_data_paths
+                        .clone()
+                        .ok_or_else(|| anyhow!("node data paths missing for {shard_key}"))?;
                     Some(paths.into_iter().map(|path| self.resolve_path(&path)).collect())
                 } else {
                     None

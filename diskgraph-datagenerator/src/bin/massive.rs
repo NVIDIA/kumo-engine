@@ -176,7 +176,6 @@ fn main() -> Result<()> {
     let mut node_meta = NodeShardMetadata {
         min_id: 0,
         max_id: args.nodes.saturating_sub(1),
-        node_data_path: None,
         node_data_paths: None,
     };
 
@@ -209,7 +208,7 @@ fn main() -> Result<()> {
     if args.node_data {
         let rel = "nodes.parquet".to_string();
         generate_node_data(&target, &rel, &args, Some(&mut progress))?;
-        node_meta.node_data_path = Some(rel);
+        node_meta.node_data_paths = Some(vec![rel]);
     }
 
     progress.start_stage("Writing metadata", None);

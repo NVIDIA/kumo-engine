@@ -28,8 +28,6 @@ pub struct NodeShardMetadata {
     pub min_id: u64,
     pub max_id: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub node_data_path: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node_data_paths: Option<Vec<String>>,
 }
 

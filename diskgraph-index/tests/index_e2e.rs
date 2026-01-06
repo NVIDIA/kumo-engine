@@ -964,7 +964,6 @@ fn truncates_large_node_multi_relation() {
         shards: vec![NodeShardMetadata {
             min_id: 0,
             max_id: 1,
-            node_data_path: None,
             node_data_paths: None,
         }],
     };
@@ -1399,7 +1398,6 @@ fn node_meta(name: &str, max_id: u64) -> NodeTypeMetadata {
         shards: vec![NodeShardMetadata {
             min_id: 0,
             max_id,
-            node_data_path: None,
             node_data_paths: None,
         }],
     }
@@ -1583,8 +1581,7 @@ fn builder_writes_node_data() {
         shards: vec![NodeShardMetadata {
             min_id: 0,
             max_id: 2,
-            node_data_path: Some("nodes.bin".into()),
-            node_data_paths: None,
+            node_data_paths: Some(vec!["nodes.bin".into()]),
         }],
     };
     let relation_meta = relation_meta("Follows", "User", "User", None);
@@ -1636,8 +1633,7 @@ fn builder_errors_on_node_data_row_count_mismatch() {
         shards: vec![NodeShardMetadata {
             min_id: 0,
             max_id: 2,
-            node_data_path: Some("nodes.bin".into()),
-            node_data_paths: None,
+            node_data_paths: Some(vec!["nodes.bin".into()]),
         }],
     };
     let relation_meta = relation_meta("Follows", "User", "User", None);

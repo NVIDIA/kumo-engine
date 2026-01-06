@@ -2177,7 +2177,6 @@ impl IngestContext {
                 shards.push(NodeShardMetadata {
                     min_id,
                     max_id,
-                    node_data_path: None,
                     node_data_paths: Some(node_data_paths),
                 });
             }
@@ -2273,7 +2272,6 @@ impl IngestContext {
     fn finalize_metadata(&self, mut metadata: DatasetMetadata) -> Result<DatasetMetadata> {
         for node in &mut metadata.node_types {
             for shard in &mut node.shards {
-                shard.node_data_path = None;
                 shard.node_data_paths = None;
             }
         }

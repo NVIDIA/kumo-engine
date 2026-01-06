@@ -65,13 +65,11 @@ fn graph_builder_and_reader_multi_table() {
                     NodeShardMetadata {
                         min_id: 0,
                         max_id: 1,
-                        node_data_path: None,
                         node_data_paths: None,
                     },
                     NodeShardMetadata {
                         min_id: 2,
                         max_id: 3,
-                        node_data_path: None,
                         node_data_paths: None,
                     },
                 ],
@@ -85,7 +83,6 @@ fn graph_builder_and_reader_multi_table() {
                 shards: vec![NodeShardMetadata {
                     min_id: 0,
                     max_id: 1,
-                    node_data_path: None,
                     node_data_paths: None,
                 }],
             },
