@@ -2,9 +2,6 @@ use std::fs;
 use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
-
-use arrow_array::{ArrayRef, BinaryArray, Int64Array, RecordBatch, StringArray};
-use arrow_schema::{DataType, Field, Schema};
 use diskgraph_core::metadata::{
     EdgeRelationMetadata, EdgeStorageFormat, NodeShardMetadata, NodeTypeMetadata,
 };
@@ -12,10 +9,8 @@ use diskgraph_index::{
     builder::{ShardBuildParams, ShardBuilder},
     layout::RelationSegment,
     reader::ShardReader,
-    streaming::{EdgeShardInput, ParquetSource},
+    streaming::EdgeShardInput,
 };
-use parquet::arrow::ArrowWriter;
-use parquet::file::properties::WriterProperties;
 use tempfile::tempdir;
 
 #[derive(Clone)]
@@ -28,7 +23,7 @@ pub struct EdgeRow {
 #[test]
 fn build_and_read_round_trip_basic() {
     let dir = tempdir().unwrap();
-    let edge_path = dir.path().join("edges.parquet");
+    let edge_path = dir.path().join("edges.bin");
     write_edges(
         &edge_path,
         &[
@@ -68,9 +63,9 @@ fn build_and_read_round_trip_basic() {
             &[EdgeShardInput {
                 relation: "Follows".into(),
                 source_shard_index: 0,
-                parquet: ParquetSource::LocalFile(edge_path),
+                path: edge_path,
                 has_dest_sort_key: false,
-                format: EdgeStorageFormat::Parquet,
+                format: EdgeStorageFormat::Binary,
             }],
         )
         .unwrap();
@@ -124,7 +119,7 @@ fn build_handles_all_zero_edges() {
 #[test]
 fn build_rejects_dangling_edges() {
     let dir = tempdir().unwrap();
-    let edge_path = dir.path().join("edges.parquet");
+    let edge_path = dir.path().join("edges.bin");
     write_edges(
         &edge_path,
         &[EdgeRow {
@@ -151,9 +146,9 @@ fn build_rejects_dangling_edges() {
         &[EdgeShardInput {
             relation: "Follows".into(),
             source_shard_index: 0,
-            parquet: ParquetSource::LocalFile(edge_path),
+            path: edge_path,
             has_dest_sort_key: false,
-            format: EdgeStorageFormat::Parquet,
+            format: EdgeStorageFormat::Binary,
         }],
     ) {
         Ok(_) => panic!("expected DanglingEdges error"),
@@ -168,7 +163,7 @@ fn build_rejects_dangling_edges() {
 #[test]
 fn build_rejects_edge_ordering_violation() {
     let dir = tempdir().unwrap();
-    let edge_path = dir.path().join("edges.parquet");
+    let edge_path = dir.path().join("edges.bin");
     // src_id must be sorted ascending; make it descending to trigger violation.
     write_edges(
         &edge_path,
@@ -203,9 +198,9 @@ fn build_rejects_edge_ordering_violation() {
         &[EdgeShardInput {
             relation: "Follows".into(),
             source_shard_index: 0,
-            parquet: ParquetSource::LocalFile(edge_path),
+            path: edge_path,
             has_dest_sort_key: false,
-            format: EdgeStorageFormat::Parquet,
+            format: EdgeStorageFormat::Binary,
         }],
     ) {
         Ok(_) => panic!("expected EdgeOrderingViolation error"),
@@ -221,7 +216,7 @@ fn build_rejects_edge_ordering_violation() {
 fn offsets_span_multiple_chunks_and_edges_decode_correctly() {
     // Ensure offset delta encoding handles repeated offsets and multiple chunks.
     let dir = tempdir().unwrap();
-    let edge_path = dir.path().join("edges.parquet");
+    let edge_path = dir.path().join("edges.bin");
     write_edges(
         &edge_path,
         &[
@@ -276,9 +271,9 @@ fn offsets_span_multiple_chunks_and_edges_decode_correctly() {
             &[EdgeShardInput {
                 relation: "Follows".into(),
                 source_shard_index: 0,
-                parquet: ParquetSource::LocalFile(edge_path),
+                path: edge_path,
                 has_dest_sort_key: false,
-                format: EdgeStorageFormat::Parquet,
+                format: EdgeStorageFormat::Binary,
             }],
         )
         .unwrap();
@@ -302,7 +297,7 @@ fn offsets_span_multiple_chunks_and_edges_decode_correctly() {
 #[test]
 fn sort_key_round_trip_decodes_correctly() {
     let dir = tempdir().unwrap();
-    let edge_path = dir.path().join("edges.parquet");
+    let edge_path = dir.path().join("edges.bin");
     write_edges(
         &edge_path,
         &[
@@ -342,9 +337,9 @@ fn sort_key_round_trip_decodes_correctly() {
             &[EdgeShardInput {
                 relation: "Temporal".into(),
                 source_shard_index: 0,
-                parquet: ParquetSource::LocalFile(edge_path),
+                path: edge_path,
                 has_dest_sort_key: true,
-                format: EdgeStorageFormat::Parquet,
+                format: EdgeStorageFormat::Binary,
             }],
         )
         .unwrap();
@@ -360,8 +355,8 @@ fn sort_key_round_trip_decodes_correctly() {
 #[test]
 fn multi_relation_counts_and_edges_decode_correctly() {
     let dir = tempdir().unwrap();
-    let edge_path_a = dir.path().join("edges_a.parquet");
-    let edge_path_b = dir.path().join("edges_b.parquet");
+    let edge_path_a = dir.path().join("edges_a.bin");
+    let edge_path_b = dir.path().join("edges_b.bin");
     // Relation A: no sort key.
     write_edges(
         &edge_path_a,
@@ -415,16 +410,16 @@ fn multi_relation_counts_and_edges_decode_correctly() {
                 EdgeShardInput {
                     relation: "Follows".into(),
                     source_shard_index: 0,
-                    parquet: ParquetSource::LocalFile(edge_path_a),
+                    path: edge_path_a,
                     has_dest_sort_key: false,
-                    format: EdgeStorageFormat::Parquet,
+                    format: EdgeStorageFormat::Binary,
                 },
                 EdgeShardInput {
                     relation: "Temporal".into(),
                     source_shard_index: 0,
-                    parquet: ParquetSource::LocalFile(edge_path_b),
+                    path: edge_path_b,
                     has_dest_sort_key: true,
-                    format: EdgeStorageFormat::Parquet,
+                    format: EdgeStorageFormat::Binary,
                 },
             ],
         )
@@ -445,8 +440,8 @@ fn multi_relation_counts_and_edges_decode_correctly() {
 #[test]
 fn multi_relation_mixed_dst_widths_and_partial_edges() {
     let dir = tempdir().unwrap();
-    let edge_path_a = dir.path().join("edges_a.parquet"); // small dst ids
-    let edge_path_b = dir.path().join("edges_b.parquet"); // larger dst ids + sort key
+    let edge_path_a = dir.path().join("edges_a.bin"); // small dst ids
+    let edge_path_b = dir.path().join("edges_b.bin"); // larger dst ids + sort key
 
     // Relation A: no sort key, small dst ids.
     write_edges(
@@ -501,16 +496,16 @@ fn multi_relation_mixed_dst_widths_and_partial_edges() {
                 EdgeShardInput {
                     relation: "Follows".into(),
                     source_shard_index: 0,
-                    parquet: ParquetSource::LocalFile(edge_path_a),
+                    path: edge_path_a,
                     has_dest_sort_key: false,
-                    format: EdgeStorageFormat::Parquet,
+                    format: EdgeStorageFormat::Binary,
                 },
                 EdgeShardInput {
                     relation: "Temporal".into(),
                     source_shard_index: 0,
-                    parquet: ParquetSource::LocalFile(edge_path_b),
+                    path: edge_path_b,
                     has_dest_sort_key: true,
-                    format: EdgeStorageFormat::Parquet,
+                    format: EdgeStorageFormat::Binary,
                 },
             ],
         )
@@ -534,7 +529,7 @@ fn multi_relation_mixed_dst_widths_and_partial_edges() {
 #[test]
 fn truncates_large_node_without_sort_key() {
     let dir = tempdir().unwrap();
-    let edge_path = dir.path().join("edges.parquet");
+    let edge_path = dir.path().join("edges.bin");
     // Two nodes; node 0 has a huge fanout, node 1 has a small edge.
     let big_count = 70_000;
     let mut edges = Vec::with_capacity(big_count as usize + 1);
@@ -568,9 +563,9 @@ fn truncates_large_node_without_sort_key() {
             &[EdgeShardInput {
                 relation: "Follows".into(),
                 source_shard_index: 0,
-                parquet: ParquetSource::LocalFile(edge_path),
+                path: edge_path,
                 has_dest_sort_key: false,
-                format: EdgeStorageFormat::Parquet,
+                format: EdgeStorageFormat::Binary,
             }],
         )
         .unwrap();
@@ -608,7 +603,7 @@ fn truncates_large_node_without_sort_key() {
 #[test]
 fn truncates_large_node_with_sort_key() {
     let dir = tempdir().unwrap();
-    let edge_path = dir.path().join("edges.parquet");
+    let edge_path = dir.path().join("edges.bin");
     let big_count = 60_000;
     let mut edges = Vec::with_capacity(big_count as usize + 1);
     for i in 0..big_count {
@@ -647,9 +642,9 @@ fn truncates_large_node_with_sort_key() {
             &[EdgeShardInput {
                 relation: "Temporal".into(),
                 source_shard_index: 0,
-                parquet: ParquetSource::LocalFile(edge_path),
+                path: edge_path,
                 has_dest_sort_key: true,
-                format: EdgeStorageFormat::Parquet,
+                format: EdgeStorageFormat::Binary,
             }],
         )
         .unwrap();
@@ -682,7 +677,7 @@ fn truncates_large_node_with_sort_key() {
 #[test]
 fn caps_relation_edge_count_at_varint_limit() {
     let dir = tempdir().unwrap();
-    let edge_path = dir.path().join("edges.parquet");
+    let edge_path = dir.path().join("edges.bin");
     let cap = 0x3FFFusize;
     let big = cap + 500;
     let mut edges = Vec::with_capacity(big + 1);
@@ -717,9 +712,9 @@ fn caps_relation_edge_count_at_varint_limit() {
             &[EdgeShardInput {
                 relation: "Follows".into(),
                 source_shard_index: 0,
-                parquet: ParquetSource::LocalFile(edge_path),
+                path: edge_path,
                 has_dest_sort_key: false,
-                format: EdgeStorageFormat::Parquet,
+                format: EdgeStorageFormat::Binary,
             }],
         )
         .unwrap();
@@ -869,7 +864,7 @@ fn reader_rejects_truncated_edge_counts() {
 #[test]
 fn offsets_many_chunks_sparse_edges() {
     let dir = tempdir().unwrap();
-    let edge_path = dir.path().join("edges.parquet");
+    let edge_path = dir.path().join("edges.bin");
     write_edges(
         &edge_path,
         &[
@@ -904,9 +899,9 @@ fn offsets_many_chunks_sparse_edges() {
             &[EdgeShardInput {
                 relation: "Follows".into(),
                 source_shard_index: 0,
-                parquet: ParquetSource::LocalFile(edge_path),
+                path: edge_path,
                 has_dest_sort_key: false,
-                format: EdgeStorageFormat::Parquet,
+                format: EdgeStorageFormat::Binary,
             }],
         )
         .unwrap();
@@ -919,8 +914,8 @@ fn offsets_many_chunks_sparse_edges() {
 #[test]
 fn truncates_large_node_multi_relation() {
     let dir = tempdir().unwrap();
-    let edge_path_a = dir.path().join("edges_a.parquet");
-    let edge_path_b = dir.path().join("edges_b.parquet");
+    let edge_path_a = dir.path().join("edges_a.bin");
+    let edge_path_b = dir.path().join("edges_b.bin");
 
     // Large dst bits (max_id very large) plus wide dest_sort_key bits to inflate entry sizes.
     let big = 4_000;
@@ -990,16 +985,16 @@ fn truncates_large_node_multi_relation() {
                 EdgeShardInput {
                     relation: "Follows".into(),
                     source_shard_index: 0,
-                    parquet: ParquetSource::LocalFile(edge_path_a),
+                    path: edge_path_a,
                     has_dest_sort_key: false,
-                    format: EdgeStorageFormat::Parquet,
+                    format: EdgeStorageFormat::Binary,
                 },
                 EdgeShardInput {
                     relation: "Temporal".into(),
                     source_shard_index: 0,
-                    parquet: ParquetSource::LocalFile(edge_path_b),
+                    path: edge_path_b,
                     has_dest_sort_key: true,
-                    format: EdgeStorageFormat::Parquet,
+                    format: EdgeStorageFormat::Binary,
                 },
             ],
         )
@@ -1029,9 +1024,9 @@ fn truncates_large_node_multi_relation() {
 
 
 #[test]
-fn builder_errors_when_edge_columns_missing() {
+fn builder_errors_when_missing_dest_sort_key() {
     let dir = tempdir().unwrap();
-    let edge_path = dir.path().join("edges.parquet");
+    let edge_path = dir.path().join("edges.bin");
     // Missing dest_sort_key even though metadata expects it.
     write_edges(
         &edge_path,
@@ -1058,25 +1053,34 @@ fn builder_errors_when_edge_columns_missing() {
         &[EdgeShardInput {
             relation: "Temporal".into(),
             source_shard_index: 0,
-            parquet: ParquetSource::LocalFile(edge_path),
+            path: edge_path,
             has_dest_sort_key: true,
-            format: EdgeStorageFormat::Parquet,
+            format: EdgeStorageFormat::Binary,
         }],
     ) {
         Ok(_) => panic!("expected missing dest_sort_key error"),
         Err(err) => err.to_string(),
     };
     assert!(
-        msg.contains("invalid column type"),
-        "expected InvalidColumn for missing dest_sort_key, got {msg}"
+        msg.contains("binary edge missing dest_sort_key"),
+        "expected missing dest_sort_key error, got {msg}"
     );
 }
 
 #[test]
-fn builder_errors_when_edge_column_wrong_type() {
+fn builder_errors_on_unsupported_edge_format() {
     let dir = tempdir().unwrap();
-    let edge_path = dir.path().join("edges.parquet");
-    write_wrong_type_edges(&edge_path, &["src_id"], &["dst_id"]).unwrap();
+    let edge_path = dir.path().join("edges.bin");
+    write_edges(
+        &edge_path,
+        &[EdgeRow {
+            src: 0,
+            dst: 1,
+            dest_sort_key: None,
+        }],
+        false,
+    )
+    .unwrap();
 
     let node_meta = node_meta("User", 1);
     let relation_meta = relation_meta("Follows", "User", "User", None);
@@ -1092,17 +1096,17 @@ fn builder_errors_when_edge_column_wrong_type() {
         &[EdgeShardInput {
             relation: "Follows".into(),
             source_shard_index: 0,
-            parquet: ParquetSource::LocalFile(edge_path),
+            path: edge_path,
             has_dest_sort_key: false,
             format: EdgeStorageFormat::Parquet,
         }],
     ) {
-        Ok(_) => panic!("expected invalid column type error"),
+        Ok(_) => panic!("expected unsupported format error"),
         Err(err) => err.to_string(),
     };
     assert!(
-        msg.contains("invalid column type"),
-        "expected InvalidColumn type, got {msg}"
+        msg.contains("edge input format not supported"),
+        "expected unsupported format error, got {msg}"
     );
 }
 
@@ -1133,7 +1137,7 @@ fn builder_accepts_binary_edges_with_64bit_sort_key() {
             &[EdgeShardInput {
                 relation: "Temporal".into(),
                 source_shard_index: 0,
-                parquet: ParquetSource::LocalFile(edge_path),
+                path: edge_path,
                 has_dest_sort_key: true,
                 format: EdgeStorageFormat::Binary,
             }],
@@ -1148,7 +1152,7 @@ fn builder_accepts_binary_edges_with_64bit_sort_key() {
 #[test]
 fn builder_errors_when_dst_id_exceeds_mask() {
     let dir = tempdir().unwrap();
-    let edge_path = dir.path().join("edges.parquet");
+    let edge_path = dir.path().join("edges.bin");
     // max_id = 10 so dst_bits small; use a large dst to overflow mask.
     write_edges(
         &edge_path,
@@ -1175,9 +1179,9 @@ fn builder_errors_when_dst_id_exceeds_mask() {
         &[EdgeShardInput {
             relation: "Follows".into(),
             source_shard_index: 0,
-            parquet: ParquetSource::LocalFile(edge_path),
+            path: edge_path,
             has_dest_sort_key: false,
-            format: EdgeStorageFormat::Parquet,
+            format: EdgeStorageFormat::Binary,
         }],
     ) {
         Ok(_) => panic!("expected dst_id out of range error"),
@@ -1192,7 +1196,7 @@ fn builder_errors_when_dst_id_exceeds_mask() {
 #[test]
 fn builder_errors_when_dest_sort_key_exceeds_mask() {
     let dir = tempdir().unwrap();
-    let edge_path = dir.path().join("edges.parquet");
+    let edge_path = dir.path().join("edges.bin");
     // dest_sort_key_bits = 8; value 300 exceeds mask 0xff.
     write_edges(
         &edge_path,
@@ -1219,9 +1223,9 @@ fn builder_errors_when_dest_sort_key_exceeds_mask() {
         &[EdgeShardInput {
             relation: "Temporal".into(),
             source_shard_index: 0,
-            parquet: ParquetSource::LocalFile(edge_path),
+            path: edge_path,
             has_dest_sort_key: true,
-            format: EdgeStorageFormat::Parquet,
+            format: EdgeStorageFormat::Binary,
         }],
     ) {
         Ok(_) => panic!("expected dest_sort_key out of range error"),
@@ -1236,7 +1240,7 @@ fn builder_errors_when_dest_sort_key_exceeds_mask() {
 #[test]
 fn builder_errors_on_unknown_relation_name() {
     let dir = tempdir().unwrap();
-    let edge_path = dir.path().join("edges.parquet");
+    let edge_path = dir.path().join("edges.bin");
     write_edges(
         &edge_path,
         &[EdgeRow {
@@ -1262,9 +1266,9 @@ fn builder_errors_on_unknown_relation_name() {
         &[EdgeShardInput {
             relation: "Unknown".into(),
             source_shard_index: 0,
-            parquet: ParquetSource::LocalFile(edge_path),
+            path: edge_path,
             has_dest_sort_key: false,
-            format: EdgeStorageFormat::Parquet,
+            format: EdgeStorageFormat::Binary,
         }],
     ) {
         Ok(_) => panic!("expected UnknownRelation error"),
@@ -1277,11 +1281,11 @@ fn builder_errors_on_unknown_relation_name() {
 }
 
 #[test]
-fn builder_errors_on_corrupted_parquet() {
+fn builder_errors_on_corrupted_binary() {
     let dir = tempdir().unwrap();
-    let edge_path = dir.path().join("edges.parquet");
-    // Write non-parquet bytes to edge file.
-    fs::write(&edge_path, b"not parquet").unwrap();
+    let edge_path = dir.path().join("edges.bin");
+    // Write invalid bytes to edge file.
+    fs::write(&edge_path, b"not binary").unwrap();
 
     let node_meta = node_meta("User", 0);
     let relation_meta = relation_meta("Follows", "User", "User", None);
@@ -1297,24 +1301,24 @@ fn builder_errors_on_corrupted_parquet() {
         &[EdgeShardInput {
             relation: "Follows".into(),
             source_shard_index: 0,
-            parquet: ParquetSource::LocalFile(edge_path),
+            path: edge_path,
             has_dest_sort_key: false,
-            format: EdgeStorageFormat::Parquet,
+            format: EdgeStorageFormat::Binary,
         }],
     ) {
-        Ok(_) => panic!("expected parquet error"),
+        Ok(_) => panic!("expected binary error"),
         Err(err) => err.to_string(),
     };
     assert!(
-        msg.to_lowercase().contains("parquet"),
-        "expected parquet error, got {msg}"
+        msg.contains("invalid binary edge magic"),
+        "expected binary error, got {msg}"
     );
 }
 
 #[test]
 fn builder_errors_on_shard_index_mismatch() {
     let dir = tempdir().unwrap();
-    let edge_path = dir.path().join("edges.parquet");
+    let edge_path = dir.path().join("edges.bin");
     write_edges(
         &edge_path,
         &[EdgeRow {
@@ -1340,9 +1344,9 @@ fn builder_errors_on_shard_index_mismatch() {
         &[EdgeShardInput {
             relation: "Follows".into(),
             source_shard_index: 1,
-            parquet: ParquetSource::LocalFile(edge_path),
+            path: edge_path,
             has_dest_sort_key: false,
-            format: EdgeStorageFormat::Parquet,
+            format: EdgeStorageFormat::Binary,
         }],
     ) {
         Ok(_) => panic!("expected shard index mismatch"),
@@ -1371,9 +1375,9 @@ fn builder_fails_on_missing_edge_file() {
         &[EdgeShardInput {
             relation: "Follows".into(),
             source_shard_index: 0,
-            parquet: ParquetSource::LocalFile(dir.path().join("missing.parquet")),
+            path: dir.path().join("missing.bin"),
             has_dest_sort_key: false,
-            format: EdgeStorageFormat::Parquet,
+            format: EdgeStorageFormat::Binary,
         }],
     ) {
         Ok(_) => panic!("expected IO error for missing edge file"),
@@ -1413,35 +1417,14 @@ pub fn relation_meta(
         dst_type: dst.into(),
         shards: vec![],
         dest_sort_key_bits,
-        format: EdgeStorageFormat::Parquet,
+        format: EdgeStorageFormat::Binary,
     }
 }
 
 
 pub fn write_edges(path: &Path, edges: &[EdgeRow], with_sort_key: bool) -> anyhow::Result<()> {
-    let mut fields = vec![
-        Field::new("src_id", DataType::Int64, false),
-        Field::new("dst_id", DataType::Int64, false),
-    ];
-    if with_sort_key {
-        fields.push(Field::new("dest_sort_key", DataType::Int64, false));
-    }
-    let schema = Schema::new(fields);
-    let src: Vec<i64> = edges.iter().map(|e| e.src).collect();
-    let dst: Vec<i64> = edges.iter().map(|e| e.dst).collect();
-    let mut cols: Vec<ArrayRef> = vec![
-        Arc::new(Int64Array::from(src)) as ArrayRef,
-        Arc::new(Int64Array::from(dst)) as ArrayRef,
-    ];
-    if with_sort_key {
-        let dsk: Vec<i64> = edges
-            .iter()
-            .map(|e| e.dest_sort_key.unwrap_or_default())
-            .collect();
-        cols.push(Arc::new(Int64Array::from(dsk)) as ArrayRef);
-    }
-    let batch = RecordBatch::try_new(Arc::new(schema.clone()), cols)?;
-    write_parquet(path, &schema, &[batch])
+    let sort_width = if with_sort_key { 8 } else { 0 };
+    write_binary_edges(path, edges, 8, 8, sort_width)
 }
 
 pub fn write_binary_edges(
@@ -1480,23 +1463,16 @@ fn write_u64_width(writer: &mut std::io::BufWriter<std::fs::File>, value: u64, w
 }
 
 pub fn write_node_data(path: &Path, rows: &[Vec<u8>]) -> anyhow::Result<()> {
-    let schema = Schema::new(vec![Field::new("data", DataType::Binary, false)]);
-    let data = BinaryArray::from_iter_values(rows.iter().map(|v| v.as_slice()));
-    let batch = RecordBatch::try_new(Arc::new(schema.clone()), vec![Arc::new(data)])?;
-    write_parquet(path, &schema, &[batch])
-}
-
-fn write_parquet(path: &Path, schema: &Schema, batches: &[RecordBatch]) -> anyhow::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let props = WriterProperties::builder().build();
-    let file = fs::File::create(path)?;
-    let mut writer = ArrowWriter::try_new(file, Arc::new(schema.clone()), Some(props))?;
-    for batch in batches {
-        writer.write(batch)?;
+    let mut writer = std::io::BufWriter::new(fs::File::create(path)?);
+    for row in rows {
+        let len = row.len() as u32;
+        writer.write_all(&len.to_le_bytes())?;
+        writer.write_all(row)?;
     }
-    writer.close()?;
+    writer.flush()?;
     Ok(())
 }
 
@@ -1550,7 +1526,7 @@ fn build_simple_shard(
     Arc<Vec<diskgraph_index::layout::RelationLayout>>,
 ) {
     let dir = tempdir().unwrap();
-    let edge_path = dir.path().join("edges.parquet");
+    let edge_path = dir.path().join("edges.bin");
     write_edges(&edge_path, edges, false).unwrap();
     let node_meta = node_meta("User", *nodes.iter().max().unwrap_or(&0) as u64);
     let relation_meta = relation_meta("Follows", "User", "User", None);
@@ -1568,9 +1544,9 @@ fn build_simple_shard(
             &[EdgeShardInput {
                 relation: "Follows".into(),
                 source_shard_index: 0,
-                parquet: ParquetSource::LocalFile(edge_path),
+                path: edge_path,
                 has_dest_sort_key: false,
-                format: EdgeStorageFormat::Parquet,
+                format: EdgeStorageFormat::Binary,
             }],
         )
         .unwrap();
@@ -1580,7 +1556,7 @@ fn build_simple_shard(
 #[test]
 fn builder_writes_node_data() {
     let dir = tempdir().unwrap();
-    let edge_path = dir.path().join("edges.parquet");
+    let edge_path = dir.path().join("edges.bin");
     let edges = vec![
         EdgeRow {
             src: 0,
@@ -1594,7 +1570,7 @@ fn builder_writes_node_data() {
         },
     ];
     write_edges(&edge_path, &edges, false).unwrap();
-    let node_data_path = dir.path().join("nodes.parquet");
+    let node_data_path = dir.path().join("nodes.bin");
     let node_data = vec![vec![1, 2], vec![3], vec![]];
     write_node_data(&node_data_path, &node_data).unwrap();
 
@@ -1607,7 +1583,7 @@ fn builder_writes_node_data() {
         shards: vec![NodeShardMetadata {
             min_id: 0,
             max_id: 2,
-            node_data_path: Some("nodes.parquet".into()),
+            node_data_path: Some("nodes.bin".into()),
             node_data_paths: None,
         }],
     };
@@ -1619,16 +1595,16 @@ fn builder_writes_node_data() {
         node_types: vec![node_meta.clone()],
         relation_metas: vec![relation_meta.clone()],
         shard_index: 0,
-        node_data_paths: Some(vec![ParquetSource::LocalFile(node_data_path)]),
+        node_data_paths: Some(vec![node_data_path]),
     });
     let built = builder
         .build(
             &[EdgeShardInput {
                 relation: "Follows".into(),
                 source_shard_index: 0,
-                parquet: ParquetSource::LocalFile(edge_path),
+                path: edge_path,
                 has_dest_sort_key: false,
-                format: EdgeStorageFormat::Parquet,
+                format: EdgeStorageFormat::Binary,
             }],
         )
         .unwrap();
@@ -1645,9 +1621,9 @@ fn builder_writes_node_data() {
 #[test]
 fn builder_errors_on_node_data_row_count_mismatch() {
     let dir = tempdir().unwrap();
-    let edge_path = dir.path().join("edges.parquet");
+    let edge_path = dir.path().join("edges.bin");
     write_edges(&edge_path, &[], false).unwrap();
-    let node_data_path = dir.path().join("nodes.parquet");
+    let node_data_path = dir.path().join("nodes.bin");
     let node_data = vec![vec![1], vec![2]]; // should be 3 rows
     write_node_data(&node_data_path, &node_data).unwrap();
 
@@ -1660,7 +1636,7 @@ fn builder_errors_on_node_data_row_count_mismatch() {
         shards: vec![NodeShardMetadata {
             min_id: 0,
             max_id: 2,
-            node_data_path: Some("nodes.parquet".into()),
+            node_data_path: Some("nodes.bin".into()),
             node_data_paths: None,
         }],
     };
@@ -1672,15 +1648,15 @@ fn builder_errors_on_node_data_row_count_mismatch() {
         node_types: vec![node_meta.clone()],
         relation_metas: vec![relation_meta.clone()],
         shard_index: 0,
-        node_data_paths: Some(vec![ParquetSource::LocalFile(node_data_path)]),
+        node_data_paths: Some(vec![node_data_path]),
     });
     let msg = match builder.build(
         &[EdgeShardInput {
             relation: "Follows".into(),
             source_shard_index: 0,
-            parquet: ParquetSource::LocalFile(edge_path),
+            path: edge_path,
             has_dest_sort_key: false,
-            format: EdgeStorageFormat::Parquet,
+            format: EdgeStorageFormat::Binary,
         }],
     ) {
         Ok(_) => panic!("expected node data row count error"),
@@ -1691,24 +1667,6 @@ fn builder_errors_on_node_data_row_count_mismatch() {
         "expected node data row count error, got {msg}"
     );
 }
-
-
-
-fn write_wrong_type_edges(path: &Path, src_col: &[&str], dst_col: &[&str]) -> anyhow::Result<()> {
-    let schema = Schema::new(vec![
-        Field::new("src_id", DataType::Utf8, false),
-        Field::new("dst_id", DataType::Utf8, false),
-    ]);
-    let batch = RecordBatch::try_new(
-        Arc::new(schema.clone()),
-        vec![
-            Arc::new(StringArray::from(src_col.to_vec())) as ArrayRef,
-            Arc::new(StringArray::from(dst_col.to_vec())) as ArrayRef,
-        ],
-    )?;
-    write_parquet(path, &schema, &[batch])
-}
-
 fn varint_len_u64(v: u64) -> usize {
     if v <= 63 {
         1

@@ -1,16 +1,11 @@
 use std::fs;
+use std::io::Write;
 use std::path::Path;
-use std::sync::Arc;
-
-use arrow_array::{ArrayRef, Int64Array, RecordBatch};
-use arrow_schema::{DataType, Field, Schema};
 use diskgraph_core::metadata::{
     DatasetMetadata, EdgeRelationMetadata, EdgeShardMetadata, EdgeStorageFormat, NodeShardMetadata,
     NodeTypeMetadata,
 };
 use diskgraph_index::graph::{GraphIndexBuilder, GraphIndexReader};
-use parquet::arrow::ArrowWriter;
-use parquet::file::properties::WriterProperties;
 use tempfile::tempdir;
 
 #[derive(Clone)]
@@ -28,11 +23,11 @@ fn graph_builder_and_reader_multi_table() {
     let edges_root = root.join("edges");
     fs::create_dir_all(&edges_root).unwrap();
 
-    let follows0 = edges_root.join("follows/part-00000.parquet");
-    let follows1 = edges_root.join("follows/part-00001.parquet");
-    let likes0 = edges_root.join("likes/part-00000.parquet");
-    let likes1 = edges_root.join("likes/part-00001.parquet");
-    let tagged0 = edges_root.join("tagged/part-00000.parquet");
+    let follows0 = edges_root.join("follows/part-00000.bin");
+    let follows1 = edges_root.join("follows/part-00001.bin");
+    let likes0 = edges_root.join("likes/part-00000.bin");
+    let likes1 = edges_root.join("likes/part-00001.bin");
+    let tagged0 = edges_root.join("tagged/part-00000.bin");
     fs::create_dir_all(follows0.parent().unwrap()).unwrap();
     fs::create_dir_all(likes0.parent().unwrap()).unwrap();
     fs::create_dir_all(tagged0.parent().unwrap()).unwrap();
@@ -102,18 +97,18 @@ fn graph_builder_and_reader_multi_table() {
                 dst_type: "User".into(),
                 shards: vec![
                     EdgeShardMetadata {
-                        path: "edges/follows/part-00000.parquet".into(),
+                        path: "edges/follows/part-00000.bin".into(),
                         src_min_id: 0,
                         src_max_id: 1,
                     },
                     EdgeShardMetadata {
-                        path: "edges/follows/part-00001.parquet".into(),
+                        path: "edges/follows/part-00001.bin".into(),
                         src_min_id: 2,
                         src_max_id: 3,
                     },
                 ],
                 dest_sort_key_bits: None,
-                format: EdgeStorageFormat::Parquet,
+                format: EdgeStorageFormat::Binary,
             },
             EdgeRelationMetadata {
                 name: "Likes".into(),
@@ -121,30 +116,30 @@ fn graph_builder_and_reader_multi_table() {
                 dst_type: "Item".into(),
                 shards: vec![
                     EdgeShardMetadata {
-                        path: "edges/likes/part-00000.parquet".into(),
+                        path: "edges/likes/part-00000.bin".into(),
                         src_min_id: 0,
                         src_max_id: 1,
                     },
                     EdgeShardMetadata {
-                        path: "edges/likes/part-00001.parquet".into(),
+                        path: "edges/likes/part-00001.bin".into(),
                         src_min_id: 2,
                         src_max_id: 3,
                     },
                 ],
                 dest_sort_key_bits: None,
-                format: EdgeStorageFormat::Parquet,
+                format: EdgeStorageFormat::Binary,
             },
             EdgeRelationMetadata {
                 name: "Tagged".into(),
                 src_type: "Item".into(),
                 dst_type: "User".into(),
                 shards: vec![EdgeShardMetadata {
-                    path: "edges/tagged/part-00000.parquet".into(),
+                    path: "edges/tagged/part-00000.bin".into(),
                     src_min_id: 0,
                     src_max_id: 1,
                 }],
                 dest_sort_key_bits: None,
-                format: EdgeStorageFormat::Parquet,
+                format: EdgeStorageFormat::Binary,
             },
         ],
     };
@@ -184,27 +179,29 @@ fn graph_builder_and_reader_multi_table() {
 }
 
 fn write_edges(path: &Path, edges: &[EdgeRow]) -> anyhow::Result<()> {
-    let schema = Schema::new(vec![
-        Field::new("src_id", DataType::Int64, false),
-        Field::new("dst_id", DataType::Int64, false),
-    ]);
-    let src: Vec<i64> = edges.iter().map(|e| e.src).collect();
-    let dst: Vec<i64> = edges.iter().map(|e| e.dst).collect();
-    let cols: Vec<ArrayRef> = vec![
-        Arc::new(Int64Array::from(src)) as ArrayRef,
-        Arc::new(Int64Array::from(dst)) as ArrayRef,
-    ];
-    let batch = RecordBatch::try_new(Arc::new(schema.clone()), cols)?;
-    write_parquet(path, &schema, &[batch])
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let mut writer = std::io::BufWriter::new(fs::File::create(path)?);
+    writer.write_all(b"DGED")?;
+    writer.write_all(&[2u8])?;
+    writer.write_all(&[0u8])?;
+    writer.write_all(&[8u8, 8u8, 0u8])?;
+    writer.write_all(&[0u8, 0u8, 0u8])?;
+    for edge in edges {
+        write_u64_width(&mut writer, edge.src as u64, 8)?;
+        write_u64_width(&mut writer, edge.dst as u64, 8)?;
+    }
+    writer.flush()?;
+    Ok(())
 }
 
-fn write_parquet(path: &Path, schema: &Schema, batches: &[RecordBatch]) -> anyhow::Result<()> {
-    let file = fs::File::create(path)?;
-    let props = WriterProperties::builder().build();
-    let mut writer = ArrowWriter::try_new(file, Arc::new(schema.clone()), Some(props))?;
-    for batch in batches {
-        writer.write(batch)?;
-    }
-    writer.close()?;
+fn write_u64_width(
+    writer: &mut std::io::BufWriter<std::fs::File>,
+    value: u64,
+    width: u8,
+) -> anyhow::Result<()> {
+    let bytes = value.to_le_bytes();
+    writer.write_all(&bytes[..width as usize])?;
     Ok(())
 }

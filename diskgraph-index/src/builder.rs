@@ -1,29 +1,18 @@
 use crate::layout::{
     NodeEdgeStats, OffsetFileHeader, RelationLayout, DELTA_CHUNK, EDGES_FILENAME, OFFSETS_FILENAME,
 };
-use crate::streaming::{EdgeShardInput, ParquetSource};
+use crate::streaming::EdgeShardInput;
 use crate::truncate::truncate_counts;
 use anyhow::Result;
-use arrow_array::{BinaryArray, Int64Array};
-use arrow_schema::{DataType, SchemaRef};
-use bytes::Bytes;
 use diskgraph_core::metadata::{EdgeRelationMetadata, NodeTypeMetadata};
-use futures::{future::BoxFuture, StreamExt};
-use parquet::arrow::async_reader::{AsyncFileReader, ParquetRecordBatchStreamBuilder};
-use parquet::arrow::arrow_reader::ArrowReaderOptions;
-use parquet::file::metadata::ParquetMetaData;
-use parquet::file::reader::FileReader;
-use parquet::file::serialized_reader::SerializedFileReader;
 use serde_json;
 use serde::Serialize;
-use std::sync::mpsc::{self, Receiver};
 use std::fs::{self, File};
 use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::cell::RefCell;
 use thiserror::Error;
-use tokio::runtime::Runtime;
 use tracing::info;
 
 /// Hard cap on edges per relation for a single node to keep varint encoding small.
@@ -66,9 +55,6 @@ impl<F: FnMut(BuildProgress)> ProgressSink for ProgressReporter<F> {
     }
 }
 
-type PrefetchBatch =
-    std::result::Result<Option<arrow_array::RecordBatch>, parquet::errors::ParquetError>;
-
 #[derive(Debug, Error)]
 pub enum IndexBuildError {
     #[error("not implemented: {0}")]
@@ -93,15 +79,13 @@ pub enum IndexBuildError {
     ShardIndexMismatch { node: usize, edge: usize },
     #[error("node shard index {index} missing from metadata")]
     NodeShardMissing { index: usize },
-    #[error("parquet error: {0}")]
-    Parquet(#[from] parquet::errors::ParquetError),
     #[error("build aborted")]
     Aborted,
 }
 fn localize_edge_inputs(
     edge_shards: &[EdgeShardInput],
-    node_data: Option<&[ParquetSource]>,
-) -> Result<(Vec<EdgeShardInput>, Option<Vec<ParquetSource>>)> {
+    node_data: Option<&[PathBuf]>,
+) -> Result<(Vec<EdgeShardInput>, Option<Vec<PathBuf>>)> {
     Ok((edge_shards.to_vec(), node_data.map(|paths| paths.to_vec())))
 }
 
@@ -115,8 +99,8 @@ pub struct ShardBuildParams {
     pub relation_metas: Vec<EdgeRelationMetadata>,
     /// Shard index we are building (used for selecting aligned edge shards).
     pub shard_index: usize,
-    /// Optional node data Parquet source for this shard.
-    pub node_data_paths: Option<Vec<ParquetSource>>,
+    /// Optional node data sources for this shard.
+    pub node_data_paths: Option<Vec<PathBuf>>,
 }
 
 /// Consumes node shard metadata and all aligned edge shards (across relations) and emits two files:
@@ -158,7 +142,6 @@ impl ShardBuilder {
         let offsets_path = self.params.output_dir.join(OFFSETS_FILENAME);
         let edges_path = self.params.output_dir.join(EDGES_FILENAME);
 
-        let rt = Arc::new(Runtime::new()?);
         let (edge_inputs, localized_node_data) =
             localize_edge_inputs(edge_shards, self.params.node_data_paths.as_deref())?;
 
@@ -170,7 +153,7 @@ impl ShardBuilder {
         let mut node_stream =
             NodeStream::try_new(&self.params.node_meta, self.params.shard_index)?;
         let mut edge_stream =
-            MergedEdgeStream::try_new(rt.clone(), &edge_inputs, &self.params.relation_metas)?;
+            MergedEdgeStream::try_new(&edge_inputs, &self.params.relation_metas)?;
         let expected_nodes = shard_node_count(&self.params.node_meta, self.params.shard_index)?;
         if !self.params.node_meta.has_node_data && self.params.node_data_paths.is_some() {
             return Err(IndexBuildError::NotImplemented(
@@ -183,7 +166,6 @@ impl ShardBuilder {
                 .as_ref()
                 .ok_or(IndexBuildError::NotImplemented("node data missing for shard"))?;
             Some(NodeDataStream::try_new(
-                rt.clone(),
                 sources,
                 expected_nodes,
             )?)
@@ -760,24 +742,7 @@ pub(crate) fn shard_node_count(node_meta: &NodeTypeMetadata, shard_index: usize)
 }
 
 enum EdgeSubStream {
-    Parquet(ParquetEdgeSubStream),
     Binary(BinaryEdgeSubStream),
-}
-
-struct ParquetEdgeSubStream {
-    _schema: SchemaRef,
-    batch: Option<arrow_array::RecordBatch>,
-    idx_in_batch: usize,
-    batch_len: usize,
-    dest_sort_key_bits: Option<u8>,
-    relation_id: u16,
-    src_idx: usize,
-    dst_idx: usize,
-    sort_idx: Option<usize>,
-    current_src: Option<Int64Array>,
-    current_dst: Option<Int64Array>,
-    current_sort: Option<Int64Array>,
-    rx: Receiver<PrefetchBatch>,
 }
 
 struct BinaryEdgeRecord {
@@ -799,145 +764,98 @@ struct BinaryEdgeSubStream {
 
 impl EdgeSubStream {
     fn try_new(
-        rt: Arc<Runtime>,
         input: &EdgeShardInput,
         relation_id: u16,
         dest_sort_key_bits: Option<u8>,
     ) -> Result<Self> {
-        match input.format {
-            diskgraph_core::metadata::EdgeStorageFormat::Parquet => {
-                let reader = object_reader_from_source(&input.parquet, &rt)?;
-                let (tx, rx) = mpsc::sync_channel(32);
-                let schema = rt.block_on(async move {
-                    let mut builder = ParquetRecordBatchStreamBuilder::new(reader).await?;
-                    builder = builder.with_batch_size(256_000);
-                    let stream = builder.build()?;
-                    let schema = stream.schema().clone();
-                    tokio::spawn(async move {
-                        futures::pin_mut!(stream);
-                        while let Some(item) = stream.next().await {
-                            match item {
-                                Ok(batch) => {
-                                    if tx.send(Ok(Some(batch))).is_err() {
-                                        return;
-                                    }
-                                }
-                                Err(e) => {
-                                    let _ = tx.send(Err(e));
-                                    return;
-                                }
-                            }
-                        }
-                        let _ = tx.send(Ok(None));
-                    });
-                    Ok::<_, parquet::errors::ParquetError>(schema)
-                })?;
-                Ok(EdgeSubStream::Parquet(ParquetEdgeSubStream {
-                    _schema: schema,
-                    batch: None,
-                    idx_in_batch: 0,
-                    batch_len: 0,
-                    dest_sort_key_bits,
-                    relation_id,
-                    src_idx: 0,
-                    dst_idx: 0,
-                    sort_idx: None,
-                    current_src: None,
-                    current_dst: None,
-                    current_sort: None,
-                    rx,
-                }))
-            }
-            diskgraph_core::metadata::EdgeStorageFormat::Binary => {
-                let local_path = match &input.parquet {
-                    ParquetSource::LocalFile(path) => path.clone(),
-                };
-                let file = std::fs::File::open(&local_path)?;
-                let file_len = file.metadata()?.len();
-                if file_len < 8 {
-                    return Err(IndexBuildError::NotImplemented(
-                        "binary edge file too small",
-                    )
-                    .into());
-                }
-                let mut reader = std::io::BufReader::with_capacity(1024 * 1024, file);
-                let mut header = [0u8; 12];
-                reader.read_exact(&mut header[..8])?;
-                if header[0..4] != *b"DGED" {
-                    return Err(IndexBuildError::NotImplemented(
-                        "invalid binary edge magic",
-                    )
-                    .into());
-                }
-                let version = header[4];
-                if version != 1 && version != 2 {
-                    return Err(IndexBuildError::NotImplemented(
-                        "unsupported binary edge version",
-                    )
-                    .into());
-                }
-                let with_sort = (header[5] & 1) != 0;
-                let (src_width, dst_width, sort_width, header_len) = if version == 1 {
-                    let sort_width = if with_sort { 4 } else { 0 };
-                    (8u8, 8u8, sort_width, 8u64)
-                } else {
-                    reader.read_exact(&mut header[8..12])?;
-                    let src_width = header[6];
-                    let dst_width = header[7];
-                    let sort_width = header[8];
-                    if src_width == 0 || dst_width == 0 || src_width > 8 || dst_width > 8 {
-                        return Err(IndexBuildError::NotImplemented(
-                            "invalid binary edge width",
-                        )
-                        .into());
-                    }
-                    if with_sort && sort_width == 0 {
-                        return Err(IndexBuildError::NotImplemented(
-                            "binary edge missing dest_sort_key width",
-                        )
-                        .into());
-                    }
-                    if sort_width > 8 {
-                        return Err(IndexBuildError::NotImplemented(
-                            "binary edge sort key width too large",
-                        )
-                        .into());
-                    }
-                    (src_width, dst_width, sort_width, 12u64)
-                };
-                if dest_sort_key_bits.is_some() && !with_sort {
-                    return Err(IndexBuildError::NotImplemented(
-                        "binary edge missing dest_sort_key",
-                    )
-                    .into());
-                }
-                let record_size =
-                    src_width as u64 + dst_width as u64 + sort_width as u64;
-                let payload = file_len - header_len;
-                if payload % record_size != 0 {
-                    return Err(IndexBuildError::NotImplemented(
-                        "binary edge file size mismatch",
-                    )
-                    .into());
-                }
-                let remaining = payload / record_size;
-                Ok(EdgeSubStream::Binary(BinaryEdgeSubStream {
-                    reader,
-                    remaining,
-                    relation_id,
-                    with_sort,
-                    src_width,
-                    dst_width,
-                    sort_width,
-                    next_record: None,
-                }))
-            }
+        if input.format != diskgraph_core::metadata::EdgeStorageFormat::Binary {
+            return Err(IndexBuildError::NotImplemented(
+                "edge input format not supported",
+            )
+            .into());
         }
+        let file = std::fs::File::open(&input.path)?;
+        let file_len = file.metadata()?.len();
+        if file_len < 8 {
+            return Err(IndexBuildError::NotImplemented(
+                "binary edge file too small",
+            )
+            .into());
+        }
+        let mut reader = std::io::BufReader::with_capacity(1024 * 1024, file);
+        let mut header = [0u8; 12];
+        reader.read_exact(&mut header[..8])?;
+        if header[0..4] != *b"DGED" {
+            return Err(IndexBuildError::NotImplemented(
+                "invalid binary edge magic",
+            )
+            .into());
+        }
+        let version = header[4];
+        if version != 1 && version != 2 {
+            return Err(IndexBuildError::NotImplemented(
+                "unsupported binary edge version",
+            )
+            .into());
+        }
+        let with_sort = (header[5] & 1) != 0;
+        let (src_width, dst_width, sort_width, header_len) = if version == 1 {
+            let sort_width = if with_sort { 4 } else { 0 };
+            (8u8, 8u8, sort_width, 8u64)
+        } else {
+            reader.read_exact(&mut header[8..12])?;
+            let src_width = header[6];
+            let dst_width = header[7];
+            let sort_width = header[8];
+            if src_width == 0 || dst_width == 0 || src_width > 8 || dst_width > 8 {
+                return Err(IndexBuildError::NotImplemented(
+                    "invalid binary edge width",
+                )
+                .into());
+            }
+            if with_sort && sort_width == 0 {
+                return Err(IndexBuildError::NotImplemented(
+                    "binary edge missing dest_sort_key width",
+                )
+                .into());
+            }
+            if sort_width > 8 {
+                return Err(IndexBuildError::NotImplemented(
+                    "binary edge sort key width too large",
+                )
+                .into());
+            }
+            (src_width, dst_width, sort_width, 12u64)
+        };
+        if dest_sort_key_bits.is_some() && !with_sort {
+            return Err(IndexBuildError::NotImplemented(
+                "binary edge missing dest_sort_key",
+            )
+            .into());
+        }
+        let record_size = src_width as u64 + dst_width as u64 + sort_width as u64;
+        let payload = file_len - header_len;
+        if payload % record_size != 0 {
+            return Err(IndexBuildError::NotImplemented(
+                "binary edge file size mismatch",
+            )
+            .into());
+        }
+        let remaining = payload / record_size;
+        Ok(EdgeSubStream::Binary(BinaryEdgeSubStream {
+            reader,
+            remaining,
+            relation_id,
+            with_sort,
+            src_width,
+            dst_width,
+            sort_width,
+            next_record: None,
+        }))
     }
 
     fn peek_src(&mut self) -> Result<Option<u64>> {
         match self {
-            EdgeSubStream::Parquet(inner) => inner.peek_src(),
             EdgeSubStream::Binary(inner) => inner.peek_src(),
         }
     }
@@ -948,181 +866,7 @@ impl EdgeSubStream {
         buckets: &mut [Vec<EdgeRec>],
     ) -> Result<Option<u64>> {
         match self {
-            EdgeSubStream::Parquet(inner) => inner.drain_edges(node_id, buckets),
             EdgeSubStream::Binary(inner) => inner.drain_edges(node_id, buckets),
-        }
-    }
-}
-
-impl ParquetEdgeSubStream {
-    fn peek_src(&mut self) -> Result<Option<u64>> {
-        loop {
-            if let Some(_) = &self.batch {
-                if self.idx_in_batch < self.batch_len {
-                    let src_col = self
-                        .current_src
-                        .as_ref()
-                        .ok_or_else(|| IndexBuildError::InvalidColumn("src_id"))?;
-                    return Ok(Some(src_col.value(self.idx_in_batch) as u64));
-                }
-            }
-            match self.rx.recv() {
-                Ok(Ok(Some(batch))) => {
-                    if self.batch.is_none() {
-                        self.src_idx = batch
-                            .schema()
-                            .index_of("src_id")
-                            .map_err(|_| IndexBuildError::InvalidColumn("src_id"))?;
-                        self.dst_idx = batch
-                            .schema()
-                            .index_of("dst_id")
-                            .map_err(|_| IndexBuildError::InvalidColumn("dst_id"))?;
-                        self.sort_idx = if self.dest_sort_key_bits.is_some() {
-                            Some(
-                                batch
-                                    .schema()
-                                    .index_of("dest_sort_key")
-                                    .map_err(|_| IndexBuildError::InvalidColumn("dest_sort_key"))?,
-                            )
-                        } else {
-                            None
-                        };
-                    }
-                    self.current_src = Some(
-                        batch
-                            .column(self.src_idx)
-                            .as_any()
-                            .downcast_ref::<Int64Array>()
-                            .ok_or(IndexBuildError::InvalidColumn("src_id"))?
-                            .clone(),
-                    );
-                    self.current_dst = Some(
-                        batch
-                            .column(self.dst_idx)
-                            .as_any()
-                            .downcast_ref::<Int64Array>()
-                            .ok_or(IndexBuildError::InvalidColumn("dst_id"))?
-                            .clone(),
-                    );
-                    self.current_sort = self.sort_idx.and_then(|idx| {
-                        batch
-                            .column(idx)
-                            .as_any()
-                            .downcast_ref::<Int64Array>()
-                            .cloned()
-                    });
-                    self.batch = Some(batch);
-                    self.idx_in_batch = 0;
-                    self.batch_len = self.batch.as_ref().map(|b| b.num_rows()).unwrap_or(0);
-                }
-                Ok(Ok(None)) => return Ok(None),
-                Ok(Err(e)) => return Err(e.into()),
-                Err(_) => {
-                    return Err(IndexBuildError::Parquet(
-                        parquet::errors::ParquetError::General(
-                            "prefetch channel closed".to_string(),
-                        ),
-                    )
-                    .into())
-                }
-            }
-        }
-    }
-
-    fn drain_edges(
-        &mut self,
-        node_id: u64,
-        buckets: &mut [Vec<EdgeRec>],
-    ) -> Result<Option<u64>> {
-        loop {
-            if let Some(_) = &self.batch {
-                if self.idx_in_batch < self.batch_len {
-                    let src_col = self
-                        .current_src
-                        .as_ref()
-                        .ok_or_else(|| IndexBuildError::InvalidColumn("src_id"))?;
-                    let dst_col = self
-                        .current_dst
-                        .as_ref()
-                        .ok_or_else(|| IndexBuildError::InvalidColumn("dst_id"))?;
-                    let sort_col = self.current_sort.as_ref();
-                    while self.idx_in_batch < self.batch_len {
-                        let row = self.idx_in_batch;
-                        let src_val = src_col.value(row) as u64;
-                        if src_val != node_id {
-                            return Ok(Some(src_val));
-                        }
-                        let sort_val = sort_col.map(|c| c.value(row) as u64);
-                        buckets[self.relation_id as usize].push(EdgeRec {
-                            src: src_val,
-                            dst: dst_col.value(row) as u64,
-                            dest_sort_key: sort_val,
-                            relation_id: self.relation_id,
-                        });
-                        self.idx_in_batch += 1;
-                    }
-                }
-            }
-            match self.rx.recv() {
-                Ok(Ok(Some(batch))) => {
-                    if self.batch.is_none() {
-                        self.src_idx = batch
-                            .schema()
-                            .index_of("src_id")
-                            .map_err(|_| IndexBuildError::InvalidColumn("src_id"))?;
-                        self.dst_idx = batch
-                            .schema()
-                            .index_of("dst_id")
-                            .map_err(|_| IndexBuildError::InvalidColumn("dst_id"))?;
-                        self.sort_idx = if self.dest_sort_key_bits.is_some() {
-                            Some(
-                                batch
-                                    .schema()
-                                    .index_of("dest_sort_key")
-                                    .map_err(|_| IndexBuildError::InvalidColumn("dest_sort_key"))?,
-                            )
-                        } else {
-                            None
-                        };
-                    }
-                    self.current_src = Some(
-                        batch
-                            .column(self.src_idx)
-                            .as_any()
-                            .downcast_ref::<Int64Array>()
-                            .ok_or(IndexBuildError::InvalidColumn("src_id"))?
-                            .clone(),
-                    );
-                    self.current_dst = Some(
-                        batch
-                            .column(self.dst_idx)
-                            .as_any()
-                            .downcast_ref::<Int64Array>()
-                            .ok_or(IndexBuildError::InvalidColumn("dst_id"))?
-                            .clone(),
-                    );
-                    self.current_sort = self.sort_idx.and_then(|idx| {
-                        batch
-                            .column(idx)
-                            .as_any()
-                            .downcast_ref::<Int64Array>()
-                            .cloned()
-                    });
-                    self.batch = Some(batch);
-                    self.idx_in_batch = 0;
-                    self.batch_len = self.batch.as_ref().map(|b| b.num_rows()).unwrap_or(0);
-                }
-                Ok(Ok(None)) => return Ok(None),
-                Ok(Err(e)) => return Err(e.into()),
-                Err(_) => {
-                    return Err(IndexBuildError::Parquet(
-                        parquet::errors::ParquetError::General(
-                            "prefetch channel closed".to_string(),
-                        ),
-                    )
-                    .into())
-                }
-            }
         }
     }
 }
@@ -1187,19 +931,7 @@ fn read_u64_width(reader: &mut std::io::BufReader<std::fs::File>, width: u8) -> 
 }
 
 enum NodeDataStream {
-    Parquet(ParquetNodeDataStream),
     MultiBinary(MultiBinaryNodeDataStream),
-}
-
-struct ParquetNodeDataStream {
-    batch: Option<arrow_array::RecordBatch>,
-    idx_in_batch: usize,
-    batch_len: usize,
-    data_idx: usize,
-    current_data: Option<BinaryArray>,
-    rx: Receiver<PrefetchBatch>,
-    expected_rows: u64,
-    seen_rows: u64,
 }
 
 struct MultiBinaryNodeDataStream {
@@ -1211,78 +943,11 @@ struct MultiBinaryNodeDataStream {
 }
 
 impl NodeDataStream {
-    fn try_new(rt: Arc<Runtime>, sources: &[ParquetSource], expected_rows: u64) -> Result<Self> {
+    fn try_new(sources: &[PathBuf], expected_rows: u64) -> Result<Self> {
         if sources.is_empty() {
             return Err(IndexBuildError::NotImplemented("node data missing for shard").into());
         }
-        let paths: Vec<PathBuf> = sources
-            .iter()
-            .map(|source| match source {
-                ParquetSource::LocalFile(path) => path.clone(),
-            })
-            .collect();
-        if paths.len() == 1 && paths[0].extension().and_then(|e| e.to_str()) != Some("bin") {
-            let file = std::fs::File::open(&paths[0])?;
-            let reader = SerializedFileReader::new(file)?;
-            let rows = reader.metadata().file_metadata().num_rows() as u64;
-            if rows != expected_rows {
-                return Err(IndexBuildError::NotImplemented(
-                    "node data row count mismatch",
-                )
-                .into());
-            }
-            let reader = object_reader_from_source(&sources[0], &rt)?;
-            let (tx, rx) = mpsc::sync_channel(32);
-            let data_idx = rt.block_on(async move {
-                let mut builder = ParquetRecordBatchStreamBuilder::new(reader).await?;
-                builder = builder.with_batch_size(256_000);
-                let stream = builder.build()?;
-                let schema = stream.schema().clone();
-                if schema.fields().len() != 1 {
-                    return Err(parquet::errors::ParquetError::General(
-                        "node data parquet must have exactly one column".into(),
-                    ));
-                }
-                let idx = schema.index_of("data").map_err(|_| {
-                    parquet::errors::ParquetError::General("missing data column".into())
-                })?;
-                let field = schema.field(idx);
-                if !matches!(field.data_type(), DataType::Binary) {
-                    return Err(parquet::errors::ParquetError::General(
-                        "node data column must be binary".into(),
-                    ));
-                }
-                tokio::spawn(async move {
-                    futures::pin_mut!(stream);
-                    while let Some(item) = stream.next().await {
-                        match item {
-                            Ok(batch) => {
-                                if tx.send(Ok(Some(batch))).is_err() {
-                                    return;
-                                }
-                            }
-                            Err(e) => {
-                                let _ = tx.send(Err(e));
-                                return;
-                            }
-                        }
-                    }
-                    let _ = tx.send(Ok(None));
-                });
-                Ok::<_, parquet::errors::ParquetError>(idx)
-            })?;
-            return Ok(NodeDataStream::Parquet(ParquetNodeDataStream {
-                batch: None,
-                idx_in_batch: 0,
-                batch_len: 0,
-                data_idx,
-                current_data: None,
-                rx,
-                expected_rows,
-                seen_rows: 0,
-            }));
-        }
-        for path in &paths {
+        for path in sources {
             if path.extension().and_then(|e| e.to_str()) != Some("bin") {
                 return Err(IndexBuildError::NotImplemented(
                     "node data parts must be .bin files",
@@ -1291,7 +956,7 @@ impl NodeDataStream {
             }
         }
         Ok(NodeDataStream::MultiBinary(MultiBinaryNodeDataStream {
-            files: paths,
+            files: sources.to_vec(),
             current_idx: 0,
             reader: None,
             expected_rows,
@@ -1300,66 +965,7 @@ impl NodeDataStream {
     }
     fn next_into(&mut self, out: &mut Vec<u8>) -> Result<usize> {
         match self {
-            NodeDataStream::Parquet(inner) => inner.next_into(out),
             NodeDataStream::MultiBinary(inner) => inner.next_into(out),
-        }
-    }
-}
-
-impl ParquetNodeDataStream {
-    fn next_into(&mut self, out: &mut Vec<u8>) -> Result<usize> {
-        loop {
-            if let Some(_) = &self.batch {
-                if self.idx_in_batch < self.batch_len {
-                    let data_col = self
-                        .current_data
-                        .as_ref()
-                        .ok_or_else(|| IndexBuildError::InvalidColumn("data"))?;
-                    let bytes = data_col.value(self.idx_in_batch);
-                    out.clear();
-                    out.extend_from_slice(bytes);
-                    self.idx_in_batch += 1;
-                    self.seen_rows += 1;
-                    return Ok(bytes.len());
-                }
-            }
-            match self.rx.recv() {
-                Ok(Ok(Some(batch))) => {
-                    let batch_len = batch.num_rows();
-                    if self.seen_rows + batch_len as u64 > self.expected_rows {
-                        return Err(IndexBuildError::NotImplemented(
-                            "node data row count exceeds shard range",
-                        )
-                        .into());
-                    }
-                    self.current_data = Some(
-                        batch
-                            .column(self.data_idx)
-                            .as_any()
-                            .downcast_ref::<BinaryArray>()
-                            .ok_or(IndexBuildError::InvalidColumn("data"))?
-                            .clone(),
-                    );
-                    self.batch = Some(batch);
-                    self.idx_in_batch = 0;
-                    self.batch_len = batch_len;
-                }
-                Ok(Ok(None)) => {
-                    return Err(IndexBuildError::NotImplemented(
-                        "node data row count shorter than shard range",
-                    )
-                    .into())
-                }
-                Ok(Err(e)) => return Err(e.into()),
-                Err(_) => {
-                    return Err(IndexBuildError::Parquet(
-                        parquet::errors::ParquetError::General(
-                            "node data prefetch channel closed".to_string(),
-                        ),
-                    )
-                    .into())
-                }
-            }
         }
     }
 }
@@ -1436,7 +1042,6 @@ struct MergedEdgeStream {
 
 impl MergedEdgeStream {
     fn try_new(
-        rt: Arc<Runtime>,
         inputs: &[EdgeShardInput],
         relation_metas: &[EdgeRelationMetadata],
     ) -> Result<Self> {
@@ -1450,7 +1055,7 @@ impl MergedEdgeStream {
             let (relation_id, sort_bits) = rel_lookup
                 .get(&input.relation)
                 .ok_or(IndexBuildError::UnknownRelation)?;
-            let stream = EdgeSubStream::try_new(rt.clone(), input, *relation_id, *sort_bits)?;
+            let stream = EdgeSubStream::try_new(input, *relation_id, *sort_bits)?;
             streams.push(stream);
             head_srcs.push(streams.last_mut().unwrap().peek_src()?);
         }
@@ -1480,129 +1085,4 @@ impl MergedEdgeStream {
         }
         Ok(())
     }
-}
-
-fn object_reader_from_source(source: &ParquetSource, _rt: &Runtime) -> Result<AnyParquetReader> {
-    let path = match source {
-        ParquetSource::LocalFile(path) => path,
-    };
-    Ok(AnyParquetReader::Local(
-        LocalParquetObjectReader::new(LocalAsyncFileReader { path: path.clone() }),
-    ))
-}
-
-enum AnyParquetReader {
-    Local(LocalParquetObjectReader),
-}
-
-impl AsyncFileReader for AnyParquetReader {
-    fn get_metadata<'a>(
-        &'a mut self,
-        options: Option<&'a ArrowReaderOptions>,
-    ) -> BoxFuture<'a, parquet::errors::Result<std::sync::Arc<ParquetMetaData>>> {
-        match self {
-            AnyParquetReader::Local(r) => r.get_metadata(options),
-        }
-    }
-
-    fn get_byte_ranges(
-        &mut self,
-        ranges: Vec<std::ops::Range<u64>>,
-    ) -> BoxFuture<'_, parquet::errors::Result<Vec<Bytes>>> {
-        match self {
-            AnyParquetReader::Local(r) => r.get_byte_ranges(ranges),
-        }
-    }
-
-    fn get_bytes(
-        &mut self,
-        range: std::ops::Range<u64>,
-    ) -> BoxFuture<'_, parquet::errors::Result<Bytes>> {
-        match self {
-            AnyParquetReader::Local(r) => r.get_bytes(range),
-        }
-    }
-}
-
-struct LocalParquetObjectReader {
-    inner: LocalAsyncFileReader,
-}
-
-impl LocalParquetObjectReader {
-    fn new(inner: LocalAsyncFileReader) -> Self {
-        Self { inner }
-    }
-}
-
-impl AsyncFileReader for LocalParquetObjectReader {
-    fn get_metadata<'a>(
-        &'a mut self,
-        _options: Option<&'a ArrowReaderOptions>,
-    ) -> BoxFuture<'a, parquet::errors::Result<std::sync::Arc<ParquetMetaData>>> {
-        let path = self.inner.path.clone();
-        Box::pin(async move {
-            let meta = tokio::task::spawn_blocking(move || {
-                let file = std::fs::File::open(path)?;
-                let reader = SerializedFileReader::new(file)?;
-                Ok::<_, parquet::errors::ParquetError>(reader.metadata().clone())
-            })
-            .await
-            .map_err(|e| parquet::errors::ParquetError::General(e.to_string()))??;
-            Ok(std::sync::Arc::new(meta))
-        })
-    }
-
-    fn get_bytes(
-        &mut self,
-        range: std::ops::Range<u64>,
-    ) -> BoxFuture<'_, parquet::errors::Result<Bytes>> {
-        let path = self.inner.path.clone();
-        Box::pin(async move {
-            let buf = tokio::task::spawn_blocking(move || {
-                let mut f = std::fs::File::open(&path)?;
-                use std::io::{Read, Seek, SeekFrom};
-                f.seek(SeekFrom::Start(range.start))?;
-                let len: usize = (range.end - range.start)
-                    .try_into()
-                    .map_err(|_| parquet::errors::ParquetError::General("range too large".into()))?;
-                let mut buf = vec![0u8; len];
-                f.read_exact(&mut buf)?;
-                Ok::<_, parquet::errors::ParquetError>(buf)
-            })
-            .await
-            .map_err(|e| parquet::errors::ParquetError::General(e.to_string()))??;
-            Ok(Bytes::from(buf))
-        })
-    }
-
-    fn get_byte_ranges(
-        &mut self,
-        ranges: Vec<std::ops::Range<u64>>,
-    ) -> BoxFuture<'_, parquet::errors::Result<Vec<Bytes>>> {
-        let path = self.inner.path.clone();
-        Box::pin(async move {
-            let bufs = tokio::task::spawn_blocking(move || {
-                let mut out = Vec::with_capacity(ranges.len());
-                for range in ranges {
-                    let mut f = std::fs::File::open(&path)?;
-                    use std::io::{Read, Seek, SeekFrom};
-                    f.seek(SeekFrom::Start(range.start))?;
-                    let len: usize = (range.end - range.start).try_into().map_err(|_| {
-                        parquet::errors::ParquetError::General("range too large".into())
-                    })?;
-                    let mut buf = vec![0u8; len];
-                    f.read_exact(&mut buf)?;
-                    out.push(Bytes::from(buf));
-                }
-                Ok::<_, parquet::errors::ParquetError>(out)
-            })
-            .await
-            .map_err(|e| parquet::errors::ParquetError::General(e.to_string()))??;
-            Ok(bufs)
-        })
-    }
-}
-
-struct LocalAsyncFileReader {
-    path: PathBuf,
 }

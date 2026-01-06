@@ -1,7 +1,7 @@
 use crate::builder::{ShardBuildParams, ShardBuilder, BuildStats};
 use crate::layout::RelationLayout;
 use crate::reader::ShardReader;
-use crate::streaming::{EdgeShardInput, ParquetSource};
+use crate::streaming::EdgeShardInput;
 use crate::builder::{compute_relation_layouts, shard_node_count};
 use anyhow::{anyhow, Context, Result};
 use diskgraph_core::metadata::{
@@ -160,12 +160,7 @@ impl GraphIndexBuilder {
                     } else {
                         return Err(anyhow!("node data path missing for {shard_key}"));
                     };
-                    Some(
-                        paths
-                            .into_iter()
-                            .map(|path| self.resolve_parquet(&path))
-                            .collect(),
-                    )
+                    Some(paths.into_iter().map(|path| self.resolve_path(&path)).collect())
                 } else {
                     None
                 };
@@ -179,7 +174,7 @@ impl GraphIndexBuilder {
                         Ok(EdgeShardInput {
                             relation: rel.name.clone(),
                             source_shard_index: shard_idx,
-                            parquet: self.resolve_parquet(&shard.path),
+                            path: self.resolve_path(&shard.path),
                             has_dest_sort_key: rel.dest_sort_key_bits.is_some(),
                             format: rel.format,
                         })
@@ -202,11 +197,9 @@ impl GraphIndexBuilder {
         Ok(jobs)
     }
 
-    fn resolve_parquet(&self, rel_path: &str) -> ParquetSource {
+    fn resolve_path(&self, rel_path: &str) -> PathBuf {
         match &self.source {
-            GraphDataSource::Local { root } => {
-                ParquetSource::LocalFile(root.join(rel_path))
-            }
+            GraphDataSource::Local { root } => root.join(rel_path),
         }
     }
 }
@@ -218,7 +211,7 @@ struct ShardBuildJob {
     node_types: Vec<NodeTypeMetadata>,
     relation_metas: Vec<EdgeRelationMetadata>,
     shard_index: usize,
-    node_data_paths: Option<Vec<ParquetSource>>,
+    node_data_paths: Option<Vec<PathBuf>>,
     edge_inputs: Vec<EdgeShardInput>,
     expected_nodes: u64,
 }

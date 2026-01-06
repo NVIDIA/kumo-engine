@@ -4,7 +4,7 @@ Rust crate for building and reading per-shard on-disk indices for the Diskgraph 
 
 ## Overview
 
-`diskgraph-index` ingests node shard ranges (from metadata) and aligned edge shards, producing two files (plus optional node data). Node data is enabled per node type in metadata (`has_node_data`), with a `node_data_path` per shard and a rowpack context file referenced by `node_data_compression.context_path`.
+`diskgraph-index` ingests node shard ranges (from metadata) and aligned edge shards, producing two files (plus optional node data). Node data is enabled per node type in metadata (`has_node_data`), with one or more `node_data_paths` per shard and a rowpack context file referenced by `node_data_compression.context_path`.
 
 - `offsets.bin`: delta-encoded byte offsets for each node’s edge blob.
 - `edges.bin`: packed edge blobs containing relation-prefixed counts and contiguous relation segments (and optional node data payloads).
@@ -74,7 +74,7 @@ Steps:
    - `entry_bytes` = ceil((dst_bits + sort_bits)/8); `dest_sort_key_bits` supports up to 64.
 2. Stream edges and generate node ids:
    - Node ids are generated from the shard range in metadata.
-   - Each edge stream is an async Parquet reader (`ParquetRecordBatchStreamBuilder`), caching column indices and downcast arrays per batch.
+   - Each edge stream reads the binary edge format and yields rows ordered by `src_id`.
    - Merge edges across relations with a heap, preserving global ordering and validating sort order.
 3. For each node (single pass):
    - Collect edges into per-relation buckets (reused vectors).
@@ -154,7 +154,7 @@ Helper script:
 - `scripts/explore_local.sh /path/to/index`
 
 ## Expectations and assumptions
-- Input Parquet shards are already sorted:
+- Input binary edge shards are already sorted:
   - Nodes by `id` ascending.
   - Edges by `src_id` ascending and `dest_sort_key` descending when present.
 - Sharding alignment: edges for shard N reference only source IDs in shard N.
