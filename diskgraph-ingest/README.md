@@ -133,8 +133,9 @@ Other Parquet/Arrow types are rejected during ingest.
   - node/edge tables and shard ranges
   - rowpack `node_data_compression` per node table
   - primary key map paths (when configured)
-- Node data shards with rowpack-compressed node payloads (binary by default)
-- Edge shard files (bidirectional), written as binary by default or Parquet if configured
+- Per-shard index files under `nodes/<table>/shard-<id>/`:
+  - `edges.bin` (edge blobs + optional node data)
+  - `offsets.bin` (edge blob offsets)
 - Rowpack context files per node table (`node_data.ctx` by default)
 - `ingest_stats.json` with ingest stats (key failures, duplicate keys, schema echo)
 
@@ -143,7 +144,7 @@ Other Parquet/Arrow types are rejected during ingest.
 1) Temp (per table)
    - Read each input file and sample rows to build the rowpack context (one context per table).
    - Rowpack-encode the table primary key into a temp pkey file per shard (or round-robin when no PK).
-   - Rowpack-encode node payloads into temp node data files per shard.
+   - Rowpack-encode node payloads into temp node data files per shard (written under `_tmp/`).
    - Enforce node data size limits at write time; oversized payloads are written as empty and counted.
    - For each outgoing FK, write temp files containing the encoded FK key (and optional sort key).
    - For explicit edge tables, write temp edge files for forward and reverse directions.
@@ -155,14 +156,15 @@ Other Parquet/Arrow types are rejected during ingest.
    - Duplicate PKs are dropped and counted; up to 10 samples are recorded.
 
 3) Final nodes (per table, per shard)
-   - Convert temp node data into the final node binary format.
+   - Convert temp node data into the node binary format (stored under `_tmp/`).
 
 4) Final edges (per relation, per shard)
    - Use pk maps to translate temp edge/FK keys into local IDs.
-   - Emit forward and reverse edge shard files in the final binary format.
+   - Emit forward and reverse edge shard files in the binary format under `_tmp/`.
    - Ensure edges are sorted by src_id (per relation and direction).
 
 5) Finalize
+   - Build the final per-shard index (`edges.bin` + `offsets.bin`) from the temp node/edge shards.
    - Write `index_metadata.json` and `ingest_stats.json`.
    - Remove temporary files and directories.
 
@@ -175,7 +177,7 @@ cargo run -p diskgraph-ingest -- --source /path/to/source_dir --output /path/to/
 Flags:
 - `--source`: directory containing `source_metadata.json` or the path to `source_metadata.json` directly.
 - `--output`: output directory for `index_metadata.json` and parquet files.
-- `--dest`: `local|s3|gcs|adls` (controls destination backend).
+- `--dest`: must be `local` (index build requires local output).
 - `--mapping`: `hash|sorted` (primary key map strategy).
 - `--profile [base]`: enable CPU profiling and emit `*-profile.pb`/`*-profile.svg`.
 

@@ -1,11 +1,11 @@
 use anyhow::{anyhow, Result};
 use diskgraph_core::metadata::DatasetMetadata;
 use diskgraph_ingest::{ingest, Dest, IngestOptions};
-use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use diskgraph_index::graph::GraphIndexReader;
 use parquet::arrow::ArrowWriter;
 use parquet::file::properties::WriterProperties;
 use std::fs;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
 use tempfile::tempdir;
@@ -41,73 +41,22 @@ fn write_parquet(path: &Path, schema: Schema, columns: Vec<ArrayRef>) -> Result<
     Ok(())
 }
 
-fn count_binary_edges(path: &Path) -> Result<usize> {
-    let mut file = std::fs::File::open(path)?;
-    let len = file.metadata()?.len();
-    let mut header = [0u8; 12];
-    file.read_exact(&mut header[..8])?;
-    if &header[0..4] != b"DGED" {
-        return Err(anyhow!("invalid edge binary header"));
+fn sum_relation_edges(
+    table: &diskgraph_index::graph::TableReader,
+    rel_name: &str,
+) -> Result<u64> {
+    let rel_idx = table
+        .relations()
+        .iter()
+        .position(|rel| rel.name == rel_name)
+        .ok_or_else(|| anyhow!("missing relation {rel_name}"))?;
+    let mut total = 0u64;
+    for node_id in 0..table.node_count() {
+        let view = table.edges_for_node(node_id)?;
+        let segments = view.relation_segments()?;
+        total = total.saturating_add(segments[rel_idx].count as u64);
     }
-    let version = header[4];
-    let with_sort = (header[5] & 1) != 0;
-    let (src_w, dst_w, sort_w, header_len) = if version == 1 {
-        (8u8, 8u8, if with_sort { 4u8 } else { 0u8 }, 8u64)
-    } else if version == 2 {
-        file.read_exact(&mut header[8..12])?;
-        (header[6], header[7], header[8], 12u64)
-    } else {
-        return Err(anyhow!("unsupported edge binary version"));
-    };
-    let record_size = src_w as u64 + dst_w as u64 + sort_w as u64;
-    let payload = len.saturating_sub(header_len);
-    if payload % record_size != 0 {
-        return Err(anyhow!("edge binary payload size mismatch"));
-    }
-    Ok((payload / record_size) as usize)
-}
-fn read_first_node_value(path: &Path, ctx: &[u8]) -> Result<serde_json::Value> {
-    let raw = if path.extension().and_then(|e| e.to_str()) == Some("bin") {
-        let mut file = fs::File::open(path)?;
-        let mut header = [0u8; 8];
-        file.read_exact(&mut header)?;
-        if &header[0..4] != b"DGND" || header[4] != 1 {
-            return Err(anyhow!("invalid node data header"));
-        }
-        let len_width = header[5];
-        let len = match len_width {
-            2 => {
-                let mut buf = [0u8; 2];
-                file.read_exact(&mut buf)?;
-                u16::from_le_bytes(buf) as usize
-            }
-            4 => {
-                let mut buf = [0u8; 4];
-                file.read_exact(&mut buf)?;
-                u32::from_le_bytes(buf) as usize
-            }
-            _ => return Err(anyhow!("unsupported node data length width")),
-        };
-        let mut buf = vec![0u8; len];
-        file.read_exact(&mut buf)?;
-        buf
-    } else {
-        let file = fs::File::open(path)?;
-        let mut reader = ParquetRecordBatchReaderBuilder::try_new(file)?
-            .with_batch_size(1)
-            .build()?;
-        let batch = reader.next().unwrap()?;
-        let idx = batch.schema().index_of("data")?;
-        let array = batch.column(idx);
-        let bin = array
-            .as_any()
-            .downcast_ref::<BinaryArray>()
-            .ok_or_else(|| anyhow::anyhow!("data column not binary"))?;
-        bin.value(0).to_vec()
-    };
-    let ctx = diskgraph_rowpack::RowPackContext::from_bytes(ctx)?;
-    let decoder = diskgraph_rowpack::RowPackDecoder::new(ctx)?;
-    Ok(decoder.decode_json(&raw)?)
+    Ok(total)
 }
 
 #[test]
@@ -237,9 +186,10 @@ fn ingest_csv_with_edges_and_rowpack() -> Result<()> {
     assert_eq!(compression.codec, "rowpack");
     let ctx_path = output_root.join(&compression.context_path);
     assert!(ctx_path.exists());
-    let ctx_bytes = fs::read(&ctx_path)?;
-    let node_data = output_root.join("nodes/user/shard-00000/part-00000.bin");
-    let value = read_first_node_value(&node_data, &ctx_bytes)?;
+    let reader = GraphIndexReader::open(&output_root.join("index_metadata.json"), &output_root)?;
+    let user_table = reader.table("User").unwrap();
+    let view = user_table.edges_for_node(0)?;
+    let value = user_table.decode_node_data_json(&view)?.unwrap();
     assert_eq!(value["name"], "user0001");
 
     let order_user = disk_metadata
@@ -268,21 +218,16 @@ fn ingest_csv_with_edges_and_rowpack() -> Result<()> {
     assert_eq!(edge_src.dest_sort_key_bits, Some(32));
     assert_eq!(edge_dst.dest_sort_key_bits, Some(32));
 
-    let order_user_rows = count_binary_edges(
-        &output_root.join("edges/order_user/shard-00000/part-00000.bin"),
-    )?;
-    let order_user_rev_rows = count_binary_edges(
-        &output_root.join("edges/order_user_reverse/shard-00000/part-00000.bin"),
-    )?;
+    let order_table = reader.table("Order").unwrap();
+    let user_table = reader.table("User").unwrap();
+    let order_user_rows = sum_relation_edges(&order_table, "order_user")?;
+    let order_user_rev_rows = sum_relation_edges(&user_table, "order_user_reverse")?;
     assert_eq!(order_user_rows, 2);
     assert_eq!(order_user_rev_rows, 2);
 
-    let edge_src_rows = count_binary_edges(
-        &output_root.join("edges/edge_orderitem_src_to_dst/shard-00000/part-00000.bin"),
-    )?;
-    let edge_dst_rows = count_binary_edges(
-        &output_root.join("edges/edge_orderitem_dst_to_src/shard-00000/part-00000.bin"),
-    )?;
+    let product_table = reader.table("Product").unwrap();
+    let edge_src_rows = sum_relation_edges(&order_table, "edge_OrderItem_src_to_dst")?;
+    let edge_dst_rows = sum_relation_edges(&product_table, "edge_OrderItem_dst_to_src")?;
     assert_eq!(edge_src_rows, 2);
     assert_eq!(edge_dst_rows, 2);
 
@@ -489,12 +434,11 @@ fn ingest_relationship_uses_dest_timestamp_sort_key() -> Result<()> {
         .unwrap();
     assert_eq!(forward.dest_sort_key_bits, Some(32));
     assert_eq!(reverse.dest_sort_key_bits, None);
-    let forward_rows = count_binary_edges(
-        &output_root.join("edges/event_session/shard-00000/part-00000.bin"),
-    )?;
-    let reverse_rows = count_binary_edges(
-        &output_root.join("edges/event_session_reverse/shard-00000/part-00000.bin"),
-    )?;
+    let reader = GraphIndexReader::open(&output_root.join("index_metadata.json"), &output_root)?;
+    let event_table = reader.table("Event").unwrap();
+    let session_table = reader.table("Session").unwrap();
+    let forward_rows = sum_relation_edges(&event_table, "event_session")?;
+    let reverse_rows = sum_relation_edges(&session_table, "event_session_reverse")?;
     assert_eq!(forward_rows, 2);
     assert_eq!(reverse_rows, 2);
 

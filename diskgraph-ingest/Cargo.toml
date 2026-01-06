@@ -15,6 +15,7 @@ tracing-subscriber = { workspace = true }
 diskgraph-core = { path = "../diskgraph-core" }
 diskgraph-fs = { path = "../diskgraph-fs" }
 diskgraph-rowpack = { path = "../diskgraph-rowpack" }
+diskgraph-index = { path = "../diskgraph-index" }
 arrow-array = "57.1.0"
 arrow-buffer = "57.1.0"
 arrow-schema = "57.1.0"

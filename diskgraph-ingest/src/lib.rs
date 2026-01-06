@@ -23,6 +23,7 @@ use diskgraph_rowpack::{
     LogicalType as RowpackType, RowPackConfig, RowPackContextBuilder, RowPackDecodeScratch,
     RowPackDecoder, RowPackEncoder, RowPackScratch, ValueRef,
 };
+use diskgraph_index::graph::{GraphDataSource, GraphIndexBuilder};
 use num_traits::Signed;
 use object_store::{path::Path as ObjectPath, ObjectStore, WriteMultipart};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
@@ -203,6 +204,9 @@ pub fn ingest_with_stats(
     source.validate()?;
 
     let target = std::sync::Arc::new(OutputTarget::parse(output, dest)?);
+    if !matches!(&*target, OutputTarget::Local { .. }) {
+        return Err(anyhow!("index build requires local output"));
+    }
     target.prepare()?;
 
     let mut ctx = IngestContext::new(source, target, options, output)?;
@@ -233,8 +237,13 @@ pub fn ingest_with_stats(
         ctx.build_final_edges()?;
     }
     let build_wall = final_start.elapsed();
+    ctx.cleanup_temp_inputs()?;
+    let index_start = std::time::Instant::now();
+    let index_metadata = ctx.build_index_metadata()?;
+    ctx.build_index(index_metadata.clone())?;
+    let _index_wall = index_start.elapsed();
     let finalize_start = std::time::Instant::now();
-    let index_metadata = ctx.finalize_metadata()?;
+    let index_metadata = ctx.finalize_metadata(index_metadata)?;
     ctx.cleanup_temp()?;
     let finalize_wall = finalize_start.elapsed();
     let wall_time = wall_start.elapsed();
@@ -1598,7 +1607,7 @@ impl IngestContext {
                 let meta_path = root.join(temp_node_data_meta_path(&table.name, shard));
                 let meta = read_temp_meta(&meta_path)?;
                 let node_ctx = diskgraph_rowpack::RowPackContext::from_bytes(&meta.context)?;
-                let out_rel = node_shard_output_path(&table.name, shard);
+                let out_rel = temp_node_shard_output_path(&table.name, shard);
                 let out_path = self.target.join(&out_rel);
                 if let OutputTarget::Local { .. } = &*self.target {
                     if let Some(parent) = out_path.parent() {
@@ -1749,8 +1758,8 @@ impl IngestContext {
                 let fkey_meta =
                     root.join(temp_fkey_meta_path(&rel.src_table, &rel.name_forward, shard));
                 let meta = read_temp_meta(&fkey_meta)?;
-                let forward_rel = edge_shard_output_path(&rel.name_forward, shard);
-                let reverse_rel = edge_shard_output_path(&rel.name_reverse, shard);
+                let forward_rel = temp_edge_shard_output_path(&rel.name_forward, shard);
+                let reverse_rel = temp_edge_shard_output_path(&rel.name_reverse, shard);
                 let forward_path = self.target.join(&forward_rel);
                 let reverse_path = self.target.join(&reverse_rel);
                 if let OutputTarget::Local { .. } = &*self.target {
@@ -1962,7 +1971,7 @@ impl IngestContext {
                 let forward_path = root.join(temp_edge_path(&forward_name, shard));
                 let forward_meta =
                     read_temp_meta(&root.join(temp_edge_meta_path(&forward_name, shard)))?;
-                let out_rel = edge_shard_output_path(&forward_name, shard);
+                let out_rel = temp_edge_shard_output_path(&forward_name, shard);
                 let out_path = self.target.join(&out_rel);
                 if let OutputTarget::Local { .. } = &*self.target {
                     if let Some(parent) = out_path.parent() {
@@ -2066,7 +2075,7 @@ impl IngestContext {
                 let reverse_path = root.join(temp_edge_path(&reverse_name, shard));
                 let reverse_meta =
                     read_temp_meta(&root.join(temp_edge_meta_path(&reverse_name, shard)))?;
-                let out_rel = edge_shard_output_path(&reverse_name, shard);
+                let out_rel = temp_edge_shard_output_path(&reverse_name, shard);
                 let out_path = self.target.join(&out_rel);
                 if let OutputTarget::Local { .. } = &*self.target {
                     if let Some(parent) = out_path.parent() {
@@ -2221,7 +2230,54 @@ impl IngestContext {
         Ok(())
     }
 
-    fn finalize_metadata(&self) -> Result<DatasetMetadata> {
+    fn cleanup_temp_inputs(&self) -> Result<()> {
+        fn purge_dir(dir: &Path) -> Result<()> {
+            let mut entries = fs::read_dir(dir)?;
+            while let Some(entry) = entries.next() {
+                let entry = entry?;
+                let path = entry.path();
+                if path.is_dir() {
+                    purge_dir(&path)?;
+                    if fs::read_dir(&path)?.next().is_none() {
+                        fs::remove_dir(&path)?;
+                    }
+                    continue;
+                }
+                let name = match path.file_name().and_then(|n| n.to_str()) {
+                    Some(name) => name,
+                    None => continue,
+                };
+                match name {
+                    "node_data.bin" | "node_data.ctx" | "pkey.bin" | "pkey.ctx" | "rows.bin"
+                    | "rows.ctx" => {
+                        let _ = fs::remove_file(&path);
+                    }
+                    _ => {}
+                }
+            }
+            Ok(())
+        }
+        if let OutputTarget::Local { root } = &*self.target {
+            let temp_root = root.join(TEMP_DIR_NAME);
+            if temp_root.exists() {
+                purge_dir(&temp_root)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn build_index(&self, metadata: DatasetMetadata) -> Result<()> {
+        let root = require_local_output(&self.target)?.to_path_buf();
+        let builder = GraphIndexBuilder::from_metadata(
+            metadata,
+            GraphDataSource::Local { root: root.clone() },
+            &root,
+        );
+        builder.build(None)?;
+        Ok(())
+    }
+
+    fn build_index_metadata(&self) -> Result<DatasetMetadata> {
         let mut node_types = Vec::new();
         for table in &self.source.tables {
             if table.edge_table.is_some() {
@@ -2249,7 +2305,7 @@ impl IngestContext {
                 shards.push(NodeShardMetadata {
                     min_id,
                     max_id,
-                    node_data_path: Some(node_shard_output_path(&table.name, shard)),
+                    node_data_path: Some(temp_node_shard_output_path(&table.name, shard)),
                 });
             }
             let context_path = self.table_contexts.get(&table.name).cloned();
@@ -2315,7 +2371,7 @@ impl IngestContext {
                     min_id.saturating_add(count.saturating_sub(1))
                 };
                 shards.push(EdgeShardMetadata {
-                    path: edge_shard_output_path(&rel.name, shard),
+                    path: temp_edge_shard_output_path(&rel.name, shard),
                     src_min_id: min_id,
                     src_max_id: max_id,
                 });
@@ -2338,10 +2394,23 @@ impl IngestContext {
             node_types,
             edge_relations,
         };
-        let json = serde_json::to_vec_pretty(&index_metadata)?;
-        self.target.write_bytes("index_metadata.json", json)?;
-
         Ok(index_metadata)
+    }
+
+    fn finalize_metadata(&self, mut metadata: DatasetMetadata) -> Result<DatasetMetadata> {
+        for node in &mut metadata.node_types {
+            for shard in &mut node.shards {
+                shard.node_data_path = None;
+            }
+        }
+        for rel in &mut metadata.edge_relations {
+            for shard in &mut rel.shards {
+                shard.path.clear();
+            }
+        }
+        let json = serde_json::to_vec_pretty(&metadata)?;
+        self.target.write_bytes("index_metadata.json", json)?;
+        Ok(metadata)
     }
 
     fn build_stats(&self, metadata: &DatasetMetadata, mut perf: PerfStats) -> IngestStats {
@@ -2443,17 +2512,19 @@ struct EdgeRecord {
     sort_key: u64,
 }
 
-fn node_shard_output_path(name: &str, shard: usize) -> String {
+fn temp_node_shard_output_path(name: &str, shard: usize) -> String {
     format!(
-        "nodes/{}/shard-{:05}/part-00000.bin",
+        "{}/nodes/{}/shard-{:05}/part-00000.bin",
+        TEMP_DIR_NAME,
         name.to_lowercase(),
         shard
     )
 }
 
-fn edge_shard_output_path(name: &str, shard: usize) -> String {
+fn temp_edge_shard_output_path(name: &str, shard: usize) -> String {
     format!(
-        "edges/{}/shard-{:05}/part-00000.bin",
+        "{}/edges/{}/shard-{:05}/part-00000.bin",
+        TEMP_DIR_NAME,
         name.to_lowercase(),
         shard
     )
