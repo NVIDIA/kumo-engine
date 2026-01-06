@@ -13,7 +13,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::cell::RefCell;
 use thiserror::Error;
-use tracing::info;
 
 /// Hard cap on edges per relation for a single node to keep varint encoding small.
 /// Compact varint supports up to 14 bits (0x3FFF). We cap relation edge lists
@@ -354,20 +353,10 @@ impl ShardBuilder {
         let report_path = self.params.output_dir.join("build_stats.json");
         fs::write(&report_path, serde_json::to_vec_pretty(&report)?)?;
 
-        info!(
-            "built shard {} for node type {} (relations: {}, nodes={}, edges={}, bytes={})",
-            self.params.shard_index,
-            self.params.node_meta.name,
-            self.params.relation_metas.len(),
-            nodes_seen,
-            stats.edge_count,
-            stats.byte_len
-        );
-
-            Ok(ShardBuildOutput {
-                offsets_path,
-                edges_path,
-                stats,
+        Ok(ShardBuildOutput {
+            offsets_path,
+            edges_path,
+            stats,
                 layouts,
                 build_stats,
             })
