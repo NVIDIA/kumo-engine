@@ -1,11 +1,25 @@
 use anyhow::{anyhow, Result};
-use ahash::AHasher;
+use ahash::RandomState;
+use std::hash::BuildHasher;
 use std::cmp::Ordering;
 use std::hash::Hasher;
 use std::io::{self, Write};
 
 const MAGIC: &[u8; 8] = b"DGPKMAP\0";
 const VERSION: u32 = 3;
+const AHASH_SEED_1: u64 = 0x9e3779b185ebca87;
+const AHASH_SEED_2: u64 = 0xc2b2ae3d27d4eb4f;
+const AHASH_SEED_3: u64 = 0x165667b19e3779f9;
+const AHASH_SEED_4: u64 = 0xd6e8feb86659fd93;
+
+fn fixed_hash_state() -> RandomState {
+    RandomState::with_seeds(
+        AHASH_SEED_1,
+        AHASH_SEED_2,
+        AHASH_SEED_3,
+        AHASH_SEED_4,
+    )
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MappingKind {
@@ -574,7 +588,7 @@ fn hash_key(key: &Key) -> u64 {
     match key {
         Key::Int(v) => hash_int(*v),
         Key::FixedBytes(v) | Key::Bytes(v) => {
-            let mut hasher = AHasher::default();
+            let mut hasher = fixed_hash_state().build_hasher();
             hasher.write(v);
             hasher.finish()
         }

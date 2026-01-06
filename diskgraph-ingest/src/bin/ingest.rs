@@ -7,10 +7,24 @@ use diskgraph_ingest::{
     ProgressPhase,
 };
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
-use ahash::AHashMap as HashMap;
+use ahash::{AHashMap as HashMap, RandomState};
 use std::fs;
 use std::io::IsTerminal;
 use std::sync::{Arc, Mutex};
+
+const AHASH_SEED_1: u64 = 0x9e3779b185ebca87;
+const AHASH_SEED_2: u64 = 0xc2b2ae3d27d4eb4f;
+const AHASH_SEED_3: u64 = 0x165667b19e3779f9;
+const AHASH_SEED_4: u64 = 0xd6e8feb86659fd93;
+
+fn fixed_hash_state() -> RandomState {
+    RandomState::with_seeds(
+        AHASH_SEED_1,
+        AHASH_SEED_2,
+        AHASH_SEED_3,
+        AHASH_SEED_4,
+    )
+}
 
 #[derive(Parser, Debug)]
 #[command(author, version, about = "Ingest raw CSV/Parquet into diskgraph index format.")]
@@ -289,7 +303,7 @@ fn build_progress() -> Option<ProgressCallback> {
     }
     let state = Arc::new(Mutex::new(ProgressState {
         mp: MultiProgress::new(),
-        bars: HashMap::new(),
+        bars: HashMap::with_hasher(fixed_hash_state()),
     }));
     let cb = Arc::new(move |event: ProgressEvent| {
         let mut guard = state.lock().unwrap();

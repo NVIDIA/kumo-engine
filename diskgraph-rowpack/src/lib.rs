@@ -19,8 +19,21 @@ const ALPHABET_MIN_COVERAGE: f32 = 0.95;
 const NUMERIC_MIN_COVERAGE: f32 = 0.98;
 const MAX_NUMERIC_SCALE: u32 = 38;
 const ALPHABET_INVALID: u8 = u8::MAX;
+const AHASH_SEED_1: u64 = 0x9e3779b185ebca87;
+const AHASH_SEED_2: u64 = 0xc2b2ae3d27d4eb4f;
+const AHASH_SEED_3: u64 = 0x165667b19e3779f9;
+const AHASH_SEED_4: u64 = 0xd6e8feb86659fd93;
 
 type FastHashMap<K, V> = HashMap<K, V, RandomState>;
+
+fn fixed_hash_state() -> RandomState {
+    RandomState::with_seeds(
+        AHASH_SEED_1,
+        AHASH_SEED_2,
+        AHASH_SEED_3,
+        AHASH_SEED_4,
+    )
+}
 
 #[derive(Clone)]
 struct AlphabetMap {
@@ -989,7 +1002,7 @@ impl ColumnStats {
             float_has_nan: false,
             float_has_inf: false,
             bool_seen: false,
-            string_counts: FastHashMap::default(),
+            string_counts: FastHashMap::with_hasher(fixed_hash_state()),
             string_max_len: 0,
             string_samples: Vec::new(),
             string_sample_bytes: 0,
@@ -1472,7 +1485,8 @@ fn train_bpe_dict(samples: &[Vec<u8>], max_entries: usize, max_bytes: usize) -> 
     let mut dict_entries = Vec::new();
     let mut dict_bytes = 0usize;
     for _ in 0..max_entries {
-        let mut pair_counts: FastHashMap<(u16, u16), usize> = FastHashMap::default();
+        let mut pair_counts: FastHashMap<(u16, u16), usize> =
+            FastHashMap::with_hasher(fixed_hash_state());
         for seq in &sequences {
             if seq.len() < 2 {
                 continue;
@@ -1617,10 +1631,8 @@ impl RowPackEncoder {
                 ColumnEncoding::String {
                     encoding: StringEncoding::Dict { values },
                 } => {
-                    let mut map = FastHashMap::with_capacity_and_hasher(
-                        values.len(),
-                        RandomState::default(),
-                    );
+                    let mut map =
+                        FastHashMap::with_capacity_and_hasher(values.len(), fixed_hash_state());
                     for (idx, value) in values.iter().enumerate() {
                         map.insert(value.clone(), idx as u32);
                     }

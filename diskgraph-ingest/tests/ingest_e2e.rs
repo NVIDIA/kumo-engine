@@ -5,12 +5,12 @@ use diskgraph_index::graph::GraphIndexReader;
 use parquet::arrow::ArrowWriter;
 use parquet::file::properties::WriterProperties;
 use std::fs;
-use std::hash::Hasher;
+use std::hash::{BuildHasher, Hasher};
 use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
 use tempfile::tempdir;
-use twox_hash::XxHash64;
+use ahash::RandomState;
 
 use arrow_array::{
     ArrayRef, BinaryArray, Float32Array, Int64Array, RecordBatch, StringArray,
@@ -44,12 +44,22 @@ fn write_parquet(path: &Path, schema: Schema, columns: Vec<ArrayRef>) -> Result<
 }
 
 fn build_global_ids(sharded_files: &[Vec<u64>], num_shards: usize) -> std::collections::HashMap<u64, u64> {
+    const AHASH_SEED_1: u64 = 0x9e3779b185ebca87;
+    const AHASH_SEED_2: u64 = 0xc2b2ae3d27d4eb4f;
+    const AHASH_SEED_3: u64 = 0x165667b19e3779f9;
+    const AHASH_SEED_4: u64 = 0xd6e8feb86659fd93;
+    let state = RandomState::with_seeds(
+        AHASH_SEED_1,
+        AHASH_SEED_2,
+        AHASH_SEED_3,
+        AHASH_SEED_4,
+    );
     let mut shard_counts = vec![0u64; num_shards];
     let mut shard_maps: Vec<std::collections::HashMap<u64, u64>> =
         (0..num_shards).map(|_| std::collections::HashMap::new()).collect();
     for file in sharded_files {
         for &key in file {
-            let mut hasher = XxHash64::with_seed(0);
+            let mut hasher = state.build_hasher();
             hasher.write(&key.to_le_bytes());
             let shard = (hasher.finish() as usize) % num_shards;
             let local = shard_counts[shard];
