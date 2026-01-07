@@ -357,6 +357,12 @@ pub fn ingest_with_stats(
         return Err(anyhow!("index build requires local output"));
     }
     target.prepare()?;
+    if let OutputTarget::Local { root } = &*target {
+        let temp_root = root.join(TEMP_DIR_NAME);
+        if temp_root.exists() {
+            fs::remove_dir_all(&temp_root)?;
+        }
+    }
 
     let mut ctx = IngestContext::new(source, target, options, output)?;
     let profile_dir = ctx.profile_dir.clone();

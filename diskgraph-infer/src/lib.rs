@@ -234,7 +234,7 @@ fn root_dataset_name(root: &RootSource) -> String {
 }
 
 fn estimate_num_shards(total_bytes: u64) -> usize {
-    const SHARD_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+    const SHARD_BYTES: u64 = 1 * 1024 * 1024 * 1024;
     if total_bytes == 0 {
         return 1;
     }
