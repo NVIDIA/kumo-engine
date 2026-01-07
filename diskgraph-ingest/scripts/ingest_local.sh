@@ -4,6 +4,7 @@ set -euo pipefail
 # Run diskgraph-ingest on a local source directory or source_metadata.json.
 
 PROFILE_ENABLED="false"
+PARALLEL_ENABLED="${PARALLEL_ENABLED:-true}"
 POSITIONAL=()
 for arg in "$@"; do
   case "${arg}" in
@@ -39,15 +40,22 @@ if [[ -z "${OUTPUT}" ]]; then
   OUTPUT="${OUT_ROOT:-${DEFAULT_OUT_ROOT}}/${INPUT_NAME}"
 fi
 
+PARALLEL_FLAG=()
+if [[ "${PARALLEL_ENABLED}" == "true" ]]; then
+  PARALLEL_FLAG=(--parallel)
+fi
+
 if [[ "${PROFILE_ENABLED}" == "true" ]]; then
   cargo run -p diskgraph-ingest --bin ingest --release -- \
     --profile \
     --source "${SOURCE}" \
     --output "${OUTPUT}" \
-    --dest local
+    --dest local \
+    "${PARALLEL_FLAG[@]}"
 else
   cargo run -p diskgraph-ingest --bin ingest --release -- \
     --source "${SOURCE}" \
     --output "${OUTPUT}" \
-    --dest local
+    --dest local \
+    "${PARALLEL_FLAG[@]}"
 fi

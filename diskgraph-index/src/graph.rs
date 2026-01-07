@@ -106,7 +106,7 @@ impl GraphIndexBuilder {
         })
     }
 
-    fn prepare_jobs(&self) -> Result<Vec<ShardBuildJob>> {
+    pub fn prepare_jobs(&self) -> Result<Vec<ShardBuildJob>> {
         let mut jobs = Vec::new();
         for node_type in &self.metadata.node_types {
             let relations: Vec<EdgeRelationMetadata> = self
@@ -170,7 +170,7 @@ impl GraphIndexBuilder {
     }
 }
 
-struct ShardBuildJob {
+pub struct ShardBuildJob {
     shard_key: String,
     output_dir: PathBuf,
     node_meta: NodeTypeMetadata,
@@ -183,7 +183,14 @@ struct ShardBuildJob {
 }
 
 impl ShardBuildJob {
-    fn run(&self, progress: Option<&dyn GraphProgressSink>) -> Result<crate::builder::ShardBuildOutput> {
+    pub fn shard_key(&self) -> &str {
+        &self.shard_key
+    }
+
+    pub fn run(
+        &self,
+        progress: Option<&dyn GraphProgressSink>,
+    ) -> Result<crate::builder::ShardBuildOutput> {
         let start = std::time::Instant::now();
         fs::create_dir_all(&self.output_dir)?;
         let params = ShardBuildParams {

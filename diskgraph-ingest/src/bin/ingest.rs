@@ -41,6 +41,9 @@ struct Args {
     /// Write pprof profiles per phase to this directory.
     #[arg(long, value_name = "DIR", num_args = 0..=1, default_missing_value = ".")]
     profile: Option<PathBuf>,
+    /// Enable the shared worker pool.
+    #[arg(long, default_value_t = true)]
+    parallel: bool,
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
@@ -78,6 +81,7 @@ fn main() -> Result<()> {
     let options = IngestOptions {
         profile_dir: args.profile.clone(),
         progress: build_progress(),
+        parallel: args.parallel,
     };
     let dest = match args.dest {
         DestArg::Local => Dest::Local,
