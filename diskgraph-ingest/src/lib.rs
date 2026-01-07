@@ -57,7 +57,7 @@ const TEMP_META_MAGIC: [u8; 4] = *b"DGTP";
 const TEMP_META_VERSION: u8 = 1;
 const SAMPLE_ROW_LIMIT: usize = 100_000;
 const SAMPLE_ROW_TARGET: usize = 10_000;
-const PK_MAP_MEMORY_BUDGET: usize = 1024 * 1024 * 1024;
+const PK_MAP_MEMORY_BUDGET_FALLBACK: usize = 1024 * 1024 * 1024;
 const MAX_NODE_DATA_LEN: usize = 60 * 1024;
 const PROGRESS_ROW_BATCH: u64 = 1_000_000;
 const MAX_VAR_KEY_LEN: usize = u16::MAX as usize;
@@ -2009,7 +2009,7 @@ impl IngestContext {
 
     fn build_sharded_pk_maps(&mut self) -> Result<()> {
         let root = require_local_output(&self.target)?.to_path_buf();
-        let limiter = Arc::new(MemoryLimiter::new(PK_MAP_MEMORY_BUDGET));
+        let limiter = Arc::new(MemoryLimiter::new(pk_map_memory_budget()));
         let pk_map_time = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
         let duplicate_counts = std::sync::Arc::new(std::sync::Mutex::new(fixed_hash_map()));
         let duplicate_samples = std::sync::Arc::new(std::sync::Mutex::new(fixed_hash_map()));
@@ -4851,6 +4851,30 @@ fn key_type_for_column(col: &ColumnSpec) -> Result<KeyType> {
         }
         _ => Err(anyhow!("unsupported primary key type")),
     }
+}
+
+fn pk_map_memory_budget() -> usize {
+    let meminfo = fs::read_to_string("/proc/meminfo");
+    let meminfo = match meminfo {
+        Ok(meminfo) => meminfo,
+        Err(_) => return PK_MAP_MEMORY_BUDGET_FALLBACK,
+    };
+    for line in meminfo.lines() {
+        if let Some(rest) = line.strip_prefix("MemTotal:") {
+            let kb_str = rest.trim().split_whitespace().next();
+            if let Some(kb_str) = kb_str {
+                if let Ok(kb) = kb_str.parse::<u64>() {
+                    let bytes = kb.saturating_mul(1024);
+                    let budget = bytes.saturating_mul(80) / 100;
+                    if budget >= (128 * 1024 * 1024) {
+                        return budget as usize;
+                    }
+                }
+            }
+            break;
+        }
+    }
+    PK_MAP_MEMORY_BUDGET_FALLBACK
 }
 
 fn column_index(table: &TableSpec, name: &str) -> Result<usize> {

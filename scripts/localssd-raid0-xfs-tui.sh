@@ -174,8 +174,10 @@ main() {
     esac
   fi
 
-  local chunk_k="256"
+  # Sequential-write optimized defaults.
+  local chunk_k="1024"
   local mountpoint="/mnt/localssd"
+  local stripe_cache="8192"
 
   local target
   if [[ "${#selected[@]}" -eq 1 ]]; then
@@ -198,6 +200,16 @@ main() {
     target="$md"
   fi
 
+  for d in "${selected[@]}"; do
+    if [[ -w "/sys/block/$(basename "$d")/queue/scheduler" ]]; then
+      echo none > "/sys/block/$(basename "$d")/queue/scheduler" || true
+    fi
+  done
+
+  if [[ "$target" == /dev/md* && -w "/sys/block/$(basename "$target")/md/stripe_cache_size" ]]; then
+    echo "$stripe_cache" > "/sys/block/$(basename "$target")/md/stripe_cache_size" || true
+  fi
+
   if [[ "${#selected[@]}" -gt 1 ]]; then
     mkfs.xfs -f -d "su=${chunk_k}k,sw=${#selected[@]}" "$target"
   else
@@ -213,6 +225,9 @@ main() {
   echo "  Target: $target"
   echo "  Disks: ${selected[*]}"
   echo "  Chunk: ${chunk_k}KiB"
+  if [[ "$target" == /dev/md* ]]; then
+    echo "  Stripe cache: ${stripe_cache}"
+  fi
   echo "  Mount: $mountpoint"
 }
 
