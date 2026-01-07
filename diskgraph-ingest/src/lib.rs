@@ -358,9 +358,9 @@ pub fn ingest_with_stats(
     }
     target.prepare()?;
     if let OutputTarget::Local { root } = &*target {
-        let temp_root = root.join(TEMP_DIR_NAME);
-        if temp_root.exists() {
-            fs::remove_dir_all(&temp_root)?;
+        if root.exists() {
+            fs::remove_dir_all(root)?;
+            fs::create_dir_all(root)?;
         }
     }
 
