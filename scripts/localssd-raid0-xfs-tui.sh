@@ -178,6 +178,9 @@ main() {
   local chunk_k="1024"
   local mountpoint="/mnt/localssd"
   local stripe_cache="8192"
+  local log_size="1g"
+  local logbufs="8"
+  local logbsize="256k"
 
   local target
   if [[ "${#selected[@]}" -eq 1 ]]; then
@@ -211,14 +214,14 @@ main() {
   fi
 
   if [[ "${#selected[@]}" -gt 1 ]]; then
-    mkfs.xfs -f -d "su=${chunk_k}k,sw=${#selected[@]}" "$target"
+    mkfs.xfs -f -d "su=${chunk_k}k,sw=${#selected[@]}" -l "size=${log_size}" "$target"
   else
-    mkfs.xfs -f "$target"
+    mkfs.xfs -f -l "size=${log_size}" "$target"
   fi
 
   mkdir -p "$mountpoint"
 
-  mount -o noatime,nodiratime,allocsize=1m "$target" "$mountpoint"
+  mount -o noatime,nodiratime,allocsize=1m,logbufs=${logbufs},logbsize=${logbsize} "$target" "$mountpoint"
   chmod 0777 "$mountpoint"
 
   echo "Done."
@@ -228,6 +231,10 @@ main() {
   if [[ "$target" == /dev/md* ]]; then
     echo "  Stripe cache: ${stripe_cache}"
   fi
+  echo "  Log size: ${log_size}"
+  echo "  Log bufs: ${logbufs}"
+  echo "  Log buf size: ${logbsize}"
+  echo "  Mount opts: noatime,nodiratime,allocsize=1m,logbufs=${logbufs},logbsize=${logbsize}"
   echo "  Mount: $mountpoint"
 }
 
