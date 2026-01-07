@@ -2268,45 +2268,52 @@ impl IngestContext {
                 let shard_offsets = shard_offsets.clone();
                 let root = root.clone();
                 let tx = tx.clone();
-                task_count = task_count.saturating_add(1);
-                tasks.push(WorkItem {
-                    bucket: None,
-                    run: Box::new(move || {
-                        let mut key_failures = KeyFailureState::default();
-                        let failure_context =
-                            format!("fkey:{}.{}", rel.src_table, rel.src_column);
-                        let file_count = table_by_name(&source, &rel.src_table)?.paths.len();
-                        let mut rel_total_rows = 0u64;
-                        for shard in 0..num_shards {
-                            for file_idx in 0..file_count {
-                                let fkey_meta = root.join(temp_fkey_meta_path(
-                                    &rel.src_table,
-                                    &rel.name_forward,
-                                    shard,
-                                    file_idx,
-                                ));
-                                let meta = read_temp_meta(&fkey_meta)?;
-                                rel_total_rows = rel_total_rows.saturating_add(meta.row_count);
-                            }
-                        }
-                        if let Some(cb) = &progress {
-                            cb(ProgressEvent {
-                                phase: ProgressPhase::EdgesPassA,
-                                table: rel.name_forward.clone(),
-                                shard: None,
-                                kind: ProgressKind::Start,
-                                delta: 0,
-                                total: Some(rel_total_rows),
-                            });
-                        }
-                        let src_table = table_by_name(&source, &rel.src_table)?;
-                        let src_fk_col = column_spec(src_table, &rel.src_column)?;
-                        let src_offsets = shard_offsets
-                            .get(&rel.src_table)
-                            .cloned()
-                            .unwrap_or_else(|| vec![0; num_shards]);
-                        let mut pending = 0u64;
-                        for shard in 0..num_shards {
+                let file_count = table_by_name(&source, &rel.src_table)?.paths.len();
+                let mut rel_total_rows = 0u64;
+                for shard in 0..num_shards {
+                    for file_idx in 0..file_count {
+                        let fkey_meta = root.join(temp_fkey_meta_path(
+                            &rel.src_table,
+                            &rel.name_forward,
+                            shard,
+                            file_idx,
+                        ));
+                        let meta = read_temp_meta(&fkey_meta)?;
+                        rel_total_rows = rel_total_rows.saturating_add(meta.row_count);
+                    }
+                }
+                if let Some(cb) = &progress {
+                    cb(ProgressEvent {
+                        phase: ProgressPhase::EdgesPassA,
+                        table: rel.name_forward.clone(),
+                        shard: None,
+                        kind: ProgressKind::Start,
+                        delta: 0,
+                        total: Some(rel_total_rows),
+                    });
+                }
+                let src_table = table_by_name(&source, &rel.src_table)?;
+                let src_fk_col = column_spec(src_table, &rel.src_column)?;
+                let src_offsets = shard_offsets
+                    .get(&rel.src_table)
+                    .cloned()
+                    .unwrap_or_else(|| vec![0; num_shards]);
+                for shard in 0..num_shards {
+                    let rel = rel.clone();
+                    let progress = progress.clone();
+                    let target = std::sync::Arc::clone(&target);
+                    let root = root.clone();
+                    let tx = tx.clone();
+                    let src_fk_col = src_fk_col.clone();
+                    let src_offsets = src_offsets.clone();
+                    task_count = task_count.saturating_add(1);
+                    tasks.push(WorkItem {
+                        bucket: None,
+                        run: Box::new(move || {
+                            let mut key_failures = KeyFailureState::default();
+                            let failure_context =
+                                format!("fkey:{}.{}", rel.src_table, rel.src_column);
+                            let mut pending = 0u64;
                             let mut local_count = 0u64;
                             for file_idx in 0..file_count {
                                 let mut writers = Vec::with_capacity(num_shards);
@@ -2347,7 +2354,7 @@ impl IngestContext {
                                     let src_id = src_offsets[shard].saturating_add(local_count);
                                     local_count = local_count.saturating_add(1);
                                     let mut data = row;
-                                    let dst_key = match read_key_ref_from_buf(&mut data, src_fk_col)
+                                    let dst_key = match read_key_ref_from_buf(&mut data, &src_fk_col)
                                     {
                                         Ok(key) => key,
                                         Err(_) => {
@@ -2386,34 +2393,34 @@ impl IngestContext {
                                     )?;
                                 }
                             }
-                        }
-                        if pending > 0 {
-                            if let Some(cb) = &progress {
-                                cb(ProgressEvent {
-                                    phase: ProgressPhase::EdgesPassA,
-                                    table: rel.name_forward.clone(),
-                                    shard: None,
-                                    kind: ProgressKind::Advance,
-                                    delta: pending,
-                                    total: Some(rel_total_rows),
-                                });
+                            if pending > 0 {
+                                if let Some(cb) = &progress {
+                                    cb(ProgressEvent {
+                                        phase: ProgressPhase::EdgesPassA,
+                                        table: rel.name_forward.clone(),
+                                        shard: None,
+                                        kind: ProgressKind::Advance,
+                                        delta: pending,
+                                        total: Some(rel_total_rows),
+                                    });
+                                }
                             }
-                        }
-                        if let Some(cb) = &progress {
-                            cb(ProgressEvent {
-                                phase: ProgressPhase::EdgesPassA,
-                                table: rel.name_forward.clone(),
-                                shard: None,
-                                kind: ProgressKind::Finish,
-                                delta: 0,
-                                total: Some(rel_total_rows),
-                            });
-                        }
-                        tx.send(Ok(key_failures))
-                            .map_err(|e| anyhow!("edges_a output error: {e}"))?;
-                        Ok(())
-                    }),
-                });
+                            tx.send(Ok(key_failures))
+                                .map_err(|e| anyhow!("edges_a output error: {e}"))?;
+                            Ok(())
+                        }),
+                    });
+                }
+                if let Some(cb) = &progress {
+                    cb(ProgressEvent {
+                        phase: ProgressPhase::EdgesPassA,
+                        table: rel.name_forward.clone(),
+                        shard: None,
+                        kind: ProgressKind::Finish,
+                        delta: 0,
+                        total: Some(rel_total_rows),
+                    });
+                }
             }
 
             for table in self.source.tables.iter().filter(|t| t.edge_table.is_some()) {
@@ -2425,60 +2432,70 @@ impl IngestContext {
                 let pk_map_paths = pk_map_paths.clone();
                 let root = root.clone();
                 let tx = tx.clone();
-                task_count = task_count.saturating_add(1);
-                tasks.push(WorkItem {
-                    bucket: None,
-                    run: Box::new(move || {
-                        let key_failures = KeyFailureState::default();
-                        let edge = table
-                            .edge_table
-                            .as_ref()
-                            .ok_or_else(|| anyhow!("missing edge table spec for {}", table.name))?;
-                        let forward_name = format!("edge_{}_src_to_dst", table.name);
-                        let file_count = table.paths.len();
-                        let mut total_rows = 0u64;
-                        for shard in 0..num_shards {
-                            for file_idx in 0..file_count {
-                                let meta = read_temp_meta(
-                                    &root.join(temp_edge_meta_path(&forward_name, shard, file_idx)),
-                                )?;
-                                total_rows = total_rows.saturating_add(meta.row_count);
-                            }
-                        }
-                        if let Some(cb) = &progress {
-                            cb(ProgressEvent {
-                                phase: ProgressPhase::EdgesPassA,
-                                table: forward_name.clone(),
-                                shard: None,
-                                kind: ProgressKind::Start,
-                                delta: 0,
-                                total: Some(total_rows),
-                            });
-                        }
-                        let src_table = table_by_name(&source, &edge.src_fk.ref_table)?;
-                        let dst_table = table_by_name(&source, &edge.dst_fk.ref_table)?;
-                        let src_pk = src_table
-                            .primary_key
-                            .as_ref()
-                            .ok_or_else(|| anyhow!("missing pk for {}", edge.src_fk.ref_table))?;
-                        let dst_pk = dst_table
-                            .primary_key
-                            .as_ref()
-                            .ok_or_else(|| anyhow!("missing pk for {}", edge.dst_fk.ref_table))?;
-                        let src_pk_col = column_spec(src_table, src_pk)?;
-                        let dst_pk_col = column_spec(dst_table, dst_pk)?;
-                        let src_offsets = shard_offsets
-                            .get(&edge.src_fk.ref_table)
-                            .cloned()
-                            .unwrap_or_else(|| vec![0; num_shards]);
-                        let mut pending = 0u64;
-                        for shard in 0..num_shards {
+                let edge = table
+                    .edge_table
+                    .as_ref()
+                    .ok_or_else(|| anyhow!("missing edge table spec for {}", table.name))?
+                    .clone();
+                let forward_name = format!("edge_{}_src_to_dst", table.name);
+                let file_count = table.paths.len();
+                let mut total_rows = 0u64;
+                for shard in 0..num_shards {
+                    for file_idx in 0..file_count {
+                        let meta =
+                            read_temp_meta(&root.join(temp_edge_meta_path(&forward_name, shard, file_idx)))?;
+                        total_rows = total_rows.saturating_add(meta.row_count);
+                    }
+                }
+                if let Some(cb) = &progress {
+                    cb(ProgressEvent {
+                        phase: ProgressPhase::EdgesPassA,
+                        table: forward_name.clone(),
+                        shard: None,
+                        kind: ProgressKind::Start,
+                        delta: 0,
+                        total: Some(total_rows),
+                    });
+                }
+                let src_table = table_by_name(&source, &edge.src_fk.ref_table)?;
+                let dst_table = table_by_name(&source, &edge.dst_fk.ref_table)?;
+                let src_pk = src_table
+                    .primary_key
+                    .as_ref()
+                    .ok_or_else(|| anyhow!("missing pk for {}", edge.src_fk.ref_table))?;
+                let dst_pk = dst_table
+                    .primary_key
+                    .as_ref()
+                    .ok_or_else(|| anyhow!("missing pk for {}", edge.dst_fk.ref_table))?;
+                let src_pk_col = column_spec(src_table, src_pk)?;
+                let dst_pk_col = column_spec(dst_table, dst_pk)?;
+                let src_offsets = shard_offsets
+                    .get(&edge.src_fk.ref_table)
+                    .cloned()
+                    .unwrap_or_else(|| vec![0; num_shards]);
+                for shard in 0..num_shards {
+                    let progress = progress.clone();
+                    let target = std::sync::Arc::clone(&target);
+                    let pk_map_paths = pk_map_paths.clone();
+                    let root = root.clone();
+                    let tx = tx.clone();
+                    let edge = edge.clone();
+                    let forward_name = forward_name.clone();
+                    let src_pk_col = src_pk_col.clone();
+                    let dst_pk_col = dst_pk_col.clone();
+                    let src_offsets = src_offsets.clone();
+                    task_count = task_count.saturating_add(1);
+                    tasks.push(WorkItem {
+                        bucket: None,
+                        run: Box::new(move || {
+                            let key_failures = KeyFailureState::default();
                             let src_map = Self::read_pk_map_from_paths(
                                 &root,
                                 &pk_map_paths,
                                 &edge.src_fk.ref_table,
                                 shard,
                             )?;
+                            let mut pending = 0u64;
                             for file_idx in 0..file_count {
                                 let mut writers = Vec::with_capacity(num_shards);
                                 for dst_shard in 0..num_shards {
@@ -2512,9 +2529,9 @@ impl IngestContext {
                                         pending = 0;
                                     }
                                     let mut data = row;
-                                    let src_key = read_key_from_buf(&mut data, src_pk_col)
+                                    let src_key = read_key_from_buf(&mut data, &src_pk_col)
                                         .map_err(|_| anyhow!("src key parse"))?;
-                                    let dst_key = read_key_ref_from_buf(&mut data, dst_pk_col)
+                                    let dst_key = read_key_ref_from_buf(&mut data, &dst_pk_col)
                                         .map_err(|_| anyhow!("dst key parse"))?;
                                     let dst_shard = shard_for_key(
                                         key_ref_hash_bytes(&dst_key, &mut scratch),
@@ -2549,34 +2566,34 @@ impl IngestContext {
                                     )?;
                                 }
                             }
-                        }
-                        if pending > 0 {
-                            if let Some(cb) = &progress {
-                                cb(ProgressEvent {
-                                    phase: ProgressPhase::EdgesPassA,
-                                    table: forward_name.clone(),
-                                    shard: None,
-                                    kind: ProgressKind::Advance,
-                                    delta: pending,
-                                    total: Some(total_rows),
-                                });
+                            if pending > 0 {
+                                if let Some(cb) = &progress {
+                                    cb(ProgressEvent {
+                                        phase: ProgressPhase::EdgesPassA,
+                                        table: forward_name.clone(),
+                                        shard: None,
+                                        kind: ProgressKind::Advance,
+                                        delta: pending,
+                                        total: Some(total_rows),
+                                    });
+                                }
                             }
-                        }
-                        if let Some(cb) = &progress {
-                            cb(ProgressEvent {
-                                phase: ProgressPhase::EdgesPassA,
-                                table: forward_name.clone(),
-                                shard: None,
-                                kind: ProgressKind::Finish,
-                                delta: 0,
-                                total: Some(total_rows),
-                            });
-                        }
-                        tx.send(Ok(key_failures))
-                            .map_err(|e| anyhow!("edges_a output error: {e}"))?;
-                        Ok(())
-                    }),
-                });
+                            tx.send(Ok(key_failures))
+                                .map_err(|e| anyhow!("edges_a output error: {e}"))?;
+                            Ok(())
+                        }),
+                    });
+                }
+                if let Some(cb) = &progress {
+                    cb(ProgressEvent {
+                        phase: ProgressPhase::EdgesPassA,
+                        table: forward_name.clone(),
+                        shard: None,
+                        kind: ProgressKind::Finish,
+                        delta: 0,
+                        total: Some(total_rows),
+                    });
+                }
             }
 
             drop(tx);
@@ -2942,53 +2959,62 @@ impl IngestContext {
                 let rel_sort_bits = rel_sort_bits.clone();
                 let root = root.clone();
                 let tx = tx.clone();
-                task_count = task_count.saturating_add(1);
-                tasks.push(WorkItem {
-                    bucket: None,
-                    run: Box::new(move || {
-                        let lookup_context = format!("dst_lookup:{}", info.forward_name);
-                        let mut result = EdgePassBResult::default();
-                        let mut total_rows = 0u64;
-                        for dst_shard in 0..num_shards {
-                            for src_shard in 0..num_shards {
-                                for file_idx in 0..info.file_count {
-                                    let meta = read_temp_meta(&root.join(
-                                        temp_edge_pass_a_meta_path(
-                                            &info.forward_name,
-                                            dst_shard,
-                                            src_shard,
-                                            file_idx,
-                                        ),
-                                    ))?;
-                                    total_rows = total_rows.saturating_add(meta.row_count);
-                                }
-                            }
+                let mut total_rows = 0u64;
+                for dst_shard in 0..num_shards {
+                    for src_shard in 0..num_shards {
+                        for file_idx in 0..info.file_count {
+                            let meta = read_temp_meta(&root.join(
+                                temp_edge_pass_a_meta_path(
+                                    &info.forward_name,
+                                    dst_shard,
+                                    src_shard,
+                                    file_idx,
+                                ),
+                            ))?;
+                            total_rows = total_rows.saturating_add(meta.row_count);
                         }
-                        if let Some(cb) = &progress {
-                            cb(ProgressEvent {
-                                phase: ProgressPhase::EdgesPassB,
-                                table: info.forward_name.clone(),
-                                shard: None,
-                                kind: ProgressKind::Start,
-                                delta: 0,
-                                total: Some(total_rows),
-                            });
-                        }
-                        let dst_offsets = shard_offsets
-                            .get(&info.dst_table)
-                            .cloned()
-                            .unwrap_or_else(|| vec![0; num_shards]);
-                        let mut pending = 0u64;
-                        let reverse_sort_bits = rel_sort_bits
-                            .get(&info.reverse_name)
-                            .copied()
-                            .flatten();
-                        let reverse_spec = edge_binary_spec(
-                            max_ids.get(&info.dst_table).copied().unwrap_or(0),
-                            max_ids.get(&info.src_table).copied().unwrap_or(0),
-                            reverse_sort_bits,
-                        );
-                        for dst_shard in 0..num_shards {
+                    }
+                }
+                if let Some(cb) = &progress {
+                    cb(ProgressEvent {
+                        phase: ProgressPhase::EdgesPassB,
+                        table: info.forward_name.clone(),
+                        shard: None,
+                        kind: ProgressKind::Start,
+                        delta: 0,
+                        total: Some(total_rows),
+                    });
+                }
+                for dst_shard in 0..num_shards {
+                    let info = info.clone();
+                    let progress = progress.clone();
+                    let target = std::sync::Arc::clone(&target);
+                    let shard_offsets = shard_offsets.clone();
+                    let pk_map_paths = pk_map_paths.clone();
+                    let max_ids = max_ids.clone();
+                    let rel_sort_bits = rel_sort_bits.clone();
+                    let root = root.clone();
+                    let tx = tx.clone();
+                    task_count = task_count.saturating_add(1);
+                    tasks.push(WorkItem {
+                        bucket: None,
+                        run: Box::new(move || {
+                            let lookup_context = format!("dst_lookup:{}", info.forward_name);
+                            let mut result = EdgePassBResult::default();
+                            let dst_offsets = shard_offsets
+                                .get(&info.dst_table)
+                                .cloned()
+                                .unwrap_or_else(|| vec![0; num_shards]);
+                            let mut pending = 0u64;
+                            let reverse_sort_bits = rel_sort_bits
+                                .get(&info.reverse_name)
+                                .copied()
+                                .flatten();
+                            let reverse_spec = edge_binary_spec(
+                                max_ids.get(&info.dst_table).copied().unwrap_or(0),
+                                max_ids.get(&info.src_table).copied().unwrap_or(0),
+                                reverse_sort_bits,
+                            );
                             let dst_map = Self::read_pk_map_from_paths(
                                 &root,
                                 &pk_map_paths,
@@ -3103,34 +3129,34 @@ impl IngestContext {
                                 .entry(info.reverse_name.clone())
                                 .or_insert(0);
                             *entry = entry.saturating_add(count);
-                        }
-                        if pending > 0 {
-                            if let Some(cb) = &progress {
-                                cb(ProgressEvent {
-                                    phase: ProgressPhase::EdgesPassB,
-                                    table: info.forward_name.clone(),
-                                    shard: None,
-                                    kind: ProgressKind::Advance,
-                                    delta: pending,
-                                    total: Some(total_rows),
-                                });
+                            if pending > 0 {
+                                if let Some(cb) = &progress {
+                                    cb(ProgressEvent {
+                                        phase: ProgressPhase::EdgesPassB,
+                                        table: info.forward_name.clone(),
+                                        shard: None,
+                                        kind: ProgressKind::Advance,
+                                        delta: pending,
+                                        total: Some(total_rows),
+                                    });
+                                }
                             }
-                        }
-                        if let Some(cb) = &progress {
-                            cb(ProgressEvent {
-                                phase: ProgressPhase::EdgesPassB,
-                                table: info.forward_name.clone(),
-                                shard: None,
-                                kind: ProgressKind::Finish,
-                                delta: 0,
-                                total: Some(total_rows),
-                            });
-                        }
-                        tx.send(Ok(result))
-                            .map_err(|e| anyhow!("edges_b output error: {e}"))?;
-                        Ok(())
-                    }),
-                });
+                            tx.send(Ok(result))
+                                .map_err(|e| anyhow!("edges_b output error: {e}"))?;
+                            Ok(())
+                        }),
+                    });
+                }
+                if let Some(cb) = &progress {
+                    cb(ProgressEvent {
+                        phase: ProgressPhase::EdgesPassB,
+                        table: info.forward_name.clone(),
+                        shard: None,
+                        kind: ProgressKind::Finish,
+                        delta: 0,
+                        total: Some(total_rows),
+                    });
+                }
             }
             drop(tx);
             run_tasks(tasks, 0, Some(task_time.clone()), Some(pool))?;
@@ -3403,51 +3429,57 @@ impl IngestContext {
                 let rel_sort_bits = rel_sort_bits.clone();
                 let root = root.clone();
                 let tx = tx.clone();
-                task_count = task_count.saturating_add(1);
-                tasks.push(WorkItem {
-                    bucket: None,
-                    run: Box::new(move || {
-                        let mut result = EdgePassCResult::default();
-                        let mut total_rows = 0u64;
-                        let mut src_shard_rows = vec![0u64; num_shards];
-                        for src_shard in 0..num_shards {
-                            for dst_shard in 0..num_shards {
-                                for file_idx in 0..info.file_count {
-                                    let meta = read_temp_meta(&root.join(
-                                        temp_edge_pass_b_meta_path(
-                                            &info.forward_name,
-                                            src_shard,
-                                            dst_shard,
-                                            file_idx,
-                                        ),
-                                    ))?;
-                                    total_rows = total_rows.saturating_add(meta.row_count);
-                                    src_shard_rows[src_shard] =
-                                        src_shard_rows[src_shard].saturating_add(meta.row_count);
-                                }
-                            }
+                let mut total_rows = 0u64;
+                let mut src_shard_rows = vec![0u64; num_shards];
+                for src_shard in 0..num_shards {
+                    for dst_shard in 0..num_shards {
+                        for file_idx in 0..info.file_count {
+                            let meta = read_temp_meta(&root.join(temp_edge_pass_b_meta_path(
+                                &info.forward_name,
+                                src_shard,
+                                dst_shard,
+                                file_idx,
+                            )))?;
+                            total_rows = total_rows.saturating_add(meta.row_count);
+                            src_shard_rows[src_shard] =
+                                src_shard_rows[src_shard].saturating_add(meta.row_count);
                         }
-                        if let Some(cb) = &progress {
-                            cb(ProgressEvent {
-                                phase: ProgressPhase::EdgesPassC,
-                                table: info.forward_name.clone(),
-                                shard: None,
-                                kind: ProgressKind::Start,
-                                delta: 0,
-                                total: Some(total_rows),
-                            });
-                        }
-                        let forward_sort_bits = rel_sort_bits
-                            .get(&info.forward_name)
-                            .copied()
-                            .flatten();
-                        let forward_spec = edge_binary_spec(
-                            max_ids.get(&info.src_table).copied().unwrap_or(0),
-                            max_ids.get(&info.dst_table).copied().unwrap_or(0),
-                            forward_sort_bits,
-                        );
-                        let mut pending = 0u64;
-                        for src_shard in 0..num_shards {
+                    }
+                }
+                if let Some(cb) = &progress {
+                    cb(ProgressEvent {
+                        phase: ProgressPhase::EdgesPassC,
+                        table: info.forward_name.clone(),
+                        shard: None,
+                        kind: ProgressKind::Start,
+                        delta: 0,
+                        total: Some(total_rows),
+                    });
+                }
+                for src_shard in 0..num_shards {
+                    let info = info.clone();
+                    let progress = progress.clone();
+                    let target = std::sync::Arc::clone(&target);
+                    let max_ids = max_ids.clone();
+                    let rel_sort_bits = rel_sort_bits.clone();
+                    let root = root.clone();
+                    let tx = tx.clone();
+                    let src_shard_rows = src_shard_rows.clone();
+                    task_count = task_count.saturating_add(1);
+                    tasks.push(WorkItem {
+                        bucket: None,
+                        run: Box::new(move || {
+                            let mut result = EdgePassCResult::default();
+                            let forward_sort_bits = rel_sort_bits
+                                .get(&info.forward_name)
+                                .copied()
+                                .flatten();
+                            let forward_spec = edge_binary_spec(
+                                max_ids.get(&info.src_table).copied().unwrap_or(0),
+                                max_ids.get(&info.dst_table).copied().unwrap_or(0),
+                                forward_sort_bits,
+                            );
+                            let mut pending = 0u64;
                             let mut forward_edges = Vec::new();
                             let reserve = src_shard_rows.get(src_shard).copied().unwrap_or(0);
                             if reserve > 0 {
@@ -3491,8 +3523,7 @@ impl IngestContext {
                                     })?;
                                 }
                             }
-                            let out_rel =
-                                temp_edge_shard_output_path(&info.forward_name, src_shard);
+                            let out_rel = temp_edge_shard_output_path(&info.forward_name, src_shard);
                             let out_path = target.join(&out_rel);
                             if let OutputTarget::Local { .. } = &*target {
                                 if let Some(parent) = out_path.parent() {
@@ -3511,34 +3542,34 @@ impl IngestContext {
                                 .entry(info.forward_name.clone())
                                 .or_insert(0);
                             *entry = entry.saturating_add(count);
-                        }
-                        if pending > 0 {
-                            if let Some(cb) = &progress {
-                                cb(ProgressEvent {
-                                    phase: ProgressPhase::EdgesPassC,
-                                    table: info.forward_name.clone(),
-                                    shard: None,
-                                    kind: ProgressKind::Advance,
-                                    delta: pending,
-                                    total: Some(total_rows),
-                                });
+                            if pending > 0 {
+                                if let Some(cb) = &progress {
+                                    cb(ProgressEvent {
+                                        phase: ProgressPhase::EdgesPassC,
+                                        table: info.forward_name.clone(),
+                                        shard: None,
+                                        kind: ProgressKind::Advance,
+                                        delta: pending,
+                                        total: Some(total_rows),
+                                    });
+                                }
                             }
-                        }
-                        if let Some(cb) = &progress {
-                            cb(ProgressEvent {
-                                phase: ProgressPhase::EdgesPassC,
-                                table: info.forward_name.clone(),
-                                shard: None,
-                                kind: ProgressKind::Finish,
-                                delta: 0,
-                                total: Some(total_rows),
-                            });
-                        }
-                        tx.send(Ok(result))
-                            .map_err(|e| anyhow!("edges_c output error: {e}"))?;
-                        Ok(())
-                    }),
-                });
+                            tx.send(Ok(result))
+                                .map_err(|e| anyhow!("edges_c output error: {e}"))?;
+                            Ok(())
+                        }),
+                    });
+                }
+                if let Some(cb) = &progress {
+                    cb(ProgressEvent {
+                        phase: ProgressPhase::EdgesPassC,
+                        table: info.forward_name.clone(),
+                        shard: None,
+                        kind: ProgressKind::Finish,
+                        delta: 0,
+                        total: Some(total_rows),
+                    });
+                }
             }
             drop(tx);
             run_tasks(tasks, 0, Some(task_time.clone()), Some(pool))?;
