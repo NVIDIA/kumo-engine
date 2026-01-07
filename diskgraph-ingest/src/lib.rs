@@ -471,7 +471,8 @@ pub fn ingest_with_stats(
                 .saturating_add(ctx.temp_fkeys_bytes)
                 .saturating_add(ctx.temp_edges_a_bytes)
                 .saturating_add(ctx.temp_edges_b_bytes)
-                .saturating_add(ctx.temp_edges_c_bytes),
+                .saturating_add(ctx.temp_edges_c_bytes)
+                .saturating_add(ctx.temp_node_data_bytes),
         };
     let stats = ctx.build_stats(&index_metadata, perf);
     let report = IngestReport {
