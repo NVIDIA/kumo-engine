@@ -67,11 +67,106 @@ struct TableSpecReport {
 #[derive(Debug, Deserialize)]
 struct ColumnSpecReport {
     name: String,
-    dtype: String,
+    source_dtype: ColumnTypeReport,
+    ingested_dtype: ColumnTypeReport,
     #[serde(default)]
     fixed_len: Option<usize>,
     #[serde(default)]
-    key_mode: Option<String>,
+    key_mode: Option<KeyModeReport>,
+    #[serde(default)]
+    timestamp_format: Option<String>,
+    #[serde(default)]
+    timestamp_unit: Option<TimestampUnitReport>,
+    #[serde(default)]
+    precision: Option<u32>,
+    #[serde(default)]
+    scale: Option<i32>,
+}
+
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum ColumnTypeReport {
+    Int8,
+    Int16,
+    Int64,
+    Int32,
+    UInt8,
+    UInt16,
+    UInt64,
+    UInt32,
+    Float64,
+    Float32,
+    Bool,
+    String,
+    Bytes,
+    Date,
+    Timestamp,
+    Decimal128,
+    Decimal256,
+    Float32Array,
+    Float64Array,
+}
+
+impl ColumnTypeReport {
+    fn as_str(&self) -> &'static str {
+        match self {
+            ColumnTypeReport::Int8 => "int8",
+            ColumnTypeReport::Int16 => "int16",
+            ColumnTypeReport::Int64 => "int64",
+            ColumnTypeReport::Int32 => "int32",
+            ColumnTypeReport::UInt8 => "uint8",
+            ColumnTypeReport::UInt16 => "uint16",
+            ColumnTypeReport::UInt64 => "uint64",
+            ColumnTypeReport::UInt32 => "uint32",
+            ColumnTypeReport::Float64 => "float64",
+            ColumnTypeReport::Float32 => "float32",
+            ColumnTypeReport::Bool => "bool",
+            ColumnTypeReport::String => "string",
+            ColumnTypeReport::Bytes => "bytes",
+            ColumnTypeReport::Date => "date",
+            ColumnTypeReport::Timestamp => "timestamp",
+            ColumnTypeReport::Decimal128 => "decimal128",
+            ColumnTypeReport::Decimal256 => "decimal256",
+            ColumnTypeReport::Float32Array => "float32_array",
+            ColumnTypeReport::Float64Array => "float64_array",
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum TimestampUnitReport {
+    Seconds,
+    Millis,
+    Micros,
+    Nanos,
+}
+
+impl TimestampUnitReport {
+    fn as_str(&self) -> &'static str {
+        match self {
+            TimestampUnitReport::Seconds => "seconds",
+            TimestampUnitReport::Millis => "millis",
+            TimestampUnitReport::Micros => "micros",
+            TimestampUnitReport::Nanos => "nanos",
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum KeyModeReport {
+    Fixed,
+    Uuid,
+}
+
+impl KeyModeReport {
+    fn as_str(&self) -> &'static str {
+        match self {
+            KeyModeReport::Fixed => "fixed",
+            KeyModeReport::Uuid => "uuid",
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -732,14 +827,29 @@ fn format_fk(table: &TableSpecReport, fk: &ForeignKeySpecReport) -> String {
 }
 
 fn format_column(col: &ColumnSpecReport) -> String {
-    let mut out = col.dtype.clone();
+    let mut out = col.ingested_dtype.as_str().to_string();
+    if col.source_dtype != col.ingested_dtype {
+        out.push_str(&format!(", source={}", col.source_dtype.as_str()));
+    }
     if let Some(mode) = &col.key_mode {
-        out.push_str(&format!(", mode={}", mode));
+        out.push_str(&format!(", mode={}", mode.as_str()));
     } else {
         out.push_str(", mode=var");
     }
     if let Some(len) = col.fixed_len {
         out.push_str(&format!(", fixed_len={}", len));
+    }
+    if let Some(fmt) = &col.timestamp_format {
+        out.push_str(&format!(", format={}", fmt));
+    }
+    if let Some(unit) = &col.timestamp_unit {
+        out.push_str(&format!(", unit={}", unit.as_str()));
+    }
+    if let Some(precision) = col.precision {
+        out.push_str(&format!(", precision={}", precision));
+    }
+    if let Some(scale) = col.scale {
+        out.push_str(&format!(", scale={}", scale));
     }
     out
 }
@@ -748,17 +858,26 @@ fn print_build_report(report: &BuildReport) {
     let stats = &report.build_stats;
     println!();
     println!("Build stats:");
-    println!("  Nodes ingested: {}", stats.nodes_ingested);
-    println!("  Edges ingested: {}", stats.edges_ingested);
+    println!("  Nodes ingested: {}", format_count(stats.nodes_ingested));
+    println!("  Edges ingested: {}", format_count(stats.edges_ingested));
     if stats.truncated_nodes > 0 || stats.truncated_edges_total > 0 {
-        println!("  Truncated nodes: {}", stats.truncated_nodes);
-        println!("  Truncated edges: {}", stats.truncated_edges_total);
+        println!("  Truncated nodes: {}", format_count(stats.truncated_nodes));
+        println!(
+            "  Truncated edges: {}",
+            format_count(stats.truncated_edges_total)
+        );
     }
     if stats.capped_edge_lists > 0 {
-        println!("  Capped edge lists: {}", stats.capped_edge_lists);
+        println!(
+            "  Capped edge lists: {}",
+            format_count(stats.capped_edge_lists)
+        );
     }
     if stats.node_data_trimmed > 0 {
-        println!("  Dropped oversized node data: {}", stats.node_data_trimmed);
+        println!(
+            "  Dropped oversized node data: {}",
+            format_count(stats.node_data_trimmed)
+        );
     }
     if !stats.truncated_edges_per_relation.is_empty() {
         let total: u64 = stats.truncated_edges_per_relation.iter().sum();
