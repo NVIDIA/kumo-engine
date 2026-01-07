@@ -39,7 +39,7 @@ use std::fs;
 use std::io::{self, BufWriter, Read, Write};
 use std::hash::{BuildHasher, Hasher};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::collections::hash_map::Entry;
 use std::time::Duration;
@@ -58,7 +58,6 @@ const TEMP_META_MAGIC: [u8; 4] = *b"DGTP";
 const TEMP_META_VERSION: u8 = 1;
 const SAMPLE_ROW_LIMIT: usize = 100_000;
 const SAMPLE_ROW_TARGET: usize = 10_000;
-const PK_MAP_MEMORY_BUDGET_FALLBACK: usize = 1024 * 1024 * 1024;
 const MAX_NODE_DATA_LEN: usize = 60 * 1024;
 const PROGRESS_ROW_BATCH: u64 = 1_000_000;
 const MAX_VAR_KEY_LEN: usize = u16::MAX as usize;
@@ -2010,7 +2009,6 @@ impl IngestContext {
 
     fn build_sharded_pk_maps(&mut self) -> Result<()> {
         let root = require_local_output(&self.target)?.to_path_buf();
-        let limiter = Arc::new(MemoryLimiter::new(pk_map_memory_budget()));
         let pk_map_time = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
         let duplicate_counts = std::sync::Arc::new(std::sync::Mutex::new(fixed_hash_map()));
         let duplicate_samples = std::sync::Arc::new(std::sync::Mutex::new(fixed_hash_map()));
@@ -2029,11 +2027,6 @@ impl IngestContext {
             });
             let pk_name = table.primary_key.clone().unwrap();
             let pk_col = column_spec(table, &pk_name)?;
-            let shard_rows = self
-                .shard_rows
-                .get(&table.name)
-                .cloned()
-                .unwrap_or_else(|| vec![0; self.num_shards]);
             let pk_map_paths = std::sync::Arc::new(std::sync::Mutex::new(vec![
                 None;
                 self.num_shards
@@ -2041,7 +2034,6 @@ impl IngestContext {
             let file_count = table.paths.len();
             let num_shards = self.num_shards as u64;
             for shard in 0..self.num_shards {
-                let limiter = Arc::clone(&limiter);
                 let target = std::sync::Arc::clone(&self.target);
                 let table_name = table.name.clone();
                 let pk_col = pk_col.clone();
@@ -2049,13 +2041,11 @@ impl IngestContext {
                 let pk_map_paths = std::sync::Arc::clone(&pk_map_paths);
                 let duplicate_counts = std::sync::Arc::clone(&duplicate_counts);
                 let duplicate_samples = std::sync::Arc::clone(&duplicate_samples);
-                let estimate = estimate_pk_map_bytes(&pk_col, shard_rows[shard] as usize);
                 let root = root.clone();
                 let pkey_ctx_rel = temp_pkey_context_path(&table.name);
                 tasks.push(WorkItem {
                     bucket: Some(pk_map_time.clone()),
                     run: Box::new(move || {
-                        let _permit = limiter.acquire(estimate);
                         let ctx_path = root.join(&pkey_ctx_rel);
                         let ctx_bytes = fs::read(&ctx_path)
                             .with_context(|| format!("read {}", ctx_path.display()))?;
@@ -2257,9 +2247,15 @@ impl IngestContext {
             let pk_map_paths = self.pk_map_paths.clone();
             let num_shards = self.num_shards;
             let task_time = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
-            let (tx, rx) = std::sync::mpsc::channel::<Result<KeyFailureState>>();
+            struct EdgePassAResult {
+                relation: String,
+                key_failures: KeyFailureState,
+            }
+            let (tx, rx) = std::sync::mpsc::channel::<Result<EdgePassAResult>>();
             let mut tasks = Vec::new();
             let mut task_count = 0u64;
+            let mut expected = fixed_hash_map();
+            let mut totals = fixed_hash_map();
 
             for rel in &self.relationships {
                 let rel = rel.clone();
@@ -2293,6 +2289,8 @@ impl IngestContext {
                         total: Some(rel_total_rows),
                     });
                 }
+                expected.insert(rel.name_forward.clone(), num_shards as u64);
+                totals.insert(rel.name_forward.clone(), rel_total_rows);
                 let src_table = table_by_name(&source, &rel.src_table)?;
                 let src_fk_col = column_spec(src_table, &rel.src_column)?;
                 let src_offsets = shard_offsets
@@ -2406,20 +2404,13 @@ impl IngestContext {
                                     });
                                 }
                             }
-                            tx.send(Ok(key_failures))
+                            tx.send(Ok(EdgePassAResult {
+                                relation: rel.name_forward.clone(),
+                                key_failures,
+                            }))
                                 .map_err(|e| anyhow!("edges_a output error: {e}"))?;
                             Ok(())
                         }),
-                    });
-                }
-                if let Some(cb) = &progress {
-                    cb(ProgressEvent {
-                        phase: ProgressPhase::EdgesPassA,
-                        table: rel.name_forward.clone(),
-                        shard: None,
-                        kind: ProgressKind::Finish,
-                        delta: 0,
-                        total: Some(rel_total_rows),
                     });
                 }
             }
@@ -2458,6 +2449,8 @@ impl IngestContext {
                         total: Some(total_rows),
                     });
                 }
+                expected.insert(forward_name.clone(), num_shards as u64);
+                totals.insert(forward_name.clone(), total_rows);
                 let src_table = table_by_name(&source, &edge.src_fk.ref_table)?;
                 let dst_table = table_by_name(&source, &edge.dst_fk.ref_table)?;
                 let src_pk = src_table
@@ -2579,31 +2572,42 @@ impl IngestContext {
                                     });
                                 }
                             }
-                            tx.send(Ok(key_failures))
+                            tx.send(Ok(EdgePassAResult {
+                                relation: forward_name.clone(),
+                                key_failures,
+                            }))
                                 .map_err(|e| anyhow!("edges_a output error: {e}"))?;
                             Ok(())
                         }),
-                    });
-                }
-                if let Some(cb) = &progress {
-                    cb(ProgressEvent {
-                        phase: ProgressPhase::EdgesPassA,
-                        table: forward_name.clone(),
-                        shard: None,
-                        kind: ProgressKind::Finish,
-                        delta: 0,
-                        total: Some(total_rows),
                     });
                 }
             }
 
             drop(tx);
             run_tasks(tasks, 0, Some(task_time.clone()), Some(pool))?;
+            let mut done = fixed_hash_map();
             for _ in 0..task_count {
                 let state = rx
                     .recv()
                     .map_err(|e| anyhow!("edges_a output error: {e}"))??;
-                self.merge_key_failures(state);
+                self.merge_key_failures(state.key_failures);
+                let entry = done.entry(state.relation.clone()).or_insert(0u64);
+                *entry = entry.saturating_add(1);
+                if let Some(expected) = expected.get(&state.relation) {
+                    if *entry == *expected {
+                        let total = totals.get(&state.relation).copied();
+                        if let Some(cb) = &self.progress {
+                            cb(ProgressEvent {
+                                phase: ProgressPhase::EdgesPassA,
+                                table: state.relation.clone(),
+                                shard: None,
+                                kind: ProgressKind::Finish,
+                                delta: 0,
+                                total,
+                            });
+                        }
+                    }
+                }
             }
             self.edges_a_task_ms = task_time.load(Ordering::Relaxed) / 1_000_000;
             self.edges_a_tasks = task_count;
@@ -2936,6 +2940,7 @@ impl IngestContext {
         if let Some(pool) = self.pool.as_deref() {
             #[derive(Default)]
             struct EdgePassBResult {
+                relation: String,
                 key_failures: KeyFailureState,
                 edge_counts: HashMap<String, u64>,
             }
@@ -2950,6 +2955,8 @@ impl IngestContext {
             let (tx, rx) = std::sync::mpsc::channel::<Result<EdgePassBResult>>();
             let mut tasks = Vec::new();
             let mut task_count = 0u64;
+            let mut expected = fixed_hash_map();
+            let mut totals = fixed_hash_map();
             for info in &infos {
                 let info = info.clone();
                 let progress = progress.clone();
@@ -2986,6 +2993,8 @@ impl IngestContext {
                         total: Some(total_rows),
                     });
                 }
+                expected.insert(info.forward_name.clone(), num_shards as u64);
+                totals.insert(info.forward_name.clone(), total_rows);
                 for dst_shard in 0..num_shards {
                     let info = info.clone();
                     let progress = progress.clone();
@@ -3002,6 +3011,7 @@ impl IngestContext {
                         run: Box::new(move || {
                             let lookup_context = format!("dst_lookup:{}", info.forward_name);
                             let mut result = EdgePassBResult::default();
+                            result.relation = info.forward_name.clone();
                             let dst_offsets = shard_offsets
                                 .get(&info.dst_table)
                                 .cloned()
@@ -3148,19 +3158,10 @@ impl IngestContext {
                         }),
                     });
                 }
-                if let Some(cb) = &progress {
-                    cb(ProgressEvent {
-                        phase: ProgressPhase::EdgesPassB,
-                        table: info.forward_name.clone(),
-                        shard: None,
-                        kind: ProgressKind::Finish,
-                        delta: 0,
-                        total: Some(total_rows),
-                    });
-                }
             }
             drop(tx);
             run_tasks(tasks, 0, Some(task_time.clone()), Some(pool))?;
+            let mut done = fixed_hash_map();
             for _ in 0..task_count {
                 let result = rx
                     .recv()
@@ -3169,6 +3170,23 @@ impl IngestContext {
                 for (rel, count) in result.edge_counts {
                     let entry = self.edge_counts.entry(rel).or_insert(0);
                     *entry = entry.saturating_add(count);
+                }
+                let entry = done.entry(result.relation.clone()).or_insert(0u64);
+                *entry = entry.saturating_add(1);
+                if let Some(expected) = expected.get(&result.relation) {
+                    if *entry == *expected {
+                        let total = totals.get(&result.relation).copied();
+                        if let Some(cb) = &self.progress {
+                            cb(ProgressEvent {
+                                phase: ProgressPhase::EdgesPassB,
+                                table: result.relation.clone(),
+                                shard: None,
+                                kind: ProgressKind::Finish,
+                                delta: 0,
+                                total,
+                            });
+                        }
+                    }
                 }
             }
             self.edges_b_task_ms = task_time.load(Ordering::Relaxed) / 1_000_000;
@@ -3411,6 +3429,7 @@ impl IngestContext {
         if let Some(pool) = self.pool.as_deref() {
             #[derive(Default)]
             struct EdgePassCResult {
+                relation: String,
                 edge_counts: HashMap<String, u64>,
             }
             let progress = self.progress.clone();
@@ -3422,6 +3441,8 @@ impl IngestContext {
             let (tx, rx) = std::sync::mpsc::channel::<Result<EdgePassCResult>>();
             let mut tasks = Vec::new();
             let mut task_count = 0u64;
+            let mut expected = fixed_hash_map();
+            let mut totals = fixed_hash_map();
             for info in &infos {
                 let info = info.clone();
                 let progress = progress.clone();
@@ -3457,6 +3478,8 @@ impl IngestContext {
                         total: Some(total_rows),
                     });
                 }
+                expected.insert(info.forward_name.clone(), num_shards as u64);
+                totals.insert(info.forward_name.clone(), total_rows);
                 for src_shard in 0..num_shards {
                     let info = info.clone();
                     let progress = progress.clone();
@@ -3471,6 +3494,7 @@ impl IngestContext {
                         bucket: None,
                         run: Box::new(move || {
                             let mut result = EdgePassCResult::default();
+                            result.relation = info.forward_name.clone();
                             let forward_sort_bits = rel_sort_bits
                                 .get(&info.forward_name)
                                 .copied()
@@ -3561,19 +3585,10 @@ impl IngestContext {
                         }),
                     });
                 }
-                if let Some(cb) = &progress {
-                    cb(ProgressEvent {
-                        phase: ProgressPhase::EdgesPassC,
-                        table: info.forward_name.clone(),
-                        shard: None,
-                        kind: ProgressKind::Finish,
-                        delta: 0,
-                        total: Some(total_rows),
-                    });
-                }
             }
             drop(tx);
             run_tasks(tasks, 0, Some(task_time.clone()), Some(pool))?;
+            let mut done = fixed_hash_map();
             for _ in 0..task_count {
                 let result = rx
                     .recv()
@@ -3581,6 +3596,23 @@ impl IngestContext {
                 for (rel, count) in result.edge_counts {
                     let entry = self.edge_counts.entry(rel).or_insert(0);
                     *entry = entry.saturating_add(count);
+                }
+                let entry = done.entry(result.relation.clone()).or_insert(0u64);
+                *entry = entry.saturating_add(1);
+                if let Some(expected) = expected.get(&result.relation) {
+                    if *entry == *expected {
+                        let total = totals.get(&result.relation).copied();
+                        if let Some(cb) = &self.progress {
+                            cb(ProgressEvent {
+                                phase: ProgressPhase::EdgesPassC,
+                                table: result.relation.clone(),
+                                shard: None,
+                                kind: ProgressKind::Finish,
+                                delta: 0,
+                                total,
+                            });
+                        }
+                    }
                 }
             }
             self.edges_c_task_ms = task_time.load(Ordering::Relaxed) / 1_000_000;
@@ -4705,53 +4737,6 @@ impl Drop for TaskPool {
     }
 }
 
-struct MemoryLimiter {
-    total: usize,
-    available: Mutex<usize>,
-    cvar: Condvar,
-}
-
-struct MemoryPermit {
-    limiter: Arc<MemoryLimiter>,
-    amount: usize,
-}
-
-
-impl MemoryLimiter {
-    fn new(total: usize) -> Self {
-        Self {
-            total,
-            available: Mutex::new(total),
-            cvar: Condvar::new(),
-        }
-    }
-
-    fn acquire(self: &Arc<Self>, amount: usize) -> MemoryPermit {
-        let amount = amount.min(self.total);
-        let mut available = self.available.lock().unwrap();
-        while *available < amount {
-            available = self.cvar.wait(available).unwrap();
-        }
-        *available -= amount;
-        MemoryPermit {
-            limiter: Arc::clone(self),
-            amount,
-        }
-    }
-
-    fn release(&self, amount: usize) {
-        let mut available = self.available.lock().unwrap();
-        *available = available.saturating_add(amount);
-        self.cvar.notify_all();
-    }
-}
-
-impl Drop for MemoryPermit {
-    fn drop(&mut self) {
-        self.limiter.release(self.amount);
-    }
-}
-
 fn default_worker_threads() -> usize {
     std::thread::available_parallelism()
         .map(|n| n.get())
@@ -4850,30 +4835,6 @@ fn key_type_for_column(col: &ColumnSpec) -> Result<KeyType> {
         }
         _ => Err(anyhow!("unsupported primary key type")),
     }
-}
-
-fn pk_map_memory_budget() -> usize {
-    let meminfo = fs::read_to_string("/proc/meminfo");
-    let meminfo = match meminfo {
-        Ok(meminfo) => meminfo,
-        Err(_) => return PK_MAP_MEMORY_BUDGET_FALLBACK,
-    };
-    for line in meminfo.lines() {
-        if let Some(rest) = line.strip_prefix("MemTotal:") {
-            let kb_str = rest.trim().split_whitespace().next();
-            if let Some(kb_str) = kb_str {
-                if let Ok(kb) = kb_str.parse::<u64>() {
-                    let bytes = kb.saturating_mul(1024);
-                    let budget = bytes.saturating_mul(80) / 100;
-                    if budget >= (128 * 1024 * 1024) {
-                        return budget as usize;
-                    }
-                }
-            }
-            break;
-        }
-    }
-    PK_MAP_MEMORY_BUDGET_FALLBACK
 }
 
 fn column_index(table: &TableSpec, name: &str) -> Result<usize> {
@@ -5935,17 +5896,6 @@ fn shard_for_key(bytes: &[u8], num_shards: usize) -> usize {
     (hasher.finish() as usize) % num_shards
 }
 
-
-fn estimate_pk_map_bytes(col: &ColumnSpec, rows: usize) -> usize {
-    let key_type = key_type_for_column(col).unwrap_or(KeyType::VarBytes);
-    let key_len = match key_type {
-        KeyType::Int64 => 8,
-        KeyType::FixedBytes { len } => len,
-        KeyType::Uuid => 16,
-        KeyType::VarBytes => col.fixed_len.unwrap_or(32),
-    };
-    rows.saturating_mul(key_len + 16)
-}
 
 struct RowView<'a> {
     row: usize,
