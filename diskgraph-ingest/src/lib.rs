@@ -516,12 +516,6 @@ struct TempRowWriter {
     row_count: u64,
 }
 
-struct TempNodeResult {
-    total_rows: u64,
-    shard_rows: Vec<u64>,
-    node_data_dropped: u64,
-}
-
 struct TempNodeFileResult {
     total_rows: u64,
     shard_rows: Vec<u64>,
@@ -1177,14 +1171,14 @@ impl IngestContext {
         let root = require_local_output(&self.target)?.to_path_buf();
         let temp_root = root.join(TEMP_DIR_NAME);
         fs::create_dir_all(&temp_root)?;
-        let mut table_rows = fixed_hash_map();
+        let mut table_rows: HashMap<String, u64> = fixed_hash_map();
         let tables = self.source.tables.clone();
         if let Some(pool) = self.pool.as_deref() {
             #[derive(Default)]
             struct EncodeResult {
                 table: String,
-                node_rows: Option<u64>,
-                shard_rows: Option<Vec<u64>>,
+                total_rows: u64,
+                shard_rows: Vec<u64>,
                 node_data_dropped: u64,
                 key_failures: KeyFailureState,
             }
@@ -1199,45 +1193,54 @@ impl IngestContext {
             let progress = self.progress.clone();
             let mut task_count = 0u64;
             for table in &tables {
-                let table = table.clone();
-                let relationships = relationships.clone();
-                let target = std::sync::Arc::clone(&target);
-                let trimmed_strings = std::sync::Arc::clone(&trimmed_strings);
-                let progress = progress.clone();
-                let root = root.clone();
-                let tx = tx.clone();
-                task_count = task_count.saturating_add(1);
-                tasks.push(WorkItem {
-                    bucket: None,
-                    run: Box::new(move || {
-                        if let Some(cb) = &progress {
-                            cb(ProgressEvent {
-                                phase: ProgressPhase::Encode,
-                                table: table.name.clone(),
-                                shard: None,
-                                kind: ProgressKind::Start,
-                                delta: 0,
-                                total: Some(table.paths.len() as u64),
-                            });
-                        }
-                        let mut key_failures = KeyFailureState::default();
-                        let mut result = EncodeResult {
-                            table: table.name.clone(),
-                            ..Default::default()
-                        };
-                        if table.edge_table.is_some() {
-                            Self::build_temp_edge_table(
-                                &table,
-                                num_shards,
-                                &target,
-                                &trimmed_strings,
-                                &progress,
-                                &mut key_failures,
-                            )?;
-                        } else {
-                            let node = Self::build_temp_node_table(
+                if let Some(cb) = &self.progress {
+                    cb(ProgressEvent {
+                        phase: ProgressPhase::Encode,
+                        table: table.name.clone(),
+                        shard: None,
+                        kind: ProgressKind::Start,
+                        delta: 0,
+                        total: Some(table.paths.len() as u64),
+                    });
+                }
+                let file_count = table.paths.len();
+                for file_idx in 0..file_count {
+                    let table = table.clone();
+                    let relationships = relationships.clone();
+                    let target = std::sync::Arc::clone(&target);
+                    let trimmed_strings = std::sync::Arc::clone(&trimmed_strings);
+                    let progress = progress.clone();
+                    let root = root.clone();
+                    let tx = tx.clone();
+                    task_count = task_count.saturating_add(1);
+                    tasks.push(WorkItem {
+                        bucket: None,
+                        run: Box::new(move || {
+                            let mut key_failures = KeyFailureState::default();
+                            if table.edge_table.is_some() {
+                                Self::build_temp_edge_file(
+                                    &table,
+                                    file_idx,
+                                    num_shards,
+                                    &target,
+                                    &trimmed_strings,
+                                    &progress,
+                                    &mut key_failures,
+                                )?;
+                                tx.send(Ok(EncodeResult {
+                                    table: table.name.clone(),
+                                    total_rows: 0,
+                                    shard_rows: Vec::new(),
+                                    node_data_dropped: 0,
+                                    key_failures,
+                                }))
+                                .map_err(|e| anyhow!("encode output error: {e}"))?;
+                                return Ok(());
+                            }
+                            let node = Self::build_temp_node_file(
                                 &table,
                                 &relationships,
+                                file_idx,
                                 num_shards,
                                 &target,
                                 &root,
@@ -1245,46 +1248,67 @@ impl IngestContext {
                                 &progress,
                                 &mut key_failures,
                             )?;
-                            result.node_rows = Some(node.total_rows);
-                            result.shard_rows = Some(node.shard_rows);
-                            result.node_data_dropped = node.node_data_dropped;
-                        }
-                        if let Some(cb) = &progress {
-                            cb(ProgressEvent {
-                                phase: ProgressPhase::Encode,
+                            tx.send(Ok(EncodeResult {
                                 table: table.name.clone(),
-                                shard: None,
-                                kind: ProgressKind::Finish,
-                                delta: 0,
-                                total: Some(table.paths.len() as u64),
-                            });
-                        }
-                        result.key_failures = key_failures;
-                        tx.send(Ok(result))
+                                total_rows: node.total_rows,
+                                shard_rows: node.shard_rows,
+                                node_data_dropped: node.node_data_dropped,
+                                key_failures,
+                            }))
                             .map_err(|e| anyhow!("encode output error: {e}"))?;
-                        Ok(())
-                    }),
-                });
+                            Ok(())
+                        }),
+                    });
+                }
             }
             drop(tx);
             run_tasks(tasks, 0, Some(task_time.clone()), Some(pool))?;
+            let mut finished_files = fixed_hash_map();
             for _ in 0..task_count {
                 let result = rx
                     .recv()
                     .map_err(|e| anyhow!("encode output error: {e}"))??;
-                if let Some(rows) = result.node_rows {
-                    table_rows.insert(result.table.clone(), rows);
+                if let Some(total) = table_rows.get_mut(&result.table) {
+                    *total = total.saturating_add(result.total_rows);
+                } else if result.total_rows > 0 {
+                    table_rows.insert(result.table.clone(), result.total_rows);
                 }
-                if let Some(shard_rows) = result.shard_rows {
-                    self.shard_rows.insert(result.table.clone(), shard_rows);
+                if !result.shard_rows.is_empty() {
+                    let entry = self
+                        .shard_rows
+                        .entry(result.table.clone())
+                        .or_insert_with(|| vec![0; num_shards]);
+                    for (idx, count) in result.shard_rows.iter().enumerate() {
+                        if let Some(dst) = entry.get_mut(idx) {
+                            *dst = dst.saturating_add(*count);
+                        }
+                    }
                 }
                 if result.node_data_dropped > 0 {
-                    self.pk_duplicate_counts.insert(
-                        format!("node_data_dropped:{}", result.table),
-                        result.node_data_dropped,
-                    );
+                    let key = format!("node_data_dropped:{}", result.table);
+                    let entry = self.pk_duplicate_counts.entry(key).or_insert(0);
+                    *entry = entry.saturating_add(result.node_data_dropped);
                 }
                 self.merge_key_failures(result.key_failures);
+                let done = finished_files.entry(result.table.clone()).or_insert(0u64);
+                *done = done.saturating_add(1);
+                if let Some(cb) = &self.progress {
+                    let expected = tables
+                        .iter()
+                        .find(|t| t.name == result.table)
+                        .map(|t| t.paths.len() as u64)
+                        .unwrap_or(0);
+                    if expected > 0 && *done == expected {
+                        cb(ProgressEvent {
+                            phase: ProgressPhase::Encode,
+                            table: result.table.clone(),
+                            shard: None,
+                            kind: ProgressKind::Finish,
+                            delta: 0,
+                            total: Some(expected),
+                        });
+                    }
+                }
             }
             self.table_rows = table_rows;
             self.encode_task_ms = task_time.load(Ordering::Relaxed) / 1_000_000;
@@ -1302,31 +1326,48 @@ impl IngestContext {
                 });
                 let mut key_failures = KeyFailureState::default();
                 if table.edge_table.is_some() {
-                    Self::build_temp_edge_table(
-                        table,
-                        self.num_shards,
-                        &self.target,
-                        &self.trimmed_strings,
-                        &self.progress,
-                        &mut key_failures,
-                    )?;
+                    for file_idx in 0..table.paths.len() {
+                        Self::build_temp_edge_file(
+                            table,
+                            file_idx,
+                            self.num_shards,
+                            &self.target,
+                            &self.trimmed_strings,
+                            &self.progress,
+                            &mut key_failures,
+                        )?;
+                    }
                 } else {
-                    let node = Self::build_temp_node_table(
-                        table,
-                        &relationships,
-                        self.num_shards,
-                        &self.target,
-                        &root,
-                        &self.trimmed_strings,
-                        &self.progress,
-                        &mut key_failures,
-                    )?;
-                    table_rows.insert(table.name.clone(), node.total_rows);
-                    self.shard_rows.insert(table.name.clone(), node.shard_rows);
-                    if node.node_data_dropped > 0 {
+                    let mut total_rows = 0u64;
+                    let mut shard_rows = vec![0u64; self.num_shards];
+                    let mut node_data_dropped = 0u64;
+                    for file_idx in 0..table.paths.len() {
+                        let node = Self::build_temp_node_file(
+                            table,
+                            &relationships,
+                            file_idx,
+                            self.num_shards,
+                            &self.target,
+                            &root,
+                            &self.trimmed_strings,
+                            &self.progress,
+                            &mut key_failures,
+                        )?;
+                        total_rows = total_rows.saturating_add(node.total_rows);
+                        node_data_dropped =
+                            node_data_dropped.saturating_add(node.node_data_dropped);
+                        for (idx, count) in node.shard_rows.iter().enumerate() {
+                            if let Some(dst) = shard_rows.get_mut(idx) {
+                                *dst = dst.saturating_add(*count);
+                            }
+                        }
+                    }
+                    table_rows.insert(table.name.clone(), total_rows);
+                    self.shard_rows.insert(table.name.clone(), shard_rows);
+                    if node_data_dropped > 0 {
                         self.pk_duplicate_counts.insert(
                             format!("node_data_dropped:{}", table.name),
-                            node.node_data_dropped,
+                            node_data_dropped,
                         );
                     }
                 }
@@ -1351,16 +1392,17 @@ impl IngestContext {
         Ok(())
     }
 
-    fn build_temp_node_table(
+    fn build_temp_node_file(
         table: &TableSpec,
         relationships: &[RelationshipRuntime],
+        file_idx: usize,
         num_shards: usize,
         target: &std::sync::Arc<OutputTarget>,
         root: &Path,
         trimmed_strings: &std::sync::Arc<AtomicU64>,
         progress: &Option<ProgressCallback>,
         key_failures: &mut KeyFailureState,
-    ) -> Result<TempNodeResult> {
+    ) -> Result<TempNodeFileResult> {
         let pk_col = table.primary_key.as_ref().and_then(|pk| column_spec(table, pk).ok());
         let pk_idx = table
             .primary_key
@@ -1437,142 +1479,136 @@ impl IngestContext {
             Ok(())
         };
 
-        for (file_idx, path) in table.paths.iter().enumerate() {
-            if !is_cloud_path(path) && !Path::new(path).exists() {
-                return Err(anyhow!("input path not found {}", path));
-            }
-            let local = localize_input(path)?;
-            let mut writers = NodeTempWriters {
-                node: Vec::new(),
-                pkey: None,
-                fkey: fixed_hash_map(),
-            };
-            Self::init_node_temp_writers(
-                table,
-                file_idx,
-                num_shards,
-                &target,
-                &mut writers.node,
-                &mut writers.pkey,
-                &mut writers.fkey,
-                &rel_specs,
-                has_pkey,
-            )?;
-            match table.format {
-                TableFormat::Parquet => {
-                    let file = fs::File::open(&local.path)
-                        .with_context(|| format!("open {}", local.path.display()))?;
-                    let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
-                    let reader = builder.with_batch_size(NODE_BATCH_SIZE).build()?;
-                    for batch in reader {
-                        let batch = batch?;
-                        let mut cols = Vec::with_capacity(table.columns.len());
-                        for col in &table.columns {
-                            let idx = batch
-                                .schema()
-                                .index_of(&col.name)
-                                .context("missing column in batch")?;
-                            cols.push(batch.column(idx).clone());
-                        }
-                        let trimmed_strings = std::sync::Arc::clone(trimmed_strings);
-                        let mut access = RowAccess::new(
-                            table,
-                            &cols,
-                            &column_runtimes,
-                            &trimmed_strings,
-                        );
-                        for row in 0..batch.num_rows() {
-                            total_rows += 1;
-                            access.reset(row);
-                            Self::write_node_row_from_access(
-                                table,
-                                pk_idx,
-                                &rel_specs,
-                                &mut access,
-                                &node_encoder,
-                                &pkey_encoder,
-                                &mut node_scratch,
-                                &mut pkey_scratch,
-                                &mut node_out,
-                                &mut pkey_out,
-                                &mut writers.node,
-                                &mut writers.pkey,
-                                &mut writers.fkey,
-                                &mut row_id,
-                                pk_col,
-                                &mut key_buf,
-                                &mut node_data_dropped,
-                                num_shards,
-                                key_failures,
-                            )?;
-                        }
+        let path = table
+            .paths
+            .get(file_idx)
+            .ok_or_else(|| anyhow!("missing input file {}", file_idx))?;
+        if !is_cloud_path(path) && !Path::new(path).exists() {
+            return Err(anyhow!("input path not found {}", path));
+        }
+        let local = localize_input(path)?;
+        let mut writers = NodeTempWriters {
+            node: Vec::new(),
+            pkey: None,
+            fkey: fixed_hash_map(),
+        };
+        Self::init_node_temp_writers(
+            table,
+            file_idx,
+            num_shards,
+            &target,
+            &mut writers.node,
+            &mut writers.pkey,
+            &mut writers.fkey,
+            &rel_specs,
+            has_pkey,
+        )?;
+        match table.format {
+            TableFormat::Parquet => {
+                let file = fs::File::open(&local.path)
+                    .with_context(|| format!("open {}", local.path.display()))?;
+                let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
+                let reader = builder.with_batch_size(NODE_BATCH_SIZE).build()?;
+                for batch in reader {
+                    let batch = batch?;
+                    let mut cols = Vec::with_capacity(table.columns.len());
+                    for col in &table.columns {
+                        let idx = batch
+                            .schema()
+                            .index_of(&col.name)
+                            .context("missing column in batch")?;
+                        cols.push(batch.column(idx).clone());
                     }
-                }
-                TableFormat::Csv => {
-                    let file = fs::File::open(&local.path)
-                        .with_context(|| format!("open {}", local.path.display()))?;
-                    let schema = table_schema(table)?;
-                    let builder = arrow_csv::ReaderBuilder::new(Arc::new(schema))
-                        .with_header(true);
-                    let reader = builder.build(file)?;
-                    for batch in reader {
-                        let batch = batch?;
-                        let mut cols = Vec::with_capacity(table.columns.len());
-                        for col in &table.columns {
-                            let idx = batch
-                                .schema()
-                                .index_of(&col.name)
-                                .context("missing column in batch")?;
-                            cols.push(batch.column(idx).clone());
-                        }
-                        let trimmed_strings = std::sync::Arc::clone(trimmed_strings);
-                        let mut access = RowAccess::new(
+                    let trimmed_strings = std::sync::Arc::clone(trimmed_strings);
+                    let mut access =
+                        RowAccess::new(table, &cols, &column_runtimes, &trimmed_strings);
+                    for row in 0..batch.num_rows() {
+                        total_rows += 1;
+                        access.reset(row);
+                        Self::write_node_row_from_access(
                             table,
-                            &cols,
-                            &column_runtimes,
-                            &trimmed_strings,
-                        );
-                        for row in 0..batch.num_rows() {
-                            total_rows += 1;
-                            access.reset(row);
-                            Self::write_node_row_from_access(
-                                table,
-                                pk_idx,
-                                &rel_specs,
-                                &mut access,
-                                &node_encoder,
-                                &pkey_encoder,
-                                &mut node_scratch,
-                                &mut pkey_scratch,
-                                &mut node_out,
-                                &mut pkey_out,
-                                &mut writers.node,
-                                &mut writers.pkey,
-                                &mut writers.fkey,
-                                &mut row_id,
-                                pk_col,
-                                &mut key_buf,
-                                &mut node_data_dropped,
-                                num_shards,
-                                key_failures,
-                            )?;
-                        }
+                            pk_idx,
+                            &rel_specs,
+                            &mut access,
+                            &node_encoder,
+                            &pkey_encoder,
+                            &mut node_scratch,
+                            &mut pkey_scratch,
+                            &mut node_out,
+                            &mut pkey_out,
+                            &mut writers.node,
+                            &mut writers.pkey,
+                            &mut writers.fkey,
+                            &mut row_id,
+                            pk_col,
+                            &mut key_buf,
+                            &mut node_data_dropped,
+                            num_shards,
+                            key_failures,
+                        )?;
                     }
                 }
             }
-            finish_writers(file_idx, writers)?;
-            if let Some(cb) = progress {
-                cb(ProgressEvent {
-                    phase: ProgressPhase::Encode,
-                    table: table.name.clone(),
-                    shard: None,
-                    kind: ProgressKind::Advance,
-                    delta: 1,
-                    total: Some(table.paths.len() as u64),
-                });
+            TableFormat::Csv => {
+                let file = fs::File::open(&local.path)
+                    .with_context(|| format!("open {}", local.path.display()))?;
+                let schema = table_schema(table)?;
+                let builder = arrow_csv::ReaderBuilder::new(Arc::new(schema))
+                    .with_header(true);
+                let reader = builder.build(file)?;
+                for batch in reader {
+                    let batch = batch?;
+                    let mut cols = Vec::with_capacity(table.columns.len());
+                    for col in &table.columns {
+                        let idx = batch
+                            .schema()
+                            .index_of(&col.name)
+                            .context("missing column in batch")?;
+                        cols.push(batch.column(idx).clone());
+                    }
+                    let trimmed_strings = std::sync::Arc::clone(trimmed_strings);
+                    let mut access =
+                        RowAccess::new(table, &cols, &column_runtimes, &trimmed_strings);
+                    for row in 0..batch.num_rows() {
+                        total_rows += 1;
+                        access.reset(row);
+                        Self::write_node_row_from_access(
+                            table,
+                            pk_idx,
+                            &rel_specs,
+                            &mut access,
+                            &node_encoder,
+                            &pkey_encoder,
+                            &mut node_scratch,
+                            &mut pkey_scratch,
+                            &mut node_out,
+                            &mut pkey_out,
+                            &mut writers.node,
+                            &mut writers.pkey,
+                            &mut writers.fkey,
+                            &mut row_id,
+                            pk_col,
+                            &mut key_buf,
+                            &mut node_data_dropped,
+                            num_shards,
+                            key_failures,
+                        )?;
+                    }
+                }
             }
         }
-        Ok(TempNodeResult {
+        finish_writers(file_idx, writers)?;
+        if let Some(cb) = progress {
+            cb(ProgressEvent {
+                phase: ProgressPhase::Encode,
+                table: table.name.clone(),
+                shard: None,
+                kind: ProgressKind::Advance,
+                delta: 1,
+                total: Some(table.paths.len() as u64),
+            });
+        }
+        Ok(TempNodeFileResult {
             total_rows,
             shard_rows,
             node_data_dropped,
@@ -1748,8 +1784,9 @@ impl IngestContext {
         Ok(())
     }
 
-    fn build_temp_edge_table(
+    fn build_temp_edge_file(
         table: &TableSpec,
+        file_idx: usize,
         num_shards: usize,
         target: &std::sync::Arc<OutputTarget>,
         trimmed_strings: &std::sync::Arc<AtomicU64>,
@@ -1768,135 +1805,137 @@ impl IngestContext {
         let dst_context = format!("edge_fk:{}.{}", table.name, edge.dst_fk.column);
         let schema = table_schema(table)?;
 
-        for (file_idx, path) in table.paths.iter().enumerate() {
-            if !is_cloud_path(path) && !Path::new(path).exists() {
-                return Err(anyhow!("input path not found {}", path));
-            }
-            let local = localize_input(path)?;
-            let mut forward_writers: Vec<TempRowWriter> = Vec::new();
-            Self::init_edge_temp_writers(&table.name, file_idx, num_shards, target, &mut forward_writers)?;
-            match table.format {
-                TableFormat::Parquet => {
-                    let file = fs::File::open(&local.path)
-                        .with_context(|| format!("open {}", local.path.display()))?;
-                    let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
-                    let reader = builder.with_batch_size(NODE_BATCH_SIZE).build()?;
-                    for batch in reader {
-                        let batch = batch?;
-                        let mut cols = Vec::with_capacity(table.columns.len());
-                        for col in &table.columns {
-                            let idx = batch
-                                .schema()
-                                .index_of(&col.name)
-                                .context("missing column in batch")?;
-                            cols.push(batch.column(idx).clone());
-                        }
-                        let mut values = Vec::with_capacity(table.columns.len());
-                        let mut arrays_f32: Vec<Vec<f32>> = Vec::new();
-                        let mut arrays_f64: Vec<Vec<f64>> = Vec::new();
-                        let mut strings: Vec<String> = Vec::new();
-                        let mut bytes: Vec<Vec<u8>> = Vec::new();
-                        for row in 0..batch.num_rows() {
-                            let row_view = RowView {
-                                row,
-                                cols: &cols,
-                            };
-                            let owned = owned_row_from_row(
-                                &row_view,
-                                table,
-                                &mut values,
-                                &mut arrays_f32,
-                                &mut arrays_f64,
-                                &mut strings,
-                                &mut bytes,
-                                trimmed_strings,
-                            )?;
-                            Self::write_edge_row(
-                                src_fk_idx,
-                                dst_fk_idx,
-                                src_fk_col,
-                                dst_fk_col,
-                                &src_context,
-                                &dst_context,
-                                owned,
-                                &mut forward_writers,
-                                num_shards,
-                                key_failures,
-                            )?;
-                        }
+        let path = table
+            .paths
+            .get(file_idx)
+            .ok_or_else(|| anyhow!("missing input file {}", file_idx))?;
+        if !is_cloud_path(path) && !Path::new(path).exists() {
+            return Err(anyhow!("input path not found {}", path));
+        }
+        let local = localize_input(path)?;
+        let mut forward_writers: Vec<TempRowWriter> = Vec::new();
+        Self::init_edge_temp_writers(
+            &table.name,
+            file_idx,
+            num_shards,
+            target,
+            &mut forward_writers,
+        )?;
+        match table.format {
+            TableFormat::Parquet => {
+                let file = fs::File::open(&local.path)
+                    .with_context(|| format!("open {}", local.path.display()))?;
+                let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
+                let reader = builder.with_batch_size(NODE_BATCH_SIZE).build()?;
+                for batch in reader {
+                    let batch = batch?;
+                    let mut cols = Vec::with_capacity(table.columns.len());
+                    for col in &table.columns {
+                        let idx = batch
+                            .schema()
+                            .index_of(&col.name)
+                            .context("missing column in batch")?;
+                        cols.push(batch.column(idx).clone());
                     }
-                }
-                TableFormat::Csv => {
-                    let file = fs::File::open(&local.path)
-                        .with_context(|| format!("open {}", local.path.display()))?;
-                    let builder = arrow_csv::ReaderBuilder::new(Arc::new(schema.clone()))
-                        .with_header(true);
-                    let reader = builder.build(file)?;
-                    for batch in reader {
-                        let batch = batch?;
-                        let mut cols = Vec::with_capacity(table.columns.len());
-                        for col in &table.columns {
-                            let idx = batch
-                                .schema()
-                                .index_of(&col.name)
-                                .context("missing column in batch")?;
-                            cols.push(batch.column(idx).clone());
-                        }
-                        let mut values = Vec::with_capacity(table.columns.len());
-                        let mut arrays_f32: Vec<Vec<f32>> = Vec::new();
-                        let mut arrays_f64: Vec<Vec<f64>> = Vec::new();
-                        let mut strings: Vec<String> = Vec::new();
-                        let mut bytes: Vec<Vec<u8>> = Vec::new();
-                        for row in 0..batch.num_rows() {
-                            let row_view = RowView {
-                                row,
-                                cols: &cols,
-                            };
-                            let owned = owned_row_from_row(
-                                &row_view,
-                                table,
-                                &mut values,
-                                &mut arrays_f32,
-                                &mut arrays_f64,
-                                &mut strings,
-                                &mut bytes,
-                                trimmed_strings,
-                            )?;
-                            Self::write_edge_row(
-                                src_fk_idx,
-                                dst_fk_idx,
-                                src_fk_col,
-                                dst_fk_col,
-                                &src_context,
-                                &dst_context,
-                                owned,
-                                &mut forward_writers,
-                                num_shards,
-                                key_failures,
-                            )?;
-                        }
+                    let mut values = Vec::with_capacity(table.columns.len());
+                    let mut arrays_f32: Vec<Vec<f32>> = Vec::new();
+                    let mut arrays_f64: Vec<Vec<f64>> = Vec::new();
+                    let mut strings: Vec<String> = Vec::new();
+                    let mut bytes: Vec<Vec<u8>> = Vec::new();
+                    for row in 0..batch.num_rows() {
+                        let row_view = RowView { row, cols: &cols };
+                        let owned = owned_row_from_row(
+                            &row_view,
+                            table,
+                            &mut values,
+                            &mut arrays_f32,
+                            &mut arrays_f64,
+                            &mut strings,
+                            &mut bytes,
+                            trimmed_strings,
+                        )?;
+                        Self::write_edge_row(
+                            src_fk_idx,
+                            dst_fk_idx,
+                            src_fk_col,
+                            dst_fk_col,
+                            &src_context,
+                            &dst_context,
+                            owned,
+                            &mut forward_writers,
+                            num_shards,
+                            key_failures,
+                        )?;
                     }
                 }
             }
-            for shard in 0..num_shards {
-                let rows = finish_temp_writer(forward_writers.remove(0))?;
-                let meta_path = temp_edge_meta_path(
-                    &format!("edge_{}_src_to_dst", table.name),
-                    shard,
-                    file_idx,
-                );
-                write_temp_meta(target, &meta_path, rows)?;
+            TableFormat::Csv => {
+                let file = fs::File::open(&local.path)
+                    .with_context(|| format!("open {}", local.path.display()))?;
+                let builder = arrow_csv::ReaderBuilder::new(Arc::new(schema.clone()))
+                    .with_header(true);
+                let reader = builder.build(file)?;
+                for batch in reader {
+                    let batch = batch?;
+                    let mut cols = Vec::with_capacity(table.columns.len());
+                    for col in &table.columns {
+                        let idx = batch
+                            .schema()
+                            .index_of(&col.name)
+                            .context("missing column in batch")?;
+                        cols.push(batch.column(idx).clone());
+                    }
+                    let mut values = Vec::with_capacity(table.columns.len());
+                    let mut arrays_f32: Vec<Vec<f32>> = Vec::new();
+                    let mut arrays_f64: Vec<Vec<f64>> = Vec::new();
+                    let mut strings: Vec<String> = Vec::new();
+                    let mut bytes: Vec<Vec<u8>> = Vec::new();
+                    for row in 0..batch.num_rows() {
+                        let row_view = RowView { row, cols: &cols };
+                        let owned = owned_row_from_row(
+                            &row_view,
+                            table,
+                            &mut values,
+                            &mut arrays_f32,
+                            &mut arrays_f64,
+                            &mut strings,
+                            &mut bytes,
+                            trimmed_strings,
+                        )?;
+                        Self::write_edge_row(
+                            src_fk_idx,
+                            dst_fk_idx,
+                            src_fk_col,
+                            dst_fk_col,
+                            &src_context,
+                            &dst_context,
+                            owned,
+                            &mut forward_writers,
+                            num_shards,
+                            key_failures,
+                        )?;
+                    }
+                }
             }
-            if let Some(cb) = progress {
-                cb(ProgressEvent {
-                    phase: ProgressPhase::Encode,
-                    table: table.name.clone(),
-                    shard: None,
-                    kind: ProgressKind::Advance,
-                    delta: 1,
-                    total: Some(table.paths.len() as u64),
-                });
-            }
+        }
+        for shard in 0..num_shards {
+            let rows = finish_temp_writer(forward_writers.remove(0))?;
+            let meta_path = temp_edge_meta_path(
+                &format!("edge_{}_src_to_dst", table.name),
+                shard,
+                file_idx,
+            );
+            write_temp_meta(target, &meta_path, rows)?;
+        }
+        if let Some(cb) = progress {
+            cb(ProgressEvent {
+                phase: ProgressPhase::Encode,
+                table: table.name.clone(),
+                shard: None,
+                kind: ProgressKind::Advance,
+                delta: 1,
+                total: Some(table.paths.len() as u64),
+            });
         }
         Ok(())
     }
