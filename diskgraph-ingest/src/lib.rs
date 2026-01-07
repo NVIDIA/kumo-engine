@@ -2013,6 +2013,8 @@ impl IngestContext {
         let duplicate_counts = std::sync::Arc::new(std::sync::Mutex::new(fixed_hash_map()));
         let duplicate_samples = std::sync::Arc::new(std::sync::Mutex::new(fixed_hash_map()));
         let mut tasks = Vec::new();
+        let mut pk_map_handles: HashMap<String, std::sync::Arc<std::sync::Mutex<Vec<Option<String>>>>> =
+            fixed_hash_map();
         for table in &self.source.tables {
             if table.edge_table.is_some() || table.primary_key.is_none() {
                 continue;
@@ -2031,6 +2033,7 @@ impl IngestContext {
                 None;
                 self.num_shards
             ]));
+            pk_map_handles.insert(table.name.clone(), std::sync::Arc::clone(&pk_map_paths));
             let file_count = table.paths.len();
             let num_shards = self.num_shards as u64;
             for shard in 0..self.num_shards {
@@ -2145,18 +2148,26 @@ impl IngestContext {
                     }),
                 });
             }
-            let pool = self.pool.as_deref();
-            let threads = if pool.is_some() { 0 } else { 1 };
-            run_tasks(
-                tasks.drain(..).collect(),
-                threads,
-                Some(pk_map_time.clone()),
-                pool,
-            )?;
+        }
+        let pool = self.pool.as_deref();
+        let threads = if pool.is_some() { 0 } else { 1 };
+        run_tasks(
+            tasks.drain(..).collect(),
+            threads,
+            Some(pk_map_time.clone()),
+            pool,
+        )?;
+        for table in &self.source.tables {
+            if table.edge_table.is_some() || table.primary_key.is_none() {
+                continue;
+            }
+            let pk_map_paths = pk_map_handles
+                .remove(&table.name)
+                .ok_or_else(|| anyhow!("missing pk map paths for {}", table.name))?;
             let paths = std::sync::Arc::try_unwrap(pk_map_paths)
-                .unwrap()
+                .map_err(|_| anyhow!("pk map paths still in use"))?
                 .into_inner()
-                .unwrap()
+                .map_err(|_| anyhow!("pk map paths locked"))?
                 .into_iter()
                 .map(|p| p.ok_or_else(|| anyhow!("missing pk map path for {}", table.name)))
                 .collect::<Result<Vec<_>>>()?;
@@ -2611,6 +2622,8 @@ impl IngestContext {
             }
             self.edges_a_task_ms = task_time.load(Ordering::Relaxed) / 1_000_000;
             self.edges_a_tasks = task_count;
+            self.cleanup_edge_stage("edges_src")?;
+            self.cleanup_edge_stage("fkeys")?;
             return Ok(());
         }
 
@@ -2878,6 +2891,8 @@ impl IngestContext {
             .edges_a_task_ms
             .saturating_add(elapsed.as_millis() as u64);
         self.edges_a_tasks = self.edges_a_tasks.saturating_add(1);
+        self.cleanup_edge_stage("edges_src")?;
+        self.cleanup_edge_stage("fkeys")?;
         Ok(())
     }
 
@@ -3191,6 +3206,7 @@ impl IngestContext {
             }
             self.edges_b_task_ms = task_time.load(Ordering::Relaxed) / 1_000_000;
             self.edges_b_tasks = task_count;
+            self.cleanup_edge_stage("edges_a")?;
             return Ok(());
         }
 
@@ -3387,6 +3403,7 @@ impl IngestContext {
             .edges_b_task_ms
             .saturating_add(elapsed.as_millis() as u64);
         self.edges_b_tasks = self.edges_b_tasks.saturating_add(1);
+        self.cleanup_edge_stage("edges_a")?;
         Ok(())
     }
 
@@ -3617,6 +3634,7 @@ impl IngestContext {
             }
             self.edges_c_task_ms = task_time.load(Ordering::Relaxed) / 1_000_000;
             self.edges_c_tasks = task_count;
+            self.cleanup_edge_stage("edges_b")?;
             return Ok(());
         }
 
@@ -3744,6 +3762,7 @@ impl IngestContext {
             .edges_c_task_ms
             .saturating_add(elapsed.as_millis() as u64);
         self.edges_c_tasks = self.edges_c_tasks.saturating_add(1);
+        self.cleanup_edge_stage("edges_b")?;
         Ok(())
     }
 
@@ -3766,6 +3785,16 @@ impl IngestContext {
             let temp_root = root.join(TEMP_DIR_NAME);
             if temp_root.exists() {
                 fs::remove_dir_all(temp_root)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn cleanup_edge_stage(&self, dir: &str) -> Result<()> {
+        if let OutputTarget::Local { root } = &*self.target {
+            let stage_root = root.join(TEMP_DIR_NAME).join(dir);
+            if stage_root.exists() {
+                fs::remove_dir_all(stage_root)?;
             }
         }
         Ok(())
@@ -4174,7 +4203,7 @@ fn temp_pkey_context_path(name: &str) -> String {
 
 fn temp_fkey_shard_dir(table: &str, rel: &str, shard: usize) -> String {
     format!(
-        "{}/nodes/{}/fkeys/{}/shard-{:05}",
+        "{}/fkeys/{}/{}/shard-{:05}",
         TEMP_DIR_NAME,
         table.to_lowercase(),
         rel.to_lowercase(),
@@ -4200,7 +4229,7 @@ fn temp_fkey_meta_path(table: &str, rel: &str, shard: usize, file_idx: usize) ->
 
 fn temp_edge_shard_dir(rel: &str, shard: usize) -> String {
     format!(
-        "{}/edges/{}/shard-{:05}",
+        "{}/edges_src/{}/shard-{:05}",
         TEMP_DIR_NAME,
         rel.to_lowercase(),
         shard
@@ -4225,7 +4254,7 @@ fn temp_edge_meta_path(rel: &str, shard: usize, file_idx: usize) -> String {
 
 fn temp_edge_pass_a_path(rel: &str, dst_shard: usize, src_shard: usize, file_idx: usize) -> String {
     format!(
-        "{}/edges/{}/pass-a/dst-{:05}/src-{:05}/file-{:05}.bin",
+        "{}/edges_a/{}/dst-{:05}/src-{:05}/file-{:05}.bin",
         TEMP_DIR_NAME,
         rel.to_lowercase(),
         dst_shard,
@@ -4241,7 +4270,7 @@ fn temp_edge_pass_a_meta_path(
     file_idx: usize,
 ) -> String {
     format!(
-        "{}/edges/{}/pass-a/dst-{:05}/src-{:05}/file-{:05}.meta",
+        "{}/edges_a/{}/dst-{:05}/src-{:05}/file-{:05}.meta",
         TEMP_DIR_NAME,
         rel.to_lowercase(),
         dst_shard,
@@ -4252,7 +4281,7 @@ fn temp_edge_pass_a_meta_path(
 
 fn temp_edge_pass_b_path(rel: &str, src_shard: usize, dst_shard: usize, file_idx: usize) -> String {
     format!(
-        "{}/edges/{}/pass-b/src-{:05}/dst-{:05}/file-{:05}.bin",
+        "{}/edges_b/{}/src-{:05}/dst-{:05}/file-{:05}.bin",
         TEMP_DIR_NAME,
         rel.to_lowercase(),
         src_shard,
@@ -4268,7 +4297,7 @@ fn temp_edge_pass_b_meta_path(
     file_idx: usize,
 ) -> String {
     format!(
-        "{}/edges/{}/pass-b/src-{:05}/dst-{:05}/file-{:05}.meta",
+        "{}/edges_b/{}/src-{:05}/dst-{:05}/file-{:05}.meta",
         TEMP_DIR_NAME,
         rel.to_lowercase(),
         src_shard,
