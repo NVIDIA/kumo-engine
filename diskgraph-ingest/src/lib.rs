@@ -317,6 +317,13 @@ pub struct PerfStats {
     pub index_tasks: u64,
     pub bytes_read: u64,
     pub bytes_written: u64,
+    pub temp_edges_src_bytes: u64,
+    pub temp_fkeys_bytes: u64,
+    pub temp_edges_a_bytes: u64,
+    pub temp_edges_b_bytes: u64,
+    pub temp_edges_c_bytes: u64,
+    pub temp_node_data_bytes: u64,
+    pub temp_bytes_total: u64,
 }
 
 pub fn ingest(
@@ -409,6 +416,16 @@ pub fn ingest_with_stats(
     let index_wall = index_start.elapsed();
     let finalize_start = std::time::Instant::now();
     let index_metadata = ctx.finalize_metadata(index_metadata)?;
+    if let OutputTarget::Local { root } = &*ctx.target {
+        let nodes_root = root.join(TEMP_DIR_NAME).join("nodes");
+        if nodes_root.exists() {
+            ctx.temp_node_data_bytes = sum_dir_bytes(&nodes_root).unwrap_or(0);
+        }
+        let edges_root = root.join(TEMP_DIR_NAME).join("edges");
+        if edges_root.exists() {
+            ctx.temp_edges_c_bytes = sum_dir_bytes(&edges_root).unwrap_or(0);
+        }
+    }
     ctx.cleanup_temp()?;
     let finalize_wall = finalize_start.elapsed();
     let wall_time = wall_start.elapsed();
@@ -417,33 +434,45 @@ pub fn ingest_with_stats(
         OutputTarget::Local { root } => sum_dir_bytes(root).unwrap_or(0),
         _ => 0,
     };
-    let perf = PerfStats {
-        wall_time_ms: wall_time.as_millis() as u64,
-        context_wall_ms: context_wall.as_millis() as u64,
-        encode_wall_ms: encode_wall.as_millis() as u64,
-        pk_map_wall_ms: pk_map_wall.as_millis() as u64,
-        edges_a_wall_ms: edges_a_wall.as_millis() as u64,
-        edges_b_wall_ms: edges_b_wall.as_millis() as u64,
-        edges_c_wall_ms: edges_c_wall.as_millis() as u64,
-        index_wall_ms: index_wall.as_millis() as u64,
-        finalize_wall_ms: finalize_wall.as_millis() as u64,
-        context_task_ms: ctx.context_task_ms,
-        encode_task_ms: ctx.encode_task_ms,
-        pk_map_task_ms: ctx.pk_map_task_ms,
-        edges_a_task_ms: ctx.edges_a_task_ms,
-        edges_b_task_ms: ctx.edges_b_task_ms,
-        edges_c_task_ms: ctx.edges_c_task_ms,
-        index_task_ms: ctx.index_task_ms,
-        context_tasks: ctx.context_tasks,
-        encode_tasks: ctx.encode_tasks,
-        pk_map_tasks: ctx.pk_map_tasks,
-        edges_a_tasks: ctx.edges_a_tasks,
-        edges_b_tasks: ctx.edges_b_tasks,
-        edges_c_tasks: ctx.edges_c_tasks,
-        index_tasks: ctx.index_tasks,
-        bytes_read,
-        bytes_written,
-    };
+        let perf = PerfStats {
+            wall_time_ms: wall_time.as_millis() as u64,
+            context_wall_ms: context_wall.as_millis() as u64,
+            encode_wall_ms: encode_wall.as_millis() as u64,
+            pk_map_wall_ms: pk_map_wall.as_millis() as u64,
+            edges_a_wall_ms: edges_a_wall.as_millis() as u64,
+            edges_b_wall_ms: edges_b_wall.as_millis() as u64,
+            edges_c_wall_ms: edges_c_wall.as_millis() as u64,
+            index_wall_ms: index_wall.as_millis() as u64,
+            finalize_wall_ms: finalize_wall.as_millis() as u64,
+            context_task_ms: ctx.context_task_ms,
+            encode_task_ms: ctx.encode_task_ms,
+            pk_map_task_ms: ctx.pk_map_task_ms,
+            edges_a_task_ms: ctx.edges_a_task_ms,
+            edges_b_task_ms: ctx.edges_b_task_ms,
+            edges_c_task_ms: ctx.edges_c_task_ms,
+            index_task_ms: ctx.index_task_ms,
+            context_tasks: ctx.context_tasks,
+            encode_tasks: ctx.encode_tasks,
+            pk_map_tasks: ctx.pk_map_tasks,
+            edges_a_tasks: ctx.edges_a_tasks,
+            edges_b_tasks: ctx.edges_b_tasks,
+            edges_c_tasks: ctx.edges_c_tasks,
+            index_tasks: ctx.index_tasks,
+            bytes_read,
+            bytes_written,
+            temp_edges_src_bytes: ctx.temp_edges_src_bytes,
+            temp_fkeys_bytes: ctx.temp_fkeys_bytes,
+            temp_edges_a_bytes: ctx.temp_edges_a_bytes,
+            temp_edges_b_bytes: ctx.temp_edges_b_bytes,
+            temp_edges_c_bytes: ctx.temp_edges_c_bytes,
+            temp_node_data_bytes: ctx.temp_node_data_bytes,
+            temp_bytes_total: ctx
+                .temp_edges_src_bytes
+                .saturating_add(ctx.temp_fkeys_bytes)
+                .saturating_add(ctx.temp_edges_a_bytes)
+                .saturating_add(ctx.temp_edges_b_bytes)
+                .saturating_add(ctx.temp_edges_c_bytes),
+        };
     let stats = ctx.build_stats(&index_metadata, perf);
     let report = IngestReport {
         stats: stats.clone(),
@@ -485,6 +514,12 @@ struct IngestContext {
     output: String,
     trimmed_strings: std::sync::Arc<AtomicU64>,
     progress: Option<ProgressCallback>,
+    temp_edges_src_bytes: u64,
+    temp_fkeys_bytes: u64,
+    temp_edges_a_bytes: u64,
+    temp_edges_b_bytes: u64,
+    temp_edges_c_bytes: u64,
+    temp_node_data_bytes: u64,
     encode_task_ms: u64,
     pk_map_task_ms: u64,
     edges_a_task_ms: u64,
@@ -756,6 +791,12 @@ impl IngestContext {
             output: output.to_string(),
             trimmed_strings: std::sync::Arc::new(AtomicU64::new(0)),
             progress: options.progress,
+            temp_edges_src_bytes: 0,
+            temp_fkeys_bytes: 0,
+            temp_edges_a_bytes: 0,
+            temp_edges_b_bytes: 0,
+            temp_edges_c_bytes: 0,
+            temp_node_data_bytes: 0,
             encode_task_ms: 0,
             pk_map_task_ms: 0,
             edges_a_task_ms: 0,
@@ -2622,6 +2663,12 @@ impl IngestContext {
             }
             self.edges_a_task_ms = task_time.load(Ordering::Relaxed) / 1_000_000;
             self.edges_a_tasks = task_count;
+            self.temp_edges_src_bytes = self
+                .temp_edges_src_bytes
+                .saturating_add(self.record_edge_stage_bytes("edges_src")?);
+            self.temp_fkeys_bytes = self
+                .temp_fkeys_bytes
+                .saturating_add(self.record_edge_stage_bytes("fkeys")?);
             self.cleanup_edge_stage("edges_src")?;
             self.cleanup_edge_stage("fkeys")?;
             return Ok(());
@@ -2891,6 +2938,12 @@ impl IngestContext {
             .edges_a_task_ms
             .saturating_add(elapsed.as_millis() as u64);
         self.edges_a_tasks = self.edges_a_tasks.saturating_add(1);
+        self.temp_edges_src_bytes = self
+            .temp_edges_src_bytes
+            .saturating_add(self.record_edge_stage_bytes("edges_src")?);
+        self.temp_fkeys_bytes = self
+            .temp_fkeys_bytes
+            .saturating_add(self.record_edge_stage_bytes("fkeys")?);
         self.cleanup_edge_stage("edges_src")?;
         self.cleanup_edge_stage("fkeys")?;
         Ok(())
@@ -3206,6 +3259,9 @@ impl IngestContext {
             }
             self.edges_b_task_ms = task_time.load(Ordering::Relaxed) / 1_000_000;
             self.edges_b_tasks = task_count;
+            self.temp_edges_a_bytes = self
+                .temp_edges_a_bytes
+                .saturating_add(self.record_edge_stage_bytes("edges_a")?);
             self.cleanup_edge_stage("edges_a")?;
             return Ok(());
         }
@@ -3403,6 +3459,9 @@ impl IngestContext {
             .edges_b_task_ms
             .saturating_add(elapsed.as_millis() as u64);
         self.edges_b_tasks = self.edges_b_tasks.saturating_add(1);
+        self.temp_edges_a_bytes = self
+            .temp_edges_a_bytes
+            .saturating_add(self.record_edge_stage_bytes("edges_a")?);
         self.cleanup_edge_stage("edges_a")?;
         Ok(())
     }
@@ -3634,6 +3693,9 @@ impl IngestContext {
             }
             self.edges_c_task_ms = task_time.load(Ordering::Relaxed) / 1_000_000;
             self.edges_c_tasks = task_count;
+            self.temp_edges_b_bytes = self
+                .temp_edges_b_bytes
+                .saturating_add(self.record_edge_stage_bytes("edges_b")?);
             self.cleanup_edge_stage("edges_b")?;
             return Ok(());
         }
@@ -3762,6 +3824,9 @@ impl IngestContext {
             .edges_c_task_ms
             .saturating_add(elapsed.as_millis() as u64);
         self.edges_c_tasks = self.edges_c_tasks.saturating_add(1);
+        self.temp_edges_b_bytes = self
+            .temp_edges_b_bytes
+            .saturating_add(self.record_edge_stage_bytes("edges_b")?);
         self.cleanup_edge_stage("edges_b")?;
         Ok(())
     }
@@ -3798,6 +3863,17 @@ impl IngestContext {
             }
         }
         Ok(())
+    }
+
+    fn record_edge_stage_bytes(&mut self, dir: &str) -> Result<u64> {
+        if let OutputTarget::Local { root } = &*self.target {
+            let stage_root = root.join(TEMP_DIR_NAME).join(dir);
+            if stage_root.exists() {
+                let bytes = sum_dir_bytes(&stage_root).unwrap_or(0);
+                return Ok(bytes);
+            }
+        }
+        Ok(0)
     }
 
     fn build_index(&mut self, metadata: DatasetMetadata) -> Result<()> {

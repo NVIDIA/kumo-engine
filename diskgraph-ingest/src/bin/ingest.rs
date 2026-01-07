@@ -176,6 +176,45 @@ fn main() -> Result<()> {
     );
     println!("  Total bytes: {}", format_bytes(total_bytes));
     println!("  Throughput: {}/s", format_bytes(bytes_per_sec as u64));
+    if stats.perf.temp_bytes_total > 0 {
+        println!("  Temp bytes (edges): {}", format_bytes(stats.perf.temp_bytes_total));
+        if stats.perf.temp_fkeys_bytes > 0 {
+            println!(
+                "    fkeys: {}",
+                format_bytes(stats.perf.temp_fkeys_bytes)
+            );
+        }
+        if stats.perf.temp_edges_src_bytes > 0 {
+            println!(
+                "    edges_src: {}",
+                format_bytes(stats.perf.temp_edges_src_bytes)
+            );
+        }
+        if stats.perf.temp_edges_a_bytes > 0 {
+            println!(
+                "    edges_a: {}",
+                format_bytes(stats.perf.temp_edges_a_bytes)
+            );
+        }
+        if stats.perf.temp_edges_b_bytes > 0 {
+            println!(
+                "    edges_b: {}",
+                format_bytes(stats.perf.temp_edges_b_bytes)
+            );
+        }
+        if stats.perf.temp_edges_c_bytes > 0 {
+            println!(
+                "    edges_c: {}",
+                format_bytes(stats.perf.temp_edges_c_bytes)
+            );
+        }
+    }
+    if stats.perf.temp_node_data_bytes > 0 {
+        println!(
+            "  Temp bytes (nodes): {}",
+            format_bytes(stats.perf.temp_node_data_bytes)
+        );
+    }
     println!("  Stage timings (wall):");
     println!(
         "    context: {}",
