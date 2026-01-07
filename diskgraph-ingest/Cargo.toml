@@ -33,3 +33,4 @@ num-traits = "0.2"
 clap = { version = "4.4", features = ["derive"] }
 indicatif = "0.17"
 pprof = { version = "0.13", features = ["flamegraph", "prost-codec"] }
+lz4_flex = { version = "0.12", features = ["frame"] }

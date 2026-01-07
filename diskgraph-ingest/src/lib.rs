@@ -26,6 +26,7 @@ use diskgraph_rowpack::{
 use diskgraph_index::graph::{
     GraphBuildProgress, GraphBuildStage, GraphDataSource, GraphIndexBuilder, GraphProgressSink,
 };
+use lz4_flex::frame::{FrameDecoder, FrameEncoder};
 use num_traits::Signed;
 use object_store::{path::Path as ObjectPath, ObjectStore, WriteMultipart};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
@@ -512,7 +513,7 @@ struct TempRowpackMeta {
 }
 
 struct TempRowWriter {
-    writer: BufWriter<OutputSink>,
+    writer: FrameEncoder<OutputSink>,
     row_count: u64,
 }
 
@@ -4283,7 +4284,7 @@ fn open_temp_row_writer(target: &OutputTarget, rel_path: &str) -> Result<TempRow
     }
     let sink = target.sink(&path)?;
     Ok(TempRowWriter {
-        writer: BufWriter::with_capacity(1024 * 1024, sink),
+        writer: FrameEncoder::new(sink),
         row_count: 0,
     })
 }
@@ -4398,19 +4399,17 @@ fn write_key_ref_to_buf(buf: &mut Vec<u8>, key: &KeyRef<'_>) {
 }
 
 fn finish_temp_writer(writer: TempRowWriter) -> Result<u64> {
-    let mut writer = writer;
-    writer.writer.flush()?;
     let sink = writer
         .writer
-        .into_inner()
-        .map_err(|_| anyhow!("temp writer flush failed"))?;
+        .finish()
+        .map_err(|e| anyhow!("temp writer finish failed: {e}"))?;
     sink.finish()?;
     Ok(writer.row_count)
 }
 
 fn read_temp_rows(path: &Path, mut f: impl FnMut(&[u8]) -> Result<()>) -> Result<()> {
     let file = fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
-    let mut file = io::BufReader::with_capacity(1024 * 1024, file);
+    let mut file = FrameDecoder::new(file);
     let mut len_buf = [0u8; 4];
     let mut data = Vec::new();
     loop {

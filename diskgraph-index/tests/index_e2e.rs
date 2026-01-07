@@ -5,6 +5,7 @@ use std::sync::Arc;
 use diskgraph_core::metadata::{
     EdgeRelationMetadata, NodeShardMetadata, NodeTypeMetadata,
 };
+use lz4_flex::frame::FrameEncoder;
 use diskgraph_index::{
     builder::{ShardBuildParams, ShardBuilder},
     layout::RelationSegment,
@@ -1347,13 +1348,14 @@ pub fn write_node_data(path: &Path, rows: &[Vec<u8>]) -> anyhow::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let mut writer = std::io::BufWriter::new(fs::File::create(path)?);
+    let file = fs::File::create(path)?;
+    let mut writer = FrameEncoder::new(file);
     for row in rows {
         let len = u16::try_from(row.len()).map_err(|_| anyhow::anyhow!("node data too large"))?;
         writer.write_all(&len.to_le_bytes())?;
         writer.write_all(row)?;
     }
-    writer.flush()?;
+    writer.finish().map_err(|e| anyhow::anyhow!("node data finish failed: {e}"))?;
     Ok(())
 }
 

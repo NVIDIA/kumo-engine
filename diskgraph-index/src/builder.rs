@@ -5,6 +5,7 @@ use crate::streaming::EdgeShardInput;
 use crate::truncate::truncate_counts;
 use anyhow::Result;
 use diskgraph_core::metadata::{EdgeRelationMetadata, NodeTypeMetadata};
+use lz4_flex::frame::FrameDecoder;
 use serde_json;
 use serde::Serialize;
 use std::fs::{self, File};
@@ -975,7 +976,7 @@ enum NodeDataStream {
 struct MultiBinaryNodeDataStream {
     files: Vec<PathBuf>,
     current_idx: usize,
-    reader: Option<std::io::BufReader<std::fs::File>>,
+    reader: Option<FrameDecoder<std::fs::File>>,
     expected_rows: u64,
     seen_rows: u64,
 }
@@ -1026,7 +1027,7 @@ impl MultiBinaryNodeDataStream {
                 }
                 let path = &self.files[self.current_idx];
                 let file = std::fs::File::open(path)?;
-                self.reader = Some(std::io::BufReader::with_capacity(1024 * 1024, file));
+                self.reader = Some(FrameDecoder::new(file));
             }
             let reader = self
                 .reader
@@ -1057,7 +1058,7 @@ impl MultiBinaryNodeDataStream {
     }
 }
 
-fn read_u16_len(reader: &mut std::io::BufReader<std::fs::File>) -> Result<Option<u16>> {
+fn read_u16_len(reader: &mut impl Read) -> Result<Option<u16>> {
     let mut buf = [0u8; 2];
     let mut read = 0usize;
     while read < buf.len() {
