@@ -221,7 +221,23 @@ main() {
   mkfs.ext4 "${mkfs_opts[@]}" "$target"
 
   mkdir -p "$mountpoint"
-  mount -o noatime,nodiratime,discard=async "$target" "$mountpoint"
+  if findmnt -n "$mountpoint" >/dev/null 2>&1; then
+    umount "$mountpoint"
+  fi
+  if command -v udevadm >/dev/null 2>&1; then
+    udevadm settle || true
+  fi
+  sync
+  mount_opts="noatime,nodiratime,discard=async"
+  if ! mount -o "$mount_opts" "$target" "$mountpoint"; then
+    echo "warning: discard=async not supported; retrying without discard" >&2
+    mount_opts="noatime,nodiratime"
+    if ! mount -o "$mount_opts" "$target" "$mountpoint"; then
+      echo "error: failed to mount $target on $mountpoint" >&2
+      echo "Check: dmesg | tail -n 20" >&2
+      exit 1
+    fi
+  fi
   chmod 0777 "$mountpoint"
 
   echo "Done."
@@ -236,7 +252,7 @@ main() {
     echo "  Stride: ${stride}"
     echo "  Stripe width: ${stripe_width}"
   fi
-  echo "  Mount opts: noatime,nodiratime,discard=async"
+  echo "  Mount opts: ${mount_opts}"
   echo "  Mount: $mountpoint"
 }
 
