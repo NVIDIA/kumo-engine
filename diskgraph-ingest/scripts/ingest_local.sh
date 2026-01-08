@@ -64,10 +64,7 @@ if [[ "${DEBUGINFO_ENABLED}" == "true" ]]; then
   env_args+=(RUSTFLAGS="${RUSTFLAGS:-} -C debuginfo=1 -C force-frame-pointers=yes")
 fi
 
-args=(cargo run -p diskgraph-ingest --bin ingest --release -- \
-  --source "${SOURCE}" \
-  --output "${OUTPUT}" \
-  --dest local)
+args=(cargo run -p diskgraph-ingest --bin ingest --release -- --source "${SOURCE}" --output "${OUTPUT}" --dest local)
 if [[ "${PROFILE_ENABLED}" == "true" ]]; then
   args+=(--profile)
 fi
