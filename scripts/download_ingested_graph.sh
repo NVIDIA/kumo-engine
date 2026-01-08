@@ -15,6 +15,7 @@ set -euo pipefail
 # Notes:
 # - Requires AWS CLI credentials with access to kumo-prod-dataplane-bucket.
 # - Errors if the raw ingest data is empty (likely GC'd).
+# - Set DRY_RUN=1 to skip downloading parquet files.
 
 usage() {
   echo "usage: $0 <customer_name> <job_id>" >&2
@@ -35,7 +36,7 @@ fi
 
 if [[ $# -eq 1 ]]; then
   read -r CUSTOMER_NAME JOB_ID < <(
-    python3 - <<'PY'
+    python3 - "$1" <<'PY'
 import re
 import sys
 from urllib.parse import urlparse
@@ -48,13 +49,13 @@ match = re.search(r"(trainingjob-[A-Za-z0-9]+|bp-job-[A-Za-z0-9]+)", parsed.path
 job_id = match.group(1) if match else ""
 print(customer, job_id)
 PY
-    "$1"
   )
 else
   CUSTOMER_NAME="$1"
   JOB_ID="$2"
 fi
 OUT_ROOT="${OUT_ROOT:-/mnt/localssd}"
+DRY_RUN="${DRY_RUN:-0}"
 
 if ! [[ "${CUSTOMER_NAME}" =~ ^[A-Za-z0-9._-]+$ ]]; then
   echo "error: customer_name must be alnum/._- only" >&2
@@ -87,16 +88,40 @@ BUCKET="s3://kumo-prod-dataplane-bucket"
 GRAPHS_PREFIX="${BUCKET}/${CUSTOMER_NAME}/prod/jobs/${JOB_ID}/graphs/"
 OUT_DIR="${OUT_ROOT}/${CUSTOMER_NAME}_${JOB_ID}"
 
-echo "Listing tables at ${GRAPHS_PREFIX}"
-TABLE_PREFIXES=()
+echo "Listing graphs at ${GRAPHS_PREFIX}"
+GRAPH_ENTRIES=()
 while read -r prefix; do
   [[ -z "${prefix}" ]] && continue
-  TABLE_PREFIXES+=("${prefix}")
+  GRAPH_ENTRIES+=("${prefix}")
 done < <(aws s3 ls "${GRAPHS_PREFIX}" | awk '/PRE / {print $2}')
 
-if [[ ${#TABLE_PREFIXES[@]} -eq 0 ]]; then
-  echo "error: no table directories found under ${GRAPHS_PREFIX}" >&2
+if [[ ${#GRAPH_ENTRIES[@]} -eq 0 ]]; then
+  echo "error: no entries found under ${GRAPHS_PREFIX}" >&2
   exit 1
+fi
+
+TABLE_PREFIXES=()
+if aws s3 ls "${GRAPHS_PREFIX}${GRAPH_ENTRIES[0]}attributes.json" >/dev/null 2>&1; then
+  TABLE_PREFIXES=("${GRAPH_ENTRIES[@]}")
+else
+  if [[ ${#GRAPH_ENTRIES[@]} -gt 1 ]]; then
+    echo "error: multiple graph directories under ${GRAPHS_PREFIX}; specify a single job" >&2
+    for entry in "${GRAPH_ENTRIES[@]}"; do
+      echo "  ${entry}" >&2
+    done
+    exit 1
+  fi
+  GRAPH_PREFIX="${GRAPHS_PREFIX}${GRAPH_ENTRIES[0]}"
+  echo "Listing tables at ${GRAPH_PREFIX}"
+  while read -r prefix; do
+    [[ -z "${prefix}" ]] && continue
+    TABLE_PREFIXES+=("${prefix}")
+  done < <(aws s3 ls "${GRAPH_PREFIX}" | awk '/PRE / {print $2}')
+  if [[ ${#TABLE_PREFIXES[@]} -eq 0 ]]; then
+    echo "error: no table directories found under ${GRAPH_PREFIX}" >&2
+    exit 1
+  fi
+  GRAPHS_PREFIX="${GRAPH_PREFIX}"
 fi
 
 mkdir -p "${OUT_DIR}"
@@ -106,19 +131,8 @@ for table_prefix in "${TABLE_PREFIXES[@]}"; do
   echo "Reading ${attr_path}"
   attrs_json="$(aws s3 cp "${attr_path}" -)"
   read -r table_name source_name data_source data_version < <(
-    python3 - <<'PY'
-import json, sys
-doc = json.load(sys.stdin)
-tm = doc.get("table_metadata_config") or {}
-fields = [
-    tm.get("table_name"),
-    tm.get("source_name"),
-    tm.get("data_source"),
-    tm.get("data_version"),
-]
-print(" ".join("" if v is None else str(v) for v in fields))
-PY
-  <<<"${attrs_json}"
+    python3 -c 'import json,sys; doc=json.load(sys.stdin); tm=doc.get("table_metadata_config") or {}; fields=[tm.get("table_name"), tm.get("source_name"), tm.get("data_source"), tm.get("data_version")]; print(" ".join("" if v is None else str(v) for v in fields))' \
+      <<<"${attrs_json}"
   )
 
   if [[ -z "${table_name}" || -z "${source_name}" || -z "${data_source}" || -z "${data_version}" ]]; then
@@ -139,7 +153,11 @@ PY
   table_out="${OUT_DIR}/${table_name}"
   mkdir -p "${table_out}"
   echo "Downloading ${raw_prefix} -> ${table_out}"
-  aws s3 cp "${raw_prefix}" "${table_out}/" --recursive --exclude "*" --include "*.parquet"
+  if [[ "${DRY_RUN}" == "1" ]]; then
+    echo "DRY_RUN=1 set; skipping download for ${table_name}"
+  else
+    aws s3 cp "${raw_prefix}" "${table_out}/" --recursive --exclude "*" --include "*.parquet"
+  fi
 done
 
 echo "Done. Data at ${OUT_DIR}"
