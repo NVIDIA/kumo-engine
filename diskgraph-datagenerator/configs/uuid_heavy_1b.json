@@ -1,0 +1,79 @@
+{
+  "total_rows": 1000000000,
+  "seed": 99,
+  "batch_size": 250000,
+  "row_group_size": 1000000,
+  "tables": [
+    {
+      "name": "users_uuid",
+      "row_percent": 15,
+      "shards": 64,
+      "columns": [
+        { "name": "user_id", "dtype": "string", "primary_key": true, "key_mode": "uuid" },
+        { "name": "country", "dtype": "string", "gen": { "type": "categorical", "values": ["us", "ca", "uk", "de", "fr", "in", "jp"] } },
+        { "name": "signup_ts", "dtype": "timestamp", "timestamp_unit": "millis", "gen": { "type": "timestamp", "start_epoch_ms": 1577836800000, "step_ms": 2000 } }
+      ]
+    },
+    {
+      "name": "devices_uuid",
+      "row_percent": 5,
+      "shards": 32,
+      "columns": [
+        { "name": "device_id", "dtype": "bytes", "primary_key": true, "key_mode": "uuid" },
+        { "name": "device_type", "dtype": "string", "gen": { "type": "categorical", "values": ["phone", "tablet", "desktop", "tv"] } }
+      ]
+    },
+    {
+      "name": "sessions_uuid",
+      "row_percent": 20,
+      "shards": 64,
+      "columns": [
+        { "name": "session_id", "dtype": "string", "primary_key": true, "key_mode": "uuid" },
+        { "name": "user_id", "dtype": "string", "key_mode": "uuid" },
+        { "name": "device_id", "dtype": "bytes", "key_mode": "uuid" },
+        { "name": "start_ts", "dtype": "timestamp", "timestamp_unit": "millis", "gen": { "type": "timestamp", "start_epoch_ms": 1672531200000, "step_ms": 500 } }
+      ]
+    },
+    {
+      "name": "visits_uuid",
+      "row_percent": 20,
+      "shards": 64,
+      "columns": [
+        { "name": "visit_id", "dtype": "bytes", "primary_key": true, "key_mode": "uuid" },
+        { "name": "user_id", "dtype": "string", "key_mode": "uuid" },
+        { "name": "visit_ts", "dtype": "timestamp", "timestamp_unit": "millis", "gen": { "type": "timestamp", "start_epoch_ms": 1672531200000, "step_ms": 800 } }
+      ]
+    },
+    {
+      "name": "events_uuid",
+      "row_percent": 35,
+      "shards": 128,
+      "columns": [
+        { "name": "event_id", "dtype": "bytes", "primary_key": true, "key_mode": "uuid" },
+        { "name": "session_id", "dtype": "string", "key_mode": "uuid" },
+        { "name": "device_id", "dtype": "bytes", "key_mode": "uuid" },
+        { "name": "event_ts", "dtype": "timestamp", "timestamp_unit": "millis", "gen": { "type": "timestamp", "start_epoch_ms": 1672531200000, "step_ms": 100 } },
+        { "name": "weight", "dtype": "float32", "gen": { "type": "uniform_float", "min": 0.0, "max": 5.0 } }
+      ]
+    },
+    {
+      "name": "user_visit_edges",
+      "row_percent": 5,
+      "shards": 64,
+      "columns": [
+        { "name": "user_id", "dtype": "string", "key_mode": "uuid" },
+        { "name": "visit_id", "dtype": "bytes", "key_mode": "uuid" },
+        { "name": "edge_ts", "dtype": "timestamp", "timestamp_unit": "millis", "gen": { "type": "timestamp", "start_epoch_ms": 1672531200000, "step_ms": 250 } }
+      ]
+    }
+  ],
+  "relationships": [
+    { "src_table": "sessions_uuid", "src_column": "user_id", "dst_table": "users_uuid", "dst_column": "user_id", "distribution": { "type": "uniform" } },
+    { "src_table": "sessions_uuid", "src_column": "device_id", "dst_table": "devices_uuid", "dst_column": "device_id", "distribution": { "type": "uniform" } },
+    { "src_table": "visits_uuid", "src_column": "user_id", "dst_table": "users_uuid", "dst_column": "user_id", "distribution": { "type": "uniform" } },
+    { "src_table": "events_uuid", "src_column": "session_id", "dst_table": "sessions_uuid", "dst_column": "session_id", "distribution": { "type": "uniform" } },
+    { "src_table": "events_uuid", "src_column": "device_id", "dst_table": "devices_uuid", "dst_column": "device_id", "distribution": { "type": "uniform" } },
+    { "src_table": "user_visit_edges", "src_column": "user_id", "dst_table": "users_uuid", "dst_column": "user_id", "distribution": { "type": "uniform" } },
+    { "src_table": "user_visit_edges", "src_column": "visit_id", "dst_table": "visits_uuid", "dst_column": "visit_id", "distribution": { "type": "uniform" } }
+  ]
+}

@@ -1,0 +1,127 @@
+{
+  "total_rows": 10000000000,
+  "seed": 1001,
+  "batch_size": 300000,
+  "row_group_size": 1000000,
+  "tables": [
+    {
+      "name": "accounts_big",
+      "row_percent": 5,
+      "shards": 128,
+      "columns": [
+        { "name": "account_id", "dtype": "uint64", "primary_key": true },
+        { "name": "plan", "dtype": "string", "gen": { "type": "categorical", "values": ["free", "standard", "premium"] } },
+        { "name": "created_ts", "dtype": "timestamp", "timestamp_unit": "millis", "gen": { "type": "timestamp", "start_epoch_ms": 1577836800000, "step_ms": 100000 } }
+      ]
+    },
+    {
+      "name": "users_big",
+      "row_percent": 10,
+      "shards": 192,
+      "columns": [
+        { "name": "user_id", "dtype": "int64", "primary_key": true },
+        { "name": "account_id", "dtype": "uint64" },
+        { "name": "country", "dtype": "string", "gen": { "type": "categorical", "values": ["us", "ca", "br", "de", "in", "jp", "au"] } },
+        { "name": "signup_date", "dtype": "date", "gen": { "type": "date", "start_ymd": "2017-01-01", "step_days": 1 } }
+      ]
+    },
+    {
+      "name": "devices_big",
+      "row_percent": 5,
+      "shards": 128,
+      "columns": [
+        { "name": "device_id", "dtype": "bytes", "primary_key": true, "key_mode": "fixed", "fixed_len": 16, "key_encoding": "u64_le" },
+        { "name": "device_type", "dtype": "string", "gen": { "type": "categorical", "values": ["phone", "tablet", "desktop", "tv"] } }
+      ]
+    },
+    {
+      "name": "sessions_big",
+      "row_percent": 15,
+      "shards": 256,
+      "columns": [
+        { "name": "session_id", "dtype": "string", "primary_key": true, "key_mode": "fixed", "fixed_len": 20, "key_encoding": "hex" },
+        { "name": "user_id", "dtype": "int64" },
+        { "name": "device_id", "dtype": "bytes", "key_mode": "fixed", "fixed_len": 16 },
+        { "name": "start_ts", "dtype": "timestamp", "timestamp_unit": "millis", "gen": { "type": "timestamp", "start_epoch_ms": 1609459200000, "step_ms": 100 } }
+      ]
+    },
+    {
+      "name": "events_big",
+      "row_percent": 35,
+      "shards": 512,
+      "columns": [
+        { "name": "event_id", "dtype": "uint64", "primary_key": true },
+        { "name": "session_id", "dtype": "string", "key_mode": "fixed", "fixed_len": 20 },
+        { "name": "ad_id", "dtype": "string" },
+        { "name": "event_ts", "dtype": "timestamp", "timestamp_unit": "millis", "gen": { "type": "timestamp", "start_epoch_ms": 1609459200000, "step_ms": 10 } },
+        { "name": "score", "dtype": "float32", "gen": { "type": "uniform_float", "min": 0.0, "max": 1.0 } }
+      ]
+    },
+    {
+      "name": "clicks_big",
+      "row_percent": 10,
+      "shards": 256,
+      "columns": [
+        { "name": "click_id", "dtype": "uint64", "primary_key": true },
+        { "name": "session_id", "dtype": "string", "key_mode": "fixed", "fixed_len": 20 },
+        { "name": "ad_id", "dtype": "string" },
+        { "name": "click_ts", "dtype": "timestamp", "timestamp_unit": "millis", "gen": { "type": "timestamp", "start_epoch_ms": 1609459200000, "step_ms": 25 } }
+      ]
+    },
+    {
+      "name": "impressions_big",
+      "row_percent": 10,
+      "shards": 256,
+      "columns": [
+        { "name": "impression_id", "dtype": "uint64", "primary_key": true },
+        { "name": "session_id", "dtype": "string", "key_mode": "fixed", "fixed_len": 20 },
+        { "name": "ad_id", "dtype": "string" },
+        { "name": "impression_ts", "dtype": "timestamp", "timestamp_unit": "millis", "gen": { "type": "timestamp", "start_epoch_ms": 1609459200000, "step_ms": 15 } }
+      ]
+    },
+    {
+      "name": "ads_big",
+      "row_percent": 5,
+      "shards": 128,
+      "columns": [
+        { "name": "ad_id", "dtype": "string", "primary_key": true, "key_encoding": "hex" },
+        { "name": "campaign_id", "dtype": "string" },
+        { "name": "budget", "dtype": "float64", "gen": { "type": "uniform_float", "min": 100.0, "max": 100000.0 } }
+      ]
+    },
+    {
+      "name": "campaigns_big",
+      "row_percent": 3,
+      "shards": 96,
+      "columns": [
+        { "name": "campaign_id", "dtype": "string", "primary_key": true, "key_encoding": "hex" },
+        { "name": "region", "dtype": "string", "gen": { "type": "categorical", "values": ["na", "eu", "apac", "latam"] } }
+      ]
+    },
+    {
+      "name": "conversions_big",
+      "row_percent": 2,
+      "shards": 128,
+      "columns": [
+        { "name": "conversion_id", "dtype": "uint64", "primary_key": true },
+        { "name": "session_id", "dtype": "string", "key_mode": "fixed", "fixed_len": 20 },
+        { "name": "campaign_id", "dtype": "string" },
+        { "name": "value", "dtype": "float64", "gen": { "type": "uniform_float", "min": 1.0, "max": 500.0 } }
+      ]
+    }
+  ],
+  "relationships": [
+    { "src_table": "users_big", "src_column": "account_id", "dst_table": "accounts_big", "dst_column": "account_id", "distribution": { "type": "uniform" } },
+    { "src_table": "sessions_big", "src_column": "user_id", "dst_table": "users_big", "dst_column": "user_id", "distribution": { "type": "uniform" } },
+    { "src_table": "sessions_big", "src_column": "device_id", "dst_table": "devices_big", "dst_column": "device_id", "distribution": { "type": "uniform" } },
+    { "src_table": "events_big", "src_column": "session_id", "dst_table": "sessions_big", "dst_column": "session_id", "distribution": { "type": "uniform" } },
+    { "src_table": "events_big", "src_column": "ad_id", "dst_table": "ads_big", "dst_column": "ad_id", "distribution": { "type": "uniform" } },
+    { "src_table": "clicks_big", "src_column": "session_id", "dst_table": "sessions_big", "dst_column": "session_id", "distribution": { "type": "uniform" } },
+    { "src_table": "clicks_big", "src_column": "ad_id", "dst_table": "ads_big", "dst_column": "ad_id", "distribution": { "type": "uniform" } },
+    { "src_table": "impressions_big", "src_column": "session_id", "dst_table": "sessions_big", "dst_column": "session_id", "distribution": { "type": "uniform" } },
+    { "src_table": "impressions_big", "src_column": "ad_id", "dst_table": "ads_big", "dst_column": "ad_id", "distribution": { "type": "uniform" } },
+    { "src_table": "ads_big", "src_column": "campaign_id", "dst_table": "campaigns_big", "dst_column": "campaign_id", "distribution": { "type": "uniform" } },
+    { "src_table": "conversions_big", "src_column": "session_id", "dst_table": "sessions_big", "dst_column": "session_id", "distribution": { "type": "uniform" } },
+    { "src_table": "conversions_big", "src_column": "campaign_id", "dst_table": "campaigns_big", "dst_column": "campaign_id", "distribution": { "type": "uniform" } }
+  ]
+}

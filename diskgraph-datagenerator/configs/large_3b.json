@@ -1,0 +1,103 @@
+{
+  "total_rows": 3000000000,
+  "seed": 314,
+  "batch_size": 250000,
+  "row_group_size": 1000000,
+  "tables": [
+    {
+      "name": "customers",
+      "row_percent": 10,
+      "shards": 96,
+      "columns": [
+        { "name": "customer_id", "dtype": "int64", "primary_key": true },
+        { "name": "segment", "dtype": "string", "gen": { "type": "categorical", "values": ["consumer", "smallbiz", "enterprise"] } },
+        { "name": "signup_date", "dtype": "date", "gen": { "type": "date", "start_ymd": "2018-01-01", "step_days": 1 } }
+      ]
+    },
+    {
+      "name": "merchants",
+      "row_percent": 5,
+      "shards": 48,
+      "columns": [
+        { "name": "merchant_id", "dtype": "string", "primary_key": true, "key_encoding": "hex" },
+        { "name": "country", "dtype": "string", "gen": { "type": "categorical", "values": ["us", "ca", "uk", "de", "fr", "jp"] } }
+      ]
+    },
+    {
+      "name": "products",
+      "row_percent": 10,
+      "shards": 96,
+      "columns": [
+        { "name": "product_id", "dtype": "string", "primary_key": true, "key_encoding": "hex" },
+        { "name": "category", "dtype": "string", "gen": { "type": "categorical", "values": ["apparel", "home", "grocery", "electronics", "tools"] } },
+        { "name": "price", "dtype": "float64", "gen": { "type": "uniform_float", "min": 1.0, "max": 1500.0 } }
+      ]
+    },
+    {
+      "name": "warehouses",
+      "row_percent": 2,
+      "shards": 24,
+      "columns": [
+        { "name": "warehouse_id", "dtype": "uint64", "primary_key": true },
+        { "name": "region", "dtype": "string", "gen": { "type": "categorical", "values": ["na", "eu", "apac"] } }
+      ]
+    },
+    {
+      "name": "orders",
+      "row_percent": 30,
+      "shards": 128,
+      "columns": [
+        { "name": "order_id", "dtype": "int64", "primary_key": true },
+        { "name": "customer_id", "dtype": "int64" },
+        { "name": "merchant_id", "dtype": "string" },
+        { "name": "order_ts", "dtype": "timestamp", "timestamp_unit": "millis", "gen": { "type": "timestamp", "start_epoch_ms": 1609459200000, "step_ms": 100 } },
+        { "name": "order_total", "dtype": "float64", "gen": { "type": "uniform_float", "min": 5.0, "max": 5000.0 } }
+      ]
+    },
+    {
+      "name": "order_items",
+      "row_percent": 30,
+      "shards": 128,
+      "columns": [
+        { "name": "order_id", "dtype": "int64" },
+        { "name": "product_id", "dtype": "string" },
+        { "name": "quantity", "dtype": "int16", "gen": { "type": "uniform_int", "min": 1, "max": 12 } },
+        { "name": "item_discount", "dtype": "float32", "gen": { "type": "uniform_float", "min": 0.0, "max": 0.3 } }
+      ]
+    },
+    {
+      "name": "shipments",
+      "row_percent": 8,
+      "shards": 96,
+      "columns": [
+        { "name": "shipment_id", "dtype": "bytes", "primary_key": true, "key_mode": "fixed", "fixed_len": 16, "key_encoding": "u64_le" },
+        { "name": "order_id", "dtype": "int64" },
+        { "name": "warehouse_id", "dtype": "uint64" },
+        { "name": "ship_ts", "dtype": "timestamp", "timestamp_unit": "millis", "gen": { "type": "timestamp", "start_epoch_ms": 1609459200000, "step_ms": 300 } },
+        { "name": "route_embedding", "dtype": "float64_array", "gen": { "type": "array_float64", "len": 6, "min": -2.0, "max": 2.0 } }
+      ]
+    },
+    {
+      "name": "reviews",
+      "row_percent": 5,
+      "shards": 64,
+      "columns": [
+        { "name": "review_id", "dtype": "uint64", "primary_key": true },
+        { "name": "order_id", "dtype": "int64" },
+        { "name": "customer_id", "dtype": "int64" },
+        { "name": "rating", "dtype": "int8", "gen": { "type": "uniform_int", "min": 1, "max": 5 } },
+        { "name": "verified", "dtype": "bool", "gen": { "type": "bool", "true_ratio": 0.8 } }
+      ]
+    }
+  ],
+  "relationships": [
+    { "src_table": "orders", "src_column": "customer_id", "dst_table": "customers", "dst_column": "customer_id", "distribution": { "type": "uniform" } },
+    { "src_table": "orders", "src_column": "merchant_id", "dst_table": "merchants", "dst_column": "merchant_id", "distribution": { "type": "uniform" } },
+    { "src_table": "order_items", "src_column": "order_id", "dst_table": "orders", "dst_column": "order_id", "distribution": { "type": "uniform" } },
+    { "src_table": "order_items", "src_column": "product_id", "dst_table": "products", "dst_column": "product_id", "distribution": { "type": "uniform" } },
+    { "src_table": "shipments", "src_column": "order_id", "dst_table": "orders", "dst_column": "order_id", "distribution": { "type": "uniform" } },
+    { "src_table": "shipments", "src_column": "warehouse_id", "dst_table": "warehouses", "dst_column": "warehouse_id", "distribution": { "type": "uniform" } },
+    { "src_table": "reviews", "src_column": "order_id", "dst_table": "orders", "dst_column": "order_id", "distribution": { "type": "uniform" } },
+    { "src_table": "reviews", "src_column": "customer_id", "dst_table": "customers", "dst_column": "customer_id", "distribution": { "type": "uniform" } }
+  ]
+}
