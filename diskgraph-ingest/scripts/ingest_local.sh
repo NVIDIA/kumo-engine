@@ -45,22 +45,14 @@ if [[ -z "${OUTPUT}" ]]; then
   OUTPUT="${OUT_ROOT:-${DEFAULT_OUT_ROOT}}/${INPUT_NAME}"
 fi
 
-PARALLEL_FLAG=()
-if [[ "${PARALLEL_ENABLED}" == "true" ]]; then
-  PARALLEL_FLAG=(--parallel)
-fi
-
+args=(cargo run -p diskgraph-ingest --bin ingest --release -- \
+  --source "${SOURCE}" \
+  --output "${OUTPUT}" \
+  --dest local)
 if [[ "${PROFILE_ENABLED}" == "true" ]]; then
-  cargo run -p diskgraph-ingest --bin ingest --release -- \
-    --profile \
-    --source "${SOURCE}" \
-    --output "${OUTPUT}" \
-    --dest local \
-    "${PARALLEL_FLAG[@]}"
-else
-  cargo run -p diskgraph-ingest --bin ingest --release -- \
-    --source "${SOURCE}" \
-    --output "${OUTPUT}" \
-    --dest local \
-    "${PARALLEL_FLAG[@]}"
+  args+=(--profile)
 fi
+if [[ "${PARALLEL_ENABLED}" == "true" ]]; then
+  args+=(--parallel)
+fi
+"${args[@]}"

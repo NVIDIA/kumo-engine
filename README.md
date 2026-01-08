@@ -56,3 +56,13 @@ benchmark 8 30s
 ```
 
 `benchmark` is optional but handy to sanity-check performance.
+
+## Download ingested graph data from a job
+
+Use this when you have a training or bp job ID and want the raw parquet tables for ingest.
+
+```bash
+./scripts/download_ingested_graph.sh <customer_name> <job_id>
+./diskgraph-infer/scripts/infer_source.sh /mnt/localssd/<customer_name>_<job_id>
+./diskgraph-ingest/scripts/ingest_local.sh /mnt/localssd/<customer_name>_<job_id>
+```
