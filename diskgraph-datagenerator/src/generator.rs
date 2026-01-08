@@ -72,7 +72,7 @@ pub fn run(config: DatasetConfig, output_root: &Path, workers: usize) -> Result<
         bail!("generation failed");
     }
 
-    if let Ok(mut progress) = progress.lock() {
+    if let Ok(progress) = progress.lock() {
         progress.finish("Done");
     }
 
@@ -147,8 +147,6 @@ struct TablePlan {
     shard_ranges: Vec<RowRange>,
     schema: Arc<Schema>,
     columns: Vec<ColumnPlan>,
-    pk_column_idx: usize,
-    pk_generator: KeyGenerator,
     table_seed: u64,
 }
 
@@ -187,7 +185,6 @@ struct KeyGenerator {
 
 #[derive(Clone, Debug)]
 struct ForeignKeyGenerator {
-    dst_table_idx: usize,
     dst_rows: u64,
     dst_key: KeyGenerator,
     distribution: FkDistribution,
@@ -260,8 +257,7 @@ fn build_plan(config: &DatasetConfig) -> Result<Plan> {
         .collect();
 
     let mut pk_columns = Vec::new();
-    for (idx, table) in config.tables.iter().enumerate() {
-        let row_count = row_counts[idx];
+    for (_idx, table) in config.tables.iter().enumerate() {
         let table_seed = mix64(config.seed ^ hash_name(&table.name));
         let (pk_column_idx, pk_generator) =
             resolve_primary_key(table, table_seed).with_context(|| {
@@ -293,8 +289,6 @@ fn build_plan(config: &DatasetConfig) -> Result<Plan> {
             shard_ranges,
             schema,
             columns,
-            pk_column_idx: *pk_column_idx,
-            pk_generator: pk_generator.clone(),
             table_seed,
         });
     }
@@ -353,7 +347,7 @@ fn allocate_rows(config: &DatasetConfig) -> Result<Vec<u64>> {
         );
     }
 
-    let mut remaining = config.total_rows - fixed_total;
+    let remaining = config.total_rows - fixed_total;
     if has_fraction {
         let mut raw = Vec::new();
         let mut sum_base = 0u64;
@@ -530,7 +524,6 @@ fn build_relationship_map(
         validate_fk_compat(src_col, dst_col)?;
         let distribution = rel.distribution.clone().unwrap_or(FkDistribution::Uniform);
         let fk = ForeignKeyGenerator {
-            dst_table_idx: dst_idx,
             dst_rows: row_counts[dst_idx],
             dst_key: dst_pk.clone(),
             distribution,
@@ -973,11 +966,11 @@ impl ValueAppender for ListBuilder<Float32Builder> {
                 for value in values {
                     inner.append_value(value);
                 }
-                self.append(true)?;
+                self.append(true);
             }
             Some(_) => bail!("type mismatch for float32 array"),
             None => {
-                self.append(false)?;
+                self.append(false);
             }
         }
         Ok(())
@@ -992,11 +985,11 @@ impl ValueAppender for ListBuilder<Float64Builder> {
                 for value in values {
                     inner.append_value(value);
                 }
-                self.append(true)?;
+                self.append(true);
             }
             Some(_) => bail!("type mismatch for float64 array"),
             None => {
-                self.append(false)?;
+                self.append(false);
             }
         }
         Ok(())
