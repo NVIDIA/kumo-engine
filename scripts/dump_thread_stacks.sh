@@ -3,9 +3,9 @@ set -euo pipefail
 
 # Dump Rust thread stacks from a running process (default: diskgraph ingest).
 #
-# Usage:
-#   ./scripts/dump_thread_stacks.sh            # auto-detect ingest PID
-#   ./scripts/dump_thread_stacks.sh <pid>      # explicit PID
+# Usage (recommended with sudo):
+#   sudo ./scripts/dump_thread_stacks.sh       # auto-detect ingest PID
+#   sudo ./scripts/dump_thread_stacks.sh <pid> # explicit PID
 #
 # Notes:
 # - Requires gdb.
