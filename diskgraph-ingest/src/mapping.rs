@@ -1,11 +1,10 @@
 use anyhow::{anyhow, Result};
 use memmap2::Mmap;
-use ptr_hash::hash::{FxHash, Hasher as PtrHasher, Xx128};
-use ptr_hash::KeyT;
+use ptr_hash::hash::{FxHash, Xx128};
 use ptr_hash::DefaultPtrHash;
 use std::fs::File;
 use std::hash::Hasher;
-use epserde::prelude::Deserialize as EpDeserialize;
+use epserde::prelude::{Deserialize as EpDeserialize, Flags as EpFlags};
 
 const PK_DATA_MAGIC: &[u8; 8] = b"DGPKDAT\0";
 const PK_DATA_VERSION: u32 = 1;
@@ -116,34 +115,59 @@ impl PkXxHash {
     }
 }
 
+type MphfInt = epserde::prelude::MemCase<
+    epserde::prelude::DeserType<'static, DefaultPtrHash<FxHash, u64>>,
+>;
+type MphfBytes = epserde::prelude::MemCase<
+    epserde::prelude::DeserType<'static, DefaultPtrHash<Xx128, Vec<u8>>>,
+>;
+type MphfUuid = epserde::prelude::MemCase<
+    epserde::prelude::DeserType<'static, DefaultPtrHash<Xx128, [u8; 16]>>,
+>;
+
 enum PkHashMphf {
-    Int(DefaultPtrHash<FxHash, u64>),
-    Bytes(DefaultPtrHash<Xx128, Vec<u8>>),
-    Uuid(DefaultPtrHash<Xx128, [u8; 16]>),
+    Int(MphfInt),
+    Bytes(MphfBytes),
+    Uuid(MphfUuid),
 }
 
 impl PkHashMphf {
     fn index(&self, key: &Key) -> Option<usize> {
         match (self, key) {
-            (PkHashMphf::Int(mphf), Key::Int(value)) => safe_mphf_index(mphf, value),
-            (PkHashMphf::Bytes(mphf), Key::Bytes(bytes)) => safe_mphf_index(mphf, bytes),
-            (PkHashMphf::Bytes(mphf), Key::FixedBytes(bytes)) => safe_mphf_index(mphf, bytes),
-            (PkHashMphf::Uuid(mphf), Key::Uuid(value)) => safe_mphf_index(mphf, value),
+            (PkHashMphf::Int(mphf), Key::Int(value)) => {
+                let slot = mphf.index_no_remap(value);
+                if slot >= mphf.max_index() {
+                    None
+                } else {
+                    Some(slot)
+                }
+            }
+            (PkHashMphf::Bytes(mphf), Key::Bytes(bytes)) => {
+                let slot = mphf.index_no_remap(bytes);
+                if slot >= mphf.max_index() {
+                    None
+                } else {
+                    Some(slot)
+                }
+            }
+            (PkHashMphf::Bytes(mphf), Key::FixedBytes(bytes)) => {
+                let slot = mphf.index_no_remap(bytes);
+                if slot >= mphf.max_index() {
+                    None
+                } else {
+                    Some(slot)
+                }
+            }
+            (PkHashMphf::Uuid(mphf), Key::Uuid(value)) => {
+                let slot = mphf.index_no_remap(value);
+                if slot >= mphf.max_index() {
+                    None
+                } else {
+                    Some(slot)
+                }
+            }
             _ => None,
         }
-    }
-}
-
-fn safe_mphf_index<Key: KeyT + Sized, Hx: PtrHasher<Key>>(
-    mphf: &DefaultPtrHash<Hx, Key>,
-    key: &Key,
-) -> Option<usize>
-{
-    let slot = mphf.index_no_remap(key);
-    if slot >= mphf.max_index() {
-        None
-    } else {
-        Some(slot)
     }
 }
 
@@ -171,18 +195,27 @@ impl PkHashShard {
         }
         let mphf = match key_type {
             KeyType::Int64 => {
-                let mphf = DefaultPtrHash::<FxHash, u64>::load_full(hash_path)
-                    .map_err(|e| anyhow!("load pk hash {}: {e}", hash_path.display()))?;
+                let mphf: MphfInt = DefaultPtrHash::<FxHash, u64>::load_mmap(
+                    hash_path,
+                    EpFlags::RANDOM_ACCESS | EpFlags::TRANSPARENT_HUGE_PAGES,
+                )
+                .map_err(|e| anyhow!("load pk hash {}: {e}", hash_path.display()))?;
                 PkHashMphf::Int(mphf)
             }
             KeyType::FixedBytes { .. } | KeyType::VarBytes => {
-                let mphf = DefaultPtrHash::<Xx128, Vec<u8>>::load_full(hash_path)
-                    .map_err(|e| anyhow!("load pk hash {}: {e}", hash_path.display()))?;
+                let mphf: MphfBytes = DefaultPtrHash::<Xx128, Vec<u8>>::load_mmap(
+                    hash_path,
+                    EpFlags::RANDOM_ACCESS | EpFlags::TRANSPARENT_HUGE_PAGES,
+                )
+                .map_err(|e| anyhow!("load pk hash {}: {e}", hash_path.display()))?;
                 PkHashMphf::Bytes(mphf)
             }
             KeyType::Uuid => {
-                let mphf = DefaultPtrHash::<Xx128, [u8; 16]>::load_full(hash_path)
-                    .map_err(|e| anyhow!("load pk hash {}: {e}", hash_path.display()))?;
+                let mphf: MphfUuid = DefaultPtrHash::<Xx128, [u8; 16]>::load_mmap(
+                    hash_path,
+                    EpFlags::RANDOM_ACCESS | EpFlags::TRANSPARENT_HUGE_PAGES,
+                )
+                .map_err(|e| anyhow!("load pk hash {}: {e}", hash_path.display()))?;
                 PkHashMphf::Uuid(mphf)
             }
         };
