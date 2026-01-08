@@ -9,12 +9,16 @@ if ! ulimit -n "${ULIMIT_NOFILE}" 2>/dev/null; then
 fi
 
 PROFILE_ENABLED="false"
+DEBUGINFO_ENABLED="false"
 PARALLEL_ENABLED="${PARALLEL_ENABLED:-true}"
 POSITIONAL=()
 for arg in "$@"; do
   case "${arg}" in
     -p)
       PROFILE_ENABLED="true"
+      ;;
+    -d)
+      DEBUGINFO_ENABLED="true"
       ;;
     *)
       POSITIONAL+=("${arg}")
@@ -27,7 +31,7 @@ SOURCE="${SOURCE:-${1:-}}"
 OUTPUT="${OUTPUT:-${2:-}}"
 
 if [[ -z "${SOURCE}" ]]; then
-  echo "Usage: SOURCE=/path/to/source_dir_or_metadata [OUTPUT=path] $0 [-p]" >&2
+  echo "Usage: SOURCE=/path/to/source_dir_or_metadata [OUTPUT=path] $0 [-p] [-d]" >&2
   exit 1
 fi
 
@@ -45,6 +49,12 @@ if [[ -z "${OUTPUT}" ]]; then
   OUTPUT="${OUT_ROOT:-${DEFAULT_OUT_ROOT}}/${INPUT_NAME}"
 fi
 
+env_args=()
+if [[ "${DEBUGINFO_ENABLED}" == "true" ]]; then
+  env_args+=(CARGO_PROFILE_RELEASE_DEBUG=1)
+  env_args+=(RUSTFLAGS="${RUSTFLAGS:-} -C debuginfo=1 -C force-frame-pointers=yes")
+fi
+
 args=(cargo run -p diskgraph-ingest --bin ingest --release -- \
   --source "${SOURCE}" \
   --output "${OUTPUT}" \
@@ -55,4 +65,4 @@ fi
 if [[ "${PARALLEL_ENABLED}" == "true" ]]; then
   args+=(--parallel)
 fi
-"${args[@]}"
+env "${env_args[@]}" "${args[@]}"
