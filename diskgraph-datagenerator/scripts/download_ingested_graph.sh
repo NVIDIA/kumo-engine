@@ -4,8 +4,8 @@ set -euo pipefail
 # Wrapper for the Rust downloader.
 #
 # Usage:
-#   ./scripts/download_ingested_graph.sh <customer_name> <job_id>
-#   ./scripts/download_ingested_graph.sh <job_url>
+#   ./diskgraph-datagenerator/scripts/download_ingested_graph.sh <customer_name> <job_id>
+#   ./diskgraph-datagenerator/scripts/download_ingested_graph.sh <job_url>
 #
 # Optional flags (passed through):
 #   --out-root /mnt/localssd/datasets
