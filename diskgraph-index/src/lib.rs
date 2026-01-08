@@ -13,6 +13,7 @@
 pub mod builder;
 pub mod graph;
 pub mod layout;
+pub mod pkmap;
 pub mod reader;
 pub mod streaming;
 pub mod truncate;

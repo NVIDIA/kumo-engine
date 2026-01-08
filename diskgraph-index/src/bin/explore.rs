@@ -369,7 +369,7 @@ fn is_indexed_graph(dir: &Path) -> bool {
 fn repl(reader: Arc<GraphIndexReader>, default_table: String, index_root: PathBuf) -> Result<()> {
     let mut rl = DefaultEditor::new().context("init editor")?;
     let mut current_table = default_table;
-    println!("Commands: tables | use <table> | info | node <id> | formats | ingest | schema | benchmark <threads> [duration] | benchmarkall <threads> [duration] | quit");
+    println!("Commands: tables | use <table> | info | node <id> | pkey <value> | formats | ingest | schema | benchmark <threads> [duration] | benchmarkall <threads> [duration] | quit");
     loop {
         match rl.readline("explore> ") {
             Ok(line) => {
@@ -415,6 +415,15 @@ fn repl(reader: Arc<GraphIndexReader>, default_table: String, index_root: PathBu
                     match rest.trim().parse::<u64>() {
                         Ok(id) => show_node(&reader, &current_table, id)?,
                         Err(_) => println!("Invalid node id: {rest}"),
+                    }
+                    continue;
+                }
+                if let Some(rest) = trimmed.strip_prefix("pkey ") {
+                    let value = rest.trim();
+                    if value.is_empty() {
+                        println!("Missing primary key value.");
+                    } else {
+                        show_node_by_pk(&reader, &current_table, value)?;
                     }
                     continue;
                 }
@@ -492,7 +501,7 @@ fn repl(reader: Arc<GraphIndexReader>, default_table: String, index_root: PathBu
                     continue;
                 }
                 println!(
-                    "Unknown command. Use: tables | use <table> | info | node <id> | formats | ingest | schema | benchmark <threads> [duration] | benchmarkall <threads> [duration] | quit"
+                    "Unknown command. Use: tables | use <table> | info | node <id> | pkey <value> | formats | ingest | schema | benchmark <threads> [duration] | benchmarkall <threads> [duration] | quit"
                 );
             }
             Err(ReadlineError::Interrupted) | Err(ReadlineError::Eof) => break,
@@ -1104,6 +1113,39 @@ fn show_node(reader: &GraphIndexReader, table_name: &str, node: u64) -> Result<(
     let elapsed = start.elapsed();
     println!("  lookup: {:.3} ms", elapsed.as_secs_f64() * 1000.0);
     Ok(())
+}
+
+fn show_node_by_pk(reader: &GraphIndexReader, table_name: &str, key: &str) -> Result<()> {
+    let table = match reader.table(table_name) {
+        Some(table) => table,
+        None => {
+            println!("Unknown table: {table_name}");
+            return Ok(());
+        }
+    };
+    if table.primary_key_map().is_none() {
+        println!("Table {table_name} has no primary key map");
+        return Ok(());
+    }
+    let key = match table.parse_pk_key(key) {
+        Ok(key) => key,
+        Err(err) => {
+            println!("Invalid primary key: {err}");
+            return Ok(());
+        }
+    };
+    let node_id = match table.node_id_from_pk(&key) {
+        Ok(Some(node_id)) => node_id,
+        Ok(None) => {
+            println!("Primary key not found");
+            return Ok(());
+        }
+        Err(err) => {
+            println!("Primary key lookup error: {err}");
+            return Ok(());
+        }
+    };
+    show_node(reader, table_name, node_id)
 }
 
 fn run_benchmark(

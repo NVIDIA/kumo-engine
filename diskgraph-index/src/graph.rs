@@ -1,11 +1,12 @@
-use crate::builder::{ShardBuildParams, ShardBuilder, BuildStats};
+use crate::builder::{compute_relation_layouts, shard_node_count, BuildStats, ShardBuildParams, ShardBuilder};
 use crate::layout::RelationLayout;
+use crate::pkmap::{self, Key, PkHashTable};
 use crate::reader::ShardReader;
 use crate::streaming::EdgeShardInput;
-use crate::builder::{compute_relation_layouts, shard_node_count};
 use anyhow::{anyhow, Context, Result};
 use diskgraph_core::metadata::{
     DatasetMetadata, EdgeRelationMetadata, NodeDataCompression, NodeShardMetadata, NodeTypeMetadata,
+    PrimaryKeyMap,
 };
 use std::collections::HashMap;
 use std::fs;
@@ -296,14 +297,30 @@ impl GraphIndexReader {
                 let reader = ShardReader::open(&dir, Arc::clone(&layouts), node_type.has_node_data)?;
                 shard_readers.push(reader);
             }
-                let table = TableReader::new(
-                    node_type,
-                    relations,
-                    Arc::clone(&layouts),
-                    shard_readers,
-                    node_data_compression,
-                    node_data_decoder,
-                )?;
+            let pk_map = match &node_type.primary_key_map {
+                Some(pk) if pk.mapping_kind == "ptrhash" => {
+                    Some(load_pk_hash_table(root, node_type, pk)?)
+                }
+                Some(pk) => {
+                    tracing::warn!(
+                        "unsupported primary key map kind {} for {}",
+                        pk.mapping_kind,
+                        node_type.name
+                    );
+                    None
+                }
+                None => None,
+            };
+            let table = TableReader::new(
+                node_type,
+                relations,
+                Arc::clone(&layouts),
+                shard_readers,
+                node_data_compression,
+                node_data_decoder,
+                node_type.primary_key_map.clone(),
+                pk_map,
+            )?;
             tables.insert(node_type.name.clone(), Arc::new(table));
         }
         Ok(Self { metadata, tables })
@@ -335,6 +352,8 @@ pub struct TableReader {
     total_nodes: u64,
     node_data_compression: Option<NodeDataCompression>,
     node_data_decoder: Option<diskgraph_rowpack::RowPackDecoder>,
+    primary_key_map: Option<PrimaryKeyMap>,
+    pk_map: Option<PkHashTable>,
 }
 
 impl TableReader {
@@ -345,6 +364,8 @@ impl TableReader {
         shards: Vec<ShardReader>,
         node_data_compression: Option<NodeDataCompression>,
         node_data_decoder: Option<diskgraph_rowpack::RowPackDecoder>,
+        primary_key_map: Option<PrimaryKeyMap>,
+        pk_map: Option<PkHashTable>,
     ) -> Result<Self> {
         let mut shard_offsets = Vec::with_capacity(node_type.shards.len());
         let mut offset = 0u64;
@@ -364,11 +385,17 @@ impl TableReader {
             total_nodes: offset,
             node_data_compression,
             node_data_decoder,
+            primary_key_map,
+            pk_map,
         })
     }
 
     pub fn node_type(&self) -> &str {
         &self.node_type
+    }
+
+    pub fn primary_key_map(&self) -> Option<&PrimaryKeyMap> {
+        self.primary_key_map.as_ref()
     }
 
     pub fn relations(&self) -> &[EdgeRelationMetadata] {
@@ -444,6 +471,38 @@ impl TableReader {
         Ok(Some(out))
     }
 
+    pub fn parse_pk_key(&self, input: &str) -> Result<Key> {
+        let pk = self
+            .primary_key_map
+            .as_ref()
+            .ok_or_else(|| anyhow!("table {} has no primary key map", self.node_type))?;
+        pkmap::parse_key_from_str(pk, input)
+    }
+
+    pub fn node_id_from_pk(&self, key: &Key) -> Result<Option<u64>> {
+        let pk_map = match &self.pk_map {
+            Some(map) => map,
+            None => return Ok(None),
+        };
+        if key.key_type() != pk_map.key_type() {
+            return Ok(None);
+        }
+        let shard_idx = pkmap::shard_for_key(key, self.shards.len());
+        let shard = pk_map
+            .shard(shard_idx)
+            .ok_or_else(|| anyhow!("missing pk shard {}", shard_idx))?;
+        let local = match shard.lookup(key) {
+            Some(value) => value,
+            None => return Ok(None),
+        };
+        let min_id = self
+            .shard_ranges
+            .get(shard_idx)
+            .map(|range| range.min_id)
+            .unwrap_or(0);
+        Ok(Some(min_id.saturating_add(local as u64)))
+    }
+
     pub fn node_id_from_offset(&self, offset: u64) -> Option<u64> {
         if offset >= self.total_nodes {
             return None;
@@ -471,4 +530,26 @@ impl TableReader {
         }
         None
     }
+}
+
+fn load_pk_hash_table(
+    root: &Path,
+    node_type: &NodeTypeMetadata,
+    pk: &PrimaryKeyMap,
+) -> Result<PkHashTable> {
+    let key_type = pkmap::key_type_from_metadata(pk)?;
+    let hash_template = pk
+        .hash_path
+        .as_ref()
+        .ok_or_else(|| anyhow!("missing pk hash path for {}", node_type.name))?;
+    let mut shards = Vec::with_capacity(node_type.shards.len());
+    for shard_idx in 0..node_type.shards.len() {
+        let data_rel = pkmap::resolve_shard_path(&pk.mapping_path, shard_idx);
+        let hash_rel = pkmap::resolve_shard_path(hash_template, shard_idx);
+        let data_path = root.join(data_rel);
+        let hash_path = root.join(hash_rel);
+        let shard = pkmap::PkHashShard::load(&hash_path, &data_path, key_type)?;
+        shards.push(shard);
+    }
+    Ok(PkHashTable::new(key_type, shards))
 }
