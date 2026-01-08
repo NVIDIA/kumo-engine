@@ -3,6 +3,11 @@ set -euo pipefail
 
 # Run diskgraph-ingest on a local source directory or source_metadata.json.
 
+ULIMIT_NOFILE="${ULIMIT_NOFILE:-100000}"
+if ! ulimit -n "${ULIMIT_NOFILE}" 2>/dev/null; then
+  echo "warning: failed to raise ulimit -n to ${ULIMIT_NOFILE}; current limit may be too low" >&2
+fi
+
 PROFILE_ENABLED="false"
 PARALLEL_ENABLED="${PARALLEL_ENABLED:-true}"
 POSITIONAL=()
