@@ -13,18 +13,19 @@ struct Args {
     /// Output path for source_metadata.json (defaults to <input>/source_metadata.json for local dirs).
     #[arg(long)]
     output: Option<PathBuf>,
-    /// Disable schema validation within directories.
+    /// Validate schema consistency across all files in each table.
     #[arg(long)]
-    no_validate: bool,
+    validate_all: bool,
 }
 
 fn main() -> Result<()> {
     let args = Args::parse();
     let root = parse_root_source(&args.input)?;
     let options = InferOptions {
-        validate_dir_schemas: !args.no_validate,
+        validate_dir_schemas: args.validate_all,
         ..InferOptions::default()
     };
+    eprintln!("infer_source: inferring metadata");
     let result = infer_source_metadata(&root, options)?;
     let output_path = match args.output {
         Some(path) => path,
@@ -33,6 +34,7 @@ fn main() -> Result<()> {
     if let Some(parent) = output_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
+    eprintln!("infer_source: writing {}", output_path.display());
     std::fs::write(&output_path, serde_json::to_vec_pretty(&result.metadata)?)?;
     println!("Tables:");
     for table in &result.metadata.tables {

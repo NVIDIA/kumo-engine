@@ -44,7 +44,7 @@ impl Default for InferOptions {
             sample_rows: DEFAULT_SAMPLE_ROWS,
             csv_sample_bytes: DEFAULT_CSV_SAMPLE_BYTES,
             csv_sample_rows: DEFAULT_CSV_SAMPLE_ROWS,
-            validate_dir_schemas: true,
+            validate_dir_schemas: false,
         }
     }
 }
@@ -275,6 +275,7 @@ fn infer_file_table(name: &str, path: &Path, options: &InferOptions) -> Result<O
         .to_lowercase();
     match ext.as_str() {
         "csv" => {
+            eprintln!("infer_source: reading {}", path.display());
             let size = std::fs::metadata(path)?.len();
             let columns = infer_csv_schema(path, options)?;
             Ok(Some(TableInput {
@@ -286,6 +287,7 @@ fn infer_file_table(name: &str, path: &Path, options: &InferOptions) -> Result<O
             }))
         }
         "parquet" => {
+            eprintln!("infer_source: reading {}", path.display());
             let size = std::fs::metadata(path)?.len();
             let columns = infer_parquet_schema_local(path, options)?;
             Ok(Some(TableInput {
@@ -325,12 +327,18 @@ fn infer_dir_table(
             _ => continue,
         };
         let size = path.metadata()?.len();
-        let columns = match format {
-            TableFormat::Csv => infer_csv_schema(&path, options)?,
-            TableFormat::Parquet => infer_parquet_schema_local(&path, options)?,
-        };
         match &mut table {
             Some(existing) => {
+                if !options.validate_dir_schemas {
+                    existing.paths.push(path.to_string_lossy().to_string());
+                    existing.total_bytes = existing.total_bytes.saturating_add(size);
+                    continue;
+                }
+                eprintln!("infer_source: reading {}", path.display());
+                let columns = match format {
+                    TableFormat::Csv => infer_csv_schema(&path, options)?,
+                    TableFormat::Parquet => infer_parquet_schema_local(&path, options)?,
+                };
                 if !same_table_format(&existing.format, &format)
                     || !columns_match(&existing.columns, &columns)
                 {
@@ -349,6 +357,11 @@ fn infer_dir_table(
                 existing.total_bytes = existing.total_bytes.saturating_add(size);
             }
             None => {
+                eprintln!("infer_source: reading {}", path.display());
+                let columns = match format {
+                    TableFormat::Csv => infer_csv_schema(&path, options)?,
+                    TableFormat::Parquet => infer_parquet_schema_local(&path, options)?,
+                };
                 table = Some(TableInput {
                     name: name.to_string(),
                     format,
@@ -397,6 +410,19 @@ fn infer_remote_tables(
         if parts.len() == 1 {
             if let Some((table_name, format)) = split_table_file(parts[0]) {
                 let format_clone = format.clone();
+                if let Some(entry) = tables.get_mut(table_name) {
+                    if !options.validate_dir_schemas {
+                        entry.paths.push(format!(
+                            "{}://{}/{}",
+                            root_scheme(root),
+                            bucket,
+                            rel_path
+                        ));
+                        entry.total_bytes = entry.total_bytes.saturating_add(obj.size);
+                        continue;
+                    }
+                }
+                eprintln!("infer_source: reading {}", path_str);
                 let columns = match format {
                     TableFormat::Parquet => infer_parquet_schema_remote(
                         &rt,
@@ -444,6 +470,19 @@ fn infer_remote_tables(
             if let Some((_, format)) = split_table_file(file) {
                 let table_name = parts[0];
                 let format_clone = format.clone();
+                if let Some(entry) = tables.get_mut(table_name) {
+                    if !options.validate_dir_schemas {
+                        entry.paths.push(format!(
+                            "{}://{}/{}",
+                            root_scheme(root),
+                            bucket,
+                            rel_path
+                        ));
+                        entry.total_bytes = entry.total_bytes.saturating_add(obj.size);
+                        continue;
+                    }
+                }
+                eprintln!("infer_source: reading {}", path_str);
                 let columns = match format {
                     TableFormat::Parquet => infer_parquet_schema_remote(
                         &rt,
@@ -664,6 +703,12 @@ fn infer_parquet_schema_from_arrow(schema: &Schema) -> Result<Vec<ColumnSpec>> {
     let mut columns = Vec::new();
     for field in schema.fields() {
         let (dtype, fixed_len, precision, scale) = arrow_type_to_column_type(field.data_type())?;
+        let mut key_mode = None;
+        if matches!(dtype, ColumnType::Bytes) {
+            if let Some(len) = fixed_len {
+                key_mode = Some(if len == 16 { KeyMode::Uuid } else { KeyMode::Fixed });
+            }
+        }
         columns.push(ColumnSpec {
             name: field.name().to_string(),
             source_dtype: dtype.clone(),
@@ -671,7 +716,7 @@ fn infer_parquet_schema_from_arrow(schema: &Schema) -> Result<Vec<ColumnSpec>> {
             fixed_len,
             timestamp_format: None,
             timestamp_unit: None,
-            key_mode: None,
+            key_mode,
             precision,
             scale,
         });
@@ -950,6 +995,14 @@ fn apply_string_stats_overrides(columns: &mut [ColumnSpec], stats: &[Option<Colu
             col.timestamp_format = inferred.timestamp_format;
             col.timestamp_unit = inferred.timestamp_unit;
         }
+        if matches!(col.ingested_dtype, ColumnType::String | ColumnType::Bytes) {
+            if inferred.key_mode.is_some() {
+                col.key_mode = inferred.key_mode;
+            }
+            if inferred.fixed_len.is_some() {
+                col.fixed_len = inferred.fixed_len;
+            }
+        }
     }
 }
 
@@ -1084,6 +1137,10 @@ struct ColumnStats {
     int_max: Option<i64>,
     ts_format: Option<String>,
     date_format: Option<String>,
+    str_min_len: Option<usize>,
+    str_max_len: Option<usize>,
+    uuid_ok: bool,
+    uuid_seen: bool,
 }
 
 impl ColumnStats {
@@ -1103,7 +1160,8 @@ impl ColumnStats {
     }
 
     fn observe(&mut self, value: &str) {
-        if value.trim().is_empty() {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
             return;
         }
         self.seen += 1;
@@ -1113,19 +1171,28 @@ impl ColumnStats {
             self.date_ok = true;
             self.ts_ok = true;
             self.bool_ok = true;
+            self.uuid_ok = true;
+            self.uuid_seen = false;
+        }
+        let len = trimmed.len();
+        self.str_min_len = Some(self.str_min_len.map(|m| m.min(len)).unwrap_or(len));
+        self.str_max_len = Some(self.str_max_len.map(|m| m.max(len)).unwrap_or(len));
+        self.uuid_seen = true;
+        if self.uuid_ok && !looks_like_uuid(trimmed) {
+            self.uuid_ok = false;
         }
         if self.int_ok {
-            if let Some(v) = parse_int(value) {
+            if let Some(v) = parse_int(trimmed) {
                 self.int_min = Some(self.int_min.map(|m| m.min(v)).unwrap_or(v));
                 self.int_max = Some(self.int_max.map(|m| m.max(v)).unwrap_or(v));
             } else {
                 self.int_ok = false;
             }
         }
-        if self.float_ok && parse_float(value).is_none() {
+        if self.float_ok && parse_float(trimmed).is_none() {
             self.float_ok = false;
         }
-        if self.date_ok && parse_date(value).is_none() {
+        if self.date_ok && parse_date(trimmed).is_none() {
             self.date_ok = false;
             self.date_format = None;
         } else if self.date_ok {
@@ -1135,11 +1202,11 @@ impl ColumnStats {
                 Some(_) => self.date_format = None,
             }
         }
-        if self.ts_ok && parse_timestamp(value).is_none() {
+        if self.ts_ok && parse_timestamp(trimmed).is_none() {
             self.ts_ok = false;
             self.ts_format = None;
         } else if self.ts_ok {
-            if let Some(fmt) = parse_timestamp_format(value) {
+            if let Some(fmt) = parse_timestamp_format(trimmed) {
                 match &self.ts_format {
                     None => self.ts_format = Some(fmt.to_string()),
                     Some(existing) if existing == fmt => {}
@@ -1150,7 +1217,7 @@ impl ColumnStats {
                 self.ts_format = None;
             }
         }
-        if self.bool_ok && parse_bool(value).is_none() {
+        if self.bool_ok && parse_bool(trimmed).is_none() {
             self.bool_ok = false;
         }
     }
@@ -1161,6 +1228,8 @@ impl ColumnStats {
         let mut ingested_dtype = ColumnType::String;
         let mut timestamp_format = None;
         let mut timestamp_unit = None;
+        let mut fixed_len = None;
+        let mut key_mode = None;
         if self.bool_ok {
             source_dtype = ColumnType::Bool;
             ingested_dtype = ColumnType::Bool;
@@ -1189,18 +1258,54 @@ impl ColumnStats {
             source_dtype = ColumnType::Float64;
             ingested_dtype = ColumnType::Float64;
         }
+        if matches!(ingested_dtype, ColumnType::String) {
+            if self.uuid_seen && self.uuid_ok {
+                key_mode = Some(KeyMode::Uuid);
+            } else if let (Some(min_len), Some(max_len)) = (self.str_min_len, self.str_max_len) {
+                if min_len == max_len {
+                    fixed_len = Some(min_len);
+                    key_mode = Some(KeyMode::Fixed);
+                }
+            }
+        }
         ColumnSpec {
             name: name.to_string(),
             source_dtype,
             ingested_dtype,
-            fixed_len: None,
+            fixed_len,
             timestamp_format,
             timestamp_unit,
-            key_mode: None,
+            key_mode,
             precision: None,
             scale: None,
         }
     }
+}
+
+fn looks_like_uuid(value: &str) -> bool {
+    let mut s = value;
+    if let Some(rest) = s.strip_prefix("urn:uuid:") {
+        s = rest;
+    }
+    if s.starts_with('{') && s.ends_with('}') && s.len() >= 2 {
+        s = &s[1..s.len() - 1];
+    }
+    let bytes = s.as_bytes();
+    match bytes.len() {
+        32 => bytes.iter().all(|b| is_hex(*b)),
+        36 => bytes
+            .iter()
+            .enumerate()
+            .all(|(idx, b)| match idx {
+                8 | 13 | 18 | 23 => *b == b'-',
+                _ => is_hex(*b),
+            }),
+        _ => false,
+    }
+}
+
+fn is_hex(b: u8) -> bool {
+    matches!(b, b'0'..=b'9' | b'a'..=b'f' | b'A'..=b'F')
 }
 
 fn parse_int(value: &str) -> Option<i64> {
@@ -3584,6 +3689,33 @@ mod tests {
         }
         let col = stats.to_column_spec("flag");
         assert!(matches!(col.ingested_dtype, ColumnType::Bool));
+    }
+
+    #[test]
+    fn csv_infers_uuid_key_mode() {
+        let mut stats = ColumnStats::default();
+        for v in [
+            "fdda48b5ba510e70ddcbe3932fc6d7e0",
+            "fdda48b5ba510e70ddcbe3932fc6d7e0",
+        ] {
+            stats.observe(v);
+        }
+        let col = stats.to_column_spec("user_id");
+        assert!(matches!(col.ingested_dtype, ColumnType::String));
+        assert_eq!(col.key_mode, Some(KeyMode::Uuid));
+        assert_eq!(col.fixed_len, None);
+    }
+
+    #[test]
+    fn csv_infers_fixed_key_mode() {
+        let mut stats = ColumnStats::default();
+        for v in ["ABC", "DEF"] {
+            stats.observe(v);
+        }
+        let col = stats.to_column_spec("code");
+        assert!(matches!(col.ingested_dtype, ColumnType::String));
+        assert_eq!(col.key_mode, Some(KeyMode::Fixed));
+        assert_eq!(col.fixed_len, Some(3));
     }
 
     #[test]
