@@ -228,15 +228,11 @@ main() {
     udevadm settle || true
   fi
   sync
-  mount_opts="noatime,nodiratime,discard=async"
+  mount_opts="noatime,nodiratime"
   if ! mount -o "$mount_opts" "$target" "$mountpoint"; then
-    echo "warning: discard=async not supported; retrying without discard" >&2
-    mount_opts="noatime,nodiratime"
-    if ! mount -o "$mount_opts" "$target" "$mountpoint"; then
-      echo "error: failed to mount $target on $mountpoint" >&2
-      echo "Check: dmesg | tail -n 20" >&2
-      exit 1
-    fi
+    echo "error: failed to mount $target on $mountpoint" >&2
+    echo "Check: dmesg | tail -n 20" >&2
+    exit 1
   fi
   chmod 0777 "$mountpoint"
 
