@@ -2,6 +2,15 @@
 set -euo pipefail
 
 # Run diskgraph-ingest on a local source directory or source_metadata.json.
+#
+# Quick usage:
+#   ./diskgraph-ingest/scripts/ingest_local.sh /path/to/source_dir
+#   ./diskgraph-ingest/scripts/ingest_local.sh -p /path/to/source_dir
+#   ./diskgraph-ingest/scripts/ingest_local.sh -d /path/to/source_dir
+#
+# Flags:
+#   -p  Enable pprof profiling output.
+#   -d  Build with debuginfo + frame pointers for stack dumps.
 
 ULIMIT_NOFILE="${ULIMIT_NOFILE:-100000}"
 if ! ulimit -n "${ULIMIT_NOFILE}" 2>/dev/null; then

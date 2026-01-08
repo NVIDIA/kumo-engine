@@ -1,6 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Dump Rust thread stacks from a running process (default: diskgraph ingest).
+#
+# Usage:
+#   ./scripts/dump_thread_stacks.sh            # auto-detect ingest PID
+#   ./scripts/dump_thread_stacks.sh <pid>      # explicit PID
+#
+# Notes:
+# - Requires gdb.
+# - If attach fails, run with sudo.
+# - For readable Rust stacks in release, build with:
+#   RUSTFLAGS="-C debuginfo=1 -C force-frame-pointers=yes" \
+#   cargo build -p diskgraph-ingest --release
+
 PID="${1:-}"
 
 if [[ -z "$PID" ]]; then
