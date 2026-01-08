@@ -56,6 +56,8 @@ else
 fi
 OUT_ROOT="${OUT_ROOT:-/mnt/localssd}"
 DRY_RUN="${DRY_RUN:-0}"
+S3_MAX_CONCURRENT_REQUESTS="${S3_MAX_CONCURRENT_REQUESTS:-50}"
+S3_MULTIPART_CHUNKSIZE="${S3_MULTIPART_CHUNKSIZE:-64MB}"
 
 if ! [[ "${CUSTOMER_NAME}" =~ ^[A-Za-z0-9._-]+$ ]]; then
   echo "error: customer_name must be alnum/._- only" >&2
@@ -74,6 +76,13 @@ if ! command -v python3 >/dev/null 2>&1; then
   echo "error: python3 not found in PATH" >&2
   exit 1
 fi
+
+aws_profile_args=()
+if [[ -n "${AWS_PROFILE:-}" ]]; then
+  aws_profile_args=(--profile "${AWS_PROFILE}")
+fi
+aws configure set s3.max_concurrent_requests "${S3_MAX_CONCURRENT_REQUESTS}" "${aws_profile_args[@]}"
+aws configure set s3.multipart_chunksize "${S3_MULTIPART_CHUNKSIZE}" "${aws_profile_args[@]}"
 
 if [[ ! -d "${OUT_ROOT}" ]]; then
   echo "error: OUT_ROOT does not exist: ${OUT_ROOT}" >&2
@@ -156,7 +165,7 @@ for table_prefix in "${TABLE_PREFIXES[@]}"; do
   if [[ "${DRY_RUN}" == "1" ]]; then
     echo "DRY_RUN=1 set; skipping download for ${table_name}"
   else
-    aws s3 cp "${raw_prefix}" "${table_out}/" --recursive --exclude "*" --include "*.parquet"
+    aws s3 sync "${raw_prefix}" "${table_out}/" --exclude "*" --include "*.parquet"
   fi
 done
 
