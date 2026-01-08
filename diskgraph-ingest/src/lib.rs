@@ -637,7 +637,7 @@ fn run_delete_loop(receiver: mpsc::Receiver<DeleteTask>) {
 fn set_low_io_priority() {
     unsafe {
         let tid = libc::syscall(libc::SYS_gettid) as libc::pid_t;
-        let _ = libc::setpriority(libc::PRIO_PROCESS, tid, 19);
+        let _ = libc::setpriority(libc::PRIO_PROCESS, tid as libc::id_t, 19);
         const IOPRIO_WHO_PROCESS: libc::c_int = 1;
         const IOPRIO_CLASS_IDLE: libc::c_int = 3;
         let ioprio = (IOPRIO_CLASS_IDLE << 13) | 0;
