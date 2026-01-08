@@ -1,31 +1,16 @@
 use anyhow::{anyhow, Result};
-use ahash::RandomState;
-use std::hash::BuildHasher;
-use std::cmp::Ordering;
+use memmap2::Mmap;
+use ptr_hash::hash::{FxHash, Hasher as PtrHasher, Xx128};
+use ptr_hash::KeyT;
+use ptr_hash::DefaultPtrHash;
+use std::fs::File;
 use std::hash::Hasher;
-use std::io::{self, Write};
+use epserde::prelude::Deserialize as EpDeserialize;
 
-const MAGIC: &[u8; 8] = b"DGPKMAP\0";
-const VERSION: u32 = 3;
-const AHASH_SEED_1: u64 = 0x9e3779b185ebca87;
-const AHASH_SEED_2: u64 = 0xc2b2ae3d27d4eb4f;
-const AHASH_SEED_3: u64 = 0x165667b19e3779f9;
-const AHASH_SEED_4: u64 = 0xd6e8feb86659fd93;
-
-fn fixed_hash_state() -> RandomState {
-    RandomState::with_seeds(
-        AHASH_SEED_1,
-        AHASH_SEED_2,
-        AHASH_SEED_3,
-        AHASH_SEED_4,
-    )
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MappingKind {
-    Hash,
-    Sorted,
-}
+const PK_DATA_MAGIC: &[u8; 8] = b"DGPKDAT\0";
+const PK_DATA_VERSION: u32 = 1;
+const PK_DATA_HEADER_LEN: usize = 8 + 4 + 1 + 1 + 4 + 8 + 8;
+const PK_DATA_ENTRY_LEN: usize = 8 + 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyType {
@@ -35,7 +20,7 @@ pub enum KeyType {
     Uuid,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Key {
     Int(u64),
     FixedBytes(Vec<u8>),
@@ -52,585 +37,263 @@ impl Key {
             Key::Uuid(_) => KeyType::Uuid,
         }
     }
-
-    fn as_bytes(&self) -> &[u8] {
-        match self {
-            Key::Int(v) => unsafe {
-                std::slice::from_raw_parts(v as *const u64 as *const u8, 8)
-            },
-            Key::FixedBytes(v) => v.as_slice(),
-            Key::Bytes(v) => v.as_slice(),
-            Key::Uuid(v) => v.as_slice(),
-        }
-    }
 }
 
-#[derive(Debug, Clone)]
-pub struct PkMap {
-    kind: MappingKind,
-    key_type: KeyType,
-    entries: Vec<(Key, u64)>,
-    hash_table: Vec<Option<(Key, u64)>>,
-    capacity: usize,
-    hash_len: usize,
-    duplicate_count: u64,
-    duplicate_samples: Vec<Key>,
-    min_key: u64,
-    max_key: u64,
-    direct: Option<DirectMap>,
-    identity_base: Option<u64>,
-    identity_len: usize,
+#[derive(Debug, Clone, Copy)]
+struct PkDataHeader {
+    key_type_tag: u8,
+    key_len: u32,
+    count: u64,
+    fingerprint_seed: u64,
 }
 
-#[derive(Debug, Clone)]
-struct DirectMap {
-    base: u64,
-    values: Vec<u64>,
-}
-
-impl PkMap {
-    pub fn new(kind: MappingKind, key_type: KeyType, capacity_hint: usize) -> Self {
-        let capacity = match kind {
-            MappingKind::Hash => next_pow2((capacity_hint as f64 / 0.7).ceil() as usize).max(8),
-            MappingKind::Sorted => 0,
-        };
-        Self {
-            kind,
-            key_type,
-            entries: Vec::with_capacity(capacity_hint),
-            hash_table: vec![None; capacity],
-            capacity,
-            hash_len: 0,
-            duplicate_count: 0,
-            duplicate_samples: Vec::new(),
-            min_key: u64::MAX,
-            max_key: 0,
-            direct: None,
-            identity_base: None,
-            identity_len: 0,
-        }
-    }
-
-    pub fn insert(&mut self, key: Key, value: u64) -> Result<()> {
-        if key.key_type() != self.key_type {
-            return Err(anyhow!("key type mismatch"));
-        }
-        if let Key::Int(v) = key {
-            if v < self.min_key {
-                self.min_key = v;
-            }
-            if v > self.max_key {
-                self.max_key = v;
-            }
-            return self.insert_inner(Key::Int(v), value);
-        }
-        self.insert_inner(key, value)
-    }
-
-    fn insert_inner(&mut self, key: Key, value: u64) -> Result<()> {
-        match self.kind {
-            MappingKind::Hash => {
-                if (self.hash_len + 1) * 10 >= self.capacity * 7 {
-                    self.grow_hash();
-                }
-                let mut idx = (hash_key(&key) as usize) & (self.capacity - 1);
-                loop {
-                    match &self.hash_table[idx] {
-                        None => {
-                            self.hash_table[idx] = Some((key, value));
-                            self.hash_len += 1;
-                            return Ok(());
-                        }
-                        Some((existing, _)) if keys_equal(existing, &key) => {
-                            self.duplicate_count = self.duplicate_count.saturating_add(1);
-                            if self.duplicate_samples.len() < 10 {
-                                self.duplicate_samples.push(key);
-                            }
-                            return Ok(());
-                        }
-                        _ => {
-                            idx = (idx + 1) & (self.capacity - 1);
-                        }
-                    }
-                }
-            }
-            MappingKind::Sorted => {
-                self.entries.push((key, value));
-                Ok(())
-            }
-        }
-    }
-
-    pub fn finalize(&mut self) {
-        if let MappingKind::Sorted = self.kind {
-            self.entries.sort_by(|a, b| compare_keys(&a.0, &b.0));
-            if !self.entries.is_empty() {
-                let mut deduped = Vec::with_capacity(self.entries.len());
-                let mut iter = std::mem::take(&mut self.entries).into_iter();
-                if let Some(mut current) = iter.next() {
-                    for entry in iter {
-                        if compare_keys(&current.0, &entry.0) == Ordering::Equal {
-                            self.duplicate_count = self.duplicate_count.saturating_add(1);
-                            if self.duplicate_samples.len() < 10 {
-                                self.duplicate_samples.push(current.0.clone());
-                            }
-                            continue;
-                        }
-                        deduped.push(current);
-                        current = entry;
-                    }
-                    deduped.push(current);
-                }
-                self.entries = deduped;
-            }
-        }
-        if self.kind == MappingKind::Hash && self.key_type == KeyType::Int64 {
-            self.try_build_direct();
-        }
-    }
-
-    pub fn duplicate_count(&self) -> u64 {
-        self.duplicate_count
-    }
-
-    pub fn duplicate_samples(&self) -> &[Key] {
-        &self.duplicate_samples
-    }
-
-    pub fn lookup(&self, key: &Key) -> Option<u64> {
-        if key.key_type() != self.key_type {
-            return None;
-        }
-        if let (Some(base), Key::Int(v)) = (self.identity_base, key) {
-            if *v >= base {
-                let idx = (*v - base) as usize;
-                if idx < self.identity_len {
-                    return Some(idx as u64);
-                }
-            }
-            return None;
-        }
-        if let (Some(direct), Key::Int(v)) = (&self.direct, key) {
-            if *v >= direct.base {
-                let idx = (*v - direct.base) as usize;
-                if idx < direct.values.len() {
-                    return Some(direct.values[idx]);
-                }
-            }
-            return None;
-        }
-        match self.kind {
-            MappingKind::Hash => {
-                let mut idx = (hash_key(key) as usize) & (self.capacity - 1);
-                loop {
-                    match &self.hash_table[idx] {
-                        None => return None,
-                        Some((existing, value)) if keys_equal(existing, key) => {
-                            return Some(*value)
-                        }
-                        _ => {
-                            idx = (idx + 1) & (self.capacity - 1);
-                        }
-                    }
-                }
-            }
-            MappingKind::Sorted => {
-                let idx = self.entries.binary_search_by(|(k, _)| compare_keys(k, key)).ok()?;
-                self.entries.get(idx).map(|(_, v)| *v)
-            }
-        }
-    }
-
-
-    pub fn write_to(&self, mut writer: impl Write) -> io::Result<()> {
-        writer.write_all(MAGIC)?;
-        writer.write_all(&VERSION.to_le_bytes())?;
-        writer.write_all(&[match self.kind {
-            MappingKind::Hash => 0u8,
-            MappingKind::Sorted => 1u8,
-        }])?;
-        let (key_type_tag, key_len) = match self.key_type {
-            KeyType::Int64 => (0u8, 8u32),
-            KeyType::FixedBytes { len } => (1u8, len as u32),
-            KeyType::VarBytes => (2u8, 0u32),
-            KeyType::Uuid => (3u8, 16u32),
-        };
-        writer.write_all(&[key_type_tag])?;
-        writer.write_all(&key_len.to_le_bytes())?;
-        let count = match self.kind {
-            MappingKind::Hash => self.hash_len,
-            MappingKind::Sorted => self.entries.len(),
-        } as u64;
-        let capacity = if self.kind == MappingKind::Hash {
-            self.capacity as u64
-        } else {
-            count
-        };
-        writer.write_all(&capacity.to_le_bytes())?;
-        writer.write_all(&count.to_le_bytes())?;
-
-        if self.kind == MappingKind::Hash {
-            let bitmap_len = (self.capacity + 7) / 8;
-            let mut bitmap = vec![0u8; bitmap_len];
-            for (idx, entry) in self.hash_table.iter().enumerate() {
-                if entry.is_some() {
-                    bitmap[idx / 8] |= 1 << (idx % 8);
-                }
-            }
-            writer.write_all(&bitmap)?;
-            for entry in &self.hash_table {
-                if let Some((key, value)) = entry {
-                    if self.key_type == KeyType::VarBytes {
-                        let bytes = key.as_bytes();
-                        let len = u16::try_from(bytes.len()).map_err(|_| {
-                            io::Error::new(
-                                io::ErrorKind::InvalidInput,
-                                "pk map key too large",
-                            )
-                        })?;
-                        writer.write_all(&len.to_le_bytes())?;
-                        writer.write_all(bytes)?;
-                    } else {
-                        writer.write_all(key.as_bytes())?;
-                    }
-                    writer.write_all(&value.to_le_bytes())?;
-                } else {
-                    if self.key_type == KeyType::VarBytes {
-                        writer.write_all(&u16::MAX.to_le_bytes())?;
-                    } else {
-                        let zero = vec![0u8; key_len as usize];
-                        writer.write_all(&zero)?;
-                    }
-                    writer.write_all(&0u64.to_le_bytes())?;
-                }
-            }
-        } else {
-            for (key, value) in &self.entries {
-                if self.key_type == KeyType::VarBytes {
-                    let bytes = key.as_bytes();
-                    let len = u16::try_from(bytes.len()).map_err(|_| {
-                        io::Error::new(io::ErrorKind::InvalidInput, "pk map key too large")
-                    })?;
-                    writer.write_all(&len.to_le_bytes())?;
-                    writer.write_all(bytes)?;
-                } else {
-                    writer.write_all(key.as_bytes())?;
-                }
-                writer.write_all(&value.to_le_bytes())?;
-            }
-        }
+impl PkDataHeader {
+    fn write_to(&self, mut out: impl std::io::Write) -> std::io::Result<()> {
+        out.write_all(PK_DATA_MAGIC)?;
+        out.write_all(&PK_DATA_VERSION.to_le_bytes())?;
+        out.write_all(&[self.key_type_tag])?;
+        out.write_all(&[0u8])?;
+        out.write_all(&self.key_len.to_le_bytes())?;
+        out.write_all(&self.count.to_le_bytes())?;
+        out.write_all(&self.fingerprint_seed.to_le_bytes())?;
         Ok(())
     }
 
-    pub fn read_from(bytes: &[u8]) -> Result<Self> {
-        if bytes.len() < MAGIC.len() + 4 + 1 + 1 + 4 + 8 + 8 {
-            return Err(anyhow!("pk map truncated"));
+    fn read_from(bytes: &[u8]) -> Result<Self> {
+        if bytes.len() < PK_DATA_HEADER_LEN {
+            return Err(anyhow!("pk data header truncated"));
         }
         let mut offset = 0usize;
-        if &bytes[offset..offset + MAGIC.len()] != MAGIC {
-            return Err(anyhow!("pk map magic mismatch"));
+        if &bytes[offset..offset + PK_DATA_MAGIC.len()] != PK_DATA_MAGIC {
+            return Err(anyhow!("pk data magic mismatch"));
         }
-        offset += MAGIC.len();
+        offset += PK_DATA_MAGIC.len();
         let version = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
         offset += 4;
-        let var_len_width = match version {
-            2 => 4usize,
-            3 => 2usize,
-            _ => return Err(anyhow!("pk map version mismatch")),
-        };
-        let kind = match bytes[offset] {
-            0 => MappingKind::Hash,
-            1 => MappingKind::Sorted,
-            _ => return Err(anyhow!("pk map kind invalid")),
-        };
+        if version != PK_DATA_VERSION {
+            return Err(anyhow!("pk data version mismatch"));
+        }
+        let key_type_tag = bytes[offset];
         offset += 1;
-        let key_type = match bytes[offset] {
-            0 => KeyType::Int64,
-            1 => KeyType::FixedBytes { len: 0 },
-            2 => KeyType::VarBytes,
-            3 => KeyType::Uuid,
-            _ => return Err(anyhow!("pk map key type invalid")),
-        };
         offset += 1;
-        let key_len = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap()) as usize;
+        let key_len = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
         offset += 4;
-        let capacity = u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap()) as usize;
+        let count = u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap());
         offset += 8;
-        let count = u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap()) as usize;
-        offset += 8;
-        let key_type = match key_type {
-            KeyType::FixedBytes { .. } => KeyType::FixedBytes { len: key_len },
-            other => other,
+        let fingerprint_seed = u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap());
+        Ok(Self {
+            key_type_tag,
+            key_len,
+            count,
+            fingerprint_seed,
+        })
+    }
+
+    fn key_type(&self) -> Result<KeyType> {
+        match self.key_type_tag {
+            0 => Ok(KeyType::Int64),
+            1 => Ok(KeyType::FixedBytes {
+                len: self.key_len as usize,
+            }),
+            2 => Ok(KeyType::VarBytes),
+            3 => Ok(KeyType::Uuid),
+            _ => Err(anyhow!("pk data key type invalid")),
+        }
+    }
+}
+
+
+
+#[derive(Clone, epserde::prelude::Epserde)]
+pub struct PkXxHash;
+
+impl PkXxHash {
+    #[inline(always)]
+    pub(crate) fn hash<Key: std::hash::Hash + ?Sized>(x: &Key, seed: u64) -> u64 {
+        let mut hasher = twox_hash::XxHash64::with_seed(seed);
+        x.hash(&mut hasher);
+        hasher.finish()
+    }
+}
+
+enum PkHashMphf {
+    Int(DefaultPtrHash<FxHash, u64>),
+    Bytes(DefaultPtrHash<Xx128, Vec<u8>>),
+    Uuid(DefaultPtrHash<Xx128, [u8; 16]>),
+}
+
+impl PkHashMphf {
+    fn index(&self, key: &Key) -> Option<usize> {
+        match (self, key) {
+            (PkHashMphf::Int(mphf), Key::Int(value)) => safe_mphf_index(mphf, value),
+            (PkHashMphf::Bytes(mphf), Key::Bytes(bytes)) => safe_mphf_index(mphf, bytes),
+            (PkHashMphf::Bytes(mphf), Key::FixedBytes(bytes)) => safe_mphf_index(mphf, bytes),
+            (PkHashMphf::Uuid(mphf), Key::Uuid(value)) => safe_mphf_index(mphf, value),
+            _ => None,
+        }
+    }
+}
+
+fn safe_mphf_index<Key: KeyT + Sized, Hx: PtrHasher<Key>>(
+    mphf: &DefaultPtrHash<Hx, Key>,
+    key: &Key,
+) -> Option<usize>
+{
+    let slot = mphf.index_no_remap(key);
+    if slot >= mphf.max_index() {
+        None
+    } else {
+        Some(slot)
+    }
+}
+
+pub struct PkHashShard {
+    key_type: KeyType,
+    mphf: PkHashMphf,
+    data: Mmap,
+    header: PkDataHeader,
+}
+
+impl PkHashShard {
+    pub fn load(hash_path: &std::path::Path, data_path: &std::path::Path, key_type: KeyType) -> Result<Self> {
+        let data_file = File::open(data_path)
+            .map_err(|e| anyhow!("open pk data {}: {e}", data_path.display()))?;
+        let data = unsafe { Mmap::map(&data_file)? };
+        advise_random(&data);
+        let header = PkDataHeader::read_from(&data)?;
+        let header_key_type = header.key_type()?;
+        if header_key_type != key_type {
+            return Err(anyhow!(
+                "pk data key type mismatch: expected {:?}, found {:?}",
+                key_type,
+                header_key_type
+            ));
+        }
+        let mphf = match key_type {
+            KeyType::Int64 => {
+                let mphf = DefaultPtrHash::<FxHash, u64>::load_full(hash_path)
+                    .map_err(|e| anyhow!("load pk hash {}: {e}", hash_path.display()))?;
+                PkHashMphf::Int(mphf)
+            }
+            KeyType::FixedBytes { .. } | KeyType::VarBytes => {
+                let mphf = DefaultPtrHash::<Xx128, Vec<u8>>::load_full(hash_path)
+                    .map_err(|e| anyhow!("load pk hash {}: {e}", hash_path.display()))?;
+                PkHashMphf::Bytes(mphf)
+            }
+            KeyType::Uuid => {
+                let mphf = DefaultPtrHash::<Xx128, [u8; 16]>::load_full(hash_path)
+                    .map_err(|e| anyhow!("load pk hash {}: {e}", hash_path.display()))?;
+                PkHashMphf::Uuid(mphf)
+            }
         };
-        let mut map = PkMap::new(kind, key_type, count);
-        if kind == MappingKind::Hash {
-            map.capacity = capacity.max(1);
-            map.hash_table = vec![None; map.capacity];
-            map.hash_len = count;
-            let bitmap_len = (map.capacity + 7) / 8;
-            if bytes.len() < offset + bitmap_len {
-                return Err(anyhow!("pk map bitmap truncated"));
-            }
-            let bitmap = &bytes[offset..offset + bitmap_len];
-            offset += bitmap_len;
-            for slot in 0..map.capacity {
-                let present = (bitmap[slot / 8] >> (slot % 8)) & 1 == 1;
-                let (key, value) = if key_type == KeyType::VarBytes {
-                    if bytes.len() < offset + var_len_width {
-                        return Err(anyhow!("pk map entry truncated"));
-                    }
-                    let len = if var_len_width == 2 {
-                        let raw = u16::from_le_bytes(
-                            bytes[offset..offset + 2].try_into().unwrap(),
-                        ) as usize;
-                        offset += 2;
-                        raw
-                    } else {
-                        let raw = u32::from_le_bytes(
-                            bytes[offset..offset + 4].try_into().unwrap(),
-                        ) as usize;
-                        offset += 4;
-                        raw
-                    };
-                    let empty = if var_len_width == 2 {
-                        u16::MAX as usize
-                    } else {
-                        u32::MAX as usize
-                    };
-                    if len == empty {
-                        if bytes.len() < offset + 8 {
-                            return Err(anyhow!("pk map entry truncated"));
-                        }
-                        let value = u64::from_le_bytes(
-                            bytes[offset..offset + 8].try_into().unwrap(),
-                        );
-                        offset += 8;
-                        (None, value)
-                    } else {
-                        if bytes.len() < offset + len + 8 {
-                            return Err(anyhow!("pk map entry truncated"));
-                        }
-                        let key_bytes = &bytes[offset..offset + len];
-                        offset += len;
-                        let value = u64::from_le_bytes(
-                            bytes[offset..offset + 8].try_into().unwrap(),
-                        );
-                        offset += 8;
-                        let key = Key::Bytes(key_bytes.to_vec());
-                        (Some(key), value)
-                    }
-                } else {
-                    if bytes.len() < offset + key_len + 8 {
-                        return Err(anyhow!("pk map entry truncated"));
-                    }
-                    let key_bytes = &bytes[offset..offset + key_len];
-                    offset += key_len;
-                    let value =
-                        u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap());
-                    offset += 8;
-                    let key = match key_type {
-                        KeyType::Int64 => {
-                            let mut buf = [0u8; 8];
-                            buf[..key_len].copy_from_slice(key_bytes);
-                            let v = u64::from_le_bytes(buf);
-                            Key::Int(v)
-                        }
-                        KeyType::FixedBytes { .. } => Key::FixedBytes(key_bytes.to_vec()),
-                        KeyType::Uuid => {
-                            let mut buf = [0u8; 16];
-                            buf.copy_from_slice(&key_bytes[..16]);
-                            Key::Uuid(buf)
-                        }
-                        KeyType::VarBytes => Key::Bytes(key_bytes.to_vec()),
-                    };
-                    (Some(key), value)
-                };
-                if present {
-                    if let Some(key) = key {
-                        map.hash_table[slot] = Some((key, value));
-                    }
-                }
-            }
-        } else {
-            let mut entries = Vec::with_capacity(count);
-            for _ in 0..count {
-                let key = if key_type == KeyType::VarBytes {
-                    if bytes.len() < offset + var_len_width {
-                        return Err(anyhow!("pk map entry truncated"));
-                    }
-                    let len = if var_len_width == 2 {
-                        let raw = u16::from_le_bytes(
-                            bytes[offset..offset + 2].try_into().unwrap(),
-                        ) as usize;
-                        offset += 2;
-                        raw
-                    } else {
-                        let raw = u32::from_le_bytes(
-                            bytes[offset..offset + 4].try_into().unwrap(),
-                        ) as usize;
-                        offset += 4;
-                        raw
-                    };
-                    if bytes.len() < offset + len {
-                        return Err(anyhow!("pk map entry truncated"));
-                    }
-                    let key_bytes = &bytes[offset..offset + len];
-                    offset += len;
-                    Key::Bytes(key_bytes.to_vec())
-                } else {
-                    if bytes.len() < offset + key_len {
-                        return Err(anyhow!("pk map entry truncated"));
-                    }
-                    let key_bytes = &bytes[offset..offset + key_len];
-                    offset += key_len;
-                    match key_type {
-                        KeyType::Int64 => {
-                            let mut buf = [0u8; 8];
-                            buf[..key_len].copy_from_slice(key_bytes);
-                            Key::Int(u64::from_le_bytes(buf))
-                        }
-                        KeyType::FixedBytes { .. } => Key::FixedBytes(key_bytes.to_vec()),
-                        KeyType::Uuid => {
-                            let mut buf = [0u8; 16];
-                            buf.copy_from_slice(&key_bytes[..16]);
-                            Key::Uuid(buf)
-                        }
-                        KeyType::VarBytes => Key::Bytes(key_bytes.to_vec()),
-                    }
-                };
-                if bytes.len() < offset + 8 {
-                    return Err(anyhow!("pk map entry truncated"));
-                }
-                let value = u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap());
-                offset += 8;
-                entries.push((key, value));
-            }
-            map.entries = entries;
-        }
-        Ok(map)
+        Ok(Self {
+            key_type,
+            mphf,
+            data,
+            header,
+        })
     }
 
-    fn grow_hash(&mut self) {
-        let new_capacity = (self.capacity * 2).max(8);
-        let mut new_table = vec![None; new_capacity];
-        for entry in self.hash_table.drain(..) {
-            if let Some((key, value)) = entry {
-                let mut idx = (hash_key(&key) as usize) & (new_capacity - 1);
-                loop {
-                    if new_table[idx].is_none() {
-                        new_table[idx] = Some((key, value));
-                        break;
-                    }
-                    idx = (idx + 1) & (new_capacity - 1);
-                }
-            }
+    pub fn lookup(&self, key: &Key) -> Option<u32> {
+        if key.key_type() != self.key_type {
+            return None;
         }
-        self.hash_table = new_table;
-        self.capacity = new_capacity;
-    }
-
-    fn try_build_direct(&mut self) {
-        if self.hash_len == 0 {
-            return;
+        let idx = self.mphf.index(key)?;
+        if idx >= self.header.count as usize {
+            return None;
         }
-        if self.min_key == u64::MAX {
-            return;
+        let offset = PK_DATA_HEADER_LEN + idx * PK_DATA_ENTRY_LEN;
+        if self.data.len() < offset + PK_DATA_ENTRY_LEN {
+            return None;
         }
-        let range = self.max_key.saturating_sub(self.min_key).saturating_add(1);
-        if range as usize != self.hash_len {
-            return;
+        let fp = u64::from_le_bytes(self.data[offset..offset + 8].try_into().ok()?);
+        let value = u32::from_le_bytes(
+            self.data[offset + 8..offset + 12]
+                .try_into()
+                .ok()?,
+        );
+        if fp != fingerprint_for_key(key, self.header.fingerprint_seed) {
+            return None;
         }
-        let mut values = vec![0u64; range as usize];
-        for entry in &self.hash_table {
-            if let Some((Key::Int(k), value)) = entry {
-                let idx = (*k - self.min_key) as usize;
-                values[idx] = *value;
-            }
-        }
-        let is_identity = values
-            .iter()
-            .enumerate()
-            .all(|(idx, value)| *value == idx as u64);
-        if is_identity {
-            self.identity_base = Some(self.min_key);
-            self.identity_len = values.len();
-            self.direct = None;
-        } else {
-            self.direct = Some(DirectMap {
-                base: self.min_key,
-                values,
-            });
-        }
+        Some(value)
     }
 }
 
-fn compare_keys(a: &Key, b: &Key) -> Ordering {
-    match (a, b) {
-        (Key::Int(a), Key::Int(b)) => a.cmp(b),
-        (Key::FixedBytes(a), Key::FixedBytes(b)) => a.cmp(b),
-        (Key::Bytes(a), Key::Bytes(b)) => a.cmp(b),
-        (Key::Uuid(a), Key::Uuid(b)) => a.cmp(b),
-        _ => Ordering::Equal,
+pub struct PkHashStore {
+    tables: std::collections::HashMap<String, Vec<PkHashShard>>,
+}
+
+impl PkHashStore {
+    pub fn new(tables: std::collections::HashMap<String, Vec<PkHashShard>>) -> Self {
+        Self { tables }
+    }
+
+    pub fn shard(&self, table: &str, shard: usize) -> Result<&PkHashShard> {
+        let shards = self
+            .tables
+            .get(table)
+            .ok_or_else(|| anyhow!("missing pk hash table {}", table))?;
+        shards
+            .get(shard)
+            .ok_or_else(|| anyhow!("missing pk hash shard {}:{}", table, shard))
     }
 }
 
-fn keys_equal(a: &Key, b: &Key) -> bool {
-    match (a, b) {
-        (Key::Int(a), Key::Int(b)) => a == b,
-        (Key::FixedBytes(a), Key::FixedBytes(b)) => a == b,
-        (Key::Bytes(a), Key::Bytes(b)) => a == b,
-        (Key::Uuid(a), Key::Uuid(b)) => a == b,
-        _ => false,
+pub fn key_type_tag(key_type: KeyType) -> (u8, u32) {
+    match key_type {
+        KeyType::Int64 => (0, 8),
+        KeyType::FixedBytes { len } => (1, len as u32),
+        KeyType::VarBytes => (2, 0),
+        KeyType::Uuid => (3, 16),
     }
 }
 
-fn hash_key(key: &Key) -> u64 {
+pub fn write_pk_data_header(
+    mut out: impl std::io::Write,
+    key_type: KeyType,
+    count: u64,
+    fingerprint_seed: u64,
+) -> std::io::Result<()> {
+    let (key_type_tag, key_len) = key_type_tag(key_type);
+    let header = PkDataHeader {
+        key_type_tag,
+        key_len,
+        count,
+        fingerprint_seed,
+    };
+    header.write_to(&mut out)
+}
+
+pub fn fingerprint_for_key(key: &Key, seed: u64) -> u64 {
     match key {
-        Key::Int(v) => hash_int(*v),
-        Key::FixedBytes(v) | Key::Bytes(v) => {
-            let mut hasher = fixed_hash_state().build_hasher();
-            hasher.write(v);
-            hasher.finish()
+        Key::Int(value) => PkXxHash::hash(value, seed),
+        Key::FixedBytes(bytes) | Key::Bytes(bytes) => {
+            PkXxHash::hash(bytes, seed)
         }
-        Key::Uuid(v) => {
-            let hi = u64::from_be_bytes(v[0..8].try_into().unwrap());
-            let lo = u64::from_be_bytes(v[8..16].try_into().unwrap());
-            hash_int(hi) ^ hash_int(lo)
-        }
+        Key::Uuid(value) => PkXxHash::hash(value, seed),
     }
 }
 
-fn hash_int(mut v: u64) -> u64 {
-    v = v.wrapping_add(0x9E3779B97F4A7C15);
-    v = (v ^ (v >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
-    v = (v ^ (v >> 27)).wrapping_mul(0x94D049BB133111EB);
-    v ^ (v >> 31)
+pub fn fingerprint_seed_for(table: &str, shard: usize) -> u64 {
+    let mut hasher = twox_hash::XxHash64::with_seed(0);
+    hasher.write(table.as_bytes());
+    hasher.write_u64(shard as u64);
+    hasher.finish()
 }
 
-fn next_pow2(value: usize) -> usize {
-    value.next_power_of_two()
+pub fn write_pk_data_entry(
+    mut out: impl std::io::Write,
+    fingerprint: u64,
+    value: u32,
+) -> std::io::Result<()> {
+    out.write_all(&fingerprint.to_le_bytes())?;
+    out.write_all(&value.to_le_bytes())?;
+    Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn hash_map_skips_duplicate_keys() {
-        let mut map = PkMap::new(MappingKind::Hash, KeyType::VarBytes, 4);
-        map.insert(Key::Bytes(b"abc".to_vec()), 1).unwrap();
-        map.insert(Key::Bytes(b"abc".to_vec()), 2).unwrap();
-        assert_eq!(map.duplicate_count(), 1);
-        assert_eq!(map.lookup(&Key::Bytes(b"abc".to_vec())), Some(1));
-    }
-
-    #[test]
-    fn sorted_map_dedupes_on_finalize() {
-        let mut map = PkMap::new(MappingKind::Sorted, KeyType::FixedBytes { len: 3 }, 4);
-        map.insert(Key::FixedBytes(b"abc".to_vec()), 1).unwrap();
-        map.insert(Key::FixedBytes(b"abc".to_vec()), 2).unwrap();
-        map.finalize();
-        assert_eq!(map.duplicate_count(), 1);
-        assert_eq!(map.lookup(&Key::FixedBytes(b"abc".to_vec())), Some(1));
+fn advise_random(map: &Mmap) {
+    let ret = unsafe { libc::madvise(map.as_ptr() as *mut libc::c_void, map.len(), libc::MADV_RANDOM) };
+    if ret != 0 {
+        let _ = std::io::Error::last_os_error();
     }
 }

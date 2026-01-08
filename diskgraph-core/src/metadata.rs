@@ -15,6 +15,8 @@ pub struct PrimaryKeyMap {
     pub column: String,
     pub dtype: String,
     pub mapping_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hash_path: Option<String>,
     pub mapping_kind: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fixed_len: Option<usize>,

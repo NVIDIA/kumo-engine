@@ -34,3 +34,7 @@ clap = { version = "4.4", features = ["derive"] }
 indicatif = "0.17"
 pprof = { version = "0.13", features = ["flamegraph", "prost-codec"] }
 lz4_flex = { version = "0.12", default-features = false, features = ["frame"] }
+ptr_hash = { workspace = true, features = ["epserde"] }
+epserde = { workspace = true }
+memmap2 = "0.9"
+libc = "0.2"

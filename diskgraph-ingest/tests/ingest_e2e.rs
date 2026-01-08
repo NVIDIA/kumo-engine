@@ -510,11 +510,14 @@ fn ingest_parquet_with_sorted_mapping() -> Result<()> {
         .find(|n| n.name == "Sku")
         .unwrap();
     let pk = sku.primary_key_map.as_ref().unwrap();
-    assert_eq!(pk.mapping_kind, "sharded");
+    assert_eq!(pk.mapping_kind, "ptrhash");
     assert_eq!(pk.fixed_len, Some(8));
-    let map_path = output_root.join("nodes/sku/pk_map-00000.bin");
-    assert!(map_path.exists());
-    assert!(fs::metadata(map_path)?.len() > 0);
+    let data_path = output_root.join("nodes/sku/pk_data-00000.bin");
+    let hash_path = output_root.join("nodes/sku/pk_hash-00000.bin");
+    assert!(data_path.exists());
+    assert!(hash_path.exists());
+    assert!(fs::metadata(data_path)?.len() > 0);
+    assert!(fs::metadata(hash_path)?.len() > 0);
 
     Ok(())
 }
@@ -565,11 +568,14 @@ fn ingest_csv_with_bytes_pk_mapping() -> Result<()> {
         .find(|n| n.name == "Asset")
         .unwrap();
     let pk = asset.primary_key_map.as_ref().unwrap();
-    assert_eq!(pk.mapping_kind, "sharded");
+    assert_eq!(pk.mapping_kind, "ptrhash");
     assert_eq!(pk.fixed_len, Some(4));
-    let map_path = output_root.join("nodes/asset/pk_map-00000.bin");
-    assert!(map_path.exists());
-    assert!(fs::metadata(map_path)?.len() > 0);
+    let data_path = output_root.join("nodes/asset/pk_data-00000.bin");
+    let hash_path = output_root.join("nodes/asset/pk_hash-00000.bin");
+    assert!(data_path.exists());
+    assert!(hash_path.exists());
+    assert!(fs::metadata(data_path)?.len() > 0);
+    assert!(fs::metadata(hash_path)?.len() > 0);
 
     Ok(())
 }
