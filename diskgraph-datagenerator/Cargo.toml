@@ -27,9 +27,11 @@ tracing-subscriber = { workspace = true }
 object_store = { version = "0.12.4", default-features = false, features = ["aws", "gcp", "azure"] }
 url = "2"
 bytes = "1"
-tokio = { version = "1", features = ["rt-multi-thread"] }
+tokio = { version = "1", features = ["fs", "io-util", "macros", "rt-multi-thread", "sync"] }
 futures-util = "0.3"
 base64 = "0.22"
+aws-config = "1"
+aws-sdk-s3 = "1"
 
 [[bin]]
 name = "diskgraph-datagenerator"
@@ -46,3 +48,7 @@ path = "src/bin/generate_multi.rs"
 [[bin]]
 name = "generate-source"
 path = "src/bin/generate_source.rs"
+
+[[bin]]
+name = "download-ingested-graph"
+path = "src/bin/download_ingested_graph.rs"

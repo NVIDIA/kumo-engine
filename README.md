@@ -63,6 +63,6 @@ Use this when you have a training or bp job ID and want the raw parquet tables f
 
 ```bash
 ./scripts/download_ingested_graph.sh <customer_name> <job_id>
-./diskgraph-infer/scripts/infer_source.sh /mnt/localssd/<customer_name>_<job_id>
-./diskgraph-ingest/scripts/ingest_local.sh /mnt/localssd/<customer_name>_<job_id>
+./diskgraph-infer/scripts/infer_source.sh /mnt/localssd/datasets/<customer_name>_<job_id>
+./diskgraph-ingest/scripts/ingest_local.sh /mnt/localssd/datasets/<customer_name>_<job_id>
 ```
