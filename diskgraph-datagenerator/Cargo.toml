@@ -13,41 +13,22 @@ arrow-array = "57.1.0"
 arrow-schema = "57.1.0"
 clap = { version = "4.4", features = ["derive"] }
 indicatif = "0.17"
-diskgraph-core = { path = "../diskgraph-core" }
-diskgraph-fs = { path = "../diskgraph-fs" }
 parquet = { version = "57.1.0", features = ["arrow"] }
-rand = "0.8"
 chrono = "0.4"
-seahash = "4.1"
 anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-object_store = { version = "0.12.4", default-features = false, features = ["aws", "gcp", "azure"] }
-url = "2"
-bytes = "1"
-tokio = { version = "1", features = ["fs", "io-util", "macros", "rt-multi-thread", "sync"] }
-futures-util = "0.3"
-base64 = "0.22"
 aws-config = "1"
 aws-sdk-s3 = "1"
+futures-util = "0.3"
+tokio = { version = "1", features = ["fs", "io-util", "macros", "rt-multi-thread", "sync"] }
+url = "2"
 
 [[bin]]
 name = "diskgraph-datagenerator"
 path = "src/main.rs"
-
-[[bin]]
-name = "massive"
-path = "src/bin/massive.rs"
-
-[[bin]]
-name = "generate-multi"
-path = "src/bin/generate_multi.rs"
-
-[[bin]]
-name = "generate-source"
-path = "src/bin/generate_source.rs"
 
 [[bin]]
 name = "download-ingested-graph"

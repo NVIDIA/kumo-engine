@@ -57,6 +57,16 @@ benchmark 8 30s
 
 `benchmark` is optional but handy to sanity-check performance.
 
+## Generate a synthetic dataset
+
+Use the JSON-driven datagenerator to write Parquet shards under `/mnt/localssd/datasets/<config-name>/`.
+
+```bash
+./diskgraph-datagenerator/scripts/generate_dataset.sh diskgraph-datagenerator/configs/small_100m.json
+./diskgraph-infer/scripts/infer_source.sh /mnt/localssd/datasets/small_100m
+./diskgraph-ingest/scripts/ingest_local.sh /mnt/localssd/datasets/small_100m
+```
+
 ## Download ingested graph data from a job
 
 Use this when you have a training or bp job ID and want the raw parquet tables for ingest.
