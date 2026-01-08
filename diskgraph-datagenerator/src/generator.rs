@@ -256,14 +256,12 @@ fn build_plan(config: &DatasetConfig) -> Result<Plan> {
         .map(|(idx, table)| (table.name.as_str(), idx))
         .collect();
 
-    let mut pk_columns = Vec::new();
+    let mut pk_columns: Vec<Option<(usize, KeyGenerator)>> = Vec::new();
     for (_idx, table) in config.tables.iter().enumerate() {
         let table_seed = mix64(config.seed ^ hash_name(&table.name));
-        let (pk_column_idx, pk_generator) =
-            resolve_primary_key(table, table_seed).with_context(|| {
-                format!("table {} primary key config", table.name)
-            })?;
-        pk_columns.push((pk_column_idx, pk_generator.clone()));
+        let pk = resolve_primary_key(table, table_seed)
+            .with_context(|| format!("table {} primary key config", table.name))?;
+        pk_columns.push(pk);
     }
 
     let fk_map = build_relationship_map(config, &table_lookup, &pk_columns, &row_counts)?;
@@ -271,12 +269,11 @@ fn build_plan(config: &DatasetConfig) -> Result<Plan> {
     for (idx, table) in config.tables.iter().enumerate() {
         let row_count = row_counts[idx];
         let table_seed = mix64(config.seed ^ hash_name(&table.name));
-        let (pk_column_idx, pk_generator) = &pk_columns[idx];
+        let pk = pk_columns[idx].as_ref();
         let columns = build_column_plans(
             table,
             table_seed,
-            *pk_column_idx,
-            pk_generator,
+            pk,
             idx,
             &fk_map,
         )?;
@@ -384,7 +381,10 @@ fn allocate_rows(config: &DatasetConfig) -> Result<Vec<u64>> {
     Ok(fixed)
 }
 
-fn resolve_primary_key(table: &TableConfig, table_seed: u64) -> Result<(usize, KeyGenerator)> {
+fn resolve_primary_key(
+    table: &TableConfig,
+    table_seed: u64,
+) -> Result<Option<(usize, KeyGenerator)>> {
     let mut pk_idx = None;
     for (idx, column) in table.columns.iter().enumerate() {
         if column.primary_key {
@@ -395,12 +395,12 @@ fn resolve_primary_key(table: &TableConfig, table_seed: u64) -> Result<(usize, K
         }
     }
     let Some(pk_idx) = pk_idx else {
-        bail!("table {} missing primary_key column", table.name);
+        return Ok(None);
     };
     let pk_col = &table.columns[pk_idx];
     validate_key_column(pk_col)?;
     let encoding = pk_col.key_encoding.unwrap_or(default_key_encoding(&pk_col.dtype));
-    Ok((
+    Ok(Some((
         pk_idx,
         KeyGenerator {
             dtype: pk_col.dtype,
@@ -409,18 +409,18 @@ fn resolve_primary_key(table: &TableConfig, table_seed: u64) -> Result<(usize, K
             encoding,
             table_seed,
         },
-    ))
+    )))
 }
 
 fn build_column_plans(
     table: &TableConfig,
     table_seed: u64,
-    pk_column_idx: usize,
-    pk_generator: &KeyGenerator,
+    pk: Option<&(usize, KeyGenerator)>,
     table_idx: usize,
     fk_map: &HashMap<(usize, usize), ForeignKeyGenerator>,
 ) -> Result<Vec<ColumnPlan>> {
     let mut columns = Vec::new();
+    let pk_index = pk.map(|(idx, _)| *idx);
     for (idx, column) in table.columns.iter().enumerate() {
         let arrow_type = column_arrow_type(column)?;
         let col_seed = mix64(table_seed ^ hash_name(&column.name));
@@ -434,10 +434,11 @@ fn build_column_plans(
             }
         }
         let fk_generator = fk_map.get(&(table_idx, idx));
-        let generator = if idx == pk_column_idx {
+        let generator = if pk_index == Some(idx) {
             if column.gen.is_some() {
                 bail!("primary key column {} should not define gen", column.name);
             }
+            let (_, pk_generator) = pk.expect("pk exists");
             ColumnGenerator::PrimaryKey(pk_generator.clone())
         } else if let Some(fk) = fk_generator {
             ColumnGenerator::ForeignKey(fk.clone())
@@ -452,7 +453,7 @@ fn build_column_plans(
             dtype: column.dtype,
             arrow_type,
             generator,
-            null_ratio: if idx == pk_column_idx {
+            null_ratio: if pk_index == Some(idx) {
                 None
             } else if fk_generator.is_some() {
                 None
@@ -478,7 +479,7 @@ fn build_schema(columns: &[ColumnPlan]) -> Result<Arc<Schema>> {
 fn build_relationship_map(
     config: &DatasetConfig,
     table_lookup: &HashMap<&str, usize>,
-    pk_columns: &[(usize, KeyGenerator)],
+    pk_columns: &[Option<(usize, KeyGenerator)>],
     row_counts: &[u64],
 ) -> Result<HashMap<(usize, usize), ForeignKeyGenerator>> {
     let mut map = HashMap::new();
@@ -489,7 +490,12 @@ fn build_relationship_map(
         let dst_idx = *table_lookup
             .get(rel.dst_table.as_str())
             .ok_or_else(|| anyhow!("unknown dst_table {}", rel.dst_table))?;
-        let (dst_pk_idx, dst_pk) = &pk_columns[dst_idx];
+        let Some((dst_pk_idx, dst_pk)) = pk_columns[dst_idx].as_ref() else {
+            bail!(
+                "relationship dst_table {} must define a primary key",
+                rel.dst_table
+            );
+        };
         let dst_table = &config.tables[dst_idx];
         let dst_col = &dst_table.columns[*dst_pk_idx];
         if dst_col.name != rel.dst_column {
