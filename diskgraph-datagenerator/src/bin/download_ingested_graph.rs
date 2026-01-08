@@ -25,7 +25,7 @@ struct Args {
     #[arg(long, default_value = "/mnt/localssd/datasets")]
     out_root: PathBuf,
     /// Max in-flight S3 requests (objects + parts).
-    #[arg(long, default_value_t = 128)]
+    #[arg(long, default_value_t = 64)]
     max_requests: usize,
     /// Part size in MB for multipart downloads.
     #[arg(long, default_value_t = 64)]
