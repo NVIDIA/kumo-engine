@@ -43,7 +43,7 @@ use ptr_hash::hash::{FxHash, Xx128};
 use ptr_hash::DefaultPtrHash;
 use std::fs;
 use std::io::{self, BufWriter, Read, Write};
-use std::hash::{BuildHasher, Hasher};
+use std::hash::{BuildHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -2594,6 +2594,8 @@ impl IngestContext {
             }
             let progress = self.progress.clone();
             let target = std::sync::Arc::clone(&self.target);
+            let writer_pool = EdgeWriterPool::new(std::sync::Arc::clone(&target), edge_writer_workers());
+            let writer_senders = writer_pool.senders();
             let shard_offsets = self.shard_offsets.clone();
             let pk_hash_store = edge_ctx.pk_hash_store.clone();
             let max_ids = edge_ctx.max_ids.clone();
@@ -2610,7 +2612,6 @@ impl IngestContext {
             for rel in &self.relationships {
                 let rel = rel.clone();
                 let progress = progress.clone();
-                let target = std::sync::Arc::clone(&target);
                 let shard_offsets = shard_offsets.clone();
                 let pk_hash_store = pk_hash_store.clone();
                 let max_ids = max_ids.clone();
@@ -2649,13 +2650,13 @@ impl IngestContext {
                 for shard in 0..num_shards {
                     let rel = rel.clone();
                     let progress = progress.clone();
-                    let target = std::sync::Arc::clone(&target);
                     let shard_offsets = shard_offsets.clone();
                     let pk_hash_store = pk_hash_store.clone();
                     let max_ids = max_ids.clone();
                     let rel_sort_bits = rel_sort_bits.clone();
                     let root = root.clone();
                     let source = source.clone();
+                    let writer_senders = std::sync::Arc::clone(&writer_senders);
                     let tx = tx.clone();
                     let src_fk_col = src_fk_col.clone();
                     task_count = task_count.saturating_add(1);
@@ -2693,6 +2694,21 @@ impl IngestContext {
                                 max_ids.get(&rel.src_table).copied().unwrap_or(0),
                                 reverse_sort_bits,
                             );
+                            let buffer_limit = edge_batch_buffer_limit(num_shards);
+                            let mut forward_batcher = EdgeBatcher::new(
+                                std::sync::Arc::<str>::from(rel.name_forward.clone()),
+                                forward_spec,
+                                num_shards,
+                                buffer_limit,
+                                std::sync::Arc::clone(&writer_senders),
+                            );
+                            let mut reverse_batcher = EdgeBatcher::new(
+                                std::sync::Arc::<str>::from(rel.name_reverse.clone()),
+                                reverse_spec,
+                                num_shards,
+                                buffer_limit,
+                                std::sync::Arc::clone(&writer_senders),
+                            );
                             let mut dst_maps = Vec::with_capacity(num_shards);
                             for dst_shard in 0..num_shards {
                                 dst_maps.push(pk_hash_store.shard(&rel.dst_table, dst_shard)?);
@@ -2703,28 +2719,6 @@ impl IngestContext {
                             let mut reverse_count = 0u64;
                             let file_count = table_by_name(&source, &rel.src_table)?.paths.len();
                             for file_idx in 0..file_count {
-                                let forward_path = target.join(&temp_edge_map_path(
-                                    &rel.name_forward,
-                                    shard,
-                                    shard,
-                                    file_idx,
-                                ));
-                                let mut forward_writer =
-                                    EdgePartWriter::open(&target, &forward_path, forward_spec)?;
-                                let mut reverse_writers = Vec::with_capacity(num_shards);
-                                for dst_shard in 0..num_shards {
-                                    let reverse_path = target.join(&temp_edge_map_path(
-                                        &rel.name_reverse,
-                                        dst_shard,
-                                        shard,
-                                        file_idx,
-                                    ));
-                                    reverse_writers.push(EdgePartWriter::open(
-                                        &target,
-                                        &reverse_path,
-                                        reverse_spec,
-                                    )?);
-                                }
                                 let fkey_path = root.join(temp_fkey_path(
                                     &rel.src_table,
                                     &rel.name_forward,
@@ -2793,18 +2787,15 @@ impl IngestContext {
                                         .copied()
                                         .unwrap_or(0)
                                         .saturating_add(dst_local);
-                                    forward_writer.write(src_id, dst_id, 0)?;
-                                    reverse_writers
-                                        .get_mut(dst_shard)
-                                        .ok_or_else(|| anyhow!("missing reverse writer"))?
-                                        .write(dst_id, src_id, 0)?;
+                                    forward_batcher.push(shard, src_id, dst_id, 0)?;
+                                    reverse_batcher.push(dst_shard, dst_id, src_id, 0)?;
+                                    forward_count = forward_count.saturating_add(1);
+                                    reverse_count = reverse_count.saturating_add(1);
                                     Ok(())
                                 })?;
-                                forward_count = forward_count.saturating_add(forward_writer.finish()?);
-                                for writer in reverse_writers {
-                                    reverse_count = reverse_count.saturating_add(writer.finish()?);
-                                }
                             }
+                            forward_batcher.flush_all()?;
+                            reverse_batcher.flush_all()?;
                             if pending > 0 {
                                 if let Some(cb) = &progress {
                                     cb(ProgressEvent {
@@ -2834,7 +2825,6 @@ impl IngestContext {
             for table in self.source.tables.iter().filter(|t| t.edge_table.is_some()) {
                 let table = table.clone();
                 let progress = progress.clone();
-                let target = std::sync::Arc::clone(&target);
                 let shard_offsets = shard_offsets.clone();
                 let pk_hash_store = pk_hash_store.clone();
                 let max_ids = max_ids.clone();
@@ -2884,13 +2874,13 @@ impl IngestContext {
                 let dst_pk_col = column_spec(dst_table, dst_pk)?;
                 for shard in 0..num_shards {
                     let progress = progress.clone();
-                    let target = std::sync::Arc::clone(&target);
                     let shard_offsets = shard_offsets.clone();
                     let pk_hash_store = pk_hash_store.clone();
                     let max_ids = max_ids.clone();
                     let rel_sort_bits = rel_sort_bits.clone();
                     let root = root.clone();
                     let tx = tx.clone();
+                    let writer_senders = std::sync::Arc::clone(&writer_senders);
                     let edge = edge.clone();
                     let forward_name = forward_name.clone();
                     let reverse_name = reverse_name.clone();
@@ -2942,32 +2932,25 @@ impl IngestContext {
                                     .unwrap_or(0),
                                 reverse_sort_bits,
                             );
+                            let buffer_limit = edge_batch_buffer_limit(num_shards);
+                            let mut forward_batcher = EdgeBatcher::new(
+                                std::sync::Arc::<str>::from(forward_name.clone()),
+                                forward_spec,
+                                num_shards,
+                                buffer_limit,
+                                std::sync::Arc::clone(&writer_senders),
+                            );
+                            let mut reverse_batcher = EdgeBatcher::new(
+                                std::sync::Arc::<str>::from(reverse_name.clone()),
+                                reverse_spec,
+                                num_shards,
+                                buffer_limit,
+                                std::sync::Arc::clone(&writer_senders),
+                            );
                             let mut pending = 0u64;
                             let mut forward_count = 0u64;
                             let mut reverse_count = 0u64;
                             for file_idx in 0..file_count {
-                                let forward_path = target.join(&temp_edge_map_path(
-                                    &forward_name,
-                                    shard,
-                                    shard,
-                                    file_idx,
-                                ));
-                                let mut forward_writer =
-                                    EdgePartWriter::open(&target, &forward_path, forward_spec)?;
-                                let mut reverse_writers = Vec::with_capacity(num_shards);
-                                for dst_shard in 0..num_shards {
-                                    let reverse_path = target.join(&temp_edge_map_path(
-                                        &reverse_name,
-                                        dst_shard,
-                                        shard,
-                                        file_idx,
-                                    ));
-                                    reverse_writers.push(EdgePartWriter::open(
-                                        &target,
-                                        &reverse_path,
-                                        reverse_spec,
-                                    )?);
-                                }
                                 let forward_path =
                                     root.join(temp_edge_path(&forward_name, shard, file_idx));
                                 read_temp_rows(&forward_path, |row| {
@@ -3043,18 +3026,15 @@ impl IngestContext {
                                         .copied()
                                         .unwrap_or(0)
                                         .saturating_add(dst_local);
-                                    forward_writer.write(src_id, dst_id, 0)?;
-                                    reverse_writers
-                                        .get_mut(dst_shard)
-                                        .ok_or_else(|| anyhow!("missing reverse writer"))?
-                                        .write(dst_id, src_id, 0)?;
+                                    forward_batcher.push(shard, src_id, dst_id, 0)?;
+                                    reverse_batcher.push(dst_shard, dst_id, src_id, 0)?;
+                                    forward_count = forward_count.saturating_add(1);
+                                    reverse_count = reverse_count.saturating_add(1);
                                     Ok(())
                                 })?;
-                                forward_count = forward_count.saturating_add(forward_writer.finish()?);
-                                for writer in reverse_writers {
-                                    reverse_count = reverse_count.saturating_add(writer.finish()?);
-                                }
                             }
+                            forward_batcher.flush_all()?;
+                            reverse_batcher.flush_all()?;
                             if pending > 0 {
                                 if let Some(cb) = &progress {
                                     cb(ProgressEvent {
@@ -3107,6 +3087,8 @@ impl IngestContext {
                     }
                 }
             }
+            drop(writer_senders);
+            writer_pool.finish()?;
             self.edges_map_task_ms = task_time.load(Ordering::Relaxed) / 1_000_000;
             self.edges_map_tasks = task_count;
             self.temp_edges_src_bytes = self
@@ -3124,6 +3106,9 @@ impl IngestContext {
         }
 
         let relationships = self.relationships.clone();
+        let writer_pool =
+            EdgeWriterPool::new(std::sync::Arc::clone(&self.target), edge_writer_workers());
+        let writer_senders = writer_pool.senders();
         for rel in &relationships {
             let progress = self.progress.clone();
             let emit_progress = |event: ProgressEvent| {
@@ -3197,29 +3182,22 @@ impl IngestContext {
                 let mut local_count = 0u64;
                 let mut forward_count = 0u64;
                 let mut reverse_count = 0u64;
+                let buffer_limit = edge_batch_buffer_limit(self.num_shards);
+                let mut forward_batcher = EdgeBatcher::new(
+                    std::sync::Arc::<str>::from(rel.name_forward.clone()),
+                    forward_spec,
+                    self.num_shards,
+                    buffer_limit,
+                    std::sync::Arc::clone(&writer_senders),
+                );
+                let mut reverse_batcher = EdgeBatcher::new(
+                    std::sync::Arc::<str>::from(rel.name_reverse.clone()),
+                    reverse_spec,
+                    self.num_shards,
+                    buffer_limit,
+                    std::sync::Arc::clone(&writer_senders),
+                );
                 for file_idx in 0..file_count {
-                    let forward_path = self.target.join(&temp_edge_map_path(
-                        &rel.name_forward,
-                        shard,
-                        shard,
-                        file_idx,
-                    ));
-                    let mut forward_writer =
-                        EdgePartWriter::open(&self.target, &forward_path, forward_spec)?;
-                    let mut reverse_writers = Vec::with_capacity(self.num_shards);
-                    for dst_shard in 0..self.num_shards {
-                        let reverse_path = self.target.join(&temp_edge_map_path(
-                            &rel.name_reverse,
-                            dst_shard,
-                            shard,
-                            file_idx,
-                        ));
-                        reverse_writers.push(EdgePartWriter::open(
-                            &self.target,
-                            &reverse_path,
-                            reverse_spec,
-                        )?);
-                    }
                     let fkey_path = root.join(temp_fkey_path(
                         &rel.src_table,
                         &rel.name_forward,
@@ -3286,18 +3264,15 @@ impl IngestContext {
                             .copied()
                             .unwrap_or(0)
                             .saturating_add(dst_local);
-                        forward_writer.write(src_id, dst_id, 0)?;
-                        reverse_writers
-                            .get_mut(dst_shard)
-                            .ok_or_else(|| anyhow!("missing reverse writer"))?
-                            .write(dst_id, src_id, 0)?;
+                        forward_batcher.push(shard, src_id, dst_id, 0)?;
+                        reverse_batcher.push(dst_shard, dst_id, src_id, 0)?;
+                        forward_count = forward_count.saturating_add(1);
+                        reverse_count = reverse_count.saturating_add(1);
                         Ok(())
                     })?;
-                    forward_count = forward_count.saturating_add(forward_writer.finish()?);
-                    for writer in reverse_writers {
-                        reverse_count = reverse_count.saturating_add(writer.finish()?);
-                    }
                 }
+                forward_batcher.flush_all()?;
+                reverse_batcher.flush_all()?;
                 let entry = self
                     .edge_counts
                     .entry(rel.name_forward.clone())
@@ -3433,29 +3408,22 @@ impl IngestContext {
             for shard in 0..self.num_shards {
                 let mut forward_count = 0u64;
                 let mut reverse_count = 0u64;
+                let buffer_limit = edge_batch_buffer_limit(self.num_shards);
+                let mut forward_batcher = EdgeBatcher::new(
+                    std::sync::Arc::<str>::from(forward_name.clone()),
+                    forward_spec,
+                    self.num_shards,
+                    buffer_limit,
+                    std::sync::Arc::clone(&writer_senders),
+                );
+                let mut reverse_batcher = EdgeBatcher::new(
+                    std::sync::Arc::<str>::from(reverse_name.clone()),
+                    reverse_spec,
+                    self.num_shards,
+                    buffer_limit,
+                    std::sync::Arc::clone(&writer_senders),
+                );
                 for file_idx in 0..file_count {
-                    let forward_path = self.target.join(&temp_edge_map_path(
-                        &forward_name,
-                        shard,
-                        shard,
-                        file_idx,
-                    ));
-                    let mut forward_writer =
-                        EdgePartWriter::open(&self.target, &forward_path, forward_spec)?;
-                    let mut reverse_writers = Vec::with_capacity(self.num_shards);
-                    for dst_shard in 0..self.num_shards {
-                        let reverse_path = self.target.join(&temp_edge_map_path(
-                            &reverse_name,
-                            dst_shard,
-                            shard,
-                            file_idx,
-                        ));
-                        reverse_writers.push(EdgePartWriter::open(
-                            &self.target,
-                            &reverse_path,
-                            reverse_spec,
-                        )?);
-                    }
                     let forward_path = root.join(temp_edge_path(&forward_name, shard, file_idx));
                     read_temp_rows(&forward_path, |row| {
                         pending = pending.saturating_add(1);
@@ -3530,18 +3498,15 @@ impl IngestContext {
                             .copied()
                             .unwrap_or(0)
                             .saturating_add(dst_local);
-                        forward_writer.write(src_id, dst_id, 0)?;
-                        reverse_writers
-                            .get_mut(dst_shard)
-                            .ok_or_else(|| anyhow!("missing reverse writer"))?
-                            .write(dst_id, src_id, 0)?;
+                        forward_batcher.push(shard, src_id, dst_id, 0)?;
+                        reverse_batcher.push(dst_shard, dst_id, src_id, 0)?;
+                        forward_count = forward_count.saturating_add(1);
+                        reverse_count = reverse_count.saturating_add(1);
                         Ok(())
                     })?;
-                    forward_count = forward_count.saturating_add(forward_writer.finish()?);
-                    for writer in reverse_writers {
-                        reverse_count = reverse_count.saturating_add(writer.finish()?);
-                    }
                 }
+                forward_batcher.flush_all()?;
+                reverse_batcher.flush_all()?;
                 let entry = self
                     .edge_counts
                     .entry(forward_name.clone())
@@ -3573,6 +3538,9 @@ impl IngestContext {
             });
             self.merge_key_failures(key_failures);
         }
+
+        drop(writer_senders);
+        writer_pool.finish()?;
 
         let elapsed = phase_start.elapsed();
         self.edges_map_task_ms = self
@@ -3963,7 +3931,7 @@ fn edge_binary_spec(
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct EdgeBinarySpec {
     src_width: u8,
     dst_width: u8,
@@ -3979,13 +3947,8 @@ fn temp_edge_map_shard_dir(name: &str, shard: usize) -> String {
     )
 }
 
-fn temp_edge_map_path(name: &str, shard: usize, producer: usize, file_idx: usize) -> String {
-    format!(
-        "{}/part-{:05}-{:05}.bin",
-        temp_edge_map_shard_dir(name, shard),
-        producer,
-        file_idx
-    )
+fn temp_edge_map_part_path(name: &str, shard: usize) -> String {
+    format!("{}/part-00000.bin", temp_edge_map_shard_dir(name, shard))
 }
 
 fn temp_node_shard_dir(name: &str, shard: usize) -> String {
@@ -4187,10 +4150,23 @@ fn write_edge_bin_header(writer: &mut BufWriter<OutputSink>, spec: EdgeBinarySpe
     Ok(())
 }
 
-fn write_u64_width(writer: &mut BufWriter<OutputSink>, value: u64, width: u8) -> Result<()> {
+fn push_u64_width(buf: &mut Vec<u8>, value: u64, width: u8) {
     let bytes = value.to_le_bytes();
-    writer.write_all(&bytes[..width as usize])?;
-    Ok(())
+    buf.extend_from_slice(&bytes[..width as usize]);
+}
+
+fn append_edge_record(
+    buf: &mut Vec<u8>,
+    spec: EdgeBinarySpec,
+    src_id: u64,
+    dst_id: u64,
+    sort_key: u64,
+) {
+    push_u64_width(buf, src_id, spec.src_width);
+    push_u64_width(buf, dst_id, spec.dst_width);
+    if spec.sort_width > 0 {
+        push_u64_width(buf, sort_key, spec.sort_width);
+    }
 }
 
 struct EdgePartWriter {
@@ -4215,13 +4191,9 @@ impl EdgePartWriter {
         })
     }
 
-    fn write(&mut self, src_id: u64, dst_id: u64, sort_key: u64) -> Result<()> {
-        write_u64_width(&mut self.writer, src_id, self.spec.src_width)?;
-        write_u64_width(&mut self.writer, dst_id, self.spec.dst_width)?;
-        if self.spec.sort_width > 0 {
-            write_u64_width(&mut self.writer, sort_key, self.spec.sort_width)?;
-        }
-        self.row_count = self.row_count.saturating_add(1);
+    fn write_batch(&mut self, data: &[u8], rows: u64) -> Result<()> {
+        self.writer.write_all(data)?;
+        self.row_count = self.row_count.saturating_add(rows);
         Ok(())
     }
 
@@ -4233,6 +4205,200 @@ impl EdgePartWriter {
             .map_err(|_| anyhow!("edge part flush failed"))?;
         sink.finish()?;
         Ok(self.row_count)
+    }
+}
+
+const EDGE_WRITE_QUEUE_DEPTH: usize = 128;
+const EDGE_BATCH_MIN_BYTES: usize = 64 * 1024;
+const EDGE_BATCH_TARGET_BYTES: usize = 8 * 1024 * 1024;
+const EDGE_BATCH_MAX_BYTES: usize = 2 * 1024 * 1024;
+
+fn edge_batch_buffer_limit(num_shards: usize) -> usize {
+    let per = EDGE_BATCH_TARGET_BYTES / num_shards.max(1);
+    let per = per.max(EDGE_BATCH_MIN_BYTES);
+    per.min(EDGE_BATCH_MAX_BYTES)
+}
+
+fn edge_writer_workers() -> usize {
+    let cpus = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1);
+    let scaled = (cpus / 8).max(1);
+    scaled.min(4)
+}
+
+fn edge_writer_index(relation_hash: u64, shard: usize, workers: usize) -> usize {
+    let mixed = relation_hash ^ (shard as u64);
+    (mixed % workers as u64) as usize
+}
+
+#[derive(Clone)]
+struct EdgeWriteBatch {
+    relation: std::sync::Arc<str>,
+    shard: usize,
+    spec: EdgeBinarySpec,
+    data: Vec<u8>,
+    row_count: u64,
+}
+
+enum EdgeWriteMessage {
+    Batch(EdgeWriteBatch),
+}
+
+struct EdgeWriterPool {
+    senders: std::sync::Arc<Vec<std::sync::mpsc::SyncSender<EdgeWriteMessage>>>,
+    handles: Vec<std::thread::JoinHandle<Result<()>>>,
+}
+
+impl EdgeWriterPool {
+    fn new(target: std::sync::Arc<OutputTarget>, workers: usize) -> Self {
+        let mut senders = Vec::with_capacity(workers);
+        let mut handles = Vec::with_capacity(workers);
+        for _ in 0..workers {
+            let (tx, rx) = std::sync::mpsc::sync_channel::<EdgeWriteMessage>(EDGE_WRITE_QUEUE_DEPTH);
+            let target = std::sync::Arc::clone(&target);
+            handles.push(std::thread::spawn(move || edge_writer_worker(target, rx)));
+            senders.push(tx);
+        }
+        Self {
+            senders: std::sync::Arc::new(senders),
+            handles,
+        }
+    }
+
+    fn senders(&self) -> std::sync::Arc<Vec<std::sync::mpsc::SyncSender<EdgeWriteMessage>>> {
+        std::sync::Arc::clone(&self.senders)
+    }
+
+    fn finish(self) -> Result<()> {
+        drop(self.senders);
+        for handle in self.handles {
+            match handle.join() {
+                Ok(result) => result?,
+                Err(_) => return Err(anyhow!("edge writer thread panicked")),
+            }
+        }
+        Ok(())
+    }
+}
+
+fn edge_writer_worker(
+    target: std::sync::Arc<OutputTarget>,
+    rx: std::sync::mpsc::Receiver<EdgeWriteMessage>,
+) -> Result<()> {
+    let mut writers: HashMap<(std::sync::Arc<str>, usize), EdgePartWriter> = HashMap::new();
+    while let Ok(msg) = rx.recv() {
+        match msg {
+            EdgeWriteMessage::Batch(batch) => {
+                let key = (std::sync::Arc::clone(&batch.relation), batch.shard);
+                if let Some(writer) = writers.get_mut(&key) {
+                    if writer.spec != batch.spec {
+                        return Err(anyhow!(
+                            "edge spec mismatch for {} shard {}",
+                            batch.relation,
+                            batch.shard
+                        ));
+                    }
+                    writer.write_batch(&batch.data, batch.row_count)?;
+                    continue;
+                }
+                let path = target.join(&temp_edge_map_part_path(&batch.relation, batch.shard));
+                let mut writer = EdgePartWriter::open(&target, &path, batch.spec)?;
+                writer.write_batch(&batch.data, batch.row_count)?;
+                writers.insert(key, writer);
+            }
+        }
+    }
+    for (_, writer) in writers {
+        writer.finish()?;
+    }
+    Ok(())
+}
+
+struct EdgeBuffer {
+    data: Vec<u8>,
+    row_count: u64,
+}
+
+struct EdgeBatcher {
+    relation: std::sync::Arc<str>,
+    relation_hash: u64,
+    spec: EdgeBinarySpec,
+    buffers: Vec<EdgeBuffer>,
+    buffer_limit: usize,
+    senders: std::sync::Arc<Vec<std::sync::mpsc::SyncSender<EdgeWriteMessage>>>,
+}
+
+impl EdgeBatcher {
+    fn new(
+        relation: std::sync::Arc<str>,
+        spec: EdgeBinarySpec,
+        num_shards: usize,
+        buffer_limit: usize,
+        senders: std::sync::Arc<Vec<std::sync::mpsc::SyncSender<EdgeWriteMessage>>>,
+    ) -> Self {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        relation.hash(&mut hasher);
+        let relation_hash = hasher.finish();
+        let buffers = (0..num_shards)
+            .map(|_| EdgeBuffer {
+                data: Vec::new(),
+                row_count: 0,
+            })
+            .collect();
+        Self {
+            relation,
+            relation_hash,
+            spec,
+            buffers,
+            buffer_limit,
+            senders,
+        }
+    }
+
+    fn push(&mut self, shard: usize, src_id: u64, dst_id: u64, sort_key: u64) -> Result<()> {
+        let buffer = self
+            .buffers
+            .get_mut(shard)
+            .ok_or_else(|| anyhow!("edge buffer shard {} out of bounds", shard))?;
+        append_edge_record(&mut buffer.data, self.spec, src_id, dst_id, sort_key);
+        buffer.row_count = buffer.row_count.saturating_add(1);
+        if buffer.data.len() >= self.buffer_limit {
+            self.flush_shard(shard)?;
+        }
+        Ok(())
+    }
+
+    fn flush_shard(&mut self, shard: usize) -> Result<()> {
+        let buffer = self
+            .buffers
+            .get_mut(shard)
+            .ok_or_else(|| anyhow!("edge buffer shard {} out of bounds", shard))?;
+        if buffer.row_count == 0 {
+            return Ok(());
+        }
+        let mut data = Vec::with_capacity(buffer.data.capacity());
+        std::mem::swap(&mut data, &mut buffer.data);
+        let batch = EdgeWriteBatch {
+            relation: std::sync::Arc::clone(&self.relation),
+            shard,
+            spec: self.spec,
+            data,
+            row_count: buffer.row_count,
+        };
+        buffer.row_count = 0;
+        let idx = edge_writer_index(self.relation_hash, shard, self.senders.len());
+        self.senders[idx]
+            .send(EdgeWriteMessage::Batch(batch))
+            .map_err(|e| anyhow!("edge writer channel error: {e}"))?;
+        Ok(())
+    }
+
+    fn flush_all(&mut self) -> Result<()> {
+        for shard in 0..self.buffers.len() {
+            self.flush_shard(shard)?;
+        }
+        Ok(())
     }
 }
 
