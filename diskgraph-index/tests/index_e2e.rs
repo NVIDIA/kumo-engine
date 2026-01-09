@@ -64,7 +64,7 @@ fn build_and_read_round_trip_basic() {
             &[EdgeShardInput {
                 relation: "Follows".into(),
                 source_shard_index: 0,
-                path: edge_path,            }],
+                paths: vec![edge_path],            }],
         )
         .unwrap();
 
@@ -144,7 +144,7 @@ fn build_rejects_dangling_edges() {
         &[EdgeShardInput {
             relation: "Follows".into(),
             source_shard_index: 0,
-            path: edge_path,        }],
+            paths: vec![edge_path],        }],
     ) {
         Ok(_) => panic!("expected DanglingEdges error"),
         Err(err) => err.to_string(),
@@ -156,7 +156,7 @@ fn build_rejects_dangling_edges() {
 }
 
 #[test]
-fn build_rejects_edge_ordering_violation() {
+fn build_sorts_edge_ordering_violation() {
     let dir = tempdir().unwrap();
     let edge_path = dir.path().join("edges.bin");
     // src_id must be sorted ascending; make it descending to trigger violation.
@@ -189,19 +189,21 @@ fn build_rejects_edge_ordering_violation() {
         shard_index: 0,
         node_data_paths: None,
     });
-    let msg = match builder.build(
-        &[EdgeShardInput {
+    let built = builder
+        .build(&[EdgeShardInput {
             relation: "Follows".into(),
             source_shard_index: 0,
-            path: edge_path,        }],
-    ) {
-        Ok(_) => panic!("expected EdgeOrderingViolation error"),
-        Err(err) => err.to_string(),
-    };
-    assert!(
-        msg.contains("input edges not sorted by src_id"),
-        "expected EdgeOrderingViolation, got {msg}"
-    );
+            paths: vec![edge_path],
+        }])
+        .unwrap();
+    let reader = ShardReader::open(&output_dir, built.layouts.clone(), false).unwrap();
+    let rel0 = 0;
+    let seg0 = decode_relation(&reader, 0, rel0);
+    assert_eq!(seg0.len(), 1);
+    assert_eq!(seg0[0].0, 2);
+    let seg1 = decode_relation(&reader, 1, rel0);
+    assert_eq!(seg1.len(), 1);
+    assert_eq!(seg1[0].0, 1);
 }
 
 #[test]
@@ -263,7 +265,7 @@ fn offsets_span_multiple_chunks_and_edges_decode_correctly() {
             &[EdgeShardInput {
                 relation: "Follows".into(),
                 source_shard_index: 0,
-                path: edge_path,            }],
+                paths: vec![edge_path],            }],
         )
         .unwrap();
     let reader = ShardReader::open(&output_dir, built.layouts.clone(), false).unwrap();
@@ -326,7 +328,7 @@ fn sort_key_round_trip_decodes_correctly() {
             &[EdgeShardInput {
                 relation: "Temporal".into(),
                 source_shard_index: 0,
-                path: edge_path,            }],
+                paths: vec![edge_path],            }],
         )
         .unwrap();
     let reader = ShardReader::open(&output_dir, built.layouts.clone(), false).unwrap();
@@ -396,11 +398,11 @@ fn multi_relation_counts_and_edges_decode_correctly() {
                 EdgeShardInput {
                     relation: "Follows".into(),
                     source_shard_index: 0,
-                    path: edge_path_a,                },
+                    paths: vec![edge_path_a],                },
                 EdgeShardInput {
                     relation: "Temporal".into(),
                     source_shard_index: 0,
-                    path: edge_path_b,                },
+                    paths: vec![edge_path_b],                },
             ],
         )
         .unwrap();
@@ -476,11 +478,11 @@ fn multi_relation_mixed_dst_widths_and_partial_edges() {
                 EdgeShardInput {
                     relation: "Follows".into(),
                     source_shard_index: 0,
-                    path: edge_path_a,                },
+                    paths: vec![edge_path_a],                },
                 EdgeShardInput {
                     relation: "Temporal".into(),
                     source_shard_index: 0,
-                    path: edge_path_b,                },
+                    paths: vec![edge_path_b],                },
             ],
         )
         .unwrap();
@@ -537,7 +539,7 @@ fn truncates_large_node_without_sort_key() {
             &[EdgeShardInput {
                 relation: "Follows".into(),
                 source_shard_index: 0,
-                path: edge_path,            }],
+                paths: vec![edge_path],            }],
         )
         .unwrap();
     let reader = ShardReader::open(&output_dir, built.layouts.clone(), false).unwrap();
@@ -613,7 +615,7 @@ fn truncates_large_node_with_sort_key() {
             &[EdgeShardInput {
                 relation: "Temporal".into(),
                 source_shard_index: 0,
-                path: edge_path,            }],
+                paths: vec![edge_path],            }],
         )
         .unwrap();
     let reader = ShardReader::open(&output_dir, built.layouts.clone(), false).unwrap();
@@ -680,7 +682,7 @@ fn caps_relation_edge_count_at_varint_limit() {
             &[EdgeShardInput {
                 relation: "Follows".into(),
                 source_shard_index: 0,
-                path: edge_path,            }],
+                paths: vec![edge_path],            }],
         )
         .unwrap();
 
@@ -864,7 +866,7 @@ fn offsets_many_chunks_sparse_edges() {
             &[EdgeShardInput {
                 relation: "Follows".into(),
                 source_shard_index: 0,
-                path: edge_path,            }],
+                paths: vec![edge_path],            }],
         )
         .unwrap();
     let reader = ShardReader::open(&output_dir, built.layouts.clone(), false).unwrap();
@@ -946,11 +948,11 @@ fn truncates_large_node_multi_relation() {
                 EdgeShardInput {
                     relation: "Follows".into(),
                     source_shard_index: 0,
-                    path: edge_path_a,                },
+                    paths: vec![edge_path_a],                },
                 EdgeShardInput {
                     relation: "Temporal".into(),
                     source_shard_index: 0,
-                    path: edge_path_b,                },
+                    paths: vec![edge_path_b],                },
             ],
         )
         .unwrap();
@@ -1008,7 +1010,7 @@ fn builder_errors_when_missing_dest_sort_key() {
         &[EdgeShardInput {
             relation: "Temporal".into(),
             source_shard_index: 0,
-            path: edge_path,        }],
+            paths: vec![edge_path],        }],
     ) {
         Ok(_) => panic!("expected missing dest_sort_key error"),
         Err(err) => err.to_string(),
@@ -1046,7 +1048,7 @@ fn builder_accepts_binary_edges_with_64bit_sort_key() {
             &[EdgeShardInput {
                 relation: "Temporal".into(),
                 source_shard_index: 0,
-                path: edge_path,            }],
+                paths: vec![edge_path],            }],
         )
         .unwrap();
 
@@ -1085,7 +1087,7 @@ fn builder_errors_when_dst_id_exceeds_mask() {
         &[EdgeShardInput {
             relation: "Follows".into(),
             source_shard_index: 0,
-            path: edge_path,        }],
+            paths: vec![edge_path],        }],
     ) {
         Ok(_) => panic!("expected dst_id out of range error"),
         Err(err) => err.to_string(),
@@ -1126,7 +1128,7 @@ fn builder_errors_when_dest_sort_key_exceeds_mask() {
         &[EdgeShardInput {
             relation: "Temporal".into(),
             source_shard_index: 0,
-            path: edge_path,        }],
+            paths: vec![edge_path],        }],
     ) {
         Ok(_) => panic!("expected dest_sort_key out of range error"),
         Err(err) => err.to_string(),
@@ -1166,7 +1168,7 @@ fn builder_errors_on_unknown_relation_name() {
         &[EdgeShardInput {
             relation: "Unknown".into(),
             source_shard_index: 0,
-            path: edge_path,        }],
+            paths: vec![edge_path],        }],
     ) {
         Ok(_) => panic!("expected UnknownRelation error"),
         Err(err) => err.to_string(),
@@ -1198,7 +1200,7 @@ fn builder_errors_on_corrupted_binary() {
         &[EdgeShardInput {
             relation: "Follows".into(),
             source_shard_index: 0,
-            path: edge_path,        }],
+            paths: vec![edge_path],        }],
     ) {
         Ok(_) => panic!("expected binary error"),
         Err(err) => err.to_string(),
@@ -1238,7 +1240,7 @@ fn builder_errors_on_shard_index_mismatch() {
         &[EdgeShardInput {
             relation: "Follows".into(),
             source_shard_index: 1,
-            path: edge_path,        }],
+            paths: vec![edge_path],        }],
     ) {
         Ok(_) => panic!("expected shard index mismatch"),
         Err(err) => err.to_string(),
@@ -1266,7 +1268,7 @@ fn builder_fails_on_missing_edge_file() {
         &[EdgeShardInput {
             relation: "Follows".into(),
             source_shard_index: 0,
-            path: dir.path().join("missing.bin"),        }],
+            paths: vec![dir.path().join("missing.bin")],        }],
     ) {
         Ok(_) => panic!("expected IO error for missing edge file"),
         Err(err) => err.to_string(),
@@ -1427,7 +1429,7 @@ fn build_simple_shard(
             &[EdgeShardInput {
                 relation: "Follows".into(),
                 source_shard_index: 0,
-                path: edge_path,            }],
+                paths: vec![edge_path],            }],
         )
         .unwrap();
     (dir, output_dir, built.layouts.clone())
@@ -1481,7 +1483,7 @@ fn builder_writes_node_data() {
             &[EdgeShardInput {
                 relation: "Follows".into(),
                 source_shard_index: 0,
-                path: edge_path,            }],
+                paths: vec![edge_path],            }],
         )
         .unwrap();
 
@@ -1529,7 +1531,7 @@ fn builder_errors_on_node_data_row_count_mismatch() {
         &[EdgeShardInput {
             relation: "Follows".into(),
             source_shard_index: 0,
-            path: edge_path,        }],
+            paths: vec![edge_path],        }],
     ) {
         Ok(_) => panic!("expected node data row count error"),
         Err(err) => err.to_string(),

@@ -143,7 +143,7 @@ impl GraphIndexBuilder {
                         Ok(EdgeShardInput {
                             relation: rel.name.clone(),
                             source_shard_index: shard_idx,
-                            path: self.resolve_path(&shard.path),
+                            paths: self.collect_edge_paths(&shard.path)?,
                         })
                     })
                     .collect::<Result<Vec<_>>>()?;
@@ -167,6 +167,24 @@ impl GraphIndexBuilder {
     fn resolve_path(&self, rel_path: &str) -> PathBuf {
         match &self.source {
             GraphDataSource::Local { root } => root.join(rel_path),
+        }
+    }
+
+    fn collect_edge_paths(&self, rel_path: &str) -> Result<Vec<PathBuf>> {
+        let path = self.resolve_path(rel_path);
+        if path.is_dir() {
+            let mut paths = Vec::new();
+            for entry in fs::read_dir(&path)? {
+                let entry = entry?;
+                let path = entry.path();
+                if path.extension().and_then(|ext| ext.to_str()) == Some("bin") {
+                    paths.push(path);
+                }
+            }
+            paths.sort();
+            Ok(paths)
+        } else {
+            Ok(vec![path])
         }
     }
 }

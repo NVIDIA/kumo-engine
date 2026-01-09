@@ -734,33 +734,21 @@ pub(crate) fn shard_node_count(node_meta: &NodeTypeMetadata, shard_index: usize)
 }
 
 enum EdgeSubStream {
-    BinaryNoSort(BinaryEdgeSubStreamNoSort),
-    BinaryWithSort(BinaryEdgeSubStreamWithSort),
+    Memory(MemoryEdgeSubStream),
 }
 
-struct BinaryEdgeRecord {
+#[derive(Clone, Copy)]
+struct EdgeRecord {
     src_id: u64,
     dst_id: u64,
-    sort_key: Option<u64>,
+    sort_key: u64,
 }
 
-struct BinaryEdgeSubStreamNoSort {
-    reader: std::io::BufReader<std::fs::File>,
-    remaining: u64,
+struct MemoryEdgeSubStream {
+    records: Vec<EdgeRecord>,
+    index: usize,
     relation_id: u16,
-    src_width: u8,
-    dst_width: u8,
-    next_record: Option<BinaryEdgeRecord>,
-}
-
-struct BinaryEdgeSubStreamWithSort {
-    reader: std::io::BufReader<std::fs::File>,
-    remaining: u64,
-    relation_id: u16,
-    src_width: u8,
-    dst_width: u8,
     sort_width: u8,
-    next_record: Option<BinaryEdgeRecord>,
 }
 
 impl EdgeSubStream {
@@ -769,13 +757,87 @@ impl EdgeSubStream {
         relation_id: u16,
         dest_sort_key_bits: Option<u8>,
     ) -> Result<Self> {
-        let file = std::fs::File::open(&input.path)?;
+        let (sort_width, mut records) = read_edge_parts(&input.paths, dest_sort_key_bits)?;
+        radix_sort_edge_records(&mut records);
+        if sort_width > 0 {
+            sort_edge_ranges_by_sort_key(&mut records);
+        }
+        Ok(EdgeSubStream::Memory(MemoryEdgeSubStream {
+            records,
+            index: 0,
+            relation_id,
+            sort_width,
+        }))
+    }
+
+    fn peek_src(&mut self) -> Result<Option<u64>> {
+        match self {
+            EdgeSubStream::Memory(inner) => inner.peek_src(),
+        }
+    }
+
+    fn drain_edges(
+        &mut self,
+        node_id: u64,
+        buckets: &mut [Vec<EdgeRec>],
+    ) -> Result<Option<u64>> {
+        match self {
+            EdgeSubStream::Memory(inner) => inner.drain_edges(node_id, buckets),
+        }
+    }
+}
+
+impl MemoryEdgeSubStream {
+    fn peek_src(&mut self) -> Result<Option<u64>> {
+        Ok(self.records.get(self.index).map(|r| r.src_id))
+    }
+
+    fn drain_edges(
+        &mut self,
+        node_id: u64,
+        buckets: &mut [Vec<EdgeRec>],
+    ) -> Result<Option<u64>> {
+        while let Some(record) = self.records.get(self.index) {
+            if record.src_id != node_id {
+                break;
+            }
+            buckets[self.relation_id as usize].push(EdgeRec {
+                src: record.src_id,
+                dst: record.dst_id,
+                dest_sort_key: if self.sort_width > 0 {
+                    Some(record.sort_key)
+                } else {
+                    None
+                },
+                relation_id: self.relation_id,
+            });
+            self.index += 1;
+        }
+        Ok(self.records.get(self.index).map(|r| r.src_id))
+    }
+}
+
+fn read_u64_width_slice(buf: &[u8], width: u8) -> u64 {
+    let mut tmp = [0u8; 8];
+    tmp[..width as usize].copy_from_slice(buf);
+    u64::from_le_bytes(tmp)
+}
+
+fn read_edge_parts(
+    paths: &[PathBuf],
+    dest_sort_key_bits: Option<u8>,
+) -> Result<(u8, Vec<EdgeRecord>)> {
+    let mut records = Vec::new();
+    if paths.is_empty() {
+        let sort_width = if dest_sort_key_bits.is_some() { 1 } else { 0 };
+        return Ok((sort_width, records));
+    }
+    let mut spec: Option<(u8, u8, u8)> = None;
+    for path in paths {
+        let file = std::fs::File::open(path)?;
         let file_len = file.metadata()?.len();
         if file_len < 3 {
-            return Err(IndexBuildError::NotImplemented(
-                "binary edge file too small",
-            )
-            .into());
+            return Err(IndexBuildError::NotImplemented("binary edge file too small").into());
         }
         let mut reader = std::io::BufReader::with_capacity(1024 * 1024, file);
         let mut header = [0u8; 3];
@@ -792,12 +854,21 @@ impl EdgeSubStream {
             )
             .into());
         }
-        let with_sort = sort_width > 0;
-        if dest_sort_key_bits.is_some() && !with_sort {
+        if dest_sort_key_bits.is_some() && sort_width == 0 {
             return Err(IndexBuildError::NotImplemented(
                 "binary edge missing dest_sort_key",
             )
             .into());
+        }
+        if let Some((s_src, s_dst, s_sort)) = spec {
+            if s_src != src_width || s_dst != dst_width || s_sort != sort_width {
+                return Err(IndexBuildError::NotImplemented(
+                    "binary edge header mismatch",
+                )
+                .into());
+            }
+        } else {
+            spec = Some((src_width, dst_width, sort_width));
         }
         let record_size = src_width as u64 + dst_width as u64 + sort_width as u64;
         let payload = file_len - 3;
@@ -808,165 +879,107 @@ impl EdgeSubStream {
             .into());
         }
         let remaining = payload / record_size;
-        if with_sort {
-            Ok(EdgeSubStream::BinaryWithSort(BinaryEdgeSubStreamWithSort {
-                reader,
-                remaining,
-                relation_id,
-                src_width,
+        let reserve = usize::try_from(remaining).unwrap_or(usize::MAX);
+        records.reserve(reserve);
+        let mut buf = [0u8; 24];
+        for _ in 0..remaining {
+            let record_size = record_size as usize;
+            reader.read_exact(&mut buf[..record_size])?;
+            let src_id = read_u64_width_slice(&buf[..src_width as usize], src_width);
+            let dst_off = src_width as usize;
+            let dst_id = read_u64_width_slice(
+                &buf[dst_off..dst_off + dst_width as usize],
                 dst_width,
-                sort_width,
-                next_record: None,
-            }))
-        } else {
-            Ok(EdgeSubStream::BinaryNoSort(BinaryEdgeSubStreamNoSort {
-                reader,
-                remaining,
-                relation_id,
-                src_width,
-                dst_width,
-                next_record: None,
-            }))
-        }
-    }
-
-    fn peek_src(&mut self) -> Result<Option<u64>> {
-        match self {
-            EdgeSubStream::BinaryNoSort(inner) => inner.peek_src(),
-            EdgeSubStream::BinaryWithSort(inner) => inner.peek_src(),
-        }
-    }
-
-    fn drain_edges(
-        &mut self,
-        node_id: u64,
-        buckets: &mut [Vec<EdgeRec>],
-    ) -> Result<Option<u64>> {
-        match self {
-            EdgeSubStream::BinaryNoSort(inner) => inner.drain_edges(node_id, buckets),
-            EdgeSubStream::BinaryWithSort(inner) => inner.drain_edges(node_id, buckets),
-        }
-    }
-}
-
-impl BinaryEdgeSubStreamNoSort {
-    fn peek_src(&mut self) -> Result<Option<u64>> {
-        if self.next_record.is_none() {
-            self.next_record = self.read_next_record()?;
-        }
-        Ok(self.next_record.as_ref().map(|r| r.src_id))
-    }
-
-    fn drain_edges(
-        &mut self,
-        node_id: u64,
-        buckets: &mut [Vec<EdgeRec>],
-    ) -> Result<Option<u64>> {
-        loop {
-            if self.next_record.is_none() {
-                self.next_record = self.read_next_record()?;
-            }
-            let Some(record) = self.next_record.take() else {
-                return Ok(None);
+            );
+            let sort_key = if sort_width > 0 {
+                let sort_off = dst_off + dst_width as usize;
+                read_u64_width_slice(
+                    &buf[sort_off..sort_off + sort_width as usize],
+                    sort_width,
+                )
+            } else {
+                0
             };
-            if record.src_id != node_id {
-                self.next_record = Some(record);
-                return Ok(self.next_record.as_ref().map(|r| r.src_id));
-            }
-            buckets[self.relation_id as usize].push(EdgeRec {
-                src: record.src_id,
-                dst: record.dst_id,
-                dest_sort_key: record.sort_key,
-                relation_id: self.relation_id,
+            records.push(EdgeRecord {
+                src_id,
+                dst_id,
+                sort_key,
             });
         }
     }
+    let sort_width = spec.map(|(_, _, sort)| sort).unwrap_or(0);
+    Ok((sort_width, records))
+}
 
-    fn read_next_record(&mut self) -> Result<Option<BinaryEdgeRecord>> {
-        if self.remaining == 0 {
-            return Ok(None);
+fn sort_edge_ranges_by_sort_key(records: &mut [EdgeRecord]) {
+    if records.len() <= 1 {
+        return;
+    }
+    let mut start = 0usize;
+    while start < records.len() {
+        let src_id = records[start].src_id;
+        let mut end = start + 1;
+        while end < records.len() && records[end].src_id == src_id {
+            end += 1;
         }
-        let record_size = (self.src_width + self.dst_width) as usize;
-        let mut buf = [0u8; 24];
-        self.reader.read_exact(&mut buf[..record_size])?;
-        let src_id = read_u64_width_slice(&buf[..self.src_width as usize], self.src_width);
-        let dst_id = read_u64_width_slice(
-            &buf[self.src_width as usize..record_size],
-            self.dst_width,
-        );
-        self.remaining = self.remaining.saturating_sub(1);
-        Ok(Some(BinaryEdgeRecord {
-            src_id,
-            dst_id,
-            sort_key: None,
-        }))
+        if end - start > 1 {
+            records[start..end].sort_unstable_by(|a, b| b.sort_key.cmp(&a.sort_key));
+        }
+        start = end;
     }
 }
 
-impl BinaryEdgeSubStreamWithSort {
-    fn peek_src(&mut self) -> Result<Option<u64>> {
-        if self.next_record.is_none() {
-            self.next_record = self.read_next_record()?;
-        }
-        Ok(self.next_record.as_ref().map(|r| r.src_id))
+fn radix_sort_edge_records(records: &mut [EdgeRecord]) {
+    if records.len() <= 1 {
+        return;
     }
-
-    fn drain_edges(
-        &mut self,
-        node_id: u64,
-        buckets: &mut [Vec<EdgeRec>],
-    ) -> Result<Option<u64>> {
-        loop {
-            if self.next_record.is_none() {
-                self.next_record = self.read_next_record()?;
+    let mut or_src = 0u64;
+    for rec in records.iter() {
+        or_src |= rec.src_id;
+    }
+    let mut passes = ((64 - or_src.leading_zeros() + 7) / 8) as usize;
+    passes = passes.max(1).min(8);
+    if passes == 0 {
+        return;
+    }
+    let mut tmp = vec![
+        EdgeRecord {
+            src_id: 0,
+            dst_id: 0,
+            sort_key: 0,
+        };
+        records.len()
+    ];
+    let mut swapped = false;
+    {
+        let mut from: &mut [EdgeRecord] = records;
+        let mut to: &mut [EdgeRecord] = tmp.as_mut_slice();
+        for pass in 0..passes {
+            let shift = pass * 8;
+            let mut counts = [0usize; 256];
+            for rec in from.iter() {
+                let byte = ((rec.src_id >> shift) & 0xFF) as usize;
+                counts[byte] += 1;
             }
-            let Some(record) = self.next_record.take() else {
-                return Ok(None);
-            };
-            if record.src_id != node_id {
-                self.next_record = Some(record);
-                return Ok(self.next_record.as_ref().map(|r| r.src_id));
+            let mut sum = 0usize;
+            for count in counts.iter_mut() {
+                let current = *count;
+                *count = sum;
+                sum = sum.saturating_add(current);
             }
-            buckets[self.relation_id as usize].push(EdgeRec {
-                src: record.src_id,
-                dst: record.dst_id,
-                dest_sort_key: record.sort_key,
-                relation_id: self.relation_id,
-            });
+            for rec in from.iter() {
+                let byte = ((rec.src_id >> shift) & 0xFF) as usize;
+                let idx = counts[byte];
+                to[idx] = *rec;
+                counts[byte] = idx + 1;
+            }
+            std::mem::swap(&mut from, &mut to);
+            swapped = !swapped;
+        }
+        if swapped {
+            to.copy_from_slice(from);
         }
     }
-
-    fn read_next_record(&mut self) -> Result<Option<BinaryEdgeRecord>> {
-        if self.remaining == 0 {
-            return Ok(None);
-        }
-        let record_size = (self.src_width + self.dst_width + self.sort_width) as usize;
-        let mut buf = [0u8; 24];
-        self.reader.read_exact(&mut buf[..record_size])?;
-        let src_id = read_u64_width_slice(&buf[..self.src_width as usize], self.src_width);
-        let dst_off = self.src_width as usize;
-        let dst_id = read_u64_width_slice(
-            &buf[dst_off..dst_off + self.dst_width as usize],
-            self.dst_width,
-        );
-        let sort_off = dst_off + self.dst_width as usize;
-        let sort_key = read_u64_width_slice(
-            &buf[sort_off..sort_off + self.sort_width as usize],
-            self.sort_width,
-        );
-        self.remaining = self.remaining.saturating_sub(1);
-        Ok(Some(BinaryEdgeRecord {
-            src_id,
-            dst_id,
-            sort_key: Some(sort_key),
-        }))
-    }
-}
-
-fn read_u64_width_slice(buf: &[u8], width: u8) -> u64 {
-    let mut tmp = [0u8; 8];
-    tmp[..width as usize].copy_from_slice(buf);
-    u64::from_le_bytes(tmp)
 }
 
 enum NodeDataStream {

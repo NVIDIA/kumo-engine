@@ -5,5 +5,5 @@ use std::path::PathBuf;
 pub struct EdgeShardInput {
     pub relation: String,
     pub source_shard_index: usize,
-    pub path: PathBuf,
+    pub paths: Vec<PathBuf>,
 }
