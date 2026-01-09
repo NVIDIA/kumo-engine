@@ -3046,6 +3046,7 @@ impl IngestContext {
             }
             drop(writer_senders);
             writer_pool.finish()?;
+            self.ensure_edge_map_shards(edge_ctx)?;
             self.edges_map_task_ms = task_time.load(Ordering::Relaxed) / 1_000_000;
             self.edges_map_tasks = task_count;
             self.temp_edges_src_bytes = self
@@ -3484,6 +3485,7 @@ impl IngestContext {
 
         drop(writer_senders);
         writer_pool.finish()?;
+        self.ensure_edge_map_shards(edge_ctx)?;
 
         let elapsed = phase_start.elapsed();
         self.edges_map_task_ms = self
@@ -3501,6 +3503,28 @@ impl IngestContext {
             .saturating_add(self.record_edge_stage_bytes("edges_map")?);
         self.cleanup_edge_stage("edges_src")?;
         self.cleanup_edge_stage("fkeys")?;
+        Ok(())
+    }
+
+    fn ensure_edge_map_shards(&self, edge_ctx: &EdgeBuildContext) -> Result<()> {
+        if !matches!(&*self.target, OutputTarget::Local { .. }) {
+            return Ok(());
+        }
+        let root = &edge_ctx.root;
+        for rel in &self.relation_defs {
+            let sort_bits = edge_ctx.rel_sort_bits.get(&rel.name).copied().flatten();
+            let src_max = edge_ctx.max_ids.get(&rel.src_table).copied().unwrap_or(0);
+            let dst_max = edge_ctx.max_ids.get(&rel.dst_table).copied().unwrap_or(0);
+            let spec = edge_binary_spec(src_max, dst_max, sort_bits);
+            for shard in 0..self.num_shards {
+                let path = root.join(temp_edge_map_part_path(&rel.name, shard));
+                if path.exists() {
+                    continue;
+                }
+                let writer = EdgePartWriter::open(&self.target, &path, spec)?;
+                writer.finish()?;
+            }
+        }
         Ok(())
     }
 
