@@ -5,12 +5,10 @@ use diskgraph_index::graph::GraphIndexReader;
 use parquet::arrow::ArrowWriter;
 use parquet::file::properties::WriterProperties;
 use std::fs;
-use std::hash::{BuildHasher, Hasher};
 use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
 use tempfile::tempdir;
-use ahash::RandomState;
 
 use arrow_array::{
     ArrayRef, BinaryArray, Float32Array, Int64Array, RecordBatch, StringArray,
@@ -41,45 +39,6 @@ fn write_parquet(path: &Path, schema: Schema, columns: Vec<ArrayRef>) -> Result<
     writer.write(&batch)?;
     writer.close()?;
     Ok(())
-}
-
-fn build_global_ids(sharded_files: &[Vec<u64>], num_shards: usize) -> std::collections::HashMap<u64, u64> {
-    const AHASH_SEED_1: u64 = 0x9e3779b185ebca87;
-    const AHASH_SEED_2: u64 = 0xc2b2ae3d27d4eb4f;
-    const AHASH_SEED_3: u64 = 0x165667b19e3779f9;
-    const AHASH_SEED_4: u64 = 0xd6e8feb86659fd93;
-    let state = RandomState::with_seeds(
-        AHASH_SEED_1,
-        AHASH_SEED_2,
-        AHASH_SEED_3,
-        AHASH_SEED_4,
-    );
-    let mut shard_counts = vec![0u64; num_shards];
-    let mut shard_maps: Vec<std::collections::HashMap<u64, u64>> =
-        (0..num_shards).map(|_| std::collections::HashMap::new()).collect();
-    for file in sharded_files {
-        for &key in file {
-            let mut hasher = state.build_hasher();
-            hasher.write(&key.to_le_bytes());
-            let shard = (hasher.finish() as usize) % num_shards;
-            let local = shard_counts[shard];
-            shard_counts[shard] = shard_counts[shard].saturating_add(1);
-            shard_maps[shard].insert(key, local);
-        }
-    }
-    let mut offsets = vec![0u64; num_shards];
-    let mut acc = 0u64;
-    for (idx, count) in shard_counts.iter().enumerate() {
-        offsets[idx] = acc;
-        acc = acc.saturating_add(*count);
-    }
-    let mut out = std::collections::HashMap::new();
-    for shard in 0..num_shards {
-        for (key, local) in shard_maps[shard].iter() {
-            out.insert(*key, offsets[shard].saturating_add(*local));
-        }
-    }
-    out
 }
 
 fn sum_relation_edges(
@@ -420,10 +379,6 @@ fn ingest_csv_multi_file_table_with_two_shards() -> Result<()> {
     let order_table = reader.table("Order").unwrap();
     assert_eq!(user_table.node_count(), 20);
     assert_eq!(order_table.node_count(), 20);
-    let user_ids = build_global_ids(&[user_rows_1.iter().map(|r| r[0].parse().unwrap()).collect(),
-        user_rows_2.iter().map(|r| r[0].parse().unwrap()).collect()], 2);
-    let order_ids = build_global_ids(&[order_rows_1.iter().map(|r| r[0].parse().unwrap()).collect(),
-        order_rows_2.iter().map(|r| r[0].parse().unwrap()).collect()], 2);
     let mut expected_edges = 0u64;
     let rel_idx = user_table
         .relations()
@@ -433,8 +388,10 @@ fn ingest_csv_multi_file_table_with_two_shards() -> Result<()> {
     for row in edge_rows_1.iter().chain(edge_rows_2.iter()) {
         let user_key: u64 = row[0].parse().unwrap();
         let order_key: u64 = row[1].parse().unwrap();
-        let user_id = *user_ids.get(&user_key).unwrap();
-        let order_id = *order_ids.get(&order_key).unwrap();
+        let user_key = user_table.parse_pk_key(&user_key.to_string())?;
+        let order_key = order_table.parse_pk_key(&order_key.to_string())?;
+        let user_id = user_table.node_id_from_pk(&user_key)?.unwrap();
+        let order_id = order_table.node_id_from_pk(&order_key)?.unwrap();
         let view = user_table.edges_for_node(user_id)?;
         let segments = view.relation_segments()?;
         let segment = &segments[rel_idx];
