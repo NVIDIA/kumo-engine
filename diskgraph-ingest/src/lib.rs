@@ -46,11 +46,10 @@ use std::io::{self, BufWriter, Read, Write};
 use std::hash::{BuildHasher, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::sync::mpsc::{self, Sender};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::collections::hash_map::Entry;
 use std::time::Duration;
-use std::thread;
+use std::process::{Command, Stdio};
 use tokio::runtime::Runtime;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
@@ -482,7 +481,6 @@ pub fn ingest_with_stats(
     };
     ctx.target
         .write_bytes("ingest_stats.json", serde_json::to_vec_pretty(&report)?)?;
-    ctx.finish_deletes();
     Ok((index_metadata, stats))
 }
 
@@ -537,7 +535,6 @@ struct IngestContext {
     edges_c_tasks: u64,
     index_tasks: u64,
     context_tasks: u64,
-    deleter: Option<BackgroundDeleter>,
 }
 
 struct EdgeBuildContext {
@@ -568,73 +565,76 @@ struct TempNodeFileResult {
     node_data_dropped: u64,
 }
 
-enum DeleteTask {
-    Dir(PathBuf),
-    Shutdown,
-}
-
-struct BackgroundDeleter {
-    sender: Sender<DeleteTask>,
-    handle: Option<thread::JoinHandle<()>>,
-}
-
-impl BackgroundDeleter {
-    fn new() -> Self {
-        let (sender, receiver) = mpsc::channel();
-        let handle = thread::Builder::new()
-            .name("diskgraph-delete".to_string())
-            .spawn(move || {
-                set_low_io_priority();
-                run_delete_loop(receiver);
-            })
-            .ok();
-        Self {
-            sender,
-            handle,
-        }
+fn spawn_background_delete(path: PathBuf) {
+    if !path.exists() {
+        return;
     }
-
-    fn enqueue_dir(&self, path: PathBuf) {
-        let _ = self.sender.send(DeleteTask::Dir(path));
-    }
-
-    fn finish(mut self) {
-        let _ = self.sender.send(DeleteTask::Shutdown);
-        if let Some(handle) = self.handle.take() {
-            let _ = handle.join();
-        }
+    if let Err(err) = spawn_delete_process(&path) {
+        tracing::warn!("delete spawn failed for {}: {}", path.display(), err);
     }
 }
 
-fn run_delete_loop(receiver: mpsc::Receiver<DeleteTask>) {
-    while let Ok(task) = receiver.recv() {
-        match task {
-            DeleteTask::Dir(path) => {
-                if path.exists() {
-                    if let Err(err) = fs::remove_dir_all(&path) {
-                        tracing::warn!("delete {} failed: {}", path.display(), err);
-                    }
-                }
-            }
-            DeleteTask::Shutdown => break,
-        }
-    }
+fn spawn_delete_process(path: &Path) -> io::Result<()> {
+    let mut cmd = if command_exists("ionice") {
+        let mut cmd = Command::new("ionice");
+        cmd.args([
+            "-c3",
+            "-n7",
+            "nice",
+            "-n",
+            "19",
+            "rm",
+            "-rf",
+            "--",
+        ]);
+        cmd.arg(path);
+        cmd
+    } else if command_exists("nice") {
+        let mut cmd = Command::new("nice");
+        cmd.args(["-n", "19", "rm", "-rf", "--"]);
+        cmd.arg(path);
+        cmd
+    } else {
+        let mut cmd = Command::new("rm");
+        cmd.args(["-rf", "--"]);
+        cmd.arg(path);
+        cmd
+    };
+
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    detach_command(&mut cmd);
+    let _child = cmd.spawn()?;
+    Ok(())
 }
 
-#[cfg(target_os = "linux")]
-fn set_low_io_priority() {
+fn command_exists(cmd: &str) -> bool {
+    Command::new(cmd)
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map(|mut child| {
+            let _ = child.wait();
+            true
+        })
+        .unwrap_or(false)
+}
+
+#[cfg(unix)]
+fn detach_command(cmd: &mut Command) {
+    use std::os::unix::process::CommandExt;
     unsafe {
-        let tid = libc::syscall(libc::SYS_gettid) as libc::pid_t;
-        let _ = libc::setpriority(libc::PRIO_PROCESS, tid as libc::id_t, 19);
-        const IOPRIO_WHO_PROCESS: libc::c_int = 1;
-        const IOPRIO_CLASS_IDLE: libc::c_int = 3;
-        let ioprio = (IOPRIO_CLASS_IDLE << 13) | 0;
-        let _ = libc::syscall(libc::SYS_ioprio_set, IOPRIO_WHO_PROCESS, tid, ioprio);
+        cmd.pre_exec(|| {
+            libc::setsid();
+            Ok(())
+        });
     }
 }
 
-#[cfg(not(target_os = "linux"))]
-fn set_low_io_priority() {}
+#[cfg(not(unix))]
+fn detach_command(_cmd: &mut Command) {}
 
 #[derive(Clone)]
 enum OwnedValue {
@@ -765,11 +765,6 @@ impl IngestContext {
         output: &str,
     ) -> Result<Self> {
         let num_shards = source.num_shards.unwrap_or(1).max(1);
-        let deleter = if matches!(&*target, OutputTarget::Local { .. }) {
-            Some(BackgroundDeleter::new())
-        } else {
-            None
-        };
         let mut relation_defs = Vec::new();
         let mut relationships = Vec::new();
         for rel in &source.relationships {
@@ -895,7 +890,6 @@ impl IngestContext {
             edges_c_tasks: 0,
             index_tasks: 0,
             context_tasks: 0,
-            deleter,
         })
     }
 
@@ -3649,11 +3643,7 @@ impl IngestContext {
         if let OutputTarget::Local { root } = &*self.target {
             let temp_root = root.join(TEMP_DIR_NAME);
             if temp_root.exists() {
-                if let Some(deleter) = &self.deleter {
-                    deleter.enqueue_dir(temp_root);
-                } else {
-                    fs::remove_dir_all(temp_root)?;
-                }
+                spawn_background_delete(temp_root);
             }
         }
         Ok(())
@@ -3663,20 +3653,10 @@ impl IngestContext {
         if let OutputTarget::Local { root } = &*self.target {
             let stage_root = root.join(TEMP_DIR_NAME).join(dir);
             if stage_root.exists() {
-                if let Some(deleter) = &self.deleter {
-                    deleter.enqueue_dir(stage_root);
-                } else {
-                    fs::remove_dir_all(stage_root)?;
-                }
+                spawn_background_delete(stage_root);
             }
         }
         Ok(())
-    }
-
-    fn finish_deletes(&mut self) {
-        if let Some(deleter) = self.deleter.take() {
-            deleter.finish();
-        }
     }
 
     fn record_edge_stage_bytes(&mut self, dir: &str) -> Result<u64> {
