@@ -183,6 +183,7 @@ pub fn infer_source_metadata(root: &RootSource, options: InferOptions) -> Result
     prune_relationships_without_primary_key(&table_specs, &mut relationships);
     infer_primary_key_relationships(&table_specs, &mut relationships);
     infer_edge_tables(&mut table_specs, &relationships);
+    prune_relationships_for_edge_tables(&table_specs, &mut relationships);
 
     let total_bytes: u64 = tables.iter().map(|table| table.total_bytes).sum();
     let num_shards = estimate_num_shards(total_bytes);
@@ -1850,6 +1851,22 @@ fn infer_edge_tables(tables: &mut [TableSpec], rels: &[RelationshipSpec]) {
     }
 }
 
+fn prune_relationships_for_edge_tables(tables: &[TableSpec], rels: &mut Vec<RelationshipSpec>) {
+    let mut edge_tables = HashSet::new();
+    for table in tables {
+        if table.edge_table.is_some() {
+            edge_tables.insert(table.name.as_str());
+        }
+    }
+    if edge_tables.is_empty() {
+        return;
+    }
+    rels.retain(|rel| {
+        !edge_tables.contains(rel.src_table.as_str())
+            && !edge_tables.contains(rel.dst_table.as_str())
+    });
+}
+
 fn is_weight_like(col: &ColumnSpec) -> bool {
     let name = col.name.to_lowercase();
     if !matches!(
@@ -3036,6 +3053,7 @@ mod tests {
         prune_relationships_without_primary_key(&tables, &mut rels);
         infer_primary_key_relationships(&tables, &mut rels);
         infer_edge_tables(&mut tables, &rels);
+        prune_relationships_for_edge_tables(&tables, &mut rels);
 
         let edge = tables
             .iter()
@@ -3046,6 +3064,10 @@ mod tests {
         assert_eq!(edge_spec.src_fk.ref_table, "users");
         assert_eq!(edge_spec.dst_fk.column, "item_id");
         assert_eq!(edge_spec.dst_fk.ref_table, "items");
+        assert!(
+            !rels.iter().any(|rel| rel.src_table == "user_item_edges"),
+            "edge table relationships should be pruned"
+        );
     }
 
     #[test]
