@@ -391,6 +391,9 @@ fn progress_label(event: &ProgressEvent) -> String {
         ProgressPhase::EdgesPassC => "edges_c",
         ProgressPhase::Index => "index",
     };
+    if matches!(event.phase, ProgressPhase::Index) {
+        return format!("{} {}", phase, event.table);
+    }
     match event.shard {
         Some(shard) => format!("{} {} shard-{:05}", phase, event.table, shard),
         None => format!("{} {}", phase, event.table),

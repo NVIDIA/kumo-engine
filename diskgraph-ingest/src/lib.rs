@@ -156,20 +156,55 @@ pub type ProgressCallback = std::sync::Arc<dyn Fn(ProgressEvent) + Send + Sync>;
 
 struct IndexProgressAdapter {
     cb: ProgressCallback,
-    last: Mutex<HashMap<(String, Option<usize>), IndexProgressState>>,
+    state: Mutex<IndexProgressTracker>,
+}
+
+struct IndexProgressTracker {
+    shard_states: HashMap<(String, Option<usize>), IndexProgressState>,
+    table_states: HashMap<String, TableProgressState>,
 }
 
 #[derive(Clone, Copy)]
 struct IndexProgressState {
     current: u64,
+}
+
+#[derive(Clone, Copy)]
+struct TableProgressState {
+    current: u64,
     total: Option<u64>,
+    remaining_shards: Option<usize>,
+    started: bool,
+    finished: bool,
+}
+
+#[derive(Clone, Copy)]
+struct TableIndexTotals {
+    total_nodes: u64,
+    total_shards: usize,
 }
 
 impl IndexProgressAdapter {
-    fn new(cb: ProgressCallback) -> Self {
+    fn new(cb: ProgressCallback, table_totals: HashMap<String, TableIndexTotals>) -> Self {
+        let mut table_states = fixed_hash_map();
+        for (table, totals) in table_totals {
+            table_states.insert(
+                table,
+                TableProgressState {
+                    current: 0,
+                    total: Some(totals.total_nodes),
+                    remaining_shards: Some(totals.total_shards),
+                    started: false,
+                    finished: false,
+                },
+            );
+        }
         Self {
             cb,
-            last: Mutex::new(fixed_hash_map()),
+            state: Mutex::new(IndexProgressTracker {
+                shard_states: fixed_hash_map(),
+                table_states,
+            }),
         }
     }
 
@@ -190,72 +225,92 @@ impl GraphProgressSink for IndexProgressAdapter {
             | GraphBuildStage::Complete { shard } => Self::shard_key(shard.as_ref()),
         };
         let key = (table.clone(), shard);
-        let mut last = self.last.lock().unwrap();
+        let mut state = self.state.lock().unwrap();
         match update.stage {
             GraphBuildStage::BuildShard { .. } => {
-                let total = update.total;
-                let effective_current = match total {
-                    Some(total) if total > 0 && update.current >= total => total - 1,
-                    _ => update.current,
-                };
-                match last.entry(key.clone()) {
+                let delta = match state.shard_states.entry(key) {
                     Entry::Vacant(v) => {
-                        (self.cb)(ProgressEvent {
-                            phase: ProgressPhase::Index,
-                            table: table.clone(),
-                            shard,
-                            kind: ProgressKind::Start,
-                            delta: 0,
-                            total,
-                        });
                         v.insert(IndexProgressState {
-                            current: effective_current,
-                            total,
+                            current: update.current,
                         });
-                        if effective_current > 0 {
-                            (self.cb)(ProgressEvent {
-                                phase: ProgressPhase::Index,
-                                table,
-                                shard,
-                                kind: ProgressKind::Advance,
-                                delta: effective_current,
-                                total,
-                            });
-                        }
+                        update.current
                     }
                     Entry::Occupied(mut o) => {
                         let prev = o.get().current;
-                        let total = o.get().total.or(update.total);
-                        if effective_current > prev {
-                            let delta = effective_current.saturating_sub(prev);
+                        if update.current > prev {
+                            let delta = update.current.saturating_sub(prev);
                             o.insert(IndexProgressState {
-                                current: effective_current,
-                                total,
+                                current: update.current,
                             });
-                            (self.cb)(ProgressEvent {
-                                phase: ProgressPhase::Index,
-                                table,
-                                shard,
-                                kind: ProgressKind::Advance,
-                                delta,
-                                total,
-                            });
+                            delta
+                        } else {
+                            0
                         }
                     }
+                };
+                let table_state = state.table_states.entry(table.clone()).or_insert(
+                    TableProgressState {
+                        current: 0,
+                        total: None,
+                        remaining_shards: None,
+                        started: false,
+                        finished: false,
+                    },
+                );
+                if !table_state.started && !table_state.finished {
+                    table_state.started = true;
+                    (self.cb)(ProgressEvent {
+                        phase: ProgressPhase::Index,
+                        table: table.clone(),
+                        shard: None,
+                        kind: ProgressKind::Start,
+                        delta: 0,
+                        total: table_state.total,
+                    });
+                }
+                if delta > 0 {
+                    table_state.current = table_state.current.saturating_add(delta);
+                    (self.cb)(ProgressEvent {
+                        phase: ProgressPhase::Index,
+                        table,
+                        shard: None,
+                        kind: ProgressKind::Advance,
+                        delta,
+                        total: table_state.total,
+                    });
                 }
             }
             GraphBuildStage::Complete { .. } => {
-                let state = last.remove(&key);
-                let prev = state.map(|s| s.current).unwrap_or(0);
-                let total = state.and_then(|s| s.total);
-                (self.cb)(ProgressEvent {
-                    phase: ProgressPhase::Index,
-                    table,
-                    shard,
-                    kind: ProgressKind::Finish,
-                    delta: 0,
-                    total: total.or(Some(prev)),
-                });
+                state.shard_states.remove(&key);
+                let table_state = state.table_states.entry(table.clone()).or_insert(
+                    TableProgressState {
+                        current: 0,
+                        total: None,
+                        remaining_shards: None,
+                        started: false,
+                        finished: false,
+                    },
+                );
+                if let Some(remaining) = table_state.remaining_shards.as_mut() {
+                    if *remaining > 0 {
+                        *remaining = remaining.saturating_sub(1);
+                    }
+                }
+                let should_finish = match table_state.remaining_shards {
+                    Some(remaining) => remaining == 0,
+                    None => true,
+                };
+                if should_finish && !table_state.finished {
+                    table_state.finished = true;
+                    (self.cb)(ProgressEvent {
+                        phase: ProgressPhase::Index,
+                        table,
+                        shard: None,
+                        kind: ProgressKind::Finish,
+                        delta: 0,
+                        total: table_state.total.or(Some(table_state.current)),
+                    });
+                }
             }
         }
     }
@@ -3580,6 +3635,7 @@ impl IngestContext {
             GraphDataSource::Local { root: root.clone() },
             &root,
         );
+        let table_totals = self.index_table_totals();
         if let Some(pool) = self.pool.as_ref() {
             fs::create_dir_all(&root)?;
             let metadata_path = root.join("index_metadata.json");
@@ -3593,7 +3649,10 @@ impl IngestContext {
                 String,
                 diskgraph_index::builder::ShardBuildOutput,
             )>>();
-            let adapter = self.progress.clone().map(IndexProgressAdapter::new);
+            let adapter = self
+                .progress
+                .clone()
+                .map(|cb| IndexProgressAdapter::new(cb, table_totals.clone()));
             let adapter = adapter.map(std::sync::Arc::new);
             let mut tasks = Vec::with_capacity(job_count);
             for job in jobs {
@@ -3658,7 +3717,7 @@ impl IngestContext {
             self.index_task_ms = total_shard_ms;
             self.index_tasks = total_shards;
         } else if let Some(progress) = self.progress.clone() {
-            let adapter = IndexProgressAdapter::new(progress);
+            let adapter = IndexProgressAdapter::new(progress, table_totals);
             let output = builder.build(Some(&adapter))?;
             self.index_task_ms = output.total_shard_ms;
             self.index_tasks = output.total_shards;
@@ -3668,6 +3727,29 @@ impl IngestContext {
             self.index_tasks = output.total_shards;
         }
         Ok(())
+    }
+
+    fn index_table_totals(&self) -> HashMap<String, TableIndexTotals> {
+        let mut totals = fixed_hash_map();
+        for table in &self.source.tables {
+            if table.edge_table.is_some() {
+                continue;
+            }
+            let shard_rows = self
+                .shard_rows
+                .get(&table.name)
+                .cloned()
+                .unwrap_or_else(|| vec![0; self.num_shards]);
+            let total_nodes = shard_rows.iter().copied().sum::<u64>();
+            totals.insert(
+                table.name.clone(),
+                TableIndexTotals {
+                    total_nodes,
+                    total_shards: shard_rows.len(),
+                },
+            );
+        }
+        totals
     }
 
     fn build_index_metadata(&self) -> Result<DatasetMetadata> {
