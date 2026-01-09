@@ -13,7 +13,8 @@ use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::Semaphore;
 use url::Url;
 
-const BUCKET: &str = "kumo-prod-dataplane-bucket";
+const DEFAULT_BUCKET: &str = "kumo-prod-dataplane-bucket";
+const DOORDASH_BUCKET: &str = "kumo-doordash-cache";
 
 #[derive(Parser, Debug)]
 #[command(about = "Download ingested graph parquet files for a training or bp job.")]
@@ -44,21 +45,20 @@ struct Args {
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = parse_args()?;
+    let bucket = bucket_for_customer(&args.customer_name);
+    let customer_path = customer_for_paths(&args.customer_name);
 
     let config = aws_config::load_defaults(BehaviorVersion::latest()).await;
     let s3_config = Config::new(&config);
     let client = Client::from_conf(s3_config);
 
-    let graphs_prefix_key = format!(
-        "{}/prod/jobs/{}/graphs/",
-        args.customer_name, args.job_id
-    );
-    let graphs_prefix_s3 = format!("s3://{}/{}", BUCKET, graphs_prefix_key);
+    let graphs_prefix_key = format!("{}/prod/jobs/{}/graphs/", customer_path, args.job_id);
+    let graphs_prefix_s3 = format!("s3://{}/{}", bucket, graphs_prefix_key);
     let progress = ProgressTracker::new();
     let progress_task = spawn_progress(progress.clone());
     progress.log("Listing graphs".to_string());
 
-    let mut graph_prefixes = list_prefixes(&client, &graphs_prefix_key)
+    let mut graph_prefixes = list_prefixes(&client, bucket, &graphs_prefix_key)
         .await
         .context("list graphs")?;
     if graph_prefixes.is_empty() {
@@ -68,7 +68,7 @@ async fn main() -> Result<()> {
     let mut table_prefixes = Vec::new();
     let mut graphs_prefix_key = graphs_prefix_key;
     let first_prefix = graph_prefixes.remove(0);
-    if attributes_exist(&client, &(graphs_prefix_key.clone() + &first_prefix)).await? {
+    if attributes_exist(&client, bucket, &(graphs_prefix_key.clone() + &first_prefix)).await? {
         table_prefixes.push(first_prefix);
         table_prefixes.extend(graph_prefixes);
     } else {
@@ -76,9 +76,9 @@ async fn main() -> Result<()> {
             bail!("multiple graph directories under {}; please use a specific job", graphs_prefix_s3);
         }
         graphs_prefix_key = format!("{}{}", graphs_prefix_key, first_prefix);
-        let graph_s3 = format!("s3://{}/{}", BUCKET, graphs_prefix_key);
+        let graph_s3 = format!("s3://{}/{}", bucket, graphs_prefix_key);
         progress.log("Listing tables".to_string());
-        table_prefixes = list_prefixes(&client, &graphs_prefix_key)
+        table_prefixes = list_prefixes(&client, bucket, &graphs_prefix_key)
             .await
             .context("list tables")?;
         if table_prefixes.is_empty() {
@@ -95,21 +95,21 @@ async fn main() -> Result<()> {
     let mut download_items = Vec::new();
     for table_prefix in table_prefixes {
         let attrs_key = format!("{}{}attributes.json", graphs_prefix_key, table_prefix);
-        let attrs_s3 = format!("s3://{}/{}", BUCKET, attrs_key);
+        let attrs_s3 = format!("s3://{}/{}", bucket, attrs_key);
         progress.log("Reading metadata".to_string());
-        let attrs = get_object_string(&client, &attrs_key).await?;
+        let attrs = get_object_string(&client, bucket, &attrs_key).await?;
         let table_meta = parse_table_metadata(&attrs)
             .with_context(|| format!("parse metadata from {}", attrs_s3))?;
         validate_table_name(&table_meta.table_name)?;
 
         let raw_prefix_key = format!(
-            "{}/prod/data-persist-dir/ingest/fpv3.{}.{}" ,
-            args.customer_name, table_meta.data_source, table_meta.source_name
+            "{}/prod/data-persist-dir/ingest/fpv3.{}.{}",
+            customer_path, table_meta.data_source, table_meta.source_name
         );
         let raw_prefix_key = format!("{}/{}/", raw_prefix_key, table_meta.data_version);
-        let raw_prefix_s3 = format!("s3://{}/{}", BUCKET, raw_prefix_key);
+        let raw_prefix_s3 = format!("s3://{}/{}", bucket, raw_prefix_key);
 
-        let parquet_objects = list_parquet_objects(&client, &raw_prefix_key).await?;
+        let parquet_objects = list_parquet_objects(&client, bucket, &raw_prefix_key).await?;
         if parquet_objects.is_empty() {
             bail!("raw ingest data not found (likely GC'd): {}", raw_prefix_s3);
         }
@@ -161,9 +161,11 @@ async fn main() -> Result<()> {
             let client = client_ref.clone();
             let request_sema = request_sema.clone();
             let progress = progress.clone();
+            let bucket = bucket.to_string();
             async move {
                 download_path(
                     &client,
+                    &bucket,
                     item,
                     part_size,
                     threshold,
@@ -237,6 +239,22 @@ fn parse_job_url(input: &str) -> Result<(String, String)> {
     Ok((customer, job_id))
 }
 
+fn bucket_for_customer(customer: &str) -> &'static str {
+    if customer.eq_ignore_ascii_case("doordash") {
+        DOORDASH_BUCKET
+    } else {
+        DEFAULT_BUCKET
+    }
+}
+
+fn customer_for_paths(customer: &str) -> String {
+    if customer.eq_ignore_ascii_case("doordash") {
+        "kumo".to_string()
+    } else {
+        customer.to_string()
+    }
+}
+
 fn extract_job_id(path: &str) -> Option<String> {
     for needle in ["trainingjob-", "bp-job-"] {
         if let Some(idx) = path.find(needle) {
@@ -251,13 +269,13 @@ fn extract_job_id(path: &str) -> Option<String> {
     None
 }
 
-async fn list_prefixes(client: &Client, base_prefix: &str) -> Result<Vec<String>> {
+async fn list_prefixes(client: &Client, bucket: &str, base_prefix: &str) -> Result<Vec<String>> {
     let mut prefixes = Vec::new();
     let mut token = None;
     loop {
         let mut req = client
             .list_objects_v2()
-            .bucket(BUCKET)
+            .bucket(bucket)
             .prefix(base_prefix)
             .delimiter("/");
         if let Some(t) = token {
@@ -278,9 +296,9 @@ async fn list_prefixes(client: &Client, base_prefix: &str) -> Result<Vec<String>
     Ok(prefixes)
 }
 
-async fn attributes_exist(client: &Client, prefix: &str) -> Result<bool> {
+async fn attributes_exist(client: &Client, bucket: &str, prefix: &str) -> Result<bool> {
     let key = format!("{}attributes.json", prefix);
-    let resp = client.head_object().bucket(BUCKET).key(key).send().await;
+    let resp = client.head_object().bucket(bucket).key(key).send().await;
     match resp {
         Ok(_) => Ok(true),
         Err(aws_sdk_s3::error::SdkError::ServiceError(service_err)) => {
@@ -294,10 +312,10 @@ async fn attributes_exist(client: &Client, prefix: &str) -> Result<bool> {
     }
 }
 
-async fn get_object_string(client: &Client, key: &str) -> Result<String> {
+async fn get_object_string(client: &Client, bucket: &str, key: &str) -> Result<String> {
     let resp = client
         .get_object()
-        .bucket(BUCKET)
+        .bucket(bucket)
         .key(key)
         .send()
         .await?;
@@ -359,11 +377,11 @@ fn validate_token(label: &str, value: &str) -> Result<()> {
     }
 }
 
-async fn list_parquet_objects(client: &Client, prefix: &str) -> Result<Vec<Object>> {
+async fn list_parquet_objects(client: &Client, bucket: &str, prefix: &str) -> Result<Vec<Object>> {
     let mut objects = Vec::new();
     let mut token = None;
     loop {
-        let mut req = client.list_objects_v2().bucket(BUCKET).prefix(prefix);
+        let mut req = client.list_objects_v2().bucket(bucket).prefix(prefix);
         if let Some(t) = token {
             req = req.continuation_token(t);
         }
@@ -391,6 +409,7 @@ struct DownloadItem {
 
 async fn download_path(
     client: &Client,
+    bucket: &str,
     item: DownloadItem,
     part_size: u64,
     threshold: u64,
@@ -431,13 +450,22 @@ async fn download_path(
                 let out_path = out_path.clone();
                 let progress = progress.clone();
                 async move {
-                    download_range(&client, key_ref, &out_path, start, end, request_sema, &progress)
+                    download_range(
+                        &client,
+                        bucket,
+                        key_ref,
+                        &out_path,
+                        start,
+                        end,
+                        request_sema,
+                        &progress,
+                    )
                         .await
                 }
             })
             .await?;
     } else {
-        download_full(client, &key, &out_path, request_sema).await?;
+        download_full(client, bucket, &key, &out_path, request_sema).await?;
         progress.add_bytes(size);
     }
     progress.add_file_done();
@@ -446,12 +474,13 @@ async fn download_path(
 
 async fn download_full(
     client: &Client,
+    bucket: &str,
     key: &str,
     out_path: &Path,
     request_sema: &Semaphore,
 ) -> Result<()> {
     let _permit = request_sema.acquire().await?;
-    let resp = client.get_object().bucket(BUCKET).key(key).send().await?;
+    let resp = client.get_object().bucket(bucket).key(key).send().await?;
     let mut reader = resp.body.into_async_read();
     let mut file = tokio::fs::File::create(out_path).await?;
     tokio::io::copy(&mut reader, &mut file).await?;
@@ -461,6 +490,7 @@ async fn download_full(
 
 async fn download_range(
     client: &Client,
+    bucket: &str,
     key: &str,
     out_path: &Path,
     start: u64,
@@ -472,7 +502,7 @@ async fn download_range(
     let range = format!("bytes={}-{}", start, end);
     let resp = client
         .get_object()
-        .bucket(BUCKET)
+        .bucket(bucket)
         .key(key)
         .range(range)
         .send()
