@@ -1,0 +1,465 @@
+{
+  "total_rows": 23153248858,
+  "seed": 20240109,
+  "batch_size": 250000,
+  "row_group_size": 1000000,
+  "tables": [
+    {
+      "name": "users",
+      "rows": 870707702,
+      "shards": 205,
+      "columns": [
+        {
+          "name": "user_id",
+          "dtype": "string",
+          "primary_key": true,
+          "key_mode": "uuid"
+        },
+        {
+          "name": "username",
+          "dtype": "string",
+          "gen": {
+            "type": "string",
+            "min_len": 6,
+            "max_len": 20,
+            "alphabet": "lower"
+          }
+        },
+        {
+          "name": "username_tokens",
+          "dtype": "string",
+          "gen": {
+            "type": "string",
+            "min_len": 4,
+            "max_len": 24,
+            "alphabet": "lower"
+          }
+        },
+        {
+          "name": "country",
+          "dtype": "string",
+          "gen": {
+            "type": "categorical",
+            "values": [
+              "us",
+              "ca",
+              "uk",
+              "de",
+              "fr",
+              "br",
+              "in",
+              "jp"
+            ]
+          }
+        },
+        {
+          "name": "is_banned",
+          "dtype": "bool",
+          "gen": {
+            "type": "bool",
+            "true_ratio": 0.02
+          }
+        },
+        {
+          "name": "signup_ts",
+          "dtype": "timestamp",
+          "timestamp_unit": "millis",
+          "gen": {
+            "type": "timestamp",
+            "start_epoch_ms": 1262304000000,
+            "step_ms": 1000
+          }
+        }
+      ]
+    },
+    {
+      "name": "ip_addresses",
+      "rows": 145087730,
+      "shards": 51,
+      "columns": [
+        {
+          "name": "ip_id",
+          "dtype": "string",
+          "primary_key": true,
+          "key_mode": "uuid"
+        },
+        {
+          "name": "ip_v4",
+          "dtype": "string",
+          "gen": {
+            "type": "string",
+            "min_len": 7,
+            "max_len": 15,
+            "alphabet": "digits"
+          }
+        },
+        {
+          "name": "region",
+          "dtype": "string",
+          "gen": {
+            "type": "categorical",
+            "values": [
+              "na",
+              "eu",
+              "apac",
+              "latam"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "mac_addresses",
+      "rows": 65376215,
+      "shards": 26,
+      "columns": [
+        {
+          "name": "mac_id",
+          "dtype": "string",
+          "primary_key": true,
+          "key_mode": "uuid"
+        },
+        {
+          "name": "device_type",
+          "dtype": "string",
+          "gen": {
+            "type": "categorical",
+            "values": [
+              "phone",
+              "tablet",
+              "desktop",
+              "console"
+            ]
+          }
+        },
+        {
+          "name": "vendor",
+          "dtype": "string",
+          "gen": {
+            "type": "categorical",
+            "values": [
+              "apple",
+              "samsung",
+              "lenovo",
+              "dell",
+              "sony",
+              "other"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "emails",
+      "rows": 43603376,
+      "shards": 26,
+      "columns": [
+        {
+          "name": "email_id",
+          "dtype": "string",
+          "primary_key": true,
+          "key_mode": "uuid"
+        },
+        {
+          "name": "domain",
+          "dtype": "string",
+          "gen": {
+            "type": "categorical",
+            "values": [
+              "gmail.com",
+              "yahoo.com",
+              "outlook.com",
+              "icloud.com",
+              "proton.me"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "btids",
+      "rows": 6733416026,
+      "shards": 410,
+      "columns": [
+        {
+          "name": "btid_id",
+          "dtype": "string",
+          "primary_key": true,
+          "key_mode": "uuid"
+        },
+        {
+          "name": "browser_type",
+          "dtype": "string",
+          "gen": {
+            "type": "categorical",
+            "values": [
+              "chrome",
+              "safari",
+              "firefox",
+              "edge",
+              "other"
+            ]
+          }
+        },
+        {
+          "name": "os_type",
+          "dtype": "string",
+          "gen": {
+            "type": "categorical",
+            "values": [
+              "ios",
+              "android",
+              "windows",
+              "macos",
+              "linux"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "user_ip_edges",
+      "rows": 7153770009,
+      "shards": 410,
+      "columns": [
+        {
+          "name": "user_id",
+          "dtype": "string",
+          "key_mode": "uuid"
+        },
+        {
+          "name": "ip_id",
+          "dtype": "string",
+          "key_mode": "uuid"
+        },
+        {
+          "name": "last_seen_ts",
+          "dtype": "timestamp",
+          "timestamp_unit": "millis",
+          "gen": {
+            "type": "timestamp",
+            "start_epoch_ms": 1609459200000,
+            "step_ms": 60000
+          }
+        }
+      ]
+    },
+    {
+      "name": "user_mac_edges",
+      "rows": 364146013,
+      "shards": 205,
+      "columns": [
+        {
+          "name": "user_id",
+          "dtype": "string",
+          "key_mode": "uuid"
+        },
+        {
+          "name": "mac_id",
+          "dtype": "string",
+          "key_mode": "uuid"
+        },
+        {
+          "name": "last_seen_ts",
+          "dtype": "timestamp",
+          "timestamp_unit": "millis",
+          "gen": {
+            "type": "timestamp",
+            "start_epoch_ms": 1609459200000,
+            "step_ms": 60000
+          }
+        }
+      ]
+    },
+    {
+      "name": "user_email_edges",
+      "rows": 71535271,
+      "shards": 102,
+      "columns": [
+        {
+          "name": "user_id",
+          "dtype": "string",
+          "key_mode": "uuid"
+        },
+        {
+          "name": "email_id",
+          "dtype": "string",
+          "key_mode": "uuid"
+        },
+        {
+          "name": "last_seen_ts",
+          "dtype": "timestamp",
+          "timestamp_unit": "millis",
+          "gen": {
+            "type": "timestamp",
+            "start_epoch_ms": 1609459200000,
+            "step_ms": 60000
+          }
+        }
+      ]
+    },
+    {
+      "name": "user_btid_edges",
+      "rows": 7705601516,
+      "shards": 410,
+      "columns": [
+        {
+          "name": "user_id",
+          "dtype": "string",
+          "key_mode": "uuid"
+        },
+        {
+          "name": "btid_id",
+          "dtype": "string",
+          "key_mode": "uuid"
+        },
+        {
+          "name": "last_seen_ts",
+          "dtype": "timestamp",
+          "timestamp_unit": "millis",
+          "gen": {
+            "type": "timestamp",
+            "start_epoch_ms": 1609459200000,
+            "step_ms": 60000
+          }
+        }
+      ]
+    },
+    {
+      "name": "alt_labels",
+      "rows": 5000,
+      "shards": 6,
+      "columns": [
+        {
+          "name": "user_id_a",
+          "dtype": "string",
+          "key_mode": "uuid"
+        },
+        {
+          "name": "user_id_b",
+          "dtype": "string",
+          "key_mode": "uuid"
+        },
+        {
+          "name": "label",
+          "dtype": "int8",
+          "gen": {
+            "type": "uniform_int",
+            "min": 0,
+            "max": 1
+          }
+        },
+        {
+          "name": "rule_id",
+          "dtype": "int16",
+          "gen": {
+            "type": "uniform_int",
+            "min": 1,
+            "max": 17
+          }
+        },
+        {
+          "name": "score",
+          "dtype": "float32",
+          "gen": {
+            "type": "uniform_float",
+            "min": 0.0,
+            "max": 1.0
+          }
+        }
+      ]
+    }
+  ],
+  "relationships": [
+    {
+      "src_table": "user_ip_edges",
+      "src_column": "user_id",
+      "dst_table": "users",
+      "dst_column": "user_id",
+      "distribution": {
+        "type": "uniform"
+      }
+    },
+    {
+      "src_table": "user_ip_edges",
+      "src_column": "ip_id",
+      "dst_table": "ip_addresses",
+      "dst_column": "ip_id",
+      "distribution": {
+        "type": "uniform"
+      }
+    },
+    {
+      "src_table": "user_mac_edges",
+      "src_column": "user_id",
+      "dst_table": "users",
+      "dst_column": "user_id",
+      "distribution": {
+        "type": "uniform"
+      }
+    },
+    {
+      "src_table": "user_mac_edges",
+      "src_column": "mac_id",
+      "dst_table": "mac_addresses",
+      "dst_column": "mac_id",
+      "distribution": {
+        "type": "uniform"
+      }
+    },
+    {
+      "src_table": "user_email_edges",
+      "src_column": "user_id",
+      "dst_table": "users",
+      "dst_column": "user_id",
+      "distribution": {
+        "type": "uniform"
+      }
+    },
+    {
+      "src_table": "user_email_edges",
+      "src_column": "email_id",
+      "dst_table": "emails",
+      "dst_column": "email_id",
+      "distribution": {
+        "type": "uniform"
+      }
+    },
+    {
+      "src_table": "user_btid_edges",
+      "src_column": "user_id",
+      "dst_table": "users",
+      "dst_column": "user_id",
+      "distribution": {
+        "type": "uniform"
+      }
+    },
+    {
+      "src_table": "user_btid_edges",
+      "src_column": "btid_id",
+      "dst_table": "btids",
+      "dst_column": "btid_id",
+      "distribution": {
+        "type": "uniform"
+      }
+    },
+    {
+      "src_table": "alt_labels",
+      "src_column": "user_id_a",
+      "dst_table": "users",
+      "dst_column": "user_id",
+      "distribution": {
+        "type": "uniform"
+      }
+    },
+    {
+      "src_table": "alt_labels",
+      "src_column": "user_id_b",
+      "dst_table": "users",
+      "dst_column": "user_id",
+      "distribution": {
+        "type": "uniform"
+      }
+    }
+  ]
+}
