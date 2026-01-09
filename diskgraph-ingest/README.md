@@ -153,11 +153,12 @@ Temporary files are written under `_tmp/` and removed after finalize. The final 
 1) **Rowpack contexts**
    - Sample rows per node table and write `node_data.ctx`.
 2) **Temp shards**
-   - Encode node payloads and FK/edge keys into temp shard files under `_tmp/`.
+   - Encode node payloads and FK/edge keys into consolidated shard files under `_tmp/`.
+   - Files are appended concurrently across input files; per-file order is not preserved, but row alignment across node data/pkeys/fkeys is preserved.
 3) **Primary key maps**
    - Build sharded PK hash + data files (`pk_hash-<id>.bin`, `pk_data-<id>.bin`).
 4) **Edge mapping**
-   - Resolve implicit and explicit edges, translate keys to IDs, and write unsorted edge parts under `_tmp/edges_map`.
+   - Resolve implicit and explicit edges, translate keys to IDs, and write unsorted edge parts under `_tmp/edges_map` (one part per shard).
    - Sorting is deferred to the index build stage.
 5) **Index build**
    - Run the DiskGraph index builder to produce `edges.bin` and `offsets.bin`.
