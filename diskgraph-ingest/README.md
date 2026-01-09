@@ -142,7 +142,8 @@ Other Parquet/Arrow types are rejected during ingest.
 - `ingest_stats.json`
 - `nodes/<table>/shard-<id>/offsets.bin`
 - `nodes/<table>/shard-<id>/edges.bin`
-- `nodes/<table>/pk_map-<id>.bin` and `nodes/<table>/pk_map-<id>.meta.json`
+- `nodes/<table>/pk_data-<id>.bin`
+- `nodes/<table>/pk_hash-<id>.bin`
 - `nodes/<table>/node_data.ctx` (rowpack context)
 
 Temporary files are written under `_tmp/` and removed after finalize. The final `index_metadata.json` intentionally clears temporary paths.
@@ -154,9 +155,10 @@ Temporary files are written under `_tmp/` and removed after finalize. The final 
 2) **Temp shards**
    - Encode node payloads and FK/edge keys into temp shard files under `_tmp/`.
 3) **Primary key maps**
-   - Build sharded PK maps (`pk_map-<id>.bin`).
-4) **Edge passes**
-   - Resolve implicit and explicit edges, translate keys to IDs, and write temp edge shards.
+   - Build sharded PK hash + data files (`pk_hash-<id>.bin`, `pk_data-<id>.bin`).
+4) **Edge mapping**
+   - Resolve implicit and explicit edges, translate keys to IDs, and write unsorted edge parts under `_tmp/edges_map`.
+   - Sorting is deferred to the index build stage.
 5) **Index build**
    - Run the DiskGraph index builder to produce `edges.bin` and `offsets.bin`.
 6) **Finalize**

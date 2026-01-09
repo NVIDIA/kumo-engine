@@ -4,7 +4,7 @@ Rust crate for building and reading per-shard on-disk indices for the Diskgraph 
 
 ## Overview
 
-`diskgraph-index` ingests node shard ranges (from metadata) and aligned edge shards, producing two files (plus optional node data). Node data is enabled per node type in metadata (`has_node_data`), with one or more `node_data_paths` per shard and a rowpack context file referenced by `node_data_compression.context_path`.
+`diskgraph-index` ingests node shard ranges (from metadata) and aligned edge shard parts, producing two files (plus optional node data). Edge inputs can be a single `*.bin` file or a directory of `*.bin` parts for the shard. Node data is enabled per node type in metadata (`has_node_data`), with one or more `node_data_paths` per shard and a rowpack context file referenced by `node_data_compression.context_path`.
 
 - `offsets.bin`: delta-encoded byte offsets for each node’s edge blob.
 - `edges.bin`: packed edge blobs containing relation-prefixed counts and contiguous relation segments (and optional node data payloads).
@@ -65,17 +65,20 @@ Counts use the compact 1–2 byte scheme in prefix order (R0 then R1), followed 
 
 ## Build algorithm (ShardBuilder)
 
-Input: node shard ranges from metadata and all aligned edge shards (sorted by `src_id`, then `dest_sort_key` desc when present).
+Input: node shard ranges from metadata and all aligned edge shard parts (input order does not need to be sorted).
 
 Steps:
 1. Precompute relation layouts:
    - `dst_bits` = min bits to hold `max_id` of destination node type (fallback 64).
    - Masks for `dst_id` and optional `dest_sort_key`.
    - `entry_bytes` = ceil((dst_bits + sort_bits)/8); `dest_sort_key_bits` supports up to 64.
-2. Stream edges and generate node ids:
+2. Load and sort edge parts:
+   - For each relation + shard, load all `*.bin` parts into memory.
+   - Sort by `src_id` (radix), then sort by `dest_sort_key` descending within each `src_id` when present.
+3. Stream edges and generate node ids:
    - Node ids are generated from the shard range in metadata.
-   - Each edge stream reads the binary edge format and yields rows ordered by `src_id`.
-   - Merge edges across relations with a heap, preserving global ordering and validating sort order.
+   - Each edge stream yields rows ordered by `src_id`.
+   - Merge edges across relations by draining the per-relation streams for the current node id.
 3. For each node (single pass):
    - Collect edges into per-relation buckets (reused vectors).
    - Compute per-relation counts; cap each relation at 10k edges to keep counts within the compact varint range.
@@ -94,7 +97,6 @@ Outputs: `ShardBuildOutput` with file paths, `NodeEdgeStats`, `BuildStats`, and 
 - Counters: `truncated_nodes`, `truncated_edges_total`, `truncated_edges_per_relation`.
 
 ### Validations and graceful failures
-- Edge ordering: edges must be sorted by `src_id`, then `dest_sort_key` descending (when present). Violation → error.
 - Shard alignment: edges must not continue after nodes are exhausted (DanglingEdges).
 - Zero-edge nodes: allowed. Offsets may repeat (delta 0) when start==end; reader treats zero-length slices as all-zero counts.
 - Offset overflow: prevented by truncation; residual overflow → error.
@@ -154,9 +156,7 @@ Helper script:
 - `scripts/explore_local.sh /path/to/index`
 
 ## Expectations and assumptions
-- Input binary edge shards are already sorted:
-  - Nodes by `id` ascending.
-  - Edges by `src_id` ascending and `dest_sort_key` descending when present.
+- Input edge shard parts may be unsorted; the builder sorts by `src_id` and `dest_sort_key` as needed.
 - Sharding alignment: edges for shard N reference only source IDs in shard N.
 - Offsets are always byte-based; `edge_blob_word_size` kept as 1 for future compatibility.
 - Relation order in metadata is stable and shared between build and read.
