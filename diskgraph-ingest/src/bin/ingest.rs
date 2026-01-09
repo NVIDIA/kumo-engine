@@ -190,22 +190,10 @@ fn main() -> Result<()> {
                 format_bytes(stats.perf.temp_edges_src_bytes)
             );
         }
-        if stats.perf.temp_edges_a_bytes > 0 {
+        if stats.perf.temp_edges_map_bytes > 0 {
             println!(
-                "    edges_a: {}",
-                format_bytes(stats.perf.temp_edges_a_bytes)
-            );
-        }
-        if stats.perf.temp_edges_b_bytes > 0 {
-            println!(
-                "    edges_b: {}",
-                format_bytes(stats.perf.temp_edges_b_bytes)
-            );
-        }
-        if stats.perf.temp_edges_c_bytes > 0 {
-            println!(
-                "    edges_c: {}",
-                format_bytes(stats.perf.temp_edges_c_bytes)
+                "    edges_map: {}",
+                format_bytes(stats.perf.temp_edges_map_bytes)
             );
         }
     }
@@ -229,16 +217,8 @@ fn main() -> Result<()> {
         format_duration(stats.perf.pk_map_wall_ms)
     );
     println!(
-        "    edges_a: {}",
-        format_duration(stats.perf.edges_a_wall_ms)
-    );
-    println!(
-        "    edges_b: {}",
-        format_duration(stats.perf.edges_b_wall_ms)
-    );
-    println!(
-        "    edges_c: {}",
-        format_duration(stats.perf.edges_c_wall_ms)
+        "    edges_map: {}",
+        format_duration(stats.perf.edges_map_wall_ms)
     );
     println!(
         "    index: {}",
@@ -265,19 +245,9 @@ fn main() -> Result<()> {
         stats.perf.pk_map_tasks
     );
     println!(
-        "    edges_a: {} ({} tasks)",
-        format_duration(stats.perf.edges_a_task_ms),
-        stats.perf.edges_a_tasks
-    );
-    println!(
-        "    edges_b: {} ({} tasks)",
-        format_duration(stats.perf.edges_b_task_ms),
-        stats.perf.edges_b_tasks
-    );
-    println!(
-        "    edges_c: {} ({} tasks)",
-        format_duration(stats.perf.edges_c_task_ms),
-        stats.perf.edges_c_tasks
+        "    edges_map: {} ({} tasks)",
+        format_duration(stats.perf.edges_map_task_ms),
+        stats.perf.edges_map_tasks
     );
     println!(
         "    index: {} ({} tasks)",
@@ -286,7 +256,7 @@ fn main() -> Result<()> {
     );
     if let Some(profile_dir) = args.profile.as_ref() {
         let mut profiles = Vec::new();
-        for name in ["context", "encode", "pk_map", "edges_a", "edges_b", "edges_c", "index"] {
+        for name in ["context", "encode", "pk_map", "edges_map", "index"] {
             let svg = profile_dir.join(format!("{name}-profile.svg"));
             let pb = profile_dir.join(format!("{name}-profile.pb"));
             if svg.exists() {
@@ -302,7 +272,7 @@ fn main() -> Result<()> {
                 println!("  {}", path.display());
             }
             let mut pb_paths = Vec::new();
-            for name in ["context", "encode", "pk_map", "edges_a", "edges_b", "edges_c", "index"] {
+            for name in ["context", "encode", "pk_map", "edges_map", "index"] {
                 let pb = profile_dir.join(format!("{name}-profile.pb"));
                 if pb.exists() {
                     pb_paths.push(pb);
@@ -416,7 +386,7 @@ fn progress_label(event: &ProgressEvent) -> String {
         ProgressPhase::Context => "context",
         ProgressPhase::Encode => "encode",
         ProgressPhase::PkMap => "pk_map",
-        ProgressPhase::EdgesPassA => "edges_a",
+        ProgressPhase::EdgesPassA => "edges_map",
         ProgressPhase::EdgesPassB => "edges_b",
         ProgressPhase::EdgesPassC => "edges_c",
         ProgressPhase::Index => "index",

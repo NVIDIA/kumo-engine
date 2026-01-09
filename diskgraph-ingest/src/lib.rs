@@ -302,32 +302,24 @@ pub struct PerfStats {
     pub context_wall_ms: u64,
     pub encode_wall_ms: u64,
     pub pk_map_wall_ms: u64,
-    pub edges_a_wall_ms: u64,
-    pub edges_b_wall_ms: u64,
-    pub edges_c_wall_ms: u64,
+    pub edges_map_wall_ms: u64,
     pub index_wall_ms: u64,
     pub finalize_wall_ms: u64,
     pub context_task_ms: u64,
     pub encode_task_ms: u64,
     pub pk_map_task_ms: u64,
-    pub edges_a_task_ms: u64,
-    pub edges_b_task_ms: u64,
-    pub edges_c_task_ms: u64,
+    pub edges_map_task_ms: u64,
     pub index_task_ms: u64,
     pub context_tasks: u64,
     pub encode_tasks: u64,
     pub pk_map_tasks: u64,
-    pub edges_a_tasks: u64,
-    pub edges_b_tasks: u64,
-    pub edges_c_tasks: u64,
+    pub edges_map_tasks: u64,
     pub index_tasks: u64,
     pub bytes_read: u64,
     pub bytes_written: u64,
     pub temp_edges_src_bytes: u64,
     pub temp_fkeys_bytes: u64,
-    pub temp_edges_a_bytes: u64,
-    pub temp_edges_b_bytes: u64,
-    pub temp_edges_c_bytes: u64,
+    pub temp_edges_map_bytes: u64,
     pub temp_node_data_bytes: u64,
     pub temp_bytes_total: u64,
 }
@@ -397,15 +389,13 @@ pub fn ingest_with_stats(
     }
     let pk_map_wall = pk_map_start.elapsed();
     let edge_ctx = ctx.edge_build_context()?;
-    let edges_a_start = std::time::Instant::now();
+    let edges_map_start = std::time::Instant::now();
     if let Some(profile_dir) = &profile_dir {
         profile_phase(profile_dir, "edges_map", || ctx.build_edges_mapped(&edge_ctx))?;
     } else {
         ctx.build_edges_mapped(&edge_ctx)?;
     }
-    let edges_a_wall = edges_a_start.elapsed();
-    let edges_b_wall = std::time::Duration::from_millis(0);
-    let edges_c_wall = std::time::Duration::from_millis(0);
+    let edges_map_wall = edges_map_start.elapsed();
     let index_start = std::time::Instant::now();
     let index_metadata = ctx.build_index_metadata()?;
     if let Some(profile_dir) = &profile_dir {
@@ -423,7 +413,7 @@ pub fn ingest_with_stats(
         }
         let edges_root = root.join(TEMP_DIR_NAME).join("edges_map");
         if edges_root.exists() {
-            ctx.temp_edges_a_bytes = sum_dir_bytes(&edges_root).unwrap_or(0);
+            ctx.temp_edges_map_bytes = sum_dir_bytes(&edges_root).unwrap_or(0);
         }
     }
     ctx.cleanup_temp()?;
@@ -434,44 +424,34 @@ pub fn ingest_with_stats(
         OutputTarget::Local { root } => sum_dir_bytes(root).unwrap_or(0),
         _ => 0,
     };
-        let perf = PerfStats {
+    let perf = PerfStats {
             wall_time_ms: wall_time.as_millis() as u64,
             context_wall_ms: context_wall.as_millis() as u64,
             encode_wall_ms: encode_wall.as_millis() as u64,
             pk_map_wall_ms: pk_map_wall.as_millis() as u64,
-            edges_a_wall_ms: edges_a_wall.as_millis() as u64,
-            edges_b_wall_ms: edges_b_wall.as_millis() as u64,
-            edges_c_wall_ms: edges_c_wall.as_millis() as u64,
+            edges_map_wall_ms: edges_map_wall.as_millis() as u64,
             index_wall_ms: index_wall.as_millis() as u64,
             finalize_wall_ms: finalize_wall.as_millis() as u64,
             context_task_ms: ctx.context_task_ms,
             encode_task_ms: ctx.encode_task_ms,
             pk_map_task_ms: ctx.pk_map_task_ms,
-            edges_a_task_ms: ctx.edges_a_task_ms,
-            edges_b_task_ms: ctx.edges_b_task_ms,
-            edges_c_task_ms: ctx.edges_c_task_ms,
+            edges_map_task_ms: ctx.edges_map_task_ms,
             index_task_ms: ctx.index_task_ms,
             context_tasks: ctx.context_tasks,
             encode_tasks: ctx.encode_tasks,
             pk_map_tasks: ctx.pk_map_tasks,
-            edges_a_tasks: ctx.edges_a_tasks,
-            edges_b_tasks: ctx.edges_b_tasks,
-            edges_c_tasks: ctx.edges_c_tasks,
+            edges_map_tasks: ctx.edges_map_tasks,
             index_tasks: ctx.index_tasks,
             bytes_read,
             bytes_written,
             temp_edges_src_bytes: ctx.temp_edges_src_bytes,
             temp_fkeys_bytes: ctx.temp_fkeys_bytes,
-            temp_edges_a_bytes: ctx.temp_edges_a_bytes,
-            temp_edges_b_bytes: ctx.temp_edges_b_bytes,
-            temp_edges_c_bytes: ctx.temp_edges_c_bytes,
+            temp_edges_map_bytes: ctx.temp_edges_map_bytes,
             temp_node_data_bytes: ctx.temp_node_data_bytes,
             temp_bytes_total: ctx
                 .temp_edges_src_bytes
                 .saturating_add(ctx.temp_fkeys_bytes)
-                .saturating_add(ctx.temp_edges_a_bytes)
-                .saturating_add(ctx.temp_edges_b_bytes)
-                .saturating_add(ctx.temp_edges_c_bytes)
+                .saturating_add(ctx.temp_edges_map_bytes)
                 .saturating_add(ctx.temp_node_data_bytes),
         };
     let stats = ctx.build_stats(&index_metadata, perf);
@@ -517,22 +497,16 @@ struct IngestContext {
     progress: Option<ProgressCallback>,
     temp_edges_src_bytes: u64,
     temp_fkeys_bytes: u64,
-    temp_edges_a_bytes: u64,
-    temp_edges_b_bytes: u64,
-    temp_edges_c_bytes: u64,
+    temp_edges_map_bytes: u64,
     temp_node_data_bytes: u64,
     encode_task_ms: u64,
     pk_map_task_ms: u64,
-    edges_a_task_ms: u64,
-    edges_b_task_ms: u64,
-    edges_c_task_ms: u64,
+    edges_map_task_ms: u64,
     index_task_ms: u64,
     context_task_ms: u64,
     encode_tasks: u64,
     pk_map_tasks: u64,
-    edges_a_tasks: u64,
-    edges_b_tasks: u64,
-    edges_c_tasks: u64,
+    edges_map_tasks: u64,
     index_tasks: u64,
     context_tasks: u64,
 }
@@ -872,22 +846,16 @@ impl IngestContext {
             progress: options.progress,
             temp_edges_src_bytes: 0,
             temp_fkeys_bytes: 0,
-            temp_edges_a_bytes: 0,
-            temp_edges_b_bytes: 0,
-            temp_edges_c_bytes: 0,
+            temp_edges_map_bytes: 0,
             temp_node_data_bytes: 0,
             encode_task_ms: 0,
             pk_map_task_ms: 0,
-            edges_a_task_ms: 0,
-            edges_b_task_ms: 0,
-            edges_c_task_ms: 0,
+            edges_map_task_ms: 0,
             index_task_ms: 0,
             context_task_ms: 0,
             encode_tasks: 0,
             pk_map_tasks: 0,
-            edges_a_tasks: 0,
-            edges_b_tasks: 0,
-            edges_c_tasks: 0,
+            edges_map_tasks: 0,
             index_tasks: 0,
             context_tasks: 0,
         })
@@ -3139,16 +3107,16 @@ impl IngestContext {
                     }
                 }
             }
-            self.edges_a_task_ms = task_time.load(Ordering::Relaxed) / 1_000_000;
-            self.edges_a_tasks = task_count;
+            self.edges_map_task_ms = task_time.load(Ordering::Relaxed) / 1_000_000;
+            self.edges_map_tasks = task_count;
             self.temp_edges_src_bytes = self
                 .temp_edges_src_bytes
                 .saturating_add(self.record_edge_stage_bytes("edges_src")?);
             self.temp_fkeys_bytes = self
                 .temp_fkeys_bytes
                 .saturating_add(self.record_edge_stage_bytes("fkeys")?);
-            self.temp_edges_a_bytes = self
-                .temp_edges_a_bytes
+            self.temp_edges_map_bytes = self
+                .temp_edges_map_bytes
                 .saturating_add(self.record_edge_stage_bytes("edges_map")?);
             self.cleanup_edge_stage("edges_src")?;
             self.cleanup_edge_stage("fkeys")?;
@@ -3607,18 +3575,18 @@ impl IngestContext {
         }
 
         let elapsed = phase_start.elapsed();
-        self.edges_a_task_ms = self
-            .edges_a_task_ms
+        self.edges_map_task_ms = self
+            .edges_map_task_ms
             .saturating_add(elapsed.as_millis() as u64);
-        self.edges_a_tasks = self.edges_a_tasks.saturating_add(1);
+        self.edges_map_tasks = self.edges_map_tasks.saturating_add(1);
         self.temp_edges_src_bytes = self
             .temp_edges_src_bytes
             .saturating_add(self.record_edge_stage_bytes("edges_src")?);
         self.temp_fkeys_bytes = self
             .temp_fkeys_bytes
             .saturating_add(self.record_edge_stage_bytes("fkeys")?);
-        self.temp_edges_a_bytes = self
-            .temp_edges_a_bytes
+        self.temp_edges_map_bytes = self
+            .temp_edges_map_bytes
             .saturating_add(self.record_edge_stage_bytes("edges_map")?);
         self.cleanup_edge_stage("edges_src")?;
         self.cleanup_edge_stage("fkeys")?;
@@ -3907,15 +3875,11 @@ impl IngestContext {
     fn build_stats(&self, metadata: &DatasetMetadata, mut perf: PerfStats) -> IngestStats {
         perf.context_task_ms = self.context_task_ms;
         perf.encode_task_ms = self.encode_task_ms;
-        perf.edges_a_task_ms = self.edges_a_task_ms;
-        perf.edges_b_task_ms = self.edges_b_task_ms;
-        perf.edges_c_task_ms = self.edges_c_task_ms;
+        perf.edges_map_task_ms = self.edges_map_task_ms;
         perf.index_task_ms = self.index_task_ms;
         perf.context_tasks = self.context_tasks;
         perf.encode_tasks = self.encode_tasks;
-        perf.edges_a_tasks = self.edges_a_tasks;
-        perf.edges_b_tasks = self.edges_b_tasks;
-        perf.edges_c_tasks = self.edges_c_tasks;
+        perf.edges_map_tasks = self.edges_map_tasks;
         perf.index_tasks = self.index_tasks;
         let mut node_counts = fixed_hash_map();
         for node in metadata.node_types.iter() {
