@@ -57,9 +57,13 @@ pub enum ColumnType {
     Int16,
     Int32,
     Int64,
+    #[serde(alias = "uint8")]
     UInt8,
+    #[serde(alias = "uint16")]
     UInt16,
+    #[serde(alias = "uint32")]
     UInt32,
+    #[serde(alias = "uint64")]
     UInt64,
     Float32,
     Float64,

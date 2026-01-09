@@ -9,8 +9,8 @@ use diskgraph_fs::{
     build_adls_client, build_gcs_client, build_s3_client, AdlsConfig, GcsConfig, S3Config,
 };
 use diskgraph_ingest::source_metadata::{
-    ColumnSpec, ColumnType, KeyMode, RelationshipSpec, SourceMetadata, TableFormat, TableSpec,
-    TimestampUnit,
+    ColumnSpec, ColumnType, EdgeTableSpec, ForeignKeySpec, KeyMode, RelationshipSpec,
+    SourceMetadata, TableFormat, TableSpec, TimestampUnit,
 };
 use arrow_array::{
     Array, Int16Array, Int32Array, Int64Array, Int8Array, LargeStringArray, RecordBatch,
@@ -182,6 +182,7 @@ pub fn infer_source_metadata(root: &RootSource, options: InferOptions) -> Result
     drop_join_table_primary_keys(&mut table_specs, &relationships);
     prune_relationships_without_primary_key(&table_specs, &mut relationships);
     infer_primary_key_relationships(&table_specs, &mut relationships);
+    infer_edge_tables(&mut table_specs, &relationships);
 
     let total_bytes: u64 = tables.iter().map(|table| table.total_bytes).sum();
     let num_shards = estimate_num_shards(total_bytes);
@@ -1770,6 +1771,105 @@ fn prune_relationships_without_primary_key(tables: &[TableSpec], rels: &mut Vec<
     });
 }
 
+fn infer_edge_tables(tables: &mut [TableSpec], rels: &[RelationshipSpec]) {
+    let mut rels_by_table: HashMap<&str, Vec<&RelationshipSpec>> = HashMap::new();
+    for rel in rels {
+        rels_by_table
+            .entry(rel.src_table.as_str())
+            .or_default()
+            .push(rel);
+    }
+    for table in tables {
+        if table.edge_table.is_some() {
+            continue;
+        }
+        let Some(table_rels) = rels_by_table.get(table.name.as_str()) else {
+            continue;
+        };
+        let mut rels_by_col: HashMap<&str, &RelationshipSpec> = HashMap::new();
+        for rel in table_rels {
+            rels_by_col.entry(rel.src_column.as_str()).or_insert(*rel);
+        }
+        if rels_by_col.len() != 2 {
+            continue;
+        }
+
+        let mut seen_time = false;
+        let mut seen_weight = false;
+        let mut allowed = true;
+        for col in &table.columns {
+            if rels_by_col.contains_key(col.name.as_str()) {
+                continue;
+            }
+            if table.create_time.as_deref() == Some(col.name.as_str()) {
+                if seen_time {
+                    allowed = false;
+                    break;
+                }
+                seen_time = true;
+                continue;
+            }
+            if is_weight_like(col) {
+                if seen_weight {
+                    allowed = false;
+                    break;
+                }
+                seen_weight = true;
+                continue;
+            }
+            allowed = false;
+            break;
+        }
+        if !allowed {
+            continue;
+        }
+
+        let mut ordered: Vec<&RelationshipSpec> = Vec::new();
+        for col in &table.columns {
+            if let Some(rel) = rels_by_col.get(col.name.as_str()) {
+                ordered.push(*rel);
+            }
+        }
+        if ordered.len() != 2 {
+            ordered = rels_by_col.values().copied().collect();
+        }
+        let src_rel = ordered[0];
+        let dst_rel = ordered[1];
+        table.edge_table = Some(EdgeTableSpec {
+            src_fk: ForeignKeySpec {
+                column: src_rel.src_column.clone(),
+                ref_table: src_rel.dst_table.clone(),
+                ref_column: src_rel.dst_column.clone(),
+            },
+            dst_fk: ForeignKeySpec {
+                column: dst_rel.src_column.clone(),
+                ref_table: dst_rel.dst_table.clone(),
+                ref_column: dst_rel.dst_column.clone(),
+            },
+        });
+    }
+}
+
+fn is_weight_like(col: &ColumnSpec) -> bool {
+    let name = col.name.to_lowercase();
+    if !matches!(
+        col.ingested_dtype,
+        ColumnType::Int8
+            | ColumnType::Int16
+            | ColumnType::Int32
+            | ColumnType::Int64
+            | ColumnType::UInt8
+            | ColumnType::UInt16
+            | ColumnType::UInt32
+            | ColumnType::UInt64
+            | ColumnType::Float32
+            | ColumnType::Float64
+    ) {
+        return false;
+    }
+    matches!(name.as_str(), "weight" | "score" | "strength" | "prob" | "probability")
+}
+
 fn relationship_exists(
     rels: &[RelationshipSpec],
     src_table: &str,
@@ -2910,6 +3010,42 @@ mod tests {
             "designs",
             "id"
         ));
+    }
+
+    #[test]
+    fn infer_edge_table_with_timestamp_and_weight() {
+        let mut tables = vec![
+            table("users", &[("user_id", ColumnType::Int64)]),
+            table("items", &[("item_id", ColumnType::Int64)]),
+            table(
+                "user_item_edges",
+                &[
+                    ("user_id", ColumnType::Int64),
+                    ("item_id", ColumnType::Int64),
+                    ("created_at", ColumnType::Timestamp),
+                    ("weight", ColumnType::Float32),
+                ],
+            ),
+        ];
+        infer_primary_keys(&mut tables);
+        infer_create_time(&mut tables);
+        let mut rels = Vec::new();
+        let mut notes = Vec::new();
+        infer_foreign_keys(&tables, &mut rels, &mut notes);
+        drop_join_table_primary_keys(&mut tables, &rels);
+        prune_relationships_without_primary_key(&tables, &mut rels);
+        infer_primary_key_relationships(&tables, &mut rels);
+        infer_edge_tables(&mut tables, &rels);
+
+        let edge = tables
+            .iter()
+            .find(|t| t.name == "user_item_edges")
+            .unwrap();
+        let edge_spec = edge.edge_table.as_ref().unwrap();
+        assert_eq!(edge_spec.src_fk.column, "user_id");
+        assert_eq!(edge_spec.src_fk.ref_table, "users");
+        assert_eq!(edge_spec.dst_fk.column, "item_id");
+        assert_eq!(edge_spec.dst_fk.ref_table, "items");
     }
 
     #[test]
