@@ -48,7 +48,8 @@ Column names are fixed and must adhere to this spec.
         { "path": "edges/follows/part-00000.parquet", "src_min_id": 0, "src_max_id": 49999 },
         { "path": "edges/follows/part-00001.parquet", "src_min_id": 50000, "src_max_id": 99999 }
       ],
-      "dest_sort_key_bits": null
+      "dest_sort_key_bits": null,
+      "dest_sort_key": null
     }
   ]
 }
@@ -63,7 +64,8 @@ Field notes:
 - `edge_relations[*].name`: logical relation name.
 - `edge_relations[*].src_type` / `dst_type`: refer to node type names.
 - `edge_relations[*].shards`: relative paths and source ID ranges for edge shards; shard count must align with the source node type shard count.
-- `edge_relations[*].dest_sort_key_bits`: one of `4|8|16|32|64` (bit width) or null to indicate presence/width of `dest_sort_key`.
+- `edge_relations[*].dest_sort_key_bits`: multiple of 8 up to 64 (bit width) or null to indicate presence/width of `dest_sort_key`.
+- `edge_relations[*].dest_sort_key`: optional metadata describing timestamp/weight encodings and original expressions.
 
 ## Validation Rules
 

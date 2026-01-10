@@ -30,6 +30,8 @@ twox-hash = "1.6"
 base64 = "0.22"
 num-bigint = "0.4"
 num-traits = "0.2"
+fasteval = "0.2"
+half = "2"
 clap = { version = "4.4", features = ["derive"] }
 indicatif = "0.17"
 pprof = { version = "0.13", features = ["flamegraph", "prost-codec"] }

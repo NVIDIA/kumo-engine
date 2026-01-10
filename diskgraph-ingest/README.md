@@ -9,6 +9,7 @@
   - explicit edge tables (optional)
   - foreign-key / primary-key relationships (implicit edges)
   - optional primary keys, timestamps, weights
+  - optional edge sort keys
   - optional rowpack configuration
 - Source data files (CSV or Parquet). Paths may be local or `s3://`, `gs://`, `az://`.
 
@@ -21,6 +22,7 @@ Top-level schema (all fields optional except `dataset_name` and `tables`):
   "dataset_name": "example",
   "tables": [/* TableSpec */],
   "relationships": [/* RelationshipSpec */],
+  "edge_sort_keys": { /* EdgeSortKeysSpec */ },
   "rowpack": { /* RowPackConfig */ },
   "num_shards": 8,
   "edge_format": "binary"
@@ -58,6 +60,65 @@ Rules:
 - `weight` (optional): numeric column.
 - `edge_table` (optional): marks the table as an explicit edge list. Both FKs must reference a primary key on the destination table.
 - `rowpack` (optional): per-table overrides for rowpack configuration. When present, it is merged with the top-level `rowpack` (table values override dataset values).
+
+### EdgeSortKeysSpec (explicit sort keys)
+
+Sort keys are defined per edge relation and per direction. They can pull a timestamp
+and/or weight from either the destination node table or an edge table (when the
+relation comes from an edge table). Each component is encoded and packed into a
+single sortable key.
+
+```json
+{
+  "edge_sort_keys": {
+    "relationships": {
+      "order_user": {
+        "forward": {
+          "timestamp": {
+            "table": "User",
+            "column": "created_at",
+            "encoding": {"kind": "int32", "anchor": 0, "step": 1}
+          },
+          "weight": {
+            "table": "User",
+            "expr": "weight",
+            "encoding": {"dtype": "float32"}
+          }
+        },
+        "reverse": null
+      }
+    },
+    "edge_tables": {
+      "OrderItem": {
+        "src_to_dst": {
+          "weight": {
+            "table": "OrderItem",
+            "expr": "weight",
+            "encoding": {"dtype": "float32"}
+          }
+        },
+        "dst_to_src": {
+          "timestamp": {
+            "table": "Order",
+            "column": "created_at",
+            "encoding": {"kind": "int16", "anchor": 0, "step": 1}
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+Notes:
+- `relationships` keys are the relationship name (or auto-generated name).
+- `edge_tables` keys are the edge table name.
+- `table` must be either the destination table or the edge table for that direction.
+- `expr` is a math expression over numeric columns in `table`.
+  Use backticks for column names with special characters: `` `weight-kg` * 2 ``.
+- Encodings:
+  - timestamp `kind`: `int16|int32`
+  - weight `dtype`: `byte|uint16|uint32|float16|float32`
 
 ### ColumnSpec
 

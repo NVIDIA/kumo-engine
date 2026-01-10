@@ -1327,6 +1327,7 @@ pub fn relation_meta(
         dst_type: dst.into(),
         shards: vec![],
         dest_sort_key_bits,
+        dest_sort_key: None,
         format: diskgraph_core::metadata::EdgeStorageFormat::Binary,
     }
 }

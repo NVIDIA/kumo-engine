@@ -29,6 +29,7 @@ tempfile = "3"
 indicatif = "0.17"
 pprof = { version = "0.13", features = ["flamegraph", "prost-codec"] }
 lz4_flex = { version = "0.12", default-features = false, features = ["frame"] }
+half = "2"
 
 [dev-dependencies]
 tempfile = "3"

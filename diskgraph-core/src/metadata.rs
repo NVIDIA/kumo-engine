@@ -80,8 +80,63 @@ pub struct EdgeRelationMetadata {
     pub shards: Vec<EdgeShardMetadata>,
     /// Optional dest_sort_key configuration (bit width when present).
     pub dest_sort_key_bits: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dest_sort_key: Option<EdgeSortKeyMetadata>,
     #[serde(default = "default_edge_storage_format")]
     pub format: EdgeStorageFormat,
+}
+
+/// Optional dest_sort_key decoding metadata (when present).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EdgeSortKeyMetadata {
+    pub width_bits: u8,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<EdgeSortKeyTimestampMetadata>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weight: Option<EdgeSortKeyWeightMetadata>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EdgeSortKeyTimestampMetadata {
+    pub table: String,
+    pub column: String,
+    pub encoding: EdgeSortKeyTimestampEncoding,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EdgeSortKeyTimestampEncoding {
+    pub kind: EdgeSortKeyTimestampKind,
+    pub anchor: i64,
+    pub step: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum EdgeSortKeyTimestampKind {
+    Int16,
+    Int32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EdgeSortKeyWeightMetadata {
+    pub table: String,
+    pub expr: String,
+    pub encoding: EdgeSortKeyWeightEncoding,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EdgeSortKeyWeightEncoding {
+    pub dtype: EdgeSortKeyWeightKind,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum EdgeSortKeyWeightKind {
+    Byte,
+    UInt16,
+    UInt32,
+    Float16,
+    Float32,
 }
 
 /// Root metadata payload found in index_metadata.json.

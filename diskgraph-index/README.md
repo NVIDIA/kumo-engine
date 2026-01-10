@@ -71,7 +71,7 @@ Steps:
 1. Precompute relation layouts:
    - `dst_bits` = min bits to hold `max_id` of destination node type (fallback 64).
    - Masks for `dst_id` and optional `dest_sort_key`.
-   - `entry_bytes` = ceil((dst_bits + sort_bits)/8); `dest_sort_key_bits` supports up to 64.
+   - `entry_bytes` = ceil((dst_bits + sort_bits)/8); `dest_sort_key_bits` supports multiples of 8 up to 64.
 2. Load and sort edge parts:
    - For each relation + shard, load all `*.bin` parts into memory.
    - Sort by `src_id` (radix), then sort by `dest_sort_key` descending within each `src_id` when present.

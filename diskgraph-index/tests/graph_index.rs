@@ -104,6 +104,7 @@ fn graph_builder_and_reader_multi_table() {
                     },
                 ],
                 dest_sort_key_bits: None,
+                dest_sort_key: None,
                 format: diskgraph_core::metadata::EdgeStorageFormat::Binary,
             },
             EdgeRelationMetadata {
@@ -123,6 +124,7 @@ fn graph_builder_and_reader_multi_table() {
                     },
                 ],
                 dest_sort_key_bits: None,
+                dest_sort_key: None,
                 format: diskgraph_core::metadata::EdgeStorageFormat::Binary,
             },
             EdgeRelationMetadata {
@@ -135,6 +137,7 @@ fn graph_builder_and_reader_multi_table() {
                     src_max_id: 1,
                 }],
                 dest_sort_key_bits: None,
+                dest_sort_key: None,
                 format: diskgraph_core::metadata::EdgeStorageFormat::Binary,
             },
         ],

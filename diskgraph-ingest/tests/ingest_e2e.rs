@@ -59,6 +59,49 @@ fn sum_relation_edges(
     Ok(total)
 }
 
+fn extract_relation_sort_keys(
+    table: &diskgraph_index::graph::TableReader,
+    rel_name: &str,
+    node_id: u64,
+) -> Result<Vec<u64>> {
+    let rel_idx = table
+        .relations()
+        .iter()
+        .position(|rel| rel.name == rel_name)
+        .ok_or_else(|| anyhow!("missing relation {rel_name}"))?;
+    let view = table.edges_for_node(node_id)?;
+    let segments = view.relation_segments()?;
+    let seg = &segments[rel_idx];
+    let mut buf = [0u8; 16];
+    let mut out = Vec::new();
+    for chunk in seg.data.chunks(seg.layout.entry_bytes) {
+        buf[..seg.layout.entry_bytes].copy_from_slice(chunk);
+        let val = u128::from_le_bytes(buf);
+        if let Some(bits) = seg.layout.dest_sort_key_bits {
+            let sort = (val >> seg.layout.dst_bits as u128) & ((1u128 << bits) - 1);
+            out.push(sort as u64);
+        }
+        buf.fill(0);
+    }
+    Ok(out)
+}
+
+fn ordered_f32_bits(value: f32) -> u32 {
+    let bits = value.to_bits();
+    if bits & 0x8000_0000 != 0 {
+        !bits
+    } else {
+        bits ^ 0x8000_0000
+    }
+}
+
+fn encode_ts_i32(value: i64, anchor: i64, step: i64) -> u64 {
+    let delta = value.saturating_sub(anchor).div_euclid(step.max(1));
+    let clamped = delta.clamp(i32::MIN as i64, i32::MAX as i64) as i32;
+    let raw = clamped as u32 as u64;
+    raw ^ 0x8000_0000
+}
+
 #[test]
 fn ingest_csv_with_edges_and_rowpack() -> Result<()> {
     let dir = tempdir()?;
@@ -158,7 +201,38 @@ fn ingest_csv_with_edges_and_rowpack() -> Result<()> {
                 "dst_table": "User",
                 "dst_column": "id"
             }
-        ]
+        ],
+        "edge_sort_keys": {
+            "relationships": {
+                "order_user": {
+                    "forward": {
+                        "weight": {
+                            "table": "User",
+                            "expr": "weight",
+                            "encoding": {"dtype": "float32"}
+                        }
+                    }
+                }
+            },
+            "edge_tables": {
+                "OrderItem": {
+                    "src_to_dst": {
+                        "weight": {
+                            "table": "OrderItem",
+                            "expr": "weight",
+                            "encoding": {"dtype": "float32"}
+                        }
+                    },
+                    "dst_to_src": {
+                        "weight": {
+                            "table": "OrderItem",
+                            "expr": "weight",
+                            "encoding": {"dtype": "float32"}
+                        }
+                    }
+                }
+            }
+        }
     });
     let source_path = dir.path().join("source_metadata.json");
     fs::write(&source_path, serde_json::to_vec_pretty(&source)?)?;
@@ -603,7 +677,24 @@ fn ingest_relationship_uses_dest_timestamp_sort_key() -> Result<()> {
                 "dst_table": "Session",
                 "dst_column": "id"
             }
-        ]
+        ],
+        "edge_sort_keys": {
+            "relationships": {
+                "event_session": {
+                    "forward": {
+                        "timestamp": {
+                            "table": "Session",
+                            "column": "created_at",
+                            "encoding": {
+                                "kind": "int32",
+                                "anchor": 0,
+                                "step": 1
+                            }
+                        }
+                    }
+                }
+            }
+        }
     });
     let source_path = dir.path().join("source_metadata.json");
     fs::write(&source_path, serde_json::to_vec_pretty(&source)?)?;
@@ -758,6 +849,238 @@ fn ingest_invalid_fields_records_failures_and_builds() -> Result<()> {
         assert!(count > 0);
     }
     assert!(!stats.key_failure_samples.is_empty());
+
+    Ok(())
+}
+
+#[test]
+fn ingest_edge_table_mixed_sort_keys() -> Result<()> {
+    let dir = tempdir()?;
+    let input_root = dir.path().join("input");
+    let output_root = dir.path().join("output");
+
+    write_csv(
+        &input_root.join("users.csv"),
+        &["id", "user_weight"],
+        &[
+            vec!["0".into(), "0.25".into()],
+            vec!["1".into(), "0.75".into()],
+        ],
+    )?;
+    write_csv(
+        &input_root.join("items.csv"),
+        &["id", "rank", "created_at"],
+        &[
+            vec!["0".into(), "1.5".into(), "1000".into()],
+            vec!["1".into(), "2.5".into(), "2000".into()],
+        ],
+    )?;
+    write_csv(
+        &input_root.join("clicks.csv"),
+        &["user_id", "item_id", "ts", "edge_weight"],
+        &[
+            vec!["0".into(), "0".into(), "10".into(), "0.5".into()],
+            vec!["0".into(), "1".into(), "20".into(), "1.5".into()],
+            vec!["1".into(), "0".into(), "30".into(), "2.5".into()],
+        ],
+    )?;
+
+    let source = serde_json::json!({
+        "dataset_name": "edge_table_mixed_sort_keys",
+        "tables": [
+            {
+                "name": "User",
+                "format": "csv",
+                "paths": [input_root.join("users.csv").to_string_lossy()],
+                "primary_key": "id",
+                "columns": [
+                    {"name": "id", "source_dtype": "int64", "ingested_dtype": "int64"},
+                    {"name": "user_weight", "source_dtype": "float32", "ingested_dtype": "float32"}
+                ]
+            },
+            {
+                "name": "Item",
+                "format": "csv",
+                "paths": [input_root.join("items.csv").to_string_lossy()],
+                "primary_key": "id",
+                "columns": [
+                    {"name": "id", "source_dtype": "int64", "ingested_dtype": "int64"},
+                    {"name": "rank", "source_dtype": "float32", "ingested_dtype": "float32"},
+                    {"name": "created_at", "source_dtype": "int64", "ingested_dtype": "timestamp", "timestamp_unit": "seconds"}
+                ]
+            },
+            {
+                "name": "Click",
+                "format": "csv",
+                "paths": [input_root.join("clicks.csv").to_string_lossy()],
+                "edge_table": {
+                    "src_fk": {"column": "user_id", "ref_table": "User", "ref_column": "id"},
+                    "dst_fk": {"column": "item_id", "ref_table": "Item", "ref_column": "id"}
+                },
+                "columns": [
+                    {"name": "user_id", "source_dtype": "int64", "ingested_dtype": "int64"},
+                    {"name": "item_id", "source_dtype": "int64", "ingested_dtype": "int64"},
+                    {"name": "ts", "source_dtype": "int64", "ingested_dtype": "timestamp", "timestamp_unit": "seconds"},
+                    {"name": "edge_weight", "source_dtype": "float32", "ingested_dtype": "float32"}
+                ]
+            }
+        ],
+        "edge_sort_keys": {
+            "edge_tables": {
+                "Click": {
+                    "src_to_dst": {
+                        "timestamp": {
+                            "table": "Click",
+                            "column": "ts",
+                            "encoding": {"kind": "int32", "anchor": 0, "step": 1}
+                        },
+                        "weight": {
+                            "table": "Item",
+                            "expr": "rank",
+                            "encoding": {"dtype": "float32"}
+                        }
+                    },
+                    "dst_to_src": {
+                        "timestamp": {
+                            "table": "Click",
+                            "column": "ts",
+                            "encoding": {"kind": "int16", "anchor": 0, "step": 1}
+                        },
+                        "weight": {
+                            "table": "User",
+                            "expr": "user_weight",
+                            "encoding": {"dtype": "float32"}
+                        }
+                    }
+                }
+            }
+        }
+    });
+    let source_path = dir.path().join("source_metadata.json");
+    fs::write(&source_path, serde_json::to_vec_pretty(&source)?)?;
+
+    let metadata = ingest(
+        &source_path,
+        output_root.to_str().unwrap(),
+        Dest::Local,
+        IngestOptions {
+            profile_dir: None,
+            progress: None,
+            parallel: true,
+            index_mem_budget_bytes: None,
+        },
+    )?;
+    let forward = metadata
+        .edge_relations
+        .iter()
+        .find(|r| r.name == "edge_Click_src_to_dst")
+        .unwrap();
+    let reverse = metadata
+        .edge_relations
+        .iter()
+        .find(|r| r.name == "edge_Click_dst_to_src")
+        .unwrap();
+    assert_eq!(forward.dest_sort_key_bits, Some(64));
+    assert_eq!(reverse.dest_sort_key_bits, Some(48));
+
+    let reader = GraphIndexReader::open(&output_root.join("index_metadata.json"), &output_root)?;
+    let user_table = reader.table("User").unwrap();
+    let sort_keys = extract_relation_sort_keys(&user_table, "edge_Click_src_to_dst", 0)?;
+    let ts0 = encode_ts_i32(10, 0, 1);
+    let ts1 = encode_ts_i32(20, 0, 1);
+    let weight0 = ordered_f32_bits(1.5) as u64;
+    let weight1 = ordered_f32_bits(2.5) as u64;
+    let expected0 = (ts1 << 32) | weight1;
+    let expected1 = (ts0 << 32) | weight0;
+    assert_eq!(sort_keys, vec![expected0, expected1]);
+
+    Ok(())
+}
+
+#[test]
+fn ingest_weight_expr_with_backticks() -> Result<()> {
+    let dir = tempdir()?;
+    let input_root = dir.path().join("input");
+    let output_root = dir.path().join("output");
+
+    write_csv(
+        &input_root.join("src.csv"),
+        &["id", "dst_id"],
+        &[vec!["0".into(), "0".into()]],
+    )?;
+    write_csv(
+        &input_root.join("dst.csv"),
+        &["id", "weight-kg"],
+        &[vec!["0".into(), "3.5".into()]],
+    )?;
+
+    let source = serde_json::json!({
+        "dataset_name": "weight_expr_backticks",
+        "tables": [
+            {
+                "name": "Src",
+                "format": "csv",
+                "paths": [input_root.join("src.csv").to_string_lossy()],
+                "primary_key": "id",
+                "columns": [
+                    {"name": "id", "source_dtype": "int64", "ingested_dtype": "int64"},
+                    {"name": "dst_id", "source_dtype": "int64", "ingested_dtype": "int64"}
+                ]
+            },
+            {
+                "name": "Dst",
+                "format": "csv",
+                "paths": [input_root.join("dst.csv").to_string_lossy()],
+                "primary_key": "id",
+                "columns": [
+                    {"name": "id", "source_dtype": "int64", "ingested_dtype": "int64"},
+                    {"name": "weight-kg", "source_dtype": "float32", "ingested_dtype": "float32"}
+                ]
+            }
+        ],
+        "relationships": [
+            {
+                "name": "src_dst",
+                "src_table": "Src",
+                "src_column": "dst_id",
+                "dst_table": "Dst",
+                "dst_column": "id"
+            }
+        ],
+        "edge_sort_keys": {
+            "relationships": {
+                "src_dst": {
+                    "forward": {
+                        "weight": {
+                            "table": "Dst",
+                            "expr": "`weight-kg`",
+                            "encoding": {"dtype": "float32"}
+                        }
+                    }
+                }
+            }
+        }
+    });
+    let source_path = dir.path().join("source_metadata.json");
+    fs::write(&source_path, serde_json::to_vec_pretty(&source)?)?;
+
+    let metadata = ingest(
+        &source_path,
+        output_root.to_str().unwrap(),
+        Dest::Local,
+        IngestOptions {
+            profile_dir: None,
+            progress: None,
+            parallel: true,
+            index_mem_budget_bytes: None,
+        },
+    )?;
+    let forward = metadata
+        .edge_relations
+        .iter()
+        .find(|r| r.name == "src_dst")
+        .unwrap();
+    assert_eq!(forward.dest_sort_key_bits, Some(32));
 
     Ok(())
 }

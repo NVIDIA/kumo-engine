@@ -4,7 +4,9 @@
 //! REPL for inspecting edge lists by node id.
 
 use anyhow::{anyhow, Context, Result};
-use diskgraph_core::metadata::DatasetMetadata;
+use diskgraph_core::metadata::{
+    DatasetMetadata, EdgeRelationMetadata, EdgeSortKeyTimestampKind, EdgeSortKeyWeightKind,
+};
 use diskgraph_index::graph::{GraphIndexReader, TableReader};
 use diskgraph_index::layout::{EDGES_FILENAME, OFFSETS_FILENAME};
 use diskgraph_rowpack::{ColumnEncoding, DecimalStorage, FloatStorage, RowPackContext, StringEncoding};
@@ -17,6 +19,7 @@ use std::io::{self, Write, IsTerminal};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use half::f16;
 
 #[derive(Clone, Debug)]
 enum Source {
@@ -52,6 +55,8 @@ struct SourceMetadataReport {
     tables: Vec<TableSpecReport>,
     #[serde(default)]
     relationships: Vec<RelationshipSpecReport>,
+    #[serde(default)]
+    edge_sort_keys: Option<EdgeSortKeysReport>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -81,6 +86,81 @@ struct ColumnSpecReport {
     precision: Option<u32>,
     #[serde(default)]
     scale: Option<i32>,
+}
+
+#[derive(Debug, Deserialize)]
+struct EdgeSortKeysReport {
+    #[serde(default)]
+    relationships: HashMap<String, RelationshipSortKeysReport>,
+    #[serde(default)]
+    edge_tables: HashMap<String, EdgeTableSortKeysReport>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RelationshipSortKeysReport {
+    #[serde(default)]
+    forward: Option<SortKeyReport>,
+    #[serde(default)]
+    reverse: Option<SortKeyReport>,
+}
+
+#[derive(Debug, Deserialize)]
+struct EdgeTableSortKeysReport {
+    #[serde(default)]
+    src_to_dst: Option<SortKeyReport>,
+    #[serde(default)]
+    dst_to_src: Option<SortKeyReport>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SortKeyReport {
+    #[serde(default)]
+    timestamp: Option<SortKeyTimestampReport>,
+    #[serde(default)]
+    weight: Option<SortKeyWeightReport>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SortKeyTimestampReport {
+    table: String,
+    column: String,
+    encoding: SortKeyTimestampEncodingReport,
+}
+
+#[derive(Debug, Deserialize)]
+struct SortKeyTimestampEncodingReport {
+    kind: SortKeyTimestampKindReport,
+    anchor: i64,
+    step: i64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum SortKeyTimestampKindReport {
+    Int16,
+    Int32,
+}
+
+#[derive(Debug, Deserialize)]
+struct SortKeyWeightReport {
+    table: String,
+    expr: String,
+    encoding: SortKeyWeightEncodingReport,
+}
+
+#[derive(Debug, Deserialize)]
+struct SortKeyWeightEncodingReport {
+    dtype: SortKeyWeightKindReport,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum SortKeyWeightKindReport {
+    Byte,
+    UInt16,
+    UInt32,
+    Float16,
+    Float32,
 }
 
 #[derive(Debug, Deserialize, PartialEq, Eq)]
@@ -531,10 +611,7 @@ fn print_tables(reader: &GraphIndexReader) {
             format_number(table.node_count())
         );
         for rel in table.relations() {
-            let sort_label = rel
-                .dest_sort_key_bits
-                .map(|bits| format!("{bits}b"))
-                .unwrap_or_else(|| "none".to_string());
+            let sort_label = format_sort_key_summary(rel);
             println!(
                 "    -> {} (dst={}, sort_key={})",
                 rel.name, rel.dst_type, sort_label
@@ -819,6 +896,54 @@ fn print_source_schema(source: &SourceMetadataReport) {
             );
         }
     }
+    if let Some(sort_keys) = &source.edge_sort_keys {
+        if !sort_keys.relationships.is_empty() {
+            println!("  Relationship sort keys:");
+            let mut names: Vec<_> = sort_keys.relationships.keys().collect();
+            names.sort();
+            for name in names {
+                if let Some(cfg) = sort_keys.relationships.get(name) {
+                    if let Some(spec) = &cfg.forward {
+                        println!(
+                            "    {} forward: {}",
+                            name,
+                            format_sort_key_report(spec)
+                        );
+                    }
+                    if let Some(spec) = &cfg.reverse {
+                        println!(
+                            "    {} reverse: {}",
+                            name,
+                            format_sort_key_report(spec)
+                        );
+                    }
+                }
+            }
+        }
+        if !sort_keys.edge_tables.is_empty() {
+            println!("  Edge table sort keys:");
+            let mut names: Vec<_> = sort_keys.edge_tables.keys().collect();
+            names.sort();
+            for name in names {
+                if let Some(cfg) = sort_keys.edge_tables.get(name) {
+                    if let Some(spec) = &cfg.src_to_dst {
+                        println!(
+                            "    {} src_to_dst: {}",
+                            name,
+                            format_sort_key_report(spec)
+                        );
+                    }
+                    if let Some(spec) = &cfg.dst_to_src {
+                        println!(
+                            "    {} dst_to_src: {}",
+                            name,
+                            format_sort_key_report(spec)
+                        );
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn format_fk(table: &TableSpecReport, fk: &ForeignKeySpecReport) -> String {
@@ -995,6 +1120,166 @@ fn format_rowpack_bytes(bytes: &[u8]) -> String {
     out
 }
 
+fn format_sort_key_report(spec: &SortKeyReport) -> String {
+    let mut parts = Vec::new();
+    if let Some(ts) = &spec.timestamp {
+        let kind = match ts.encoding.kind {
+            SortKeyTimestampKindReport::Int16 => "int16",
+            SortKeyTimestampKindReport::Int32 => "int32",
+        };
+        parts.push(format!(
+            "timestamp(table={}, column={}, kind={}, anchor={}, step={})",
+            ts.table, ts.column, kind, ts.encoding.anchor, ts.encoding.step
+        ));
+    }
+    if let Some(weight) = &spec.weight {
+        let kind = match weight.encoding.dtype {
+            SortKeyWeightKindReport::Byte => "byte",
+            SortKeyWeightKindReport::UInt16 => "uint16",
+            SortKeyWeightKindReport::UInt32 => "uint32",
+            SortKeyWeightKindReport::Float16 => "float16",
+            SortKeyWeightKindReport::Float32 => "float32",
+        };
+        parts.push(format!(
+            "weight(table={}, expr={}, dtype={})",
+            weight.table, weight.expr, kind
+        ));
+    }
+    if parts.is_empty() {
+        "none".to_string()
+    } else {
+        parts.join(" ")
+    }
+}
+
+fn format_sort_key_summary(rel: &EdgeRelationMetadata) -> String {
+    let meta = match &rel.dest_sort_key {
+        Some(meta) => meta,
+        None => {
+            return rel
+                .dest_sort_key_bits
+                .map(|bits| format!("{bits}b"))
+                .unwrap_or_else(|| "none".to_string())
+        }
+    };
+    let mut parts = Vec::new();
+    if let Some(ts) = &meta.timestamp {
+        let kind = match ts.encoding.kind {
+            EdgeSortKeyTimestampKind::Int16 => "int16",
+            EdgeSortKeyTimestampKind::Int32 => "int32",
+        };
+        parts.push(format!("ts({kind})"));
+    }
+    if let Some(weight) = &meta.weight {
+        let kind = match weight.encoding.dtype {
+            EdgeSortKeyWeightKind::Byte => "byte",
+            EdgeSortKeyWeightKind::UInt16 => "u16",
+            EdgeSortKeyWeightKind::UInt32 => "u32",
+            EdgeSortKeyWeightKind::Float16 => "f16",
+            EdgeSortKeyWeightKind::Float32 => "f32",
+        };
+        parts.push(format!("w({kind})"));
+    }
+    if parts.is_empty() {
+        "none".to_string()
+    } else {
+        format!("{}b {}", meta.width_bits, parts.join("+"))
+    }
+}
+
+fn format_sort_key_value(rel: &EdgeRelationMetadata, raw: u64) -> String {
+    let meta = match &rel.dest_sort_key {
+        Some(meta) => meta,
+        None => return format!("{raw}"),
+    };
+    let weight_bits = meta.weight.as_ref().map(weight_bits_for_meta).unwrap_or(0);
+    let weight_mask = if weight_bits > 0 {
+        (1u64 << weight_bits) - 1
+    } else {
+        0
+    };
+    let weight_raw = if weight_bits > 0 { raw & weight_mask } else { 0 };
+    let ts_raw = if weight_bits > 0 { raw >> weight_bits } else { raw };
+    let mut parts = Vec::new();
+    if let Some(ts) = &meta.timestamp {
+        let bits = timestamp_bits_for_meta(ts);
+        let delta = decode_ordered_signed(ts_raw, bits);
+        let secs = delta
+            .saturating_mul(ts.encoding.step)
+            .saturating_add(ts.encoding.anchor);
+        parts.push(format!("ts={secs}"));
+    }
+    if let Some(weight) = &meta.weight {
+        let value = decode_weight_value(weight, weight_raw);
+        parts.push(value);
+    }
+    if parts.is_empty() {
+        format!("{raw}")
+    } else {
+        parts.join(",")
+    }
+}
+
+fn timestamp_bits_for_meta(meta: &diskgraph_core::metadata::EdgeSortKeyTimestampMetadata) -> u8 {
+    match meta.encoding.kind {
+        EdgeSortKeyTimestampKind::Int16 => 16,
+        EdgeSortKeyTimestampKind::Int32 => 32,
+    }
+}
+
+fn weight_bits_for_meta(meta: &diskgraph_core::metadata::EdgeSortKeyWeightMetadata) -> u8 {
+    match meta.encoding.dtype {
+        EdgeSortKeyWeightKind::Byte => 8,
+        EdgeSortKeyWeightKind::UInt16 => 16,
+        EdgeSortKeyWeightKind::UInt32 => 32,
+        EdgeSortKeyWeightKind::Float16 => 16,
+        EdgeSortKeyWeightKind::Float32 => 32,
+    }
+}
+
+fn decode_ordered_signed(raw: u64, bits: u8) -> i64 {
+    let mask = 1u64 << (bits - 1);
+    let decoded = raw ^ mask;
+    match bits {
+        16 => (decoded as u16 as i16) as i64,
+        32 => (decoded as u32 as i32) as i64,
+        _ => decoded as i64,
+    }
+}
+
+fn ordered_f32_from_bits(raw: u32) -> f32 {
+    let bits = if raw & 0x8000_0000 != 0 {
+        raw ^ 0x8000_0000
+    } else {
+        !raw
+    };
+    f32::from_bits(bits)
+}
+
+fn ordered_f16_from_bits(raw: u16) -> f32 {
+    let bits = if raw & 0x8000 != 0 { raw ^ 0x8000 } else { !raw };
+    f16::from_bits(bits).to_f32()
+}
+
+fn decode_weight_value(
+    meta: &diskgraph_core::metadata::EdgeSortKeyWeightMetadata,
+    raw: u64,
+) -> String {
+    match meta.encoding.dtype {
+        EdgeSortKeyWeightKind::Byte => format!("weight={raw}"),
+        EdgeSortKeyWeightKind::UInt16 => format!("weight={raw}"),
+        EdgeSortKeyWeightKind::UInt32 => format!("weight={raw}"),
+        EdgeSortKeyWeightKind::Float16 => {
+            let val = ordered_f16_from_bits(raw as u16);
+            format!("weight={val}")
+        }
+        EdgeSortKeyWeightKind::Float32 => {
+            let val = ordered_f32_from_bits(raw as u32);
+            format!("weight={val}")
+        }
+    }
+}
+
 fn format_float_storage(storage: FloatStorage) -> &'static str {
     match storage {
         FloatStorage::F16 => "f16",
@@ -1026,10 +1311,7 @@ fn print_info(reader: &GraphIndexReader, table_name: &str) {
         table.relations().len()
     );
     for (idx, rel) in table.relations().iter().enumerate() {
-        let sort = rel
-            .dest_sort_key_bits
-            .map(|b| format!("sort_bits={b}"))
-            .unwrap_or_else(|| "no sort key".into());
+        let sort = format_sort_key_summary(rel);
         println!("  [{}] {} ({} -> {}), {}", idx, rel.name, rel.src_type, rel.dst_type, sort);
     }
 }
@@ -1078,7 +1360,10 @@ fn show_node(reader: &GraphIndexReader, table_name: &str, node: u64) -> Result<(
                     .dest_sort_key_bits
                     .map(|bits| (val >> seg.layout.dst_bits as u128) & ((1u128 << bits) - 1))
                     .map(|v| v as u64);
-                rows.push((dst, sort));
+                let sort_display = sort
+                    .map(|raw| format_sort_key_value(rel, raw))
+                    .unwrap_or_else(|| "none".to_string());
+                rows.push((dst, sort_display));
                 buf.fill(0);
             }
             println!("    first {} edges: {:?}", rows.len(), rows);

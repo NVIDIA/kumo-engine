@@ -8,7 +8,9 @@ use crate::mapping::{
     PkHashStore, PkXxHash,
 };
 use crate::source_metadata::{
-    ColumnSpec, ColumnType, KeyMode, TableFormat, TableSpec, TimestampUnit,
+    relationship_name, ColumnSpec, ColumnType, KeyMode, SortKeySpec, TableFormat, TableSpec,
+    TimestampEncodingKind, TimestampEncodingSpec, TimestampUnit, WeightEncodingKind,
+    WeightEncodingSpec,
 };
 use anyhow::{anyhow, Context, Result};
 use arrow_array::{Array, ArrayRef};
@@ -16,8 +18,10 @@ use arrow_schema::{DataType, Field, Schema};
 use bytes::Bytes;
 use chrono::{NaiveDate, NaiveDateTime};
 use diskgraph_core::metadata::{
-    DatasetMetadata, EdgeRelationMetadata, EdgeShardMetadata, EdgeStorageFormat, NodeDataCompression,
-    NodeShardMetadata, NodeTypeMetadata, PrimaryKeyMap,
+    DatasetMetadata, EdgeRelationMetadata, EdgeShardMetadata, EdgeSortKeyMetadata,
+    EdgeSortKeyTimestampEncoding, EdgeSortKeyTimestampKind, EdgeSortKeyTimestampMetadata,
+    EdgeSortKeyWeightEncoding, EdgeSortKeyWeightKind, EdgeSortKeyWeightMetadata, EdgeStorageFormat,
+    NodeDataCompression, NodeShardMetadata, NodeTypeMetadata, PrimaryKeyMap,
 };
 use diskgraph_fs::{
     build_adls_client, build_gcs_client, build_s3_client, AdlsConfig, GcsConfig, S3Config,
@@ -31,7 +35,10 @@ use diskgraph_index::graph::{
     GraphBuildProgress, GraphBuildStage, GraphDataSource, GraphIndexBuilder, GraphProgressSink,
 };
 use lz4_flex::frame::{FrameDecoder, FrameEncoder};
-use num_traits::Signed;
+use fasteval::{eval_compiled_ref, Compiler, Evaler, Parser, Slab};
+use half::f16;
+use memmap2::Mmap;
+use num_traits::{Signed, ToPrimitive};
 use object_store::{path::Path as ObjectPath, ObjectStore, WriteMultipart};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use pprof::protos::Message;
@@ -49,6 +56,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::collections::hash_map::Entry;
+use std::collections::HashSet;
 use std::time::Duration;
 use std::process::{Command, Stdio};
 use tokio::runtime::Runtime;
@@ -575,8 +583,88 @@ struct IngestContext {
 struct EdgeBuildContext {
     root: PathBuf,
     rel_sort_bits: HashMap<String, Option<u8>>,
+    rel_sort_keys: HashMap<String, RelationSortKeyInfo>,
     max_ids: HashMap<String, u64>,
     pk_hash_store: Arc<PkHashStore>,
+    edge_tables: HashSet<String>,
+}
+
+struct SortKeyComponentStore {
+    width_bytes: usize,
+    data: Mmap,
+}
+
+enum SortKeyComponentSource {
+    DestTable { shards: Vec<SortKeyComponentStore> },
+    EdgeTable { shards: Vec<SortKeyComponentStore> },
+}
+
+struct SortKeyLookup {
+    weight_bits: u8,
+    timestamp: Option<SortKeyComponentSource>,
+    weight: Option<SortKeyComponentSource>,
+}
+
+impl SortKeyComponentStore {
+    fn get(&self, idx: u64) -> Result<u64> {
+        let offset = (idx as usize)
+            .checked_mul(self.width_bytes)
+            .ok_or_else(|| anyhow!("sort key offset overflow"))?;
+        let end = offset + self.width_bytes;
+        if end > self.data.len() {
+            return Err(anyhow!("sort key offset out of range"));
+        }
+        let mut buf = [0u8; 8];
+        buf[..self.width_bytes].copy_from_slice(&self.data[offset..end]);
+        Ok(u64::from_le_bytes(buf))
+    }
+}
+
+impl SortKeyComponentSource {
+    fn get_value(
+        &self,
+        dest_shard: usize,
+        dest_local: u64,
+        edge_shard: usize,
+        edge_row: u64,
+    ) -> Result<u64> {
+        match self {
+            SortKeyComponentSource::DestTable { shards } => shards
+                .get(dest_shard)
+                .ok_or_else(|| anyhow!("sort key dest shard missing"))?
+                .get(dest_local),
+            SortKeyComponentSource::EdgeTable { shards } => shards
+                .get(edge_shard)
+                .ok_or_else(|| anyhow!("sort key edge shard missing"))?
+                .get(edge_row),
+        }
+    }
+}
+
+impl SortKeyLookup {
+    fn sort_key(
+        &self,
+        dest_shard: usize,
+        dest_local: u64,
+        edge_shard: usize,
+        edge_row: u64,
+    ) -> Result<u64> {
+        let ts_val = if let Some(ts) = &self.timestamp {
+            ts.get_value(dest_shard, dest_local, edge_shard, edge_row)?
+        } else {
+            0
+        };
+        let weight_val = if let Some(weight) = &self.weight {
+            weight.get_value(dest_shard, dest_local, edge_shard, edge_row)?
+        } else {
+            0
+        };
+        if self.weight_bits > 0 {
+            Ok((ts_val << self.weight_bits) | weight_val)
+        } else {
+            Ok(ts_val)
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -747,7 +835,7 @@ struct RelationDef {
     name: String,
     src_table: String,
     dst_table: String,
-    sort_key: SortKeyMode,
+    sort_key: Option<RelationSortKeyConfig>,
 }
 
 #[derive(Clone)]
@@ -759,11 +847,468 @@ struct RelationshipRuntime {
     dst_table: String,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum SortKeyMode {
-    None,
+#[derive(Clone)]
+struct RelationSortKeyConfig {
+    timestamp: Option<SortKeyTimestampConfig>,
+    weight: Option<SortKeyWeightConfig>,
+    width_bits: u8,
+}
+
+#[derive(Clone)]
+struct SortKeyTimestampConfig {
+    table: String,
+    column: String,
+    encoding: TimestampEncodingSpec,
+}
+
+#[derive(Clone)]
+struct SortKeyWeightConfig {
+    table: String,
+    expr: String,
+    encoding: WeightEncodingSpec,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum SortKeyComponentKind {
+    Timestamp,
     Weight,
-    CreateTime,
+}
+
+#[derive(Clone)]
+struct SortKeyComponentSpec {
+    kind: SortKeyComponentKind,
+    table: String,
+    width_bits: u8,
+}
+
+#[derive(Clone)]
+struct RelationSortKeyInfo {
+    timestamp: Option<SortKeyComponentInfo>,
+    weight: Option<SortKeyComponentInfo>,
+}
+
+#[derive(Clone)]
+struct SortKeyComponentInfo {
+    spec: SortKeyComponentSpec,
+}
+
+enum SortKeyComponentEncoder {
+    Timestamp {
+        column_idx: usize,
+        encoding: TimestampEncodingSpec,
+    },
+    Weight {
+        expr: WeightExprRuntime,
+        encoding: WeightEncodingSpec,
+    },
+}
+
+struct WeightExprRuntime {
+    slab: Slab,
+    compiled: fasteval::compiler::Instruction,
+    vars: Vec<WeightExprVar>,
+    var_values: std::collections::BTreeMap<String, f64>,
+    simple_idx: Option<usize>,
+    simple_dtype: Option<ColumnType>,
+    simple_scale: Option<i32>,
+}
+
+struct WeightExprVar {
+    name: String,
+    idx: usize,
+    dtype: ColumnType,
+    scale: Option<i32>,
+}
+
+fn timestamp_width_bits(kind: &TimestampEncodingKind) -> u8 {
+    match kind {
+        TimestampEncodingKind::Int16 => 16,
+        TimestampEncodingKind::Int32 => 32,
+    }
+}
+
+fn weight_width_bits(kind: &WeightEncodingKind) -> u8 {
+    match kind {
+        WeightEncodingKind::Byte => 8,
+        WeightEncodingKind::UInt16 => 16,
+        WeightEncodingKind::UInt32 => 32,
+        WeightEncodingKind::Float16 => 16,
+        WeightEncodingKind::Float32 => 32,
+    }
+}
+
+fn build_relation_sort_key_config(spec: &SortKeySpec) -> Option<RelationSortKeyConfig> {
+    let mut width_bits: u16 = 0;
+    let timestamp = spec.timestamp.as_ref().map(|ts| {
+        width_bits += timestamp_width_bits(&ts.encoding.kind) as u16;
+        SortKeyTimestampConfig {
+            table: ts.table.clone(),
+            column: ts.column.clone(),
+            encoding: ts.encoding.clone(),
+        }
+    });
+    let weight = spec.weight.as_ref().map(|w| {
+        width_bits += weight_width_bits(&w.encoding.dtype) as u16;
+        SortKeyWeightConfig {
+            table: w.table.clone(),
+            expr: w.expr.clone(),
+            encoding: w.encoding.clone(),
+        }
+    });
+    if width_bits == 0 {
+        None
+    } else {
+        Some(RelationSortKeyConfig {
+            timestamp,
+            weight,
+            width_bits: width_bits as u8,
+        })
+    }
+}
+
+fn build_sort_key_metadata(cfg: &RelationSortKeyConfig) -> EdgeSortKeyMetadata {
+    EdgeSortKeyMetadata {
+        width_bits: cfg.width_bits,
+        timestamp: cfg.timestamp.as_ref().map(|ts| EdgeSortKeyTimestampMetadata {
+            table: ts.table.clone(),
+            column: ts.column.clone(),
+            encoding: EdgeSortKeyTimestampEncoding {
+                kind: match ts.encoding.kind {
+                    TimestampEncodingKind::Int16 => EdgeSortKeyTimestampKind::Int16,
+                    TimestampEncodingKind::Int32 => EdgeSortKeyTimestampKind::Int32,
+                },
+                anchor: ts.encoding.anchor,
+                step: ts.encoding.step,
+            },
+        }),
+        weight: cfg.weight.as_ref().map(|w| EdgeSortKeyWeightMetadata {
+            table: w.table.clone(),
+            expr: w.expr.clone(),
+            encoding: EdgeSortKeyWeightEncoding {
+                dtype: match w.encoding.dtype {
+                    WeightEncodingKind::Byte => EdgeSortKeyWeightKind::Byte,
+                    WeightEncodingKind::UInt16 => EdgeSortKeyWeightKind::UInt16,
+                    WeightEncodingKind::UInt32 => EdgeSortKeyWeightKind::UInt32,
+                    WeightEncodingKind::Float16 => EdgeSortKeyWeightKind::Float16,
+                    WeightEncodingKind::Float32 => EdgeSortKeyWeightKind::Float32,
+                },
+            },
+        }),
+    }
+}
+
+fn rewrite_weight_expr(expr: &str) -> Result<(String, std::collections::HashMap<String, String>)> {
+    let mut out = String::new();
+    let mut map: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    let mut chars = expr.chars().peekable();
+    let mut idx = 0usize;
+    while let Some(ch) = chars.next() {
+        if ch == '`' {
+            let mut name = String::new();
+            let mut escaped = false;
+            while let Some(c) = chars.next() {
+                if escaped {
+                    match c {
+                        'n' => name.push('\n'),
+                        'r' => name.push('\r'),
+                        't' => name.push('\t'),
+                        '\\' => name.push('\\'),
+                        '`' => name.push('`'),
+                        other => name.push(other),
+                    }
+                    escaped = false;
+                    continue;
+                }
+                if c == '\\' {
+                    escaped = true;
+                    continue;
+                }
+                if c == '`' {
+                    break;
+                }
+                name.push(c);
+            }
+            if escaped {
+                return Err(anyhow!("unterminated escape in `{expr}`"));
+            }
+            if name.is_empty() {
+                return Err(anyhow!("empty backtick identifier"));
+            }
+            let var = format!("__c{idx}");
+            idx += 1;
+            out.push_str(&var);
+            map.insert(var, name);
+        } else {
+            out.push(ch);
+        }
+    }
+    Ok((out, map))
+}
+
+fn compile_weight_expr(expr: &str, table: &TableSpec) -> Result<WeightExprRuntime> {
+    let (rewritten, var_map) = rewrite_weight_expr(expr)?;
+    let parser = Parser::new();
+    let mut slab = Slab::new();
+    let expr_i = parser
+        .parse(&rewritten, &mut slab.ps)
+        .map_err(|e| anyhow!("parse error: {e}"))?;
+    let expr_ref = expr_i.from(&slab.ps);
+    let vars = expr_ref.var_names(&slab);
+    if vars.is_empty() {
+        return Err(anyhow!("expression has no column references"));
+    }
+    let mut var_values = std::collections::BTreeMap::new();
+    let mut runtime_vars = Vec::with_capacity(vars.len());
+    let mut simple_idx = None;
+    let mut simple_dtype = None;
+    let mut simple_scale = None;
+    for var in vars {
+        let column = var_map.get(&var).cloned().unwrap_or_else(|| var.clone());
+        let idx = column_index(table, &column)?;
+        let col = column_spec(table, &column)?;
+        var_values.insert(var.clone(), 0.0);
+        runtime_vars.push(WeightExprVar {
+            name: var.clone(),
+            idx,
+            dtype: col.ingested_dtype.clone(),
+            scale: col.scale,
+        });
+        if rewritten.trim() == var {
+            simple_idx = Some(idx);
+            simple_dtype = Some(col.ingested_dtype.clone());
+            simple_scale = col.scale;
+        }
+    }
+    let compiled = expr_ref.compile(&slab.ps, &mut slab.cs);
+    Ok(WeightExprRuntime {
+        slab,
+        compiled,
+        vars: runtime_vars,
+        var_values,
+        simple_idx,
+        simple_dtype,
+        simple_scale,
+    })
+}
+
+fn value_ref_to_f64(value: &ValueRef<'_>, dtype: &ColumnType, scale: Option<i32>) -> Option<f64> {
+    match (value, dtype) {
+        (ValueRef::Int64(v), ColumnType::Int64)
+        | (ValueRef::Int64(v), ColumnType::Int32)
+        | (ValueRef::Int64(v), ColumnType::Int16)
+        | (ValueRef::Int64(v), ColumnType::Int8) => Some(*v as f64),
+        (ValueRef::Int32(v), ColumnType::Int32)
+        | (ValueRef::Int32(v), ColumnType::Int16)
+        | (ValueRef::Int32(v), ColumnType::Int8) => Some(*v as f64),
+        (ValueRef::UInt64(v), ColumnType::UInt64)
+        | (ValueRef::UInt64(v), ColumnType::UInt32)
+        | (ValueRef::UInt64(v), ColumnType::UInt16)
+        | (ValueRef::UInt64(v), ColumnType::UInt8) => Some(*v as f64),
+        (ValueRef::UInt32(v), ColumnType::UInt32)
+        | (ValueRef::UInt32(v), ColumnType::UInt16)
+        | (ValueRef::UInt32(v), ColumnType::UInt8) => Some(*v as f64),
+        (ValueRef::Float64(v), ColumnType::Float64) => Some(*v),
+        (ValueRef::Float32(v), ColumnType::Float32) => Some(*v as f64),
+        (ValueRef::Decimal128(v), ColumnType::Decimal128) => {
+            let scale = scale.unwrap_or(0);
+            let denom = 10_f64.powi(scale);
+            Some((*v as f64) / denom)
+        }
+        (ValueRef::Decimal256(v), ColumnType::Decimal256) => {
+            let scale = scale.unwrap_or(0);
+            let num = num_bigint::BigInt::from_signed_bytes_le(v);
+            num.to_f64().map(|f| f / 10_f64.powi(scale))
+        }
+        _ => None,
+    }
+}
+
+fn encode_timestamp_value(
+    value: Option<i64>,
+    encoding: &TimestampEncodingSpec,
+) -> u64 {
+    let step = encoding.step.max(1);
+    let raw = value.unwrap_or(i64::MIN);
+    let delta = raw.saturating_sub(encoding.anchor).div_euclid(step);
+    match encoding.kind {
+        TimestampEncodingKind::Int16 => {
+            let clamped = delta.clamp(i16::MIN as i64, i16::MAX as i64) as i16;
+            ordered_signed_to_u64(clamped as i64, 16)
+        }
+        TimestampEncodingKind::Int32 => {
+            let clamped = delta.clamp(i32::MIN as i64, i32::MAX as i64) as i32;
+            ordered_signed_to_u64(clamped as i64, 32)
+        }
+    }
+}
+
+fn ordered_signed_to_u64(value: i64, bits: u8) -> u64 {
+    let mask = 1u64 << (bits - 1);
+    let raw = match bits {
+        16 => (value as i16 as u16) as u64,
+        32 => (value as i32 as u32) as u64,
+        _ => value as u64,
+    };
+    raw ^ mask
+}
+
+fn ordered_f32_bits(value: f32) -> u32 {
+    let bits = value.to_bits();
+    if bits & 0x8000_0000 != 0 {
+        !bits
+    } else {
+        bits ^ 0x8000_0000
+    }
+}
+
+fn ordered_f16_bits(value: f32) -> u16 {
+    let bits = f16::from_f32(value).to_bits();
+    if bits & 0x8000 != 0 {
+        !bits
+    } else {
+        bits ^ 0x8000
+    }
+}
+
+fn encode_weight_value(value: Option<f64>, encoding: &WeightEncodingSpec) -> u64 {
+    let val = value.unwrap_or(0.0);
+    if !val.is_finite() {
+        return 0;
+    }
+    match encoding.dtype {
+        WeightEncodingKind::Byte => val.clamp(0.0, u8::MAX as f64) as u64,
+        WeightEncodingKind::UInt16 => val.clamp(0.0, u16::MAX as f64) as u64,
+        WeightEncodingKind::UInt32 => val.clamp(0.0, u32::MAX as f64) as u64,
+        WeightEncodingKind::Float16 => ordered_f16_bits(val as f32) as u64,
+        WeightEncodingKind::Float32 => ordered_f32_bits(val as f32) as u64,
+    }
+}
+
+fn eval_weight_expr(expr: &mut WeightExprRuntime, access: &mut RowAccess<'_>) -> Result<Option<f64>> {
+    if let Some(idx) = expr.simple_idx {
+        let value = access.value_ref(idx)?;
+        return Ok(value_ref_to_f64(&value, expr.simple_dtype.as_ref().unwrap(), expr.simple_scale));
+    }
+    for var in &expr.vars {
+        let value = access.value_ref(var.idx)?;
+        let num = value_ref_to_f64(&value, &var.dtype, var.scale);
+        if let Some(slot) = expr.var_values.get_mut(&var.name) {
+            if let Some(num) = num {
+                *slot = num;
+            } else {
+                return Ok(None);
+            }
+        }
+    }
+    let val = eval_compiled_ref!(&expr.compiled, &expr.slab, &mut expr.var_values);
+    Ok(Some(val))
+}
+
+fn build_sort_key_batchers_for_node_table(
+    table: &TableSpec,
+    relation_defs: &[RelationDef],
+    num_shards: usize,
+    buffer_limit: usize,
+    senders: std::sync::Arc<Vec<std::sync::mpsc::SyncSender<SortKeyWriteMessage>>>,
+) -> Result<Vec<SortKeyComponentBatcher>> {
+    let mut batchers = Vec::new();
+    for rel in relation_defs {
+        let cfg = match &rel.sort_key {
+            Some(cfg) => cfg,
+            None => continue,
+        };
+        if let Some(ts) = &cfg.timestamp {
+            if ts.table == table.name {
+                let idx = column_index(table, &ts.column)?;
+                let width_bytes = (timestamp_width_bits(&ts.encoding.kind) / 8) as u8;
+                batchers.push(SortKeyComponentBatcher::new(
+                    std::sync::Arc::<str>::from(rel.name.clone()),
+                    SortKeyComponentKind::Timestamp,
+                    width_bytes,
+                    SortKeyComponentEncoder::Timestamp {
+                        column_idx: idx,
+                        encoding: ts.encoding.clone(),
+                    },
+                    num_shards,
+                    buffer_limit,
+                    std::sync::Arc::clone(&senders),
+                ));
+            }
+        }
+        if let Some(weight) = &cfg.weight {
+            if weight.table == table.name {
+                let expr = compile_weight_expr(&weight.expr, table)?;
+                let width_bytes = (weight_width_bits(&weight.encoding.dtype) / 8) as u8;
+                batchers.push(SortKeyComponentBatcher::new(
+                    std::sync::Arc::<str>::from(rel.name.clone()),
+                    SortKeyComponentKind::Weight,
+                    width_bytes,
+                    SortKeyComponentEncoder::Weight {
+                        expr,
+                        encoding: weight.encoding.clone(),
+                    },
+                    num_shards,
+                    buffer_limit,
+                    std::sync::Arc::clone(&senders),
+                ));
+            }
+        }
+    }
+    Ok(batchers)
+}
+
+fn build_sort_key_batchers_for_edge_table(
+    table: &TableSpec,
+    relation_defs: &[RelationDef],
+    num_shards: usize,
+    buffer_limit: usize,
+    senders: std::sync::Arc<Vec<std::sync::mpsc::SyncSender<SortKeyWriteMessage>>>,
+) -> Result<Vec<SortKeyComponentBatcher>> {
+    let mut batchers = Vec::new();
+    for rel in relation_defs {
+        let cfg = match &rel.sort_key {
+            Some(cfg) => cfg,
+            None => continue,
+        };
+        if let Some(ts) = &cfg.timestamp {
+            if ts.table == table.name {
+                let idx = column_index(table, &ts.column)?;
+                let width_bytes = (timestamp_width_bits(&ts.encoding.kind) / 8) as u8;
+                batchers.push(SortKeyComponentBatcher::new(
+                    std::sync::Arc::<str>::from(rel.name.clone()),
+                    SortKeyComponentKind::Timestamp,
+                    width_bytes,
+                    SortKeyComponentEncoder::Timestamp {
+                        column_idx: idx,
+                        encoding: ts.encoding.clone(),
+                    },
+                    num_shards,
+                    buffer_limit,
+                    std::sync::Arc::clone(&senders),
+                ));
+            }
+        }
+        if let Some(weight) = &cfg.weight {
+            if weight.table == table.name {
+                let expr = compile_weight_expr(&weight.expr, table)?;
+                let width_bytes = (weight_width_bits(&weight.encoding.dtype) / 8) as u8;
+                batchers.push(SortKeyComponentBatcher::new(
+                    std::sync::Arc::<str>::from(rel.name.clone()),
+                    SortKeyComponentKind::Weight,
+                    width_bytes,
+                    SortKeyComponentEncoder::Weight {
+                        expr,
+                        encoding: weight.encoding.clone(),
+                    },
+                    num_shards,
+                    buffer_limit,
+                    std::sync::Arc::clone(&senders),
+                ));
+            }
+        }
+    }
+    Ok(batchers)
 }
 
 impl IngestContext {
@@ -806,37 +1351,16 @@ impl IngestContext {
         let num_shards = source.num_shards.unwrap_or(1).max(1);
         let mut relation_defs = Vec::new();
         let mut relationships = Vec::new();
+        let sort_keys = source.edge_sort_keys.clone().unwrap_or_default();
         for rel in &source.relationships {
-            let base = rel.name.clone().unwrap_or_else(|| {
-                format!(
-                    "{}_{}_to_{}_{}",
-                    rel.src_table, rel.src_column, rel.dst_table, rel.dst_column
-                )
-            });
-            let dst_table = source
-                .tables
-                .iter()
-                .find(|t| t.name == rel.dst_table)
-                .ok_or_else(|| anyhow!("missing table {}", rel.dst_table))?;
-            let src_table = source
-                .tables
-                .iter()
-                .find(|t| t.name == rel.src_table)
-                .ok_or_else(|| anyhow!("missing table {}", rel.src_table))?;
-            let dst_sort = if dst_table.weight.is_some() {
-                SortKeyMode::Weight
-            } else if dst_table.create_time.is_some() {
-                SortKeyMode::CreateTime
-            } else {
-                SortKeyMode::None
-            };
-            let src_sort = if src_table.weight.is_some() {
-                SortKeyMode::Weight
-            } else if src_table.create_time.is_some() {
-                SortKeyMode::CreateTime
-            } else {
-                SortKeyMode::None
-            };
+            let base = relationship_name(rel);
+            let rel_sort = sort_keys.relationships.get(&base);
+            let dst_sort = rel_sort
+                .and_then(|cfg| cfg.forward.as_ref())
+                .and_then(build_relation_sort_key_config);
+            let src_sort = rel_sort
+                .and_then(|cfg| cfg.reverse.as_ref())
+                .and_then(build_relation_sort_key_config);
             relation_defs.push(RelationDef {
                 name: base.clone(),
                 src_table: rel.src_table.clone(),
@@ -860,23 +1384,22 @@ impl IngestContext {
         for table in &source.tables {
             if let Some(edge) = &table.edge_table {
                 let base = format!("edge_{}", table.name);
+                let edge_sort = sort_keys.edge_tables.get(&table.name);
                 let src_rel = RelationDef {
                     name: format!("{base}_src_to_dst"),
                     src_table: edge.src_fk.ref_table.clone(),
                     dst_table: edge.dst_fk.ref_table.clone(),
-                    sort_key: if table.weight.is_some() {
-                        SortKeyMode::Weight
-                    } else if table.create_time.is_some() {
-                        SortKeyMode::CreateTime
-                    } else {
-                        SortKeyMode::None
-                    },
+                    sort_key: edge_sort
+                        .and_then(|cfg| cfg.src_to_dst.as_ref())
+                        .and_then(build_relation_sort_key_config),
                 };
                 let dst_rel = RelationDef {
                     name: format!("{base}_dst_to_src"),
                     src_table: edge.dst_fk.ref_table.clone(),
                     dst_table: edge.src_fk.ref_table.clone(),
-                    sort_key: src_rel.sort_key,
+                    sort_key: edge_sort
+                        .and_then(|cfg| cfg.dst_to_src.as_ref())
+                        .and_then(build_relation_sort_key_config),
                 };
                 relation_defs.push(src_rel);
                 relation_defs.push(dst_rel);
@@ -1316,12 +1839,16 @@ impl IngestContext {
             let (tx, rx) = std::sync::mpsc::channel::<Result<EncodeResult>>();
             let mut tasks = Vec::new();
             let relationships = self.relationships.clone();
+            let relation_defs = std::sync::Arc::new(self.relation_defs.clone());
             let num_shards = self.num_shards;
             let target = std::sync::Arc::clone(&self.target);
             let node_pool = NodeWritePool::new(std::sync::Arc::clone(&target), edge_writer_workers());
             let edge_pool = EdgeSrcWritePool::new(std::sync::Arc::clone(&target), edge_writer_workers());
+            let sort_key_pool =
+                SortKeyWritePool::new(std::sync::Arc::clone(&target), edge_writer_workers());
             let node_senders = node_pool.senders();
             let edge_senders = edge_pool.senders();
+            let sort_key_senders = sort_key_pool.senders();
             let trimmed_strings = std::sync::Arc::clone(&self.trimmed_strings);
             let progress = self.progress.clone();
             let mut task_count = 0u64;
@@ -1341,9 +1868,11 @@ impl IngestContext {
                 let target = std::sync::Arc::clone(&target);
                 let node_senders = std::sync::Arc::clone(&node_senders);
                 let edge_senders = std::sync::Arc::clone(&edge_senders);
+                let sort_key_senders = std::sync::Arc::clone(&sort_key_senders);
                 let trimmed_strings = std::sync::Arc::clone(&trimmed_strings);
                 let progress = progress.clone();
                 let root = root.clone();
+                let relation_defs = std::sync::Arc::clone(&relation_defs);
                 let file_count = table.paths.len();
                 for file_idx in 0..file_count {
                     let table = table.clone();
@@ -1351,9 +1880,11 @@ impl IngestContext {
                     let target = std::sync::Arc::clone(&target);
                     let node_senders = std::sync::Arc::clone(&node_senders);
                     let edge_senders = std::sync::Arc::clone(&edge_senders);
+                    let sort_key_senders = std::sync::Arc::clone(&sort_key_senders);
                     let trimmed_strings = std::sync::Arc::clone(&trimmed_strings);
                     let progress = progress.clone();
                     let root = root.clone();
+                    let relation_defs = std::sync::Arc::clone(&relation_defs);
                     let tx = tx.clone();
                     task_count = task_count.saturating_add(1);
                     tasks.push(WorkItem {
@@ -1370,6 +1901,8 @@ impl IngestContext {
                                     &progress,
                                     &mut key_failures,
                                     &edge_senders,
+                                    &sort_key_senders,
+                                    relation_defs.as_ref(),
                                 )?;
                                 tx.send(Ok(EncodeResult {
                                     table: table.name.clone(),
@@ -1383,6 +1916,7 @@ impl IngestContext {
                             let node = Self::build_temp_node_file(
                                 &table,
                                 &relationships,
+                                &relation_defs,
                                 file_idx,
                                 num_shards,
                                 &target,
@@ -1391,6 +1925,7 @@ impl IngestContext {
                                 &progress,
                                 &mut key_failures,
                                 &node_senders,
+                                &sort_key_senders,
                             )?;
                             tx.send(Ok(EncodeResult {
                                 table: table.name.clone(),
@@ -1439,8 +1974,10 @@ impl IngestContext {
             }
             drop(node_senders);
             drop(edge_senders);
+            drop(sort_key_senders);
             let node_stats = node_pool.finish()?;
             let edge_stats = edge_pool.finish()?;
+            let _sort_key_stats = sort_key_pool.finish()?;
             self.write_consolidated_meta(&node_stats, &edge_stats)?;
             self.refresh_shard_rows_from_stats(&node_stats);
             self.table_rows = table_rows;
@@ -1448,10 +1985,13 @@ impl IngestContext {
             self.encode_tasks = task_count;
         } else {
             let relationships = self.relationships.clone();
+            let relation_defs = self.relation_defs.clone();
             let node_pool = NodeWritePool::new(std::sync::Arc::clone(&self.target), 1);
             let edge_pool = EdgeSrcWritePool::new(std::sync::Arc::clone(&self.target), 1);
+            let sort_key_pool = SortKeyWritePool::new(std::sync::Arc::clone(&self.target), 1);
             let node_senders = node_pool.senders();
             let edge_senders = edge_pool.senders();
+            let sort_key_senders = sort_key_pool.senders();
             for table in &tables {
                 self.emit_progress(ProgressEvent {
                     phase: ProgressPhase::Encode,
@@ -1473,7 +2013,9 @@ impl IngestContext {
                             &self.progress,
                             &mut key_failures,
                             &edge_senders,
-                        )?;
+                            &sort_key_senders,
+                                relation_defs.as_ref(),
+                            )?;
                     }
                 } else {
                     let mut total_rows = 0u64;
@@ -1482,6 +2024,7 @@ impl IngestContext {
                         let node = Self::build_temp_node_file(
                             table,
                             &relationships,
+                            &relation_defs,
                             file_idx,
                             self.num_shards,
                             &self.target,
@@ -1490,6 +2033,7 @@ impl IngestContext {
                             &self.progress,
                             &mut key_failures,
                             &node_senders,
+                            &sort_key_senders,
                         )?;
                         total_rows = total_rows.saturating_add(node.total_rows);
                         node_data_dropped =
@@ -1516,8 +2060,10 @@ impl IngestContext {
             }
             drop(node_senders);
             drop(edge_senders);
+            drop(sort_key_senders);
             let node_stats = node_pool.finish()?;
             let edge_stats = edge_pool.finish()?;
+            let _sort_key_stats = sort_key_pool.finish()?;
             self.write_consolidated_meta(&node_stats, &edge_stats)?;
             self.refresh_shard_rows_from_stats(&node_stats);
             self.table_rows = table_rows;
@@ -1617,12 +2163,30 @@ impl IngestContext {
                 )?;
             }
         }
+        for rel in &self.relation_defs {
+            if let Some(cfg) = &rel.sort_key {
+                let kinds = [
+                    (SortKeyComponentKind::Timestamp, cfg.timestamp.is_some()),
+                    (SortKeyComponentKind::Weight, cfg.weight.is_some()),
+                ];
+                for (kind, enabled) in kinds {
+                    if !enabled {
+                        continue;
+                    }
+                    for shard in 0..self.num_shards {
+                        let path = temp_sort_key_component_path(&rel.name, kind, shard);
+                        ensure_sort_key_file(&self.target, &path)?;
+                    }
+                }
+            }
+        }
         Ok(())
     }
 
     fn build_temp_node_file(
         table: &TableSpec,
         relationships: &[RelationshipRuntime],
+        relation_defs: &[RelationDef],
         file_idx: usize,
         num_shards: usize,
         _target: &std::sync::Arc<OutputTarget>,
@@ -1631,6 +2195,7 @@ impl IngestContext {
         progress: &Option<ProgressCallback>,
         key_failures: &mut KeyFailureState,
         senders: &std::sync::Arc<Vec<std::sync::mpsc::SyncSender<NodeWriteMessage>>>,
+        sort_key_senders: &std::sync::Arc<Vec<std::sync::mpsc::SyncSender<SortKeyWriteMessage>>>,
     ) -> Result<TempNodeFileResult> {
         let pk_col = table.primary_key.as_ref().and_then(|pk| column_spec(table, pk).ok());
         let pk_idx = table
@@ -1688,6 +2253,13 @@ impl IngestContext {
             buffer_limit,
             std::sync::Arc::clone(senders),
         );
+        let mut sort_key_batchers = build_sort_key_batchers_for_node_table(
+            table,
+            relation_defs,
+            num_shards,
+            buffer_limit,
+            std::sync::Arc::clone(sort_key_senders),
+        )?;
 
         let path = table
             .paths
@@ -1732,6 +2304,7 @@ impl IngestContext {
                             &mut node_out,
                             &mut pkey_out,
                             &mut batcher,
+                            &mut sort_key_batchers,
                             &mut row_id,
                             pk_col,
                             &mut key_buf,
@@ -1776,6 +2349,7 @@ impl IngestContext {
                             &mut node_out,
                             &mut pkey_out,
                             &mut batcher,
+                            &mut sort_key_batchers,
                             &mut row_id,
                             pk_col,
                             &mut key_buf,
@@ -1788,6 +2362,9 @@ impl IngestContext {
             }
         }
         batcher.flush_all()?;
+        for batcher in &mut sort_key_batchers {
+            batcher.flush_all()?;
+        }
         if let Some(cb) = progress {
             cb(ProgressEvent {
                 phase: ProgressPhase::Encode,
@@ -1848,6 +2425,7 @@ impl IngestContext {
         node_out: &mut Vec<u8>,
         pkey_out: &mut Vec<u8>,
         batcher: &mut NodeBatcher,
+        sort_key_batchers: &mut [SortKeyComponentBatcher],
         row_id: &mut u64,
         pk_col: Option<&ColumnSpec>,
         key_buf: &mut Vec<u8>,
@@ -1899,6 +2477,9 @@ impl IngestContext {
         } else {
             batcher.push_node(shard, node_out)?;
         }
+        for sort_key in sort_key_batchers.iter_mut() {
+            sort_key.push_row(shard, access)?;
+        }
         for (_rel_name, rel_idx, rel_pos) in rel_specs {
             let col = table
                 .columns
@@ -1937,6 +2518,8 @@ impl IngestContext {
         progress: &Option<ProgressCallback>,
         key_failures: &mut KeyFailureState,
         senders: &std::sync::Arc<Vec<std::sync::mpsc::SyncSender<EdgeSrcWriteMessage>>>,
+        sort_key_senders: &std::sync::Arc<Vec<std::sync::mpsc::SyncSender<SortKeyWriteMessage>>>,
+        relation_defs: &[RelationDef],
     ) -> Result<()> {
         let edge = table
             .edge_table
@@ -1959,6 +2542,13 @@ impl IngestContext {
             buffer_limit,
             std::sync::Arc::clone(senders),
         );
+        let mut sort_key_batchers = build_sort_key_batchers_for_edge_table(
+            table,
+            relation_defs,
+            num_shards,
+            buffer_limit,
+            std::sync::Arc::clone(sort_key_senders),
+        )?;
 
         let path = table
             .paths
@@ -2002,6 +2592,7 @@ impl IngestContext {
                             dst_fast,
                             &mut access,
                             &mut batcher,
+                            &mut sort_key_batchers,
                             num_shards,
                             key_failures,
                         )?;
@@ -2042,6 +2633,7 @@ impl IngestContext {
                             dst_fast,
                             &mut access,
                             &mut batcher,
+                            &mut sort_key_batchers,
                             num_shards,
                             key_failures,
                         )?;
@@ -2050,6 +2642,9 @@ impl IngestContext {
             }
         }
         batcher.flush_all()?;
+        for batcher in &mut sort_key_batchers {
+            batcher.flush_all()?;
+        }
         if let Some(cb) = progress {
             cb(ProgressEvent {
                 phase: ProgressPhase::Encode,
@@ -2077,6 +2672,7 @@ impl IngestContext {
         dst_fast: Option<EdgeKeyFastKind>,
         access: &mut RowAccess<'_>,
         batcher: &mut EdgeSrcBatcher,
+        sort_key_batchers: &mut [SortKeyComponentBatcher],
         num_shards: usize,
         key_failures: &mut KeyFailureState,
     ) -> Result<()> {
@@ -2150,6 +2746,9 @@ impl IngestContext {
         write_key_to_buf(&mut forward_row, &src_key)?;
         write_key_to_buf(&mut forward_row, &dst_key)?;
         batcher.push(forward_shard, &forward_row)?;
+        for batcher in sort_key_batchers.iter_mut() {
+            batcher.push_row(forward_shard, access)?;
+        }
         Ok(())
     }
 
@@ -2574,12 +3173,33 @@ impl IngestContext {
         let root = require_local_output(&self.target)?.to_path_buf();
         self.build_shard_offsets();
         let mut rel_sort_bits = fixed_hash_map();
+        let mut rel_sort_keys = fixed_hash_map();
         for rel in &self.relation_defs {
-            let sort_bits = match rel.sort_key {
-                SortKeyMode::None => None,
-                _ => Some(32),
-            };
+            let sort_bits = rel.sort_key.as_ref().map(|cfg| cfg.width_bits);
             rel_sort_bits.insert(rel.name.clone(), sort_bits);
+            if let Some(cfg) = &rel.sort_key {
+                let timestamp = cfg.timestamp.as_ref().map(|ts| SortKeyComponentInfo {
+                    spec: SortKeyComponentSpec {
+                        kind: SortKeyComponentKind::Timestamp,
+                        table: ts.table.clone(),
+                        width_bits: timestamp_width_bits(&ts.encoding.kind),
+                    },
+                });
+                let weight = cfg.weight.as_ref().map(|w| SortKeyComponentInfo {
+                    spec: SortKeyComponentSpec {
+                        kind: SortKeyComponentKind::Weight,
+                        table: w.table.clone(),
+                        width_bits: weight_width_bits(&w.encoding.dtype),
+                    },
+                });
+                rel_sort_keys.insert(
+                    rel.name.clone(),
+                    RelationSortKeyInfo {
+                        timestamp,
+                        weight,
+                    },
+                );
+            }
         }
         let mut max_ids = fixed_hash_map();
         for (table, counts) in &self.shard_rows {
@@ -2587,12 +3207,20 @@ impl IngestContext {
             let max_id = total.saturating_sub(1);
             max_ids.insert(table.clone(), max_id);
         }
+        let mut edge_tables = HashSet::new();
+        for table in &self.source.tables {
+            if table.edge_table.is_some() {
+                edge_tables.insert(table.name.clone());
+            }
+        }
         let pk_hash_store = Arc::new(self.build_pk_hash_store(&root)?);
         Ok(EdgeBuildContext {
             root,
             rel_sort_bits,
+            rel_sort_keys,
             max_ids,
             pk_hash_store,
+            edge_tables,
         })
     }
     fn build_pk_hash_store(&self, root: &Path) -> Result<PkHashStore> {
@@ -2641,6 +3269,8 @@ impl IngestContext {
             let pk_hash_store = edge_ctx.pk_hash_store.clone();
             let max_ids = edge_ctx.max_ids.clone();
             let rel_sort_bits = edge_ctx.rel_sort_bits.clone();
+            let rel_sort_keys = edge_ctx.rel_sort_keys.clone();
+            let edge_tables = edge_ctx.edge_tables.clone();
             let source = self.source.clone();
             let num_shards = self.num_shards;
             let task_time = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -2691,6 +3321,8 @@ impl IngestContext {
                     let pk_hash_store = pk_hash_store.clone();
                     let max_ids = max_ids.clone();
                     let rel_sort_bits = rel_sort_bits.clone();
+                    let rel_sort_keys = rel_sort_keys.clone();
+                    let edge_tables = edge_tables.clone();
                     let root = root.clone();
                     let writer_senders = std::sync::Arc::clone(&writer_senders);
                     let tx = tx.clone();
@@ -2720,6 +3352,20 @@ impl IngestContext {
                                 .get(&rel.name_reverse)
                                 .copied()
                                 .flatten();
+                            let forward_lookup = build_sort_key_lookup(
+                                &root,
+                                &edge_tables,
+                                &rel_sort_keys,
+                                &rel.name_forward,
+                                num_shards,
+                            )?;
+                            let reverse_lookup = build_sort_key_lookup(
+                                &root,
+                                &edge_tables,
+                                &rel_sort_keys,
+                                &rel.name_reverse,
+                                num_shards,
+                            )?;
                             let forward_spec = edge_binary_spec(
                                 max_ids.get(&rel.src_table).copied().unwrap_or(0),
                                 max_ids.get(&rel.dst_table).copied().unwrap_or(0),
@@ -2774,6 +3420,7 @@ impl IngestContext {
                                     }
                                     pending = 0;
                                 }
+                                let src_local = local_count;
                                 let src_id = src_offsets
                                     .get(shard)
                                     .copied()
@@ -2820,8 +3467,26 @@ impl IngestContext {
                                     .copied()
                                     .unwrap_or(0)
                                     .saturating_add(dst_local);
-                                forward_batcher.push(shard, src_id, dst_id, 0)?;
-                                reverse_batcher.push(dst_shard, dst_id, src_id, 0)?;
+                                let forward_sort_key = match &forward_lookup {
+                                    Some(lookup) => lookup.sort_key(
+                                        dst_shard,
+                                        dst_local,
+                                        shard,
+                                        0,
+                                    )?,
+                                    None => 0,
+                                };
+                                let reverse_sort_key = match &reverse_lookup {
+                                    Some(lookup) => lookup.sort_key(
+                                        shard,
+                                        src_local,
+                                        shard,
+                                        0,
+                                    )?,
+                                    None => 0,
+                                };
+                                forward_batcher.push(shard, src_id, dst_id, forward_sort_key)?;
+                                reverse_batcher.push(dst_shard, dst_id, src_id, reverse_sort_key)?;
                                 forward_count = forward_count.saturating_add(1);
                                 reverse_count = reverse_count.saturating_add(1);
                                 Ok(())
@@ -2906,6 +3571,8 @@ impl IngestContext {
                     let pk_hash_store = pk_hash_store.clone();
                     let max_ids = max_ids.clone();
                     let rel_sort_bits = rel_sort_bits.clone();
+                    let rel_sort_keys = rel_sort_keys.clone();
+                    let edge_tables = edge_tables.clone();
                     let root = root.clone();
                     let tx = tx.clone();
                     let writer_senders = std::sync::Arc::clone(&writer_senders);
@@ -2938,6 +3605,20 @@ impl IngestContext {
                                 .get(&reverse_name)
                                 .copied()
                                 .flatten();
+                            let forward_lookup = build_sort_key_lookup(
+                                &root,
+                                &edge_tables,
+                                &rel_sort_keys,
+                                &forward_name,
+                                num_shards,
+                            )?;
+                            let reverse_lookup = build_sort_key_lookup(
+                                &root,
+                                &edge_tables,
+                                &rel_sort_keys,
+                                &reverse_name,
+                                num_shards,
+                            )?;
                             let forward_spec = edge_binary_spec(
                                 max_ids
                                     .get(&edge.src_fk.ref_table)
@@ -2979,6 +3660,7 @@ impl IngestContext {
                             let mut forward_count = 0u64;
                             let mut reverse_count = 0u64;
                             let forward_path = root.join(temp_edge_path(&forward_name, shard));
+                            let mut row_idx = 0u64;
                             read_temp_rows(&forward_path, |row| {
                                 pending = pending.saturating_add(1);
                                 if pending >= PROGRESS_ROW_BATCH {
@@ -3052,10 +3734,29 @@ impl IngestContext {
                                     .copied()
                                     .unwrap_or(0)
                                     .saturating_add(dst_local);
-                                forward_batcher.push(shard, src_id, dst_id, 0)?;
-                                reverse_batcher.push(dst_shard, dst_id, src_id, 0)?;
+                                let forward_sort_key = match &forward_lookup {
+                                    Some(lookup) => lookup.sort_key(
+                                        dst_shard,
+                                        dst_local,
+                                        shard,
+                                        row_idx,
+                                    )?,
+                                    None => 0,
+                                };
+                                let reverse_sort_key = match &reverse_lookup {
+                                    Some(lookup) => lookup.sort_key(
+                                        src_shard,
+                                        src_local,
+                                        shard,
+                                        row_idx,
+                                    )?,
+                                    None => 0,
+                                };
+                                forward_batcher.push(shard, src_id, dst_id, forward_sort_key)?;
+                                reverse_batcher.push(dst_shard, dst_id, src_id, reverse_sort_key)?;
                                 forward_count = forward_count.saturating_add(1);
                                 reverse_count = reverse_count.saturating_add(1);
+                                row_idx = row_idx.saturating_add(1);
                                 Ok(())
                             })?;
                             forward_batcher.flush_all()?;
@@ -3185,6 +3886,20 @@ impl IngestContext {
                 .get(&rel.name_reverse)
                 .copied()
                 .flatten();
+            let forward_lookup = build_sort_key_lookup(
+                root,
+                &edge_ctx.edge_tables,
+                &edge_ctx.rel_sort_keys,
+                &rel.name_forward,
+                self.num_shards,
+            )?;
+            let reverse_lookup = build_sort_key_lookup(
+                root,
+                &edge_ctx.edge_tables,
+                &edge_ctx.rel_sort_keys,
+                &rel.name_reverse,
+                self.num_shards,
+            )?;
             let forward_spec = edge_binary_spec(
                 edge_ctx.max_ids.get(&rel.src_table).copied().unwrap_or(0),
                 edge_ctx.max_ids.get(&rel.dst_table).copied().unwrap_or(0),
@@ -3238,6 +3953,7 @@ impl IngestContext {
                         });
                         pending = 0;
                     }
+                    let src_local = local_count;
                     let src_id = src_offsets
                         .get(shard)
                         .copied()
@@ -3284,8 +4000,26 @@ impl IngestContext {
                         .copied()
                         .unwrap_or(0)
                         .saturating_add(dst_local);
-                    forward_batcher.push(shard, src_id, dst_id, 0)?;
-                    reverse_batcher.push(dst_shard, dst_id, src_id, 0)?;
+                    let forward_sort_key = match &forward_lookup {
+                        Some(lookup) => lookup.sort_key(
+                            dst_shard,
+                            dst_local,
+                            shard,
+                            0,
+                        )?,
+                        None => 0,
+                    };
+                    let reverse_sort_key = match &reverse_lookup {
+                        Some(lookup) => lookup.sort_key(
+                            shard,
+                            src_local,
+                            shard,
+                            0,
+                        )?,
+                        None => 0,
+                    };
+                    forward_batcher.push(shard, src_id, dst_id, forward_sort_key)?;
+                    reverse_batcher.push(dst_shard, dst_id, src_id, reverse_sort_key)?;
                     forward_count = forward_count.saturating_add(1);
                     reverse_count = reverse_count.saturating_add(1);
                     Ok(())
@@ -3390,6 +4124,20 @@ impl IngestContext {
                 .get(&reverse_name)
                 .copied()
                 .flatten();
+            let forward_lookup = build_sort_key_lookup(
+                root,
+                &edge_ctx.edge_tables,
+                &edge_ctx.rel_sort_keys,
+                &forward_name,
+                self.num_shards,
+            )?;
+            let reverse_lookup = build_sort_key_lookup(
+                root,
+                &edge_ctx.edge_tables,
+                &edge_ctx.rel_sort_keys,
+                &reverse_name,
+                self.num_shards,
+            )?;
             let forward_spec = edge_binary_spec(
                 edge_ctx
                     .max_ids
@@ -3438,6 +4186,7 @@ impl IngestContext {
                     std::sync::Arc::clone(&writer_senders),
                 );
                 let forward_path = root.join(temp_edge_path(&forward_name, shard));
+                let mut row_idx = 0u64;
                 read_temp_rows(&forward_path, |row| {
                     pending = pending.saturating_add(1);
                     if pending >= PROGRESS_ROW_BATCH {
@@ -3511,10 +4260,29 @@ impl IngestContext {
                         .copied()
                         .unwrap_or(0)
                         .saturating_add(dst_local);
-                    forward_batcher.push(shard, src_id, dst_id, 0)?;
-                    reverse_batcher.push(dst_shard, dst_id, src_id, 0)?;
+                    let forward_sort_key = match &forward_lookup {
+                        Some(lookup) => lookup.sort_key(
+                            dst_shard,
+                            dst_local,
+                            shard,
+                            row_idx,
+                        )?,
+                        None => 0,
+                    };
+                    let reverse_sort_key = match &reverse_lookup {
+                        Some(lookup) => lookup.sort_key(
+                            src_shard,
+                            src_local,
+                            shard,
+                            row_idx,
+                        )?,
+                        None => 0,
+                    };
+                    forward_batcher.push(shard, src_id, dst_id, forward_sort_key)?;
+                    reverse_batcher.push(dst_shard, dst_id, src_id, reverse_sort_key)?;
                     forward_count = forward_count.saturating_add(1);
                     reverse_count = reverse_count.saturating_add(1);
+                    row_idx = row_idx.saturating_add(1);
                     Ok(())
                 })?;
                 forward_batcher.flush_all()?;
@@ -3892,10 +4660,8 @@ impl IngestContext {
                 src_type: rel.src_table.clone(),
                 dst_type: rel.dst_table.clone(),
                 shards,
-                dest_sort_key_bits: match rel.sort_key {
-                    SortKeyMode::None => None,
-                    _ => Some(32),
-                },
+                dest_sort_key_bits: rel.sort_key.as_ref().map(|cfg| cfg.width_bits),
+                dest_sort_key: rel.sort_key.as_ref().map(build_sort_key_metadata),
                 format: EdgeStorageFormat::Binary,
             });
         }
@@ -4107,6 +4873,30 @@ fn temp_edge_meta_path(rel: &str, shard: usize) -> String {
     format!("{}/rows.meta", temp_edge_shard_dir(rel, shard))
 }
 
+fn sort_key_component_name(kind: SortKeyComponentKind) -> &'static str {
+    match kind {
+        SortKeyComponentKind::Timestamp => "timestamp",
+        SortKeyComponentKind::Weight => "weight",
+    }
+}
+
+fn temp_sort_key_component_shard_dir(rel: &str, kind: SortKeyComponentKind, shard: usize) -> String {
+    format!(
+        "{}/sort_keys/{}/{}/shard-{:05}",
+        TEMP_DIR_NAME,
+        rel.to_lowercase(),
+        sort_key_component_name(kind),
+        shard
+    )
+}
+
+fn temp_sort_key_component_path(rel: &str, kind: SortKeyComponentKind, shard: usize) -> String {
+    format!(
+        "{}/values.bin",
+        temp_sort_key_component_shard_dir(rel, kind, shard)
+    )
+}
+
 fn write_temp_meta(target: &OutputTarget, rel_path: &str, row_count: u64) -> Result<()> {
     let mut payload = Vec::with_capacity(16);
     payload.extend_from_slice(&TEMP_META_MAGIC);
@@ -4149,6 +4939,32 @@ fn open_temp_row_writer(target: &OutputTarget, rel_path: &str) -> Result<TempRow
         writer: FrameEncoder::new(sink),
         row_count: 0,
     })
+}
+
+fn open_sort_key_writer(target: &OutputTarget, rel_path: &str) -> Result<BufWriter<OutputSink>> {
+    let path = target.join(rel_path);
+    if let OutputTarget::Local { .. } = target {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+    }
+    Ok(BufWriter::with_capacity(1024 * 1024, target.sink(&path)?))
+}
+
+fn ensure_sort_key_file(target: &OutputTarget, rel_path: &str) -> Result<()> {
+    if let OutputTarget::Local { .. } = target {
+        let path = target.join(rel_path);
+        if path.exists() {
+            return Ok(());
+        }
+    }
+    let mut writer = open_sort_key_writer(target, rel_path)?;
+    writer.flush()?;
+    let sink = writer
+        .into_inner()
+        .map_err(|_| anyhow!("sort key flush failed"))?;
+    sink.finish()?;
+    Ok(())
 }
 
 fn ensure_temp_file(target: &OutputTarget, rel_path: &str) -> Result<()> {
@@ -4213,6 +5029,68 @@ fn read_temp_rows(path: &Path, mut f: impl FnMut(&[u8]) -> Result<()>) -> Result
         file.read_exact(slice)?;
         f(slice)?;
     }
+}
+
+fn load_sort_key_component_shards(
+    root: &Path,
+    rel_name: &str,
+    kind: SortKeyComponentKind,
+    num_shards: usize,
+    width_bytes: usize,
+) -> Result<Vec<SortKeyComponentStore>> {
+    let mut shards = Vec::with_capacity(num_shards);
+    for shard in 0..num_shards {
+        let path = root.join(temp_sort_key_component_path(rel_name, kind, shard));
+        let file = fs::File::open(&path)
+            .with_context(|| format!("open {}", path.display()))?;
+        let data = unsafe { Mmap::map(&file)? };
+        shards.push(SortKeyComponentStore { width_bytes, data });
+    }
+    Ok(shards)
+}
+
+fn build_sort_key_lookup(
+    root: &Path,
+    edge_tables: &HashSet<String>,
+    rel_sort_keys: &HashMap<String, RelationSortKeyInfo>,
+    rel_name: &str,
+    num_shards: usize,
+) -> Result<Option<SortKeyLookup>> {
+    let info = match rel_sort_keys.get(rel_name) {
+        Some(info) => info,
+        None => return Ok(None),
+    };
+    let mut timestamp = None;
+    let mut weight = None;
+    if let Some(ts) = &info.timestamp {
+        let width_bytes = (ts.spec.width_bits / 8) as usize;
+        let shards = load_sort_key_component_shards(root, rel_name, ts.spec.kind, num_shards, width_bytes)?;
+        let source = if edge_tables.contains(&ts.spec.table) {
+            SortKeyComponentSource::EdgeTable { shards }
+        } else {
+            SortKeyComponentSource::DestTable { shards }
+        };
+        timestamp = Some(source);
+    }
+    if let Some(w) = &info.weight {
+        let width_bytes = (w.spec.width_bits / 8) as usize;
+        let shards = load_sort_key_component_shards(root, rel_name, w.spec.kind, num_shards, width_bytes)?;
+        let source = if edge_tables.contains(&w.spec.table) {
+            SortKeyComponentSource::EdgeTable { shards }
+        } else {
+            SortKeyComponentSource::DestTable { shards }
+        };
+        weight = Some(source);
+    }
+    Ok(Some(SortKeyLookup {
+        weight_bits: info
+            .weight
+            .as_ref()
+            .map(|w| w.spec.width_bits)
+            .unwrap_or(0),
+        timestamp,
+        weight,
+    }))
 }
 
 fn write_edge_bin_header(writer: &mut BufWriter<OutputSink>, spec: EdgeBinarySpec) -> Result<()> {
@@ -4802,6 +5680,237 @@ impl NodeBatcher {
         self.senders[idx]
             .send(NodeWriteMessage::Batch(batch))
             .map_err(|e| anyhow!("node writer channel error: {e}"))?;
+        Ok(())
+    }
+
+    fn flush_all(&mut self) -> Result<()> {
+        for shard in 0..self.buffers.len() {
+            self.flush_shard(shard)?;
+        }
+        Ok(())
+    }
+}
+
+struct SortKeyWriteBatch {
+    rel: std::sync::Arc<str>,
+    kind: SortKeyComponentKind,
+    shard: usize,
+    data: Vec<u8>,
+    row_count: u64,
+    width_bytes: usize,
+}
+
+enum SortKeyWriteMessage {
+    Batch(SortKeyWriteBatch),
+}
+
+#[derive(Default)]
+struct SortKeyWriterStats {
+    rows: HashMap<(String, SortKeyComponentKind, usize), u64>,
+}
+
+impl SortKeyWriterStats {
+    fn merge(&mut self, other: SortKeyWriterStats) {
+        for (key, value) in other.rows {
+            let entry = self.rows.entry(key).or_insert(0);
+            *entry = entry.saturating_add(value);
+        }
+    }
+}
+
+struct SortKeyShardWriter {
+    writer: BufWriter<OutputSink>,
+    width_bytes: usize,
+}
+
+struct SortKeyWritePool {
+    senders: std::sync::Arc<Vec<std::sync::mpsc::SyncSender<SortKeyWriteMessage>>>,
+    handles: Vec<std::thread::JoinHandle<Result<SortKeyWriterStats>>>,
+}
+
+impl SortKeyWritePool {
+    fn new(target: std::sync::Arc<OutputTarget>, workers: usize) -> Self {
+        let mut senders = Vec::with_capacity(workers);
+        let mut handles = Vec::with_capacity(workers);
+        for _ in 0..workers {
+            let (tx, rx) =
+                std::sync::mpsc::sync_channel::<SortKeyWriteMessage>(EDGE_WRITE_QUEUE_DEPTH);
+            let target = std::sync::Arc::clone(&target);
+            handles.push(std::thread::spawn(move || sort_key_writer_worker(target, rx)));
+            senders.push(tx);
+        }
+        Self {
+            senders: std::sync::Arc::new(senders),
+            handles,
+        }
+    }
+
+    fn senders(&self) -> std::sync::Arc<Vec<std::sync::mpsc::SyncSender<SortKeyWriteMessage>>> {
+        std::sync::Arc::clone(&self.senders)
+    }
+
+    fn finish(self) -> Result<SortKeyWriterStats> {
+        drop(self.senders);
+        let mut stats = SortKeyWriterStats::default();
+        for handle in self.handles {
+            match handle.join() {
+                Ok(result) => {
+                    stats.merge(result?);
+                }
+                Err(_) => return Err(anyhow!("sort key writer thread panicked")),
+            }
+        }
+        Ok(stats)
+    }
+}
+
+fn sort_key_writer_worker(
+    target: std::sync::Arc<OutputTarget>,
+    rx: std::sync::mpsc::Receiver<SortKeyWriteMessage>,
+) -> Result<SortKeyWriterStats> {
+    let mut writers: HashMap<(std::sync::Arc<str>, SortKeyComponentKind, usize), SortKeyShardWriter> =
+        HashMap::new();
+    let mut stats = SortKeyWriterStats::default();
+    while let Ok(msg) = rx.recv() {
+        match msg {
+            SortKeyWriteMessage::Batch(batch) => {
+                let key = (
+                    std::sync::Arc::clone(&batch.rel),
+                    batch.kind,
+                    batch.shard,
+                );
+                let writer = match writers.get_mut(&key) {
+                    Some(writer) => writer,
+                    None => {
+                        let path = temp_sort_key_component_path(&batch.rel, batch.kind, batch.shard);
+                        let writer = open_sort_key_writer(&target, &path)?;
+                        writers.insert(
+                            key.clone(),
+                            SortKeyShardWriter {
+                                writer,
+                                width_bytes: batch.width_bytes,
+                            },
+                        );
+                        writers.get_mut(&key).unwrap()
+                    }
+                };
+                if writer.width_bytes != batch.width_bytes {
+                    return Err(anyhow!(
+                        "sort key width mismatch for {} {:?} shard {}",
+                        batch.rel,
+                        batch.kind,
+                        batch.shard
+                    ));
+                }
+                writer.writer.write_all(&batch.data)?;
+                let entry = stats
+                    .rows
+                    .entry((batch.rel.to_string(), batch.kind, batch.shard))
+                    .or_insert(0);
+                *entry = entry.saturating_add(batch.row_count);
+            }
+        }
+    }
+    for (_, mut writer) in writers {
+        writer.writer.flush()?;
+        let sink = writer
+            .writer
+            .into_inner()
+            .map_err(|_| anyhow!("sort key flush failed"))?;
+        sink.finish()?;
+    }
+    Ok(stats)
+}
+
+struct SortKeyComponentBatcher {
+    rel: std::sync::Arc<str>,
+    rel_hash: u64,
+    kind: SortKeyComponentKind,
+    width_bytes: u8,
+    encoder: SortKeyComponentEncoder,
+    buffers: Vec<Vec<u8>>,
+    rows: Vec<u64>,
+    buffer_limit: usize,
+    senders: std::sync::Arc<Vec<std::sync::mpsc::SyncSender<SortKeyWriteMessage>>>,
+}
+
+impl SortKeyComponentBatcher {
+    fn new(
+        rel: std::sync::Arc<str>,
+        kind: SortKeyComponentKind,
+        width_bytes: u8,
+        encoder: SortKeyComponentEncoder,
+        num_shards: usize,
+        buffer_limit: usize,
+        senders: std::sync::Arc<Vec<std::sync::mpsc::SyncSender<SortKeyWriteMessage>>>,
+    ) -> Self {
+        let rel_hash = hash_name(&rel);
+        Self {
+            rel,
+            rel_hash,
+            kind,
+            width_bytes,
+            encoder,
+            buffers: vec![Vec::new(); num_shards],
+            rows: vec![0; num_shards],
+            buffer_limit,
+            senders,
+        }
+    }
+
+    fn push_row(&mut self, shard: usize, access: &mut RowAccess<'_>) -> Result<()> {
+        let value = match &mut self.encoder {
+            SortKeyComponentEncoder::Timestamp { column_idx, encoding } => {
+                let ts_value = match access.value_ref(*column_idx)? {
+                    ValueRef::Timestamp { secs, .. } => Some(secs),
+                    ValueRef::Date(days) => Some(i64::from(days) * 86_400),
+                    _ => None,
+                };
+                encode_timestamp_value(ts_value, encoding)
+            }
+            SortKeyComponentEncoder::Weight { expr, encoding } => {
+                let weight = eval_weight_expr(expr, access)?;
+                encode_weight_value(weight, encoding)
+            }
+        };
+        let buffer = self
+            .buffers
+            .get_mut(shard)
+            .ok_or_else(|| anyhow!("sort key buffer shard {} out of bounds", shard))?;
+        push_u64_width(buffer, value, self.width_bytes);
+        if let Some(row_count) = self.rows.get_mut(shard) {
+            *row_count = row_count.saturating_add(1);
+        }
+        if buffer.len() >= self.buffer_limit {
+            self.flush_shard(shard)?;
+        }
+        Ok(())
+    }
+
+    fn flush_shard(&mut self, shard: usize) -> Result<()> {
+        let buffer = self
+            .buffers
+            .get_mut(shard)
+            .ok_or_else(|| anyhow!("sort key buffer shard {} out of bounds", shard))?;
+        let rows = self.rows.get_mut(shard).ok_or_else(|| anyhow!("sort key row count missing"))?;
+        if *rows == 0 {
+            return Ok(());
+        }
+        let mut data = Vec::with_capacity(buffer.capacity());
+        std::mem::swap(&mut data, buffer);
+        let batch = SortKeyWriteBatch {
+            rel: std::sync::Arc::clone(&self.rel),
+            kind: self.kind,
+            shard,
+            data,
+            row_count: *rows,
+            width_bytes: self.width_bytes as usize,
+        };
+        *rows = 0;
+        let idx = edge_writer_index(self.rel_hash, shard, self.senders.len());
+        self.senders[idx]
+            .send(SortKeyWriteMessage::Batch(batch))
+            .map_err(|e| anyhow!("sort key writer channel error: {e}"))?;
         Ok(())
     }
 
