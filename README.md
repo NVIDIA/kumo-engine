@@ -2,6 +2,12 @@
 
 DiskGraph is a Rust-based pipeline for turning CSV/Parquet tables into an on-disk graph index and exploring it with a fast TUI.
 
+## Install Rust
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
 ## Getting Started (Local, tested on GCP Local SSD)
 
 ### 1) Start a VM and mount Local SSD
