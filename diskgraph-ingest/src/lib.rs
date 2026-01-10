@@ -5479,60 +5479,47 @@ fn parse_uuid_bytes(bytes: &[u8]) -> KeyParseResult<[u8; 16]> {
 }
 
 fn parse_uuid_string(bytes: &[u8]) -> KeyParseResult<[u8; 16]> {
-    let mut input = bytes;
-    if starts_with_case_insensitive(input, b"urn:uuid:") {
-        input = &input[9..];
+    match bytes.len() {
+        32 => parse_uuid_hex32(bytes),
+        36 => parse_uuid_dashed(bytes),
+        38 => parse_uuid_dashed(&bytes[1..37]),
+        45 => parse_uuid_dashed(&bytes[9..45]),
+        _ => Err(KeyParseError::InvalidUuid),
     }
-    if input.len() >= 2 {
-        let first = input[0];
-        let last = input[input.len() - 1];
-        if (first == b'{' && last == b'}') || (first == b'(' && last == b')') {
-            input = &input[1..input.len() - 1];
-        }
-    }
+}
+
+fn parse_uuid_hex32(bytes: &[u8]) -> KeyParseResult<[u8; 16]> {
     let mut out = [0u8; 16];
-    let mut idx = 0usize;
-    let mut high = true;
-    for &b in input {
-        if b == b'-' {
-            continue;
-        }
-        let val = hex_value(b).ok_or(KeyParseError::InvalidUuid)?;
-        if idx >= 16 {
-            return Err(KeyParseError::InvalidUuid);
-        }
-        if high {
-            out[idx] = val << 4;
-            high = false;
-        } else {
-            out[idx] |= val;
-            idx += 1;
-            high = true;
-        }
-    }
-    if idx != 16 || !high {
-        return Err(KeyParseError::InvalidUuid);
+    let mut src = 0usize;
+    for dst in out.iter_mut() {
+        let hi = hex_value_unchecked(bytes[src]);
+        let lo = hex_value_unchecked(bytes[src + 1]);
+        *dst = (hi << 4) | lo;
+        src += 2;
     }
     Ok(out)
 }
 
-fn hex_value(b: u8) -> Option<u8> {
-    match b {
-        b'0'..=b'9' => Some(b - b'0'),
-        b'a'..=b'f' => Some(b - b'a' + 10),
-        b'A'..=b'F' => Some(b - b'A' + 10),
-        _ => None,
+fn parse_uuid_dashed(bytes: &[u8]) -> KeyParseResult<[u8; 16]> {
+    let offsets = [
+        0usize, 2, 4, 6, 9, 11, 14, 16, 19, 21, 24, 26, 28, 30, 32, 34,
+    ];
+    let mut out = [0u8; 16];
+    for (dst, &src) in out.iter_mut().zip(offsets.iter()) {
+        let hi = hex_value_unchecked(bytes[src]);
+        let lo = hex_value_unchecked(bytes[src + 1]);
+        *dst = (hi << 4) | lo;
     }
+    Ok(out)
 }
 
-fn starts_with_case_insensitive(haystack: &[u8], needle: &[u8]) -> bool {
-    if haystack.len() < needle.len() {
-        return false;
+fn hex_value_unchecked(b: u8) -> u8 {
+    match b {
+        b'0'..=b'9' => b - b'0',
+        b'a'..=b'f' => b - b'a' + 10,
+        b'A'..=b'F' => b - b'A' + 10,
+        _ => 0,
     }
-    haystack
-        .iter()
-        .zip(needle.iter())
-        .all(|(a, b)| a.to_ascii_lowercase() == b.to_ascii_lowercase())
 }
 
 fn normalize_numeric_bytes(bytes: &[u8], target_col: &ColumnSpec) -> KeyParseResult<Vec<u8>> {
