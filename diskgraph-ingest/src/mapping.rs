@@ -325,7 +325,7 @@ pub fn write_pk_data_entry(
 }
 
 fn advise_random(map: &Mmap) {
-    let ret = unsafe { libc::madvise(map.as_ptr() as *mut libc::c_void, map.len(), libc::MADV_RANDOM) };
+    let ret = unsafe { libc::madvise(map.as_ptr() as *mut libc::c_void, map.len(), libc::MADV_WILLNEED) };
     if ret != 0 {
         let _ = std::io::Error::last_os_error();
     }
