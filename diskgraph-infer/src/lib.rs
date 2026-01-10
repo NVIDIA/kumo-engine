@@ -236,11 +236,46 @@ fn root_dataset_name(root: &RootSource) -> String {
 }
 
 fn estimate_num_shards(total_bytes: u64) -> usize {
-    const SHARD_BYTES: u64 = 1 * 1024 * 1024 * 1024;
     if total_bytes == 0 {
         return 1;
     }
-    ((total_bytes + SHARD_BYTES - 1) / SHARD_BYTES) as usize
+    let shard_bytes = shard_target_bytes();
+    ((total_bytes + shard_bytes - 1) / shard_bytes) as usize
+}
+
+fn shard_target_bytes() -> u64 {
+    const FALLBACK_SHARD_BYTES: u64 = 1 * 1024 * 1024 * 1024;
+    let mem_total = read_system_memory_bytes();
+    let cpu_count = std::thread::available_parallelism().ok().map(|n| n.get() as u64);
+    match (mem_total, cpu_count) {
+        (Some(mem_total), Some(cpu_count)) if cpu_count > 0 => {
+            let per_cpu = mem_total / cpu_count;
+            if per_cpu == 0 {
+                FALLBACK_SHARD_BYTES
+            } else {
+                per_cpu
+            }
+        }
+        _ => FALLBACK_SHARD_BYTES,
+    }
+}
+
+fn read_system_memory_bytes() -> Option<u64> {
+    #[cfg(target_os = "linux")]
+    {
+        let contents = std::fs::read_to_string("/proc/meminfo").ok()?;
+        for line in contents.lines() {
+            if let Some(rest) = line.strip_prefix("MemTotal:") {
+                let kb = rest.trim().split_whitespace().next()?.parse::<u64>().ok()?;
+                return kb.checked_mul(1024);
+            }
+        }
+        None
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
+    }
 }
 
 fn infer_local_tables(
