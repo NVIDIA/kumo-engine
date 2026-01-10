@@ -5490,36 +5490,66 @@ fn parse_uuid_string(bytes: &[u8]) -> KeyParseResult<[u8; 16]> {
 
 fn parse_uuid_hex32(bytes: &[u8]) -> KeyParseResult<[u8; 16]> {
     let mut out = [0u8; 16];
-    let mut src = 0usize;
-    for dst in out.iter_mut() {
-        let hi = hex_value_unchecked(bytes[src]);
-        let lo = hex_value_unchecked(bytes[src + 1]);
-        *dst = (hi << 4) | lo;
-        src += 2;
-    }
+    let h = hex_value_unchecked;
+    out[0] = (h(bytes[0]) << 4) | h(bytes[1]);
+    out[1] = (h(bytes[2]) << 4) | h(bytes[3]);
+    out[2] = (h(bytes[4]) << 4) | h(bytes[5]);
+    out[3] = (h(bytes[6]) << 4) | h(bytes[7]);
+    out[4] = (h(bytes[8]) << 4) | h(bytes[9]);
+    out[5] = (h(bytes[10]) << 4) | h(bytes[11]);
+    out[6] = (h(bytes[12]) << 4) | h(bytes[13]);
+    out[7] = (h(bytes[14]) << 4) | h(bytes[15]);
+    out[8] = (h(bytes[16]) << 4) | h(bytes[17]);
+    out[9] = (h(bytes[18]) << 4) | h(bytes[19]);
+    out[10] = (h(bytes[20]) << 4) | h(bytes[21]);
+    out[11] = (h(bytes[22]) << 4) | h(bytes[23]);
+    out[12] = (h(bytes[24]) << 4) | h(bytes[25]);
+    out[13] = (h(bytes[26]) << 4) | h(bytes[27]);
+    out[14] = (h(bytes[28]) << 4) | h(bytes[29]);
+    out[15] = (h(bytes[30]) << 4) | h(bytes[31]);
     Ok(out)
 }
 
 fn parse_uuid_dashed(bytes: &[u8]) -> KeyParseResult<[u8; 16]> {
-    let offsets = [
-        0usize, 2, 4, 6, 9, 11, 14, 16, 19, 21, 24, 26, 28, 30, 32, 34,
-    ];
     let mut out = [0u8; 16];
-    for (dst, &src) in out.iter_mut().zip(offsets.iter()) {
-        let hi = hex_value_unchecked(bytes[src]);
-        let lo = hex_value_unchecked(bytes[src + 1]);
-        *dst = (hi << 4) | lo;
-    }
+    let h = hex_value_unchecked;
+    out[0] = (h(bytes[0]) << 4) | h(bytes[1]);
+    out[1] = (h(bytes[2]) << 4) | h(bytes[3]);
+    out[2] = (h(bytes[4]) << 4) | h(bytes[5]);
+    out[3] = (h(bytes[6]) << 4) | h(bytes[7]);
+    out[4] = (h(bytes[9]) << 4) | h(bytes[10]);
+    out[5] = (h(bytes[11]) << 4) | h(bytes[12]);
+    out[6] = (h(bytes[14]) << 4) | h(bytes[15]);
+    out[7] = (h(bytes[16]) << 4) | h(bytes[17]);
+    out[8] = (h(bytes[19]) << 4) | h(bytes[20]);
+    out[9] = (h(bytes[21]) << 4) | h(bytes[22]);
+    out[10] = (h(bytes[24]) << 4) | h(bytes[25]);
+    out[11] = (h(bytes[26]) << 4) | h(bytes[27]);
+    out[12] = (h(bytes[28]) << 4) | h(bytes[29]);
+    out[13] = (h(bytes[30]) << 4) | h(bytes[31]);
+    out[14] = (h(bytes[32]) << 4) | h(bytes[33]);
+    out[15] = (h(bytes[34]) << 4) | h(bytes[35]);
     Ok(out)
 }
 
-fn hex_value_unchecked(b: u8) -> u8 {
-    match b {
-        b'0'..=b'9' => b - b'0',
-        b'a'..=b'f' => b - b'a' + 10,
-        b'A'..=b'F' => b - b'A' + 10,
-        _ => 0,
+static HEX_MAP: [u8; 256] = {
+    let mut map = [0u8; 256];
+    let mut i = 0u8;
+    while i < 10 {
+        map[b'0' as usize + i as usize] = i;
+        i += 1;
     }
+    let mut j = 0u8;
+    while j < 6 {
+        map[b'a' as usize + j as usize] = 10 + j;
+        map[b'A' as usize + j as usize] = 10 + j;
+        j += 1;
+    }
+    map
+};
+
+fn hex_value_unchecked(b: u8) -> u8 {
+    HEX_MAP[b as usize]
 }
 
 fn normalize_numeric_bytes(bytes: &[u8], target_col: &ColumnSpec) -> KeyParseResult<Vec<u8>> {
