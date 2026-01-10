@@ -250,10 +250,11 @@ fn shard_target_bytes() -> u64 {
     match (mem_total, cpu_count) {
         (Some(mem_total), Some(cpu_count)) if cpu_count > 0 => {
             let per_cpu = mem_total / cpu_count;
-            if per_cpu == 0 {
+            let target = per_cpu / 4;
+            if target == 0 {
                 FALLBACK_SHARD_BYTES
             } else {
-                per_cpu
+                target
             }
         }
         _ => FALLBACK_SHARD_BYTES,
