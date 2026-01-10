@@ -1970,25 +1970,19 @@ impl IngestContext {
                             .context("missing column in batch")?;
                         cols.push(batch.column(idx).clone());
                     }
-                    let mut values = Vec::with_capacity(table.columns.len());
-                    let mut pools = RowValuePools::new();
+                    let column_runtimes = build_column_runtimes(table);
+                    let mut access =
+                        RowAccess::new(table, &cols, &column_runtimes, trimmed_strings);
                     for row in 0..batch.num_rows() {
-                        let row_view = RowView { row, cols: &cols };
-                        let owned = owned_row_from_row(
-                            &row_view,
-                            table,
-                            &mut values,
-                            &mut pools,
-                            trimmed_strings,
-                        )?;
-                        Self::write_edge_row(
+                        access.reset(row);
+                        Self::write_edge_row_from_access(
                             src_fk_idx,
                             dst_fk_idx,
                             src_fk_col,
                             dst_fk_col,
                             &src_context,
                             &dst_context,
-                            owned,
+                            &mut access,
                             &mut batcher,
                             num_shards,
                             key_failures,
@@ -2012,25 +2006,19 @@ impl IngestContext {
                             .context("missing column in batch")?;
                         cols.push(batch.column(idx).clone());
                     }
-                    let mut values = Vec::with_capacity(table.columns.len());
-                    let mut pools = RowValuePools::new();
+                    let column_runtimes = build_column_runtimes(table);
+                    let mut access =
+                        RowAccess::new(table, &cols, &column_runtimes, trimmed_strings);
                     for row in 0..batch.num_rows() {
-                        let row_view = RowView { row, cols: &cols };
-                        let owned = owned_row_from_row(
-                            &row_view,
-                            table,
-                            &mut values,
-                            &mut pools,
-                            trimmed_strings,
-                        )?;
-                        Self::write_edge_row(
+                        access.reset(row);
+                        Self::write_edge_row_from_access(
                             src_fk_idx,
                             dst_fk_idx,
                             src_fk_col,
                             dst_fk_col,
                             &src_context,
                             &dst_context,
-                            owned,
+                            &mut access,
                             &mut batcher,
                             num_shards,
                             key_failures,
@@ -2054,21 +2042,20 @@ impl IngestContext {
     }
 
 
-    fn write_edge_row(
+    fn write_edge_row_from_access(
         src_idx: usize,
         dst_idx: usize,
         src_col: &ColumnSpec,
         dst_col: &ColumnSpec,
         src_context: &str,
         dst_context: &str,
-        row: OwnedRow,
+        access: &mut RowAccess<'_>,
         batcher: &mut EdgeSrcBatcher,
         num_shards: usize,
         key_failures: &mut KeyFailureState,
     ) -> Result<()> {
-        let mut value_refs = Vec::new();
-        row.as_value_refs_for_indices(&[src_idx], &mut value_refs);
-        let src_key = match key_from_value_ref(&value_refs[0], src_col) {
+        let src_value = access.value_ref(src_idx)?;
+        let src_key = match key_from_value_ref(&src_value, src_col) {
             Ok(key) => key,
             Err(_) => {
                 record_key_parse_failure_value(
@@ -2076,13 +2063,13 @@ impl IngestContext {
                     &mut key_failures.samples,
                     &mut key_failures.by_context,
                     src_context,
-                    &value_refs[0],
+                    &src_value,
                 );
                 return Ok(());
             }
         };
-        row.as_value_refs_for_indices(&[dst_idx], &mut value_refs);
-        let dst_key = match key_from_value_ref(&value_refs[0], dst_col) {
+        let dst_value = access.value_ref(dst_idx)?;
+        let dst_key = match key_from_value_ref(&dst_value, dst_col) {
             Ok(key) => key,
             Err(_) => {
                 record_key_parse_failure_value(
@@ -2090,7 +2077,7 @@ impl IngestContext {
                     &mut key_failures.samples,
                     &mut key_failures.by_context,
                     dst_context,
-                    &value_refs[0],
+                    &dst_value,
                 );
                 return Ok(());
             }
