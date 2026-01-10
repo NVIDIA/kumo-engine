@@ -20,13 +20,10 @@ sudo ./scripts/localssd-raid0-xfs-tui.sh
 
 ### 2) Download data to `/mnt/localssd/datasets/`
 
-Example with AWS S3:
+Use the H&M download helper (defaults to `/mnt/localssd/datasets/hnm`):
 
 ```bash
-mkdir -p /mnt/localssd/datasets/hnm
-aws s3 cp "s3://kumo-public-datasets/Kaggle_H&M/parquet/articles.parquet" /mnt/localssd/datasets/hnm/
-aws s3 cp "s3://kumo-public-datasets/Kaggle_H&M/parquet/customers.parquet" /mnt/localssd/datasets/hnm/
-aws s3 cp "s3://kumo-public-datasets/Kaggle_H&M/parquet/transactions_train.parquet" /mnt/localssd/datasets/hnm/
+./diskgraph-datagenerator/scripts/hnm100_download.sh
 ```
 
 ### 3) Infer `source_metadata.json`
