@@ -73,6 +73,10 @@ base_env=(PATH="${PATH}" HOME="${HOME}" USER="${USER}")
 
 USE_CARGO_RUN="true"
 if [[ "${MEM_PROFILE_ENABLED}" == "true" ]]; then
+  if [[ "${DEBUGINFO_ENABLED}" == "false" ]]; then
+    env_args+=(CARGO_PROFILE_RELEASE_DEBUG=1)
+    env_args+=(RUSTFLAGS="${RUSTFLAGS:-} -C debuginfo=1 -C force-frame-pointers=yes")
+  fi
   env -i "${base_env[@]}" \
     MALLOC_CONF= _RJEM_MALLOC_CONF= _rjem_MALLOC_CONF= \
     JEMALLOC_CONF= JEMALLOC_SYS_WITH_MALLOC_CONF= JEMALLOC_OPTIONS= \

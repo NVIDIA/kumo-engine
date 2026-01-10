@@ -62,9 +62,9 @@ if ! command -v dot >/dev/null 2>&1; then
   echo "  Arch: sudo pacman -S graphviz" >&2
 fi
 
-"${JEPROF}" --show_bytes "${INGEST_BIN}" "${HEAP_FILE}" > "${TXT_OUT}"
+"${JEPROF}" --show_bytes --lines "${INGEST_BIN}" "${HEAP_FILE}" > "${TXT_OUT}"
 if [[ "${HAS_DOT}" == "true" ]]; then
-  "${JEPROF}" --show_bytes --svg "${INGEST_BIN}" "${HEAP_FILE}" > "${SVG_OUT}"
+  "${JEPROF}" --show_bytes --lines --svg "${INGEST_BIN}" "${HEAP_FILE}" > "${SVG_OUT}"
 fi
 
 echo "Wrote ${TXT_OUT}"
