@@ -26,6 +26,7 @@ use diskgraph_rowpack::{
     LogicalType as RowpackType, RowPackConfig, RowPackContextBuilder, RowPackDecodeScratch,
     RowPackDecoder, RowPackEncoder, RowPackScratch, ValueRef,
 };
+use diskgraph_index::builder::MemoryBudget;
 use diskgraph_index::graph::{
     GraphBuildProgress, GraphBuildStage, GraphDataSource, GraphIndexBuilder, GraphProgressSink,
 };
@@ -101,6 +102,8 @@ enum KeyParseError {
 
 type KeyParseResult<T> = std::result::Result<T, KeyParseError>;
 
+const DEFAULT_INDEX_MEM_BUDGET_FRAC: f64 = 0.9;
+
 #[derive(Clone, Debug, Serialize)]
 pub struct IngestReport {
     pub stats: IngestStats,
@@ -112,6 +115,7 @@ pub struct IngestOptions {
     pub profile_dir: Option<PathBuf>,
     pub progress: Option<ProgressCallback>,
     pub parallel: bool,
+    pub index_mem_budget_bytes: Option<u64>,
 }
 
 impl Default for IngestOptions {
@@ -120,6 +124,7 @@ impl Default for IngestOptions {
             profile_dir: None,
             progress: None,
             parallel: true,
+            index_mem_budget_bytes: None,
         }
     }
 }
@@ -532,6 +537,7 @@ struct IngestContext {
     target: std::sync::Arc<OutputTarget>,
     profile_dir: Option<PathBuf>,
     pool: Option<std::sync::Arc<TaskPool>>,
+    index_mem_budget: Option<std::sync::Arc<MemoryBudget>>,
     num_shards: usize,
     table_rows: HashMap<String, u64>,
     table_contexts: HashMap<String, String>,
@@ -792,6 +798,11 @@ impl IngestContext {
         options: IngestOptions,
         output: &str,
     ) -> Result<Self> {
+        let index_mem_budget_bytes = options
+            .index_mem_budget_bytes
+            .or_else(default_index_mem_budget_bytes);
+        let index_mem_budget = index_mem_budget_bytes
+            .map(|bytes| std::sync::Arc::new(MemoryBudget::new(bytes)));
         let num_shards = source.num_shards.unwrap_or(1).max(1);
         let mut relation_defs = Vec::new();
         let mut relationships = Vec::new();
@@ -880,6 +891,7 @@ impl IngestContext {
             } else {
                 None
             },
+            index_mem_budget,
             num_shards,
             table_rows: fixed_hash_map(),
             table_contexts: fixed_hash_map(),
@@ -3637,6 +3649,7 @@ impl IngestContext {
             &root,
         );
         let table_totals = self.index_table_totals();
+        let mem_budget = self.index_mem_budget.clone();
         if let Some(pool) = self.pool.as_ref() {
             fs::create_dir_all(&root)?;
             let metadata_path = root.join("index_metadata.json");
@@ -3659,13 +3672,16 @@ impl IngestContext {
             for job in jobs {
                 let tx = tx.clone();
                 let adapter = adapter.clone();
+                let mem_budget = mem_budget.clone();
                 let shard_key = job.shard_key().to_string();
                 tasks.push(WorkItem {
                     bucket: None,
                     run: Box::new(move || {
                         let result = match adapter {
-                            Some(adapter) => job.run(Some(adapter.as_ref())),
-                            None => job.run(None),
+                            Some(adapter) => {
+                                job.run_with_budget(Some(adapter.as_ref()), mem_budget.clone())
+                            }
+                            None => job.run_with_budget(None, mem_budget.clone()),
                         };
                         match result {
                             Ok(output) => {
@@ -3714,6 +3730,28 @@ impl IngestContext {
             }
             if let Some(e) = err {
                 return Err(e);
+            }
+            self.index_task_ms = total_shard_ms;
+            self.index_tasks = total_shards;
+        } else if mem_budget.is_some() {
+            fs::create_dir_all(&root)?;
+            let metadata_path = root.join("index_metadata.json");
+            fs::write(
+                &metadata_path,
+                serde_json::to_vec_pretty(builder.metadata())?,
+            )?;
+            let jobs = builder.prepare_jobs()?;
+            let mut total_shard_ms = 0u64;
+            let mut total_shards = 0u64;
+            let progress = self.progress.clone();
+            let adapter = progress.map(|cb| IndexProgressAdapter::new(cb, table_totals));
+            for job in jobs {
+                let output = match &adapter {
+                    Some(adapter) => job.run_with_budget(Some(adapter), mem_budget.clone()),
+                    None => job.run_with_budget(None, mem_budget.clone()),
+                }?;
+                total_shard_ms = total_shard_ms.saturating_add(output.wall_ms);
+                total_shards = total_shards.saturating_add(1);
             }
             self.index_task_ms = total_shard_ms;
             self.index_tasks = total_shards;
@@ -5005,6 +5043,65 @@ fn sum_dir_bytes(path: &Path) -> Result<u64> {
         }
     }
     Ok(total)
+}
+
+fn default_index_mem_budget_bytes() -> Option<u64> {
+    let total = total_memory_bytes()?;
+    Some((total as f64 * DEFAULT_INDEX_MEM_BUDGET_FRAC) as u64)
+}
+
+#[cfg(target_os = "linux")]
+fn total_memory_bytes() -> Option<u64> {
+    let mem_total = read_meminfo_total().unwrap_or(0);
+    let cgroup_limit = read_cgroup_limit().unwrap_or(u64::MAX);
+    let total = mem_total.min(cgroup_limit);
+    if total == 0 || total == u64::MAX {
+        None
+    } else {
+        Some(total)
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn total_memory_bytes() -> Option<u64> {
+    None
+}
+
+#[cfg(target_os = "linux")]
+fn read_meminfo_total() -> Option<u64> {
+    let meminfo = fs::read_to_string("/proc/meminfo").ok()?;
+    for line in meminfo.lines() {
+        if let Some(value) = line.strip_prefix("MemTotal:") {
+            return parse_kb_line(value);
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "linux")]
+fn read_cgroup_limit() -> Option<u64> {
+    if let Ok(limit) = fs::read_to_string("/sys/fs/cgroup/memory.max") {
+        let trimmed = limit.trim();
+        if trimmed != "max" {
+            if let Ok(bytes) = trimmed.parse::<u64>() {
+                return Some(bytes);
+            }
+        }
+    }
+    if let Ok(limit) = fs::read_to_string("/sys/fs/cgroup/memory/memory.limit_in_bytes") {
+        let trimmed = limit.trim();
+        if let Ok(bytes) = trimmed.parse::<u64>() {
+            return Some(bytes);
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "linux")]
+fn parse_kb_line(value: &str) -> Option<u64> {
+    let mut iter = value.split_whitespace();
+    let num = iter.next()?.parse::<u64>().ok()?;
+    Some(num.saturating_mul(1024))
 }
 
 struct WorkItem {

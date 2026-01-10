@@ -1,4 +1,7 @@
-use crate::builder::{compute_relation_layouts, shard_node_count, BuildStats, ShardBuildParams, ShardBuilder};
+use crate::builder::{
+    compute_relation_layouts, estimate_edge_record_bytes, shard_node_count, BuildStats,
+    MemoryBudget, ShardBuildParams, ShardBuilder,
+};
 use crate::layout::RelationLayout;
 use crate::pkmap::{self, Key, PkHashTable};
 use crate::reader::ShardReader;
@@ -206,9 +209,21 @@ impl ShardBuildJob {
         &self.shard_key
     }
 
+    pub fn estimated_edge_record_bytes(&self) -> Result<u64> {
+        estimate_edge_record_bytes(&self.edge_inputs)
+    }
+
     pub fn run(
         &self,
         progress: Option<&dyn GraphProgressSink>,
+    ) -> Result<crate::builder::ShardBuildOutput> {
+        self.run_with_budget(progress, None)
+    }
+
+    pub fn run_with_budget(
+        &self,
+        progress: Option<&dyn GraphProgressSink>,
+        mem_budget: Option<Arc<MemoryBudget>>,
     ) -> Result<crate::builder::ShardBuildOutput> {
         let start = std::time::Instant::now();
         fs::create_dir_all(&self.output_dir)?;
@@ -219,6 +234,7 @@ impl ShardBuildJob {
             relation_metas: self.relation_metas.clone(),
             shard_index: self.shard_index,
             node_data_paths: self.node_data_paths.clone(),
+            mem_budget,
         };
         let builder = ShardBuilder::new(params);
         let shard_key: Arc<str> = Arc::from(self.shard_key.as_str());

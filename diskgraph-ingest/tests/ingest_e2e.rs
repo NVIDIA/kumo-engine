@@ -171,6 +171,7 @@ fn ingest_csv_with_edges_and_rowpack() -> Result<()> {
             profile_dir: None,
             progress: None,
             parallel: true,
+            index_mem_budget_bytes: None,
         },
     )?;
     let index_path = output_root.join("index_metadata.json");
@@ -371,6 +372,7 @@ fn ingest_csv_multi_file_table_with_two_shards() -> Result<()> {
             profile_dir: None,
             progress: None,
             parallel: true,
+            index_mem_budget_bytes: None,
         },
     )?;
     assert_eq!(metadata.node_types.len(), 2);
@@ -456,6 +458,7 @@ fn ingest_parquet_with_sorted_mapping() -> Result<()> {
         profile_dir: None,
         progress: None,
         parallel: true,
+        index_mem_budget_bytes: None,
     };
     let metadata = ingest(&source_path, output_root.to_str().unwrap(), Dest::Local, options)?;
     assert_eq!(metadata.node_types.len(), 1);
@@ -517,6 +520,7 @@ fn ingest_csv_with_bytes_pk_mapping() -> Result<()> {
         profile_dir: None,
         progress: None,
         parallel: true,
+        index_mem_budget_bytes: None,
     };
     let metadata = ingest(&source_path, output_root.to_str().unwrap(), Dest::Local, options)?;
     let asset = metadata
@@ -612,6 +616,7 @@ fn ingest_relationship_uses_dest_timestamp_sort_key() -> Result<()> {
             profile_dir: None,
             progress: None,
             parallel: true,
+            index_mem_budget_bytes: None,
         },
     )?;
     let forward = metadata

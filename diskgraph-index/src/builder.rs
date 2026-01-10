@@ -11,7 +11,7 @@ use serde::Serialize;
 use std::fs::{self, File};
 use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Condvar, Mutex};
 use std::cell::RefCell;
 use thiserror::Error;
 
@@ -82,6 +82,77 @@ pub enum IndexBuildError {
     #[error("build aborted")]
     Aborted,
 }
+
+#[derive(Debug)]
+pub struct MemoryBudget {
+    total: u64,
+    available: Mutex<u64>,
+    cvar: Condvar,
+}
+
+pub struct MemoryBudgetGuard {
+    budget: Arc<MemoryBudget>,
+    bytes: u64,
+}
+
+impl MemoryBudget {
+    pub fn new(total: u64) -> Self {
+        Self {
+            total,
+            available: Mutex::new(total),
+            cvar: Condvar::new(),
+        }
+    }
+
+    pub fn acquire(self: &Arc<Self>, bytes: u64) -> Result<MemoryBudgetGuard> {
+        if bytes == 0 {
+            return Ok(MemoryBudgetGuard {
+                budget: Arc::clone(self),
+                bytes,
+            });
+        }
+        if bytes > self.total {
+            return Err(IndexBuildError::NotImplemented(
+                "memory budget too small for shard",
+            )
+            .into());
+        }
+        let mut available = self.available.lock().unwrap();
+        while *available < bytes {
+            available = self.cvar.wait(available).unwrap();
+        }
+        *available = available.saturating_sub(bytes);
+        Ok(MemoryBudgetGuard {
+            budget: Arc::clone(self),
+            bytes,
+        })
+    }
+
+    fn release(&self, bytes: u64) {
+        let mut available = self.available.lock().unwrap();
+        *available = available.saturating_add(bytes).min(self.total);
+        self.cvar.notify_all();
+    }
+}
+
+impl Drop for MemoryBudgetGuard {
+    fn drop(&mut self) {
+        if self.bytes > 0 {
+            self.budget.release(self.bytes);
+        }
+    }
+}
+
+impl MemoryBudgetGuard {
+    fn release_bytes(&mut self, bytes: u64) {
+        let released = bytes.min(self.bytes);
+        if released == 0 {
+            return;
+        }
+        self.bytes = self.bytes.saturating_sub(released);
+        self.budget.release(released);
+    }
+}
 fn localize_edge_inputs(
     edge_shards: &[EdgeShardInput],
     node_data: Option<&[PathBuf]>,
@@ -101,6 +172,7 @@ pub struct ShardBuildParams {
     pub shard_index: usize,
     /// Optional node data sources for this shard.
     pub node_data_paths: Option<Vec<PathBuf>>,
+    pub mem_budget: Option<Arc<MemoryBudget>>,
 }
 
 /// Consumes node shard metadata and all aligned edge shards (across relations) and emits two files:
@@ -145,6 +217,12 @@ impl ShardBuilder {
         let (edge_inputs, localized_node_data) =
             localize_edge_inputs(edge_shards, self.params.node_data_paths.as_deref())?;
 
+        let record_bytes = estimate_edge_record_bytes(&edge_inputs)?;
+        let mut budget_guard = match &self.params.mem_budget {
+            Some(budget) => Some(budget.acquire(record_bytes.saturating_mul(2))?),
+            None => None,
+        };
+
         let layouts = Arc::new(compute_relation_layouts(
             &self.params.relation_metas,
             &self.params.node_types,
@@ -154,6 +232,9 @@ impl ShardBuilder {
             NodeStream::try_new(&self.params.node_meta, self.params.shard_index)?;
         let mut edge_stream =
             MergedEdgeStream::try_new(&edge_inputs, &self.params.relation_metas)?;
+        if let Some(guard) = &mut budget_guard {
+            guard.release_bytes(record_bytes);
+        }
         let expected_nodes = shard_node_count(&self.params.node_meta, self.params.shard_index)?;
         if !self.params.node_meta.has_node_data && self.params.node_data_paths.is_some() {
             return Err(IndexBuildError::NotImplemented(
@@ -909,6 +990,52 @@ fn read_edge_parts(
     }
     let sort_width = spec.map(|(_, _, sort)| sort).unwrap_or(0);
     Ok((sort_width, records))
+}
+
+pub fn estimate_edge_record_bytes(edge_inputs: &[EdgeShardInput]) -> Result<u64> {
+    let mut total_records = 0u64;
+    for input in edge_inputs {
+        for path in &input.paths {
+            total_records = total_records.saturating_add(edge_record_count(path)?);
+        }
+    }
+    Ok(total_records.saturating_mul(std::mem::size_of::<EdgeRecord>() as u64))
+}
+
+pub fn estimate_edge_sort_bytes(edge_inputs: &[EdgeShardInput]) -> Result<u64> {
+    Ok(estimate_edge_record_bytes(edge_inputs)?.saturating_mul(2))
+}
+
+fn edge_record_count(path: &Path) -> Result<u64> {
+    let file = File::open(path)?;
+    let file_len = file.metadata()?.len();
+    if file_len < 3 {
+        return Err(IndexBuildError::NotImplemented("binary edge file too small").into());
+    }
+    let mut reader = std::io::BufReader::with_capacity(1024 * 1024, file);
+    let mut header = [0u8; 3];
+    reader.read_exact(&mut header)?;
+    let src_width = header[0];
+    let dst_width = header[1];
+    let sort_width = header[2];
+    if src_width == 0 || dst_width == 0 || src_width > 8 || dst_width > 8 {
+        return Err(IndexBuildError::NotImplemented("invalid binary edge width").into());
+    }
+    if sort_width > 8 {
+        return Err(IndexBuildError::NotImplemented(
+            "binary edge sort key width too large",
+        )
+        .into());
+    }
+    let record_size = src_width as u64 + dst_width as u64 + sort_width as u64;
+    let payload = file_len - 3;
+    if payload % record_size != 0 {
+        return Err(IndexBuildError::NotImplemented(
+            "binary edge file size mismatch",
+        )
+        .into());
+    }
+    Ok(payload / record_size)
 }
 
 fn sort_edge_ranges_by_sort_key(records: &mut [EdgeRecord]) {

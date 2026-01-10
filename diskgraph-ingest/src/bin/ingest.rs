@@ -50,6 +50,9 @@ struct Args {
     /// Enable jemalloc heap dump watchdog (80% RSS anon threshold).
     #[arg(short = 'm', long = "mem-profile")]
     mem_profile: bool,
+    /// Max bytes of index-build edge sort memory allowed across workers.
+    #[arg(long, value_name = "BYTES")]
+    index_mem_budget_bytes: Option<u64>,
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
@@ -105,6 +108,7 @@ fn main() -> Result<()> {
         profile_dir: args.profile.clone(),
         progress: build_progress(),
         parallel: args.parallel,
+        index_mem_budget_bytes: args.index_mem_budget_bytes,
     };
     let dest = match args.dest {
         DestArg::Local => Dest::Local,
