@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+DEST_ROOT="${1:-/mnt/localssd/datasets/hnm}"
+TXN_SUBDIR="${2:-transactions}"
+DUP_COUNT="${3:-100}"
+
+S3_BASE="s3://kumo-public-datasets/Kaggle_H&M/parquet"
+
+mkdir -p "${DEST_ROOT}" "${DEST_ROOT}/${TXN_SUBDIR}"
+
+aws s3 cp "${S3_BASE}/articles.parquet" "${DEST_ROOT}/"
+aws s3 cp "${S3_BASE}/customers.parquet" "${DEST_ROOT}/"
+
+TXN_SOURCE="${DEST_ROOT}/${TXN_SUBDIR}/transactions_train.parquet"
+aws s3 cp "${S3_BASE}/transactions_train.parquet" "${TXN_SOURCE}"
+
+for i in $(seq -w 1 "${DUP_COUNT}"); do
+  cp -f "${TXN_SOURCE}" "${DEST_ROOT}/${TXN_SUBDIR}/transactions_train_${i}.parquet"
+done
