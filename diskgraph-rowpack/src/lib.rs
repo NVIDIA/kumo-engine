@@ -425,6 +425,7 @@ impl BitWriter {
         }
     }
 
+    #[allow(dead_code)]
     fn finish(mut self) -> Vec<u8> {
         if self.used > 0 {
             self.buf.push(self.cur);
@@ -1781,55 +1782,6 @@ impl RowPackEncoder {
         &self.ctx
     }
 
-    pub fn encode_row<'a>(&self, values: &[ValueRef<'a>]) -> Result<Vec<u8>> {
-        if values.len() != self.ctx.columns.len() {
-            return Err(anyhow!("rowpack column mismatch"));
-        }
-        let tag_bytes = (self.ctx.columns.len() * 2 + 7) / 8;
-        let bool_columns = self
-            .ctx
-            .columns
-            .iter()
-            .filter(|c| matches!(c.encoding, ColumnEncoding::Bool))
-            .count();
-        let bool_bytes = (bool_columns + 7) / 8;
-        let mut tags = BitWriter::with_capacity(tag_bytes);
-        let mut bools = BitWriter::with_capacity(bool_bytes);
-        let mut data = Vec::with_capacity(self.ctx.estimated_row_bytes as usize);
-        let mut bpe_tokens = Vec::new();
-        let mut lz4_buf = Vec::new();
-        for (idx, col) in self.ctx.columns.iter().enumerate() {
-            let value = &values[idx];
-            let tag = match value {
-                ValueRef::Null => 0u8,
-                _ if matches!(col.encoding, ColumnEncoding::Bool) => {
-                    let v = match value {
-                        ValueRef::Bool(v) => *v,
-                        _ => return Err(anyhow!("rowpack bool mismatch")),
-                    };
-                    bools.write_bits(if v { 1 } else { 0 }, 1);
-                    1u8
-                }
-                _ => encode_value_with_tag(
-                    &mut data,
-                    col,
-                    value,
-                    self.dict_maps[idx].as_ref(),
-                    self.alphabet_maps[idx].as_ref(),
-                    self.bpe_tries[idx].as_ref(),
-                    Some(&mut bpe_tokens),
-                    Some(&mut lz4_buf),
-                )?,
-            };
-            tags.write_bits(tag, 2);
-        }
-        let mut out = tags.finish();
-        let mut bool_bytes = bools.finish();
-        out.append(&mut bool_bytes);
-        out.extend_from_slice(&data);
-        Ok(out)
-    }
-
     pub fn encode_row_into<'a>(
         &self,
         values: &[ValueRef<'a>],
@@ -2451,11 +2403,11 @@ fn encode_value_with_tag<'a>(
     out: &mut Vec<u8>,
     col: &ColumnContext,
     value: &ValueRef<'a>,
-    dict: Option<&FastHashMap<Vec<u8>, u32>>,
-    alphabet: Option<&AlphabetMap>,
-    bpe: Option<&BpeTrie>,
-    bpe_tokens: Option<&mut Vec<u32>>,
-    lz4_buf: Option<&mut Vec<u8>>,
+    _dict: Option<&FastHashMap<Vec<u8>, u32>>,
+    _alphabet: Option<&AlphabetMap>,
+    _bpe: Option<&BpeTrie>,
+    _bpe_tokens: Option<&mut Vec<u32>>,
+    _lz4_buf: Option<&mut Vec<u8>>,
 ) -> Result<u8> {
     match (&col.encoding, value) {
         (ColumnEncoding::Int { signed, varint, bits }, ValueRef::Int64(v)) => {
@@ -2534,8 +2486,8 @@ fn encode_value_with_tag<'a>(
             }
             encode_decimal_i256_with_tag(out, v, *scale, storage)
         }
-        (ColumnEncoding::String { encoding }, ValueRef::String(v)) => {
-            encode_string_with_tag(out, encoding, v, dict, alphabet, bpe, bpe_tokens, lz4_buf)
+        (ColumnEncoding::String { .. }, ValueRef::String(_)) => {
+            Err(anyhow!("rowpack string encoding mismatch"))
         }
         (ColumnEncoding::FloatArray { storage }, ValueRef::Float32Array(values)) => {
             let tag = encode_float_array_f32_with_tag(
@@ -2781,150 +2733,6 @@ fn encode_float(out: &mut Vec<u8>, storage: FloatStorage, v: f64) -> Result<()> 
         }
     }
     Ok(())
-}
-
-fn encode_string_with_tag(
-    out: &mut Vec<u8>,
-    encoding: &StringEncoding,
-    value: &str,
-    dict: Option<&FastHashMap<Vec<u8>, u32>>,
-    alphabet: Option<&AlphabetMap>,
-    bpe: Option<&BpeTrie>,
-    mut bpe_tokens: Option<&mut Vec<u32>>,
-    mut lz4_buf: Option<&mut Vec<u8>>,
-) -> Result<u8> {
-    match encoding {
-        StringEncoding::Raw => {
-            let bytes = value.as_bytes();
-            write_varint(bytes.len() as u64, out);
-            out.extend_from_slice(bytes);
-            Ok(1)
-        }
-        StringEncoding::Dict { .. } => {
-            if let Some(map) = dict {
-                if let Some(idx) = map.get(value.as_bytes()) {
-                    write_varint(*idx as u64, out);
-                    Ok(1)
-                } else {
-                    let bytes = value.as_bytes();
-                    write_varint(bytes.len() as u64, out);
-                    out.extend_from_slice(bytes);
-                    Ok(2)
-                }
-            } else {
-                Err(anyhow!("rowpack missing dict"))
-            }
-        }
-        StringEncoding::Alphabet { .. } => {
-            let bytes = value.as_bytes();
-            let map = alphabet.ok_or_else(|| anyhow!("rowpack missing alphabet map"))?;
-            write_varint(bytes.len() as u64, out);
-            let packed_len = ((bytes.len() * map.bits as usize) + 7) / 8;
-            out.reserve(packed_len);
-            if write_alphabet_packed_checked(out, bytes, &map.map, map.bits) {
-                Ok(1)
-            } else {
-                out.extend_from_slice(bytes);
-                Ok(2)
-            }
-        }
-        StringEncoding::Bpe { .. } => {
-            let bytes = value.as_bytes();
-            let trie = bpe.ok_or_else(|| anyhow!("rowpack missing bpe trie"))?;
-            let mut local_tokens = Vec::new();
-            let tokens = match bpe_tokens.as_deref_mut() {
-                Some(buf) => {
-                    buf.clear();
-                    buf
-                }
-                None => &mut local_tokens,
-            };
-            tokenize_bpe(bytes, trie, tokens);
-            write_varint(tokens.len() as u64, out);
-            let bits = bpe_token_bits(trie.dict_len);
-            write_tokens_packed(out, tokens, bits);
-            Ok(1)
-        }
-        StringEncoding::NumericInt => {
-            if let Some((value, scale)) = parse_numeric_i64(value) {
-                if scale == 0 {
-                    write_varint(zigzag_encode(value), out);
-                    return Ok(1);
-                }
-            }
-            let bytes = value.as_bytes();
-            write_varint(bytes.len() as u64, out);
-            out.extend_from_slice(bytes);
-            Ok(2)
-        }
-        StringEncoding::NumericScaled => {
-            if let Some((value, scale)) = parse_numeric_i64(value) {
-                write_varint(zigzag_encode(value), out);
-                write_varint(scale as u64, out);
-                return Ok(1);
-            }
-            let bytes = value.as_bytes();
-            write_varint(bytes.len() as u64, out);
-            out.extend_from_slice(bytes);
-            Ok(2)
-        }
-        StringEncoding::Hex { len, dashed, .. } => {
-            if let Some(bytes) = encode_hex_unchecked(value, *len, *dashed) {
-                out.extend_from_slice(&bytes);
-                Ok(1)
-            } else {
-                let bytes = value.as_bytes();
-                write_varint(bytes.len() as u64, out);
-                out.extend_from_slice(bytes);
-                Ok(2)
-            }
-        }
-        StringEncoding::IsoTimestamp { .. } => {
-            if let Some((_fmt, secs, nanos)) = parse_iso(value) {
-                write_varint(zigzag_encode(secs), out);
-                write_varint(nanos as u64, out);
-                Ok(1)
-            } else {
-                let bytes = value.as_bytes();
-                write_varint(bytes.len() as u64, out);
-                out.extend_from_slice(bytes);
-                Ok(2)
-            }
-        }
-        StringEncoding::Lz4 => {
-            let bytes = value.as_bytes();
-            let raw_len = bytes.len();
-            let mut local_buf = Vec::new();
-            let buf = match lz4_buf.as_deref_mut() {
-                Some(buf) => {
-                    buf.clear();
-                    buf
-                }
-                None => &mut local_buf,
-            };
-            let max = lz4_flex::block::get_maximum_output_size(raw_len);
-            if buf.capacity() < max {
-                buf.reserve(max - buf.capacity());
-            }
-            buf.resize(max, 0);
-            let written = lz4_flex::block::compress_into(bytes, buf)?;
-            let compressed = &buf[..written];
-            let raw_total = varint_bytes_u64(raw_len as u64) + raw_len;
-            let compressed_total = varint_bytes_u64(raw_len as u64)
-                + varint_bytes_u64(compressed.len() as u64)
-                + compressed.len();
-            if compressed_total < raw_total {
-                write_varint(raw_len as u64, out);
-                write_varint(compressed.len() as u64, out);
-                out.extend_from_slice(compressed);
-                Ok(1)
-            } else {
-                write_varint(raw_len as u64, out);
-                out.extend_from_slice(bytes);
-                Ok(2)
-            }
-        }
-    }
 }
 
 fn alphabet_bits(len: usize) -> u8 {
@@ -4612,6 +4420,13 @@ fn push_utf8_lossy(out: &mut String, bytes: &[u8]) {
 mod tests {
     use super::*;
 
+    fn encode_row(encoder: &RowPackEncoder, row: &[ValueRef<'_>]) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut scratch = RowPackScratch::new(encoder.context());
+        encoder.encode_row_into(row, &mut out, &mut scratch).unwrap();
+        out
+    }
+
     fn build_context() -> RowPackContext {
         RowPackContext {
             version: ROWPACK_VERSION,
@@ -4694,7 +4509,7 @@ mod tests {
             },
             ValueRef::Float32Array(&[0.1, 0.2, 0.3]),
         ];
-        let encoded = encoder.encode_row(&row).unwrap();
+        let encoded = encode_row(&encoder, &row);
         let decoder = RowPackDecoder::new(ctx).unwrap();
         let msg = decoder.decode_msgpack(&encoded).unwrap();
         let json = decoder.decode_json(&encoded).unwrap();
@@ -4718,7 +4533,7 @@ mod tests {
             secs: 1_700_000_000,
             nanos: 123_000_000,
         }];
-        let encoded = encoder.encode_row(&row).unwrap();
+        let encoded = encode_row(&encoder, &row);
         let decoder = RowPackDecoder::new(ctx).unwrap();
         let json = decoder.decode_json(&encoded).unwrap();
         assert!(json.to_string().contains(".123"));
@@ -4744,7 +4559,7 @@ mod tests {
         };
         let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
         let row = vec![ValueRef::Decimal128(-12345i128)];
-        let encoded = encoder.encode_row(&row).unwrap();
+        let encoded = encode_row(&encoder, &row);
         let decoder = RowPackDecoder::new(ctx).unwrap();
         let json = decoder.decode_json(&encoded).unwrap();
         let JsonValue::Object(map) = json else {
@@ -4774,7 +4589,7 @@ mod tests {
         let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
         let big = BigInt::parse_bytes(b"123456789012345678901234567890", 10).unwrap();
         let row = vec![ValueRef::Decimal256(decimal256_bytes(&big))];
-        let encoded = encoder.encode_row(&row).unwrap();
+        let encoded = encode_row(&encoder, &row);
         let decoder = RowPackDecoder::new(ctx).unwrap();
         let json = decoder.decode_json(&encoded).unwrap();
         let JsonValue::Object(map) = json else {
@@ -4868,7 +4683,7 @@ mod tests {
         }
         let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
         let row = vec![ValueRef::Decimal128(123456i128)];
-        let encoded = encoder.encode_row(&row).unwrap();
+        let encoded = encode_row(&encoder, &row);
         let decoder = RowPackDecoder::new(ctx).unwrap();
         let json = decoder.decode_json(&encoded).unwrap();
         let JsonValue::Object(map) = json else {
@@ -4905,7 +4720,7 @@ mod tests {
         }
         let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
         let row = vec![ValueRef::Decimal128(123456i128)];
-        let encoded = encoder.encode_row(&row).unwrap();
+        let encoded = encode_row(&encoder, &row);
         let decoder = RowPackDecoder::new(ctx).unwrap();
         let json = decoder.decode_json(&encoded).unwrap();
         let JsonValue::Object(map) = json else {
@@ -4936,7 +4751,7 @@ mod tests {
         let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
         let big = i128::MAX;
         let row = vec![ValueRef::Decimal128(big)];
-        let encoded = encoder.encode_row(&row).unwrap();
+        let encoded = encode_row(&encoder, &row);
         let decoder = RowPackDecoder::new(ctx).unwrap();
         let json = decoder.decode_json(&encoded).unwrap();
         let JsonValue::Object(map) = json else {
@@ -4958,7 +4773,7 @@ mod tests {
             ValueRef::Timestamp { secs: 0, nanos: 0 },
             ValueRef::Float32Array(&[]),
         ];
-        let encoded = encoder.encode_row(&row).unwrap();
+        let encoded = encode_row(&encoder, &row);
         let decoder = RowPackDecoder::new(ctx).unwrap();
         let json = decoder.decode_json(&encoded).unwrap();
         assert!(json.to_string().contains("carol"));
@@ -4982,7 +4797,7 @@ mod tests {
         let ctx = builder.finish().unwrap();
         let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
         let row = vec![ValueRef::String("2024-01-01T00:00:00Z")];
-        let encoded = encoder.encode_row(&row).unwrap();
+        let encoded = encode_row(&encoder, &row);
         let decoder = RowPackDecoder::new(ctx).unwrap();
         let json = decoder.decode_json(&encoded).unwrap();
         assert!(json.to_string().contains("2024"));
@@ -5006,7 +4821,7 @@ mod tests {
         let ctx = builder.finish().unwrap();
         let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
         let row = vec![ValueRef::String("0123456789abcdef0123456789abcdef")];
-        let encoded = encoder.encode_row(&row).unwrap();
+        let encoded = encode_row(&encoder, &row);
         let decoder = RowPackDecoder::new(ctx).unwrap();
         let json = decoder.decode_json(&encoded).unwrap();
         assert!(json.to_string().contains("0123456789abcdef"));
@@ -5030,7 +4845,7 @@ mod tests {
         let ctx = builder.finish().unwrap();
         let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
         let row = vec![ValueRef::String("ABCDEF0123456789ABCDEF0123456789")];
-        let encoded = encoder.encode_row(&row).unwrap();
+        let encoded = encode_row(&encoder, &row);
         let decoder = RowPackDecoder::new(ctx).unwrap();
         let json = decoder.decode_json(&encoded).unwrap();
         assert!(json.to_string().contains("ABCDEF"));
@@ -5054,7 +4869,7 @@ mod tests {
         let ctx = builder.finish().unwrap();
         let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
         let row = vec![ValueRef::String("Abcdef0123456789ABCDEF0123456789")];
-        let encoded = encoder.encode_row(&row).unwrap();
+        let encoded = encode_row(&encoder, &row);
         let decoder = RowPackDecoder::new(ctx).unwrap();
         let json = decoder.decode_json(&encoded).unwrap();
         assert!(json.to_string().contains("Abcdef"));
@@ -5077,7 +4892,7 @@ mod tests {
         };
         let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
         let row = vec![ValueRef::String("USER-0001")];
-        let encoded = encoder.encode_row(&row).unwrap();
+        let encoded = encode_row(&encoder, &row);
         let decoder = RowPackDecoder::new(ctx).unwrap();
         let json = decoder.decode_json(&encoded).unwrap();
         let JsonValue::Object(map) = json else {
@@ -5103,7 +4918,7 @@ mod tests {
         };
         let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
         let row = vec![ValueRef::String("USER-0001?")];
-        let encoded = encoder.encode_row(&row).unwrap();
+        let encoded = encode_row(&encoder, &row);
         let decoder = RowPackDecoder::new(ctx).unwrap();
         let json = decoder.decode_json(&encoded).unwrap();
         let JsonValue::Object(map) = json else {
@@ -5181,7 +4996,7 @@ mod tests {
         };
         let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
         let row = vec![ValueRef::String("TOKEN123TOKEN123")];
-        let encoded = encoder.encode_row(&row).unwrap();
+        let encoded = encode_row(&encoder, &row);
         let decoder = RowPackDecoder::new(ctx).unwrap();
         let json = decoder.decode_json(&encoded).unwrap();
         let JsonValue::Object(map) = json else {
@@ -5286,7 +5101,7 @@ mod tests {
         };
         let encoder = RowPackEncoder::new(ctx).unwrap();
         let row = vec![ValueRef::String(value)];
-        let encoded = encoder.encode_row(&row).unwrap();
+        let encoded = encode_row(&encoder, &row);
         encoded.len()
     }
 
@@ -5447,7 +5262,7 @@ mod tests {
         };
         let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
         let row = vec![ValueRef::String("12345")];
-        let encoded = encoder.encode_row(&row).unwrap();
+        let encoded = encode_row(&encoder, &row);
         let decoder = RowPackDecoder::new(ctx).unwrap();
         let json = decoder.decode_json(&encoded).unwrap();
         let JsonValue::Object(map) = json else {
@@ -5471,7 +5286,7 @@ mod tests {
         };
         let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
         let row = vec![ValueRef::String("-12.340")];
-        let encoded = encoder.encode_row(&row).unwrap();
+        let encoded = encode_row(&encoder, &row);
         let decoder = RowPackDecoder::new(ctx).unwrap();
         let json = decoder.decode_json(&encoded).unwrap();
         let JsonValue::Object(map) = json else {
@@ -5495,7 +5310,7 @@ mod tests {
         };
         let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
         let row = vec![ValueRef::String("12.3a")];
-        let encoded = encoder.encode_row(&row).unwrap();
+        let encoded = encode_row(&encoder, &row);
         let decoder = RowPackDecoder::new(ctx).unwrap();
         let json = decoder.decode_json(&encoded).unwrap();
         let JsonValue::Object(map) = json else {
@@ -5569,7 +5384,7 @@ mod tests {
         };
         let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
         let row = vec![ValueRef::String(".5")];
-        let encoded = encoder.encode_row(&row).unwrap();
+        let encoded = encode_row(&encoder, &row);
         let decoder = RowPackDecoder::new(ctx.clone()).unwrap();
         let json = decoder.decode_json(&encoded).unwrap();
         let JsonValue::Object(map) = json else {
@@ -5579,7 +5394,7 @@ mod tests {
 
         let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
         let row = vec![ValueRef::String("1.")];
-        let encoded = encoder.encode_row(&row).unwrap();
+        let encoded = encode_row(&encoder, &row);
         let decoder = RowPackDecoder::new(ctx).unwrap();
         let json = decoder.decode_json(&encoded).unwrap();
         let JsonValue::Object(map) = json else {
@@ -5610,7 +5425,7 @@ mod tests {
         let row = vec![ValueRef::String(
             "01234567-89ab-cdef-0123-456789abcdef",
         )];
-        let encoded = encoder.encode_row(&row).unwrap();
+        let encoded = encode_row(&encoder, &row);
         let decoder = RowPackDecoder::new(ctx).unwrap();
         let json = decoder.decode_json(&encoded).unwrap();
         assert!(json
@@ -5637,7 +5452,7 @@ mod tests {
         };
         let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
         let row = vec![ValueRef::String("not-hex")];
-        let encoded = encoder.encode_row(&row).unwrap();
+        let encoded = encode_row(&encoder, &row);
         let decoder = RowPackDecoder::new(ctx).unwrap();
         let json = decoder.decode_json(&encoded).unwrap();
         assert!(json.to_string().contains("not-hex"));
@@ -5658,7 +5473,7 @@ mod tests {
         };
         let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
         let row = vec![ValueRef::Float64(999.0)];
-        let encoded = encoder.encode_row(&row).unwrap();
+        let encoded = encode_row(&encoder, &row);
         let decoder = RowPackDecoder::new(ctx).unwrap();
         let json = decoder.decode_json(&encoded).unwrap();
         assert!(json.to_string().contains("999"));
@@ -5688,7 +5503,7 @@ mod tests {
         }
         let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
         let row = vec![ValueRef::Float32Array(&[0.1, 0.2, 0.3])];
-        let encoded = encoder.encode_row(&row).unwrap();
+        let encoded = encode_row(&encoder, &row);
         let decoder = RowPackDecoder::new(ctx).unwrap();
         let json = decoder.decode_json(&encoded).unwrap();
         assert!(json.to_string().contains("0.1"));
@@ -5731,7 +5546,7 @@ mod tests {
         };
         let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
         let row = vec![ValueRef::Bytes(b"xyz")];
-        let encoded = encoder.encode_row(&row).unwrap();
+        let encoded = encode_row(&encoder, &row);
         let decoder = RowPackDecoder::new(ctx).unwrap();
         let json = decoder.decode_json(&encoded).unwrap();
         assert!(json.to_string().contains("eHl6"));
@@ -5750,7 +5565,7 @@ mod tests {
         };
         let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
         let row = vec![ValueRef::Bytes(b"ABCD")];
-        let encoded = encoder.encode_row(&row).unwrap();
+        let encoded = encode_row(&encoder, &row);
         let decoder = RowPackDecoder::new(ctx).unwrap();
         let json = decoder.decode_json(&encoded).unwrap();
         assert!(json.to_string().contains("QUJDRA=="));
@@ -5769,7 +5584,7 @@ mod tests {
         };
         let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
         let row = vec![ValueRef::Bytes(b"ABCDE")];
-        let encoded = encoder.encode_row(&row).unwrap();
+        let encoded = encode_row(&encoder, &row);
         let decoder = RowPackDecoder::new(ctx).unwrap();
         let json = decoder.decode_json(&encoded).unwrap();
         assert!(json.to_string().contains("QUJDREU="));
@@ -5826,7 +5641,7 @@ mod tests {
             ValueRef::Int32(32000),
             ValueRef::UInt32(65000),
         ];
-        let encoded = encoder.encode_row(&row).unwrap();
+        let encoded = encode_row(&encoder, &row);
         let decoder = RowPackDecoder::new(ctx).unwrap();
         let json = decoder.decode_json(&encoded).unwrap();
         assert!(json.to_string().contains("-7"));
@@ -5852,7 +5667,7 @@ mod tests {
         };
         let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
         let row = vec![ValueRef::Int32(-12345)];
-        let encoded = encoder.encode_row(&row).unwrap();
+        let encoded = encode_row(&encoder, &row);
         let decoder = RowPackDecoder::new(ctx).unwrap();
         let json = decoder.decode_json(&encoded).unwrap();
         assert!(json.to_string().contains("-12345"));
@@ -5873,7 +5688,7 @@ mod tests {
         };
         let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
         let row = vec![ValueRef::String("not-a-timestamp")];
-        let encoded = encoder.encode_row(&row).unwrap();
+        let encoded = encode_row(&encoder, &row);
         let decoder = RowPackDecoder::new(ctx).unwrap();
         let json = decoder.decode_json(&encoded).unwrap();
         assert!(json.to_string().contains("not-a-timestamp"));
@@ -5903,7 +5718,7 @@ mod tests {
         }
         let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
         let row = vec![ValueRef::String("2024-02-03")];
-        let encoded = encoder.encode_row(&row).unwrap();
+        let encoded = encode_row(&encoder, &row);
         let decoder = RowPackDecoder::new(ctx).unwrap();
         let json = decoder.decode_json(&encoded).unwrap();
         assert!(json.to_string().contains("2024-02-03"));
@@ -5935,7 +5750,7 @@ mod tests {
         }
         let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
         let row = vec![ValueRef::String("2024-02-03 12:34:56")];
-        let encoded = encoder.encode_row(&row).unwrap();
+        let encoded = encode_row(&encoder, &row);
         let decoder = RowPackDecoder::new(ctx).unwrap();
         let json = decoder.decode_json(&encoded).unwrap();
         assert!(json.to_string().contains("2024-02-03 12:34:56"));
@@ -5968,7 +5783,7 @@ mod tests {
         }
         let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
         let row = vec![ValueRef::String(&value)];
-        let encoded = encoder.encode_row(&row).unwrap();
+        let encoded = encode_row(&encoder, &row);
         let decoder = RowPackDecoder::new(ctx).unwrap();
         let json = decoder.decode_json(&encoded).unwrap();
         assert!(json.to_string().contains("aaaaaaaa"));
@@ -6001,7 +5816,7 @@ mod tests {
         }
         let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
         let row = vec![ValueRef::String(&value)];
-        let encoded = encoder.encode_row(&row).unwrap();
+        let encoded = encode_row(&encoder, &row);
         let decoder = RowPackDecoder::new(ctx).unwrap();
         let json = decoder.decode_json(&encoded).unwrap();
         assert!(json.to_string().contains("x3f9A2k"));
@@ -6024,7 +5839,7 @@ mod tests {
         };
         let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
         let row = vec![ValueRef::String("carol")];
-        let encoded = encoder.encode_row(&row).unwrap();
+        let encoded = encode_row(&encoder, &row);
         let decoder = RowPackDecoder::new(ctx).unwrap();
         let json = decoder.decode_json(&encoded).unwrap();
         assert!(json.to_string().contains("carol"));
@@ -6056,7 +5871,7 @@ mod tests {
         };
         let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
         let row = vec![ValueRef::Null, ValueRef::Null];
-        let encoded = encoder.encode_row(&row).unwrap();
+        let encoded = encode_row(&encoder, &row);
         let decoder = RowPackDecoder::new(ctx).unwrap();
         let json = decoder.decode_json(&encoded).unwrap();
         assert!(json.to_string().contains("null"));
