@@ -45,3 +45,4 @@ jemalloc-ctl = { version = "0.5", optional = true }
 
 [features]
 mem-profile = ["jemallocator", "jemalloc-ctl", "jemallocator/profiling"]
+unsafe-vars = []
