@@ -1663,6 +1663,7 @@ pub struct RowPackEncoder {
     dict_maps: Vec<Option<FastHashMap<Vec<u8>, u32>>>,
     alphabet_maps: Vec<Option<AlphabetMap>>,
     bpe_tries: Vec<Option<BpeTrie>>,
+    string_encoders: Vec<Option<StringEncoder>>,
 }
 
 pub struct RowPackScratch {
@@ -1722,6 +1723,7 @@ impl RowPackEncoder {
         let mut dict_maps = Vec::with_capacity(ctx.columns.len());
         let mut alphabet_maps = Vec::with_capacity(ctx.columns.len());
         let mut bpe_tries = Vec::with_capacity(ctx.columns.len());
+        let mut string_encoders = Vec::with_capacity(ctx.columns.len());
         for col in &ctx.columns {
             match &col.encoding {
                 ColumnEncoding::String {
@@ -1759,12 +1761,19 @@ impl RowPackEncoder {
                 }
                 _ => bpe_tries.push(None),
             }
+            match &col.encoding {
+                ColumnEncoding::String { encoding } => {
+                    string_encoders.push(Some(StringEncoder::new(encoding)));
+                }
+                _ => string_encoders.push(None),
+            }
         }
         Ok(Self {
             ctx,
             dict_maps,
             alphabet_maps,
             bpe_tries,
+            string_encoders,
         })
     }
 
@@ -1843,16 +1852,35 @@ impl RowPackEncoder {
                     scratch.bools.write_bits(if v { 1 } else { 0 }, 1);
                     1u8
                 }
-                _ => encode_value_with_tag(
-                    &mut scratch.data,
-                    col,
-                    value,
-                    self.dict_maps[idx].as_ref(),
-                    self.alphabet_maps[idx].as_ref(),
-                    self.bpe_tries[idx].as_ref(),
-                    Some(&mut scratch.bpe_tokens),
-                    Some(&mut scratch.lz4_buf),
-                )?,
+                _ => match (&col.encoding, value) {
+                    (ColumnEncoding::String { .. }, ValueRef::String(v)) => {
+                        let encoder = self
+                            .string_encoders
+                            .get(idx)
+                            .and_then(|e| e.as_ref())
+                            .ok_or_else(|| anyhow!("rowpack string encoder missing"))?;
+                        (encoder.encode)(
+                            encoder,
+                            &mut scratch.data,
+                            v,
+                            self.dict_maps[idx].as_ref(),
+                            self.alphabet_maps[idx].as_ref(),
+                            self.bpe_tries[idx].as_ref(),
+                            Some(&mut scratch.bpe_tokens),
+                            Some(&mut scratch.lz4_buf),
+                        )?
+                    }
+                    _ => encode_value_with_tag(
+                        &mut scratch.data,
+                        col,
+                        value,
+                        self.dict_maps[idx].as_ref(),
+                        self.alphabet_maps[idx].as_ref(),
+                        self.bpe_tries[idx].as_ref(),
+                        Some(&mut scratch.bpe_tokens),
+                        Some(&mut scratch.lz4_buf),
+                    )?,
+                },
             };
             scratch.tags.write_bits(tag, 2);
         }
@@ -1998,20 +2026,21 @@ impl RowPackEncoder {
                 LogicalType::String => match access.get_string(idx)? {
                     None => 0u8,
                     Some(v) => {
-                        if let ColumnEncoding::String { encoding } = &col.encoding {
-                            encode_string_with_tag(
-                                &mut scratch.data,
-                                encoding,
-                                v,
-                                self.dict_maps[idx].as_ref(),
-                                self.alphabet_maps[idx].as_ref(),
-                                self.bpe_tries[idx].as_ref(),
-                                Some(&mut scratch.bpe_tokens),
-                                Some(&mut scratch.lz4_buf),
-                            )?
-                        } else {
-                            return Err(anyhow!("rowpack string encoding mismatch"));
-                        }
+                        let encoder = self
+                            .string_encoders
+                            .get(idx)
+                            .and_then(|e| e.as_ref())
+                            .ok_or_else(|| anyhow!("rowpack string encoder missing"))?;
+                        (encoder.encode)(
+                            encoder,
+                            &mut scratch.data,
+                            v,
+                            self.dict_maps[idx].as_ref(),
+                            self.alphabet_maps[idx].as_ref(),
+                            self.bpe_tries[idx].as_ref(),
+                            Some(&mut scratch.bpe_tokens),
+                            Some(&mut scratch.lz4_buf),
+                        )?
                     }
                 },
                 LogicalType::Bytes => match access.get_bytes(idx)? {
@@ -2127,6 +2156,294 @@ impl RowPackEncoder {
         scratch.bools.append_to(out);
         out.extend_from_slice(&scratch.data);
         Ok(())
+    }
+}
+
+#[derive(Clone, Copy)]
+struct StringEncoder {
+    encode: fn(
+        &StringEncoder,
+        &mut Vec<u8>,
+        &str,
+        Option<&FastHashMap<Vec<u8>, u32>>,
+        Option<&AlphabetMap>,
+        Option<&BpeTrie>,
+        Option<&mut Vec<u32>>,
+        Option<&mut Vec<u8>>,
+    ) -> Result<u8>,
+    len: usize,
+    dashed: bool,
+}
+
+impl StringEncoder {
+    fn new(encoding: &StringEncoding) -> Self {
+        match encoding {
+            StringEncoding::Raw => Self {
+                encode: encode_string_raw,
+                len: 0,
+                dashed: false,
+            },
+            StringEncoding::Dict { .. } => Self {
+                encode: encode_string_dict,
+                len: 0,
+                dashed: false,
+            },
+            StringEncoding::Alphabet { .. } => Self {
+                encode: encode_string_alphabet,
+                len: 0,
+                dashed: false,
+            },
+            StringEncoding::Bpe { .. } => Self {
+                encode: encode_string_bpe,
+                len: 0,
+                dashed: false,
+            },
+            StringEncoding::NumericInt => Self {
+                encode: encode_string_numeric_int,
+                len: 0,
+                dashed: false,
+            },
+            StringEncoding::NumericScaled => Self {
+                encode: encode_string_numeric_scaled,
+                len: 0,
+                dashed: false,
+            },
+            StringEncoding::Hex { len, dashed, .. } => Self {
+                encode: encode_string_hex,
+                len: *len,
+                dashed: *dashed,
+            },
+            StringEncoding::IsoTimestamp { .. } => Self {
+                encode: encode_string_iso,
+                len: 0,
+                dashed: false,
+            },
+            StringEncoding::Lz4 => Self {
+                encode: encode_string_lz4,
+                len: 0,
+                dashed: false,
+            },
+        }
+    }
+}
+
+fn encode_string_raw(
+    _enc: &StringEncoder,
+    out: &mut Vec<u8>,
+    value: &str,
+    _dict: Option<&FastHashMap<Vec<u8>, u32>>,
+    _alphabet: Option<&AlphabetMap>,
+    _bpe: Option<&BpeTrie>,
+    _bpe_tokens: Option<&mut Vec<u32>>,
+    _lz4_buf: Option<&mut Vec<u8>>,
+) -> Result<u8> {
+    let bytes = value.as_bytes();
+    write_varint(bytes.len() as u64, out);
+    out.extend_from_slice(bytes);
+    Ok(1)
+}
+
+fn encode_string_dict(
+    _enc: &StringEncoder,
+    out: &mut Vec<u8>,
+    value: &str,
+    dict: Option<&FastHashMap<Vec<u8>, u32>>,
+    _alphabet: Option<&AlphabetMap>,
+    _bpe: Option<&BpeTrie>,
+    _bpe_tokens: Option<&mut Vec<u32>>,
+    _lz4_buf: Option<&mut Vec<u8>>,
+) -> Result<u8> {
+    if let Some(map) = dict {
+        if let Some(idx) = map.get(value.as_bytes()) {
+            write_varint(*idx as u64, out);
+            Ok(1)
+        } else {
+            let bytes = value.as_bytes();
+            write_varint(bytes.len() as u64, out);
+            out.extend_from_slice(bytes);
+            Ok(2)
+        }
+    } else {
+        Err(anyhow!("rowpack missing dict"))
+    }
+}
+
+fn encode_string_alphabet(
+    _enc: &StringEncoder,
+    out: &mut Vec<u8>,
+    value: &str,
+    _dict: Option<&FastHashMap<Vec<u8>, u32>>,
+    alphabet: Option<&AlphabetMap>,
+    _bpe: Option<&BpeTrie>,
+    _bpe_tokens: Option<&mut Vec<u32>>,
+    _lz4_buf: Option<&mut Vec<u8>>,
+) -> Result<u8> {
+    let bytes = value.as_bytes();
+    let map = alphabet.ok_or_else(|| anyhow!("rowpack missing alphabet map"))?;
+    write_varint(bytes.len() as u64, out);
+    let packed_len = ((bytes.len() * map.bits as usize) + 7) / 8;
+    out.reserve(packed_len);
+    if write_alphabet_packed_checked(out, bytes, &map.map, map.bits) {
+        Ok(1)
+    } else {
+        out.extend_from_slice(bytes);
+        Ok(2)
+    }
+}
+
+fn encode_string_bpe(
+    _enc: &StringEncoder,
+    out: &mut Vec<u8>,
+    value: &str,
+    _dict: Option<&FastHashMap<Vec<u8>, u32>>,
+    _alphabet: Option<&AlphabetMap>,
+    bpe: Option<&BpeTrie>,
+    mut bpe_tokens: Option<&mut Vec<u32>>,
+    _lz4_buf: Option<&mut Vec<u8>>,
+) -> Result<u8> {
+    let bytes = value.as_bytes();
+    let trie = bpe.ok_or_else(|| anyhow!("rowpack missing bpe trie"))?;
+    let mut local_tokens = Vec::new();
+    let tokens = match bpe_tokens.as_deref_mut() {
+        Some(buf) => {
+            buf.clear();
+            buf
+        }
+        None => &mut local_tokens,
+    };
+    tokenize_bpe(bytes, trie, tokens);
+    write_varint(tokens.len() as u64, out);
+    let bits = bpe_token_bits(trie.dict_len);
+    write_tokens_packed(out, tokens, bits);
+    Ok(1)
+}
+
+fn encode_string_numeric_int(
+    _enc: &StringEncoder,
+    out: &mut Vec<u8>,
+    value: &str,
+    _dict: Option<&FastHashMap<Vec<u8>, u32>>,
+    _alphabet: Option<&AlphabetMap>,
+    _bpe: Option<&BpeTrie>,
+    _bpe_tokens: Option<&mut Vec<u32>>,
+    _lz4_buf: Option<&mut Vec<u8>>,
+) -> Result<u8> {
+    if let Some((value, scale)) = parse_numeric_i64(value) {
+        if scale == 0 {
+            write_varint(zigzag_encode(value), out);
+            return Ok(1);
+        }
+    }
+    let bytes = value.as_bytes();
+    write_varint(bytes.len() as u64, out);
+    out.extend_from_slice(bytes);
+    Ok(2)
+}
+
+fn encode_string_numeric_scaled(
+    _enc: &StringEncoder,
+    out: &mut Vec<u8>,
+    value: &str,
+    _dict: Option<&FastHashMap<Vec<u8>, u32>>,
+    _alphabet: Option<&AlphabetMap>,
+    _bpe: Option<&BpeTrie>,
+    _bpe_tokens: Option<&mut Vec<u32>>,
+    _lz4_buf: Option<&mut Vec<u8>>,
+) -> Result<u8> {
+    if let Some((value, scale)) = parse_numeric_i64(value) {
+        write_varint(zigzag_encode(value), out);
+        write_varint(scale as u64, out);
+        return Ok(1);
+    }
+    let bytes = value.as_bytes();
+    write_varint(bytes.len() as u64, out);
+    out.extend_from_slice(bytes);
+    Ok(2)
+}
+
+fn encode_string_hex(
+    enc: &StringEncoder,
+    out: &mut Vec<u8>,
+    value: &str,
+    _dict: Option<&FastHashMap<Vec<u8>, u32>>,
+    _alphabet: Option<&AlphabetMap>,
+    _bpe: Option<&BpeTrie>,
+    _bpe_tokens: Option<&mut Vec<u32>>,
+    _lz4_buf: Option<&mut Vec<u8>>,
+) -> Result<u8> {
+    if let Some(bytes) = encode_hex_unchecked(value, enc.len, enc.dashed) {
+        out.extend_from_slice(&bytes);
+        Ok(1)
+    } else {
+        let bytes = value.as_bytes();
+        write_varint(bytes.len() as u64, out);
+        out.extend_from_slice(bytes);
+        Ok(2)
+    }
+}
+
+fn encode_string_iso(
+    _enc: &StringEncoder,
+    out: &mut Vec<u8>,
+    value: &str,
+    _dict: Option<&FastHashMap<Vec<u8>, u32>>,
+    _alphabet: Option<&AlphabetMap>,
+    _bpe: Option<&BpeTrie>,
+    _bpe_tokens: Option<&mut Vec<u32>>,
+    _lz4_buf: Option<&mut Vec<u8>>,
+) -> Result<u8> {
+    if let Some((_fmt, secs, nanos)) = parse_iso(value) {
+        write_varint(zigzag_encode(secs), out);
+        write_varint(nanos as u64, out);
+        Ok(1)
+    } else {
+        let bytes = value.as_bytes();
+        write_varint(bytes.len() as u64, out);
+        out.extend_from_slice(bytes);
+        Ok(2)
+    }
+}
+
+fn encode_string_lz4(
+    _enc: &StringEncoder,
+    out: &mut Vec<u8>,
+    value: &str,
+    _dict: Option<&FastHashMap<Vec<u8>, u32>>,
+    _alphabet: Option<&AlphabetMap>,
+    _bpe: Option<&BpeTrie>,
+    _bpe_tokens: Option<&mut Vec<u32>>,
+    mut lz4_buf: Option<&mut Vec<u8>>,
+) -> Result<u8> {
+    let bytes = value.as_bytes();
+    let raw_len = bytes.len();
+    let mut local_buf = Vec::new();
+    let buf = match lz4_buf.as_deref_mut() {
+        Some(buf) => {
+            buf.clear();
+            buf
+        }
+        None => &mut local_buf,
+    };
+    let max = lz4_flex::block::get_maximum_output_size(raw_len);
+    if buf.capacity() < max {
+        buf.reserve(max - buf.capacity());
+    }
+    buf.resize(max, 0);
+    let written = lz4_flex::block::compress_into(bytes, buf)?;
+    let compressed = &buf[..written];
+    let raw_total = varint_bytes_u64(raw_len as u64) + raw_len;
+    let compressed_total = varint_bytes_u64(raw_len as u64)
+        + varint_bytes_u64(compressed.len() as u64)
+        + compressed.len();
+    if compressed_total < raw_total {
+        write_varint(raw_len as u64, out);
+        write_varint(compressed.len() as u64, out);
+        out.extend_from_slice(compressed);
+        Ok(1)
+    } else {
+        write_varint(raw_len as u64, out);
+        out.extend_from_slice(bytes);
+        Ok(2)
     }
 }
 
