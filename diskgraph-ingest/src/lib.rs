@@ -1936,6 +1936,8 @@ impl IngestContext {
         let dst_fk_col = column_spec(table, &edge.dst_fk.column)?;
         let src_context = format!("edge_fk:{}.{}", table.name, edge.src_fk.column);
         let dst_context = format!("edge_fk:{}.{}", table.name, edge.dst_fk.column);
+        let src_fast = edge_fast_path_for_column(src_fk_col);
+        let dst_fast = edge_fast_path_for_column(dst_fk_col);
         let schema = table_schema(table)?;
         let rel_name = std::sync::Arc::<str>::from(format!("edge_{}_src_to_dst", table.name));
         let buffer_limit = edge_batch_buffer_limit(num_shards);
@@ -1982,6 +1984,10 @@ impl IngestContext {
                             dst_fk_col,
                             &src_context,
                             &dst_context,
+                            &cols,
+                            row,
+                            src_fast,
+                            dst_fast,
                             &mut access,
                             &mut batcher,
                             num_shards,
@@ -2018,6 +2024,10 @@ impl IngestContext {
                             dst_fk_col,
                             &src_context,
                             &dst_context,
+                            &cols,
+                            row,
+                            src_fast,
+                            dst_fast,
                             &mut access,
                             &mut batcher,
                             num_shards,
@@ -2049,37 +2059,77 @@ impl IngestContext {
         dst_col: &ColumnSpec,
         src_context: &str,
         dst_context: &str,
+        cols: &[ArrayRef],
+        row: usize,
+        src_fast: Option<EdgeKeyFastKind>,
+        dst_fast: Option<EdgeKeyFastKind>,
         access: &mut RowAccess<'_>,
         batcher: &mut EdgeSrcBatcher,
         num_shards: usize,
         key_failures: &mut KeyFailureState,
     ) -> Result<()> {
-        let src_value = access.value_ref(src_idx)?;
-        let src_key = match key_from_value_ref(&src_value, src_col) {
-            Ok(key) => key,
-            Err(_) => {
-                record_key_parse_failure_value(
-                    &mut key_failures.parse_failures,
-                    &mut key_failures.samples,
-                    &mut key_failures.by_context,
-                    src_context,
-                    &src_value,
-                );
-                return Ok(());
+        let src_key = match src_fast {
+            Some(kind) => match fast_key_from_array(cols, row, src_idx, kind) {
+                Ok(key) => key,
+                Err(_) => {
+                    let src_value = access.value_ref(src_idx)?;
+                    record_key_parse_failure_value(
+                        &mut key_failures.parse_failures,
+                        &mut key_failures.samples,
+                        &mut key_failures.by_context,
+                        src_context,
+                        &src_value,
+                    );
+                    return Ok(());
+                }
+            },
+            None => {
+                let src_value = access.value_ref(src_idx)?;
+                match key_from_value_ref(&src_value, src_col) {
+                    Ok(key) => key,
+                    Err(_) => {
+                        record_key_parse_failure_value(
+                            &mut key_failures.parse_failures,
+                            &mut key_failures.samples,
+                            &mut key_failures.by_context,
+                            src_context,
+                            &src_value,
+                        );
+                        return Ok(());
+                    }
+                }
             }
         };
-        let dst_value = access.value_ref(dst_idx)?;
-        let dst_key = match key_from_value_ref(&dst_value, dst_col) {
-            Ok(key) => key,
-            Err(_) => {
-                record_key_parse_failure_value(
-                    &mut key_failures.parse_failures,
-                    &mut key_failures.samples,
-                    &mut key_failures.by_context,
-                    dst_context,
-                    &dst_value,
-                );
-                return Ok(());
+        let dst_key = match dst_fast {
+            Some(kind) => match fast_key_from_array(cols, row, dst_idx, kind) {
+                Ok(key) => key,
+                Err(_) => {
+                    let dst_value = access.value_ref(dst_idx)?;
+                    record_key_parse_failure_value(
+                        &mut key_failures.parse_failures,
+                        &mut key_failures.samples,
+                        &mut key_failures.by_context,
+                        dst_context,
+                        &dst_value,
+                    );
+                    return Ok(());
+                }
+            },
+            None => {
+                let dst_value = access.value_ref(dst_idx)?;
+                match key_from_value_ref(&dst_value, dst_col) {
+                    Ok(key) => key,
+                    Err(_) => {
+                        record_key_parse_failure_value(
+                            &mut key_failures.parse_failures,
+                            &mut key_failures.samples,
+                            &mut key_failures.by_context,
+                            dst_context,
+                            &dst_value,
+                        );
+                        return Ok(());
+                    }
+                }
             }
         };
         let mut scratch = [0u8; 16];
@@ -6130,6 +6180,214 @@ fn shard_for_key(bytes: &[u8], num_shards: usize) -> usize {
     let mut hasher = fixed_hash_state().build_hasher();
     hasher.write(bytes);
     (hasher.finish() as usize) % num_shards
+}
+
+#[derive(Clone, Copy)]
+enum EdgeKeyFastKind {
+    Int64,
+    Int32,
+    Int16,
+    Int8,
+    UInt64,
+    UInt32,
+    UInt16,
+    UInt8,
+    StringUuid,
+    BytesUuid,
+    StringFixed { len: usize },
+    BytesFixed { len: usize },
+    StringVar,
+    BytesVar,
+}
+
+fn edge_fast_path_for_column(col: &ColumnSpec) -> Option<EdgeKeyFastKind> {
+    if col.source_dtype != col.ingested_dtype {
+        return None;
+    }
+    match col.ingested_dtype {
+        ColumnType::Int64 => Some(EdgeKeyFastKind::Int64),
+        ColumnType::Int32 => Some(EdgeKeyFastKind::Int32),
+        ColumnType::Int16 => Some(EdgeKeyFastKind::Int16),
+        ColumnType::Int8 => Some(EdgeKeyFastKind::Int8),
+        ColumnType::UInt64 => Some(EdgeKeyFastKind::UInt64),
+        ColumnType::UInt32 => Some(EdgeKeyFastKind::UInt32),
+        ColumnType::UInt16 => Some(EdgeKeyFastKind::UInt16),
+        ColumnType::UInt8 => Some(EdgeKeyFastKind::UInt8),
+        ColumnType::String => {
+            if col.key_mode == Some(KeyMode::Uuid) {
+                Some(EdgeKeyFastKind::StringUuid)
+            } else if col.key_mode == Some(KeyMode::Fixed) || col.fixed_len.is_some() {
+                col.fixed_len.map(|len| EdgeKeyFastKind::StringFixed { len })
+            } else {
+                Some(EdgeKeyFastKind::StringVar)
+            }
+        }
+        ColumnType::Bytes => {
+            if col.key_mode == Some(KeyMode::Uuid) {
+                Some(EdgeKeyFastKind::BytesUuid)
+            } else if col.key_mode == Some(KeyMode::Fixed) || col.fixed_len.is_some() {
+                col.fixed_len.map(|len| EdgeKeyFastKind::BytesFixed { len })
+            } else {
+                Some(EdgeKeyFastKind::BytesVar)
+            }
+        }
+        _ => None,
+    }
+}
+
+fn fast_key_from_array(
+    cols: &[ArrayRef],
+    row: usize,
+    col_idx: usize,
+    kind: EdgeKeyFastKind,
+) -> KeyParseResult<Key> {
+    let array = cols.get(col_idx).ok_or(KeyParseError::TypeMismatch)?;
+    if array.is_null(row) {
+        return Err(KeyParseError::TypeMismatch);
+    }
+    match kind {
+        EdgeKeyFastKind::Int64 => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::Int64Array>()
+                .ok_or(KeyParseError::TypeMismatch)?;
+            let v = arr.value(row);
+            if v < 0 {
+                Err(KeyParseError::Negative)
+            } else {
+                Ok(Key::Int(v as u64))
+            }
+        }
+        EdgeKeyFastKind::Int32 => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::Int32Array>()
+                .ok_or(KeyParseError::TypeMismatch)?;
+            let v = arr.value(row);
+            if v < 0 {
+                Err(KeyParseError::Negative)
+            } else {
+                Ok(Key::Int(v as u64))
+            }
+        }
+        EdgeKeyFastKind::Int16 => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::Int16Array>()
+                .ok_or(KeyParseError::TypeMismatch)?;
+            let v = arr.value(row);
+            if v < 0 {
+                Err(KeyParseError::Negative)
+            } else {
+                Ok(Key::Int(v as u64))
+            }
+        }
+        EdgeKeyFastKind::Int8 => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::Int8Array>()
+                .ok_or(KeyParseError::TypeMismatch)?;
+            let v = arr.value(row);
+            if v < 0 {
+                Err(KeyParseError::Negative)
+            } else {
+                Ok(Key::Int(v as u64))
+            }
+        }
+        EdgeKeyFastKind::UInt64 => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::UInt64Array>()
+                .ok_or(KeyParseError::TypeMismatch)?;
+            Ok(Key::Int(arr.value(row)))
+        }
+        EdgeKeyFastKind::UInt32 => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::UInt32Array>()
+                .ok_or(KeyParseError::TypeMismatch)?;
+            Ok(Key::Int(arr.value(row) as u64))
+        }
+        EdgeKeyFastKind::UInt16 => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::UInt16Array>()
+                .ok_or(KeyParseError::TypeMismatch)?;
+            Ok(Key::Int(arr.value(row) as u64))
+        }
+        EdgeKeyFastKind::UInt8 => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::UInt8Array>()
+                .ok_or(KeyParseError::TypeMismatch)?;
+            Ok(Key::Int(arr.value(row) as u64))
+        }
+        EdgeKeyFastKind::StringUuid => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::StringArray>()
+                .ok_or(KeyParseError::TypeMismatch)?;
+            let uuid = parse_uuid_string(arr.value(row).as_bytes())?;
+            Ok(Key::Uuid(uuid))
+        }
+        EdgeKeyFastKind::BytesUuid => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::BinaryArray>()
+                .ok_or(KeyParseError::TypeMismatch)?;
+            let data = arr.value(row);
+            if data.len() != 16 {
+                return Err(KeyParseError::LengthMismatch);
+            }
+            let mut buf = [0u8; 16];
+            buf.copy_from_slice(data);
+            Ok(Key::Uuid(buf))
+        }
+        EdgeKeyFastKind::StringFixed { len } => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::StringArray>()
+                .ok_or(KeyParseError::TypeMismatch)?;
+            let data = arr.value(row).as_bytes();
+            if data.len() != len {
+                return Err(KeyParseError::LengthMismatch);
+            }
+            Ok(Key::FixedBytes(data.to_vec()))
+        }
+        EdgeKeyFastKind::BytesFixed { len } => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::BinaryArray>()
+                .ok_or(KeyParseError::TypeMismatch)?;
+            let data = arr.value(row);
+            if data.len() != len {
+                return Err(KeyParseError::LengthMismatch);
+            }
+            Ok(Key::FixedBytes(data.to_vec()))
+        }
+        EdgeKeyFastKind::StringVar => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::StringArray>()
+                .ok_or(KeyParseError::TypeMismatch)?;
+            let data = arr.value(row).as_bytes();
+            if data.len() > MAX_VAR_KEY_LEN {
+                return Err(KeyParseError::TooLarge);
+            }
+            Ok(Key::Bytes(data.to_vec()))
+        }
+        EdgeKeyFastKind::BytesVar => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::BinaryArray>()
+                .ok_or(KeyParseError::TypeMismatch)?;
+            let data = arr.value(row);
+            if data.len() > MAX_VAR_KEY_LEN {
+                return Err(KeyParseError::TooLarge);
+            }
+            Ok(Key::Bytes(data.to_vec()))
+        }
+    }
 }
 
 
