@@ -179,6 +179,7 @@ Flags:
 - `--output`: local output directory for the index.
 - `--dest`: must be `local` (index build requires local output).
 - `--profile [dir]`: enable CPU profiling and emit `*-profile.pb`/`*-profile.svg`.
+- `-m, --mem-profile`: enable jemalloc heap dump watchdog (writes `heap-*.heap` when RSS anon exceeds 80%; requires the `mem-profile` Cargo feature and `_RJEM_MALLOC_CONF=prof:true`).
 
 Helper script:
 - `scripts/ingest_local.sh`

@@ -1,5 +1,4 @@
 use std::path::PathBuf;
-
 use anyhow::Result;
 use clap::{Parser, ValueEnum};
 use diskgraph_ingest::{
@@ -16,6 +15,10 @@ const AHASH_SEED_1: u64 = 0x9e3779b185ebca87;
 const AHASH_SEED_2: u64 = 0xc2b2ae3d27d4eb4f;
 const AHASH_SEED_3: u64 = 0x165667b19e3779f9;
 const AHASH_SEED_4: u64 = 0xd6e8feb86659fd93;
+
+#[cfg(all(feature = "mem-profile", target_os = "linux"))]
+#[global_allocator]
+static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
 
 fn fixed_hash_state() -> RandomState {
     RandomState::with_seeds(
@@ -44,6 +47,9 @@ struct Args {
     /// Enable the shared worker pool.
     #[arg(long, default_value_t = true)]
     parallel: bool,
+    /// Enable jemalloc heap dump watchdog (80% RSS anon threshold).
+    #[arg(short = 'm', long = "mem-profile")]
+    mem_profile: bool,
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
@@ -78,6 +84,23 @@ fn main() -> Result<()> {
     if let Some(profile_dir) = args.profile.as_ref() {
         fs::create_dir_all(profile_dir)?;
     }
+    let mem_watchdog: Option<mem_watchdog::MemWatchdog> = if args.mem_profile {
+        #[cfg(feature = "mem-profile")]
+        {
+            let dir = args
+                .profile
+                .clone()
+                .unwrap_or_else(|| PathBuf::from("."));
+            Some(mem_watchdog::start(dir))
+        }
+        #[cfg(not(feature = "mem-profile"))]
+        {
+            tracing::warn!("--mem-profile requires the cargo feature 'mem-profile'");
+            None
+        }
+    } else {
+        None
+    };
     let options = IngestOptions {
         profile_dir: args.profile.clone(),
         progress: build_progress(),
@@ -90,6 +113,7 @@ fn main() -> Result<()> {
         DestArg::Adls => Dest::Adls,
     };
     let (_metadata, stats) = ingest_with_stats(&source_path, &args.output, dest, options)?;
+    drop(mem_watchdog);
     println!("Output: {}", stats.output);
     println!(
         "Node tables: {} ({} nodes)",
@@ -291,6 +315,206 @@ fn main() -> Result<()> {
         explore_command_hint(&args.dest, &stats.output)
     );
     Ok(())
+}
+
+#[cfg(feature = "mem-profile")]
+mod mem_watchdog {
+    use std::ffi::CString;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use std::thread;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    use anyhow::Result;
+    #[cfg(target_os = "linux")]
+    use std::os::unix::ffi::OsStrExt;
+
+    const MEM_WATCHDOG_INTERVAL: Duration = Duration::from_millis(500);
+    const MEM_WATCHDOG_THRESHOLD: f64 = 0.80;
+
+    pub struct MemWatchdog {
+        stop: Arc<AtomicBool>,
+        handle: Option<thread::JoinHandle<()>>,
+    }
+
+    impl Drop for MemWatchdog {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::Relaxed);
+            if let Some(handle) = self.handle.take() {
+                let _ = handle.join();
+            }
+        }
+    }
+
+    pub fn start(dump_dir: PathBuf) -> MemWatchdog {
+        log_jemalloc_conf();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_thread = Arc::clone(&stop);
+        let handle = thread::spawn(move || mem_watchdog_loop(dump_dir, stop_thread));
+        MemWatchdog {
+            stop,
+            handle: Some(handle),
+        }
+    }
+
+    fn mem_watchdog_loop(dump_dir: PathBuf, stop: Arc<AtomicBool>) {
+        if !cfg!(target_os = "linux") {
+            tracing::warn!("memory watchdog only supported on linux");
+            return;
+        }
+        let total_bytes = match total_memory_bytes() {
+            Some(total) => total,
+            None => {
+                tracing::warn!("memory watchdog disabled: unable to read total memory");
+                return;
+            }
+        };
+        let threshold_bytes = (total_bytes as f64 * MEM_WATCHDOG_THRESHOLD) as u64;
+        let dumped = AtomicBool::new(false);
+        while !stop.load(Ordering::Relaxed) {
+            if let Some(rss_anon) = rss_anon_bytes() {
+                if rss_anon >= threshold_bytes
+                    && dumped
+                        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                        .is_ok()
+                {
+                    if let Err(err) = dump_heap_profile(&dump_dir) {
+                        tracing::warn!("heap profile dump failed: {err}");
+                    }
+                }
+            }
+            thread::sleep(MEM_WATCHDOG_INTERVAL);
+        }
+    }
+
+    fn dump_heap_profile(dump_dir: &PathBuf) -> Result<()> {
+        if !jemalloc_prof_supported() {
+            tracing::warn!("jemalloc profiling is not compiled in");
+            return Ok(());
+        }
+        if !jemalloc_prof_enabled() {
+            tracing::warn!("jemalloc opt.prof=false; set _RJEM_MALLOC_CONF=prof:true");
+            return Ok(());
+        }
+        if let Err(err) = unsafe { jemalloc_ctl::raw::write(b"prof.active\0", true) } {
+            tracing::warn!("jemalloc prof.active enable failed: {err}");
+        }
+        fs::create_dir_all(dump_dir)?;
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let dump_path = dump_dir.join(format!("heap-{}.heap", ts));
+        let c_path = CString::new(dump_path.as_os_str().as_bytes())?;
+        unsafe {
+            jemalloc_ctl::raw::write(b"prof.dump\0", c_path.as_ptr())
+                .map_err(|e| anyhow::anyhow!("prof.dump failed: {e}"))?;
+        }
+        tracing::info!("heap profile written to {}", dump_path.display());
+        Ok(())
+    }
+
+    fn jemalloc_prof_supported() -> bool {
+        unsafe { jemalloc_ctl::raw::read::<bool>(b"config.prof\0") }.unwrap_or(false)
+    }
+
+    fn jemalloc_prof_enabled() -> bool {
+        unsafe { jemalloc_ctl::raw::read::<bool>(b"opt.prof\0") }.unwrap_or(false)
+    }
+
+    fn log_jemalloc_conf() {
+        let prof = unsafe { jemalloc_ctl::raw::read::<bool>(b"config.prof\0") }.unwrap_or(false);
+        let opt_prof = unsafe { jemalloc_ctl::raw::read::<bool>(b"opt.prof\0") }.unwrap_or(false);
+        tracing::warn!("jemalloc config.prof={}, opt.prof={}", prof, opt_prof);
+        let conf = unsafe { jemalloc_ctl::raw::read::<*const std::os::raw::c_char>(b"config.malloc_conf\0") };
+        if let Ok(ptr) = conf {
+            if ptr.is_null() {
+                tracing::warn!("jemalloc config.malloc_conf is null");
+                return;
+            }
+            unsafe {
+                let cstr = std::ffi::CStr::from_ptr(ptr);
+                tracing::warn!("jemalloc config.malloc_conf: {}", cstr.to_string_lossy());
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn rss_anon_bytes() -> Option<u64> {
+        let status = fs::read_to_string("/proc/self/status").ok()?;
+        for line in status.lines() {
+            if let Some(value) = line.strip_prefix("RssAnon:") {
+                return parse_kb_line(value);
+            }
+        }
+        None
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn rss_anon_bytes() -> Option<u64> {
+        None
+    }
+
+    #[cfg(target_os = "linux")]
+    fn total_memory_bytes() -> Option<u64> {
+        let mem_total = read_meminfo_total().unwrap_or(0);
+        let cgroup_limit = read_cgroup_limit().unwrap_or(u64::MAX);
+        let total = mem_total.min(cgroup_limit);
+        if total == 0 || total == u64::MAX {
+            None
+        } else {
+            Some(total)
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn total_memory_bytes() -> Option<u64> {
+        None
+    }
+
+    #[cfg(target_os = "linux")]
+    fn read_meminfo_total() -> Option<u64> {
+        let meminfo = fs::read_to_string("/proc/meminfo").ok()?;
+        for line in meminfo.lines() {
+            if let Some(value) = line.strip_prefix("MemTotal:") {
+                return parse_kb_line(value);
+            }
+        }
+        None
+    }
+
+    #[cfg(target_os = "linux")]
+    fn read_cgroup_limit() -> Option<u64> {
+        if let Ok(limit) = fs::read_to_string("/sys/fs/cgroup/memory.max") {
+            let trimmed = limit.trim();
+            if trimmed != "max" {
+                if let Ok(bytes) = trimmed.parse::<u64>() {
+                    return Some(bytes);
+                }
+            }
+        }
+        if let Ok(limit) = fs::read_to_string("/sys/fs/cgroup/memory/memory.limit_in_bytes") {
+            let trimmed = limit.trim();
+            if let Ok(bytes) = trimmed.parse::<u64>() {
+                return Some(bytes);
+            }
+        }
+        None
+    }
+
+    #[cfg(target_os = "linux")]
+    fn parse_kb_line(value: &str) -> Option<u64> {
+        let mut iter = value.split_whitespace();
+        let num = iter.next()?.parse::<u64>().ok()?;
+        Some(num.saturating_mul(1024))
+    }
+}
+
+#[cfg(not(feature = "mem-profile"))]
+mod mem_watchdog {
+    pub struct MemWatchdog;
 }
 
 fn explore_command_hint(dest: &DestArg, output: &str) -> String {
