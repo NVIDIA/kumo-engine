@@ -589,6 +589,102 @@ fn encode_hex(value: &str, len: usize, dashed: bool) -> Option<Vec<u8>> {
     Some(out)
 }
 
+fn encode_hex_unchecked(value: &str, len: usize, dashed: bool) -> Option<Vec<u8>> {
+    if len % 2 != 0 {
+        return None;
+    }
+    let bytes = value.as_bytes();
+    if !dashed {
+        if bytes.len() != len {
+            return None;
+        }
+        return Some(encode_hex_bytes_unchecked(bytes));
+    }
+    if len == 32 {
+        if bytes.len() == 32 {
+            return Some(encode_hex_bytes_unchecked(bytes));
+        }
+        if bytes.len() == 36 {
+            return Some(encode_hex_bytes_dashed_unchecked(bytes));
+        }
+    }
+    let mut out = Vec::with_capacity(len / 2);
+    let mut acc = 0u8;
+    let mut high = true;
+    let mut count = 0usize;
+    for &b in bytes {
+        if b == b'-' {
+            continue;
+        }
+        let val = hex_value_unchecked(b);
+        if high {
+            acc = val << 4;
+            high = false;
+        } else {
+            out.push(acc | val);
+            high = true;
+        }
+        count += 1;
+    }
+    if count != len || !high {
+        return None;
+    }
+    Some(out)
+}
+
+fn encode_hex_bytes_unchecked(bytes: &[u8]) -> Vec<u8> {
+    let mut out = vec![0u8; bytes.len() / 2];
+    let h = hex_value_unchecked;
+    let mut src = 0usize;
+    for dst in out.iter_mut() {
+        *dst = (h(bytes[src]) << 4) | h(bytes[src + 1]);
+        src += 2;
+    }
+    out
+}
+
+fn encode_hex_bytes_dashed_unchecked(bytes: &[u8]) -> Vec<u8> {
+    let mut out = [0u8; 16];
+    let h = hex_value_unchecked;
+    out[0] = (h(bytes[0]) << 4) | h(bytes[1]);
+    out[1] = (h(bytes[2]) << 4) | h(bytes[3]);
+    out[2] = (h(bytes[4]) << 4) | h(bytes[5]);
+    out[3] = (h(bytes[6]) << 4) | h(bytes[7]);
+    out[4] = (h(bytes[9]) << 4) | h(bytes[10]);
+    out[5] = (h(bytes[11]) << 4) | h(bytes[12]);
+    out[6] = (h(bytes[14]) << 4) | h(bytes[15]);
+    out[7] = (h(bytes[16]) << 4) | h(bytes[17]);
+    out[8] = (h(bytes[19]) << 4) | h(bytes[20]);
+    out[9] = (h(bytes[21]) << 4) | h(bytes[22]);
+    out[10] = (h(bytes[24]) << 4) | h(bytes[25]);
+    out[11] = (h(bytes[26]) << 4) | h(bytes[27]);
+    out[12] = (h(bytes[28]) << 4) | h(bytes[29]);
+    out[13] = (h(bytes[30]) << 4) | h(bytes[31]);
+    out[14] = (h(bytes[32]) << 4) | h(bytes[33]);
+    out[15] = (h(bytes[34]) << 4) | h(bytes[35]);
+    out.to_vec()
+}
+
+static HEX_MAP: [u8; 256] = {
+    let mut map = [0u8; 256];
+    let mut i = 0u8;
+    while i < 10 {
+        map[b'0' as usize + i as usize] = i;
+        i += 1;
+    }
+    let mut j = 0u8;
+    while j < 6 {
+        map[b'a' as usize + j as usize] = 10 + j;
+        map[b'A' as usize + j as usize] = 10 + j;
+        j += 1;
+    }
+    map
+};
+
+fn hex_value_unchecked(b: u8) -> u8 {
+    HEX_MAP[b as usize]
+}
+
 fn decode_hex(bytes: &[u8], len: usize, dashed: bool, upper: bool) -> String {
     let mut out = String::with_capacity(len + if dashed { 4 } else { 0 });
     for (idx, byte) in bytes.iter().enumerate() {
@@ -2455,7 +2551,7 @@ fn encode_string_with_tag(
             Ok(2)
         }
         StringEncoding::Hex { len, dashed, .. } => {
-            if let Some(bytes) = encode_hex(value, *len, *dashed) {
+            if let Some(bytes) = encode_hex_unchecked(value, *len, *dashed) {
                 out.extend_from_slice(&bytes);
                 Ok(1)
             } else {
