@@ -986,10 +986,7 @@ impl IngestContext {
                                         }
                                         let mut values =
                                             Vec::with_capacity(table.columns.len());
-                                        let mut arrays_f32: Vec<Vec<f32>> = Vec::new();
-                                        let mut arrays_f64: Vec<Vec<f64>> = Vec::new();
-                                        let mut strings: Vec<String> = Vec::new();
-                                        let mut bytes: Vec<Vec<u8>> = Vec::new();
+                                        let mut pools = RowValuePools::new();
                                         for row in 0..batch.num_rows() {
                                             if buffered_total >= SAMPLE_ROW_LIMIT {
                                                 reached_limit = true;
@@ -1000,10 +997,7 @@ impl IngestContext {
                                                 &row_view,
                                                 &table,
                                                 &mut values,
-                                                &mut arrays_f32,
-                                                &mut arrays_f64,
-                                                &mut strings,
-                                                &mut bytes,
+                                                &mut pools,
                                                 &trimmed_strings,
                                             )?;
                                             buffered_rows.push(owned);
@@ -1036,10 +1030,7 @@ impl IngestContext {
                                         }
                                         let mut values =
                                             Vec::with_capacity(table.columns.len());
-                                        let mut arrays_f32: Vec<Vec<f32>> = Vec::new();
-                                        let mut arrays_f64: Vec<Vec<f64>> = Vec::new();
-                                        let mut strings: Vec<String> = Vec::new();
-                                        let mut bytes: Vec<Vec<u8>> = Vec::new();
+                                        let mut pools = RowValuePools::new();
                                         for row in 0..batch.num_rows() {
                                             if buffered_total >= SAMPLE_ROW_LIMIT {
                                                 reached_limit = true;
@@ -1050,10 +1041,7 @@ impl IngestContext {
                                                 &row_view,
                                                 &table,
                                                 &mut values,
-                                                &mut arrays_f32,
-                                                &mut arrays_f64,
-                                                &mut strings,
-                                                &mut bytes,
+                                                &mut pools,
                                                 &trimmed_strings,
                                             )?;
                                             buffered_rows.push(owned);
@@ -1175,10 +1163,7 @@ impl IngestContext {
                                     cols.push(batch.column(idx).clone());
                                 }
                                 let mut values = Vec::with_capacity(table.columns.len());
-                                let mut arrays_f32: Vec<Vec<f32>> = Vec::new();
-                                let mut arrays_f64: Vec<Vec<f64>> = Vec::new();
-                                let mut strings: Vec<String> = Vec::new();
-                                let mut bytes: Vec<Vec<u8>> = Vec::new();
+                                let mut pools = RowValuePools::new();
                                 for row in 0..batch.num_rows() {
                                     if buffered_total >= SAMPLE_ROW_LIMIT {
                                         reached_limit = true;
@@ -1189,10 +1174,7 @@ impl IngestContext {
                                         &row_view,
                                         table,
                                         &mut values,
-                                        &mut arrays_f32,
-                                        &mut arrays_f64,
-                                        &mut strings,
-                                        &mut bytes,
+                                        &mut pools,
                                         &self.trimmed_strings,
                                     )?;
                                     buffered_rows.push(owned);
@@ -1221,10 +1203,7 @@ impl IngestContext {
                                     cols.push(batch.column(idx).clone());
                                 }
                                 let mut values = Vec::with_capacity(table.columns.len());
-                                let mut arrays_f32: Vec<Vec<f32>> = Vec::new();
-                                let mut arrays_f64: Vec<Vec<f64>> = Vec::new();
-                                let mut strings: Vec<String> = Vec::new();
-                                let mut bytes: Vec<Vec<u8>> = Vec::new();
+                                let mut pools = RowValuePools::new();
                                 for row in 0..batch.num_rows() {
                                     if buffered_total >= SAMPLE_ROW_LIMIT {
                                         reached_limit = true;
@@ -1235,10 +1214,7 @@ impl IngestContext {
                                         &row_view,
                                         table,
                                         &mut values,
-                                        &mut arrays_f32,
-                                        &mut arrays_f64,
-                                        &mut strings,
-                                        &mut bytes,
+                                        &mut pools,
                                         &self.trimmed_strings,
                                     )?;
                                     buffered_rows.push(owned);
@@ -1995,20 +1971,14 @@ impl IngestContext {
                         cols.push(batch.column(idx).clone());
                     }
                     let mut values = Vec::with_capacity(table.columns.len());
-                    let mut arrays_f32: Vec<Vec<f32>> = Vec::new();
-                    let mut arrays_f64: Vec<Vec<f64>> = Vec::new();
-                    let mut strings: Vec<String> = Vec::new();
-                    let mut bytes: Vec<Vec<u8>> = Vec::new();
+                    let mut pools = RowValuePools::new();
                     for row in 0..batch.num_rows() {
                         let row_view = RowView { row, cols: &cols };
                         let owned = owned_row_from_row(
                             &row_view,
                             table,
                             &mut values,
-                            &mut arrays_f32,
-                            &mut arrays_f64,
-                            &mut strings,
-                            &mut bytes,
+                            &mut pools,
                             trimmed_strings,
                         )?;
                         Self::write_edge_row(
@@ -2043,20 +2013,14 @@ impl IngestContext {
                         cols.push(batch.column(idx).clone());
                     }
                     let mut values = Vec::with_capacity(table.columns.len());
-                    let mut arrays_f32: Vec<Vec<f32>> = Vec::new();
-                    let mut arrays_f64: Vec<Vec<f64>> = Vec::new();
-                    let mut strings: Vec<String> = Vec::new();
-                    let mut bytes: Vec<Vec<u8>> = Vec::new();
+                    let mut pools = RowValuePools::new();
                     for row in 0..batch.num_rows() {
                         let row_view = RowView { row, cols: &cols };
                         let owned = owned_row_from_row(
                             &row_view,
                             table,
                             &mut values,
-                            &mut arrays_f32,
-                            &mut arrays_f64,
-                            &mut strings,
-                            &mut bytes,
+                            &mut pools,
                             trimmed_strings,
                         )?;
                         Self::write_edge_row(
@@ -5785,18 +5749,12 @@ mod tests {
             cols: &cols,
         };
         let mut values = Vec::new();
-        let mut arrays_f32 = Vec::new();
-        let mut arrays_f64 = Vec::new();
-        let mut strings = Vec::new();
-        let mut bytes = Vec::new();
+        let mut pools = RowValuePools::new();
         row_values_from_row(
             &row,
             &table,
             &mut values,
-            &mut arrays_f32,
-            &mut arrays_f64,
-            &mut strings,
-            &mut bytes,
+            &mut pools,
             &std::sync::Arc::new(AtomicU64::new(0)),
         )
         .unwrap();
@@ -5839,18 +5797,12 @@ mod tests {
             cols: &cols,
         };
         let mut values = Vec::new();
-        let mut arrays_f32 = Vec::new();
-        let mut arrays_f64 = Vec::new();
-        let mut strings = Vec::new();
-        let mut bytes = Vec::new();
+        let mut pools = RowValuePools::new();
         row_values_from_row(
             &row,
             &table,
             &mut values,
-            &mut arrays_f32,
-            &mut arrays_f64,
-            &mut strings,
-            &mut bytes,
+            &mut pools,
             &std::sync::Arc::new(AtomicU64::new(0)),
         )
         .unwrap();
@@ -5893,18 +5845,12 @@ mod tests {
             cols: &cols,
         };
         let mut values = Vec::new();
-        let mut arrays_f32 = Vec::new();
-        let mut arrays_f64 = Vec::new();
-        let mut strings = Vec::new();
-        let mut bytes = Vec::new();
+        let mut pools = RowValuePools::new();
         row_values_from_row(
             &row,
             &table,
             &mut values,
-            &mut arrays_f32,
-            &mut arrays_f64,
-            &mut strings,
-            &mut bytes,
+            &mut pools,
             &std::sync::Arc::new(AtomicU64::new(0)),
         )
         .unwrap();
@@ -5954,18 +5900,12 @@ mod tests {
             cols: &cols,
         };
         let mut values = Vec::new();
-        let mut arrays_f32 = Vec::new();
-        let mut arrays_f64 = Vec::new();
-        let mut strings = Vec::new();
-        let mut bytes = Vec::new();
+        let mut pools = RowValuePools::new();
         row_values_from_row(
             &row,
             &table,
             &mut values,
-            &mut arrays_f32,
-            &mut arrays_f64,
-            &mut strings,
-            &mut bytes,
+            &mut pools,
             &std::sync::Arc::new(AtomicU64::new(0)),
         )
         .unwrap();
@@ -6005,18 +5945,12 @@ mod tests {
             cols: &cols,
         };
         let mut values = Vec::new();
-        let mut arrays_f32 = Vec::new();
-        let mut arrays_f64 = Vec::new();
-        let mut strings = Vec::new();
-        let mut bytes = Vec::new();
+        let mut pools = RowValuePools::new();
         row_values_from_row(
             &row,
             &table,
             &mut values,
-            &mut arrays_f32,
-            &mut arrays_f64,
-            &mut strings,
-            &mut bytes,
+            &mut pools,
             &std::sync::Arc::new(AtomicU64::new(0)),
         )
         .unwrap();
@@ -6819,6 +6753,19 @@ impl RowValuePools {
         }
     }
 
+    fn take_string_buf(&mut self) -> &mut String {
+        if self.strings_len < self.strings.len() {
+            let out = &mut self.strings[self.strings_len];
+            out.clear();
+            self.strings_len += 1;
+            out
+        } else {
+            self.strings.push(String::new());
+            self.strings_len += 1;
+            self.strings.last_mut().unwrap()
+        }
+    }
+
     fn take_bytes_owned(&mut self, value: Vec<u8>) -> &[u8] {
         if self.bytes_len < self.bytes.len() {
             self.bytes[self.bytes_len] = value;
@@ -6829,6 +6776,19 @@ impl RowValuePools {
             self.bytes.push(value);
             self.bytes_len += 1;
             self.bytes.last().unwrap().as_slice()
+        }
+    }
+
+    fn take_bytes_buf(&mut self) -> &mut Vec<u8> {
+        if self.bytes_len < self.bytes.len() {
+            let out = &mut self.bytes[self.bytes_len];
+            out.clear();
+            self.bytes_len += 1;
+            out
+        } else {
+            self.bytes.push(Vec::new());
+            self.bytes_len += 1;
+            self.bytes.last_mut().unwrap()
         }
     }
 
@@ -6865,23 +6825,15 @@ impl RowValuePools {
 fn row_values_from_row<'a>(
     row: &RowView<'a>,
     table: &TableSpec,
-    values: &mut Vec<ValueRef<'a>>,
-    arrays_f32: &mut Vec<Vec<f32>>,
-    arrays_f64: &mut Vec<Vec<f64>>,
-    strings: &mut Vec<String>,
-    bytes: &mut Vec<Vec<u8>>,
+    values: &mut Vec<ValueRef<'static>>,
+    pools: &mut RowValuePools,
     trimmed_strings: &std::sync::Arc<AtomicU64>,
 ) -> Result<()> {
+    use std::fmt::Write;
     values.clear();
-    arrays_f32.clear();
-    arrays_f64.clear();
-    strings.clear();
-    bytes.clear();
+    pools.reset();
     let reserve = table.columns.len();
-    strings.reserve(reserve);
-    bytes.reserve(reserve);
-    arrays_f32.reserve(reserve);
-    arrays_f64.reserve(reserve);
+    values.reserve(reserve);
     for (idx, col) in table.columns.iter().enumerate() {
         let array = row
             .cols
@@ -6977,14 +6929,17 @@ fn row_values_from_row<'a>(
                         .ok_or_else(|| anyhow!("string cast"))?;
                     let text = arr.value(row.row);
                     if text.len() > MAX_INPUT_STRING_BYTES {
-                        let trimmed = trim_str_bytes(text, MAX_INPUT_STRING_BYTES).to_string();
+                        let trimmed = trim_str_bytes(text, MAX_INPUT_STRING_BYTES);
                         trimmed_strings.fetch_add(1, Ordering::Relaxed);
-                        strings.push(trimmed);
-                        let slice_ptr = strings.last().unwrap().as_str() as *const str;
-                        let slice = unsafe { &*slice_ptr };
+                        let buf = pools.take_string_buf();
+                        buf.push_str(trimmed);
+                        let slice =
+                            unsafe { std::mem::transmute::<&str, &'static str>(buf.as_str()) };
                         values.push(ValueRef::String(slice));
                     } else {
-                        values.push(ValueRef::String(text));
+                        let slice =
+                            unsafe { std::mem::transmute::<&str, &'static str>(text) };
+                        values.push(ValueRef::String(slice));
                     }
                 }
                 ColumnType::Bytes => {
@@ -6995,12 +6950,15 @@ fn row_values_from_row<'a>(
                     let data = arr.value(row.row);
                     if data.len() > MAX_INPUT_STRING_BYTES {
                         trimmed_strings.fetch_add(1, Ordering::Relaxed);
-                        bytes.push(data[..MAX_INPUT_STRING_BYTES].to_vec());
-                        let slice_ptr = bytes.last().unwrap().as_slice() as *const [u8];
-                        let slice = unsafe { &*slice_ptr };
+                        let buf = pools.take_bytes_buf();
+                        buf.extend_from_slice(&data[..MAX_INPUT_STRING_BYTES]);
+                        let slice =
+                            unsafe { std::mem::transmute::<&[u8], &'static [u8]>(buf.as_slice()) };
                         values.push(ValueRef::Bytes(slice));
                     } else {
-                        values.push(ValueRef::Bytes(data));
+                        let slice =
+                            unsafe { std::mem::transmute::<&[u8], &'static [u8]>(data) };
+                        values.push(ValueRef::Bytes(slice));
                     }
                 }
                 ColumnType::Date => {
@@ -7041,7 +6999,7 @@ fn row_values_from_row<'a>(
                     let offsets = list.value_offsets();
                     let start = offsets[row.row] as usize;
                     let end = offsets[row.row + 1] as usize;
-                    let mut vec = Vec::with_capacity(end.saturating_sub(start));
+                    let vec = pools.take_f32_vec(end.saturating_sub(start));
                     for idx in start..end {
                         if values_arr.is_null(idx) {
                             vec.push(0.0);
@@ -7049,9 +7007,8 @@ fn row_values_from_row<'a>(
                             vec.push(values_arr.value(idx));
                         }
                     }
-                    arrays_f32.push(vec);
-                    let slice_ptr = arrays_f32.last().unwrap().as_slice() as *const [f32];
-                    let slice = unsafe { &*slice_ptr };
+                    let slice =
+                        unsafe { std::mem::transmute::<&[f32], &'static [f32]>(vec.as_slice()) };
                     values.push(ValueRef::Float32Array(slice));
                 }
                 ColumnType::Float64Array => {
@@ -7067,7 +7024,7 @@ fn row_values_from_row<'a>(
                     let offsets = list.value_offsets();
                     let start = offsets[row.row] as usize;
                     let end = offsets[row.row + 1] as usize;
-                    let mut vec = Vec::with_capacity(end.saturating_sub(start));
+                    let vec = pools.take_f64_vec(end.saturating_sub(start));
                     for idx in start..end {
                         if values_arr.is_null(idx) {
                             vec.push(0.0);
@@ -7075,9 +7032,8 @@ fn row_values_from_row<'a>(
                             vec.push(values_arr.value(idx));
                         }
                     }
-                    arrays_f64.push(vec);
-                    let slice_ptr = arrays_f64.last().unwrap().as_slice() as *const [f64];
-                    let slice = unsafe { &*slice_ptr };
+                    let slice =
+                        unsafe { std::mem::transmute::<&[f64], &'static [f64]>(vec.as_slice()) };
                     values.push(ValueRef::Float64Array(slice));
                 }
             },
@@ -7235,28 +7191,49 @@ fn row_values_from_row<'a>(
                         continue;
                     }
                     JsonValue::String(s) => s,
-                    JsonValue::Number(n) => n.to_string(),
-                    JsonValue::Bool(v) => v.to_string(),
+                    JsonValue::Number(n) => {
+                        let buf = pools.take_string_buf();
+                        let _ = write!(buf, "{n}");
+                        let slice =
+                            unsafe { std::mem::transmute::<&str, &'static str>(buf.as_str()) };
+                        values.push(ValueRef::String(slice));
+                        continue;
+                    }
+                    JsonValue::Bool(v) => {
+                        let buf = pools.take_string_buf();
+                        if v {
+                            buf.push_str("true");
+                        } else {
+                            buf.push_str("false");
+                        }
+                        let slice =
+                            unsafe { std::mem::transmute::<&str, &'static str>(buf.as_str()) };
+                        values.push(ValueRef::String(slice));
+                        continue;
+                    }
                     _ => {
                         values.push(ValueRef::Null);
                         continue;
                     }
                 };
-                strings.push(text);
-                let slice_ptr = strings.last().unwrap().as_str() as *const str;
-                let slice = unsafe { &*slice_ptr };
+                let buf = pools.take_string_buf();
+                buf.push_str(&text);
+                let slice = unsafe { std::mem::transmute::<&str, &'static str>(buf.as_str()) };
                 values.push(ValueRef::String(slice));
             }
             (ColumnType::String, ColumnType::Bytes) | (ColumnType::Bytes, ColumnType::Bytes) => {
                 let data = read_bytes(array, row.row, &col.source_dtype)?;
                 if data.len() > MAX_INPUT_STRING_BYTES {
                     trimmed_strings.fetch_add(1, Ordering::Relaxed);
-                    bytes.push(data[..MAX_INPUT_STRING_BYTES].to_vec());
-                    let slice_ptr = bytes.last().unwrap().as_slice() as *const [u8];
-                    let slice = unsafe { &*slice_ptr };
+                    let buf = pools.take_bytes_buf();
+                    buf.extend_from_slice(&data[..MAX_INPUT_STRING_BYTES]);
+                    let slice =
+                        unsafe { std::mem::transmute::<&[u8], &'static [u8]>(buf.as_slice()) };
                     values.push(ValueRef::Bytes(slice));
                 } else {
-                    values.push(ValueRef::Bytes(data));
+                    let slice =
+                        unsafe { std::mem::transmute::<&[u8], &'static [u8]>(data) };
+                    values.push(ValueRef::Bytes(slice));
                 }
             }
             _ => {
@@ -7305,21 +7282,15 @@ fn owned_row_from_refs(
 fn owned_row_from_row<'a>(
     row: &RowView<'a>,
     table: &TableSpec,
-    values: &mut Vec<ValueRef<'a>>,
-    arrays_f32: &mut Vec<Vec<f32>>,
-    arrays_f64: &mut Vec<Vec<f64>>,
-    strings: &mut Vec<String>,
-    bytes: &mut Vec<Vec<u8>>,
+    values: &mut Vec<ValueRef<'static>>,
+    pools: &mut RowValuePools,
     trimmed_strings: &std::sync::Arc<AtomicU64>,
 ) -> Result<OwnedRow> {
     row_values_from_row(
         row,
         table,
         values,
-        arrays_f32,
-        arrays_f64,
-        strings,
-        bytes,
+        pools,
         trimmed_strings,
     )?;
     Ok(owned_row_from_refs(values))

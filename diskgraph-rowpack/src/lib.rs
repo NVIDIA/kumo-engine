@@ -1788,6 +1788,7 @@ impl RowPackEncoder {
         let mut bools = BitWriter::with_capacity(bool_bytes);
         let mut data = Vec::with_capacity(self.ctx.estimated_row_bytes as usize);
         let mut bpe_tokens = Vec::new();
+        let mut lz4_buf = Vec::new();
         for (idx, col) in self.ctx.columns.iter().enumerate() {
             let value = &values[idx];
             let tag = match value {
@@ -1808,7 +1809,7 @@ impl RowPackEncoder {
                     self.alphabet_maps[idx].as_ref(),
                     self.bpe_tries[idx].as_ref(),
                     Some(&mut bpe_tokens),
-                    None,
+                    Some(&mut lz4_buf),
                 )?,
             };
             tags.write_bits(tag, 2);
