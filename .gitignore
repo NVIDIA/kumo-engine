@@ -6,3 +6,6 @@
 Cargo.lock
 *profile.svg
 *profile.pb
+heap-*.heap
+heap-*.svg
+heap-*.txt
