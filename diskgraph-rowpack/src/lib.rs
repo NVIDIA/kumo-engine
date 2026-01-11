@@ -37,6 +37,18 @@ fn fixed_hash_state() -> RandomState {
 struct AlphabetMap {
     map: [u8; 256],
     bits: u8,
+    packer: AlphabetPacker,
+}
+
+#[derive(Clone, Copy)]
+enum AlphabetPacker {
+    Bits1,
+    Bits2,
+    Bits3,
+    Bits4,
+    Bits5,
+    Bits6,
+    Generic { bits: u8 },
 }
 
 struct BpeTrie {
@@ -1315,7 +1327,6 @@ pub struct RowPackEncoder {
     dict_maps: Vec<Option<FastHashMap<Vec<u8>, u32>>>,
     alphabet_maps: Vec<Option<AlphabetMap>>,
     bpe_tries: Vec<Option<BpeTrie>>,
-    string_encoders: Vec<Option<StringEncoder>>,
 }
 
 pub struct RowPackScratch {
@@ -1375,7 +1386,6 @@ impl RowPackEncoder {
         let mut dict_maps = Vec::with_capacity(ctx.columns.len());
         let mut alphabet_maps = Vec::with_capacity(ctx.columns.len());
         let mut bpe_tries = Vec::with_capacity(ctx.columns.len());
-        let mut string_encoders = Vec::with_capacity(ctx.columns.len());
         for col in &ctx.columns {
             match &col.encoding {
                 ColumnEncoding::String {
@@ -1398,9 +1408,20 @@ impl RowPackEncoder {
                     for (idx, b) in alphabet.iter().enumerate() {
                         map[*b as usize] = idx as u8;
                     }
+                    let bits = alphabet_bits(alphabet.len());
+                    let packer = match bits {
+                        1 => AlphabetPacker::Bits1,
+                        2 => AlphabetPacker::Bits2,
+                        3 => AlphabetPacker::Bits3,
+                        4 => AlphabetPacker::Bits4,
+                        5 => AlphabetPacker::Bits5,
+                        6 => AlphabetPacker::Bits6,
+                        _ => AlphabetPacker::Generic { bits },
+                    };
                     alphabet_maps.push(Some(AlphabetMap {
                         map,
-                        bits: alphabet_bits(alphabet.len()),
+                        bits,
+                        packer,
                     }));
                 }
                 _ => alphabet_maps.push(None),
@@ -1413,19 +1434,12 @@ impl RowPackEncoder {
                 }
                 _ => bpe_tries.push(None),
             }
-            match &col.encoding {
-                ColumnEncoding::String { encoding } => {
-                    string_encoders.push(Some(StringEncoder::new(encoding)));
-                }
-                _ => string_encoders.push(None),
-            }
         }
         Ok(Self {
             ctx,
             dict_maps,
             alphabet_maps,
             bpe_tries,
-            string_encoders,
         })
     }
 
@@ -1445,7 +1459,7 @@ impl RowPackEncoder {
         scratch.reset(&self.ctx);
         for (idx, col) in self.ctx.columns.iter().enumerate() {
             let value = &values[idx];
-                let tag = match value {
+            let tag = match value {
                 ValueRef::Null => 0u8,
                 _ if matches!(col.encoding, ColumnEncoding::Bool) => {
                     let v = match value {
@@ -1457,15 +1471,10 @@ impl RowPackEncoder {
                 }
                 _ => match (&col.encoding, value) {
                     (ColumnEncoding::String { .. }, ValueRef::String(v)) => {
-                        let encoder = self
-                            .string_encoders
-                            .get(idx)
-                            .and_then(|e| e.as_ref())
-                            .ok_or_else(|| anyhow!("rowpack string encoder missing"))?;
-                        (encoder.encode)(
-                            encoder,
+                        encode_string(
                             &mut scratch.data,
                             v,
+                            col,
                             self.dict_maps[idx].as_ref(),
                             self.alphabet_maps[idx].as_ref(),
                             self.bpe_tries[idx].as_ref(),
@@ -1629,15 +1638,10 @@ impl RowPackEncoder {
                 LogicalType::String => match access.get_string(idx)? {
                     None => 0u8,
                     Some(v) => {
-                        let encoder = self
-                            .string_encoders
-                            .get(idx)
-                            .and_then(|e| e.as_ref())
-                            .ok_or_else(|| anyhow!("rowpack string encoder missing"))?;
-                        (encoder.encode)(
-                            encoder,
+                        encode_string(
                             &mut scratch.data,
                             v,
+                            col,
                             self.dict_maps[idx].as_ref(),
                             self.alphabet_maps[idx].as_ref(),
                             self.bpe_tries[idx].as_ref(),
@@ -1777,51 +1781,35 @@ impl RowPackEncoder {
     }
 }
 
-#[derive(Clone, Copy)]
-struct StringEncoder {
-    encode: fn(
-        &StringEncoder,
-        &mut Vec<u8>,
-        &str,
-        Option<&FastHashMap<Vec<u8>, u32>>,
-        Option<&AlphabetMap>,
-        Option<&BpeTrie>,
-        Option<&mut Vec<u32>>,
-        Option<&mut Vec<u8>>,
-    ) -> Result<u8>,
-}
-
-impl StringEncoder {
-    fn new(encoding: &StringEncoding) -> Self {
-        match encoding {
-            StringEncoding::Raw => Self {
-                encode: encode_string_raw,
-            },
-            StringEncoding::Dict { .. } => Self {
-                encode: encode_string_dict,
-            },
-            StringEncoding::Alphabet { .. } => Self {
-                encode: encode_string_alphabet,
-            },
-            StringEncoding::Bpe { .. } => Self {
-                encode: encode_string_bpe,
-            },
-            StringEncoding::Lz4 => Self {
-                encode: encode_string_lz4,
-            },
-        }
-    }
-}
-
-fn encode_string_raw(
-    _enc: &StringEncoder,
+fn encode_string(
     out: &mut Vec<u8>,
     value: &str,
+    col: &ColumnContext,
     _dict: Option<&FastHashMap<Vec<u8>, u32>>,
     _alphabet: Option<&AlphabetMap>,
     _bpe: Option<&BpeTrie>,
     _bpe_tokens: Option<&mut Vec<u32>>,
     _lz4_buf: Option<&mut Vec<u8>>,
+) -> Result<u8> {
+    let ColumnEncoding::String { encoding } = &col.encoding else {
+        return Err(anyhow!("rowpack string encoding mismatch"));
+    };
+    match encoding {
+        StringEncoding::Raw => encode_string_raw(out, value),
+        StringEncoding::Dict { .. } => {
+            encode_string_dict(out, value, _dict)
+        }
+        StringEncoding::Alphabet { .. } => {
+            encode_string_alphabet(out, value, _alphabet)
+        }
+        StringEncoding::Bpe { .. } => encode_string_bpe(out, value, _bpe, _bpe_tokens),
+        StringEncoding::Lz4 => encode_string_lz4(out, value, _lz4_buf),
+    }
+}
+
+fn encode_string_raw(
+    out: &mut Vec<u8>,
+    value: &str,
 ) -> Result<u8> {
     let bytes = value.as_bytes();
     write_varint(bytes.len() as u64, out);
@@ -1830,14 +1818,9 @@ fn encode_string_raw(
 }
 
 fn encode_string_dict(
-    _enc: &StringEncoder,
     out: &mut Vec<u8>,
     value: &str,
     dict: Option<&FastHashMap<Vec<u8>, u32>>,
-    _alphabet: Option<&AlphabetMap>,
-    _bpe: Option<&BpeTrie>,
-    _bpe_tokens: Option<&mut Vec<u32>>,
-    _lz4_buf: Option<&mut Vec<u8>>,
 ) -> Result<u8> {
     if let Some(map) = dict {
         if let Some(idx) = map.get(value.as_bytes()) {
@@ -1855,21 +1838,28 @@ fn encode_string_dict(
 }
 
 fn encode_string_alphabet(
-    _enc: &StringEncoder,
     out: &mut Vec<u8>,
     value: &str,
-    _dict: Option<&FastHashMap<Vec<u8>, u32>>,
     alphabet: Option<&AlphabetMap>,
-    _bpe: Option<&BpeTrie>,
-    _bpe_tokens: Option<&mut Vec<u32>>,
-    _lz4_buf: Option<&mut Vec<u8>>,
 ) -> Result<u8> {
     let bytes = value.as_bytes();
     let map = alphabet.ok_or_else(|| anyhow!("rowpack missing alphabet map"))?;
     write_varint(bytes.len() as u64, out);
     let packed_len = ((bytes.len() * map.bits as usize) + 7) / 8;
     out.reserve(packed_len);
-    if write_alphabet_packed_checked(out, bytes, &map.map, map.bits) {
+    let payload_start = out.len();
+    let packed_ok = match map.packer {
+        AlphabetPacker::Bits1 => pack_bits_1(out, bytes, &map.map, payload_start),
+        AlphabetPacker::Bits2 => pack_bits_2(out, bytes, &map.map, payload_start),
+        AlphabetPacker::Bits3 => pack_bits_3(out, bytes, &map.map, payload_start),
+        AlphabetPacker::Bits4 => pack_bits_4(out, bytes, &map.map, payload_start),
+        AlphabetPacker::Bits5 => pack_bits_5(out, bytes, &map.map, payload_start),
+        AlphabetPacker::Bits6 => pack_bits_6(out, bytes, &map.map, payload_start),
+        AlphabetPacker::Generic { bits } => {
+            pack_bits_generic(out, bytes, &map.map, bits, payload_start)
+        }
+    };
+    if packed_ok {
         Ok(1)
     } else {
         out.extend_from_slice(bytes);
@@ -1878,14 +1868,10 @@ fn encode_string_alphabet(
 }
 
 fn encode_string_bpe(
-    _enc: &StringEncoder,
     out: &mut Vec<u8>,
     value: &str,
-    _dict: Option<&FastHashMap<Vec<u8>, u32>>,
-    _alphabet: Option<&AlphabetMap>,
     bpe: Option<&BpeTrie>,
     mut bpe_tokens: Option<&mut Vec<u32>>,
-    _lz4_buf: Option<&mut Vec<u8>>,
 ) -> Result<u8> {
     let bytes = value.as_bytes();
     let trie = bpe.ok_or_else(|| anyhow!("rowpack missing bpe trie"))?;
@@ -1905,13 +1891,8 @@ fn encode_string_bpe(
 }
 
 fn encode_string_lz4(
-    _enc: &StringEncoder,
     out: &mut Vec<u8>,
     value: &str,
-    _dict: Option<&FastHashMap<Vec<u8>, u32>>,
-    _alphabet: Option<&AlphabetMap>,
-    _bpe: Option<&BpeTrie>,
-    _bpe_tokens: Option<&mut Vec<u32>>,
     mut lz4_buf: Option<&mut Vec<u8>>,
 ) -> Result<u8> {
     let bytes = value.as_bytes();
@@ -2213,24 +2194,6 @@ fn alphabet_bits(len: usize) -> u8 {
 fn bpe_token_bits(dict_len: usize) -> u8 {
     let space = 256usize.saturating_add(dict_len);
     alphabet_bits(space.max(1))
-}
-
-fn write_alphabet_packed_checked(
-    out: &mut Vec<u8>,
-    bytes: &[u8],
-    map: &[u8; 256],
-    bits: u8,
-) -> bool {
-    let payload_start = out.len();
-    match bits {
-        1 => pack_bits_1(out, bytes, map, payload_start),
-        2 => pack_bits_2(out, bytes, map, payload_start),
-        3 => pack_bits_3(out, bytes, map, payload_start),
-        4 => pack_bits_4(out, bytes, map, payload_start),
-        5 => pack_bits_5(out, bytes, map, payload_start),
-        6 => pack_bits_6(out, bytes, map, payload_start),
-        _ => pack_bits_generic(out, bytes, map, bits, payload_start),
-    }
 }
 
 #[inline]
