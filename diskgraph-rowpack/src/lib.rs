@@ -191,7 +191,7 @@ impl RowPackConfig {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum LogicalType {
+pub enum IngestedType {
     Int8,
     Int16,
     Int64,
@@ -220,7 +220,7 @@ pub enum LogicalType {
 #[derive(Debug, Clone)]
 pub struct RowPackColumn {
     pub name: String,
-    pub logical_type: LogicalType,
+    pub logical_type: IngestedType,
     pub fixed_len: Option<usize>,
     pub precision: Option<u32>,
     pub scale: Option<i32>,
@@ -269,7 +269,7 @@ impl RowPackContext {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ColumnContext {
     pub name: String,
-    pub logical_type: LogicalType,
+    pub logical_type: IngestedType,
     pub encoding: ColumnEncoding,
 }
 
@@ -644,7 +644,7 @@ fn format_timestamp_rfc3339(secs: i64, nanos: u32) -> String {
 #[derive(Debug, Clone)]
 pub struct RowPackContextBuilder {
     config: RowPackConfig,
-    columns: Vec<LogicalType>,
+    columns: Vec<IngestedType>,
     names: Vec<String>,
     fixed_lens: Vec<Option<usize>>,
     decimal_specs: Vec<Option<DecimalSpec>>,
@@ -670,14 +670,14 @@ impl RowPackContextBuilder {
             types.push(col.logical_type);
             fixed_lens.push(col.fixed_len);
             let spec = match col.logical_type {
-                LogicalType::Decimal128 => match (col.precision, col.scale) {
+                IngestedType::Decimal128 => match (col.precision, col.scale) {
                     (Some(precision), Some(scale)) => Some(DecimalSpec {
                         precision,
                         scale,
                     }),
                     _ => None,
                 },
-                LogicalType::Decimal256 => match (col.precision, col.scale) {
+                IngestedType::Decimal256 => match (col.precision, col.scale) {
                     (Some(precision), Some(scale)) => Some(DecimalSpec {
                         precision,
                         scale,
@@ -724,81 +724,81 @@ impl RowPackContextBuilder {
                 .get_mut(idx)
                 .ok_or_else(|| anyhow!("rowpack sample column mismatch"))?;
             match logical {
-                LogicalType::Bool => match access.get_bool(idx)? {
+                IngestedType::Bool => match access.get_bool(idx)? {
                     None => stats.observe_null(),
                     Some(_) => stats.observe_bool(),
                 },
-                LogicalType::Int64 => match access.get_int64(idx)? {
+                IngestedType::Int64 => match access.get_int64(idx)? {
                     None => stats.observe_null(),
                     Some(v) => stats.observe_int64(v),
                 },
-                LogicalType::Int16 | LogicalType::Int8 | LogicalType::Int32 => {
+                IngestedType::Int16 | IngestedType::Int8 | IngestedType::Int32 => {
                     match access.get_int32(idx)? {
                         None => stats.observe_null(),
                         Some(v) => stats.observe_int32(v),
                     }
                 }
-                LogicalType::UInt64 => match access.get_uint64(idx)? {
+                IngestedType::UInt64 => match access.get_uint64(idx)? {
                     None => stats.observe_null(),
                     Some(v) => stats.observe_uint64(v),
                 },
-                LogicalType::UInt16 | LogicalType::UInt8 | LogicalType::UInt32 => {
+                IngestedType::UInt16 | IngestedType::UInt8 | IngestedType::UInt32 => {
                     match access.get_uint32(idx)? {
                         None => stats.observe_null(),
                         Some(v) => stats.observe_uint32(v),
                     }
                 }
-                LogicalType::Float64 => match access.get_float64(idx)? {
+                IngestedType::Float64 => match access.get_float64(idx)? {
                     None => stats.observe_null(),
                     Some(v) => stats.observe_float64(v),
                 },
-                LogicalType::Float32 => match access.get_float32(idx)? {
+                IngestedType::Float32 => match access.get_float32(idx)? {
                     None => stats.observe_null(),
                     Some(v) => stats.observe_float32(v),
                 },
-                LogicalType::String => match access.get_string(idx)? {
+                IngestedType::String => match access.get_string(idx)? {
                     None => stats.observe_null(),
                     Some(v) => stats.observe_string(v, &self.config),
                 },
-                LogicalType::Bytes => match access.get_bytes(idx)? {
+                IngestedType::Bytes => match access.get_bytes(idx)? {
                     None => stats.observe_null(),
                     Some(v) => stats.observe_bytes_len(v.len()),
                 },
-                LogicalType::Uuid => match access.get_bytes(idx)? {
+                IngestedType::Uuid => match access.get_bytes(idx)? {
                     None => stats.observe_null(),
                     Some(_) => stats.observe_uuid(),
                 },
-                LogicalType::Uuid256 => match access.get_bytes(idx)? {
+                IngestedType::Uuid256 => match access.get_bytes(idx)? {
                     None => stats.observe_null(),
                     Some(_) => stats.observe_uuid256(),
                 },
-                LogicalType::Ip => match access.get_bytes(idx)? {
+                IngestedType::Ip => match access.get_bytes(idx)? {
                     None => stats.observe_null(),
                     Some(_) => stats.observe_ip(),
                 },
-                LogicalType::Date => match access.get_date(idx)? {
+                IngestedType::Date => match access.get_date(idx)? {
                     None => stats.observe_null(),
                     Some(_) => stats.count = stats.count.saturating_add(1),
                 },
-                LogicalType::Timestamp => match access.get_timestamp(idx)? {
+                IngestedType::Timestamp => match access.get_timestamp(idx)? {
                     None => stats.observe_null(),
                     Some((secs, _)) => stats.observe_timestamp(secs),
                 },
-                LogicalType::Decimal128 => match access.get_decimal128(idx)? {
+                IngestedType::Decimal128 => match access.get_decimal128(idx)? {
                     None => stats.observe_null(),
                     Some(_) => stats.count = stats.count.saturating_add(1),
                 },
-                LogicalType::Decimal256 => match access.get_decimal256(idx)? {
+                IngestedType::Decimal256 => match access.get_decimal256(idx)? {
                     None => stats.observe_null(),
                     Some(_) => stats.count = stats.count.saturating_add(1),
                 },
-                LogicalType::Float32Array | LogicalType::Float16Array => {
+                IngestedType::Float32Array | IngestedType::Float16Array => {
                     match access.get_float32_array(idx)? {
                         None => stats.observe_null(),
                         Some(values) => stats.observe_array_f32(values),
                     }
                 }
-                LogicalType::Float64Array => match access.get_float64_array(idx)? {
+                IngestedType::Float64Array => match access.get_float64_array(idx)? {
                     None => stats.observe_null(),
                     Some(values) => stats.observe_array_f64(values),
                 },
@@ -814,7 +814,7 @@ impl RowPackContextBuilder {
         let mut bools = 0usize;
         for (idx, logical_type) in self.columns.iter().enumerate() {
             let encoding = match (logical_type, self.decimal_specs[idx]) {
-                (LogicalType::Decimal128, Some(spec)) => {
+                (IngestedType::Decimal128, Some(spec)) => {
                     if spec.precision == 0 {
                         return Err(anyhow!("rowpack decimal precision missing"));
                     }
@@ -826,7 +826,7 @@ impl RowPackContextBuilder {
                         storage: DecimalStorage::Varint,
                     }
                 }
-                (LogicalType::Decimal256, Some(spec)) => {
+                (IngestedType::Decimal256, Some(spec)) => {
                     if spec.precision == 0 {
                         return Err(anyhow!("rowpack decimal precision missing"));
                     }
@@ -838,7 +838,7 @@ impl RowPackContextBuilder {
                         storage: DecimalStorage::Raw,
                     }
                 }
-                (LogicalType::Decimal128, None) | (LogicalType::Decimal256, None) => {
+                (IngestedType::Decimal128, None) | (IngestedType::Decimal256, None) => {
                     return Err(anyhow!("rowpack decimal precision missing"));
                 }
                 _ => self.stats[idx].choose_encoding(
@@ -1367,80 +1367,80 @@ impl ColumnStats {
 
     fn choose_encoding(
         &self,
-        logical: LogicalType,
+        logical: IngestedType,
         config: &RowPackConfig,
         fixed_len: Option<usize>,
     ) -> Result<ColumnEncoding> {
         match logical {
-            LogicalType::Int64 => Ok(ColumnEncoding::Int {
+            IngestedType::Int64 => Ok(ColumnEncoding::Int {
                 signed: true,
                 varint: int_use_varint(self.int_min, self.int_max),
                 bits: 64,
             }),
-            LogicalType::Int32 => Ok(ColumnEncoding::Int {
+            IngestedType::Int32 => Ok(ColumnEncoding::Int {
                 signed: true,
                 varint: int_use_varint(self.int_min, self.int_max),
                 bits: 32,
             }),
-            LogicalType::Int16 => Ok(ColumnEncoding::Int {
+            IngestedType::Int16 => Ok(ColumnEncoding::Int {
                 signed: true,
                 varint: int_use_varint(self.int_min, self.int_max),
                 bits: 16,
             }),
-            LogicalType::Int8 => Ok(ColumnEncoding::Int {
+            IngestedType::Int8 => Ok(ColumnEncoding::Int {
                 signed: true,
                 varint: false,
                 bits: 8,
             }),
-            LogicalType::UInt64 => Ok(ColumnEncoding::Int {
+            IngestedType::UInt64 => Ok(ColumnEncoding::Int {
                 signed: false,
                 varint: uint_use_varint(self.uint_max),
                 bits: 64,
             }),
-            LogicalType::UInt32 => Ok(ColumnEncoding::Int {
+            IngestedType::UInt32 => Ok(ColumnEncoding::Int {
                 signed: false,
                 varint: uint_use_varint(self.uint_max),
                 bits: 32,
             }),
-            LogicalType::UInt16 => Ok(ColumnEncoding::Int {
+            IngestedType::UInt16 => Ok(ColumnEncoding::Int {
                 signed: false,
                 varint: uint_use_varint(self.uint_max),
                 bits: 16,
             }),
-            LogicalType::UInt8 => Ok(ColumnEncoding::Int {
+            IngestedType::UInt8 => Ok(ColumnEncoding::Int {
                 signed: false,
                 varint: false,
                 bits: 8,
             }),
-            LogicalType::Float64 => Ok(ColumnEncoding::Float {
+            IngestedType::Float64 => Ok(ColumnEncoding::Float {
                 storage: choose_float_storage(true),
             }),
-            LogicalType::Float32 => Ok(ColumnEncoding::Float {
+            IngestedType::Float32 => Ok(ColumnEncoding::Float {
                 storage: choose_float_storage(false),
             }),
-            LogicalType::Bool => Ok(ColumnEncoding::Bool),
-            LogicalType::String => Ok(ColumnEncoding::String {
+            IngestedType::Bool => Ok(ColumnEncoding::Bool),
+            IngestedType::String => Ok(ColumnEncoding::String {
                 encoding: choose_string_encoding(self, config)?,
             }),
-            LogicalType::Bytes => Ok(ColumnEncoding::Bytes { fixed_len }),
-            LogicalType::Uuid => Ok(ColumnEncoding::Uuid),
-            LogicalType::Uuid256 => Ok(ColumnEncoding::Uuid256),
-            LogicalType::Ip => Ok(ColumnEncoding::Ip),
-            LogicalType::Date => Ok(ColumnEncoding::Date {
+            IngestedType::Bytes => Ok(ColumnEncoding::Bytes { fixed_len }),
+            IngestedType::Uuid => Ok(ColumnEncoding::Uuid),
+            IngestedType::Uuid256 => Ok(ColumnEncoding::Uuid256),
+            IngestedType::Ip => Ok(ColumnEncoding::Ip),
+            IngestedType::Date => Ok(ColumnEncoding::Date {
                 varint: int_use_varint(self.int_min, self.int_max),
                 bits: 32,
             }),
-            LogicalType::Timestamp => Ok(ColumnEncoding::Timestamp),
-            LogicalType::Decimal128 | LogicalType::Decimal256 => {
+            IngestedType::Timestamp => Ok(ColumnEncoding::Timestamp),
+            IngestedType::Decimal128 | IngestedType::Decimal256 => {
                 Err(anyhow!("rowpack decimal encoding missing"))
             }
-            LogicalType::Float32Array => Ok(ColumnEncoding::FloatArray {
+            IngestedType::Float32Array => Ok(ColumnEncoding::FloatArray {
                 storage: choose_float_storage(false),
             }),
-            LogicalType::Float64Array => Ok(ColumnEncoding::FloatArray {
+            IngestedType::Float64Array => Ok(ColumnEncoding::FloatArray {
                 storage: choose_float_storage(true),
             }),
-            LogicalType::Float16Array => Ok(ColumnEncoding::FloatArray {
+            IngestedType::Float16Array => Ok(ColumnEncoding::FloatArray {
                 storage: FloatStorage::F16,
             }),
         }
@@ -1846,14 +1846,14 @@ impl RowPackEncoder {
         scratch.reset(&self.ctx);
         for (idx, col) in self.ctx.columns.iter().enumerate() {
             let tag = match col.logical_type {
-                LogicalType::Bool => match access.get_bool(idx)? {
+                IngestedType::Bool => match access.get_bool(idx)? {
                     None => 0u8,
                     Some(v) => {
                         scratch.bools.write_bits(if v { 1 } else { 0 }, 1);
                         1u8
                     }
                 },
-                LogicalType::Int64 => match access.get_int64(idx)? {
+                IngestedType::Int64 => match access.get_int64(idx)? {
                     None => 0u8,
                     Some(v) => {
                         if let ColumnEncoding::Int { signed, varint, bits } = &col.encoding {
@@ -1864,7 +1864,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                LogicalType::Int16 => match access.get_int32(idx)? {
+                IngestedType::Int16 => match access.get_int32(idx)? {
                     None => 0u8,
                     Some(v) => {
                         if let ColumnEncoding::Int { signed, varint, bits } = &col.encoding {
@@ -1875,7 +1875,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                LogicalType::Int8 => match access.get_int32(idx)? {
+                IngestedType::Int8 => match access.get_int32(idx)? {
                     None => 0u8,
                     Some(v) => {
                         if let ColumnEncoding::Int { signed, varint, bits } = &col.encoding {
@@ -1886,7 +1886,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                LogicalType::Int32 => match access.get_int32(idx)? {
+                IngestedType::Int32 => match access.get_int32(idx)? {
                     None => 0u8,
                     Some(v) => {
                         if let ColumnEncoding::Int { signed, varint, bits } = &col.encoding {
@@ -1897,7 +1897,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                LogicalType::UInt64 => match access.get_uint64(idx)? {
+                IngestedType::UInt64 => match access.get_uint64(idx)? {
                     None => 0u8,
                     Some(v) => {
                         if let ColumnEncoding::Int { signed, varint, bits } = &col.encoding {
@@ -1908,7 +1908,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                LogicalType::UInt16 => match access.get_uint32(idx)? {
+                IngestedType::UInt16 => match access.get_uint32(idx)? {
                     None => 0u8,
                     Some(v) => {
                         if let ColumnEncoding::Int { signed, varint, bits } = &col.encoding {
@@ -1919,7 +1919,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                LogicalType::UInt8 => match access.get_uint32(idx)? {
+                IngestedType::UInt8 => match access.get_uint32(idx)? {
                     None => 0u8,
                     Some(v) => {
                         if let ColumnEncoding::Int { signed, varint, bits } = &col.encoding {
@@ -1930,7 +1930,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                LogicalType::UInt32 => match access.get_uint32(idx)? {
+                IngestedType::UInt32 => match access.get_uint32(idx)? {
                     None => 0u8,
                     Some(v) => {
                         if let ColumnEncoding::Int { signed, varint, bits } = &col.encoding {
@@ -1941,7 +1941,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                LogicalType::Float64 => match access.get_float64(idx)? {
+                IngestedType::Float64 => match access.get_float64(idx)? {
                     None => 0u8,
                     Some(v) => {
                         if let ColumnEncoding::Float { storage } = &col.encoding {
@@ -1951,7 +1951,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                LogicalType::Float32 => match access.get_float32(idx)? {
+                IngestedType::Float32 => match access.get_float32(idx)? {
                     None => 0u8,
                     Some(v) => {
                         if let ColumnEncoding::Float { storage } = &col.encoding {
@@ -1966,7 +1966,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                LogicalType::String => match access.get_string(idx)? {
+                IngestedType::String => match access.get_string(idx)? {
                     None => 0u8,
                     Some(v) => {
                         encode_string(
@@ -1981,7 +1981,7 @@ impl RowPackEncoder {
                         )?
                     }
                 },
-                LogicalType::Bytes => match access.get_bytes(idx)? {
+                IngestedType::Bytes => match access.get_bytes(idx)? {
                     None => 0u8,
                     Some(v) => {
                         if let ColumnEncoding::Bytes { fixed_len } = &col.encoding {
@@ -2004,7 +2004,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                LogicalType::Uuid => match access.get_bytes(idx)? {
+                IngestedType::Uuid => match access.get_bytes(idx)? {
                     None => 0u8,
                     Some(v) => {
                         if !matches!(col.encoding, ColumnEncoding::Uuid) {
@@ -2017,7 +2017,7 @@ impl RowPackEncoder {
                         1u8
                     }
                 },
-                LogicalType::Uuid256 => match access.get_bytes(idx)? {
+                IngestedType::Uuid256 => match access.get_bytes(idx)? {
                     None => 0u8,
                     Some(v) => {
                         if !matches!(col.encoding, ColumnEncoding::Uuid256) {
@@ -2030,7 +2030,7 @@ impl RowPackEncoder {
                         1u8
                     }
                 },
-                LogicalType::Ip => match access.get_bytes(idx)? {
+                IngestedType::Ip => match access.get_bytes(idx)? {
                     None => 0u8,
                     Some(v) => {
                         if !matches!(col.encoding, ColumnEncoding::Ip) {
@@ -2043,7 +2043,7 @@ impl RowPackEncoder {
                         1u8
                     }
                 },
-                LogicalType::Date => match access.get_date(idx)? {
+                IngestedType::Date => match access.get_date(idx)? {
                     None => 0u8,
                     Some(v) => {
                         if let ColumnEncoding::Date { varint, bits } = &col.encoding {
@@ -2054,7 +2054,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                LogicalType::Timestamp => match access.get_timestamp(idx)? {
+                IngestedType::Timestamp => match access.get_timestamp(idx)? {
                     None => 0u8,
                     Some((secs, nanos)) => {
                         write_varint(zigzag_encode(secs), &mut scratch.data);
@@ -2062,7 +2062,7 @@ impl RowPackEncoder {
                         1u8
                     }
                 },
-                LogicalType::Decimal128 => match access.get_decimal128(idx)? {
+                IngestedType::Decimal128 => match access.get_decimal128(idx)? {
                     None => 0u8,
                     Some(v) => {
                         if let ColumnEncoding::Decimal { bytes, scale, storage, .. } =
@@ -2083,7 +2083,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                LogicalType::Decimal256 => match access.get_decimal256(idx)? {
+                IngestedType::Decimal256 => match access.get_decimal256(idx)? {
                     None => 0u8,
                     Some(v) => {
                         if let ColumnEncoding::Decimal { bytes, scale, storage, .. } =
@@ -2104,7 +2104,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                LogicalType::Float32Array => match access.get_float32_array(idx)? {
+                IngestedType::Float32Array => match access.get_float32_array(idx)? {
                     None => 0u8,
                     Some(values) => {
                         if let ColumnEncoding::FloatArray { storage } = &col.encoding {
@@ -2119,7 +2119,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                LogicalType::Float16Array => match access.get_float32_array(idx)? {
+                IngestedType::Float16Array => match access.get_float32_array(idx)? {
                     None => 0u8,
                     Some(values) => {
                         if let ColumnEncoding::FloatArray { storage } = &col.encoding {
@@ -2134,7 +2134,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                LogicalType::Float64Array => match access.get_float64_array(idx)? {
+                IngestedType::Float64Array => match access.get_float64_array(idx)? {
                     None => 0u8,
                     Some(values) => {
                         if let ColumnEncoding::FloatArray { storage } = &col.encoding {
@@ -2177,14 +2177,14 @@ impl RowPackEncoder {
 
         for (idx, col) in self.ctx.columns.iter().enumerate() {
             let tag = match col.logical_type {
-                LogicalType::Bool => match access.get_bool(idx)? {
+                IngestedType::Bool => match access.get_bool(idx)? {
                     None => 0u8,
                     Some(v) => {
                         bool_writer.write_bits(if v { 1 } else { 0 }, 1);
                         1u8
                     }
                 },
-                LogicalType::Int64 => match access.get_int64(idx)? {
+                IngestedType::Int64 => match access.get_int64(idx)? {
                     None => 0u8,
                     Some(v) => {
                         if let ColumnEncoding::Int { signed, varint, bits } = &col.encoding {
@@ -2195,7 +2195,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                LogicalType::Int16 => match access.get_int32(idx)? {
+                IngestedType::Int16 => match access.get_int32(idx)? {
                     None => 0u8,
                     Some(v) => {
                         if let ColumnEncoding::Int { signed, varint, bits } = &col.encoding {
@@ -2206,7 +2206,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                LogicalType::Int8 => match access.get_int32(idx)? {
+                IngestedType::Int8 => match access.get_int32(idx)? {
                     None => 0u8,
                     Some(v) => {
                         if let ColumnEncoding::Int { signed, varint, bits } = &col.encoding {
@@ -2217,7 +2217,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                LogicalType::Int32 => match access.get_int32(idx)? {
+                IngestedType::Int32 => match access.get_int32(idx)? {
                     None => 0u8,
                     Some(v) => {
                         if let ColumnEncoding::Int { signed, varint, bits } = &col.encoding {
@@ -2228,7 +2228,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                LogicalType::UInt64 => match access.get_uint64(idx)? {
+                IngestedType::UInt64 => match access.get_uint64(idx)? {
                     None => 0u8,
                     Some(v) => {
                         if let ColumnEncoding::Int { signed, varint, bits } = &col.encoding {
@@ -2239,7 +2239,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                LogicalType::UInt16 => match access.get_uint32(idx)? {
+                IngestedType::UInt16 => match access.get_uint32(idx)? {
                     None => 0u8,
                     Some(v) => {
                         if let ColumnEncoding::Int { signed, varint, bits } = &col.encoding {
@@ -2250,7 +2250,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                LogicalType::UInt8 => match access.get_uint32(idx)? {
+                IngestedType::UInt8 => match access.get_uint32(idx)? {
                     None => 0u8,
                     Some(v) => {
                         if let ColumnEncoding::Int { signed, varint, bits } = &col.encoding {
@@ -2261,7 +2261,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                LogicalType::UInt32 => match access.get_uint32(idx)? {
+                IngestedType::UInt32 => match access.get_uint32(idx)? {
                     None => 0u8,
                     Some(v) => {
                         if let ColumnEncoding::Int { signed, varint, bits } = &col.encoding {
@@ -2272,7 +2272,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                LogicalType::Float64 => match access.get_float64(idx)? {
+                IngestedType::Float64 => match access.get_float64(idx)? {
                     None => 0u8,
                     Some(v) => {
                         if let ColumnEncoding::Float { storage } = &col.encoding {
@@ -2282,7 +2282,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                LogicalType::Float32 => match access.get_float32(idx)? {
+                IngestedType::Float32 => match access.get_float32(idx)? {
                     None => 0u8,
                     Some(v) => {
                         if let ColumnEncoding::Float { storage } = &col.encoding {
@@ -2292,7 +2292,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                LogicalType::String => match access.get_string(idx)? {
+                IngestedType::String => match access.get_string(idx)? {
                     None => 0u8,
                     Some(v) => {
                         encode_string(
@@ -2307,7 +2307,7 @@ impl RowPackEncoder {
                         )?
                     }
                 },
-                LogicalType::Bytes => match access.get_bytes(idx)? {
+                IngestedType::Bytes => match access.get_bytes(idx)? {
                     None => 0u8,
                     Some(v) => {
                         if let ColumnEncoding::Bytes { fixed_len } = &col.encoding {
@@ -2330,7 +2330,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                LogicalType::Uuid => match access.get_bytes(idx)? {
+                IngestedType::Uuid => match access.get_bytes(idx)? {
                     None => 0u8,
                     Some(v) => {
                         if !matches!(col.encoding, ColumnEncoding::Uuid) {
@@ -2343,7 +2343,7 @@ impl RowPackEncoder {
                         1u8
                     }
                 },
-                LogicalType::Uuid256 => match access.get_bytes(idx)? {
+                IngestedType::Uuid256 => match access.get_bytes(idx)? {
                     None => 0u8,
                     Some(v) => {
                         if !matches!(col.encoding, ColumnEncoding::Uuid256) {
@@ -2356,7 +2356,7 @@ impl RowPackEncoder {
                         1u8
                     }
                 },
-                LogicalType::Ip => match access.get_bytes(idx)? {
+                IngestedType::Ip => match access.get_bytes(idx)? {
                     None => 0u8,
                     Some(v) => {
                         if !matches!(col.encoding, ColumnEncoding::Ip) {
@@ -2369,7 +2369,7 @@ impl RowPackEncoder {
                         1u8
                     }
                 },
-                LogicalType::Date => match access.get_date(idx)? {
+                IngestedType::Date => match access.get_date(idx)? {
                     None => 0u8,
                     Some(v) => {
                         if let ColumnEncoding::Date { varint, bits } = &col.encoding {
@@ -2380,7 +2380,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                LogicalType::Timestamp => match access.get_timestamp(idx)? {
+                IngestedType::Timestamp => match access.get_timestamp(idx)? {
                     None => 0u8,
                     Some((secs, nanos)) => {
                         write_varint(zigzag_encode(secs), data);
@@ -2388,7 +2388,7 @@ impl RowPackEncoder {
                         1u8
                     }
                 },
-                LogicalType::Decimal128 => match access.get_decimal128(idx)? {
+                IngestedType::Decimal128 => match access.get_decimal128(idx)? {
                     None => 0u8,
                     Some(v) => {
                         if let ColumnEncoding::Decimal { bytes, scale, storage, .. } =
@@ -2409,7 +2409,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                LogicalType::Decimal256 => match access.get_decimal256(idx)? {
+                IngestedType::Decimal256 => match access.get_decimal256(idx)? {
                     None => 0u8,
                     Some(v) => {
                         if let ColumnEncoding::Decimal { bytes, scale, storage, .. } =
@@ -2430,7 +2430,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                LogicalType::Float32Array => match access.get_float32_array(idx)? {
+                IngestedType::Float32Array => match access.get_float32_array(idx)? {
                     None => 0u8,
                     Some(values) => {
                         if let ColumnEncoding::FloatArray { storage } = &col.encoding {
@@ -2445,7 +2445,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                LogicalType::Float16Array => match access.get_float32_array(idx)? {
+                IngestedType::Float16Array => match access.get_float32_array(idx)? {
                     None => 0u8,
                     Some(values) => {
                         if let ColumnEncoding::FloatArray { storage } = &col.encoding {
@@ -2460,7 +2460,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                LogicalType::Float64Array => match access.get_float64_array(idx)? {
+                IngestedType::Float64Array => match access.get_float64_array(idx)? {
                     None => 0u8,
                     Some(values) => {
                         if let ColumnEncoding::FloatArray { storage } = &col.encoding {
@@ -2761,7 +2761,7 @@ fn encode_value_with_tag<'a>(
 
 fn encode_float_with_tag(
     out: &mut Vec<u8>,
-    logical: LogicalType,
+    logical: IngestedType,
     storage: FloatStorage,
     v: f64,
 ) -> Result<u8> {
@@ -2821,7 +2821,7 @@ fn encode_decimal_i256_with_tag(
 
 fn encode_float_array_f32_with_tag(
     out: &mut Vec<u8>,
-    logical: LogicalType,
+    logical: IngestedType,
     storage: FloatStorage,
     values: &[f32],
 ) -> Result<u8> {
@@ -2835,7 +2835,7 @@ fn encode_float_array_f32_with_tag(
 
 fn encode_float_array_f64_with_tag(
     out: &mut Vec<u8>,
-    logical: LogicalType,
+    logical: IngestedType,
     storage: FloatStorage,
     values: &[f64],
 ) -> Result<u8> {
@@ -3429,7 +3429,7 @@ fn decode_value_msgpack(
         ColumnEncoding::Float { storage } => {
             let v = decode_float(data, *storage)?;
             match col.logical_type {
-                LogicalType::Float32 => mp::write_f32(out, v as f32)?,
+                IngestedType::Float32 => mp::write_f32(out, v as f32)?,
                 _ => mp::write_f64(out, v)?,
             }
         }
@@ -3513,7 +3513,7 @@ fn decode_value_msgpack(
             for _ in 0..len {
                 let v = decode_float(data, *storage)?;
                 match col.logical_type {
-                    LogicalType::Float16Array | LogicalType::Float32Array => {
+                    IngestedType::Float16Array | IngestedType::Float32Array => {
                         mp::write_f32(out, v as f32)?
                     }
                     _ => mp::write_f64(out, v)?,
@@ -3542,7 +3542,7 @@ fn decode_value_json(
         ColumnEncoding::Float { storage } => {
             let v = decode_float(data, *storage)?;
             match col.logical_type {
-                LogicalType::Float32 => JsonValue::from(v as f32),
+                IngestedType::Float32 => JsonValue::from(v as f32),
                 _ => JsonValue::from(v),
             }
         }
@@ -3621,7 +3621,7 @@ fn decode_value_json(
             for _ in 0..len {
                 let v = decode_float(data, *storage)?;
                 match col.logical_type {
-                    LogicalType::Float16Array | LogicalType::Float32Array => {
+                    IngestedType::Float16Array | IngestedType::Float32Array => {
                         values.push(JsonValue::from(v as f32))
                     }
                     _ => values.push(JsonValue::from(v)),
@@ -3652,7 +3652,7 @@ fn decode_value_ref<'a>(
         ColumnEncoding::Float { storage } => {
             let v = decode_float(data, *storage)?;
             match col.logical_type {
-                LogicalType::Float32 => Ok(ValueRef::Float32(v as f32)),
+                IngestedType::Float32 => Ok(ValueRef::Float32(v as f32)),
                 _ => Ok(ValueRef::Float64(v)),
             }
         }
@@ -3731,7 +3731,7 @@ fn decode_value_ref<'a>(
                 return Err(anyhow!("rowpack array length overflow"));
             }
             match col.logical_type {
-                LogicalType::Float16Array | LogicalType::Float32Array => {
+                IngestedType::Float16Array | IngestedType::Float32Array => {
                     scratch.float32.clear();
                     for _ in 0..len {
                         let v = decode_float(data, *storage)?;
@@ -3739,7 +3739,7 @@ fn decode_value_ref<'a>(
                     }
                     Ok(ValueRef::Float32Array(&scratch.float32))
                 }
-                LogicalType::Float64Array => {
+                IngestedType::Float64Array => {
                     scratch.float64.clear();
                     for _ in 0..len {
                         let v = decode_float(data, *storage)?;
@@ -4404,7 +4404,7 @@ mod tests {
             columns: vec![
                 ColumnContext {
                     name: "id".to_string(),
-                    logical_type: LogicalType::Int64,
+                    logical_type: IngestedType::Int64,
                     encoding: ColumnEncoding::Int {
                         signed: true,
                         varint: true,
@@ -4413,7 +4413,7 @@ mod tests {
                 },
                 ColumnContext {
                     name: "name".to_string(),
-                    logical_type: LogicalType::String,
+                    logical_type: IngestedType::String,
                     encoding: ColumnEncoding::String {
                         encoding: StringEncoding::Dict {
                             values: vec![b"alice".to_vec(), b"bob".to_vec()],
@@ -4422,29 +4422,29 @@ mod tests {
                 },
                 ColumnContext {
                     name: "active".to_string(),
-                    logical_type: LogicalType::Bool,
+                    logical_type: IngestedType::Bool,
                     encoding: ColumnEncoding::Bool,
                 },
                 ColumnContext {
                     name: "score".to_string(),
-                    logical_type: LogicalType::Float32,
+                    logical_type: IngestedType::Float32,
                     encoding: ColumnEncoding::Float {
                         storage: FloatStorage::F16,
                     },
                 },
                 ColumnContext {
                     name: "payload".to_string(),
-                    logical_type: LogicalType::Bytes,
+                    logical_type: IngestedType::Bytes,
                     encoding: ColumnEncoding::Bytes { fixed_len: None },
                 },
                 ColumnContext {
                     name: "created_at".to_string(),
-                    logical_type: LogicalType::Timestamp,
+                    logical_type: IngestedType::Timestamp,
                     encoding: ColumnEncoding::Timestamp,
                 },
                 ColumnContext {
                     name: "embed".to_string(),
-                    logical_type: LogicalType::Float32Array,
+                    logical_type: IngestedType::Float32Array,
                     encoding: ColumnEncoding::FloatArray {
                         storage: FloatStorage::F32,
                     },
@@ -4494,7 +4494,7 @@ mod tests {
             version: ROWPACK_VERSION,
             columns: vec![ColumnContext {
                 name: "ts".to_string(),
-                logical_type: LogicalType::Timestamp,
+                logical_type: IngestedType::Timestamp,
                 encoding: ColumnEncoding::Timestamp,
             }],
         estimated_row_bytes: 0,
@@ -4516,7 +4516,7 @@ mod tests {
             version: ROWPACK_VERSION,
             columns: vec![ColumnContext {
                 name: "amount".to_string(),
-                logical_type: LogicalType::Decimal128,
+                logical_type: IngestedType::Decimal128,
                 encoding: ColumnEncoding::Decimal {
                     precision: 10,
                     scale: 2,
@@ -4543,7 +4543,7 @@ mod tests {
             version: ROWPACK_VERSION,
             columns: vec![ColumnContext {
                 name: "amount".to_string(),
-                logical_type: LogicalType::Decimal256,
+                logical_type: IngestedType::Decimal256,
                 encoding: ColumnEncoding::Decimal {
                     precision: 50,
                     scale: 4,
@@ -4571,7 +4571,7 @@ mod tests {
         let mut builder = RowPackContextBuilder::new(
             vec![RowPackColumn {
                 name: "amount".to_string(),
-                logical_type: LogicalType::Decimal128,
+                logical_type: IngestedType::Decimal128,
                 fixed_len: None,
                 precision: Some(10),
                 scale: Some(2),
@@ -4601,7 +4601,7 @@ mod tests {
         let mut builder = RowPackContextBuilder::new(
             vec![RowPackColumn {
                 name: "amount".to_string(),
-                logical_type: LogicalType::Decimal128,
+                logical_type: IngestedType::Decimal128,
                 fixed_len: None,
                 precision: Some(10),
                 scale: Some(0),
@@ -4627,7 +4627,7 @@ mod tests {
         let mut builder = RowPackContextBuilder::new(
             vec![RowPackColumn {
                 name: "amount".to_string(),
-                logical_type: LogicalType::Decimal128,
+                logical_type: IngestedType::Decimal128,
                 fixed_len: None,
                 precision: Some(10),
                 scale: Some(3),
@@ -4662,7 +4662,7 @@ mod tests {
             version: ROWPACK_VERSION,
             columns: vec![ColumnContext {
                 name: "amount".to_string(),
-                logical_type: LogicalType::Decimal128,
+                logical_type: IngestedType::Decimal128,
                 encoding: ColumnEncoding::Decimal {
                     precision: 20,
                     scale: 0,
@@ -4701,7 +4701,7 @@ mod tests {
                 version: ROWPACK_VERSION,
                 columns: vec![ColumnContext {
                     name: "amount".to_string(),
-                    logical_type: LogicalType::Decimal128,
+                    logical_type: IngestedType::Decimal128,
                     encoding: ColumnEncoding::Decimal {
                         precision,
                         scale: 0,
@@ -4749,7 +4749,7 @@ mod tests {
             version: ROWPACK_VERSION,
             columns: vec![ColumnContext {
                 name: "code".to_string(),
-                logical_type: LogicalType::String,
+                logical_type: IngestedType::String,
                 encoding: ColumnEncoding::String {
                     encoding: StringEncoding::Alphabet {
                         alphabet: b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-".to_vec(),
@@ -4775,7 +4775,7 @@ mod tests {
             version: ROWPACK_VERSION,
             columns: vec![ColumnContext {
                 name: "code".to_string(),
-                logical_type: LogicalType::String,
+                logical_type: IngestedType::String,
                 encoding: ColumnEncoding::String {
                     encoding: StringEncoding::Alphabet {
                         alphabet: b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-".to_vec(),
@@ -4800,7 +4800,7 @@ mod tests {
         let mut builder = RowPackContextBuilder::new(
             vec![RowPackColumn {
                 name: "code".to_string(),
-                logical_type: LogicalType::String,
+                logical_type: IngestedType::String,
                 fixed_len: None,
                 precision: None,
                 scale: None,
@@ -4827,7 +4827,7 @@ mod tests {
         let mut builder = RowPackContextBuilder::new(
             vec![RowPackColumn {
                 name: "code".to_string(),
-                logical_type: LogicalType::String,
+                logical_type: IngestedType::String,
                 fixed_len: None,
                 precision: None,
                 scale: None,
@@ -4853,7 +4853,7 @@ mod tests {
             version: ROWPACK_VERSION,
             columns: vec![ColumnContext {
                 name: "code".to_string(),
-                logical_type: LogicalType::String,
+                logical_type: IngestedType::String,
                 encoding: ColumnEncoding::String {
                     encoding: StringEncoding::Bpe {
                         dict: vec![b"TOKEN123".to_vec()],
@@ -4885,7 +4885,7 @@ mod tests {
         let mut builder = RowPackContextBuilder::new(
             vec![RowPackColumn {
                 name: "code".to_string(),
-                logical_type: LogicalType::String,
+                logical_type: IngestedType::String,
                 fixed_len: None,
                 precision: None,
                 scale: None,
@@ -4912,7 +4912,7 @@ mod tests {
             version: ROWPACK_VERSION,
             columns: vec![ColumnContext {
                 name: "code".to_string(),
-                logical_type: LogicalType::String,
+                logical_type: IngestedType::String,
                 encoding: ColumnEncoding::String {
                     encoding: StringEncoding::Bpe {
                         dict: vec![b"TOKEN".to_vec()],
@@ -4939,7 +4939,7 @@ mod tests {
             version: ROWPACK_VERSION,
             columns: vec![ColumnContext {
                 name: "code".to_string(),
-                logical_type: LogicalType::String,
+                logical_type: IngestedType::String,
                 encoding: ColumnEncoding::String {
                     encoding: StringEncoding::Bpe {
                         dict: vec![b"TOKEN".to_vec()],
@@ -4962,7 +4962,7 @@ mod tests {
             version: ROWPACK_VERSION,
             columns: vec![ColumnContext {
                 name: "code".to_string(),
-                logical_type: LogicalType::String,
+                logical_type: IngestedType::String,
                 encoding: ColumnEncoding::String { encoding },
             }],
         estimated_row_bytes: 0,
@@ -5096,7 +5096,7 @@ mod tests {
         let mut builder = RowPackContextBuilder::new(
             vec![RowPackColumn {
                 name: "code".to_string(),
-                logical_type: LogicalType::String,
+                logical_type: IngestedType::String,
                 fixed_len: None,
                 precision: None,
                 scale: None,
@@ -5118,7 +5118,7 @@ mod tests {
         let mut builder = RowPackContextBuilder::new(
             vec![RowPackColumn {
                 name: "embed".to_string(),
-                logical_type: LogicalType::Float16Array,
+                logical_type: IngestedType::Float16Array,
                 fixed_len: None,
                 precision: None,
                 scale: None,
@@ -5149,7 +5149,7 @@ mod tests {
             version: ROWPACK_VERSION,
             columns: vec![ColumnContext {
                 name: "blob".to_string(),
-                logical_type: LogicalType::Bytes,
+                logical_type: IngestedType::Bytes,
                 encoding: ColumnEncoding::Bytes { fixed_len: None },
             }],
         estimated_row_bytes: 0,
@@ -5168,7 +5168,7 @@ mod tests {
             version: ROWPACK_VERSION,
             columns: vec![ColumnContext {
                 name: "blob".to_string(),
-                logical_type: LogicalType::Bytes,
+                logical_type: IngestedType::Bytes,
                 encoding: ColumnEncoding::Bytes { fixed_len: Some(4) },
             }],
         estimated_row_bytes: 0,
@@ -5187,7 +5187,7 @@ mod tests {
             version: ROWPACK_VERSION,
             columns: vec![ColumnContext {
                 name: "blob".to_string(),
-                logical_type: LogicalType::Bytes,
+                logical_type: IngestedType::Bytes,
                 encoding: ColumnEncoding::Bytes { fixed_len: Some(4) },
             }],
         estimated_row_bytes: 0,
@@ -5206,7 +5206,7 @@ mod tests {
             version: ROWPACK_VERSION,
             columns: vec![ColumnContext {
                 name: "id".to_string(),
-                logical_type: LogicalType::Uuid,
+                logical_type: IngestedType::Uuid,
                 encoding: ColumnEncoding::Uuid,
             }],
             estimated_row_bytes: 0,
@@ -5231,7 +5231,7 @@ mod tests {
             version: ROWPACK_VERSION,
             columns: vec![ColumnContext {
                 name: "id".to_string(),
-                logical_type: LogicalType::Uuid,
+                logical_type: IngestedType::Uuid,
                 encoding: ColumnEncoding::Uuid,
             }],
             estimated_row_bytes: 0,
@@ -5260,7 +5260,7 @@ mod tests {
             version: ROWPACK_VERSION,
             columns: vec![ColumnContext {
                 name: "id".to_string(),
-                logical_type: LogicalType::Uuid256,
+                logical_type: IngestedType::Uuid256,
                 encoding: ColumnEncoding::Uuid256,
             }],
             estimated_row_bytes: 0,
@@ -5285,7 +5285,7 @@ mod tests {
             version: ROWPACK_VERSION,
             columns: vec![ColumnContext {
                 name: "id".to_string(),
-                logical_type: LogicalType::Uuid256,
+                logical_type: IngestedType::Uuid256,
                 encoding: ColumnEncoding::Uuid256,
             }],
             estimated_row_bytes: 0,
@@ -5314,7 +5314,7 @@ mod tests {
             version: ROWPACK_VERSION,
             columns: vec![ColumnContext {
                 name: "ip".to_string(),
-                logical_type: LogicalType::Ip,
+                logical_type: IngestedType::Ip,
                 encoding: ColumnEncoding::Ip,
             }],
             estimated_row_bytes: 0,
@@ -5334,7 +5334,7 @@ mod tests {
             version: ROWPACK_VERSION,
             columns: vec![ColumnContext {
                 name: "ip".to_string(),
-                logical_type: LogicalType::Ip,
+                logical_type: IngestedType::Ip,
                 encoding: ColumnEncoding::Ip,
             }],
             estimated_row_bytes: 0,
@@ -5361,7 +5361,7 @@ mod tests {
             columns: vec![
                 ColumnContext {
                     name: "i8".to_string(),
-                    logical_type: LogicalType::Int8,
+                    logical_type: IngestedType::Int8,
                     encoding: ColumnEncoding::Int {
                         signed: true,
                         varint: false,
@@ -5370,7 +5370,7 @@ mod tests {
                 },
                 ColumnContext {
                     name: "u8".to_string(),
-                    logical_type: LogicalType::UInt8,
+                    logical_type: IngestedType::UInt8,
                     encoding: ColumnEncoding::Int {
                         signed: false,
                         varint: false,
@@ -5379,7 +5379,7 @@ mod tests {
                 },
                 ColumnContext {
                     name: "i16".to_string(),
-                    logical_type: LogicalType::Int16,
+                    logical_type: IngestedType::Int16,
                     encoding: ColumnEncoding::Int {
                         signed: true,
                         varint: false,
@@ -5388,7 +5388,7 @@ mod tests {
                 },
                 ColumnContext {
                     name: "u16".to_string(),
-                    logical_type: LogicalType::UInt16,
+                    logical_type: IngestedType::UInt16,
                     encoding: ColumnEncoding::Int {
                         signed: false,
                         varint: false,
@@ -5420,7 +5420,7 @@ mod tests {
             version: ROWPACK_VERSION,
             columns: vec![ColumnContext {
                 name: "i32".to_string(),
-                logical_type: LogicalType::Int32,
+                logical_type: IngestedType::Int32,
                 encoding: ColumnEncoding::Int {
                     signed: true,
                     varint: true,
@@ -5446,7 +5446,7 @@ mod tests {
         let mut builder = RowPackContextBuilder::new(
             vec![RowPackColumn {
                 name: "text".to_string(),
-                logical_type: LogicalType::String,
+                logical_type: IngestedType::String,
                 fixed_len: None,
                 precision: None,
                 scale: None,
@@ -5479,7 +5479,7 @@ mod tests {
         let mut builder = RowPackContextBuilder::new(
             vec![RowPackColumn {
                 name: "text".to_string(),
-                logical_type: LogicalType::String,
+                logical_type: IngestedType::String,
                 fixed_len: None,
                 precision: None,
                 scale: None,
@@ -5509,7 +5509,7 @@ mod tests {
             version: ROWPACK_VERSION,
             columns: vec![ColumnContext {
                 name: "name".to_string(),
-                logical_type: LogicalType::String,
+                logical_type: IngestedType::String,
                 encoding: ColumnEncoding::String {
                     encoding: StringEncoding::Dict {
                         values: vec![b"alice".to_vec()],
@@ -5533,7 +5533,7 @@ mod tests {
             columns: vec![
                 ColumnContext {
                     name: "id".to_string(),
-                    logical_type: LogicalType::Int64,
+                    logical_type: IngestedType::Int64,
                     encoding: ColumnEncoding::Int {
                         signed: true,
                         varint: true,
@@ -5542,7 +5542,7 @@ mod tests {
                 },
                 ColumnContext {
                     name: "note".to_string(),
-                    logical_type: LogicalType::String,
+                    logical_type: IngestedType::String,
                     encoding: ColumnEncoding::String {
                         encoding: StringEncoding::Raw,
                     },
@@ -5564,7 +5564,7 @@ mod tests {
             version: ROWPACK_VERSION,
             columns: vec![ColumnContext {
                 name: "name".to_string(),
-                logical_type: LogicalType::String,
+                logical_type: IngestedType::String,
                 encoding: ColumnEncoding::String {
                     encoding: StringEncoding::Raw,
                 },
@@ -5590,7 +5590,7 @@ mod tests {
             version: ROWPACK_VERSION,
             columns: vec![ColumnContext {
                 name: "embed".to_string(),
-                logical_type: LogicalType::Float32Array,
+                logical_type: IngestedType::Float32Array,
                 encoding: ColumnEncoding::FloatArray {
                     storage: FloatStorage::F32,
                 },
@@ -5616,7 +5616,7 @@ mod tests {
             version: ROWPACK_VERSION,
             columns: vec![ColumnContext {
                 name: "active".to_string(),
-                logical_type: LogicalType::Bool,
+                logical_type: IngestedType::Bool,
                 encoding: ColumnEncoding::Bool,
             }],
         estimated_row_bytes: 0,
@@ -5635,7 +5635,7 @@ mod tests {
             version: ROWPACK_VERSION,
             columns: vec![ColumnContext {
                 name: "id".to_string(),
-                logical_type: LogicalType::Int64,
+                logical_type: IngestedType::Int64,
                 encoding: ColumnEncoding::Int {
                     signed: true,
                     varint: true,
@@ -5658,7 +5658,7 @@ mod tests {
             version: ROWPACK_VERSION,
             columns: vec![ColumnContext {
                 name: "text".to_string(),
-                logical_type: LogicalType::String,
+                logical_type: IngestedType::String,
                 encoding: ColumnEncoding::String {
                     encoding: StringEncoding::Lz4,
                 },

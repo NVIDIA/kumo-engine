@@ -9,10 +9,10 @@ use diskgraph_fs::{
     build_adls_client, build_gcs_client, build_s3_client, AdlsConfig, GcsConfig, S3Config,
 };
 use diskgraph_ingest::source_metadata::{
-    relationship_name, ColumnSpec, ColumnType, EdgeSortKeysSpec, EdgeTableSortKeysSpec,
-    EdgeTableSpec, ForeignKeySpec, RelationshipSortKeysSpec, RelationshipSpec,
-    SortKeySpec, SortKeyTimestampSpec, SortKeyWeightSpec, SourceMetadata, TableFormat,
-    TableSpec, TimestampEncodingKind, TimestampEncodingSpec, TimestampUnit, WeightEncodingKind,
+    relationship_name, ColumnSpec, EdgeSortKeysSpec, EdgeTableSortKeysSpec, EdgeTableSpec,
+    ForeignKeySpec, IngestedType, RelationshipSortKeysSpec, RelationshipSpec, SortKeySpec,
+    SortKeyTimestampSpec, SortKeyWeightSpec, SourceMetadata, SourceType, TableFormat, TableSpec,
+    TimestampEncodingKind, TimestampEncodingSpec, TimestampUnit, WeightEncodingKind,
     WeightEncodingSpec,
 };
 use arrow_array::{
@@ -654,7 +654,7 @@ fn same_table_format(a: &TableFormat, b: &TableFormat) -> bool {
     )
 }
 
-fn column_type_eq(a: &ColumnType, b: &ColumnType) -> bool {
+fn column_type_eq(a: &SourceType, b: &SourceType) -> bool {
     std::mem::discriminant(a) == std::mem::discriminant(b)
 }
 
@@ -744,31 +744,48 @@ fn infer_parquet_schema_remote(
 fn infer_parquet_schema_from_arrow(schema: &Schema) -> Result<Vec<ColumnSpec>> {
     let mut columns = Vec::new();
     for field in schema.fields() {
-        let (dtype, fixed_len, precision, scale) = arrow_type_to_column_type(field.data_type())?;
-        let mut ingested_dtype = match dtype {
-            ColumnType::Float64 => ColumnType::Float32,
-            ColumnType::Float32Array | ColumnType::Float64Array | ColumnType::Float16Array => {
-                ColumnType::Float16Array
+        let (source_dtype, fixed_len, precision, scale) =
+            arrow_type_to_source_type(field.data_type())?;
+        let mut ingested_dtype = match source_dtype {
+            SourceType::Float64 => IngestedType::Float32,
+            SourceType::Float32Array | SourceType::Float64Array | SourceType::Float16Array => {
+                IngestedType::Float16Array
             }
-            _ => dtype.clone(),
+            SourceType::Int8 => IngestedType::Int8,
+            SourceType::Int16 => IngestedType::Int16,
+            SourceType::Int32 => IngestedType::Int32,
+            SourceType::Int64 => IngestedType::Int64,
+            SourceType::UInt8 => IngestedType::UInt8,
+            SourceType::UInt16 => IngestedType::UInt16,
+            SourceType::UInt32 => IngestedType::UInt32,
+            SourceType::UInt64 => IngestedType::UInt64,
+            SourceType::Float32 => IngestedType::Float32,
+            SourceType::Bool => IngestedType::Bool,
+            SourceType::String => IngestedType::String,
+            SourceType::Bytes => IngestedType::Bytes,
+            SourceType::Uuid256 => IngestedType::Uuid256,
+            SourceType::Date => IngestedType::Date,
+            SourceType::Timestamp => IngestedType::Timestamp,
+            SourceType::Decimal128 => IngestedType::Decimal128,
+            SourceType::Decimal256 => IngestedType::Decimal256,
         };
-        if matches!(dtype, ColumnType::Bytes) {
+        if matches!(source_dtype, SourceType::Bytes) {
             if let Some(len) = fixed_len {
                 let name_lower = field.name().to_lowercase();
                 if len == 16 && name_lower.contains("ip") {
-                    ingested_dtype = ColumnType::Ip;
+                    ingested_dtype = IngestedType::Ip;
                 } else if len == 16 {
-                    ingested_dtype = ColumnType::Uuid;
+                    ingested_dtype = IngestedType::Uuid;
                 } else if len == 32 {
-                    ingested_dtype = ColumnType::Uuid256;
+                    ingested_dtype = IngestedType::Uuid256;
                 } else if len == 4 && name_lower.contains("ip") {
-                    ingested_dtype = ColumnType::Ip;
+                    ingested_dtype = IngestedType::Ip;
                 }
             }
         }
         columns.push(ColumnSpec {
             name: field.name().to_string(),
-            source_dtype: dtype.clone(),
+            source_dtype,
             ingested_dtype,
             fixed_len,
             timestamp_format: None,
@@ -793,15 +810,15 @@ where
         .map(|col| {
             if matches!(
                 col.source_dtype,
-                ColumnType::String
-                    | ColumnType::Int8
-                    | ColumnType::Int16
-                    | ColumnType::Int32
-                    | ColumnType::Int64
-                    | ColumnType::UInt8
-                    | ColumnType::UInt16
-                    | ColumnType::UInt32
-                    | ColumnType::UInt64
+                SourceType::String
+                    | SourceType::Int8
+                    | SourceType::Int16
+                    | SourceType::Int32
+                    | SourceType::Int64
+                    | SourceType::UInt8
+                    | SourceType::UInt16
+                    | SourceType::UInt32
+                    | SourceType::UInt64
             ) {
                 Some(ColumnStats::default())
             } else {
@@ -819,15 +836,15 @@ where
         for (idx, col) in columns.iter().enumerate() {
             if !matches!(
                 col.source_dtype,
-                ColumnType::String
-                    | ColumnType::Int8
-                    | ColumnType::Int16
-                    | ColumnType::Int32
-                    | ColumnType::Int64
-                    | ColumnType::UInt8
-                    | ColumnType::UInt16
-                    | ColumnType::UInt32
-                    | ColumnType::UInt64
+                SourceType::String
+                    | SourceType::Int8
+                    | SourceType::Int16
+                    | SourceType::Int32
+                    | SourceType::Int64
+                    | SourceType::UInt8
+                    | SourceType::UInt16
+                    | SourceType::UInt32
+                    | SourceType::UInt64
             ) {
                 continue;
             }
@@ -875,15 +892,15 @@ where
         .map(|col| {
             if matches!(
                 col.source_dtype,
-                ColumnType::String
-                    | ColumnType::Int8
-                    | ColumnType::Int16
-                    | ColumnType::Int32
-                    | ColumnType::Int64
-                    | ColumnType::UInt8
-                    | ColumnType::UInt16
-                    | ColumnType::UInt32
-                    | ColumnType::UInt64
+                SourceType::String
+                    | SourceType::Int8
+                    | SourceType::Int16
+                    | SourceType::Int32
+                    | SourceType::Int64
+                    | SourceType::UInt8
+                    | SourceType::UInt16
+                    | SourceType::UInt32
+                    | SourceType::UInt64
             ) {
                 Some(ColumnStats::default())
             } else {
@@ -901,15 +918,15 @@ where
         for (idx, col) in columns.iter().enumerate() {
             if !matches!(
                 col.source_dtype,
-                ColumnType::String
-                    | ColumnType::Int8
-                    | ColumnType::Int16
-                    | ColumnType::Int32
-                    | ColumnType::Int64
-                    | ColumnType::UInt8
-                    | ColumnType::UInt16
-                    | ColumnType::UInt32
-                    | ColumnType::UInt64
+                SourceType::String
+                    | SourceType::Int8
+                    | SourceType::Int16
+                    | SourceType::Int32
+                    | SourceType::Int64
+                    | SourceType::UInt8
+                    | SourceType::UInt16
+                    | SourceType::UInt32
+                    | SourceType::UInt64
             ) {
                 continue;
             }
@@ -1047,15 +1064,15 @@ fn apply_string_stats_overrides(columns: &mut [ColumnSpec], stats: &[Option<Colu
         }
         let inferred = st.to_column_spec(&col.name);
         let inferred_dtype = inferred.ingested_dtype.clone();
-        if matches!(inferred_dtype, ColumnType::Timestamp | ColumnType::Date) {
+        if matches!(inferred_dtype, IngestedType::Timestamp | IngestedType::Date) {
             col.ingested_dtype = inferred_dtype.clone();
             col.timestamp_format = inferred.timestamp_format;
             col.timestamp_unit = inferred.timestamp_unit;
         }
-        if matches!(col.ingested_dtype, ColumnType::String | ColumnType::Bytes) {
+        if matches!(col.ingested_dtype, IngestedType::String | IngestedType::Bytes) {
             if matches!(
                 inferred_dtype,
-                ColumnType::Uuid | ColumnType::Uuid256 | ColumnType::Ip
+                IngestedType::Uuid | IngestedType::Uuid256 | IngestedType::Ip
             ) {
                 col.ingested_dtype = inferred_dtype;
                 col.fixed_len = None;
@@ -1066,46 +1083,46 @@ fn apply_string_stats_overrides(columns: &mut [ColumnSpec], stats: &[Option<Colu
     }
 }
 
-fn arrow_type_to_column_type(
+fn arrow_type_to_source_type(
     source_dtype: &DataType,
-) -> Result<(ColumnType, Option<usize>, Option<u32>, Option<i32>)> {
+) -> Result<(SourceType, Option<usize>, Option<u32>, Option<i32>)> {
     let mut precision = None;
     let mut scale = None;
     let mut fixed_len = None;
     let out = match source_dtype {
-        DataType::Int8 => ColumnType::Int8,
-        DataType::Int16 => ColumnType::Int16,
-        DataType::Int32 => ColumnType::Int32,
-        DataType::Int64 => ColumnType::Int64,
-        DataType::UInt8 => ColumnType::UInt8,
-        DataType::UInt16 => ColumnType::UInt16,
-        DataType::UInt32 => ColumnType::UInt32,
-        DataType::UInt64 => ColumnType::UInt64,
-        DataType::Float32 => ColumnType::Float32,
-        DataType::Float64 => ColumnType::Float64,
-        DataType::Boolean => ColumnType::Bool,
-        DataType::Utf8 | DataType::LargeUtf8 => ColumnType::String,
-        DataType::Binary | DataType::LargeBinary => ColumnType::Bytes,
+        DataType::Int8 => SourceType::Int8,
+        DataType::Int16 => SourceType::Int16,
+        DataType::Int32 => SourceType::Int32,
+        DataType::Int64 => SourceType::Int64,
+        DataType::UInt8 => SourceType::UInt8,
+        DataType::UInt16 => SourceType::UInt16,
+        DataType::UInt32 => SourceType::UInt32,
+        DataType::UInt64 => SourceType::UInt64,
+        DataType::Float32 => SourceType::Float32,
+        DataType::Float64 => SourceType::Float64,
+        DataType::Boolean => SourceType::Bool,
+        DataType::Utf8 | DataType::LargeUtf8 => SourceType::String,
+        DataType::Binary | DataType::LargeBinary => SourceType::Bytes,
         DataType::FixedSizeBinary(len) => {
             fixed_len = Some(*len as usize);
-            ColumnType::Bytes
+            SourceType::Bytes
         }
-        DataType::Date32 => ColumnType::Date,
-        DataType::Timestamp(_, _) => ColumnType::Timestamp,
+        DataType::Date32 => SourceType::Date,
+        DataType::Timestamp(_, _) => SourceType::Timestamp,
         DataType::Decimal128(p, s) => {
             precision = Some(*p as u32);
             scale = Some(*s as i32);
-            ColumnType::Decimal128
+            SourceType::Decimal128
         }
         DataType::Decimal256(p, s) => {
             precision = Some(*p as u32);
             scale = Some(*s as i32);
-            ColumnType::Decimal256
+            SourceType::Decimal256
         }
         DataType::List(field) | DataType::LargeList(field) => match field.data_type() {
-            DataType::Float16 => ColumnType::Float16Array,
-            DataType::Float32 => ColumnType::Float32Array,
-            DataType::Float64 => ColumnType::Float64Array,
+            DataType::Float16 => SourceType::Float16Array,
+            DataType::Float32 => SourceType::Float32Array,
+            DataType::Float64 => SourceType::Float64Array,
             _ => return Err(anyhow!("unsupported list type {}", field.data_type())),
         },
         _ => return Err(anyhow!("unsupported parquet type {}", source_dtype)),
@@ -1139,7 +1156,7 @@ fn infer_csv_schema(path: &Path, options: &InferOptions) -> Result<Vec<ColumnSpe
         .zip(stats.iter())
         .map(|(name, st)| {
             let mut col = st.to_column_spec(name);
-            col.source_dtype = ColumnType::String;
+            col.source_dtype = SourceType::String;
             col
         })
         .collect())
@@ -1182,7 +1199,11 @@ fn infer_csv_schema_from_bytes(bytes: &Bytes, options: &InferOptions) -> Result<
     Ok(headers
         .iter()
         .zip(stats.iter())
-        .map(|(name, st)| st.to_column_spec(name))
+        .map(|(name, st)| {
+            let mut col = st.to_column_spec(name);
+            col.source_dtype = SourceType::String;
+            col
+        })
         .collect())
 }
 
@@ -1301,46 +1322,40 @@ impl ColumnStats {
 
     fn to_column_spec(&self, name: &str) -> ColumnSpec {
         let name_lower = name.to_lowercase();
-        let mut source_dtype = ColumnType::String;
-        let mut ingested_dtype = ColumnType::String;
+        let source_dtype = SourceType::String;
+        let mut ingested_dtype = IngestedType::String;
         let mut timestamp_format = None;
         let mut timestamp_unit = None;
         let mut fixed_len = None;
         if self.bool_ok {
-            source_dtype = ColumnType::Bool;
-            ingested_dtype = ColumnType::Bool;
+            ingested_dtype = IngestedType::Bool;
         } else if self.ts_ok {
-            source_dtype = ColumnType::String;
-            ingested_dtype = ColumnType::Timestamp;
+            ingested_dtype = IngestedType::Timestamp;
             // Preserve the parse format for string-backed timestamps.
             timestamp_format = self.ts_format.clone();
         } else if time_name_score(&name_lower) > 0
             && self.int_ok
             && int_looks_like_timestamp(self.int_min, self.int_max).is_some()
         {
-            source_dtype = ColumnType::Int64;
-            ingested_dtype = ColumnType::Timestamp;
+            ingested_dtype = IngestedType::Timestamp;
             // Record the epoch unit for integer timestamps.
             timestamp_unit = int_looks_like_timestamp(self.int_min, self.int_max);
         } else if self.date_ok {
-            source_dtype = ColumnType::String;
-            ingested_dtype = ColumnType::Date;
+            ingested_dtype = IngestedType::Date;
             // Preserve the parse format for string-backed dates.
             timestamp_format = self.date_format.clone();
         } else if self.int_ok {
-            source_dtype = ColumnType::Int64;
-            ingested_dtype = ColumnType::Int64;
+            ingested_dtype = IngestedType::Int64;
         } else if self.float_ok {
-            source_dtype = ColumnType::Float64;
-            ingested_dtype = ColumnType::Float32;
+            ingested_dtype = IngestedType::Float32;
         }
-        if matches!(ingested_dtype, ColumnType::String) {
+        if matches!(ingested_dtype, IngestedType::String) {
             if self.uuid_seen && self.uuid_ok {
-                ingested_dtype = ColumnType::Uuid;
+                ingested_dtype = IngestedType::Uuid;
             } else if self.uuid256_seen && self.uuid256_ok {
-                ingested_dtype = ColumnType::Uuid256;
+                ingested_dtype = IngestedType::Uuid256;
             } else if self.ip_seen && self.ip_ok {
-                ingested_dtype = ColumnType::Ip;
+                ingested_dtype = IngestedType::Ip;
             } else if let (Some(min_len), Some(max_len)) = (self.str_min_len, self.str_max_len) {
                 if min_len == max_len {
                     fixed_len = Some(min_len);
@@ -2136,16 +2151,16 @@ fn is_weight_like(col: &ColumnSpec) -> bool {
     let name = col.name.to_lowercase();
     if !matches!(
         col.ingested_dtype,
-        ColumnType::Int8
-            | ColumnType::Int16
-            | ColumnType::Int32
-            | ColumnType::Int64
-            | ColumnType::UInt8
-            | ColumnType::UInt16
-            | ColumnType::UInt32
-            | ColumnType::UInt64
-            | ColumnType::Float32
-            | ColumnType::Float64
+        IngestedType::Int8
+            | IngestedType::Int16
+            | IngestedType::Int32
+            | IngestedType::Int64
+            | IngestedType::UInt8
+            | IngestedType::UInt16
+            | IngestedType::UInt32
+            | IngestedType::UInt64
+            | IngestedType::Float32
+            | IngestedType::Float64
     ) {
         return false;
     }
@@ -2589,7 +2604,7 @@ fn has_composite_code_version(candidate: &str, columns: &[ColumnSpec]) -> bool {
 }
 
 fn compatible_key_columns(a: &ColumnSpec, b: &ColumnSpec) -> bool {
-    use ColumnType::*;
+    use IngestedType::*;
     match (&a.ingested_dtype, &b.ingested_dtype) {
         (String, String) | (Bytes, Bytes) | (String, Bytes) | (Bytes, String) => true,
         (Uuid, Uuid) | (Uuid256, Uuid256) | (Ip, Ip) => true,
@@ -2600,32 +2615,32 @@ fn compatible_key_columns(a: &ColumnSpec, b: &ColumnSpec) -> bool {
     }
 }
 
-fn is_pk_dtype(t: &ColumnType) -> bool {
+fn is_pk_dtype(t: &IngestedType) -> bool {
     matches!(
         t,
-        ColumnType::String
-            | ColumnType::Bytes
-            | ColumnType::Uuid
-            | ColumnType::Uuid256
-            | ColumnType::Ip
+        IngestedType::String
+            | IngestedType::Bytes
+            | IngestedType::Uuid
+            | IngestedType::Uuid256
+            | IngestedType::Ip
     ) || is_numeric(t)
 }
 
-fn is_numeric(t: &ColumnType) -> bool {
+fn is_numeric(t: &IngestedType) -> bool {
     matches!(
         t,
-        ColumnType::Int8
-            | ColumnType::Int16
-            | ColumnType::Int32
-            | ColumnType::Int64
-            | ColumnType::UInt8
-            | ColumnType::UInt16
-            | ColumnType::UInt32
-            | ColumnType::UInt64
-            | ColumnType::Float32
-            | ColumnType::Float64
-            | ColumnType::Decimal128
-            | ColumnType::Decimal256
+        IngestedType::Int8
+            | IngestedType::Int16
+            | IngestedType::Int32
+            | IngestedType::Int64
+            | IngestedType::UInt8
+            | IngestedType::UInt16
+            | IngestedType::UInt32
+            | IngestedType::UInt64
+            | IngestedType::Float32
+            | IngestedType::Float64
+            | IngestedType::Decimal128
+            | IngestedType::Decimal256
     )
 }
 
@@ -2637,7 +2652,7 @@ fn infer_create_time(tables: &mut [TableSpec]) {
         let time_cols: Vec<&ColumnSpec> = table
             .columns
             .iter()
-            .filter(|col| matches!(col.ingested_dtype, ColumnType::Timestamp | ColumnType::Date))
+            .filter(|col| matches!(col.ingested_dtype, IngestedType::Timestamp | IngestedType::Date))
             .collect();
         if time_cols.len() == 1 {
             table.create_time = Some(time_cols[0].name.clone());
@@ -2909,7 +2924,7 @@ mod tests {
     use super::*;
     use arrow_schema::Field;
 
-    fn table(name: &str, cols: &[(&str, ColumnType)]) -> TableSpec {
+    fn table(name: &str, cols: &[(&str, IngestedType)]) -> TableSpec {
         TableSpec {
             name: name.to_string(),
             format: TableFormat::Csv,
@@ -2918,7 +2933,7 @@ mod tests {
                 .iter()
                 .map(|(n, t)| ColumnSpec {
                     name: n.to_string(),
-                    source_dtype: t.clone(),
+                    source_dtype: SourceType::String,
                     ingested_dtype: t.clone(),
                     fixed_len: None,
                     timestamp_format: None,
@@ -2952,28 +2967,28 @@ mod tests {
 
     #[test]
     fn infer_pk_id() {
-        let mut t = table("users", &[("id", ColumnType::Int64)]);
+        let mut t = table("users", &[("id", IngestedType::Int64)]);
         infer_primary_keys(std::slice::from_mut(&mut t));
         assert_eq!(t.primary_key.as_deref(), Some("id"));
     }
 
     #[test]
     fn infer_pk_table_id() {
-        let mut t = table("orders", &[("order_id", ColumnType::Int64)]);
+        let mut t = table("orders", &[("order_id", IngestedType::Int64)]);
         infer_primary_keys(std::slice::from_mut(&mut t));
         assert_eq!(t.primary_key.as_deref(), Some("order_id"));
     }
 
     #[test]
     fn infer_pk_last_token_only_when_single_id() {
-        let mut t = table("kaggle_hm_articles", &[("article_id", ColumnType::Int64)]);
+        let mut t = table("kaggle_hm_articles", &[("article_id", IngestedType::Int64)]);
         infer_primary_keys(std::slice::from_mut(&mut t));
         assert_eq!(t.primary_key.as_deref(), Some("article_id"));
     }
 
     #[test]
     fn infer_pk_uuid() {
-        let mut t = table("sessions", &[("uuid", ColumnType::String)]);
+        let mut t = table("sessions", &[("uuid", IngestedType::String)]);
         infer_primary_keys(std::slice::from_mut(&mut t));
         assert_eq!(t.primary_key.as_deref(), Some("uuid"));
     }
@@ -2987,8 +3002,8 @@ mod tests {
             columns: vec![
                 ColumnSpec {
                     name: "customer_id".to_string(),
-                    source_dtype: ColumnType::String,
-                    ingested_dtype: ColumnType::String,
+                    source_dtype: SourceType::String,
+                    ingested_dtype: IngestedType::String,
                     timestamp_format: None,
                     timestamp_unit: None,
                     fixed_len: None,
@@ -2997,8 +3012,8 @@ mod tests {
                 },
                 ColumnSpec {
                     name: "postal_code".to_string(),
-                    source_dtype: ColumnType::String,
-                    ingested_dtype: ColumnType::String,
+                    source_dtype: SourceType::String,
+                    ingested_dtype: IngestedType::String,
                     timestamp_format: None,
                     timestamp_unit: None,
                     fixed_len: None,
@@ -3020,7 +3035,7 @@ mod tests {
     fn infer_pk_ignores_user_id_in_join_table() {
         let mut t = table(
             "user_interest",
-            &[("user_id", ColumnType::Int64), ("interest_id", ColumnType::Int64)],
+            &[("user_id", IngestedType::Int64), ("interest_id", IngestedType::Int64)],
         );
         infer_primary_keys(std::slice::from_mut(&mut t));
         assert_eq!(t.primary_key, None);
@@ -3032,17 +3047,17 @@ mod tests {
             table(
                 "AdsInfo",
                 &[
-                    ("AdID", ColumnType::Int64),
-                    ("LocationID", ColumnType::Int64),
-                    ("CategoryID", ColumnType::Int64),
+                    ("AdID", IngestedType::Int64),
+                    ("LocationID", IngestedType::Int64),
+                    ("CategoryID", IngestedType::Int64),
                 ],
             ),
             table(
                 "UserInfo",
                 &[
-                    ("UserID", ColumnType::Int64),
-                    ("UserAgentID", ColumnType::Int64),
-                    ("UserDeviceID", ColumnType::Int64),
+                    ("UserID", IngestedType::Int64),
+                    ("UserAgentID", IngestedType::Int64),
+                    ("UserDeviceID", IngestedType::Int64),
                 ],
             ),
         ];
@@ -3059,32 +3074,32 @@ mod tests {
             table(
                 "events",
                 &[
-                    ("event_id", ColumnType::Int64),
-                    ("user_id", ColumnType::Int64),
-                    ("start_time", ColumnType::Timestamp),
+                    ("event_id", IngestedType::Int64),
+                    ("user_id", IngestedType::Int64),
+                    ("start_time", IngestedType::Timestamp),
                 ],
             ),
             table(
                 "users",
                 &[
-                    ("user_id", ColumnType::Int64),
-                    ("joinedAt", ColumnType::Timestamp),
+                    ("user_id", IngestedType::Int64),
+                    ("joinedAt", IngestedType::Timestamp),
                 ],
             ),
             table(
                 "event_attendees",
                 &[
-                    ("event", ColumnType::Int64),
-                    ("user_id", ColumnType::Int64),
-                    ("start_time", ColumnType::Timestamp),
+                    ("event", IngestedType::Int64),
+                    ("user_id", IngestedType::Int64),
+                    ("start_time", IngestedType::Timestamp),
                 ],
             ),
             table(
                 "event_interest",
                 &[
-                    ("user", ColumnType::Int64),
-                    ("event", ColumnType::Int64),
-                    ("timestamp", ColumnType::Timestamp),
+                    ("user", IngestedType::Int64),
+                    ("event", IngestedType::Int64),
+                    ("timestamp", IngestedType::Timestamp),
                 ],
             ),
         ];
@@ -3134,12 +3149,12 @@ mod tests {
     #[test]
     fn rel_salt_prefers_customer_id_and_address_fk() {
         let mut tables = vec![
-            table("address", &[("ADDRESSID", ColumnType::Int64)]),
+            table("address", &[("ADDRESSID", IngestedType::Int64)]),
             table(
                 "customer",
                 &[
-                    ("CUSTOMER", ColumnType::Int64),
-                    ("ADDRESSID", ColumnType::Int64),
+                    ("CUSTOMER", IngestedType::Int64),
+                    ("ADDRESSID", IngestedType::Int64),
                 ],
             ),
         ];
@@ -3162,25 +3177,25 @@ mod tests {
     #[test]
     fn rel_stack_adds_related_post_fk_and_skips_history_type_fk() {
         let mut tables = vec![
-            table("posts", &[("Id", ColumnType::Int64)]),
-            table("users", &[("Id", ColumnType::Int64)]),
+            table("posts", &[("Id", IngestedType::Int64)]),
+            table("users", &[("Id", IngestedType::Int64)]),
             table(
                 "postLinks",
                 &[
-                    ("Id", ColumnType::Int64),
-                    ("PostId", ColumnType::Int64),
-                    ("RelatedPostId", ColumnType::Int64),
-                    ("CreationDate", ColumnType::Timestamp),
+                    ("Id", IngestedType::Int64),
+                    ("PostId", IngestedType::Int64),
+                    ("RelatedPostId", IngestedType::Int64),
+                    ("CreationDate", IngestedType::Timestamp),
                 ],
             ),
             table(
                 "postHistory",
                 &[
-                    ("Id", ColumnType::Int64),
-                    ("PostId", ColumnType::Int64),
-                    ("UserId", ColumnType::Int64),
-                    ("PostHistoryTypeId", ColumnType::Int64),
-                    ("CreationDate", ColumnType::Timestamp),
+                    ("Id", IngestedType::Int64),
+                    ("PostId", IngestedType::Int64),
+                    ("UserId", IngestedType::Int64),
+                    ("PostHistoryTypeId", IngestedType::Int64),
+                    ("CreationDate", IngestedType::Timestamp),
                 ],
             ),
         ];
@@ -3211,19 +3226,19 @@ mod tests {
     #[test]
     fn rel_trial_handles_join_tables_and_fk_direction() {
         let mut tables = vec![
-            table("conditions", &[("condition_id", ColumnType::Int64)]),
-            table("studies", &[("nct_id", ColumnType::String)]),
+            table("conditions", &[("condition_id", IngestedType::Int64)]),
+            table("studies", &[("nct_id", IngestedType::String)]),
             table(
                 "designs",
-                &[("id", ColumnType::Int64), ("nct_id", ColumnType::String)],
+                &[("id", IngestedType::Int64), ("nct_id", IngestedType::String)],
             ),
             table(
                 "conditions_studies",
                 &[
-                    ("id", ColumnType::Int64),
-                    ("nct_id", ColumnType::String),
-                    ("condition_id", ColumnType::Int64),
-                    ("date", ColumnType::Date),
+                    ("id", IngestedType::Int64),
+                    ("nct_id", IngestedType::String),
+                    ("condition_id", IngestedType::Int64),
+                    ("date", IngestedType::Date),
                 ],
             ),
         ];
@@ -3266,15 +3281,15 @@ mod tests {
     #[test]
     fn infer_edge_table_with_timestamp_and_weight() {
         let mut tables = vec![
-            table("users", &[("user_id", ColumnType::Int64)]),
-            table("items", &[("item_id", ColumnType::Int64)]),
+            table("users", &[("user_id", IngestedType::Int64)]),
+            table("items", &[("item_id", IngestedType::Int64)]),
             table(
                 "user_item_edges",
                 &[
-                    ("user_id", ColumnType::Int64),
-                    ("item_id", ColumnType::Int64),
-                    ("created_at", ColumnType::Timestamp),
-                    ("weight", ColumnType::Float32),
+                    ("user_id", IngestedType::Int64),
+                    ("item_id", IngestedType::Int64),
+                    ("created_at", IngestedType::Timestamp),
+                    ("weight", IngestedType::Float32),
                 ],
             ),
         ];
@@ -3310,17 +3325,17 @@ mod tests {
             table(
                 "users",
                 &[
-                    ("user_id", ColumnType::Int64),
-                    ("created_at", ColumnType::Timestamp),
-                    ("weight", ColumnType::Float32),
+                    ("user_id", IngestedType::Int64),
+                    ("created_at", IngestedType::Timestamp),
+                    ("weight", IngestedType::Float32),
                 ],
             ),
             table(
                 "events",
                 &[
-                    ("event_id", ColumnType::Int64),
-                    ("user_id", ColumnType::Int64),
-                    ("created_at", ColumnType::Timestamp),
+                    ("event_id", IngestedType::Int64),
+                    ("user_id", IngestedType::Int64),
+                    ("created_at", IngestedType::Timestamp),
                 ],
             ),
         ];
@@ -3368,24 +3383,24 @@ mod tests {
             table(
                 "users",
                 &[
-                    ("user_id", ColumnType::Int64),
-                    ("created_at", ColumnType::Timestamp),
+                    ("user_id", IngestedType::Int64),
+                    ("created_at", IngestedType::Timestamp),
                 ],
             ),
             table(
                 "items",
                 &[
-                    ("item_id", ColumnType::Int64),
-                    ("created_at", ColumnType::Timestamp),
+                    ("item_id", IngestedType::Int64),
+                    ("created_at", IngestedType::Timestamp),
                 ],
             ),
             table(
                 "user_item_edges",
                 &[
-                    ("user_id", ColumnType::Int64),
-                    ("item_id", ColumnType::Int64),
-                    ("created_at", ColumnType::Timestamp),
-                    ("weight", ColumnType::Float32),
+                    ("user_id", IngestedType::Int64),
+                    ("item_id", IngestedType::Int64),
+                    ("created_at", IngestedType::Timestamp),
+                    ("weight", IngestedType::Float32),
                 ],
             ),
         ];
@@ -3430,8 +3445,8 @@ mod tests {
                 paths: vec![],
                 columns: vec![ColumnSpec {
                     name: "user_id".to_string(),
-                    source_dtype: ColumnType::Int64,
-                    ingested_dtype: ColumnType::Int64,
+                    source_dtype: SourceType::Int64,
+                    ingested_dtype: IngestedType::Int64,
                     timestamp_format: None,
                     timestamp_unit: None,
                     fixed_len: None,
@@ -3450,8 +3465,8 @@ mod tests {
                 paths: vec![],
                 columns: vec![ColumnSpec {
                     name: "user_id".to_string(),
-                    source_dtype: ColumnType::Int64,
-                    ingested_dtype: ColumnType::Int64,
+                    source_dtype: SourceType::Int64,
+                    ingested_dtype: IngestedType::Int64,
                     timestamp_format: None,
                     timestamp_unit: None,
                     fixed_len: None,
@@ -3482,8 +3497,8 @@ mod tests {
                 paths: vec![],
                 columns: vec![ColumnSpec {
                     name: "device_id".to_string(),
-                    source_dtype: ColumnType::Bytes,
-                    ingested_dtype: ColumnType::Uuid,
+                    source_dtype: SourceType::Bytes,
+                    ingested_dtype: IngestedType::Uuid,
                     timestamp_format: None,
                     timestamp_unit: None,
                     fixed_len: None,
@@ -3502,8 +3517,8 @@ mod tests {
                 paths: vec![],
                 columns: vec![ColumnSpec {
                     name: "device_id".to_string(),
-                    source_dtype: ColumnType::String,
-                    ingested_dtype: ColumnType::Bytes,
+                    source_dtype: SourceType::String,
+                    ingested_dtype: IngestedType::Bytes,
                     timestamp_format: None,
                     timestamp_unit: None,
                     fixed_len: None,
@@ -3529,14 +3544,14 @@ mod tests {
         let admits = table(
             "admits",
             &[
-                ("subject_id", ColumnType::Int64),
-                ("hadm_id", ColumnType::Int64),
-                ("admittime", ColumnType::Timestamp),
-                ("dischtime", ColumnType::Timestamp),
+                ("subject_id", IngestedType::Int64),
+                ("hadm_id", IngestedType::Int64),
+                ("admittime", IngestedType::Timestamp),
+                ("dischtime", IngestedType::Timestamp),
             ],
         );
-        let pats = table("pats", &[("subject_id", ColumnType::Int64)]);
-        let encounters = table("encounters", &[("subject_id", ColumnType::Int64)]);
+        let pats = table("pats", &[("subject_id", IngestedType::Int64)]);
+        let encounters = table("encounters", &[("subject_id", IngestedType::Int64)]);
         let mut tables = vec![admits, pats, encounters];
         infer_primary_keys(&mut tables);
         assert_eq!(tables[0].primary_key.as_deref(), Some("hadm_id"));
@@ -3551,8 +3566,8 @@ mod tests {
                 paths: vec![],
                 columns: vec![ColumnSpec {
                     name: "itemid".to_string(),
-                    source_dtype: ColumnType::Int64,
-                    ingested_dtype: ColumnType::Int64,
+                    source_dtype: SourceType::Int64,
+                    ingested_dtype: IngestedType::Int64,
                     timestamp_format: None,
                     timestamp_unit: None,
                     fixed_len: None,
@@ -3571,8 +3586,8 @@ mod tests {
                 paths: vec![],
                 columns: vec![ColumnSpec {
                     name: "itemid".to_string(),
-                    source_dtype: ColumnType::Int64,
-                    ingested_dtype: ColumnType::Int64,
+                    source_dtype: SourceType::Int64,
+                    ingested_dtype: IngestedType::Int64,
                     timestamp_format: None,
                     timestamp_unit: None,
                     fixed_len: None,
@@ -3591,8 +3606,8 @@ mod tests {
                 paths: vec![],
                 columns: vec![ColumnSpec {
                     name: "itemid".to_string(),
-                    source_dtype: ColumnType::Int64,
-                    ingested_dtype: ColumnType::Int64,
+                    source_dtype: SourceType::Int64,
+                    ingested_dtype: IngestedType::Int64,
                     timestamp_format: None,
                     timestamp_unit: None,
                     fixed_len: None,
@@ -3623,8 +3638,8 @@ mod tests {
             columns: vec![
                 ColumnSpec {
                     name: "poe_id".to_string(),
-                    source_dtype: ColumnType::String,
-                    ingested_dtype: ColumnType::String,
+                    source_dtype: SourceType::String,
+                    ingested_dtype: IngestedType::String,
                     timestamp_format: None,
                     timestamp_unit: None,
                     fixed_len: None,
@@ -3633,8 +3648,8 @@ mod tests {
                 },
                 ColumnSpec {
                     name: "discontinue_of_poe_id".to_string(),
-                    source_dtype: ColumnType::String,
-                    ingested_dtype: ColumnType::String,
+                    source_dtype: SourceType::String,
+                    ingested_dtype: IngestedType::String,
                     timestamp_format: None,
                     timestamp_unit: None,
                     fixed_len: None,
@@ -3662,8 +3677,8 @@ mod tests {
         let mut t = table(
             "d_icd_diag",
             &[
-                ("icd_code", ColumnType::String),
-                ("icd_version", ColumnType::Int16),
+                ("icd_code", IngestedType::String),
+                ("icd_version", IngestedType::Int16),
             ],
         );
         infer_primary_keys(std::slice::from_mut(&mut t));
@@ -3675,9 +3690,9 @@ mod tests {
         let mut t = table(
             "icu_stays",
             &[
-                ("subject_id", ColumnType::Int64),
-                ("hadm_id", ColumnType::Int64),
-                ("stay_id", ColumnType::Int64),
+                ("subject_id", IngestedType::Int64),
+                ("hadm_id", IngestedType::Int64),
+                ("stay_id", IngestedType::Int64),
             ],
         );
         infer_primary_keys(std::slice::from_mut(&mut t));
@@ -3689,9 +3704,9 @@ mod tests {
         let mut t = table(
             "hcpcs",
             &[
-                ("subject_id", ColumnType::Int64),
-                ("hadm_id", ColumnType::Int64),
-                ("hcpcs_cd", ColumnType::String),
+                ("subject_id", IngestedType::Int64),
+                ("hadm_id", IngestedType::Int64),
+                ("hcpcs_cd", IngestedType::String),
             ],
         );
         infer_primary_keys(std::slice::from_mut(&mut t));
@@ -3703,9 +3718,9 @@ mod tests {
         let mut t = table(
             "encounters",
             &[
-                ("subject_id", ColumnType::Int64),
-                ("hadm_id", ColumnType::Int64),
-                ("date", ColumnType::Date),
+                ("subject_id", IngestedType::Int64),
+                ("hadm_id", IngestedType::Int64),
+                ("date", IngestedType::Date),
             ],
         );
         infer_primary_keys(std::slice::from_mut(&mut t));
@@ -3721,8 +3736,8 @@ mod tests {
                 paths: vec![],
                 columns: vec![ColumnSpec {
                     name: "code".to_string(),
-                    source_dtype: ColumnType::String,
-                    ingested_dtype: ColumnType::String,
+                    source_dtype: SourceType::String,
+                    ingested_dtype: IngestedType::String,
                     timestamp_format: None,
                     timestamp_unit: None,
                     fixed_len: None,
@@ -3741,8 +3756,8 @@ mod tests {
                 paths: vec![],
                 columns: vec![ColumnSpec {
                     name: "hcpcs_cd".to_string(),
-                    source_dtype: ColumnType::String,
-                    ingested_dtype: ColumnType::String,
+                    source_dtype: SourceType::String,
+                    ingested_dtype: IngestedType::String,
                     timestamp_format: None,
                     timestamp_unit: None,
                     fixed_len: None,
@@ -3773,8 +3788,8 @@ mod tests {
                 paths: vec![],
                 columns: vec![ColumnSpec {
                     name: "code".to_string(),
-                    source_dtype: ColumnType::String,
-                    ingested_dtype: ColumnType::String,
+                    source_dtype: SourceType::String,
+                    ingested_dtype: IngestedType::String,
                     timestamp_format: None,
                     timestamp_unit: None,
                     fixed_len: None,
@@ -3793,8 +3808,8 @@ mod tests {
                 paths: vec![],
                 columns: vec![ColumnSpec {
                     name: "icd_code".to_string(),
-                    source_dtype: ColumnType::String,
-                    ingested_dtype: ColumnType::String,
+                    source_dtype: SourceType::String,
+                    ingested_dtype: IngestedType::String,
                     timestamp_format: None,
                     timestamp_unit: None,
                     fixed_len: None,
@@ -3819,10 +3834,10 @@ mod tests {
         let mut t = table(
             "admits",
             &[
-                ("subject_id", ColumnType::Int64),
-                ("hadm_id", ColumnType::Int64),
-                ("admittime", ColumnType::Timestamp),
-                ("dischtime", ColumnType::Timestamp),
+                ("subject_id", IngestedType::Int64),
+                ("hadm_id", IngestedType::Int64),
+                ("admittime", IngestedType::Timestamp),
+                ("dischtime", IngestedType::Timestamp),
             ],
         );
         infer_primary_keys(std::slice::from_mut(&mut t));
@@ -3838,8 +3853,8 @@ mod tests {
                 paths: vec![],
                 columns: vec![ColumnSpec {
                     name: "poe_id".to_string(),
-                    source_dtype: ColumnType::String,
-                    ingested_dtype: ColumnType::String,
+                    source_dtype: SourceType::String,
+                    ingested_dtype: IngestedType::String,
                     timestamp_format: None,
                     timestamp_unit: None,
                     fixed_len: None,
@@ -3858,8 +3873,8 @@ mod tests {
                 paths: vec![],
                 columns: vec![ColumnSpec {
                     name: "poe_id".to_string(),
-                    source_dtype: ColumnType::String,
-                    ingested_dtype: ColumnType::String,
+                    source_dtype: SourceType::String,
+                    ingested_dtype: IngestedType::String,
                     timestamp_format: None,
                     timestamp_unit: None,
                     fixed_len: None,
@@ -3878,8 +3893,8 @@ mod tests {
                 paths: vec![],
                 columns: vec![ColumnSpec {
                     name: "poe_id".to_string(),
-                    source_dtype: ColumnType::String,
-                    ingested_dtype: ColumnType::String,
+                    source_dtype: SourceType::String,
+                    ingested_dtype: IngestedType::String,
                     timestamp_format: None,
                     timestamp_unit: None,
                     fixed_len: None,
@@ -3909,8 +3924,8 @@ mod tests {
                 paths: vec![],
                 columns: vec![ColumnSpec {
                     name: "hadm_id".to_string(),
-                    source_dtype: ColumnType::Int64,
-                    ingested_dtype: ColumnType::Int64,
+                    source_dtype: SourceType::Int64,
+                    ingested_dtype: IngestedType::Int64,
                     timestamp_format: None,
                     timestamp_unit: None,
                     fixed_len: None,
@@ -3929,8 +3944,8 @@ mod tests {
                 paths: vec![],
                 columns: vec![ColumnSpec {
                     name: "hadm_id".to_string(),
-                    source_dtype: ColumnType::Int64,
-                    ingested_dtype: ColumnType::Int64,
+                    source_dtype: SourceType::Int64,
+                    ingested_dtype: IngestedType::Int64,
                     timestamp_format: None,
                     timestamp_unit: None,
                     fixed_len: None,
@@ -3960,8 +3975,8 @@ mod tests {
                 paths: vec![],
                 columns: vec![ColumnSpec {
                     name: "itemid".to_string(),
-                    source_dtype: ColumnType::Int64,
-                    ingested_dtype: ColumnType::Int64,
+                    source_dtype: SourceType::Int64,
+                    ingested_dtype: IngestedType::Int64,
                     timestamp_format: None,
                     timestamp_unit: None,
                     fixed_len: None,
@@ -3980,8 +3995,8 @@ mod tests {
                 paths: vec![],
                 columns: vec![ColumnSpec {
                     name: "itemid".to_string(),
-                    source_dtype: ColumnType::Int64,
-                    ingested_dtype: ColumnType::Int64,
+                    source_dtype: SourceType::Int64,
+                    ingested_dtype: IngestedType::Int64,
                     timestamp_format: None,
                     timestamp_unit: None,
                     fixed_len: None,
@@ -4000,8 +4015,8 @@ mod tests {
                 paths: vec![],
                 columns: vec![ColumnSpec {
                     name: "itemid".to_string(),
-                    source_dtype: ColumnType::Int64,
-                    ingested_dtype: ColumnType::Int64,
+                    source_dtype: SourceType::Int64,
+                    ingested_dtype: IngestedType::Int64,
                     timestamp_format: None,
                     timestamp_unit: None,
                     fixed_len: None,
@@ -4031,8 +4046,8 @@ mod tests {
                 paths: vec![],
                 columns: vec![ColumnSpec {
                     name: "user_id".to_string(),
-                    source_dtype: ColumnType::Int64,
-                    ingested_dtype: ColumnType::Int64,
+                    source_dtype: SourceType::Int64,
+                    ingested_dtype: IngestedType::Int64,
                     fixed_len: None,
                     timestamp_format: None,
                     timestamp_unit: None,
@@ -4051,8 +4066,8 @@ mod tests {
                 paths: vec![],
                 columns: vec![ColumnSpec {
                     name: "user_id".to_string(),
-                    source_dtype: ColumnType::Int64,
-                    ingested_dtype: ColumnType::Int64,
+                    source_dtype: SourceType::Int64,
+                    ingested_dtype: IngestedType::Int64,
                     fixed_len: None,
                     timestamp_format: None,
                     timestamp_unit: None,
@@ -4083,8 +4098,8 @@ mod tests {
                 paths: vec![],
                 columns: vec![ColumnSpec {
                     name: "id".to_string(),
-                    source_dtype: ColumnType::Int64,
-                    ingested_dtype: ColumnType::Int64,
+                    source_dtype: SourceType::Int64,
+                    ingested_dtype: IngestedType::Int64,
                     fixed_len: None,
                     timestamp_format: None,
                     timestamp_unit: None,
@@ -4103,8 +4118,8 @@ mod tests {
                 paths: vec![],
                 columns: vec![ColumnSpec {
                     name: "id".to_string(),
-                    source_dtype: ColumnType::Int64,
-                    ingested_dtype: ColumnType::Int64,
+                    source_dtype: SourceType::Int64,
+                    ingested_dtype: IngestedType::Int64,
                     fixed_len: None,
                     timestamp_format: None,
                     timestamp_unit: None,
@@ -4129,7 +4144,7 @@ mod tests {
     fn infer_create_time_from_timestamp_col() {
         let mut t = table(
             "events",
-            &[("created_at", ColumnType::Timestamp), ("id", ColumnType::Int64)],
+            &[("created_at", IngestedType::Timestamp), ("id", IngestedType::Int64)],
         );
         infer_create_time(std::slice::from_mut(&mut t));
         assert_eq!(t.create_time.as_deref(), Some("created_at"));
@@ -4142,7 +4157,7 @@ mod tests {
             stats.observe(v);
         }
         let col = stats.to_column_spec("created_at");
-        assert!(matches!(col.ingested_dtype, ColumnType::Timestamp));
+        assert!(matches!(col.ingested_dtype, IngestedType::Timestamp));
     }
 
     #[test]
@@ -4152,7 +4167,7 @@ mod tests {
             stats.observe(v);
         }
         let col = stats.to_column_spec("created_at");
-        assert!(matches!(col.ingested_dtype, ColumnType::Int64));
+        assert!(matches!(col.ingested_dtype, IngestedType::Int64));
     }
 
     #[test]
@@ -4162,7 +4177,7 @@ mod tests {
             stats.observe(v);
         }
         let col = stats.to_column_spec("event_date");
-        assert!(matches!(col.ingested_dtype, ColumnType::Date));
+        assert!(matches!(col.ingested_dtype, IngestedType::Date));
     }
 
     #[test]
@@ -4172,7 +4187,7 @@ mod tests {
             stats.observe(v);
         }
         let col = stats.to_column_spec("flag");
-        assert!(matches!(col.ingested_dtype, ColumnType::Bool));
+        assert!(matches!(col.ingested_dtype, IngestedType::Bool));
     }
 
     #[test]
@@ -4182,8 +4197,8 @@ mod tests {
             stats.observe(v);
         }
         let col = stats.to_column_spec("score");
-        assert!(matches!(col.source_dtype, ColumnType::Float64));
-        assert!(matches!(col.ingested_dtype, ColumnType::Float32));
+        assert!(matches!(col.source_dtype, SourceType::String));
+        assert!(matches!(col.ingested_dtype, IngestedType::Float32));
     }
 
     #[test]
@@ -4196,7 +4211,7 @@ mod tests {
             stats.observe(v);
         }
         let col = stats.to_column_spec("user_id");
-        assert!(matches!(col.ingested_dtype, ColumnType::Uuid));
+        assert!(matches!(col.ingested_dtype, IngestedType::Uuid));
         assert_eq!(col.fixed_len, None);
     }
 
@@ -4210,7 +4225,7 @@ mod tests {
             stats.observe(v);
         }
         let col = stats.to_column_spec("user_id");
-        assert!(matches!(col.ingested_dtype, ColumnType::Uuid256));
+        assert!(matches!(col.ingested_dtype, IngestedType::Uuid256));
         assert_eq!(col.fixed_len, None);
     }
 
@@ -4221,7 +4236,7 @@ mod tests {
             stats.observe(v);
         }
         let col = stats.to_column_spec("ip");
-        assert!(matches!(col.ingested_dtype, ColumnType::Ip));
+        assert!(matches!(col.ingested_dtype, IngestedType::Ip));
         assert_eq!(col.fixed_len, None);
     }
 
@@ -4232,7 +4247,7 @@ mod tests {
             stats.observe(v);
         }
         let col = stats.to_column_spec("code");
-        assert!(matches!(col.ingested_dtype, ColumnType::String));
+        assert!(matches!(col.ingested_dtype, IngestedType::String));
         assert_eq!(col.fixed_len, Some(3));
     }
 
@@ -4253,10 +4268,10 @@ mod tests {
         let cols = infer_parquet_schema_from_arrow(&schema).unwrap();
         let vec32 = cols.iter().find(|c| c.name == "vec32").unwrap();
         let vec64 = cols.iter().find(|c| c.name == "vec64").unwrap();
-        assert!(matches!(vec32.source_dtype, ColumnType::Float32Array));
-        assert!(matches!(vec64.source_dtype, ColumnType::Float64Array));
-        assert!(matches!(vec32.ingested_dtype, ColumnType::Float16Array));
-        assert!(matches!(vec64.ingested_dtype, ColumnType::Float16Array));
+        assert!(matches!(vec32.source_dtype, SourceType::Float32Array));
+        assert!(matches!(vec64.source_dtype, SourceType::Float64Array));
+        assert!(matches!(vec32.ingested_dtype, IngestedType::Float16Array));
+        assert!(matches!(vec64.ingested_dtype, IngestedType::Float16Array));
     }
 
     #[test]
@@ -4266,7 +4281,7 @@ mod tests {
             stats.observe(v);
         }
         let col = stats.to_column_spec("charttime");
-        assert!(matches!(col.ingested_dtype, ColumnType::Timestamp));
+        assert!(matches!(col.ingested_dtype, IngestedType::Timestamp));
     }
 
     #[test]
@@ -4276,7 +4291,7 @@ mod tests {
             stats.observe(v);
         }
         let col = stats.to_column_spec("storetime");
-        assert!(matches!(col.ingested_dtype, ColumnType::Timestamp));
+        assert!(matches!(col.ingested_dtype, IngestedType::Timestamp));
     }
 
     #[test]
@@ -4284,8 +4299,8 @@ mod tests {
         let mut t = table(
             "events",
             &[
-                ("start_time", ColumnType::Timestamp),
-                ("end_time", ColumnType::Timestamp),
+                ("start_time", IngestedType::Timestamp),
+                ("end_time", IngestedType::Timestamp),
             ],
         );
         infer_create_time(std::slice::from_mut(&mut t));
@@ -4297,8 +4312,8 @@ mod tests {
         let mut t = table(
             "events",
             &[
-                ("end_time", ColumnType::Timestamp),
-                ("stop_time", ColumnType::Timestamp),
+                ("end_time", IngestedType::Timestamp),
+                ("stop_time", IngestedType::Timestamp),
             ],
         );
         infer_create_time(std::slice::from_mut(&mut t));
@@ -4310,8 +4325,8 @@ mod tests {
         let mut t = table(
             "accounts",
             &[
-                ("created_at", ColumnType::Timestamp),
-                ("updated_at", ColumnType::Timestamp),
+                ("created_at", IngestedType::Timestamp),
+                ("updated_at", IngestedType::Timestamp),
             ],
         );
         infer_create_time(std::slice::from_mut(&mut t));
@@ -4323,8 +4338,8 @@ mod tests {
         let mut t = table(
             "orders",
             &[
-                ("authorized_time", ColumnType::Timestamp),
-                ("voided_time", ColumnType::Timestamp),
+                ("authorized_time", IngestedType::Timestamp),
+                ("voided_time", IngestedType::Timestamp),
             ],
         );
         infer_create_time(std::slice::from_mut(&mut t));
@@ -4336,8 +4351,8 @@ mod tests {
         let mut t = table(
             "shipping",
             &[
-                ("shipped_at", ColumnType::Timestamp),
-                ("returned_at", ColumnType::Timestamp),
+                ("shipped_at", IngestedType::Timestamp),
+                ("returned_at", IngestedType::Timestamp),
             ],
         );
         infer_create_time(std::slice::from_mut(&mut t));
@@ -4349,8 +4364,8 @@ mod tests {
         let mut t = table(
             "chart",
             &[
-                ("charttime", ColumnType::Timestamp),
-                ("storetime", ColumnType::Timestamp),
+                ("charttime", IngestedType::Timestamp),
+                ("storetime", IngestedType::Timestamp),
             ],
         );
         infer_create_time(std::slice::from_mut(&mut t));
@@ -4362,8 +4377,8 @@ mod tests {
         let mut t = table(
             "inputevents",
             &[
-                ("starttime", ColumnType::Timestamp),
-                ("storetime", ColumnType::Timestamp),
+                ("starttime", IngestedType::Timestamp),
+                ("storetime", IngestedType::Timestamp),
             ],
         );
         infer_create_time(std::slice::from_mut(&mut t));
@@ -4375,8 +4390,8 @@ mod tests {
         let mut t = table(
             "transfers",
             &[
-                ("intime", ColumnType::Timestamp),
-                ("outtime", ColumnType::Timestamp),
+                ("intime", IngestedType::Timestamp),
+                ("outtime", IngestedType::Timestamp),
             ],
         );
         infer_create_time(std::slice::from_mut(&mut t));
@@ -4387,8 +4402,8 @@ mod tests {
     fn compatible_numeric_to_var_string() {
         let a = ColumnSpec {
             name: "user_id".to_string(),
-            source_dtype: ColumnType::Int64,
-            ingested_dtype: ColumnType::Int64,
+            source_dtype: SourceType::Int64,
+            ingested_dtype: IngestedType::Int64,
             timestamp_format: None,
             timestamp_unit: None,
             fixed_len: None,
@@ -4397,8 +4412,8 @@ mod tests {
         };
         let b = ColumnSpec {
             name: "id".to_string(),
-            source_dtype: ColumnType::String,
-            ingested_dtype: ColumnType::String,
+            source_dtype: SourceType::String,
+            ingested_dtype: IngestedType::String,
             timestamp_format: None,
             timestamp_unit: None,
             fixed_len: None,
@@ -4412,8 +4427,8 @@ mod tests {
     fn incompatible_uuid_and_bytes() {
         let a = ColumnSpec {
             name: "device_id".to_string(),
-            source_dtype: ColumnType::String,
-            ingested_dtype: ColumnType::Uuid,
+            source_dtype: SourceType::String,
+            ingested_dtype: IngestedType::Uuid,
             timestamp_format: None,
             timestamp_unit: None,
             fixed_len: None,
@@ -4422,8 +4437,8 @@ mod tests {
         };
         let b = ColumnSpec {
             name: "id".to_string(),
-            source_dtype: ColumnType::Bytes,
-            ingested_dtype: ColumnType::Bytes,
+            source_dtype: SourceType::Bytes,
+            ingested_dtype: IngestedType::Bytes,
             timestamp_format: None,
             timestamp_unit: None,
             fixed_len: None,
@@ -4437,8 +4452,8 @@ mod tests {
     fn compatible_uuid() {
         let a = ColumnSpec {
             name: "id".to_string(),
-            source_dtype: ColumnType::String,
-            ingested_dtype: ColumnType::Uuid,
+            source_dtype: SourceType::String,
+            ingested_dtype: IngestedType::Uuid,
             timestamp_format: None,
             timestamp_unit: None,
             fixed_len: None,
@@ -4447,8 +4462,8 @@ mod tests {
         };
         let b = ColumnSpec {
             name: "id".to_string(),
-            source_dtype: ColumnType::Bytes,
-            ingested_dtype: ColumnType::Uuid,
+            source_dtype: SourceType::Bytes,
+            ingested_dtype: IngestedType::Uuid,
             timestamp_format: None,
             timestamp_unit: None,
             fixed_len: None,

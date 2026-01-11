@@ -8,7 +8,7 @@ use crate::mapping::{
     PkHashShard, PkHashStore, PkGxHash,
 };
 use crate::source_metadata::{
-    relationship_name, ColumnSpec, ColumnType, SortKeySpec, TableFormat, TableSpec,
+    relationship_name, ColumnSpec, IngestedType, SortKeySpec, SourceType, TableFormat, TableSpec,
     TimestampEncodingKind, TimestampEncodingSpec, TimestampUnit, WeightEncodingKind,
     WeightEncodingSpec,
 };
@@ -27,7 +27,7 @@ use diskgraph_fs::{
     build_adls_client, build_gcs_client, build_s3_client, AdlsConfig, GcsConfig, S3Config,
 };
 use diskgraph_rowpack::{
-    LogicalType as RowpackType, RowPackConfig, RowPackContextBuilder, RowPackEncoder,
+    IngestedType as RowpackType, RowPackConfig, RowPackContextBuilder, RowPackEncoder,
     RowPackRowLens, RowValueAccess,
 };
 use diskgraph_index::builder::MemoryBudget;
@@ -821,14 +821,14 @@ struct WeightExprRuntime {
     vars: Vec<WeightExprVar>,
     var_values: std::collections::BTreeMap<String, f64>,
     simple_idx: Option<usize>,
-    simple_dtype: Option<ColumnType>,
+    simple_dtype: Option<IngestedType>,
     simple_scale: Option<i32>,
 }
 
 struct WeightExprVar {
     name: String,
     idx: usize,
-    dtype: ColumnType,
+    dtype: IngestedType,
     scale: Option<i32>,
 }
 
@@ -1009,21 +1009,21 @@ fn compile_weight_expr(expr: &str, table: &TableSpec) -> Result<WeightExprRuntim
 fn access_value_to_f64(
     access: &mut RowAccess<'_>,
     idx: usize,
-    dtype: &ColumnType,
+    dtype: &IngestedType,
     scale: Option<i32>,
 ) -> Option<f64> {
     match dtype {
-        ColumnType::Int64 => access.get_int64(idx).ok().flatten().map(|v| v as f64),
-        ColumnType::Int32 | ColumnType::Int16 | ColumnType::Int8 => {
+        IngestedType::Int64 => access.get_int64(idx).ok().flatten().map(|v| v as f64),
+        IngestedType::Int32 | IngestedType::Int16 | IngestedType::Int8 => {
             access.get_int32(idx).ok().flatten().map(|v| v as f64)
         }
-        ColumnType::UInt64 => access.get_uint64(idx).ok().flatten().map(|v| v as f64),
-        ColumnType::UInt32 | ColumnType::UInt16 | ColumnType::UInt8 => {
+        IngestedType::UInt64 => access.get_uint64(idx).ok().flatten().map(|v| v as f64),
+        IngestedType::UInt32 | IngestedType::UInt16 | IngestedType::UInt8 => {
             access.get_uint32(idx).ok().flatten().map(|v| v as f64)
         }
-        ColumnType::Float64 => access.get_float64(idx).ok().flatten(),
-        ColumnType::Float32 => access.get_float32(idx).ok().flatten().map(|v| v as f64),
-        ColumnType::Decimal128 => {
+        IngestedType::Float64 => access.get_float64(idx).ok().flatten(),
+        IngestedType::Float32 => access.get_float32(idx).ok().flatten().map(|v| v as f64),
+        IngestedType::Decimal128 => {
             let scale = scale.unwrap_or(0);
             let denom = 10_f64.powi(scale);
             access
@@ -1032,7 +1032,7 @@ fn access_value_to_f64(
                 .flatten()
                 .map(|v| (v as f64) / denom)
         }
-        ColumnType::Decimal256 => {
+        IngestedType::Decimal256 => {
             let scale = scale.unwrap_or(0);
             access
                 .get_decimal256(idx)
@@ -6427,22 +6427,22 @@ fn run_tasks(
 
 fn key_type_for_column(col: &ColumnSpec) -> Result<KeyType> {
     match col.ingested_dtype {
-        ColumnType::Int64
-        | ColumnType::Int32
-        | ColumnType::Int16
-        | ColumnType::Int8
-        | ColumnType::UInt64
-        | ColumnType::UInt32
-        | ColumnType::UInt16
-        | ColumnType::UInt8 => Ok(KeyType::Int64),
-        ColumnType::Float32
-        | ColumnType::Float64
-        | ColumnType::Decimal128
-        | ColumnType::Decimal256 => Ok(KeyType::Int64),
-        ColumnType::String | ColumnType::Bytes => Ok(KeyType::VarBytes),
-        ColumnType::Uuid => Ok(KeyType::Uuid),
-        ColumnType::Uuid256 => Ok(KeyType::Uuid256),
-        ColumnType::Ip => Ok(KeyType::Ip),
+        IngestedType::Int64
+        | IngestedType::Int32
+        | IngestedType::Int16
+        | IngestedType::Int8
+        | IngestedType::UInt64
+        | IngestedType::UInt32
+        | IngestedType::UInt16
+        | IngestedType::UInt8 => Ok(KeyType::Int64),
+        IngestedType::Float32
+        | IngestedType::Float64
+        | IngestedType::Decimal128
+        | IngestedType::Decimal256 => Ok(KeyType::Int64),
+        IngestedType::String | IngestedType::Bytes => Ok(KeyType::VarBytes),
+        IngestedType::Uuid => Ok(KeyType::Uuid),
+        IngestedType::Uuid256 => Ok(KeyType::Uuid256),
+        IngestedType::Ip => Ok(KeyType::Ip),
         _ => Err(anyhow!("unsupported primary key type")),
     }
 }
@@ -6466,18 +6466,18 @@ fn key_from_access_into_buf(
     match key_type {
         KeyType::Int64 => {
             let value = match col.ingested_dtype {
-                ColumnType::Int64 => access
+                IngestedType::Int64 => access
                     .get_int64(idx)
                     .map_err(|_| KeyParseError::TypeMismatch)?
                     .ok_or(KeyParseError::TypeMismatch)?,
-                ColumnType::Int32 | ColumnType::Int16 | ColumnType::Int8 => {
+                IngestedType::Int32 | IngestedType::Int16 | IngestedType::Int8 => {
                     let value = access
                         .get_int32(idx)
                         .map_err(|_| KeyParseError::TypeMismatch)?
                         .ok_or(KeyParseError::TypeMismatch)?;
                     value as i64
                 }
-                ColumnType::UInt64 => {
+                IngestedType::UInt64 => {
                     let value = access
                         .get_uint64(idx)
                         .map_err(|_| KeyParseError::TypeMismatch)?
@@ -6485,7 +6485,7 @@ fn key_from_access_into_buf(
                     out.extend_from_slice(&value.to_le_bytes());
                     return Ok(());
                 }
-                ColumnType::UInt32 | ColumnType::UInt16 | ColumnType::UInt8 => {
+                IngestedType::UInt32 | IngestedType::UInt16 | IngestedType::UInt8 => {
                     let value = access
                         .get_uint32(idx)
                         .map_err(|_| KeyParseError::TypeMismatch)?
@@ -6493,7 +6493,7 @@ fn key_from_access_into_buf(
                     out.extend_from_slice(&(value as u64).to_le_bytes());
                     return Ok(());
                 }
-                ColumnType::String | ColumnType::Bytes => {
+                IngestedType::String | IngestedType::Bytes => {
                     let (col, array) = access
                         .column_and_array(idx)
                         .map_err(|_| KeyParseError::TypeMismatch)?;
@@ -6513,19 +6513,19 @@ fn key_from_access_into_buf(
         }
         KeyType::VarBytes => {
             let bytes = match col.ingested_dtype {
-                ColumnType::Bytes => access
+                IngestedType::Bytes => access
                     .get_bytes(idx)
                     .map_err(|_| KeyParseError::TypeMismatch)?
                     .ok_or(KeyParseError::TypeMismatch)?
                     .to_vec(),
-                ColumnType::String => {
+                IngestedType::String => {
                     let value = access
                         .get_string(idx)
                         .map_err(|_| KeyParseError::TypeMismatch)?
                         .ok_or(KeyParseError::TypeMismatch)?;
                     normalize_numeric_bytes(value.as_bytes(), col)?
                 }
-                ColumnType::Int64 => {
+                IngestedType::Int64 => {
                     let value = access
                         .get_int64(idx)
                         .map_err(|_| KeyParseError::TypeMismatch)?
@@ -6535,7 +6535,7 @@ fn key_from_access_into_buf(
                     }
                     value.to_string().into_bytes()
                 }
-                ColumnType::Int32 | ColumnType::Int16 | ColumnType::Int8 => {
+                IngestedType::Int32 | IngestedType::Int16 | IngestedType::Int8 => {
                     let value = access
                         .get_int32(idx)
                         .map_err(|_| KeyParseError::TypeMismatch)?
@@ -6545,14 +6545,14 @@ fn key_from_access_into_buf(
                     }
                     value.to_string().into_bytes()
                 }
-                ColumnType::UInt64 => {
+                IngestedType::UInt64 => {
                     let value = access
                         .get_uint64(idx)
                         .map_err(|_| KeyParseError::TypeMismatch)?
                         .ok_or(KeyParseError::TypeMismatch)?;
                     value.to_string().into_bytes()
                 }
-                ColumnType::UInt32 | ColumnType::UInt16 | ColumnType::UInt8 => {
+                IngestedType::UInt32 | IngestedType::UInt16 | IngestedType::UInt8 => {
                     let value = access
                         .get_uint32(idx)
                         .map_err(|_| KeyParseError::TypeMismatch)?
@@ -6569,7 +6569,7 @@ fn key_from_access_into_buf(
         KeyType::Uuid => {
             let mut buf = [0u8; 16];
             let uuid = match col.ingested_dtype {
-                ColumnType::Uuid => {
+                IngestedType::Uuid => {
                     let value = access
                         .get_bytes(idx)
                         .map_err(|_| KeyParseError::TypeMismatch)?
@@ -6580,7 +6580,7 @@ fn key_from_access_into_buf(
                     buf.copy_from_slice(value);
                     buf
                 }
-                ColumnType::String | ColumnType::Bytes => {
+                IngestedType::String | IngestedType::Bytes => {
                     let (col, array) = access
                         .column_and_array(idx)
                         .map_err(|_| KeyParseError::TypeMismatch)?;
@@ -6604,7 +6604,7 @@ fn key_from_access_into_buf(
         KeyType::Uuid256 => {
             let mut buf = [0u8; 32];
             let uuid = match col.ingested_dtype {
-                ColumnType::Uuid256 => {
+                IngestedType::Uuid256 => {
                     let value = access
                         .get_bytes(idx)
                         .map_err(|_| KeyParseError::TypeMismatch)?
@@ -6615,7 +6615,7 @@ fn key_from_access_into_buf(
                     buf.copy_from_slice(value);
                     buf
                 }
-                ColumnType::String | ColumnType::Bytes => {
+                IngestedType::String | IngestedType::Bytes => {
                     let (col, array) = access
                         .column_and_array(idx)
                         .map_err(|_| KeyParseError::TypeMismatch)?;
@@ -6638,14 +6638,14 @@ fn key_from_access_into_buf(
         }
         KeyType::Ip => {
             let ip = match col.ingested_dtype {
-                ColumnType::Ip => {
+                IngestedType::Ip => {
                     let value = access
                         .get_bytes(idx)
                         .map_err(|_| KeyParseError::TypeMismatch)?
                         .ok_or(KeyParseError::TypeMismatch)?;
                     parse_ip_bytes(value)?
                 }
-                ColumnType::String | ColumnType::Bytes => {
+                IngestedType::String | IngestedType::Bytes => {
                     let (col, array) = access
                         .column_and_array(idx)
                         .map_err(|_| KeyParseError::TypeMismatch)?;
@@ -6908,10 +6908,10 @@ fn hex_value_unchecked(b: u8) -> u8 {
 fn normalize_numeric_bytes(bytes: &[u8], target_col: &ColumnSpec) -> KeyParseResult<Vec<u8>> {
     if matches!(
         target_col.ingested_dtype,
-        ColumnType::Float32
-            | ColumnType::Float64
-            | ColumnType::Decimal128
-            | ColumnType::Decimal256
+        IngestedType::Float32
+            | IngestedType::Float64
+            | IngestedType::Decimal128
+            | IngestedType::Decimal256
     ) {
         return normalize_base10_bytes(bytes);
     }
@@ -7129,7 +7129,7 @@ mod tests {
         assert!(parse_uuid_bytes(&[0u8; 16]).is_ok());
     }
 
-    fn single_col_table(source: ColumnType, ingested: ColumnType) -> TableSpec {
+    fn single_col_table(source: SourceType, ingested: IngestedType) -> TableSpec {
         TableSpec {
             name: "sample".to_string(),
             format: TableFormat::Parquet,
@@ -7166,7 +7166,7 @@ mod tests {
 
     #[test]
     fn access_uuid_from_uuid_string_source() {
-        let table = single_col_table(ColumnType::Uuid, ColumnType::Uuid);
+        let table = single_col_table(SourceType::String, IngestedType::Uuid);
         let text = "00112233445566778899aabbccddeeff";
         let cols: Vec<ArrayRef> = vec![Arc::new(StringArray::from(vec![text]))];
         let expected = parse_uuid_string(text.as_bytes()).unwrap();
@@ -7178,7 +7178,7 @@ mod tests {
 
     #[test]
     fn access_uuid_from_string_to_uuid() {
-        let table = single_col_table(ColumnType::String, ColumnType::Uuid);
+        let table = single_col_table(SourceType::String, IngestedType::Uuid);
         let text = "00112233445566778899aabbccddeeff";
         let cols: Vec<ArrayRef> = vec![Arc::new(StringArray::from(vec![text]))];
         let expected = parse_uuid_string(text.as_bytes()).unwrap();
@@ -7190,7 +7190,7 @@ mod tests {
 
     #[test]
     fn access_uuid256_from_string_to_uuid256() {
-        let table = single_col_table(ColumnType::String, ColumnType::Uuid256);
+        let table = single_col_table(SourceType::String, IngestedType::Uuid256);
         let text = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
         let cols: Vec<ArrayRef> = vec![Arc::new(StringArray::from(vec![text]))];
         let expected = parse_uuid256_string(text.as_bytes()).unwrap();
@@ -7202,7 +7202,7 @@ mod tests {
 
     #[test]
     fn access_ip_from_ip_string_source() {
-        let table = single_col_table(ColumnType::Ip, ColumnType::Ip);
+        let table = single_col_table(SourceType::String, IngestedType::Ip);
         let text = "192.168.1.2";
         let cols: Vec<ArrayRef> = vec![Arc::new(StringArray::from(vec![text]))];
         let expected = parse_ip_string(text.as_bytes()).unwrap();
@@ -7220,8 +7220,8 @@ mod tests {
             paths: vec![],
             columns: vec![ColumnSpec {
                 name: "created_at".to_string(),
-                source_dtype: ColumnType::String,
-                ingested_dtype: ColumnType::Timestamp,
+                source_dtype: SourceType::String,
+                ingested_dtype: IngestedType::Timestamp,
                 fixed_len: None,
                 timestamp_format: Some("rfc3339".to_string()),
                 timestamp_unit: None,
@@ -7251,8 +7251,8 @@ mod tests {
             paths: vec![],
             columns: vec![ColumnSpec {
                 name: "created_at".to_string(),
-                source_dtype: ColumnType::Int64,
-                ingested_dtype: ColumnType::Timestamp,
+                source_dtype: SourceType::Int64,
+                ingested_dtype: IngestedType::Timestamp,
                 fixed_len: None,
                 timestamp_format: None,
                 timestamp_unit: Some(TimestampUnit::Millis),
@@ -7297,8 +7297,8 @@ mod tests {
             paths: vec![],
             columns: vec![ColumnSpec {
                 name: "created_date".to_string(),
-                source_dtype: ColumnType::String,
-                ingested_dtype: ColumnType::Date,
+                source_dtype: SourceType::String,
+                ingested_dtype: IngestedType::Date,
                 fixed_len: None,
                 timestamp_format: Some("%Y-%m-%d".to_string()),
                 timestamp_unit: None,
@@ -7335,8 +7335,8 @@ mod tests {
             paths: vec![],
             columns: vec![ColumnSpec {
                 name: "id".to_string(),
-                source_dtype: ColumnType::Int64,
-                ingested_dtype: ColumnType::String,
+                source_dtype: SourceType::Int64,
+                ingested_dtype: IngestedType::String,
                 fixed_len: None,
                 timestamp_format: None,
                 timestamp_unit: None,
@@ -7365,8 +7365,8 @@ mod tests {
             paths: vec![],
             columns: vec![ColumnSpec {
                 name: "id".to_string(),
-                source_dtype: ColumnType::Bytes,
-                ingested_dtype: ColumnType::Int32,
+                source_dtype: SourceType::Bytes,
+                ingested_dtype: IngestedType::Int32,
                 fixed_len: None,
                 timestamp_format: None,
                 timestamp_unit: None,
@@ -7394,25 +7394,23 @@ fn table_schema(table: &TableSpec) -> Result<Schema> {
     let mut fields = Vec::with_capacity(table.columns.len());
     for col in &table.columns {
         let dtype = match col.source_dtype {
-            ColumnType::Int8 => DataType::Int8,
-            ColumnType::Int16 => DataType::Int16,
-            ColumnType::Int64 => DataType::Int64,
-            ColumnType::Int32 => DataType::Int32,
-            ColumnType::UInt8 => DataType::UInt8,
-            ColumnType::UInt16 => DataType::UInt16,
-            ColumnType::UInt64 => DataType::UInt64,
-            ColumnType::UInt32 => DataType::UInt32,
-            ColumnType::Float64 => DataType::Float64,
-            ColumnType::Float32 => DataType::Float32,
-            ColumnType::Bool => DataType::Boolean,
-            ColumnType::String => DataType::Utf8,
-            ColumnType::Bytes => DataType::Binary,
-            ColumnType::Uuid => DataType::Binary,
-            ColumnType::Uuid256 => DataType::Binary,
-            ColumnType::Ip => DataType::Binary,
-            ColumnType::Date => DataType::Date32,
-            ColumnType::Timestamp => DataType::Timestamp(arrow_schema::TimeUnit::Second, None),
-            ColumnType::Decimal128 => {
+            SourceType::Int8 => DataType::Int8,
+            SourceType::Int16 => DataType::Int16,
+            SourceType::Int64 => DataType::Int64,
+            SourceType::Int32 => DataType::Int32,
+            SourceType::UInt8 => DataType::UInt8,
+            SourceType::UInt16 => DataType::UInt16,
+            SourceType::UInt64 => DataType::UInt64,
+            SourceType::UInt32 => DataType::UInt32,
+            SourceType::Float64 => DataType::Float64,
+            SourceType::Float32 => DataType::Float32,
+            SourceType::Bool => DataType::Boolean,
+            SourceType::String => DataType::Utf8,
+            SourceType::Bytes => DataType::Binary,
+            SourceType::Uuid256 => DataType::Binary,
+            SourceType::Date => DataType::Date32,
+            SourceType::Timestamp => DataType::Timestamp(arrow_schema::TimeUnit::Second, None),
+            SourceType::Decimal128 => {
                 let precision = col
                     .precision
                     .ok_or_else(|| anyhow!("decimal128 column {} missing precision", col.name))?;
@@ -7425,7 +7423,7 @@ fn table_schema(table: &TableSpec) -> Result<Schema> {
                     i8::try_from(scale).map_err(|_| anyhow!("decimal128 column {} scale out of range", col.name))?;
                 DataType::Decimal128(precision, scale)
             }
-            ColumnType::Decimal256 => {
+            SourceType::Decimal256 => {
                 let precision = col
                     .precision
                     .ok_or_else(|| anyhow!("decimal256 column {} missing precision", col.name))?;
@@ -7438,17 +7436,17 @@ fn table_schema(table: &TableSpec) -> Result<Schema> {
                     i8::try_from(scale).map_err(|_| anyhow!("decimal256 column {} scale out of range", col.name))?;
                 DataType::Decimal256(precision, scale)
             }
-            ColumnType::Float32Array => DataType::List(Arc::new(Field::new(
+            SourceType::Float32Array => DataType::List(Arc::new(Field::new(
                 "item",
                 DataType::Float32,
                 true,
             ))),
-            ColumnType::Float64Array => DataType::List(Arc::new(Field::new(
+            SourceType::Float64Array => DataType::List(Arc::new(Field::new(
                 "item",
                 DataType::Float64,
                 true,
             ))),
-            ColumnType::Float16Array => DataType::List(Arc::new(Field::new(
+            SourceType::Float16Array => DataType::List(Arc::new(Field::new(
                 "item",
                 DataType::Float16,
                 true,
@@ -7471,8 +7469,8 @@ fn build_column_runtimes(table: &TableSpec) -> Vec<ColumnRuntime> {
         .columns
         .iter()
         .map(|col| {
-            let use_format = matches!(col.source_dtype, ColumnType::String | ColumnType::Bytes)
-                && matches!(col.ingested_dtype, ColumnType::Timestamp | ColumnType::Date);
+        let use_format = matches!(col.source_dtype, SourceType::String | SourceType::Bytes)
+                && matches!(col.ingested_dtype, IngestedType::Timestamp | IngestedType::Date);
             let parser = if use_format {
                 col.timestamp_format
                     .as_deref()
@@ -7492,32 +7490,32 @@ fn rowpack_columns(table: &TableSpec) -> Result<Vec<diskgraph_rowpack::RowPackCo
     let mut columns = Vec::with_capacity(table.columns.len());
     for col in &table.columns {
         let dtype = match col.ingested_dtype {
-            ColumnType::Int8 => RowpackType::Int8,
-            ColumnType::Int16 => RowpackType::Int16,
-            ColumnType::Int64 => RowpackType::Int64,
-            ColumnType::Int32 => RowpackType::Int32,
-            ColumnType::UInt8 => RowpackType::UInt8,
-            ColumnType::UInt16 => RowpackType::UInt16,
-            ColumnType::UInt64 => RowpackType::UInt64,
-            ColumnType::UInt32 => RowpackType::UInt32,
-            ColumnType::Float64 => RowpackType::Float64,
-            ColumnType::Float32 => RowpackType::Float32,
-            ColumnType::Bool => RowpackType::Bool,
-            ColumnType::String => RowpackType::String,
-            ColumnType::Bytes => RowpackType::Bytes,
-            ColumnType::Uuid => RowpackType::Uuid,
-            ColumnType::Uuid256 => RowpackType::Uuid256,
-            ColumnType::Ip => RowpackType::Ip,
-            ColumnType::Date => RowpackType::Date,
-            ColumnType::Timestamp => RowpackType::Timestamp,
-            ColumnType::Decimal128 => RowpackType::Decimal128,
-            ColumnType::Decimal256 => RowpackType::Decimal256,
-            ColumnType::Float32Array => RowpackType::Float32Array,
-            ColumnType::Float64Array => RowpackType::Float64Array,
-            ColumnType::Float16Array => RowpackType::Float16Array,
+            IngestedType::Int8 => RowpackType::Int8,
+            IngestedType::Int16 => RowpackType::Int16,
+            IngestedType::Int64 => RowpackType::Int64,
+            IngestedType::Int32 => RowpackType::Int32,
+            IngestedType::UInt8 => RowpackType::UInt8,
+            IngestedType::UInt16 => RowpackType::UInt16,
+            IngestedType::UInt64 => RowpackType::UInt64,
+            IngestedType::UInt32 => RowpackType::UInt32,
+            IngestedType::Float64 => RowpackType::Float64,
+            IngestedType::Float32 => RowpackType::Float32,
+            IngestedType::Bool => RowpackType::Bool,
+            IngestedType::String => RowpackType::String,
+            IngestedType::Bytes => RowpackType::Bytes,
+            IngestedType::Uuid => RowpackType::Uuid,
+            IngestedType::Uuid256 => RowpackType::Uuid256,
+            IngestedType::Ip => RowpackType::Ip,
+            IngestedType::Date => RowpackType::Date,
+            IngestedType::Timestamp => RowpackType::Timestamp,
+            IngestedType::Decimal128 => RowpackType::Decimal128,
+            IngestedType::Decimal256 => RowpackType::Decimal256,
+            IngestedType::Float32Array => RowpackType::Float32Array,
+            IngestedType::Float64Array => RowpackType::Float64Array,
+            IngestedType::Float16Array => RowpackType::Float16Array,
         };
         let fixed_len = match col.ingested_dtype {
-            ColumnType::Uuid | ColumnType::Uuid256 | ColumnType::Ip => None,
+            IngestedType::Uuid | IngestedType::Uuid256 | IngestedType::Ip => None,
             _ => col.fixed_len,
         };
         columns.push(diskgraph_rowpack::RowPackColumn {
@@ -7562,25 +7560,22 @@ enum EdgeKeyFastKind {
 
 fn edge_fast_path_for_column(col: &ColumnSpec) -> Option<EdgeKeyFastKind> {
     match (&col.source_dtype, &col.ingested_dtype) {
-        (s, i) if s == i => match i {
-            ColumnType::Int64 => Some(EdgeKeyFastKind::Int64),
-            ColumnType::Int32 => Some(EdgeKeyFastKind::Int32),
-            ColumnType::Int16 => Some(EdgeKeyFastKind::Int16),
-            ColumnType::Int8 => Some(EdgeKeyFastKind::Int8),
-            ColumnType::UInt64 => Some(EdgeKeyFastKind::UInt64),
-            ColumnType::UInt32 => Some(EdgeKeyFastKind::UInt32),
-            ColumnType::UInt16 => Some(EdgeKeyFastKind::UInt16),
-            ColumnType::UInt8 => Some(EdgeKeyFastKind::UInt8),
-            ColumnType::String => Some(EdgeKeyFastKind::StringVar),
-            ColumnType::Bytes => Some(EdgeKeyFastKind::BytesVar),
-            _ => None,
-        },
-        (ColumnType::String, ColumnType::Uuid) => Some(EdgeKeyFastKind::StringUuid),
-        (ColumnType::Bytes, ColumnType::Uuid) => Some(EdgeKeyFastKind::BytesUuid),
-        (ColumnType::String, ColumnType::Uuid256) => Some(EdgeKeyFastKind::StringUuid256),
-        (ColumnType::Bytes, ColumnType::Uuid256) => Some(EdgeKeyFastKind::BytesUuid256),
-        (ColumnType::String, ColumnType::Ip) => Some(EdgeKeyFastKind::StringIp),
-        (ColumnType::Bytes, ColumnType::Ip) => Some(EdgeKeyFastKind::BytesIp),
+        (SourceType::Int64, IngestedType::Int64) => Some(EdgeKeyFastKind::Int64),
+        (SourceType::Int32, IngestedType::Int32) => Some(EdgeKeyFastKind::Int32),
+        (SourceType::Int16, IngestedType::Int16) => Some(EdgeKeyFastKind::Int16),
+        (SourceType::Int8, IngestedType::Int8) => Some(EdgeKeyFastKind::Int8),
+        (SourceType::UInt64, IngestedType::UInt64) => Some(EdgeKeyFastKind::UInt64),
+        (SourceType::UInt32, IngestedType::UInt32) => Some(EdgeKeyFastKind::UInt32),
+        (SourceType::UInt16, IngestedType::UInt16) => Some(EdgeKeyFastKind::UInt16),
+        (SourceType::UInt8, IngestedType::UInt8) => Some(EdgeKeyFastKind::UInt8),
+        (SourceType::String, IngestedType::String) => Some(EdgeKeyFastKind::StringVar),
+        (SourceType::Bytes, IngestedType::Bytes) => Some(EdgeKeyFastKind::BytesVar),
+        (SourceType::String, IngestedType::Uuid) => Some(EdgeKeyFastKind::StringUuid),
+        (SourceType::Bytes, IngestedType::Uuid) => Some(EdgeKeyFastKind::BytesUuid),
+        (SourceType::String, IngestedType::Uuid256) => Some(EdgeKeyFastKind::StringUuid256),
+        (SourceType::Bytes, IngestedType::Uuid256) => Some(EdgeKeyFastKind::BytesUuid256),
+        (SourceType::String, IngestedType::Ip) => Some(EdgeKeyFastKind::StringIp),
+        (SourceType::Bytes, IngestedType::Ip) => Some(EdgeKeyFastKind::BytesIp),
         _ => None,
     }
 }
@@ -7823,19 +7818,19 @@ impl<'a> diskgraph_rowpack::RowValueAccess for RowAccess<'a> {
         if array.is_null(self.row) {
             return Ok(None);
         }
-        if col.ingested_dtype != ColumnType::Int64 {
+        if col.ingested_dtype != IngestedType::Int64 {
             return Ok(None);
         }
         match col.source_dtype {
-            ColumnType::Int64
-            | ColumnType::Int32
-            | ColumnType::Int16
-            | ColumnType::Int8
-            | ColumnType::UInt64
-            | ColumnType::UInt32
-            | ColumnType::UInt16
-            | ColumnType::UInt8 => Ok(Some(read_i64(array, self.row, &col.source_dtype)?)),
-            ColumnType::String | ColumnType::Bytes => {
+            SourceType::Int64
+            | SourceType::Int32
+            | SourceType::Int16
+            | SourceType::Int8
+            | SourceType::UInt64
+            | SourceType::UInt32
+            | SourceType::UInt16
+            | SourceType::UInt8 => Ok(Some(read_i64(array, self.row, &col.source_dtype)?)),
+            SourceType::String | SourceType::Bytes => {
                 let text = read_utf8(array, self.row, &col.source_dtype)?;
                 Ok(parse_i64(text))
             }
@@ -7849,15 +7844,15 @@ impl<'a> diskgraph_rowpack::RowValueAccess for RowAccess<'a> {
             return Ok(None);
         }
         match col.ingested_dtype {
-            ColumnType::Int32 | ColumnType::Int16 | ColumnType::Int8 => {}
+            IngestedType::Int32 | IngestedType::Int16 | IngestedType::Int8 => {}
             _ => return Ok(None),
         }
         match col.source_dtype {
-            ColumnType::Int64
-            | ColumnType::Int32
-            | ColumnType::Int16
-            | ColumnType::Int8 => Ok(Some(read_i64(array, self.row, &col.source_dtype)? as i32)),
-            ColumnType::String | ColumnType::Bytes => {
+            SourceType::Int64
+            | SourceType::Int32
+            | SourceType::Int16
+            | SourceType::Int8 => Ok(Some(read_i64(array, self.row, &col.source_dtype)? as i32)),
+            SourceType::String | SourceType::Bytes => {
                 let text = read_utf8(array, self.row, &col.source_dtype)?;
                 Ok(parse_i32(text))
             }
@@ -7870,39 +7865,39 @@ impl<'a> diskgraph_rowpack::RowValueAccess for RowAccess<'a> {
         if array.is_null(self.row) {
             return Ok(None);
         }
-        if col.ingested_dtype != ColumnType::UInt64 {
+        if col.ingested_dtype != IngestedType::UInt64 {
             return Ok(None);
         }
         match col.source_dtype {
-            ColumnType::UInt64 => {
+            SourceType::UInt64 => {
                 let arr = array
                     .as_any()
                     .downcast_ref::<arrow_array::UInt64Array>()
                     .ok_or_else(|| anyhow!("uint64 cast"))?;
                 Ok(Some(arr.value(self.row)))
             }
-            ColumnType::UInt32 => {
+            SourceType::UInt32 => {
                 let arr = array
                     .as_any()
                     .downcast_ref::<arrow_array::UInt32Array>()
                     .ok_or_else(|| anyhow!("uint32 cast"))?;
                 Ok(Some(arr.value(self.row) as u64))
             }
-            ColumnType::UInt16 => {
+            SourceType::UInt16 => {
                 let arr = array
                     .as_any()
                     .downcast_ref::<arrow_array::UInt16Array>()
                     .ok_or_else(|| anyhow!("uint16 cast"))?;
                 Ok(Some(arr.value(self.row) as u64))
             }
-            ColumnType::UInt8 => {
+            SourceType::UInt8 => {
                 let arr = array
                     .as_any()
                     .downcast_ref::<arrow_array::UInt8Array>()
                     .ok_or_else(|| anyhow!("uint8 cast"))?;
                 Ok(Some(arr.value(self.row) as u64))
             }
-            ColumnType::String | ColumnType::Bytes => {
+            SourceType::String | SourceType::Bytes => {
                 let text = read_utf8(array, self.row, &col.source_dtype)?;
                 Ok(parse_u64(text))
             }
@@ -7916,32 +7911,32 @@ impl<'a> diskgraph_rowpack::RowValueAccess for RowAccess<'a> {
             return Ok(None);
         }
         match col.ingested_dtype {
-            ColumnType::UInt32 | ColumnType::UInt16 | ColumnType::UInt8 => {}
+            IngestedType::UInt32 | IngestedType::UInt16 | IngestedType::UInt8 => {}
             _ => return Ok(None),
         }
         match col.source_dtype {
-            ColumnType::UInt32 => {
+            SourceType::UInt32 => {
                 let arr = array
                     .as_any()
                     .downcast_ref::<arrow_array::UInt32Array>()
                     .ok_or_else(|| anyhow!("uint32 cast"))?;
                 Ok(Some(arr.value(self.row)))
             }
-            ColumnType::UInt16 => {
+            SourceType::UInt16 => {
                 let arr = array
                     .as_any()
                     .downcast_ref::<arrow_array::UInt16Array>()
                     .ok_or_else(|| anyhow!("uint16 cast"))?;
                 Ok(Some(arr.value(self.row) as u32))
             }
-            ColumnType::UInt8 => {
+            SourceType::UInt8 => {
                 let arr = array
                     .as_any()
                     .downcast_ref::<arrow_array::UInt8Array>()
                     .ok_or_else(|| anyhow!("uint8 cast"))?;
                 Ok(Some(arr.value(self.row) as u32))
             }
-            ColumnType::String | ColumnType::Bytes => {
+            SourceType::String | SourceType::Bytes => {
                 let text = read_utf8(array, self.row, &col.source_dtype)?;
                 Ok(parse_u32(text))
             }
@@ -7954,25 +7949,25 @@ impl<'a> diskgraph_rowpack::RowValueAccess for RowAccess<'a> {
         if array.is_null(self.row) {
             return Ok(None);
         }
-        if col.ingested_dtype != ColumnType::Float64 {
+        if col.ingested_dtype != IngestedType::Float64 {
             return Ok(None);
         }
         match col.source_dtype {
-            ColumnType::Float64 => {
+            SourceType::Float64 => {
                 let arr = array
                     .as_any()
                     .downcast_ref::<arrow_array::Float64Array>()
                     .ok_or_else(|| anyhow!("float64 cast"))?;
                 Ok(Some(arr.value(self.row)))
             }
-            ColumnType::Float32 => {
+            SourceType::Float32 => {
                 let arr = array
                     .as_any()
                     .downcast_ref::<arrow_array::Float32Array>()
                     .ok_or_else(|| anyhow!("float32 cast"))?;
                 Ok(Some(arr.value(self.row) as f64))
             }
-            ColumnType::String | ColumnType::Bytes => {
+            SourceType::String | SourceType::Bytes => {
                 let text = read_utf8(array, self.row, &col.source_dtype)?;
                 Ok(parse_f64(text))
             }
@@ -7985,25 +7980,25 @@ impl<'a> diskgraph_rowpack::RowValueAccess for RowAccess<'a> {
         if array.is_null(self.row) {
             return Ok(None);
         }
-        if col.ingested_dtype != ColumnType::Float32 {
+        if col.ingested_dtype != IngestedType::Float32 {
             return Ok(None);
         }
         match col.source_dtype {
-            ColumnType::Float32 => {
+            SourceType::Float32 => {
                 let arr = array
                     .as_any()
                     .downcast_ref::<arrow_array::Float32Array>()
                     .ok_or_else(|| anyhow!("float32 cast"))?;
                 Ok(Some(arr.value(self.row)))
             }
-            ColumnType::Float64 => {
+            SourceType::Float64 => {
                 let arr = array
                     .as_any()
                     .downcast_ref::<arrow_array::Float64Array>()
                     .ok_or_else(|| anyhow!("float64 cast"))?;
                 Ok(Some(arr.value(self.row) as f32))
             }
-            ColumnType::String | ColumnType::Bytes => {
+            SourceType::String | SourceType::Bytes => {
                 let text = read_utf8(array, self.row, &col.source_dtype)?;
                 Ok(parse_f32(text))
             }
@@ -8016,18 +8011,18 @@ impl<'a> diskgraph_rowpack::RowValueAccess for RowAccess<'a> {
         if array.is_null(self.row) {
             return Ok(None);
         }
-        if col.ingested_dtype != ColumnType::Bool {
+        if col.ingested_dtype != IngestedType::Bool {
             return Ok(None);
         }
         match col.source_dtype {
-            ColumnType::Bool => {
+            SourceType::Bool => {
                 let arr = array
                     .as_any()
                     .downcast_ref::<arrow_array::BooleanArray>()
                     .ok_or_else(|| anyhow!("bool cast"))?;
                 Ok(Some(arr.value(self.row)))
             }
-            ColumnType::String | ColumnType::Bytes => {
+            SourceType::String | SourceType::Bytes => {
                 let text = read_utf8(array, self.row, &col.source_dtype)?;
                 Ok(parse_bool(text))
             }
@@ -8040,11 +8035,11 @@ impl<'a> diskgraph_rowpack::RowValueAccess for RowAccess<'a> {
         if array.is_null(self.row) {
             return Ok(None);
         }
-        if col.ingested_dtype != ColumnType::String {
+        if col.ingested_dtype != IngestedType::String {
             return Ok(None);
         }
         let text = match col.source_dtype {
-            ColumnType::String => {
+            SourceType::String => {
                 let arr = array
                     .as_any()
                     .downcast_ref::<arrow_array::StringArray>()
@@ -8057,7 +8052,7 @@ impl<'a> diskgraph_rowpack::RowValueAccess for RowAccess<'a> {
                     text.to_string()
                 }
             }
-            ColumnType::Bytes => {
+            SourceType::Bytes => {
                 let text = read_utf8(array, self.row, &col.source_dtype)?;
                 if text.len() > MAX_INPUT_STRING_BYTES {
                     self.trimmed_strings.fetch_add(1, Ordering::Relaxed);
@@ -8086,7 +8081,7 @@ impl<'a> diskgraph_rowpack::RowValueAccess for RowAccess<'a> {
             return Ok(None);
         }
         let bytes = match col.ingested_dtype {
-            ColumnType::Bytes => {
+            IngestedType::Bytes => {
                 let data = read_bytes(array, self.row, &col.source_dtype)?;
                 if data.len() > MAX_INPUT_STRING_BYTES {
                     self.trimmed_strings.fetch_add(1, Ordering::Relaxed);
@@ -8095,8 +8090,8 @@ impl<'a> diskgraph_rowpack::RowValueAccess for RowAccess<'a> {
                     data.to_vec()
                 }
             }
-            ColumnType::Uuid => match col.source_dtype {
-                ColumnType::String | ColumnType::Bytes | ColumnType::Uuid => {
+            IngestedType::Uuid => match col.source_dtype {
+                SourceType::String | SourceType::Bytes => {
                     if let Ok(text) = read_utf8(array, self.row, &col.source_dtype) {
                         if let Ok(uuid) = parse_uuid_string(text.as_bytes()) {
                             return Ok(Some(self.pool_bytes(uuid.to_vec())));
@@ -8114,8 +8109,8 @@ impl<'a> diskgraph_rowpack::RowValueAccess for RowAccess<'a> {
                 }
                 _ => return Ok(None),
             },
-            ColumnType::Uuid256 => match col.source_dtype {
-                ColumnType::String | ColumnType::Bytes | ColumnType::Uuid256 => {
+            IngestedType::Uuid256 => match col.source_dtype {
+                SourceType::String | SourceType::Bytes | SourceType::Uuid256 => {
                     if let Ok(text) = read_utf8(array, self.row, &col.source_dtype) {
                         if let Ok(uuid) = parse_uuid256_string(text.as_bytes()) {
                             return Ok(Some(self.pool_bytes(uuid.to_vec())));
@@ -8133,8 +8128,8 @@ impl<'a> diskgraph_rowpack::RowValueAccess for RowAccess<'a> {
                 }
                 _ => return Ok(None),
             },
-            ColumnType::Ip => match col.source_dtype {
-                ColumnType::String | ColumnType::Bytes | ColumnType::Ip => {
+            IngestedType::Ip => match col.source_dtype {
+                SourceType::String | SourceType::Bytes => {
                     if let Ok(text) = read_utf8(array, self.row, &col.source_dtype) {
                         if let Ok(ip) = parse_ip_string(text.as_bytes()) {
                             return Ok(Some(self.pool_bytes(ip.to_vec())));
@@ -8162,18 +8157,18 @@ impl<'a> diskgraph_rowpack::RowValueAccess for RowAccess<'a> {
         if array.is_null(self.row) {
             return Ok(None);
         }
-        if col.ingested_dtype != ColumnType::Date {
+        if col.ingested_dtype != IngestedType::Date {
             return Ok(None);
         }
         match col.source_dtype {
-            ColumnType::Date => {
+            SourceType::Date => {
                 let arr = array
                     .as_any()
                     .downcast_ref::<arrow_array::Date32Array>()
                     .ok_or_else(|| anyhow!("date cast"))?;
                 Ok(Some(arr.value(self.row)))
             }
-            ColumnType::String | ColumnType::Bytes => {
+            SourceType::String | SourceType::Bytes => {
                 let text = read_utf8(array, self.row, &col.source_dtype)?;
                 if let Some(parser) = self
                     .runtimes
@@ -8186,14 +8181,14 @@ impl<'a> diskgraph_rowpack::RowValueAccess for RowAccess<'a> {
                 }
                 Ok(parse_date_text(text, col.timestamp_format.as_deref()))
             }
-            ColumnType::Int8
-            | ColumnType::Int16
-            | ColumnType::Int32
-            | ColumnType::Int64
-            | ColumnType::UInt8
-            | ColumnType::UInt16
-            | ColumnType::UInt32
-            | ColumnType::UInt64 => {
+            SourceType::Int8
+            | SourceType::Int16
+            | SourceType::Int32
+            | SourceType::Int64
+            | SourceType::UInt8
+            | SourceType::UInt16
+            | SourceType::UInt32
+            | SourceType::UInt64 => {
                 let value = read_i64(array, self.row, &col.source_dtype)?;
                 let days = if let Some(unit) = col.timestamp_unit.as_ref() {
                     let (secs, _) = timestamp_from_int(value, unit.clone());
@@ -8212,15 +8207,15 @@ impl<'a> diskgraph_rowpack::RowValueAccess for RowAccess<'a> {
         if array.is_null(self.row) {
             return Ok(None);
         }
-        if col.ingested_dtype != ColumnType::Timestamp {
+        if col.ingested_dtype != IngestedType::Timestamp {
             return Ok(None);
         }
         match col.source_dtype {
-            ColumnType::Timestamp => {
+            SourceType::Timestamp => {
                 let (secs, nanos) = timestamp_parts_from_array(array, self.row)?;
                 Ok(Some((secs, nanos)))
             }
-            ColumnType::String | ColumnType::Bytes => {
+            SourceType::String | SourceType::Bytes => {
                 let text = read_utf8(array, self.row, &col.source_dtype)?;
                 if let Some(parser) = self
                     .runtimes
@@ -8233,14 +8228,14 @@ impl<'a> diskgraph_rowpack::RowValueAccess for RowAccess<'a> {
                 }
                 Ok(parse_timestamp_text(text, col.timestamp_format.as_deref()))
             }
-            ColumnType::Int8
-            | ColumnType::Int16
-            | ColumnType::Int32
-            | ColumnType::Int64
-            | ColumnType::UInt8
-            | ColumnType::UInt16
-            | ColumnType::UInt32
-            | ColumnType::UInt64 => {
+            SourceType::Int8
+            | SourceType::Int16
+            | SourceType::Int32
+            | SourceType::Int64
+            | SourceType::UInt8
+            | SourceType::UInt16
+            | SourceType::UInt32
+            | SourceType::UInt64 => {
                 let value = read_i64(array, self.row, &col.source_dtype)?;
                 let unit = col
                     .timestamp_unit
@@ -8257,18 +8252,18 @@ impl<'a> diskgraph_rowpack::RowValueAccess for RowAccess<'a> {
         if array.is_null(self.row) {
             return Ok(None);
         }
-        if col.ingested_dtype != ColumnType::Decimal128 {
+        if col.ingested_dtype != IngestedType::Decimal128 {
             return Ok(None);
         }
         match col.source_dtype {
-            ColumnType::Decimal128 => {
+            SourceType::Decimal128 => {
                 let arr = array
                     .as_any()
                     .downcast_ref::<arrow_array::Decimal128Array>()
                     .ok_or_else(|| anyhow!("decimal128 cast"))?;
                 Ok(Some(arr.value(self.row)))
             }
-            ColumnType::String | ColumnType::Bytes => {
+            SourceType::String | SourceType::Bytes => {
                 let text = read_utf8(array, self.row, &col.source_dtype)?;
                 Ok(parse_decimal_i128(text, col.scale.unwrap_or(0)))
             }
@@ -8281,18 +8276,18 @@ impl<'a> diskgraph_rowpack::RowValueAccess for RowAccess<'a> {
         if array.is_null(self.row) {
             return Ok(None);
         }
-        if col.ingested_dtype != ColumnType::Decimal256 {
+        if col.ingested_dtype != IngestedType::Decimal256 {
             return Ok(None);
         }
         match col.source_dtype {
-            ColumnType::Decimal256 => {
+            SourceType::Decimal256 => {
                 let arr = array
                     .as_any()
                     .downcast_ref::<arrow_array::Decimal256Array>()
                     .ok_or_else(|| anyhow!("decimal256 cast"))?;
                 Ok(Some(arr.value(self.row).to_le_bytes()))
             }
-            ColumnType::String | ColumnType::Bytes => {
+            SourceType::String | SourceType::Bytes => {
                 let text = read_utf8(array, self.row, &col.source_dtype)?;
                 Ok(parse_decimal_i256(text, col.scale.unwrap_or(0)).map(|v| v.to_le_bytes()))
             }
@@ -8309,7 +8304,7 @@ impl<'a> diskgraph_rowpack::RowValueAccess for RowAccess<'a> {
             return Ok(None);
         }
         match ingested_dtype {
-            ColumnType::Float32Array | ColumnType::Float16Array => {}
+            IngestedType::Float32Array | IngestedType::Float16Array => {}
             _ => return Ok(None),
         }
         let list = array
@@ -8320,7 +8315,7 @@ impl<'a> diskgraph_rowpack::RowValueAccess for RowAccess<'a> {
         let start = offsets[self.row] as usize;
         let end = offsets[self.row + 1] as usize;
         match source_dtype {
-            ColumnType::Float32Array => {
+            SourceType::Float32Array => {
                 let values_arr = list
                     .values()
                     .as_any()
@@ -8336,7 +8331,7 @@ impl<'a> diskgraph_rowpack::RowValueAccess for RowAccess<'a> {
                 }
                 Ok(Some(unsafe { std::mem::transmute::<&[f32], &'a [f32]>(vec.as_slice()) }))
             }
-            ColumnType::Float64Array => {
+            SourceType::Float64Array => {
                 let values_arr = list
                     .values()
                     .as_any()
@@ -8364,7 +8359,7 @@ impl<'a> diskgraph_rowpack::RowValueAccess for RowAccess<'a> {
         if array.is_null(self.row) {
             return Ok(None);
         }
-        if ingested_dtype != ColumnType::Float64Array {
+        if ingested_dtype != IngestedType::Float64Array {
             return Ok(None);
         }
         let list = array
@@ -8479,26 +8474,21 @@ impl RowValuePools {
 }
 
  
-fn read_utf8<'a>(array: &'a ArrayRef, row: usize, dtype: &ColumnType) -> Result<&'a str> {
+fn read_utf8<'a>(array: &'a ArrayRef, row: usize, dtype: &SourceType) -> Result<&'a str> {
     match dtype {
-        ColumnType::String => {
+        SourceType::String => {
             let arr = array
                 .as_any()
                 .downcast_ref::<arrow_array::StringArray>()
                 .ok_or_else(|| anyhow!("string cast"))?;
             Ok(arr.value(row))
         }
-        ColumnType::Bytes => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<arrow_array::BinaryArray>()
-                .ok_or_else(|| anyhow!("binary cast"))?;
-            std::str::from_utf8(arr.value(row)).map_err(|_| anyhow!("invalid utf8"))
-        }
-        ColumnType::Uuid | ColumnType::Uuid256 | ColumnType::Ip => {
-            if let Some(arr) = array.as_any().downcast_ref::<arrow_array::StringArray>() {
-                Ok(arr.value(row))
-            } else if let Some(arr) = array.as_any().downcast_ref::<arrow_array::BinaryArray>() {
+        SourceType::Bytes | SourceType::Uuid256 => {
+            if let Some(arr) = array.as_any().downcast_ref::<arrow_array::BinaryArray>() {
+                std::str::from_utf8(arr.value(row)).map_err(|_| anyhow!("invalid utf8"))
+            } else if let Some(arr) =
+                array.as_any().downcast_ref::<arrow_array::FixedSizeBinaryArray>()
+            {
                 std::str::from_utf8(arr.value(row)).map_err(|_| anyhow!("invalid utf8"))
             } else {
                 Err(anyhow!("unsupported utf8 source"))
@@ -8508,27 +8498,18 @@ fn read_utf8<'a>(array: &'a ArrayRef, row: usize, dtype: &ColumnType) -> Result<
     }
 }
 
-fn read_bytes<'a>(array: &'a ArrayRef, row: usize, dtype: &ColumnType) -> Result<&'a [u8]> {
+fn read_bytes<'a>(array: &'a ArrayRef, row: usize, dtype: &SourceType) -> Result<&'a [u8]> {
     match dtype {
-        ColumnType::String => {
+        SourceType::String => {
             let arr = array
                 .as_any()
                 .downcast_ref::<arrow_array::StringArray>()
                 .ok_or_else(|| anyhow!("string cast"))?;
             Ok(arr.value(row).as_bytes())
         }
-        ColumnType::Bytes => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<arrow_array::BinaryArray>()
-                .ok_or_else(|| anyhow!("binary cast"))?;
-            Ok(arr.value(row))
-        }
-        ColumnType::Uuid | ColumnType::Uuid256 | ColumnType::Ip => {
+        SourceType::Bytes | SourceType::Uuid256 => {
             if let Some(arr) = array.as_any().downcast_ref::<arrow_array::BinaryArray>() {
                 Ok(arr.value(row))
-            } else if let Some(arr) = array.as_any().downcast_ref::<arrow_array::StringArray>() {
-                Ok(arr.value(row).as_bytes())
             } else if let Some(arr) =
                 array.as_any().downcast_ref::<arrow_array::FixedSizeBinaryArray>()
             {
@@ -8541,58 +8522,58 @@ fn read_bytes<'a>(array: &'a ArrayRef, row: usize, dtype: &ColumnType) -> Result
     }
 }
 
-fn read_i64(array: &ArrayRef, row: usize, dtype: &ColumnType) -> Result<i64> {
+fn read_i64(array: &ArrayRef, row: usize, dtype: &SourceType) -> Result<i64> {
     match dtype {
-        ColumnType::Int64 => {
+        SourceType::Int64 => {
             let arr = array
                 .as_any()
                 .downcast_ref::<arrow_array::Int64Array>()
                 .ok_or_else(|| anyhow!("int64 cast"))?;
             Ok(arr.value(row))
         }
-        ColumnType::Int32 => {
+        SourceType::Int32 => {
             let arr = array
                 .as_any()
                 .downcast_ref::<arrow_array::Int32Array>()
                 .ok_or_else(|| anyhow!("int32 cast"))?;
             Ok(arr.value(row) as i64)
         }
-        ColumnType::Int16 => {
+        SourceType::Int16 => {
             let arr = array
                 .as_any()
                 .downcast_ref::<arrow_array::Int16Array>()
                 .ok_or_else(|| anyhow!("int16 cast"))?;
             Ok(arr.value(row) as i64)
         }
-        ColumnType::Int8 => {
+        SourceType::Int8 => {
             let arr = array
                 .as_any()
                 .downcast_ref::<arrow_array::Int8Array>()
                 .ok_or_else(|| anyhow!("int8 cast"))?;
             Ok(arr.value(row) as i64)
         }
-        ColumnType::UInt64 => {
+        SourceType::UInt64 => {
             let arr = array
                 .as_any()
                 .downcast_ref::<arrow_array::UInt64Array>()
                 .ok_or_else(|| anyhow!("uint64 cast"))?;
             Ok(arr.value(row) as i64)
         }
-        ColumnType::UInt32 => {
+        SourceType::UInt32 => {
             let arr = array
                 .as_any()
                 .downcast_ref::<arrow_array::UInt32Array>()
                 .ok_or_else(|| anyhow!("uint32 cast"))?;
             Ok(arr.value(row) as i64)
         }
-        ColumnType::UInt16 => {
+        SourceType::UInt16 => {
             let arr = array
                 .as_any()
                 .downcast_ref::<arrow_array::UInt16Array>()
                 .ok_or_else(|| anyhow!("uint16 cast"))?;
             Ok(arr.value(row) as i64)
         }
-        ColumnType::UInt8 => {
+        SourceType::UInt8 => {
             let arr = array
                 .as_any()
                 .downcast_ref::<arrow_array::UInt8Array>()

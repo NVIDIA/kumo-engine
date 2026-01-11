@@ -42,8 +42,8 @@ pub struct TableSpec {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ColumnSpec {
     pub name: String,
-    pub source_dtype: ColumnType,
-    pub ingested_dtype: ColumnType,
+    pub source_dtype: SourceType,
+    pub ingested_dtype: IngestedType,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fixed_len: Option<usize>,
     // For timestamp/date columns inferred from strings, this captures the parse format.
@@ -60,7 +60,33 @@ pub struct ColumnSpec {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum ColumnType {
+pub enum SourceType {
+    Int8,
+    Int16,
+    Int64,
+    Int32,
+    UInt8,
+    UInt16,
+    UInt64,
+    UInt32,
+    Float64,
+    Float32,
+    Bool,
+    String,
+    Bytes,
+    Uuid256,
+    Date,
+    Timestamp,
+    Decimal128,
+    Decimal256,
+    Float32Array,
+    Float64Array,
+    Float16Array,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum IngestedType {
     Int8,
     Int16,
     Int64,
@@ -256,14 +282,14 @@ impl SourceMetadata {
                     errors.push(format!("table {} has duplicate column {}", table.name, col.name));
                 }
                 if col.fixed_len.is_some()
-                    && !matches!(col.ingested_dtype, ColumnType::String | ColumnType::Bytes)
+                    && !matches!(col.ingested_dtype, IngestedType::String | IngestedType::Bytes)
                 {
                     errors.push(format!(
                         "table {} column {} fixed_len only valid for string/bytes",
                         table.name, col.name
                     ));
                 }
-                let is_decimal = matches!(col.ingested_dtype, ColumnType::Decimal128 | ColumnType::Decimal256);
+                let is_decimal = matches!(col.ingested_dtype, IngestedType::Decimal128 | IngestedType::Decimal256);
                 if is_decimal {
                     let precision = match col.precision {
                         Some(v) => v,
@@ -286,8 +312,8 @@ impl SourceMetadata {
                         }
                     };
                     let max_precision = match col.ingested_dtype {
-                        ColumnType::Decimal128 => 38,
-                        ColumnType::Decimal256 => 76,
+                        IngestedType::Decimal128 => 38,
+                        IngestedType::Decimal256 => 76,
                         _ => 0,
                     };
                     if precision == 0 || precision > max_precision {
@@ -321,23 +347,23 @@ impl SourceMetadata {
                 } else if let Some(col) = table.columns.iter().find(|c| c.name == *pk) {
                 if !matches!(
                     col.ingested_dtype,
-                    ColumnType::Int8
-                        | ColumnType::Int16
-                        | ColumnType::Int64
-                        | ColumnType::Int32
-                        | ColumnType::UInt8
-                        | ColumnType::UInt16
-                        | ColumnType::UInt64
-                        | ColumnType::UInt32
-                        | ColumnType::Float32
-                        | ColumnType::Float64
-                        | ColumnType::Decimal128
-                        | ColumnType::Decimal256
-                        | ColumnType::String
-                        | ColumnType::Bytes
-                        | ColumnType::Uuid
-                        | ColumnType::Uuid256
-                        | ColumnType::Ip
+                    IngestedType::Int8
+                        | IngestedType::Int16
+                        | IngestedType::Int64
+                        | IngestedType::Int32
+                        | IngestedType::UInt8
+                        | IngestedType::UInt16
+                        | IngestedType::UInt64
+                        | IngestedType::UInt32
+                        | IngestedType::Float32
+                        | IngestedType::Float64
+                        | IngestedType::Decimal128
+                        | IngestedType::Decimal256
+                        | IngestedType::String
+                        | IngestedType::Bytes
+                        | IngestedType::Uuid
+                        | IngestedType::Uuid256
+                        | IngestedType::Ip
                 ) {
                     errors.push(format!(
                         "table {} primary_key {} must be numeric or string/bytes/uuid/uuid256/ip",
@@ -352,16 +378,16 @@ impl SourceMetadata {
                 } else if let Some(col) = table.columns.iter().find(|c| c.name == *weight) {
                     if !matches!(
                         col.ingested_dtype,
-                        ColumnType::Int8
-                            | ColumnType::Int16
-                            | ColumnType::Int64
-                            | ColumnType::Int32
-                            | ColumnType::UInt8
-                            | ColumnType::UInt16
-                            | ColumnType::UInt64
-                            | ColumnType::UInt32
-                            | ColumnType::Float64
-                            | ColumnType::Float32
+                        IngestedType::Int8
+                            | IngestedType::Int16
+                            | IngestedType::Int64
+                            | IngestedType::Int32
+                            | IngestedType::UInt8
+                            | IngestedType::UInt16
+                            | IngestedType::UInt64
+                            | IngestedType::UInt32
+                            | IngestedType::Float64
+                            | IngestedType::Float32
                     ) {
                         errors.push(format!(
                             "table {} weight column {} must be numeric",
@@ -377,7 +403,7 @@ impl SourceMetadata {
                         table.name, ts
                     ));
                 } else if let Some(col) = table.columns.iter().find(|c| c.name == *ts) {
-                    if !matches!(col.ingested_dtype, ColumnType::Date | ColumnType::Timestamp) {
+                    if !matches!(col.ingested_dtype, IngestedType::Date | IngestedType::Timestamp) {
                         errors.push(format!(
                             "table {} create_time column {} must be date/timestamp",
                             table.name, ts
@@ -595,7 +621,7 @@ impl SourceMetadata {
 }
 
 fn compatible_key_columns(a: &ColumnSpec, b: &ColumnSpec) -> Result<(), String> {
-    use ColumnType::*;
+    use IngestedType::*;
     match (&a.ingested_dtype, &b.ingested_dtype) {
         (String, String) | (Bytes, Bytes) | (String, Bytes) | (Bytes, String) => Ok(()),
         (Uuid, Uuid) | (Uuid256, Uuid256) | (Ip, Ip) => Ok(()),
@@ -649,7 +675,7 @@ fn validate_sort_key_spec(
         }
         match column_spec(table, &ts.column) {
             Ok(col) => {
-                if !matches!(col.ingested_dtype, ColumnType::Date | ColumnType::Timestamp) {
+                if !matches!(col.ingested_dtype, IngestedType::Date | IngestedType::Timestamp) {
                     errors.push(format!(
                         "sort key {} timestamp column {} must be date/timestamp",
                         rel_name, ts.column
@@ -789,22 +815,34 @@ fn rewrite_weight_expr(expr: &str) -> Result<(String, HashMap<String, String>)> 
     Ok((out, map))
 }
 
-fn is_signed_int(t: &ColumnType) -> bool {
-    matches!(t, ColumnType::Int8 | ColumnType::Int16 | ColumnType::Int32 | ColumnType::Int64)
+fn is_signed_int(t: &IngestedType) -> bool {
+    matches!(
+        t,
+        IngestedType::Int8
+            | IngestedType::Int16
+            | IngestedType::Int32
+            | IngestedType::Int64
+    )
 }
 
-fn is_unsigned_int(t: &ColumnType) -> bool {
-    matches!(t, ColumnType::UInt8 | ColumnType::UInt16 | ColumnType::UInt32 | ColumnType::UInt64)
+fn is_unsigned_int(t: &IngestedType) -> bool {
+    matches!(
+        t,
+        IngestedType::UInt8
+            | IngestedType::UInt16
+            | IngestedType::UInt32
+            | IngestedType::UInt64
+    )
 }
 
-fn is_numeric(t: &ColumnType) -> bool {
+fn is_numeric(t: &IngestedType) -> bool {
     is_signed_int(t)
         || is_unsigned_int(t)
         || matches!(
             t,
-            ColumnType::Float32
-                | ColumnType::Float64
-                | ColumnType::Decimal128
-                | ColumnType::Decimal256
+            IngestedType::Float32
+                | IngestedType::Float64
+                | IngestedType::Decimal128
+                | IngestedType::Decimal256
         )
 }
