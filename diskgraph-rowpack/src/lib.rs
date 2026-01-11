@@ -229,27 +229,6 @@ pub struct RowPackColumn {
     pub scale: Option<i32>,
 }
 
-pub trait RowValueAccess {
-    fn get_int64(&mut self, idx: usize) -> Result<Option<i64>>;
-    fn get_int32(&mut self, idx: usize) -> Result<Option<i32>>;
-    fn get_uint64(&mut self, idx: usize) -> Result<Option<u64>>;
-    fn get_uint32(&mut self, idx: usize) -> Result<Option<u32>>;
-    fn get_float64(&mut self, idx: usize) -> Result<Option<f64>>;
-    fn get_float32(&mut self, idx: usize) -> Result<Option<f32>>;
-    fn get_bool(&mut self, idx: usize) -> Result<Option<bool>>;
-    fn get_string(&mut self, idx: usize) -> Result<Option<&str>>;
-    fn get_bytes(&mut self, idx: usize) -> Result<Option<&[u8]>>;
-    fn get_uuid(&mut self, idx: usize) -> Result<Option<[u8; 16]>>;
-    fn get_uuid256(&mut self, idx: usize) -> Result<Option<[u8; 32]>>;
-    fn get_ip(&mut self, idx: usize) -> Result<Option<[u8; 16]>>;
-    fn get_date(&mut self, idx: usize) -> Result<Option<i32>>;
-    fn get_timestamp(&mut self, idx: usize) -> Result<Option<(i64, u32)>>;
-    fn get_decimal128(&mut self, idx: usize) -> Result<Option<i128>>;
-    fn get_decimal256(&mut self, idx: usize) -> Result<Option<[u8; 32]>>;
-    fn get_float32_array(&mut self, idx: usize) -> Result<Option<&[f32]>>;
-    fn get_float64_array(&mut self, idx: usize) -> Result<Option<&[f64]>>;
-}
-
 const MAX_INPUT_STRING_BYTES: usize = 32 * 1024;
 
 #[derive(Debug, Clone)]
@@ -1817,80 +1796,6 @@ impl<'p> RowAccess<'p> {
     }
 }
 
-impl<'p> RowValueAccess for RowAccess<'p> {
-    fn get_int64(&mut self, idx: usize) -> Result<Option<i64>> {
-        RowAccess::get_int64(self, idx)
-    }
-
-    fn get_int32(&mut self, idx: usize) -> Result<Option<i32>> {
-        RowAccess::get_int32(self, idx)
-    }
-
-    fn get_uint64(&mut self, idx: usize) -> Result<Option<u64>> {
-        RowAccess::get_uint64(self, idx)
-    }
-
-    fn get_uint32(&mut self, idx: usize) -> Result<Option<u32>> {
-        RowAccess::get_uint32(self, idx)
-    }
-
-    fn get_float64(&mut self, idx: usize) -> Result<Option<f64>> {
-        RowAccess::get_float64(self, idx)
-    }
-
-    fn get_float32(&mut self, idx: usize) -> Result<Option<f32>> {
-        RowAccess::get_float32(self, idx)
-    }
-
-    fn get_bool(&mut self, idx: usize) -> Result<Option<bool>> {
-        RowAccess::get_bool(self, idx)
-    }
-
-    fn get_string(&mut self, idx: usize) -> Result<Option<&str>> {
-        RowAccess::get_string(self, idx)
-    }
-
-    fn get_bytes(&mut self, idx: usize) -> Result<Option<&[u8]>> {
-        RowAccess::get_bytes(self, idx)
-    }
-
-    fn get_uuid(&mut self, idx: usize) -> Result<Option<[u8; 16]>> {
-        RowAccess::get_uuid(self, idx)
-    }
-
-    fn get_uuid256(&mut self, idx: usize) -> Result<Option<[u8; 32]>> {
-        RowAccess::get_uuid256(self, idx)
-    }
-
-    fn get_ip(&mut self, idx: usize) -> Result<Option<[u8; 16]>> {
-        RowAccess::get_ip(self, idx)
-    }
-
-    fn get_date(&mut self, idx: usize) -> Result<Option<i32>> {
-        RowAccess::get_date(self, idx)
-    }
-
-    fn get_timestamp(&mut self, idx: usize) -> Result<Option<(i64, u32)>> {
-        RowAccess::get_timestamp(self, idx)
-    }
-
-    fn get_decimal128(&mut self, idx: usize) -> Result<Option<i128>> {
-        RowAccess::get_decimal128(self, idx)
-    }
-
-    fn get_decimal256(&mut self, idx: usize) -> Result<Option<[u8; 32]>> {
-        RowAccess::get_decimal256(self, idx)
-    }
-
-    fn get_float32_array(&mut self, idx: usize) -> Result<Option<&[f32]>> {
-        RowAccess::get_float32_array(self, idx)
-    }
-
-    fn get_float64_array(&mut self, idx: usize) -> Result<Option<&[f64]>> {
-        RowAccess::get_float64_array(self, idx)
-    }
-}
-
 fn parse_bool(value: &str) -> Option<bool> {
     match value.trim().to_ascii_lowercase().as_str() {
         "true" | "1" => Some(true),
@@ -2978,7 +2883,7 @@ impl RowPackContextBuilder {
         Ok(())
     }
 
-    pub fn observe_row_from_access<A: RowValueAccess>(&mut self, access: &mut A) -> Result<()> {
+    pub fn observe_row_from_access(&mut self, access: &mut RowAccess<'_>) -> Result<()> {
         if self.samples_seen >= self.config.sample_rows() {
             return Ok(());
         }
@@ -4101,9 +4006,9 @@ impl RowPackEncoder {
         Ok(())
     }
 
-    pub fn encode_row_from_access<A: RowValueAccess>(
+    pub fn encode_row_from_access(
         &self,
-        access: &mut A,
+        access: &mut RowAccess<'_>,
         out: &mut Vec<u8>,
         scratch: &mut RowPackScratch,
     ) -> Result<()> {
@@ -4417,9 +4322,9 @@ impl RowPackEncoder {
         Ok(())
     }
 
-    pub fn encode_row_from_access_into_buffers<A: RowValueAccess>(
+    pub fn encode_row_from_access_into_buffers(
         &self,
-        access: &mut A,
+        access: &mut RowAccess<'_>,
         tags: &mut Vec<u8>,
         bools: &mut Vec<u8>,
         data: &mut Vec<u8>,
