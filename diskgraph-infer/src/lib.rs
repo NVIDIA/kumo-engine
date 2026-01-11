@@ -244,18 +244,18 @@ fn estimate_num_shards(total_bytes: u64) -> usize {
     if total_bytes == 0 {
         return 1;
     }
-    let shard_bytes = shard_target_bytes();
+    let shard_bytes = shard_target_bytes(total_bytes);
     ((total_bytes + shard_bytes - 1) / shard_bytes) as usize
 }
 
-fn shard_target_bytes() -> u64 {
+fn shard_target_bytes(total_bytes: u64) -> u64 {
     const FALLBACK_SHARD_BYTES: u64 = 1 * 1024 * 1024 * 1024;
     let mem_total = read_system_memory_bytes();
     let cpu_count = std::thread::available_parallelism().ok().map(|n| n.get() as u64);
     match (mem_total, cpu_count) {
         (Some(mem_total), Some(cpu_count)) if cpu_count > 0 => {
             let per_cpu = mem_total / cpu_count;
-            let target = per_cpu / 4;
+            let target = smooth_shard_target(per_cpu, total_bytes);
             if target == 0 {
                 FALLBACK_SHARD_BYTES
             } else {
@@ -264,6 +264,14 @@ fn shard_target_bytes() -> u64 {
         }
         _ => FALLBACK_SHARD_BYTES,
     }
+}
+
+fn smooth_shard_target(per_cpu_bytes: u64, total_bytes: u64) -> u64 {
+    let total_gb = total_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
+    let t = ((total_gb - 10.0) / 30.0).clamp(0.0, 1.0);
+    let smooth = t * t * (3.0 - 2.0 * t);
+    let divisor = 12.0 - 8.0 * smooth;
+    (per_cpu_bytes as f64 / divisor).round() as u64
 }
 
 fn read_system_memory_bytes() -> Option<u64> {
