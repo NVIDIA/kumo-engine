@@ -1248,10 +1248,14 @@ fn format_sort_key_value(rel: &EdgeRelationMetadata, raw: u64) -> String {
     if let Some(ts) = &meta.timestamp {
         let bits = timestamp_bits_for_meta(ts);
         let delta = decode_ordered_signed(ts_raw, bits);
-        let secs = delta
-            .saturating_mul(ts.encoding.step)
-            .saturating_add(ts.encoding.anchor);
-        parts.push(format!("ts={}", format_epoch_seconds(secs)));
+        if delta == min_signed_for_bits(bits) {
+            parts.push("ts=NaT".to_string());
+        } else {
+            let secs = delta
+                .saturating_mul(ts.encoding.step)
+                .saturating_add(ts.encoding.anchor);
+            parts.push(format!("ts={}", format_epoch_seconds(secs)));
+        }
     }
     if let Some(weight) = &meta.weight {
         let value = decode_weight_value(weight, weight_raw);
@@ -1297,10 +1301,19 @@ fn decode_ordered_signed(raw: u64, bits: u8) -> i64 {
     let mask = 1u64 << (bits - 1);
     let decoded = raw ^ mask;
     match bits {
+        8 => (decoded as u8 as i8) as i64,
         16 => (decoded as u16 as i16) as i64,
         32 => (decoded as u32 as i32) as i64,
+        64 => decoded as i64,
         _ => decoded as i64,
     }
+}
+
+fn min_signed_for_bits(bits: u8) -> i64 {
+    if bits == 0 || bits >= 63 {
+        return i64::MIN;
+    }
+    -(1i64 << (bits - 1))
 }
 
 fn ordered_f32_from_bits(raw: u32) -> f32 {
