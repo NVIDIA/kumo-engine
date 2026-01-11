@@ -506,7 +506,7 @@ struct IngestContext {
     source: SourceMetadata,
     target: std::sync::Arc<OutputTarget>,
     profile_dir: Option<PathBuf>,
-    pool: Option<std::sync::Arc<TaskPool>>,
+    pool: std::sync::Arc<TaskPool>,
     index_mem_budget: Option<std::sync::Arc<MemoryBudget>>,
     num_shards: usize,
     table_rows: HashMap<String, u64>,
@@ -1308,11 +1308,11 @@ impl IngestContext {
             source,
             target,
             profile_dir: options.profile_dir,
-            pool: if options.parallel {
-                Some(std::sync::Arc::new(TaskPool::new(default_worker_threads())))
+            pool: std::sync::Arc::new(TaskPool::new(if options.parallel {
+                default_worker_threads()
             } else {
-                None
-            },
+                1
+            })),
             index_mem_budget,
             num_shards,
             table_rows: HashMap::new(),
@@ -1341,295 +1341,155 @@ impl IngestContext {
 
     fn build_node_contexts(&mut self) -> Result<()> {
         let tables = self.source.tables.clone();
-        if let Some(pool) = self.pool.as_deref() {
-            let (tx, rx) = std::sync::mpsc::channel::<Result<(String, String)>>();
-            let mut tasks = Vec::new();
-            let source_rowpack = self.source.rowpack.clone();
-            for table in &tables {
-                if table.edge_table.is_some() {
-                    continue;
-                }
-                let table = table.clone();
-                let target = std::sync::Arc::clone(&self.target);
-                let trimmed_strings = std::sync::Arc::clone(&self.trimmed_strings);
-                let progress = self.progress.clone();
-                let tx = tx.clone();
-                let rowpack_cfg = source_rowpack.clone();
-                tasks.push(WorkItem {
-                    bucket: None,
-                    run: Box::new(move || {
-                        if let Some(cb) = &progress {
-                            cb(ProgressEvent {
-                                phase: ProgressPhase::Context,
-                                table: table.name.clone(),
-                                shard: None,
-                                kind: ProgressKind::Start,
-                                delta: 0,
-                                total: Some(table.paths.len() as u64),
-                            });
+        let (tx, rx) = std::sync::mpsc::channel::<Result<(String, String)>>();
+        let mut tasks = Vec::new();
+        let source_rowpack = self.source.rowpack.clone();
+        for table in &tables {
+            if table.edge_table.is_some() {
+                continue;
+            }
+            let table = table.clone();
+            let target = std::sync::Arc::clone(&self.target);
+            let trimmed_strings = std::sync::Arc::clone(&self.trimmed_strings);
+            let progress = self.progress.clone();
+            let tx = tx.clone();
+            let rowpack_cfg = source_rowpack.clone();
+            tasks.push(WorkItem {
+                bucket: None,
+                run: Box::new(move || {
+                    if let Some(cb) = &progress {
+                        cb(ProgressEvent {
+                            phase: ProgressPhase::Context,
+                            table: table.name.clone(),
+                            shard: None,
+                            kind: ProgressKind::Start,
+                            delta: 0,
+                            total: Some(table.paths.len() as u64),
+                        });
+                    }
+                    let rowpack_config = rowpack_config_for_table(rowpack_cfg.as_ref(), &table);
+                    let node_columns = rowpack_columns(&table)?;
+                    let mut node_builder =
+                        RowPackContextBuilder::new(node_columns, rowpack_config.clone());
+                    let mut sampled = 0usize;
+                    let sample_limit = rowpack_config.sample_rows().min(SAMPLE_ROW_LIMIT);
+                    let row_access_hints = build_row_access_hints(&table);
+                    let mut pools = RowValuePools::new();
+                    let stats = RowAccessStats::new(Some(trimmed_strings.as_ref()));
+                    let mut access = RowAccess::new(row_access_hints, &mut pools, stats);
+                    let mut reached_limit = false;
+                    if table.paths.is_empty() {
+                        return Err(anyhow!("no input files for table {}", table.name));
+                    }
+                    'file_loop: for path in &table.paths {
+                        if !is_cloud_path(path) && !Path::new(path).exists() {
+                            return Err(anyhow!("input path not found {}", path));
                         }
-                        let rowpack_config = rowpack_config_for_table(rowpack_cfg.as_ref(), &table);
-                        let node_columns = rowpack_columns(&table)?;
-                        let mut node_builder =
-                            RowPackContextBuilder::new(node_columns, rowpack_config.clone());
-                        let mut sampled = 0usize;
-                        let sample_limit = rowpack_config.sample_rows().min(SAMPLE_ROW_LIMIT);
-                        let row_access_hints = build_row_access_hints(&table);
-                        let mut pools = RowValuePools::new();
-                        let stats = RowAccessStats::new(Some(trimmed_strings.as_ref()));
-                        let mut access = RowAccess::new(row_access_hints, &mut pools, stats);
-                        let mut reached_limit = false;
-                        if table.paths.is_empty() {
-                            return Err(anyhow!("no input files for table {}", table.name));
-                        }
-                        'file_loop: for path in &table.paths {
-                            if !is_cloud_path(path) && !Path::new(path).exists() {
-                                return Err(anyhow!("input path not found {}", path));
-                            }
-                            let local = localize_input(path)?;
-                            match table.format {
-                                TableFormat::Parquet => {
-                                    let file = fs::File::open(&local.path).with_context(|| {
-                                        format!("open {}", local.path.display())
-                                    })?;
-                                    let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
-                                    let reader = builder.with_batch_size(NODE_BATCH_SIZE).build()?;
-                                    for batch in reader {
-                                        let batch = batch?;
-                                        let mut cols =
-                                            Vec::with_capacity(table.columns.len());
-                                        for col in &table.columns {
-                                            let idx = batch
-                                                .schema()
-                                                .index_of(&col.name)
-                                                .context("missing column in batch")?;
-                                            cols.push(batch.column(idx).clone());
-                                        }
-                                        access.set_cols(&cols);
-                                        for row in 0..batch.num_rows() {
-                                            if sampled >= sample_limit {
-                                                reached_limit = true;
-                                                break;
-                                            }
-                                            access.set_row(row);
-                                            node_builder.observe_row_from_access(&mut access)?;
-                                            sampled = sampled.saturating_add(1);
-                                        }
-                                        if reached_limit {
+                        let local = localize_input(path)?;
+                        match table.format {
+                            TableFormat::Parquet => {
+                                let file = fs::File::open(&local.path)
+                                    .with_context(|| format!("open {}", local.path.display()))?;
+                                let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
+                                let reader = builder.with_batch_size(NODE_BATCH_SIZE).build()?;
+                                for batch in reader {
+                                    let batch = batch?;
+                                    let mut cols = Vec::with_capacity(table.columns.len());
+                                    for col in &table.columns {
+                                        let idx = batch
+                                            .schema()
+                                            .index_of(&col.name)
+                                            .context("missing column in batch")?;
+                                        cols.push(batch.column(idx).clone());
+                                    }
+                                    access.set_cols(&cols);
+                                    for row in 0..batch.num_rows() {
+                                        if sampled >= sample_limit {
+                                            reached_limit = true;
                                             break;
                                         }
+                                        access.set_row(row);
+                                        node_builder.observe_row_from_access(&mut access)?;
+                                        sampled = sampled.saturating_add(1);
+                                    }
+                                    if reached_limit {
+                                        break;
                                     }
                                 }
-                                TableFormat::Csv => {
-                                    let file = fs::File::open(&local.path).with_context(|| {
-                                        format!("open {}", local.path.display())
-                                    })?;
-                                    let schema = table_schema(&table)?;
-                                    let builder =
-                                        arrow_csv::ReaderBuilder::new(Arc::new(schema))
-                                            .with_header(true);
-                                    let reader = builder.build(file)?;
-                                    for batch in reader {
-                                        let batch = batch?;
-                                        let mut cols =
-                                            Vec::with_capacity(table.columns.len());
-                                        for col in &table.columns {
-                                            let idx = batch
-                                                .schema()
-                                                .index_of(&col.name)
-                                                .context("missing column in batch")?;
-                                            cols.push(batch.column(idx).clone());
-                                        }
-                                        access.set_cols(&cols);
-                                        for row in 0..batch.num_rows() {
-                                            if sampled >= sample_limit {
-                                                reached_limit = true;
-                                                break;
-                                            }
-                                            access.set_row(row);
-                                            node_builder.observe_row_from_access(&mut access)?;
-                                            sampled = sampled.saturating_add(1);
-                                        }
-                                        if reached_limit {
+                            }
+                            TableFormat::Csv => {
+                                let file = fs::File::open(&local.path)
+                                    .with_context(|| format!("open {}", local.path.display()))?;
+                                let schema = table_schema(&table)?;
+                                let builder =
+                                    arrow_csv::ReaderBuilder::new(Arc::new(schema)).with_header(true);
+                                let reader = builder.build(file)?;
+                                for batch in reader {
+                                    let batch = batch?;
+                                    let mut cols = Vec::with_capacity(table.columns.len());
+                                    for col in &table.columns {
+                                        let idx = batch
+                                            .schema()
+                                            .index_of(&col.name)
+                                            .context("missing column in batch")?;
+                                        cols.push(batch.column(idx).clone());
+                                    }
+                                    access.set_cols(&cols);
+                                    for row in 0..batch.num_rows() {
+                                        if sampled >= sample_limit {
+                                            reached_limit = true;
                                             break;
                                         }
+                                        access.set_row(row);
+                                        node_builder.observe_row_from_access(&mut access)?;
+                                        sampled = sampled.saturating_add(1);
                                     }
-                                }
-                            }
-                            if let Some(cb) = &progress {
-                                cb(ProgressEvent {
-                                    phase: ProgressPhase::Context,
-                                    table: table.name.clone(),
-                                    shard: None,
-                                    kind: ProgressKind::Advance,
-                                    delta: 1,
-                                    total: Some(table.paths.len() as u64),
-                                });
-                            }
-                            if reached_limit {
-                                break 'file_loop;
-                            }
-                        }
-                        let node_context = node_builder.finish()?;
-                        let ctx_bytes = node_context.to_bytes()?;
-                        target.write_bytes(&temp_node_context_path(&table.name), ctx_bytes.clone())?;
-                        target.write_bytes(&node_context_output_path(&table.name), ctx_bytes)?;
-                        if let Some(cb) = &progress {
-                            cb(ProgressEvent {
-                                phase: ProgressPhase::Context,
-                                table: table.name.clone(),
-                                shard: None,
-                                kind: ProgressKind::Finish,
-                                delta: 0,
-                                total: Some(table.paths.len() as u64),
-                            });
-                        }
-                        let ctx_path = format!("nodes/{}/node_data.ctx", table.name.to_lowercase());
-                        tx.send(Ok((table.name.clone(), ctx_path)))
-                            .map_err(|e| anyhow!("context output error: {e}"))?;
-                        Ok(())
-                    }),
-                });
-            }
-            drop(tx);
-            let task_count = tasks.len();
-            run_tasks(tasks, 0, Some(pool))?;
-            for _ in 0..task_count {
-                let (table, ctx_path) = rx
-                    .recv()
-                    .map_err(|e| anyhow!("context output error: {e}"))??;
-                self.table_contexts.insert(table, ctx_path);
-            }
-        } else {
-            for table in &tables {
-                if table.edge_table.is_some() {
-                    continue;
-                }
-                self.emit_progress(ProgressEvent {
-                    phase: ProgressPhase::Context,
-                    table: table.name.clone(),
-                    shard: None,
-                    kind: ProgressKind::Start,
-                    delta: 0,
-                    total: Some(table.paths.len() as u64),
-                });
-                let rowpack_config = rowpack_config_for_table(self.source.rowpack.as_ref(), table);
-                let node_columns = rowpack_columns(table)?;
-                let mut node_builder =
-                    RowPackContextBuilder::new(node_columns, rowpack_config.clone());
-                let mut sampled = 0usize;
-                let sample_limit = rowpack_config.sample_rows().min(SAMPLE_ROW_LIMIT);
-                let row_access_hints = build_row_access_hints(table);
-                let mut pools = RowValuePools::new();
-                let stats = RowAccessStats::new(Some(self.trimmed_strings.as_ref()));
-                let mut access = RowAccess::new(row_access_hints, &mut pools, stats);
-                let mut reached_limit = false;
-                if table.paths.is_empty() {
-                    return Err(anyhow!("no input files for table {}", table.name));
-                }
-                'file_loop: for (_file_idx, path) in table.paths.iter().enumerate() {
-                    if !is_cloud_path(path) && !Path::new(path).exists() {
-                        return Err(anyhow!("input path not found {}", path));
-                    }
-                    let local = localize_input(path)?;
-                    match table.format {
-                        TableFormat::Parquet => {
-                            let file = fs::File::open(&local.path)
-                                .with_context(|| format!("open {}", local.path.display()))?;
-                            let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
-                            let reader = builder.with_batch_size(NODE_BATCH_SIZE).build()?;
-                            for batch in reader {
-                                let batch = batch?;
-                                let mut cols = Vec::with_capacity(table.columns.len());
-                                for col in &table.columns {
-                                    let idx = batch
-                                        .schema()
-                                        .index_of(&col.name)
-                                        .context("missing column in batch")?;
-                                    cols.push(batch.column(idx).clone());
-                                }
-                                access.set_cols(&cols);
-                                for row in 0..batch.num_rows() {
-                                    if sampled >= sample_limit {
-                                        reached_limit = true;
+                                    if reached_limit {
                                         break;
                                     }
-                                    access.set_row(row);
-                                    node_builder.observe_row_from_access(&mut access)?;
-                                    sampled = sampled.saturating_add(1);
-                                }
-                                if reached_limit {
-                                    break;
                                 }
                             }
                         }
-                        TableFormat::Csv => {
-                            let file = fs::File::open(&local.path)
-                                .with_context(|| format!("open {}", local.path.display()))?;
-                            let schema = table_schema(table)?;
-                            let builder = arrow_csv::ReaderBuilder::new(Arc::new(schema))
-                                .with_header(true);
-                            let reader = builder.build(file)?;
-                            for batch in reader {
-                                let batch = batch?;
-                                let mut cols = Vec::with_capacity(table.columns.len());
-                                for col in &table.columns {
-                                    let idx = batch
-                                        .schema()
-                                        .index_of(&col.name)
-                                        .context("missing column in batch")?;
-                                    cols.push(batch.column(idx).clone());
-                                }
-                                access.set_cols(&cols);
-                                for row in 0..batch.num_rows() {
-                                    if sampled >= sample_limit {
-                                        reached_limit = true;
-                                        break;
-                                    }
-                                    access.set_row(row);
-                                    node_builder.observe_row_from_access(&mut access)?;
-                                    sampled = sampled.saturating_add(1);
-                                }
-                                if reached_limit {
-                                    break;
-                                }
-                            }
+                        if reached_limit {
+                            break 'file_loop;
                         }
                     }
-                    self.emit_progress(ProgressEvent {
-                        phase: ProgressPhase::Context,
-                        table: table.name.clone(),
-                        shard: None,
-                        kind: ProgressKind::Advance,
-                        delta: 1,
-                        total: Some(table.paths.len() as u64),
-                    });
-                    if reached_limit {
-                        break 'file_loop;
-                    }
-                }
-                let node_context = node_builder.finish()?;
-                let ctx_bytes = node_context.to_bytes()?;
-                self.target
-                    .write_bytes(&temp_node_context_path(&table.name), ctx_bytes.clone())?;
-                self.target
-                    .write_bytes(&node_context_output_path(&table.name), ctx_bytes)?;
-                self.table_contexts.insert(
-                    table.name.clone(),
-                    format!("nodes/{}/node_data.ctx", table.name.to_lowercase()),
-                );
-                self.emit_progress(ProgressEvent {
+                    let node_context = node_builder.finish()?;
+                    let ctx_bytes = node_context.to_bytes()?;
+                    target.write_bytes(&temp_node_context_path(&table.name), ctx_bytes.clone())?;
+                    target.write_bytes(&node_context_output_path(&table.name), ctx_bytes)?;
+                    tx.send(Ok((
+                        table.name.clone(),
+                        format!("nodes/{}/node_data.ctx", table.name.to_lowercase()),
+                    )))
+                    .map_err(|e| anyhow!("context output error: {e}"))?;
+                    Ok(())
+                }),
+            });
+        }
+        drop(tx);
+        let task_count = tasks.len();
+        run_tasks(tasks, &self.pool)?;
+        for _ in 0..task_count {
+            let result = rx
+                .recv()
+                .map_err(|e| anyhow!("context output error: {e}"))??;
+            let (table_name, ctx_path) = result;
+            self.table_contexts.insert(table_name.clone(), ctx_path);
+            if let Some(cb) = &self.progress {
+                cb(ProgressEvent {
                     phase: ProgressPhase::Context,
-                    table: table.name.clone(),
+                    table: table_name,
                     shard: None,
-                    kind: ProgressKind::Finish,
-                    delta: 0,
-                    total: Some(table.paths.len() as u64),
+                    kind: ProgressKind::Advance,
+                    delta: 1,
+                    total: Some(tables.len() as u64),
                 });
             }
         }
         Ok(())
     }
+
 
     fn build_temp_shards(&mut self) -> Result<()> {
         let root = require_local_output(&self.target)?.to_path_buf();
@@ -1637,41 +1497,52 @@ impl IngestContext {
         fs::create_dir_all(&temp_root)?;
         let mut table_rows: HashMap<String, u64> = HashMap::new();
         let tables = self.source.tables.clone();
-        if let Some(pool) = self.pool.as_deref() {
-            #[derive(Default)]
-            struct EncodeResult {
-                table: String,
-                total_rows: u64,
-                node_data_dropped: u64,
-                key_failures: KeyFailureState,
-            }
+        #[derive(Default)]
+        struct EncodeResult {
+            table: String,
+            total_rows: u64,
+            node_data_dropped: u64,
+            key_failures: KeyFailureState,
+        }
 
-            let (tx, rx) = std::sync::mpsc::channel::<Result<EncodeResult>>();
-            let mut tasks = Vec::new();
-            let relationships = self.relationships.clone();
-            let relation_defs = std::sync::Arc::new(self.relation_defs.clone());
-            let num_shards = self.num_shards;
-            let target = std::sync::Arc::clone(&self.target);
-            let node_pool = NodeWritePool::new(std::sync::Arc::clone(&target), edge_writer_workers());
-            let edge_pool = EdgeSrcWritePool::new(std::sync::Arc::clone(&target), edge_writer_workers());
-            let sort_key_pool =
-                SortKeyWritePool::new(std::sync::Arc::clone(&target), edge_writer_workers());
-            let node_senders = node_pool.senders();
-            let edge_senders = edge_pool.senders();
-            let sort_key_senders = sort_key_pool.senders();
-            let trimmed_strings = std::sync::Arc::clone(&self.trimmed_strings);
-            let progress = self.progress.clone();
-            for table in &tables {
-                if let Some(cb) = &self.progress {
-                    cb(ProgressEvent {
-                        phase: ProgressPhase::Encode,
-                        table: table.name.clone(),
-                        shard: None,
-                        kind: ProgressKind::Start,
-                        delta: 0,
-                        total: Some(table.paths.len() as u64),
-                    });
-                }
+        let (tx, rx) = std::sync::mpsc::channel::<Result<EncodeResult>>();
+        let mut tasks = Vec::new();
+        let relationships = self.relationships.clone();
+        let relation_defs = std::sync::Arc::new(self.relation_defs.clone());
+        let num_shards = self.num_shards;
+        let target = std::sync::Arc::clone(&self.target);
+        let node_pool = NodeWritePool::new(std::sync::Arc::clone(&target), edge_writer_workers());
+        let edge_pool = EdgeSrcWritePool::new(std::sync::Arc::clone(&target), edge_writer_workers());
+        let sort_key_pool =
+            SortKeyWritePool::new(std::sync::Arc::clone(&target), edge_writer_workers());
+        let node_senders = node_pool.senders();
+        let edge_senders = edge_pool.senders();
+        let sort_key_senders = sort_key_pool.senders();
+        let trimmed_strings = std::sync::Arc::clone(&self.trimmed_strings);
+        let progress = self.progress.clone();
+        for table in &tables {
+            if let Some(cb) = &self.progress {
+                cb(ProgressEvent {
+                    phase: ProgressPhase::Encode,
+                    table: table.name.clone(),
+                    shard: None,
+                    kind: ProgressKind::Start,
+                    delta: 0,
+                    total: Some(table.paths.len() as u64),
+                });
+            }
+            let table = table.clone();
+            let relationships = relationships.clone();
+            let target = std::sync::Arc::clone(&target);
+            let node_senders = std::sync::Arc::clone(&node_senders);
+            let edge_senders = std::sync::Arc::clone(&edge_senders);
+            let sort_key_senders = std::sync::Arc::clone(&sort_key_senders);
+            let trimmed_strings = std::sync::Arc::clone(&trimmed_strings);
+            let progress = progress.clone();
+            let root = root.clone();
+            let relation_defs = std::sync::Arc::clone(&relation_defs);
+            let file_count = table.paths.len();
+            for file_idx in 0..file_count {
                 let table = table.clone();
                 let relationships = relationships.clone();
                 let target = std::sync::Arc::clone(&target);
@@ -1682,201 +1553,105 @@ impl IngestContext {
                 let progress = progress.clone();
                 let root = root.clone();
                 let relation_defs = std::sync::Arc::clone(&relation_defs);
-                let file_count = table.paths.len();
-                for file_idx in 0..file_count {
-                    let table = table.clone();
-                    let relationships = relationships.clone();
-                    let target = std::sync::Arc::clone(&target);
-                    let node_senders = std::sync::Arc::clone(&node_senders);
-                    let edge_senders = std::sync::Arc::clone(&edge_senders);
-                    let sort_key_senders = std::sync::Arc::clone(&sort_key_senders);
-                    let trimmed_strings = std::sync::Arc::clone(&trimmed_strings);
-                    let progress = progress.clone();
-                    let root = root.clone();
-                    let relation_defs = std::sync::Arc::clone(&relation_defs);
-                    let tx = tx.clone();
+                let tx = tx.clone();
                 tasks.push(WorkItem {
-                        bucket: None,
-                        run: Box::new(move || {
-                            let mut key_failures = KeyFailureState::default();
-                            if table.edge_table.is_some() {
-                                Self::build_temp_edge_file(
-                                    &table,
-                                    file_idx,
-                                    num_shards,
-                                    &target,
-                                    &trimmed_strings,
-                                    &progress,
-                                    &mut key_failures,
-                                    &edge_senders,
-                                    &sort_key_senders,
-                                    relation_defs.as_ref(),
-                                )?;
-                                tx.send(Ok(EncodeResult {
-                                    table: table.name.clone(),
-                                    total_rows: 0,
-                                    node_data_dropped: 0,
-                                    key_failures,
-                                }))
-                                .map_err(|e| anyhow!("encode output error: {e}"))?;
-                                return Ok(());
-                            }
-                            let node = Self::build_temp_node_file(
+                    bucket: None,
+                    run: Box::new(move || {
+                        let mut key_failures = KeyFailureState::default();
+                        if table.edge_table.is_some() {
+                            Self::build_temp_edge_file(
                                 &table,
-                                &relationships,
-                                &relation_defs,
                                 file_idx,
                                 num_shards,
                                 &target,
-                                &root,
                                 &trimmed_strings,
                                 &progress,
                                 &mut key_failures,
-                                &node_senders,
+                                &edge_senders,
                                 &sort_key_senders,
+                                relation_defs.as_ref(),
                             )?;
                             tx.send(Ok(EncodeResult {
                                 table: table.name.clone(),
-                                total_rows: node.total_rows,
-                                node_data_dropped: node.node_data_dropped,
+                                total_rows: 0,
+                                node_data_dropped: 0,
                                 key_failures,
                             }))
                             .map_err(|e| anyhow!("encode output error: {e}"))?;
-                            Ok(())
-                        }),
-                    });
-                }
-            }
-            drop(tx);
-            let task_count = tasks.len();
-            run_tasks(tasks, 0, Some(pool))?;
-            for _ in 0..task_count {
-                let result = rx
-                    .recv()
-                    .map_err(|e| anyhow!("encode output error: {e}"))??;
-                if let Some(total) = table_rows.get_mut(&result.table) {
-                    *total = total.saturating_add(result.total_rows);
-                } else if result.total_rows > 0 {
-                    table_rows.insert(result.table.clone(), result.total_rows);
-                }
-                if result.node_data_dropped > 0 {
-                    let key = format!("node_data_dropped:{}", result.table);
-                    let entry = self.pk_duplicate_counts.entry(key).or_insert(0);
-                    *entry = entry.saturating_add(result.node_data_dropped);
-                }
-                self.merge_key_failures(result.key_failures);
-                if let Some(cb) = &self.progress {
-                    let expected = tables
-                        .iter()
-                        .find(|t| t.name == result.table)
-                        .map(|t| t.paths.len() as u64)
-                        .unwrap_or(0);
-                    cb(ProgressEvent {
-                        phase: ProgressPhase::Encode,
-                        table: result.table.clone(),
-                        shard: None,
-                        kind: ProgressKind::Finish,
-                        delta: 0,
-                        total: Some(expected),
-                    });
-                }
-            }
-            drop(node_senders);
-            drop(edge_senders);
-            drop(sort_key_senders);
-            let node_stats = node_pool.finish()?;
-            let edge_stats = edge_pool.finish()?;
-            let _sort_key_stats = sort_key_pool.finish()?;
-            self.write_consolidated_meta(&node_stats, &edge_stats)?;
-            self.refresh_shard_rows_from_stats(&node_stats);
-            self.table_rows = table_rows;
-        } else {
-            let relationships = self.relationships.clone();
-            let relation_defs = self.relation_defs.clone();
-            let node_pool = NodeWritePool::new(std::sync::Arc::clone(&self.target), 1);
-            let edge_pool = EdgeSrcWritePool::new(std::sync::Arc::clone(&self.target), 1);
-            let sort_key_pool = SortKeyWritePool::new(std::sync::Arc::clone(&self.target), 1);
-            let node_senders = node_pool.senders();
-            let edge_senders = edge_pool.senders();
-            let sort_key_senders = sort_key_pool.senders();
-            for table in &tables {
-                self.emit_progress(ProgressEvent {
-                    phase: ProgressPhase::Encode,
-                    table: table.name.clone(),
-                    shard: None,
-                    kind: ProgressKind::Start,
-                    delta: 0,
-                    total: Some(table.paths.len() as u64),
-                });
-                let mut key_failures = KeyFailureState::default();
-                if table.edge_table.is_some() {
-                    for file_idx in 0..table.paths.len() {
-                        Self::build_temp_edge_file(
-                            table,
-                            file_idx,
-                            self.num_shards,
-                            &self.target,
-                            &self.trimmed_strings,
-                            &self.progress,
-                            &mut key_failures,
-                            &edge_senders,
-                            &sort_key_senders,
-                                relation_defs.as_ref(),
-                            )?;
-                    }
-                } else {
-                    let mut total_rows = 0u64;
-                    let mut node_data_dropped = 0u64;
-                    for file_idx in 0..table.paths.len() {
+                            return Ok(());
+                        }
                         let node = Self::build_temp_node_file(
-                            table,
+                            &table,
                             &relationships,
                             &relation_defs,
                             file_idx,
-                            self.num_shards,
-                            &self.target,
+                            num_shards,
+                            &target,
                             &root,
-                            &self.trimmed_strings,
-                            &self.progress,
+                            &trimmed_strings,
+                            &progress,
                             &mut key_failures,
                             &node_senders,
                             &sort_key_senders,
                         )?;
-                        total_rows = total_rows.saturating_add(node.total_rows);
-                        node_data_dropped =
-                            node_data_dropped.saturating_add(node.node_data_dropped);
-                    }
-                    table_rows.insert(table.name.clone(), total_rows);
-                    if node_data_dropped > 0 {
-                        self.pk_duplicate_counts.insert(
-                            format!("node_data_dropped:{}", table.name),
-                            node_data_dropped,
-                        );
-                    }
-                }
-                self.merge_key_failures(key_failures);
-                let total = Some(table.paths.len() as u64);
-                self.emit_progress(ProgressEvent {
+                        tx.send(Ok(EncodeResult {
+                            table: table.name.clone(),
+                            total_rows: node.total_rows,
+                            node_data_dropped: node.node_data_dropped,
+                            key_failures,
+                        }))
+                        .map_err(|e| anyhow!("encode output error: {e}"))?;
+                        Ok(())
+                    }),
+                });
+            }
+        }
+        drop(tx);
+        let task_count = tasks.len();
+        run_tasks(tasks, &self.pool)?;
+        for _ in 0..task_count {
+            let result = rx
+                .recv()
+                .map_err(|e| anyhow!("encode output error: {e}"))??;
+            if let Some(total) = table_rows.get_mut(&result.table) {
+                *total = total.saturating_add(result.total_rows);
+            } else if result.total_rows > 0 {
+                table_rows.insert(result.table.clone(), result.total_rows);
+            }
+            if result.node_data_dropped > 0 {
+                let key = format!("node_data_dropped:{}", result.table);
+                let entry = self.pk_duplicate_counts.entry(key).or_insert(0);
+                *entry = entry.saturating_add(result.node_data_dropped);
+            }
+            self.merge_key_failures(result.key_failures);
+            if let Some(cb) = &self.progress {
+                let expected = tables
+                    .iter()
+                    .find(|t| t.name == result.table)
+                    .map(|t| t.paths.len() as u64)
+                    .unwrap_or(0);
+                cb(ProgressEvent {
                     phase: ProgressPhase::Encode,
-                    table: table.name.clone(),
+                    table: result.table.clone(),
                     shard: None,
                     kind: ProgressKind::Finish,
                     delta: 0,
-                    total,
+                    total: Some(expected),
                 });
             }
-            drop(node_senders);
-            drop(edge_senders);
-            drop(sort_key_senders);
-            let node_stats = node_pool.finish()?;
-            let edge_stats = edge_pool.finish()?;
-            let _sort_key_stats = sort_key_pool.finish()?;
-            self.write_consolidated_meta(&node_stats, &edge_stats)?;
-            self.refresh_shard_rows_from_stats(&node_stats);
-            self.table_rows = table_rows;
         }
+        drop(node_senders);
+        drop(edge_senders);
+        drop(sort_key_senders);
+        let node_stats = node_pool.finish()?;
+        let edge_stats = edge_pool.finish()?;
+        let _sort_key_stats = sort_key_pool.finish()?;
+        self.write_consolidated_meta(&node_stats, &edge_stats)?;
+        self.refresh_shard_rows_from_stats(&node_stats);
+        self.table_rows = table_rows;
         Ok(())
     }
+
 
     fn refresh_shard_rows_from_stats(&mut self, stats: &NodeWriterStats) {
         for table in &self.source.tables {
@@ -2991,9 +2766,7 @@ impl IngestContext {
                 });
             }
         }
-        let pool = self.pool.as_deref();
-        let threads = if pool.is_some() { 0 } else { 1 };
-        run_tasks(tasks.drain(..).collect(), threads, pool)?;
+        run_tasks(tasks.drain(..).collect(), &self.pool)?;
         for table in &self.source.tables {
             if table.edge_table.is_some() || table.primary_key.is_none() {
                 continue;
@@ -3156,8 +2929,7 @@ impl IngestContext {
         let root = &edge_ctx.root;
         self.edge_counts.clear();
 
-        let local_pool = TaskPool::new(1);
-        let pool = self.pool.as_deref().unwrap_or(&local_pool);
+        let pool = &self.pool;
         {
             #[derive(Default)]
             struct EdgeMapResult {
@@ -3699,7 +3471,7 @@ impl IngestContext {
 
             drop(tx);
             let task_count = tasks.len();
-            run_tasks(tasks, 0, Some(pool))?;
+            run_tasks(tasks, pool)?;
             let mut done = HashMap::new();
             for _ in 0..task_count {
                 let result = rx
@@ -3823,115 +3595,33 @@ impl IngestContext {
         );
         let table_totals = self.index_table_totals();
         let mem_budget = self.index_mem_budget.clone();
-        if let Some(pool) = self.pool.as_ref() {
-            fs::create_dir_all(&root)?;
-            let metadata_path = root.join("index_metadata.json");
-            fs::write(
-                &metadata_path,
-                serde_json::to_vec_pretty(builder.metadata())?,
-            )?;
-            let jobs = builder.prepare_jobs()?;
-            let job_count = jobs.len();
-            let (tx, rx) = std::sync::mpsc::channel::<Result<(
-                String,
-                diskgraph_index::builder::ShardBuildOutput,
-            )>>();
-            let adapter = self
-                .progress
-                .clone()
-                .map(|cb| IndexProgressAdapter::new(cb, table_totals.clone()));
-            let adapter = adapter.map(std::sync::Arc::new);
-            let mut tasks = Vec::with_capacity(job_count);
-            for job in jobs {
-                let tx = tx.clone();
-                let adapter = adapter.clone();
-                let mem_budget = mem_budget.clone();
-                let shard_key = job.shard_key().to_string();
-                tasks.push(WorkItem {
-                    bucket: None,
-                    run: Box::new(move || {
-                        let result = match adapter {
-                            Some(adapter) => {
-                                job.run_with_budget(Some(adapter.as_ref()), mem_budget.clone())
-                            }
-                            None => job.run_with_budget(None, mem_budget.clone()),
-                        };
-                        match result {
-                            Ok(output) => {
-                                tx.send(Ok((shard_key, output)))
-                                    .map_err(|e| anyhow!("index output error: {e}"))?;
-                                Ok(())
-                            }
-                            Err(e) => {
-                                let msg = format!("index shard {} failed: {}", shard_key, e);
-                                let _ = tx.send(Err(anyhow!(msg.clone())));
-                                Err(anyhow!(msg))
-                            }
-                        }
-                    }),
-                });
-            }
-            drop(tx);
-            let pool_result = pool.run_tasks(tasks);
-            let mut shard_stats = HashMap::new();
-            let mut total_shard_ms = 0u64;
-            let mut total_shards = 0u64;
-            let mut err: Option<anyhow::Error> = None;
-            for _ in 0..job_count {
-                match rx.recv() {
-                    Ok(Ok((shard_key, output))) => {
-                        shard_stats.insert(shard_key, output.build_stats);
-                        total_shard_ms = total_shard_ms.saturating_add(output.wall_ms);
-                        total_shards = total_shards.saturating_add(1);
-                    }
-                    Ok(Err(e)) => {
-                        if err.is_none() {
-                            err = Some(e);
-                        }
-                    }
-                    Err(e) => {
-                        if err.is_none() {
-                            err = Some(anyhow!("index output error: {e}"));
-                        }
-                    }
-                }
-            }
-            if let Err(e) = pool_result {
-                if err.is_none() {
-                    err = Some(e);
-                }
-            }
-            if let Some(e) = err {
-                return Err(e);
-            }
-        } else if mem_budget.is_some() {
-            fs::create_dir_all(&root)?;
-            let metadata_path = root.join("index_metadata.json");
-            fs::write(
-                &metadata_path,
-                serde_json::to_vec_pretty(builder.metadata())?,
-            )?;
-            let jobs = builder.prepare_jobs()?;
-            let mut total_shard_ms = 0u64;
-            let mut total_shards = 0u64;
-            let progress = self.progress.clone();
-            let adapter = progress.map(|cb| IndexProgressAdapter::new(cb, table_totals));
-            for job in jobs {
-                let output = match &adapter {
-                    Some(adapter) => job.run_with_budget(Some(adapter), mem_budget.clone()),
-                    None => job.run_with_budget(None, mem_budget.clone()),
-                }?;
-                total_shard_ms = total_shard_ms.saturating_add(output.wall_ms);
-                total_shards = total_shards.saturating_add(1);
-            }
-        } else if let Some(progress) = self.progress.clone() {
-            let adapter = IndexProgressAdapter::new(progress, table_totals);
-            builder.build(Some(&adapter))?;
-        } else {
-            builder.build(None)?;
+        fs::create_dir_all(&root)?;
+        let metadata_path = root.join("index_metadata.json");
+        fs::write(&metadata_path, serde_json::to_vec_pretty(builder.metadata())?)?;
+        let jobs = builder.prepare_jobs()?;
+        let adapter = self
+            .progress
+            .clone()
+            .map(|cb| IndexProgressAdapter::new(cb, table_totals.clone()));
+        let adapter = adapter.map(std::sync::Arc::new);
+        let mut tasks = Vec::with_capacity(jobs.len());
+        for job in jobs {
+            let adapter = adapter.clone();
+            let mem_budget = mem_budget.clone();
+            tasks.push(WorkItem {
+                bucket: None,
+                run: Box::new(move || {
+                    let progress = adapter
+                        .as_ref()
+                        .map(|value| value.as_ref() as &dyn GraphProgressSink);
+                    job.run_with_budget(progress, mem_budget).map(|_| ())
+                }),
+            });
         }
+        run_tasks(tasks, &self.pool)?;
         Ok(())
     }
+
 
     fn index_table_totals(&self) -> HashMap<String, TableIndexTotals> {
         let mut totals = HashMap::new();
@@ -5856,45 +5546,26 @@ impl TaskPool {
         }
     }
 
-    fn run_tasks(
-        &self,
-        tasks: Vec<WorkItem>,
-    ) -> Result<()> {
+    fn run_tasks(&self, tasks: Vec<WorkItem>) -> Result<()> {
         if tasks.is_empty() {
             return Ok(());
         }
-        let task_count = tasks.len();
-        let (done_tx, done_rx) = std::sync::mpsc::channel::<Result<()>>();
+        let mut receivers = Vec::with_capacity(tasks.len());
         for task in tasks {
+            let (tx, rx) = std::sync::mpsc::channel::<Result<()>>();
             self.sender
-                .send(PoolMessage::Task(PoolTask {
-                    item: task,
-                    done: done_tx.clone(),
-                }))
+                .send(PoolMessage::Task(PoolTask { item: task, done: tx }))
                 .map_err(|e| anyhow!("task queue error: {e}"))?;
+            receivers.push(rx);
         }
-        drop(done_tx);
-        let mut err: Option<anyhow::Error> = None;
-        for _ in 0..task_count {
-            match done_rx.recv() {
+        for rx in receivers {
+            match rx.recv() {
                 Ok(Ok(())) => {}
-                Ok(Err(e)) => {
-                    if err.is_none() {
-                        err = Some(e);
-                    }
-                }
-                Err(e) => {
-                    if err.is_none() {
-                        err = Some(anyhow!("task completion error: {e}"));
-                    }
-                }
+                Ok(Err(err)) => return Err(err),
+                Err(err) => return Err(anyhow!("task result error: {err}")),
             }
         }
-        if let Some(e) = err {
-            Err(e)
-        } else {
-            Ok(())
-        }
+        Ok(())
     }
 }
 
@@ -5918,63 +5589,10 @@ fn default_worker_threads() -> usize {
         / 100
 }
 
-fn run_tasks(
-    tasks: Vec<WorkItem>,
-    threads: usize,
-    pool: Option<&TaskPool>,
-) -> Result<()> {
-    if let Some(pool) = pool {
-        return pool.run_tasks(tasks);
-    }
-    if tasks.is_empty() {
-        return Ok(());
-    }
-    let (tx, rx) = std::sync::mpsc::channel::<WorkItem>();
-    for task in tasks {
-        tx.send(task).map_err(|e| anyhow!("task queue error: {e}"))?;
-    }
-    drop(tx);
-    let rx = std::sync::Arc::new(std::sync::Mutex::new(rx));
-    let err: std::sync::Arc<std::sync::Mutex<Option<anyhow::Error>>> =
-        std::sync::Arc::new(std::sync::Mutex::new(None));
-    let mut handles = Vec::with_capacity(threads);
-    for _ in 0..threads {
-        let rx = std::sync::Arc::clone(&rx);
-        let err = std::sync::Arc::clone(&err);
-        handles.push(std::thread::spawn(move || loop {
-            if err.lock().unwrap().is_some() {
-                break;
-            }
-            let task = {
-                let guard = rx.lock().unwrap();
-                guard.recv()
-            };
-            let task = match task {
-                Ok(task) => task,
-                Err(_) => break,
-            };
-            let start = std::time::Instant::now();
-            let result = (task.run)();
-            let elapsed = start.elapsed().as_nanos() as u64;
-            if let Some(bucket) = task.bucket {
-                bucket.fetch_add(elapsed, std::sync::atomic::Ordering::Relaxed);
-            }
-            if let Err(e) = result {
-                *err.lock().unwrap() = Some(e);
-                break;
-            }
-        }));
-    }
-    for handle in handles {
-        let _ = handle.join();
-    }
-    let mut err = err.lock().unwrap();
-    if let Some(e) = err.take() {
-        Err(e)
-    } else {
-        Ok(())
-    }
+fn run_tasks(tasks: Vec<WorkItem>, pool: &TaskPool) -> Result<()> {
+    pool.run_tasks(tasks)
 }
+
 
 fn key_type_for_column(col: &ColumnSpec) -> Result<KeyType> {
     match col.ingested_dtype {
