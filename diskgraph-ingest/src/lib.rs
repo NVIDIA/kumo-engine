@@ -8027,35 +8027,60 @@ impl<'a> RowAccess<'a> {
                     }
                 }
                 ColumnType::Uuid => {
-                    let arr = array
-                        .as_any()
-                        .downcast_ref::<arrow_array::BinaryArray>()
-                        .ok_or_else(|| anyhow!("uuid cast"))?;
-                    let data = arr.value(self.row);
-                    if data.len() != 16 {
-                        return Err(anyhow!("uuid length mismatch"));
+                    if let Some(arr) = array.as_any().downcast_ref::<arrow_array::StringArray>() {
+                        let text = arr.value(self.row);
+                        let uuid = parse_uuid_string(text.as_bytes())
+                            .map_err(|_| anyhow!("uuid parse"))?;
+                        Ok(ValueRef::Uuid(uuid))
+                    } else if let Some(arr) =
+                        array.as_any().downcast_ref::<arrow_array::BinaryArray>()
+                    {
+                        let data = arr.value(self.row);
+                        if data.len() != 16 {
+                            return Err(anyhow!("uuid length mismatch"));
+                        }
+                        let mut buf = [0u8; 16];
+                        buf.copy_from_slice(data);
+                        Ok(ValueRef::Uuid(buf))
+                    } else {
+                        Err(anyhow!("uuid cast"))
                     }
-                    Ok(ValueRef::Bytes(data))
                 }
                 ColumnType::Uuid256 => {
-                    let arr = array
-                        .as_any()
-                        .downcast_ref::<arrow_array::BinaryArray>()
-                        .ok_or_else(|| anyhow!("uuid256 cast"))?;
-                    let data = arr.value(self.row);
-                    if data.len() != 32 {
-                        return Err(anyhow!("uuid256 length mismatch"));
+                    if let Some(arr) = array.as_any().downcast_ref::<arrow_array::StringArray>() {
+                        let text = arr.value(self.row);
+                        let uuid = parse_uuid256_string(text.as_bytes())
+                            .map_err(|_| anyhow!("uuid256 parse"))?;
+                        Ok(ValueRef::Uuid256(uuid))
+                    } else if let Some(arr) =
+                        array.as_any().downcast_ref::<arrow_array::BinaryArray>()
+                    {
+                        let data = arr.value(self.row);
+                        if data.len() != 32 {
+                            return Err(anyhow!("uuid256 length mismatch"));
+                        }
+                        let mut buf = [0u8; 32];
+                        buf.copy_from_slice(data);
+                        Ok(ValueRef::Uuid256(buf))
+                    } else {
+                        Err(anyhow!("uuid256 cast"))
                     }
-                    Ok(ValueRef::Bytes(data))
                 }
                 ColumnType::Ip => {
-                    let arr = array
-                        .as_any()
-                        .downcast_ref::<arrow_array::BinaryArray>()
-                        .ok_or_else(|| anyhow!("ip cast"))?;
-                    let data = arr.value(self.row);
-                    let ip = parse_ip_bytes(data).map_err(|_| anyhow!("ip parse"))?;
-                    Ok(ValueRef::Bytes(self.pool_bytes(ip.to_vec())))
+                    if let Some(arr) = array.as_any().downcast_ref::<arrow_array::StringArray>() {
+                        let text = arr.value(self.row);
+                        let ip =
+                            parse_ip_string(text.as_bytes()).map_err(|_| anyhow!("ip parse"))?;
+                        Ok(ValueRef::Ip(ip))
+                    } else if let Some(arr) =
+                        array.as_any().downcast_ref::<arrow_array::BinaryArray>()
+                    {
+                        let data = arr.value(self.row);
+                        let ip = parse_ip_bytes(data).map_err(|_| anyhow!("ip parse"))?;
+                        Ok(ValueRef::Ip(ip))
+                    } else {
+                        Err(anyhow!("ip cast"))
+                    }
                 }
                 ColumnType::Date => {
                     let arr = array
@@ -8337,7 +8362,7 @@ impl<'a> RowAccess<'a> {
             (ColumnType::String, ColumnType::Uuid) => {
                 let text = read_utf8(array, self.row, &col.source_dtype)?;
                 if let Ok(uuid) = parse_uuid_string(text.as_bytes()) {
-                    Ok(ValueRef::Bytes(self.pool_bytes(uuid.to_vec())))
+                    Ok(ValueRef::Uuid(uuid))
                 } else {
                     Ok(ValueRef::Null)
                 }
@@ -8345,7 +8370,9 @@ impl<'a> RowAccess<'a> {
             (ColumnType::Bytes, ColumnType::Uuid) => {
                 let data = read_bytes(array, self.row, &col.source_dtype)?;
                 if data.len() == 16 {
-                    Ok(ValueRef::Bytes(data))
+                    let mut buf = [0u8; 16];
+                    buf.copy_from_slice(data);
+                    Ok(ValueRef::Uuid(buf))
                 } else {
                     Ok(ValueRef::Null)
                 }
@@ -8353,7 +8380,7 @@ impl<'a> RowAccess<'a> {
             (ColumnType::String, ColumnType::Uuid256) => {
                 let text = read_utf8(array, self.row, &col.source_dtype)?;
                 if let Ok(uuid) = parse_uuid256_string(text.as_bytes()) {
-                    Ok(ValueRef::Bytes(self.pool_bytes(uuid.to_vec())))
+                    Ok(ValueRef::Uuid256(uuid))
                 } else {
                     Ok(ValueRef::Null)
                 }
@@ -8361,7 +8388,9 @@ impl<'a> RowAccess<'a> {
             (ColumnType::Bytes, ColumnType::Uuid256) => {
                 let data = read_bytes(array, self.row, &col.source_dtype)?;
                 if data.len() == 32 {
-                    Ok(ValueRef::Bytes(data))
+                    let mut buf = [0u8; 32];
+                    buf.copy_from_slice(data);
+                    Ok(ValueRef::Uuid256(buf))
                 } else {
                     Ok(ValueRef::Null)
                 }
@@ -8369,7 +8398,7 @@ impl<'a> RowAccess<'a> {
             (ColumnType::String, ColumnType::Ip) => {
                 let text = read_utf8(array, self.row, &col.source_dtype)?;
                 if let Ok(ip) = parse_ip_string(text.as_bytes()) {
-                    Ok(ValueRef::Bytes(self.pool_bytes(ip.to_vec())))
+                    Ok(ValueRef::Ip(ip))
                 } else {
                     Ok(ValueRef::Null)
                 }
@@ -8377,7 +8406,7 @@ impl<'a> RowAccess<'a> {
             (ColumnType::Bytes, ColumnType::Ip) => {
                 let data = read_bytes(array, self.row, &col.source_dtype)?;
                 if let Ok(ip) = parse_ip_bytes(data) {
-                    Ok(ValueRef::Bytes(self.pool_bytes(ip.to_vec())))
+                    Ok(ValueRef::Ip(ip))
                 } else {
                     Ok(ValueRef::Null)
                 }
@@ -8510,6 +8539,9 @@ impl<'a> diskgraph_rowpack::RowValueAccess for RowAccess<'a> {
         match self.value_ref(idx)? {
             ValueRef::Null => Ok(None),
             ValueRef::Bytes(v) => Ok(Some(v)),
+            ValueRef::Uuid(v) => Ok(Some(self.pool_bytes(v.to_vec()))),
+            ValueRef::Uuid256(v) => Ok(Some(self.pool_bytes(v.to_vec()))),
+            ValueRef::Ip(v) => Ok(Some(self.pool_bytes(v.to_vec()))),
             _ => Err(anyhow!("rowpack bytes mismatch")),
         }
     }

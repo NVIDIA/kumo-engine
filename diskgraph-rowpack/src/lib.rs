@@ -4623,6 +4623,35 @@ mod tests {
     }
 
     #[test]
+    fn uuid_value_ref_roundtrip() {
+        let ctx = RowPackContext {
+            version: ROWPACK_VERSION,
+            columns: vec![ColumnContext {
+                name: "id".to_string(),
+                logical_type: LogicalType::Uuid,
+                encoding: ColumnEncoding::Uuid,
+            }],
+            estimated_row_bytes: 0,
+        };
+        let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
+        let value = [
+            0xde, 0xad, 0xbe, 0xef, 0x12, 0x34, 0x56, 0x78, 0x90, 0xab, 0xcd, 0xef, 0x01,
+            0x23, 0x45, 0x67,
+        ];
+        let row = vec![ValueRef::Uuid(value)];
+        let encoded = encode_row(&encoder, &row);
+        let decoder = RowPackDecoder::new(ctx).unwrap();
+        let mut scratch = RowPackDecodeScratch::default();
+        let decoded = decoder
+            .decode_column_value(&encoded, 0, &mut scratch)
+            .unwrap();
+        match decoded {
+            ValueRef::Uuid(bytes) => assert_eq!(bytes, value),
+            other => panic!("unexpected value ref: {:?}", other),
+        }
+    }
+
+    #[test]
     fn uuid256_json_hex() {
         let ctx = RowPackContext {
             version: ROWPACK_VERSION,
@@ -4648,6 +4677,35 @@ mod tests {
     }
 
     #[test]
+    fn uuid256_value_ref_roundtrip() {
+        let ctx = RowPackContext {
+            version: ROWPACK_VERSION,
+            columns: vec![ColumnContext {
+                name: "id".to_string(),
+                logical_type: LogicalType::Uuid256,
+                encoding: ColumnEncoding::Uuid256,
+            }],
+            estimated_row_bytes: 0,
+        };
+        let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
+        let mut value = [0u8; 32];
+        for (idx, byte) in value.iter_mut().enumerate() {
+            *byte = 0xffu8.wrapping_sub(idx as u8);
+        }
+        let row = vec![ValueRef::Uuid256(value)];
+        let encoded = encode_row(&encoder, &row);
+        let decoder = RowPackDecoder::new(ctx).unwrap();
+        let mut scratch = RowPackDecodeScratch::default();
+        let decoded = decoder
+            .decode_column_value(&encoded, 0, &mut scratch)
+            .unwrap();
+        match decoded {
+            ValueRef::Uuid256(bytes) => assert_eq!(bytes, value),
+            other => panic!("unexpected value ref: {:?}", other),
+        }
+    }
+
+    #[test]
     fn ip_json_string() {
         let ctx = RowPackContext {
             version: ROWPACK_VERSION,
@@ -4665,6 +4723,32 @@ mod tests {
         let decoder = RowPackDecoder::new(ctx).unwrap();
         let json = decoder.decode_json(&encoded).unwrap();
         assert!(json.to_string().contains("127.0.0.1"));
+    }
+
+    #[test]
+    fn ip_value_ref_roundtrip() {
+        let ctx = RowPackContext {
+            version: ROWPACK_VERSION,
+            columns: vec![ColumnContext {
+                name: "ip".to_string(),
+                logical_type: LogicalType::Ip,
+                encoding: ColumnEncoding::Ip,
+            }],
+            estimated_row_bytes: 0,
+        };
+        let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
+        let ip = std::net::Ipv6Addr::LOCALHOST.octets();
+        let row = vec![ValueRef::Ip(ip)];
+        let encoded = encode_row(&encoder, &row);
+        let decoder = RowPackDecoder::new(ctx).unwrap();
+        let mut scratch = RowPackDecodeScratch::default();
+        let decoded = decoder
+            .decode_column_value(&encoded, 0, &mut scratch)
+            .unwrap();
+        match decoded {
+            ValueRef::Ip(bytes) => assert_eq!(bytes, ip),
+            other => panic!("unexpected value ref: {:?}", other),
+        }
     }
 
     #[test]
