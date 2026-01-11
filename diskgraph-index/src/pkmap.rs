@@ -7,6 +7,7 @@ use ptr_hash::hash::Hasher as PtrHasher;
 use ptr_hash::DefaultPtrHash;
 use std::fs::File;
 use std::hash::{Hash, Hasher};
+use uuid_simd::{parse_hyphenated, parse_simple, AsOut};
 
 const PK_DATA_MAGIC: &[u8; 8] = b"DGPKDAT\0";
 const PK_DATA_VERSION: u32 = 1;
@@ -436,9 +437,16 @@ pub fn parse_key_from_str(pk: &PrimaryKeyMap, input: &str) -> Result<Key> {
     match key_type {
         KeyType::Int64 => parse_int_key(input).map(Key::Int),
         KeyType::Uuid => {
-            let value = uuid::Uuid::parse_str(input)
-                .map_err(|e| anyhow!("invalid uuid: {e}"))?;
-            Ok(Key::Uuid(*value.as_bytes()))
+            let raw = input.as_bytes();
+            let mut out = [0u8; 16];
+            let value = match raw.len() {
+                32 => parse_simple(raw, out.as_out())
+                    .map_err(|e| anyhow!("invalid uuid: {e}"))?,
+                36 => parse_hyphenated(raw, out.as_out())
+                    .map_err(|e| anyhow!("invalid uuid: {e}"))?,
+                _ => return Err(anyhow!("invalid uuid: wrong length")),
+            };
+            Ok(Key::Uuid(*value))
         }
         KeyType::VarBytes => Ok(Key::Bytes(parse_bytes_key(input)?)),
         KeyType::Uuid256 => {

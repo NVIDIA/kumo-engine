@@ -17,6 +17,7 @@ bincode = "1.3"
 num-bigint = "0.4"
 num-traits = "0.2"
 gxhash = "3.5.0"
+uuid_simd = { package = "uuid-simd", version = "0.8.0", default-features = false, features = ["std"] }
 arrow-array = { workspace = true }
 arrow-schema = { workspace = true }
 arrow-buffer = { workspace = true }

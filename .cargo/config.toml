@@ -1,15 +1,5 @@
-# .cargo/config.toml
+[target.'cfg(target_arch = "x86_64")']
+rustflags = ["-C", "target-feature=+aes,+sse2"]
 
-# x86_64: SSE2 is baseline; enable AES-NI explicitly
-[target.x86_64-unknown-linux-gnu]
-rustflags = ["-C", "target-feature=+aes"]
-
-[target.x86_64-apple-darwin]
-rustflags = ["-C", "target-feature=+aes"]
-
-# aarch64: enable ARM AES + NEON
-[target.aarch64-unknown-linux-gnu]
-rustflags = ["-C", "target-feature=+aes,+neon"]
-
-[target.aarch64-apple-darwin]
+[target.'cfg(target_arch = "aarch64")']
 rustflags = ["-C", "target-feature=+aes,+neon"]

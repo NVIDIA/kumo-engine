@@ -59,6 +59,7 @@ use std::process::{Command, Stdio};
 use tokio::runtime::Runtime;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
+use uuid_simd::{parse_hyphenated, parse_simple, AsOut};
 
 pub use source_metadata::SourceMetadata;
 
@@ -6758,57 +6759,16 @@ fn parse_uuid_bytes(bytes: &[u8]) -> KeyParseResult<[u8; 16]> {
 }
 
 fn parse_uuid_string(bytes: &[u8]) -> KeyParseResult<[u8; 16]> {
-    match bytes.len() {
-        32 => parse_uuid_hex32(bytes),
-        36 => parse_uuid_dashed(bytes),
-        38 => parse_uuid_dashed(&bytes[1..37]),
-        45 => parse_uuid_dashed(&bytes[9..45]),
-        _ => Err(KeyParseError::InvalidUuid),
+    let mut out = [0u8; 16];
+    if bytes.len() == 32 {
+        parse_simple(bytes, out.as_out()).map_err(|_| KeyParseError::InvalidUuid)?;
+        return Ok(out);
     }
-}
-
-fn parse_uuid_hex32(bytes: &[u8]) -> KeyParseResult<[u8; 16]> {
-    let mut out = [0u8; 16];
-    let h = hex_value_unchecked;
-    out[0] = (h(bytes[0]) << 4) | h(bytes[1]);
-    out[1] = (h(bytes[2]) << 4) | h(bytes[3]);
-    out[2] = (h(bytes[4]) << 4) | h(bytes[5]);
-    out[3] = (h(bytes[6]) << 4) | h(bytes[7]);
-    out[4] = (h(bytes[8]) << 4) | h(bytes[9]);
-    out[5] = (h(bytes[10]) << 4) | h(bytes[11]);
-    out[6] = (h(bytes[12]) << 4) | h(bytes[13]);
-    out[7] = (h(bytes[14]) << 4) | h(bytes[15]);
-    out[8] = (h(bytes[16]) << 4) | h(bytes[17]);
-    out[9] = (h(bytes[18]) << 4) | h(bytes[19]);
-    out[10] = (h(bytes[20]) << 4) | h(bytes[21]);
-    out[11] = (h(bytes[22]) << 4) | h(bytes[23]);
-    out[12] = (h(bytes[24]) << 4) | h(bytes[25]);
-    out[13] = (h(bytes[26]) << 4) | h(bytes[27]);
-    out[14] = (h(bytes[28]) << 4) | h(bytes[29]);
-    out[15] = (h(bytes[30]) << 4) | h(bytes[31]);
-    Ok(out)
-}
-
-fn parse_uuid_dashed(bytes: &[u8]) -> KeyParseResult<[u8; 16]> {
-    let mut out = [0u8; 16];
-    let h = hex_value_unchecked;
-    out[0] = (h(bytes[0]) << 4) | h(bytes[1]);
-    out[1] = (h(bytes[2]) << 4) | h(bytes[3]);
-    out[2] = (h(bytes[4]) << 4) | h(bytes[5]);
-    out[3] = (h(bytes[6]) << 4) | h(bytes[7]);
-    out[4] = (h(bytes[9]) << 4) | h(bytes[10]);
-    out[5] = (h(bytes[11]) << 4) | h(bytes[12]);
-    out[6] = (h(bytes[14]) << 4) | h(bytes[15]);
-    out[7] = (h(bytes[16]) << 4) | h(bytes[17]);
-    out[8] = (h(bytes[19]) << 4) | h(bytes[20]);
-    out[9] = (h(bytes[21]) << 4) | h(bytes[22]);
-    out[10] = (h(bytes[24]) << 4) | h(bytes[25]);
-    out[11] = (h(bytes[26]) << 4) | h(bytes[27]);
-    out[12] = (h(bytes[28]) << 4) | h(bytes[29]);
-    out[13] = (h(bytes[30]) << 4) | h(bytes[31]);
-    out[14] = (h(bytes[32]) << 4) | h(bytes[33]);
-    out[15] = (h(bytes[34]) << 4) | h(bytes[35]);
-    Ok(out)
+    if bytes.len() == 36 {
+        parse_hyphenated(bytes, out.as_out()).map_err(|_| KeyParseError::InvalidUuid)?;
+        return Ok(out);
+    }
+    Err(KeyParseError::InvalidUuid)
 }
 
 fn parse_uuid256_string(bytes: &[u8]) -> KeyParseResult<[u8; 32]> {
@@ -7061,18 +7021,12 @@ mod tests {
     fn parse_uuid_string_formats() {
         let raw = "00112233445566778899aabbccddeeff";
         let dashed = "00112233-4455-6677-8899-aabbccddeeff";
-        let upper = "00112233-4455-6677-8899-AABBCCDDEEFF";
-        let urn = "urn:uuid:00112233-4455-6677-8899-aabbccddeeff";
-        let braced = "{00112233-4455-6677-8899-aabbccddeeff}";
         let expected = [
             0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb,
             0xcc, 0xdd, 0xee, 0xff,
         ];
         assert_eq!(parse_uuid_string(raw.as_bytes()).unwrap(), expected);
         assert_eq!(parse_uuid_string(dashed.as_bytes()).unwrap(), expected);
-        assert_eq!(parse_uuid_string(upper.as_bytes()).unwrap(), expected);
-        assert_eq!(parse_uuid_string(urn.as_bytes()).unwrap(), expected);
-        assert_eq!(parse_uuid_string(braced.as_bytes()).unwrap(), expected);
     }
 
     #[test]

@@ -1407,14 +1407,7 @@ impl ColumnStats {
 }
 
 fn looks_like_uuid(value: &str) -> bool {
-    let mut s = value;
-    if let Some(rest) = s.strip_prefix("urn:uuid:") {
-        s = rest;
-    }
-    if s.starts_with('{') && s.ends_with('}') && s.len() >= 2 {
-        s = &s[1..s.len() - 1];
-    }
-    let bytes = s.as_bytes();
+    let bytes = value.as_bytes();
     match bytes.len() {
         32 => bytes.iter().all(|b| is_hex(*b)),
         36 => bytes

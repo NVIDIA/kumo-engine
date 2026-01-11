@@ -158,7 +158,7 @@ Rules:
 ### Key types and compatibility
 
 UUID/IP keys:
-- `ingested_dtype: uuid` supports common UUID string formats (hex with/without dashes, upper/lower, optional braces or `urn:uuid:`) and raw 16-byte values for bytes.
+- `ingested_dtype: uuid` supports 32-character hex or 36-character dashed strings, plus raw 16-byte values for bytes.
 - `ingested_dtype: uuid256` expects 64 hex characters (optional `0x` prefix) or raw 32-byte values.
 - `ingested_dtype: ip` accepts IPv4/IPv6 strings or raw 4/16-byte values (IPv4 is stored as IPv6-mapped bytes).
 

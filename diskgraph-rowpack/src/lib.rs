@@ -10,6 +10,7 @@ use rmp::encode as mp;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use gxhash::{HashMap, HashMapExt};
+use uuid_simd::{parse_hyphenated, parse_simple, format_simple, AsOut, AsciiCase};
 
 const ROWPACK_VERSION: u8 = 3;
 const MAX_FIELD_BYTES: usize = 8 * 1024 * 1024;
@@ -1934,63 +1935,20 @@ fn trim_str_bytes(value: &str, max: usize) -> &str {
 }
 
 fn parse_uuid_string(bytes: &[u8]) -> Option<[u8; 16]> {
-    match bytes.len() {
-        32 => parse_uuid_hex32(bytes),
-        36 => parse_uuid_dashed(bytes),
-        38 => parse_uuid_dashed(&bytes[1..37]),
-        45 => parse_uuid_dashed(&bytes[9..45]),
-        _ => None,
-    }
-}
-
-fn parse_uuid_hex32(bytes: &[u8]) -> Option<[u8; 16]> {
-    if bytes.len() != 32 {
+    let mut out = [0u8; 16];
+    if bytes.len() == 32 {
+        if parse_simple(bytes, out.as_out()).is_ok() {
+            return Some(out);
+        }
         return None;
     }
-    let mut out = [0u8; 16];
-    let h = hex_value_unchecked;
-    out[0] = (h(bytes[0]) << 4) | h(bytes[1]);
-    out[1] = (h(bytes[2]) << 4) | h(bytes[3]);
-    out[2] = (h(bytes[4]) << 4) | h(bytes[5]);
-    out[3] = (h(bytes[6]) << 4) | h(bytes[7]);
-    out[4] = (h(bytes[8]) << 4) | h(bytes[9]);
-    out[5] = (h(bytes[10]) << 4) | h(bytes[11]);
-    out[6] = (h(bytes[12]) << 4) | h(bytes[13]);
-    out[7] = (h(bytes[14]) << 4) | h(bytes[15]);
-    out[8] = (h(bytes[16]) << 4) | h(bytes[17]);
-    out[9] = (h(bytes[18]) << 4) | h(bytes[19]);
-    out[10] = (h(bytes[20]) << 4) | h(bytes[21]);
-    out[11] = (h(bytes[22]) << 4) | h(bytes[23]);
-    out[12] = (h(bytes[24]) << 4) | h(bytes[25]);
-    out[13] = (h(bytes[26]) << 4) | h(bytes[27]);
-    out[14] = (h(bytes[28]) << 4) | h(bytes[29]);
-    out[15] = (h(bytes[30]) << 4) | h(bytes[31]);
-    Some(out)
-}
-
-fn parse_uuid_dashed(bytes: &[u8]) -> Option<[u8; 16]> {
-    if bytes.len() != 36 {
+    if bytes.len() == 36 {
+        if parse_hyphenated(bytes, out.as_out()).is_ok() {
+            return Some(out);
+        }
         return None;
     }
-    let mut out = [0u8; 16];
-    let h = hex_value_unchecked;
-    out[0] = (h(bytes[0]) << 4) | h(bytes[1]);
-    out[1] = (h(bytes[2]) << 4) | h(bytes[3]);
-    out[2] = (h(bytes[4]) << 4) | h(bytes[5]);
-    out[3] = (h(bytes[6]) << 4) | h(bytes[7]);
-    out[4] = (h(bytes[9]) << 4) | h(bytes[10]);
-    out[5] = (h(bytes[11]) << 4) | h(bytes[12]);
-    out[6] = (h(bytes[14]) << 4) | h(bytes[15]);
-    out[7] = (h(bytes[16]) << 4) | h(bytes[17]);
-    out[8] = (h(bytes[19]) << 4) | h(bytes[20]);
-    out[9] = (h(bytes[21]) << 4) | h(bytes[22]);
-    out[10] = (h(bytes[24]) << 4) | h(bytes[25]);
-    out[11] = (h(bytes[26]) << 4) | h(bytes[27]);
-    out[12] = (h(bytes[28]) << 4) | h(bytes[29]);
-    out[13] = (h(bytes[30]) << 4) | h(bytes[31]);
-    out[14] = (h(bytes[32]) << 4) | h(bytes[33]);
-    out[15] = (h(bytes[34]) << 4) | h(bytes[35]);
-    Some(out)
+    None
 }
 
 fn parse_uuid256_string(bytes: &[u8]) -> Option<[u8; 32]> {
@@ -5757,7 +5715,10 @@ fn decode_value_msgpack(
         }
         ColumnEncoding::Uuid => {
             let bytes = decode_fixed_bytes::<16>(data)?;
-            let text = hex_encode(&bytes);
+            let mut buf = [0u8; 32];
+            let encoded = format_simple(&bytes, buf.as_out(), AsciiCase::Lower);
+            let text = std::str::from_utf8(encoded)
+                .map_err(|_| anyhow!("rowpack uuid format invalid utf8"))?;
             mp::write_str(out, &text)?;
         }
         ColumnEncoding::Uuid256 => {
@@ -5870,7 +5831,11 @@ fn decode_value_json(
         }
         ColumnEncoding::Uuid => {
             let bytes = decode_fixed_bytes::<16>(data)?;
-            JsonValue::from(hex_encode(&bytes))
+            let mut buf = [0u8; 32];
+            let encoded = format_simple(&bytes, buf.as_out(), AsciiCase::Lower);
+            let text = std::str::from_utf8(encoded)
+                .map_err(|_| anyhow!("rowpack uuid format invalid utf8"))?;
+            JsonValue::from(text)
         }
         ColumnEncoding::Uuid256 => {
             let bytes = decode_fixed_bytes::<32>(data)?;
