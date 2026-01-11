@@ -1952,22 +1952,16 @@ fn parse_uuid_string(bytes: &[u8]) -> Option<[u8; 16]> {
 }
 
 fn parse_uuid256_string(bytes: &[u8]) -> Option<[u8; 32]> {
-    let bytes = if bytes.len() == 66 && (bytes.starts_with(b"0x") || bytes.starts_with(b"0X")) {
-        &bytes[2..]
-    } else {
-        bytes
-    };
     if bytes.len() != 64 {
         return None;
     }
     let mut out = [0u8; 32];
-    let h = hex_value_unchecked;
-    let mut i = 0usize;
-    while i < 32 {
-        let idx = i * 2;
-        out[i] = (h(bytes[idx]) << 4) | h(bytes[idx + 1]);
-        i += 1;
-    }
+    // Safety: `out` is 32 bytes, so the two 16-byte regions are in-bounds and non-overlapping.
+    let out_ptr = out.as_mut_ptr();
+    let hi = unsafe { &mut *(out_ptr as *mut [u8; 16]) };
+    let lo = unsafe { &mut *(out_ptr.add(16) as *mut [u8; 16]) };
+    parse_simple(&bytes[..32], hi.as_out()).ok()?;
+    parse_simple(&bytes[32..], lo.as_out()).ok()?;
     Some(out)
 }
 
@@ -1996,26 +1990,6 @@ fn ip_to_ipv6_bytes(ip: std::net::IpAddr) -> [u8; 16] {
         std::net::IpAddr::V4(v4) => v4.to_ipv6_mapped().octets(),
         std::net::IpAddr::V6(v6) => v6.octets(),
     }
-}
-
-static HEX_MAP: [u8; 256] = {
-    let mut map = [0u8; 256];
-    let mut i = 0u8;
-    while i < 10 {
-        map[b'0' as usize + i as usize] = i;
-        i += 1;
-    }
-    let mut j = 0u8;
-    while j < 6 {
-        map[b'a' as usize + j as usize] = 10 + j;
-        map[b'A' as usize + j as usize] = 10 + j;
-        j += 1;
-    }
-    map
-};
-
-fn hex_value_unchecked(b: u8) -> u8 {
-    HEX_MAP[b as usize]
 }
 
 fn parse_timestamp_text(value: &str, format: Option<&str>) -> Option<(i64, u32)> {
@@ -5723,7 +5697,18 @@ fn decode_value_msgpack(
         }
         ColumnEncoding::Uuid256 => {
             let bytes = decode_fixed_bytes::<32>(data)?;
-            let text = hex_encode(&bytes);
+            let mut buf = [0u8; 64];
+            // Safety: `bytes` and `buf` are fixed-size arrays, so the splits are in-bounds.
+            let bytes_ptr = bytes.as_ptr();
+            let hi = unsafe { &*(bytes_ptr as *const [u8; 16]) };
+            let lo = unsafe { &*(bytes_ptr.add(16) as *const [u8; 16]) };
+            let out_ptr = buf.as_mut_ptr();
+            let hi_out = unsafe { &mut *(out_ptr as *mut [u8; 32]) };
+            let lo_out = unsafe { &mut *(out_ptr.add(32) as *mut [u8; 32]) };
+            let _ = format_simple(hi, hi_out.as_out(), AsciiCase::Lower);
+            let _ = format_simple(lo, lo_out.as_out(), AsciiCase::Lower);
+            let text = std::str::from_utf8(&buf)
+                .map_err(|_| anyhow!("rowpack uuid256 format invalid utf8"))?;
             mp::write_str(out, &text)?;
         }
         ColumnEncoding::Ip => {
@@ -5839,7 +5824,19 @@ fn decode_value_json(
         }
         ColumnEncoding::Uuid256 => {
             let bytes = decode_fixed_bytes::<32>(data)?;
-            JsonValue::from(hex_encode(&bytes))
+            let mut buf = [0u8; 64];
+            // Safety: `bytes` and `buf` are fixed-size arrays, so the splits are in-bounds.
+            let bytes_ptr = bytes.as_ptr();
+            let hi = unsafe { &*(bytes_ptr as *const [u8; 16]) };
+            let lo = unsafe { &*(bytes_ptr.add(16) as *const [u8; 16]) };
+            let out_ptr = buf.as_mut_ptr();
+            let hi_out = unsafe { &mut *(out_ptr as *mut [u8; 32]) };
+            let lo_out = unsafe { &mut *(out_ptr.add(32) as *mut [u8; 32]) };
+            let _ = format_simple(hi, hi_out.as_out(), AsciiCase::Lower);
+            let _ = format_simple(lo, lo_out.as_out(), AsciiCase::Lower);
+            let text = std::str::from_utf8(&buf)
+                .map_err(|_| anyhow!("rowpack uuid256 format invalid utf8"))?;
+            JsonValue::from(text)
         }
         ColumnEncoding::Ip => {
             let bytes = decode_fixed_bytes::<16>(data)?;
@@ -6294,16 +6291,6 @@ fn decode_fixed_bytes<const N: usize>(data: &mut &[u8]) -> Result<[u8; N]> {
     let mut out = [0u8; N];
     out.copy_from_slice(head);
     Ok(out)
-}
-
-fn hex_encode(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        out.push(HEX[(b >> 4) as usize] as char);
-        out.push(HEX[(b & 0x0f) as usize] as char);
-    }
-    out
 }
 
 fn format_ip(bytes: [u8; 16]) -> String {

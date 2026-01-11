@@ -6772,24 +6772,16 @@ fn parse_uuid_string(bytes: &[u8]) -> KeyParseResult<[u8; 16]> {
 }
 
 fn parse_uuid256_string(bytes: &[u8]) -> KeyParseResult<[u8; 32]> {
-    let bytes = if bytes.len() == 66 && bytes.starts_with(b"0x") {
-        &bytes[2..]
-    } else if bytes.len() == 66 && bytes.starts_with(b"0X") {
-        &bytes[2..]
-    } else {
-        bytes
-    };
     if bytes.len() != 64 {
         return Err(KeyParseError::InvalidUuid256);
     }
     let mut out = [0u8; 32];
-    let h = hex_value_unchecked;
-    let mut i = 0usize;
-    while i < 32 {
-        let idx = i * 2;
-        out[i] = (h(bytes[idx]) << 4) | h(bytes[idx + 1]);
-        i += 1;
-    }
+    // Safety: `out` is 32 bytes, so the two 16-byte regions are in-bounds and non-overlapping.
+    let out_ptr = out.as_mut_ptr();
+    let hi = unsafe { &mut *(out_ptr as *mut [u8; 16]) };
+    let lo = unsafe { &mut *(out_ptr.add(16) as *mut [u8; 16]) };
+    parse_simple(&bytes[..32], hi.as_out()).map_err(|_| KeyParseError::InvalidUuid256)?;
+    parse_simple(&bytes[32..], lo.as_out()).map_err(|_| KeyParseError::InvalidUuid256)?;
     Ok(out)
 }
 
@@ -6821,26 +6813,6 @@ fn ip_to_ipv6_bytes(ip: std::net::IpAddr) -> [u8; 16] {
         std::net::IpAddr::V4(v4) => v4.to_ipv6_mapped().octets(),
         std::net::IpAddr::V6(v6) => v6.octets(),
     }
-}
-
-static HEX_MAP: [u8; 256] = {
-    let mut map = [0u8; 256];
-    let mut i = 0u8;
-    while i < 10 {
-        map[b'0' as usize + i as usize] = i;
-        i += 1;
-    }
-    let mut j = 0u8;
-    while j < 6 {
-        map[b'a' as usize + j as usize] = 10 + j;
-        map[b'A' as usize + j as usize] = 10 + j;
-        j += 1;
-    }
-    map
-};
-
-fn hex_value_unchecked(b: u8) -> u8 {
-    HEX_MAP[b as usize]
 }
 
 fn normalize_numeric_bytes(bytes: &[u8], target_col: &ColumnSpec) -> KeyParseResult<Vec<u8>> {
@@ -7032,14 +7004,12 @@ mod tests {
     #[test]
     fn parse_uuid256_string_formats() {
         let raw = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
-        let prefixed = "0x00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
         let expected: [u8; 32] = [
             0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb,
             0xcc, 0xdd, 0xee, 0xff, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
             0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff,
         ];
         assert_eq!(parse_uuid256_string(raw.as_bytes()).unwrap(), expected);
-        assert_eq!(parse_uuid256_string(prefixed.as_bytes()).unwrap(), expected);
     }
 
     #[test]

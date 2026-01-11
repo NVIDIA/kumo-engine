@@ -509,11 +509,10 @@ fn parse_hex_bytes(input: &str) -> Result<Vec<u8>> {
 
 fn parse_uuid256_hex(input: &str) -> Result<[u8; 32]> {
     let raw = input.trim();
-    let hex = raw.strip_prefix("0x").or_else(|| raw.strip_prefix("0X")).unwrap_or(raw);
-    if hex.len() != 64 {
+    if raw.len() != 64 {
         return Err(anyhow!("uuid256 hex must be 64 chars"));
     }
-    let bytes = parse_hex_bytes(hex)?;
+    let bytes = parse_hex_bytes(raw)?;
     let mut out = [0u8; 32];
     out.copy_from_slice(&bytes);
     Ok(out)

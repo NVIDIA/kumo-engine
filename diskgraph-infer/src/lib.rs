@@ -1279,8 +1279,7 @@ impl ColumnStats {
     }
 
     fn observe(&mut self, value: &str) {
-        let trimmed = value.trim();
-        if trimmed.is_empty() {
+        if value.is_empty() {
             return;
         }
         self.seen += 1;
@@ -1297,33 +1296,33 @@ impl ColumnStats {
             self.ip_ok = true;
             self.ip_seen = false;
         }
-        let len = trimmed.len();
+        let len = value.len();
         self.str_min_len = Some(self.str_min_len.map(|m| m.min(len)).unwrap_or(len));
         self.str_max_len = Some(self.str_max_len.map(|m| m.max(len)).unwrap_or(len));
         self.uuid_seen = true;
-        if self.uuid_ok && !looks_like_uuid(trimmed) {
+        if self.uuid_ok && !looks_like_uuid(value) {
             self.uuid_ok = false;
         }
         self.uuid256_seen = true;
-        if self.uuid256_ok && !looks_like_uuid256(trimmed) {
+        if self.uuid256_ok && !looks_like_uuid256(value) {
             self.uuid256_ok = false;
         }
         self.ip_seen = true;
-        if self.ip_ok && !looks_like_ip(trimmed) {
+        if self.ip_ok && !looks_like_ip(value) {
             self.ip_ok = false;
         }
         if self.int_ok {
-            if let Some(v) = parse_int(trimmed) {
+            if let Some(v) = parse_int(value) {
                 self.int_min = Some(self.int_min.map(|m| m.min(v)).unwrap_or(v));
                 self.int_max = Some(self.int_max.map(|m| m.max(v)).unwrap_or(v));
             } else {
                 self.int_ok = false;
             }
         }
-        if self.float_ok && parse_float(trimmed).is_none() {
+        if self.float_ok && parse_float(value).is_none() {
             self.float_ok = false;
         }
-        if self.date_ok && parse_date(trimmed).is_none() {
+        if self.date_ok && parse_date(value).is_none() {
             self.date_ok = false;
             self.date_format = None;
         } else if self.date_ok {
@@ -1333,11 +1332,11 @@ impl ColumnStats {
                 Some(_) => self.date_format = None,
             }
         }
-        if self.ts_ok && parse_timestamp(trimmed).is_none() {
+        if self.ts_ok && parse_timestamp(value).is_none() {
             self.ts_ok = false;
             self.ts_format = None;
         } else if self.ts_ok {
-            if let Some(fmt) = parse_timestamp_format(trimmed) {
+            if let Some(fmt) = parse_timestamp_format(value) {
                 match &self.ts_format {
                     None => self.ts_format = Some(fmt.to_string()),
                     Some(existing) if existing == fmt => {}
@@ -1348,7 +1347,7 @@ impl ColumnStats {
                 self.ts_format = None;
             }
         }
-        if self.bool_ok && parse_bool(trimmed).is_none() {
+        if self.bool_ok && parse_bool(value).is_none() {
             self.bool_ok = false;
         }
     }
@@ -1422,10 +1421,7 @@ fn looks_like_uuid(value: &str) -> bool {
 }
 
 fn looks_like_uuid256(value: &str) -> bool {
-    let mut s = value.trim();
-    if let Some(rest) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
-        s = rest;
-    }
+    let s = value.trim();
     if s.len() != 64 {
         return false;
     }
