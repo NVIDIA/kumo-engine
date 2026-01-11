@@ -2088,7 +2088,7 @@ impl IngestContext {
             fs::read(&ctx_path).with_context(|| format!("read {}", ctx_path.display()))?;
         let node_context = diskgraph_rowpack::RowPackContext::from_bytes(&ctx_bytes)?;
         let node_encoder = Some(RowPackEncoder::new(node_context)?);
-        let mut key_bufs: Vec<Option<Vec<u8>>> = vec![None; table.columns.len()];
+        let mut key_bufs: Vec<Vec<u8>> = vec![Vec::new(); table.columns.len()];
         let mut node_data_dropped = 0u64;
         let has_pkey = pk_col.is_some() && pk_idx.is_some();
         let rel_names = std::sync::Arc::new(rel_names);
@@ -2225,22 +2225,19 @@ impl IngestContext {
         sort_key_batchers: &mut [SortKeyComponentBatcher],
         row_id: &mut u64,
         pk_col: Option<&ColumnSpec>,
-        key_bufs: &mut Vec<Option<Vec<u8>>>,
+        key_bufs: &mut Vec<Vec<u8>>,
         node_data_dropped: &mut u64,
         num_shards: usize,
         key_failures: &mut KeyFailureState,
     ) -> Result<()> {
         for buf in key_bufs.iter_mut() {
-            if let Some(buf) = buf.as_mut() {
-                buf.clear();
-            }
+            buf.clear();
         }
         let mut has_pkey = false;
         let shard = if let (Some(idx), Some(pk_col)) = (pk_idx, pk_col) {
             let buf = key_bufs
                 .get_mut(idx)
-                .ok_or_else(|| anyhow!("missing key buffer"))?
-                .get_or_insert_with(Vec::new);
+                .ok_or_else(|| anyhow!("missing key buffer"))?;
             match key_from_access_into_buf(access, idx, pk_col, buf) {
                 Ok(_) => {}
                 Err(_) => {
@@ -2267,8 +2264,7 @@ impl IngestContext {
                 .ok_or_else(|| anyhow!("missing fk column"))?;
             let buf = key_bufs
                 .get_mut(*rel_idx)
-                .ok_or_else(|| anyhow!("missing key buffer"))?
-                .get_or_insert_with(Vec::new);
+                .ok_or_else(|| anyhow!("missing key buffer"))?;
             if key_from_access_into_buf(access, *rel_idx, col, buf).is_err() {
                 let context = format!("fkey:{}.{}", table.name, col.name);
                 record_key_parse_failure_sample(
@@ -2317,8 +2313,6 @@ impl IngestContext {
         if has_pkey {
             let buf = key_bufs
                 .get(pk_idx.unwrap())
-                .and_then(|v| v.as_ref())
-                .filter(|v| !v.is_empty())
                 .ok_or_else(|| anyhow!("missing pkey buffer"))?;
             batcher.push_pkey(shard, buf)?;
         }
@@ -2326,13 +2320,9 @@ impl IngestContext {
             sort_key.push_row(shard, access)?;
         }
         for (_rel_name, rel_idx, rel_pos) in rel_specs {
-            let buf = match key_bufs
-                .get(*rel_idx)
-                .and_then(|v| v.as_ref())
-                .filter(|v| !v.is_empty())
-            {
-                Some(buf) => buf,
-                None => continue,
+            let buf = match key_bufs.get(*rel_idx) {
+                Some(buf) if !buf.is_empty() => buf,
+                _ => continue,
             };
             batcher.push_fkey(shard, *rel_pos, buf)?;
         }

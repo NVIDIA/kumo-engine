@@ -4481,8 +4481,9 @@ impl RowPackEncoder {
         tags: &mut Vec<u8>,
         bools: &mut Vec<u8>,
         data: &mut Vec<u8>,
-        key_bufs: &[Option<Vec<u8>>],
+        key_bufs: &[Vec<u8>],
     ) -> Result<RowPackRowLens> {
+        debug_assert_eq!(key_bufs.len(), self.ctx.columns.len());
         let tag_start = tags.len();
         let bool_start = bools.len();
         let data_start = data.len();
@@ -4645,17 +4646,8 @@ impl RowPackEncoder {
                     }
                 },
                 IngestedType::Uuid => {
-                    if !matches!(col.encoding, ColumnEncoding::Uuid) {
-                        return Err(anyhow!("rowpack uuid encoding mismatch"));
-                    }
-                    if let Some(buf) = key_bufs
-                        .get(idx)
-                        .and_then(|v| v.as_ref())
-                        .filter(|v| !v.is_empty())
-                    {
-                        if buf.len() != 16 {
-                            return Err(anyhow!("rowpack uuid key buffer length mismatch"));
-                        }
+                    let buf = &key_bufs[idx];
+                    if buf.len() == 16 {
                         data.extend_from_slice(buf);
                         1u8
                     } else {
@@ -4669,17 +4661,8 @@ impl RowPackEncoder {
                     }
                 }
                 IngestedType::Uuid256 => {
-                    if !matches!(col.encoding, ColumnEncoding::Uuid256) {
-                        return Err(anyhow!("rowpack uuid256 encoding mismatch"));
-                    }
-                    if let Some(buf) = key_bufs
-                        .get(idx)
-                        .and_then(|v| v.as_ref())
-                        .filter(|v| !v.is_empty())
-                    {
-                        if buf.len() != 32 {
-                            return Err(anyhow!("rowpack uuid256 key buffer length mismatch"));
-                        }
+                    let buf = &key_bufs[idx];
+                    if buf.len() == 32 {
                         data.extend_from_slice(buf);
                         1u8
                     } else {
@@ -4693,17 +4676,8 @@ impl RowPackEncoder {
                     }
                 }
                 IngestedType::Ip => {
-                    if !matches!(col.encoding, ColumnEncoding::Ip) {
-                        return Err(anyhow!("rowpack ip encoding mismatch"));
-                    }
-                    if let Some(buf) = key_bufs
-                        .get(idx)
-                        .and_then(|v| v.as_ref())
-                        .filter(|v| !v.is_empty())
-                    {
-                        if buf.len() != 16 {
-                            return Err(anyhow!("rowpack ip key buffer length mismatch"));
-                        }
+                    let buf = &key_bufs[idx];
+                    if buf.len() == 16 {
                         data.extend_from_slice(buf);
                         1u8
                     } else {
