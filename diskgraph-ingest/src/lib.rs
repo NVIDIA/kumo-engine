@@ -7025,8 +7025,8 @@ fn format_value_ref_sample(value: &ValueRef<'_>) -> String {
         ValueRef::Bool(v) => v.to_string(),
         ValueRef::String(v) => truncate_sample(v),
         ValueRef::Bytes(v) => format_bytes_sample_prefix(v),
-        ValueRef::Uuid(v) => format!("0x{}", hex_encode(v)),
-        ValueRef::Uuid256(v) => format!("0x{}", hex_encode(v)),
+        ValueRef::Uuid(v) => hex_encode(v),
+        ValueRef::Uuid256(v) => hex_encode(v),
         ValueRef::Ip(v) => format_ip_bytes(*v),
         ValueRef::Date(v) => v.to_string(),
         ValueRef::Timestamp { secs, nanos } => format!("{secs}.{nanos:09}"),
@@ -7176,6 +7176,90 @@ mod tests {
         assert!(parse_uuid_bytes(&[0u8; 15]).is_err());
         assert!(parse_uuid_bytes(&[0u8; 17]).is_err());
         assert!(parse_uuid_bytes(&[0u8; 16]).is_ok());
+    }
+
+    fn single_col_table(source: ColumnType, ingested: ColumnType) -> TableSpec {
+        TableSpec {
+            name: "sample".to_string(),
+            format: TableFormat::Parquet,
+            paths: vec![],
+            columns: vec![ColumnSpec {
+                name: "id".to_string(),
+                source_dtype: source,
+                ingested_dtype: ingested,
+                fixed_len: None,
+                timestamp_format: None,
+                timestamp_unit: None,
+                precision: None,
+                scale: None,
+            }],
+            primary_key: None,
+            create_time: None,
+            weight: None,
+            edge_table: None,
+            rowpack: None,
+        }
+    }
+
+    fn with_value_ref(
+        table: &TableSpec,
+        cols: Vec<ArrayRef>,
+        f: impl FnOnce(ValueRef<'_>),
+    ) {
+        let runtimes = build_column_runtimes(table);
+        let trimmed = std::sync::Arc::new(AtomicU64::new(0));
+        let mut access = RowAccess::new(table, &cols, &runtimes, &trimmed);
+        access.reset(0);
+        let value = access.value_ref(0).unwrap();
+        f(value);
+    }
+
+    #[test]
+    fn value_ref_uuid_from_uuid_string_source() {
+        let table = single_col_table(ColumnType::Uuid, ColumnType::Uuid);
+        let text = "00112233445566778899aabbccddeeff";
+        let cols: Vec<ArrayRef> = vec![Arc::new(StringArray::from(vec![text]))];
+        let expected = parse_uuid_string(text.as_bytes()).unwrap();
+        with_value_ref(&table, cols, |value| match value {
+            ValueRef::Uuid(v) => assert_eq!(v, expected),
+            other => panic!("expected uuid value ref, got {:?}", other),
+        });
+    }
+
+    #[test]
+    fn value_ref_uuid_from_string_to_uuid() {
+        let table = single_col_table(ColumnType::String, ColumnType::Uuid);
+        let text = "00112233445566778899aabbccddeeff";
+        let cols: Vec<ArrayRef> = vec![Arc::new(StringArray::from(vec![text]))];
+        let expected = parse_uuid_string(text.as_bytes()).unwrap();
+        with_value_ref(&table, cols, |value| match value {
+            ValueRef::Uuid(v) => assert_eq!(v, expected),
+            other => panic!("expected uuid value ref, got {:?}", other),
+        });
+    }
+
+    #[test]
+    fn value_ref_uuid256_from_string_to_uuid256() {
+        let table = single_col_table(ColumnType::String, ColumnType::Uuid256);
+        let text = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+        let cols: Vec<ArrayRef> = vec![Arc::new(StringArray::from(vec![text]))];
+        let expected = parse_uuid256_string(text.as_bytes()).unwrap();
+        with_value_ref(&table, cols, |value| match value {
+            ValueRef::Uuid256(v) => assert_eq!(v, expected),
+            other => panic!("expected uuid256 value ref, got {:?}", other),
+        });
+    }
+
+    #[test]
+    fn value_ref_ip_from_ip_string_source() {
+        let table = single_col_table(ColumnType::Ip, ColumnType::Ip);
+        let text = "192.168.1.2";
+        let cols: Vec<ArrayRef> = vec![Arc::new(StringArray::from(vec![text]))];
+        let expected = parse_ip_string(text.as_bytes()).unwrap();
+        with_value_ref(&table, cols, |value| match value {
+            ValueRef::Ip(v) => assert_eq!(v, expected),
+            other => panic!("expected ip value ref, got {:?}", other),
+        });
     }
 
     #[test]
