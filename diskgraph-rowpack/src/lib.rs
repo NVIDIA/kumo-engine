@@ -958,6 +958,78 @@ impl<'p> RowAccess<'p> {
                     .ok_or_else(|| anyhow!("bool cast"))?;
                 Ok(Some(arr.value(self.row)))
             }
+            DataType::Int64 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Int64Array>()
+                    .ok_or_else(|| anyhow!("int64 cast"))?;
+                Ok(Some(arr.value(self.row) != 0))
+            }
+            DataType::Int32 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Int32Array>()
+                    .ok_or_else(|| anyhow!("int32 cast"))?;
+                Ok(Some(arr.value(self.row) != 0))
+            }
+            DataType::Int16 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Int16Array>()
+                    .ok_or_else(|| anyhow!("int16 cast"))?;
+                Ok(Some(arr.value(self.row) != 0))
+            }
+            DataType::Int8 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Int8Array>()
+                    .ok_or_else(|| anyhow!("int8 cast"))?;
+                Ok(Some(arr.value(self.row) != 0))
+            }
+            DataType::UInt64 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::UInt64Array>()
+                    .ok_or_else(|| anyhow!("uint64 cast"))?;
+                Ok(Some(arr.value(self.row) != 0))
+            }
+            DataType::UInt32 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::UInt32Array>()
+                    .ok_or_else(|| anyhow!("uint32 cast"))?;
+                Ok(Some(arr.value(self.row) != 0))
+            }
+            DataType::UInt16 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::UInt16Array>()
+                    .ok_or_else(|| anyhow!("uint16 cast"))?;
+                Ok(Some(arr.value(self.row) != 0))
+            }
+            DataType::UInt8 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::UInt8Array>()
+                    .ok_or_else(|| anyhow!("uint8 cast"))?;
+                Ok(Some(arr.value(self.row) != 0))
+            }
+            DataType::Float64 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Float64Array>()
+                    .ok_or_else(|| anyhow!("float64 cast"))?;
+                let value = arr.value(self.row);
+                Ok(Some(!value.is_nan() && value != 0.0))
+            }
+            DataType::Float32 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Float32Array>()
+                    .ok_or_else(|| anyhow!("float32 cast"))?;
+                let value = arr.value(self.row);
+                Ok(Some(!value.is_nan() && value != 0.0))
+            }
             DataType::Utf8
             | DataType::LargeUtf8
             | DataType::Binary
@@ -6610,6 +6682,8 @@ fn push_utf8_lossy(out: &mut String, bytes: &[u8]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arrow_array::{Float32Array, Float64Array, Int32Array};
+    use std::sync::Arc;
 
     fn encode_row(encoder: &RowPackEncoder, row: &[ValueRef<'_>]) -> Vec<u8> {
         let mut out = Vec::new();
@@ -6682,6 +6756,68 @@ mod tests {
             out[..bytes.len()].copy_from_slice(&bytes);
         }
         out
+    }
+
+    #[test]
+    fn bool_from_numeric_ints() {
+        let cols: Vec<ArrayRef> = vec![Arc::new(Int32Array::from(vec![0, 1, -1]))];
+        let hints = vec![RowAccessHints {
+            timestamp_format: None,
+            timestamp_unit: None,
+            decimal_scale: None,
+        }];
+        let mut pools = RowValuePools::new();
+        let mut access = RowAccess::new(hints, &mut pools, RowAccessStats::new(None));
+        access.set_cols(&cols);
+
+        access.set_row(0);
+        assert_eq!(access.get_bool(0).unwrap(), Some(false));
+        access.set_row(1);
+        assert_eq!(access.get_bool(0).unwrap(), Some(true));
+        access.set_row(2);
+        assert_eq!(access.get_bool(0).unwrap(), Some(true));
+    }
+
+    #[test]
+    fn bool_from_numeric_floats() {
+        let cols: Vec<ArrayRef> = vec![Arc::new(Float64Array::from(vec![
+            0.0,
+            1.0,
+            -0.5,
+            f64::NAN,
+        ]))];
+        let hints = vec![RowAccessHints {
+            timestamp_format: None,
+            timestamp_unit: None,
+            decimal_scale: None,
+        }];
+        let mut pools = RowValuePools::new();
+        let mut access = RowAccess::new(hints, &mut pools, RowAccessStats::new(None));
+        access.set_cols(&cols);
+
+        access.set_row(0);
+        assert_eq!(access.get_bool(0).unwrap(), Some(false));
+        access.set_row(1);
+        assert_eq!(access.get_bool(0).unwrap(), Some(true));
+        access.set_row(2);
+        assert_eq!(access.get_bool(0).unwrap(), Some(true));
+        access.set_row(3);
+        assert_eq!(access.get_bool(0).unwrap(), Some(false));
+    }
+
+    #[test]
+    fn bool_from_float32_nan() {
+        let cols: Vec<ArrayRef> = vec![Arc::new(Float32Array::from(vec![f32::NAN]))];
+        let hints = vec![RowAccessHints {
+            timestamp_format: None,
+            timestamp_unit: None,
+            decimal_scale: None,
+        }];
+        let mut pools = RowValuePools::new();
+        let mut access = RowAccess::new(hints, &mut pools, RowAccessStats::new(None));
+        access.set_cols(&cols);
+        access.set_row(0);
+        assert_eq!(access.get_bool(0).unwrap(), Some(false));
     }
 
     #[test]
