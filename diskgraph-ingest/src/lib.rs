@@ -7066,6 +7066,21 @@ mod tests {
     }
 
     #[test]
+    fn encode_timestamp_int8() {
+        let encoding = TimestampEncodingSpec {
+            kind: TimestampEncodingKind::Int8,
+            anchor: 0,
+            step: 1,
+        };
+        let encoded = encode_timestamp_value(Some(10), &encoding);
+        assert_eq!(encoded, ordered_signed_to_u64(10, 8));
+        let encoded_neg = encode_timestamp_value(Some(-1), &encoding);
+        assert_eq!(encoded_neg, ordered_signed_to_u64(-1, 8));
+        let encoded_clamp = encode_timestamp_value(Some(1000), &encoding);
+        assert_eq!(encoded_clamp, ordered_signed_to_u64(i8::MAX as i64, 8));
+    }
+
+    #[test]
     fn convert_string_date_to_rowpack_date() {
         let table = TableSpec {
             name: "events".to_string(),

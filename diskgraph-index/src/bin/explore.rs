@@ -1120,6 +1120,47 @@ fn format_rowpack_bytes(bytes: &[u8]) -> String {
     out
 }
 
+fn format_anchor_time(anchor: i64) -> String {
+    use chrono::{DateTime, Utc};
+    if let Some(dt) = DateTime::<Utc>::from_timestamp(anchor, 0) {
+        if anchor.rem_euclid(86_400) == 0 {
+            return dt.format("%Y-%m-%d").to_string();
+        }
+        return dt.format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    }
+    anchor.to_string()
+}
+
+fn format_interval(step: i64) -> String {
+    if step == 0 {
+        return "0s".to_string();
+    }
+    let neg = step < 0;
+    let mut remaining = step.abs();
+    let units = [
+        (86_400_i64, "d"),
+        (3_600_i64, "h"),
+        (60_i64, "m"),
+        (1_i64, "s"),
+    ];
+    let mut parts = Vec::new();
+    for (unit, suffix) in units {
+        if remaining >= unit {
+            let count = remaining / unit;
+            remaining %= unit;
+            parts.push(format!("{count}{suffix}"));
+        }
+    }
+    if parts.is_empty() {
+        parts.push("0s".to_string());
+    }
+    if neg {
+        format!("-{}", parts.join(""))
+    } else {
+        parts.join("")
+    }
+}
+
 fn format_sort_key_report(spec: &SortKeyReport) -> String {
     let mut parts = Vec::new();
     if let Some(ts) = &spec.timestamp {
@@ -1127,9 +1168,11 @@ fn format_sort_key_report(spec: &SortKeyReport) -> String {
             SortKeyTimestampKindReport::Int16 => "int16",
             SortKeyTimestampKindReport::Int32 => "int32",
         };
+        let anchor = format_anchor_time(ts.encoding.anchor);
+        let step = format_interval(ts.encoding.step);
         parts.push(format!(
             "timestamp(table={}, column={}, kind={}, anchor={}, step={})",
-            ts.table, ts.column, kind, ts.encoding.anchor, ts.encoding.step
+            ts.table, ts.column, kind, anchor, step
         ));
     }
     if let Some(weight) = &spec.weight {
@@ -1208,7 +1251,7 @@ fn format_sort_key_value(rel: &EdgeRelationMetadata, raw: u64) -> String {
         let secs = delta
             .saturating_mul(ts.encoding.step)
             .saturating_add(ts.encoding.anchor);
-        parts.push(format!("ts={secs}"));
+        parts.push(format!("ts={}", format_epoch_seconds(secs)));
     }
     if let Some(weight) = &meta.weight {
         let value = decode_weight_value(weight, weight_raw);
@@ -1219,6 +1262,17 @@ fn format_sort_key_value(rel: &EdgeRelationMetadata, raw: u64) -> String {
     } else {
         parts.join(",")
     }
+}
+
+fn format_epoch_seconds(secs: i64) -> String {
+    use chrono::{DateTime, Utc};
+    if let Some(dt) = DateTime::<Utc>::from_timestamp(secs, 0) {
+        if secs.rem_euclid(86_400) == 0 {
+            return dt.format("%Y-%m-%d").to_string();
+        }
+        return dt.format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    }
+    secs.to_string()
 }
 
 fn timestamp_bits_for_meta(meta: &diskgraph_core::metadata::EdgeSortKeyTimestampMetadata) -> u8 {
