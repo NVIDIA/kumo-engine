@@ -678,8 +678,15 @@ fn generate_column_array(
             }
             Arc::new(builder.finish())
         }
-        ColumnType::Bytes | ColumnType::Uuid | ColumnType::Uuid256 | ColumnType::Ip => {
+        ColumnType::Bytes => {
             let mut builder = BinaryBuilder::new();
+            for i in 0..len {
+                append_value(&mut builder, column, table, row_start + i as u64, seed)?;
+            }
+            Arc::new(builder.finish())
+        }
+        ColumnType::Uuid | ColumnType::Uuid256 | ColumnType::Ip => {
+            let mut builder = StringBuilder::new();
             for i in 0..len {
                 append_value(&mut builder, column, table, row_start + i as u64, seed)?;
             }
@@ -1056,15 +1063,15 @@ impl KeyGenerator {
                 apply_fixed_len_bytes(&mut bytes, self.fixed_len);
                 Ok(GeneratedValue::Bytes(bytes))
             }
-            ColumnType::Uuid => Ok(GeneratedValue::Bytes(
-                uuid_from_id(self.table_seed, id).to_vec(),
-            )),
-            ColumnType::Uuid256 => Ok(GeneratedValue::Bytes(
-                uuid256_from_id(self.table_seed, id).to_vec(),
-            )),
-            ColumnType::Ip => Ok(GeneratedValue::Bytes(
-                ip_from_id(self.table_seed, id).to_vec(),
-            )),
+            ColumnType::Uuid => Ok(GeneratedValue::String(hex_encode(
+                &uuid_from_id(self.table_seed, id),
+            ))),
+            ColumnType::Uuid256 => Ok(GeneratedValue::String(hex_encode(
+                &uuid256_from_id(self.table_seed, id),
+            ))),
+            ColumnType::Ip => Ok(GeneratedValue::String(format_ip(
+                ip_from_id(self.table_seed, id),
+            ))),
             ColumnType::Timestamp => {
                 let unit = timestamp_unit.unwrap_or(TimestampUnit::Millis);
                 let value = match unit {
@@ -1238,9 +1245,9 @@ fn column_arrow_type(column: &ColumnConfig) -> Result<DataType> {
         ColumnType::Bool => DataType::Boolean,
         ColumnType::String => DataType::Utf8,
         ColumnType::Bytes => DataType::Binary,
-        ColumnType::Uuid => DataType::Binary,
-        ColumnType::Uuid256 => DataType::Binary,
-        ColumnType::Ip => DataType::Binary,
+        ColumnType::Uuid => DataType::Utf8,
+        ColumnType::Uuid256 => DataType::Utf8,
+        ColumnType::Ip => DataType::Utf8,
         ColumnType::Date => DataType::Date32,
         ColumnType::Timestamp => {
             let unit = match column.timestamp_unit.unwrap_or(TimestampUnit::Millis) {
@@ -1343,8 +1350,10 @@ fn prepare_generator(column: &ColumnConfig, gen: GeneratorSpec) -> Result<Prepar
                 "from_id" => UuidMode::FromId,
                 other => bail!("unknown uuid mode {}", other),
             };
-            let default_format = if matches!(column.dtype, ColumnType::Bytes | ColumnType::Uuid) {
+            let default_format = if matches!(column.dtype, ColumnType::Bytes) {
                 "bytes"
+            } else if matches!(column.dtype, ColumnType::Uuid) {
+                "hex"
             } else {
                 "dashed"
             };
@@ -1357,8 +1366,8 @@ fn prepare_generator(column: &ColumnConfig, gen: GeneratorSpec) -> Result<Prepar
             if column.dtype == ColumnType::String && matches!(format, UuidFormat::Bytes) {
                 bail!("uuid bytes format requires bytes dtype");
             }
-            if column.dtype == ColumnType::Uuid && !matches!(format, UuidFormat::Bytes) {
-                bail!("uuid format must be bytes for uuid dtype");
+            if column.dtype == ColumnType::Uuid && matches!(format, UuidFormat::Bytes) {
+                bail!("uuid bytes format not allowed for uuid dtype");
             }
             Ok(PreparedGenerator::Uuid { mode, format })
         }
@@ -1659,6 +1668,15 @@ fn format_uuid(bytes: [u8; 16], format: UuidFormat) -> String {
                 &hex[20..32]
             )
         }
+    }
+}
+
+fn format_ip(bytes: [u8; 16]) -> String {
+    let addr = std::net::Ipv6Addr::from(bytes);
+    if let Some(v4) = addr.to_ipv4() {
+        v4.to_string()
+    } else {
+        addr.to_string()
     }
 }
 
