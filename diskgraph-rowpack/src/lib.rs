@@ -410,6 +410,48 @@ impl BitWriter {
     }
 }
 
+struct BitWriterRef<'a> {
+    buf: &'a mut Vec<u8>,
+    cur: u8,
+    used: u8,
+}
+
+impl<'a> BitWriterRef<'a> {
+    fn new(buf: &'a mut Vec<u8>) -> Self {
+        Self {
+            buf,
+            cur: 0,
+            used: 0,
+        }
+    }
+
+    fn write_bits(&mut self, mut value: u8, mut bits: u8) {
+        while bits > 0 {
+            let avail = 8 - self.used;
+            let take = bits.min(avail);
+            let mask = (1u16 << take) - 1;
+            let chunk = (value & mask as u8) << self.used;
+            self.cur |= chunk;
+            self.used += take;
+            value >>= take;
+            bits -= take;
+            if self.used == 8 {
+                self.buf.push(self.cur);
+                self.cur = 0;
+                self.used = 0;
+            }
+        }
+    }
+
+    fn finish(&mut self) {
+        if self.used > 0 {
+            self.buf.push(self.cur);
+            self.cur = 0;
+            self.used = 0;
+        }
+    }
+}
+
 struct BitReader<'a> {
     buf: &'a [u8],
     idx: usize,
@@ -667,6 +709,100 @@ impl RowPackContextBuilder {
         }
         for (idx, value) in values.iter().enumerate() {
             self.stats[idx].observe(value, &self.config)?;
+        }
+        self.samples_seen += 1;
+        Ok(())
+    }
+
+    pub fn observe_row_from_access<A: RowValueAccess>(&mut self, access: &mut A) -> Result<()> {
+        if self.samples_seen >= self.config.sample_rows() {
+            return Ok(());
+        }
+        for (idx, logical) in self.columns.iter().enumerate() {
+            let stats = self
+                .stats
+                .get_mut(idx)
+                .ok_or_else(|| anyhow!("rowpack sample column mismatch"))?;
+            match logical {
+                LogicalType::Bool => match access.get_bool(idx)? {
+                    None => stats.observe_null(),
+                    Some(_) => stats.observe_bool(),
+                },
+                LogicalType::Int64 => match access.get_int64(idx)? {
+                    None => stats.observe_null(),
+                    Some(v) => stats.observe_int64(v),
+                },
+                LogicalType::Int16 | LogicalType::Int8 | LogicalType::Int32 => {
+                    match access.get_int32(idx)? {
+                        None => stats.observe_null(),
+                        Some(v) => stats.observe_int32(v),
+                    }
+                }
+                LogicalType::UInt64 => match access.get_uint64(idx)? {
+                    None => stats.observe_null(),
+                    Some(v) => stats.observe_uint64(v),
+                },
+                LogicalType::UInt16 | LogicalType::UInt8 | LogicalType::UInt32 => {
+                    match access.get_uint32(idx)? {
+                        None => stats.observe_null(),
+                        Some(v) => stats.observe_uint32(v),
+                    }
+                }
+                LogicalType::Float64 => match access.get_float64(idx)? {
+                    None => stats.observe_null(),
+                    Some(v) => stats.observe_float64(v),
+                },
+                LogicalType::Float32 => match access.get_float32(idx)? {
+                    None => stats.observe_null(),
+                    Some(v) => stats.observe_float32(v),
+                },
+                LogicalType::String => match access.get_string(idx)? {
+                    None => stats.observe_null(),
+                    Some(v) => stats.observe_string(v, &self.config),
+                },
+                LogicalType::Bytes => match access.get_bytes(idx)? {
+                    None => stats.observe_null(),
+                    Some(v) => stats.observe_bytes_len(v.len()),
+                },
+                LogicalType::Uuid => match access.get_bytes(idx)? {
+                    None => stats.observe_null(),
+                    Some(_) => stats.observe_uuid(),
+                },
+                LogicalType::Uuid256 => match access.get_bytes(idx)? {
+                    None => stats.observe_null(),
+                    Some(_) => stats.observe_uuid256(),
+                },
+                LogicalType::Ip => match access.get_bytes(idx)? {
+                    None => stats.observe_null(),
+                    Some(_) => stats.observe_ip(),
+                },
+                LogicalType::Date => match access.get_date(idx)? {
+                    None => stats.observe_null(),
+                    Some(_) => stats.count = stats.count.saturating_add(1),
+                },
+                LogicalType::Timestamp => match access.get_timestamp(idx)? {
+                    None => stats.observe_null(),
+                    Some((secs, _)) => stats.observe_timestamp(secs),
+                },
+                LogicalType::Decimal128 => match access.get_decimal128(idx)? {
+                    None => stats.observe_null(),
+                    Some(_) => stats.count = stats.count.saturating_add(1),
+                },
+                LogicalType::Decimal256 => match access.get_decimal256(idx)? {
+                    None => stats.observe_null(),
+                    Some(_) => stats.count = stats.count.saturating_add(1),
+                },
+                LogicalType::Float32Array | LogicalType::Float16Array => {
+                    match access.get_float32_array(idx)? {
+                        None => stats.observe_null(),
+                        Some(values) => stats.observe_array_f32(values),
+                    }
+                }
+                LogicalType::Float64Array => match access.get_float64_array(idx)? {
+                    None => stats.observe_null(),
+                    Some(values) => stats.observe_array_f64(values),
+                },
+            }
         }
         self.samples_seen += 1;
         Ok(())
@@ -1079,6 +1215,156 @@ impl ColumnStats {
         Ok(())
     }
 
+    fn observe_null(&mut self) {
+        self.count += 1;
+        self.nulls += 1;
+    }
+
+    fn observe_int64(&mut self, v: i64) {
+        self.count += 1;
+        self.int_min = self.int_min.min(v);
+        self.int_max = self.int_max.max(v);
+    }
+
+    fn observe_int32(&mut self, v: i32) {
+        self.observe_int64(v as i64);
+    }
+
+    fn observe_uint64(&mut self, v: u64) {
+        self.count += 1;
+        self.uint_max = self.uint_max.max(v);
+    }
+
+    fn observe_uint32(&mut self, v: u32) {
+        self.observe_uint64(v as u64);
+    }
+
+    fn observe_float64(&mut self, v: f64) {
+        self.count += 1;
+        self.observe_float_stats(v);
+    }
+
+    fn observe_float32(&mut self, v: f32) {
+        self.observe_float64(v as f64);
+    }
+
+    fn observe_bool(&mut self) {
+        self.count += 1;
+        self.bool_seen = true;
+    }
+
+    fn observe_string(&mut self, value: &str, config: &RowPackConfig) {
+        self.count += 1;
+        self.string_total += 1;
+        let bytes = value.as_bytes();
+        self.string_max_len = self.string_max_len.max(bytes.len());
+        self.string_bytes += bytes.len();
+        if self.string_counts.len() < 1_000_000 {
+            *self.string_counts.entry(bytes.to_vec()).or_insert(0) += 1;
+        }
+        if self.string_samples.len() < config.bpe_max_samples() {
+            if self.string_sample_bytes + bytes.len() <= config.bpe_max_dict_bytes() * 4 {
+                self.string_samples.push(bytes.to_vec());
+                self.string_sample_bytes += bytes.len();
+            }
+        }
+        if self.alphabet_ok {
+            if bytes.len() > config.string_long_min_len() {
+                self.alphabet_ok = false;
+            } else {
+                let mut ok = true;
+                for b in bytes {
+                    let idx = *b as usize;
+                    if !self.alphabet_bytes[idx] {
+                        if self.alphabet_len + 1 > ALPHABET_MAX_CHARS {
+                            ok = false;
+                            break;
+                        }
+                    }
+                }
+                if ok {
+                    for b in bytes {
+                        let idx = *b as usize;
+                        if !self.alphabet_bytes[idx] {
+                            self.alphabet_bytes[idx] = true;
+                            self.alphabet_len += 1;
+                        }
+                    }
+                    self.alphabet_hits += 1;
+                } else {
+                    self.alphabet_ok = false;
+                }
+            }
+        }
+        if bytes.len() >= config.string_long_min_len() {
+            let raw_len = bytes.len();
+            let raw_total = varint_bytes_u64(raw_len as u64) + raw_len;
+            self.string_long_bytes += raw_len;
+            self.string_long_raw += raw_total;
+            let max = lz4_flex::block::get_maximum_output_size(raw_len);
+            let mut buf = vec![0u8; max];
+            let written = lz4_flex::block::compress_into(bytes, &mut buf).unwrap_or(raw_len);
+            let compressed_total = varint_bytes_u64(raw_len as u64)
+                + varint_bytes_u64(written as u64)
+                + written;
+            self.string_long_compressed += compressed_total;
+        }
+    }
+
+    fn observe_bytes_len(&mut self, len: usize) {
+        self.count += 1;
+        self.bytes_total += len;
+        self.bytes_count += 1;
+    }
+
+    fn observe_uuid(&mut self) {
+        self.observe_bytes_len(16);
+    }
+
+    fn observe_uuid256(&mut self) {
+        self.observe_bytes_len(32);
+    }
+
+    fn observe_ip(&mut self) {
+        self.observe_bytes_len(16);
+    }
+
+    fn observe_timestamp(&mut self, secs: i64) {
+        self.count += 1;
+        self.ts_min = self.ts_min.min(secs);
+        self.ts_max = self.ts_max.max(secs);
+        self.ts_seen = true;
+    }
+
+    fn observe_array_f32(&mut self, values: &[f32]) {
+        self.count += 1;
+        self.array_len_total += values.len();
+        self.array_count += 1;
+        for v in values {
+            self.observe_float_stats(*v as f64);
+        }
+    }
+
+    fn observe_array_f64(&mut self, values: &[f64]) {
+        self.count += 1;
+        self.array_len_total += values.len();
+        self.array_count += 1;
+        for v in values {
+            self.observe_float_stats(*v);
+        }
+    }
+
+    fn observe_float_stats(&mut self, v: f64) {
+        if v.is_nan() {
+            self.float_has_nan = true;
+        } else if v.is_infinite() {
+            self.float_has_inf = true;
+        } else {
+            self.float_min = self.float_min.min(v);
+            self.float_max = self.float_max.max(v);
+        }
+    }
+
     fn choose_encoding(
         &self,
         logical: LogicalType,
@@ -1365,6 +1651,13 @@ pub struct RowPackEncoder {
     dict_maps: Vec<Option<FastHashMap<Vec<u8>, u32>>>,
     alphabet_maps: Vec<Option<AlphabetMap>>,
     bpe_tries: Vec<Option<BpeTrie>>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct RowPackRowLens {
+    pub tag_bytes: usize,
+    pub bool_bytes: usize,
+    pub data_bytes: usize,
 }
 
 pub struct RowPackScratch {
@@ -1867,6 +2160,331 @@ impl RowPackEncoder {
         scratch.bools.append_to(out);
         out.extend_from_slice(&scratch.data);
         Ok(())
+    }
+
+    pub fn encode_row_from_access_into_buffers<A: RowValueAccess>(
+        &self,
+        access: &mut A,
+        tags: &mut Vec<u8>,
+        bools: &mut Vec<u8>,
+        data: &mut Vec<u8>,
+    ) -> Result<RowPackRowLens> {
+        let tag_start = tags.len();
+        let bool_start = bools.len();
+        let data_start = data.len();
+        let mut tag_writer = BitWriterRef::new(tags);
+        let mut bool_writer = BitWriterRef::new(bools);
+
+        for (idx, col) in self.ctx.columns.iter().enumerate() {
+            let tag = match col.logical_type {
+                LogicalType::Bool => match access.get_bool(idx)? {
+                    None => 0u8,
+                    Some(v) => {
+                        bool_writer.write_bits(if v { 1 } else { 0 }, 1);
+                        1u8
+                    }
+                },
+                LogicalType::Int64 => match access.get_int64(idx)? {
+                    None => 0u8,
+                    Some(v) => {
+                        if let ColumnEncoding::Int { signed, varint, bits } = &col.encoding {
+                            encode_int(data, *signed, *varint, *bits, v as i128)?;
+                            1u8
+                        } else {
+                            return Err(anyhow!("rowpack int64 encoding mismatch"));
+                        }
+                    }
+                },
+                LogicalType::Int16 => match access.get_int32(idx)? {
+                    None => 0u8,
+                    Some(v) => {
+                        if let ColumnEncoding::Int { signed, varint, bits } = &col.encoding {
+                            encode_int(data, *signed, *varint, *bits, v as i128)?;
+                            1u8
+                        } else {
+                            return Err(anyhow!("rowpack int16 encoding mismatch"));
+                        }
+                    }
+                },
+                LogicalType::Int8 => match access.get_int32(idx)? {
+                    None => 0u8,
+                    Some(v) => {
+                        if let ColumnEncoding::Int { signed, varint, bits } = &col.encoding {
+                            encode_int(data, *signed, *varint, *bits, v as i128)?;
+                            1u8
+                        } else {
+                            return Err(anyhow!("rowpack int8 encoding mismatch"));
+                        }
+                    }
+                },
+                LogicalType::Int32 => match access.get_int32(idx)? {
+                    None => 0u8,
+                    Some(v) => {
+                        if let ColumnEncoding::Int { signed, varint, bits } = &col.encoding {
+                            encode_int(data, *signed, *varint, *bits, v as i128)?;
+                            1u8
+                        } else {
+                            return Err(anyhow!("rowpack int32 encoding mismatch"));
+                        }
+                    }
+                },
+                LogicalType::UInt64 => match access.get_uint64(idx)? {
+                    None => 0u8,
+                    Some(v) => {
+                        if let ColumnEncoding::Int { signed, varint, bits } = &col.encoding {
+                            encode_uint(data, *signed, *varint, *bits, v)?;
+                            1u8
+                        } else {
+                            return Err(anyhow!("rowpack uint64 encoding mismatch"));
+                        }
+                    }
+                },
+                LogicalType::UInt16 => match access.get_uint32(idx)? {
+                    None => 0u8,
+                    Some(v) => {
+                        if let ColumnEncoding::Int { signed, varint, bits } = &col.encoding {
+                            encode_uint(data, *signed, *varint, *bits, v as u64)?;
+                            1u8
+                        } else {
+                            return Err(anyhow!("rowpack uint16 encoding mismatch"));
+                        }
+                    }
+                },
+                LogicalType::UInt8 => match access.get_uint32(idx)? {
+                    None => 0u8,
+                    Some(v) => {
+                        if let ColumnEncoding::Int { signed, varint, bits } = &col.encoding {
+                            encode_uint(data, *signed, *varint, *bits, v as u64)?;
+                            1u8
+                        } else {
+                            return Err(anyhow!("rowpack uint8 encoding mismatch"));
+                        }
+                    }
+                },
+                LogicalType::UInt32 => match access.get_uint32(idx)? {
+                    None => 0u8,
+                    Some(v) => {
+                        if let ColumnEncoding::Int { signed, varint, bits } = &col.encoding {
+                            encode_uint(data, *signed, *varint, *bits, v as u64)?;
+                            1u8
+                        } else {
+                            return Err(anyhow!("rowpack uint32 encoding mismatch"));
+                        }
+                    }
+                },
+                LogicalType::Float64 => match access.get_float64(idx)? {
+                    None => 0u8,
+                    Some(v) => {
+                        if let ColumnEncoding::Float { storage } = &col.encoding {
+                            encode_float_with_tag(data, col.logical_type, *storage, v)?
+                        } else {
+                            return Err(anyhow!("rowpack float64 encoding mismatch"));
+                        }
+                    }
+                },
+                LogicalType::Float32 => match access.get_float32(idx)? {
+                    None => 0u8,
+                    Some(v) => {
+                        if let ColumnEncoding::Float { storage } = &col.encoding {
+                            encode_float_with_tag(data, col.logical_type, *storage, v as f64)?
+                        } else {
+                            return Err(anyhow!("rowpack float32 encoding mismatch"));
+                        }
+                    }
+                },
+                LogicalType::String => match access.get_string(idx)? {
+                    None => 0u8,
+                    Some(v) => {
+                        encode_string(
+                            data,
+                            v,
+                            col,
+                            self.dict_maps[idx].as_ref(),
+                            self.alphabet_maps[idx].as_ref(),
+                            self.bpe_tries[idx].as_ref(),
+                            None,
+                            None,
+                        )?
+                    }
+                },
+                LogicalType::Bytes => match access.get_bytes(idx)? {
+                    None => 0u8,
+                    Some(v) => {
+                        if let ColumnEncoding::Bytes { fixed_len } = &col.encoding {
+                            if let Some(len) = fixed_len {
+                                if *len == v.len() {
+                                    data.extend_from_slice(v);
+                                    1u8
+                                } else {
+                                    write_varint(v.len() as u64, data);
+                                    data.extend_from_slice(v);
+                                    2u8
+                                }
+                            } else {
+                                write_varint(v.len() as u64, data);
+                                data.extend_from_slice(v);
+                                1u8
+                            }
+                        } else {
+                            return Err(anyhow!("rowpack bytes encoding mismatch"));
+                        }
+                    }
+                },
+                LogicalType::Uuid => match access.get_bytes(idx)? {
+                    None => 0u8,
+                    Some(v) => {
+                        if !matches!(col.encoding, ColumnEncoding::Uuid) {
+                            return Err(anyhow!("rowpack uuid encoding mismatch"));
+                        }
+                        if v.len() != 16 {
+                            return Err(anyhow!("rowpack uuid length mismatch"));
+                        }
+                        data.extend_from_slice(v);
+                        1u8
+                    }
+                },
+                LogicalType::Uuid256 => match access.get_bytes(idx)? {
+                    None => 0u8,
+                    Some(v) => {
+                        if !matches!(col.encoding, ColumnEncoding::Uuid256) {
+                            return Err(anyhow!("rowpack uuid256 encoding mismatch"));
+                        }
+                        if v.len() != 32 {
+                            return Err(anyhow!("rowpack uuid256 length mismatch"));
+                        }
+                        data.extend_from_slice(v);
+                        1u8
+                    }
+                },
+                LogicalType::Ip => match access.get_bytes(idx)? {
+                    None => 0u8,
+                    Some(v) => {
+                        if !matches!(col.encoding, ColumnEncoding::Ip) {
+                            return Err(anyhow!("rowpack ip encoding mismatch"));
+                        }
+                        if v.len() != 16 {
+                            return Err(anyhow!("rowpack ip length mismatch"));
+                        }
+                        data.extend_from_slice(v);
+                        1u8
+                    }
+                },
+                LogicalType::Date => match access.get_date(idx)? {
+                    None => 0u8,
+                    Some(v) => {
+                        if let ColumnEncoding::Date { varint, bits } = &col.encoding {
+                            encode_int(data, true, *varint, *bits, v as i128)?;
+                            1u8
+                        } else {
+                            return Err(anyhow!("rowpack date encoding mismatch"));
+                        }
+                    }
+                },
+                LogicalType::Timestamp => match access.get_timestamp(idx)? {
+                    None => 0u8,
+                    Some((secs, nanos)) => {
+                        write_varint(zigzag_encode(secs), data);
+                        write_varint(nanos as u64, data);
+                        1u8
+                    }
+                },
+                LogicalType::Decimal128 => match access.get_decimal128(idx)? {
+                    None => 0u8,
+                    Some(v) => {
+                        if let ColumnEncoding::Decimal { bytes, scale, storage, .. } =
+                            &col.encoding
+                        {
+                            if *bytes == 0 || *bytes > 16 {
+                                return Err(anyhow!("rowpack decimal size mismatch"));
+                            }
+                            encode_decimal_i128_with_tag(
+                                data,
+                                v,
+                                *scale,
+                                storage,
+                                *bytes,
+                            )?
+                        } else {
+                            return Err(anyhow!("rowpack decimal128 encoding mismatch"));
+                        }
+                    }
+                },
+                LogicalType::Decimal256 => match access.get_decimal256(idx)? {
+                    None => 0u8,
+                    Some(v) => {
+                        if let ColumnEncoding::Decimal { bytes, scale, storage, .. } =
+                            &col.encoding
+                        {
+                            if *bytes == 0 || *bytes > 32 {
+                                return Err(anyhow!("rowpack decimal size mismatch"));
+                            }
+                            encode_decimal_i256_with_tag(
+                                data,
+                                &v,
+                                *scale,
+                                storage,
+                                *bytes,
+                            )?
+                        } else {
+                            return Err(anyhow!("rowpack decimal256 encoding mismatch"));
+                        }
+                    }
+                },
+                LogicalType::Float32Array => match access.get_float32_array(idx)? {
+                    None => 0u8,
+                    Some(values) => {
+                        if let ColumnEncoding::FloatArray { storage } = &col.encoding {
+                            encode_float_array_f32_with_tag(
+                                data,
+                                col.logical_type,
+                                *storage,
+                                values,
+                            )?
+                        } else {
+                            return Err(anyhow!("rowpack float32 array encoding mismatch"));
+                        }
+                    }
+                },
+                LogicalType::Float16Array => match access.get_float32_array(idx)? {
+                    None => 0u8,
+                    Some(values) => {
+                        if let ColumnEncoding::FloatArray { storage } = &col.encoding {
+                            encode_float_array_f32_with_tag(
+                                data,
+                                col.logical_type,
+                                *storage,
+                                values,
+                            )?
+                        } else {
+                            return Err(anyhow!("rowpack float16 array encoding mismatch"));
+                        }
+                    }
+                },
+                LogicalType::Float64Array => match access.get_float64_array(idx)? {
+                    None => 0u8,
+                    Some(values) => {
+                        if let ColumnEncoding::FloatArray { storage } = &col.encoding {
+                            encode_float_array_f64_with_tag(
+                                data,
+                                col.logical_type,
+                                *storage,
+                                values,
+                            )?
+                        } else {
+                            return Err(anyhow!("rowpack float64 array encoding mismatch"));
+                        }
+                    }
+                },
+            };
+            tag_writer.write_bits(tag, 2);
+        }
+        tag_writer.finish();
+        bool_writer.finish();
+        Ok(RowPackRowLens {
+            tag_bytes: tags.len() - tag_start,
+            bool_bytes: bools.len() - bool_start,
+            data_bytes: data.len() - data_start,
+        })
     }
 }
 
