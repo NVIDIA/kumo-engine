@@ -355,16 +355,6 @@ pub struct PerfStats {
     pub edges_map_wall_ms: u64,
     pub index_wall_ms: u64,
     pub finalize_wall_ms: u64,
-    pub context_task_ms: u64,
-    pub encode_task_ms: u64,
-    pub pk_map_task_ms: u64,
-    pub edges_map_task_ms: u64,
-    pub index_task_ms: u64,
-    pub context_tasks: u64,
-    pub encode_tasks: u64,
-    pub pk_map_tasks: u64,
-    pub edges_map_tasks: u64,
-    pub index_tasks: u64,
     pub bytes_read: u64,
     pub bytes_written: u64,
     pub temp_edges_src_bytes: u64,
@@ -475,35 +465,25 @@ pub fn ingest_with_stats(
         _ => 0,
     };
     let perf = PerfStats {
-            wall_time_ms: wall_time.as_millis() as u64,
-            context_wall_ms: context_wall.as_millis() as u64,
-            encode_wall_ms: encode_wall.as_millis() as u64,
-            pk_map_wall_ms: pk_map_wall.as_millis() as u64,
-            edges_map_wall_ms: edges_map_wall.as_millis() as u64,
-            index_wall_ms: index_wall.as_millis() as u64,
-            finalize_wall_ms: finalize_wall.as_millis() as u64,
-            context_task_ms: ctx.context_task_ms,
-            encode_task_ms: ctx.encode_task_ms,
-            pk_map_task_ms: ctx.pk_map_task_ms,
-            edges_map_task_ms: ctx.edges_map_task_ms,
-            index_task_ms: ctx.index_task_ms,
-            context_tasks: ctx.context_tasks,
-            encode_tasks: ctx.encode_tasks,
-            pk_map_tasks: ctx.pk_map_tasks,
-            edges_map_tasks: ctx.edges_map_tasks,
-            index_tasks: ctx.index_tasks,
-            bytes_read,
-            bytes_written,
-            temp_edges_src_bytes: ctx.temp_edges_src_bytes,
-            temp_fkeys_bytes: ctx.temp_fkeys_bytes,
-            temp_edges_map_bytes: ctx.temp_edges_map_bytes,
-            temp_node_data_bytes: ctx.temp_node_data_bytes,
-            temp_bytes_total: ctx
-                .temp_edges_src_bytes
-                .saturating_add(ctx.temp_fkeys_bytes)
-                .saturating_add(ctx.temp_edges_map_bytes)
-                .saturating_add(ctx.temp_node_data_bytes),
-        };
+        wall_time_ms: wall_time.as_millis() as u64,
+        context_wall_ms: context_wall.as_millis() as u64,
+        encode_wall_ms: encode_wall.as_millis() as u64,
+        pk_map_wall_ms: pk_map_wall.as_millis() as u64,
+        edges_map_wall_ms: edges_map_wall.as_millis() as u64,
+        index_wall_ms: index_wall.as_millis() as u64,
+        finalize_wall_ms: finalize_wall.as_millis() as u64,
+        bytes_read,
+        bytes_written,
+        temp_edges_src_bytes: ctx.temp_edges_src_bytes,
+        temp_fkeys_bytes: ctx.temp_fkeys_bytes,
+        temp_edges_map_bytes: ctx.temp_edges_map_bytes,
+        temp_node_data_bytes: ctx.temp_node_data_bytes,
+        temp_bytes_total: ctx
+            .temp_edges_src_bytes
+            .saturating_add(ctx.temp_fkeys_bytes)
+            .saturating_add(ctx.temp_edges_map_bytes)
+            .saturating_add(ctx.temp_node_data_bytes),
+    };
     let stats = ctx.build_stats(&index_metadata, perf);
     let report = IngestReport {
         stats: stats.clone(),
@@ -550,16 +530,6 @@ struct IngestContext {
     temp_fkeys_bytes: u64,
     temp_edges_map_bytes: u64,
     temp_node_data_bytes: u64,
-    encode_task_ms: u64,
-    pk_map_task_ms: u64,
-    edges_map_task_ms: u64,
-    index_task_ms: u64,
-    context_task_ms: u64,
-    encode_tasks: u64,
-    pk_map_tasks: u64,
-    edges_map_tasks: u64,
-    index_tasks: u64,
-    context_tasks: u64,
 }
 
 struct EdgeBuildContext {
@@ -1366,28 +1336,15 @@ impl IngestContext {
             temp_fkeys_bytes: 0,
             temp_edges_map_bytes: 0,
             temp_node_data_bytes: 0,
-            encode_task_ms: 0,
-            pk_map_task_ms: 0,
-            edges_map_task_ms: 0,
-            index_task_ms: 0,
-            context_task_ms: 0,
-            encode_tasks: 0,
-            pk_map_tasks: 0,
-            edges_map_tasks: 0,
-            index_tasks: 0,
-            context_tasks: 0,
         })
     }
 
     fn build_node_contexts(&mut self) -> Result<()> {
-        let phase_start = std::time::Instant::now();
         let tables = self.source.tables.clone();
         if let Some(pool) = self.pool.as_deref() {
-            let task_time = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
             let (tx, rx) = std::sync::mpsc::channel::<Result<(String, String)>>();
             let mut tasks = Vec::new();
             let source_rowpack = self.source.rowpack.clone();
-            let mut task_count = 0u64;
             for table in &tables {
                 if table.edge_table.is_some() {
                     continue;
@@ -1398,7 +1355,6 @@ impl IngestContext {
                 let progress = self.progress.clone();
                 let tx = tx.clone();
                 let rowpack_cfg = source_rowpack.clone();
-                task_count = task_count.saturating_add(1);
                 tasks.push(WorkItem {
                     bucket: None,
                     run: Box::new(move || {
@@ -1536,15 +1492,14 @@ impl IngestContext {
                 });
             }
             drop(tx);
-            run_tasks(tasks, 0, Some(task_time.clone()), Some(pool))?;
+            let task_count = tasks.len();
+            run_tasks(tasks, 0, Some(pool))?;
             for _ in 0..task_count {
                 let (table, ctx_path) = rx
                     .recv()
                     .map_err(|e| anyhow!("context output error: {e}"))??;
                 self.table_contexts.insert(table, ctx_path);
             }
-            self.context_task_ms = task_time.load(Ordering::Relaxed) / 1_000_000;
-            self.context_tasks = task_count;
         } else {
             for table in &tables {
                 if table.edge_table.is_some() {
@@ -1672,17 +1627,11 @@ impl IngestContext {
                     total: Some(table.paths.len() as u64),
                 });
             }
-            let elapsed = phase_start.elapsed();
-            self.context_task_ms = self
-                .context_task_ms
-                .saturating_add(elapsed.as_millis() as u64);
-            self.context_tasks = self.context_tasks.saturating_add(1);
         }
         Ok(())
     }
 
     fn build_temp_shards(&mut self) -> Result<()> {
-        let phase_start = std::time::Instant::now();
         let root = require_local_output(&self.target)?.to_path_buf();
         let temp_root = root.join(TEMP_DIR_NAME);
         fs::create_dir_all(&temp_root)?;
@@ -1697,7 +1646,6 @@ impl IngestContext {
                 key_failures: KeyFailureState,
             }
 
-            let task_time = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
             let (tx, rx) = std::sync::mpsc::channel::<Result<EncodeResult>>();
             let mut tasks = Vec::new();
             let relationships = self.relationships.clone();
@@ -1713,7 +1661,6 @@ impl IngestContext {
             let sort_key_senders = sort_key_pool.senders();
             let trimmed_strings = std::sync::Arc::clone(&self.trimmed_strings);
             let progress = self.progress.clone();
-            let mut task_count = 0u64;
             for table in &tables {
                 if let Some(cb) = &self.progress {
                     cb(ProgressEvent {
@@ -1748,8 +1695,7 @@ impl IngestContext {
                     let root = root.clone();
                     let relation_defs = std::sync::Arc::clone(&relation_defs);
                     let tx = tx.clone();
-                    task_count = task_count.saturating_add(1);
-                    tasks.push(WorkItem {
+                tasks.push(WorkItem {
                         bucket: None,
                         run: Box::new(move || {
                             let mut key_failures = KeyFailureState::default();
@@ -1802,7 +1748,8 @@ impl IngestContext {
                 }
             }
             drop(tx);
-            run_tasks(tasks, 0, Some(task_time.clone()), Some(pool))?;
+            let task_count = tasks.len();
+            run_tasks(tasks, 0, Some(pool))?;
             for _ in 0..task_count {
                 let result = rx
                     .recv()
@@ -1843,8 +1790,6 @@ impl IngestContext {
             self.write_consolidated_meta(&node_stats, &edge_stats)?;
             self.refresh_shard_rows_from_stats(&node_stats);
             self.table_rows = table_rows;
-            self.encode_task_ms = task_time.load(Ordering::Relaxed) / 1_000_000;
-            self.encode_tasks = task_count;
         } else {
             let relationships = self.relationships.clone();
             let relation_defs = self.relation_defs.clone();
@@ -1929,11 +1874,6 @@ impl IngestContext {
             self.write_consolidated_meta(&node_stats, &edge_stats)?;
             self.refresh_shard_rows_from_stats(&node_stats);
             self.table_rows = table_rows;
-            let elapsed = phase_start.elapsed();
-            self.encode_task_ms = self
-                .encode_task_ms
-                .saturating_add(elapsed.as_millis() as u64);
-            self.encode_tasks = self.encode_tasks.saturating_add(1);
         }
         Ok(())
     }
@@ -2613,7 +2553,6 @@ impl IngestContext {
 
     fn build_sharded_pk_maps(&mut self) -> Result<()> {
         let root = require_local_output(&self.target)?.to_path_buf();
-        let pk_map_time = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
         let duplicate_counts = std::sync::Arc::new(std::sync::Mutex::new(HashMap::new()));
         let duplicate_samples = std::sync::Arc::new(std::sync::Mutex::new(HashMap::new()));
         let mut tasks = Vec::new();
@@ -2652,7 +2591,7 @@ impl IngestContext {
                 let duplicate_samples = std::sync::Arc::clone(&duplicate_samples);
                 let root = root.clone();
                 tasks.push(WorkItem {
-                    bucket: Some(pk_map_time.clone()),
+                    bucket: None,
                     run: Box::new(move || {
                         let key_type = key_type_for_column(&pk_col)?;
                         let meta_path = root.join(temp_pkey_meta_path(&table_name, shard));
@@ -3054,12 +2993,7 @@ impl IngestContext {
         }
         let pool = self.pool.as_deref();
         let threads = if pool.is_some() { 0 } else { 1 };
-        run_tasks(
-            tasks.drain(..).collect(),
-            threads,
-            Some(pk_map_time.clone()),
-            pool,
-        )?;
+        run_tasks(tasks.drain(..).collect(), threads, pool)?;
         for table in &self.source.tables {
             if table.edge_table.is_some() || table.primary_key.is_none() {
                 continue;
@@ -3084,8 +3018,6 @@ impl IngestContext {
                 total: Some(self.num_shards as u64),
             });
         }
-        self.pk_map_task_ms = pk_map_time.load(Ordering::Relaxed) / 1_000_000;
-        self.pk_map_tasks = self.pk_hash_paths.values().map(|v| v.len() as u64).sum();
         if let Ok(counts) = std::sync::Arc::try_unwrap(duplicate_counts) {
             self.pk_duplicate_counts = counts.into_inner().unwrap();
         }
@@ -3245,10 +3177,8 @@ impl IngestContext {
             let edge_tables = edge_ctx.edge_tables.clone();
             let source = self.source.clone();
             let num_shards = self.num_shards;
-            let task_time = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
             let (tx, rx) = std::sync::mpsc::channel::<Result<EdgeMapResult>>();
             let mut tasks = Vec::new();
-            let mut task_count = 0u64;
             let mut expected = HashMap::new();
             let mut totals = HashMap::new();
 
@@ -3299,7 +3229,6 @@ impl IngestContext {
                     let writer_senders = std::sync::Arc::clone(&writer_senders);
                     let tx = tx.clone();
                     let src_fk_col = src_fk_col.clone();
-                    task_count = task_count.saturating_add(1);
                     tasks.push(WorkItem {
                         bucket: None,
                         run: Box::new(move || {
@@ -3571,7 +3500,6 @@ impl IngestContext {
                     let reverse_name = reverse_name.clone();
                     let src_pk_col = src_pk_col.clone();
                     let dst_pk_col = dst_pk_col.clone();
-                    task_count = task_count.saturating_add(1);
                     tasks.push(WorkItem {
                         bucket: None,
                         run: Box::new(move || {
@@ -3770,7 +3698,8 @@ impl IngestContext {
             }
 
             drop(tx);
-            run_tasks(tasks, 0, Some(task_time.clone()), Some(pool))?;
+            let task_count = tasks.len();
+            run_tasks(tasks, 0, Some(pool))?;
             let mut done = HashMap::new();
             for _ in 0..task_count {
                 let result = rx
@@ -3802,8 +3731,6 @@ impl IngestContext {
             drop(writer_senders);
             writer_pool.finish()?;
             self.ensure_edge_map_shards(edge_ctx)?;
-            self.edges_map_task_ms = task_time.load(Ordering::Relaxed) / 1_000_000;
-            self.edges_map_tasks = task_count;
             self.temp_edges_src_bytes = self
                 .temp_edges_src_bytes
                 .saturating_add(self.record_edge_stage_bytes("edges_src")?);
@@ -3945,7 +3872,7 @@ impl IngestContext {
                 });
             }
             drop(tx);
-            let pool_result = pool.run_tasks(tasks, None);
+            let pool_result = pool.run_tasks(tasks);
             let mut shard_stats = HashMap::new();
             let mut total_shard_ms = 0u64;
             let mut total_shards = 0u64;
@@ -3977,8 +3904,6 @@ impl IngestContext {
             if let Some(e) = err {
                 return Err(e);
             }
-            self.index_task_ms = total_shard_ms;
-            self.index_tasks = total_shards;
         } else if mem_budget.is_some() {
             fs::create_dir_all(&root)?;
             let metadata_path = root.join("index_metadata.json");
@@ -3999,17 +3924,11 @@ impl IngestContext {
                 total_shard_ms = total_shard_ms.saturating_add(output.wall_ms);
                 total_shards = total_shards.saturating_add(1);
             }
-            self.index_task_ms = total_shard_ms;
-            self.index_tasks = total_shards;
         } else if let Some(progress) = self.progress.clone() {
             let adapter = IndexProgressAdapter::new(progress, table_totals);
-            let output = builder.build(Some(&adapter))?;
-            self.index_task_ms = output.total_shard_ms;
-            self.index_tasks = output.total_shards;
+            builder.build(Some(&adapter))?;
         } else {
-            let output = builder.build(None)?;
-            self.index_task_ms = output.total_shard_ms;
-            self.index_tasks = output.total_shards;
+            builder.build(None)?;
         }
         Ok(())
     }
@@ -4159,15 +4078,7 @@ impl IngestContext {
         Ok(metadata)
     }
 
-    fn build_stats(&self, metadata: &DatasetMetadata, mut perf: PerfStats) -> IngestStats {
-        perf.context_task_ms = self.context_task_ms;
-        perf.encode_task_ms = self.encode_task_ms;
-        perf.edges_map_task_ms = self.edges_map_task_ms;
-        perf.index_task_ms = self.index_task_ms;
-        perf.context_tasks = self.context_tasks;
-        perf.encode_tasks = self.encode_tasks;
-        perf.edges_map_tasks = self.edges_map_tasks;
-        perf.index_tasks = self.index_tasks;
+    fn build_stats(&self, metadata: &DatasetMetadata, perf: PerfStats) -> IngestStats {
         let mut node_counts = HashMap::new();
         for node in metadata.node_types.iter() {
             let count = node.max_id.saturating_add(1);
@@ -5896,7 +5807,6 @@ struct WorkItem {
 
 struct PoolTask {
     item: WorkItem,
-    task_time: Option<std::sync::Arc<std::sync::atomic::AtomicU64>>,
     done: std::sync::mpsc::Sender<Result<()>>,
 }
 
@@ -5931,9 +5841,6 @@ impl TaskPool {
                         let start = std::time::Instant::now();
                         let result = (task.item.run)();
                         let elapsed = start.elapsed().as_nanos() as u64;
-                        if let Some(task_time) = &task.task_time {
-                            task_time.fetch_add(elapsed, std::sync::atomic::Ordering::Relaxed);
-                        }
                         if let Some(bucket) = &task.item.bucket {
                             bucket.fetch_add(elapsed, std::sync::atomic::Ordering::Relaxed);
                         }
@@ -5952,7 +5859,6 @@ impl TaskPool {
     fn run_tasks(
         &self,
         tasks: Vec<WorkItem>,
-        task_time: Option<std::sync::Arc<std::sync::atomic::AtomicU64>>,
     ) -> Result<()> {
         if tasks.is_empty() {
             return Ok(());
@@ -5963,7 +5869,6 @@ impl TaskPool {
             self.sender
                 .send(PoolMessage::Task(PoolTask {
                     item: task,
-                    task_time: task_time.clone(),
                     done: done_tx.clone(),
                 }))
                 .map_err(|e| anyhow!("task queue error: {e}"))?;
@@ -6016,11 +5921,10 @@ fn default_worker_threads() -> usize {
 fn run_tasks(
     tasks: Vec<WorkItem>,
     threads: usize,
-    task_time: Option<std::sync::Arc<std::sync::atomic::AtomicU64>>,
     pool: Option<&TaskPool>,
 ) -> Result<()> {
     if let Some(pool) = pool {
-        return pool.run_tasks(tasks, task_time);
+        return pool.run_tasks(tasks);
     }
     if tasks.is_empty() {
         return Ok(());
@@ -6037,7 +5941,6 @@ fn run_tasks(
     for _ in 0..threads {
         let rx = std::sync::Arc::clone(&rx);
         let err = std::sync::Arc::clone(&err);
-        let task_time = task_time.clone();
         handles.push(std::thread::spawn(move || loop {
             if err.lock().unwrap().is_some() {
                 break;
@@ -6053,9 +5956,6 @@ fn run_tasks(
             let start = std::time::Instant::now();
             let result = (task.run)();
             let elapsed = start.elapsed().as_nanos() as u64;
-            if let Some(task_time) = &task_time {
-                task_time.fetch_add(elapsed, std::sync::atomic::Ordering::Relaxed);
-            }
             if let Some(bucket) = task.bucket {
                 bucket.fetch_add(elapsed, std::sync::atomic::Ordering::Relaxed);
             }

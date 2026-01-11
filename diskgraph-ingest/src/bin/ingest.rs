@@ -242,32 +242,6 @@ fn main() -> Result<()> {
         "    finalize: {}",
         format_duration(stats.perf.finalize_wall_ms)
     );
-    println!("  Stage timings (summed across threads):");
-    println!(
-        "    context: {} ({} tasks)",
-        format_duration(stats.perf.context_task_ms),
-        stats.perf.context_tasks
-    );
-    println!(
-        "    encode: {} ({} tasks)",
-        format_duration(stats.perf.encode_task_ms),
-        stats.perf.encode_tasks
-    );
-    println!(
-        "    pk_map: {} ({} tasks)",
-        format_duration(stats.perf.pk_map_task_ms),
-        stats.perf.pk_map_tasks
-    );
-    println!(
-        "    edges_map: {} ({} tasks)",
-        format_duration(stats.perf.edges_map_task_ms),
-        stats.perf.edges_map_tasks
-    );
-    println!(
-        "    index: {} ({} tasks)",
-        format_duration(stats.perf.index_task_ms),
-        stats.perf.index_tasks
-    );
     if let Some(profile_dir) = args.profile.as_ref() {
         let mut profiles = Vec::new();
         for name in ["context", "encode", "pk_map", "edges_map", "index"] {
