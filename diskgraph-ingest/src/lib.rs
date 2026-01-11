@@ -9,8 +9,7 @@ use crate::mapping::{
 };
 use crate::source_metadata::{
     relationship_name, ColumnSpec, IngestedType, SortKeySpec, TableFormat, TableSpec,
-    TimestampEncodingKind, TimestampEncodingSpec, TimestampUnit, WeightEncodingKind,
-    WeightEncodingSpec,
+    TimestampEncodingKind, TimestampEncodingSpec, WeightEncodingKind, WeightEncodingSpec,
 };
 use anyhow::{anyhow, Context, Result};
 use arrow_array::{Array, ArrayRef};
@@ -26,8 +25,8 @@ use diskgraph_fs::{
     build_adls_client, build_gcs_client, build_s3_client, AdlsConfig, GcsConfig, S3Config,
 };
 use diskgraph_rowpack::{
-    IngestedType as RowpackType, RowPackConfig, RowPackContextBuilder, RowPackEncoder,
-    RowPackRowLens, RowValueAccess,
+    IngestedType as RowpackType, RowAccess, RowAccessHints, RowAccessStats, RowPackConfig,
+    RowPackContextBuilder, RowPackEncoder, RowPackRowLens, RowValuePools,
 };
 use diskgraph_index::builder::MemoryBudget;
 use diskgraph_index::graph::{
@@ -65,7 +64,6 @@ pub use source_metadata::SourceMetadata;
 
 const NODE_BATCH_SIZE: usize = 100_000;
 const MAX_KEY_SAMPLE_LEN: usize = 64;
-const MAX_INPUT_STRING_BYTES: usize = 32 * 1024;
 const TEMP_DIR_NAME: &str = "_tmp";
 const TEMP_META_MAGIC: [u8; 4] = *b"DGTP";
 const TEMP_META_VERSION: u8 = 1;
@@ -1006,7 +1004,7 @@ fn compile_weight_expr(expr: &str, table: &TableSpec) -> Result<WeightExprRuntim
 }
 
 fn access_value_to_f64(
-    access: &mut IngestRowAccess<'_>,
+    access: &mut RowAccess<'_>,
     idx: usize,
     dtype: &IngestedType,
     scale: Option<i32>,
@@ -1112,7 +1110,7 @@ fn encode_weight_value(value: Option<f64>, encoding: &WeightEncodingSpec) -> u64
     }
 }
 
-fn eval_weight_expr(expr: &mut WeightExprRuntime, access: &mut IngestRowAccess<'_>) -> Result<Option<f64>> {
+fn eval_weight_expr(expr: &mut WeightExprRuntime, access: &mut RowAccess<'_>) -> Result<Option<f64>> {
     if let Some(idx) = expr.simple_idx {
         return Ok(access_value_to_f64(
             access,
@@ -1419,7 +1417,10 @@ impl IngestContext {
                             RowPackContextBuilder::new(node_columns, rowpack_config.clone());
                         let mut sampled = 0usize;
                         let sample_limit = rowpack_config.sample_rows().min(SAMPLE_ROW_LIMIT);
-                        let column_runtimes = build_column_runtimes(&table);
+                        let row_access_hints = build_row_access_hints(&table);
+                        let mut pools = RowValuePools::new();
+                        let stats = RowAccessStats::new(Some(trimmed_strings.as_ref()));
+                        let mut access = RowAccess::new(row_access_hints, &mut pools, stats);
                         let mut reached_limit = false;
                         if table.paths.is_empty() {
                             return Err(anyhow!("no input files for table {}", table.name));
@@ -1447,14 +1448,7 @@ impl IngestContext {
                                                 .context("missing column in batch")?;
                                             cols.push(batch.column(idx).clone());
                                         }
-                                        let trimmed_strings =
-                                            std::sync::Arc::clone(&trimmed_strings);
-                                        let mut access = IngestRowAccess::new(
-                                            &cols,
-                                            &table.columns,
-                                            &column_runtimes,
-                                            &trimmed_strings,
-                                        );
+                                        access.set_cols(&cols);
                                         for row in 0..batch.num_rows() {
                                             if sampled >= sample_limit {
                                                 reached_limit = true;
@@ -1489,14 +1483,7 @@ impl IngestContext {
                                                 .context("missing column in batch")?;
                                             cols.push(batch.column(idx).clone());
                                         }
-                                        let trimmed_strings =
-                                            std::sync::Arc::clone(&trimmed_strings);
-                                        let mut access = IngestRowAccess::new(
-                                            &cols,
-                                            &table.columns,
-                                            &column_runtimes,
-                                            &trimmed_strings,
-                                        );
+                                        access.set_cols(&cols);
                                         for row in 0..batch.num_rows() {
                                             if sampled >= sample_limit {
                                                 reached_limit = true;
@@ -1576,7 +1563,10 @@ impl IngestContext {
                     RowPackContextBuilder::new(node_columns, rowpack_config.clone());
                 let mut sampled = 0usize;
                 let sample_limit = rowpack_config.sample_rows().min(SAMPLE_ROW_LIMIT);
-                let column_runtimes = build_column_runtimes(table);
+                let row_access_hints = build_row_access_hints(table);
+                let mut pools = RowValuePools::new();
+                let stats = RowAccessStats::new(Some(self.trimmed_strings.as_ref()));
+                let mut access = RowAccess::new(row_access_hints, &mut pools, stats);
                 let mut reached_limit = false;
                 if table.paths.is_empty() {
                     return Err(anyhow!("no input files for table {}", table.name));
@@ -1602,14 +1592,7 @@ impl IngestContext {
                                         .context("missing column in batch")?;
                                     cols.push(batch.column(idx).clone());
                                 }
-                                let trimmed_strings =
-                                    std::sync::Arc::clone(&self.trimmed_strings);
-                                let mut access = IngestRowAccess::new(
-                                    &cols,
-                                    &table.columns,
-                                    &column_runtimes,
-                                    &trimmed_strings,
-                                );
+                                access.set_cols(&cols);
                                 for row in 0..batch.num_rows() {
                                     if sampled >= sample_limit {
                                         reached_limit = true;
@@ -1641,14 +1624,7 @@ impl IngestContext {
                                         .context("missing column in batch")?;
                                     cols.push(batch.column(idx).clone());
                                 }
-                                let trimmed_strings =
-                                    std::sync::Arc::clone(&self.trimmed_strings);
-                                let mut access = IngestRowAccess::new(
-                                    &cols,
-                                    &table.columns,
-                                    &column_runtimes,
-                                    &trimmed_strings,
-                                );
+                                access.set_cols(&cols);
                                 for row in 0..batch.num_rows() {
                                     if sampled >= sample_limit {
                                         reached_limit = true;
@@ -2102,7 +2078,10 @@ impl IngestContext {
             rel_specs.push((rel_name, idx, rel_pos));
         }
         let mut total_rows = 0u64;
-        let column_runtimes = build_column_runtimes(table);
+        let row_access_hints = build_row_access_hints(table);
+        let mut pools = RowValuePools::new();
+        let stats = RowAccessStats::new(Some(trimmed_strings.as_ref()));
+        let mut access = RowAccess::new(row_access_hints, &mut pools, stats);
         let ctx_path = root.join(temp_node_context_path(&table.name));
         let ctx_bytes =
             fs::read(&ctx_path).with_context(|| format!("read {}", ctx_path.display()))?;
@@ -2154,13 +2133,7 @@ impl IngestContext {
                             .context("missing column in batch")?;
                         cols.push(batch.column(idx).clone());
                     }
-                    let trimmed_strings = std::sync::Arc::clone(trimmed_strings);
-                    let mut access = IngestRowAccess::new(
-                        &cols,
-                        &table.columns,
-                        &column_runtimes,
-                        &trimmed_strings,
-                    );
+                    access.set_cols(&cols);
                     for row in 0..batch.num_rows() {
                         total_rows += 1;
                         access.set_row(row);
@@ -2198,13 +2171,7 @@ impl IngestContext {
                             .context("missing column in batch")?;
                         cols.push(batch.column(idx).clone());
                     }
-                    let trimmed_strings = std::sync::Arc::clone(trimmed_strings);
-                    let mut access = IngestRowAccess::new(
-                        &cols,
-                        &table.columns,
-                        &column_runtimes,
-                        &trimmed_strings,
-                    );
+                    access.set_cols(&cols);
                     for row in 0..batch.num_rows() {
                         total_rows += 1;
                         access.set_row(row);
@@ -2251,7 +2218,7 @@ impl IngestContext {
         table: &TableSpec,
         pk_idx: Option<usize>,
         rel_specs: &[(std::sync::Arc<str>, usize, usize)],
-        access: &mut IngestRowAccess<'_>,
+        access: &mut RowAccess<'_>,
         node_encoder: &Option<RowPackEncoder>,
         batcher: &mut NodeBatcher,
         sort_key_batchers: &mut [SortKeyComponentBatcher],
@@ -2388,6 +2355,10 @@ impl IngestContext {
             return Err(anyhow!("input path not found {}", path));
         }
         let local = localize_input(path)?;
+        let row_access_hints = build_row_access_hints(table);
+        let mut pools = RowValuePools::new();
+        let stats = RowAccessStats::new(Some(trimmed_strings.as_ref()));
+        let mut access = RowAccess::new(row_access_hints, &mut pools, stats);
         match table.format {
             TableFormat::Parquet => {
                 let file = fs::File::open(&local.path)
@@ -2404,13 +2375,7 @@ impl IngestContext {
                             .context("missing column in batch")?;
                         cols.push(batch.column(idx).clone());
                     }
-                    let column_runtimes = build_column_runtimes(table);
-                    let mut access = IngestRowAccess::new(
-                        &cols,
-                        &table.columns,
-                        &column_runtimes,
-                        trimmed_strings,
-                    );
+                    access.set_cols(&cols);
                     let src_fast = edge_fast_path_for_array(src_fk_col, &cols[src_fk_idx]);
                     let dst_fast = edge_fast_path_for_array(dst_fk_col, &cols[dst_fk_idx]);
                     let mut src_key_buf = Vec::new();
@@ -2457,13 +2422,7 @@ impl IngestContext {
                             .context("missing column in batch")?;
                         cols.push(batch.column(idx).clone());
                     }
-                    let column_runtimes = build_column_runtimes(table);
-                    let mut access = IngestRowAccess::new(
-                        &cols,
-                        &table.columns,
-                        &column_runtimes,
-                        trimmed_strings,
-                    );
+                    access.set_cols(&cols);
                     let src_fast = edge_fast_path_for_array(src_fk_col, &cols[src_fk_idx]);
                     let dst_fast = edge_fast_path_for_array(dst_fk_col, &cols[dst_fk_idx]);
                     let mut src_key_buf = Vec::new();
@@ -2524,7 +2483,7 @@ impl IngestContext {
         row: usize,
         src_fast: Option<EdgeKeyFastKind>,
         dst_fast: Option<EdgeKeyFastKind>,
-        access: &mut IngestRowAccess<'_>,
+        access: &mut RowAccess<'_>,
         src_key_buf: &mut Vec<u8>,
         dst_key_buf: &mut Vec<u8>,
         forward_row: &mut Vec<u8>,
@@ -5906,7 +5865,7 @@ impl SortKeyComponentBatcher {
         }
     }
 
-    fn push_row(&mut self, shard: usize, access: &mut IngestRowAccess<'_>) -> Result<()> {
+    fn push_row(&mut self, shard: usize, access: &mut RowAccess<'_>) -> Result<()> {
         let value = match &mut self.encoder {
             SortKeyComponentEncoder::Timestamp { column_idx, encoding } => {
                 let ts_value = if let Some((secs, _)) = access.get_timestamp(*column_idx)? {
@@ -6481,7 +6440,7 @@ fn column_index(table: &TableSpec, name: &str) -> Result<usize> {
 }
 
 fn key_from_access_into_buf(
-    access: &mut IngestRowAccess<'_>,
+    access: &mut RowAccess<'_>,
     idx: usize,
     col: &ColumnSpec,
     out: &mut Vec<u8>,
@@ -6519,8 +6478,8 @@ fn key_from_access_into_buf(
                     return Ok(());
                 }
                 IngestedType::String | IngestedType::Bytes => {
-                    let (_, array) = access
-                        .column_and_array(idx)
+                    let array = access
+                        .array(idx)
                         .map_err(|_| KeyParseError::TypeMismatch)?;
                     let bytes = read_bytes(array, access.row())
                         .map_err(|_| KeyParseError::TypeMismatch)?;
@@ -6603,8 +6562,8 @@ fn key_from_access_into_buf(
                     buf
                 }
                 IngestedType::String | IngestedType::Bytes => {
-                    let (_, array) = access
-                        .column_and_array(idx)
+                    let array = access
+                        .array(idx)
                         .map_err(|_| KeyParseError::TypeMismatch)?;
                     if let Ok(text) = read_utf8(array, access.row()) {
                         parse_uuid_string(text.as_bytes())?
@@ -6635,8 +6594,8 @@ fn key_from_access_into_buf(
                     buf
                 }
                 IngestedType::String | IngestedType::Bytes => {
-                    let (_, array) = access
-                        .column_and_array(idx)
+                    let array = access
+                        .array(idx)
                         .map_err(|_| KeyParseError::TypeMismatch)?;
                     if let Ok(text) = read_utf8(array, access.row()) {
                         parse_uuid256_string(text.as_bytes())?
@@ -6665,8 +6624,8 @@ fn key_from_access_into_buf(
                     value
                 }
                 IngestedType::String | IngestedType::Bytes => {
-                    let (_, array) = access
-                        .column_and_array(idx)
+                    let array = access
+                        .array(idx)
                         .map_err(|_| KeyParseError::TypeMismatch)?;
                     if let Ok(text) = read_utf8(array, access.row()) {
                         parse_ip_string(text.as_bytes())?
@@ -7044,7 +7003,7 @@ fn record_key_parse_failure(
     }
 }
 
-fn sample_from_access(access: &IngestRowAccess<'_>, idx: usize) -> Option<String> {
+fn sample_from_access(access: &RowAccess<'_>, idx: usize) -> Option<String> {
     let array = access.array(idx).ok()?;
     let value = value_from_array(array, access.row()).ok()?;
     match value {
@@ -7093,8 +7052,9 @@ fn record_key_lookup_failure(
 
 #[cfg(test)]
 mod tests {
-    use chrono::NaiveDate;
     use super::*;
+    use crate::source_metadata::TimestampUnit;
+    use chrono::NaiveDate;
     use arrow_array::{BinaryArray, Int64Array, StringArray};
 
     #[test]
@@ -7174,13 +7134,20 @@ mod tests {
     fn with_access(
         table: &TableSpec,
         cols: Vec<ArrayRef>,
-        f: impl FnOnce(&mut IngestRowAccess<'_>),
+        f: impl FnOnce(&mut RowAccess<'_>),
     ) {
-        let runtimes = build_column_runtimes(table);
         let trimmed = std::sync::Arc::new(AtomicU64::new(0));
-        let mut access = IngestRowAccess::new(&cols, &table.columns, &runtimes, &trimmed);
+        let hints = build_row_access_hints(table);
+        let mut pools = RowValuePools::new();
+        let stats = RowAccessStats::new(Some(trimmed.as_ref()));
+        let mut access = RowAccess::new(hints, &mut pools, stats);
+        access.set_cols(&cols);
         access.set_row(0);
         f(&mut access);
+    }
+
+    fn days_from_secs(secs: i64) -> i32 {
+        secs.div_euclid(86_400) as i32
     }
 
     #[test]
@@ -7419,25 +7386,27 @@ fn rowpack_config_for_table(
     RowPackConfig::merge(source_cfg, table.rowpack.as_ref())
 }
 
-fn build_column_runtimes(table: &TableSpec) -> Vec<ColumnRuntime> {
+fn build_row_access_hints(table: &TableSpec) -> Vec<RowAccessHints> {
     table
         .columns
         .iter()
-        .map(|col| {
-            let parser = if matches!(col.ingested_dtype, IngestedType::Timestamp | IngestedType::Date)
-            {
-                col.timestamp_format
-                    .as_deref()
-                    .and_then(TimestampFormatParser::compile)
-            } else {
-                None
-            };
-            ColumnRuntime {
-                timestamp_parser: parser.clone(),
-                date_parser: parser,
-            }
+        .map(|col| RowAccessHints {
+            timestamp_format: col.timestamp_format.clone(),
+            timestamp_unit: to_arrow_time_unit(col.timestamp_unit.as_ref()),
+            decimal_scale: col.scale,
         })
         .collect()
+}
+
+fn to_arrow_time_unit(
+    unit: Option<&crate::source_metadata::TimestampUnit>,
+) -> Option<arrow_schema::TimeUnit> {
+    match unit? {
+        crate::source_metadata::TimestampUnit::Seconds => Some(arrow_schema::TimeUnit::Second),
+        crate::source_metadata::TimestampUnit::Millis => Some(arrow_schema::TimeUnit::Millisecond),
+        crate::source_metadata::TimestampUnit::Micros => Some(arrow_schema::TimeUnit::Microsecond),
+        crate::source_metadata::TimestampUnit::Nanos => Some(arrow_schema::TimeUnit::Nanosecond),
+    }
 }
 
 fn rowpack_columns(table: &TableSpec) -> Result<Vec<diskgraph_rowpack::RowPackColumn>> {
@@ -7734,247 +7703,6 @@ fn fast_key_from_array(
 }
 
 
-struct ColumnRuntime {
-    timestamp_parser: Option<TimestampFormatParser>,
-    date_parser: Option<TimestampFormatParser>,
-}
-
-struct IngestRowAccess<'a> {
-    access: diskgraph_rowpack::RowAccess<'a>,
-    columns: &'a [ColumnSpec],
-    runtimes: &'a [ColumnRuntime],
-    trimmed_strings: &'a Arc<AtomicU64>,
-}
-
-impl<'a> IngestRowAccess<'a> {
-    fn new(
-        cols: &'a [ArrayRef],
-        columns: &'a [ColumnSpec],
-        runtimes: &'a [ColumnRuntime],
-        trimmed_strings: &'a Arc<AtomicU64>,
-    ) -> Self {
-        Self {
-            access: diskgraph_rowpack::RowAccess::new(cols),
-            columns,
-            runtimes,
-            trimmed_strings,
-        }
-    }
-
-    fn set_row(&mut self, row: usize) {
-        self.access.set_row(row);
-    }
-
-    fn row(&self) -> usize {
-        self.access.row()
-    }
-
-    fn array(&self, idx: usize) -> Result<&ArrayRef> {
-        self.access.array(idx)
-    }
-
-    fn column(&self, idx: usize) -> Result<&ColumnSpec> {
-        self.columns
-            .get(idx)
-            .ok_or_else(|| anyhow!("missing column {}", idx))
-    }
-
-    fn column_and_array(&self, idx: usize) -> Result<(&ColumnSpec, &ArrayRef)> {
-        let col = self.column(idx)?;
-        let array = self.access.array(idx)?;
-        Ok((col, array))
-    }
-}
-
-impl<'a> diskgraph_rowpack::RowValueAccess for IngestRowAccess<'a> {
-    fn get_int64(&mut self, idx: usize) -> Result<Option<i64>> {
-        self.access.get_int64(idx)
-    }
-
-    fn get_int32(&mut self, idx: usize) -> Result<Option<i32>> {
-        self.access.get_int32(idx)
-    }
-
-    fn get_uint64(&mut self, idx: usize) -> Result<Option<u64>> {
-        self.access.get_uint64(idx)
-    }
-
-    fn get_uint32(&mut self, idx: usize) -> Result<Option<u32>> {
-        self.access.get_uint32(idx)
-    }
-
-    fn get_float64(&mut self, idx: usize) -> Result<Option<f64>> {
-        self.access.get_float64(idx)
-    }
-
-    fn get_float32(&mut self, idx: usize) -> Result<Option<f32>> {
-        self.access.get_float32(idx)
-    }
-
-    fn get_bool(&mut self, idx: usize) -> Result<Option<bool>> {
-        self.access.get_bool(idx)
-    }
-
-    fn get_string(&mut self, idx: usize) -> Result<Option<&str>> {
-        let array = self.access.array(idx)?;
-        if array.is_null(self.access.row()) {
-            return Ok(None);
-        }
-        let text = match array.data_type() {
-            DataType::Utf8 | DataType::LargeUtf8 | DataType::Binary | DataType::LargeBinary
-            | DataType::FixedSizeBinary(_) => {
-                let text = match self.access.read_utf8(idx)? {
-                    Some(text) => text,
-                    None => return Ok(None),
-                };
-                if text.len() > MAX_INPUT_STRING_BYTES {
-                    self.trimmed_strings.fetch_add(1, Ordering::Relaxed);
-                    trim_str_bytes(text, MAX_INPUT_STRING_BYTES).to_string()
-                } else {
-                    text.to_string()
-                }
-            }
-            _ => {
-                let value = value_from_array(array, self.access.row())?;
-                match value {
-                    JsonValue::Null => return Ok(None),
-                    JsonValue::String(s) => s,
-                    JsonValue::Number(n) => n.to_string(),
-                    JsonValue::Bool(v) => v.to_string(),
-                    _ => return Ok(None),
-                }
-            }
-        };
-        Ok(Some(self.access.pool_str(text)))
-    }
-
-    fn get_bytes(&mut self, idx: usize) -> Result<Option<&[u8]>> {
-        let array = self.access.array(idx)?;
-        if array.is_null(self.access.row()) {
-            return Ok(None);
-        }
-        match array.data_type() {
-            DataType::Utf8
-            | DataType::LargeUtf8
-            | DataType::Binary
-            | DataType::LargeBinary
-            | DataType::FixedSizeBinary(_) => {}
-            _ => return Ok(None),
-        }
-        let data = match self.access.read_bytes(idx)? {
-            Some(bytes) => bytes,
-            None => return Ok(None),
-        };
-        let bytes = if data.len() > MAX_INPUT_STRING_BYTES {
-            self.trimmed_strings.fetch_add(1, Ordering::Relaxed);
-            data[..MAX_INPUT_STRING_BYTES].to_vec()
-        } else {
-            data.to_vec()
-        };
-        Ok(Some(self.access.pool_bytes(bytes)))
-    }
-
-    fn get_uuid(&mut self, idx: usize) -> Result<Option<[u8; 16]>> {
-        self.access.get_uuid(idx)
-    }
-
-    fn get_uuid256(&mut self, idx: usize) -> Result<Option<[u8; 32]>> {
-        self.access.get_uuid256(idx)
-    }
-
-    fn get_ip(&mut self, idx: usize) -> Result<Option<[u8; 16]>> {
-        self.access.get_ip(idx)
-    }
-
-    fn get_date(&mut self, idx: usize) -> Result<Option<i32>> {
-        let (col, array) = self.column_and_array(idx)?;
-        if array.is_null(self.access.row()) {
-            return Ok(None);
-        }
-        let unit = to_arrow_time_unit(col.timestamp_unit.as_ref());
-        let format = col.timestamp_format.as_deref();
-        if matches!(
-            array.data_type(),
-            DataType::Utf8
-                | DataType::LargeUtf8
-                | DataType::Binary
-                | DataType::LargeBinary
-                | DataType::FixedSizeBinary(_)
-        ) {
-            if let Some(parser) = self
-                .runtimes
-                .get(idx)
-                .and_then(|r| r.date_parser.as_ref())
-            {
-                if let Some(text) = self.access.read_utf8(idx)? {
-                    if let Some(days) = parser.parse_date(text) {
-                        return Ok(Some(days));
-                    }
-                }
-            }
-        }
-        self.access.get_date(idx, format, unit)
-    }
-
-    fn get_timestamp(&mut self, idx: usize) -> Result<Option<(i64, u32)>> {
-        let (col, array) = self.column_and_array(idx)?;
-        if array.is_null(self.access.row()) {
-            return Ok(None);
-        }
-        let unit = to_arrow_time_unit(col.timestamp_unit.as_ref());
-        let format = col.timestamp_format.as_deref();
-        if matches!(
-            array.data_type(),
-            DataType::Utf8
-                | DataType::LargeUtf8
-                | DataType::Binary
-                | DataType::LargeBinary
-                | DataType::FixedSizeBinary(_)
-        ) {
-            if let Some(parser) = self
-                .runtimes
-                .get(idx)
-                .and_then(|r| r.timestamp_parser.as_ref())
-            {
-                if let Some(text) = self.access.read_utf8(idx)? {
-                    if let Some((secs, nanos)) = parser.parse_timestamp(text) {
-                        return Ok(Some((secs, nanos)));
-                    }
-                }
-            }
-        }
-        self.access.get_timestamp(idx, format, unit)
-    }
-
-    fn get_decimal128(&mut self, idx: usize) -> Result<Option<i128>> {
-        let scale = self.column(idx)?.scale;
-        self.access.get_decimal128(idx, scale)
-    }
-
-    fn get_decimal256(&mut self, idx: usize) -> Result<Option<[u8; 32]>> {
-        let scale = self.column(idx)?.scale;
-        self.access.get_decimal256(idx, scale)
-    }
-
-    fn get_float32_array(&mut self, idx: usize) -> Result<Option<&[f32]>> {
-        self.access.get_float32_array(idx)
-    }
-
-    fn get_float64_array(&mut self, idx: usize) -> Result<Option<&[f64]>> {
-        self.access.get_float64_array(idx)
-    }
-}
-
-fn to_arrow_time_unit(unit: Option<&TimestampUnit>) -> Option<arrow_schema::TimeUnit> {
-    match unit? {
-        TimestampUnit::Seconds => Some(arrow_schema::TimeUnit::Second),
-        TimestampUnit::Millis => Some(arrow_schema::TimeUnit::Millisecond),
-        TimestampUnit::Micros => Some(arrow_schema::TimeUnit::Microsecond),
-        TimestampUnit::Nanos => Some(arrow_schema::TimeUnit::Nanosecond),
-    }
-}
-
-
 fn read_utf8<'a>(array: &'a ArrayRef, row: usize) -> Result<&'a str> {
     match array.data_type() {
         DataType::Utf8 => {
@@ -8057,247 +7785,7 @@ fn read_bytes<'a>(array: &'a ArrayRef, row: usize) -> Result<&'a [u8]> {
     }
 }
 
-fn trim_str_bytes(value: &str, max: usize) -> &str {
-    if value.len() <= max {
-        return value;
-    }
-    let mut end = max;
-    while end > 0 && !value.is_char_boundary(end) {
-        end -= 1;
-    }
-    &value[..end]
-}
-
-#[derive(Clone, Debug)]
-enum TimestampToken {
-    Literal(Vec<u8>),
-    Year,
-    Month,
-    Day,
-    Hour,
-    Minute,
-    Second,
-    Fraction,
-}
-
-#[derive(Clone, Debug)]
-struct TimestampFormatParser {
-    tokens: Vec<TimestampToken>,
-    has_date: bool,
-}
-
-impl TimestampFormatParser {
-    fn compile(format: &str) -> Option<Self> {
-        let mut tokens = Vec::new();
-        let mut literal = Vec::new();
-        let mut chars = format.chars().peekable();
-        let mut has_date = false;
-        let mut has_time = false;
-        while let Some(ch) = chars.next() {
-            if ch == '%' {
-                if let Some(spec) = chars.next() {
-                    if !literal.is_empty() {
-                        tokens.push(TimestampToken::Literal(std::mem::take(&mut literal)));
-                    }
-                    match spec {
-                        '%' => literal.push(b'%'),
-                        'Y' => {
-                            tokens.push(TimestampToken::Year);
-                            has_date = true;
-                        }
-                        'm' => {
-                            tokens.push(TimestampToken::Month);
-                            has_date = true;
-                        }
-                        'd' => {
-                            tokens.push(TimestampToken::Day);
-                            has_date = true;
-                        }
-                        'H' => {
-                            tokens.push(TimestampToken::Hour);
-                            has_time = true;
-                        }
-                        'M' => {
-                            tokens.push(TimestampToken::Minute);
-                            has_time = true;
-                        }
-                        'S' => {
-                            tokens.push(TimestampToken::Second);
-                            has_time = true;
-                        }
-                        'f' => {
-                            tokens.push(TimestampToken::Fraction);
-                            has_time = true;
-                        }
-                        'F' => {
-                            tokens.push(TimestampToken::Year);
-                            tokens.push(TimestampToken::Literal(vec![b'-']));
-                            tokens.push(TimestampToken::Month);
-                            tokens.push(TimestampToken::Literal(vec![b'-']));
-                            tokens.push(TimestampToken::Day);
-                            has_date = true;
-                        }
-                        'T' => {
-                            tokens.push(TimestampToken::Hour);
-                            tokens.push(TimestampToken::Literal(vec![b':']));
-                            tokens.push(TimestampToken::Minute);
-                            tokens.push(TimestampToken::Literal(vec![b':']));
-                            tokens.push(TimestampToken::Second);
-                            has_time = true;
-                        }
-                        _ => return None,
-                    }
-                } else {
-                    return None;
-                }
-            } else if ch.is_ascii() {
-                literal.push(ch as u8);
-            } else {
-                return None;
-            }
-        }
-        if !literal.is_empty() {
-            tokens.push(TimestampToken::Literal(literal));
-        }
-        let _ = has_time;
-        Some(Self { tokens, has_date })
-    }
-
-    fn parse_timestamp(&self, value: &str) -> Option<(i64, u32)> {
-        if !self.has_date {
-            return None;
-        }
-        let bytes = value.as_bytes();
-        let mut pos = 0usize;
-        let mut year: i32 = 0;
-        let mut month: u32 = 1;
-        let mut day: u32 = 1;
-        let mut hour: u32 = 0;
-        let mut minute: u32 = 0;
-        let mut second: u32 = 0;
-        let mut nanos: u32 = 0;
-        for token in &self.tokens {
-            match token {
-                TimestampToken::Literal(lit) => {
-                    if pos + lit.len() > bytes.len() {
-                        return None;
-                    }
-                    if &bytes[pos..pos + lit.len()] != lit.as_slice() {
-                        return None;
-                    }
-                    pos += lit.len();
-                }
-                TimestampToken::Year => {
-                    let (val, next) = parse_fixed_u32(bytes, pos, 4)?;
-                    year = val as i32;
-                    pos = next;
-                }
-                TimestampToken::Month => {
-                    let (val, next) = parse_fixed_u32(bytes, pos, 2)?;
-                    month = val;
-                    pos = next;
-                }
-                TimestampToken::Day => {
-                    let (val, next) = parse_fixed_u32(bytes, pos, 2)?;
-                    day = val;
-                    pos = next;
-                }
-                TimestampToken::Hour => {
-                    let (val, next) = parse_fixed_u32(bytes, pos, 2)?;
-                    hour = val;
-                    pos = next;
-                }
-                TimestampToken::Minute => {
-                    let (val, next) = parse_fixed_u32(bytes, pos, 2)?;
-                    minute = val;
-                    pos = next;
-                }
-                TimestampToken::Second => {
-                    let (val, next) = parse_fixed_u32(bytes, pos, 2)?;
-                    second = val;
-                    pos = next;
-                }
-                TimestampToken::Fraction => {
-                    let (val, digits, next) = parse_fraction(bytes, pos)?;
-                    nanos = fraction_to_nanos(val, digits);
-                    pos = next;
-                }
-            }
-        }
-        if pos != bytes.len() {
-            return None;
-        }
-        let date = chrono::NaiveDate::from_ymd_opt(year, month, day)?;
-        let time = chrono::NaiveTime::from_hms_nano_opt(hour, minute, second, nanos)?;
-        let dt = chrono::NaiveDateTime::new(date, time);
-        Some((dt.and_utc().timestamp(), nanos))
-    }
-
-    fn parse_date(&self, value: &str) -> Option<i32> {
-        let (secs, _nanos) = self.parse_timestamp(value)?;
-        Some(days_from_secs(secs))
-    }
-}
-
-fn parse_fixed_u32(bytes: &[u8], pos: usize, len: usize) -> Option<(u32, usize)> {
-    if pos + len > bytes.len() {
-        return None;
-    }
-    let mut val: u32 = 0;
-    for idx in pos..pos + len {
-        let b = bytes[idx];
-        if !b.is_ascii_digit() {
-            return None;
-        }
-        val = val.saturating_mul(10).saturating_add((b - b'0') as u32);
-    }
-    Some((val, pos + len))
-}
-
-fn parse_fraction(bytes: &[u8], pos: usize) -> Option<(u32, usize, usize)> {
-    let mut idx = pos;
-    let mut val: u32 = 0;
-    let mut digits = 0usize;
-    while idx < bytes.len() && bytes[idx].is_ascii_digit() {
-        if digits < 9 {
-            val = val.saturating_mul(10).saturating_add((bytes[idx] - b'0') as u32);
-        }
-        digits += 1;
-        idx += 1;
-    }
-    if digits == 0 {
-        return None;
-    }
-    Some((val, digits.min(9), idx))
-}
-
-fn fraction_to_nanos(value: u32, digits: usize) -> u32 {
-    const POW10: [u32; 10] = [
-        1_000_000_000,
-        100_000_000,
-        10_000_000,
-        1_000_000,
-        100_000,
-        10_000,
-        1_000,
-        100,
-        10,
-        1,
-    ];
-    if digits == 0 {
-        0
-    } else if digits >= 9 {
-        value
-    } else {
-        value.saturating_mul(POW10[digits])
-    }
-}
-
-fn days_from_secs(secs: i64) -> i32 {
-    secs.div_euclid(86_400) as i32
-}
-
-fn value_from_array(array: &ArrayRef, row: usize) -> Result<JsonValue> {
+ fn value_from_array(array: &ArrayRef, row: usize) -> Result<JsonValue> {
     if array.is_null(row) {
         return Ok(JsonValue::Null);
     }

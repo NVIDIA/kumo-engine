@@ -249,19 +249,53 @@ pub trait RowValueAccess {
     fn get_float64_array(&mut self, idx: usize) -> Result<Option<&[f64]>>;
 }
 
-pub struct RowAccess<'a> {
-    row: usize,
-    cols: &'a [ArrayRef],
-    pools: RowValuePools,
+const MAX_INPUT_STRING_BYTES: usize = 32 * 1024;
+
+#[derive(Debug, Clone)]
+pub struct RowAccessHints {
+    pub timestamp_format: Option<String>,
+    pub timestamp_unit: Option<arrow_schema::TimeUnit>,
+    pub decimal_scale: Option<i32>,
 }
 
-impl<'a> RowAccess<'a> {
-    pub fn new(cols: &'a [ArrayRef]) -> Self {
+pub struct RowAccess<'p> {
+    row: usize,
+    cols_ptr: *const ArrayRef,
+    cols_len: usize,
+    pools: &'p mut RowValuePools,
+    _stats: RowAccessStats<'p>,
+    hints: Vec<RowAccessHints>,
+    fast_parsers: Vec<Option<TimestampFormatParser>>,
+}
+
+impl<'p> RowAccess<'p> {
+    pub fn new(
+        hints: Vec<RowAccessHints>,
+        pools: &'p mut RowValuePools,
+        stats: RowAccessStats<'p>,
+    ) -> Self {
+        let fast_parsers = hints
+            .iter()
+            .map(|hint| {
+                hint.timestamp_format
+                    .as_deref()
+                    .and_then(TimestampFormatParser::compile)
+            })
+            .collect();
         Self {
             row: 0,
-            cols,
-            pools: RowValuePools::new(),
+            cols_ptr: std::ptr::null(),
+            cols_len: 0,
+            pools,
+            _stats: stats,
+            hints,
+            fast_parsers,
         }
+    }
+
+    pub fn set_cols(&mut self, cols: &[ArrayRef]) {
+        self.cols_ptr = cols.as_ptr();
+        self.cols_len = cols.len();
     }
 
     pub fn set_row(&mut self, row: usize) {
@@ -274,9 +308,11 @@ impl<'a> RowAccess<'a> {
     }
 
     pub fn array(&self, idx: usize) -> Result<&ArrayRef> {
-        self.cols
-            .get(idx)
-            .ok_or_else(|| anyhow!("missing column {}", idx))
+        if self.cols_ptr.is_null() {
+            return Err(anyhow!("row access columns not set"));
+        }
+        let cols = unsafe { std::slice::from_raw_parts(self.cols_ptr, self.cols_len) };
+        cols.get(idx).ok_or_else(|| anyhow!("missing column {}", idx))
     }
 
     pub fn pool_str(&mut self, value: String) -> &str {
@@ -289,97 +325,13 @@ impl<'a> RowAccess<'a> {
         unsafe { std::mem::transmute::<&[u8], &[u8]>(slice) }
     }
 
-    pub fn read_utf8(&self, idx: usize) -> Result<Option<&str>> {
-        let array = self.array(idx)?;
-        if array.is_null(self.row) {
-            return Ok(None);
-        }
-        match array.data_type() {
-            DataType::Utf8 => {
-                let arr = array
-                    .as_any()
-                    .downcast_ref::<arrow_array::StringArray>()
-                    .ok_or_else(|| anyhow!("string cast"))?;
-                Ok(Some(arr.value(self.row)))
-            }
-            DataType::LargeUtf8 => {
-                let arr = array
-                    .as_any()
-                    .downcast_ref::<arrow_array::LargeStringArray>()
-                    .ok_or_else(|| anyhow!("large string cast"))?;
-                Ok(Some(arr.value(self.row)))
-            }
-            DataType::Binary => {
-                let arr = array
-                    .as_any()
-                    .downcast_ref::<arrow_array::BinaryArray>()
-                    .ok_or_else(|| anyhow!("binary cast"))?;
-                Ok(Some(std::str::from_utf8(arr.value(self.row))?))
-            }
-            DataType::LargeBinary => {
-                let arr = array
-                    .as_any()
-                    .downcast_ref::<arrow_array::LargeBinaryArray>()
-                    .ok_or_else(|| anyhow!("large binary cast"))?;
-                Ok(Some(std::str::from_utf8(arr.value(self.row))?))
-            }
-            DataType::FixedSizeBinary(_) => {
-                let arr = array
-                    .as_any()
-                    .downcast_ref::<arrow_array::FixedSizeBinaryArray>()
-                    .ok_or_else(|| anyhow!("fixed binary cast"))?;
-                Ok(Some(std::str::from_utf8(arr.value(self.row))?))
-            }
-            _ => Err(anyhow!("unsupported utf8 source")),
-        }
+    fn hint(&self, idx: usize) -> Result<&RowAccessHints> {
+        self.hints
+            .get(idx)
+            .ok_or_else(|| anyhow!("missing column hint {}", idx))
     }
 
-    pub fn read_bytes(&self, idx: usize) -> Result<Option<&[u8]>> {
-        let array = self.array(idx)?;
-        if array.is_null(self.row) {
-            return Ok(None);
-        }
-        match array.data_type() {
-            DataType::Utf8 => {
-                let arr = array
-                    .as_any()
-                    .downcast_ref::<arrow_array::StringArray>()
-                    .ok_or_else(|| anyhow!("string cast"))?;
-                Ok(Some(arr.value(self.row).as_bytes()))
-            }
-            DataType::LargeUtf8 => {
-                let arr = array
-                    .as_any()
-                    .downcast_ref::<arrow_array::LargeStringArray>()
-                    .ok_or_else(|| anyhow!("large string cast"))?;
-                Ok(Some(arr.value(self.row).as_bytes()))
-            }
-            DataType::Binary => {
-                let arr = array
-                    .as_any()
-                    .downcast_ref::<arrow_array::BinaryArray>()
-                    .ok_or_else(|| anyhow!("binary cast"))?;
-                Ok(Some(arr.value(self.row)))
-            }
-            DataType::LargeBinary => {
-                let arr = array
-                    .as_any()
-                    .downcast_ref::<arrow_array::LargeBinaryArray>()
-                    .ok_or_else(|| anyhow!("large binary cast"))?;
-                Ok(Some(arr.value(self.row)))
-            }
-            DataType::FixedSizeBinary(_) => {
-                let arr = array
-                    .as_any()
-                    .downcast_ref::<arrow_array::FixedSizeBinaryArray>()
-                    .ok_or_else(|| anyhow!("fixed binary cast"))?;
-                Ok(Some(arr.value(self.row)))
-            }
-            _ => Err(anyhow!("unsupported bytes source")),
-        }
-    }
-
-    pub fn read_i64(&self, idx: usize) -> Result<Option<i64>> {
+    pub fn get_int64(&self, idx: usize) -> Result<Option<i64>> {
         let array = self.array(idx)?;
         if array.is_null(self.row) {
             return Ok(None);
@@ -441,11 +393,147 @@ impl<'a> RowAccess<'a> {
                     .ok_or_else(|| anyhow!("uint8 cast"))?;
                 Ok(Some(arr.value(self.row) as i64))
             }
-            _ => Err(anyhow!("unsupported int source")),
+            DataType::Utf8 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::StringArray>()
+                    .ok_or_else(|| anyhow!("string cast"))?;
+                Ok(parse_i64(arr.value(self.row)))
+            }
+            DataType::LargeUtf8 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::LargeStringArray>()
+                    .ok_or_else(|| anyhow!("large string cast"))?;
+                Ok(parse_i64(arr.value(self.row)))
+            }
+            DataType::Binary => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::BinaryArray>()
+                    .ok_or_else(|| anyhow!("binary cast"))?;
+                Ok(parse_i64(std::str::from_utf8(arr.value(self.row))?))
+            }
+            DataType::LargeBinary => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::LargeBinaryArray>()
+                    .ok_or_else(|| anyhow!("large binary cast"))?;
+                Ok(parse_i64(std::str::from_utf8(arr.value(self.row))?))
+            }
+            DataType::FixedSizeBinary(_) => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::FixedSizeBinaryArray>()
+                    .ok_or_else(|| anyhow!("fixed binary cast"))?;
+                Ok(parse_i64(std::str::from_utf8(arr.value(self.row))?))
+            }
+            _ => Ok(None),
         }
     }
 
-    pub fn read_u64(&self, idx: usize) -> Result<Option<u64>> {
+    pub fn get_int32(&self, idx: usize) -> Result<Option<i32>> {
+        let array = self.array(idx)?;
+        if array.is_null(self.row) {
+            return Ok(None);
+        }
+        match array.data_type() {
+            DataType::Int64 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Int64Array>()
+                    .ok_or_else(|| anyhow!("int64 cast"))?;
+                Ok(Some(arr.value(self.row) as i32))
+            }
+            DataType::Int32 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Int32Array>()
+                    .ok_or_else(|| anyhow!("int32 cast"))?;
+                Ok(Some(arr.value(self.row)))
+            }
+            DataType::Int16 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Int16Array>()
+                    .ok_or_else(|| anyhow!("int16 cast"))?;
+                Ok(Some(arr.value(self.row) as i32))
+            }
+            DataType::Int8 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Int8Array>()
+                    .ok_or_else(|| anyhow!("int8 cast"))?;
+                Ok(Some(arr.value(self.row) as i32))
+            }
+            DataType::UInt64 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::UInt64Array>()
+                    .ok_or_else(|| anyhow!("uint64 cast"))?;
+                Ok(Some(arr.value(self.row) as i32))
+            }
+            DataType::UInt32 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::UInt32Array>()
+                    .ok_or_else(|| anyhow!("uint32 cast"))?;
+                Ok(Some(arr.value(self.row) as i32))
+            }
+            DataType::UInt16 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::UInt16Array>()
+                    .ok_or_else(|| anyhow!("uint16 cast"))?;
+                Ok(Some(arr.value(self.row) as i32))
+            }
+            DataType::UInt8 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::UInt8Array>()
+                    .ok_or_else(|| anyhow!("uint8 cast"))?;
+                Ok(Some(arr.value(self.row) as i32))
+            }
+            DataType::Utf8 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::StringArray>()
+                    .ok_or_else(|| anyhow!("string cast"))?;
+                Ok(parse_i32(arr.value(self.row)))
+            }
+            DataType::LargeUtf8 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::LargeStringArray>()
+                    .ok_or_else(|| anyhow!("large string cast"))?;
+                Ok(parse_i32(arr.value(self.row)))
+            }
+            DataType::Binary => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::BinaryArray>()
+                    .ok_or_else(|| anyhow!("binary cast"))?;
+                Ok(parse_i32(std::str::from_utf8(arr.value(self.row))?))
+            }
+            DataType::LargeBinary => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::LargeBinaryArray>()
+                    .ok_or_else(|| anyhow!("large binary cast"))?;
+                Ok(parse_i32(std::str::from_utf8(arr.value(self.row))?))
+            }
+            DataType::FixedSizeBinary(_) => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::FixedSizeBinaryArray>()
+                    .ok_or_else(|| anyhow!("fixed binary cast"))?;
+                Ok(parse_i32(std::str::from_utf8(arr.value(self.row))?))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    pub fn get_uint64(&self, idx: usize) -> Result<Option<u64>> {
         let array = self.array(idx)?;
         if array.is_null(self.row) {
             return Ok(None);
@@ -479,63 +567,171 @@ impl<'a> RowAccess<'a> {
                     .ok_or_else(|| anyhow!("uint8 cast"))?;
                 Ok(Some(arr.value(self.row) as u64))
             }
-            _ => Err(anyhow!("unsupported uint source")),
-        }
-    }
-
-    pub fn get_int64(&self, idx: usize) -> Result<Option<i64>> {
-        match self.read_i64(idx) {
-            Ok(Some(v)) => Ok(Some(v)),
-            Ok(None) => Ok(None),
-            Err(_) => {
-                if let Some(text) = self.read_utf8(idx)? {
-                    Ok(parse_i64(text))
-                } else {
-                    Ok(None)
-                }
+            DataType::Int64 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Int64Array>()
+                    .ok_or_else(|| anyhow!("int64 cast"))?;
+                Ok(Some(arr.value(self.row) as u64))
             }
-        }
-    }
-
-    pub fn get_int32(&self, idx: usize) -> Result<Option<i32>> {
-        match self.read_i64(idx) {
-            Ok(Some(v)) => Ok(Some(v as i32)),
-            Ok(None) => Ok(None),
-            Err(_) => {
-                if let Some(text) = self.read_utf8(idx)? {
-                    Ok(parse_i32(text))
-                } else {
-                    Ok(None)
-                }
+            DataType::Int32 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Int32Array>()
+                    .ok_or_else(|| anyhow!("int32 cast"))?;
+                Ok(Some(arr.value(self.row) as u64))
             }
-        }
-    }
-
-    pub fn get_uint64(&self, idx: usize) -> Result<Option<u64>> {
-        match self.read_u64(idx) {
-            Ok(Some(v)) => Ok(Some(v)),
-            Ok(None) => Ok(None),
-            Err(_) => {
-                if let Some(text) = self.read_utf8(idx)? {
-                    Ok(parse_u64(text))
-                } else {
-                    Ok(None)
-                }
+            DataType::Int16 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Int16Array>()
+                    .ok_or_else(|| anyhow!("int16 cast"))?;
+                Ok(Some(arr.value(self.row) as u64))
             }
+            DataType::Int8 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Int8Array>()
+                    .ok_or_else(|| anyhow!("int8 cast"))?;
+                Ok(Some(arr.value(self.row) as u64))
+            }
+            DataType::Utf8 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::StringArray>()
+                    .ok_or_else(|| anyhow!("string cast"))?;
+                Ok(parse_u64(arr.value(self.row)))
+            }
+            DataType::LargeUtf8 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::LargeStringArray>()
+                    .ok_or_else(|| anyhow!("large string cast"))?;
+                Ok(parse_u64(arr.value(self.row)))
+            }
+            DataType::Binary => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::BinaryArray>()
+                    .ok_or_else(|| anyhow!("binary cast"))?;
+                Ok(parse_u64(std::str::from_utf8(arr.value(self.row))?))
+            }
+            DataType::LargeBinary => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::LargeBinaryArray>()
+                    .ok_or_else(|| anyhow!("large binary cast"))?;
+                Ok(parse_u64(std::str::from_utf8(arr.value(self.row))?))
+            }
+            DataType::FixedSizeBinary(_) => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::FixedSizeBinaryArray>()
+                    .ok_or_else(|| anyhow!("fixed binary cast"))?;
+                Ok(parse_u64(std::str::from_utf8(arr.value(self.row))?))
+            }
+            _ => Ok(None),
         }
     }
 
     pub fn get_uint32(&self, idx: usize) -> Result<Option<u32>> {
-        match self.read_u64(idx) {
-            Ok(Some(v)) => Ok(Some(v as u32)),
-            Ok(None) => Ok(None),
-            Err(_) => {
-                if let Some(text) = self.read_utf8(idx)? {
-                    Ok(parse_u32(text))
-                } else {
-                    Ok(None)
-                }
+        let array = self.array(idx)?;
+        if array.is_null(self.row) {
+            return Ok(None);
+        }
+        match array.data_type() {
+            DataType::UInt64 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::UInt64Array>()
+                    .ok_or_else(|| anyhow!("uint64 cast"))?;
+                Ok(Some(arr.value(self.row) as u32))
             }
+            DataType::UInt32 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::UInt32Array>()
+                    .ok_or_else(|| anyhow!("uint32 cast"))?;
+                Ok(Some(arr.value(self.row)))
+            }
+            DataType::UInt16 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::UInt16Array>()
+                    .ok_or_else(|| anyhow!("uint16 cast"))?;
+                Ok(Some(arr.value(self.row) as u32))
+            }
+            DataType::UInt8 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::UInt8Array>()
+                    .ok_or_else(|| anyhow!("uint8 cast"))?;
+                Ok(Some(arr.value(self.row) as u32))
+            }
+            DataType::Int64 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Int64Array>()
+                    .ok_or_else(|| anyhow!("int64 cast"))?;
+                Ok(Some(arr.value(self.row) as u32))
+            }
+            DataType::Int32 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Int32Array>()
+                    .ok_or_else(|| anyhow!("int32 cast"))?;
+                Ok(Some(arr.value(self.row) as u32))
+            }
+            DataType::Int16 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Int16Array>()
+                    .ok_or_else(|| anyhow!("int16 cast"))?;
+                Ok(Some(arr.value(self.row) as u32))
+            }
+            DataType::Int8 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Int8Array>()
+                    .ok_or_else(|| anyhow!("int8 cast"))?;
+                Ok(Some(arr.value(self.row) as u32))
+            }
+            DataType::Utf8 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::StringArray>()
+                    .ok_or_else(|| anyhow!("string cast"))?;
+                Ok(parse_u32(arr.value(self.row)))
+            }
+            DataType::LargeUtf8 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::LargeStringArray>()
+                    .ok_or_else(|| anyhow!("large string cast"))?;
+                Ok(parse_u32(arr.value(self.row)))
+            }
+            DataType::Binary => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::BinaryArray>()
+                    .ok_or_else(|| anyhow!("binary cast"))?;
+                Ok(parse_u32(std::str::from_utf8(arr.value(self.row))?))
+            }
+            DataType::LargeBinary => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::LargeBinaryArray>()
+                    .ok_or_else(|| anyhow!("large binary cast"))?;
+                Ok(parse_u32(std::str::from_utf8(arr.value(self.row))?))
+            }
+            DataType::FixedSizeBinary(_) => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::FixedSizeBinaryArray>()
+                    .ok_or_else(|| anyhow!("fixed binary cast"))?;
+                Ok(parse_u32(std::str::from_utf8(arr.value(self.row))?))
+            }
+            _ => Ok(None),
         }
     }
 
@@ -559,16 +755,74 @@ impl<'a> RowAccess<'a> {
                     .ok_or_else(|| anyhow!("float32 cast"))?;
                 Ok(Some(arr.value(self.row) as f64))
             }
+            DataType::Int64 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Int64Array>()
+                    .ok_or_else(|| anyhow!("int64 cast"))?;
+                Ok(Some(arr.value(self.row) as f64))
+            }
+            DataType::Int32 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Int32Array>()
+                    .ok_or_else(|| anyhow!("int32 cast"))?;
+                Ok(Some(arr.value(self.row) as f64))
+            }
+            DataType::UInt64 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::UInt64Array>()
+                    .ok_or_else(|| anyhow!("uint64 cast"))?;
+                Ok(Some(arr.value(self.row) as f64))
+            }
+            DataType::UInt32 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::UInt32Array>()
+                    .ok_or_else(|| anyhow!("uint32 cast"))?;
+                Ok(Some(arr.value(self.row) as f64))
+            }
             DataType::Utf8
             | DataType::LargeUtf8
             | DataType::Binary
             | DataType::LargeBinary
             | DataType::FixedSizeBinary(_) => {
-                if let Some(text) = self.read_utf8(idx)? {
-                    Ok(parse_f64(text))
-                } else {
-                    Ok(None)
-                }
+                let text = match array.data_type() {
+                    DataType::Utf8 => array
+                        .as_any()
+                        .downcast_ref::<arrow_array::StringArray>()
+                        .ok_or_else(|| anyhow!("string cast"))?
+                        .value(self.row),
+                    DataType::LargeUtf8 => array
+                        .as_any()
+                        .downcast_ref::<arrow_array::LargeStringArray>()
+                        .ok_or_else(|| anyhow!("large string cast"))?
+                        .value(self.row),
+                    DataType::Binary => std::str::from_utf8(
+                        array
+                            .as_any()
+                            .downcast_ref::<arrow_array::BinaryArray>()
+                            .ok_or_else(|| anyhow!("binary cast"))?
+                            .value(self.row),
+                    )?,
+                    DataType::LargeBinary => std::str::from_utf8(
+                        array
+                            .as_any()
+                            .downcast_ref::<arrow_array::LargeBinaryArray>()
+                            .ok_or_else(|| anyhow!("large binary cast"))?
+                            .value(self.row),
+                    )?,
+                    DataType::FixedSizeBinary(_) => std::str::from_utf8(
+                        array
+                            .as_any()
+                            .downcast_ref::<arrow_array::FixedSizeBinaryArray>()
+                            .ok_or_else(|| anyhow!("fixed binary cast"))?
+                            .value(self.row),
+                    )?,
+                    _ => return Ok(None),
+                };
+                Ok(parse_f64(text))
             }
             _ => Ok(None),
         }
@@ -594,16 +848,74 @@ impl<'a> RowAccess<'a> {
                     .ok_or_else(|| anyhow!("float64 cast"))?;
                 Ok(Some(arr.value(self.row) as f32))
             }
+            DataType::Int64 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Int64Array>()
+                    .ok_or_else(|| anyhow!("int64 cast"))?;
+                Ok(Some(arr.value(self.row) as f32))
+            }
+            DataType::Int32 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Int32Array>()
+                    .ok_or_else(|| anyhow!("int32 cast"))?;
+                Ok(Some(arr.value(self.row) as f32))
+            }
+            DataType::UInt64 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::UInt64Array>()
+                    .ok_or_else(|| anyhow!("uint64 cast"))?;
+                Ok(Some(arr.value(self.row) as f32))
+            }
+            DataType::UInt32 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::UInt32Array>()
+                    .ok_or_else(|| anyhow!("uint32 cast"))?;
+                Ok(Some(arr.value(self.row) as f32))
+            }
             DataType::Utf8
             | DataType::LargeUtf8
             | DataType::Binary
             | DataType::LargeBinary
             | DataType::FixedSizeBinary(_) => {
-                if let Some(text) = self.read_utf8(idx)? {
-                    Ok(parse_f32(text))
-                } else {
-                    Ok(None)
-                }
+                let text = match array.data_type() {
+                    DataType::Utf8 => array
+                        .as_any()
+                        .downcast_ref::<arrow_array::StringArray>()
+                        .ok_or_else(|| anyhow!("string cast"))?
+                        .value(self.row),
+                    DataType::LargeUtf8 => array
+                        .as_any()
+                        .downcast_ref::<arrow_array::LargeStringArray>()
+                        .ok_or_else(|| anyhow!("large string cast"))?
+                        .value(self.row),
+                    DataType::Binary => std::str::from_utf8(
+                        array
+                            .as_any()
+                            .downcast_ref::<arrow_array::BinaryArray>()
+                            .ok_or_else(|| anyhow!("binary cast"))?
+                            .value(self.row),
+                    )?,
+                    DataType::LargeBinary => std::str::from_utf8(
+                        array
+                            .as_any()
+                            .downcast_ref::<arrow_array::LargeBinaryArray>()
+                            .ok_or_else(|| anyhow!("large binary cast"))?
+                            .value(self.row),
+                    )?,
+                    DataType::FixedSizeBinary(_) => std::str::from_utf8(
+                        array
+                            .as_any()
+                            .downcast_ref::<arrow_array::FixedSizeBinaryArray>()
+                            .ok_or_else(|| anyhow!("fixed binary cast"))?
+                            .value(self.row),
+                    )?,
+                    _ => return Ok(None),
+                };
+                Ok(parse_f32(text))
             }
             _ => Ok(None),
         }
@@ -627,14 +939,221 @@ impl<'a> RowAccess<'a> {
             | DataType::Binary
             | DataType::LargeBinary
             | DataType::FixedSizeBinary(_) => {
-                if let Some(text) = self.read_utf8(idx)? {
-                    Ok(parse_bool(text))
-                } else {
-                    Ok(None)
-                }
+                let text = match array.data_type() {
+                    DataType::Utf8 => array
+                        .as_any()
+                        .downcast_ref::<arrow_array::StringArray>()
+                        .ok_or_else(|| anyhow!("string cast"))?
+                        .value(self.row),
+                    DataType::LargeUtf8 => array
+                        .as_any()
+                        .downcast_ref::<arrow_array::LargeStringArray>()
+                        .ok_or_else(|| anyhow!("large string cast"))?
+                        .value(self.row),
+                    DataType::Binary => std::str::from_utf8(
+                        array
+                            .as_any()
+                            .downcast_ref::<arrow_array::BinaryArray>()
+                            .ok_or_else(|| anyhow!("binary cast"))?
+                            .value(self.row),
+                    )?,
+                    DataType::LargeBinary => std::str::from_utf8(
+                        array
+                            .as_any()
+                            .downcast_ref::<arrow_array::LargeBinaryArray>()
+                            .ok_or_else(|| anyhow!("large binary cast"))?
+                            .value(self.row),
+                    )?,
+                    DataType::FixedSizeBinary(_) => std::str::from_utf8(
+                        array
+                            .as_any()
+                            .downcast_ref::<arrow_array::FixedSizeBinaryArray>()
+                            .ok_or_else(|| anyhow!("fixed binary cast"))?
+                            .value(self.row),
+                    )?,
+                    _ => return Ok(None),
+                };
+                Ok(parse_bool(text))
             }
             _ => Ok(None),
         }
+    }
+
+    pub fn get_string(&mut self, idx: usize) -> Result<Option<&str>> {
+        let array = self.array(idx)?;
+        if array.is_null(self.row) {
+            return Ok(None);
+        }
+        let value = match array.data_type() {
+            DataType::Utf8 => array
+                .as_any()
+                .downcast_ref::<arrow_array::StringArray>()
+                .ok_or_else(|| anyhow!("string cast"))?
+                .value(self.row)
+                .to_string(),
+            DataType::LargeUtf8 => array
+                .as_any()
+                .downcast_ref::<arrow_array::LargeStringArray>()
+                .ok_or_else(|| anyhow!("large string cast"))?
+                .value(self.row)
+                .to_string(),
+            DataType::Binary => std::str::from_utf8(
+                array
+                    .as_any()
+                    .downcast_ref::<arrow_array::BinaryArray>()
+                    .ok_or_else(|| anyhow!("binary cast"))?
+                    .value(self.row),
+            )?
+            .to_string(),
+            DataType::LargeBinary => std::str::from_utf8(
+                array
+                    .as_any()
+                    .downcast_ref::<arrow_array::LargeBinaryArray>()
+                    .ok_or_else(|| anyhow!("large binary cast"))?
+                    .value(self.row),
+            )?
+            .to_string(),
+            DataType::FixedSizeBinary(_) => std::str::from_utf8(
+                array
+                    .as_any()
+                    .downcast_ref::<arrow_array::FixedSizeBinaryArray>()
+                    .ok_or_else(|| anyhow!("fixed binary cast"))?
+                    .value(self.row),
+            )?
+            .to_string(),
+            DataType::Int64 => array
+                .as_any()
+                .downcast_ref::<arrow_array::Int64Array>()
+                .ok_or_else(|| anyhow!("int64 cast"))?
+                .value(self.row)
+                .to_string(),
+            DataType::Int32 => array
+                .as_any()
+                .downcast_ref::<arrow_array::Int32Array>()
+                .ok_or_else(|| anyhow!("int32 cast"))?
+                .value(self.row)
+                .to_string(),
+            DataType::Int16 => array
+                .as_any()
+                .downcast_ref::<arrow_array::Int16Array>()
+                .ok_or_else(|| anyhow!("int16 cast"))?
+                .value(self.row)
+                .to_string(),
+            DataType::Int8 => array
+                .as_any()
+                .downcast_ref::<arrow_array::Int8Array>()
+                .ok_or_else(|| anyhow!("int8 cast"))?
+                .value(self.row)
+                .to_string(),
+            DataType::UInt64 => array
+                .as_any()
+                .downcast_ref::<arrow_array::UInt64Array>()
+                .ok_or_else(|| anyhow!("uint64 cast"))?
+                .value(self.row)
+                .to_string(),
+            DataType::UInt32 => array
+                .as_any()
+                .downcast_ref::<arrow_array::UInt32Array>()
+                .ok_or_else(|| anyhow!("uint32 cast"))?
+                .value(self.row)
+                .to_string(),
+            DataType::UInt16 => array
+                .as_any()
+                .downcast_ref::<arrow_array::UInt16Array>()
+                .ok_or_else(|| anyhow!("uint16 cast"))?
+                .value(self.row)
+                .to_string(),
+            DataType::UInt8 => array
+                .as_any()
+                .downcast_ref::<arrow_array::UInt8Array>()
+                .ok_or_else(|| anyhow!("uint8 cast"))?
+                .value(self.row)
+                .to_string(),
+            DataType::Float64 => array
+                .as_any()
+                .downcast_ref::<arrow_array::Float64Array>()
+                .ok_or_else(|| anyhow!("float64 cast"))?
+                .value(self.row)
+                .to_string(),
+            DataType::Float32 => array
+                .as_any()
+                .downcast_ref::<arrow_array::Float32Array>()
+                .ok_or_else(|| anyhow!("float32 cast"))?
+                .value(self.row)
+                .to_string(),
+            DataType::Boolean => array
+                .as_any()
+                .downcast_ref::<arrow_array::BooleanArray>()
+                .ok_or_else(|| anyhow!("bool cast"))?
+                .value(self.row)
+                .to_string(),
+            DataType::Date32 => array
+                .as_any()
+                .downcast_ref::<arrow_array::Date32Array>()
+                .ok_or_else(|| anyhow!("date cast"))?
+                .value(self.row)
+                .to_string(),
+            DataType::Timestamp(_, _) => {
+                let (secs, _) = timestamp_parts_from_array(array, self.row)?;
+                secs.to_string()
+            }
+            _ => return Ok(None),
+        };
+        let value = if value.len() > MAX_INPUT_STRING_BYTES {
+            if let Some(counter) = self._stats.trimmed_strings {
+                counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+            trim_str_bytes(&value, MAX_INPUT_STRING_BYTES).to_string()
+        } else {
+            value
+        };
+        Ok(Some(self.pool_str(value)))
+    }
+
+    pub fn get_bytes(&mut self, idx: usize) -> Result<Option<&[u8]>> {
+        let array = self.array(idx)?;
+        if array.is_null(self.row) {
+            return Ok(None);
+        }
+        let data = match array.data_type() {
+            DataType::Utf8 => array
+                .as_any()
+                .downcast_ref::<arrow_array::StringArray>()
+                .ok_or_else(|| anyhow!("string cast"))?
+                .value(self.row)
+                .as_bytes(),
+            DataType::LargeUtf8 => array
+                .as_any()
+                .downcast_ref::<arrow_array::LargeStringArray>()
+                .ok_or_else(|| anyhow!("large string cast"))?
+                .value(self.row)
+                .as_bytes(),
+            DataType::Binary => array
+                .as_any()
+                .downcast_ref::<arrow_array::BinaryArray>()
+                .ok_or_else(|| anyhow!("binary cast"))?
+                .value(self.row),
+            DataType::LargeBinary => array
+                .as_any()
+                .downcast_ref::<arrow_array::LargeBinaryArray>()
+                .ok_or_else(|| anyhow!("large binary cast"))?
+                .value(self.row),
+            DataType::FixedSizeBinary(_) => array
+                .as_any()
+                .downcast_ref::<arrow_array::FixedSizeBinaryArray>()
+                .ok_or_else(|| anyhow!("fixed binary cast"))?
+                .value(self.row),
+            _ => return Ok(None),
+        };
+        let bytes = if data.len() > MAX_INPUT_STRING_BYTES {
+            if let Some(counter) = self._stats.trimmed_strings {
+                counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+            data[..MAX_INPUT_STRING_BYTES].to_vec()
+        } else {
+            data.to_vec()
+        };
+        Ok(Some(self.pool_bytes(bytes)))
     }
 
     pub fn get_uuid(&self, idx: usize) -> Result<Option<[u8; 16]>> {
@@ -642,17 +1161,62 @@ impl<'a> RowAccess<'a> {
         if array.is_null(self.row) {
             return Ok(None);
         }
-        if let Some(text) = self.read_utf8(idx)? {
-            return Ok(parse_uuid_string(text.as_bytes()));
-        }
-        if let Some(data) = self.read_bytes(idx)? {
-            if data.len() == 16 {
+        match array.data_type() {
+            DataType::Utf8 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::StringArray>()
+                    .ok_or_else(|| anyhow!("string cast"))?;
+                Ok(parse_uuid_string(arr.value(self.row).as_bytes()))
+            }
+            DataType::LargeUtf8 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::LargeStringArray>()
+                    .ok_or_else(|| anyhow!("large string cast"))?;
+                Ok(parse_uuid_string(arr.value(self.row).as_bytes()))
+            }
+            DataType::Binary => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::BinaryArray>()
+                    .ok_or_else(|| anyhow!("binary cast"))?;
+                let data = arr.value(self.row);
+                if data.len() != 16 {
+                    return Ok(None);
+                }
                 let mut out = [0u8; 16];
                 out.copy_from_slice(data);
-                return Ok(Some(out));
+                Ok(Some(out))
             }
+            DataType::LargeBinary => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::LargeBinaryArray>()
+                    .ok_or_else(|| anyhow!("large binary cast"))?;
+                let data = arr.value(self.row);
+                if data.len() != 16 {
+                    return Ok(None);
+                }
+                let mut out = [0u8; 16];
+                out.copy_from_slice(data);
+                Ok(Some(out))
+            }
+            DataType::FixedSizeBinary(_) => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::FixedSizeBinaryArray>()
+                    .ok_or_else(|| anyhow!("fixed binary cast"))?;
+                let data = arr.value(self.row);
+                if data.len() != 16 {
+                    return Ok(None);
+                }
+                let mut out = [0u8; 16];
+                out.copy_from_slice(data);
+                Ok(Some(out))
+            }
+            _ => Ok(None),
         }
-        Ok(None)
     }
 
     pub fn get_uuid256(&self, idx: usize) -> Result<Option<[u8; 32]>> {
@@ -660,17 +1224,62 @@ impl<'a> RowAccess<'a> {
         if array.is_null(self.row) {
             return Ok(None);
         }
-        if let Some(text) = self.read_utf8(idx)? {
-            return Ok(parse_uuid256_string(text.as_bytes()));
-        }
-        if let Some(data) = self.read_bytes(idx)? {
-            if data.len() == 32 {
+        match array.data_type() {
+            DataType::Utf8 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::StringArray>()
+                    .ok_or_else(|| anyhow!("string cast"))?;
+                Ok(parse_uuid256_string(arr.value(self.row).as_bytes()))
+            }
+            DataType::LargeUtf8 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::LargeStringArray>()
+                    .ok_or_else(|| anyhow!("large string cast"))?;
+                Ok(parse_uuid256_string(arr.value(self.row).as_bytes()))
+            }
+            DataType::Binary => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::BinaryArray>()
+                    .ok_or_else(|| anyhow!("binary cast"))?;
+                let data = arr.value(self.row);
+                if data.len() != 32 {
+                    return Ok(None);
+                }
                 let mut out = [0u8; 32];
                 out.copy_from_slice(data);
-                return Ok(Some(out));
+                Ok(Some(out))
             }
+            DataType::LargeBinary => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::LargeBinaryArray>()
+                    .ok_or_else(|| anyhow!("large binary cast"))?;
+                let data = arr.value(self.row);
+                if data.len() != 32 {
+                    return Ok(None);
+                }
+                let mut out = [0u8; 32];
+                out.copy_from_slice(data);
+                Ok(Some(out))
+            }
+            DataType::FixedSizeBinary(_) => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::FixedSizeBinaryArray>()
+                    .ok_or_else(|| anyhow!("fixed binary cast"))?;
+                let data = arr.value(self.row);
+                if data.len() != 32 {
+                    return Ok(None);
+                }
+                let mut out = [0u8; 32];
+                out.copy_from_slice(data);
+                Ok(Some(out))
+            }
+            _ => Ok(None),
         }
-        Ok(None)
     }
 
     pub fn get_ip(&self, idx: usize) -> Result<Option<[u8; 16]>> {
@@ -678,25 +1287,55 @@ impl<'a> RowAccess<'a> {
         if array.is_null(self.row) {
             return Ok(None);
         }
-        if let Some(text) = self.read_utf8(idx)? {
-            return Ok(parse_ip_string(text.as_bytes()));
+        match array.data_type() {
+            DataType::Utf8 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::StringArray>()
+                    .ok_or_else(|| anyhow!("string cast"))?;
+                Ok(parse_ip_string(arr.value(self.row).as_bytes()))
+            }
+            DataType::LargeUtf8 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::LargeStringArray>()
+                    .ok_or_else(|| anyhow!("large string cast"))?;
+                Ok(parse_ip_string(arr.value(self.row).as_bytes()))
+            }
+            DataType::Binary => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::BinaryArray>()
+                    .ok_or_else(|| anyhow!("binary cast"))?;
+                Ok(parse_ip_bytes(arr.value(self.row)))
+            }
+            DataType::LargeBinary => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::LargeBinaryArray>()
+                    .ok_or_else(|| anyhow!("large binary cast"))?;
+                Ok(parse_ip_bytes(arr.value(self.row)))
+            }
+            DataType::FixedSizeBinary(_) => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::FixedSizeBinaryArray>()
+                    .ok_or_else(|| anyhow!("fixed binary cast"))?;
+                Ok(parse_ip_bytes(arr.value(self.row)))
+            }
+            _ => Ok(None),
         }
-        if let Some(data) = self.read_bytes(idx)? {
-            return Ok(parse_ip_bytes(data));
-        }
-        Ok(None)
     }
 
-    pub fn get_date(
-        &self,
-        idx: usize,
-        format: Option<&str>,
-        unit: Option<arrow_schema::TimeUnit>,
-    ) -> Result<Option<i32>> {
+    pub fn get_date(&self, idx: usize) -> Result<Option<i32>> {
         let array = self.array(idx)?;
         if array.is_null(self.row) {
             return Ok(None);
         }
+        let hint = self.hint(idx)?;
+        let format = hint.timestamp_format.as_deref();
+        let unit = hint.timestamp_unit;
+        let fast = self.fast_parsers.get(idx).and_then(|v| v.as_ref());
         match array.data_type() {
             DataType::Date32 => {
                 let arr = array
@@ -710,10 +1349,45 @@ impl<'a> RowAccess<'a> {
             | DataType::Binary
             | DataType::LargeBinary
             | DataType::FixedSizeBinary(_) => {
-                let text = match self.read_utf8(idx)? {
-                    Some(text) => text,
-                    None => return Ok(None),
+                let text = match array.data_type() {
+                    DataType::Utf8 => array
+                        .as_any()
+                        .downcast_ref::<arrow_array::StringArray>()
+                        .ok_or_else(|| anyhow!("string cast"))?
+                        .value(self.row),
+                    DataType::LargeUtf8 => array
+                        .as_any()
+                        .downcast_ref::<arrow_array::LargeStringArray>()
+                        .ok_or_else(|| anyhow!("large string cast"))?
+                        .value(self.row),
+                    DataType::Binary => std::str::from_utf8(
+                        array
+                            .as_any()
+                            .downcast_ref::<arrow_array::BinaryArray>()
+                            .ok_or_else(|| anyhow!("binary cast"))?
+                            .value(self.row),
+                    )?,
+                    DataType::LargeBinary => std::str::from_utf8(
+                        array
+                            .as_any()
+                            .downcast_ref::<arrow_array::LargeBinaryArray>()
+                            .ok_or_else(|| anyhow!("large binary cast"))?
+                            .value(self.row),
+                    )?,
+                    DataType::FixedSizeBinary(_) => std::str::from_utf8(
+                        array
+                            .as_any()
+                            .downcast_ref::<arrow_array::FixedSizeBinaryArray>()
+                            .ok_or_else(|| anyhow!("fixed binary cast"))?
+                            .value(self.row),
+                    )?,
+                    _ => return Ok(None),
                 };
+                if let Some(parser) = fast {
+                    if let Some(days) = parser.parse_date(text) {
+                        return Ok(Some(days));
+                    }
+                }
                 if let Some(days) = parse_date_text(text, format) {
                     return Ok(Some(days));
                 }
@@ -731,9 +1405,48 @@ impl<'a> RowAccess<'a> {
             | DataType::UInt16
             | DataType::UInt32
             | DataType::UInt64 => {
-                let value = match self.read_i64(idx)? {
-                    Some(v) => v,
-                    None => return Ok(None),
+                let value = match array.data_type() {
+                    DataType::Int64 => array
+                        .as_any()
+                        .downcast_ref::<arrow_array::Int64Array>()
+                        .ok_or_else(|| anyhow!("int64 cast"))?
+                        .value(self.row),
+                    DataType::Int32 => array
+                        .as_any()
+                        .downcast_ref::<arrow_array::Int32Array>()
+                        .ok_or_else(|| anyhow!("int32 cast"))?
+                        .value(self.row) as i64,
+                    DataType::Int16 => array
+                        .as_any()
+                        .downcast_ref::<arrow_array::Int16Array>()
+                        .ok_or_else(|| anyhow!("int16 cast"))?
+                        .value(self.row) as i64,
+                    DataType::Int8 => array
+                        .as_any()
+                        .downcast_ref::<arrow_array::Int8Array>()
+                        .ok_or_else(|| anyhow!("int8 cast"))?
+                        .value(self.row) as i64,
+                    DataType::UInt64 => array
+                        .as_any()
+                        .downcast_ref::<arrow_array::UInt64Array>()
+                        .ok_or_else(|| anyhow!("uint64 cast"))?
+                        .value(self.row) as i64,
+                    DataType::UInt32 => array
+                        .as_any()
+                        .downcast_ref::<arrow_array::UInt32Array>()
+                        .ok_or_else(|| anyhow!("uint32 cast"))?
+                        .value(self.row) as i64,
+                    DataType::UInt16 => array
+                        .as_any()
+                        .downcast_ref::<arrow_array::UInt16Array>()
+                        .ok_or_else(|| anyhow!("uint16 cast"))?
+                        .value(self.row) as i64,
+                    DataType::UInt8 => array
+                        .as_any()
+                        .downcast_ref::<arrow_array::UInt8Array>()
+                        .ok_or_else(|| anyhow!("uint8 cast"))?
+                        .value(self.row) as i64,
+                    _ => return Ok(None),
                 };
                 let (secs, _) = timestamp_from_int(value, unit);
                 Ok(Some(days_from_secs(secs)))
@@ -742,16 +1455,15 @@ impl<'a> RowAccess<'a> {
         }
     }
 
-    pub fn get_timestamp(
-        &self,
-        idx: usize,
-        format: Option<&str>,
-        unit: Option<arrow_schema::TimeUnit>,
-    ) -> Result<Option<(i64, u32)>> {
+    pub fn get_timestamp(&self, idx: usize) -> Result<Option<(i64, u32)>> {
         let array = self.array(idx)?;
         if array.is_null(self.row) {
             return Ok(None);
         }
+        let hint = self.hint(idx)?;
+        let format = hint.timestamp_format.as_deref();
+        let unit = hint.timestamp_unit;
+        let fast = self.fast_parsers.get(idx).and_then(|v| v.as_ref());
         match array.data_type() {
             DataType::Timestamp(_, _) => {
                 let (secs, nanos) = timestamp_parts_from_array(array, self.row)?;
@@ -762,10 +1474,45 @@ impl<'a> RowAccess<'a> {
             | DataType::Binary
             | DataType::LargeBinary
             | DataType::FixedSizeBinary(_) => {
-                let text = match self.read_utf8(idx)? {
-                    Some(text) => text,
-                    None => return Ok(None),
+                let text = match array.data_type() {
+                    DataType::Utf8 => array
+                        .as_any()
+                        .downcast_ref::<arrow_array::StringArray>()
+                        .ok_or_else(|| anyhow!("string cast"))?
+                        .value(self.row),
+                    DataType::LargeUtf8 => array
+                        .as_any()
+                        .downcast_ref::<arrow_array::LargeStringArray>()
+                        .ok_or_else(|| anyhow!("large string cast"))?
+                        .value(self.row),
+                    DataType::Binary => std::str::from_utf8(
+                        array
+                            .as_any()
+                            .downcast_ref::<arrow_array::BinaryArray>()
+                            .ok_or_else(|| anyhow!("binary cast"))?
+                            .value(self.row),
+                    )?,
+                    DataType::LargeBinary => std::str::from_utf8(
+                        array
+                            .as_any()
+                            .downcast_ref::<arrow_array::LargeBinaryArray>()
+                            .ok_or_else(|| anyhow!("large binary cast"))?
+                            .value(self.row),
+                    )?,
+                    DataType::FixedSizeBinary(_) => std::str::from_utf8(
+                        array
+                            .as_any()
+                            .downcast_ref::<arrow_array::FixedSizeBinaryArray>()
+                            .ok_or_else(|| anyhow!("fixed binary cast"))?
+                            .value(self.row),
+                    )?,
+                    _ => return Ok(None),
                 };
+                if let Some(parser) = fast {
+                    if let Some((secs, nanos)) = parser.parse_timestamp(text) {
+                        return Ok(Some((secs, nanos)));
+                    }
+                }
                 if let Some((secs, nanos)) = parse_timestamp_text(text, format) {
                     return Ok(Some((secs, nanos)));
                 }
@@ -782,9 +1529,48 @@ impl<'a> RowAccess<'a> {
             | DataType::UInt16
             | DataType::UInt32
             | DataType::UInt64 => {
-                let value = match self.read_i64(idx)? {
-                    Some(v) => v,
-                    None => return Ok(None),
+                let value = match array.data_type() {
+                    DataType::Int64 => array
+                        .as_any()
+                        .downcast_ref::<arrow_array::Int64Array>()
+                        .ok_or_else(|| anyhow!("int64 cast"))?
+                        .value(self.row),
+                    DataType::Int32 => array
+                        .as_any()
+                        .downcast_ref::<arrow_array::Int32Array>()
+                        .ok_or_else(|| anyhow!("int32 cast"))?
+                        .value(self.row) as i64,
+                    DataType::Int16 => array
+                        .as_any()
+                        .downcast_ref::<arrow_array::Int16Array>()
+                        .ok_or_else(|| anyhow!("int16 cast"))?
+                        .value(self.row) as i64,
+                    DataType::Int8 => array
+                        .as_any()
+                        .downcast_ref::<arrow_array::Int8Array>()
+                        .ok_or_else(|| anyhow!("int8 cast"))?
+                        .value(self.row) as i64,
+                    DataType::UInt64 => array
+                        .as_any()
+                        .downcast_ref::<arrow_array::UInt64Array>()
+                        .ok_or_else(|| anyhow!("uint64 cast"))?
+                        .value(self.row) as i64,
+                    DataType::UInt32 => array
+                        .as_any()
+                        .downcast_ref::<arrow_array::UInt32Array>()
+                        .ok_or_else(|| anyhow!("uint32 cast"))?
+                        .value(self.row) as i64,
+                    DataType::UInt16 => array
+                        .as_any()
+                        .downcast_ref::<arrow_array::UInt16Array>()
+                        .ok_or_else(|| anyhow!("uint16 cast"))?
+                        .value(self.row) as i64,
+                    DataType::UInt8 => array
+                        .as_any()
+                        .downcast_ref::<arrow_array::UInt8Array>()
+                        .ok_or_else(|| anyhow!("uint8 cast"))?
+                        .value(self.row) as i64,
+                    _ => return Ok(None),
                 };
                 Ok(Some(timestamp_from_int(value, unit)))
             }
@@ -792,11 +1578,12 @@ impl<'a> RowAccess<'a> {
         }
     }
 
-    pub fn get_decimal128(&self, idx: usize, scale: Option<i32>) -> Result<Option<i128>> {
+    pub fn get_decimal128(&self, idx: usize) -> Result<Option<i128>> {
         let array = self.array(idx)?;
         if array.is_null(self.row) {
             return Ok(None);
         }
+        let scale = self.hint(idx)?.decimal_scale.unwrap_or(0);
         match array.data_type() {
             DataType::Decimal128(_, _) => {
                 let arr = array
@@ -810,21 +1597,52 @@ impl<'a> RowAccess<'a> {
             | DataType::Binary
             | DataType::LargeBinary
             | DataType::FixedSizeBinary(_) => {
-                if let Some(text) = self.read_utf8(idx)? {
-                    Ok(parse_decimal_i128(text, scale.unwrap_or(0)))
-                } else {
-                    Ok(None)
-                }
+                let text = match array.data_type() {
+                    DataType::Utf8 => array
+                        .as_any()
+                        .downcast_ref::<arrow_array::StringArray>()
+                        .ok_or_else(|| anyhow!("string cast"))?
+                        .value(self.row),
+                    DataType::LargeUtf8 => array
+                        .as_any()
+                        .downcast_ref::<arrow_array::LargeStringArray>()
+                        .ok_or_else(|| anyhow!("large string cast"))?
+                        .value(self.row),
+                    DataType::Binary => std::str::from_utf8(
+                        array
+                            .as_any()
+                            .downcast_ref::<arrow_array::BinaryArray>()
+                            .ok_or_else(|| anyhow!("binary cast"))?
+                            .value(self.row),
+                    )?,
+                    DataType::LargeBinary => std::str::from_utf8(
+                        array
+                            .as_any()
+                            .downcast_ref::<arrow_array::LargeBinaryArray>()
+                            .ok_or_else(|| anyhow!("large binary cast"))?
+                            .value(self.row),
+                    )?,
+                    DataType::FixedSizeBinary(_) => std::str::from_utf8(
+                        array
+                            .as_any()
+                            .downcast_ref::<arrow_array::FixedSizeBinaryArray>()
+                            .ok_or_else(|| anyhow!("fixed binary cast"))?
+                            .value(self.row),
+                    )?,
+                    _ => return Ok(None),
+                };
+                Ok(parse_decimal_i128(text, scale))
             }
             _ => Ok(None),
         }
     }
 
-    pub fn get_decimal256(&self, idx: usize, scale: Option<i32>) -> Result<Option<[u8; 32]>> {
+    pub fn get_decimal256(&self, idx: usize) -> Result<Option<[u8; 32]>> {
         let array = self.array(idx)?;
         if array.is_null(self.row) {
             return Ok(None);
         }
+        let scale = self.hint(idx)?.decimal_scale.unwrap_or(0);
         match array.data_type() {
             DataType::Decimal256(_, _) => {
                 let arr = array
@@ -838,12 +1656,41 @@ impl<'a> RowAccess<'a> {
             | DataType::Binary
             | DataType::LargeBinary
             | DataType::FixedSizeBinary(_) => {
-                if let Some(text) = self.read_utf8(idx)? {
-                    Ok(parse_decimal_i256(text, scale.unwrap_or(0))
-                        .map(|v| v.to_le_bytes()))
-                } else {
-                    Ok(None)
-                }
+                let text = match array.data_type() {
+                    DataType::Utf8 => array
+                        .as_any()
+                        .downcast_ref::<arrow_array::StringArray>()
+                        .ok_or_else(|| anyhow!("string cast"))?
+                        .value(self.row),
+                    DataType::LargeUtf8 => array
+                        .as_any()
+                        .downcast_ref::<arrow_array::LargeStringArray>()
+                        .ok_or_else(|| anyhow!("large string cast"))?
+                        .value(self.row),
+                    DataType::Binary => std::str::from_utf8(
+                        array
+                            .as_any()
+                            .downcast_ref::<arrow_array::BinaryArray>()
+                            .ok_or_else(|| anyhow!("binary cast"))?
+                            .value(self.row),
+                    )?,
+                    DataType::LargeBinary => std::str::from_utf8(
+                        array
+                            .as_any()
+                            .downcast_ref::<arrow_array::LargeBinaryArray>()
+                            .ok_or_else(|| anyhow!("large binary cast"))?
+                            .value(self.row),
+                    )?,
+                    DataType::FixedSizeBinary(_) => std::str::from_utf8(
+                        array
+                            .as_any()
+                            .downcast_ref::<arrow_array::FixedSizeBinaryArray>()
+                            .ok_or_else(|| anyhow!("fixed binary cast"))?
+                            .value(self.row),
+                    )?,
+                    _ => return Ok(None),
+                };
+                Ok(parse_decimal_i256(text, scale).map(|v| v.to_le_bytes()))
             }
             _ => Ok(None),
         }
@@ -969,6 +1816,80 @@ impl<'a> RowAccess<'a> {
     }
 }
 
+impl<'p> RowValueAccess for RowAccess<'p> {
+    fn get_int64(&mut self, idx: usize) -> Result<Option<i64>> {
+        RowAccess::get_int64(self, idx)
+    }
+
+    fn get_int32(&mut self, idx: usize) -> Result<Option<i32>> {
+        RowAccess::get_int32(self, idx)
+    }
+
+    fn get_uint64(&mut self, idx: usize) -> Result<Option<u64>> {
+        RowAccess::get_uint64(self, idx)
+    }
+
+    fn get_uint32(&mut self, idx: usize) -> Result<Option<u32>> {
+        RowAccess::get_uint32(self, idx)
+    }
+
+    fn get_float64(&mut self, idx: usize) -> Result<Option<f64>> {
+        RowAccess::get_float64(self, idx)
+    }
+
+    fn get_float32(&mut self, idx: usize) -> Result<Option<f32>> {
+        RowAccess::get_float32(self, idx)
+    }
+
+    fn get_bool(&mut self, idx: usize) -> Result<Option<bool>> {
+        RowAccess::get_bool(self, idx)
+    }
+
+    fn get_string(&mut self, idx: usize) -> Result<Option<&str>> {
+        RowAccess::get_string(self, idx)
+    }
+
+    fn get_bytes(&mut self, idx: usize) -> Result<Option<&[u8]>> {
+        RowAccess::get_bytes(self, idx)
+    }
+
+    fn get_uuid(&mut self, idx: usize) -> Result<Option<[u8; 16]>> {
+        RowAccess::get_uuid(self, idx)
+    }
+
+    fn get_uuid256(&mut self, idx: usize) -> Result<Option<[u8; 32]>> {
+        RowAccess::get_uuid256(self, idx)
+    }
+
+    fn get_ip(&mut self, idx: usize) -> Result<Option<[u8; 16]>> {
+        RowAccess::get_ip(self, idx)
+    }
+
+    fn get_date(&mut self, idx: usize) -> Result<Option<i32>> {
+        RowAccess::get_date(self, idx)
+    }
+
+    fn get_timestamp(&mut self, idx: usize) -> Result<Option<(i64, u32)>> {
+        RowAccess::get_timestamp(self, idx)
+    }
+
+    fn get_decimal128(&mut self, idx: usize) -> Result<Option<i128>> {
+        RowAccess::get_decimal128(self, idx)
+    }
+
+    fn get_decimal256(&mut self, idx: usize) -> Result<Option<[u8; 32]>> {
+        RowAccess::get_decimal256(self, idx)
+    }
+
+    fn get_float32_array(&mut self, idx: usize) -> Result<Option<&[f32]>> {
+        RowAccess::get_float32_array(self, idx)
+    }
+
+    fn get_float64_array(&mut self, idx: usize) -> Result<Option<&[f64]>> {
+        RowAccess::get_float64_array(self, idx)
+    }
+}
+
 fn parse_bool(value: &str) -> Option<bool> {
     match value.trim().to_ascii_lowercase().as_str() {
         "true" | "1" => Some(true),
@@ -999,6 +1920,17 @@ fn parse_f64(value: &str) -> Option<f64> {
 
 fn parse_f32(value: &str) -> Option<f32> {
     value.trim().parse::<f32>().ok()
+}
+
+fn trim_str_bytes(value: &str, max: usize) -> &str {
+    if value.len() <= max {
+        return value;
+    }
+    let mut end = max;
+    while end > 0 && !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    &value[..end]
 }
 
 fn parse_uuid_string(bytes: &[u8]) -> Option<[u8; 16]> {
@@ -1177,6 +2109,231 @@ fn parse_date_text(value: &str, format: Option<&str>) -> Option<i32> {
     Some(days_from_secs(ts))
 }
 
+#[derive(Clone, Debug)]
+enum TimestampToken {
+    Literal(Vec<u8>),
+    Year,
+    Month,
+    Day,
+    Hour,
+    Minute,
+    Second,
+    Fraction,
+}
+
+#[derive(Clone, Debug)]
+struct TimestampFormatParser {
+    tokens: Vec<TimestampToken>,
+    has_date: bool,
+}
+
+impl TimestampFormatParser {
+    fn compile(format: &str) -> Option<Self> {
+        let mut tokens = Vec::new();
+        let mut literal = Vec::new();
+        let mut chars = format.chars().peekable();
+        let mut has_date = false;
+        let mut has_time = false;
+        while let Some(ch) = chars.next() {
+            if ch == '%' {
+                if let Some(spec) = chars.next() {
+                    if !literal.is_empty() {
+                        tokens.push(TimestampToken::Literal(std::mem::take(&mut literal)));
+                    }
+                    match spec {
+                        '%' => literal.push(b'%'),
+                        'Y' => {
+                            tokens.push(TimestampToken::Year);
+                            has_date = true;
+                        }
+                        'm' => {
+                            tokens.push(TimestampToken::Month);
+                            has_date = true;
+                        }
+                        'd' => {
+                            tokens.push(TimestampToken::Day);
+                            has_date = true;
+                        }
+                        'H' => {
+                            tokens.push(TimestampToken::Hour);
+                            has_time = true;
+                        }
+                        'M' => {
+                            tokens.push(TimestampToken::Minute);
+                            has_time = true;
+                        }
+                        'S' => {
+                            tokens.push(TimestampToken::Second);
+                            has_time = true;
+                        }
+                        'f' => {
+                            tokens.push(TimestampToken::Fraction);
+                            has_time = true;
+                        }
+                        'F' => {
+                            tokens.push(TimestampToken::Year);
+                            tokens.push(TimestampToken::Literal(vec![b'-']));
+                            tokens.push(TimestampToken::Month);
+                            tokens.push(TimestampToken::Literal(vec![b'-']));
+                            tokens.push(TimestampToken::Day);
+                            has_date = true;
+                        }
+                        'T' => {
+                            tokens.push(TimestampToken::Hour);
+                            tokens.push(TimestampToken::Literal(vec![b':']));
+                            tokens.push(TimestampToken::Minute);
+                            tokens.push(TimestampToken::Literal(vec![b':']));
+                            tokens.push(TimestampToken::Second);
+                            has_time = true;
+                        }
+                        _ => return None,
+                    }
+                } else {
+                    return None;
+                }
+            } else if ch.is_ascii() {
+                literal.push(ch as u8);
+            } else {
+                return None;
+            }
+        }
+        if !literal.is_empty() {
+            tokens.push(TimestampToken::Literal(literal));
+        }
+        let _ = has_time;
+        Some(Self { tokens, has_date })
+    }
+
+    fn parse_timestamp(&self, value: &str) -> Option<(i64, u32)> {
+        if !self.has_date {
+            return None;
+        }
+        let bytes = value.as_bytes();
+        let mut pos = 0usize;
+        let mut year: i32 = 0;
+        let mut month: u32 = 1;
+        let mut day: u32 = 1;
+        let mut hour: u32 = 0;
+        let mut minute: u32 = 0;
+        let mut second: u32 = 0;
+        let mut nanos: u32 = 0;
+        for token in &self.tokens {
+            match token {
+                TimestampToken::Literal(lit) => {
+                    if pos + lit.len() > bytes.len() {
+                        return None;
+                    }
+                    if &bytes[pos..pos + lit.len()] != lit.as_slice() {
+                        return None;
+                    }
+                    pos += lit.len();
+                }
+                TimestampToken::Year => {
+                    let (val, next) = parse_fixed_u32(bytes, pos, 4)?;
+                    year = val as i32;
+                    pos = next;
+                }
+                TimestampToken::Month => {
+                    let (val, next) = parse_fixed_u32(bytes, pos, 2)?;
+                    month = val;
+                    pos = next;
+                }
+                TimestampToken::Day => {
+                    let (val, next) = parse_fixed_u32(bytes, pos, 2)?;
+                    day = val;
+                    pos = next;
+                }
+                TimestampToken::Hour => {
+                    let (val, next) = parse_fixed_u32(bytes, pos, 2)?;
+                    hour = val;
+                    pos = next;
+                }
+                TimestampToken::Minute => {
+                    let (val, next) = parse_fixed_u32(bytes, pos, 2)?;
+                    minute = val;
+                    pos = next;
+                }
+                TimestampToken::Second => {
+                    let (val, next) = parse_fixed_u32(bytes, pos, 2)?;
+                    second = val;
+                    pos = next;
+                }
+                TimestampToken::Fraction => {
+                    let (val, digits, next) = parse_fraction(bytes, pos)?;
+                    nanos = fraction_to_nanos(val, digits);
+                    pos = next;
+                }
+            }
+        }
+        if pos != bytes.len() {
+            return None;
+        }
+        let date = chrono::NaiveDate::from_ymd_opt(year, month, day)?;
+        let time = chrono::NaiveTime::from_hms_nano_opt(hour, minute, second, nanos)?;
+        let dt = chrono::NaiveDateTime::new(date, time);
+        Some((dt.and_utc().timestamp(), nanos))
+    }
+
+    fn parse_date(&self, value: &str) -> Option<i32> {
+        let (secs, _nanos) = self.parse_timestamp(value)?;
+        Some(days_from_secs(secs))
+    }
+}
+
+fn parse_fixed_u32(bytes: &[u8], pos: usize, len: usize) -> Option<(u32, usize)> {
+    if pos + len > bytes.len() {
+        return None;
+    }
+    let mut val: u32 = 0;
+    for idx in pos..pos + len {
+        let b = bytes[idx];
+        if !b.is_ascii_digit() {
+            return None;
+        }
+        val = val.saturating_mul(10).saturating_add((b - b'0') as u32);
+    }
+    Some((val, pos + len))
+}
+
+fn parse_fraction(bytes: &[u8], pos: usize) -> Option<(u32, usize, usize)> {
+    let mut idx = pos;
+    let mut val: u32 = 0;
+    let mut digits = 0usize;
+    while idx < bytes.len() && bytes[idx].is_ascii_digit() {
+        if digits < 9 {
+            val = val.saturating_mul(10).saturating_add((bytes[idx] - b'0') as u32);
+        }
+        digits += 1;
+        idx += 1;
+    }
+    if digits == 0 {
+        return None;
+    }
+    Some((val, digits.min(9), idx))
+}
+
+fn fraction_to_nanos(value: u32, digits: usize) -> u32 {
+    const POW10: [u32; 10] = [
+        1_000_000_000,
+        100_000_000,
+        10_000_000,
+        1_000_000,
+        100_000,
+        10_000,
+        1_000,
+        100,
+        10,
+        1,
+    ];
+    if digits == 0 {
+        0
+    } else if digits >= 9 {
+        value
+    } else {
+        value.saturating_mul(POW10[digits])
+    }
+}
+
 fn timestamp_from_int(value: i64, unit: Option<arrow_schema::TimeUnit>) -> (i64, u32) {
     let unit = unit.unwrap_or(arrow_schema::TimeUnit::Second);
     match unit {
@@ -1328,7 +2485,7 @@ pub struct RowValuePools {
 }
 
 impl RowValuePools {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             strings: Vec::new(),
             bytes: Vec::new(),
@@ -1400,6 +2557,22 @@ impl RowValuePools {
             self.arrays_f64_len += 1;
             self.arrays_f64.last_mut().unwrap()
         }
+    }
+}
+
+pub struct RowAccessStats<'a> {
+    pub trimmed_strings: Option<&'a std::sync::atomic::AtomicU64>,
+}
+
+impl<'a> RowAccessStats<'a> {
+    pub fn new(trimmed_strings: Option<&'a std::sync::atomic::AtomicU64>) -> Self {
+        Self { trimmed_strings }
+    }
+}
+
+impl<'a> Default for RowAccessStats<'a> {
+    fn default() -> Self {
+        Self { trimmed_strings: None }
     }
 }
 
