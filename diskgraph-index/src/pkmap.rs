@@ -21,26 +21,29 @@ const AHASH_SEED_4: u64 = 0xd6e8feb86659fd93;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyType {
     Int64,
-    FixedBytes { len: usize },
     VarBytes,
     Uuid,
+    Uuid256,
+    Ip,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Key {
     Int(u64),
-    FixedBytes(Vec<u8>),
     Bytes(Vec<u8>),
     Uuid([u8; 16]),
+    Uuid256([u8; 32]),
+    Ip([u8; 16]),
 }
 
 impl Key {
     pub fn key_type(&self) -> KeyType {
         match self {
             Key::Int(_) => KeyType::Int64,
-            Key::FixedBytes(v) => KeyType::FixedBytes { len: v.len() },
             Key::Bytes(_) => KeyType::VarBytes,
             Key::Uuid(_) => KeyType::Uuid,
+            Key::Uuid256(_) => KeyType::Uuid256,
+            Key::Ip(_) => KeyType::Ip,
         }
     }
 }
@@ -86,14 +89,40 @@ impl PkDataHeader {
 
     fn key_type(&self) -> Result<KeyType> {
         match self.key_type_tag {
-            0 => Ok(KeyType::Int64),
-            1 => Ok(KeyType::FixedBytes {
-                len: self.key_len as usize,
-            }),
-            2 => Ok(KeyType::VarBytes),
-            3 => Ok(KeyType::Uuid),
+            0 => {
+                self.expect_len(8, "int64")?;
+                Ok(KeyType::Int64)
+            }
+            2 => {
+                self.expect_len(0, "var_bytes")?;
+                Ok(KeyType::VarBytes)
+            }
+            3 => {
+                self.expect_len(16, "uuid")?;
+                Ok(KeyType::Uuid)
+            }
+            4 => {
+                self.expect_len(32, "uuid256")?;
+                Ok(KeyType::Uuid256)
+            }
+            5 => {
+                self.expect_len(16, "ip")?;
+                Ok(KeyType::Ip)
+            }
             _ => Err(anyhow!("pk data key type invalid")),
         }
+    }
+
+    fn expect_len(&self, expected: u32, name: &str) -> Result<()> {
+        if self.key_len != expected {
+            return Err(anyhow!(
+                "pk data key length mismatch for {}: expected {}, got {}",
+                name,
+                expected,
+                self.key_len
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -106,11 +135,19 @@ type MphfBytes = epserde::prelude::MemCase<
 type MphfUuid = epserde::prelude::MemCase<
     epserde::prelude::DeserType<'static, DefaultPtrHash<Xx128, [u8; 16]>>,
 >;
+type MphfUuid256 = epserde::prelude::MemCase<
+    epserde::prelude::DeserType<'static, DefaultPtrHash<Xx128, [u8; 32]>>,
+>;
+type MphfIp = epserde::prelude::MemCase<
+    epserde::prelude::DeserType<'static, DefaultPtrHash<Xx128, [u8; 16]>>,
+>;
 
 enum PkHashMphf {
     Int(MphfInt),
     Bytes(MphfBytes),
     Uuid(MphfUuid),
+    Uuid256(MphfUuid256),
+    Ip(MphfIp),
 }
 
 impl PkHashMphf {
@@ -132,15 +169,23 @@ impl PkHashMphf {
                     Some(slot)
                 }
             }
-            (PkHashMphf::Bytes(mphf), Key::FixedBytes(bytes)) => {
-                let slot = mphf.index_no_remap(bytes);
+            (PkHashMphf::Uuid(mphf), Key::Uuid(value)) => {
+                let slot = mphf.index_no_remap(value);
                 if slot >= mphf.max_index() {
                     None
                 } else {
                     Some(slot)
                 }
             }
-            (PkHashMphf::Uuid(mphf), Key::Uuid(value)) => {
+            (PkHashMphf::Uuid256(mphf), Key::Uuid256(value)) => {
+                let slot = mphf.index_no_remap(value);
+                if slot >= mphf.max_index() {
+                    None
+                } else {
+                    Some(slot)
+                }
+            }
+            (PkHashMphf::Ip(mphf), Key::Ip(value)) => {
                 let slot = mphf.index_no_remap(value);
                 if slot >= mphf.max_index() {
                     None
@@ -184,7 +229,7 @@ impl PkHashShard {
                 .map_err(|e| anyhow!("load pk hash {}: {e}", hash_path.display()))?;
                 PkHashMphf::Int(mphf)
             }
-            KeyType::FixedBytes { .. } | KeyType::VarBytes => {
+            KeyType::VarBytes => {
                 let mphf: MphfBytes = DefaultPtrHash::<Xx128, Vec<u8>>::load_mmap(
                     hash_path,
                     EpFlags::RANDOM_ACCESS | EpFlags::TRANSPARENT_HUGE_PAGES,
@@ -199,6 +244,22 @@ impl PkHashShard {
                 )
                 .map_err(|e| anyhow!("load pk hash {}: {e}", hash_path.display()))?;
                 PkHashMphf::Uuid(mphf)
+            }
+            KeyType::Uuid256 => {
+                let mphf: MphfUuid256 = DefaultPtrHash::<Xx128, [u8; 32]>::load_mmap(
+                    hash_path,
+                    EpFlags::RANDOM_ACCESS | EpFlags::TRANSPARENT_HUGE_PAGES,
+                )
+                .map_err(|e| anyhow!("load pk hash {}: {e}", hash_path.display()))?;
+                PkHashMphf::Uuid256(mphf)
+            }
+            KeyType::Ip => {
+                let mphf: MphfIp = DefaultPtrHash::<Xx128, [u8; 16]>::load_mmap(
+                    hash_path,
+                    EpFlags::RANDOM_ACCESS | EpFlags::TRANSPARENT_HUGE_PAGES,
+                )
+                .map_err(|e| anyhow!("load pk hash {}: {e}", hash_path.display()))?;
+                PkHashMphf::Ip(mphf)
             }
         };
         Ok(Self {
@@ -254,9 +315,6 @@ impl PkHashTable {
 }
 
 pub fn key_type_from_metadata(pk: &PrimaryKeyMap) -> Result<KeyType> {
-    if pk.key_mode.as_deref() == Some("uuid") {
-        return Ok(KeyType::Uuid);
-    }
     match pk.dtype.as_str() {
         "int64"
         | "int32"
@@ -270,13 +328,10 @@ pub fn key_type_from_metadata(pk: &PrimaryKeyMap) -> Result<KeyType> {
         | "float32"
         | "decimal128"
         | "decimal256" => Ok(KeyType::Int64),
-        "string" | "bytes" => {
-            if let Some(len) = pk.fixed_len {
-                Ok(KeyType::FixedBytes { len })
-            } else {
-                Ok(KeyType::VarBytes)
-            }
-        }
+        "string" | "bytes" => Ok(KeyType::VarBytes),
+        "uuid" => Ok(KeyType::Uuid),
+        "uuid256" => Ok(KeyType::Uuid256),
+        "ip" => Ok(KeyType::Ip),
         other => Err(anyhow!("unsupported pk dtype {}", other)),
     }
 }
@@ -290,14 +345,15 @@ pub fn parse_key_from_str(pk: &PrimaryKeyMap, input: &str) -> Result<Key> {
                 .map_err(|e| anyhow!("invalid uuid: {e}"))?;
             Ok(Key::Uuid(*value.as_bytes()))
         }
-        KeyType::FixedBytes { len } => {
-            let bytes = parse_bytes_key(input)?;
-            if bytes.len() != len {
-                return Err(anyhow!("expected {} bytes, got {}", len, bytes.len()));
-            }
-            Ok(Key::FixedBytes(bytes))
-        }
         KeyType::VarBytes => Ok(Key::Bytes(parse_bytes_key(input)?)),
+        KeyType::Uuid256 => {
+            let bytes = parse_uuid256_hex(input)?;
+            Ok(Key::Uuid256(bytes))
+        }
+        KeyType::Ip => {
+            let ip = parse_ip_text(input)?;
+            Ok(Key::Ip(ip))
+        }
     }
 }
 
@@ -348,6 +404,27 @@ fn parse_hex_bytes(input: &str) -> Result<Vec<u8>> {
     Ok(out)
 }
 
+fn parse_uuid256_hex(input: &str) -> Result<[u8; 32]> {
+    let raw = input.trim();
+    let hex = raw.strip_prefix("0x").or_else(|| raw.strip_prefix("0X")).unwrap_or(raw);
+    if hex.len() != 64 {
+        return Err(anyhow!("uuid256 hex must be 64 chars"));
+    }
+    let bytes = parse_hex_bytes(hex)?;
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&bytes);
+    Ok(out)
+}
+
+fn parse_ip_text(input: &str) -> Result<[u8; 16]> {
+    let ip: std::net::IpAddr = input.trim().parse().map_err(|e| anyhow!("invalid ip: {e}"))?;
+    let bytes = match ip {
+        std::net::IpAddr::V4(v4) => v4.to_ipv6_mapped().octets(),
+        std::net::IpAddr::V6(v6) => v6.octets(),
+    };
+    Ok(bytes)
+}
+
 fn key_hash_bytes<'a>(key: &'a Key, scratch: &'a mut [u8; 16]) -> &'a [u8] {
     match key {
         Key::Int(v) => {
@@ -355,7 +432,8 @@ fn key_hash_bytes<'a>(key: &'a Key, scratch: &'a mut [u8; 16]) -> &'a [u8] {
             &scratch[..8]
         }
         Key::Uuid(v) => v.as_slice(),
-        Key::FixedBytes(v) => v.as_slice(),
+        Key::Uuid256(v) => v.as_slice(),
+        Key::Ip(v) => v.as_slice(),
         Key::Bytes(v) => v.as_slice(),
     }
 }
@@ -374,7 +452,9 @@ fn fingerprint_for_key(key: &Key, seed: u64) -> u64 {
     match key {
         Key::Int(v) => v.hash(&mut hasher),
         Key::Uuid(v) => v.hash(&mut hasher),
-        Key::FixedBytes(v) | Key::Bytes(v) => v.hash(&mut hasher),
+        Key::Uuid256(v) => v.hash(&mut hasher),
+        Key::Ip(v) => v.hash(&mut hasher),
+        Key::Bytes(v) => v.hash(&mut hasher),
     }
     hasher.finish()
 }

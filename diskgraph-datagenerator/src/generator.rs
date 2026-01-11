@@ -19,7 +19,7 @@ use parquet::arrow::ArrowWriter;
 use parquet::file::properties::WriterProperties;
 
 use crate::config::{
-    ColumnConfig, ColumnType, DatasetConfig, FkDistribution, GeneratorSpec, KeyEncoding, KeyMode,
+    ColumnConfig, ColumnType, DatasetConfig, FkDistribution, GeneratorSpec, KeyEncoding,
     TableConfig, TimestampUnit,
 };
 use crate::progress::ProgressState;
@@ -177,7 +177,6 @@ enum ColumnGenerator {
 #[derive(Clone, Debug)]
 struct KeyGenerator {
     dtype: ColumnType,
-    key_mode: Option<KeyMode>,
     fixed_len: Option<usize>,
     encoding: KeyEncoding,
     table_seed: u64,
@@ -404,7 +403,6 @@ fn resolve_primary_key(
         pk_idx,
         KeyGenerator {
             dtype: pk_col.dtype,
-            key_mode: pk_col.key_mode,
             fixed_len: pk_col.fixed_len,
             encoding,
             table_seed,
@@ -680,7 +678,7 @@ fn generate_column_array(
             }
             Arc::new(builder.finish())
         }
-        ColumnType::Bytes => {
+        ColumnType::Bytes | ColumnType::Uuid | ColumnType::Uuid256 | ColumnType::Ip => {
             let mut builder = BinaryBuilder::new();
             for i in 0..len {
                 append_value(&mut builder, column, table, row_start + i as u64, seed)?;
@@ -1048,26 +1046,25 @@ impl KeyGenerator {
             | ColumnType::UInt32
             | ColumnType::UInt64 => Ok(GeneratedValue::UInt(id)),
             ColumnType::String => {
-                let value = if self.key_mode == Some(KeyMode::Uuid) {
-                    let bytes = uuid_from_id(self.table_seed, id);
-                    format_uuid(bytes, UuidFormat::Dashed)
-                } else {
-                    let bytes = encode_key_bytes(self.encoding, self.table_seed, id);
-                    let value = String::from_utf8_lossy(&bytes).to_string();
-                    apply_fixed_len_string(value, self.fixed_len)
-                };
+                let bytes = encode_key_bytes(self.encoding, self.table_seed, id);
+                let value = String::from_utf8_lossy(&bytes).to_string();
+                let value = apply_fixed_len_string(value, self.fixed_len);
                 Ok(GeneratedValue::String(value))
             }
             ColumnType::Bytes => {
-                let bytes = if self.key_mode == Some(KeyMode::Uuid) {
-                    uuid_from_id(self.table_seed, id).to_vec()
-                } else {
-                    let mut bytes = encode_key_bytes(self.encoding, self.table_seed, id);
-                    apply_fixed_len_bytes(&mut bytes, self.fixed_len);
-                    bytes
-                };
+                let mut bytes = encode_key_bytes(self.encoding, self.table_seed, id);
+                apply_fixed_len_bytes(&mut bytes, self.fixed_len);
                 Ok(GeneratedValue::Bytes(bytes))
             }
+            ColumnType::Uuid => Ok(GeneratedValue::Bytes(
+                uuid_from_id(self.table_seed, id).to_vec(),
+            )),
+            ColumnType::Uuid256 => Ok(GeneratedValue::Bytes(
+                uuid256_from_id(self.table_seed, id).to_vec(),
+            )),
+            ColumnType::Ip => Ok(GeneratedValue::Bytes(
+                ip_from_id(self.table_seed, id).to_vec(),
+            )),
             ColumnType::Timestamp => {
                 let unit = timestamp_unit.unwrap_or(TimestampUnit::Millis);
                 let value = match unit {
@@ -1241,6 +1238,9 @@ fn column_arrow_type(column: &ColumnConfig) -> Result<DataType> {
         ColumnType::Bool => DataType::Boolean,
         ColumnType::String => DataType::Utf8,
         ColumnType::Bytes => DataType::Binary,
+        ColumnType::Uuid => DataType::Binary,
+        ColumnType::Uuid256 => DataType::Binary,
+        ColumnType::Ip => DataType::Binary,
         ColumnType::Date => DataType::Date32,
         ColumnType::Timestamp => {
             let unit = match column.timestamp_unit.unwrap_or(TimestampUnit::Millis) {
@@ -1334,13 +1334,16 @@ fn prepare_generator(column: &ColumnConfig, gen: GeneratorSpec) -> Result<Prepar
             Ok(PreparedGenerator::Bytes { min_len, max_len })
         }
         GeneratorSpec::Uuid { mode, format } => {
-            ensure_dtype(column.dtype, &[ColumnType::String, ColumnType::Bytes])?;
+            ensure_dtype(
+                column.dtype,
+                &[ColumnType::String, ColumnType::Bytes, ColumnType::Uuid],
+            )?;
             let mode = match mode.as_deref().unwrap_or("from_id") {
                 "v4" => UuidMode::V4,
                 "from_id" => UuidMode::FromId,
                 other => bail!("unknown uuid mode {}", other),
             };
-            let default_format = if column.dtype == ColumnType::Bytes {
+            let default_format = if matches!(column.dtype, ColumnType::Bytes | ColumnType::Uuid) {
                 "bytes"
             } else {
                 "dashed"
@@ -1353,6 +1356,9 @@ fn prepare_generator(column: &ColumnConfig, gen: GeneratorSpec) -> Result<Prepar
             };
             if column.dtype == ColumnType::String && matches!(format, UuidFormat::Bytes) {
                 bail!("uuid bytes format requires bytes dtype");
+            }
+            if column.dtype == ColumnType::Uuid && !matches!(format, UuidFormat::Bytes) {
+                bail!("uuid format must be bytes for uuid dtype");
             }
             Ok(PreparedGenerator::Uuid { mode, format })
         }
@@ -1433,7 +1439,7 @@ fn parse_constant(dtype: ColumnType, value: serde_json::Value) -> Result<Generat
         ColumnType::String => {
             GeneratedValue::String(value.as_str().unwrap_or_default().to_string())
         }
-        ColumnType::Bytes => {
+        ColumnType::Bytes | ColumnType::Uuid | ColumnType::Uuid256 | ColumnType::Ip => {
             let bytes = value.as_str().unwrap_or_default().as_bytes().to_vec();
             GeneratedValue::Bytes(bytes)
         }
@@ -1509,17 +1515,22 @@ fn validate_key_column(column: &ColumnConfig) -> Result<()> {
         | ColumnType::UInt32
         | ColumnType::UInt64
         | ColumnType::String
-        | ColumnType::Bytes => {}
+        | ColumnType::Bytes
+        | ColumnType::Uuid
+        | ColumnType::Uuid256
+        | ColumnType::Ip => {}
         _ => bail!("invalid key dtype {:?} for column {}", column.dtype, column.name),
-    }
-    if column.key_mode == Some(KeyMode::Uuid) {
-        ensure_dtype(column.dtype, &[ColumnType::String, ColumnType::Bytes])?;
     }
     if column.dtype == ColumnType::String && column.key_encoding == Some(KeyEncoding::U64Le) {
         bail!("key_encoding u64_le is only valid for bytes columns");
     }
-    if column.key_mode == Some(KeyMode::Fixed) && column.fixed_len.is_none() {
-        bail!("fixed key_mode requires fixed_len for {}", column.name);
+    if column.fixed_len.is_some()
+        && !matches!(column.dtype, ColumnType::String | ColumnType::Bytes)
+    {
+        bail!(
+            "fixed_len only valid for string/bytes for {}",
+            column.name
+        );
     }
     Ok(())
 }
@@ -1532,15 +1543,6 @@ fn validate_fk_compat(src: &ColumnConfig, dst: &ColumnConfig) -> Result<()> {
             src.dtype,
             dst.name,
             dst.dtype
-        );
-    }
-    if src.key_mode != dst.key_mode {
-        bail!(
-            "foreign key key_mode mismatch {} ({:?}) -> {} ({:?})",
-            src.name,
-            src.key_mode,
-            dst.name,
-            dst.key_mode
         );
     }
     if src.fixed_len != dst.fixed_len {
@@ -1618,6 +1620,28 @@ fn uuid_from_id(seed: u64, id: u64) -> [u8; 16] {
     bytes[8..].copy_from_slice(&lo.to_be_bytes());
     bytes[6] = (bytes[6] & 0x0f) | 0x40;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    bytes
+}
+
+fn uuid256_from_id(seed: u64, id: u64) -> [u8; 32] {
+    let v0 = mix64(seed ^ id);
+    let v1 = mix64(seed ^ id ^ 0x9e3779b97f4a7c15);
+    let v2 = mix64(seed ^ id ^ 0x94d049bb133111eb);
+    let v3 = mix64(seed ^ id ^ 0x2545f4914f6cdd1d);
+    let mut bytes = [0u8; 32];
+    bytes[0..8].copy_from_slice(&v0.to_be_bytes());
+    bytes[8..16].copy_from_slice(&v1.to_be_bytes());
+    bytes[16..24].copy_from_slice(&v2.to_be_bytes());
+    bytes[24..32].copy_from_slice(&v3.to_be_bytes());
+    bytes
+}
+
+fn ip_from_id(seed: u64, id: u64) -> [u8; 16] {
+    let v4 = (mix64(seed ^ id) as u32).to_be_bytes();
+    let mut bytes = [0u8; 16];
+    bytes[10] = 0xff;
+    bytes[11] = 0xff;
+    bytes[12..16].copy_from_slice(&v4);
     bytes
 }
 

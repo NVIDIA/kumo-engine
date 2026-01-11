@@ -8,7 +8,7 @@ use crate::mapping::{
     PkHashStore, PkXxHash,
 };
 use crate::source_metadata::{
-    relationship_name, ColumnSpec, ColumnType, KeyMode, SortKeySpec, TableFormat, TableSpec,
+    relationship_name, ColumnSpec, ColumnType, SortKeySpec, TableFormat, TableSpec,
     TimestampEncodingKind, TimestampEncodingSpec, TimestampUnit, WeightEncodingKind,
     WeightEncodingSpec,
 };
@@ -106,6 +106,8 @@ enum KeyParseError {
     NotUtf8,
     Negative,
     InvalidUuid,
+    InvalidUuid256,
+    InvalidIp,
 }
 
 type KeyParseResult<T> = std::result::Result<T, KeyParseError>;
@@ -2886,7 +2888,7 @@ impl IngestContext {
                                 )?;
                                 (hash_rel, data_rel)
                             }
-                            KeyType::FixedBytes { .. } | KeyType::VarBytes => {
+                            KeyType::VarBytes => {
                                 let mut seen: std::collections::HashMap<Vec<u8>, u32> =
                                     std::collections::HashMap::with_capacity(total_rows as usize);
                                 let data_path = root.join(temp_pkey_path(&table_name, shard));
@@ -2895,7 +2897,7 @@ impl IngestContext {
                                         decoder.decode_column_value(row, 0, &mut scratch)?;
                                     if let Ok(key) = key_from_value_ref(&value, &pk_col) {
                                         let bytes = match key {
-                                            Key::FixedBytes(bytes) | Key::Bytes(bytes) => bytes,
+                                            Key::Bytes(bytes) => bytes,
                                             _ => {
                                                 row_id += 1;
                                                 return Ok(());
@@ -2912,13 +2914,7 @@ impl IngestContext {
                                                     duplicate_count.saturating_add(1);
                                                 if duplicate_samples_local.len() < 10 {
                                                     let sample = entry.key().clone();
-                                                    if let KeyType::FixedBytes { .. } = key_type {
-                                                        duplicate_samples_local
-                                                            .push(Key::FixedBytes(sample));
-                                                    } else {
-                                                        duplicate_samples_local
-                                                            .push(Key::Bytes(sample));
-                                                    }
+                                                    duplicate_samples_local.push(Key::Bytes(sample));
                                                 }
                                             }
                                         }
@@ -2988,6 +2984,143 @@ impl IngestContext {
                                                 if duplicate_samples_local.len() < 10 {
                                                     duplicate_samples_local
                                                         .push(Key::Uuid(uuid));
+                                                }
+                                            }
+                                        }
+                                    }
+                                    row_id += 1;
+                                    Ok(())
+                                })?;
+                                let mut keys = Vec::with_capacity(seen.len());
+                                let mut values = Vec::with_capacity(seen.len());
+                                for (key, value) in seen.into_iter() {
+                                    keys.push(key);
+                                    values.push(value);
+                                }
+                                let params = ptr_hash::PtrHashParams::default();
+                                let mphf = DefaultPtrHash::<Xx128, [u8; 16]>::try_new(
+                                    &keys,
+                                    params,
+                                )
+                                .ok_or_else(|| anyhow!("ptrhash construction failed"))?;
+                                let slots = mphf.max_index();
+                                let mut entries = vec![(0u64, 0u32); slots];
+                                for (key, value) in keys.iter().zip(values.iter()) {
+                                    let idx = mphf.index_no_remap(key);
+                                    let fp = PkXxHash::hash(key, fingerprint_seed);
+                                    entries[idx] = (fp, *value);
+                                }
+                                let hash_rel = format!(
+                                    "nodes/{}/pk_hash-{:05}.bin",
+                                    table_name.to_lowercase(),
+                                    shard
+                                );
+                                let data_rel = format!(
+                                    "nodes/{}/pk_data-{:05}.bin",
+                                    table_name.to_lowercase(),
+                                    shard
+                                );
+                                IngestContext::write_pk_hash_and_data(
+                                    &target,
+                                    &hash_rel,
+                                    &data_rel,
+                                    key_type,
+                                    fingerprint_seed,
+                                    &mphf,
+                                    &entries,
+                                )?;
+                                (hash_rel, data_rel)
+                            }
+                            KeyType::Uuid256 => {
+                                let mut seen: std::collections::HashMap<[u8; 32], u32> =
+                                    std::collections::HashMap::with_capacity(total_rows as usize);
+                                let data_path = root.join(temp_pkey_path(&table_name, shard));
+                                read_temp_rows(&data_path, |row| {
+                                    let value =
+                                        decoder.decode_column_value(row, 0, &mut scratch)?;
+                                    if let Ok(Key::Uuid256(uuid)) =
+                                        key_from_value_ref(&value, &pk_col)
+                                    {
+                                        let local_id = u32::try_from(row_id)
+                                            .map_err(|_| anyhow!("pk local id overflow"))?;
+                                        match seen.entry(uuid) {
+                                            Entry::Vacant(entry) => {
+                                                entry.insert(local_id);
+                                            }
+                                            Entry::Occupied(_) => {
+                                                duplicate_count =
+                                                    duplicate_count.saturating_add(1);
+                                                if duplicate_samples_local.len() < 10 {
+                                                    duplicate_samples_local
+                                                        .push(Key::Uuid256(uuid));
+                                                }
+                                            }
+                                        }
+                                    }
+                                    row_id += 1;
+                                    Ok(())
+                                })?;
+                                let mut keys = Vec::with_capacity(seen.len());
+                                let mut values = Vec::with_capacity(seen.len());
+                                for (key, value) in seen.into_iter() {
+                                    keys.push(key);
+                                    values.push(value);
+                                }
+                                let params = ptr_hash::PtrHashParams::default();
+                                let mphf = DefaultPtrHash::<Xx128, [u8; 32]>::try_new(
+                                    &keys,
+                                    params,
+                                )
+                                .ok_or_else(|| anyhow!("ptrhash construction failed"))?;
+                                let slots = mphf.max_index();
+                                let mut entries = vec![(0u64, 0u32); slots];
+                                for (key, value) in keys.iter().zip(values.iter()) {
+                                    let idx = mphf.index_no_remap(key);
+                                    let fp = PkXxHash::hash(key, fingerprint_seed);
+                                    entries[idx] = (fp, *value);
+                                }
+                                let hash_rel = format!(
+                                    "nodes/{}/pk_hash-{:05}.bin",
+                                    table_name.to_lowercase(),
+                                    shard
+                                );
+                                let data_rel = format!(
+                                    "nodes/{}/pk_data-{:05}.bin",
+                                    table_name.to_lowercase(),
+                                    shard
+                                );
+                                IngestContext::write_pk_hash_and_data(
+                                    &target,
+                                    &hash_rel,
+                                    &data_rel,
+                                    key_type,
+                                    fingerprint_seed,
+                                    &mphf,
+                                    &entries,
+                                )?;
+                                (hash_rel, data_rel)
+                            }
+                            KeyType::Ip => {
+                                let mut seen: std::collections::HashMap<[u8; 16], u32> =
+                                    std::collections::HashMap::with_capacity(total_rows as usize);
+                                let data_path = root.join(temp_pkey_path(&table_name, shard));
+                                read_temp_rows(&data_path, |row| {
+                                    let value =
+                                        decoder.decode_column_value(row, 0, &mut scratch)?;
+                                    if let Ok(Key::Ip(ip)) =
+                                        key_from_value_ref(&value, &pk_col)
+                                    {
+                                        let local_id = u32::try_from(row_id)
+                                            .map_err(|_| anyhow!("pk local id overflow"))?;
+                                        match seen.entry(ip) {
+                                            Entry::Vacant(entry) => {
+                                                entry.insert(local_id);
+                                            }
+                                            Entry::Occupied(_) => {
+                                                duplicate_count =
+                                                    duplicate_count.saturating_add(1);
+                                                if duplicate_samples_local.len() < 10 {
+                                                    duplicate_samples_local.push(Key::Ip(ip));
                                                 }
                                             }
                                         }
@@ -4618,15 +4751,6 @@ impl IngestContext {
                     .iter()
                     .find(|c| c.name == *pk)
                     .and_then(|c| c.fixed_len),
-                key_mode: table
-                    .columns
-                    .iter()
-                    .find(|c| c.name == *pk)
-                    .and_then(|c| c.key_mode.as_ref())
-                    .and_then(|mode| match mode {
-                        KeyMode::Uuid => Some("uuid".to_string()),
-                        KeyMode::Fixed => None,
-                    }),
             });
             let max_id = shard_rows.iter().sum::<u64>().saturating_sub(1);
             node_types.push(NodeTypeMetadata {
@@ -6421,16 +6545,10 @@ fn key_type_for_column(col: &ColumnSpec) -> Result<KeyType> {
         | ColumnType::Float64
         | ColumnType::Decimal128
         | ColumnType::Decimal256 => Ok(KeyType::Int64),
-        ColumnType::String | ColumnType::Bytes => {
-            if col.key_mode == Some(KeyMode::Uuid) {
-                return Ok(KeyType::Uuid);
-            }
-            if col.key_mode == Some(KeyMode::Fixed) || col.fixed_len.is_some() {
-                let len = col.fixed_len.ok_or_else(|| anyhow!("fixed_len required"))?;
-                return Ok(KeyType::FixedBytes { len });
-            }
-            Ok(KeyType::VarBytes)
-        }
+        ColumnType::String | ColumnType::Bytes => Ok(KeyType::VarBytes),
+        ColumnType::Uuid => Ok(KeyType::Uuid),
+        ColumnType::Uuid256 => Ok(KeyType::Uuid256),
+        ColumnType::Ip => Ok(KeyType::Ip),
         _ => Err(anyhow!("unsupported primary key type")),
     }
 }
@@ -6464,59 +6582,19 @@ fn key_from_value_ref(value: &ValueRef<'_>, col: &ColumnSpec) -> KeyParseResult<
             ValueRef::UInt64(v) => Ok(Key::Int(*v)),
             ValueRef::UInt32(v) => Ok(Key::Int(*v as u64)),
             ValueRef::String(s) => {
-                if col.key_mode == Some(KeyMode::Uuid)
-                    || col.key_mode == Some(KeyMode::Fixed)
-                    || col.fixed_len.is_some()
-                {
-                    return Err(KeyParseError::TypeMismatch);
-                }
                 parse_base10_bytes(s.as_bytes()).map(Key::Int)
             }
             ValueRef::Bytes(b) => parse_base10_bytes(b).map(Key::Int),
             _ => Err(KeyParseError::TypeMismatch),
         },
-        KeyType::FixedBytes { len } => match value {
-            ValueRef::Bytes(b) => {
-                if col.key_mode == Some(KeyMode::Uuid) {
-                    return Err(KeyParseError::TypeMismatch);
-                }
-                if b.len() != len {
-                    return Err(KeyParseError::LengthMismatch);
-                }
-                Ok(Key::FixedBytes(b.to_vec()))
-            }
-            ValueRef::String(s) => {
-                if col.key_mode == Some(KeyMode::Uuid) {
-                    return Err(KeyParseError::TypeMismatch);
-                }
-                let bytes = normalize_numeric_bytes(s.as_bytes(), col)?;
-                if bytes.len() != len {
-                    return Err(KeyParseError::LengthMismatch);
-                }
-                Ok(Key::FixedBytes(bytes))
-            }
-            _ => Err(KeyParseError::TypeMismatch),
-        },
         KeyType::VarBytes => match value {
             ValueRef::Bytes(b) => {
-                if col.key_mode == Some(KeyMode::Uuid)
-                    || col.key_mode == Some(KeyMode::Fixed)
-                    || col.fixed_len.is_some()
-                {
-                    return Err(KeyParseError::TypeMismatch);
-                }
                 if b.len() > MAX_VAR_KEY_LEN {
                     return Err(KeyParseError::TooLarge);
                 }
                 Ok(Key::Bytes(b.to_vec()))
             }
             ValueRef::String(s) => {
-                if col.key_mode == Some(KeyMode::Uuid)
-                    || col.key_mode == Some(KeyMode::Fixed)
-                    || col.fixed_len.is_some()
-                {
-                    return Err(KeyParseError::TypeMismatch);
-                }
                 let bytes = normalize_numeric_bytes(s.as_bytes(), col)?;
                 if bytes.len() > MAX_VAR_KEY_LEN {
                     return Err(KeyParseError::TooLarge);
@@ -6561,22 +6639,42 @@ fn key_from_value_ref(value: &ValueRef<'_>, col: &ColumnSpec) -> KeyParseResult<
         },
         KeyType::Uuid => match value {
             ValueRef::String(s) => {
-                if col.key_mode != Some(KeyMode::Uuid) {
-                    return Err(KeyParseError::TypeMismatch);
-                }
                 let uuid = parse_uuid_string(s.as_bytes())?;
                 Ok(Key::Uuid(uuid))
             }
             ValueRef::Bytes(b) => {
-                if col.key_mode != Some(KeyMode::Uuid) {
-                    return Err(KeyParseError::TypeMismatch);
-                }
                 if b.len() != 16 {
                     return Err(KeyParseError::LengthMismatch);
                 }
                 let mut buf = [0u8; 16];
                 buf.copy_from_slice(b);
                 Ok(Key::Uuid(buf))
+            }
+            _ => Err(KeyParseError::TypeMismatch),
+        },
+        KeyType::Uuid256 => match value {
+            ValueRef::String(s) => {
+                let uuid = parse_uuid256_string(s.as_bytes())?;
+                Ok(Key::Uuid256(uuid))
+            }
+            ValueRef::Bytes(b) => {
+                if b.len() != 32 {
+                    return Err(KeyParseError::LengthMismatch);
+                }
+                let mut buf = [0u8; 32];
+                buf.copy_from_slice(b);
+                Ok(Key::Uuid256(buf))
+            }
+            _ => Err(KeyParseError::TypeMismatch),
+        },
+        KeyType::Ip => match value {
+            ValueRef::String(s) => {
+                let ip = parse_ip_string(s.as_bytes())?;
+                Ok(Key::Ip(ip))
+            }
+            ValueRef::Bytes(b) => {
+                let ip = parse_ip_bytes(b)?;
+                Ok(Key::Ip(ip))
             }
             _ => Err(KeyParseError::TypeMismatch),
         },
@@ -6590,7 +6688,8 @@ fn key_hash_bytes<'a>(key: &'a Key, scratch: &'a mut [u8; 16]) -> &'a [u8] {
             &scratch[..8]
         }
         Key::Uuid(v) => v.as_slice(),
-        Key::FixedBytes(v) => v.as_slice(),
+        Key::Uuid256(v) => v.as_slice(),
+        Key::Ip(v) => v.as_slice(),
         Key::Bytes(v) => v.as_slice(),
     }
 }
@@ -6599,7 +6698,8 @@ fn write_key_to_buf(buf: &mut Vec<u8>, key: &Key) -> Result<()> {
     match key {
         Key::Int(v) => buf.extend_from_slice(&v.to_le_bytes()),
         Key::Uuid(v) => buf.extend_from_slice(v),
-        Key::FixedBytes(v) => buf.extend_from_slice(v),
+        Key::Uuid256(v) => buf.extend_from_slice(v),
+        Key::Ip(v) => buf.extend_from_slice(v),
         Key::Bytes(v) => {
             let len = u16::try_from(v.len())
                 .map_err(|_| anyhow!("temp key too large"))?;
@@ -6631,13 +6731,23 @@ fn read_key_from_buf(data: &mut &[u8], col: &ColumnSpec) -> Result<Key> {
             *data = &data[16..];
             Ok(Key::Uuid(buf))
         }
-        KeyType::FixedBytes { len } => {
-            if data.len() < len {
+        KeyType::Uuid256 => {
+            if data.len() < 32 {
                 return Err(anyhow!("temp key truncated"));
             }
-            let bytes = data[..len].to_vec();
-            *data = &data[len..];
-            Ok(Key::FixedBytes(bytes))
+            let mut buf = [0u8; 32];
+            buf.copy_from_slice(&data[..32]);
+            *data = &data[32..];
+            Ok(Key::Uuid256(buf))
+        }
+        KeyType::Ip => {
+            if data.len() < 16 {
+                return Err(anyhow!("temp key truncated"));
+            }
+            let mut buf = [0u8; 16];
+            buf.copy_from_slice(&data[..16]);
+            *data = &data[16..];
+            Ok(Key::Ip(buf))
         }
         KeyType::VarBytes => {
             if data.len() < 2 {
@@ -6746,6 +6856,58 @@ fn parse_uuid_dashed(bytes: &[u8]) -> KeyParseResult<[u8; 16]> {
     Ok(out)
 }
 
+fn parse_uuid256_string(bytes: &[u8]) -> KeyParseResult<[u8; 32]> {
+    let bytes = if bytes.len() == 66 && bytes.starts_with(b"0x") {
+        &bytes[2..]
+    } else if bytes.len() == 66 && bytes.starts_with(b"0X") {
+        &bytes[2..]
+    } else {
+        bytes
+    };
+    if bytes.len() != 64 {
+        return Err(KeyParseError::InvalidUuid256);
+    }
+    let mut out = [0u8; 32];
+    let h = hex_value_unchecked;
+    let mut i = 0usize;
+    while i < 32 {
+        let idx = i * 2;
+        out[i] = (h(bytes[idx]) << 4) | h(bytes[idx + 1]);
+        i += 1;
+    }
+    Ok(out)
+}
+
+fn parse_ip_string(bytes: &[u8]) -> KeyParseResult<[u8; 16]> {
+    let s = std::str::from_utf8(bytes).map_err(|_| KeyParseError::NotUtf8)?;
+    let ip: std::net::IpAddr = s.parse().map_err(|_| KeyParseError::InvalidIp)?;
+    Ok(ip_to_ipv6_bytes(ip))
+}
+
+fn parse_ip_bytes(bytes: &[u8]) -> KeyParseResult<[u8; 16]> {
+    match bytes.len() {
+        4 => {
+            let ip = std::net::IpAddr::V4(std::net::Ipv4Addr::new(
+                bytes[0], bytes[1], bytes[2], bytes[3],
+            ));
+            Ok(ip_to_ipv6_bytes(ip))
+        }
+        16 => {
+            let mut out = [0u8; 16];
+            out.copy_from_slice(bytes);
+            Ok(out)
+        }
+        _ => Err(KeyParseError::LengthMismatch),
+    }
+}
+
+fn ip_to_ipv6_bytes(ip: std::net::IpAddr) -> [u8; 16] {
+    match ip {
+        std::net::IpAddr::V4(v4) => v4.to_ipv6_mapped().octets(),
+        std::net::IpAddr::V6(v6) => v6.octets(),
+    }
+}
+
 static HEX_MAP: [u8; 256] = {
     let mut map = [0u8; 256];
     let mut i = 0u8;
@@ -6819,8 +6981,10 @@ fn normalize_base10_bytes(bytes: &[u8]) -> KeyParseResult<Vec<u8>> {
 fn sample_key(key: &Key) -> Option<String> {
     match key {
         Key::Int(v) => Some(v.to_string()),
-        Key::FixedBytes(bytes) | Key::Bytes(bytes) => Some(format_bytes_sample(bytes)),
+        Key::Bytes(bytes) => Some(format_bytes_sample(bytes)),
         Key::Uuid(bytes) => Some(hex_encode(bytes)),
+        Key::Uuid256(bytes) => Some(hex_encode(bytes)),
+        Key::Ip(bytes) => Some(hex_encode(bytes)),
     }
 }
 
@@ -6963,6 +7127,33 @@ mod tests {
     }
 
     #[test]
+    fn parse_uuid256_string_formats() {
+        let raw = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+        let prefixed = "0x00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+        let expected: [u8; 32] = [
+            0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb,
+            0xcc, 0xdd, 0xee, 0xff, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
+            0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff,
+        ];
+        assert_eq!(parse_uuid256_string(raw.as_bytes()).unwrap(), expected);
+        assert_eq!(parse_uuid256_string(prefixed.as_bytes()).unwrap(), expected);
+    }
+
+    #[test]
+    fn parse_ip_string_formats() {
+        let v4 = "192.168.1.2";
+        let v6 = "2001:db8::1";
+        let v4_expected = [
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 192, 168, 1, 2,
+        ];
+        let v6_expected = [
+            0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+        ];
+        assert_eq!(parse_ip_string(v4.as_bytes()).unwrap(), v4_expected);
+        assert_eq!(parse_ip_string(v6.as_bytes()).unwrap(), v6_expected);
+    }
+
+    #[test]
     fn parse_uuid_bytes_requires_len_16() {
         assert!(parse_uuid_bytes(&[0u8; 15]).is_err());
         assert!(parse_uuid_bytes(&[0u8; 17]).is_err());
@@ -6982,7 +7173,6 @@ mod tests {
                 fixed_len: None,
                 timestamp_format: Some("rfc3339".to_string()),
                 timestamp_unit: None,
-                key_mode: None,
                 precision: None,
                 scale: None,
             }],
@@ -7030,7 +7220,6 @@ mod tests {
                 fixed_len: None,
                 timestamp_format: None,
                 timestamp_unit: Some(TimestampUnit::Millis),
-                key_mode: None,
                 precision: None,
                 scale: None,
             }],
@@ -7093,7 +7282,6 @@ mod tests {
                 fixed_len: None,
                 timestamp_format: Some("%Y-%m-%d".to_string()),
                 timestamp_unit: None,
-                key_mode: None,
                 precision: None,
                 scale: None,
             }],
@@ -7148,7 +7336,6 @@ mod tests {
                 fixed_len: None,
                 timestamp_format: None,
                 timestamp_unit: None,
-                key_mode: None,
                 precision: None,
                 scale: None,
             }],
@@ -7193,7 +7380,6 @@ mod tests {
                 fixed_len: None,
                 timestamp_format: None,
                 timestamp_unit: None,
-                key_mode: None,
                 precision: None,
                 scale: None,
             }],
@@ -7245,6 +7431,9 @@ fn table_schema(table: &TableSpec) -> Result<Schema> {
             ColumnType::Bool => DataType::Boolean,
             ColumnType::String => DataType::Utf8,
             ColumnType::Bytes => DataType::Binary,
+            ColumnType::Uuid => DataType::Binary,
+            ColumnType::Uuid256 => DataType::Binary,
+            ColumnType::Ip => DataType::Binary,
             ColumnType::Date => DataType::Date32,
             ColumnType::Timestamp => DataType::Timestamp(arrow_schema::TimeUnit::Second, None),
             ColumnType::Decimal128 => {
@@ -7340,6 +7529,7 @@ fn rowpack_columns(table: &TableSpec) -> Result<Vec<diskgraph_rowpack::RowPackCo
             ColumnType::Bool => RowpackType::Bool,
             ColumnType::String => RowpackType::String,
             ColumnType::Bytes => RowpackType::Bytes,
+            ColumnType::Uuid | ColumnType::Uuid256 | ColumnType::Ip => RowpackType::Bytes,
             ColumnType::Date => RowpackType::Date,
             ColumnType::Timestamp => RowpackType::Timestamp,
             ColumnType::Decimal128 => RowpackType::Decimal128,
@@ -7348,10 +7538,16 @@ fn rowpack_columns(table: &TableSpec) -> Result<Vec<diskgraph_rowpack::RowPackCo
             ColumnType::Float64Array => RowpackType::Float64Array,
             ColumnType::Float16Array => RowpackType::Float16Array,
         };
+        let fixed_len = match col.ingested_dtype {
+            ColumnType::Uuid => Some(16),
+            ColumnType::Uuid256 => Some(32),
+            ColumnType::Ip => Some(16),
+            _ => col.fixed_len,
+        };
         columns.push(diskgraph_rowpack::RowPackColumn {
             name: col.name.clone(),
             logical_type: dtype,
-            fixed_len: col.fixed_len,
+            fixed_len,
             precision: col.precision,
             scale: col.scale,
         });
@@ -7378,6 +7574,7 @@ fn rowpack_columns_for_specs(
             ColumnType::Bool => RowpackType::Bool,
             ColumnType::String => RowpackType::String,
             ColumnType::Bytes => RowpackType::Bytes,
+            ColumnType::Uuid | ColumnType::Uuid256 | ColumnType::Ip => RowpackType::Bytes,
             ColumnType::Date => RowpackType::Date,
             ColumnType::Timestamp => RowpackType::Timestamp,
             ColumnType::Decimal128 => RowpackType::Decimal128,
@@ -7386,10 +7583,16 @@ fn rowpack_columns_for_specs(
             ColumnType::Float64Array => RowpackType::Float64Array,
             ColumnType::Float16Array => RowpackType::Float16Array,
         };
+        let fixed_len = match col.ingested_dtype {
+            ColumnType::Uuid => Some(16),
+            ColumnType::Uuid256 => Some(32),
+            ColumnType::Ip => Some(16),
+            _ => col.fixed_len,
+        };
         columns.push(diskgraph_rowpack::RowPackColumn {
             name: col.name.clone(),
             logical_type: dtype,
-            fixed_len: col.fixed_len,
+            fixed_len,
             precision: col.precision,
             scale: col.scale,
         });
@@ -7427,45 +7630,37 @@ enum EdgeKeyFastKind {
     UInt32,
     UInt16,
     UInt8,
-    StringUuid,
-    BytesUuid,
-    StringFixed { len: usize },
-    BytesFixed { len: usize },
     StringVar,
     BytesVar,
+    StringUuid,
+    BytesUuid,
+    StringUuid256,
+    BytesUuid256,
+    StringIp,
+    BytesIp,
 }
 
 fn edge_fast_path_for_column(col: &ColumnSpec) -> Option<EdgeKeyFastKind> {
-    if col.source_dtype != col.ingested_dtype {
-        return None;
-    }
-    match col.ingested_dtype {
-        ColumnType::Int64 => Some(EdgeKeyFastKind::Int64),
-        ColumnType::Int32 => Some(EdgeKeyFastKind::Int32),
-        ColumnType::Int16 => Some(EdgeKeyFastKind::Int16),
-        ColumnType::Int8 => Some(EdgeKeyFastKind::Int8),
-        ColumnType::UInt64 => Some(EdgeKeyFastKind::UInt64),
-        ColumnType::UInt32 => Some(EdgeKeyFastKind::UInt32),
-        ColumnType::UInt16 => Some(EdgeKeyFastKind::UInt16),
-        ColumnType::UInt8 => Some(EdgeKeyFastKind::UInt8),
-        ColumnType::String => {
-            if col.key_mode == Some(KeyMode::Uuid) {
-                Some(EdgeKeyFastKind::StringUuid)
-            } else if col.key_mode == Some(KeyMode::Fixed) || col.fixed_len.is_some() {
-                col.fixed_len.map(|len| EdgeKeyFastKind::StringFixed { len })
-            } else {
-                Some(EdgeKeyFastKind::StringVar)
-            }
-        }
-        ColumnType::Bytes => {
-            if col.key_mode == Some(KeyMode::Uuid) {
-                Some(EdgeKeyFastKind::BytesUuid)
-            } else if col.key_mode == Some(KeyMode::Fixed) || col.fixed_len.is_some() {
-                col.fixed_len.map(|len| EdgeKeyFastKind::BytesFixed { len })
-            } else {
-                Some(EdgeKeyFastKind::BytesVar)
-            }
-        }
+    match (&col.source_dtype, &col.ingested_dtype) {
+        (s, i) if s == i => match i {
+            ColumnType::Int64 => Some(EdgeKeyFastKind::Int64),
+            ColumnType::Int32 => Some(EdgeKeyFastKind::Int32),
+            ColumnType::Int16 => Some(EdgeKeyFastKind::Int16),
+            ColumnType::Int8 => Some(EdgeKeyFastKind::Int8),
+            ColumnType::UInt64 => Some(EdgeKeyFastKind::UInt64),
+            ColumnType::UInt32 => Some(EdgeKeyFastKind::UInt32),
+            ColumnType::UInt16 => Some(EdgeKeyFastKind::UInt16),
+            ColumnType::UInt8 => Some(EdgeKeyFastKind::UInt8),
+            ColumnType::String => Some(EdgeKeyFastKind::StringVar),
+            ColumnType::Bytes => Some(EdgeKeyFastKind::BytesVar),
+            _ => None,
+        },
+        (ColumnType::String, ColumnType::Uuid) => Some(EdgeKeyFastKind::StringUuid),
+        (ColumnType::Bytes, ColumnType::Uuid) => Some(EdgeKeyFastKind::BytesUuid),
+        (ColumnType::String, ColumnType::Uuid256) => Some(EdgeKeyFastKind::StringUuid256),
+        (ColumnType::Bytes, ColumnType::Uuid256) => Some(EdgeKeyFastKind::BytesUuid256),
+        (ColumnType::String, ColumnType::Ip) => Some(EdgeKeyFastKind::StringIp),
+        (ColumnType::Bytes, ColumnType::Ip) => Some(EdgeKeyFastKind::BytesIp),
         _ => None,
     }
 }
@@ -7578,28 +7773,6 @@ fn fast_key_from_array(
             buf.copy_from_slice(data);
             Ok(Key::Uuid(buf))
         }
-        EdgeKeyFastKind::StringFixed { len } => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<arrow_array::StringArray>()
-                .ok_or(KeyParseError::TypeMismatch)?;
-            let data = arr.value(row).as_bytes();
-            if data.len() != len {
-                return Err(KeyParseError::LengthMismatch);
-            }
-            Ok(Key::FixedBytes(data.to_vec()))
-        }
-        EdgeKeyFastKind::BytesFixed { len } => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<arrow_array::BinaryArray>()
-                .ok_or(KeyParseError::TypeMismatch)?;
-            let data = arr.value(row);
-            if data.len() != len {
-                return Err(KeyParseError::LengthMismatch);
-            }
-            Ok(Key::FixedBytes(data.to_vec()))
-        }
         EdgeKeyFastKind::StringVar => {
             let arr = array
                 .as_any()
@@ -7621,6 +7794,43 @@ fn fast_key_from_array(
                 return Err(KeyParseError::TooLarge);
             }
             Ok(Key::Bytes(data.to_vec()))
+        }
+        EdgeKeyFastKind::StringUuid256 => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::StringArray>()
+                .ok_or(KeyParseError::TypeMismatch)?;
+            let uuid = parse_uuid256_string(arr.value(row).as_bytes())?;
+            Ok(Key::Uuid256(uuid))
+        }
+        EdgeKeyFastKind::BytesUuid256 => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::BinaryArray>()
+                .ok_or(KeyParseError::TypeMismatch)?;
+            let data = arr.value(row);
+            if data.len() != 32 {
+                return Err(KeyParseError::LengthMismatch);
+            }
+            let mut buf = [0u8; 32];
+            buf.copy_from_slice(data);
+            Ok(Key::Uuid256(buf))
+        }
+        EdgeKeyFastKind::StringIp => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::StringArray>()
+                .ok_or(KeyParseError::TypeMismatch)?;
+            let ip = parse_ip_string(arr.value(row).as_bytes())?;
+            Ok(Key::Ip(ip))
+        }
+        EdgeKeyFastKind::BytesIp => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::BinaryArray>()
+                .ok_or(KeyParseError::TypeMismatch)?;
+            let ip = parse_ip_bytes(arr.value(row))?;
+            Ok(Key::Ip(ip))
         }
     }
 }
@@ -7797,6 +8007,37 @@ impl<'a> RowAccess<'a> {
                     } else {
                         Ok(ValueRef::Bytes(data))
                     }
+                }
+                ColumnType::Uuid => {
+                    let arr = array
+                        .as_any()
+                        .downcast_ref::<arrow_array::BinaryArray>()
+                        .ok_or_else(|| anyhow!("uuid cast"))?;
+                    let data = arr.value(self.row);
+                    if data.len() != 16 {
+                        return Err(anyhow!("uuid length mismatch"));
+                    }
+                    Ok(ValueRef::Bytes(data))
+                }
+                ColumnType::Uuid256 => {
+                    let arr = array
+                        .as_any()
+                        .downcast_ref::<arrow_array::BinaryArray>()
+                        .ok_or_else(|| anyhow!("uuid256 cast"))?;
+                    let data = arr.value(self.row);
+                    if data.len() != 32 {
+                        return Err(anyhow!("uuid256 length mismatch"));
+                    }
+                    Ok(ValueRef::Bytes(data))
+                }
+                ColumnType::Ip => {
+                    let arr = array
+                        .as_any()
+                        .downcast_ref::<arrow_array::BinaryArray>()
+                        .ok_or_else(|| anyhow!("ip cast"))?;
+                    let data = arr.value(self.row);
+                    let ip = parse_ip_bytes(data).map_err(|_| anyhow!("ip parse"))?;
+                    Ok(ValueRef::Bytes(self.pool_bytes(ip.to_vec())))
                 }
                 ColumnType::Date => {
                     let arr = array
@@ -8071,6 +8312,54 @@ impl<'a> RowAccess<'a> {
                 let text = read_utf8(array, self.row, &col.source_dtype)?;
                 if let Some(v) = parse_bool(text) {
                     Ok(ValueRef::Bool(v))
+                } else {
+                    Ok(ValueRef::Null)
+                }
+            }
+            (ColumnType::String, ColumnType::Uuid) => {
+                let text = read_utf8(array, self.row, &col.source_dtype)?;
+                if let Ok(uuid) = parse_uuid_string(text.as_bytes()) {
+                    Ok(ValueRef::Bytes(self.pool_bytes(uuid.to_vec())))
+                } else {
+                    Ok(ValueRef::Null)
+                }
+            }
+            (ColumnType::Bytes, ColumnType::Uuid) => {
+                let data = read_bytes(array, self.row, &col.source_dtype)?;
+                if data.len() == 16 {
+                    Ok(ValueRef::Bytes(data))
+                } else {
+                    Ok(ValueRef::Null)
+                }
+            }
+            (ColumnType::String, ColumnType::Uuid256) => {
+                let text = read_utf8(array, self.row, &col.source_dtype)?;
+                if let Ok(uuid) = parse_uuid256_string(text.as_bytes()) {
+                    Ok(ValueRef::Bytes(self.pool_bytes(uuid.to_vec())))
+                } else {
+                    Ok(ValueRef::Null)
+                }
+            }
+            (ColumnType::Bytes, ColumnType::Uuid256) => {
+                let data = read_bytes(array, self.row, &col.source_dtype)?;
+                if data.len() == 32 {
+                    Ok(ValueRef::Bytes(data))
+                } else {
+                    Ok(ValueRef::Null)
+                }
+            }
+            (ColumnType::String, ColumnType::Ip) => {
+                let text = read_utf8(array, self.row, &col.source_dtype)?;
+                if let Ok(ip) = parse_ip_string(text.as_bytes()) {
+                    Ok(ValueRef::Bytes(self.pool_bytes(ip.to_vec())))
+                } else {
+                    Ok(ValueRef::Null)
+                }
+            }
+            (ColumnType::Bytes, ColumnType::Ip) => {
+                let data = read_bytes(array, self.row, &col.source_dtype)?;
+                if let Ok(ip) = parse_ip_bytes(data) {
+                    Ok(ValueRef::Bytes(self.pool_bytes(ip.to_vec())))
                 } else {
                     Ok(ValueRef::Null)
                 }
@@ -8508,6 +8797,49 @@ fn row_values_from_row<'a>(
                         values.push(ValueRef::Bytes(slice));
                     }
                 }
+                ColumnType::Uuid => {
+                    let arr = array
+                        .as_any()
+                        .downcast_ref::<arrow_array::BinaryArray>()
+                        .ok_or_else(|| anyhow!("uuid cast"))?;
+                    let data = arr.value(row.row);
+                    if data.len() != 16 {
+                        return Err(anyhow!("uuid length mismatch"));
+                    }
+                    let buf = pools.take_bytes_buf();
+                    buf.extend_from_slice(data);
+                    let slice =
+                        unsafe { std::mem::transmute::<&[u8], &'static [u8]>(buf.as_slice()) };
+                    values.push(ValueRef::Bytes(slice));
+                }
+                ColumnType::Uuid256 => {
+                    let arr = array
+                        .as_any()
+                        .downcast_ref::<arrow_array::BinaryArray>()
+                        .ok_or_else(|| anyhow!("uuid256 cast"))?;
+                    let data = arr.value(row.row);
+                    if data.len() != 32 {
+                        return Err(anyhow!("uuid256 length mismatch"));
+                    }
+                    let buf = pools.take_bytes_buf();
+                    buf.extend_from_slice(data);
+                    let slice =
+                        unsafe { std::mem::transmute::<&[u8], &'static [u8]>(buf.as_slice()) };
+                    values.push(ValueRef::Bytes(slice));
+                }
+                ColumnType::Ip => {
+                    let arr = array
+                        .as_any()
+                        .downcast_ref::<arrow_array::BinaryArray>()
+                        .ok_or_else(|| anyhow!("ip cast"))?;
+                    let data = arr.value(row.row);
+                    let ip = parse_ip_bytes(data).map_err(|_| anyhow!("ip parse"))?;
+                    let buf = pools.take_bytes_buf();
+                    buf.extend_from_slice(&ip);
+                    let slice =
+                        unsafe { std::mem::transmute::<&[u8], &'static [u8]>(buf.as_slice()) };
+                    values.push(ValueRef::Bytes(slice));
+                }
                 ColumnType::Date => {
                     let arr = array
                         .as_any()
@@ -8761,6 +9093,74 @@ fn row_values_from_row<'a>(
                 let text = read_utf8(array, row.row, &col.source_dtype)?;
                 if let Some(v) = parse_bool(text) {
                     values.push(ValueRef::Bool(v));
+                } else {
+                    values.push(ValueRef::Null);
+                }
+            }
+            (ColumnType::String, ColumnType::Uuid) => {
+                let text = read_utf8(array, row.row, &col.source_dtype)?;
+                if let Ok(uuid) = parse_uuid_string(text.as_bytes()) {
+                    let buf = pools.take_bytes_buf();
+                    buf.extend_from_slice(&uuid);
+                    let slice =
+                        unsafe { std::mem::transmute::<&[u8], &'static [u8]>(buf.as_slice()) };
+                    values.push(ValueRef::Bytes(slice));
+                } else {
+                    values.push(ValueRef::Null);
+                }
+            }
+            (ColumnType::Bytes, ColumnType::Uuid) => {
+                let data = read_bytes(array, row.row, &col.source_dtype)?;
+                if data.len() == 16 {
+                    let slice =
+                        unsafe { std::mem::transmute::<&[u8], &'static [u8]>(data) };
+                    values.push(ValueRef::Bytes(slice));
+                } else {
+                    values.push(ValueRef::Null);
+                }
+            }
+            (ColumnType::String, ColumnType::Uuid256) => {
+                let text = read_utf8(array, row.row, &col.source_dtype)?;
+                if let Ok(uuid) = parse_uuid256_string(text.as_bytes()) {
+                    let buf = pools.take_bytes_buf();
+                    buf.extend_from_slice(&uuid);
+                    let slice =
+                        unsafe { std::mem::transmute::<&[u8], &'static [u8]>(buf.as_slice()) };
+                    values.push(ValueRef::Bytes(slice));
+                } else {
+                    values.push(ValueRef::Null);
+                }
+            }
+            (ColumnType::Bytes, ColumnType::Uuid256) => {
+                let data = read_bytes(array, row.row, &col.source_dtype)?;
+                if data.len() == 32 {
+                    let slice =
+                        unsafe { std::mem::transmute::<&[u8], &'static [u8]>(data) };
+                    values.push(ValueRef::Bytes(slice));
+                } else {
+                    values.push(ValueRef::Null);
+                }
+            }
+            (ColumnType::String, ColumnType::Ip) => {
+                let text = read_utf8(array, row.row, &col.source_dtype)?;
+                if let Ok(ip) = parse_ip_string(text.as_bytes()) {
+                    let buf = pools.take_bytes_buf();
+                    buf.extend_from_slice(&ip);
+                    let slice =
+                        unsafe { std::mem::transmute::<&[u8], &'static [u8]>(buf.as_slice()) };
+                    values.push(ValueRef::Bytes(slice));
+                } else {
+                    values.push(ValueRef::Null);
+                }
+            }
+            (ColumnType::Bytes, ColumnType::Ip) => {
+                let data = read_bytes(array, row.row, &col.source_dtype)?;
+                if let Ok(ip) = parse_ip_bytes(data) {
+                    let buf = pools.take_bytes_buf();
+                    buf.extend_from_slice(&ip);
+                    let slice =
+                        unsafe { std::mem::transmute::<&[u8], &'static [u8]>(buf.as_slice()) };
+                    values.push(ValueRef::Bytes(slice));
                 } else {
                     values.push(ValueRef::Null);
                 }

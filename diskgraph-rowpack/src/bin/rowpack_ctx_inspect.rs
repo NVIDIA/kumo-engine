@@ -134,9 +134,7 @@ fn format_float_storage(storage: FloatStorage) -> &'static str {
 fn format_decimal_storage(storage: &DecimalStorage) -> String {
     match storage {
         DecimalStorage::Raw => "raw".to_string(),
-        DecimalStorage::Int { varint, bits } => {
-            format!("int(varint={}, bits={})", varint, bits)
-        }
+        DecimalStorage::Varint => "varint".to_string(),
     }
 }
 

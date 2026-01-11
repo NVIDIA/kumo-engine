@@ -37,8 +37,6 @@ pub struct ColumnConfig {
     #[serde(default)]
     pub primary_key: bool,
     #[serde(default)]
-    pub key_mode: Option<KeyMode>,
-    #[serde(default)]
     pub fixed_len: Option<usize>,
     #[serde(default)]
     pub key_encoding: Option<KeyEncoding>,
@@ -70,6 +68,9 @@ pub enum ColumnType {
     Bool,
     String,
     Bytes,
+    Uuid,
+    Uuid256,
+    Ip,
     Date,
     Timestamp,
     Float32Array,
@@ -83,13 +84,6 @@ pub enum TimestampUnit {
     Millis,
     Micros,
     Nanos,
-}
-
-#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum KeyMode {
-    Fixed,
-    Uuid,
 }
 
 #[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]

@@ -77,8 +77,6 @@ struct ColumnSpecReport {
     #[serde(default)]
     fixed_len: Option<usize>,
     #[serde(default)]
-    key_mode: Option<KeyModeReport>,
-    #[serde(default)]
     timestamp_format: Option<String>,
     #[serde(default)]
     timestamp_unit: Option<TimestampUnitReport>,
@@ -179,6 +177,9 @@ enum ColumnTypeReport {
     Bool,
     String,
     Bytes,
+    Uuid,
+    Uuid256,
+    Ip,
     Date,
     Timestamp,
     Decimal128,
@@ -203,6 +204,9 @@ impl ColumnTypeReport {
             ColumnTypeReport::Bool => "bool",
             ColumnTypeReport::String => "string",
             ColumnTypeReport::Bytes => "bytes",
+            ColumnTypeReport::Uuid => "uuid",
+            ColumnTypeReport::Uuid256 => "uuid256",
+            ColumnTypeReport::Ip => "ip",
             ColumnTypeReport::Date => "date",
             ColumnTypeReport::Timestamp => "timestamp",
             ColumnTypeReport::Decimal128 => "decimal128",
@@ -229,22 +233,6 @@ impl TimestampUnitReport {
             TimestampUnitReport::Millis => "millis",
             TimestampUnitReport::Micros => "micros",
             TimestampUnitReport::Nanos => "nanos",
-        }
-    }
-}
-
-#[derive(Debug, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-enum KeyModeReport {
-    Fixed,
-    Uuid,
-}
-
-impl KeyModeReport {
-    fn as_str(&self) -> &'static str {
-        match self {
-            KeyModeReport::Fixed => "fixed",
-            KeyModeReport::Uuid => "uuid",
         }
     }
 }
@@ -626,14 +614,13 @@ fn print_formats(metadata: &DatasetMetadata, root: &Path) -> Result<()> {
         println!();
         println!("Table: {}", node.name);
         if let Some(pk) = &node.primary_key_map {
-            let key_mode = pk.key_mode.as_deref().unwrap_or("var");
             let fixed = pk
                 .fixed_len
                 .map(|v| v.to_string())
                 .unwrap_or_else(|| "n/a".to_string());
             println!(
-                "  Primary key: {} (dtype={}, mode={}, fixed_len={}, mapping={})",
-                pk.column, pk.dtype, key_mode, fixed, pk.mapping_kind
+                "  Primary key: {} (dtype={}, fixed_len={}, mapping={})",
+                pk.column, pk.dtype, fixed, pk.mapping_kind
             );
         } else {
             println!("  Primary key: none");
@@ -964,11 +951,6 @@ fn format_column(col: &ColumnSpecReport) -> String {
     let mut out = col.ingested_dtype.as_str().to_string();
     if col.source_dtype != col.ingested_dtype {
         out.push_str(&format!(", source={}", col.source_dtype.as_str()));
-    }
-    if let Some(mode) = &col.key_mode {
-        out.push_str(&format!(", mode={}", mode.as_str()));
-    } else {
-        out.push_str(", mode=var");
     }
     if let Some(len) = col.fixed_len {
         out.push_str(&format!(", fixed_len={}", len));
@@ -1354,7 +1336,7 @@ fn format_float_storage(storage: FloatStorage) -> &'static str {
 fn format_decimal_storage(storage: &DecimalStorage) -> String {
     match storage {
         DecimalStorage::Raw => "raw".to_string(),
-        DecimalStorage::Int { varint, bits } => format!("int(varint={}, bits={})", varint, bits),
+        DecimalStorage::Varint => "varint".to_string(),
     }
 }
 

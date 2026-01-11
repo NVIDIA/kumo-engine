@@ -11,9 +11,8 @@
       "columns": [
         {
           "name": "user_id",
-          "dtype": "string",
-          "primary_key": true,
-          "key_mode": "uuid"
+          "dtype": "uuid",
+          "primary_key": true
         },
         {
           "name": "username",
@@ -79,9 +78,8 @@
       "columns": [
         {
           "name": "ip_id",
-          "dtype": "string",
-          "primary_key": true,
-          "key_mode": "uuid"
+          "dtype": "uuid",
+          "primary_key": true
         },
         {
           "name": "ip_v4",
@@ -115,9 +113,8 @@
       "columns": [
         {
           "name": "mac_id",
-          "dtype": "string",
-          "primary_key": true,
-          "key_mode": "uuid"
+          "dtype": "uuid",
+          "primary_key": true
         },
         {
           "name": "device_type",
@@ -156,9 +153,8 @@
       "columns": [
         {
           "name": "email_id",
-          "dtype": "string",
-          "primary_key": true,
-          "key_mode": "uuid"
+          "dtype": "uuid",
+          "primary_key": true
         },
         {
           "name": "domain",
@@ -183,9 +179,8 @@
       "columns": [
         {
           "name": "btid_id",
-          "dtype": "string",
-          "primary_key": true,
-          "key_mode": "uuid"
+          "dtype": "uuid",
+          "primary_key": true
         },
         {
           "name": "browser_type",
@@ -224,13 +219,11 @@
       "columns": [
         {
           "name": "user_id",
-          "dtype": "string",
-          "key_mode": "uuid"
+          "dtype": "uuid"
         },
         {
           "name": "ip_id",
-          "dtype": "string",
-          "key_mode": "uuid"
+          "dtype": "uuid"
         },
         {
           "name": "last_seen_ts",
@@ -251,13 +244,11 @@
       "columns": [
         {
           "name": "user_id",
-          "dtype": "string",
-          "key_mode": "uuid"
+          "dtype": "uuid"
         },
         {
           "name": "mac_id",
-          "dtype": "string",
-          "key_mode": "uuid"
+          "dtype": "uuid"
         },
         {
           "name": "last_seen_ts",
@@ -278,13 +269,11 @@
       "columns": [
         {
           "name": "user_id",
-          "dtype": "string",
-          "key_mode": "uuid"
+          "dtype": "uuid"
         },
         {
           "name": "email_id",
-          "dtype": "string",
-          "key_mode": "uuid"
+          "dtype": "uuid"
         },
         {
           "name": "last_seen_ts",
@@ -305,13 +294,11 @@
       "columns": [
         {
           "name": "user_id",
-          "dtype": "string",
-          "key_mode": "uuid"
+          "dtype": "uuid"
         },
         {
           "name": "btid_id",
-          "dtype": "string",
-          "key_mode": "uuid"
+          "dtype": "uuid"
         },
         {
           "name": "last_seen_ts",
@@ -332,13 +319,11 @@
       "columns": [
         {
           "name": "user_id_a",
-          "dtype": "string",
-          "key_mode": "uuid"
+          "dtype": "uuid"
         },
         {
           "name": "user_id_b",
-          "dtype": "string",
-          "key_mode": "uuid"
+          "dtype": "uuid"
         },
         {
           "name": "label",

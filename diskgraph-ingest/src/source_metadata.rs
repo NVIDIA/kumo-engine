@@ -68,8 +68,6 @@ pub struct ColumnSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timestamp_unit: Option<TimestampUnit>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub key_mode: Option<KeyMode>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub precision: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scale: Option<i32>,
@@ -91,6 +89,9 @@ pub enum ColumnType {
     Bool,
     String,
     Bytes,
+    Uuid,
+    Uuid256,
+    Ip,
     Date,
     Timestamp,
     Decimal128,
@@ -114,13 +115,6 @@ pub enum TimestampUnit {
 pub enum TableFormat {
     Csv,
     Parquet,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum KeyMode {
-    Fixed,
-    Uuid,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -276,39 +270,7 @@ impl SourceMetadata {
                 if !col_names.insert(col.name.as_str()) {
                     errors.push(format!("table {} has duplicate column {}", table.name, col.name));
                 }
-                if let Some(mode) = &col.key_mode {
-                    match mode {
-                        KeyMode::Fixed => {
-                            if !matches!(col.ingested_dtype, ColumnType::String | ColumnType::Bytes) {
-                                errors.push(format!(
-                                    "table {} column {} fixed key_mode only valid for string/bytes",
-                                    table.name, col.name
-                                ));
-                            } else if col.fixed_len.is_none() {
-                                errors.push(format!(
-                                    "table {} column {} fixed key_mode requires fixed_len",
-                                    table.name, col.name
-                                ));
-                            }
-                        }
-                        KeyMode::Uuid => {
-                            if !matches!(col.ingested_dtype, ColumnType::String | ColumnType::Bytes) {
-                                errors.push(format!(
-                                    "table {} column {} uuid key_mode only valid for string/bytes",
-                                    table.name, col.name
-                                ));
-                            }
-                            if let Some(len) = col.fixed_len {
-                                if len != 16 {
-                                    errors.push(format!(
-                                        "table {} column {} uuid key_mode requires fixed_len 16 if set",
-                                        table.name, col.name
-                                    ));
-                                }
-                            }
-                        }
-                    }
-                } else if col.fixed_len.is_some()
+                if col.fixed_len.is_some()
                     && !matches!(col.ingested_dtype, ColumnType::String | ColumnType::Bytes)
                 {
                     errors.push(format!(
@@ -388,9 +350,12 @@ impl SourceMetadata {
                         | ColumnType::Decimal256
                         | ColumnType::String
                         | ColumnType::Bytes
+                        | ColumnType::Uuid
+                        | ColumnType::Uuid256
+                        | ColumnType::Ip
                 ) {
                     errors.push(format!(
-                        "table {} primary_key {} must be numeric or string/bytes",
+                        "table {} primary_key {} must be numeric or string/bytes/uuid/uuid256/ip",
                         table.name, pk
                     ));
                 }
@@ -647,36 +612,11 @@ impl SourceMetadata {
 fn compatible_key_columns(a: &ColumnSpec, b: &ColumnSpec) -> Result<(), String> {
     use ColumnType::*;
     match (&a.ingested_dtype, &b.ingested_dtype) {
-        (String, String) | (Bytes, Bytes) | (String, Bytes) | (Bytes, String) => {
-            let a_mode = string_key_mode(a);
-            let b_mode = string_key_mode(b);
-            match (a_mode, b_mode) {
-                (KeyStringMode::Uuid, KeyStringMode::Uuid) => Ok(()),
-                (KeyStringMode::Fixed(a_len), KeyStringMode::Fixed(b_len)) => {
-                    if a_len != b_len {
-                        return Err("have incompatible fixed_len".to_string());
-                    }
-                    Ok(())
-                }
-                (KeyStringMode::Var, KeyStringMode::Var) => Ok(()),
-                _ => Err("have incompatible key modes".to_string()),
-            }
-        }
+        (String, String) | (Bytes, Bytes) | (String, Bytes) | (Bytes, String) => Ok(()),
+        (Uuid, Uuid) | (Uuid256, Uuid256) | (Ip, Ip) => Ok(()),
         (a_type, b_type) if is_numeric(a_type) && is_numeric(b_type) => Ok(()),
-        (a_type, b_type) if is_numeric(a_type) && matches!(b_type, String | Bytes) => {
-            if string_key_mode(b).is_var() {
-                Ok(())
-            } else {
-                Err("have incompatible key modes".to_string())
-            }
-        }
-        (a_type, b_type) if is_numeric(b_type) && matches!(a_type, String | Bytes) => {
-            if string_key_mode(a).is_var() {
-                Ok(())
-            } else {
-                Err("have incompatible key modes".to_string())
-            }
-        }
+        (a_type, b_type) if is_numeric(a_type) && matches!(b_type, String | Bytes) => Ok(()),
+        (a_type, b_type) if is_numeric(b_type) && matches!(a_type, String | Bytes) => Ok(()),
         _ => Err("have incompatible types".to_string()),
     }
 }
@@ -862,30 +802,6 @@ fn rewrite_weight_expr(expr: &str) -> Result<(String, HashMap<String, String>)> 
         }
     }
     Ok((out, map))
-}
-
-#[derive(Clone, Copy)]
-enum KeyStringMode {
-    Var,
-    Fixed(usize),
-    Uuid,
-}
-
-impl KeyStringMode {
-    fn is_var(self) -> bool {
-        matches!(self, KeyStringMode::Var)
-    }
-}
-
-fn string_key_mode(col: &ColumnSpec) -> KeyStringMode {
-    if col.key_mode == Some(KeyMode::Uuid) {
-        return KeyStringMode::Uuid;
-    }
-    let len = col.fixed_len;
-    if col.key_mode == Some(KeyMode::Fixed) || len.is_some() {
-        return KeyStringMode::Fixed(len.unwrap_or(0));
-    }
-    KeyStringMode::Var
 }
 
 fn is_signed_int(t: &ColumnType) -> bool {

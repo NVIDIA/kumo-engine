@@ -14,26 +14,29 @@ const PK_DATA_ENTRY_LEN: usize = 8 + 4;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyType {
     Int64,
-    FixedBytes { len: usize },
     VarBytes,
     Uuid,
+    Uuid256,
+    Ip,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Key {
     Int(u64),
-    FixedBytes(Vec<u8>),
     Bytes(Vec<u8>),
     Uuid([u8; 16]),
+    Uuid256([u8; 32]),
+    Ip([u8; 16]),
 }
 
 impl Key {
     pub fn key_type(&self) -> KeyType {
         match self {
             Key::Int(_) => KeyType::Int64,
-            Key::FixedBytes(v) => KeyType::FixedBytes { len: v.len() },
             Key::Bytes(_) => KeyType::VarBytes,
             Key::Uuid(_) => KeyType::Uuid,
+            Key::Uuid256(_) => KeyType::Uuid256,
+            Key::Ip(_) => KeyType::Ip,
         }
     }
 }
@@ -91,11 +94,10 @@ impl PkDataHeader {
     fn key_type(&self) -> Result<KeyType> {
         match self.key_type_tag {
             0 => Ok(KeyType::Int64),
-            1 => Ok(KeyType::FixedBytes {
-                len: self.key_len as usize,
-            }),
             2 => Ok(KeyType::VarBytes),
             3 => Ok(KeyType::Uuid),
+            4 => Ok(KeyType::Uuid256),
+            5 => Ok(KeyType::Ip),
             _ => Err(anyhow!("pk data key type invalid")),
         }
     }
@@ -124,11 +126,19 @@ type MphfBytes = epserde::prelude::MemCase<
 type MphfUuid = epserde::prelude::MemCase<
     epserde::prelude::DeserType<'static, DefaultPtrHash<Xx128, [u8; 16]>>,
 >;
+type MphfUuid256 = epserde::prelude::MemCase<
+    epserde::prelude::DeserType<'static, DefaultPtrHash<Xx128, [u8; 32]>>,
+>;
+type MphfIp = epserde::prelude::MemCase<
+    epserde::prelude::DeserType<'static, DefaultPtrHash<Xx128, [u8; 16]>>,
+>;
 
 enum PkHashMphf {
     Int(MphfInt),
     Bytes(MphfBytes),
     Uuid(MphfUuid),
+    Uuid256(MphfUuid256),
+    Ip(MphfIp),
 }
 
 impl PkHashMphf {
@@ -150,15 +160,23 @@ impl PkHashMphf {
                     Some(slot)
                 }
             }
-            (PkHashMphf::Bytes(mphf), Key::FixedBytes(bytes)) => {
-                let slot = mphf.index_no_remap(bytes);
+            (PkHashMphf::Uuid(mphf), Key::Uuid(value)) => {
+                let slot = mphf.index_no_remap(value);
                 if slot >= mphf.max_index() {
                     None
                 } else {
                     Some(slot)
                 }
             }
-            (PkHashMphf::Uuid(mphf), Key::Uuid(value)) => {
+            (PkHashMphf::Uuid256(mphf), Key::Uuid256(value)) => {
+                let slot = mphf.index_no_remap(value);
+                if slot >= mphf.max_index() {
+                    None
+                } else {
+                    Some(slot)
+                }
+            }
+            (PkHashMphf::Ip(mphf), Key::Ip(value)) => {
                 let slot = mphf.index_no_remap(value);
                 if slot >= mphf.max_index() {
                     None
@@ -202,7 +220,7 @@ impl PkHashShard {
                 .map_err(|e| anyhow!("load pk hash {}: {e}", hash_path.display()))?;
                 PkHashMphf::Int(mphf)
             }
-            KeyType::FixedBytes { .. } | KeyType::VarBytes => {
+            KeyType::VarBytes => {
                 let mphf: MphfBytes = DefaultPtrHash::<Xx128, Vec<u8>>::load_mmap(
                     hash_path,
                     EpFlags::RANDOM_ACCESS | EpFlags::TRANSPARENT_HUGE_PAGES,
@@ -217,6 +235,22 @@ impl PkHashShard {
                 )
                 .map_err(|e| anyhow!("load pk hash {}: {e}", hash_path.display()))?;
                 PkHashMphf::Uuid(mphf)
+            }
+            KeyType::Uuid256 => {
+                let mphf: MphfUuid256 = DefaultPtrHash::<Xx128, [u8; 32]>::load_mmap(
+                    hash_path,
+                    EpFlags::RANDOM_ACCESS | EpFlags::TRANSPARENT_HUGE_PAGES,
+                )
+                .map_err(|e| anyhow!("load pk hash {}: {e}", hash_path.display()))?;
+                PkHashMphf::Uuid256(mphf)
+            }
+            KeyType::Ip => {
+                let mphf: MphfIp = DefaultPtrHash::<Xx128, [u8; 16]>::load_mmap(
+                    hash_path,
+                    EpFlags::RANDOM_ACCESS | EpFlags::TRANSPARENT_HUGE_PAGES,
+                )
+                .map_err(|e| anyhow!("load pk hash {}: {e}", hash_path.display()))?;
+                PkHashMphf::Ip(mphf)
             }
         };
         Ok(Self {
@@ -275,9 +309,10 @@ impl PkHashStore {
 pub fn key_type_tag(key_type: KeyType) -> (u8, u32) {
     match key_type {
         KeyType::Int64 => (0, 8),
-        KeyType::FixedBytes { len } => (1, len as u32),
         KeyType::VarBytes => (2, 0),
         KeyType::Uuid => (3, 16),
+        KeyType::Uuid256 => (4, 32),
+        KeyType::Ip => (5, 16),
     }
 }
 
@@ -300,10 +335,10 @@ pub fn write_pk_data_header(
 pub fn fingerprint_for_key(key: &Key, seed: u64) -> u64 {
     match key {
         Key::Int(value) => PkXxHash::hash(value, seed),
-        Key::FixedBytes(bytes) | Key::Bytes(bytes) => {
-            PkXxHash::hash(bytes, seed)
-        }
+        Key::Bytes(bytes) => PkXxHash::hash(bytes, seed),
         Key::Uuid(value) => PkXxHash::hash(value, seed),
+        Key::Uuid256(value) => PkXxHash::hash(value, seed),
+        Key::Ip(value) => PkXxHash::hash(value, seed),
     }
 }
 

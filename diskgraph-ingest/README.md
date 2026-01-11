@@ -126,18 +126,15 @@ Notes:
 {
   "name": "id",
   "source_dtype": "string",
-  "ingested_dtype": "string",
-  "fixed_len": 16,
-  "key_mode": "uuid",
+  "ingested_dtype": "uuid",
   "precision": 10,
   "scale": 2
 }
 ```
 
 Fields:
-- `source_dtype` / `ingested_dtype` (required): `int8|int16|int32|int64|uint8|uint16|uint32|uint64|float32|float64|bool|string|bytes|date|timestamp|decimal128|decimal256|float32_array|float64_array`
+- `source_dtype` / `ingested_dtype` (required): `int8|int16|int32|int64|uint8|uint16|uint32|uint64|float32|float64|bool|string|bytes|uuid|uuid256|ip|date|timestamp|decimal128|decimal256|float32_array|float64_array`
 - `fixed_len` (optional): only valid for `string`/`bytes`.
-- `key_mode` (optional): `fixed` or `uuid` (string/bytes only).
 - `timestamp_format` (optional): format string for string timestamps.
 - `timestamp_unit` (optional): `seconds|millis|micros|nanos` for integer timestamps.
 - `precision`/`scale` (optional): required for decimal columns and rejected for non-decimals.
@@ -159,17 +156,16 @@ Rules:
 - At least one side must be the primary key of its table.
 - A primary-key-to-primary-key relationship cannot be declared in both directions.
 
-### Key modes and compatibility
+### Key types and compatibility
 
-String/bytes keys:
-- `key_mode: uuid` supports common UUID string formats (hex with/without dashes, upper/lower, optional braces or `urn:uuid:`) and raw 16-byte values for bytes.
-- `key_mode: fixed` (or `fixed_len`) enforces fixed byte length.
-- default is variable-length.
+UUID/IP keys:
+- `ingested_dtype: uuid` supports common UUID string formats (hex with/without dashes, upper/lower, optional braces or `urn:uuid:`) and raw 16-byte values for bytes.
+- `ingested_dtype: uuid256` expects 64 hex characters (optional `0x` prefix) or raw 32-byte values.
+- `ingested_dtype: ip` accepts IPv4/IPv6 strings or raw 4/16-byte values (IPv4 is stored as IPv6-mapped bytes).
 
 Compatibility rules:
-- `uuid` only matches `uuid`.
-- `fixed` only matches `fixed` of the same length.
-- variable-length string/bytes can match each other and can match numeric types.
+- `uuid` only matches `uuid`, `uuid256` only matches `uuid256`, and `ip` only matches `ip`.
+- string/bytes can match each other and can match numeric types.
 
 Key matching behavior:
 - string values are compared as raw UTF-8 bytes; bytes are compared as raw bytes (no normalization).

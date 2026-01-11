@@ -11,7 +11,7 @@ use diskgraph_fs::{
 };
 use diskgraph_ingest::source_metadata::{
     relationship_name, ColumnSpec, ColumnType, EdgeSortKeysSpec, EdgeTableSortKeysSpec,
-    EdgeTableSpec, ForeignKeySpec, KeyMode, RelationshipSortKeysSpec, RelationshipSpec,
+    EdgeTableSpec, ForeignKeySpec, RelationshipSortKeysSpec, RelationshipSpec,
     SortKeySpec, SortKeyTimestampSpec, SortKeyWeightSpec, SourceMetadata, TableFormat,
     TableSpec, TimestampEncodingKind, TimestampEncodingSpec, TimestampUnit, WeightEncodingKind,
     WeightEncodingSpec,
@@ -612,7 +612,6 @@ fn columns_equivalent(lhs: &ColumnSpec, rhs: &ColumnSpec) -> bool {
     lhs.name == rhs.name
         && column_type_eq(&lhs.source_dtype, &rhs.source_dtype)
         && lhs.fixed_len == rhs.fixed_len
-        && lhs.key_mode == rhs.key_mode
         && lhs.precision == rhs.precision
         && lhs.scale == rhs.scale
 }
@@ -747,17 +746,25 @@ fn infer_parquet_schema_from_arrow(schema: &Schema) -> Result<Vec<ColumnSpec>> {
     let mut columns = Vec::new();
     for field in schema.fields() {
         let (dtype, fixed_len, precision, scale) = arrow_type_to_column_type(field.data_type())?;
-        let ingested_dtype = match dtype {
+        let mut ingested_dtype = match dtype {
             ColumnType::Float64 => ColumnType::Float32,
             ColumnType::Float32Array | ColumnType::Float64Array | ColumnType::Float16Array => {
                 ColumnType::Float16Array
             }
             _ => dtype.clone(),
         };
-        let mut key_mode = None;
         if matches!(dtype, ColumnType::Bytes) {
             if let Some(len) = fixed_len {
-                key_mode = Some(if len == 16 { KeyMode::Uuid } else { KeyMode::Fixed });
+                let name_lower = field.name().to_lowercase();
+                if len == 16 && name_lower.contains("ip") {
+                    ingested_dtype = ColumnType::Ip;
+                } else if len == 16 {
+                    ingested_dtype = ColumnType::Uuid;
+                } else if len == 32 {
+                    ingested_dtype = ColumnType::Uuid256;
+                } else if len == 4 && name_lower.contains("ip") {
+                    ingested_dtype = ColumnType::Ip;
+                }
             }
         }
         columns.push(ColumnSpec {
@@ -767,7 +774,6 @@ fn infer_parquet_schema_from_arrow(schema: &Schema) -> Result<Vec<ColumnSpec>> {
             fixed_len,
             timestamp_format: None,
             timestamp_unit: None,
-            key_mode,
             precision,
             scale,
         });
@@ -1041,16 +1047,20 @@ fn apply_string_stats_overrides(columns: &mut [ColumnSpec], stats: &[Option<Colu
             continue;
         }
         let inferred = st.to_column_spec(&col.name);
-        if matches!(inferred.ingested_dtype, ColumnType::Timestamp | ColumnType::Date) {
-            col.ingested_dtype = inferred.ingested_dtype;
+        let inferred_dtype = inferred.ingested_dtype.clone();
+        if matches!(inferred_dtype, ColumnType::Timestamp | ColumnType::Date) {
+            col.ingested_dtype = inferred_dtype.clone();
             col.timestamp_format = inferred.timestamp_format;
             col.timestamp_unit = inferred.timestamp_unit;
         }
         if matches!(col.ingested_dtype, ColumnType::String | ColumnType::Bytes) {
-            if inferred.key_mode.is_some() {
-                col.key_mode = inferred.key_mode;
-            }
-            if inferred.fixed_len.is_some() {
+            if matches!(
+                inferred_dtype,
+                ColumnType::Uuid | ColumnType::Uuid256 | ColumnType::Ip
+            ) {
+                col.ingested_dtype = inferred_dtype;
+                col.fixed_len = None;
+            } else if inferred.fixed_len.is_some() {
                 col.fixed_len = inferred.fixed_len;
             }
         }
@@ -1193,6 +1203,10 @@ struct ColumnStats {
     str_max_len: Option<usize>,
     uuid_ok: bool,
     uuid_seen: bool,
+    uuid256_ok: bool,
+    uuid256_seen: bool,
+    ip_ok: bool,
+    ip_seen: bool,
 }
 
 impl ColumnStats {
@@ -1225,6 +1239,10 @@ impl ColumnStats {
             self.bool_ok = true;
             self.uuid_ok = true;
             self.uuid_seen = false;
+            self.uuid256_ok = true;
+            self.uuid256_seen = false;
+            self.ip_ok = true;
+            self.ip_seen = false;
         }
         let len = trimmed.len();
         self.str_min_len = Some(self.str_min_len.map(|m| m.min(len)).unwrap_or(len));
@@ -1232,6 +1250,14 @@ impl ColumnStats {
         self.uuid_seen = true;
         if self.uuid_ok && !looks_like_uuid(trimmed) {
             self.uuid_ok = false;
+        }
+        self.uuid256_seen = true;
+        if self.uuid256_ok && !looks_like_uuid256(trimmed) {
+            self.uuid256_ok = false;
+        }
+        self.ip_seen = true;
+        if self.ip_ok && !looks_like_ip(trimmed) {
+            self.ip_ok = false;
         }
         if self.int_ok {
             if let Some(v) = parse_int(trimmed) {
@@ -1281,7 +1307,6 @@ impl ColumnStats {
         let mut timestamp_format = None;
         let mut timestamp_unit = None;
         let mut fixed_len = None;
-        let mut key_mode = None;
         if self.bool_ok {
             source_dtype = ColumnType::Bool;
             ingested_dtype = ColumnType::Bool;
@@ -1312,11 +1337,14 @@ impl ColumnStats {
         }
         if matches!(ingested_dtype, ColumnType::String) {
             if self.uuid_seen && self.uuid_ok {
-                key_mode = Some(KeyMode::Uuid);
+                ingested_dtype = ColumnType::Uuid;
+            } else if self.uuid256_seen && self.uuid256_ok {
+                ingested_dtype = ColumnType::Uuid256;
+            } else if self.ip_seen && self.ip_ok {
+                ingested_dtype = ColumnType::Ip;
             } else if let (Some(min_len), Some(max_len)) = (self.str_min_len, self.str_max_len) {
                 if min_len == max_len {
                     fixed_len = Some(min_len);
-                    key_mode = Some(KeyMode::Fixed);
                 }
             }
         }
@@ -1327,7 +1355,6 @@ impl ColumnStats {
             fixed_len,
             timestamp_format,
             timestamp_unit,
-            key_mode,
             precision: None,
             scale: None,
         }
@@ -1354,6 +1381,21 @@ fn looks_like_uuid(value: &str) -> bool {
             }),
         _ => false,
     }
+}
+
+fn looks_like_uuid256(value: &str) -> bool {
+    let mut s = value.trim();
+    if let Some(rest) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+        s = rest;
+    }
+    if s.len() != 64 {
+        return false;
+    }
+    s.as_bytes().iter().all(|b| is_hex(*b))
+}
+
+fn looks_like_ip(value: &str) -> bool {
+    value.trim().parse::<std::net::IpAddr>().is_ok()
 }
 
 fn is_hex(b: u8) -> bool {
@@ -2550,53 +2592,24 @@ fn has_composite_code_version(candidate: &str, columns: &[ColumnSpec]) -> bool {
 fn compatible_key_columns(a: &ColumnSpec, b: &ColumnSpec) -> bool {
     use ColumnType::*;
     match (&a.ingested_dtype, &b.ingested_dtype) {
-        (String, String) | (Bytes, Bytes) | (String, Bytes) | (Bytes, String) => {
-            let a_mode = string_key_mode(a);
-            let b_mode = string_key_mode(b);
-            match (a_mode, b_mode) {
-                (KeyStringMode::Uuid, KeyStringMode::Uuid) => true,
-                (KeyStringMode::Fixed(a_len), KeyStringMode::Fixed(b_len)) => a_len == b_len,
-                (KeyStringMode::Var, KeyStringMode::Var) => true,
-                _ => false,
-            }
-        }
+        (String, String) | (Bytes, Bytes) | (String, Bytes) | (Bytes, String) => true,
+        (Uuid, Uuid) | (Uuid256, Uuid256) | (Ip, Ip) => true,
         (a_type, b_type) if is_numeric(a_type) && is_numeric(b_type) => true,
-        (a_type, b_type) if is_numeric(a_type) && matches!(b_type, String | Bytes) => {
-            string_key_mode(b).is_var()
-        }
-        (a_type, b_type) if is_numeric(b_type) && matches!(a_type, String | Bytes) => {
-            string_key_mode(a).is_var()
-        }
+        (a_type, b_type) if is_numeric(a_type) && matches!(b_type, String | Bytes) => true,
+        (a_type, b_type) if is_numeric(b_type) && matches!(a_type, String | Bytes) => true,
         _ => false,
     }
 }
 
 fn is_pk_dtype(t: &ColumnType) -> bool {
-    matches!(t, ColumnType::String | ColumnType::Bytes) || is_numeric(t)
-}
-
-#[derive(Clone, Copy)]
-enum KeyStringMode {
-    Var,
-    Fixed(usize),
-    Uuid,
-}
-
-impl KeyStringMode {
-    fn is_var(self) -> bool {
-        matches!(self, KeyStringMode::Var)
-    }
-}
-
-fn string_key_mode(col: &ColumnSpec) -> KeyStringMode {
-    if col.key_mode == Some(KeyMode::Uuid) {
-        return KeyStringMode::Uuid;
-    }
-    let len = col.fixed_len;
-    if col.key_mode == Some(KeyMode::Fixed) || len.is_some() {
-        return KeyStringMode::Fixed(len.unwrap_or(0));
-    }
-    KeyStringMode::Var
+    matches!(
+        t,
+        ColumnType::String
+            | ColumnType::Bytes
+            | ColumnType::Uuid
+            | ColumnType::Uuid256
+            | ColumnType::Ip
+    ) || is_numeric(t)
 }
 
 fn is_numeric(t: &ColumnType) -> bool {
@@ -2911,7 +2924,6 @@ mod tests {
                     fixed_len: None,
                     timestamp_format: None,
                     timestamp_unit: None,
-                    key_mode: None,
                     precision: None,
                     scale: None,
                 })
@@ -2981,7 +2993,6 @@ mod tests {
                     timestamp_format: None,
                     timestamp_unit: None,
                     fixed_len: None,
-                    key_mode: None,
                     precision: None,
                     scale: None,
                 },
@@ -2992,7 +3003,6 @@ mod tests {
                     timestamp_format: None,
                     timestamp_unit: None,
                     fixed_len: None,
-                    key_mode: None,
                     precision: None,
                     scale: None,
                 },
@@ -3426,7 +3436,6 @@ mod tests {
                     timestamp_format: None,
                     timestamp_unit: None,
                     fixed_len: None,
-                    key_mode: None,
                     precision: None,
                     scale: None,
                 }],
@@ -3447,7 +3456,6 @@ mod tests {
                     timestamp_format: None,
                     timestamp_unit: None,
                     fixed_len: None,
-                    key_mode: None,
                     precision: None,
                     scale: None,
                 }],
@@ -3476,11 +3484,10 @@ mod tests {
                 columns: vec![ColumnSpec {
                     name: "device_id".to_string(),
                     source_dtype: ColumnType::Bytes,
-                    ingested_dtype: ColumnType::Bytes,
+                    ingested_dtype: ColumnType::Uuid,
                     timestamp_format: None,
                     timestamp_unit: None,
-                    fixed_len: Some(16),
-                    key_mode: Some(KeyMode::Fixed),
+                    fixed_len: None,
                     precision: None,
                     scale: None,
                 }],
@@ -3497,11 +3504,10 @@ mod tests {
                 columns: vec![ColumnSpec {
                     name: "device_id".to_string(),
                     source_dtype: ColumnType::String,
-                    ingested_dtype: ColumnType::String,
+                    ingested_dtype: ColumnType::Bytes,
                     timestamp_format: None,
                     timestamp_unit: None,
                     fixed_len: None,
-                    key_mode: None,
                     precision: None,
                     scale: None,
                 }],
@@ -3551,7 +3557,6 @@ mod tests {
                     timestamp_format: None,
                     timestamp_unit: None,
                     fixed_len: None,
-                    key_mode: None,
                     precision: None,
                     scale: None,
                 }],
@@ -3572,7 +3577,6 @@ mod tests {
                     timestamp_format: None,
                     timestamp_unit: None,
                     fixed_len: None,
-                    key_mode: None,
                     precision: None,
                     scale: None,
                 }],
@@ -3593,7 +3597,6 @@ mod tests {
                     timestamp_format: None,
                     timestamp_unit: None,
                     fixed_len: None,
-                    key_mode: None,
                     precision: None,
                     scale: None,
                 }],
@@ -3626,7 +3629,6 @@ mod tests {
                     timestamp_format: None,
                     timestamp_unit: None,
                     fixed_len: None,
-                    key_mode: None,
                     precision: None,
                     scale: None,
                 },
@@ -3637,7 +3639,6 @@ mod tests {
                     timestamp_format: None,
                     timestamp_unit: None,
                     fixed_len: None,
-                    key_mode: None,
                     precision: None,
                     scale: None,
                 },
@@ -3726,7 +3727,6 @@ mod tests {
                     timestamp_format: None,
                     timestamp_unit: None,
                     fixed_len: None,
-                    key_mode: None,
                     precision: None,
                     scale: None,
                 }],
@@ -3747,7 +3747,6 @@ mod tests {
                     timestamp_format: None,
                     timestamp_unit: None,
                     fixed_len: None,
-                    key_mode: None,
                     precision: None,
                     scale: None,
                 }],
@@ -3780,7 +3779,6 @@ mod tests {
                     timestamp_format: None,
                     timestamp_unit: None,
                     fixed_len: None,
-                    key_mode: None,
                     precision: None,
                     scale: None,
                 }],
@@ -3801,7 +3799,6 @@ mod tests {
                     timestamp_format: None,
                     timestamp_unit: None,
                     fixed_len: None,
-                    key_mode: None,
                     precision: None,
                     scale: None,
                 }],
@@ -3847,7 +3844,6 @@ mod tests {
                     timestamp_format: None,
                     timestamp_unit: None,
                     fixed_len: None,
-                    key_mode: None,
                     precision: None,
                     scale: None,
                 }],
@@ -3868,7 +3864,6 @@ mod tests {
                     timestamp_format: None,
                     timestamp_unit: None,
                     fixed_len: None,
-                    key_mode: None,
                     precision: None,
                     scale: None,
                 }],
@@ -3889,7 +3884,6 @@ mod tests {
                     timestamp_format: None,
                     timestamp_unit: None,
                     fixed_len: None,
-                    key_mode: None,
                     precision: None,
                     scale: None,
                 }],
@@ -3921,7 +3915,6 @@ mod tests {
                     timestamp_format: None,
                     timestamp_unit: None,
                     fixed_len: None,
-                    key_mode: None,
                     precision: None,
                     scale: None,
                 }],
@@ -3942,7 +3935,6 @@ mod tests {
                     timestamp_format: None,
                     timestamp_unit: None,
                     fixed_len: None,
-                    key_mode: None,
                     precision: None,
                     scale: None,
                 }],
@@ -3974,7 +3966,6 @@ mod tests {
                     timestamp_format: None,
                     timestamp_unit: None,
                     fixed_len: None,
-                    key_mode: None,
                     precision: None,
                     scale: None,
                 }],
@@ -3995,7 +3986,6 @@ mod tests {
                     timestamp_format: None,
                     timestamp_unit: None,
                     fixed_len: None,
-                    key_mode: None,
                     precision: None,
                     scale: None,
                 }],
@@ -4016,7 +4006,6 @@ mod tests {
                     timestamp_format: None,
                     timestamp_unit: None,
                     fixed_len: None,
-                    key_mode: None,
                     precision: None,
                     scale: None,
                 }],
@@ -4048,7 +4037,6 @@ mod tests {
                     fixed_len: None,
                     timestamp_format: None,
                     timestamp_unit: None,
-                    key_mode: None,
                     precision: None,
                     scale: None,
                 }],
@@ -4069,7 +4057,6 @@ mod tests {
                     fixed_len: None,
                     timestamp_format: None,
                     timestamp_unit: None,
-                    key_mode: None,
                     precision: None,
                     scale: None,
                 }],
@@ -4102,7 +4089,6 @@ mod tests {
                     fixed_len: None,
                     timestamp_format: None,
                     timestamp_unit: None,
-                    key_mode: None,
                     precision: None,
                     scale: None,
                 }],
@@ -4123,7 +4109,6 @@ mod tests {
                     fixed_len: None,
                     timestamp_format: None,
                     timestamp_unit: None,
-                    key_mode: None,
                     precision: None,
                     scale: None,
                 }],
@@ -4203,7 +4188,7 @@ mod tests {
     }
 
     #[test]
-    fn csv_infers_uuid_key_mode() {
+    fn csv_infers_uuid_dtype() {
         let mut stats = ColumnStats::default();
         for v in [
             "fdda48b5ba510e70ddcbe3932fc6d7e0",
@@ -4212,20 +4197,43 @@ mod tests {
             stats.observe(v);
         }
         let col = stats.to_column_spec("user_id");
-        assert!(matches!(col.ingested_dtype, ColumnType::String));
-        assert_eq!(col.key_mode, Some(KeyMode::Uuid));
+        assert!(matches!(col.ingested_dtype, ColumnType::Uuid));
         assert_eq!(col.fixed_len, None);
     }
 
     #[test]
-    fn csv_infers_fixed_key_mode() {
+    fn csv_infers_uuid256_dtype() {
+        let mut stats = ColumnStats::default();
+        for v in [
+            "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+            "ffffffffffffffffffffffffffffffff00000000000000000000000000000000",
+        ] {
+            stats.observe(v);
+        }
+        let col = stats.to_column_spec("user_id");
+        assert!(matches!(col.ingested_dtype, ColumnType::Uuid256));
+        assert_eq!(col.fixed_len, None);
+    }
+
+    #[test]
+    fn csv_infers_ip_dtype() {
+        let mut stats = ColumnStats::default();
+        for v in ["192.168.1.1", "2001:db8::1"] {
+            stats.observe(v);
+        }
+        let col = stats.to_column_spec("ip");
+        assert!(matches!(col.ingested_dtype, ColumnType::Ip));
+        assert_eq!(col.fixed_len, None);
+    }
+
+    #[test]
+    fn csv_infers_fixed_len() {
         let mut stats = ColumnStats::default();
         for v in ["ABC", "DEF"] {
             stats.observe(v);
         }
         let col = stats.to_column_spec("code");
         assert!(matches!(col.ingested_dtype, ColumnType::String));
-        assert_eq!(col.key_mode, Some(KeyMode::Fixed));
         assert_eq!(col.fixed_len, Some(3));
     }
 
@@ -4385,7 +4393,6 @@ mod tests {
             timestamp_format: None,
             timestamp_unit: None,
             fixed_len: None,
-            key_mode: None,
             precision: None,
             scale: None,
         };
@@ -4396,7 +4403,6 @@ mod tests {
             timestamp_format: None,
             timestamp_unit: None,
             fixed_len: None,
-            key_mode: None,
             precision: None,
             scale: None,
         };
@@ -4404,15 +4410,14 @@ mod tests {
     }
 
     #[test]
-    fn incompatible_fixed_vs_var() {
+    fn incompatible_uuid_and_bytes() {
         let a = ColumnSpec {
             name: "device_id".to_string(),
-            source_dtype: ColumnType::Bytes,
-            ingested_dtype: ColumnType::Bytes,
+            source_dtype: ColumnType::String,
+            ingested_dtype: ColumnType::Uuid,
             timestamp_format: None,
             timestamp_unit: None,
-            fixed_len: Some(16),
-            key_mode: Some(KeyMode::Fixed),
+            fixed_len: None,
             precision: None,
             scale: None,
         };
@@ -4423,7 +4428,6 @@ mod tests {
             timestamp_format: None,
             timestamp_unit: None,
             fixed_len: None,
-            key_mode: None,
             precision: None,
             scale: None,
         };
@@ -4435,22 +4439,20 @@ mod tests {
         let a = ColumnSpec {
             name: "id".to_string(),
             source_dtype: ColumnType::String,
-            ingested_dtype: ColumnType::String,
+            ingested_dtype: ColumnType::Uuid,
             timestamp_format: None,
             timestamp_unit: None,
-            fixed_len: Some(16),
-            key_mode: Some(KeyMode::Uuid),
+            fixed_len: None,
             precision: None,
             scale: None,
         };
         let b = ColumnSpec {
             name: "id".to_string(),
             source_dtype: ColumnType::Bytes,
-            ingested_dtype: ColumnType::Bytes,
+            ingested_dtype: ColumnType::Uuid,
             timestamp_format: None,
             timestamp_unit: None,
-            fixed_len: Some(16),
-            key_mode: Some(KeyMode::Uuid),
+            fixed_len: None,
             precision: None,
             scale: None,
         };
