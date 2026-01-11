@@ -656,7 +656,7 @@ impl RowPackContextBuilder {
                     if spec.precision == 0 {
                         return Err(anyhow!("rowpack decimal precision missing"));
                     }
-                    let storage = choose_decimal_storage(spec.precision, spec.scale)?;
+                    let storage = choose_decimal_storage(spec, &self.stats[idx])?;
                     ColumnEncoding::Decimal {
                         precision: spec.precision,
                         scale: spec.scale,
@@ -762,14 +762,11 @@ fn estimate_column_bytes(encoding: &ColumnEncoding, stats: &ColumnStats) -> usiz
         ColumnEncoding::Decimal { bytes, storage, scale, .. } => match storage {
             DecimalStorage::Raw => *bytes as usize,
             DecimalStorage::Int { varint, bits } => {
-                if *scale == 0 {
-                    if *varint {
-                        varint_bytes(*bits)
-                    } else {
-                        ((*bits + 7) / 8) as usize
-                    }
+                let _ = scale;
+                if *varint {
+                    varint_bytes(*bits)
                 } else {
-                    *bytes as usize
+                    ((*bits + 7) / 8) as usize
                 }
             }
         },
@@ -808,7 +805,26 @@ fn avg_len(total: usize, count: usize) -> usize {
     }
 }
 
-fn choose_decimal_storage(precision: u32, scale: i32) -> Result<DecimalStorage> {
+fn choose_decimal_storage(spec: DecimalSpec, stats: &ColumnStats) -> Result<DecimalStorage> {
+    if stats.decimal_seen {
+        if stats.decimal_over_i64 {
+            return Ok(DecimalStorage::Raw);
+        }
+        if stats.decimal_max_abs_i64 <= i32::MAX as u64 {
+            return Ok(DecimalStorage::Int {
+                varint: true,
+                bits: 32,
+            });
+        }
+        return Ok(DecimalStorage::Int {
+            varint: false,
+            bits: 64,
+        });
+    }
+    choose_decimal_storage_fallback(spec.precision, spec.scale)
+}
+
+fn choose_decimal_storage_fallback(precision: u32, scale: i32) -> Result<DecimalStorage> {
     if scale == 0 {
         if precision <= 9 {
             return Ok(DecimalStorage::Int {
@@ -859,6 +875,9 @@ struct ColumnStats {
     ts_min: i64,
     ts_max: i64,
     ts_seen: bool,
+    decimal_seen: bool,
+    decimal_max_abs_i64: u64,
+    decimal_over_i64: bool,
 }
 
 impl ColumnStats {
@@ -894,6 +913,9 @@ impl ColumnStats {
             ts_min: i64::MAX,
             ts_max: i64::MIN,
             ts_seen: false,
+            decimal_seen: false,
+            decimal_max_abs_i64: 0,
+            decimal_over_i64: false,
         }
     }
 
@@ -1009,8 +1031,25 @@ impl ColumnStats {
                 self.ts_max = self.ts_max.max(*secs);
                 self.ts_seen = true;
             }
-            ValueRef::Decimal128(_) => {}
-            ValueRef::Decimal256(_) => {}
+            ValueRef::Decimal128(v) => {
+                self.decimal_seen = true;
+                if *v < i64::MIN as i128 || *v > i64::MAX as i128 {
+                    self.decimal_over_i64 = true;
+                } else {
+                    let abs = v.unsigned_abs() as u64;
+                    self.decimal_max_abs_i64 = self.decimal_max_abs_i64.max(abs);
+                }
+            }
+            ValueRef::Decimal256(v) => {
+                self.decimal_seen = true;
+                let big = BigInt::from_signed_bytes_le(v);
+                if let Some(val) = big.to_i64() {
+                    let abs = val.unsigned_abs();
+                    self.decimal_max_abs_i64 = self.decimal_max_abs_i64.max(abs);
+                } else {
+                    self.decimal_over_i64 = true;
+                }
+            }
             ValueRef::Float32Array(values) => {
                 self.array_len_total += values.len();
                 self.array_count += 1;
@@ -2063,11 +2102,12 @@ fn encode_decimal_i128_with_tag(
             Ok(1)
         }
         DecimalStorage::Int { varint, bits } => {
-            if scale != 0 {
-                out.extend_from_slice(&value.to_le_bytes());
-                return Ok(2);
-            }
-            if value < i64::MIN as i128 || value > i64::MAX as i128 {
+            let _ = scale;
+            let fits = match *bits {
+                32 => value >= i32::MIN as i128 && value <= i32::MAX as i128,
+                _ => value >= i64::MIN as i128 && value <= i64::MAX as i128,
+            };
+            if !fits {
                 out.extend_from_slice(&value.to_le_bytes());
                 return Ok(2);
             }
@@ -2089,18 +2129,22 @@ fn encode_decimal_i256_with_tag(
             Ok(1)
         }
         DecimalStorage::Int { varint, bits } => {
-            if scale != 0 {
+            let _ = scale;
+            let big = BigInt::from_signed_bytes_le(value);
+            let Some(v) = big.to_i64() else {
+                out.extend_from_slice(value);
+                return Ok(2);
+            };
+            let fits = match *bits {
+                32 => v >= i32::MIN as i64 && v <= i32::MAX as i64,
+                _ => true,
+            };
+            if !fits {
                 out.extend_from_slice(value);
                 return Ok(2);
             }
-            let big = BigInt::from_signed_bytes_le(value);
-            if let Some(v) = big.to_i64() {
-                encode_int(out, true, *varint, *bits, v as i128)?;
-                Ok(1)
-            } else {
-                out.extend_from_slice(value);
-                Ok(2)
-            }
+            encode_int(out, true, *varint, *bits, v as i128)?;
+            Ok(1)
         }
     }
 }
@@ -3774,7 +3818,7 @@ mod tests {
     }
 
     #[test]
-    fn decimal_lossless_raw_encoding() {
+    fn decimal_raw_encoding_when_out_of_range() {
         let config = RowPackConfig::default();
         let mut builder = RowPackContextBuilder::new(
             vec![RowPackColumn {
@@ -3787,7 +3831,7 @@ mod tests {
             config,
         );
         builder
-            .observe_row(&[ValueRef::Decimal128(-12345i128)])
+            .observe_row(&[ValueRef::Decimal128(i128::MAX)])
             .unwrap();
         let ctx = builder.finish().unwrap();
         match &ctx.columns[0].encoding {
@@ -3826,7 +3870,7 @@ mod tests {
     }
 
     #[test]
-    fn decimal_lossless_scale_nonzero_raw_roundtrip() {
+    fn decimal_scale_nonzero_int_roundtrip() {
         let config = RowPackConfig::default();
         let mut builder = RowPackContextBuilder::new(
             vec![RowPackColumn {
@@ -3844,7 +3888,7 @@ mod tests {
         let ctx = builder.finish().unwrap();
         match &ctx.columns[0].encoding {
             ColumnEncoding::Decimal {
-                storage: DecimalStorage::Raw,
+                storage: DecimalStorage::Int { .. },
                 ..
             } => {}
             other => panic!("unexpected encoding: {:?}", other),
