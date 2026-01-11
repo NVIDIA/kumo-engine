@@ -27,8 +27,8 @@ use diskgraph_fs::{
     build_adls_client, build_gcs_client, build_s3_client, AdlsConfig, GcsConfig, S3Config,
 };
 use diskgraph_rowpack::{
-    LogicalType as RowpackType, RowPackConfig, RowPackContextBuilder, RowPackDecodeScratch,
-    RowPackDecoder, RowPackEncoder, RowPackRowLens, RowValueAccess, ValueRef,
+    LogicalType as RowpackType, RowPackConfig, RowPackContextBuilder, RowPackEncoder,
+    RowPackRowLens, RowValueAccess,
 };
 use diskgraph_index::builder::MemoryBudget;
 use diskgraph_index::graph::{
@@ -1414,22 +1414,10 @@ impl IngestContext {
                                 total: Some(table.paths.len() as u64),
                             });
                         }
-                        let pk_col =
-                            table.primary_key.as_ref().and_then(|pk| column_spec(&table, pk).ok());
-                        let pk_idx = table
-                            .primary_key
-                            .as_ref()
-                            .and_then(|pk| column_index(&table, pk).ok());
                         let rowpack_config = rowpack_config_for_table(rowpack_cfg.as_ref(), &table);
                         let node_columns = rowpack_columns(&table)?;
                         let mut node_builder =
                             RowPackContextBuilder::new(node_columns, rowpack_config.clone());
-                        let mut pkey_builder = if let Some(pk_col) = pk_col.as_ref() {
-                            let columns = rowpack_columns_for_specs(&[(*pk_col).clone()])?;
-                            Some(RowPackContextBuilder::new(columns, rowpack_config.clone()))
-                        } else {
-                            None
-                        };
                         let mut sampled = 0usize;
                         let sample_limit = rowpack_config.sample_rows().min(SAMPLE_ROW_LIMIT);
                         let column_runtimes = build_column_runtimes(&table);
@@ -1475,15 +1463,6 @@ impl IngestContext {
                                             }
                                             access.reset(row);
                                             node_builder.observe_row_from_access(&mut access)?;
-                                            if let (Some(pk_idx), Some(builder)) =
-                                                (pk_idx, pkey_builder.as_mut())
-                                            {
-                                                let mut col_access = ColumnAccess {
-                                                    access: &mut access,
-                                                    column_idx: pk_idx,
-                                                };
-                                                builder.observe_row_from_access(&mut col_access)?;
-                                            }
                                             sampled = sampled.saturating_add(1);
                                         }
                                         if reached_limit {
@@ -1526,15 +1505,6 @@ impl IngestContext {
                                             }
                                             access.reset(row);
                                             node_builder.observe_row_from_access(&mut access)?;
-                                            if let (Some(pk_idx), Some(builder)) =
-                                                (pk_idx, pkey_builder.as_mut())
-                                            {
-                                                let mut col_access = ColumnAccess {
-                                                    access: &mut access,
-                                                    column_idx: pk_idx,
-                                                };
-                                                builder.observe_row_from_access(&mut col_access)?;
-                                            }
                                             sampled = sampled.saturating_add(1);
                                         }
                                         if reached_limit {
@@ -1558,14 +1528,9 @@ impl IngestContext {
                             }
                         }
                         let node_context = node_builder.finish()?;
-                        let pkey_context = pkey_builder.map(|builder| builder.finish()).transpose()?;
                         let ctx_bytes = node_context.to_bytes()?;
                         target.write_bytes(&temp_node_context_path(&table.name), ctx_bytes.clone())?;
                         target.write_bytes(&node_context_output_path(&table.name), ctx_bytes)?;
-                        if let Some(ctx) = pkey_context.as_ref() {
-                            let bytes = ctx.to_bytes()?;
-                            target.write_bytes(&temp_pkey_context_path(&table.name), bytes)?;
-                        }
                         if let Some(cb) = &progress {
                             cb(ProgressEvent {
                                 phase: ProgressPhase::Context,
@@ -1606,22 +1571,10 @@ impl IngestContext {
                     delta: 0,
                     total: Some(table.paths.len() as u64),
                 });
-                let pk_col =
-                    table.primary_key.as_ref().and_then(|pk| column_spec(table, pk).ok());
-                let pk_idx = table
-                    .primary_key
-                    .as_ref()
-                    .and_then(|pk| column_index(table, pk).ok());
                 let rowpack_config = rowpack_config_for_table(self.source.rowpack.as_ref(), table);
                 let node_columns = rowpack_columns(table)?;
                 let mut node_builder =
                     RowPackContextBuilder::new(node_columns, rowpack_config.clone());
-                let mut pkey_builder = if let Some(pk_col) = pk_col.as_ref() {
-                    let columns = rowpack_columns_for_specs(&[(*pk_col).clone()])?;
-                    Some(RowPackContextBuilder::new(columns, rowpack_config.clone()))
-                } else {
-                    None
-                };
                 let mut sampled = 0usize;
                 let sample_limit = rowpack_config.sample_rows().min(SAMPLE_ROW_LIMIT);
                 let column_runtimes = build_column_runtimes(table);
@@ -1661,15 +1614,6 @@ impl IngestContext {
                                     }
                                     access.reset(row);
                                     node_builder.observe_row_from_access(&mut access)?;
-                                    if let (Some(pk_idx), Some(builder)) =
-                                        (pk_idx, pkey_builder.as_mut())
-                                    {
-                                        let mut col_access = ColumnAccess {
-                                            access: &mut access,
-                                            column_idx: pk_idx,
-                                        };
-                                        builder.observe_row_from_access(&mut col_access)?;
-                                    }
                                     sampled = sampled.saturating_add(1);
                                 }
                                 if reached_limit {
@@ -1705,15 +1649,6 @@ impl IngestContext {
                                     }
                                     access.reset(row);
                                     node_builder.observe_row_from_access(&mut access)?;
-                                    if let (Some(pk_idx), Some(builder)) =
-                                        (pk_idx, pkey_builder.as_mut())
-                                    {
-                                        let mut col_access = ColumnAccess {
-                                            access: &mut access,
-                                            column_idx: pk_idx,
-                                        };
-                                        builder.observe_row_from_access(&mut col_access)?;
-                                    }
                                     sampled = sampled.saturating_add(1);
                                 }
                                 if reached_limit {
@@ -1735,17 +1670,11 @@ impl IngestContext {
                     }
                 }
                 let node_context = node_builder.finish()?;
-                let pkey_context = pkey_builder.map(|builder| builder.finish()).transpose()?;
                 let ctx_bytes = node_context.to_bytes()?;
                 self.target
                     .write_bytes(&temp_node_context_path(&table.name), ctx_bytes.clone())?;
                 self.target
                     .write_bytes(&node_context_output_path(&table.name), ctx_bytes)?;
-                if let Some(ctx) = pkey_context.as_ref() {
-                    let bytes = ctx.to_bytes()?;
-                    self.target
-                        .write_bytes(&temp_pkey_context_path(&table.name), bytes)?;
-                }
                 self.table_contexts.insert(
                     table.name.clone(),
                     format!("nodes/{}/node_data.ctx", table.name.to_lowercase()),
@@ -2172,17 +2101,9 @@ impl IngestContext {
             fs::read(&ctx_path).with_context(|| format!("read {}", ctx_path.display()))?;
         let node_context = diskgraph_rowpack::RowPackContext::from_bytes(&ctx_bytes)?;
         let node_encoder = Some(RowPackEncoder::new(node_context)?);
-        let mut pkey_encoder: Option<RowPackEncoder> = None;
         let mut key_buf: Vec<u8> = Vec::new();
         let mut node_data_dropped = 0u64;
         let has_pkey = pk_col.is_some() && pk_idx.is_some();
-        if has_pkey {
-            let pkey_ctx_path = root.join(temp_pkey_context_path(&table.name));
-            let ctx_bytes = fs::read(&pkey_ctx_path)
-                .with_context(|| format!("read {}", pkey_ctx_path.display()))?;
-            let pkey_context = diskgraph_rowpack::RowPackContext::from_bytes(&ctx_bytes)?;
-            pkey_encoder = Some(RowPackEncoder::new(pkey_context)?);
-        }
         let rel_names = std::sync::Arc::new(rel_names);
         let buffer_limit = edge_batch_buffer_limit(num_shards);
         let mut batcher = NodeBatcher::new(
@@ -2238,7 +2159,6 @@ impl IngestContext {
                             &rel_specs,
                             &mut access,
                             &node_encoder,
-                            &pkey_encoder,
                             &mut batcher,
                             &mut sort_key_batchers,
                             &mut row_id,
@@ -2279,7 +2199,6 @@ impl IngestContext {
                             &rel_specs,
                             &mut access,
                             &node_encoder,
-                            &pkey_encoder,
                             &mut batcher,
                             &mut sort_key_batchers,
                             &mut row_id,
@@ -2319,7 +2238,6 @@ impl IngestContext {
         rel_specs: &[(std::sync::Arc<str>, usize, usize)],
         access: &mut RowAccess<'_>,
         node_encoder: &Option<RowPackEncoder>,
-        pkey_encoder: &Option<RowPackEncoder>,
         batcher: &mut NodeBatcher,
         sort_key_batchers: &mut [SortKeyComponentBatcher],
         row_id: &mut u64,
@@ -2329,10 +2247,10 @@ impl IngestContext {
         num_shards: usize,
         key_failures: &mut KeyFailureState,
     ) -> Result<()> {
-        let mut pk_value = None;
+        let mut has_pkey = false;
         let shard = if let (Some(idx), Some(pk_col)) = (pk_idx, pk_col) {
-            let key = match key_from_access(access, idx, pk_col) {
-                Ok(key) => key,
+            match key_from_access_into_buf(access, idx, pk_col, key_buf) {
+                Ok(_) => {}
                 Err(_) => {
                     let context = format!("pkey:{}.{}", table.name, pk_col.name);
                     record_key_parse_failure_sample(
@@ -2345,9 +2263,8 @@ impl IngestContext {
                     return Ok(());
                 }
             };
-            pk_value = Some(idx);
-            let mut scratch = [0u8; 16];
-            shard_for_key(key_hash_bytes(&key, &mut scratch), num_shards)
+            has_pkey = true;
+            shard_for_key(key_buf, num_shards)
         } else {
             (*row_id as usize) % num_shards
         };
@@ -2378,32 +2295,8 @@ impl IngestContext {
                 batcher.push_node_row(shard, lens)?;
             }
         }
-        if let (Some(pkey_encoder), Some(pk_idx)) = (pkey_encoder.as_ref(), pk_value) {
-            let mut col_access = ColumnAccess {
-                access,
-                column_idx: pk_idx,
-            };
-            let sink = batcher.pkey_sink(shard)?;
-            let tag_start = sink.tags.len();
-            let bool_start = sink.bools.len();
-            let data_start = sink.data.len();
-            let lens = pkey_encoder.encode_row_from_access_into_buffers(
-                &mut col_access,
-                sink.tags,
-                sink.bools,
-                sink.data,
-            )?;
-            let row_len = lens
-                .tag_bytes
-                .saturating_add(lens.bool_bytes)
-                .saturating_add(lens.data_bytes);
-            if row_len == 0 {
-                sink.tags.truncate(tag_start);
-                sink.bools.truncate(bool_start);
-                sink.data.truncate(data_start);
-            } else {
-                batcher.push_pkey_row(shard, lens)?;
-            }
+        if has_pkey {
+            batcher.push_pkey(shard, key_buf)?;
         }
         for sort_key in sort_key_batchers.iter_mut() {
             sort_key.push_row(shard, access)?;
@@ -2413,9 +2306,8 @@ impl IngestContext {
                 .columns
                 .get(*rel_idx)
                 .ok_or_else(|| anyhow!("missing fk column"))?;
-            let key = match key_from_access(access, *rel_idx, col) {
-                Ok(key) => key,
-                Err(_) => {
+            if key_from_access_into_buf(access, *rel_idx, col, key_buf).is_err() {
+                {
                     let context = format!("fkey:{}.{}", table.name, col.name);
                     record_key_parse_failure_sample(
                         &mut key_failures.parse_failures,
@@ -2424,11 +2316,9 @@ impl IngestContext {
                         &context,
                         sample_from_access(access, *rel_idx),
                     );
-                    continue;
                 }
-            };
-            key_buf.clear();
-            write_key_to_buf(key_buf, &key)?;
+                continue;
+            }
             batcher.push_fkey(shard, *rel_pos, key_buf)?;
         }
         batcher.maybe_flush(shard)?;
@@ -2504,6 +2394,9 @@ impl IngestContext {
                     let column_runtimes = build_column_runtimes(table);
                     let mut access =
                         RowAccess::new(table, &cols, &column_runtimes, trimmed_strings);
+                    let mut src_key_buf = Vec::new();
+                    let mut dst_key_buf = Vec::new();
+                    let mut forward_row = Vec::new();
                     for row in 0..batch.num_rows() {
                         access.reset(row);
                         Self::write_edge_row_from_access(
@@ -2518,6 +2411,9 @@ impl IngestContext {
                             src_fast,
                             dst_fast,
                             &mut access,
+                            &mut src_key_buf,
+                            &mut dst_key_buf,
+                            &mut forward_row,
                             &mut batcher,
                             &mut sort_key_batchers,
                             num_shards,
@@ -2545,6 +2441,9 @@ impl IngestContext {
                     let column_runtimes = build_column_runtimes(table);
                     let mut access =
                         RowAccess::new(table, &cols, &column_runtimes, trimmed_strings);
+                    let mut src_key_buf = Vec::new();
+                    let mut dst_key_buf = Vec::new();
+                    let mut forward_row = Vec::new();
                     for row in 0..batch.num_rows() {
                         access.reset(row);
                         Self::write_edge_row_from_access(
@@ -2559,6 +2458,9 @@ impl IngestContext {
                             src_fast,
                             dst_fast,
                             &mut access,
+                            &mut src_key_buf,
+                            &mut dst_key_buf,
+                            &mut forward_row,
                             &mut batcher,
                             &mut sort_key_batchers,
                             num_shards,
@@ -2598,14 +2500,30 @@ impl IngestContext {
         src_fast: Option<EdgeKeyFastKind>,
         dst_fast: Option<EdgeKeyFastKind>,
         access: &mut RowAccess<'_>,
+        src_key_buf: &mut Vec<u8>,
+        dst_key_buf: &mut Vec<u8>,
+        forward_row: &mut Vec<u8>,
         batcher: &mut EdgeSrcBatcher,
         sort_key_batchers: &mut [SortKeyComponentBatcher],
         num_shards: usize,
         key_failures: &mut KeyFailureState,
     ) -> Result<()> {
-        let src_key = match src_fast {
+        src_key_buf.clear();
+        dst_key_buf.clear();
+        match src_fast {
             Some(kind) => match fast_key_from_array(cols, row, src_idx, kind) {
-                Ok(key) => key,
+                Ok(key) => {
+                    if write_key_to_buf(src_key_buf, &key).is_err() {
+                        record_key_parse_failure_sample(
+                            &mut key_failures.parse_failures,
+                            &mut key_failures.samples,
+                            &mut key_failures.by_context,
+                            src_context,
+                            sample_from_access(access, src_idx),
+                        );
+                        return Ok(());
+                    }
+                }
                 Err(_) => {
                     record_key_parse_failure_sample(
                         &mut key_failures.parse_failures,
@@ -2618,24 +2536,32 @@ impl IngestContext {
                 }
             },
             None => {
-                match key_from_access(access, src_idx, src_col) {
-                    Ok(key) => key,
-                    Err(_) => {
+                if key_from_access_into_buf(access, src_idx, src_col, src_key_buf).is_err() {
+                    record_key_parse_failure_sample(
+                        &mut key_failures.parse_failures,
+                        &mut key_failures.samples,
+                        &mut key_failures.by_context,
+                        src_context,
+                        sample_from_access(access, src_idx),
+                    );
+                    return Ok(());
+                }
+            }
+        }
+        match dst_fast {
+            Some(kind) => match fast_key_from_array(cols, row, dst_idx, kind) {
+                Ok(key) => {
+                    if write_key_to_buf(dst_key_buf, &key).is_err() {
                         record_key_parse_failure_sample(
                             &mut key_failures.parse_failures,
                             &mut key_failures.samples,
                             &mut key_failures.by_context,
-                            src_context,
-                            sample_from_access(access, src_idx),
+                            dst_context,
+                            sample_from_access(access, dst_idx),
                         );
                         return Ok(());
                     }
                 }
-            }
-        };
-        let dst_key = match dst_fast {
-            Some(kind) => match fast_key_from_array(cols, row, dst_idx, kind) {
-                Ok(key) => key,
                 Err(_) => {
                     record_key_parse_failure_sample(
                         &mut key_failures.parse_failures,
@@ -2648,27 +2574,24 @@ impl IngestContext {
                 }
             },
             None => {
-                match key_from_access(access, dst_idx, dst_col) {
-                    Ok(key) => key,
-                    Err(_) => {
-                        record_key_parse_failure_sample(
-                            &mut key_failures.parse_failures,
-                            &mut key_failures.samples,
-                            &mut key_failures.by_context,
-                            dst_context,
-                            sample_from_access(access, dst_idx),
-                        );
-                        return Ok(());
-                    }
+                if key_from_access_into_buf(access, dst_idx, dst_col, dst_key_buf).is_err() {
+                    record_key_parse_failure_sample(
+                        &mut key_failures.parse_failures,
+                        &mut key_failures.samples,
+                        &mut key_failures.by_context,
+                        dst_context,
+                        sample_from_access(access, dst_idx),
+                    );
+                    return Ok(());
                 }
             }
-        };
-        let mut scratch = [0u8; 16];
-        let forward_shard = shard_for_key(key_hash_bytes(&src_key, &mut scratch), num_shards);
-        let mut forward_row = Vec::new();
-        write_key_to_buf(&mut forward_row, &src_key)?;
-        write_key_to_buf(&mut forward_row, &dst_key)?;
-        batcher.push(forward_shard, &forward_row)?;
+        }
+        let forward_shard = shard_for_key(src_key_buf, num_shards);
+        forward_row.clear();
+        forward_row.reserve(src_key_buf.len().saturating_add(dst_key_buf.len()));
+        forward_row.extend_from_slice(src_key_buf);
+        forward_row.extend_from_slice(dst_key_buf);
+        batcher.push(forward_shard, forward_row)?;
         for batcher in sort_key_batchers.iter_mut() {
             batcher.push_row(forward_shard, access)?;
         }
@@ -2715,15 +2638,9 @@ impl IngestContext {
                 let duplicate_counts = std::sync::Arc::clone(&duplicate_counts);
                 let duplicate_samples = std::sync::Arc::clone(&duplicate_samples);
                 let root = root.clone();
-                let pkey_ctx_rel = temp_pkey_context_path(&table.name);
                 tasks.push(WorkItem {
                     bucket: Some(pk_map_time.clone()),
                     run: Box::new(move || {
-                        let ctx_path = root.join(&pkey_ctx_rel);
-                        let ctx_bytes = fs::read(&ctx_path)
-                            .with_context(|| format!("read {}", ctx_path.display()))?;
-                        let ctx = diskgraph_rowpack::RowPackContext::from_bytes(&ctx_bytes)?;
-                        let decoder = RowPackDecoder::new(ctx)?;
                         let key_type = key_type_for_column(&pk_col)?;
                         let meta_path = root.join(temp_pkey_meta_path(&table_name, shard));
                         let meta = read_temp_meta(&meta_path)?;
@@ -2731,7 +2648,6 @@ impl IngestContext {
                         let mut duplicate_count = 0u64;
                         let mut duplicate_samples_local: Vec<Key> = Vec::new();
                         let mut row_id = 0u64;
-                        let mut scratch = RowPackDecodeScratch::default();
                         let fingerprint_seed = fingerprint_seed_for(&table_name, shard);
                         let (hash_rel, data_rel) = match key_type {
                             KeyType::Int64 => {
@@ -2739,11 +2655,9 @@ impl IngestContext {
                                     std::collections::HashMap::with_capacity(total_rows as usize);
                                 let data_path = root.join(temp_pkey_path(&table_name, shard));
                                 read_temp_rows(&data_path, |row| {
-                                    let value =
-                                        decoder.decode_column_value(row, 0, &mut scratch)?;
-                                    if let Ok(Key::Int(v)) =
-                                        key_from_rowpack_value(&value, &pk_col)
-                                    {
+                                    let mut data = row;
+                                    let key = read_key_from_buf(&mut data, &pk_col)?;
+                                    if let Key::Int(v) = key {
                                         let local_id = u32::try_from(row_id)
                                             .map_err(|_| anyhow!("pk local id overflow"))?;
                                         match seen.entry(v) {
@@ -2807,29 +2721,26 @@ impl IngestContext {
                                     std::collections::HashMap::with_capacity(total_rows as usize);
                                 let data_path = root.join(temp_pkey_path(&table_name, shard));
                                 read_temp_rows(&data_path, |row| {
-                                    let value =
-                                        decoder.decode_column_value(row, 0, &mut scratch)?;
-                                    if let Ok(key) = key_from_rowpack_value(&value, &pk_col) {
-                                        let bytes = match key {
-                                            Key::Bytes(bytes) => bytes,
-                                            _ => {
-                                                row_id += 1;
-                                                return Ok(());
-                                            }
-                                        };
-                                        let local_id = u32::try_from(row_id)
-                                            .map_err(|_| anyhow!("pk local id overflow"))?;
-                                        match seen.entry(bytes) {
-                                            Entry::Vacant(entry) => {
-                                                entry.insert(local_id);
-                                            }
-                                            Entry::Occupied(entry) => {
-                                                duplicate_count =
-                                                    duplicate_count.saturating_add(1);
-                                                if duplicate_samples_local.len() < 10 {
-                                                    let sample = entry.key().clone();
-                                                    duplicate_samples_local.push(Key::Bytes(sample));
-                                                }
+                                    let mut data = row;
+                                    let key = read_key_from_buf(&mut data, &pk_col)?;
+                                    let bytes = match key {
+                                        Key::Bytes(bytes) => bytes,
+                                        _ => {
+                                            row_id += 1;
+                                            return Ok(());
+                                        }
+                                    };
+                                    let local_id = u32::try_from(row_id)
+                                        .map_err(|_| anyhow!("pk local id overflow"))?;
+                                    match seen.entry(bytes) {
+                                        Entry::Vacant(entry) => {
+                                            entry.insert(local_id);
+                                        }
+                                        Entry::Occupied(entry) => {
+                                            duplicate_count = duplicate_count.saturating_add(1);
+                                            if duplicate_samples_local.len() < 10 {
+                                                let sample = entry.key().clone();
+                                                duplicate_samples_local.push(Key::Bytes(sample));
                                             }
                                         }
                                     }
@@ -2881,11 +2792,9 @@ impl IngestContext {
                                     std::collections::HashMap::with_capacity(total_rows as usize);
                                 let data_path = root.join(temp_pkey_path(&table_name, shard));
                                 read_temp_rows(&data_path, |row| {
-                                    let value =
-                                        decoder.decode_column_value(row, 0, &mut scratch)?;
-                                    if let Ok(Key::Uuid(uuid)) =
-                                        key_from_rowpack_value(&value, &pk_col)
-                                    {
+                                    let mut data = row;
+                                    let key = read_key_from_buf(&mut data, &pk_col)?;
+                                    if let Key::Uuid(uuid) = key {
                                         let local_id = u32::try_from(row_id)
                                             .map_err(|_| anyhow!("pk local id overflow"))?;
                                         match seen.entry(uuid) {
@@ -2896,8 +2805,7 @@ impl IngestContext {
                                                 duplicate_count =
                                                     duplicate_count.saturating_add(1);
                                                 if duplicate_samples_local.len() < 10 {
-                                                    duplicate_samples_local
-                                                        .push(Key::Uuid(uuid));
+                                                    duplicate_samples_local.push(Key::Uuid(uuid));
                                                 }
                                             }
                                         }
@@ -2950,11 +2858,9 @@ impl IngestContext {
                                     std::collections::HashMap::with_capacity(total_rows as usize);
                                 let data_path = root.join(temp_pkey_path(&table_name, shard));
                                 read_temp_rows(&data_path, |row| {
-                                    let value =
-                                        decoder.decode_column_value(row, 0, &mut scratch)?;
-                                    if let Ok(Key::Uuid256(uuid)) =
-                                        key_from_rowpack_value(&value, &pk_col)
-                                    {
+                                    let mut data = row;
+                                    let key = read_key_from_buf(&mut data, &pk_col)?;
+                                    if let Key::Uuid256(uuid) = key {
                                         let local_id = u32::try_from(row_id)
                                             .map_err(|_| anyhow!("pk local id overflow"))?;
                                         match seen.entry(uuid) {
@@ -3019,11 +2925,9 @@ impl IngestContext {
                                     std::collections::HashMap::with_capacity(total_rows as usize);
                                 let data_path = root.join(temp_pkey_path(&table_name, shard));
                                 read_temp_rows(&data_path, |row| {
-                                    let value =
-                                        decoder.decode_column_value(row, 0, &mut scratch)?;
-                                    if let Ok(Key::Ip(ip)) =
-                                        key_from_rowpack_value(&value, &pk_col)
-                                    {
+                                    let mut data = row;
+                                    let key = read_key_from_buf(&mut data, &pk_col)?;
+                                    if let Key::Ip(ip) = key {
                                         let local_id = u32::try_from(row_id)
                                             .map_err(|_| anyhow!("pk local id overflow"))?;
                                         match seen.entry(ip) {
@@ -3458,7 +3362,7 @@ impl IngestContext {
                                 &rel.name_forward,
                                 shard,
                             ));
-                            let mut scratch = [0u8; 16];
+                            let mut key_buf = Vec::new();
                             read_temp_rows(&fkey_path, |row| {
                                 pending = pending.saturating_add(1);
                                 if pending >= PROGRESS_ROW_BATCH {
@@ -3495,10 +3399,8 @@ impl IngestContext {
                                         return Ok(());
                                     }
                                 };
-                                let dst_shard = shard_for_key(
-                                    key_hash_bytes(&dst_key, &mut scratch),
-                                    num_shards,
-                                );
+                                let dst_shard =
+                                    shard_for_key_from_key(&dst_key, &mut key_buf, num_shards)?;
                                 let dst_local = match dst_maps
                                     .get(dst_shard)
                                     .and_then(|map| map.lookup(&dst_key))
@@ -3715,6 +3617,7 @@ impl IngestContext {
                             let mut reverse_count = 0u64;
                             let forward_path = root.join(temp_edge_path(&forward_name, shard));
                             let mut row_idx = 0u64;
+                            let mut key_buf = Vec::new();
                             read_temp_rows(&forward_path, |row| {
                                 pending = pending.saturating_add(1);
                                 if pending >= PROGRESS_ROW_BATCH {
@@ -3735,15 +3638,10 @@ impl IngestContext {
                                     .map_err(|_| anyhow!("src key parse"))?;
                                 let dst_key = read_key_from_buf(&mut data, &dst_pk_col)
                                     .map_err(|_| anyhow!("dst key parse"))?;
-                                let mut scratch = [0u8; 16];
-                                let src_shard = shard_for_key(
-                                    key_hash_bytes(&src_key, &mut scratch),
-                                    num_shards,
-                                );
-                                let dst_shard = shard_for_key(
-                                    key_hash_bytes(&dst_key, &mut scratch),
-                                    num_shards,
-                                );
+                                let src_shard =
+                                    shard_for_key_from_key(&src_key, &mut key_buf, num_shards)?;
+                                let dst_shard =
+                                    shard_for_key_from_key(&dst_key, &mut key_buf, num_shards)?;
                                 let src_local = match pk_hash_store
                                     .shard(&edge.src_fk.ref_table, src_shard)?
                                     .lookup(&src_key)
@@ -3993,7 +3891,7 @@ impl IngestContext {
                     &rel.name_forward,
                     shard,
                 ));
-                let mut scratch = [0u8; 16];
+                let mut key_buf = Vec::new();
                 read_temp_rows(&fkey_path, |row| {
                     pending = pending.saturating_add(1);
                     if pending >= PROGRESS_ROW_BATCH {
@@ -4028,10 +3926,8 @@ impl IngestContext {
                             return Ok(());
                         }
                     };
-                    let dst_shard = shard_for_key(
-                        key_hash_bytes(&dst_key, &mut scratch),
-                        self.num_shards,
-                    );
+                    let dst_shard =
+                        shard_for_key_from_key(&dst_key, &mut key_buf, self.num_shards)?;
                     let dst_local = match dst_maps
                         .get(dst_shard)
                         .and_then(|map| map.lookup(&dst_key))
@@ -4241,6 +4137,7 @@ impl IngestContext {
                 );
                 let forward_path = root.join(temp_edge_path(&forward_name, shard));
                 let mut row_idx = 0u64;
+                let mut key_buf = Vec::new();
                 read_temp_rows(&forward_path, |row| {
                     pending = pending.saturating_add(1);
                     if pending >= PROGRESS_ROW_BATCH {
@@ -4259,15 +4156,10 @@ impl IngestContext {
                         .map_err(|_| anyhow!("src key parse"))?;
                     let dst_key = read_key_from_buf(&mut data, dst_pk_col)
                         .map_err(|_| anyhow!("dst key parse"))?;
-                    let mut scratch = [0u8; 16];
-                    let src_shard = shard_for_key(
-                        key_hash_bytes(&src_key, &mut scratch),
-                        self.num_shards,
-                    );
-                    let dst_shard = shard_for_key(
-                        key_hash_bytes(&dst_key, &mut scratch),
-                        self.num_shards,
-                    );
+                    let src_shard =
+                        shard_for_key_from_key(&src_key, &mut key_buf, self.num_shards)?;
+                    let dst_shard =
+                        shard_for_key_from_key(&dst_key, &mut key_buf, self.num_shards)?;
                     let src_local = match edge_ctx
                         .pk_hash_store
                         .shard(&edge.src_fk.ref_table, src_shard)?
@@ -4879,10 +4771,6 @@ fn temp_pkey_meta_path(name: &str, shard: usize) -> String {
     format!("{}/pkey.meta", temp_node_shard_dir(name, shard))
 }
 
-fn temp_pkey_context_path(name: &str) -> String {
-    format!("{}/nodes/{}/pkey.ctx", TEMP_DIR_NAME, name.to_lowercase())
-}
-
 fn temp_fkey_shard_dir(table: &str, rel: &str, shard: usize) -> String {
     format!(
         "{}/fkeys/{}/{}/shard-{:05}",
@@ -5035,7 +4923,6 @@ fn write_temp_rows_batch(writer: &mut TempRowWriter, data: &[u8], rows: u64) -> 
 #[derive(Clone, Copy)]
 enum TempRowLenKind {
     U16,
-    U32,
 }
 
 fn write_temp_rows_segments(
@@ -5051,10 +4938,6 @@ fn write_temp_rows_segments(
         match len_kind {
             TempRowLenKind::U16 => {
                 let len = u16::try_from(row_len).map_err(|_| anyhow!("temp row too large"))?;
-                writer.writer.write_all(&len.to_le_bytes())?;
-            }
-            TempRowLenKind::U32 => {
-                let len = u32::try_from(row_len).map_err(|_| anyhow!("temp row too large"))?;
                 writer.writer.write_all(&len.to_le_bytes())?;
             }
         }
@@ -5446,7 +5329,8 @@ struct NodeWriteBatch {
     rel_names: std::sync::Arc<Vec<std::sync::Arc<str>>>,
     shard: usize,
     node_data: RowPackSegmentBatch,
-    pkey_data: Option<RowPackSegmentBatch>,
+    pkey_data: Option<Vec<u8>>,
+    pkey_rows: u64,
     fkey_data: Vec<Vec<u8>>,
     fkey_rows: Vec<u64>,
 }
@@ -5594,11 +5478,11 @@ fn node_writer_worker(
                         )?);
                     }
                     if let Some(pkey_writer) = writer.pkey.as_mut() {
-                        write_temp_rows_segments(pkey_writer, &data, TempRowLenKind::U32)?;
+                        write_temp_rows_batch(pkey_writer, &data, batch.pkey_rows)?;
                     }
                     let pkey_key = (batch.table.to_string(), batch.shard);
                     let entry = stats.pkey_rows.entry(pkey_key).or_insert(0);
-                    *entry = entry.saturating_add(data.rows.len() as u64);
+                    *entry = entry.saturating_add(batch.pkey_rows);
                 }
                 for (idx, fkey_bytes) in batch.fkey_data.into_iter().enumerate() {
                     if let Some(writer_fkey) = writer.fkeys.get_mut(idx) {
@@ -5631,7 +5515,8 @@ fn node_writer_worker(
 
 struct NodeShardBuffer {
     node: RowPackSegmentBatch,
-    pkey: Option<RowPackSegmentBatch>,
+    pkey: Option<Vec<u8>>,
+    pkey_rows: u64,
     fkeys: Vec<Vec<u8>>,
     fkey_rows: Vec<u64>,
     bytes: usize,
@@ -5671,15 +5556,11 @@ impl NodeBatcher {
                     rows: Vec::new(),
                 },
                 pkey: if has_pkey {
-                    Some(RowPackSegmentBatch {
-                        tags: Vec::new(),
-                        bools: Vec::new(),
-                        data: Vec::new(),
-                        rows: Vec::new(),
-                    })
+                    Some(Vec::new())
                 } else {
                     None
                 },
+                pkey_rows: 0,
                 fkeys: vec![Vec::new(); rel_names.len()],
                 fkey_rows: vec![0; rel_names.len()],
                 bytes: 0,
@@ -5733,35 +5614,15 @@ impl NodeBatcher {
         )
     }
 
-    fn pkey_sink(&mut self, shard: usize) -> Result<NodeRowSink<'_>> {
-        let buffer = self
-            .buffers
-            .get_mut(shard)
-            .ok_or_else(|| anyhow!("pkey buffer shard {} out of bounds", shard))?;
-        let pkey = buffer
-            .pkey
-            .as_mut()
-            .ok_or_else(|| anyhow!("missing pkey buffer"))?;
-        Ok(NodeRowSink {
-            tags: &mut pkey.tags,
-            bools: &mut pkey.bools,
-            data: &mut pkey.data,
-        })
-    }
-
-    fn push_pkey_row(&mut self, shard: usize, lens: RowPackRowLens) -> Result<()> {
+    fn push_pkey(&mut self, shard: usize, row: &[u8]) -> Result<()> {
         let buffer = self
             .buffers
             .get_mut(shard)
             .ok_or_else(|| anyhow!("pkey buffer shard {} out of bounds", shard))?;
         if let Some(pkey) = buffer.pkey.as_mut() {
-            let row_len = lens
-                .tag_bytes
-                .saturating_add(lens.bool_bytes)
-                .saturating_add(lens.data_bytes);
-            let _ = u32::try_from(row_len).map_err(|_| anyhow!("temp row too large"))?;
-            pkey.rows.push(lens);
-            buffer.bytes = buffer.bytes.saturating_add(4 + row_len);
+            append_temp_row(pkey, row)?;
+            buffer.pkey_rows = buffer.pkey_rows.saturating_add(1);
+            buffer.bytes = buffer.bytes.saturating_add(4 + row.len());
         }
         Ok(())
     }
@@ -5798,7 +5659,7 @@ impl NodeBatcher {
             .get_mut(shard)
             .ok_or_else(|| anyhow!("node buffer shard {} out of bounds", shard))?;
         if buffer.node.rows.is_empty()
-            && buffer.pkey.as_ref().map_or(true, |p| p.rows.is_empty())
+            && buffer.pkey_rows == 0
             && buffer.fkey_rows.iter().all(|r| *r == 0)
         {
             return Ok(());
@@ -5811,15 +5672,11 @@ impl NodeBatcher {
         };
         std::mem::swap(&mut node, &mut buffer.node);
         let pkey = buffer.pkey.as_mut().map(|src| {
-            let mut data = RowPackSegmentBatch {
-                tags: Vec::with_capacity(src.tags.capacity()),
-                bools: Vec::with_capacity(src.bools.capacity()),
-                data: Vec::with_capacity(src.data.capacity()),
-                rows: Vec::with_capacity(src.rows.capacity()),
-            };
+            let mut data = Vec::with_capacity(src.capacity());
             std::mem::swap(&mut data, src);
             data
         });
+        let pkey_rows = buffer.pkey_rows;
         let mut fkeys = Vec::with_capacity(buffer.fkeys.len());
         for mut entry in buffer.fkeys.drain(..) {
             let mut data = Vec::with_capacity(entry.capacity());
@@ -5833,13 +5690,12 @@ impl NodeBatcher {
             shard,
             node_data: node,
             pkey_data: pkey,
+            pkey_rows,
             fkey_data: fkeys,
             fkey_rows,
         };
         buffer.node.rows.clear();
-        if let Some(pkey) = buffer.pkey.as_mut() {
-            pkey.rows.clear();
-        }
+        buffer.pkey_rows = 0;
         buffer.fkey_rows = vec![0; self.rel_names.len()];
         buffer.fkeys = vec![Vec::new(); self.rel_names.len()];
         buffer.bytes = 0;
@@ -6599,360 +6455,220 @@ fn column_index(table: &TableSpec, name: &str) -> Result<usize> {
         .ok_or_else(|| anyhow!("missing column {}", name))
 }
 
-fn key_from_access(
+fn key_from_access_into_buf(
     access: &mut RowAccess<'_>,
     idx: usize,
     col: &ColumnSpec,
-) -> KeyParseResult<Key> {
+    out: &mut Vec<u8>,
+) -> KeyParseResult<()> {
     let key_type = key_type_for_column(col).map_err(|_| KeyParseError::UnsupportedType)?;
+    out.clear();
     match key_type {
-        KeyType::Int64 => match col.ingested_dtype {
-            ColumnType::Int64 => {
-                let value = access
+        KeyType::Int64 => {
+            let value = match col.ingested_dtype {
+                ColumnType::Int64 => access
                     .get_int64(idx)
                     .map_err(|_| KeyParseError::TypeMismatch)?
-                    .ok_or(KeyParseError::TypeMismatch)?;
-                if value < 0 {
-                    Err(KeyParseError::Negative)
-                } else {
-                    Ok(Key::Int(value as u64))
+                    .ok_or(KeyParseError::TypeMismatch)?,
+                ColumnType::Int32 | ColumnType::Int16 | ColumnType::Int8 => {
+                    let value = access
+                        .get_int32(idx)
+                        .map_err(|_| KeyParseError::TypeMismatch)?
+                        .ok_or(KeyParseError::TypeMismatch)?;
+                    value as i64
                 }
-            }
-            ColumnType::Int32 | ColumnType::Int16 | ColumnType::Int8 => {
-                let value = access
-                    .get_int32(idx)
-                    .map_err(|_| KeyParseError::TypeMismatch)?
-                    .ok_or(KeyParseError::TypeMismatch)?;
-                if value < 0 {
-                    Err(KeyParseError::Negative)
-                } else {
-                    Ok(Key::Int(value as u64))
+                ColumnType::UInt64 => {
+                    let value = access
+                        .get_uint64(idx)
+                        .map_err(|_| KeyParseError::TypeMismatch)?
+                        .ok_or(KeyParseError::TypeMismatch)?;
+                    out.extend_from_slice(&value.to_le_bytes());
+                    return Ok(());
                 }
-            }
-            ColumnType::UInt64 => {
-                let value = access
-                    .get_uint64(idx)
-                    .map_err(|_| KeyParseError::TypeMismatch)?
-                    .ok_or(KeyParseError::TypeMismatch)?;
-                Ok(Key::Int(value))
-            }
-            ColumnType::UInt32 | ColumnType::UInt16 | ColumnType::UInt8 => {
-                let value = access
-                    .get_uint32(idx)
-                    .map_err(|_| KeyParseError::TypeMismatch)?
-                    .ok_or(KeyParseError::TypeMismatch)?;
-                Ok(Key::Int(value as u64))
-            }
-            ColumnType::String | ColumnType::Bytes => {
-                let (col, array) = access
-                    .column_and_array(idx)
-                    .map_err(|_| KeyParseError::TypeMismatch)?;
-                let bytes = read_bytes(array, access.row, &col.source_dtype)
-                    .map_err(|_| KeyParseError::TypeMismatch)?;
-                parse_base10_bytes(bytes).map(Key::Int)
-            }
-            _ => Err(KeyParseError::TypeMismatch),
-        },
-        KeyType::VarBytes => match col.ingested_dtype {
-            ColumnType::Bytes => {
-                let value = access
-                    .get_bytes(idx)
-                    .map_err(|_| KeyParseError::TypeMismatch)?
-                    .ok_or(KeyParseError::TypeMismatch)?;
-                if value.len() > MAX_VAR_KEY_LEN {
-                    return Err(KeyParseError::TooLarge);
+                ColumnType::UInt32 | ColumnType::UInt16 | ColumnType::UInt8 => {
+                    let value = access
+                        .get_uint32(idx)
+                        .map_err(|_| KeyParseError::TypeMismatch)?
+                        .ok_or(KeyParseError::TypeMismatch)?;
+                    out.extend_from_slice(&(value as u64).to_le_bytes());
+                    return Ok(());
                 }
-                Ok(Key::Bytes(value.to_vec()))
-            }
-            ColumnType::String => {
-                let value = access
-                    .get_string(idx)
-                    .map_err(|_| KeyParseError::TypeMismatch)?
-                    .ok_or(KeyParseError::TypeMismatch)?;
-                let bytes = normalize_numeric_bytes(value.as_bytes(), col)?;
-                if bytes.len() > MAX_VAR_KEY_LEN {
-                    return Err(KeyParseError::TooLarge);
-                }
-                Ok(Key::Bytes(bytes))
-            }
-            ColumnType::Int64 => {
-                let value = access
-                    .get_int64(idx)
-                    .map_err(|_| KeyParseError::TypeMismatch)?
-                    .ok_or(KeyParseError::TypeMismatch)?;
-                if value < 0 {
-                    return Err(KeyParseError::Negative);
-                }
-                let bytes = value.to_string().into_bytes();
-                if bytes.len() > MAX_VAR_KEY_LEN {
-                    return Err(KeyParseError::TooLarge);
-                }
-                Ok(Key::Bytes(bytes))
-            }
-            ColumnType::Int32 | ColumnType::Int16 | ColumnType::Int8 => {
-                let value = access
-                    .get_int32(idx)
-                    .map_err(|_| KeyParseError::TypeMismatch)?
-                    .ok_or(KeyParseError::TypeMismatch)?;
-                if value < 0 {
-                    return Err(KeyParseError::Negative);
-                }
-                let bytes = value.to_string().into_bytes();
-                if bytes.len() > MAX_VAR_KEY_LEN {
-                    return Err(KeyParseError::TooLarge);
-                }
-                Ok(Key::Bytes(bytes))
-            }
-            ColumnType::UInt64 => {
-                let value = access
-                    .get_uint64(idx)
-                    .map_err(|_| KeyParseError::TypeMismatch)?
-                    .ok_or(KeyParseError::TypeMismatch)?;
-                let bytes = value.to_string().into_bytes();
-                if bytes.len() > MAX_VAR_KEY_LEN {
-                    return Err(KeyParseError::TooLarge);
-                }
-                Ok(Key::Bytes(bytes))
-            }
-            ColumnType::UInt32 | ColumnType::UInt16 | ColumnType::UInt8 => {
-                let value = access
-                    .get_uint32(idx)
-                    .map_err(|_| KeyParseError::TypeMismatch)?
-                    .ok_or(KeyParseError::TypeMismatch)?;
-                let bytes = value.to_string().into_bytes();
-                if bytes.len() > MAX_VAR_KEY_LEN {
-                    return Err(KeyParseError::TooLarge);
-                }
-                Ok(Key::Bytes(bytes))
-            }
-            _ => Err(KeyParseError::TypeMismatch),
-        },
-        KeyType::Uuid => match col.ingested_dtype {
-            ColumnType::Uuid => {
-                let value = access
-                    .get_bytes(idx)
-                    .map_err(|_| KeyParseError::TypeMismatch)?
-                    .ok_or(KeyParseError::TypeMismatch)?;
-                if value.len() != 16 {
-                    return Err(KeyParseError::LengthMismatch);
-                }
-                let mut buf = [0u8; 16];
-                buf.copy_from_slice(value);
-                Ok(Key::Uuid(buf))
-            }
-            ColumnType::String | ColumnType::Bytes => {
-                let (col, array) = access
-                    .column_and_array(idx)
-                    .map_err(|_| KeyParseError::TypeMismatch)?;
-                if let Ok(text) = read_utf8(array, access.row, &col.source_dtype) {
-                    let uuid = parse_uuid_string(text.as_bytes())?;
-                    Ok(Key::Uuid(uuid))
-                } else {
-                    let data = read_bytes(array, access.row, &col.source_dtype)
+                ColumnType::String | ColumnType::Bytes => {
+                    let (col, array) = access
+                        .column_and_array(idx)
                         .map_err(|_| KeyParseError::TypeMismatch)?;
-                    if data.len() != 16 {
-                        return Err(KeyParseError::LengthMismatch);
-                    }
-                    let mut buf = [0u8; 16];
-                    buf.copy_from_slice(data);
-                    Ok(Key::Uuid(buf))
-                }
-            }
-            _ => Err(KeyParseError::TypeMismatch),
-        },
-        KeyType::Uuid256 => match col.ingested_dtype {
-            ColumnType::Uuid256 => {
-                let value = access
-                    .get_bytes(idx)
-                    .map_err(|_| KeyParseError::TypeMismatch)?
-                    .ok_or(KeyParseError::TypeMismatch)?;
-                if value.len() != 32 {
-                    return Err(KeyParseError::LengthMismatch);
-                }
-                let mut buf = [0u8; 32];
-                buf.copy_from_slice(value);
-                Ok(Key::Uuid256(buf))
-            }
-            ColumnType::String | ColumnType::Bytes => {
-                let (col, array) = access
-                    .column_and_array(idx)
-                    .map_err(|_| KeyParseError::TypeMismatch)?;
-                if let Ok(text) = read_utf8(array, access.row, &col.source_dtype) {
-                    let uuid = parse_uuid256_string(text.as_bytes())?;
-                    Ok(Key::Uuid256(uuid))
-                } else {
-                    let data = read_bytes(array, access.row, &col.source_dtype)
+                    let bytes = read_bytes(array, access.row, &col.source_dtype)
                         .map_err(|_| KeyParseError::TypeMismatch)?;
-                    if data.len() != 32 {
-                        return Err(KeyParseError::LengthMismatch);
-                    }
-                    let mut buf = [0u8; 32];
-                    buf.copy_from_slice(data);
-                    Ok(Key::Uuid256(buf))
+                    let value = parse_base10_bytes(bytes)?;
+                    out.extend_from_slice(&value.to_le_bytes());
+                    return Ok(());
                 }
+                _ => return Err(KeyParseError::TypeMismatch),
+            };
+            if value < 0 {
+                return Err(KeyParseError::Negative);
             }
-            _ => Err(KeyParseError::TypeMismatch),
-        },
-        KeyType::Ip => match col.ingested_dtype {
-            ColumnType::Ip => {
-                let value = access
-                    .get_bytes(idx)
-                    .map_err(|_| KeyParseError::TypeMismatch)?
-                    .ok_or(KeyParseError::TypeMismatch)?;
-                let ip = parse_ip_bytes(value)?;
-                Ok(Key::Ip(ip))
-            }
-            ColumnType::String | ColumnType::Bytes => {
-                let (col, array) = access
-                    .column_and_array(idx)
-                    .map_err(|_| KeyParseError::TypeMismatch)?;
-                if let Ok(text) = read_utf8(array, access.row, &col.source_dtype) {
-                    let ip = parse_ip_string(text.as_bytes())?;
-                    Ok(Key::Ip(ip))
-                } else {
-                    let data = read_bytes(array, access.row, &col.source_dtype)
-                        .map_err(|_| KeyParseError::TypeMismatch)?;
-                    let ip = parse_ip_bytes(data)?;
-                    Ok(Key::Ip(ip))
-                }
-            }
-            _ => Err(KeyParseError::TypeMismatch),
-        },
-    }
-}
-
-fn key_from_rowpack_value(value: &ValueRef<'_>, col: &ColumnSpec) -> KeyParseResult<Key> {
-    let key_type = key_type_for_column(col).map_err(|_| KeyParseError::UnsupportedType)?;
-    match key_type {
-        KeyType::Int64 => match value {
-            ValueRef::Int64(v) => {
-                if *v < 0 {
-                    Err(KeyParseError::Negative)
-                } else {
-                    Ok(Key::Int(*v as u64))
-                }
-            }
-            ValueRef::Int32(v) => {
-                if *v < 0 {
-                    Err(KeyParseError::Negative)
-                } else {
-                    Ok(Key::Int(*v as u64))
-                }
-            }
-            ValueRef::UInt64(v) => Ok(Key::Int(*v)),
-            ValueRef::UInt32(v) => Ok(Key::Int(*v as u64)),
-            ValueRef::String(s) => parse_base10_bytes(s.as_bytes()).map(Key::Int),
-            ValueRef::Bytes(b) => parse_base10_bytes(b).map(Key::Int),
-            _ => Err(KeyParseError::TypeMismatch),
-        },
-        KeyType::VarBytes => match value {
-            ValueRef::Bytes(b) => {
-                if b.len() > MAX_VAR_KEY_LEN {
-                    return Err(KeyParseError::TooLarge);
-                }
-                Ok(Key::Bytes(b.to_vec()))
-            }
-            ValueRef::String(s) => {
-                let bytes = normalize_numeric_bytes(s.as_bytes(), col)?;
-                if bytes.len() > MAX_VAR_KEY_LEN {
-                    return Err(KeyParseError::TooLarge);
-                }
-                Ok(Key::Bytes(bytes))
-            }
-            ValueRef::Int64(v) => {
-                if *v < 0 {
-                    return Err(KeyParseError::Negative);
-                }
-                let bytes = v.to_string().into_bytes();
-                if bytes.len() > MAX_VAR_KEY_LEN {
-                    return Err(KeyParseError::TooLarge);
-                }
-                Ok(Key::Bytes(bytes))
-            }
-            ValueRef::Int32(v) => {
-                if *v < 0 {
-                    return Err(KeyParseError::Negative);
-                }
-                let bytes = v.to_string().into_bytes();
-                if bytes.len() > MAX_VAR_KEY_LEN {
-                    return Err(KeyParseError::TooLarge);
-                }
-                Ok(Key::Bytes(bytes))
-            }
-            ValueRef::UInt64(v) => {
-                let bytes = v.to_string().into_bytes();
-                if bytes.len() > MAX_VAR_KEY_LEN {
-                    return Err(KeyParseError::TooLarge);
-                }
-                Ok(Key::Bytes(bytes))
-            }
-            ValueRef::UInt32(v) => {
-                let bytes = v.to_string().into_bytes();
-                if bytes.len() > MAX_VAR_KEY_LEN {
-                    return Err(KeyParseError::TooLarge);
-                }
-                Ok(Key::Bytes(bytes))
-            }
-            _ => Err(KeyParseError::TypeMismatch),
-        },
-        KeyType::Uuid => match value {
-            ValueRef::String(s) => {
-                let uuid = parse_uuid_string(s.as_bytes())?;
-                Ok(Key::Uuid(uuid))
-            }
-            ValueRef::Uuid(v) => Ok(Key::Uuid(*v)),
-            ValueRef::Bytes(b) => {
-                if b.len() != 16 {
-                    return Err(KeyParseError::LengthMismatch);
-                }
-                let mut buf = [0u8; 16];
-                buf.copy_from_slice(b);
-                Ok(Key::Uuid(buf))
-            }
-            _ => Err(KeyParseError::TypeMismatch),
-        },
-        KeyType::Uuid256 => match value {
-            ValueRef::String(s) => {
-                let uuid = parse_uuid256_string(s.as_bytes())?;
-                Ok(Key::Uuid256(uuid))
-            }
-            ValueRef::Uuid256(v) => Ok(Key::Uuid256(*v)),
-            ValueRef::Bytes(b) => {
-                if b.len() != 32 {
-                    return Err(KeyParseError::LengthMismatch);
-                }
-                let mut buf = [0u8; 32];
-                buf.copy_from_slice(b);
-                Ok(Key::Uuid256(buf))
-            }
-            _ => Err(KeyParseError::TypeMismatch),
-        },
-        KeyType::Ip => match value {
-            ValueRef::String(s) => {
-                let ip = parse_ip_string(s.as_bytes())?;
-                Ok(Key::Ip(ip))
-            }
-            ValueRef::Ip(v) => Ok(Key::Ip(*v)),
-            ValueRef::Bytes(b) => {
-                let ip = parse_ip_bytes(b)?;
-                Ok(Key::Ip(ip))
-            }
-            _ => Err(KeyParseError::TypeMismatch),
-        },
-    }
-}
-
-fn key_hash_bytes<'a>(key: &'a Key, scratch: &'a mut [u8; 16]) -> &'a [u8] {
-    match key {
-        Key::Int(v) => {
-            scratch[..8].copy_from_slice(&v.to_le_bytes());
-            &scratch[..8]
+            out.extend_from_slice(&(value as u64).to_le_bytes());
+            Ok(())
         }
-        Key::Uuid(v) => v.as_slice(),
-        Key::Uuid256(v) => v.as_slice(),
-        Key::Ip(v) => v.as_slice(),
-        Key::Bytes(v) => v.as_slice(),
+        KeyType::VarBytes => {
+            let bytes = match col.ingested_dtype {
+                ColumnType::Bytes => access
+                    .get_bytes(idx)
+                    .map_err(|_| KeyParseError::TypeMismatch)?
+                    .ok_or(KeyParseError::TypeMismatch)?
+                    .to_vec(),
+                ColumnType::String => {
+                    let value = access
+                        .get_string(idx)
+                        .map_err(|_| KeyParseError::TypeMismatch)?
+                        .ok_or(KeyParseError::TypeMismatch)?;
+                    normalize_numeric_bytes(value.as_bytes(), col)?
+                }
+                ColumnType::Int64 => {
+                    let value = access
+                        .get_int64(idx)
+                        .map_err(|_| KeyParseError::TypeMismatch)?
+                        .ok_or(KeyParseError::TypeMismatch)?;
+                    if value < 0 {
+                        return Err(KeyParseError::Negative);
+                    }
+                    value.to_string().into_bytes()
+                }
+                ColumnType::Int32 | ColumnType::Int16 | ColumnType::Int8 => {
+                    let value = access
+                        .get_int32(idx)
+                        .map_err(|_| KeyParseError::TypeMismatch)?
+                        .ok_or(KeyParseError::TypeMismatch)?;
+                    if value < 0 {
+                        return Err(KeyParseError::Negative);
+                    }
+                    value.to_string().into_bytes()
+                }
+                ColumnType::UInt64 => {
+                    let value = access
+                        .get_uint64(idx)
+                        .map_err(|_| KeyParseError::TypeMismatch)?
+                        .ok_or(KeyParseError::TypeMismatch)?;
+                    value.to_string().into_bytes()
+                }
+                ColumnType::UInt32 | ColumnType::UInt16 | ColumnType::UInt8 => {
+                    let value = access
+                        .get_uint32(idx)
+                        .map_err(|_| KeyParseError::TypeMismatch)?
+                        .ok_or(KeyParseError::TypeMismatch)?;
+                    value.to_string().into_bytes()
+                }
+                _ => return Err(KeyParseError::TypeMismatch),
+            };
+            let len = u16::try_from(bytes.len()).map_err(|_| KeyParseError::TooLarge)?;
+            out.extend_from_slice(&len.to_le_bytes());
+            out.extend_from_slice(&bytes);
+            Ok(())
+        }
+        KeyType::Uuid => {
+            let mut buf = [0u8; 16];
+            let uuid = match col.ingested_dtype {
+                ColumnType::Uuid => {
+                    let value = access
+                        .get_bytes(idx)
+                        .map_err(|_| KeyParseError::TypeMismatch)?
+                        .ok_or(KeyParseError::TypeMismatch)?;
+                    if value.len() != 16 {
+                        return Err(KeyParseError::LengthMismatch);
+                    }
+                    buf.copy_from_slice(value);
+                    buf
+                }
+                ColumnType::String | ColumnType::Bytes => {
+                    let (col, array) = access
+                        .column_and_array(idx)
+                        .map_err(|_| KeyParseError::TypeMismatch)?;
+                    if let Ok(text) = read_utf8(array, access.row, &col.source_dtype) {
+                        parse_uuid_string(text.as_bytes())?
+                    } else {
+                        let data = read_bytes(array, access.row, &col.source_dtype)
+                            .map_err(|_| KeyParseError::TypeMismatch)?;
+                        if data.len() != 16 {
+                            return Err(KeyParseError::LengthMismatch);
+                        }
+                        buf.copy_from_slice(data);
+                        buf
+                    }
+                }
+                _ => return Err(KeyParseError::TypeMismatch),
+            };
+            out.extend_from_slice(&uuid);
+            Ok(())
+        }
+        KeyType::Uuid256 => {
+            let mut buf = [0u8; 32];
+            let uuid = match col.ingested_dtype {
+                ColumnType::Uuid256 => {
+                    let value = access
+                        .get_bytes(idx)
+                        .map_err(|_| KeyParseError::TypeMismatch)?
+                        .ok_or(KeyParseError::TypeMismatch)?;
+                    if value.len() != 32 {
+                        return Err(KeyParseError::LengthMismatch);
+                    }
+                    buf.copy_from_slice(value);
+                    buf
+                }
+                ColumnType::String | ColumnType::Bytes => {
+                    let (col, array) = access
+                        .column_and_array(idx)
+                        .map_err(|_| KeyParseError::TypeMismatch)?;
+                    if let Ok(text) = read_utf8(array, access.row, &col.source_dtype) {
+                        parse_uuid256_string(text.as_bytes())?
+                    } else {
+                        let data = read_bytes(array, access.row, &col.source_dtype)
+                            .map_err(|_| KeyParseError::TypeMismatch)?;
+                        if data.len() != 32 {
+                            return Err(KeyParseError::LengthMismatch);
+                        }
+                        buf.copy_from_slice(data);
+                        buf
+                    }
+                }
+                _ => return Err(KeyParseError::TypeMismatch),
+            };
+            out.extend_from_slice(&uuid);
+            Ok(())
+        }
+        KeyType::Ip => {
+            let ip = match col.ingested_dtype {
+                ColumnType::Ip => {
+                    let value = access
+                        .get_bytes(idx)
+                        .map_err(|_| KeyParseError::TypeMismatch)?
+                        .ok_or(KeyParseError::TypeMismatch)?;
+                    parse_ip_bytes(value)?
+                }
+                ColumnType::String | ColumnType::Bytes => {
+                    let (col, array) = access
+                        .column_and_array(idx)
+                        .map_err(|_| KeyParseError::TypeMismatch)?;
+                    if let Ok(text) = read_utf8(array, access.row, &col.source_dtype) {
+                        parse_ip_string(text.as_bytes())?
+                    } else {
+                        let data = read_bytes(array, access.row, &col.source_dtype)
+                            .map_err(|_| KeyParseError::TypeMismatch)?;
+                        parse_ip_bytes(data)?
+                    }
+                }
+                _ => return Err(KeyParseError::TypeMismatch),
+            };
+            out.extend_from_slice(&ip);
+            Ok(())
+        }
     }
+}
+
+fn shard_for_key_from_key(key: &Key, buf: &mut Vec<u8>, num_shards: usize) -> Result<usize> {
+    buf.clear();
+    write_key_to_buf(buf, key)?;
+    Ok(shard_for_key(buf, num_shards))
 }
 
 fn write_key_to_buf(buf: &mut Vec<u8>, key: &Key) -> Result<()> {
@@ -7815,51 +7531,6 @@ fn rowpack_columns(table: &TableSpec) -> Result<Vec<diskgraph_rowpack::RowPackCo
     Ok(columns)
 }
 
-fn rowpack_columns_for_specs(
-    cols: &[ColumnSpec],
-) -> Result<Vec<diskgraph_rowpack::RowPackColumn>> {
-    let mut columns = Vec::with_capacity(cols.len());
-    for col in cols {
-        let dtype = match col.ingested_dtype {
-            ColumnType::Int8 => RowpackType::Int8,
-            ColumnType::Int16 => RowpackType::Int16,
-            ColumnType::Int64 => RowpackType::Int64,
-            ColumnType::Int32 => RowpackType::Int32,
-            ColumnType::UInt8 => RowpackType::UInt8,
-            ColumnType::UInt16 => RowpackType::UInt16,
-            ColumnType::UInt64 => RowpackType::UInt64,
-            ColumnType::UInt32 => RowpackType::UInt32,
-            ColumnType::Float64 => RowpackType::Float64,
-            ColumnType::Float32 => RowpackType::Float32,
-            ColumnType::Bool => RowpackType::Bool,
-            ColumnType::String => RowpackType::String,
-            ColumnType::Bytes => RowpackType::Bytes,
-            ColumnType::Uuid => RowpackType::Uuid,
-            ColumnType::Uuid256 => RowpackType::Uuid256,
-            ColumnType::Ip => RowpackType::Ip,
-            ColumnType::Date => RowpackType::Date,
-            ColumnType::Timestamp => RowpackType::Timestamp,
-            ColumnType::Decimal128 => RowpackType::Decimal128,
-            ColumnType::Decimal256 => RowpackType::Decimal256,
-            ColumnType::Float32Array => RowpackType::Float32Array,
-            ColumnType::Float64Array => RowpackType::Float64Array,
-            ColumnType::Float16Array => RowpackType::Float16Array,
-        };
-        let fixed_len = match col.ingested_dtype {
-            ColumnType::Uuid | ColumnType::Uuid256 | ColumnType::Ip => None,
-            _ => col.fixed_len,
-        };
-        columns.push(diskgraph_rowpack::RowPackColumn {
-            name: col.name.clone(),
-            logical_type: dtype,
-            fixed_len,
-            precision: col.precision,
-            scale: col.scale,
-        });
-    }
-    Ok(columns)
-}
-
 fn shard_for_key(bytes: &[u8], num_shards: usize) -> usize {
     if num_shards <= 1 {
         return 0;
@@ -8097,11 +7768,6 @@ struct RowAccess<'a> {
     runtimes: &'a [ColumnRuntime],
     pools: RowValuePools,
     trimmed_strings: &'a Arc<AtomicU64>,
-}
-
-struct ColumnAccess<'a, 'b> {
-    access: &'b mut RowAccess<'a>,
-    column_idx: usize,
 }
 
 impl<'a> RowAccess<'a> {
@@ -8725,67 +8391,6 @@ impl<'a> diskgraph_rowpack::RowValueAccess for RowAccess<'a> {
     }
 }
 
-impl<'a, 'b> diskgraph_rowpack::RowValueAccess for ColumnAccess<'a, 'b> {
-    fn get_int64(&mut self, _idx: usize) -> Result<Option<i64>> {
-        self.access.get_int64(self.column_idx)
-    }
-
-    fn get_int32(&mut self, _idx: usize) -> Result<Option<i32>> {
-        self.access.get_int32(self.column_idx)
-    }
-
-    fn get_uint64(&mut self, _idx: usize) -> Result<Option<u64>> {
-        self.access.get_uint64(self.column_idx)
-    }
-
-    fn get_uint32(&mut self, _idx: usize) -> Result<Option<u32>> {
-        self.access.get_uint32(self.column_idx)
-    }
-
-    fn get_float64(&mut self, _idx: usize) -> Result<Option<f64>> {
-        self.access.get_float64(self.column_idx)
-    }
-
-    fn get_float32(&mut self, _idx: usize) -> Result<Option<f32>> {
-        self.access.get_float32(self.column_idx)
-    }
-
-    fn get_bool(&mut self, _idx: usize) -> Result<Option<bool>> {
-        self.access.get_bool(self.column_idx)
-    }
-
-    fn get_string(&mut self, _idx: usize) -> Result<Option<&str>> {
-        self.access.get_string(self.column_idx)
-    }
-
-    fn get_bytes(&mut self, _idx: usize) -> Result<Option<&[u8]>> {
-        self.access.get_bytes(self.column_idx)
-    }
-
-    fn get_date(&mut self, _idx: usize) -> Result<Option<i32>> {
-        self.access.get_date(self.column_idx)
-    }
-
-    fn get_timestamp(&mut self, _idx: usize) -> Result<Option<(i64, u32)>> {
-        self.access.get_timestamp(self.column_idx)
-    }
-
-    fn get_decimal128(&mut self, _idx: usize) -> Result<Option<i128>> {
-        self.access.get_decimal128(self.column_idx)
-    }
-
-    fn get_decimal256(&mut self, _idx: usize) -> Result<Option<[u8; 32]>> {
-        self.access.get_decimal256(self.column_idx)
-    }
-
-    fn get_float32_array(&mut self, _idx: usize) -> Result<Option<&[f32]>> {
-        self.access.get_float32_array(self.column_idx)
-    }
-
-    fn get_float64_array(&mut self, _idx: usize) -> Result<Option<&[f64]>> {
-        self.access.get_float64_array(self.column_idx)
-    }
-}
 struct RowValuePools {
     strings: Vec<String>,
     bytes: Vec<Vec<u8>>,
