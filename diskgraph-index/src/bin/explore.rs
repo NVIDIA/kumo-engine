@@ -1075,12 +1075,6 @@ fn format_string_encoding(encoding: &StringEncoding) -> String {
             format!("string(alphabet len={})", alphabet.len())
         }
         StringEncoding::Bpe { dict } => format!("string(bpe entries={})", dict.len()),
-        StringEncoding::NumericInt => "string(numeric_int)".to_string(),
-        StringEncoding::NumericScaled => "string(numeric_scaled)".to_string(),
-        StringEncoding::Hex { len, dashed, upper } => {
-            format!("string(hex len={} dashed={} upper={})", len, dashed, upper)
-        }
-        StringEncoding::IsoTimestamp { fmt } => format!("string(iso_timestamp {:?})", fmt),
         StringEncoding::Lz4 => "string(lz4)".to_string(),
     }
 }
@@ -1361,7 +1355,6 @@ fn format_decimal_storage(storage: &DecimalStorage) -> String {
     match storage {
         DecimalStorage::Raw => "raw".to_string(),
         DecimalStorage::Int { varint, bits } => format!("int(varint={}, bits={})", varint, bits),
-        DecimalStorage::Float { storage } => format!("float({})", format_float_storage(*storage)),
     }
 }
 

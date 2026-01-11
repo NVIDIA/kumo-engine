@@ -1086,6 +1086,102 @@ fn ingest_weight_expr_with_backticks() -> Result<()> {
 }
 
 #[test]
+fn ingest_weight_expr_with_log_and_abs() -> Result<()> {
+    let dir = tempdir()?;
+    let input_root = dir.path().join("input");
+    let output_root = dir.path().join("output");
+
+    write_csv(
+        &input_root.join("src.csv"),
+        &["id", "dst_id"],
+        &[vec!["0".into(), "0".into()]],
+    )?;
+    write_csv(
+        &input_root.join("dst.csv"),
+        &["id", "weight-kg", "offset"],
+        &[vec!["0".into(), "-3.5".into(), "-2.0".into()]],
+    )?;
+
+    let source = serde_json::json!({
+        "dataset_name": "weight_expr_log_abs",
+        "tables": [
+            {
+                "name": "Src",
+                "format": "csv",
+                "paths": [input_root.join("src.csv").to_string_lossy()],
+                "primary_key": "id",
+                "columns": [
+                    {"name": "id", "source_dtype": "int64", "ingested_dtype": "int64"},
+                    {"name": "dst_id", "source_dtype": "int64", "ingested_dtype": "int64"}
+                ]
+            },
+            {
+                "name": "Dst",
+                "format": "csv",
+                "paths": [input_root.join("dst.csv").to_string_lossy()],
+                "primary_key": "id",
+                "columns": [
+                    {"name": "id", "source_dtype": "int64", "ingested_dtype": "int64"},
+                    {"name": "weight-kg", "source_dtype": "float32", "ingested_dtype": "float32"},
+                    {"name": "offset", "source_dtype": "float32", "ingested_dtype": "float32"}
+                ]
+            }
+        ],
+        "relationships": [
+            {
+                "name": "src_dst",
+                "src_table": "Src",
+                "src_column": "dst_id",
+                "dst_table": "Dst",
+                "dst_column": "id"
+            }
+        ],
+        "edge_sort_keys": {
+            "relationships": {
+                "src_dst": {
+                    "forward": {
+                        "weight": {
+                            "table": "Dst",
+                            "expr": "log(abs(`weight-kg`) + 1) + abs(offset)",
+                            "encoding": {"dtype": "float32"}
+                        }
+                    }
+                }
+            }
+        }
+    });
+    let source_path = dir.path().join("source_metadata.json");
+    fs::write(&source_path, serde_json::to_vec_pretty(&source)?)?;
+
+    let metadata = ingest(
+        &source_path,
+        output_root.to_str().unwrap(),
+        Dest::Local,
+        IngestOptions {
+            profile_dir: None,
+            progress: None,
+            parallel: true,
+            index_mem_budget_bytes: None,
+        },
+    )?;
+    let forward = metadata
+        .edge_relations
+        .iter()
+        .find(|r| r.name == "src_dst")
+        .unwrap();
+    assert_eq!(forward.dest_sort_key_bits, Some(32));
+
+    let reader = GraphIndexReader::open(&output_root.join("index_metadata.json"), &output_root)?;
+    let src_table = reader.table("Src").unwrap();
+    let sort_keys = extract_relation_sort_keys(&src_table, "src_dst", 0)?;
+    let expected = (f64::log10(3.5_f64 + 1.0) + 2.0) as f32;
+    let expected_bits = ordered_f32_bits(expected) as u64;
+    assert_eq!(sort_keys, vec![expected_bits]);
+
+    Ok(())
+}
+
+#[test]
 fn ingest_missing_dst_key_records_lookup() -> Result<()> {
     let dir = tempdir()?;
     let input_root = dir.path().join("input");

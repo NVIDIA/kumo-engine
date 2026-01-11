@@ -251,7 +251,7 @@ Rowpack settings are optional and can appear at:
 - top-level (`rowpack`): default for all node tables.
 - per table (`tables[].rowpack`): override for that table only.
 
-Rowpack is a row-oriented compression format used for node payloads. It samples columns to pick fast encodings (dictionary, alphabet, BPE, numeric, timestamp, etc.) and writes a small context file that the reader uses to decode quickly. Defaults are usually good enough.
+Rowpack is a row-oriented compression format used for node payloads. It samples columns to pick fast encodings (dictionary, alphabet, BPE, lz4, etc.) and writes a small context file that the reader uses to decode quickly. Defaults are usually good enough.
 
 RowPackConfig fields (all optional):
 - `sample_rows` (int): rows to sample when building the context (default 10,000)
@@ -265,10 +265,6 @@ RowPackConfig fields (all optional):
 - `string_dict_coverage` (float): min coverage to enable dict (default 0.7)
 - `string_long_min_len` (int): min length for long-string compression (default 128)
 - `string_long_min_ratio` (float): min ratio to keep long-string compression (default 0.85)
-- `string_iso_threshold` (float): threshold to classify ISO timestamps (default 0.85)
-- `enable_float16` (bool): allow float16 (default true)
-- `force_float64` (bool): force float64 (default false)
-- `decimal_allow_lossy` (bool): allow lossy decimal compression (default true)
 
 The context file path is written into `index_metadata.json` under
 `node_data_compression.context_path` and used by the index reader/explorer.

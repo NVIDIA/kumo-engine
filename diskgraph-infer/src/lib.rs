@@ -747,6 +747,13 @@ fn infer_parquet_schema_from_arrow(schema: &Schema) -> Result<Vec<ColumnSpec>> {
     let mut columns = Vec::new();
     for field in schema.fields() {
         let (dtype, fixed_len, precision, scale) = arrow_type_to_column_type(field.data_type())?;
+        let ingested_dtype = match dtype {
+            ColumnType::Float64 => ColumnType::Float32,
+            ColumnType::Float32Array | ColumnType::Float64Array | ColumnType::Float16Array => {
+                ColumnType::Float16Array
+            }
+            _ => dtype.clone(),
+        };
         let mut key_mode = None;
         if matches!(dtype, ColumnType::Bytes) {
             if let Some(len) = fixed_len {
@@ -756,7 +763,7 @@ fn infer_parquet_schema_from_arrow(schema: &Schema) -> Result<Vec<ColumnSpec>> {
         columns.push(ColumnSpec {
             name: field.name().to_string(),
             source_dtype: dtype.clone(),
-            ingested_dtype: dtype,
+            ingested_dtype,
             fixed_len,
             timestamp_format: None,
             timestamp_unit: None,
@@ -1087,6 +1094,7 @@ fn arrow_type_to_column_type(
             ColumnType::Decimal256
         }
         DataType::List(field) | DataType::LargeList(field) => match field.data_type() {
+            DataType::Float16 => ColumnType::Float16Array,
             DataType::Float32 => ColumnType::Float32Array,
             DataType::Float64 => ColumnType::Float64Array,
             _ => return Err(anyhow!("unsupported list type {}", field.data_type())),
@@ -1300,7 +1308,7 @@ impl ColumnStats {
             ingested_dtype = ColumnType::Int64;
         } else if self.float_ok {
             source_dtype = ColumnType::Float64;
-            ingested_dtype = ColumnType::Float64;
+            ingested_dtype = ColumnType::Float32;
         }
         if matches!(ingested_dtype, ColumnType::String) {
             if self.uuid_seen && self.uuid_ok {
@@ -2887,6 +2895,7 @@ fn singularize(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arrow_schema::Field;
 
     fn table(name: &str, cols: &[(&str, ColumnType)]) -> TableSpec {
         TableSpec {
@@ -4183,6 +4192,17 @@ mod tests {
     }
 
     #[test]
+    fn csv_infers_float32_from_float64() {
+        let mut stats = ColumnStats::default();
+        for v in ["1.5", "2.25", "3.0"] {
+            stats.observe(v);
+        }
+        let col = stats.to_column_spec("score");
+        assert!(matches!(col.source_dtype, ColumnType::Float64));
+        assert!(matches!(col.ingested_dtype, ColumnType::Float32));
+    }
+
+    #[test]
     fn csv_infers_uuid_key_mode() {
         let mut stats = ColumnStats::default();
         for v in [
@@ -4207,6 +4227,29 @@ mod tests {
         assert!(matches!(col.ingested_dtype, ColumnType::String));
         assert_eq!(col.key_mode, Some(KeyMode::Fixed));
         assert_eq!(col.fixed_len, Some(3));
+    }
+
+    #[test]
+    fn parquet_lists_infer_float16_arrays() {
+        let schema = Schema::new(vec![
+            Field::new(
+                "vec32",
+                DataType::List(Arc::new(Field::new("item", DataType::Float32, true))),
+                true,
+            ),
+            Field::new(
+                "vec64",
+                DataType::List(Arc::new(Field::new("item", DataType::Float64, true))),
+                true,
+            ),
+        ]);
+        let cols = infer_parquet_schema_from_arrow(&schema).unwrap();
+        let vec32 = cols.iter().find(|c| c.name == "vec32").unwrap();
+        let vec64 = cols.iter().find(|c| c.name == "vec64").unwrap();
+        assert!(matches!(vec32.source_dtype, ColumnType::Float32Array));
+        assert!(matches!(vec64.source_dtype, ColumnType::Float64Array));
+        assert!(matches!(vec32.ingested_dtype, ColumnType::Float16Array));
+        assert!(matches!(vec64.ingested_dtype, ColumnType::Float16Array));
     }
 
     #[test]

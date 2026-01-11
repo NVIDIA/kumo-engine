@@ -18,8 +18,8 @@ The context file is a binary format with:
 - **Per-column strategy**:
   - Nullability and tag width (2-bit tags).
   - Integer strategy (fixed width vs varint; bit width).
-  - Float strategy (float16 vs float32/float64).
-- String strategy (raw, dictionary, alphabet, hex, ISO timestamp, lz4).
+  - Float strategy (float32 vs float64).
+- String strategy (raw, dictionary, alphabet, bpe, lz4).
   - Bytes strategy (raw, fixed length).
   - Array strategy for float vectors (float16/float32/float64).
 - **Dictionaries**:
@@ -62,7 +62,7 @@ Rowpack is driven by `source_metadata.json` and ingestion maps Parquet/Arrow typ
 - **Date**: `Date32`
 - **Timestamp**: `Timestamp` with `Second|Millisecond|Microsecond|Nanosecond` units (timezone accepted, normalized to UTC)
 - **Decimal**: `Decimal128`, `Decimal256` (requires `precision` + `scale`)
-- **Arrays**: `List(Float32)` and `List(Float64)` only
+- **Arrays**: `List(Float16)`, `List(Float32)`, and `List(Float64)`
 
 Other Parquet types are not supported by rowpack at this time.
 
@@ -74,9 +74,7 @@ Other Parquet types are not supported by rowpack at this time.
 Varint uses zigzag for signed values; fixed width uses little-endian.
 
 ### Floats
-- Sample-based choice:
-  - float16 when all samples fit within [0.001, 1000] and precision loss is acceptable.
-  - float32 otherwise (or float64 if forced).
+- Floats are stored as-is (float32 or float64).
 - Fallback tag stores full float32/float64.
 
 ### Strings
@@ -85,9 +83,6 @@ Rowpack detects and chooses the most efficient strategy:
 - **Dictionary**: for categorical columns; dictionary entries stored in context.
 - **Alphabet**: for short strings with a small character set and high coverage (up to 64 distinct chars, and up to the lz4 long-string threshold, default 128 bytes); length is varint-prefixed.
 - **BPE**: for strings with repeated substrings; uses a column dictionary of common byte sequences and encodes as token streams.
-- **Numeric**: for strings that are numeric (optional leading `-`, optional decimal point).
-- **Hex**: for UUIDs / hex IDs (upper or lower case per column).
-- **ISO timestamp**: encodes to int64 micros, tolerates non-ISO via fallback.
 - **LZ4**: only used when sampled long strings compress well.
 - **Raw**: length-prefixed bytes.
 
@@ -99,7 +94,7 @@ If a value does not match the inferred strategy (e.g., a non-ISO string in an IS
 
 ### Arrays of floats
 Encodes length as a varint, followed by contiguous float payloads.
-Uses the same float16/float32/float64 strategy as scalar floats.
+Uses the logical type's float width (float16/float32/float64).
 
 ### Nulls and fallback
 Nulls are stored only in the tag stream; no payload.
@@ -110,11 +105,9 @@ Fallback payloads are always self-describing (length + bytes, or full-width nume
 The builder samples a configurable number of rows per table and:
 
 - Computes cardinality for dictionary eligibility.
-- Detects hex/UUID and ISO timestamps in string columns.
 - Measures lz4 compression ratio for long strings.
 - Trains a lightweight BPE dictionary for repeated substrings when it yields a size win (enabled for short-ish strings, default avg len >= 12 and below the lz4 threshold).
 - Chooses integer varint vs fixed width based on average size.
-- Chooses float16 only when all samples are within a safe magnitude range.
 
 Sample sizes and dictionary budgets are configurable via `SourceMetadata.rowpack`.
 
@@ -153,4 +146,4 @@ It only errors on structural corruption (invalid tags, truncated payloads).
 ### Decimals
 - Stored as fixed-width two’s-complement bytes (16 for Decimal128, 32 for Decimal256) when lossless is required.
 - By default, decimals use integer encoding when `scale == 0` and float encoding when `scale != 0` (lossy).
-- Set `decimal_allow_lossy: false` to always store lossless raw bytes.
+Decimal storage is always lossless.

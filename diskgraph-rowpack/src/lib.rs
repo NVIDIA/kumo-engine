@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Result};
-use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
+use chrono::{DateTime, Utc};
 use half::f16;
 use base64::Engine;
 use num_bigint::BigInt;
@@ -11,13 +11,11 @@ use serde_json::Value as JsonValue;
 use ahash::RandomState;
 use hashbrown::HashMap;
 
-const ROWPACK_VERSION: u8 = 2;
+const ROWPACK_VERSION: u8 = 3;
 const MAX_FIELD_BYTES: usize = 8 * 1024 * 1024;
 const MAX_ARRAY_LEN: usize = 1_000_000;
 const ALPHABET_MAX_CHARS: usize = 64;
 const ALPHABET_MIN_COVERAGE: f32 = 0.95;
-const NUMERIC_MIN_COVERAGE: f32 = 0.98;
-const MAX_NUMERIC_SCALE: u32 = 38;
 const ALPHABET_INVALID: u8 = u8::MAX;
 const AHASH_SEED_1: u64 = 0x9e3779b185ebca87;
 const AHASH_SEED_2: u64 = 0xc2b2ae3d27d4eb4f;
@@ -105,14 +103,6 @@ pub struct RowPackConfig {
     pub string_long_min_len: Option<usize>,
     #[serde(default)]
     pub string_long_min_ratio: Option<f32>,
-    #[serde(default)]
-    pub string_iso_threshold: Option<f32>,
-    #[serde(default)]
-    pub enable_float16: Option<bool>,
-    #[serde(default)]
-    pub force_float64: Option<bool>,
-    #[serde(default)]
-    pub decimal_allow_lossy: Option<bool>,
 }
 
 impl Default for RowPackConfig {
@@ -129,10 +119,6 @@ impl Default for RowPackConfig {
             string_dict_coverage: Some(0.7),
             string_long_min_len: Some(128),
             string_long_min_ratio: Some(0.85),
-            string_iso_threshold: Some(0.85),
-            enable_float16: Some(true),
-            force_float64: Some(false),
-            decimal_allow_lossy: Some(true),
         }
     }
 }
@@ -155,10 +141,6 @@ impl RowPackConfig {
                 string_dict_coverage: inner.string_dict_coverage.or(base.string_dict_coverage),
                 string_long_min_len: inner.string_long_min_len.or(base.string_long_min_len),
                 string_long_min_ratio: inner.string_long_min_ratio.or(base.string_long_min_ratio),
-                string_iso_threshold: inner.string_iso_threshold.or(base.string_iso_threshold),
-                enable_float16: inner.enable_float16.or(base.enable_float16),
-                force_float64: inner.force_float64.or(base.force_float64),
-                decimal_allow_lossy: inner.decimal_allow_lossy.or(base.decimal_allow_lossy),
             }
         } else {
             base
@@ -209,21 +191,6 @@ impl RowPackConfig {
         self.string_long_min_ratio.unwrap_or(0.85)
     }
 
-    fn string_iso_threshold(&self) -> f32 {
-        self.string_iso_threshold.unwrap_or(0.85)
-    }
-
-    fn enable_float16(&self) -> bool {
-        self.enable_float16.unwrap_or(true)
-    }
-
-    fn force_float64(&self) -> bool {
-        self.force_float64.unwrap_or(false)
-    }
-
-    fn decimal_allow_lossy(&self) -> bool {
-        self.decimal_allow_lossy.unwrap_or(true)
-    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -246,6 +213,7 @@ pub enum LogicalType {
     Timestamp,
     Decimal128,
     Decimal256,
+    Float16Array,
     Float32Array,
     Float64Array,
 }
@@ -330,7 +298,6 @@ pub enum ColumnEncoding {
 pub enum DecimalStorage {
     Raw,
     Int { varint: bool, bits: u8 },
-    Float { storage: FloatStorage },
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -348,19 +315,7 @@ pub enum StringEncoding {
     Dict { values: Vec<Vec<u8>> },
     Alphabet { alphabet: Vec<u8> },
     Bpe { dict: Vec<Vec<u8>> },
-    NumericInt,
-    NumericScaled,
-    Hex { len: usize, dashed: bool, upper: bool },
-    IsoTimestamp { fmt: IsoFormat },
     Lz4,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum IsoFormat {
-    Rfc3339,
-    DateOnly,
-    DateTimeSpace,
 }
 
 #[derive(Debug, Clone)]
@@ -571,172 +526,6 @@ fn zigzag_decode(value: u64) -> i64 {
     ((value >> 1) as i64) ^ (-((value & 1) as i64))
 }
 
-fn encode_hex(value: &str, len: usize, dashed: bool) -> Option<Vec<u8>> {
-    let raw: String = if dashed {
-        value.chars().filter(|c| *c != '-').collect()
-    } else {
-        value.to_string()
-    };
-    if raw.len() != len {
-        return None;
-    }
-    let mut out = Vec::with_capacity(len / 2);
-    let mut chars = raw.chars();
-    while let (Some(a), Some(b)) = (chars.next(), chars.next()) {
-        let hi = a.to_digit(16)? as u8;
-        let lo = b.to_digit(16)? as u8;
-        out.push((hi << 4) | lo);
-    }
-    Some(out)
-}
-
-fn encode_hex_unchecked(value: &str, len: usize, dashed: bool) -> Option<Vec<u8>> {
-    if len % 2 != 0 {
-        return None;
-    }
-    let bytes = value.as_bytes();
-    if !dashed {
-        if bytes.len() != len {
-            return None;
-        }
-        return Some(encode_hex_bytes_unchecked(bytes));
-    }
-    if len == 32 {
-        if bytes.len() == 32 {
-            return Some(encode_hex_bytes_unchecked(bytes));
-        }
-        if bytes.len() == 36 {
-            return Some(encode_hex_bytes_dashed_unchecked(bytes));
-        }
-    }
-    let mut out = Vec::with_capacity(len / 2);
-    let mut acc = 0u8;
-    let mut high = true;
-    let mut count = 0usize;
-    for &b in bytes {
-        if b == b'-' {
-            continue;
-        }
-        let val = hex_value_unchecked(b);
-        if high {
-            acc = val << 4;
-            high = false;
-        } else {
-            out.push(acc | val);
-            high = true;
-        }
-        count += 1;
-    }
-    if count != len || !high {
-        return None;
-    }
-    Some(out)
-}
-
-fn encode_hex_bytes_unchecked(bytes: &[u8]) -> Vec<u8> {
-    let mut out = vec![0u8; bytes.len() / 2];
-    let h = hex_value_unchecked;
-    let mut src = 0usize;
-    for dst in out.iter_mut() {
-        *dst = (h(bytes[src]) << 4) | h(bytes[src + 1]);
-        src += 2;
-    }
-    out
-}
-
-fn encode_hex_bytes_dashed_unchecked(bytes: &[u8]) -> Vec<u8> {
-    let mut out = [0u8; 16];
-    let h = hex_value_unchecked;
-    out[0] = (h(bytes[0]) << 4) | h(bytes[1]);
-    out[1] = (h(bytes[2]) << 4) | h(bytes[3]);
-    out[2] = (h(bytes[4]) << 4) | h(bytes[5]);
-    out[3] = (h(bytes[6]) << 4) | h(bytes[7]);
-    out[4] = (h(bytes[9]) << 4) | h(bytes[10]);
-    out[5] = (h(bytes[11]) << 4) | h(bytes[12]);
-    out[6] = (h(bytes[14]) << 4) | h(bytes[15]);
-    out[7] = (h(bytes[16]) << 4) | h(bytes[17]);
-    out[8] = (h(bytes[19]) << 4) | h(bytes[20]);
-    out[9] = (h(bytes[21]) << 4) | h(bytes[22]);
-    out[10] = (h(bytes[24]) << 4) | h(bytes[25]);
-    out[11] = (h(bytes[26]) << 4) | h(bytes[27]);
-    out[12] = (h(bytes[28]) << 4) | h(bytes[29]);
-    out[13] = (h(bytes[30]) << 4) | h(bytes[31]);
-    out[14] = (h(bytes[32]) << 4) | h(bytes[33]);
-    out[15] = (h(bytes[34]) << 4) | h(bytes[35]);
-    out.to_vec()
-}
-
-static HEX_MAP: [u8; 256] = {
-    let mut map = [0u8; 256];
-    let mut i = 0u8;
-    while i < 10 {
-        map[b'0' as usize + i as usize] = i;
-        i += 1;
-    }
-    let mut j = 0u8;
-    while j < 6 {
-        map[b'a' as usize + j as usize] = 10 + j;
-        map[b'A' as usize + j as usize] = 10 + j;
-        j += 1;
-    }
-    map
-};
-
-fn hex_value_unchecked(b: u8) -> u8 {
-    HEX_MAP[b as usize]
-}
-
-fn decode_hex(bytes: &[u8], len: usize, dashed: bool, upper: bool) -> String {
-    let mut out = String::with_capacity(len + if dashed { 4 } else { 0 });
-    for (idx, byte) in bytes.iter().enumerate() {
-        if dashed && (idx == 4 || idx == 6 || idx == 8 || idx == 10) {
-            out.push('-');
-        }
-        if upper {
-            out.push_str(&format!("{:02X}", byte));
-        } else {
-            out.push_str(&format!("{:02x}", byte));
-        }
-    }
-    out
-}
-
-fn parse_iso(value: &str) -> Option<(IsoFormat, i64, u32)> {
-    if let Ok(dt) = DateTime::parse_from_rfc3339(value) {
-        let secs = dt.timestamp();
-        let nanos = dt.timestamp_subsec_nanos();
-        return Some((IsoFormat::Rfc3339, secs, nanos));
-    }
-    if let Ok(date) = NaiveDate::parse_from_str(value, "%Y-%m-%d") {
-        let dt = date.and_hms_opt(0, 0, 0)?;
-        return Some((IsoFormat::DateOnly, dt.and_utc().timestamp(), 0));
-    }
-    if let Ok(dt) = NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S") {
-        return Some((IsoFormat::DateTimeSpace, dt.and_utc().timestamp(), 0));
-    }
-    None
-}
-
-fn format_iso(fmt: IsoFormat, secs: i64, nanos: u32) -> String {
-    match fmt {
-        IsoFormat::Rfc3339 => {
-            let dt = DateTime::<Utc>::from_timestamp(secs, nanos)
-                .unwrap_or_else(|| DateTime::<Utc>::from_timestamp(0, 0).unwrap());
-            dt.to_rfc3339()
-        }
-        IsoFormat::DateOnly => {
-            let dt = DateTime::<Utc>::from_timestamp(secs, nanos)
-                .unwrap_or_else(|| DateTime::<Utc>::from_timestamp(0, 0).unwrap());
-            dt.date_naive().format("%Y-%m-%d").to_string()
-        }
-        IsoFormat::DateTimeSpace => {
-            let dt = DateTime::<Utc>::from_timestamp(secs, nanos)
-                .unwrap_or_else(|| DateTime::<Utc>::from_timestamp(0, 0).unwrap());
-            dt.naive_utc().format("%Y-%m-%d %H:%M:%S").to_string()
-        }
-    }
-}
-
 fn write_msgpack_timestamp(out: &mut Vec<u8>, secs: i64, nanos: u32) -> Result<()> {
     let secs_u = secs as i128;
     if secs_u < 0 {
@@ -761,6 +550,12 @@ fn write_msgpack_timestamp(out: &mut Vec<u8>, secs: i64, nanos: u32) -> Result<(
     out.extend_from_slice(&(nanos as u32).to_be_bytes());
     out.extend_from_slice(&(secs as i64).to_be_bytes());
     Ok(())
+}
+
+fn format_timestamp_rfc3339(secs: i64, nanos: u32) -> String {
+    let dt = DateTime::<Utc>::from_timestamp(secs, nanos)
+        .unwrap_or_else(|| DateTime::<Utc>::from_timestamp(0, 0).unwrap());
+    dt.to_rfc3339()
 }
 
 #[derive(Debug, Clone)]
@@ -849,7 +644,7 @@ impl RowPackContextBuilder {
                     if spec.precision == 0 {
                         return Err(anyhow!("rowpack decimal precision missing"));
                     }
-                    let storage = choose_decimal_storage(&self.config, spec.precision, spec.scale)?;
+                    let storage = choose_decimal_storage(spec.precision, spec.scale)?;
                     ColumnEncoding::Decimal {
                         precision: spec.precision,
                         scale: spec.scale,
@@ -943,10 +738,6 @@ fn estimate_column_bytes(encoding: &ColumnEncoding, stats: &ColumnStats) -> usiz
                 let packed = ((avg * bits) + 7) / 8;
                 varint_bytes_u64(avg as u64) + packed
             }
-            StringEncoding::NumericInt => varint_bytes(64),
-            StringEncoding::NumericScaled => varint_bytes(64) + varint_bytes(16),
-            StringEncoding::Hex { len, .. } => len / 2,
-            StringEncoding::IsoTimestamp { .. } => varint_bytes(64) + 5,
             StringEncoding::Lz4 => {
                 let avg = avg_len(stats.string_bytes, stats.string_total);
                 varint_bytes_u64(avg as u64) + varint_bytes_u64(avg as u64) + avg
@@ -969,11 +760,6 @@ fn estimate_column_bytes(encoding: &ColumnEncoding, stats: &ColumnStats) -> usiz
                     *bytes as usize
                 }
             }
-            DecimalStorage::Float { storage } => match storage {
-                FloatStorage::F16 => 2,
-                FloatStorage::F32 => 4,
-                FloatStorage::F64 => 8,
-            },
         },
         ColumnEncoding::FloatArray { storage } => {
             let avg_len = avg_len(stats.array_len_total, stats.array_count);
@@ -1010,14 +796,7 @@ fn avg_len(total: usize, count: usize) -> usize {
     }
 }
 
-fn choose_decimal_storage(
-    config: &RowPackConfig,
-    precision: u32,
-    scale: i32,
-) -> Result<DecimalStorage> {
-    if !config.decimal_allow_lossy() {
-        return Ok(DecimalStorage::Raw);
-    }
+fn choose_decimal_storage(precision: u32, scale: i32) -> Result<DecimalStorage> {
     if scale == 0 {
         if precision <= 9 {
             return Ok(DecimalStorage::Int {
@@ -1033,9 +812,7 @@ fn choose_decimal_storage(
         }
         return Ok(DecimalStorage::Raw);
     }
-    Ok(DecimalStorage::Float {
-        storage: FloatStorage::F64,
-    })
+    Ok(DecimalStorage::Raw)
 }
 
 #[derive(Debug, Clone)]
@@ -1058,11 +835,6 @@ struct ColumnStats {
     alphabet_len: usize,
     alphabet_ok: bool,
     alphabet_hits: usize,
-    numeric_hits: usize,
-    numeric_scaled_hits: usize,
-    numeric_i64_hits: usize,
-    numeric_max_abs: i64,
-    numeric_max_scale: u32,
     string_bytes: usize,
     string_total: usize,
     bytes_total: usize,
@@ -1070,15 +842,6 @@ struct ColumnStats {
     string_long_bytes: usize,
     string_long_raw: usize,
     string_long_compressed: usize,
-    string_iso_hits: usize,
-    string_iso_total: usize,
-    string_iso_rfc3339: usize,
-    string_iso_date: usize,
-    string_iso_space: usize,
-    string_hex_len: Option<usize>,
-    string_hex_dashed: bool,
-    string_hex_upper: Option<bool>,
-    string_hex_ok: bool,
     array_len_total: usize,
     array_count: usize,
     ts_min: i64,
@@ -1107,11 +870,6 @@ impl ColumnStats {
             alphabet_len: 0,
             alphabet_ok: true,
             alphabet_hits: 0,
-            numeric_hits: 0,
-            numeric_scaled_hits: 0,
-            numeric_i64_hits: 0,
-            numeric_max_abs: 0,
-            numeric_max_scale: 0,
             string_bytes: 0,
             string_total: 0,
             bytes_total: 0,
@@ -1119,15 +877,6 @@ impl ColumnStats {
             string_long_bytes: 0,
             string_long_raw: 0,
             string_long_compressed: 0,
-            string_iso_hits: 0,
-            string_iso_total: 0,
-            string_iso_rfc3339: 0,
-            string_iso_date: 0,
-            string_iso_space: 0,
-            string_hex_len: None,
-            string_hex_dashed: false,
-            string_hex_upper: None,
-            string_hex_ok: true,
             array_len_total: 0,
             array_count: 0,
             ts_min: i64::MAX,
@@ -1195,20 +944,6 @@ impl ColumnStats {
                         self.string_sample_bytes += bytes.len();
                     }
                 }
-                if let Some((value, scale)) = parse_numeric_i64(v) {
-                    self.numeric_hits += 1;
-                    self.numeric_i64_hits += 1;
-                    if scale > 0 {
-                        self.numeric_scaled_hits += 1;
-                    }
-                    let abs = value.abs();
-                    if abs > self.numeric_max_abs {
-                        self.numeric_max_abs = abs;
-                    }
-                    if scale > self.numeric_max_scale {
-                        self.numeric_max_scale = scale;
-                    }
-                }
                 if self.alphabet_ok {
                     if bytes.len() > config.string_long_min_len() {
                         self.alphabet_ok = false;
@@ -1235,54 +970,6 @@ impl ColumnStats {
                         } else {
                             self.alphabet_ok = false;
                         }
-                    }
-                }
-                if let Some((fmt, _, _)) = parse_iso(v) {
-                    self.string_iso_hits += 1;
-                    match fmt {
-                        IsoFormat::Rfc3339 => self.string_iso_rfc3339 += 1,
-                        IsoFormat::DateOnly => self.string_iso_date += 1,
-                        IsoFormat::DateTimeSpace => self.string_iso_space += 1,
-                    }
-                }
-                self.string_iso_total += 1;
-                if self.string_hex_ok {
-                    let trimmed = v.trim();
-                    let (len, dashed) = if trimmed.len() == 36 {
-                        (32usize, true)
-                    } else {
-                        (trimmed.len(), false)
-                    };
-                    if trimmed.len() == 32 || trimmed.len() == 36 {
-                        let mut has_lower = false;
-                        let mut has_upper = false;
-                        for ch in trimmed.chars() {
-                            if ch.is_ascii_lowercase() {
-                                has_lower = true;
-                            } else if ch.is_ascii_uppercase() {
-                                has_upper = true;
-                            }
-                        }
-                        if has_lower && has_upper {
-                            self.string_hex_ok = false;
-                        }
-                        if encode_hex(trimmed, len, dashed).is_some() {
-                            if let Some(existing) = self.string_hex_len {
-                                if existing != len {
-                                    self.string_hex_ok = false;
-                                }
-                            } else {
-                                self.string_hex_len = Some(len);
-                                self.string_hex_dashed = dashed;
-                                if has_lower || has_upper {
-                                    self.string_hex_upper = Some(has_upper);
-                                }
-                            }
-                        } else {
-                            self.string_hex_ok = false;
-                        }
-                    } else {
-                        self.string_hex_ok = false;
                     }
                 }
                 if bytes.len() >= config.string_long_min_len() {
@@ -1393,10 +1080,10 @@ impl ColumnStats {
                 bits: 8,
             }),
             LogicalType::Float64 => Ok(ColumnEncoding::Float {
-                storage: choose_float_storage(config, self.float_min, self.float_max, true),
+                storage: choose_float_storage(true),
             }),
             LogicalType::Float32 => Ok(ColumnEncoding::Float {
-                storage: choose_float_storage(config, self.float_min, self.float_max, false),
+                storage: choose_float_storage(false),
             }),
             LogicalType::Bool => Ok(ColumnEncoding::Bool),
             LogicalType::String => Ok(ColumnEncoding::String {
@@ -1412,10 +1099,13 @@ impl ColumnStats {
                 Err(anyhow!("rowpack decimal encoding missing"))
             }
             LogicalType::Float32Array => Ok(ColumnEncoding::FloatArray {
-                storage: choose_float_storage(config, self.float_min, self.float_max, false),
+                storage: choose_float_storage(false),
             }),
             LogicalType::Float64Array => Ok(ColumnEncoding::FloatArray {
-                storage: choose_float_storage(config, self.float_min, self.float_max, true),
+                storage: choose_float_storage(true),
+            }),
+            LogicalType::Float16Array => Ok(ColumnEncoding::FloatArray {
+                storage: FloatStorage::F16,
             }),
         }
     }
@@ -1432,15 +1122,9 @@ fn uint_use_varint(max: u64) -> bool {
     bits <= 32
 }
 
-fn choose_float_storage(config: &RowPackConfig, min: f64, max: f64, is_f64: bool) -> FloatStorage {
-    if config.force_float64() {
-        return FloatStorage::F64;
-    }
-    if config.enable_float16() && min >= 0.001 && max <= 1000.0 {
-        return FloatStorage::F16;
-    }
+fn choose_float_storage(is_f64: bool) -> FloatStorage {
     if is_f64 {
-        FloatStorage::F32
+        FloatStorage::F64
     } else {
         FloatStorage::F32
     }
@@ -1455,39 +1139,6 @@ fn choose_string_encoding(stats: &ColumnStats, config: &RowPackConfig) -> Result
     };
     let bpe_allowed =
         avg_len >= config.bpe_min_avg_len() && avg_len < config.string_long_min_len();
-    let iso_ratio = stats.string_iso_hits as f32 / total;
-    if stats.string_iso_total > 0 && iso_ratio >= config.string_iso_threshold() {
-        let mut fmt = IsoFormat::Rfc3339;
-        let mut best = stats.string_iso_rfc3339;
-        if stats.string_iso_date > best {
-            best = stats.string_iso_date;
-            fmt = IsoFormat::DateOnly;
-        }
-        if stats.string_iso_space > best {
-            fmt = IsoFormat::DateTimeSpace;
-        }
-        return Ok(StringEncoding::IsoTimestamp {
-            fmt,
-        });
-    }
-    if stats.string_hex_ok {
-        if let Some(len) = stats.string_hex_len {
-            return Ok(StringEncoding::Hex {
-                len,
-                dashed: stats.string_hex_dashed,
-                upper: stats.string_hex_upper.unwrap_or(false),
-            });
-        }
-    }
-    if total > 0.0 {
-        let numeric_ratio = stats.numeric_i64_hits as f32 / total;
-        if numeric_ratio >= NUMERIC_MIN_COVERAGE {
-            if stats.numeric_scaled_hits > 0 {
-                return Ok(StringEncoding::NumericScaled);
-            }
-            return Ok(StringEncoding::NumericInt);
-        }
-    }
     if stats.alphabet_ok && stats.alphabet_len > 1 {
         let coverage_ratio = stats.alphabet_hits as f32 / total;
         if coverage_ratio >= ALPHABET_MIN_COVERAGE {
@@ -2082,6 +1733,21 @@ impl RowPackEncoder {
                         }
                     }
                 },
+                LogicalType::Float16Array => match access.get_float32_array(idx)? {
+                    None => 0u8,
+                    Some(values) => {
+                        if let ColumnEncoding::FloatArray { storage } = &col.encoding {
+                            encode_float_array_f32_with_tag(
+                                &mut scratch.data,
+                                col.logical_type,
+                                *storage,
+                                values,
+                            )?
+                        } else {
+                            return Err(anyhow!("rowpack float16 array encoding mismatch"));
+                        }
+                    }
+                },
                 LogicalType::Float64Array => match access.get_float64_array(idx)? {
                     None => 0u8,
                     Some(values) => {
@@ -2123,8 +1789,6 @@ struct StringEncoder {
         Option<&mut Vec<u32>>,
         Option<&mut Vec<u8>>,
     ) -> Result<u8>,
-    len: usize,
-    dashed: bool,
 }
 
 impl StringEncoder {
@@ -2132,48 +1796,18 @@ impl StringEncoder {
         match encoding {
             StringEncoding::Raw => Self {
                 encode: encode_string_raw,
-                len: 0,
-                dashed: false,
             },
             StringEncoding::Dict { .. } => Self {
                 encode: encode_string_dict,
-                len: 0,
-                dashed: false,
             },
             StringEncoding::Alphabet { .. } => Self {
                 encode: encode_string_alphabet,
-                len: 0,
-                dashed: false,
             },
             StringEncoding::Bpe { .. } => Self {
                 encode: encode_string_bpe,
-                len: 0,
-                dashed: false,
-            },
-            StringEncoding::NumericInt => Self {
-                encode: encode_string_numeric_int,
-                len: 0,
-                dashed: false,
-            },
-            StringEncoding::NumericScaled => Self {
-                encode: encode_string_numeric_scaled,
-                len: 0,
-                dashed: false,
-            },
-            StringEncoding::Hex { len, dashed, .. } => Self {
-                encode: encode_string_hex,
-                len: *len,
-                dashed: *dashed,
-            },
-            StringEncoding::IsoTimestamp { .. } => Self {
-                encode: encode_string_iso,
-                len: 0,
-                dashed: false,
             },
             StringEncoding::Lz4 => Self {
                 encode: encode_string_lz4,
-                len: 0,
-                dashed: false,
             },
         }
     }
@@ -2268,92 +1902,6 @@ fn encode_string_bpe(
     let bits = bpe_token_bits(trie.dict_len);
     write_tokens_packed(out, tokens, bits);
     Ok(1)
-}
-
-fn encode_string_numeric_int(
-    _enc: &StringEncoder,
-    out: &mut Vec<u8>,
-    value: &str,
-    _dict: Option<&FastHashMap<Vec<u8>, u32>>,
-    _alphabet: Option<&AlphabetMap>,
-    _bpe: Option<&BpeTrie>,
-    _bpe_tokens: Option<&mut Vec<u32>>,
-    _lz4_buf: Option<&mut Vec<u8>>,
-) -> Result<u8> {
-    if let Some((value, scale)) = parse_numeric_i64(value) {
-        if scale == 0 {
-            write_varint(zigzag_encode(value), out);
-            return Ok(1);
-        }
-    }
-    let bytes = value.as_bytes();
-    write_varint(bytes.len() as u64, out);
-    out.extend_from_slice(bytes);
-    Ok(2)
-}
-
-fn encode_string_numeric_scaled(
-    _enc: &StringEncoder,
-    out: &mut Vec<u8>,
-    value: &str,
-    _dict: Option<&FastHashMap<Vec<u8>, u32>>,
-    _alphabet: Option<&AlphabetMap>,
-    _bpe: Option<&BpeTrie>,
-    _bpe_tokens: Option<&mut Vec<u32>>,
-    _lz4_buf: Option<&mut Vec<u8>>,
-) -> Result<u8> {
-    if let Some((value, scale)) = parse_numeric_i64(value) {
-        write_varint(zigzag_encode(value), out);
-        write_varint(scale as u64, out);
-        return Ok(1);
-    }
-    let bytes = value.as_bytes();
-    write_varint(bytes.len() as u64, out);
-    out.extend_from_slice(bytes);
-    Ok(2)
-}
-
-fn encode_string_hex(
-    enc: &StringEncoder,
-    out: &mut Vec<u8>,
-    value: &str,
-    _dict: Option<&FastHashMap<Vec<u8>, u32>>,
-    _alphabet: Option<&AlphabetMap>,
-    _bpe: Option<&BpeTrie>,
-    _bpe_tokens: Option<&mut Vec<u32>>,
-    _lz4_buf: Option<&mut Vec<u8>>,
-) -> Result<u8> {
-    if let Some(bytes) = encode_hex_unchecked(value, enc.len, enc.dashed) {
-        out.extend_from_slice(&bytes);
-        Ok(1)
-    } else {
-        let bytes = value.as_bytes();
-        write_varint(bytes.len() as u64, out);
-        out.extend_from_slice(bytes);
-        Ok(2)
-    }
-}
-
-fn encode_string_iso(
-    _enc: &StringEncoder,
-    out: &mut Vec<u8>,
-    value: &str,
-    _dict: Option<&FastHashMap<Vec<u8>, u32>>,
-    _alphabet: Option<&AlphabetMap>,
-    _bpe: Option<&BpeTrie>,
-    _bpe_tokens: Option<&mut Vec<u32>>,
-    _lz4_buf: Option<&mut Vec<u8>>,
-) -> Result<u8> {
-    if let Some((_fmt, secs, nanos)) = parse_iso(value) {
-        write_varint(zigzag_encode(secs), out);
-        write_varint(nanos as u64, out);
-        Ok(1)
-    } else {
-        let bytes = value.as_bytes();
-        write_varint(bytes.len() as u64, out);
-        out.extend_from_slice(bytes);
-        Ok(2)
-    }
 }
 
 fn encode_string_lz4(
@@ -2517,13 +2065,7 @@ fn encode_float_with_tag(
     storage: FloatStorage,
     v: f64,
 ) -> Result<u8> {
-    if storage == FloatStorage::F16 && (!v.is_finite() || v < 0.001 || v > 1000.0) {
-        match logical {
-            LogicalType::Float32 => out.extend_from_slice(&(v as f32).to_le_bytes()),
-            _ => out.extend_from_slice(&v.to_le_bytes()),
-        }
-        return Ok(2);
-    }
+    let _ = logical;
     encode_float(out, storage, v)?;
     Ok(1)
 }
@@ -2549,16 +2091,6 @@ fn encode_decimal_i128_with_tag(
                 return Ok(2);
             }
             encode_int(out, true, *varint, *bits, value)?;
-            Ok(1)
-        }
-        DecimalStorage::Float { storage } => {
-            let divisor = 10f64.powi(scale);
-            let float_value = (value as f64) / divisor;
-            if !float_value.is_finite() {
-                out.extend_from_slice(&value.to_le_bytes());
-                return Ok(2);
-            }
-            let _ = encode_float_with_tag(out, LogicalType::Float64, *storage, float_value)?;
             Ok(1)
         }
     }
@@ -2589,22 +2121,6 @@ fn encode_decimal_i256_with_tag(
                 Ok(2)
             }
         }
-        DecimalStorage::Float { storage } => {
-            let big = BigInt::from_signed_bytes_le(value);
-            let float_value = match big.to_f64() {
-                Some(v) => v / 10f64.powi(scale),
-                None => {
-                    out.extend_from_slice(value);
-                    return Ok(2);
-                }
-            };
-            if !float_value.is_finite() {
-                out.extend_from_slice(value);
-                return Ok(2);
-            }
-            let _ = encode_float_with_tag(out, LogicalType::Float64, *storage, float_value)?;
-            Ok(1)
-        }
     }
 }
 
@@ -2614,32 +2130,7 @@ fn encode_float_array_f32_with_tag(
     storage: FloatStorage,
     values: &[f32],
 ) -> Result<u8> {
-    if storage == FloatStorage::F16 {
-        let mut ok = true;
-        for v in values {
-            let v = *v as f64;
-            if !v.is_finite() || v < 0.001 || v > 1000.0 {
-                ok = false;
-                break;
-            }
-        }
-        if !ok {
-            write_varint(values.len() as u64, out);
-            match logical {
-                LogicalType::Float64Array => {
-                    for v in values {
-                        out.extend_from_slice(&(*v as f64).to_le_bytes());
-                    }
-                }
-                _ => {
-                    for v in values {
-                        out.extend_from_slice(&v.to_le_bytes());
-                    }
-                }
-            }
-            return Ok(2);
-        }
-    }
+    let _ = logical;
     write_varint(values.len() as u64, out);
     for v in values {
         encode_float(out, storage, *v as f64)?;
@@ -2653,31 +2144,7 @@ fn encode_float_array_f64_with_tag(
     storage: FloatStorage,
     values: &[f64],
 ) -> Result<u8> {
-    if storage == FloatStorage::F16 {
-        let mut ok = true;
-        for v in values {
-            if !v.is_finite() || *v < 0.001 || *v > 1000.0 {
-                ok = false;
-                break;
-            }
-        }
-        if !ok {
-            write_varint(values.len() as u64, out);
-            match logical {
-                LogicalType::Float32Array => {
-                    for v in values {
-                        out.extend_from_slice(&(*v as f32).to_le_bytes());
-                    }
-                }
-                _ => {
-                    for v in values {
-                        out.extend_from_slice(&v.to_le_bytes());
-                    }
-                }
-            }
-            return Ok(2);
-        }
-    }
+    let _ = logical;
     write_varint(values.len() as u64, out);
     for v in values {
         encode_float(out, storage, *v)?;
@@ -3093,84 +2560,6 @@ fn estimate_bpe_bytes(samples: &[Vec<u8>], dict: &[Vec<u8>]) -> u64 {
     total
 }
 
-fn parse_numeric_i64(value: &str) -> Option<(i64, u32)> {
-    if value.starts_with('.') || value.ends_with('.') {
-        return None;
-    }
-    let mut chars = value.as_bytes().iter().copied().peekable();
-    let mut negative = false;
-    if let Some(b'-') = chars.peek().copied() {
-        negative = true;
-        let _ = chars.next();
-    }
-    let mut seen_digit = false;
-    let mut scale = 0u32;
-    let mut seen_dot = false;
-    let mut acc: i128 = 0;
-    while let Some(b) = chars.next() {
-        if b == b'.' {
-            if seen_dot {
-                return None;
-            }
-            seen_dot = true;
-            continue;
-        }
-        if !b.is_ascii_digit() {
-            return None;
-        }
-        seen_digit = true;
-        let digit = (b - b'0') as i128;
-        acc = acc.checked_mul(10)?.checked_add(digit)?;
-        if seen_dot {
-            scale = scale.saturating_add(1);
-        }
-    }
-    if !seen_digit {
-        return None;
-    }
-    if scale > MAX_NUMERIC_SCALE {
-        return None;
-    }
-    if negative {
-        acc = -acc;
-    }
-    if acc < i64::MIN as i128 || acc > i64::MAX as i128 {
-        return None;
-    }
-    Some((acc as i64, scale))
-}
-
-fn format_scaled_i64(value: i64, scale: u32) -> String {
-    if scale == 0 {
-        return value.to_string();
-    }
-    let negative = value < 0;
-    let digits = value.abs().to_string();
-    let scale = scale as usize;
-    if digits.len() <= scale {
-        let mut out = String::new();
-        if negative {
-            out.push('-');
-        }
-        out.push('0');
-        out.push('.');
-        for _ in 0..(scale - digits.len()) {
-            out.push('0');
-        }
-        out.push_str(&digits);
-        return out;
-    }
-    let split = digits.len() - scale;
-    let mut out = String::with_capacity(digits.len() + 1);
-    if negative {
-        out.push('-');
-    }
-    out.push_str(&digits[..split]);
-    out.push('.');
-    out.push_str(&digits[split..]);
-    out
-}
-
 pub struct RowPackDecoder {
     ctx: RowPackContext,
     dict_values: Vec<Option<Vec<Vec<u8>>>>,
@@ -3361,11 +2750,7 @@ fn decode_value_msgpack(
             }
         }
         ColumnEncoding::Float { storage } => {
-            let v = if tag == 2 {
-                decode_float_fallback(data, col.logical_type)?
-            } else {
-                decode_float(data, *storage)?
-            };
+            let v = decode_float(data, *storage)?;
             match col.logical_type {
                 LogicalType::Float32 => mp::write_f32(out, v as f32)?,
                 _ => mp::write_f64(out, v)?,
@@ -3409,10 +2794,6 @@ fn decode_value_msgpack(
                             mp::write_str(out, &text)?;
                         }
                     }
-                    DecimalStorage::Float { storage } => {
-                        let v = decode_float(data, *storage)?;
-                        mp::write_f64(out, v)?;
-                    }
                     DecimalStorage::Raw => {}
                 }
             }
@@ -3427,18 +2808,10 @@ fn decode_value_msgpack(
         }
         ColumnEncoding::FloatArray { storage } => {
             let len = read_varint(data)? as usize;
-            let elem_bytes = if tag == 2 {
-                match col.logical_type {
-                    LogicalType::Float32Array => 4,
-                    LogicalType::Float64Array => 8,
-                    _ => return Err(anyhow!("rowpack invalid array type")),
-                }
-            } else {
-                match storage {
-                    FloatStorage::F16 => 2,
-                    FloatStorage::F32 => 4,
-                    FloatStorage::F64 => 8,
-                }
+            let elem_bytes = match storage {
+                FloatStorage::F16 => 2,
+                FloatStorage::F32 => 4,
+                FloatStorage::F64 => 8,
             };
             let max_len = data.len() / elem_bytes;
             if len > MAX_ARRAY_LEN || len > max_len || len > u32::MAX as usize {
@@ -3446,13 +2819,11 @@ fn decode_value_msgpack(
             }
             mp::write_array_len(out, len as u32)?;
             for _ in 0..len {
-                let v = if tag == 2 {
-                    decode_float_fallback(data, col.logical_type)?
-                } else {
-                    decode_float(data, *storage)?
-                };
+                let v = decode_float(data, *storage)?;
                 match col.logical_type {
-                    LogicalType::Float32Array => mp::write_f32(out, v as f32)?,
+                    LogicalType::Float16Array | LogicalType::Float32Array => {
+                        mp::write_f32(out, v as f32)?
+                    }
                     _ => mp::write_f64(out, v)?,
                 }
             }
@@ -3477,11 +2848,7 @@ fn decode_value_json(
             }
         }
         ColumnEncoding::Float { storage } => {
-            let v = if tag == 2 {
-                decode_float_fallback(data, col.logical_type)?
-            } else {
-                decode_float(data, *storage)?
-            };
+            let v = decode_float(data, *storage)?;
             match col.logical_type {
                 LogicalType::Float32 => JsonValue::from(v as f32),
                 _ => JsonValue::from(v),
@@ -3501,7 +2868,7 @@ fn decode_value_json(
         ColumnEncoding::Timestamp => {
             let secs = zigzag_decode(read_varint(data)?);
             let nanos = read_varint(data)? as u32;
-            let formatted = format_iso(IsoFormat::Rfc3339, secs, nanos);
+            let formatted = format_timestamp_rfc3339(secs, nanos);
             JsonValue::from(formatted)
         }
         ColumnEncoding::Decimal {
@@ -3523,10 +2890,6 @@ fn decode_value_json(
                             JsonValue::from(format_decimal_i64(v, *scale))
                         }
                     }
-                    DecimalStorage::Float { storage } => {
-                        let v = decode_float(data, *storage)?;
-                        JsonValue::from(v)
-                    }
                     DecimalStorage::Raw => JsonValue::Null,
                 }
             }
@@ -3541,18 +2904,10 @@ fn decode_value_json(
         }
         ColumnEncoding::FloatArray { storage } => {
             let len = read_varint(data)? as usize;
-            let elem_bytes = if tag == 2 {
-                match col.logical_type {
-                    LogicalType::Float32Array => 4,
-                    LogicalType::Float64Array => 8,
-                    _ => return Err(anyhow!("rowpack invalid array type")),
-                }
-            } else {
-                match storage {
-                    FloatStorage::F16 => 2,
-                    FloatStorage::F32 => 4,
-                    FloatStorage::F64 => 8,
-                }
+            let elem_bytes = match storage {
+                FloatStorage::F16 => 2,
+                FloatStorage::F32 => 4,
+                FloatStorage::F64 => 8,
             };
             let max_len = data.len() / elem_bytes;
             if len > MAX_ARRAY_LEN || len > max_len {
@@ -3560,13 +2915,11 @@ fn decode_value_json(
             }
             let mut values = Vec::with_capacity(len);
             for _ in 0..len {
-                let v = if tag == 2 {
-                    decode_float_fallback(data, col.logical_type)?
-                } else {
-                    decode_float(data, *storage)?
-                };
+                let v = decode_float(data, *storage)?;
                 match col.logical_type {
-                    LogicalType::Float32Array => values.push(JsonValue::from(v as f32)),
+                    LogicalType::Float16Array | LogicalType::Float32Array => {
+                        values.push(JsonValue::from(v as f32))
+                    }
                     _ => values.push(JsonValue::from(v)),
                 }
             }
@@ -3593,11 +2946,7 @@ fn decode_value_ref<'a>(
             }
         }
         ColumnEncoding::Float { storage } => {
-            let v = if tag == 2 {
-                decode_float_fallback(data, col.logical_type)?
-            } else {
-                decode_float(data, *storage)?
-            };
+            let v = decode_float(data, *storage)?;
             match col.logical_type {
                 LogicalType::Float32 => Ok(ValueRef::Float32(v as f32)),
                 _ => Ok(ValueRef::Float64(v)),
@@ -3638,10 +2987,6 @@ fn decode_value_ref<'a>(
                             format_decimal_i64(v, *scale)
                         }
                     }
-                    DecimalStorage::Float { storage } => {
-                        let v = decode_float(data, *storage)?;
-                        v.to_string()
-                    }
                     DecimalStorage::Raw => unreachable!(),
                 }
             };
@@ -3660,32 +3005,20 @@ fn decode_value_ref<'a>(
         }
         ColumnEncoding::FloatArray { storage } => {
             let len = read_varint(data)? as usize;
-            let elem_bytes = if tag == 2 {
-                match col.logical_type {
-                    LogicalType::Float32Array => 4,
-                    LogicalType::Float64Array => 8,
-                    _ => return Err(anyhow!("rowpack invalid array type")),
-                }
-            } else {
-                match storage {
-                    FloatStorage::F16 => 2,
-                    FloatStorage::F32 => 4,
-                    FloatStorage::F64 => 8,
-                }
+            let elem_bytes = match storage {
+                FloatStorage::F16 => 2,
+                FloatStorage::F32 => 4,
+                FloatStorage::F64 => 8,
             };
             let max_len = data.len() / elem_bytes;
             if len > MAX_ARRAY_LEN || len > max_len {
                 return Err(anyhow!("rowpack array length overflow"));
             }
             match col.logical_type {
-                LogicalType::Float32Array => {
+                LogicalType::Float16Array | LogicalType::Float32Array => {
                     scratch.float32.clear();
                     for _ in 0..len {
-                        let v = if tag == 2 {
-                            decode_float_fallback(data, col.logical_type)?
-                        } else {
-                            decode_float(data, *storage)?
-                        };
+                        let v = decode_float(data, *storage)?;
                         scratch.float32.push(v as f32);
                     }
                     Ok(ValueRef::Float32Array(&scratch.float32))
@@ -3693,11 +3026,7 @@ fn decode_value_ref<'a>(
                 LogicalType::Float64Array => {
                     scratch.float64.clear();
                     for _ in 0..len {
-                        let v = if tag == 2 {
-                            decode_float_fallback(data, col.logical_type)?
-                        } else {
-                            decode_float(data, *storage)?
-                        };
+                        let v = decode_float(data, *storage)?;
                         scratch.float64.push(v);
                     }
                     Ok(ValueRef::Float64Array(&scratch.float64))
@@ -3724,11 +3053,7 @@ fn decode_value_skip(
             }
         }
         ColumnEncoding::Float { storage } => {
-            if tag == 2 {
-                let _ = decode_float_fallback(data, col.logical_type)?;
-            } else {
-                let _ = decode_float(data, *storage)?;
-            }
+            let _ = decode_float(data, *storage)?;
         }
         ColumnEncoding::Bytes { fixed_len } => {
             let _ = if tag == 2 {
@@ -3751,9 +3076,6 @@ fn decode_value_skip(
                 match storage {
                     DecimalStorage::Int { varint, bits } => {
                         let _ = decode_int(data, *varint, *bits)?;
-                    }
-                    DecimalStorage::Float { storage } => {
-                        let _ = decode_float(data, *storage)?;
                     }
                     DecimalStorage::Raw => {}
                 }
@@ -3813,24 +3135,6 @@ fn decode_value_skip(
                 }
                 *data = &data[byte_len..];
             }
-            StringEncoding::NumericInt => {
-                let _ = read_varint(data)?;
-            }
-            StringEncoding::NumericScaled => {
-                let _ = read_varint(data)?;
-                let _ = read_varint(data)?;
-            }
-            StringEncoding::Hex { len, .. } => {
-                let byte_len = len / 2;
-                if data.len() < byte_len {
-                    return Err(anyhow!("rowpack hex truncated"));
-                }
-                *data = &data[byte_len..];
-            }
-            StringEncoding::IsoTimestamp { .. } => {
-                let _ = read_varint(data)?;
-                let _ = read_varint(data)?;
-            }
             StringEncoding::Lz4 => {
                 let raw_len = read_varint(data)? as usize;
                 if raw_len > MAX_FIELD_BYTES {
@@ -3845,18 +3149,10 @@ fn decode_value_skip(
         },
         ColumnEncoding::FloatArray { storage } => {
             let len = read_varint(data)? as usize;
-            let elem_bytes = if tag == 2 {
-                match col.logical_type {
-                    LogicalType::Float32Array => 4,
-                    LogicalType::Float64Array => 8,
-                    _ => return Err(anyhow!("rowpack invalid array type")),
-                }
-            } else {
-                match storage {
-                    FloatStorage::F16 => 2,
-                    FloatStorage::F32 => 4,
-                    FloatStorage::F64 => 8,
-                }
+            let elem_bytes = match storage {
+                FloatStorage::F16 => 2,
+                FloatStorage::F32 => 4,
+                FloatStorage::F64 => 8,
             };
             let total = len.saturating_mul(elem_bytes);
             if data.len() < total {
@@ -3960,27 +3256,6 @@ fn decode_float(data: &mut &[u8], storage: FloatStorage) -> Result<f64> {
         FloatStorage::F64 => {
             if data.len() < 8 {
                 return Err(anyhow!("rowpack f64 truncated"));
-            }
-            let (head, tail) = data.split_at(8);
-            *data = tail;
-            Ok(f64::from_le_bytes(head.try_into().unwrap()))
-        }
-    }
-}
-
-fn decode_float_fallback(data: &mut &[u8], logical: LogicalType) -> Result<f64> {
-    match logical {
-        LogicalType::Float32 | LogicalType::Float32Array => {
-            if data.len() < 4 {
-                return Err(anyhow!("rowpack float fallback truncated"));
-            }
-            let (head, tail) = data.split_at(4);
-            *data = tail;
-            Ok(f32::from_le_bytes(head.try_into().unwrap()) as f64)
-        }
-        _ => {
-            if data.len() < 8 {
-                return Err(anyhow!("rowpack float fallback truncated"));
             }
             let (head, tail) = data.split_at(8);
             *data = tail;
@@ -4185,32 +3460,6 @@ fn decode_string(
             }
             Ok(String::from_utf8_lossy(&out).to_string())
         }
-        StringEncoding::NumericInt => {
-            let value = zigzag_decode(read_varint(data)?);
-            Ok(value.to_string())
-        }
-        StringEncoding::NumericScaled => {
-            let value = zigzag_decode(read_varint(data)?);
-            let scale = read_varint(data)? as u32;
-            if scale > MAX_NUMERIC_SCALE {
-                return Err(anyhow!("rowpack numeric scale too large"));
-            }
-            Ok(format_scaled_i64(value, scale))
-        }
-        StringEncoding::Hex { len, dashed, upper } => {
-            let byte_len = len / 2;
-            if data.len() < byte_len {
-                return Err(anyhow!("rowpack hex truncated"));
-            }
-            let (head, tail) = data.split_at(byte_len);
-            *data = tail;
-            Ok(decode_hex(head, *len, *dashed, *upper))
-        }
-        StringEncoding::IsoTimestamp { fmt } => {
-            let secs = zigzag_decode(read_varint(data)?);
-            let nanos = read_varint(data)? as u32;
-            Ok(format_iso(*fmt, secs, nanos))
-        }
         StringEncoding::Lz4 => {
             let raw_len = read_varint(data)? as usize;
             if raw_len > MAX_FIELD_BYTES {
@@ -4323,39 +3572,6 @@ fn decode_string_into(
                 }
             }
             push_utf8_lossy(&mut scratch.string, &scratch.bytes);
-            Ok(())
-        }
-        StringEncoding::NumericInt => {
-            let value = zigzag_decode(read_varint(data)?);
-            use core::fmt::Write;
-            let _ = write!(scratch.string, "{value}");
-            Ok(())
-        }
-        StringEncoding::NumericScaled => {
-            let value = zigzag_decode(read_varint(data)?);
-            let scale = read_varint(data)? as u32;
-            if scale > MAX_NUMERIC_SCALE {
-                return Err(anyhow!("rowpack numeric scale too large"));
-            }
-            scratch
-                .string
-                .push_str(&format_scaled_i64(value, scale));
-            Ok(())
-        }
-        StringEncoding::Hex { len, dashed, upper } => {
-            let byte_len = len / 2;
-            if data.len() < byte_len {
-                return Err(anyhow!("rowpack hex truncated"));
-            }
-            let (head, tail) = data.split_at(byte_len);
-            *data = tail;
-            scratch.string.push_str(&decode_hex(head, *len, *dashed, *upper));
-            Ok(())
-        }
-        StringEncoding::IsoTimestamp { fmt } => {
-            let secs = zigzag_decode(read_varint(data)?);
-            let nanos = read_varint(data)? as u32;
-            scratch.string.push_str(&format_iso(*fmt, secs, nanos));
             Ok(())
         }
         StringEncoding::Lz4 => {
@@ -4550,9 +3766,7 @@ mod tests {
                     precision: 10,
                     scale: 2,
                     bytes: 16,
-                    storage: DecimalStorage::Float {
-                        storage: FloatStorage::F64,
-                    },
+                    storage: DecimalStorage::Raw,
                 },
             }],
         estimated_row_bytes: 0,
@@ -4565,7 +3779,7 @@ mod tests {
         let JsonValue::Object(map) = json else {
             panic!("expected object");
         };
-        assert_eq!(map.get("amount"), Some(&JsonValue::from(-123.45)));
+        assert_eq!(map.get("amount"), Some(&JsonValue::from("-123.45")));
     }
 
     #[test]
@@ -4579,9 +3793,7 @@ mod tests {
                     precision: 50,
                     scale: 4,
                     bytes: 32,
-                    storage: DecimalStorage::Float {
-                        storage: FloatStorage::F64,
-                    },
+                    storage: DecimalStorage::Raw,
                 },
             }],
         estimated_row_bytes: 0,
@@ -4595,17 +3807,12 @@ mod tests {
         let JsonValue::Object(map) = json else {
             panic!("expected object");
         };
-        let value = map
-            .get("amount")
-            .and_then(|v| v.as_f64())
-            .unwrap();
-        assert!(value.is_finite());
+        assert!(map.get("amount").and_then(|v| v.as_str()).is_some());
     }
 
     #[test]
     fn decimal_lossless_raw_encoding() {
-        let mut config = RowPackConfig::default();
-        config.decimal_allow_lossy = Some(false);
+        let config = RowPackConfig::default();
         let mut builder = RowPackContextBuilder::new(
             vec![RowPackColumn {
                 name: "amount".to_string(),
@@ -4631,8 +3838,7 @@ mod tests {
 
     #[test]
     fn decimal_int_encoding_scale_zero() {
-        let mut config = RowPackConfig::default();
-        config.decimal_allow_lossy = Some(true);
+        let config = RowPackConfig::default();
         let mut builder = RowPackContextBuilder::new(
             vec![RowPackColumn {
                 name: "amount".to_string(),
@@ -4657,46 +3863,8 @@ mod tests {
     }
 
     #[test]
-    fn decimal_lossy_float_encoding_scale_nonzero() {
-        let mut config = RowPackConfig::default();
-        config.decimal_allow_lossy = Some(true);
-        let mut builder = RowPackContextBuilder::new(
-            vec![RowPackColumn {
-                name: "amount".to_string(),
-                logical_type: LogicalType::Decimal128,
-                fixed_len: None,
-                precision: Some(10),
-                scale: Some(3),
-            }],
-            config,
-        );
-        builder
-            .observe_row(&[ValueRef::Decimal128(123456i128)])
-            .unwrap();
-        let ctx = builder.finish().unwrap();
-        match &ctx.columns[0].encoding {
-            ColumnEncoding::Decimal {
-                storage: DecimalStorage::Float { .. },
-                ..
-            } => {}
-            other => panic!("unexpected encoding: {:?}", other),
-        }
-        let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
-        let row = vec![ValueRef::Decimal128(123456i128)];
-        let encoded = encode_row(&encoder, &row);
-        let decoder = RowPackDecoder::new(ctx).unwrap();
-        let json = decoder.decode_json(&encoded).unwrap();
-        let JsonValue::Object(map) = json else {
-            panic!("expected object");
-        };
-        let value = map.get("amount").and_then(|v| v.as_f64()).unwrap();
-        assert!((value - 123.456).abs() < 1e-6);
-    }
-
-    #[test]
     fn decimal_lossless_scale_nonzero_raw_roundtrip() {
-        let mut config = RowPackConfig::default();
-        config.decimal_allow_lossy = Some(false);
+        let config = RowPackConfig::default();
         let mut builder = RowPackContextBuilder::new(
             vec![RowPackColumn {
                 name: "amount".to_string(),
@@ -4779,101 +3947,6 @@ mod tests {
         assert!(json.to_string().contains("carol"));
     }
 
-    #[test]
-    fn iso_timestamp_encoding() {
-        let mut builder = RowPackContextBuilder::new(
-            vec![RowPackColumn {
-                name: "ts".to_string(),
-                logical_type: LogicalType::String,
-                fixed_len: None,
-                precision: None,
-                scale: None,
-            }],
-            RowPackConfig::default(),
-        );
-        builder
-            .observe_row(&[ValueRef::String("2024-01-01T00:00:00Z")])
-            .unwrap();
-        let ctx = builder.finish().unwrap();
-        let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
-        let row = vec![ValueRef::String("2024-01-01T00:00:00Z")];
-        let encoded = encode_row(&encoder, &row);
-        let decoder = RowPackDecoder::new(ctx).unwrap();
-        let json = decoder.decode_json(&encoded).unwrap();
-        assert!(json.to_string().contains("2024"));
-    }
-
-    #[test]
-    fn hex_encoding() {
-        let mut builder = RowPackContextBuilder::new(
-            vec![RowPackColumn {
-                name: "hex".to_string(),
-                logical_type: LogicalType::String,
-                fixed_len: None,
-                precision: None,
-                scale: None,
-            }],
-            RowPackConfig::default(),
-        );
-        builder
-            .observe_row(&[ValueRef::String("0123456789abcdef0123456789abcdef")])
-            .unwrap();
-        let ctx = builder.finish().unwrap();
-        let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
-        let row = vec![ValueRef::String("0123456789abcdef0123456789abcdef")];
-        let encoded = encode_row(&encoder, &row);
-        let decoder = RowPackDecoder::new(ctx).unwrap();
-        let json = decoder.decode_json(&encoded).unwrap();
-        assert!(json.to_string().contains("0123456789abcdef"));
-    }
-
-    #[test]
-    fn hex_uppercase_encoding() {
-        let mut builder = RowPackContextBuilder::new(
-            vec![RowPackColumn {
-                name: "hex".to_string(),
-                logical_type: LogicalType::String,
-                fixed_len: None,
-                precision: None,
-                scale: None,
-            }],
-            RowPackConfig::default(),
-        );
-        builder
-            .observe_row(&[ValueRef::String("ABCDEF0123456789ABCDEF0123456789")])
-            .unwrap();
-        let ctx = builder.finish().unwrap();
-        let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
-        let row = vec![ValueRef::String("ABCDEF0123456789ABCDEF0123456789")];
-        let encoded = encode_row(&encoder, &row);
-        let decoder = RowPackDecoder::new(ctx).unwrap();
-        let json = decoder.decode_json(&encoded).unwrap();
-        assert!(json.to_string().contains("ABCDEF"));
-    }
-
-    #[test]
-    fn hex_mixed_case_falls_back() {
-        let mut builder = RowPackContextBuilder::new(
-            vec![RowPackColumn {
-                name: "hex".to_string(),
-                logical_type: LogicalType::String,
-                fixed_len: None,
-                precision: None,
-                scale: None,
-            }],
-            RowPackConfig::default(),
-        );
-        builder
-            .observe_row(&[ValueRef::String("Abcdef0123456789ABCDEF0123456789")])
-            .unwrap();
-        let ctx = builder.finish().unwrap();
-        let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
-        let row = vec![ValueRef::String("Abcdef0123456789ABCDEF0123456789")];
-        let encoded = encode_row(&encoder, &row);
-        let decoder = RowPackDecoder::new(ctx).unwrap();
-        let json = decoder.decode_json(&encoded).unwrap();
-        assert!(json.to_string().contains("Abcdef"));
-    }
 
     #[test]
     fn alphabet_encoding_roundtrip() {
@@ -5106,7 +4179,7 @@ mod tests {
     }
 
     #[test]
-    fn alphabet_beats_bpe_on_iso_timestamps() {
+    fn alphabet_beats_bpe_on_structured_strings() {
         let samples = vec![
             "2024-01-05T03:24:15Z",
             "2024-02-11T14:09:26Z",
@@ -5123,7 +4196,6 @@ mod tests {
         alpha_config.max_dict_entries = Some(0);
         alpha_config.bpe_max_dict_entries = Some(0);
         alpha_config.bpe_max_dict_bytes = Some(0);
-        alpha_config.string_iso_threshold = Some(2.0);
         let alphabet_encoding = build_string_encoding(&samples, alpha_config);
         let StringEncoding::Alphabet { alphabet } = alphabet_encoding else {
             panic!("expected alphabet encoding");
@@ -5182,7 +4254,6 @@ mod tests {
         alpha_config.max_dict_entries = Some(0);
         alpha_config.bpe_max_dict_entries = Some(0);
         alpha_config.bpe_max_dict_bytes = Some(0);
-        alpha_config.string_iso_threshold = Some(2.0);
         let alphabet_encoding = build_string_encoding(&samples, alpha_config);
         let StringEncoding::Alphabet { alphabet } = alphabet_encoding else {
             panic!("expected alphabet encoding");
@@ -5248,243 +4319,11 @@ mod tests {
     }
 
     #[test]
-    fn numeric_int_encoding_roundtrip() {
-        let ctx = RowPackContext {
-            version: ROWPACK_VERSION,
-            columns: vec![ColumnContext {
-                name: "num".to_string(),
-                logical_type: LogicalType::String,
-                encoding: ColumnEncoding::String {
-                    encoding: StringEncoding::NumericInt,
-                },
-            }],
-        estimated_row_bytes: 0,
-        };
-        let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
-        let row = vec![ValueRef::String("12345")];
-        let encoded = encode_row(&encoder, &row);
-        let decoder = RowPackDecoder::new(ctx).unwrap();
-        let json = decoder.decode_json(&encoded).unwrap();
-        let JsonValue::Object(map) = json else {
-            panic!("expected object");
-        };
-        assert_eq!(map.get("num").and_then(|v| v.as_str()), Some("12345"));
-    }
-
-    #[test]
-    fn numeric_scaled_encoding_roundtrip() {
-        let ctx = RowPackContext {
-            version: ROWPACK_VERSION,
-            columns: vec![ColumnContext {
-                name: "num".to_string(),
-                logical_type: LogicalType::String,
-                encoding: ColumnEncoding::String {
-                    encoding: StringEncoding::NumericScaled,
-                },
-            }],
-        estimated_row_bytes: 0,
-        };
-        let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
-        let row = vec![ValueRef::String("-12.340")];
-        let encoded = encode_row(&encoder, &row);
-        let decoder = RowPackDecoder::new(ctx).unwrap();
-        let json = decoder.decode_json(&encoded).unwrap();
-        let JsonValue::Object(map) = json else {
-            panic!("expected object");
-        };
-        assert_eq!(map.get("num").and_then(|v| v.as_str()), Some("-12.340"));
-    }
-
-    #[test]
-    fn numeric_scaled_encoding_fallback() {
-        let ctx = RowPackContext {
-            version: ROWPACK_VERSION,
-            columns: vec![ColumnContext {
-                name: "num".to_string(),
-                logical_type: LogicalType::String,
-                encoding: ColumnEncoding::String {
-                    encoding: StringEncoding::NumericScaled,
-                },
-            }],
-        estimated_row_bytes: 0,
-        };
-        let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
-        let row = vec![ValueRef::String("12.3a")];
-        let encoded = encode_row(&encoder, &row);
-        let decoder = RowPackDecoder::new(ctx).unwrap();
-        let json = decoder.decode_json(&encoded).unwrap();
-        let JsonValue::Object(map) = json else {
-            panic!("expected object");
-        };
-        assert_eq!(map.get("num").and_then(|v| v.as_str()), Some("12.3a"));
-    }
-
-    #[test]
-    fn numeric_encoding_selected() {
-        let mut builder = RowPackContextBuilder::new(
-            vec![RowPackColumn {
-                name: "num".to_string(),
-                logical_type: LogicalType::String,
-                fixed_len: None,
-                precision: None,
-                scale: None,
-            }],
-            RowPackConfig::default(),
-        );
-        for idx in 0..100 {
-            let value = format!("{}", idx);
-            builder.observe_row(&[ValueRef::String(&value)]).unwrap();
-        }
-        let ctx = builder.finish().unwrap();
-        match &ctx.columns[0].encoding {
-            ColumnEncoding::String {
-                encoding: StringEncoding::NumericInt,
-            } => {}
-            other => panic!("unexpected encoding: {:?}", other),
-        }
-    }
-
-    #[test]
-    fn numeric_scaled_selected() {
-        let mut builder = RowPackContextBuilder::new(
-            vec![RowPackColumn {
-                name: "num".to_string(),
-                logical_type: LogicalType::String,
-                fixed_len: None,
-                precision: None,
-                scale: None,
-            }],
-            RowPackConfig::default(),
-        );
-        for idx in 0..100 {
-            let value = format!("{}.{}", idx, idx % 10);
-            builder.observe_row(&[ValueRef::String(&value)]).unwrap();
-        }
-        let ctx = builder.finish().unwrap();
-        match &ctx.columns[0].encoding {
-            ColumnEncoding::String {
-                encoding: StringEncoding::NumericScaled,
-            } => {}
-            other => panic!("unexpected encoding: {:?}", other),
-        }
-    }
-
-    #[test]
-    fn numeric_rejects_leading_or_trailing_dot() {
-        let ctx = RowPackContext {
-            version: ROWPACK_VERSION,
-            columns: vec![ColumnContext {
-                name: "num".to_string(),
-                logical_type: LogicalType::String,
-                encoding: ColumnEncoding::String {
-                    encoding: StringEncoding::NumericScaled,
-                },
-            }],
-        estimated_row_bytes: 0,
-        };
-        let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
-        let row = vec![ValueRef::String(".5")];
-        let encoded = encode_row(&encoder, &row);
-        let decoder = RowPackDecoder::new(ctx.clone()).unwrap();
-        let json = decoder.decode_json(&encoded).unwrap();
-        let JsonValue::Object(map) = json else {
-            panic!("expected object");
-        };
-        assert_eq!(map.get("num").and_then(|v| v.as_str()), Some(".5"));
-
-        let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
-        let row = vec![ValueRef::String("1.")];
-        let encoded = encode_row(&encoder, &row);
-        let decoder = RowPackDecoder::new(ctx).unwrap();
-        let json = decoder.decode_json(&encoded).unwrap();
-        let JsonValue::Object(map) = json else {
-            panic!("expected object");
-        };
-        assert_eq!(map.get("num").and_then(|v| v.as_str()), Some("1."));
-    }
-
-    #[test]
-    fn hex_dashed_encoding() {
-        let mut builder = RowPackContextBuilder::new(
-            vec![RowPackColumn {
-                name: "hex".to_string(),
-                logical_type: LogicalType::String,
-                fixed_len: None,
-                precision: None,
-                scale: None,
-            }],
-            RowPackConfig::default(),
-        );
-        builder
-            .observe_row(&[ValueRef::String(
-                "01234567-89ab-cdef-0123-456789abcdef",
-            )])
-            .unwrap();
-        let ctx = builder.finish().unwrap();
-        let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
-        let row = vec![ValueRef::String(
-            "01234567-89ab-cdef-0123-456789abcdef",
-        )];
-        let encoded = encode_row(&encoder, &row);
-        let decoder = RowPackDecoder::new(ctx).unwrap();
-        let json = decoder.decode_json(&encoded).unwrap();
-        assert!(json
-            .to_string()
-            .contains("01234567-89ab-cdef-0123-456789abcdef"));
-    }
-
-    #[test]
-    fn hex_fallback_non_hex() {
-        let ctx = RowPackContext {
-            version: ROWPACK_VERSION,
-            columns: vec![ColumnContext {
-                name: "hex".to_string(),
-                logical_type: LogicalType::String,
-                encoding: ColumnEncoding::String {
-                    encoding: StringEncoding::Hex {
-                        len: 32,
-                        dashed: false,
-                        upper: false,
-                    },
-                },
-            }],
-        estimated_row_bytes: 0,
-        };
-        let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
-        let row = vec![ValueRef::String("not-hex")];
-        let encoded = encode_row(&encoder, &row);
-        let decoder = RowPackDecoder::new(ctx).unwrap();
-        let json = decoder.decode_json(&encoded).unwrap();
-        assert!(json.to_string().contains("not-hex"));
-    }
-
-    #[test]
-    fn float16_fallback() {
-        let ctx = RowPackContext {
-            version: ROWPACK_VERSION,
-            columns: vec![ColumnContext {
-                name: "v".to_string(),
-                logical_type: LogicalType::Float64,
-                encoding: ColumnEncoding::Float {
-                    storage: FloatStorage::F16,
-                },
-            }],
-        estimated_row_bytes: 0,
-        };
-        let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
-        let row = vec![ValueRef::Float64(999.0)];
-        let encoded = encode_row(&encoder, &row);
-        let decoder = RowPackDecoder::new(ctx).unwrap();
-        let json = decoder.decode_json(&encoded).unwrap();
-        assert!(json.to_string().contains("999"));
-    }
-
-    #[test]
     fn float_array_float16_encoding() {
         let mut builder = RowPackContextBuilder::new(
             vec![RowPackColumn {
                 name: "embed".to_string(),
-                logical_type: LogicalType::Float32Array,
+                logical_type: LogicalType::Float16Array,
                 fixed_len: None,
                 precision: None,
                 scale: None,
@@ -5507,30 +4346,6 @@ mod tests {
         let decoder = RowPackDecoder::new(ctx).unwrap();
         let json = decoder.decode_json(&encoded).unwrap();
         assert!(json.to_string().contains("0.1"));
-    }
-
-    #[test]
-    fn float_force_float64_encoding() {
-        let mut config = RowPackConfig::default();
-        config.force_float64 = Some(true);
-        let mut builder = RowPackContextBuilder::new(
-            vec![RowPackColumn {
-                name: "score".to_string(),
-                logical_type: LogicalType::Float32,
-                fixed_len: None,
-                precision: None,
-                scale: None,
-            }],
-            config,
-        );
-        builder.observe_row(&[ValueRef::Float32(1.5)]).unwrap();
-        let ctx = builder.finish().unwrap();
-        match &ctx.columns[0].encoding {
-            ColumnEncoding::Float { storage } => {
-                assert_eq!(*storage, FloatStorage::F64);
-            }
-            other => panic!("unexpected encoding: {:?}", other),
-        }
     }
 
     #[test]
@@ -5671,89 +4486,6 @@ mod tests {
         let decoder = RowPackDecoder::new(ctx).unwrap();
         let json = decoder.decode_json(&encoded).unwrap();
         assert!(json.to_string().contains("-12345"));
-    }
-
-    #[test]
-    fn iso_fallback_string() {
-        let ctx = RowPackContext {
-            version: ROWPACK_VERSION,
-            columns: vec![ColumnContext {
-                name: "ts".to_string(),
-                logical_type: LogicalType::String,
-                encoding: ColumnEncoding::String {
-                    encoding: StringEncoding::IsoTimestamp { fmt: IsoFormat::Rfc3339 },
-                },
-            }],
-        estimated_row_bytes: 0,
-        };
-        let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
-        let row = vec![ValueRef::String("not-a-timestamp")];
-        let encoded = encode_row(&encoder, &row);
-        let decoder = RowPackDecoder::new(ctx).unwrap();
-        let json = decoder.decode_json(&encoded).unwrap();
-        assert!(json.to_string().contains("not-a-timestamp"));
-    }
-
-    #[test]
-    fn iso_date_only_encoding() {
-        let mut builder = RowPackContextBuilder::new(
-            vec![RowPackColumn {
-                name: "ts".to_string(),
-                logical_type: LogicalType::String,
-                fixed_len: None,
-                precision: None,
-                scale: None,
-            }],
-            RowPackConfig::default(),
-        );
-        builder.observe_row(&[ValueRef::String("2024-02-03")]).unwrap();
-        let ctx = builder.finish().unwrap();
-        match &ctx.columns[0].encoding {
-            ColumnEncoding::String {
-                encoding: StringEncoding::IsoTimestamp { fmt },
-            } => {
-                assert_eq!(*fmt, IsoFormat::DateOnly);
-            }
-            other => panic!("unexpected encoding: {:?}", other),
-        }
-        let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
-        let row = vec![ValueRef::String("2024-02-03")];
-        let encoded = encode_row(&encoder, &row);
-        let decoder = RowPackDecoder::new(ctx).unwrap();
-        let json = decoder.decode_json(&encoded).unwrap();
-        assert!(json.to_string().contains("2024-02-03"));
-    }
-
-    #[test]
-    fn iso_date_time_space_encoding() {
-        let mut builder = RowPackContextBuilder::new(
-            vec![RowPackColumn {
-                name: "ts".to_string(),
-                logical_type: LogicalType::String,
-                fixed_len: None,
-                precision: None,
-                scale: None,
-            }],
-            RowPackConfig::default(),
-        );
-        builder
-            .observe_row(&[ValueRef::String("2024-02-03 12:34:56")])
-            .unwrap();
-        let ctx = builder.finish().unwrap();
-        match &ctx.columns[0].encoding {
-            ColumnEncoding::String {
-                encoding: StringEncoding::IsoTimestamp { fmt },
-            } => {
-                assert_eq!(*fmt, IsoFormat::DateTimeSpace);
-            }
-            other => panic!("unexpected encoding: {:?}", other),
-        }
-        let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
-        let row = vec![ValueRef::String("2024-02-03 12:34:56")];
-        let encoded = encode_row(&encoder, &row);
-        let decoder = RowPackDecoder::new(ctx).unwrap();
-        let json = decoder.decode_json(&encoded).unwrap();
-        assert!(json.to_string().contains("2024-02-03 12:34:56"));
     }
 
     #[test]

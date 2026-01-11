@@ -97,6 +97,7 @@ pub enum ColumnType {
     Decimal256,
     Float32Array,
     Float64Array,
+    Float16Array,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

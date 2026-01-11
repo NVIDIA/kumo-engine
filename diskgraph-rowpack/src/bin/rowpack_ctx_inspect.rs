@@ -116,21 +116,6 @@ fn print_string_encoding(encoding: &StringEncoding) -> Result<()> {
                 println!("    [{}] {}", idx, format_bytes(value));
             }
         }
-        StringEncoding::NumericInt => {
-            println!("  Encoding: string numeric_int");
-        }
-        StringEncoding::NumericScaled => {
-            println!("  Encoding: string numeric_scaled");
-        }
-        StringEncoding::Hex { len, dashed, upper } => {
-            println!(
-                "  Encoding: string hex (len={}, dashed={}, upper={})",
-                len, dashed, upper
-            );
-        }
-        StringEncoding::IsoTimestamp { fmt } => {
-            println!("  Encoding: string iso_timestamp ({:?})", fmt);
-        }
         StringEncoding::Lz4 => {
             println!("  Encoding: string lz4");
         }
@@ -151,9 +136,6 @@ fn format_decimal_storage(storage: &DecimalStorage) -> String {
         DecimalStorage::Raw => "raw".to_string(),
         DecimalStorage::Int { varint, bits } => {
             format!("int(varint={}, bits={})", varint, bits)
-        }
-        DecimalStorage::Float { storage } => {
-            format!("float({})", format_float_storage(*storage))
         }
     }
 }

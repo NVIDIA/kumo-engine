@@ -7283,6 +7283,11 @@ fn table_schema(table: &TableSpec) -> Result<Schema> {
                 DataType::Float64,
                 true,
             ))),
+            ColumnType::Float16Array => DataType::List(Arc::new(Field::new(
+                "item",
+                DataType::Float16,
+                true,
+            ))),
         };
         fields.push(Field::new(&col.name, dtype, true));
     }
@@ -7341,6 +7346,7 @@ fn rowpack_columns(table: &TableSpec) -> Result<Vec<diskgraph_rowpack::RowPackCo
             ColumnType::Decimal256 => RowpackType::Decimal256,
             ColumnType::Float32Array => RowpackType::Float32Array,
             ColumnType::Float64Array => RowpackType::Float64Array,
+            ColumnType::Float16Array => RowpackType::Float16Array,
         };
         columns.push(diskgraph_rowpack::RowPackColumn {
             name: col.name.clone(),
@@ -7378,6 +7384,7 @@ fn rowpack_columns_for_specs(
             ColumnType::Decimal256 => RowpackType::Decimal256,
             ColumnType::Float32Array => RowpackType::Float32Array,
             ColumnType::Float64Array => RowpackType::Float64Array,
+            ColumnType::Float16Array => RowpackType::Float16Array,
         };
         columns.push(diskgraph_rowpack::RowPackColumn {
             name: col.name.clone(),
@@ -7866,7 +7873,74 @@ impl<'a> RowAccess<'a> {
                         std::mem::transmute::<&[f64], &'a [f64]>(vec.as_slice())
                     }))
                 }
+                ColumnType::Float16Array => {
+                    return Err(anyhow!("float16 array source unsupported"));
+                }
             },
+            (ColumnType::Float64, ColumnType::Float32) => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Float64Array>()
+                    .ok_or_else(|| anyhow!("float64 cast"))?;
+                Ok(ValueRef::Float32(arr.value(self.row) as f32))
+            }
+            (ColumnType::Float32, ColumnType::Float64) => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Float32Array>()
+                    .ok_or_else(|| anyhow!("float32 cast"))?;
+                Ok(ValueRef::Float64(arr.value(self.row) as f64))
+            }
+            (ColumnType::Float32Array, ColumnType::Float16Array) => {
+                let list = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::ListArray>()
+                    .ok_or_else(|| anyhow!("list cast"))?;
+                let values_arr = list
+                    .values()
+                    .as_any()
+                    .downcast_ref::<arrow_array::Float32Array>()
+                    .ok_or_else(|| anyhow!("float32 list cast"))?;
+                let offsets = list.value_offsets();
+                let start = offsets[self.row] as usize;
+                let end = offsets[self.row + 1] as usize;
+                let vec = self.pools.take_f32_vec(end.saturating_sub(start));
+                for idx in start..end {
+                    if values_arr.is_null(idx) {
+                        vec.push(0.0);
+                    } else {
+                        vec.push(values_arr.value(idx));
+                    }
+                }
+                Ok(ValueRef::Float32Array(unsafe {
+                    std::mem::transmute::<&[f32], &'a [f32]>(vec.as_slice())
+                }))
+            }
+            (ColumnType::Float64Array, ColumnType::Float16Array) => {
+                let list = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::ListArray>()
+                    .ok_or_else(|| anyhow!("list cast"))?;
+                let values_arr = list
+                    .values()
+                    .as_any()
+                    .downcast_ref::<arrow_array::Float64Array>()
+                    .ok_or_else(|| anyhow!("float64 list cast"))?;
+                let offsets = list.value_offsets();
+                let start = offsets[self.row] as usize;
+                let end = offsets[self.row + 1] as usize;
+                let vec = self.pools.take_f32_vec(end.saturating_sub(start));
+                for idx in start..end {
+                    if values_arr.is_null(idx) {
+                        vec.push(0.0);
+                    } else {
+                        vec.push(values_arr.value(idx) as f32);
+                    }
+                }
+                Ok(ValueRef::Float32Array(unsafe {
+                    std::mem::transmute::<&[f32], &'a [f32]>(vec.as_slice())
+                }))
+            }
             (ColumnType::String, ColumnType::Timestamp)
             | (ColumnType::Bytes, ColumnType::Timestamp) => {
                 let text = read_utf8(array, self.row, &col.source_dtype)?;
@@ -8509,7 +8583,74 @@ fn row_values_from_row<'a>(
                         unsafe { std::mem::transmute::<&[f64], &'static [f64]>(vec.as_slice()) };
                     values.push(ValueRef::Float64Array(slice));
                 }
+                ColumnType::Float16Array => {
+                    return Err(anyhow!("float16 array source unsupported"));
+                }
             },
+            (ColumnType::Float64, ColumnType::Float32) => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Float64Array>()
+                    .ok_or_else(|| anyhow!("float64 cast"))?;
+                values.push(ValueRef::Float32(arr.value(row.row) as f32));
+            }
+            (ColumnType::Float32, ColumnType::Float64) => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Float32Array>()
+                    .ok_or_else(|| anyhow!("float32 cast"))?;
+                values.push(ValueRef::Float64(arr.value(row.row) as f64));
+            }
+            (ColumnType::Float32Array, ColumnType::Float16Array) => {
+                let list = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::ListArray>()
+                    .ok_or_else(|| anyhow!("list cast"))?;
+                let values_arr = list
+                    .values()
+                    .as_any()
+                    .downcast_ref::<arrow_array::Float32Array>()
+                    .ok_or_else(|| anyhow!("float32 list cast"))?;
+                let offsets = list.value_offsets();
+                let start = offsets[row.row] as usize;
+                let end = offsets[row.row + 1] as usize;
+                let vec = pools.take_f32_vec(end.saturating_sub(start));
+                for idx in start..end {
+                    if values_arr.is_null(idx) {
+                        vec.push(0.0);
+                    } else {
+                        vec.push(values_arr.value(idx));
+                    }
+                }
+                let slice =
+                    unsafe { std::mem::transmute::<&[f32], &'static [f32]>(vec.as_slice()) };
+                values.push(ValueRef::Float32Array(slice));
+            }
+            (ColumnType::Float64Array, ColumnType::Float16Array) => {
+                let list = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::ListArray>()
+                    .ok_or_else(|| anyhow!("list cast"))?;
+                let values_arr = list
+                    .values()
+                    .as_any()
+                    .downcast_ref::<arrow_array::Float64Array>()
+                    .ok_or_else(|| anyhow!("float64 list cast"))?;
+                let offsets = list.value_offsets();
+                let start = offsets[row.row] as usize;
+                let end = offsets[row.row + 1] as usize;
+                let vec = pools.take_f32_vec(end.saturating_sub(start));
+                for idx in start..end {
+                    if values_arr.is_null(idx) {
+                        vec.push(0.0);
+                    } else {
+                        vec.push(values_arr.value(idx) as f32);
+                    }
+                }
+                let slice =
+                    unsafe { std::mem::transmute::<&[f32], &'static [f32]>(vec.as_slice()) };
+                values.push(ValueRef::Float32Array(slice));
+            }
             (ColumnType::String, ColumnType::Timestamp)
             | (ColumnType::Bytes, ColumnType::Timestamp) => {
                 let text = read_utf8(array, row.row, &col.source_dtype)?;
