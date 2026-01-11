@@ -113,6 +113,7 @@ pub struct EdgeSortKeyTimestampEncoding {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum EdgeSortKeyTimestampKind {
+    Int8,
     Int16,
     Int32,
 }

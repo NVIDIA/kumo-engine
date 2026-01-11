@@ -922,6 +922,7 @@ struct WeightExprVar {
 
 fn timestamp_width_bits(kind: &TimestampEncodingKind) -> u8 {
     match kind {
+        TimestampEncodingKind::Int8 => 8,
         TimestampEncodingKind::Int16 => 16,
         TimestampEncodingKind::Int32 => 32,
     }
@@ -974,6 +975,7 @@ fn build_sort_key_metadata(cfg: &RelationSortKeyConfig) -> EdgeSortKeyMetadata {
             column: ts.column.clone(),
             encoding: EdgeSortKeyTimestampEncoding {
                 kind: match ts.encoding.kind {
+                    TimestampEncodingKind::Int8 => EdgeSortKeyTimestampKind::Int8,
                     TimestampEncodingKind::Int16 => EdgeSortKeyTimestampKind::Int16,
                     TimestampEncodingKind::Int32 => EdgeSortKeyTimestampKind::Int32,
                 },
@@ -1132,6 +1134,10 @@ fn encode_timestamp_value(
     let raw = value.unwrap_or(i64::MIN);
     let delta = raw.saturating_sub(encoding.anchor).div_euclid(step);
     match encoding.kind {
+        TimestampEncodingKind::Int8 => {
+            let clamped = delta.clamp(i8::MIN as i64, i8::MAX as i64) as i8;
+            ordered_signed_to_u64(clamped as i64, 8)
+        }
         TimestampEncodingKind::Int16 => {
             let clamped = delta.clamp(i16::MIN as i64, i16::MAX as i64) as i16;
             ordered_signed_to_u64(clamped as i64, 16)
@@ -1146,6 +1152,7 @@ fn encode_timestamp_value(
 fn ordered_signed_to_u64(value: i64, bits: u8) -> u64 {
     let mask = 1u64 << (bits - 1);
     let raw = match bits {
+        8 => (value as i8 as u8) as u64,
         16 => (value as i16 as u16) as u64,
         32 => (value as i32 as u32) as u64,
         _ => value as u64,

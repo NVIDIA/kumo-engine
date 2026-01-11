@@ -1165,6 +1165,7 @@ fn format_sort_key_summary(rel: &EdgeRelationMetadata) -> String {
     let mut parts = Vec::new();
     if let Some(ts) = &meta.timestamp {
         let kind = match ts.encoding.kind {
+            EdgeSortKeyTimestampKind::Int8 => "int8",
             EdgeSortKeyTimestampKind::Int16 => "int16",
             EdgeSortKeyTimestampKind::Int32 => "int32",
         };
@@ -1222,6 +1223,7 @@ fn format_sort_key_value(rel: &EdgeRelationMetadata, raw: u64) -> String {
 
 fn timestamp_bits_for_meta(meta: &diskgraph_core::metadata::EdgeSortKeyTimestampMetadata) -> u8 {
     match meta.encoding.kind {
+        EdgeSortKeyTimestampKind::Int8 => 8,
         EdgeSortKeyTimestampKind::Int16 => 16,
         EdgeSortKeyTimestampKind::Int32 => 32,
     }

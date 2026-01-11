@@ -194,6 +194,7 @@ pub struct TimestampEncodingSpec {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum TimestampEncodingKind {
+    Int8,
     Int16,
     Int32,
 }
@@ -743,6 +744,7 @@ fn validate_sort_key_spec(
             ));
         }
         width_bits += match ts.encoding.kind {
+            TimestampEncodingKind::Int8 => 8,
             TimestampEncodingKind::Int16 => 16,
             TimestampEncodingKind::Int32 => 32,
         };

@@ -2,15 +2,19 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use ahash::AHashMap;
 use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
-use chrono::{NaiveDate, NaiveDateTime};
+use chrono::{NaiveDate, NaiveDateTime, Utc};
 use diskgraph_fs::{
     build_adls_client, build_gcs_client, build_s3_client, AdlsConfig, GcsConfig, S3Config,
 };
 use diskgraph_ingest::source_metadata::{
-    ColumnSpec, ColumnType, EdgeTableSpec, ForeignKeySpec, KeyMode, RelationshipSpec,
-    SourceMetadata, TableFormat, TableSpec, TimestampUnit,
+    relationship_name, ColumnSpec, ColumnType, EdgeSortKeysSpec, EdgeTableSortKeysSpec,
+    EdgeTableSpec, ForeignKeySpec, KeyMode, RelationshipSortKeysSpec, RelationshipSpec,
+    SortKeySpec, SortKeyTimestampSpec, SortKeyWeightSpec, SourceMetadata, TableFormat,
+    TableSpec, TimestampEncodingKind, TimestampEncodingSpec, TimestampUnit, WeightEncodingKind,
+    WeightEncodingSpec,
 };
 use arrow_array::{
     Array, Int16Array, Int32Array, Int64Array, Int8Array, LargeStringArray, RecordBatch,
@@ -184,6 +188,7 @@ pub fn infer_source_metadata(root: &RootSource, options: InferOptions) -> Result
     infer_primary_key_relationships(&table_specs, &mut relationships);
     infer_edge_tables(&mut table_specs, &relationships);
     prune_relationships_for_edge_tables(&table_specs, &mut relationships);
+    let edge_sort_keys = infer_edge_sort_keys(&table_specs, &relationships);
 
     let total_bytes: u64 = tables.iter().map(|table| table.total_bytes).sum();
     let num_shards = estimate_num_shards(total_bytes);
@@ -191,6 +196,7 @@ pub fn infer_source_metadata(root: &RootSource, options: InferOptions) -> Result
         dataset_name: root_dataset_name(root),
         tables: table_specs,
         relationships,
+        edge_sort_keys,
         rowpack: None,
         num_shards: Some(num_shards),
         edge_format: None,
@@ -1903,6 +1909,180 @@ fn prune_relationships_for_edge_tables(tables: &[TableSpec], rels: &mut Vec<Rela
     });
 }
 
+fn infer_edge_sort_keys(
+    tables: &[TableSpec],
+    rels: &[RelationshipSpec],
+) -> Option<EdgeSortKeysSpec> {
+    let mut table_map = HashMap::new();
+    for table in tables {
+        table_map.insert(table.name.as_str(), table);
+    }
+    let ts_encoding = TimestampEncodingSpec {
+        kind: TimestampEncodingKind::Int16,
+        anchor: utc_midnight_seconds(),
+        step: 86_400,
+    };
+    let weight_encoding = WeightEncodingSpec {
+        dtype: WeightEncodingKind::Float16,
+    };
+    let mut rel_specs = AHashMap::new();
+    for rel in rels {
+        let Some(dst_table) = table_map.get(rel.dst_table.as_str()) else {
+            continue;
+        };
+        let Some(src_table) = table_map.get(rel.src_table.as_str()) else {
+            continue;
+        };
+        let forward = build_relation_sort_key(dst_table, &ts_encoding, &weight_encoding);
+        let reverse = build_relation_sort_key(src_table, &ts_encoding, &weight_encoding);
+        if forward.is_some() || reverse.is_some() {
+            rel_specs.insert(
+                relationship_name(rel),
+                RelationshipSortKeysSpec { forward, reverse },
+            );
+        }
+    }
+    let mut edge_specs = AHashMap::new();
+    for table in tables {
+        let Some(edge_table) = &table.edge_table else {
+            continue;
+        };
+        let src_table = table_map.get(edge_table.src_fk.ref_table.as_str());
+        let dst_table = table_map.get(edge_table.dst_fk.ref_table.as_str());
+        let src_to_dst = dst_table.and_then(|dst| {
+            build_edge_table_sort_key(table, dst, &ts_encoding, &weight_encoding)
+        });
+        let dst_to_src = src_table.and_then(|src| {
+            build_edge_table_sort_key(table, src, &ts_encoding, &weight_encoding)
+        });
+        if src_to_dst.is_some() || dst_to_src.is_some() {
+            edge_specs.insert(
+                table.name.clone(),
+                EdgeTableSortKeysSpec {
+                    src_to_dst,
+                    dst_to_src,
+                },
+            );
+        }
+    }
+    if rel_specs.is_empty() && edge_specs.is_empty() {
+        None
+    } else {
+        Some(EdgeSortKeysSpec {
+            relationships: rel_specs,
+            edge_tables: edge_specs,
+        })
+    }
+}
+
+fn build_relation_sort_key(
+    table: &TableSpec,
+    ts_encoding: &TimestampEncodingSpec,
+    weight_encoding: &WeightEncodingSpec,
+) -> Option<SortKeySpec> {
+    let mut spec = SortKeySpec::default();
+    if let Some(ts) = table.create_time.as_ref() {
+        spec.timestamp = Some(SortKeyTimestampSpec {
+            table: table.name.clone(),
+            column: ts.clone(),
+            encoding: ts_encoding.clone(),
+        });
+    }
+    if let Some(weight) = find_weight_column(table) {
+        spec.weight = Some(SortKeyWeightSpec {
+            table: table.name.clone(),
+            expr: weight_expr_for_column(&weight.name),
+            encoding: weight_encoding.clone(),
+        });
+    }
+    if spec.timestamp.is_some() || spec.weight.is_some() {
+        Some(spec)
+    } else {
+        None
+    }
+}
+
+fn build_edge_table_sort_key(
+    edge_table: &TableSpec,
+    dest_table: &TableSpec,
+    ts_encoding: &TimestampEncodingSpec,
+    weight_encoding: &WeightEncodingSpec,
+) -> Option<SortKeySpec> {
+    let mut spec = SortKeySpec::default();
+    if let Some(ts) = edge_table.create_time.as_ref() {
+        spec.timestamp = Some(SortKeyTimestampSpec {
+            table: edge_table.name.clone(),
+            column: ts.clone(),
+            encoding: ts_encoding.clone(),
+        });
+    } else if let Some(ts) = dest_table.create_time.as_ref() {
+        spec.timestamp = Some(SortKeyTimestampSpec {
+            table: dest_table.name.clone(),
+            column: ts.clone(),
+            encoding: ts_encoding.clone(),
+        });
+    }
+    if let Some(weight) = find_weight_column(edge_table) {
+        spec.weight = Some(SortKeyWeightSpec {
+            table: edge_table.name.clone(),
+            expr: weight_expr_for_column(&weight.name),
+            encoding: weight_encoding.clone(),
+        });
+    } else if let Some(weight) = find_weight_column(dest_table) {
+        spec.weight = Some(SortKeyWeightSpec {
+            table: dest_table.name.clone(),
+            expr: weight_expr_for_column(&weight.name),
+            encoding: weight_encoding.clone(),
+        });
+    }
+    if spec.timestamp.is_some() || spec.weight.is_some() {
+        Some(spec)
+    } else {
+        None
+    }
+}
+
+fn find_weight_column(table: &TableSpec) -> Option<&ColumnSpec> {
+    table.columns.iter().find(|col| is_weight_like(col))
+}
+
+fn weight_expr_for_column(name: &str) -> String {
+    if is_simple_identifier(name) {
+        name.to_string()
+    } else {
+        let mut out = String::with_capacity(name.len() + 2);
+        out.push('`');
+        for ch in name.chars() {
+            if ch == '`' || ch == '\\' {
+                out.push('\\');
+            }
+            out.push(ch);
+        }
+        out.push('`');
+        out
+    }
+}
+
+fn is_simple_identifier(name: &str) -> bool {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !(first.is_ascii_alphabetic() || first == '_') {
+        return false;
+    }
+    chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+}
+
+fn utc_midnight_seconds() -> i64 {
+    let today = Utc::now().date_naive();
+    today
+        .and_hms_opt(0, 0, 0)
+        .expect("valid midnight")
+        .and_utc()
+        .timestamp()
+}
+
 fn is_weight_like(col: &ColumnSpec) -> bool {
     let name = col.name.to_lowercase();
     if !matches!(
@@ -3104,6 +3284,123 @@ mod tests {
             !rels.iter().any(|rel| rel.src_table == "user_item_edges"),
             "edge table relationships should be pruned"
         );
+    }
+
+    #[test]
+    fn infer_relationship_sort_keys_use_create_time() {
+        let mut tables = vec![
+            table(
+                "users",
+                &[
+                    ("user_id", ColumnType::Int64),
+                    ("created_at", ColumnType::Timestamp),
+                    ("weight", ColumnType::Float32),
+                ],
+            ),
+            table(
+                "events",
+                &[
+                    ("event_id", ColumnType::Int64),
+                    ("user_id", ColumnType::Int64),
+                    ("created_at", ColumnType::Timestamp),
+                ],
+            ),
+        ];
+        infer_primary_keys(&mut tables);
+        infer_create_time(&mut tables);
+        let mut rels = Vec::new();
+        let mut notes = Vec::new();
+        infer_foreign_keys(&tables, &mut rels, &mut notes);
+        drop_join_table_primary_keys(&mut tables, &rels);
+        prune_relationships_without_primary_key(&tables, &mut rels);
+        infer_primary_key_relationships(&tables, &mut rels);
+        infer_edge_tables(&mut tables, &rels);
+        prune_relationships_for_edge_tables(&tables, &mut rels);
+
+        let specs = infer_edge_sort_keys(&tables, &rels).expect("edge sort keys");
+        let rel = rels
+            .iter()
+            .find(|rel| rel.src_table == "events" && rel.dst_table == "users")
+            .expect("relationship");
+        let rel_spec = specs
+            .relationships
+            .get(&relationship_name(rel))
+            .expect("relationship sort key");
+        let forward = rel_spec.forward.as_ref().expect("forward sort key");
+        let forward_ts = forward.timestamp.as_ref().expect("forward timestamp");
+        assert_eq!(forward_ts.table, "users");
+        assert_eq!(forward_ts.column, "created_at");
+        assert_eq!(forward_ts.encoding.kind, TimestampEncodingKind::Int16);
+        assert_eq!(forward_ts.encoding.step, 86_400);
+        let forward_weight = forward.weight.as_ref().expect("forward weight");
+        assert_eq!(forward_weight.table, "users");
+        assert_eq!(forward_weight.expr, "weight");
+        assert_eq!(forward_weight.encoding.dtype, WeightEncodingKind::Float16);
+
+        let reverse = rel_spec.reverse.as_ref().expect("reverse sort key");
+        let reverse_ts = reverse.timestamp.as_ref().expect("reverse timestamp");
+        assert_eq!(reverse_ts.table, "events");
+        assert_eq!(reverse_ts.column, "created_at");
+        assert!(reverse.weight.is_none());
+    }
+
+    #[test]
+    fn infer_edge_table_sort_keys_prefer_edge_table_create_time() {
+        let mut tables = vec![
+            table(
+                "users",
+                &[
+                    ("user_id", ColumnType::Int64),
+                    ("created_at", ColumnType::Timestamp),
+                ],
+            ),
+            table(
+                "items",
+                &[
+                    ("item_id", ColumnType::Int64),
+                    ("created_at", ColumnType::Timestamp),
+                ],
+            ),
+            table(
+                "user_item_edges",
+                &[
+                    ("user_id", ColumnType::Int64),
+                    ("item_id", ColumnType::Int64),
+                    ("created_at", ColumnType::Timestamp),
+                    ("weight", ColumnType::Float32),
+                ],
+            ),
+        ];
+        infer_primary_keys(&mut tables);
+        infer_create_time(&mut tables);
+        let mut rels = Vec::new();
+        let mut notes = Vec::new();
+        infer_foreign_keys(&tables, &mut rels, &mut notes);
+        drop_join_table_primary_keys(&mut tables, &rels);
+        prune_relationships_without_primary_key(&tables, &mut rels);
+        infer_primary_key_relationships(&tables, &mut rels);
+        infer_edge_tables(&mut tables, &rels);
+        prune_relationships_for_edge_tables(&tables, &mut rels);
+
+        let specs = infer_edge_sort_keys(&tables, &rels).expect("edge sort keys");
+        let edge_spec = specs
+            .edge_tables
+            .get("user_item_edges")
+            .expect("edge table sort key");
+        let src_to_dst = edge_spec
+            .src_to_dst
+            .as_ref()
+            .expect("src_to_dst sort key");
+        let src_ts = src_to_dst.timestamp.as_ref().expect("src_to_dst timestamp");
+        assert_eq!(src_ts.table, "user_item_edges");
+        assert_eq!(src_ts.column, "created_at");
+        let dst_to_src = edge_spec
+            .dst_to_src
+            .as_ref()
+            .expect("dst_to_src sort key");
+        let dst_ts = dst_to_src.timestamp.as_ref().expect("dst_to_src timestamp");
+        assert_eq!(dst_ts.table, "user_item_edges");
+        assert_eq!(dst_ts.column, "created_at");
     }
 
     #[test]
