@@ -151,9 +151,9 @@ fn ingest_csv_with_edges_and_rowpack() -> Result<()> {
                 "primary_key": "id",
                 "weight": "weight",
                 "columns": [
-                    {"name": "id", "source_dtype": "int64", "ingested_dtype": "int64"},
-                    {"name": "name", "source_dtype": "string", "ingested_dtype": "string"},
-                    {"name": "weight", "source_dtype": "float32", "ingested_dtype": "float32"}
+                    {"name": "id", "ingested_dtype": "int64"},
+                    {"name": "name", "ingested_dtype": "string"},
+                    {"name": "weight", "ingested_dtype": "float32"}
                 ]
             },
             {
@@ -162,8 +162,8 @@ fn ingest_csv_with_edges_and_rowpack() -> Result<()> {
                 "paths": [input_root.join("orders.csv").to_string_lossy()],
                 "primary_key": "id",
                 "columns": [
-                    {"name": "id", "source_dtype": "int64", "ingested_dtype": "int64"},
-                    {"name": "user_id", "source_dtype": "int64", "ingested_dtype": "int64"}
+                    {"name": "id", "ingested_dtype": "int64"},
+                    {"name": "user_id", "ingested_dtype": "int64"}
                 ]
             },
             {
@@ -173,8 +173,8 @@ fn ingest_csv_with_edges_and_rowpack() -> Result<()> {
                 "primary_key": "id",
                 "weight": "weight",
                 "columns": [
-                    {"name": "id", "source_dtype": "int64", "ingested_dtype": "int64"},
-                    {"name": "weight", "source_dtype": "float32", "ingested_dtype": "float32"}
+                    {"name": "id", "ingested_dtype": "int64"},
+                    {"name": "weight", "ingested_dtype": "float32"}
                 ]
             },
             {
@@ -187,9 +187,9 @@ fn ingest_csv_with_edges_and_rowpack() -> Result<()> {
                 },
                 "weight": "weight",
                 "columns": [
-                    {"name": "order_id", "source_dtype": "int64", "ingested_dtype": "int64"},
-                    {"name": "product_id", "source_dtype": "int64", "ingested_dtype": "int64"},
-                    {"name": "weight", "source_dtype": "int32", "ingested_dtype": "int32"}
+                    {"name": "order_id", "ingested_dtype": "int64"},
+                    {"name": "product_id", "ingested_dtype": "int64"},
+                    {"name": "weight", "ingested_dtype": "int32"}
                 ]
             }
         ],
@@ -391,8 +391,8 @@ fn ingest_csv_multi_file_table_with_two_shards() -> Result<()> {
                 ],
                 "primary_key": "id",
                 "columns": [
-                    {"name": "id", "source_dtype": "int64", "ingested_dtype": "int64"},
-                    {"name": "name", "source_dtype": "string", "ingested_dtype": "string"}
+                    {"name": "id", "ingested_dtype": "int64"},
+                    {"name": "name", "ingested_dtype": "string"}
                 ]
             },
             {
@@ -404,8 +404,8 @@ fn ingest_csv_multi_file_table_with_two_shards() -> Result<()> {
                 ],
                 "primary_key": "id",
                 "columns": [
-                    {"name": "id", "source_dtype": "int64", "ingested_dtype": "int64"},
-                    {"name": "user_id", "source_dtype": "int64", "ingested_dtype": "int64"}
+                    {"name": "id", "ingested_dtype": "int64"},
+                    {"name": "user_id", "ingested_dtype": "int64"}
                 ]
             },
             {
@@ -420,8 +420,8 @@ fn ingest_csv_multi_file_table_with_two_shards() -> Result<()> {
                     "dst_fk": {"column": "order_id", "ref_table": "Order", "ref_column": "id"}
                 },
                 "columns": [
-                    {"name": "user_id", "source_dtype": "int64", "ingested_dtype": "int64"},
-                    {"name": "order_id", "source_dtype": "int64", "ingested_dtype": "int64"}
+                    {"name": "user_id", "ingested_dtype": "int64"},
+                    {"name": "order_id", "ingested_dtype": "int64"}
                 ]
             }
         ],
@@ -518,8 +518,8 @@ fn ingest_parquet_with_sorted_mapping() -> Result<()> {
                 "primary_key": "id",
                 "weight": "weight",
                 "columns": [
-                    {"name": "id", "source_dtype": "string", "ingested_dtype": "string", "fixed_len": 8},
-                    {"name": "weight", "source_dtype": "float32", "ingested_dtype": "float32"}
+                    {"name": "id", "ingested_dtype": "string", "fixed_len": 8},
+                    {"name": "weight", "ingested_dtype": "float32"}
                 ]
             }
         ],
@@ -580,8 +580,8 @@ fn ingest_csv_with_bytes_pk_mapping() -> Result<()> {
                 "paths": [table_path.to_string_lossy()],
                 "primary_key": "id",
                 "columns": [
-                    {"name": "id", "source_dtype": "bytes", "ingested_dtype": "bytes", "fixed_len": 4},
-                    {"name": "name", "source_dtype": "string", "ingested_dtype": "string"}
+                    {"name": "id", "ingested_dtype": "bytes", "fixed_len": 4},
+                    {"name": "name", "ingested_dtype": "string"}
                 ]
             }
         ],
@@ -653,8 +653,8 @@ fn ingest_relationship_uses_dest_timestamp_sort_key() -> Result<()> {
                 "paths": [event_path.to_string_lossy()],
                 "primary_key": "id",
                 "columns": [
-                    {"name": "id", "source_dtype": "int64", "ingested_dtype": "int64"},
-                    {"name": "session_id", "source_dtype": "int64", "ingested_dtype": "int64"}
+                    {"name": "id", "ingested_dtype": "int64"},
+                    {"name": "session_id", "ingested_dtype": "int64"}
                 ]
             },
             {
@@ -664,8 +664,8 @@ fn ingest_relationship_uses_dest_timestamp_sort_key() -> Result<()> {
                 "primary_key": "id",
                 "create_time": "created_at",
                 "columns": [
-                    {"name": "id", "source_dtype": "int64", "ingested_dtype": "int64"},
-                    {"name": "created_at", "source_dtype": "timestamp", "ingested_dtype": "timestamp"}
+                    {"name": "id", "ingested_dtype": "int64"},
+                    {"name": "created_at", "ingested_dtype": "timestamp"}
                 ]
             }
         ],
@@ -777,9 +777,9 @@ fn ingest_invalid_fields_records_failures_and_builds() -> Result<()> {
                 "primary_key": "id",
                 "create_time": "created_at",
                 "columns": [
-                    {"name": "id", "source_dtype": "string", "ingested_dtype": "int64"},
-                    {"name": "name", "source_dtype": "string", "ingested_dtype": "string"},
-                    {"name": "created_at", "source_dtype": "string", "ingested_dtype": "timestamp"}
+                    {"name": "id", "ingested_dtype": "int64"},
+                    {"name": "name", "ingested_dtype": "string"},
+                    {"name": "created_at", "ingested_dtype": "timestamp"}
                 ]
             },
             {
@@ -789,9 +789,9 @@ fn ingest_invalid_fields_records_failures_and_builds() -> Result<()> {
                 "primary_key": "id",
                 "create_time": "created_at",
                 "columns": [
-                    {"name": "id", "source_dtype": "string", "ingested_dtype": "int64"},
-                    {"name": "user_id", "source_dtype": "string", "ingested_dtype": "int64"},
-                    {"name": "created_at", "source_dtype": "string", "ingested_dtype": "timestamp"}
+                    {"name": "id", "ingested_dtype": "int64"},
+                    {"name": "user_id", "ingested_dtype": "int64"},
+                    {"name": "created_at", "ingested_dtype": "timestamp"}
                 ]
             },
             {
@@ -803,8 +803,8 @@ fn ingest_invalid_fields_records_failures_and_builds() -> Result<()> {
                     "dst_fk": {"column": "dst_visit_id", "ref_table": "Visit", "ref_column": "id"}
                 },
                 "columns": [
-                    {"name": "src_user_id", "source_dtype": "string", "ingested_dtype": "int64"},
-                    {"name": "dst_visit_id", "source_dtype": "string", "ingested_dtype": "int64"}
+                    {"name": "src_user_id", "ingested_dtype": "int64"},
+                    {"name": "dst_visit_id", "ingested_dtype": "int64"}
                 ]
             }
         ],
@@ -894,8 +894,8 @@ fn ingest_edge_table_mixed_sort_keys() -> Result<()> {
                 "paths": [input_root.join("users.csv").to_string_lossy()],
                 "primary_key": "id",
                 "columns": [
-                    {"name": "id", "source_dtype": "int64", "ingested_dtype": "int64"},
-                    {"name": "user_weight", "source_dtype": "float32", "ingested_dtype": "float32"}
+                    {"name": "id", "ingested_dtype": "int64"},
+                    {"name": "user_weight", "ingested_dtype": "float32"}
                 ]
             },
             {
@@ -904,9 +904,9 @@ fn ingest_edge_table_mixed_sort_keys() -> Result<()> {
                 "paths": [input_root.join("items.csv").to_string_lossy()],
                 "primary_key": "id",
                 "columns": [
-                    {"name": "id", "source_dtype": "int64", "ingested_dtype": "int64"},
-                    {"name": "rank", "source_dtype": "float32", "ingested_dtype": "float32"},
-                    {"name": "created_at", "source_dtype": "int64", "ingested_dtype": "timestamp", "timestamp_unit": "seconds"}
+                    {"name": "id", "ingested_dtype": "int64"},
+                    {"name": "rank", "ingested_dtype": "float32"},
+                    {"name": "created_at", "ingested_dtype": "timestamp", "timestamp_unit": "seconds"}
                 ]
             },
             {
@@ -918,10 +918,10 @@ fn ingest_edge_table_mixed_sort_keys() -> Result<()> {
                     "dst_fk": {"column": "item_id", "ref_table": "Item", "ref_column": "id"}
                 },
                 "columns": [
-                    {"name": "user_id", "source_dtype": "int64", "ingested_dtype": "int64"},
-                    {"name": "item_id", "source_dtype": "int64", "ingested_dtype": "int64"},
-                    {"name": "ts", "source_dtype": "int64", "ingested_dtype": "timestamp", "timestamp_unit": "seconds"},
-                    {"name": "edge_weight", "source_dtype": "float32", "ingested_dtype": "float32"}
+                    {"name": "user_id", "ingested_dtype": "int64"},
+                    {"name": "item_id", "ingested_dtype": "int64"},
+                    {"name": "ts", "ingested_dtype": "timestamp", "timestamp_unit": "seconds"},
+                    {"name": "edge_weight", "ingested_dtype": "float32"}
                 ]
             }
         ],
@@ -1087,8 +1087,8 @@ fn ingest_parquet_with_uuid_ip_types() -> Result<()> {
                 "paths": [input_root.join("users.parquet").to_string_lossy()],
                 "primary_key": "user_id",
                 "columns": [
-                    {"name": "user_id", "source_dtype": "string", "ingested_dtype": "uuid"},
-                    {"name": "name", "source_dtype": "string", "ingested_dtype": "string"}
+                    {"name": "user_id", "ingested_dtype": "uuid"},
+                    {"name": "name", "ingested_dtype": "string"}
                 ]
             },
             {
@@ -1097,9 +1097,9 @@ fn ingest_parquet_with_uuid_ip_types() -> Result<()> {
                 "paths": [input_root.join("device_tokens.parquet").to_string_lossy()],
                 "primary_key": "token_id",
                 "columns": [
-                    {"name": "token_id", "source_dtype": "string", "ingested_dtype": "uuid256"},
-                    {"name": "user_id", "source_dtype": "string", "ingested_dtype": "uuid"},
-                    {"name": "label", "source_dtype": "string", "ingested_dtype": "string"}
+                    {"name": "token_id", "ingested_dtype": "uuid256"},
+                    {"name": "user_id", "ingested_dtype": "uuid"},
+                    {"name": "label", "ingested_dtype": "string"}
                 ]
             },
             {
@@ -1108,8 +1108,8 @@ fn ingest_parquet_with_uuid_ip_types() -> Result<()> {
                 "paths": [input_root.join("token_events.parquet").to_string_lossy()],
                 "primary_key": "event_id",
                 "columns": [
-                    {"name": "event_id", "source_dtype": "string", "ingested_dtype": "uuid"},
-                    {"name": "token_id", "source_dtype": "string", "ingested_dtype": "uuid256"}
+                    {"name": "event_id", "ingested_dtype": "uuid"},
+                    {"name": "token_id", "ingested_dtype": "uuid256"}
                 ]
             },
             {
@@ -1118,8 +1118,8 @@ fn ingest_parquet_with_uuid_ip_types() -> Result<()> {
                 "paths": [input_root.join("ip_addresses.parquet").to_string_lossy()],
                 "primary_key": "ip_id",
                 "columns": [
-                    {"name": "ip_id", "source_dtype": "string", "ingested_dtype": "ip"},
-                    {"name": "region", "source_dtype": "string", "ingested_dtype": "string"}
+                    {"name": "ip_id", "ingested_dtype": "ip"},
+                    {"name": "region", "ingested_dtype": "string"}
                 ]
             },
             {
@@ -1131,8 +1131,8 @@ fn ingest_parquet_with_uuid_ip_types() -> Result<()> {
                     "dst_fk": {"column": "ip_id", "ref_table": "IpAddress", "ref_column": "ip_id"}
                 },
                 "columns": [
-                    {"name": "user_id", "source_dtype": "string", "ingested_dtype": "uuid"},
-                    {"name": "ip_id", "source_dtype": "string", "ingested_dtype": "ip"}
+                    {"name": "user_id", "ingested_dtype": "uuid"},
+                    {"name": "ip_id", "ingested_dtype": "ip"}
                 ]
             }
         ],
@@ -1202,8 +1202,8 @@ fn ingest_weight_expr_with_backticks() -> Result<()> {
                 "paths": [input_root.join("src.csv").to_string_lossy()],
                 "primary_key": "id",
                 "columns": [
-                    {"name": "id", "source_dtype": "int64", "ingested_dtype": "int64"},
-                    {"name": "dst_id", "source_dtype": "int64", "ingested_dtype": "int64"}
+                    {"name": "id", "ingested_dtype": "int64"},
+                    {"name": "dst_id", "ingested_dtype": "int64"}
                 ]
             },
             {
@@ -1212,8 +1212,8 @@ fn ingest_weight_expr_with_backticks() -> Result<()> {
                 "paths": [input_root.join("dst.csv").to_string_lossy()],
                 "primary_key": "id",
                 "columns": [
-                    {"name": "id", "source_dtype": "int64", "ingested_dtype": "int64"},
-                    {"name": "weight-kg", "source_dtype": "float32", "ingested_dtype": "float32"}
+                    {"name": "id", "ingested_dtype": "int64"},
+                    {"name": "weight-kg", "ingested_dtype": "float32"}
                 ]
             }
         ],
@@ -1290,8 +1290,8 @@ fn ingest_weight_expr_with_log_and_abs() -> Result<()> {
                 "paths": [input_root.join("src.csv").to_string_lossy()],
                 "primary_key": "id",
                 "columns": [
-                    {"name": "id", "source_dtype": "int64", "ingested_dtype": "int64"},
-                    {"name": "dst_id", "source_dtype": "int64", "ingested_dtype": "int64"}
+                    {"name": "id", "ingested_dtype": "int64"},
+                    {"name": "dst_id", "ingested_dtype": "int64"}
                 ]
             },
             {
@@ -1300,9 +1300,9 @@ fn ingest_weight_expr_with_log_and_abs() -> Result<()> {
                 "paths": [input_root.join("dst.csv").to_string_lossy()],
                 "primary_key": "id",
                 "columns": [
-                    {"name": "id", "source_dtype": "int64", "ingested_dtype": "int64"},
-                    {"name": "weight-kg", "source_dtype": "float32", "ingested_dtype": "float32"},
-                    {"name": "offset", "source_dtype": "float32", "ingested_dtype": "float32"}
+                    {"name": "id", "ingested_dtype": "int64"},
+                    {"name": "weight-kg", "ingested_dtype": "float32"},
+                    {"name": "offset", "ingested_dtype": "float32"}
                 ]
             }
         ],
@@ -1393,7 +1393,7 @@ fn ingest_missing_dst_key_records_lookup() -> Result<()> {
                 "paths": [input_root.join("users.csv").to_string_lossy()],
                 "primary_key": "id",
                 "columns": [
-                    {"name": "id", "source_dtype": "int64", "ingested_dtype": "int64"}
+                    {"name": "id", "ingested_dtype": "int64"}
                 ]
             },
             {
@@ -1402,8 +1402,8 @@ fn ingest_missing_dst_key_records_lookup() -> Result<()> {
                 "paths": [input_root.join("visits.csv").to_string_lossy()],
                 "primary_key": "id",
                 "columns": [
-                    {"name": "id", "source_dtype": "int64", "ingested_dtype": "int64"},
-                    {"name": "user_id", "source_dtype": "int64", "ingested_dtype": "int64"}
+                    {"name": "id", "ingested_dtype": "int64"},
+                    {"name": "user_id", "ingested_dtype": "int64"}
                 ]
             }
         ],

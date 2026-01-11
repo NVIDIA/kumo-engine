@@ -125,7 +125,6 @@ Notes:
 ```json
 {
   "name": "id",
-  "source_dtype": "string",
   "ingested_dtype": "uuid",
   "precision": 10,
   "scale": 2
@@ -133,7 +132,7 @@ Notes:
 ```
 
 Fields:
-- `source_dtype` / `ingested_dtype` (required): `int8|int16|int32|int64|uint8|uint16|uint32|uint64|float32|float64|bool|string|bytes|uuid|uuid256|ip|date|timestamp|decimal128|decimal256|float32_array|float64_array`
+- `ingested_dtype` (required): `int8|int16|int32|int64|uint8|uint16|uint32|uint64|float32|float64|bool|string|bytes|uuid|uuid256|ip|date|timestamp|decimal128|decimal256|float32_array|float64_array`
 - `fixed_len` (optional): only valid for `string`/`bytes`.
 - `timestamp_format` (optional): format string for string timestamps.
 - `timestamp_unit` (optional): `seconds|millis|micros|nanos` for integer timestamps.

@@ -72,7 +72,6 @@ struct TableSpecReport {
 #[derive(Debug, Deserialize)]
 struct ColumnSpecReport {
     name: String,
-    source_dtype: ColumnTypeReport,
     ingested_dtype: ColumnTypeReport,
     #[serde(default)]
     fixed_len: Option<usize>,
@@ -949,9 +948,6 @@ fn format_fk(table: &TableSpecReport, fk: &ForeignKeySpecReport) -> String {
 
 fn format_column(col: &ColumnSpecReport) -> String {
     let mut out = col.ingested_dtype.as_str().to_string();
-    if col.source_dtype != col.ingested_dtype {
-        out.push_str(&format!(", source={}", col.source_dtype.as_str()));
-    }
     if let Some(len) = col.fixed_len {
         out.push_str(&format!(", fixed_len={}", len));
     }

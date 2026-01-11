@@ -42,7 +42,6 @@ pub struct TableSpec {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ColumnSpec {
     pub name: String,
-    pub source_dtype: SourceType,
     pub ingested_dtype: IngestedType,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fixed_len: Option<usize>,
@@ -56,32 +55,6 @@ pub struct ColumnSpec {
     pub precision: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scale: Option<i32>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum SourceType {
-    Int8,
-    Int16,
-    Int64,
-    Int32,
-    UInt8,
-    UInt16,
-    UInt64,
-    UInt32,
-    Float64,
-    Float32,
-    Bool,
-    String,
-    Bytes,
-    Uuid256,
-    Date,
-    Timestamp,
-    Decimal128,
-    Decimal256,
-    Float32Array,
-    Float64Array,
-    Float16Array,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

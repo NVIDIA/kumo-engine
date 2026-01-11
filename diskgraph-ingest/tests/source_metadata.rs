@@ -1,6 +1,6 @@
 use diskgraph_ingest::source_metadata::{
     ColumnSpec, EdgeTableSpec, ForeignKeySpec, IngestedType, RelationshipSpec, SourceMetadata,
-    SourceType, TableFormat, TableSpec,
+    TableFormat, TableSpec,
 };
 
 fn base_table(name: &str) -> TableSpec {
@@ -11,7 +11,6 @@ fn base_table(name: &str) -> TableSpec {
         columns: vec![
             ColumnSpec {
                 name: "id".into(),
-                source_dtype: SourceType::Int64,
                 ingested_dtype: IngestedType::Int64,
                 timestamp_format: None,
                 timestamp_unit: None,
@@ -21,7 +20,6 @@ fn base_table(name: &str) -> TableSpec {
             },
             ColumnSpec {
                 name: "name".into(),
-                source_dtype: SourceType::String,
                 ingested_dtype: IngestedType::String,
                 timestamp_format: None,
                 timestamp_unit: None,
@@ -85,7 +83,6 @@ fn validate_missing_pk_column() {
             paths: vec!["/tmp/user.parquet".into()],
             columns: vec![ColumnSpec {
                 name: "name".into(),
-                source_dtype: SourceType::String,
                 ingested_dtype: IngestedType::String,
                 timestamp_format: None,
                 timestamp_unit: None,
@@ -141,7 +138,6 @@ fn validate_duplicate_column_names() {
     let mut meta = base_metadata();
     meta.tables[0].columns.push(ColumnSpec {
         name: "id".into(),
-        source_dtype: SourceType::Int64,
         ingested_dtype: IngestedType::Int64,
         timestamp_format: None,
         timestamp_unit: None,
@@ -196,7 +192,6 @@ fn validate_decimal_missing_precision() {
     let mut meta = base_metadata();
     meta.tables[0].columns.push(ColumnSpec {
         name: "amount".into(),
-        source_dtype: SourceType::Decimal128,
         ingested_dtype: IngestedType::Decimal128,
         timestamp_format: None,
         timestamp_unit: None,
@@ -212,7 +207,6 @@ fn validate_decimal_missing_scale() {
     let mut meta = base_metadata();
     meta.tables[0].columns.push(ColumnSpec {
         name: "amount".into(),
-        source_dtype: SourceType::Decimal128,
         ingested_dtype: IngestedType::Decimal128,
         timestamp_format: None,
         timestamp_unit: None,
@@ -228,7 +222,6 @@ fn validate_decimal_precision_out_of_range() {
     let mut meta = base_metadata();
     meta.tables[0].columns.push(ColumnSpec {
         name: "amount".into(),
-        source_dtype: SourceType::Decimal128,
         ingested_dtype: IngestedType::Decimal128,
         timestamp_format: None,
         timestamp_unit: None,
@@ -244,7 +237,6 @@ fn validate_decimal_scale_out_of_range() {
     let mut meta = base_metadata();
     meta.tables[0].columns.push(ColumnSpec {
         name: "amount".into(),
-        source_dtype: SourceType::Decimal128,
         ingested_dtype: IngestedType::Decimal128,
         timestamp_format: None,
         timestamp_unit: None,
@@ -260,7 +252,6 @@ fn validate_decimal_precision_on_non_decimal() {
     let mut meta = base_metadata();
     meta.tables[0].columns.push(ColumnSpec {
         name: "bad".into(),
-        source_dtype: SourceType::Int64,
         ingested_dtype: IngestedType::Int64,
         timestamp_format: None,
         timestamp_unit: None,
@@ -280,7 +271,6 @@ fn validate_edge_fk_missing_column() {
         paths: vec!["/tmp/edge.parquet".into()],
         columns: vec![ColumnSpec {
             name: "src_id".into(),
-            source_dtype: SourceType::Int64,
             ingested_dtype: IngestedType::Int64,
             timestamp_format: None,
             timestamp_unit: None,
@@ -318,7 +308,6 @@ fn validate_edge_fk_missing_table() {
         columns: vec![
             ColumnSpec {
                 name: "src_id".into(),
-                source_dtype: SourceType::Int64,
                 ingested_dtype: IngestedType::Int64,
                 timestamp_format: None,
                 timestamp_unit: None,
@@ -328,7 +317,6 @@ fn validate_edge_fk_missing_table() {
             },
             ColumnSpec {
                 name: "dst_id".into(),
-                source_dtype: SourceType::Int64,
                 ingested_dtype: IngestedType::Int64,
                 timestamp_format: None,
                 timestamp_unit: None,
@@ -368,7 +356,6 @@ fn validate_edge_fk_not_pk() {
         columns: vec![
             ColumnSpec {
                 name: "src_id".into(),
-                source_dtype: SourceType::Int64,
                 ingested_dtype: IngestedType::Int64,
                 timestamp_format: None,
                 timestamp_unit: None,
@@ -378,7 +365,6 @@ fn validate_edge_fk_not_pk() {
             },
             ColumnSpec {
                 name: "dst_id".into(),
-                source_dtype: SourceType::Int64,
                 ingested_dtype: IngestedType::Int64,
                 timestamp_format: None,
                 timestamp_unit: None,
@@ -651,7 +637,6 @@ fn validate_relationship_int_string_ok() {
     let mut meta = base_metadata();
     meta.tables[1].columns.push(ColumnSpec {
         name: "fk".into(),
-        source_dtype: SourceType::String,
         ingested_dtype: IngestedType::String,
         timestamp_format: None,
         timestamp_unit: None,
@@ -693,7 +678,6 @@ fn validate_relationship_int_bytes_ok() {
     let mut meta = base_metadata();
     meta.tables[1].columns.push(ColumnSpec {
         name: "fk".into(),
-        source_dtype: SourceType::Bytes,
         ingested_dtype: IngestedType::Bytes,
         timestamp_format: None,
         timestamp_unit: None,
@@ -740,7 +724,6 @@ fn validate_edge_fk_int_string_ok() {
         columns: vec![
             ColumnSpec {
                 name: "src_id".into(),
-                source_dtype: SourceType::String,
                 ingested_dtype: IngestedType::String,
                 timestamp_format: None,
                 timestamp_unit: None,
@@ -750,7 +733,6 @@ fn validate_edge_fk_int_string_ok() {
             },
             ColumnSpec {
                 name: "dst_id".into(),
-                source_dtype: SourceType::Int64,
                 ingested_dtype: IngestedType::Int64,
                 timestamp_format: None,
                 timestamp_unit: None,
@@ -789,7 +771,6 @@ fn validate_edge_fk_string_int_ok() {
         columns: vec![
             ColumnSpec {
                 name: "src_id".into(),
-                source_dtype: SourceType::Int64,
                 ingested_dtype: IngestedType::Int64,
                 timestamp_format: None,
                 timestamp_unit: None,
@@ -799,7 +780,6 @@ fn validate_edge_fk_string_int_ok() {
             },
             ColumnSpec {
                 name: "dst_id".into(),
-                source_dtype: SourceType::String,
                 ingested_dtype: IngestedType::String,
                 timestamp_format: None,
                 timestamp_unit: None,
@@ -882,7 +862,6 @@ fn validate_edge_fk_string_bytes_ok() {
         columns: vec![
             ColumnSpec {
                 name: "src_id".into(),
-                source_dtype: SourceType::String,
                 ingested_dtype: IngestedType::String,
                 timestamp_format: None,
                 timestamp_unit: None,
@@ -892,7 +871,6 @@ fn validate_edge_fk_string_bytes_ok() {
             },
             ColumnSpec {
                 name: "dst_id".into(),
-                source_dtype: SourceType::Bytes,
                 ingested_dtype: IngestedType::Bytes,
                 timestamp_format: None,
                 timestamp_unit: None,
@@ -939,7 +917,6 @@ fn validate_edge_fk_string_bytes_len_mismatch() {
         columns: vec![
             ColumnSpec {
                 name: "src_id".into(),
-                source_dtype: SourceType::String,
                 ingested_dtype: IngestedType::String,
                 timestamp_format: None,
                 timestamp_unit: None,
@@ -949,7 +926,6 @@ fn validate_edge_fk_string_bytes_len_mismatch() {
             },
             ColumnSpec {
                 name: "dst_id".into(),
-                source_dtype: SourceType::Bytes,
                 ingested_dtype: IngestedType::Bytes,
                 timestamp_format: None,
                 timestamp_unit: None,
@@ -990,7 +966,6 @@ fn validate_edge_fk_uuid_ok() {
         paths: vec!["/tmp/edge.parquet".into()],
         columns: vec![ColumnSpec {
             name: "src_id".into(),
-            source_dtype: SourceType::Bytes,
             ingested_dtype: IngestedType::Uuid,
             timestamp_format: None,
             timestamp_unit: None,
@@ -1030,7 +1005,6 @@ fn validate_edge_fk_uuid_mismatch() {
         paths: vec!["/tmp/edge.parquet".into()],
         columns: vec![ColumnSpec {
             name: "src_id".into(),
-            source_dtype: SourceType::String,
             ingested_dtype: IngestedType::Bytes,
             timestamp_format: None,
             timestamp_unit: None,

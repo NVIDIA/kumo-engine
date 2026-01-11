@@ -113,7 +113,7 @@ fn ingest_command_hint(root: &diskgraph_infer::RootSource, input: &str) -> Optio
 }
 fn fmt_column(col: &Option<diskgraph_ingest::source_metadata::ColumnSpec>) -> String {
     match col {
-        Some(spec) => format!("{}:{:?}", spec.name, spec.source_dtype),
+        Some(spec) => format!("{}:{:?}", spec.name, spec.ingested_dtype),
         None => "<missing>".to_string(),
     }
 }

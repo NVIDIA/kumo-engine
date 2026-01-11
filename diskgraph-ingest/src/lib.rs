@@ -8,7 +8,7 @@ use crate::mapping::{
     PkHashShard, PkHashStore, PkGxHash,
 };
 use crate::source_metadata::{
-    relationship_name, ColumnSpec, IngestedType, SortKeySpec, SourceType, TableFormat, TableSpec,
+    relationship_name, ColumnSpec, IngestedType, SortKeySpec, TableFormat, TableSpec,
     TimestampEncodingKind, TimestampEncodingSpec, TimestampUnit, WeightEncodingKind,
     WeightEncodingSpec,
 };
@@ -2348,8 +2348,6 @@ impl IngestContext {
         let dst_fk_col = column_spec(table, &edge.dst_fk.column)?;
         let src_context = format!("edge_fk:{}.{}", table.name, edge.src_fk.column);
         let dst_context = format!("edge_fk:{}.{}", table.name, edge.dst_fk.column);
-        let src_fast = edge_fast_path_for_column(src_fk_col);
-        let dst_fast = edge_fast_path_for_column(dst_fk_col);
         let schema = table_schema(table)?;
         let rel_name = std::sync::Arc::<str>::from(format!("edge_{}_src_to_dst", table.name));
         let buffer_limit = edge_batch_buffer_limit(num_shards);
@@ -2394,6 +2392,8 @@ impl IngestContext {
                     let column_runtimes = build_column_runtimes(table);
                     let mut access =
                         RowAccess::new(table, &cols, &column_runtimes, trimmed_strings);
+                    let src_fast = edge_fast_path_for_array(src_fk_col, &cols[src_fk_idx]);
+                    let dst_fast = edge_fast_path_for_array(dst_fk_col, &cols[dst_fk_idx]);
                     let mut src_key_buf = Vec::new();
                     let mut dst_key_buf = Vec::new();
                     let mut forward_row = Vec::new();
@@ -2441,6 +2441,8 @@ impl IngestContext {
                     let column_runtimes = build_column_runtimes(table);
                     let mut access =
                         RowAccess::new(table, &cols, &column_runtimes, trimmed_strings);
+                    let src_fast = edge_fast_path_for_array(src_fk_col, &cols[src_fk_idx]);
+                    let dst_fast = edge_fast_path_for_array(dst_fk_col, &cols[dst_fk_idx]);
                     let mut src_key_buf = Vec::new();
                     let mut dst_key_buf = Vec::new();
                     let mut forward_row = Vec::new();
@@ -6494,10 +6496,10 @@ fn key_from_access_into_buf(
                     return Ok(());
                 }
                 IngestedType::String | IngestedType::Bytes => {
-                    let (col, array) = access
+                    let (_, array) = access
                         .column_and_array(idx)
                         .map_err(|_| KeyParseError::TypeMismatch)?;
-                    let bytes = read_bytes(array, access.row, &col.source_dtype)
+                    let bytes = read_bytes(array, access.row)
                         .map_err(|_| KeyParseError::TypeMismatch)?;
                     let value = parse_base10_bytes(bytes)?;
                     out.extend_from_slice(&value.to_le_bytes());
@@ -6581,13 +6583,13 @@ fn key_from_access_into_buf(
                     buf
                 }
                 IngestedType::String | IngestedType::Bytes => {
-                    let (col, array) = access
+                    let (_, array) = access
                         .column_and_array(idx)
                         .map_err(|_| KeyParseError::TypeMismatch)?;
-                    if let Ok(text) = read_utf8(array, access.row, &col.source_dtype) {
+                    if let Ok(text) = read_utf8(array, access.row) {
                         parse_uuid_string(text.as_bytes())?
                     } else {
-                        let data = read_bytes(array, access.row, &col.source_dtype)
+                        let data = read_bytes(array, access.row)
                             .map_err(|_| KeyParseError::TypeMismatch)?;
                         if data.len() != 16 {
                             return Err(KeyParseError::LengthMismatch);
@@ -6616,13 +6618,13 @@ fn key_from_access_into_buf(
                     buf
                 }
                 IngestedType::String | IngestedType::Bytes => {
-                    let (col, array) = access
+                    let (_, array) = access
                         .column_and_array(idx)
                         .map_err(|_| KeyParseError::TypeMismatch)?;
-                    if let Ok(text) = read_utf8(array, access.row, &col.source_dtype) {
+                    if let Ok(text) = read_utf8(array, access.row) {
                         parse_uuid256_string(text.as_bytes())?
                     } else {
-                        let data = read_bytes(array, access.row, &col.source_dtype)
+                        let data = read_bytes(array, access.row)
                             .map_err(|_| KeyParseError::TypeMismatch)?;
                         if data.len() != 32 {
                             return Err(KeyParseError::LengthMismatch);
@@ -6646,13 +6648,13 @@ fn key_from_access_into_buf(
                     parse_ip_bytes(value)?
                 }
                 IngestedType::String | IngestedType::Bytes => {
-                    let (col, array) = access
+                    let (_, array) = access
                         .column_and_array(idx)
                         .map_err(|_| KeyParseError::TypeMismatch)?;
-                    if let Ok(text) = read_utf8(array, access.row, &col.source_dtype) {
+                    if let Ok(text) = read_utf8(array, access.row) {
                         parse_ip_string(text.as_bytes())?
                     } else {
-                        let data = read_bytes(array, access.row, &col.source_dtype)
+                        let data = read_bytes(array, access.row)
                             .map_err(|_| KeyParseError::TypeMismatch)?;
                         parse_ip_bytes(data)?
                     }
@@ -7129,14 +7131,13 @@ mod tests {
         assert!(parse_uuid_bytes(&[0u8; 16]).is_ok());
     }
 
-    fn single_col_table(source: SourceType, ingested: IngestedType) -> TableSpec {
+    fn single_col_table(ingested: IngestedType) -> TableSpec {
         TableSpec {
             name: "sample".to_string(),
             format: TableFormat::Parquet,
             paths: vec![],
             columns: vec![ColumnSpec {
                 name: "id".to_string(),
-                source_dtype: source,
                 ingested_dtype: ingested,
                 fixed_len: None,
                 timestamp_format: None,
@@ -7166,7 +7167,7 @@ mod tests {
 
     #[test]
     fn access_uuid_from_uuid_string_source() {
-        let table = single_col_table(SourceType::String, IngestedType::Uuid);
+        let table = single_col_table(IngestedType::Uuid);
         let text = "00112233445566778899aabbccddeeff";
         let cols: Vec<ArrayRef> = vec![Arc::new(StringArray::from(vec![text]))];
         let expected = parse_uuid_string(text.as_bytes()).unwrap();
@@ -7178,7 +7179,7 @@ mod tests {
 
     #[test]
     fn access_uuid_from_string_to_uuid() {
-        let table = single_col_table(SourceType::String, IngestedType::Uuid);
+        let table = single_col_table(IngestedType::Uuid);
         let text = "00112233445566778899aabbccddeeff";
         let cols: Vec<ArrayRef> = vec![Arc::new(StringArray::from(vec![text]))];
         let expected = parse_uuid_string(text.as_bytes()).unwrap();
@@ -7190,7 +7191,7 @@ mod tests {
 
     #[test]
     fn access_uuid256_from_string_to_uuid256() {
-        let table = single_col_table(SourceType::String, IngestedType::Uuid256);
+        let table = single_col_table(IngestedType::Uuid256);
         let text = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
         let cols: Vec<ArrayRef> = vec![Arc::new(StringArray::from(vec![text]))];
         let expected = parse_uuid256_string(text.as_bytes()).unwrap();
@@ -7202,7 +7203,7 @@ mod tests {
 
     #[test]
     fn access_ip_from_ip_string_source() {
-        let table = single_col_table(SourceType::String, IngestedType::Ip);
+        let table = single_col_table(IngestedType::Ip);
         let text = "192.168.1.2";
         let cols: Vec<ArrayRef> = vec![Arc::new(StringArray::from(vec![text]))];
         let expected = parse_ip_string(text.as_bytes()).unwrap();
@@ -7220,7 +7221,6 @@ mod tests {
             paths: vec![],
             columns: vec![ColumnSpec {
                 name: "created_at".to_string(),
-                source_dtype: SourceType::String,
                 ingested_dtype: IngestedType::Timestamp,
                 fixed_len: None,
                 timestamp_format: Some("rfc3339".to_string()),
@@ -7251,7 +7251,6 @@ mod tests {
             paths: vec![],
             columns: vec![ColumnSpec {
                 name: "created_at".to_string(),
-                source_dtype: SourceType::Int64,
                 ingested_dtype: IngestedType::Timestamp,
                 fixed_len: None,
                 timestamp_format: None,
@@ -7297,7 +7296,6 @@ mod tests {
             paths: vec![],
             columns: vec![ColumnSpec {
                 name: "created_date".to_string(),
-                source_dtype: SourceType::String,
                 ingested_dtype: IngestedType::Date,
                 fixed_len: None,
                 timestamp_format: Some("%Y-%m-%d".to_string()),
@@ -7335,7 +7333,6 @@ mod tests {
             paths: vec![],
             columns: vec![ColumnSpec {
                 name: "id".to_string(),
-                source_dtype: SourceType::Int64,
                 ingested_dtype: IngestedType::String,
                 fixed_len: None,
                 timestamp_format: None,
@@ -7365,7 +7362,6 @@ mod tests {
             paths: vec![],
             columns: vec![ColumnSpec {
                 name: "id".to_string(),
-                source_dtype: SourceType::Bytes,
                 ingested_dtype: IngestedType::Int32,
                 fixed_len: None,
                 timestamp_format: None,
@@ -7393,66 +7389,7 @@ mod tests {
 fn table_schema(table: &TableSpec) -> Result<Schema> {
     let mut fields = Vec::with_capacity(table.columns.len());
     for col in &table.columns {
-        let dtype = match col.source_dtype {
-            SourceType::Int8 => DataType::Int8,
-            SourceType::Int16 => DataType::Int16,
-            SourceType::Int64 => DataType::Int64,
-            SourceType::Int32 => DataType::Int32,
-            SourceType::UInt8 => DataType::UInt8,
-            SourceType::UInt16 => DataType::UInt16,
-            SourceType::UInt64 => DataType::UInt64,
-            SourceType::UInt32 => DataType::UInt32,
-            SourceType::Float64 => DataType::Float64,
-            SourceType::Float32 => DataType::Float32,
-            SourceType::Bool => DataType::Boolean,
-            SourceType::String => DataType::Utf8,
-            SourceType::Bytes => DataType::Binary,
-            SourceType::Uuid256 => DataType::Binary,
-            SourceType::Date => DataType::Date32,
-            SourceType::Timestamp => DataType::Timestamp(arrow_schema::TimeUnit::Second, None),
-            SourceType::Decimal128 => {
-                let precision = col
-                    .precision
-                    .ok_or_else(|| anyhow!("decimal128 column {} missing precision", col.name))?;
-                let scale = col
-                    .scale
-                    .ok_or_else(|| anyhow!("decimal128 column {} missing scale", col.name))?;
-                let precision = u8::try_from(precision)
-                    .map_err(|_| anyhow!("decimal128 column {} precision out of range", col.name))?;
-                let scale =
-                    i8::try_from(scale).map_err(|_| anyhow!("decimal128 column {} scale out of range", col.name))?;
-                DataType::Decimal128(precision, scale)
-            }
-            SourceType::Decimal256 => {
-                let precision = col
-                    .precision
-                    .ok_or_else(|| anyhow!("decimal256 column {} missing precision", col.name))?;
-                let scale = col
-                    .scale
-                    .ok_or_else(|| anyhow!("decimal256 column {} missing scale", col.name))?;
-                let precision = u8::try_from(precision)
-                    .map_err(|_| anyhow!("decimal256 column {} precision out of range", col.name))?;
-                let scale =
-                    i8::try_from(scale).map_err(|_| anyhow!("decimal256 column {} scale out of range", col.name))?;
-                DataType::Decimal256(precision, scale)
-            }
-            SourceType::Float32Array => DataType::List(Arc::new(Field::new(
-                "item",
-                DataType::Float32,
-                true,
-            ))),
-            SourceType::Float64Array => DataType::List(Arc::new(Field::new(
-                "item",
-                DataType::Float64,
-                true,
-            ))),
-            SourceType::Float16Array => DataType::List(Arc::new(Field::new(
-                "item",
-                DataType::Float16,
-                true,
-            ))),
-        };
-        fields.push(Field::new(&col.name, dtype, true));
+        fields.push(Field::new(&col.name, DataType::Utf8, true));
     }
     Ok(Schema::new(fields))
 }
@@ -7469,9 +7406,8 @@ fn build_column_runtimes(table: &TableSpec) -> Vec<ColumnRuntime> {
         .columns
         .iter()
         .map(|col| {
-        let use_format = matches!(col.source_dtype, SourceType::String | SourceType::Bytes)
-                && matches!(col.ingested_dtype, IngestedType::Timestamp | IngestedType::Date);
-            let parser = if use_format {
+            let parser = if matches!(col.ingested_dtype, IngestedType::Timestamp | IngestedType::Date)
+            {
                 col.timestamp_format
                     .as_deref()
                     .and_then(TimestampFormatParser::compile)
@@ -7558,25 +7494,82 @@ enum EdgeKeyFastKind {
     BytesIp,
 }
 
-fn edge_fast_path_for_column(col: &ColumnSpec) -> Option<EdgeKeyFastKind> {
-    match (&col.source_dtype, &col.ingested_dtype) {
-        (SourceType::Int64, IngestedType::Int64) => Some(EdgeKeyFastKind::Int64),
-        (SourceType::Int32, IngestedType::Int32) => Some(EdgeKeyFastKind::Int32),
-        (SourceType::Int16, IngestedType::Int16) => Some(EdgeKeyFastKind::Int16),
-        (SourceType::Int8, IngestedType::Int8) => Some(EdgeKeyFastKind::Int8),
-        (SourceType::UInt64, IngestedType::UInt64) => Some(EdgeKeyFastKind::UInt64),
-        (SourceType::UInt32, IngestedType::UInt32) => Some(EdgeKeyFastKind::UInt32),
-        (SourceType::UInt16, IngestedType::UInt16) => Some(EdgeKeyFastKind::UInt16),
-        (SourceType::UInt8, IngestedType::UInt8) => Some(EdgeKeyFastKind::UInt8),
-        (SourceType::String, IngestedType::String) => Some(EdgeKeyFastKind::StringVar),
-        (SourceType::Bytes, IngestedType::Bytes) => Some(EdgeKeyFastKind::BytesVar),
-        (SourceType::String, IngestedType::Uuid) => Some(EdgeKeyFastKind::StringUuid),
-        (SourceType::Bytes, IngestedType::Uuid) => Some(EdgeKeyFastKind::BytesUuid),
-        (SourceType::String, IngestedType::Uuid256) => Some(EdgeKeyFastKind::StringUuid256),
-        (SourceType::Bytes, IngestedType::Uuid256) => Some(EdgeKeyFastKind::BytesUuid256),
-        (SourceType::String, IngestedType::Ip) => Some(EdgeKeyFastKind::StringIp),
-        (SourceType::Bytes, IngestedType::Ip) => Some(EdgeKeyFastKind::BytesIp),
+fn edge_fast_path_for_array(col: &ColumnSpec, array: &ArrayRef) -> Option<EdgeKeyFastKind> {
+    match (array.data_type(), &col.ingested_dtype) {
+        (DataType::Int64, IngestedType::Int64) => Some(EdgeKeyFastKind::Int64),
+        (DataType::Int32, IngestedType::Int32) => Some(EdgeKeyFastKind::Int32),
+        (DataType::Int16, IngestedType::Int16) => Some(EdgeKeyFastKind::Int16),
+        (DataType::Int8, IngestedType::Int8) => Some(EdgeKeyFastKind::Int8),
+        (DataType::UInt64, IngestedType::UInt64) => Some(EdgeKeyFastKind::UInt64),
+        (DataType::UInt32, IngestedType::UInt32) => Some(EdgeKeyFastKind::UInt32),
+        (DataType::UInt16, IngestedType::UInt16) => Some(EdgeKeyFastKind::UInt16),
+        (DataType::UInt8, IngestedType::UInt8) => Some(EdgeKeyFastKind::UInt8),
+        (DataType::Utf8 | DataType::LargeUtf8, IngestedType::String) => {
+            Some(EdgeKeyFastKind::StringVar)
+        }
+        (
+            DataType::Binary | DataType::LargeBinary | DataType::FixedSizeBinary(_),
+            IngestedType::Bytes,
+        ) => Some(EdgeKeyFastKind::BytesVar),
+        (DataType::Utf8 | DataType::LargeUtf8, IngestedType::Uuid) => {
+            Some(EdgeKeyFastKind::StringUuid)
+        }
+        (
+            DataType::Binary | DataType::LargeBinary | DataType::FixedSizeBinary(_),
+            IngestedType::Uuid,
+        ) => Some(EdgeKeyFastKind::BytesUuid),
+        (DataType::Utf8 | DataType::LargeUtf8, IngestedType::Uuid256) => {
+            Some(EdgeKeyFastKind::StringUuid256)
+        }
+        (
+            DataType::Binary | DataType::LargeBinary | DataType::FixedSizeBinary(_),
+            IngestedType::Uuid256,
+        ) => Some(EdgeKeyFastKind::BytesUuid256),
+        (DataType::Utf8 | DataType::LargeUtf8, IngestedType::Ip) => {
+            Some(EdgeKeyFastKind::StringIp)
+        }
+        (
+            DataType::Binary | DataType::LargeBinary | DataType::FixedSizeBinary(_),
+            IngestedType::Ip,
+        ) => Some(EdgeKeyFastKind::BytesIp),
         _ => None,
+    }
+}
+
+fn fast_string_value<'a>(
+    array: &'a ArrayRef,
+    row: usize,
+) -> Result<&'a str, KeyParseError> {
+    if let Some(arr) = array.as_any().downcast_ref::<arrow_array::StringArray>() {
+        Ok(arr.value(row))
+    } else if let Some(arr) = array
+        .as_any()
+        .downcast_ref::<arrow_array::LargeStringArray>()
+    {
+        Ok(arr.value(row))
+    } else {
+        Err(KeyParseError::TypeMismatch)
+    }
+}
+
+fn fast_bytes_value<'a>(
+    array: &'a ArrayRef,
+    row: usize,
+) -> Result<&'a [u8], KeyParseError> {
+    if let Some(arr) = array.as_any().downcast_ref::<arrow_array::BinaryArray>() {
+        Ok(arr.value(row))
+    } else if let Some(arr) = array
+        .as_any()
+        .downcast_ref::<arrow_array::LargeBinaryArray>()
+    {
+        Ok(arr.value(row))
+    } else if let Some(arr) = array
+        .as_any()
+        .downcast_ref::<arrow_array::FixedSizeBinaryArray>()
+    {
+        Ok(arr.value(row))
+    } else {
+        Err(KeyParseError::TypeMismatch)
     }
 }
 
@@ -7668,19 +7661,12 @@ fn fast_key_from_array(
             Ok(Key::Int(arr.value(row) as u64))
         }
         EdgeKeyFastKind::StringUuid => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<arrow_array::StringArray>()
-                .ok_or(KeyParseError::TypeMismatch)?;
-            let uuid = parse_uuid_string(arr.value(row).as_bytes())?;
+            let text = fast_string_value(array, row)?;
+            let uuid = parse_uuid_string(text.as_bytes())?;
             Ok(Key::Uuid(uuid))
         }
         EdgeKeyFastKind::BytesUuid => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<arrow_array::BinaryArray>()
-                .ok_or(KeyParseError::TypeMismatch)?;
-            let data = arr.value(row);
+            let data = fast_bytes_value(array, row)?;
             if data.len() != 16 {
                 return Err(KeyParseError::LengthMismatch);
             }
@@ -7689,41 +7675,26 @@ fn fast_key_from_array(
             Ok(Key::Uuid(buf))
         }
         EdgeKeyFastKind::StringVar => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<arrow_array::StringArray>()
-                .ok_or(KeyParseError::TypeMismatch)?;
-            let data = arr.value(row).as_bytes();
+            let data = fast_string_value(array, row)?.as_bytes();
             if data.len() > MAX_VAR_KEY_LEN {
                 return Err(KeyParseError::TooLarge);
             }
             Ok(Key::Bytes(data.to_vec()))
         }
         EdgeKeyFastKind::BytesVar => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<arrow_array::BinaryArray>()
-                .ok_or(KeyParseError::TypeMismatch)?;
-            let data = arr.value(row);
+            let data = fast_bytes_value(array, row)?;
             if data.len() > MAX_VAR_KEY_LEN {
                 return Err(KeyParseError::TooLarge);
             }
             Ok(Key::Bytes(data.to_vec()))
         }
         EdgeKeyFastKind::StringUuid256 => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<arrow_array::StringArray>()
-                .ok_or(KeyParseError::TypeMismatch)?;
-            let uuid = parse_uuid256_string(arr.value(row).as_bytes())?;
+            let text = fast_string_value(array, row)?;
+            let uuid = parse_uuid256_string(text.as_bytes())?;
             Ok(Key::Uuid256(uuid))
         }
         EdgeKeyFastKind::BytesUuid256 => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<arrow_array::BinaryArray>()
-                .ok_or(KeyParseError::TypeMismatch)?;
-            let data = arr.value(row);
+            let data = fast_bytes_value(array, row)?;
             if data.len() != 32 {
                 return Err(KeyParseError::LengthMismatch);
             }
@@ -7732,19 +7703,13 @@ fn fast_key_from_array(
             Ok(Key::Uuid256(buf))
         }
         EdgeKeyFastKind::StringIp => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<arrow_array::StringArray>()
-                .ok_or(KeyParseError::TypeMismatch)?;
-            let ip = parse_ip_string(arr.value(row).as_bytes())?;
+            let text = fast_string_value(array, row)?;
+            let ip = parse_ip_string(text.as_bytes())?;
             Ok(Key::Ip(ip))
         }
         EdgeKeyFastKind::BytesIp => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<arrow_array::BinaryArray>()
-                .ok_or(KeyParseError::TypeMismatch)?;
-            let ip = parse_ip_bytes(arr.value(row))?;
+            let data = fast_bytes_value(array, row)?;
+            let ip = parse_ip_bytes(data)?;
             Ok(Key::Ip(ip))
         }
     }
@@ -7821,17 +7786,21 @@ impl<'a> diskgraph_rowpack::RowValueAccess for RowAccess<'a> {
         if col.ingested_dtype != IngestedType::Int64 {
             return Ok(None);
         }
-        match col.source_dtype {
-            SourceType::Int64
-            | SourceType::Int32
-            | SourceType::Int16
-            | SourceType::Int8
-            | SourceType::UInt64
-            | SourceType::UInt32
-            | SourceType::UInt16
-            | SourceType::UInt8 => Ok(Some(read_i64(array, self.row, &col.source_dtype)?)),
-            SourceType::String | SourceType::Bytes => {
-                let text = read_utf8(array, self.row, &col.source_dtype)?;
+        match array.data_type() {
+            DataType::Int64
+            | DataType::Int32
+            | DataType::Int16
+            | DataType::Int8
+            | DataType::UInt64
+            | DataType::UInt32
+            | DataType::UInt16
+            | DataType::UInt8 => Ok(Some(read_i64(array, self.row)?)),
+            DataType::Utf8
+            | DataType::LargeUtf8
+            | DataType::Binary
+            | DataType::LargeBinary
+            | DataType::FixedSizeBinary(_) => {
+                let text = read_utf8(array, self.row)?;
                 Ok(parse_i64(text))
             }
             _ => Ok(None),
@@ -7847,13 +7816,16 @@ impl<'a> diskgraph_rowpack::RowValueAccess for RowAccess<'a> {
             IngestedType::Int32 | IngestedType::Int16 | IngestedType::Int8 => {}
             _ => return Ok(None),
         }
-        match col.source_dtype {
-            SourceType::Int64
-            | SourceType::Int32
-            | SourceType::Int16
-            | SourceType::Int8 => Ok(Some(read_i64(array, self.row, &col.source_dtype)? as i32)),
-            SourceType::String | SourceType::Bytes => {
-                let text = read_utf8(array, self.row, &col.source_dtype)?;
+        match array.data_type() {
+            DataType::Int64 | DataType::Int32 | DataType::Int16 | DataType::Int8 => {
+                Ok(Some(read_i64(array, self.row)? as i32))
+            }
+            DataType::Utf8
+            | DataType::LargeUtf8
+            | DataType::Binary
+            | DataType::LargeBinary
+            | DataType::FixedSizeBinary(_) => {
+                let text = read_utf8(array, self.row)?;
                 Ok(parse_i32(text))
             }
             _ => Ok(None),
@@ -7868,37 +7840,16 @@ impl<'a> diskgraph_rowpack::RowValueAccess for RowAccess<'a> {
         if col.ingested_dtype != IngestedType::UInt64 {
             return Ok(None);
         }
-        match col.source_dtype {
-            SourceType::UInt64 => {
-                let arr = array
-                    .as_any()
-                    .downcast_ref::<arrow_array::UInt64Array>()
-                    .ok_or_else(|| anyhow!("uint64 cast"))?;
-                Ok(Some(arr.value(self.row)))
+        match array.data_type() {
+            DataType::UInt64 | DataType::UInt32 | DataType::UInt16 | DataType::UInt8 => {
+                Ok(Some(read_u64(array, self.row)?))
             }
-            SourceType::UInt32 => {
-                let arr = array
-                    .as_any()
-                    .downcast_ref::<arrow_array::UInt32Array>()
-                    .ok_or_else(|| anyhow!("uint32 cast"))?;
-                Ok(Some(arr.value(self.row) as u64))
-            }
-            SourceType::UInt16 => {
-                let arr = array
-                    .as_any()
-                    .downcast_ref::<arrow_array::UInt16Array>()
-                    .ok_or_else(|| anyhow!("uint16 cast"))?;
-                Ok(Some(arr.value(self.row) as u64))
-            }
-            SourceType::UInt8 => {
-                let arr = array
-                    .as_any()
-                    .downcast_ref::<arrow_array::UInt8Array>()
-                    .ok_or_else(|| anyhow!("uint8 cast"))?;
-                Ok(Some(arr.value(self.row) as u64))
-            }
-            SourceType::String | SourceType::Bytes => {
-                let text = read_utf8(array, self.row, &col.source_dtype)?;
+            DataType::Utf8
+            | DataType::LargeUtf8
+            | DataType::Binary
+            | DataType::LargeBinary
+            | DataType::FixedSizeBinary(_) => {
+                let text = read_utf8(array, self.row)?;
                 Ok(parse_u64(text))
             }
             _ => Ok(None),
@@ -7914,30 +7865,16 @@ impl<'a> diskgraph_rowpack::RowValueAccess for RowAccess<'a> {
             IngestedType::UInt32 | IngestedType::UInt16 | IngestedType::UInt8 => {}
             _ => return Ok(None),
         }
-        match col.source_dtype {
-            SourceType::UInt32 => {
-                let arr = array
-                    .as_any()
-                    .downcast_ref::<arrow_array::UInt32Array>()
-                    .ok_or_else(|| anyhow!("uint32 cast"))?;
-                Ok(Some(arr.value(self.row)))
+        match array.data_type() {
+            DataType::UInt32 | DataType::UInt16 | DataType::UInt8 => {
+                Ok(Some(read_u64(array, self.row)? as u32))
             }
-            SourceType::UInt16 => {
-                let arr = array
-                    .as_any()
-                    .downcast_ref::<arrow_array::UInt16Array>()
-                    .ok_or_else(|| anyhow!("uint16 cast"))?;
-                Ok(Some(arr.value(self.row) as u32))
-            }
-            SourceType::UInt8 => {
-                let arr = array
-                    .as_any()
-                    .downcast_ref::<arrow_array::UInt8Array>()
-                    .ok_or_else(|| anyhow!("uint8 cast"))?;
-                Ok(Some(arr.value(self.row) as u32))
-            }
-            SourceType::String | SourceType::Bytes => {
-                let text = read_utf8(array, self.row, &col.source_dtype)?;
+            DataType::Utf8
+            | DataType::LargeUtf8
+            | DataType::Binary
+            | DataType::LargeBinary
+            | DataType::FixedSizeBinary(_) => {
+                let text = read_utf8(array, self.row)?;
                 Ok(parse_u32(text))
             }
             _ => Ok(None),
@@ -7952,23 +7889,27 @@ impl<'a> diskgraph_rowpack::RowValueAccess for RowAccess<'a> {
         if col.ingested_dtype != IngestedType::Float64 {
             return Ok(None);
         }
-        match col.source_dtype {
-            SourceType::Float64 => {
+        match array.data_type() {
+            DataType::Float64 => {
                 let arr = array
                     .as_any()
                     .downcast_ref::<arrow_array::Float64Array>()
                     .ok_or_else(|| anyhow!("float64 cast"))?;
                 Ok(Some(arr.value(self.row)))
             }
-            SourceType::Float32 => {
+            DataType::Float32 => {
                 let arr = array
                     .as_any()
                     .downcast_ref::<arrow_array::Float32Array>()
                     .ok_or_else(|| anyhow!("float32 cast"))?;
                 Ok(Some(arr.value(self.row) as f64))
             }
-            SourceType::String | SourceType::Bytes => {
-                let text = read_utf8(array, self.row, &col.source_dtype)?;
+            DataType::Utf8
+            | DataType::LargeUtf8
+            | DataType::Binary
+            | DataType::LargeBinary
+            | DataType::FixedSizeBinary(_) => {
+                let text = read_utf8(array, self.row)?;
                 Ok(parse_f64(text))
             }
             _ => Ok(None),
@@ -7983,23 +7924,27 @@ impl<'a> diskgraph_rowpack::RowValueAccess for RowAccess<'a> {
         if col.ingested_dtype != IngestedType::Float32 {
             return Ok(None);
         }
-        match col.source_dtype {
-            SourceType::Float32 => {
+        match array.data_type() {
+            DataType::Float32 => {
                 let arr = array
                     .as_any()
                     .downcast_ref::<arrow_array::Float32Array>()
                     .ok_or_else(|| anyhow!("float32 cast"))?;
                 Ok(Some(arr.value(self.row)))
             }
-            SourceType::Float64 => {
+            DataType::Float64 => {
                 let arr = array
                     .as_any()
                     .downcast_ref::<arrow_array::Float64Array>()
                     .ok_or_else(|| anyhow!("float64 cast"))?;
                 Ok(Some(arr.value(self.row) as f32))
             }
-            SourceType::String | SourceType::Bytes => {
-                let text = read_utf8(array, self.row, &col.source_dtype)?;
+            DataType::Utf8
+            | DataType::LargeUtf8
+            | DataType::Binary
+            | DataType::LargeBinary
+            | DataType::FixedSizeBinary(_) => {
+                let text = read_utf8(array, self.row)?;
                 Ok(parse_f32(text))
             }
             _ => Ok(None),
@@ -8014,16 +7959,20 @@ impl<'a> diskgraph_rowpack::RowValueAccess for RowAccess<'a> {
         if col.ingested_dtype != IngestedType::Bool {
             return Ok(None);
         }
-        match col.source_dtype {
-            SourceType::Bool => {
+        match array.data_type() {
+            DataType::Boolean => {
                 let arr = array
                     .as_any()
                     .downcast_ref::<arrow_array::BooleanArray>()
                     .ok_or_else(|| anyhow!("bool cast"))?;
                 Ok(Some(arr.value(self.row)))
             }
-            SourceType::String | SourceType::Bytes => {
-                let text = read_utf8(array, self.row, &col.source_dtype)?;
+            DataType::Utf8
+            | DataType::LargeUtf8
+            | DataType::Binary
+            | DataType::LargeBinary
+            | DataType::FixedSizeBinary(_) => {
+                let text = read_utf8(array, self.row)?;
                 Ok(parse_bool(text))
             }
             _ => Ok(None),
@@ -8038,22 +7987,10 @@ impl<'a> diskgraph_rowpack::RowValueAccess for RowAccess<'a> {
         if col.ingested_dtype != IngestedType::String {
             return Ok(None);
         }
-        let text = match col.source_dtype {
-            SourceType::String => {
-                let arr = array
-                    .as_any()
-                    .downcast_ref::<arrow_array::StringArray>()
-                    .ok_or_else(|| anyhow!("string cast"))?;
-                let text = arr.value(self.row);
-                if text.len() > MAX_INPUT_STRING_BYTES {
-                    self.trimmed_strings.fetch_add(1, Ordering::Relaxed);
-                    trim_str_bytes(text, MAX_INPUT_STRING_BYTES).to_string()
-                } else {
-                    text.to_string()
-                }
-            }
-            SourceType::Bytes => {
-                let text = read_utf8(array, self.row, &col.source_dtype)?;
+        let text = match array.data_type() {
+            DataType::Utf8 | DataType::LargeUtf8 | DataType::Binary | DataType::LargeBinary
+            | DataType::FixedSizeBinary(_) => {
+                let text = read_utf8(array, self.row)?;
                 if text.len() > MAX_INPUT_STRING_BYTES {
                     self.trimmed_strings.fetch_add(1, Ordering::Relaxed);
                     trim_str_bytes(text, MAX_INPUT_STRING_BYTES).to_string()
@@ -8082,7 +8019,7 @@ impl<'a> diskgraph_rowpack::RowValueAccess for RowAccess<'a> {
         }
         let bytes = match col.ingested_dtype {
             IngestedType::Bytes => {
-                let data = read_bytes(array, self.row, &col.source_dtype)?;
+                let data = read_bytes(array, self.row)?;
                 if data.len() > MAX_INPUT_STRING_BYTES {
                     self.trimmed_strings.fetch_add(1, Ordering::Relaxed);
                     data[..MAX_INPUT_STRING_BYTES].to_vec()
@@ -8090,63 +8027,54 @@ impl<'a> diskgraph_rowpack::RowValueAccess for RowAccess<'a> {
                     data.to_vec()
                 }
             }
-            IngestedType::Uuid => match col.source_dtype {
-                SourceType::String | SourceType::Bytes => {
-                    if let Ok(text) = read_utf8(array, self.row, &col.source_dtype) {
-                        if let Ok(uuid) = parse_uuid_string(text.as_bytes()) {
-                            return Ok(Some(self.pool_bytes(uuid.to_vec())));
-                        }
+            IngestedType::Uuid => {
+                if let Ok(text) = read_utf8(array, self.row) {
+                    if let Ok(uuid) = parse_uuid_string(text.as_bytes()) {
+                        return Ok(Some(self.pool_bytes(uuid.to_vec())));
                     }
-                    if let Ok(data) = read_bytes(array, self.row, &col.source_dtype) {
-                        if data.len() == 16 {
-                            data.to_vec()
-                        } else {
-                            return Ok(None);
-                        }
+                }
+                if let Ok(data) = read_bytes(array, self.row) {
+                    if data.len() == 16 {
+                        data.to_vec()
                     } else {
                         return Ok(None);
                     }
+                } else {
+                    return Ok(None);
                 }
-                _ => return Ok(None),
-            },
-            IngestedType::Uuid256 => match col.source_dtype {
-                SourceType::String | SourceType::Bytes | SourceType::Uuid256 => {
-                    if let Ok(text) = read_utf8(array, self.row, &col.source_dtype) {
-                        if let Ok(uuid) = parse_uuid256_string(text.as_bytes()) {
-                            return Ok(Some(self.pool_bytes(uuid.to_vec())));
-                        }
+            }
+            IngestedType::Uuid256 => {
+                if let Ok(text) = read_utf8(array, self.row) {
+                    if let Ok(uuid) = parse_uuid256_string(text.as_bytes()) {
+                        return Ok(Some(self.pool_bytes(uuid.to_vec())));
                     }
-                    if let Ok(data) = read_bytes(array, self.row, &col.source_dtype) {
-                        if data.len() == 32 {
-                            data.to_vec()
-                        } else {
-                            return Ok(None);
-                        }
+                }
+                if let Ok(data) = read_bytes(array, self.row) {
+                    if data.len() == 32 {
+                        data.to_vec()
                     } else {
                         return Ok(None);
                     }
+                } else {
+                    return Ok(None);
                 }
-                _ => return Ok(None),
-            },
-            IngestedType::Ip => match col.source_dtype {
-                SourceType::String | SourceType::Bytes => {
-                    if let Ok(text) = read_utf8(array, self.row, &col.source_dtype) {
-                        if let Ok(ip) = parse_ip_string(text.as_bytes()) {
-                            return Ok(Some(self.pool_bytes(ip.to_vec())));
-                        }
+            }
+            IngestedType::Ip => {
+                if let Ok(text) = read_utf8(array, self.row) {
+                    if let Ok(ip) = parse_ip_string(text.as_bytes()) {
+                        return Ok(Some(self.pool_bytes(ip.to_vec())));
                     }
-                    if let Ok(data) = read_bytes(array, self.row, &col.source_dtype) {
-                        if let Ok(ip) = parse_ip_bytes(data) {
-                            return Ok(Some(self.pool_bytes(ip.to_vec())));
-                        } else {
-                            return Ok(None);
-                        }
+                }
+                if let Ok(data) = read_bytes(array, self.row) {
+                    if let Ok(ip) = parse_ip_bytes(data) {
+                        return Ok(Some(self.pool_bytes(ip.to_vec())));
                     } else {
                         return Ok(None);
                     }
+                } else {
+                    return Ok(None);
                 }
-                _ => return Ok(None),
-            },
+            }
             _ => return Ok(None),
         };
         Ok(Some(self.pool_bytes(bytes)))
@@ -8160,16 +8088,20 @@ impl<'a> diskgraph_rowpack::RowValueAccess for RowAccess<'a> {
         if col.ingested_dtype != IngestedType::Date {
             return Ok(None);
         }
-        match col.source_dtype {
-            SourceType::Date => {
+        match array.data_type() {
+            DataType::Date32 => {
                 let arr = array
                     .as_any()
                     .downcast_ref::<arrow_array::Date32Array>()
                     .ok_or_else(|| anyhow!("date cast"))?;
                 Ok(Some(arr.value(self.row)))
             }
-            SourceType::String | SourceType::Bytes => {
-                let text = read_utf8(array, self.row, &col.source_dtype)?;
+            DataType::Utf8
+            | DataType::LargeUtf8
+            | DataType::Binary
+            | DataType::LargeBinary
+            | DataType::FixedSizeBinary(_) => {
+                let text = read_utf8(array, self.row)?;
                 if let Some(parser) = self
                     .runtimes
                     .get(idx)
@@ -8179,17 +8111,29 @@ impl<'a> diskgraph_rowpack::RowValueAccess for RowAccess<'a> {
                         return Ok(Some(days));
                     }
                 }
-                Ok(parse_date_text(text, col.timestamp_format.as_deref()))
+                if let Some(days) = parse_date_text(text, col.timestamp_format.as_deref()) {
+                    return Ok(Some(days));
+                }
+                if let Some(value) = parse_i64(text) {
+                    let days = if let Some(unit) = col.timestamp_unit.as_ref() {
+                        let (secs, _) = timestamp_from_int(value, unit.clone());
+                        days_from_secs(secs)
+                    } else {
+                        value as i32
+                    };
+                    return Ok(Some(days));
+                }
+                Ok(None)
             }
-            SourceType::Int8
-            | SourceType::Int16
-            | SourceType::Int32
-            | SourceType::Int64
-            | SourceType::UInt8
-            | SourceType::UInt16
-            | SourceType::UInt32
-            | SourceType::UInt64 => {
-                let value = read_i64(array, self.row, &col.source_dtype)?;
+            DataType::Int8
+            | DataType::Int16
+            | DataType::Int32
+            | DataType::Int64
+            | DataType::UInt8
+            | DataType::UInt16
+            | DataType::UInt32
+            | DataType::UInt64 => {
+                let value = read_i64(array, self.row)?;
                 let days = if let Some(unit) = col.timestamp_unit.as_ref() {
                     let (secs, _) = timestamp_from_int(value, unit.clone());
                     days_from_secs(secs)
@@ -8210,13 +8154,17 @@ impl<'a> diskgraph_rowpack::RowValueAccess for RowAccess<'a> {
         if col.ingested_dtype != IngestedType::Timestamp {
             return Ok(None);
         }
-        match col.source_dtype {
-            SourceType::Timestamp => {
+        match array.data_type() {
+            DataType::Timestamp(_, _) => {
                 let (secs, nanos) = timestamp_parts_from_array(array, self.row)?;
                 Ok(Some((secs, nanos)))
             }
-            SourceType::String | SourceType::Bytes => {
-                let text = read_utf8(array, self.row, &col.source_dtype)?;
+            DataType::Utf8
+            | DataType::LargeUtf8
+            | DataType::Binary
+            | DataType::LargeBinary
+            | DataType::FixedSizeBinary(_) => {
+                let text = read_utf8(array, self.row)?;
                 if let Some(parser) = self
                     .runtimes
                     .get(idx)
@@ -8226,17 +8174,29 @@ impl<'a> diskgraph_rowpack::RowValueAccess for RowAccess<'a> {
                         return Ok(Some((secs, nanos)));
                     }
                 }
-                Ok(parse_timestamp_text(text, col.timestamp_format.as_deref()))
+                if let Some((secs, nanos)) =
+                    parse_timestamp_text(text, col.timestamp_format.as_deref())
+                {
+                    return Ok(Some((secs, nanos)));
+                }
+                if let Some(value) = parse_i64(text) {
+                    let unit = col
+                        .timestamp_unit
+                        .clone()
+                        .unwrap_or(TimestampUnit::Seconds);
+                    return Ok(Some(timestamp_from_int(value, unit)));
+                }
+                Ok(None)
             }
-            SourceType::Int8
-            | SourceType::Int16
-            | SourceType::Int32
-            | SourceType::Int64
-            | SourceType::UInt8
-            | SourceType::UInt16
-            | SourceType::UInt32
-            | SourceType::UInt64 => {
-                let value = read_i64(array, self.row, &col.source_dtype)?;
+            DataType::Int8
+            | DataType::Int16
+            | DataType::Int32
+            | DataType::Int64
+            | DataType::UInt8
+            | DataType::UInt16
+            | DataType::UInt32
+            | DataType::UInt64 => {
+                let value = read_i64(array, self.row)?;
                 let unit = col
                     .timestamp_unit
                     .clone()
@@ -8255,16 +8215,20 @@ impl<'a> diskgraph_rowpack::RowValueAccess for RowAccess<'a> {
         if col.ingested_dtype != IngestedType::Decimal128 {
             return Ok(None);
         }
-        match col.source_dtype {
-            SourceType::Decimal128 => {
+        match array.data_type() {
+            DataType::Decimal128(_, _) => {
                 let arr = array
                     .as_any()
                     .downcast_ref::<arrow_array::Decimal128Array>()
                     .ok_or_else(|| anyhow!("decimal128 cast"))?;
                 Ok(Some(arr.value(self.row)))
             }
-            SourceType::String | SourceType::Bytes => {
-                let text = read_utf8(array, self.row, &col.source_dtype)?;
+            DataType::Utf8
+            | DataType::LargeUtf8
+            | DataType::Binary
+            | DataType::LargeBinary
+            | DataType::FixedSizeBinary(_) => {
+                let text = read_utf8(array, self.row)?;
                 Ok(parse_decimal_i128(text, col.scale.unwrap_or(0)))
             }
             _ => Ok(None),
@@ -8279,16 +8243,20 @@ impl<'a> diskgraph_rowpack::RowValueAccess for RowAccess<'a> {
         if col.ingested_dtype != IngestedType::Decimal256 {
             return Ok(None);
         }
-        match col.source_dtype {
-            SourceType::Decimal256 => {
+        match array.data_type() {
+            DataType::Decimal256(_, _) => {
                 let arr = array
                     .as_any()
                     .downcast_ref::<arrow_array::Decimal256Array>()
                     .ok_or_else(|| anyhow!("decimal256 cast"))?;
                 Ok(Some(arr.value(self.row).to_le_bytes()))
             }
-            SourceType::String | SourceType::Bytes => {
-                let text = read_utf8(array, self.row, &col.source_dtype)?;
+            DataType::Utf8
+            | DataType::LargeUtf8
+            | DataType::Binary
+            | DataType::LargeBinary
+            | DataType::FixedSizeBinary(_) => {
+                let text = read_utf8(array, self.row)?;
                 Ok(parse_decimal_i256(text, col.scale.unwrap_or(0)).map(|v| v.to_le_bytes()))
             }
             _ => Ok(None),
@@ -8296,9 +8264,9 @@ impl<'a> diskgraph_rowpack::RowValueAccess for RowAccess<'a> {
     }
 
     fn get_float32_array(&mut self, idx: usize) -> Result<Option<&[f32]>> {
-        let (ingested_dtype, source_dtype, array) = {
+        let (ingested_dtype, array) = {
             let (col, array) = self.column_and_array(idx)?;
-            (col.ingested_dtype.clone(), col.source_dtype.clone(), array.clone())
+            (col.ingested_dtype.clone(), array.clone())
         };
         if array.is_null(self.row) {
             return Ok(None);
@@ -8307,17 +8275,31 @@ impl<'a> diskgraph_rowpack::RowValueAccess for RowAccess<'a> {
             IngestedType::Float32Array | IngestedType::Float16Array => {}
             _ => return Ok(None),
         }
-        let list = array
+        let (start, end, values) = if let Some(list) =
+            array.as_any().downcast_ref::<arrow_array::ListArray>()
+        {
+            let offsets = list.value_offsets();
+            (
+                offsets[self.row] as usize,
+                offsets[self.row + 1] as usize,
+                list.values(),
+            )
+        } else if let Some(list) = array
             .as_any()
-            .downcast_ref::<arrow_array::ListArray>()
-            .ok_or_else(|| anyhow!("list cast"))?;
-        let offsets = list.value_offsets();
-        let start = offsets[self.row] as usize;
-        let end = offsets[self.row + 1] as usize;
-        match source_dtype {
-            SourceType::Float32Array => {
-                let values_arr = list
-                    .values()
+            .downcast_ref::<arrow_array::LargeListArray>()
+        {
+            let offsets = list.value_offsets();
+            (
+                offsets[self.row] as usize,
+                offsets[self.row + 1] as usize,
+                list.values(),
+            )
+        } else {
+            return Err(anyhow!("list cast"));
+        };
+        match values.data_type() {
+            DataType::Float32 => {
+                let values_arr = values
                     .as_any()
                     .downcast_ref::<arrow_array::Float32Array>()
                     .ok_or_else(|| anyhow!("float32 list cast"))?;
@@ -8331,9 +8313,8 @@ impl<'a> diskgraph_rowpack::RowValueAccess for RowAccess<'a> {
                 }
                 Ok(Some(unsafe { std::mem::transmute::<&[f32], &'a [f32]>(vec.as_slice()) }))
             }
-            SourceType::Float64Array => {
-                let values_arr = list
-                    .values()
+            DataType::Float64 => {
+                let values_arr = values
                     .as_any()
                     .downcast_ref::<arrow_array::Float64Array>()
                     .ok_or_else(|| anyhow!("float64 list cast"))?;
@@ -8343,6 +8324,21 @@ impl<'a> diskgraph_rowpack::RowValueAccess for RowAccess<'a> {
                         vec.push(0.0);
                     } else {
                         vec.push(values_arr.value(idx) as f32);
+                    }
+                }
+                Ok(Some(unsafe { std::mem::transmute::<&[f32], &'a [f32]>(vec.as_slice()) }))
+            }
+            DataType::Float16 => {
+                let values_arr = values
+                    .as_any()
+                    .downcast_ref::<arrow_array::Float16Array>()
+                    .ok_or_else(|| anyhow!("float16 list cast"))?;
+                let vec = self.pools.take_f32_vec(end.saturating_sub(start));
+                for idx in start..end {
+                    if values_arr.is_null(idx) {
+                        vec.push(0.0);
+                    } else {
+                        vec.push(values_arr.value(idx).to_f32());
                     }
                 }
                 Ok(Some(unsafe { std::mem::transmute::<&[f32], &'a [f32]>(vec.as_slice()) }))
@@ -8362,18 +8358,32 @@ impl<'a> diskgraph_rowpack::RowValueAccess for RowAccess<'a> {
         if ingested_dtype != IngestedType::Float64Array {
             return Ok(None);
         }
-        let list = array
+        let (start, end, values) = if let Some(list) =
+            array.as_any().downcast_ref::<arrow_array::ListArray>()
+        {
+            let offsets = list.value_offsets();
+            (
+                offsets[self.row] as usize,
+                offsets[self.row + 1] as usize,
+                list.values(),
+            )
+        } else if let Some(list) = array
             .as_any()
-            .downcast_ref::<arrow_array::ListArray>()
-            .ok_or_else(|| anyhow!("list cast"))?;
-        let values_arr = list
-            .values()
+            .downcast_ref::<arrow_array::LargeListArray>()
+        {
+            let offsets = list.value_offsets();
+            (
+                offsets[self.row] as usize,
+                offsets[self.row + 1] as usize,
+                list.values(),
+            )
+        } else {
+            return Err(anyhow!("list cast"));
+        };
+        let values_arr = values
             .as_any()
             .downcast_ref::<arrow_array::Float64Array>()
             .ok_or_else(|| anyhow!("float64 list cast"))?;
-        let offsets = list.value_offsets();
-        let start = offsets[self.row] as usize;
-        let end = offsets[self.row + 1] as usize;
         let vec = self.pools.take_f64_vec(end.saturating_sub(start));
         for idx in start..end {
             if values_arr.is_null(idx) {
@@ -8474,106 +8484,140 @@ impl RowValuePools {
 }
 
  
-fn read_utf8<'a>(array: &'a ArrayRef, row: usize, dtype: &SourceType) -> Result<&'a str> {
-    match dtype {
-        SourceType::String => {
+fn read_utf8<'a>(array: &'a ArrayRef, row: usize) -> Result<&'a str> {
+    match array.data_type() {
+        DataType::Utf8 => {
             let arr = array
                 .as_any()
                 .downcast_ref::<arrow_array::StringArray>()
                 .ok_or_else(|| anyhow!("string cast"))?;
             Ok(arr.value(row))
         }
-        SourceType::Bytes | SourceType::Uuid256 => {
-            if let Some(arr) = array.as_any().downcast_ref::<arrow_array::BinaryArray>() {
-                std::str::from_utf8(arr.value(row)).map_err(|_| anyhow!("invalid utf8"))
-            } else if let Some(arr) =
-                array.as_any().downcast_ref::<arrow_array::FixedSizeBinaryArray>()
-            {
-                std::str::from_utf8(arr.value(row)).map_err(|_| anyhow!("invalid utf8"))
-            } else {
-                Err(anyhow!("unsupported utf8 source"))
-            }
+        DataType::LargeUtf8 => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::LargeStringArray>()
+                .ok_or_else(|| anyhow!("large string cast"))?;
+            Ok(arr.value(row))
+        }
+        DataType::Binary => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::BinaryArray>()
+                .ok_or_else(|| anyhow!("binary cast"))?;
+            std::str::from_utf8(arr.value(row)).map_err(|_| anyhow!("invalid utf8"))
+        }
+        DataType::LargeBinary => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::LargeBinaryArray>()
+                .ok_or_else(|| anyhow!("large binary cast"))?;
+            std::str::from_utf8(arr.value(row)).map_err(|_| anyhow!("invalid utf8"))
+        }
+        DataType::FixedSizeBinary(_) => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::FixedSizeBinaryArray>()
+                .ok_or_else(|| anyhow!("fixed binary cast"))?;
+            std::str::from_utf8(arr.value(row)).map_err(|_| anyhow!("invalid utf8"))
         }
         _ => Err(anyhow!("unsupported utf8 source")),
     }
 }
 
-fn read_bytes<'a>(array: &'a ArrayRef, row: usize, dtype: &SourceType) -> Result<&'a [u8]> {
-    match dtype {
-        SourceType::String => {
+fn read_bytes<'a>(array: &'a ArrayRef, row: usize) -> Result<&'a [u8]> {
+    match array.data_type() {
+        DataType::Utf8 => {
             let arr = array
                 .as_any()
                 .downcast_ref::<arrow_array::StringArray>()
                 .ok_or_else(|| anyhow!("string cast"))?;
             Ok(arr.value(row).as_bytes())
         }
-        SourceType::Bytes | SourceType::Uuid256 => {
-            if let Some(arr) = array.as_any().downcast_ref::<arrow_array::BinaryArray>() {
-                Ok(arr.value(row))
-            } else if let Some(arr) =
-                array.as_any().downcast_ref::<arrow_array::FixedSizeBinaryArray>()
-            {
-                Ok(arr.value(row))
-            } else {
-                Err(anyhow!("unsupported bytes source"))
-            }
+        DataType::LargeUtf8 => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::LargeStringArray>()
+                .ok_or_else(|| anyhow!("large string cast"))?;
+            Ok(arr.value(row).as_bytes())
+        }
+        DataType::Binary => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::BinaryArray>()
+                .ok_or_else(|| anyhow!("binary cast"))?;
+            Ok(arr.value(row))
+        }
+        DataType::LargeBinary => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::LargeBinaryArray>()
+                .ok_or_else(|| anyhow!("large binary cast"))?;
+            Ok(arr.value(row))
+        }
+        DataType::FixedSizeBinary(_) => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::FixedSizeBinaryArray>()
+                .ok_or_else(|| anyhow!("fixed binary cast"))?;
+            Ok(arr.value(row))
         }
         _ => Err(anyhow!("unsupported bytes source")),
     }
 }
 
-fn read_i64(array: &ArrayRef, row: usize, dtype: &SourceType) -> Result<i64> {
-    match dtype {
-        SourceType::Int64 => {
+fn read_i64(array: &ArrayRef, row: usize) -> Result<i64> {
+    match array.data_type() {
+        DataType::Int64 => {
             let arr = array
                 .as_any()
                 .downcast_ref::<arrow_array::Int64Array>()
                 .ok_or_else(|| anyhow!("int64 cast"))?;
             Ok(arr.value(row))
         }
-        SourceType::Int32 => {
+        DataType::Int32 => {
             let arr = array
                 .as_any()
                 .downcast_ref::<arrow_array::Int32Array>()
                 .ok_or_else(|| anyhow!("int32 cast"))?;
             Ok(arr.value(row) as i64)
         }
-        SourceType::Int16 => {
+        DataType::Int16 => {
             let arr = array
                 .as_any()
                 .downcast_ref::<arrow_array::Int16Array>()
                 .ok_or_else(|| anyhow!("int16 cast"))?;
             Ok(arr.value(row) as i64)
         }
-        SourceType::Int8 => {
+        DataType::Int8 => {
             let arr = array
                 .as_any()
                 .downcast_ref::<arrow_array::Int8Array>()
                 .ok_or_else(|| anyhow!("int8 cast"))?;
             Ok(arr.value(row) as i64)
         }
-        SourceType::UInt64 => {
+        DataType::UInt64 => {
             let arr = array
                 .as_any()
                 .downcast_ref::<arrow_array::UInt64Array>()
                 .ok_or_else(|| anyhow!("uint64 cast"))?;
             Ok(arr.value(row) as i64)
         }
-        SourceType::UInt32 => {
+        DataType::UInt32 => {
             let arr = array
                 .as_any()
                 .downcast_ref::<arrow_array::UInt32Array>()
                 .ok_or_else(|| anyhow!("uint32 cast"))?;
             Ok(arr.value(row) as i64)
         }
-        SourceType::UInt16 => {
+        DataType::UInt16 => {
             let arr = array
                 .as_any()
                 .downcast_ref::<arrow_array::UInt16Array>()
                 .ok_or_else(|| anyhow!("uint16 cast"))?;
             Ok(arr.value(row) as i64)
         }
-        SourceType::UInt8 => {
+        DataType::UInt8 => {
             let arr = array
                 .as_any()
                 .downcast_ref::<arrow_array::UInt8Array>()
@@ -8581,6 +8625,40 @@ fn read_i64(array: &ArrayRef, row: usize, dtype: &SourceType) -> Result<i64> {
             Ok(arr.value(row) as i64)
         }
         _ => Err(anyhow!("unsupported int source")),
+    }
+}
+
+fn read_u64(array: &ArrayRef, row: usize) -> Result<u64> {
+    match array.data_type() {
+        DataType::UInt64 => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::UInt64Array>()
+                .ok_or_else(|| anyhow!("uint64 cast"))?;
+            Ok(arr.value(row))
+        }
+        DataType::UInt32 => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::UInt32Array>()
+                .ok_or_else(|| anyhow!("uint32 cast"))?;
+            Ok(arr.value(row) as u64)
+        }
+        DataType::UInt16 => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::UInt16Array>()
+                .ok_or_else(|| anyhow!("uint16 cast"))?;
+            Ok(arr.value(row) as u64)
+        }
+        DataType::UInt8 => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::UInt8Array>()
+                .ok_or_else(|| anyhow!("uint8 cast"))?;
+            Ok(arr.value(row) as u64)
+        }
+        _ => Err(anyhow!("unsupported uint source")),
     }
 }
 

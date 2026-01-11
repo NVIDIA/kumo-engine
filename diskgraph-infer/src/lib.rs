@@ -11,7 +11,7 @@ use diskgraph_fs::{
 use diskgraph_ingest::source_metadata::{
     relationship_name, ColumnSpec, EdgeSortKeysSpec, EdgeTableSortKeysSpec, EdgeTableSpec,
     ForeignKeySpec, IngestedType, RelationshipSortKeysSpec, RelationshipSpec, SortKeySpec,
-    SortKeyTimestampSpec, SortKeyWeightSpec, SourceMetadata, SourceType, TableFormat, TableSpec,
+    SortKeyTimestampSpec, SortKeyWeightSpec, SourceMetadata, TableFormat, TableSpec,
     TimestampEncodingKind, TimestampEncodingSpec, TimestampUnit, WeightEncodingKind,
     WeightEncodingSpec,
 };
@@ -609,7 +609,7 @@ fn columns_match(a: &[ColumnSpec], b: &[ColumnSpec]) -> bool {
 
 fn columns_equivalent(lhs: &ColumnSpec, rhs: &ColumnSpec) -> bool {
     lhs.name == rhs.name
-        && column_type_eq(&lhs.source_dtype, &rhs.source_dtype)
+        && column_type_eq(&lhs.ingested_dtype, &rhs.ingested_dtype)
         && lhs.fixed_len == rhs.fixed_len
         && lhs.precision == rhs.precision
         && lhs.scale == rhs.scale
@@ -654,7 +654,7 @@ fn same_table_format(a: &TableFormat, b: &TableFormat) -> bool {
     )
 }
 
-fn column_type_eq(a: &SourceType, b: &SourceType) -> bool {
+fn column_type_eq(a: &IngestedType, b: &IngestedType) -> bool {
     std::mem::discriminant(a) == std::mem::discriminant(b)
 }
 
@@ -744,32 +744,39 @@ fn infer_parquet_schema_remote(
 fn infer_parquet_schema_from_arrow(schema: &Schema) -> Result<Vec<ColumnSpec>> {
     let mut columns = Vec::new();
     for field in schema.fields() {
-        let (source_dtype, fixed_len, precision, scale) =
-            arrow_type_to_source_type(field.data_type())?;
-        let mut ingested_dtype = match source_dtype {
-            SourceType::Float64 => IngestedType::Float32,
-            SourceType::Float32Array | SourceType::Float64Array | SourceType::Float16Array => {
-                IngestedType::Float16Array
-            }
-            SourceType::Int8 => IngestedType::Int8,
-            SourceType::Int16 => IngestedType::Int16,
-            SourceType::Int32 => IngestedType::Int32,
-            SourceType::Int64 => IngestedType::Int64,
-            SourceType::UInt8 => IngestedType::UInt8,
-            SourceType::UInt16 => IngestedType::UInt16,
-            SourceType::UInt32 => IngestedType::UInt32,
-            SourceType::UInt64 => IngestedType::UInt64,
-            SourceType::Float32 => IngestedType::Float32,
-            SourceType::Bool => IngestedType::Bool,
-            SourceType::String => IngestedType::String,
-            SourceType::Bytes => IngestedType::Bytes,
-            SourceType::Uuid256 => IngestedType::Uuid256,
-            SourceType::Date => IngestedType::Date,
-            SourceType::Timestamp => IngestedType::Timestamp,
-            SourceType::Decimal128 => IngestedType::Decimal128,
-            SourceType::Decimal256 => IngestedType::Decimal256,
+        let (fixed_len, precision, scale) = arrow_type_metadata(field.data_type())?;
+        let mut ingested_dtype = match field.data_type() {
+            DataType::Float64 => IngestedType::Float32,
+            DataType::List(field) | DataType::LargeList(field) => match field.data_type() {
+                DataType::Float16 | DataType::Float32 | DataType::Float64 => {
+                    IngestedType::Float16Array
+                }
+                _ => return Err(anyhow!("unsupported list type {}", field.data_type())),
+            },
+            DataType::Int8 => IngestedType::Int8,
+            DataType::Int16 => IngestedType::Int16,
+            DataType::Int32 => IngestedType::Int32,
+            DataType::Int64 => IngestedType::Int64,
+            DataType::UInt8 => IngestedType::UInt8,
+            DataType::UInt16 => IngestedType::UInt16,
+            DataType::UInt32 => IngestedType::UInt32,
+            DataType::UInt64 => IngestedType::UInt64,
+            DataType::Float32 => IngestedType::Float32,
+            DataType::Boolean => IngestedType::Bool,
+            DataType::Utf8 | DataType::LargeUtf8 => IngestedType::String,
+            DataType::Binary
+            | DataType::LargeBinary
+            | DataType::FixedSizeBinary(_) => IngestedType::Bytes,
+            DataType::Date32 => IngestedType::Date,
+            DataType::Timestamp(_, _) => IngestedType::Timestamp,
+            DataType::Decimal128(_, _) => IngestedType::Decimal128,
+            DataType::Decimal256(_, _) => IngestedType::Decimal256,
+            _ => return Err(anyhow!("unsupported parquet type {}", field.data_type())),
         };
-        if matches!(source_dtype, SourceType::Bytes) {
+        if matches!(
+            field.data_type(),
+            DataType::Binary | DataType::LargeBinary | DataType::FixedSizeBinary(_)
+        ) {
             if let Some(len) = fixed_len {
                 let name_lower = field.name().to_lowercase();
                 if len == 16 && name_lower.contains("ip") {
@@ -785,7 +792,6 @@ fn infer_parquet_schema_from_arrow(schema: &Schema) -> Result<Vec<ColumnSpec>> {
         }
         columns.push(ColumnSpec {
             name: field.name().to_string(),
-            source_dtype,
             ingested_dtype,
             fixed_len,
             timestamp_format: None,
@@ -805,27 +811,8 @@ fn apply_parquet_string_samples<I>(
 where
     I: Iterator<Item = std::result::Result<RecordBatch, ArrowError>>,
 {
-    let mut stats: Vec<Option<ColumnStats>> = columns
-        .iter()
-        .map(|col| {
-            if matches!(
-                col.source_dtype,
-                SourceType::String
-                    | SourceType::Int8
-                    | SourceType::Int16
-                    | SourceType::Int32
-                    | SourceType::Int64
-                    | SourceType::UInt8
-                    | SourceType::UInt16
-                    | SourceType::UInt32
-                    | SourceType::UInt64
-            ) {
-                Some(ColumnStats::default())
-            } else {
-                None
-            }
-        })
-        .collect();
+    let mut stats: Vec<Option<ColumnStats>> =
+        (0..columns.len()).map(|_| Some(ColumnStats::default())).collect();
     let mut seen = 0usize;
     while let Some(batch) = batches.next() {
         let batch = batch.map_err(|err| anyhow!(err))?;
@@ -833,43 +820,81 @@ where
             break;
         }
         let rows = batch.num_rows().min(sample_rows - seen);
-        for (idx, col) in columns.iter().enumerate() {
-            if !matches!(
-                col.source_dtype,
-                SourceType::String
-                    | SourceType::Int8
-                    | SourceType::Int16
-                    | SourceType::Int32
-                    | SourceType::Int64
-                    | SourceType::UInt8
-                    | SourceType::UInt16
-                    | SourceType::UInt32
-                    | SourceType::UInt64
-            ) {
-                continue;
-            }
+        for idx in 0..columns.len() {
             if let Some(st) = stats[idx].as_mut() {
                 let array = batch.column(idx);
-                if let Some(arr) = array.as_any().downcast_ref::<StringArray>() {
-                    sample_string_array(arr, rows, st);
-                } else if let Some(arr) = array.as_any().downcast_ref::<LargeStringArray>() {
-                    sample_large_string_array(arr, rows, st);
-                } else if let Some(arr) = array.as_any().downcast_ref::<Int64Array>() {
-                    sample_int64_array(arr, rows, st);
-                } else if let Some(arr) = array.as_any().downcast_ref::<Int32Array>() {
-                    sample_int32_array(arr, rows, st);
-                } else if let Some(arr) = array.as_any().downcast_ref::<Int16Array>() {
-                    sample_int16_array(arr, rows, st);
-                } else if let Some(arr) = array.as_any().downcast_ref::<Int8Array>() {
-                    sample_int8_array(arr, rows, st);
-                } else if let Some(arr) = array.as_any().downcast_ref::<UInt64Array>() {
-                    sample_uint64_array(arr, rows, st);
-                } else if let Some(arr) = array.as_any().downcast_ref::<UInt32Array>() {
-                    sample_uint32_array(arr, rows, st);
-                } else if let Some(arr) = array.as_any().downcast_ref::<UInt16Array>() {
-                    sample_uint16_array(arr, rows, st);
-                } else if let Some(arr) = array.as_any().downcast_ref::<UInt8Array>() {
-                    sample_uint8_array(arr, rows, st);
+                match array.data_type() {
+                    DataType::Utf8 => {
+                        let arr = array
+                            .as_any()
+                            .downcast_ref::<StringArray>()
+                            .ok_or_else(|| anyhow!("string cast"))?;
+                        sample_string_array(arr, rows, st);
+                    }
+                    DataType::LargeUtf8 => {
+                        let arr = array
+                            .as_any()
+                            .downcast_ref::<LargeStringArray>()
+                            .ok_or_else(|| anyhow!("large string cast"))?;
+                        sample_large_string_array(arr, rows, st);
+                    }
+                    DataType::Int64 => {
+                        let arr = array
+                            .as_any()
+                            .downcast_ref::<Int64Array>()
+                            .ok_or_else(|| anyhow!("int64 cast"))?;
+                        sample_int64_array(arr, rows, st);
+                    }
+                    DataType::Int32 => {
+                        let arr = array
+                            .as_any()
+                            .downcast_ref::<Int32Array>()
+                            .ok_or_else(|| anyhow!("int32 cast"))?;
+                        sample_int32_array(arr, rows, st);
+                    }
+                    DataType::Int16 => {
+                        let arr = array
+                            .as_any()
+                            .downcast_ref::<Int16Array>()
+                            .ok_or_else(|| anyhow!("int16 cast"))?;
+                        sample_int16_array(arr, rows, st);
+                    }
+                    DataType::Int8 => {
+                        let arr = array
+                            .as_any()
+                            .downcast_ref::<Int8Array>()
+                            .ok_or_else(|| anyhow!("int8 cast"))?;
+                        sample_int8_array(arr, rows, st);
+                    }
+                    DataType::UInt64 => {
+                        let arr = array
+                            .as_any()
+                            .downcast_ref::<UInt64Array>()
+                            .ok_or_else(|| anyhow!("uint64 cast"))?;
+                        sample_uint64_array(arr, rows, st);
+                    }
+                    DataType::UInt32 => {
+                        let arr = array
+                            .as_any()
+                            .downcast_ref::<UInt32Array>()
+                            .ok_or_else(|| anyhow!("uint32 cast"))?;
+                        sample_uint32_array(arr, rows, st);
+                    }
+                    DataType::UInt16 => {
+                        let arr = array
+                            .as_any()
+                            .downcast_ref::<UInt16Array>()
+                            .ok_or_else(|| anyhow!("uint16 cast"))?;
+                        sample_uint16_array(arr, rows, st);
+                    }
+                    DataType::UInt8 => {
+                        let arr = array
+                            .as_any()
+                            .downcast_ref::<UInt8Array>()
+                            .ok_or_else(|| anyhow!("uint8 cast"))?;
+                        sample_uint8_array(arr, rows, st);
+                    }
+                    _ => continue,
                 }
             }
         }
@@ -887,27 +912,8 @@ async fn apply_parquet_string_samples_stream<S>(
 where
     S: futures::Stream<Item = std::result::Result<RecordBatch, ParquetError>> + Unpin,
 {
-    let mut stats: Vec<Option<ColumnStats>> = columns
-        .iter()
-        .map(|col| {
-            if matches!(
-                col.source_dtype,
-                SourceType::String
-                    | SourceType::Int8
-                    | SourceType::Int16
-                    | SourceType::Int32
-                    | SourceType::Int64
-                    | SourceType::UInt8
-                    | SourceType::UInt16
-                    | SourceType::UInt32
-                    | SourceType::UInt64
-            ) {
-                Some(ColumnStats::default())
-            } else {
-                None
-            }
-        })
-        .collect();
+    let mut stats: Vec<Option<ColumnStats>> =
+        (0..columns.len()).map(|_| Some(ColumnStats::default())).collect();
     let mut seen = 0usize;
     while let Some(batch) = stream.next().await {
         let batch = batch.map_err(|err| anyhow!(err))?;
@@ -915,43 +921,81 @@ where
             break;
         }
         let rows = batch.num_rows().min(sample_rows - seen);
-        for (idx, col) in columns.iter().enumerate() {
-            if !matches!(
-                col.source_dtype,
-                SourceType::String
-                    | SourceType::Int8
-                    | SourceType::Int16
-                    | SourceType::Int32
-                    | SourceType::Int64
-                    | SourceType::UInt8
-                    | SourceType::UInt16
-                    | SourceType::UInt32
-                    | SourceType::UInt64
-            ) {
-                continue;
-            }
+        for idx in 0..columns.len() {
             if let Some(st) = stats[idx].as_mut() {
                 let array = batch.column(idx);
-                if let Some(arr) = array.as_any().downcast_ref::<StringArray>() {
-                    sample_string_array(arr, rows, st);
-                } else if let Some(arr) = array.as_any().downcast_ref::<LargeStringArray>() {
-                    sample_large_string_array(arr, rows, st);
-                } else if let Some(arr) = array.as_any().downcast_ref::<Int64Array>() {
-                    sample_int64_array(arr, rows, st);
-                } else if let Some(arr) = array.as_any().downcast_ref::<Int32Array>() {
-                    sample_int32_array(arr, rows, st);
-                } else if let Some(arr) = array.as_any().downcast_ref::<Int16Array>() {
-                    sample_int16_array(arr, rows, st);
-                } else if let Some(arr) = array.as_any().downcast_ref::<Int8Array>() {
-                    sample_int8_array(arr, rows, st);
-                } else if let Some(arr) = array.as_any().downcast_ref::<UInt64Array>() {
-                    sample_uint64_array(arr, rows, st);
-                } else if let Some(arr) = array.as_any().downcast_ref::<UInt32Array>() {
-                    sample_uint32_array(arr, rows, st);
-                } else if let Some(arr) = array.as_any().downcast_ref::<UInt16Array>() {
-                    sample_uint16_array(arr, rows, st);
-                } else if let Some(arr) = array.as_any().downcast_ref::<UInt8Array>() {
-                    sample_uint8_array(arr, rows, st);
+                match array.data_type() {
+                    DataType::Utf8 => {
+                        let arr = array
+                            .as_any()
+                            .downcast_ref::<StringArray>()
+                            .ok_or_else(|| anyhow!("string cast"))?;
+                        sample_string_array(arr, rows, st);
+                    }
+                    DataType::LargeUtf8 => {
+                        let arr = array
+                            .as_any()
+                            .downcast_ref::<LargeStringArray>()
+                            .ok_or_else(|| anyhow!("large string cast"))?;
+                        sample_large_string_array(arr, rows, st);
+                    }
+                    DataType::Int64 => {
+                        let arr = array
+                            .as_any()
+                            .downcast_ref::<Int64Array>()
+                            .ok_or_else(|| anyhow!("int64 cast"))?;
+                        sample_int64_array(arr, rows, st);
+                    }
+                    DataType::Int32 => {
+                        let arr = array
+                            .as_any()
+                            .downcast_ref::<Int32Array>()
+                            .ok_or_else(|| anyhow!("int32 cast"))?;
+                        sample_int32_array(arr, rows, st);
+                    }
+                    DataType::Int16 => {
+                        let arr = array
+                            .as_any()
+                            .downcast_ref::<Int16Array>()
+                            .ok_or_else(|| anyhow!("int16 cast"))?;
+                        sample_int16_array(arr, rows, st);
+                    }
+                    DataType::Int8 => {
+                        let arr = array
+                            .as_any()
+                            .downcast_ref::<Int8Array>()
+                            .ok_or_else(|| anyhow!("int8 cast"))?;
+                        sample_int8_array(arr, rows, st);
+                    }
+                    DataType::UInt64 => {
+                        let arr = array
+                            .as_any()
+                            .downcast_ref::<UInt64Array>()
+                            .ok_or_else(|| anyhow!("uint64 cast"))?;
+                        sample_uint64_array(arr, rows, st);
+                    }
+                    DataType::UInt32 => {
+                        let arr = array
+                            .as_any()
+                            .downcast_ref::<UInt32Array>()
+                            .ok_or_else(|| anyhow!("uint32 cast"))?;
+                        sample_uint32_array(arr, rows, st);
+                    }
+                    DataType::UInt16 => {
+                        let arr = array
+                            .as_any()
+                            .downcast_ref::<UInt16Array>()
+                            .ok_or_else(|| anyhow!("uint16 cast"))?;
+                        sample_uint16_array(arr, rows, st);
+                    }
+                    DataType::UInt8 => {
+                        let arr = array
+                            .as_any()
+                            .downcast_ref::<UInt8Array>()
+                            .ok_or_else(|| anyhow!("uint8 cast"))?;
+                        sample_uint8_array(arr, rows, st);
+                    }
+                    _ => continue,
                 }
             }
         }
@@ -1083,51 +1127,48 @@ fn apply_string_stats_overrides(columns: &mut [ColumnSpec], stats: &[Option<Colu
     }
 }
 
-fn arrow_type_to_source_type(
+fn arrow_type_metadata(
     source_dtype: &DataType,
-) -> Result<(SourceType, Option<usize>, Option<u32>, Option<i32>)> {
+) -> Result<(Option<usize>, Option<u32>, Option<i32>)> {
     let mut precision = None;
     let mut scale = None;
     let mut fixed_len = None;
-    let out = match source_dtype {
-        DataType::Int8 => SourceType::Int8,
-        DataType::Int16 => SourceType::Int16,
-        DataType::Int32 => SourceType::Int32,
-        DataType::Int64 => SourceType::Int64,
-        DataType::UInt8 => SourceType::UInt8,
-        DataType::UInt16 => SourceType::UInt16,
-        DataType::UInt32 => SourceType::UInt32,
-        DataType::UInt64 => SourceType::UInt64,
-        DataType::Float32 => SourceType::Float32,
-        DataType::Float64 => SourceType::Float64,
-        DataType::Boolean => SourceType::Bool,
-        DataType::Utf8 | DataType::LargeUtf8 => SourceType::String,
-        DataType::Binary | DataType::LargeBinary => SourceType::Bytes,
+    match source_dtype {
+        DataType::Int8
+        | DataType::Int16
+        | DataType::Int32
+        | DataType::Int64
+        | DataType::UInt8
+        | DataType::UInt16
+        | DataType::UInt32
+        | DataType::UInt64
+        | DataType::Float32
+        | DataType::Float64
+        | DataType::Boolean
+        | DataType::Utf8
+        | DataType::LargeUtf8
+        | DataType::Binary
+        | DataType::LargeBinary
+        | DataType::Date32
+        | DataType::Timestamp(_, _) => {}
         DataType::FixedSizeBinary(len) => {
             fixed_len = Some(*len as usize);
-            SourceType::Bytes
         }
-        DataType::Date32 => SourceType::Date,
-        DataType::Timestamp(_, _) => SourceType::Timestamp,
         DataType::Decimal128(p, s) => {
             precision = Some(*p as u32);
             scale = Some(*s as i32);
-            SourceType::Decimal128
         }
         DataType::Decimal256(p, s) => {
             precision = Some(*p as u32);
             scale = Some(*s as i32);
-            SourceType::Decimal256
         }
         DataType::List(field) | DataType::LargeList(field) => match field.data_type() {
-            DataType::Float16 => SourceType::Float16Array,
-            DataType::Float32 => SourceType::Float32Array,
-            DataType::Float64 => SourceType::Float64Array,
+            DataType::Float16 | DataType::Float32 | DataType::Float64 => {}
             _ => return Err(anyhow!("unsupported list type {}", field.data_type())),
         },
         _ => return Err(anyhow!("unsupported parquet type {}", source_dtype)),
     };
-    Ok((out, fixed_len, precision, scale))
+    Ok((fixed_len, precision, scale))
 }
 
 fn infer_csv_schema(path: &Path, options: &InferOptions) -> Result<Vec<ColumnSpec>> {
@@ -1154,11 +1195,7 @@ fn infer_csv_schema(path: &Path, options: &InferOptions) -> Result<Vec<ColumnSpe
     Ok(headers
         .iter()
         .zip(stats.iter())
-        .map(|(name, st)| {
-            let mut col = st.to_column_spec(name);
-            col.source_dtype = SourceType::String;
-            col
-        })
+        .map(|(name, st)| st.to_column_spec(name))
         .collect())
 }
 
@@ -1199,11 +1236,7 @@ fn infer_csv_schema_from_bytes(bytes: &Bytes, options: &InferOptions) -> Result<
     Ok(headers
         .iter()
         .zip(stats.iter())
-        .map(|(name, st)| {
-            let mut col = st.to_column_spec(name);
-            col.source_dtype = SourceType::String;
-            col
-        })
+        .map(|(name, st)| st.to_column_spec(name))
         .collect())
 }
 
@@ -1322,7 +1355,6 @@ impl ColumnStats {
 
     fn to_column_spec(&self, name: &str) -> ColumnSpec {
         let name_lower = name.to_lowercase();
-        let source_dtype = SourceType::String;
         let mut ingested_dtype = IngestedType::String;
         let mut timestamp_format = None;
         let mut timestamp_unit = None;
@@ -1364,7 +1396,6 @@ impl ColumnStats {
         }
         ColumnSpec {
             name: name.to_string(),
-            source_dtype,
             ingested_dtype,
             fixed_len,
             timestamp_format,
@@ -2933,7 +2964,6 @@ mod tests {
                 .iter()
                 .map(|(n, t)| ColumnSpec {
                     name: n.to_string(),
-                    source_dtype: SourceType::String,
                     ingested_dtype: t.clone(),
                     fixed_len: None,
                     timestamp_format: None,
@@ -3002,7 +3032,6 @@ mod tests {
             columns: vec![
                 ColumnSpec {
                     name: "customer_id".to_string(),
-                    source_dtype: SourceType::String,
                     ingested_dtype: IngestedType::String,
                     timestamp_format: None,
                     timestamp_unit: None,
@@ -3012,7 +3041,6 @@ mod tests {
                 },
                 ColumnSpec {
                     name: "postal_code".to_string(),
-                    source_dtype: SourceType::String,
                     ingested_dtype: IngestedType::String,
                     timestamp_format: None,
                     timestamp_unit: None,
@@ -3445,7 +3473,6 @@ mod tests {
                 paths: vec![],
                 columns: vec![ColumnSpec {
                     name: "user_id".to_string(),
-                    source_dtype: SourceType::Int64,
                     ingested_dtype: IngestedType::Int64,
                     timestamp_format: None,
                     timestamp_unit: None,
@@ -3465,7 +3492,6 @@ mod tests {
                 paths: vec![],
                 columns: vec![ColumnSpec {
                     name: "user_id".to_string(),
-                    source_dtype: SourceType::Int64,
                     ingested_dtype: IngestedType::Int64,
                     timestamp_format: None,
                     timestamp_unit: None,
@@ -3497,7 +3523,6 @@ mod tests {
                 paths: vec![],
                 columns: vec![ColumnSpec {
                     name: "device_id".to_string(),
-                    source_dtype: SourceType::Bytes,
                     ingested_dtype: IngestedType::Uuid,
                     timestamp_format: None,
                     timestamp_unit: None,
@@ -3517,7 +3542,6 @@ mod tests {
                 paths: vec![],
                 columns: vec![ColumnSpec {
                     name: "device_id".to_string(),
-                    source_dtype: SourceType::String,
                     ingested_dtype: IngestedType::Bytes,
                     timestamp_format: None,
                     timestamp_unit: None,
@@ -3566,7 +3590,6 @@ mod tests {
                 paths: vec![],
                 columns: vec![ColumnSpec {
                     name: "itemid".to_string(),
-                    source_dtype: SourceType::Int64,
                     ingested_dtype: IngestedType::Int64,
                     timestamp_format: None,
                     timestamp_unit: None,
@@ -3586,7 +3609,6 @@ mod tests {
                 paths: vec![],
                 columns: vec![ColumnSpec {
                     name: "itemid".to_string(),
-                    source_dtype: SourceType::Int64,
                     ingested_dtype: IngestedType::Int64,
                     timestamp_format: None,
                     timestamp_unit: None,
@@ -3606,7 +3628,6 @@ mod tests {
                 paths: vec![],
                 columns: vec![ColumnSpec {
                     name: "itemid".to_string(),
-                    source_dtype: SourceType::Int64,
                     ingested_dtype: IngestedType::Int64,
                     timestamp_format: None,
                     timestamp_unit: None,
@@ -3638,7 +3659,6 @@ mod tests {
             columns: vec![
                 ColumnSpec {
                     name: "poe_id".to_string(),
-                    source_dtype: SourceType::String,
                     ingested_dtype: IngestedType::String,
                     timestamp_format: None,
                     timestamp_unit: None,
@@ -3648,7 +3668,6 @@ mod tests {
                 },
                 ColumnSpec {
                     name: "discontinue_of_poe_id".to_string(),
-                    source_dtype: SourceType::String,
                     ingested_dtype: IngestedType::String,
                     timestamp_format: None,
                     timestamp_unit: None,
@@ -3736,7 +3755,6 @@ mod tests {
                 paths: vec![],
                 columns: vec![ColumnSpec {
                     name: "code".to_string(),
-                    source_dtype: SourceType::String,
                     ingested_dtype: IngestedType::String,
                     timestamp_format: None,
                     timestamp_unit: None,
@@ -3756,7 +3774,6 @@ mod tests {
                 paths: vec![],
                 columns: vec![ColumnSpec {
                     name: "hcpcs_cd".to_string(),
-                    source_dtype: SourceType::String,
                     ingested_dtype: IngestedType::String,
                     timestamp_format: None,
                     timestamp_unit: None,
@@ -3788,7 +3805,6 @@ mod tests {
                 paths: vec![],
                 columns: vec![ColumnSpec {
                     name: "code".to_string(),
-                    source_dtype: SourceType::String,
                     ingested_dtype: IngestedType::String,
                     timestamp_format: None,
                     timestamp_unit: None,
@@ -3808,7 +3824,6 @@ mod tests {
                 paths: vec![],
                 columns: vec![ColumnSpec {
                     name: "icd_code".to_string(),
-                    source_dtype: SourceType::String,
                     ingested_dtype: IngestedType::String,
                     timestamp_format: None,
                     timestamp_unit: None,
@@ -3853,7 +3868,6 @@ mod tests {
                 paths: vec![],
                 columns: vec![ColumnSpec {
                     name: "poe_id".to_string(),
-                    source_dtype: SourceType::String,
                     ingested_dtype: IngestedType::String,
                     timestamp_format: None,
                     timestamp_unit: None,
@@ -3873,7 +3887,6 @@ mod tests {
                 paths: vec![],
                 columns: vec![ColumnSpec {
                     name: "poe_id".to_string(),
-                    source_dtype: SourceType::String,
                     ingested_dtype: IngestedType::String,
                     timestamp_format: None,
                     timestamp_unit: None,
@@ -3893,7 +3906,6 @@ mod tests {
                 paths: vec![],
                 columns: vec![ColumnSpec {
                     name: "poe_id".to_string(),
-                    source_dtype: SourceType::String,
                     ingested_dtype: IngestedType::String,
                     timestamp_format: None,
                     timestamp_unit: None,
@@ -3924,7 +3936,6 @@ mod tests {
                 paths: vec![],
                 columns: vec![ColumnSpec {
                     name: "hadm_id".to_string(),
-                    source_dtype: SourceType::Int64,
                     ingested_dtype: IngestedType::Int64,
                     timestamp_format: None,
                     timestamp_unit: None,
@@ -3944,7 +3955,6 @@ mod tests {
                 paths: vec![],
                 columns: vec![ColumnSpec {
                     name: "hadm_id".to_string(),
-                    source_dtype: SourceType::Int64,
                     ingested_dtype: IngestedType::Int64,
                     timestamp_format: None,
                     timestamp_unit: None,
@@ -3975,7 +3985,6 @@ mod tests {
                 paths: vec![],
                 columns: vec![ColumnSpec {
                     name: "itemid".to_string(),
-                    source_dtype: SourceType::Int64,
                     ingested_dtype: IngestedType::Int64,
                     timestamp_format: None,
                     timestamp_unit: None,
@@ -3995,7 +4004,6 @@ mod tests {
                 paths: vec![],
                 columns: vec![ColumnSpec {
                     name: "itemid".to_string(),
-                    source_dtype: SourceType::Int64,
                     ingested_dtype: IngestedType::Int64,
                     timestamp_format: None,
                     timestamp_unit: None,
@@ -4015,7 +4023,6 @@ mod tests {
                 paths: vec![],
                 columns: vec![ColumnSpec {
                     name: "itemid".to_string(),
-                    source_dtype: SourceType::Int64,
                     ingested_dtype: IngestedType::Int64,
                     timestamp_format: None,
                     timestamp_unit: None,
@@ -4046,7 +4053,6 @@ mod tests {
                 paths: vec![],
                 columns: vec![ColumnSpec {
                     name: "user_id".to_string(),
-                    source_dtype: SourceType::Int64,
                     ingested_dtype: IngestedType::Int64,
                     fixed_len: None,
                     timestamp_format: None,
@@ -4066,7 +4072,6 @@ mod tests {
                 paths: vec![],
                 columns: vec![ColumnSpec {
                     name: "user_id".to_string(),
-                    source_dtype: SourceType::Int64,
                     ingested_dtype: IngestedType::Int64,
                     fixed_len: None,
                     timestamp_format: None,
@@ -4098,7 +4103,6 @@ mod tests {
                 paths: vec![],
                 columns: vec![ColumnSpec {
                     name: "id".to_string(),
-                    source_dtype: SourceType::Int64,
                     ingested_dtype: IngestedType::Int64,
                     fixed_len: None,
                     timestamp_format: None,
@@ -4118,7 +4122,6 @@ mod tests {
                 paths: vec![],
                 columns: vec![ColumnSpec {
                     name: "id".to_string(),
-                    source_dtype: SourceType::Int64,
                     ingested_dtype: IngestedType::Int64,
                     fixed_len: None,
                     timestamp_format: None,
@@ -4197,7 +4200,6 @@ mod tests {
             stats.observe(v);
         }
         let col = stats.to_column_spec("score");
-        assert!(matches!(col.source_dtype, SourceType::String));
         assert!(matches!(col.ingested_dtype, IngestedType::Float32));
     }
 
@@ -4268,8 +4270,6 @@ mod tests {
         let cols = infer_parquet_schema_from_arrow(&schema).unwrap();
         let vec32 = cols.iter().find(|c| c.name == "vec32").unwrap();
         let vec64 = cols.iter().find(|c| c.name == "vec64").unwrap();
-        assert!(matches!(vec32.source_dtype, SourceType::Float32Array));
-        assert!(matches!(vec64.source_dtype, SourceType::Float64Array));
         assert!(matches!(vec32.ingested_dtype, IngestedType::Float16Array));
         assert!(matches!(vec64.ingested_dtype, IngestedType::Float16Array));
     }
@@ -4402,7 +4402,6 @@ mod tests {
     fn compatible_numeric_to_var_string() {
         let a = ColumnSpec {
             name: "user_id".to_string(),
-            source_dtype: SourceType::Int64,
             ingested_dtype: IngestedType::Int64,
             timestamp_format: None,
             timestamp_unit: None,
@@ -4412,7 +4411,6 @@ mod tests {
         };
         let b = ColumnSpec {
             name: "id".to_string(),
-            source_dtype: SourceType::String,
             ingested_dtype: IngestedType::String,
             timestamp_format: None,
             timestamp_unit: None,
@@ -4427,7 +4425,6 @@ mod tests {
     fn incompatible_uuid_and_bytes() {
         let a = ColumnSpec {
             name: "device_id".to_string(),
-            source_dtype: SourceType::String,
             ingested_dtype: IngestedType::Uuid,
             timestamp_format: None,
             timestamp_unit: None,
@@ -4437,7 +4434,6 @@ mod tests {
         };
         let b = ColumnSpec {
             name: "id".to_string(),
-            source_dtype: SourceType::Bytes,
             ingested_dtype: IngestedType::Bytes,
             timestamp_format: None,
             timestamp_unit: None,
@@ -4452,7 +4448,6 @@ mod tests {
     fn compatible_uuid() {
         let a = ColumnSpec {
             name: "id".to_string(),
-            source_dtype: SourceType::String,
             ingested_dtype: IngestedType::Uuid,
             timestamp_format: None,
             timestamp_unit: None,
@@ -4462,7 +4457,6 @@ mod tests {
         };
         let b = ColumnSpec {
             name: "id".to_string(),
-            source_dtype: SourceType::Bytes,
             ingested_dtype: IngestedType::Uuid,
             timestamp_format: None,
             timestamp_unit: None,
