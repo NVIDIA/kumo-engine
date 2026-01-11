@@ -1919,11 +1919,28 @@ impl<'p> RowAccess<'p> {
 }
 
 fn parse_bool(value: &str) -> Option<bool> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "true" | "1" => Some(true),
-        "false" | "0" => Some(false),
-        _ => None,
+    let mut text = value.trim();
+    if text.starts_with('"') && text.ends_with('"') && text.len() >= 2 {
+        text = &text[1..text.len() - 1];
     }
+    let text = text.trim();
+    let lower = text.to_ascii_lowercase();
+    match lower.as_str() {
+        "" | "false" | "f" | "no" | "n" | "off" | "disabled" | "disable" | "unchecked" => {
+            return Some(false);
+        }
+        "true" | "t" | "yes" | "y" | "on" | "enabled" | "enable" | "checked" | "x" => {
+            return Some(true);
+        }
+        _ => {}
+    }
+    if let Ok(int_value) = lower.parse::<i64>() {
+        return Some(int_value != 0);
+    }
+    if let Ok(float_value) = lower.parse::<f64>() {
+        return Some(!float_value.is_nan() && float_value != 0.0);
+    }
+    None
 }
 
 fn parse_i64(value: &str) -> Option<i64> {
@@ -6818,6 +6835,24 @@ mod tests {
         access.set_cols(&cols);
         access.set_row(0);
         assert_eq!(access.get_bool(0).unwrap(), Some(false));
+    }
+
+    #[test]
+    fn parse_bool_string_variants() {
+        for value in ["TRUE", "t", "Yes", "Y", "on", "enabled", "checked", "x"] {
+            assert_eq!(parse_bool(value), Some(true));
+        }
+        for value in ["FALSE", "f", "No", "n", "off", "disabled", "unchecked", ""] {
+            assert_eq!(parse_bool(value), Some(false));
+        }
+        for value in ["1", "-2", "0.5"] {
+            assert_eq!(parse_bool(value), Some(true));
+        }
+        for value in ["0", "0.0", "NaN"] {
+            assert_eq!(parse_bool(value), Some(false));
+        }
+        assert_eq!(parse_bool("\"yes\""), Some(true));
+        assert_eq!(parse_bool("\"0\""), Some(false));
     }
 
     #[test]
