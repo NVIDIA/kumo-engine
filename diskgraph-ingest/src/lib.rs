@@ -4,8 +4,8 @@ mod mapping;
 pub mod source_metadata;
 
 use crate::mapping::{
-    fingerprint_seed_for, write_pk_data_entry, write_pk_data_header, Key, KeyType, PkHashShard,
-    PkHashStore, PkGxHash,
+    fingerprint_seed_for, write_pk_data_entry, write_pk_data_header, GxPtrHash64, Key, KeyType,
+    PkHashShard, PkHashStore, PkGxHash,
 };
 use crate::source_metadata::{
     relationship_name, ColumnSpec, ColumnType, SortKeySpec, TableFormat, TableSpec,
@@ -47,7 +47,6 @@ use serde::Serialize;
 use serde_json::Value as JsonValue;
 use gxhash::GxHasher;
 use epserde::prelude::Serialize as EpSerialize;
-use ptr_hash::hash::{FxHash, Xx128};
 use ptr_hash::DefaultPtrHash;
 use std::fs;
 use std::io::{self, BufWriter, Read, Write};
@@ -2845,7 +2844,7 @@ impl IngestContext {
                                     values.push(value);
                                 }
                                 let params = ptr_hash::PtrHashParams::default();
-                                let mphf = DefaultPtrHash::<FxHash, u64>::try_new(
+                                let mphf = DefaultPtrHash::<GxPtrHash64, u64>::try_new(
                                     &keys,
                                     params,
                                 )
@@ -2919,7 +2918,7 @@ impl IngestContext {
                                     values.push(value);
                                 }
                                 let params = ptr_hash::PtrHashParams::default();
-                                let mphf = DefaultPtrHash::<Xx128, Vec<u8>>::try_new(
+                                let mphf = DefaultPtrHash::<GxPtrHash64, Vec<u8>>::try_new(
                                     &keys,
                                     params,
                                 )
@@ -2988,7 +2987,7 @@ impl IngestContext {
                                     values.push(value);
                                 }
                                 let params = ptr_hash::PtrHashParams::default();
-                                let mphf = DefaultPtrHash::<Xx128, [u8; 16]>::try_new(
+                                let mphf = DefaultPtrHash::<GxPtrHash64, [u8; 16]>::try_new(
                                     &keys,
                                     params,
                                 )
@@ -3057,7 +3056,7 @@ impl IngestContext {
                                     values.push(value);
                                 }
                                 let params = ptr_hash::PtrHashParams::default();
-                                let mphf = DefaultPtrHash::<Xx128, [u8; 32]>::try_new(
+                                let mphf = DefaultPtrHash::<GxPtrHash64, [u8; 32]>::try_new(
                                     &keys,
                                     params,
                                 )
@@ -3125,7 +3124,7 @@ impl IngestContext {
                                     values.push(value);
                                 }
                                 let params = ptr_hash::PtrHashParams::default();
-                                let mphf = DefaultPtrHash::<Xx128, [u8; 16]>::try_new(
+                                let mphf = DefaultPtrHash::<GxPtrHash64, [u8; 16]>::try_new(
                                     &keys,
                                     params,
                                 )
