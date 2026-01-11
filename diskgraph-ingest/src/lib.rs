@@ -1378,6 +1378,7 @@ impl IngestContext {
                     let stats = RowAccessStats::new(Some(trimmed_strings.as_ref()));
                     let mut access = RowAccess::new(row_access_hints, &mut pools, stats);
                     let mut reached_limit = false;
+                    let mut processed_paths = 0u64;
                     if table.paths.is_empty() {
                         return Err(anyhow!("no input files for table {}", table.name));
                     }
@@ -1450,6 +1451,17 @@ impl IngestContext {
                                 }
                             }
                         }
+                        processed_paths = processed_paths.saturating_add(1);
+                        if let Some(cb) = &progress {
+                            cb(ProgressEvent {
+                                phase: ProgressPhase::Context,
+                                table: table.name.clone(),
+                                shard: None,
+                                kind: ProgressKind::Advance,
+                                delta: 1,
+                                total: Some(table.paths.len() as u64),
+                            });
+                        }
                         if reached_limit {
                             break 'file_loop;
                         }
@@ -1458,6 +1470,16 @@ impl IngestContext {
                     let ctx_bytes = node_context.to_bytes()?;
                     target.write_bytes(&temp_node_context_path(&table.name), ctx_bytes.clone())?;
                     target.write_bytes(&node_context_output_path(&table.name), ctx_bytes)?;
+                    if let Some(cb) = &progress {
+                        cb(ProgressEvent {
+                            phase: ProgressPhase::Context,
+                            table: table.name.clone(),
+                            shard: None,
+                            kind: ProgressKind::Finish,
+                            delta: 0,
+                            total: Some(processed_paths.max(1)),
+                        });
+                    }
                     tx.send(Ok((
                         table.name.clone(),
                         format!("nodes/{}/node_data.ctx", table.name.to_lowercase()),
@@ -1476,16 +1498,6 @@ impl IngestContext {
                 .map_err(|e| anyhow!("context output error: {e}"))??;
             let (table_name, ctx_path) = result;
             self.table_contexts.insert(table_name.clone(), ctx_path);
-            if let Some(cb) = &self.progress {
-                cb(ProgressEvent {
-                    phase: ProgressPhase::Context,
-                    table: table_name,
-                    shard: None,
-                    kind: ProgressKind::Advance,
-                    delta: 1,
-                    total: Some(tables.len() as u64),
-                });
-            }
         }
         Ok(())
     }

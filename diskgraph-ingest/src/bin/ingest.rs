@@ -555,6 +555,10 @@ fn build_progress() -> Option<ProgressCallback> {
             ProgressKind::Finish => {
                 if let Some(bar) = guard.bars.remove(&key) {
                     if let Some(total) = event.total.or_else(|| bar.length()) {
+                        bar.set_length(total);
+                        if bar.position() < total {
+                            bar.set_position(total);
+                        }
                         bar.set_prefix(format!(
                             "({}/{})",
                             format_count(bar.position()),
