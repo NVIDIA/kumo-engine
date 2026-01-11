@@ -6648,6 +6648,7 @@ fn key_from_value_ref(value: &ValueRef<'_>, col: &ColumnSpec) -> KeyParseResult<
                 let uuid = parse_uuid_string(s.as_bytes())?;
                 Ok(Key::Uuid(uuid))
             }
+            ValueRef::Uuid(v) => Ok(Key::Uuid(*v)),
             ValueRef::Bytes(b) => {
                 if b.len() != 16 {
                     return Err(KeyParseError::LengthMismatch);
@@ -6663,6 +6664,7 @@ fn key_from_value_ref(value: &ValueRef<'_>, col: &ColumnSpec) -> KeyParseResult<
                 let uuid = parse_uuid256_string(s.as_bytes())?;
                 Ok(Key::Uuid256(uuid))
             }
+            ValueRef::Uuid256(v) => Ok(Key::Uuid256(*v)),
             ValueRef::Bytes(b) => {
                 if b.len() != 32 {
                     return Err(KeyParseError::LengthMismatch);
@@ -6678,6 +6680,7 @@ fn key_from_value_ref(value: &ValueRef<'_>, col: &ColumnSpec) -> KeyParseResult<
                 let ip = parse_ip_string(s.as_bytes())?;
                 Ok(Key::Ip(ip))
             }
+            ValueRef::Ip(v) => Ok(Key::Ip(*v)),
             ValueRef::Bytes(b) => {
                 let ip = parse_ip_bytes(b)?;
                 Ok(Key::Ip(ip))

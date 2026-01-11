@@ -998,6 +998,185 @@ fn ingest_edge_table_mixed_sort_keys() -> Result<()> {
 }
 
 #[test]
+fn ingest_parquet_with_uuid_ip_types() -> Result<()> {
+    let dir = tempdir()?;
+    let input_root = dir.path().join("input");
+    let output_root = dir.path().join("output");
+
+    let user_ids = vec![
+        "00112233445566778899aabbccddeeff",
+        "112233445566778899aabbccddeeff00",
+    ];
+    let token_ids = vec![
+        "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+        "ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100",
+    ];
+    let ip_ids = vec!["192.168.1.2", "2001:db8::1"];
+
+    write_parquet(
+        &input_root.join("users.parquet"),
+        Schema::new(vec![
+            Field::new("user_id", DataType::Utf8, false),
+            Field::new("name", DataType::Utf8, false),
+        ]),
+        vec![
+            Arc::new(StringArray::from(user_ids.clone())),
+            Arc::new(StringArray::from(vec!["alice", "bob"])),
+        ],
+    )?;
+
+    write_parquet(
+        &input_root.join("device_tokens.parquet"),
+        Schema::new(vec![
+            Field::new("token_id", DataType::Utf8, false),
+            Field::new("user_id", DataType::Utf8, false),
+            Field::new("label", DataType::Utf8, false),
+        ]),
+        vec![
+            Arc::new(StringArray::from(token_ids.clone())),
+            Arc::new(StringArray::from(user_ids.clone())),
+            Arc::new(StringArray::from(vec!["t1", "t2"])),
+        ],
+    )?;
+
+    write_parquet(
+        &input_root.join("token_events.parquet"),
+        Schema::new(vec![
+            Field::new("event_id", DataType::Utf8, false),
+            Field::new("token_id", DataType::Utf8, false),
+        ]),
+        vec![
+            Arc::new(StringArray::from(vec![
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            ])),
+            Arc::new(StringArray::from(token_ids.clone())),
+        ],
+    )?;
+
+    write_parquet(
+        &input_root.join("ip_addresses.parquet"),
+        Schema::new(vec![
+            Field::new("ip_id", DataType::Utf8, false),
+            Field::new("region", DataType::Utf8, false),
+        ]),
+        vec![
+            Arc::new(StringArray::from(ip_ids.clone())),
+            Arc::new(StringArray::from(vec!["na", "eu"])),
+        ],
+    )?;
+
+    write_parquet(
+        &input_root.join("user_ip_edges.parquet"),
+        Schema::new(vec![
+            Field::new("user_id", DataType::Utf8, false),
+            Field::new("ip_id", DataType::Utf8, false),
+        ]),
+        vec![
+            Arc::new(StringArray::from(user_ids.clone())),
+            Arc::new(StringArray::from(ip_ids.clone())),
+        ],
+    )?;
+
+    let source = serde_json::json!({
+        "dataset_name": "uuid_ip_parquet",
+        "tables": [
+            {
+                "name": "User",
+                "format": "parquet",
+                "paths": [input_root.join("users.parquet").to_string_lossy()],
+                "primary_key": "user_id",
+                "columns": [
+                    {"name": "user_id", "source_dtype": "string", "ingested_dtype": "uuid"},
+                    {"name": "name", "source_dtype": "string", "ingested_dtype": "string"}
+                ]
+            },
+            {
+                "name": "DeviceToken",
+                "format": "parquet",
+                "paths": [input_root.join("device_tokens.parquet").to_string_lossy()],
+                "primary_key": "token_id",
+                "columns": [
+                    {"name": "token_id", "source_dtype": "string", "ingested_dtype": "uuid256"},
+                    {"name": "user_id", "source_dtype": "string", "ingested_dtype": "uuid"},
+                    {"name": "label", "source_dtype": "string", "ingested_dtype": "string"}
+                ]
+            },
+            {
+                "name": "TokenEvent",
+                "format": "parquet",
+                "paths": [input_root.join("token_events.parquet").to_string_lossy()],
+                "primary_key": "event_id",
+                "columns": [
+                    {"name": "event_id", "source_dtype": "string", "ingested_dtype": "uuid"},
+                    {"name": "token_id", "source_dtype": "string", "ingested_dtype": "uuid256"}
+                ]
+            },
+            {
+                "name": "IpAddress",
+                "format": "parquet",
+                "paths": [input_root.join("ip_addresses.parquet").to_string_lossy()],
+                "primary_key": "ip_id",
+                "columns": [
+                    {"name": "ip_id", "source_dtype": "string", "ingested_dtype": "ip"},
+                    {"name": "region", "source_dtype": "string", "ingested_dtype": "string"}
+                ]
+            },
+            {
+                "name": "UserIpEdge",
+                "format": "parquet",
+                "paths": [input_root.join("user_ip_edges.parquet").to_string_lossy()],
+                "edge_table": {
+                    "src_fk": {"column": "user_id", "ref_table": "User", "ref_column": "user_id"},
+                    "dst_fk": {"column": "ip_id", "ref_table": "IpAddress", "ref_column": "ip_id"}
+                },
+                "columns": [
+                    {"name": "user_id", "source_dtype": "string", "ingested_dtype": "uuid"},
+                    {"name": "ip_id", "source_dtype": "string", "ingested_dtype": "ip"}
+                ]
+            }
+        ],
+        "relationships": [
+            {
+                "name": "token_user",
+                "src_table": "DeviceToken",
+                "src_column": "user_id",
+                "dst_table": "User",
+                "dst_column": "user_id"
+            },
+            {
+                "name": "event_token",
+                "src_table": "TokenEvent",
+                "src_column": "token_id",
+                "dst_table": "DeviceToken",
+                "dst_column": "token_id"
+            }
+        ]
+    });
+
+    let source_path = dir.path().join("source_metadata.json");
+    fs::write(&source_path, serde_json::to_vec_pretty(&source)?)?;
+
+    let (_metadata, stats) = ingest_with_stats(
+        &source_path,
+        output_root.to_str().unwrap(),
+        Dest::Local,
+        IngestOptions::default(),
+    )?;
+
+    assert_eq!(stats.key_parse_failures, 0);
+    assert_eq!(stats.key_lookup_failures, 0);
+    assert!(stats.key_failure_samples.is_empty());
+
+    let reader = GraphIndexReader::open(&output_root.join("index_metadata.json"), &output_root)?;
+    assert_eq!(reader.table("User").unwrap().node_count(), 2);
+    assert_eq!(reader.table("DeviceToken").unwrap().node_count(), 2);
+    assert_eq!(reader.table("IpAddress").unwrap().node_count(), 2);
+
+    Ok(())
+}
+
+#[test]
 fn ingest_weight_expr_with_backticks() -> Result<()> {
     let dir = tempdir()?;
     let input_root = dir.path().join("input");
