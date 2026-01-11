@@ -2088,7 +2088,7 @@ impl IngestContext {
             fs::read(&ctx_path).with_context(|| format!("read {}", ctx_path.display()))?;
         let node_context = diskgraph_rowpack::RowPackContext::from_bytes(&ctx_bytes)?;
         let node_encoder = Some(RowPackEncoder::new(node_context)?);
-        let mut key_buf: Vec<u8> = Vec::new();
+        let mut key_bufs: Vec<Option<Vec<u8>>> = vec![None; table.columns.len()];
         let mut node_data_dropped = 0u64;
         let has_pkey = pk_col.is_some() && pk_idx.is_some();
         let rel_names = std::sync::Arc::new(rel_names);
@@ -2148,7 +2148,7 @@ impl IngestContext {
                             &mut sort_key_batchers,
                             &mut row_id,
                             pk_col,
-                            &mut key_buf,
+                            &mut key_bufs,
                             &mut node_data_dropped,
                             num_shards,
                             key_failures,
@@ -2186,7 +2186,7 @@ impl IngestContext {
                             &mut sort_key_batchers,
                             &mut row_id,
                             pk_col,
-                            &mut key_buf,
+                            &mut key_bufs,
                             &mut node_data_dropped,
                             num_shards,
                             key_failures,
@@ -2225,14 +2225,23 @@ impl IngestContext {
         sort_key_batchers: &mut [SortKeyComponentBatcher],
         row_id: &mut u64,
         pk_col: Option<&ColumnSpec>,
-        key_buf: &mut Vec<u8>,
+        key_bufs: &mut Vec<Option<Vec<u8>>>,
         node_data_dropped: &mut u64,
         num_shards: usize,
         key_failures: &mut KeyFailureState,
     ) -> Result<()> {
+        for buf in key_bufs.iter_mut() {
+            if let Some(buf) = buf.as_mut() {
+                buf.clear();
+            }
+        }
         let mut has_pkey = false;
         let shard = if let (Some(idx), Some(pk_col)) = (pk_idx, pk_col) {
-            match key_from_access_into_buf(access, idx, pk_col, key_buf) {
+            let buf = key_bufs
+                .get_mut(idx)
+                .ok_or_else(|| anyhow!("missing key buffer"))?
+                .get_or_insert_with(Vec::new);
+            match key_from_access_into_buf(access, idx, pk_col, buf) {
                 Ok(_) => {}
                 Err(_) => {
                     let context = format!("pkey:{}.{}", table.name, pk_col.name);
@@ -2247,10 +2256,32 @@ impl IngestContext {
                 }
             };
             has_pkey = true;
-            shard_for_key(key_buf, num_shards)
+            shard_for_key(buf, num_shards)
         } else {
             (*row_id as usize) % num_shards
         };
+        for (_rel_name, rel_idx, _rel_pos) in rel_specs {
+            let col = table
+                .columns
+                .get(*rel_idx)
+                .ok_or_else(|| anyhow!("missing fk column"))?;
+            let buf = key_bufs
+                .get_mut(*rel_idx)
+                .ok_or_else(|| anyhow!("missing key buffer"))?
+                .get_or_insert_with(Vec::new);
+            if key_from_access_into_buf(access, *rel_idx, col, buf).is_err() {
+                let context = format!("fkey:{}.{}", table.name, col.name);
+                record_key_parse_failure_sample(
+                    &mut key_failures.parse_failures,
+                    &mut key_failures.samples,
+                    &mut key_failures.by_context,
+                    &context,
+                    sample_from_access(access, *rel_idx),
+                );
+                buf.clear();
+                continue;
+            }
+        }
         let encoder = node_encoder
             .as_ref()
             .ok_or_else(|| anyhow!("missing node encoder"))?;
@@ -2262,8 +2293,13 @@ impl IngestContext {
             node_tag_start = sink.tags.len();
             node_bool_start = sink.bools.len();
             node_data_start = sink.data.len();
-            let lens =
-                encoder.encode_row_from_access_into_buffers(access, sink.tags, sink.bools, sink.data)?;
+            let lens = encoder.encode_row_from_access_into_buffers(
+                access,
+                sink.tags,
+                sink.bools,
+                sink.data,
+                key_bufs,
+            )?;
             let row_len = lens
                 .tag_bytes
                 .saturating_add(lens.bool_bytes)
@@ -2279,30 +2315,26 @@ impl IngestContext {
             }
         }
         if has_pkey {
-            batcher.push_pkey(shard, key_buf)?;
+            let buf = key_bufs
+                .get(pk_idx.unwrap())
+                .and_then(|v| v.as_ref())
+                .filter(|v| !v.is_empty())
+                .ok_or_else(|| anyhow!("missing pkey buffer"))?;
+            batcher.push_pkey(shard, buf)?;
         }
         for sort_key in sort_key_batchers.iter_mut() {
             sort_key.push_row(shard, access)?;
         }
         for (_rel_name, rel_idx, rel_pos) in rel_specs {
-            let col = table
-                .columns
+            let buf = match key_bufs
                 .get(*rel_idx)
-                .ok_or_else(|| anyhow!("missing fk column"))?;
-            if key_from_access_into_buf(access, *rel_idx, col, key_buf).is_err() {
-                {
-                    let context = format!("fkey:{}.{}", table.name, col.name);
-                    record_key_parse_failure_sample(
-                        &mut key_failures.parse_failures,
-                        &mut key_failures.samples,
-                        &mut key_failures.by_context,
-                        &context,
-                        sample_from_access(access, *rel_idx),
-                    );
-                }
-                continue;
-            }
-            batcher.push_fkey(shard, *rel_pos, key_buf)?;
+                .and_then(|v| v.as_ref())
+                .filter(|v| !v.is_empty())
+            {
+                Some(buf) => buf,
+                None => continue,
+            };
+            batcher.push_fkey(shard, *rel_pos, buf)?;
         }
         batcher.maybe_flush(shard)?;
         *row_id = row_id.saturating_add(1);
