@@ -220,6 +220,9 @@ pub enum LogicalType {
     Bool,
     String,
     Bytes,
+    Uuid,
+    Uuid256,
+    Ip,
     Date,
     Timestamp,
     Decimal128,
@@ -293,6 +296,9 @@ pub enum ColumnEncoding {
     Bool,
     String { encoding: StringEncoding },
     Bytes { fixed_len: Option<usize> },
+    Uuid,
+    Uuid256,
+    Ip,
     Date { varint: bool, bits: u8 },
     Timestamp,
     Decimal {
@@ -341,6 +347,9 @@ pub enum ValueRef<'a> {
     Bool(bool),
     String(&'a str),
     Bytes(&'a [u8]),
+    Uuid([u8; 16]),
+    Uuid256([u8; 32]),
+    Ip([u8; 16]),
     Date(i32),
     Timestamp { secs: i64, nanos: u32 },
     Decimal128(i128),
@@ -777,6 +786,9 @@ fn estimate_column_bytes(encoding: &ColumnEncoding, stats: &ColumnStats) -> usiz
                 varint_bytes_u64(len as u64) + len
             }
         }
+        ColumnEncoding::Uuid => 16,
+        ColumnEncoding::Uuid256 => 32,
+        ColumnEncoding::Ip => 16,
         ColumnEncoding::String { encoding } => match encoding {
             StringEncoding::Dict { .. } => varint_bytes_u64(1024),
             StringEncoding::Alphabet { alphabet } => {
@@ -1029,6 +1041,18 @@ impl ColumnStats {
                 self.bytes_total += v.len();
                 self.bytes_count += 1;
             }
+            ValueRef::Uuid(_) => {
+                self.bytes_total += 16;
+                self.bytes_count += 1;
+            }
+            ValueRef::Uuid256(_) => {
+                self.bytes_total += 32;
+                self.bytes_count += 1;
+            }
+            ValueRef::Ip(_) => {
+                self.bytes_total += 16;
+                self.bytes_count += 1;
+            }
             ValueRef::Date(_) => {}
             ValueRef::Timestamp { secs, .. } => {
                 self.ts_min = self.ts_min.min(*secs);
@@ -1128,6 +1152,9 @@ impl ColumnStats {
                 encoding: choose_string_encoding(self, config)?,
             }),
             LogicalType::Bytes => Ok(ColumnEncoding::Bytes { fixed_len }),
+            LogicalType::Uuid => Ok(ColumnEncoding::Uuid),
+            LogicalType::Uuid256 => Ok(ColumnEncoding::Uuid256),
+            LogicalType::Ip => Ok(ColumnEncoding::Ip),
             LogicalType::Date => Ok(ColumnEncoding::Date {
                 varint: int_use_varint(self.int_min, self.int_max),
                 bits: 32,
@@ -1699,6 +1726,45 @@ impl RowPackEncoder {
                         }
                     }
                 },
+                LogicalType::Uuid => match access.get_bytes(idx)? {
+                    None => 0u8,
+                    Some(v) => {
+                        if !matches!(col.encoding, ColumnEncoding::Uuid) {
+                            return Err(anyhow!("rowpack uuid encoding mismatch"));
+                        }
+                        if v.len() != 16 {
+                            return Err(anyhow!("rowpack uuid length mismatch"));
+                        }
+                        scratch.data.extend_from_slice(v);
+                        1u8
+                    }
+                },
+                LogicalType::Uuid256 => match access.get_bytes(idx)? {
+                    None => 0u8,
+                    Some(v) => {
+                        if !matches!(col.encoding, ColumnEncoding::Uuid256) {
+                            return Err(anyhow!("rowpack uuid256 encoding mismatch"));
+                        }
+                        if v.len() != 32 {
+                            return Err(anyhow!("rowpack uuid256 length mismatch"));
+                        }
+                        scratch.data.extend_from_slice(v);
+                        1u8
+                    }
+                },
+                LogicalType::Ip => match access.get_bytes(idx)? {
+                    None => 0u8,
+                    Some(v) => {
+                        if !matches!(col.encoding, ColumnEncoding::Ip) {
+                            return Err(anyhow!("rowpack ip encoding mismatch"));
+                        }
+                        if v.len() != 16 {
+                            return Err(anyhow!("rowpack ip length mismatch"));
+                        }
+                        scratch.data.extend_from_slice(v);
+                        1u8
+                    }
+                },
                 LogicalType::Date => match access.get_date(idx)? {
                     None => 0u8,
                     Some(v) => {
@@ -2015,6 +2081,18 @@ fn encode_value_with_tag<'a>(
                 out.extend_from_slice(v);
                 Ok(1)
             }
+        }
+        (ColumnEncoding::Uuid, ValueRef::Uuid(v)) => {
+            out.extend_from_slice(v);
+            Ok(1)
+        }
+        (ColumnEncoding::Uuid256, ValueRef::Uuid256(v)) => {
+            out.extend_from_slice(v);
+            Ok(1)
+        }
+        (ColumnEncoding::Ip, ValueRef::Ip(v)) => {
+            out.extend_from_slice(v);
+            Ok(1)
         }
         (ColumnEncoding::Date { varint, bits }, ValueRef::Date(v)) => {
             encode_int(out, true, *varint, *bits, *v as i128)?;
@@ -2760,6 +2838,21 @@ fn decode_value_msgpack(
             };
             mp::write_bin(out, bytes)?;
         }
+        ColumnEncoding::Uuid => {
+            let bytes = decode_fixed_bytes::<16>(data)?;
+            let text = hex_encode(&bytes);
+            mp::write_str(out, &text)?;
+        }
+        ColumnEncoding::Uuid256 => {
+            let bytes = decode_fixed_bytes::<32>(data)?;
+            let text = hex_encode(&bytes);
+            mp::write_str(out, &text)?;
+        }
+        ColumnEncoding::Ip => {
+            let bytes = decode_fixed_bytes::<16>(data)?;
+            let text = format_ip(bytes);
+            mp::write_str(out, &text)?;
+        }
         ColumnEncoding::Date { varint, bits } => {
             let v = decode_int(data, *varint, *bits)?;
             mp::write_sint(out, v)?;
@@ -2858,6 +2951,18 @@ fn decode_value_json(
             };
             JsonValue::from(base64::engine::general_purpose::STANDARD.encode(bytes))
         }
+        ColumnEncoding::Uuid => {
+            let bytes = decode_fixed_bytes::<16>(data)?;
+            JsonValue::from(hex_encode(&bytes))
+        }
+        ColumnEncoding::Uuid256 => {
+            let bytes = decode_fixed_bytes::<32>(data)?;
+            JsonValue::from(hex_encode(&bytes))
+        }
+        ColumnEncoding::Ip => {
+            let bytes = decode_fixed_bytes::<16>(data)?;
+            JsonValue::from(format_ip(bytes))
+        }
         ColumnEncoding::Date { varint, bits } => {
             JsonValue::from(decode_int(data, *varint, *bits)?)
         }
@@ -2955,6 +3060,18 @@ fn decode_value_ref<'a>(
                 decode_bytes(data, *fixed_len)?
             };
             Ok(ValueRef::Bytes(bytes))
+        }
+        ColumnEncoding::Uuid => {
+            let bytes = decode_fixed_bytes::<16>(data)?;
+            Ok(ValueRef::Uuid(bytes))
+        }
+        ColumnEncoding::Uuid256 => {
+            let bytes = decode_fixed_bytes::<32>(data)?;
+            Ok(ValueRef::Uuid256(bytes))
+        }
+        ColumnEncoding::Ip => {
+            let bytes = decode_fixed_bytes::<16>(data)?;
+            Ok(ValueRef::Ip(bytes))
         }
         ColumnEncoding::Date { varint, bits } => {
             Ok(ValueRef::Date(decode_int(data, *varint, *bits)? as i32))
@@ -3057,6 +3174,15 @@ fn decode_value_skip(
             } else {
                 decode_bytes(data, *fixed_len)?
             };
+        }
+        ColumnEncoding::Uuid => {
+            let _ = decode_fixed_bytes::<16>(data)?;
+        }
+        ColumnEncoding::Uuid256 => {
+            let _ = decode_fixed_bytes::<32>(data)?;
+        }
+        ColumnEncoding::Ip => {
+            let _ = decode_fixed_bytes::<16>(data)?;
         }
         ColumnEncoding::Date { varint, bits } => {
             let _ = decode_int(data, *varint, *bits)?;
@@ -3275,6 +3401,36 @@ fn decode_bytes<'a>(data: &mut &'a [u8], fixed_len: Option<usize>) -> Result<&'a
     let (head, tail) = data.split_at(len);
     *data = tail;
     Ok(head)
+}
+
+fn decode_fixed_bytes<const N: usize>(data: &mut &[u8]) -> Result<[u8; N]> {
+    if data.len() < N {
+        return Err(anyhow!("rowpack bytes truncated"));
+    }
+    let (head, tail) = data.split_at(N);
+    *data = tail;
+    let mut out = [0u8; N];
+    out.copy_from_slice(head);
+    Ok(out)
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        out.push(HEX[(b >> 4) as usize] as char);
+        out.push(HEX[(b & 0x0f) as usize] as char);
+    }
+    out
+}
+
+fn format_ip(bytes: [u8; 16]) -> String {
+    let addr = std::net::Ipv6Addr::from(bytes);
+    if let Some(v4) = addr.to_ipv4() {
+        v4.to_string()
+    } else {
+        addr.to_string()
+    }
 }
 
 fn decode_decimal_bytes<'a>(data: &mut &'a [u8], bytes: usize) -> Result<&'a [u8]> {
@@ -4439,6 +4595,76 @@ mod tests {
         let decoder = RowPackDecoder::new(ctx).unwrap();
         let json = decoder.decode_json(&encoded).unwrap();
         assert!(json.to_string().contains("QUJDREU="));
+    }
+
+    #[test]
+    fn uuid_json_hex() {
+        let ctx = RowPackContext {
+            version: ROWPACK_VERSION,
+            columns: vec![ColumnContext {
+                name: "id".to_string(),
+                logical_type: LogicalType::Uuid,
+                encoding: ColumnEncoding::Uuid,
+            }],
+            estimated_row_bytes: 0,
+        };
+        let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
+        let value = [
+            0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc,
+            0xdd, 0xee, 0xff,
+        ];
+        let row = vec![ValueRef::Uuid(value)];
+        let encoded = encode_row(&encoder, &row);
+        let decoder = RowPackDecoder::new(ctx).unwrap();
+        let json = decoder.decode_json(&encoded).unwrap();
+        assert!(json
+            .to_string()
+            .contains("00112233445566778899aabbccddeeff"));
+    }
+
+    #[test]
+    fn uuid256_json_hex() {
+        let ctx = RowPackContext {
+            version: ROWPACK_VERSION,
+            columns: vec![ColumnContext {
+                name: "id".to_string(),
+                logical_type: LogicalType::Uuid256,
+                encoding: ColumnEncoding::Uuid256,
+            }],
+            estimated_row_bytes: 0,
+        };
+        let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
+        let mut value = [0u8; 32];
+        for (idx, byte) in value.iter_mut().enumerate() {
+            *byte = idx as u8;
+        }
+        let row = vec![ValueRef::Uuid256(value)];
+        let encoded = encode_row(&encoder, &row);
+        let decoder = RowPackDecoder::new(ctx).unwrap();
+        let json = decoder.decode_json(&encoded).unwrap();
+        assert!(json
+            .to_string()
+            .contains("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"));
+    }
+
+    #[test]
+    fn ip_json_string() {
+        let ctx = RowPackContext {
+            version: ROWPACK_VERSION,
+            columns: vec![ColumnContext {
+                name: "ip".to_string(),
+                logical_type: LogicalType::Ip,
+                encoding: ColumnEncoding::Ip,
+            }],
+            estimated_row_bytes: 0,
+        };
+        let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
+        let ip = std::net::Ipv4Addr::new(127, 0, 0, 1).to_ipv6_mapped().octets();
+        let row = vec![ValueRef::Ip(ip)];
+        let encoded = encode_row(&encoder, &row);
+        let decoder = RowPackDecoder::new(ctx).unwrap();
+        let json = decoder.decode_json(&encoded).unwrap();
+        assert!(json.to_string().contains("127.0.0.1"));
     }
 
     #[test]

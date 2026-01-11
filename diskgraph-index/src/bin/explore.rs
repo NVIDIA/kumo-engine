@@ -1027,6 +1027,9 @@ fn format_rowpack_encoding(encoding: &ColumnEncoding) -> String {
             Some(len) => format!("bytes(fixed_len={})", len),
             None => "bytes".to_string(),
         },
+        ColumnEncoding::Uuid => "uuid".to_string(),
+        ColumnEncoding::Uuid256 => "uuid256".to_string(),
+        ColumnEncoding::Ip => "ip".to_string(),
         ColumnEncoding::Date { varint, bits } => {
             format!("date(varint={}, bits={})", varint, bits)
         }

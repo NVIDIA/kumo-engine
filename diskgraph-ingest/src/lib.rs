@@ -772,6 +772,9 @@ enum OwnedValue {
     Bool(bool),
     String(String),
     Bytes(Vec<u8>),
+    Uuid([u8; 16]),
+    Uuid256([u8; 32]),
+    Ip([u8; 16]),
     Date(i32),
     Timestamp { secs: i64, nanos: u32 },
     Decimal128(i128),
@@ -798,6 +801,9 @@ impl OwnedValue {
             OwnedValue::Bool(v) => ValueRef::Bool(*v),
             OwnedValue::String(v) => ValueRef::String(v.as_str()),
             OwnedValue::Bytes(v) => ValueRef::Bytes(v.as_slice()),
+            OwnedValue::Uuid(v) => ValueRef::Uuid(*v),
+            OwnedValue::Uuid256(v) => ValueRef::Uuid256(*v),
+            OwnedValue::Ip(v) => ValueRef::Ip(*v),
             OwnedValue::Date(v) => ValueRef::Date(*v),
             OwnedValue::Timestamp { secs, nanos } => ValueRef::Timestamp {
                 secs: *secs,
@@ -7019,6 +7025,9 @@ fn format_value_ref_sample(value: &ValueRef<'_>) -> String {
         ValueRef::Bool(v) => v.to_string(),
         ValueRef::String(v) => truncate_sample(v),
         ValueRef::Bytes(v) => format_bytes_sample_prefix(v),
+        ValueRef::Uuid(v) => format!("0x{}", hex_encode(v)),
+        ValueRef::Uuid256(v) => format!("0x{}", hex_encode(v)),
+        ValueRef::Ip(v) => format_ip_bytes(*v),
         ValueRef::Date(v) => v.to_string(),
         ValueRef::Timestamp { secs, nanos } => format!("{secs}.{nanos:09}"),
         ValueRef::Decimal128(v) => v.to_string(),
@@ -7044,6 +7053,15 @@ fn hex_encode(bytes: &[u8]) -> String {
         out.push(hex_char(b & 0x0f));
     }
     out
+}
+
+fn format_ip_bytes(bytes: [u8; 16]) -> String {
+    let addr = std::net::Ipv6Addr::from(bytes);
+    if let Some(v4) = addr.to_ipv4() {
+        v4.to_string()
+    } else {
+        addr.to_string()
+    }
 }
 
 fn hex_char(v: u8) -> char {
@@ -7529,7 +7547,9 @@ fn rowpack_columns(table: &TableSpec) -> Result<Vec<diskgraph_rowpack::RowPackCo
             ColumnType::Bool => RowpackType::Bool,
             ColumnType::String => RowpackType::String,
             ColumnType::Bytes => RowpackType::Bytes,
-            ColumnType::Uuid | ColumnType::Uuid256 | ColumnType::Ip => RowpackType::Bytes,
+            ColumnType::Uuid => RowpackType::Uuid,
+            ColumnType::Uuid256 => RowpackType::Uuid256,
+            ColumnType::Ip => RowpackType::Ip,
             ColumnType::Date => RowpackType::Date,
             ColumnType::Timestamp => RowpackType::Timestamp,
             ColumnType::Decimal128 => RowpackType::Decimal128,
@@ -7539,9 +7559,7 @@ fn rowpack_columns(table: &TableSpec) -> Result<Vec<diskgraph_rowpack::RowPackCo
             ColumnType::Float16Array => RowpackType::Float16Array,
         };
         let fixed_len = match col.ingested_dtype {
-            ColumnType::Uuid => Some(16),
-            ColumnType::Uuid256 => Some(32),
-            ColumnType::Ip => Some(16),
+            ColumnType::Uuid | ColumnType::Uuid256 | ColumnType::Ip => None,
             _ => col.fixed_len,
         };
         columns.push(diskgraph_rowpack::RowPackColumn {
@@ -7574,7 +7592,9 @@ fn rowpack_columns_for_specs(
             ColumnType::Bool => RowpackType::Bool,
             ColumnType::String => RowpackType::String,
             ColumnType::Bytes => RowpackType::Bytes,
-            ColumnType::Uuid | ColumnType::Uuid256 | ColumnType::Ip => RowpackType::Bytes,
+            ColumnType::Uuid => RowpackType::Uuid,
+            ColumnType::Uuid256 => RowpackType::Uuid256,
+            ColumnType::Ip => RowpackType::Ip,
             ColumnType::Date => RowpackType::Date,
             ColumnType::Timestamp => RowpackType::Timestamp,
             ColumnType::Decimal128 => RowpackType::Decimal128,
@@ -7584,9 +7604,7 @@ fn rowpack_columns_for_specs(
             ColumnType::Float16Array => RowpackType::Float16Array,
         };
         let fixed_len = match col.ingested_dtype {
-            ColumnType::Uuid => Some(16),
-            ColumnType::Uuid256 => Some(32),
-            ColumnType::Ip => Some(16),
+            ColumnType::Uuid | ColumnType::Uuid256 | ColumnType::Ip => None,
             _ => col.fixed_len,
         };
         columns.push(diskgraph_rowpack::RowPackColumn {
@@ -9278,6 +9296,9 @@ fn owned_row_from_refs(
             ValueRef::Bytes(v) => {
                 OwnedValue::Bytes((*v).to_vec())
             }
+            ValueRef::Uuid(v) => OwnedValue::Uuid(*v),
+            ValueRef::Uuid256(v) => OwnedValue::Uuid256(*v),
+            ValueRef::Ip(v) => OwnedValue::Ip(*v),
             ValueRef::Date(v) => OwnedValue::Date(*v),
             ValueRef::Timestamp { secs, nanos } => OwnedValue::Timestamp {
                 secs: *secs,

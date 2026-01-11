@@ -59,6 +59,15 @@ fn print_encoding(encoding: &ColumnEncoding) -> Result<()> {
                 println!("  Encoding: bytes");
             }
         }
+        ColumnEncoding::Uuid => {
+            println!("  Encoding: uuid");
+        }
+        ColumnEncoding::Uuid256 => {
+            println!("  Encoding: uuid256");
+        }
+        ColumnEncoding::Ip => {
+            println!("  Encoding: ip");
+        }
         ColumnEncoding::Date { varint, bits } => {
             println!("  Encoding: date (varint={}, bits={})", varint, bits);
         }
