@@ -1264,14 +1264,18 @@ impl<'p> RowAccess<'p> {
                     .as_any()
                     .downcast_ref::<arrow_array::StringArray>()
                     .ok_or_else(|| anyhow!("string cast"))?;
-                Ok(Some(parse_uuid_string(arr.value(self.row).as_bytes())?))
+                parse_uuid_string(arr.value(self.row).as_bytes())
+                    .ok_or_else(|| anyhow!("rowpack uuid parse failed"))
+                    .map(Some)
             }
             DataType::LargeUtf8 => {
                 let arr = array
                     .as_any()
                     .downcast_ref::<arrow_array::LargeStringArray>()
                     .ok_or_else(|| anyhow!("large string cast"))?;
-                Ok(Some(parse_uuid_string(arr.value(self.row).as_bytes())?))
+                parse_uuid_string(arr.value(self.row).as_bytes())
+                    .ok_or_else(|| anyhow!("rowpack uuid parse failed"))
+                    .map(Some)
             }
             DataType::Binary => {
                 let arr = array
@@ -1327,14 +1331,18 @@ impl<'p> RowAccess<'p> {
                     .as_any()
                     .downcast_ref::<arrow_array::StringArray>()
                     .ok_or_else(|| anyhow!("string cast"))?;
-                Ok(Some(parse_uuid256_string(arr.value(self.row).as_bytes())?))
+                parse_uuid256_string(arr.value(self.row).as_bytes())
+                    .ok_or_else(|| anyhow!("rowpack uuid256 parse failed"))
+                    .map(Some)
             }
             DataType::LargeUtf8 => {
                 let arr = array
                     .as_any()
                     .downcast_ref::<arrow_array::LargeStringArray>()
                     .ok_or_else(|| anyhow!("large string cast"))?;
-                Ok(Some(parse_uuid256_string(arr.value(self.row).as_bytes())?))
+                parse_uuid256_string(arr.value(self.row).as_bytes())
+                    .ok_or_else(|| anyhow!("rowpack uuid256 parse failed"))
+                    .map(Some)
             }
             DataType::Binary => {
                 let arr = array
@@ -1390,35 +1398,45 @@ impl<'p> RowAccess<'p> {
                     .as_any()
                     .downcast_ref::<arrow_array::StringArray>()
                     .ok_or_else(|| anyhow!("string cast"))?;
-                Ok(Some(parse_ip_string(arr.value(self.row).as_bytes())?))
+                parse_ip_string(arr.value(self.row).as_bytes())
+                    .ok_or_else(|| anyhow!("rowpack ip parse failed"))
+                    .map(Some)
             }
             DataType::LargeUtf8 => {
                 let arr = array
                     .as_any()
                     .downcast_ref::<arrow_array::LargeStringArray>()
                     .ok_or_else(|| anyhow!("large string cast"))?;
-                Ok(Some(parse_ip_string(arr.value(self.row).as_bytes())?))
+                parse_ip_string(arr.value(self.row).as_bytes())
+                    .ok_or_else(|| anyhow!("rowpack ip parse failed"))
+                    .map(Some)
             }
             DataType::Binary => {
                 let arr = array
                     .as_any()
                     .downcast_ref::<arrow_array::BinaryArray>()
                     .ok_or_else(|| anyhow!("binary cast"))?;
-                Ok(Some(parse_ip_bytes(arr.value(self.row))?))
+                parse_ip_bytes(arr.value(self.row))
+                    .ok_or_else(|| anyhow!("rowpack ip binary length mismatch"))
+                    .map(Some)
             }
             DataType::LargeBinary => {
                 let arr = array
                     .as_any()
                     .downcast_ref::<arrow_array::LargeBinaryArray>()
                     .ok_or_else(|| anyhow!("large binary cast"))?;
-                Ok(Some(parse_ip_bytes(arr.value(self.row))?))
+                parse_ip_bytes(arr.value(self.row))
+                    .ok_or_else(|| anyhow!("rowpack ip binary length mismatch"))
+                    .map(Some)
             }
             DataType::FixedSizeBinary(_) => {
                 let arr = array
                     .as_any()
                     .downcast_ref::<arrow_array::FixedSizeBinaryArray>()
                     .ok_or_else(|| anyhow!("fixed binary cast"))?;
-                Ok(Some(parse_ip_bytes(arr.value(self.row))?))
+                parse_ip_bytes(arr.value(self.row))
+                    .ok_or_else(|| anyhow!("rowpack ip binary length mismatch"))
+                    .map(Some)
             }
             _ => Err(anyhow!("ip type mismatch")),
         }
@@ -1978,42 +1996,40 @@ fn trim_str_bytes(value: &str, max: usize) -> &str {
     &value[..end]
 }
 
-fn parse_uuid_string(bytes: &[u8]) -> Result<[u8; 16]> {
+fn parse_uuid_string(bytes: &[u8]) -> Option<[u8; 16]> {
     let mut out = [0u8; 16];
     if bytes.len() == 32 {
-        parse_simple(bytes, out.as_out()).map_err(|_| anyhow!("rowpack uuid parse failed"))?;
-        return Ok(out);
+        parse_simple(bytes, out.as_out()).ok()?;
+        return Some(out);
     }
     if bytes.len() == 36 {
-        parse_hyphenated(bytes, out.as_out()).map_err(|_| anyhow!("rowpack uuid parse failed"))?;
-        return Ok(out);
+        parse_hyphenated(bytes, out.as_out()).ok()?;
+        return Some(out);
     }
-    Err(anyhow!("rowpack uuid length mismatch"))
+    None
 }
 
-fn parse_uuid256_string(bytes: &[u8]) -> Result<[u8; 32]> {
+fn parse_uuid256_string(bytes: &[u8]) -> Option<[u8; 32]> {
     if bytes.len() != 64 {
-        return Err(anyhow!("rowpack uuid256 length mismatch"));
+        return None;
     }
     let mut out = [0u8; 32];
     // Safety: `out` is 32 bytes, so the two 16-byte regions are in-bounds and non-overlapping.
     let out_ptr = out.as_mut_ptr();
     let hi = unsafe { &mut *(out_ptr as *mut [u8; 16]) };
     let lo = unsafe { &mut *(out_ptr.add(16) as *mut [u8; 16]) };
-    parse_simple(&bytes[..32], hi.as_out())
-        .map_err(|_| anyhow!("rowpack uuid256 parse failed"))?;
-    parse_simple(&bytes[32..], lo.as_out())
-        .map_err(|_| anyhow!("rowpack uuid256 parse failed"))?;
-    Ok(out)
+    parse_simple(&bytes[..32], hi.as_out()).ok()?;
+    parse_simple(&bytes[32..], lo.as_out()).ok()?;
+    Some(out)
 }
 
-fn parse_ip_string(bytes: &[u8]) -> Result<[u8; 16]> {
-    let s = std::str::from_utf8(bytes).map_err(|_| anyhow!("rowpack ip invalid utf8"))?;
-    let ip: std::net::IpAddr = s.parse().map_err(|_| anyhow!("rowpack ip parse failed"))?;
-    Ok(ip_to_ipv6_bytes(ip))
+fn parse_ip_string(bytes: &[u8]) -> Option<[u8; 16]> {
+    let s = std::str::from_utf8(bytes).ok()?;
+    let ip: std::net::IpAddr = s.parse().ok()?;
+    Some(ip_to_ipv6_bytes(ip))
 }
 
-fn parse_ip_bytes(bytes: &[u8]) -> Result<[u8; 16]> {
+fn parse_ip_bytes(bytes: &[u8]) -> Option<[u8; 16]> {
     match bytes.len() {
         4 => Some(ip_to_ipv6_bytes(std::net::IpAddr::V4(
             std::net::Ipv4Addr::new(bytes[0], bytes[1], bytes[2], bytes[3]),
@@ -2025,7 +2041,6 @@ fn parse_ip_bytes(bytes: &[u8]) -> Result<[u8; 16]> {
         }
         _ => None,
     }
-    .ok_or_else(|| anyhow!("rowpack ip binary length mismatch"))
 }
 
 fn ip_to_ipv6_bytes(ip: std::net::IpAddr) -> [u8; 16] {
