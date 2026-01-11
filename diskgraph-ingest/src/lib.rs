@@ -5869,11 +5869,15 @@ impl SortKeyComponentBatcher {
     fn push_row(&mut self, shard: usize, access: &mut RowAccess<'_>) -> Result<()> {
         let value = match &mut self.encoder {
             SortKeyComponentEncoder::Timestamp { column_idx, encoding } => {
-                let ts_value = if let Some((secs, _)) = access.get_timestamp(*column_idx)? {
+                let ts_value = if let Some((secs, _)) =
+                    access.get_timestamp(*column_idx).ok().flatten()
+                {
                     Some(secs)
                 } else {
                     access
-                        .get_date(*column_idx)?
+                        .get_date(*column_idx)
+                        .ok()
+                        .flatten()
                         .map(|days| i64::from(days) * 86_400)
                 };
                 encode_timestamp_value(ts_value, encoding)

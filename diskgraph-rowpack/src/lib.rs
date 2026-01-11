@@ -378,37 +378,47 @@ impl<'p> RowAccess<'p> {
                     .as_any()
                     .downcast_ref::<arrow_array::StringArray>()
                     .ok_or_else(|| anyhow!("string cast"))?;
-                Ok(parse_i64(arr.value(self.row)))
+                parse_i64(arr.value(self.row))
+                    .ok_or_else(|| anyhow!("int64 parse failed"))
+                    .map(Some)
             }
             DataType::LargeUtf8 => {
                 let arr = array
                     .as_any()
                     .downcast_ref::<arrow_array::LargeStringArray>()
                     .ok_or_else(|| anyhow!("large string cast"))?;
-                Ok(parse_i64(arr.value(self.row)))
+                parse_i64(arr.value(self.row))
+                    .ok_or_else(|| anyhow!("int64 parse failed"))
+                    .map(Some)
             }
             DataType::Binary => {
                 let arr = array
                     .as_any()
                     .downcast_ref::<arrow_array::BinaryArray>()
                     .ok_or_else(|| anyhow!("binary cast"))?;
-                Ok(parse_i64(std::str::from_utf8(arr.value(self.row))?))
+                parse_i64(std::str::from_utf8(arr.value(self.row))?)
+                    .ok_or_else(|| anyhow!("int64 parse failed"))
+                    .map(Some)
             }
             DataType::LargeBinary => {
                 let arr = array
                     .as_any()
                     .downcast_ref::<arrow_array::LargeBinaryArray>()
                     .ok_or_else(|| anyhow!("large binary cast"))?;
-                Ok(parse_i64(std::str::from_utf8(arr.value(self.row))?))
+                parse_i64(std::str::from_utf8(arr.value(self.row))?)
+                    .ok_or_else(|| anyhow!("int64 parse failed"))
+                    .map(Some)
             }
             DataType::FixedSizeBinary(_) => {
                 let arr = array
                     .as_any()
                     .downcast_ref::<arrow_array::FixedSizeBinaryArray>()
                     .ok_or_else(|| anyhow!("fixed binary cast"))?;
-                Ok(parse_i64(std::str::from_utf8(arr.value(self.row))?))
+                parse_i64(std::str::from_utf8(arr.value(self.row))?)
+                    .ok_or_else(|| anyhow!("int64 parse failed"))
+                    .map(Some)
             }
-            _ => Ok(None),
+            _ => Err(anyhow!("int64 type mismatch")),
         }
     }
 
@@ -479,37 +489,47 @@ impl<'p> RowAccess<'p> {
                     .as_any()
                     .downcast_ref::<arrow_array::StringArray>()
                     .ok_or_else(|| anyhow!("string cast"))?;
-                Ok(parse_i32(arr.value(self.row)))
+                parse_i32(arr.value(self.row))
+                    .ok_or_else(|| anyhow!("int32 parse failed"))
+                    .map(Some)
             }
             DataType::LargeUtf8 => {
                 let arr = array
                     .as_any()
                     .downcast_ref::<arrow_array::LargeStringArray>()
                     .ok_or_else(|| anyhow!("large string cast"))?;
-                Ok(parse_i32(arr.value(self.row)))
+                parse_i32(arr.value(self.row))
+                    .ok_or_else(|| anyhow!("int32 parse failed"))
+                    .map(Some)
             }
             DataType::Binary => {
                 let arr = array
                     .as_any()
                     .downcast_ref::<arrow_array::BinaryArray>()
                     .ok_or_else(|| anyhow!("binary cast"))?;
-                Ok(parse_i32(std::str::from_utf8(arr.value(self.row))?))
+                parse_i32(std::str::from_utf8(arr.value(self.row))?)
+                    .ok_or_else(|| anyhow!("int32 parse failed"))
+                    .map(Some)
             }
             DataType::LargeBinary => {
                 let arr = array
                     .as_any()
                     .downcast_ref::<arrow_array::LargeBinaryArray>()
                     .ok_or_else(|| anyhow!("large binary cast"))?;
-                Ok(parse_i32(std::str::from_utf8(arr.value(self.row))?))
+                parse_i32(std::str::from_utf8(arr.value(self.row))?)
+                    .ok_or_else(|| anyhow!("int32 parse failed"))
+                    .map(Some)
             }
             DataType::FixedSizeBinary(_) => {
                 let arr = array
                     .as_any()
                     .downcast_ref::<arrow_array::FixedSizeBinaryArray>()
                     .ok_or_else(|| anyhow!("fixed binary cast"))?;
-                Ok(parse_i32(std::str::from_utf8(arr.value(self.row))?))
+                parse_i32(std::str::from_utf8(arr.value(self.row))?)
+                    .ok_or_else(|| anyhow!("int32 parse failed"))
+                    .map(Some)
             }
-            _ => Ok(None),
+            _ => Err(anyhow!("int32 type mismatch")),
         }
     }
 
@@ -580,37 +600,47 @@ impl<'p> RowAccess<'p> {
                     .as_any()
                     .downcast_ref::<arrow_array::StringArray>()
                     .ok_or_else(|| anyhow!("string cast"))?;
-                Ok(parse_u64(arr.value(self.row)))
+                parse_u64(arr.value(self.row))
+                    .ok_or_else(|| anyhow!("uint64 parse failed"))
+                    .map(Some)
             }
             DataType::LargeUtf8 => {
                 let arr = array
                     .as_any()
                     .downcast_ref::<arrow_array::LargeStringArray>()
                     .ok_or_else(|| anyhow!("large string cast"))?;
-                Ok(parse_u64(arr.value(self.row)))
+                parse_u64(arr.value(self.row))
+                    .ok_or_else(|| anyhow!("uint64 parse failed"))
+                    .map(Some)
             }
             DataType::Binary => {
                 let arr = array
                     .as_any()
                     .downcast_ref::<arrow_array::BinaryArray>()
                     .ok_or_else(|| anyhow!("binary cast"))?;
-                Ok(parse_u64(std::str::from_utf8(arr.value(self.row))?))
+                parse_u64(std::str::from_utf8(arr.value(self.row))?)
+                    .ok_or_else(|| anyhow!("uint64 parse failed"))
+                    .map(Some)
             }
             DataType::LargeBinary => {
                 let arr = array
                     .as_any()
                     .downcast_ref::<arrow_array::LargeBinaryArray>()
                     .ok_or_else(|| anyhow!("large binary cast"))?;
-                Ok(parse_u64(std::str::from_utf8(arr.value(self.row))?))
+                parse_u64(std::str::from_utf8(arr.value(self.row))?)
+                    .ok_or_else(|| anyhow!("uint64 parse failed"))
+                    .map(Some)
             }
             DataType::FixedSizeBinary(_) => {
                 let arr = array
                     .as_any()
                     .downcast_ref::<arrow_array::FixedSizeBinaryArray>()
                     .ok_or_else(|| anyhow!("fixed binary cast"))?;
-                Ok(parse_u64(std::str::from_utf8(arr.value(self.row))?))
+                parse_u64(std::str::from_utf8(arr.value(self.row))?)
+                    .ok_or_else(|| anyhow!("uint64 parse failed"))
+                    .map(Some)
             }
-            _ => Ok(None),
+            _ => Err(anyhow!("uint64 type mismatch")),
         }
     }
 
@@ -681,37 +711,47 @@ impl<'p> RowAccess<'p> {
                     .as_any()
                     .downcast_ref::<arrow_array::StringArray>()
                     .ok_or_else(|| anyhow!("string cast"))?;
-                Ok(parse_u32(arr.value(self.row)))
+                parse_u32(arr.value(self.row))
+                    .ok_or_else(|| anyhow!("uint32 parse failed"))
+                    .map(Some)
             }
             DataType::LargeUtf8 => {
                 let arr = array
                     .as_any()
                     .downcast_ref::<arrow_array::LargeStringArray>()
                     .ok_or_else(|| anyhow!("large string cast"))?;
-                Ok(parse_u32(arr.value(self.row)))
+                parse_u32(arr.value(self.row))
+                    .ok_or_else(|| anyhow!("uint32 parse failed"))
+                    .map(Some)
             }
             DataType::Binary => {
                 let arr = array
                     .as_any()
                     .downcast_ref::<arrow_array::BinaryArray>()
                     .ok_or_else(|| anyhow!("binary cast"))?;
-                Ok(parse_u32(std::str::from_utf8(arr.value(self.row))?))
+                parse_u32(std::str::from_utf8(arr.value(self.row))?)
+                    .ok_or_else(|| anyhow!("uint32 parse failed"))
+                    .map(Some)
             }
             DataType::LargeBinary => {
                 let arr = array
                     .as_any()
                     .downcast_ref::<arrow_array::LargeBinaryArray>()
                     .ok_or_else(|| anyhow!("large binary cast"))?;
-                Ok(parse_u32(std::str::from_utf8(arr.value(self.row))?))
+                parse_u32(std::str::from_utf8(arr.value(self.row))?)
+                    .ok_or_else(|| anyhow!("uint32 parse failed"))
+                    .map(Some)
             }
             DataType::FixedSizeBinary(_) => {
                 let arr = array
                     .as_any()
                     .downcast_ref::<arrow_array::FixedSizeBinaryArray>()
                     .ok_or_else(|| anyhow!("fixed binary cast"))?;
-                Ok(parse_u32(std::str::from_utf8(arr.value(self.row))?))
+                parse_u32(std::str::from_utf8(arr.value(self.row))?)
+                    .ok_or_else(|| anyhow!("uint32 parse failed"))
+                    .map(Some)
             }
-            _ => Ok(None),
+            _ => Err(anyhow!("uint32 type mismatch")),
         }
     }
 
@@ -800,11 +840,13 @@ impl<'p> RowAccess<'p> {
                             .ok_or_else(|| anyhow!("fixed binary cast"))?
                             .value(self.row),
                     )?,
-                    _ => return Ok(None),
+                    _ => return Err(anyhow!("float64 type mismatch")),
                 };
-                Ok(parse_f64(text))
+                parse_f64(text)
+                    .ok_or_else(|| anyhow!("float64 parse failed"))
+                    .map(Some)
             }
-            _ => Ok(None),
+            _ => Err(anyhow!("float64 type mismatch")),
         }
     }
 
@@ -893,11 +935,13 @@ impl<'p> RowAccess<'p> {
                             .ok_or_else(|| anyhow!("fixed binary cast"))?
                             .value(self.row),
                     )?,
-                    _ => return Ok(None),
+                    _ => return Err(anyhow!("float32 type mismatch")),
                 };
-                Ok(parse_f32(text))
+                parse_f32(text)
+                    .ok_or_else(|| anyhow!("float32 parse failed"))
+                    .map(Some)
             }
-            _ => Ok(None),
+            _ => Err(anyhow!("float32 type mismatch")),
         }
     }
 
@@ -951,11 +995,12 @@ impl<'p> RowAccess<'p> {
                             .ok_or_else(|| anyhow!("fixed binary cast"))?
                             .value(self.row),
                     )?,
-                    _ => return Ok(None),
+                    _ => return Err(anyhow!("bool type mismatch")),
                 };
-                Ok(parse_bool(text))
+                let value = parse_bool(text).ok_or_else(|| anyhow!("bool parse failed"))?;
+                Ok(Some(value))
             }
-            _ => Ok(None),
+            _ => Err(anyhow!("bool type mismatch")),
         }
     }
 
@@ -1077,7 +1122,7 @@ impl<'p> RowAccess<'p> {
                 let (secs, _) = timestamp_parts_from_array(array, self.row)?;
                 secs.to_string()
             }
-            _ => return Ok(None),
+            _ => return Err(anyhow!("string type mismatch")),
         };
         let value = if value.len() > MAX_INPUT_STRING_BYTES {
             if let Some(counter) = self._stats.trimmed_strings {
@@ -1123,7 +1168,7 @@ impl<'p> RowAccess<'p> {
                 .downcast_ref::<arrow_array::FixedSizeBinaryArray>()
                 .ok_or_else(|| anyhow!("fixed binary cast"))?
                 .value(self.row),
-            _ => return Ok(None),
+            _ => return Err(anyhow!("bytes type mismatch")),
         };
         let bytes = if data.len() > MAX_INPUT_STRING_BYTES {
             if let Some(counter) = self._stats.trimmed_strings {
@@ -1195,7 +1240,7 @@ impl<'p> RowAccess<'p> {
                 out.copy_from_slice(data);
                 Ok(Some(out))
             }
-            _ => Ok(None),
+            _ => Err(anyhow!("uuid type mismatch")),
         }
     }
 
@@ -1258,7 +1303,7 @@ impl<'p> RowAccess<'p> {
                 out.copy_from_slice(data);
                 Ok(Some(out))
             }
-            _ => Ok(None),
+            _ => Err(anyhow!("uuid256 type mismatch")),
         }
     }
 
@@ -1303,7 +1348,7 @@ impl<'p> RowAccess<'p> {
                     .ok_or_else(|| anyhow!("fixed binary cast"))?;
                 Ok(Some(parse_ip_bytes(arr.value(self.row))?))
             }
-            _ => Ok(None),
+            _ => Err(anyhow!("ip type mismatch")),
         }
     }
 
@@ -1361,7 +1406,7 @@ impl<'p> RowAccess<'p> {
                             .ok_or_else(|| anyhow!("fixed binary cast"))?
                             .value(self.row),
                     )?,
-                    _ => return Ok(None),
+                    _ => return Err(anyhow!("date type mismatch")),
                 };
                 if let Some(parser) = fast {
                     if let Some(days) = parser.parse_date(text) {
@@ -1375,7 +1420,7 @@ impl<'p> RowAccess<'p> {
                     let (secs, _) = timestamp_from_int(value, unit);
                     return Ok(Some(days_from_secs(secs)));
                 }
-                Ok(None)
+                Err(anyhow!("date parse failed"))
             }
             DataType::Int8
             | DataType::Int16
@@ -1426,12 +1471,12 @@ impl<'p> RowAccess<'p> {
                         .downcast_ref::<arrow_array::UInt8Array>()
                         .ok_or_else(|| anyhow!("uint8 cast"))?
                         .value(self.row) as i64,
-                    _ => return Ok(None),
+                    _ => return Err(anyhow!("date type mismatch")),
                 };
                 let (secs, _) = timestamp_from_int(value, unit);
                 Ok(Some(days_from_secs(secs)))
             }
-            _ => Ok(None),
+            _ => Err(anyhow!("date type mismatch")),
         }
     }
 
@@ -1486,7 +1531,7 @@ impl<'p> RowAccess<'p> {
                             .ok_or_else(|| anyhow!("fixed binary cast"))?
                             .value(self.row),
                     )?,
-                    _ => return Ok(None),
+                    _ => return Err(anyhow!("timestamp type mismatch")),
                 };
                 if let Some(parser) = fast {
                     if let Some((secs, nanos)) = parser.parse_timestamp(text) {
@@ -1499,7 +1544,7 @@ impl<'p> RowAccess<'p> {
                 if let Some(value) = parse_i64(text) {
                     return Ok(Some(timestamp_from_int(value, unit)));
                 }
-                Ok(None)
+                Err(anyhow!("timestamp parse failed"))
             }
             DataType::Int8
             | DataType::Int16
@@ -1550,11 +1595,11 @@ impl<'p> RowAccess<'p> {
                         .downcast_ref::<arrow_array::UInt8Array>()
                         .ok_or_else(|| anyhow!("uint8 cast"))?
                         .value(self.row) as i64,
-                    _ => return Ok(None),
+                    _ => return Err(anyhow!("timestamp type mismatch")),
                 };
                 Ok(Some(timestamp_from_int(value, unit)))
             }
-            _ => Ok(None),
+            _ => Err(anyhow!("timestamp type mismatch")),
         }
     }
 
@@ -1609,11 +1654,13 @@ impl<'p> RowAccess<'p> {
                             .ok_or_else(|| anyhow!("fixed binary cast"))?
                             .value(self.row),
                     )?,
-                    _ => return Ok(None),
+                    _ => return Err(anyhow!("decimal128 type mismatch")),
                 };
-                Ok(parse_decimal_i128(text, scale))
+                parse_decimal_i128(text, scale)
+                    .ok_or_else(|| anyhow!("decimal128 parse failed"))
+                    .map(Some)
             }
-            _ => Ok(None),
+            _ => Err(anyhow!("decimal128 type mismatch")),
         }
     }
 
@@ -1668,11 +1715,14 @@ impl<'p> RowAccess<'p> {
                             .ok_or_else(|| anyhow!("fixed binary cast"))?
                             .value(self.row),
                     )?,
-                    _ => return Ok(None),
+                    _ => return Err(anyhow!("decimal256 type mismatch")),
                 };
-                Ok(parse_decimal_i256(text, scale).map(|v| v.to_le_bytes()))
+                parse_decimal_i256(text, scale)
+                    .map(|v| v.to_le_bytes())
+                    .ok_or_else(|| anyhow!("decimal256 parse failed"))
+                    .map(Some)
             }
-            _ => Ok(None),
+            _ => Err(anyhow!("decimal256 type mismatch")),
         }
     }
 
@@ -1749,7 +1799,7 @@ impl<'p> RowAccess<'p> {
                 }
                 Ok(Some(unsafe { std::mem::transmute::<&[f32], &[f32]>(vec.as_slice()) }))
             }
-            _ => Ok(None),
+            _ => Err(anyhow!("float32 array type mismatch")),
         }
     }
 
@@ -2892,81 +2942,81 @@ impl RowPackContextBuilder {
                 .get_mut(idx)
                 .ok_or_else(|| anyhow!("rowpack sample column mismatch"))?;
             match logical {
-                IngestedType::Bool => match access.get_bool(idx)? {
+                IngestedType::Bool => match access.get_bool(idx).ok().flatten() {
                     None => stats.observe_null(),
                     Some(_) => stats.observe_bool(),
                 },
-                IngestedType::Int64 => match access.get_int64(idx)? {
+                IngestedType::Int64 => match access.get_int64(idx).ok().flatten() {
                     None => stats.observe_null(),
                     Some(v) => stats.observe_int64(v),
                 },
                 IngestedType::Int16 | IngestedType::Int8 | IngestedType::Int32 => {
-                    match access.get_int32(idx)? {
+                    match access.get_int32(idx).ok().flatten() {
                         None => stats.observe_null(),
                         Some(v) => stats.observe_int32(v),
                     }
                 }
-                IngestedType::UInt64 => match access.get_uint64(idx)? {
+                IngestedType::UInt64 => match access.get_uint64(idx).ok().flatten() {
                     None => stats.observe_null(),
                     Some(v) => stats.observe_uint64(v),
                 },
                 IngestedType::UInt16 | IngestedType::UInt8 | IngestedType::UInt32 => {
-                    match access.get_uint32(idx)? {
+                    match access.get_uint32(idx).ok().flatten() {
                         None => stats.observe_null(),
                         Some(v) => stats.observe_uint32(v),
                     }
                 }
-                IngestedType::Float64 => match access.get_float64(idx)? {
+                IngestedType::Float64 => match access.get_float64(idx).ok().flatten() {
                     None => stats.observe_null(),
                     Some(v) => stats.observe_float64(v),
                 },
-                IngestedType::Float32 => match access.get_float32(idx)? {
+                IngestedType::Float32 => match access.get_float32(idx).ok().flatten() {
                     None => stats.observe_null(),
                     Some(v) => stats.observe_float32(v),
                 },
-                IngestedType::String => match access.get_string(idx)? {
+                IngestedType::String => match access.get_string(idx).ok().flatten() {
                     None => stats.observe_null(),
                     Some(v) => stats.observe_string(v, &self.config),
                 },
-                IngestedType::Bytes => match access.get_bytes(idx)? {
+                IngestedType::Bytes => match access.get_bytes(idx).ok().flatten() {
                     None => stats.observe_null(),
                     Some(v) => stats.observe_bytes_len(v.len()),
                 },
-                IngestedType::Uuid => match access.get_uuid(idx)? {
+                IngestedType::Uuid => match access.get_uuid(idx).ok().flatten() {
                     None => stats.observe_null(),
                     Some(_) => stats.observe_uuid(),
                 },
-                IngestedType::Uuid256 => match access.get_uuid256(idx)? {
+                IngestedType::Uuid256 => match access.get_uuid256(idx).ok().flatten() {
                     None => stats.observe_null(),
                     Some(_) => stats.observe_uuid256(),
                 },
-                IngestedType::Ip => match access.get_ip(idx)? {
+                IngestedType::Ip => match access.get_ip(idx).ok().flatten() {
                     None => stats.observe_null(),
                     Some(_) => stats.observe_ip(),
                 },
-                IngestedType::Date => match access.get_date(idx)? {
+                IngestedType::Date => match access.get_date(idx).ok().flatten() {
                     None => stats.observe_null(),
                     Some(_) => stats.count = stats.count.saturating_add(1),
                 },
-                IngestedType::Timestamp => match access.get_timestamp(idx)? {
+                IngestedType::Timestamp => match access.get_timestamp(idx).ok().flatten() {
                     None => stats.observe_null(),
                     Some((secs, _)) => stats.observe_timestamp(secs),
                 },
-                IngestedType::Decimal128 => match access.get_decimal128(idx)? {
+                IngestedType::Decimal128 => match access.get_decimal128(idx).ok().flatten() {
                     None => stats.observe_null(),
                     Some(_) => stats.count = stats.count.saturating_add(1),
                 },
-                IngestedType::Decimal256 => match access.get_decimal256(idx)? {
+                IngestedType::Decimal256 => match access.get_decimal256(idx).ok().flatten() {
                     None => stats.observe_null(),
                     Some(_) => stats.count = stats.count.saturating_add(1),
                 },
                 IngestedType::Float32Array | IngestedType::Float16Array => {
-                    match access.get_float32_array(idx)? {
+                    match access.get_float32_array(idx).ok().flatten() {
                         None => stats.observe_null(),
                         Some(values) => stats.observe_array_f32(values),
                     }
                 }
-                IngestedType::Float64Array => match access.get_float64_array(idx)? {
+                IngestedType::Float64Array => match access.get_float64_array(idx).ok().flatten() {
                     None => stats.observe_null(),
                     Some(values) => stats.observe_array_f64(values),
                 },
@@ -4014,14 +4064,14 @@ impl RowPackEncoder {
         scratch.reset(&self.ctx);
         for (idx, col) in self.ctx.columns.iter().enumerate() {
             let tag = match col.logical_type {
-                IngestedType::Bool => match access.get_bool(idx)? {
+                IngestedType::Bool => match access.get_bool(idx).ok().flatten() {
                     None => 0u8,
                     Some(v) => {
                         scratch.bools.write_bits(if v { 1 } else { 0 }, 1);
                         1u8
                     }
                 },
-                IngestedType::Int64 => match access.get_int64(idx)? {
+                IngestedType::Int64 => match access.get_int64(idx).ok().flatten() {
                     None => 0u8,
                     Some(v) => {
                         if let ColumnEncoding::Int { signed, varint, bits } = &col.encoding {
@@ -4032,7 +4082,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                IngestedType::Int16 => match access.get_int32(idx)? {
+                IngestedType::Int16 => match access.get_int32(idx).ok().flatten() {
                     None => 0u8,
                     Some(v) => {
                         if let ColumnEncoding::Int { signed, varint, bits } = &col.encoding {
@@ -4043,7 +4093,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                IngestedType::Int8 => match access.get_int32(idx)? {
+                IngestedType::Int8 => match access.get_int32(idx).ok().flatten() {
                     None => 0u8,
                     Some(v) => {
                         if let ColumnEncoding::Int { signed, varint, bits } = &col.encoding {
@@ -4054,7 +4104,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                IngestedType::Int32 => match access.get_int32(idx)? {
+                IngestedType::Int32 => match access.get_int32(idx).ok().flatten() {
                     None => 0u8,
                     Some(v) => {
                         if let ColumnEncoding::Int { signed, varint, bits } = &col.encoding {
@@ -4065,7 +4115,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                IngestedType::UInt64 => match access.get_uint64(idx)? {
+                IngestedType::UInt64 => match access.get_uint64(idx).ok().flatten() {
                     None => 0u8,
                     Some(v) => {
                         if let ColumnEncoding::Int { signed, varint, bits } = &col.encoding {
@@ -4076,7 +4126,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                IngestedType::UInt16 => match access.get_uint32(idx)? {
+                IngestedType::UInt16 => match access.get_uint32(idx).ok().flatten() {
                     None => 0u8,
                     Some(v) => {
                         if let ColumnEncoding::Int { signed, varint, bits } = &col.encoding {
@@ -4087,7 +4137,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                IngestedType::UInt8 => match access.get_uint32(idx)? {
+                IngestedType::UInt8 => match access.get_uint32(idx).ok().flatten() {
                     None => 0u8,
                     Some(v) => {
                         if let ColumnEncoding::Int { signed, varint, bits } = &col.encoding {
@@ -4098,7 +4148,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                IngestedType::UInt32 => match access.get_uint32(idx)? {
+                IngestedType::UInt32 => match access.get_uint32(idx).ok().flatten() {
                     None => 0u8,
                     Some(v) => {
                         if let ColumnEncoding::Int { signed, varint, bits } = &col.encoding {
@@ -4109,7 +4159,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                IngestedType::Float64 => match access.get_float64(idx)? {
+                IngestedType::Float64 => match access.get_float64(idx).ok().flatten() {
                     None => 0u8,
                     Some(v) => {
                         if let ColumnEncoding::Float { storage } = &col.encoding {
@@ -4119,7 +4169,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                IngestedType::Float32 => match access.get_float32(idx)? {
+                IngestedType::Float32 => match access.get_float32(idx).ok().flatten() {
                     None => 0u8,
                     Some(v) => {
                         if let ColumnEncoding::Float { storage } = &col.encoding {
@@ -4134,7 +4184,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                IngestedType::String => match access.get_string(idx)? {
+                IngestedType::String => match access.get_string(idx).ok().flatten() {
                     None => 0u8,
                     Some(v) => {
                         encode_string(
@@ -4149,7 +4199,7 @@ impl RowPackEncoder {
                         )?
                     }
                 },
-                IngestedType::Bytes => match access.get_bytes(idx)? {
+                IngestedType::Bytes => match access.get_bytes(idx).ok().flatten() {
                     None => 0u8,
                     Some(v) => {
                         if let ColumnEncoding::Bytes { fixed_len } = &col.encoding {
@@ -4172,7 +4222,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                IngestedType::Uuid => match access.get_uuid(idx)? {
+                IngestedType::Uuid => match access.get_uuid(idx).ok().flatten() {
                     None => 0u8,
                     Some(v) => {
                         if !matches!(col.encoding, ColumnEncoding::Uuid) {
@@ -4182,7 +4232,7 @@ impl RowPackEncoder {
                         1u8
                     }
                 },
-                IngestedType::Uuid256 => match access.get_uuid256(idx)? {
+                IngestedType::Uuid256 => match access.get_uuid256(idx).ok().flatten() {
                     None => 0u8,
                     Some(v) => {
                         if !matches!(col.encoding, ColumnEncoding::Uuid256) {
@@ -4192,7 +4242,7 @@ impl RowPackEncoder {
                         1u8
                     }
                 },
-                IngestedType::Ip => match access.get_ip(idx)? {
+                IngestedType::Ip => match access.get_ip(idx).ok().flatten() {
                     None => 0u8,
                     Some(v) => {
                         if !matches!(col.encoding, ColumnEncoding::Ip) {
@@ -4202,7 +4252,7 @@ impl RowPackEncoder {
                         1u8
                     }
                 },
-                IngestedType::Date => match access.get_date(idx)? {
+                IngestedType::Date => match access.get_date(idx).ok().flatten() {
                     None => 0u8,
                     Some(v) => {
                         if let ColumnEncoding::Date { varint, bits } = &col.encoding {
@@ -4213,7 +4263,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                IngestedType::Timestamp => match access.get_timestamp(idx)? {
+                IngestedType::Timestamp => match access.get_timestamp(idx).ok().flatten() {
                     None => 0u8,
                     Some((secs, nanos)) => {
                         write_varint(zigzag_encode(secs), &mut scratch.data);
@@ -4221,7 +4271,7 @@ impl RowPackEncoder {
                         1u8
                     }
                 },
-                IngestedType::Decimal128 => match access.get_decimal128(idx)? {
+                IngestedType::Decimal128 => match access.get_decimal128(idx).ok().flatten() {
                     None => 0u8,
                     Some(v) => {
                         if let ColumnEncoding::Decimal { bytes, scale, storage, .. } =
@@ -4242,7 +4292,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                IngestedType::Decimal256 => match access.get_decimal256(idx)? {
+                IngestedType::Decimal256 => match access.get_decimal256(idx).ok().flatten() {
                     None => 0u8,
                     Some(v) => {
                         if let ColumnEncoding::Decimal { bytes, scale, storage, .. } =
@@ -4263,7 +4313,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                IngestedType::Float32Array => match access.get_float32_array(idx)? {
+                IngestedType::Float32Array => match access.get_float32_array(idx).ok().flatten() {
                     None => 0u8,
                     Some(values) => {
                         if let ColumnEncoding::FloatArray { storage } = &col.encoding {
@@ -4278,7 +4328,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                IngestedType::Float16Array => match access.get_float32_array(idx)? {
+                IngestedType::Float16Array => match access.get_float32_array(idx).ok().flatten() {
                     None => 0u8,
                     Some(values) => {
                         if let ColumnEncoding::FloatArray { storage } = &col.encoding {
@@ -4293,7 +4343,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                IngestedType::Float64Array => match access.get_float64_array(idx)? {
+                IngestedType::Float64Array => match access.get_float64_array(idx).ok().flatten() {
                     None => 0u8,
                     Some(values) => {
                         if let ColumnEncoding::FloatArray { storage } = &col.encoding {
@@ -4336,14 +4386,14 @@ impl RowPackEncoder {
 
         for (idx, col) in self.ctx.columns.iter().enumerate() {
             let tag = match col.logical_type {
-                IngestedType::Bool => match access.get_bool(idx)? {
+                IngestedType::Bool => match access.get_bool(idx).ok().flatten() {
                     None => 0u8,
                     Some(v) => {
                         bool_writer.write_bits(if v { 1 } else { 0 }, 1);
                         1u8
                     }
                 },
-                IngestedType::Int64 => match access.get_int64(idx)? {
+                IngestedType::Int64 => match access.get_int64(idx).ok().flatten() {
                     None => 0u8,
                     Some(v) => {
                         if let ColumnEncoding::Int { signed, varint, bits } = &col.encoding {
@@ -4354,7 +4404,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                IngestedType::Int16 => match access.get_int32(idx)? {
+                IngestedType::Int16 => match access.get_int32(idx).ok().flatten() {
                     None => 0u8,
                     Some(v) => {
                         if let ColumnEncoding::Int { signed, varint, bits } = &col.encoding {
@@ -4365,7 +4415,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                IngestedType::Int8 => match access.get_int32(idx)? {
+                IngestedType::Int8 => match access.get_int32(idx).ok().flatten() {
                     None => 0u8,
                     Some(v) => {
                         if let ColumnEncoding::Int { signed, varint, bits } = &col.encoding {
@@ -4376,7 +4426,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                IngestedType::Int32 => match access.get_int32(idx)? {
+                IngestedType::Int32 => match access.get_int32(idx).ok().flatten() {
                     None => 0u8,
                     Some(v) => {
                         if let ColumnEncoding::Int { signed, varint, bits } = &col.encoding {
@@ -4387,7 +4437,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                IngestedType::UInt64 => match access.get_uint64(idx)? {
+                IngestedType::UInt64 => match access.get_uint64(idx).ok().flatten() {
                     None => 0u8,
                     Some(v) => {
                         if let ColumnEncoding::Int { signed, varint, bits } = &col.encoding {
@@ -4398,7 +4448,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                IngestedType::UInt16 => match access.get_uint32(idx)? {
+                IngestedType::UInt16 => match access.get_uint32(idx).ok().flatten() {
                     None => 0u8,
                     Some(v) => {
                         if let ColumnEncoding::Int { signed, varint, bits } = &col.encoding {
@@ -4409,7 +4459,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                IngestedType::UInt8 => match access.get_uint32(idx)? {
+                IngestedType::UInt8 => match access.get_uint32(idx).ok().flatten() {
                     None => 0u8,
                     Some(v) => {
                         if let ColumnEncoding::Int { signed, varint, bits } = &col.encoding {
@@ -4420,7 +4470,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                IngestedType::UInt32 => match access.get_uint32(idx)? {
+                IngestedType::UInt32 => match access.get_uint32(idx).ok().flatten() {
                     None => 0u8,
                     Some(v) => {
                         if let ColumnEncoding::Int { signed, varint, bits } = &col.encoding {
@@ -4431,7 +4481,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                IngestedType::Float64 => match access.get_float64(idx)? {
+                IngestedType::Float64 => match access.get_float64(idx).ok().flatten() {
                     None => 0u8,
                     Some(v) => {
                         if let ColumnEncoding::Float { storage } = &col.encoding {
@@ -4441,7 +4491,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                IngestedType::Float32 => match access.get_float32(idx)? {
+                IngestedType::Float32 => match access.get_float32(idx).ok().flatten() {
                     None => 0u8,
                     Some(v) => {
                         if let ColumnEncoding::Float { storage } = &col.encoding {
@@ -4451,7 +4501,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                IngestedType::String => match access.get_string(idx)? {
+                IngestedType::String => match access.get_string(idx).ok().flatten() {
                     None => 0u8,
                     Some(v) => {
                         encode_string(
@@ -4466,7 +4516,7 @@ impl RowPackEncoder {
                         )?
                     }
                 },
-                IngestedType::Bytes => match access.get_bytes(idx)? {
+                IngestedType::Bytes => match access.get_bytes(idx).ok().flatten() {
                     None => 0u8,
                     Some(v) => {
                         if let ColumnEncoding::Bytes { fixed_len } = &col.encoding {
@@ -4489,7 +4539,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                IngestedType::Uuid => match access.get_uuid(idx)? {
+                IngestedType::Uuid => match access.get_uuid(idx).ok().flatten() {
                     None => 0u8,
                     Some(v) => {
                         if !matches!(col.encoding, ColumnEncoding::Uuid) {
@@ -4499,7 +4549,7 @@ impl RowPackEncoder {
                         1u8
                     }
                 },
-                IngestedType::Uuid256 => match access.get_uuid256(idx)? {
+                IngestedType::Uuid256 => match access.get_uuid256(idx).ok().flatten() {
                     None => 0u8,
                     Some(v) => {
                         if !matches!(col.encoding, ColumnEncoding::Uuid256) {
@@ -4509,7 +4559,7 @@ impl RowPackEncoder {
                         1u8
                     }
                 },
-                IngestedType::Ip => match access.get_ip(idx)? {
+                IngestedType::Ip => match access.get_ip(idx).ok().flatten() {
                     None => 0u8,
                     Some(v) => {
                         if !matches!(col.encoding, ColumnEncoding::Ip) {
@@ -4519,7 +4569,7 @@ impl RowPackEncoder {
                         1u8
                     }
                 },
-                IngestedType::Date => match access.get_date(idx)? {
+                IngestedType::Date => match access.get_date(idx).ok().flatten() {
                     None => 0u8,
                     Some(v) => {
                         if let ColumnEncoding::Date { varint, bits } = &col.encoding {
@@ -4530,7 +4580,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                IngestedType::Timestamp => match access.get_timestamp(idx)? {
+                IngestedType::Timestamp => match access.get_timestamp(idx).ok().flatten() {
                     None => 0u8,
                     Some((secs, nanos)) => {
                         write_varint(zigzag_encode(secs), data);
@@ -4538,7 +4588,7 @@ impl RowPackEncoder {
                         1u8
                     }
                 },
-                IngestedType::Decimal128 => match access.get_decimal128(idx)? {
+                IngestedType::Decimal128 => match access.get_decimal128(idx).ok().flatten() {
                     None => 0u8,
                     Some(v) => {
                         if let ColumnEncoding::Decimal { bytes, scale, storage, .. } =
@@ -4559,7 +4609,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                IngestedType::Decimal256 => match access.get_decimal256(idx)? {
+                IngestedType::Decimal256 => match access.get_decimal256(idx).ok().flatten() {
                     None => 0u8,
                     Some(v) => {
                         if let ColumnEncoding::Decimal { bytes, scale, storage, .. } =
@@ -4580,7 +4630,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                IngestedType::Float32Array => match access.get_float32_array(idx)? {
+                IngestedType::Float32Array => match access.get_float32_array(idx).ok().flatten() {
                     None => 0u8,
                     Some(values) => {
                         if let ColumnEncoding::FloatArray { storage } = &col.encoding {
@@ -4595,7 +4645,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                IngestedType::Float16Array => match access.get_float32_array(idx)? {
+                IngestedType::Float16Array => match access.get_float32_array(idx).ok().flatten() {
                     None => 0u8,
                     Some(values) => {
                         if let ColumnEncoding::FloatArray { storage } = &col.encoding {
@@ -4610,7 +4660,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                IngestedType::Float64Array => match access.get_float64_array(idx)? {
+                IngestedType::Float64Array => match access.get_float64_array(idx).ok().flatten() {
                     None => 0u8,
                     Some(values) => {
                         if let ColumnEncoding::FloatArray { storage } = &col.encoding {
