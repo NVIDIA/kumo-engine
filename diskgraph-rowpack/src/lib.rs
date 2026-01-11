@@ -1,7 +1,9 @@
 use anyhow::{anyhow, Result};
-use chrono::{DateTime, Utc};
-use half::f16;
+use arrow_array::{Array, ArrayRef};
+use arrow_schema::DataType;
 use base64::Engine;
+use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
+use half::f16;
 use num_bigint::BigInt;
 use num_traits::Signed;
 use rmp::encode as mp;
@@ -236,12 +238,1169 @@ pub trait RowValueAccess {
     fn get_bool(&mut self, idx: usize) -> Result<Option<bool>>;
     fn get_string(&mut self, idx: usize) -> Result<Option<&str>>;
     fn get_bytes(&mut self, idx: usize) -> Result<Option<&[u8]>>;
+    fn get_uuid(&mut self, idx: usize) -> Result<Option<[u8; 16]>>;
+    fn get_uuid256(&mut self, idx: usize) -> Result<Option<[u8; 32]>>;
+    fn get_ip(&mut self, idx: usize) -> Result<Option<[u8; 16]>>;
     fn get_date(&mut self, idx: usize) -> Result<Option<i32>>;
     fn get_timestamp(&mut self, idx: usize) -> Result<Option<(i64, u32)>>;
     fn get_decimal128(&mut self, idx: usize) -> Result<Option<i128>>;
     fn get_decimal256(&mut self, idx: usize) -> Result<Option<[u8; 32]>>;
     fn get_float32_array(&mut self, idx: usize) -> Result<Option<&[f32]>>;
     fn get_float64_array(&mut self, idx: usize) -> Result<Option<&[f64]>>;
+}
+
+pub struct RowAccess<'a> {
+    row: usize,
+    cols: &'a [ArrayRef],
+    pools: RowValuePools,
+}
+
+impl<'a> RowAccess<'a> {
+    pub fn new(cols: &'a [ArrayRef]) -> Self {
+        Self {
+            row: 0,
+            cols,
+            pools: RowValuePools::new(),
+        }
+    }
+
+    pub fn set_row(&mut self, row: usize) {
+        self.row = row;
+        self.pools.reset();
+    }
+
+    pub fn row(&self) -> usize {
+        self.row
+    }
+
+    pub fn array(&self, idx: usize) -> Result<&ArrayRef> {
+        self.cols
+            .get(idx)
+            .ok_or_else(|| anyhow!("missing column {}", idx))
+    }
+
+    pub fn pool_str(&mut self, value: String) -> &str {
+        let slice = self.pools.take_string_owned(value);
+        unsafe { std::mem::transmute::<&str, &str>(slice) }
+    }
+
+    pub fn pool_bytes(&mut self, value: Vec<u8>) -> &[u8] {
+        let slice = self.pools.take_bytes_owned(value);
+        unsafe { std::mem::transmute::<&[u8], &[u8]>(slice) }
+    }
+
+    pub fn read_utf8(&self, idx: usize) -> Result<Option<&str>> {
+        let array = self.array(idx)?;
+        if array.is_null(self.row) {
+            return Ok(None);
+        }
+        match array.data_type() {
+            DataType::Utf8 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::StringArray>()
+                    .ok_or_else(|| anyhow!("string cast"))?;
+                Ok(Some(arr.value(self.row)))
+            }
+            DataType::LargeUtf8 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::LargeStringArray>()
+                    .ok_or_else(|| anyhow!("large string cast"))?;
+                Ok(Some(arr.value(self.row)))
+            }
+            DataType::Binary => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::BinaryArray>()
+                    .ok_or_else(|| anyhow!("binary cast"))?;
+                Ok(Some(std::str::from_utf8(arr.value(self.row))?))
+            }
+            DataType::LargeBinary => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::LargeBinaryArray>()
+                    .ok_or_else(|| anyhow!("large binary cast"))?;
+                Ok(Some(std::str::from_utf8(arr.value(self.row))?))
+            }
+            DataType::FixedSizeBinary(_) => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::FixedSizeBinaryArray>()
+                    .ok_or_else(|| anyhow!("fixed binary cast"))?;
+                Ok(Some(std::str::from_utf8(arr.value(self.row))?))
+            }
+            _ => Err(anyhow!("unsupported utf8 source")),
+        }
+    }
+
+    pub fn read_bytes(&self, idx: usize) -> Result<Option<&[u8]>> {
+        let array = self.array(idx)?;
+        if array.is_null(self.row) {
+            return Ok(None);
+        }
+        match array.data_type() {
+            DataType::Utf8 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::StringArray>()
+                    .ok_or_else(|| anyhow!("string cast"))?;
+                Ok(Some(arr.value(self.row).as_bytes()))
+            }
+            DataType::LargeUtf8 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::LargeStringArray>()
+                    .ok_or_else(|| anyhow!("large string cast"))?;
+                Ok(Some(arr.value(self.row).as_bytes()))
+            }
+            DataType::Binary => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::BinaryArray>()
+                    .ok_or_else(|| anyhow!("binary cast"))?;
+                Ok(Some(arr.value(self.row)))
+            }
+            DataType::LargeBinary => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::LargeBinaryArray>()
+                    .ok_or_else(|| anyhow!("large binary cast"))?;
+                Ok(Some(arr.value(self.row)))
+            }
+            DataType::FixedSizeBinary(_) => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::FixedSizeBinaryArray>()
+                    .ok_or_else(|| anyhow!("fixed binary cast"))?;
+                Ok(Some(arr.value(self.row)))
+            }
+            _ => Err(anyhow!("unsupported bytes source")),
+        }
+    }
+
+    pub fn read_i64(&self, idx: usize) -> Result<Option<i64>> {
+        let array = self.array(idx)?;
+        if array.is_null(self.row) {
+            return Ok(None);
+        }
+        match array.data_type() {
+            DataType::Int64 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Int64Array>()
+                    .ok_or_else(|| anyhow!("int64 cast"))?;
+                Ok(Some(arr.value(self.row)))
+            }
+            DataType::Int32 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Int32Array>()
+                    .ok_or_else(|| anyhow!("int32 cast"))?;
+                Ok(Some(arr.value(self.row) as i64))
+            }
+            DataType::Int16 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Int16Array>()
+                    .ok_or_else(|| anyhow!("int16 cast"))?;
+                Ok(Some(arr.value(self.row) as i64))
+            }
+            DataType::Int8 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Int8Array>()
+                    .ok_or_else(|| anyhow!("int8 cast"))?;
+                Ok(Some(arr.value(self.row) as i64))
+            }
+            DataType::UInt64 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::UInt64Array>()
+                    .ok_or_else(|| anyhow!("uint64 cast"))?;
+                Ok(Some(arr.value(self.row) as i64))
+            }
+            DataType::UInt32 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::UInt32Array>()
+                    .ok_or_else(|| anyhow!("uint32 cast"))?;
+                Ok(Some(arr.value(self.row) as i64))
+            }
+            DataType::UInt16 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::UInt16Array>()
+                    .ok_or_else(|| anyhow!("uint16 cast"))?;
+                Ok(Some(arr.value(self.row) as i64))
+            }
+            DataType::UInt8 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::UInt8Array>()
+                    .ok_or_else(|| anyhow!("uint8 cast"))?;
+                Ok(Some(arr.value(self.row) as i64))
+            }
+            _ => Err(anyhow!("unsupported int source")),
+        }
+    }
+
+    pub fn read_u64(&self, idx: usize) -> Result<Option<u64>> {
+        let array = self.array(idx)?;
+        if array.is_null(self.row) {
+            return Ok(None);
+        }
+        match array.data_type() {
+            DataType::UInt64 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::UInt64Array>()
+                    .ok_or_else(|| anyhow!("uint64 cast"))?;
+                Ok(Some(arr.value(self.row)))
+            }
+            DataType::UInt32 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::UInt32Array>()
+                    .ok_or_else(|| anyhow!("uint32 cast"))?;
+                Ok(Some(arr.value(self.row) as u64))
+            }
+            DataType::UInt16 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::UInt16Array>()
+                    .ok_or_else(|| anyhow!("uint16 cast"))?;
+                Ok(Some(arr.value(self.row) as u64))
+            }
+            DataType::UInt8 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::UInt8Array>()
+                    .ok_or_else(|| anyhow!("uint8 cast"))?;
+                Ok(Some(arr.value(self.row) as u64))
+            }
+            _ => Err(anyhow!("unsupported uint source")),
+        }
+    }
+
+    pub fn get_int64(&self, idx: usize) -> Result<Option<i64>> {
+        match self.read_i64(idx) {
+            Ok(Some(v)) => Ok(Some(v)),
+            Ok(None) => Ok(None),
+            Err(_) => {
+                if let Some(text) = self.read_utf8(idx)? {
+                    Ok(parse_i64(text))
+                } else {
+                    Ok(None)
+                }
+            }
+        }
+    }
+
+    pub fn get_int32(&self, idx: usize) -> Result<Option<i32>> {
+        match self.read_i64(idx) {
+            Ok(Some(v)) => Ok(Some(v as i32)),
+            Ok(None) => Ok(None),
+            Err(_) => {
+                if let Some(text) = self.read_utf8(idx)? {
+                    Ok(parse_i32(text))
+                } else {
+                    Ok(None)
+                }
+            }
+        }
+    }
+
+    pub fn get_uint64(&self, idx: usize) -> Result<Option<u64>> {
+        match self.read_u64(idx) {
+            Ok(Some(v)) => Ok(Some(v)),
+            Ok(None) => Ok(None),
+            Err(_) => {
+                if let Some(text) = self.read_utf8(idx)? {
+                    Ok(parse_u64(text))
+                } else {
+                    Ok(None)
+                }
+            }
+        }
+    }
+
+    pub fn get_uint32(&self, idx: usize) -> Result<Option<u32>> {
+        match self.read_u64(idx) {
+            Ok(Some(v)) => Ok(Some(v as u32)),
+            Ok(None) => Ok(None),
+            Err(_) => {
+                if let Some(text) = self.read_utf8(idx)? {
+                    Ok(parse_u32(text))
+                } else {
+                    Ok(None)
+                }
+            }
+        }
+    }
+
+    pub fn get_float64(&self, idx: usize) -> Result<Option<f64>> {
+        let array = self.array(idx)?;
+        if array.is_null(self.row) {
+            return Ok(None);
+        }
+        match array.data_type() {
+            DataType::Float64 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Float64Array>()
+                    .ok_or_else(|| anyhow!("float64 cast"))?;
+                Ok(Some(arr.value(self.row)))
+            }
+            DataType::Float32 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Float32Array>()
+                    .ok_or_else(|| anyhow!("float32 cast"))?;
+                Ok(Some(arr.value(self.row) as f64))
+            }
+            DataType::Utf8
+            | DataType::LargeUtf8
+            | DataType::Binary
+            | DataType::LargeBinary
+            | DataType::FixedSizeBinary(_) => {
+                if let Some(text) = self.read_utf8(idx)? {
+                    Ok(parse_f64(text))
+                } else {
+                    Ok(None)
+                }
+            }
+            _ => Ok(None),
+        }
+    }
+
+    pub fn get_float32(&self, idx: usize) -> Result<Option<f32>> {
+        let array = self.array(idx)?;
+        if array.is_null(self.row) {
+            return Ok(None);
+        }
+        match array.data_type() {
+            DataType::Float32 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Float32Array>()
+                    .ok_or_else(|| anyhow!("float32 cast"))?;
+                Ok(Some(arr.value(self.row)))
+            }
+            DataType::Float64 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Float64Array>()
+                    .ok_or_else(|| anyhow!("float64 cast"))?;
+                Ok(Some(arr.value(self.row) as f32))
+            }
+            DataType::Utf8
+            | DataType::LargeUtf8
+            | DataType::Binary
+            | DataType::LargeBinary
+            | DataType::FixedSizeBinary(_) => {
+                if let Some(text) = self.read_utf8(idx)? {
+                    Ok(parse_f32(text))
+                } else {
+                    Ok(None)
+                }
+            }
+            _ => Ok(None),
+        }
+    }
+
+    pub fn get_bool(&self, idx: usize) -> Result<Option<bool>> {
+        let array = self.array(idx)?;
+        if array.is_null(self.row) {
+            return Ok(None);
+        }
+        match array.data_type() {
+            DataType::Boolean => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::BooleanArray>()
+                    .ok_or_else(|| anyhow!("bool cast"))?;
+                Ok(Some(arr.value(self.row)))
+            }
+            DataType::Utf8
+            | DataType::LargeUtf8
+            | DataType::Binary
+            | DataType::LargeBinary
+            | DataType::FixedSizeBinary(_) => {
+                if let Some(text) = self.read_utf8(idx)? {
+                    Ok(parse_bool(text))
+                } else {
+                    Ok(None)
+                }
+            }
+            _ => Ok(None),
+        }
+    }
+
+    pub fn get_uuid(&self, idx: usize) -> Result<Option<[u8; 16]>> {
+        let array = self.array(idx)?;
+        if array.is_null(self.row) {
+            return Ok(None);
+        }
+        if let Some(text) = self.read_utf8(idx)? {
+            return Ok(parse_uuid_string(text.as_bytes()));
+        }
+        if let Some(data) = self.read_bytes(idx)? {
+            if data.len() == 16 {
+                let mut out = [0u8; 16];
+                out.copy_from_slice(data);
+                return Ok(Some(out));
+            }
+        }
+        Ok(None)
+    }
+
+    pub fn get_uuid256(&self, idx: usize) -> Result<Option<[u8; 32]>> {
+        let array = self.array(idx)?;
+        if array.is_null(self.row) {
+            return Ok(None);
+        }
+        if let Some(text) = self.read_utf8(idx)? {
+            return Ok(parse_uuid256_string(text.as_bytes()));
+        }
+        if let Some(data) = self.read_bytes(idx)? {
+            if data.len() == 32 {
+                let mut out = [0u8; 32];
+                out.copy_from_slice(data);
+                return Ok(Some(out));
+            }
+        }
+        Ok(None)
+    }
+
+    pub fn get_ip(&self, idx: usize) -> Result<Option<[u8; 16]>> {
+        let array = self.array(idx)?;
+        if array.is_null(self.row) {
+            return Ok(None);
+        }
+        if let Some(text) = self.read_utf8(idx)? {
+            return Ok(parse_ip_string(text.as_bytes()));
+        }
+        if let Some(data) = self.read_bytes(idx)? {
+            return Ok(parse_ip_bytes(data));
+        }
+        Ok(None)
+    }
+
+    pub fn get_date(
+        &self,
+        idx: usize,
+        format: Option<&str>,
+        unit: Option<arrow_schema::TimeUnit>,
+    ) -> Result<Option<i32>> {
+        let array = self.array(idx)?;
+        if array.is_null(self.row) {
+            return Ok(None);
+        }
+        match array.data_type() {
+            DataType::Date32 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Date32Array>()
+                    .ok_or_else(|| anyhow!("date cast"))?;
+                Ok(Some(arr.value(self.row)))
+            }
+            DataType::Utf8
+            | DataType::LargeUtf8
+            | DataType::Binary
+            | DataType::LargeBinary
+            | DataType::FixedSizeBinary(_) => {
+                let text = match self.read_utf8(idx)? {
+                    Some(text) => text,
+                    None => return Ok(None),
+                };
+                if let Some(days) = parse_date_text(text, format) {
+                    return Ok(Some(days));
+                }
+                if let Some(value) = parse_i64(text) {
+                    let (secs, _) = timestamp_from_int(value, unit);
+                    return Ok(Some(days_from_secs(secs)));
+                }
+                Ok(None)
+            }
+            DataType::Int8
+            | DataType::Int16
+            | DataType::Int32
+            | DataType::Int64
+            | DataType::UInt8
+            | DataType::UInt16
+            | DataType::UInt32
+            | DataType::UInt64 => {
+                let value = match self.read_i64(idx)? {
+                    Some(v) => v,
+                    None => return Ok(None),
+                };
+                let (secs, _) = timestamp_from_int(value, unit);
+                Ok(Some(days_from_secs(secs)))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    pub fn get_timestamp(
+        &self,
+        idx: usize,
+        format: Option<&str>,
+        unit: Option<arrow_schema::TimeUnit>,
+    ) -> Result<Option<(i64, u32)>> {
+        let array = self.array(idx)?;
+        if array.is_null(self.row) {
+            return Ok(None);
+        }
+        match array.data_type() {
+            DataType::Timestamp(_, _) => {
+                let (secs, nanos) = timestamp_parts_from_array(array, self.row)?;
+                Ok(Some((secs, nanos)))
+            }
+            DataType::Utf8
+            | DataType::LargeUtf8
+            | DataType::Binary
+            | DataType::LargeBinary
+            | DataType::FixedSizeBinary(_) => {
+                let text = match self.read_utf8(idx)? {
+                    Some(text) => text,
+                    None => return Ok(None),
+                };
+                if let Some((secs, nanos)) = parse_timestamp_text(text, format) {
+                    return Ok(Some((secs, nanos)));
+                }
+                if let Some(value) = parse_i64(text) {
+                    return Ok(Some(timestamp_from_int(value, unit)));
+                }
+                Ok(None)
+            }
+            DataType::Int8
+            | DataType::Int16
+            | DataType::Int32
+            | DataType::Int64
+            | DataType::UInt8
+            | DataType::UInt16
+            | DataType::UInt32
+            | DataType::UInt64 => {
+                let value = match self.read_i64(idx)? {
+                    Some(v) => v,
+                    None => return Ok(None),
+                };
+                Ok(Some(timestamp_from_int(value, unit)))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    pub fn get_decimal128(&self, idx: usize, scale: Option<i32>) -> Result<Option<i128>> {
+        let array = self.array(idx)?;
+        if array.is_null(self.row) {
+            return Ok(None);
+        }
+        match array.data_type() {
+            DataType::Decimal128(_, _) => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Decimal128Array>()
+                    .ok_or_else(|| anyhow!("decimal128 cast"))?;
+                Ok(Some(arr.value(self.row)))
+            }
+            DataType::Utf8
+            | DataType::LargeUtf8
+            | DataType::Binary
+            | DataType::LargeBinary
+            | DataType::FixedSizeBinary(_) => {
+                if let Some(text) = self.read_utf8(idx)? {
+                    Ok(parse_decimal_i128(text, scale.unwrap_or(0)))
+                } else {
+                    Ok(None)
+                }
+            }
+            _ => Ok(None),
+        }
+    }
+
+    pub fn get_decimal256(&self, idx: usize, scale: Option<i32>) -> Result<Option<[u8; 32]>> {
+        let array = self.array(idx)?;
+        if array.is_null(self.row) {
+            return Ok(None);
+        }
+        match array.data_type() {
+            DataType::Decimal256(_, _) => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Decimal256Array>()
+                    .ok_or_else(|| anyhow!("decimal256 cast"))?;
+                Ok(Some(arr.value(self.row).to_le_bytes()))
+            }
+            DataType::Utf8
+            | DataType::LargeUtf8
+            | DataType::Binary
+            | DataType::LargeBinary
+            | DataType::FixedSizeBinary(_) => {
+                if let Some(text) = self.read_utf8(idx)? {
+                    Ok(parse_decimal_i256(text, scale.unwrap_or(0))
+                        .map(|v| v.to_le_bytes()))
+                } else {
+                    Ok(None)
+                }
+            }
+            _ => Ok(None),
+        }
+    }
+
+    pub fn get_float32_array(&mut self, idx: usize) -> Result<Option<&[f32]>> {
+        let array = self.array(idx)?.clone();
+        if array.is_null(self.row) {
+            return Ok(None);
+        }
+        let (start, end, values) = if let Some(list) =
+            array.as_any().downcast_ref::<arrow_array::ListArray>()
+        {
+            let offsets = list.value_offsets();
+            (
+                offsets[self.row] as usize,
+                offsets[self.row + 1] as usize,
+                list.values(),
+            )
+        } else if let Some(list) = array
+            .as_any()
+            .downcast_ref::<arrow_array::LargeListArray>()
+        {
+            let offsets = list.value_offsets();
+            (
+                offsets[self.row] as usize,
+                offsets[self.row + 1] as usize,
+                list.values(),
+            )
+        } else {
+            return Err(anyhow!("list cast"));
+        };
+        match values.data_type() {
+            DataType::Float32 => {
+                let values_arr = values
+                    .as_any()
+                    .downcast_ref::<arrow_array::Float32Array>()
+                    .ok_or_else(|| anyhow!("float32 list cast"))?;
+                let vec = self.pools.take_f32_vec(end.saturating_sub(start));
+                for idx in start..end {
+                    if values_arr.is_null(idx) {
+                        vec.push(0.0);
+                    } else {
+                        vec.push(values_arr.value(idx));
+                    }
+                }
+                Ok(Some(unsafe { std::mem::transmute::<&[f32], &[f32]>(vec.as_slice()) }))
+            }
+            DataType::Float64 => {
+                let values_arr = values
+                    .as_any()
+                    .downcast_ref::<arrow_array::Float64Array>()
+                    .ok_or_else(|| anyhow!("float64 list cast"))?;
+                let vec = self.pools.take_f32_vec(end.saturating_sub(start));
+                for idx in start..end {
+                    if values_arr.is_null(idx) {
+                        vec.push(0.0);
+                    } else {
+                        vec.push(values_arr.value(idx) as f32);
+                    }
+                }
+                Ok(Some(unsafe { std::mem::transmute::<&[f32], &[f32]>(vec.as_slice()) }))
+            }
+            DataType::Float16 => {
+                let values_arr = values
+                    .as_any()
+                    .downcast_ref::<arrow_array::Float16Array>()
+                    .ok_or_else(|| anyhow!("float16 list cast"))?;
+                let vec = self.pools.take_f32_vec(end.saturating_sub(start));
+                for idx in start..end {
+                    if values_arr.is_null(idx) {
+                        vec.push(0.0);
+                    } else {
+                        vec.push(values_arr.value(idx).to_f32());
+                    }
+                }
+                Ok(Some(unsafe { std::mem::transmute::<&[f32], &[f32]>(vec.as_slice()) }))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    pub fn get_float64_array(&mut self, idx: usize) -> Result<Option<&[f64]>> {
+        let array = self.array(idx)?.clone();
+        if array.is_null(self.row) {
+            return Ok(None);
+        }
+        let (start, end, values) = if let Some(list) =
+            array.as_any().downcast_ref::<arrow_array::ListArray>()
+        {
+            let offsets = list.value_offsets();
+            (
+                offsets[self.row] as usize,
+                offsets[self.row + 1] as usize,
+                list.values(),
+            )
+        } else if let Some(list) = array
+            .as_any()
+            .downcast_ref::<arrow_array::LargeListArray>()
+        {
+            let offsets = list.value_offsets();
+            (
+                offsets[self.row] as usize,
+                offsets[self.row + 1] as usize,
+                list.values(),
+            )
+        } else {
+            return Err(anyhow!("list cast"));
+        };
+        let values_arr = values
+            .as_any()
+            .downcast_ref::<arrow_array::Float64Array>()
+            .ok_or_else(|| anyhow!("float64 list cast"))?;
+        let vec = self.pools.take_f64_vec(end.saturating_sub(start));
+        for idx in start..end {
+            if values_arr.is_null(idx) {
+                vec.push(0.0);
+            } else {
+                vec.push(values_arr.value(idx));
+            }
+        }
+        Ok(Some(unsafe { std::mem::transmute::<&[f64], &[f64]>(vec.as_slice()) }))
+    }
+}
+
+fn parse_bool(value: &str) -> Option<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "true" | "1" => Some(true),
+        "false" | "0" => Some(false),
+        _ => None,
+    }
+}
+
+fn parse_i64(value: &str) -> Option<i64> {
+    value.trim().parse::<i64>().ok()
+}
+
+fn parse_i32(value: &str) -> Option<i32> {
+    value.trim().parse::<i32>().ok()
+}
+
+fn parse_u64(value: &str) -> Option<u64> {
+    value.trim().parse::<u64>().ok()
+}
+
+fn parse_u32(value: &str) -> Option<u32> {
+    value.trim().parse::<u32>().ok()
+}
+
+fn parse_f64(value: &str) -> Option<f64> {
+    value.trim().parse::<f64>().ok()
+}
+
+fn parse_f32(value: &str) -> Option<f32> {
+    value.trim().parse::<f32>().ok()
+}
+
+fn parse_uuid_string(bytes: &[u8]) -> Option<[u8; 16]> {
+    match bytes.len() {
+        32 => parse_uuid_hex32(bytes),
+        36 => parse_uuid_dashed(bytes),
+        38 => parse_uuid_dashed(&bytes[1..37]),
+        45 => parse_uuid_dashed(&bytes[9..45]),
+        _ => None,
+    }
+}
+
+fn parse_uuid_hex32(bytes: &[u8]) -> Option<[u8; 16]> {
+    if bytes.len() != 32 {
+        return None;
+    }
+    let mut out = [0u8; 16];
+    let h = hex_value_unchecked;
+    out[0] = (h(bytes[0]) << 4) | h(bytes[1]);
+    out[1] = (h(bytes[2]) << 4) | h(bytes[3]);
+    out[2] = (h(bytes[4]) << 4) | h(bytes[5]);
+    out[3] = (h(bytes[6]) << 4) | h(bytes[7]);
+    out[4] = (h(bytes[8]) << 4) | h(bytes[9]);
+    out[5] = (h(bytes[10]) << 4) | h(bytes[11]);
+    out[6] = (h(bytes[12]) << 4) | h(bytes[13]);
+    out[7] = (h(bytes[14]) << 4) | h(bytes[15]);
+    out[8] = (h(bytes[16]) << 4) | h(bytes[17]);
+    out[9] = (h(bytes[18]) << 4) | h(bytes[19]);
+    out[10] = (h(bytes[20]) << 4) | h(bytes[21]);
+    out[11] = (h(bytes[22]) << 4) | h(bytes[23]);
+    out[12] = (h(bytes[24]) << 4) | h(bytes[25]);
+    out[13] = (h(bytes[26]) << 4) | h(bytes[27]);
+    out[14] = (h(bytes[28]) << 4) | h(bytes[29]);
+    out[15] = (h(bytes[30]) << 4) | h(bytes[31]);
+    Some(out)
+}
+
+fn parse_uuid_dashed(bytes: &[u8]) -> Option<[u8; 16]> {
+    if bytes.len() != 36 {
+        return None;
+    }
+    let mut out = [0u8; 16];
+    let h = hex_value_unchecked;
+    out[0] = (h(bytes[0]) << 4) | h(bytes[1]);
+    out[1] = (h(bytes[2]) << 4) | h(bytes[3]);
+    out[2] = (h(bytes[4]) << 4) | h(bytes[5]);
+    out[3] = (h(bytes[6]) << 4) | h(bytes[7]);
+    out[4] = (h(bytes[9]) << 4) | h(bytes[10]);
+    out[5] = (h(bytes[11]) << 4) | h(bytes[12]);
+    out[6] = (h(bytes[14]) << 4) | h(bytes[15]);
+    out[7] = (h(bytes[16]) << 4) | h(bytes[17]);
+    out[8] = (h(bytes[19]) << 4) | h(bytes[20]);
+    out[9] = (h(bytes[21]) << 4) | h(bytes[22]);
+    out[10] = (h(bytes[24]) << 4) | h(bytes[25]);
+    out[11] = (h(bytes[26]) << 4) | h(bytes[27]);
+    out[12] = (h(bytes[28]) << 4) | h(bytes[29]);
+    out[13] = (h(bytes[30]) << 4) | h(bytes[31]);
+    out[14] = (h(bytes[32]) << 4) | h(bytes[33]);
+    out[15] = (h(bytes[34]) << 4) | h(bytes[35]);
+    Some(out)
+}
+
+fn parse_uuid256_string(bytes: &[u8]) -> Option<[u8; 32]> {
+    let bytes = if bytes.len() == 66 && (bytes.starts_with(b"0x") || bytes.starts_with(b"0X")) {
+        &bytes[2..]
+    } else {
+        bytes
+    };
+    if bytes.len() != 64 {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    let h = hex_value_unchecked;
+    let mut i = 0usize;
+    while i < 32 {
+        let idx = i * 2;
+        out[i] = (h(bytes[idx]) << 4) | h(bytes[idx + 1]);
+        i += 1;
+    }
+    Some(out)
+}
+
+fn parse_ip_string(bytes: &[u8]) -> Option<[u8; 16]> {
+    let s = std::str::from_utf8(bytes).ok()?;
+    let ip: std::net::IpAddr = s.parse().ok()?;
+    Some(ip_to_ipv6_bytes(ip))
+}
+
+fn parse_ip_bytes(bytes: &[u8]) -> Option<[u8; 16]> {
+    match bytes.len() {
+        4 => Some(ip_to_ipv6_bytes(std::net::IpAddr::V4(
+            std::net::Ipv4Addr::new(bytes[0], bytes[1], bytes[2], bytes[3]),
+        ))),
+        16 => {
+            let mut out = [0u8; 16];
+            out.copy_from_slice(bytes);
+            Some(out)
+        }
+        _ => None,
+    }
+}
+
+fn ip_to_ipv6_bytes(ip: std::net::IpAddr) -> [u8; 16] {
+    match ip {
+        std::net::IpAddr::V4(v4) => v4.to_ipv6_mapped().octets(),
+        std::net::IpAddr::V6(v6) => v6.octets(),
+    }
+}
+
+static HEX_MAP: [u8; 256] = {
+    let mut map = [0u8; 256];
+    let mut i = 0u8;
+    while i < 10 {
+        map[b'0' as usize + i as usize] = i;
+        i += 1;
+    }
+    let mut j = 0u8;
+    while j < 6 {
+        map[b'a' as usize + j as usize] = 10 + j;
+        map[b'A' as usize + j as usize] = 10 + j;
+        j += 1;
+    }
+    map
+};
+
+fn hex_value_unchecked(b: u8) -> u8 {
+    HEX_MAP[b as usize]
+}
+
+fn parse_timestamp_text(value: &str, format: Option<&str>) -> Option<(i64, u32)> {
+    let ts = if let Some(fmt) = format {
+        if fmt == "rfc3339" {
+            chrono::DateTime::parse_from_rfc3339(value)
+                .ok()
+                .map(|v| v.naive_utc())
+        } else {
+            NaiveDateTime::parse_from_str(value, fmt).ok().or_else(|| {
+                NaiveDate::parse_from_str(value, fmt)
+                    .ok()
+                    .map(|d| d.and_hms_opt(0, 0, 0).unwrap())
+            })
+        }
+    } else {
+        chrono::DateTime::parse_from_rfc3339(value)
+            .ok()
+            .map(|v| v.naive_utc())
+            .or_else(|| NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S").ok())
+            .or_else(|| NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S%.f").ok())
+            .or_else(|| NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M").ok())
+            .or_else(|| NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S").ok())
+            .or_else(|| NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S%.f").ok())
+            .or_else(|| NaiveDate::parse_from_str(value, "%Y-%m-%d").ok().map(|d| {
+                d.and_hms_opt(0, 0, 0).unwrap()
+            }))
+    }?;
+    let ts = ts.and_utc();
+    Some((ts.timestamp(), ts.timestamp_subsec_nanos()))
+}
+
+fn parse_date_text(value: &str, format: Option<&str>) -> Option<i32> {
+    let dt = if let Some(fmt) = format {
+        NaiveDate::parse_from_str(value, fmt)
+            .ok()
+            .or_else(|| NaiveDateTime::parse_from_str(value, fmt).ok().map(|v| v.date()))
+    } else {
+        NaiveDate::parse_from_str(value, "%Y-%m-%d")
+            .ok()
+            .or_else(|| {
+                NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S")
+                    .ok()
+                    .map(|v| v.date())
+            })
+            .or_else(|| chrono::DateTime::parse_from_rfc3339(value).ok().map(|v| v.date_naive()))
+    }?;
+    let ts = dt.and_hms_opt(0, 0, 0)?.and_utc().timestamp();
+    Some(days_from_secs(ts))
+}
+
+fn timestamp_from_int(value: i64, unit: Option<arrow_schema::TimeUnit>) -> (i64, u32) {
+    let unit = unit.unwrap_or(arrow_schema::TimeUnit::Second);
+    match unit {
+        arrow_schema::TimeUnit::Second => (value, 0),
+        arrow_schema::TimeUnit::Millisecond => {
+            let secs = value.div_euclid(1_000);
+            let millis = value.rem_euclid(1_000) as u32;
+            (secs, millis * 1_000_000)
+        }
+        arrow_schema::TimeUnit::Microsecond => {
+            let secs = value.div_euclid(1_000_000);
+            let micros = value.rem_euclid(1_000_000) as u32;
+            (secs, micros * 1_000)
+        }
+        arrow_schema::TimeUnit::Nanosecond => {
+            let secs = value.div_euclid(1_000_000_000);
+            let nanos = value.rem_euclid(1_000_000_000) as u32;
+            (secs, nanos)
+        }
+    }
+}
+
+fn days_from_secs(secs: i64) -> i32 {
+    secs.div_euclid(86_400) as i32
+}
+
+fn parse_decimal_i128(value: &str, scale: i32) -> Option<i128> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    let negative = value.starts_with('-');
+    let digits = value
+        .strip_prefix('+')
+        .or_else(|| value.strip_prefix('-'))
+        .unwrap_or(value);
+    let mut parts = digits.split('.');
+    let whole = parts.next().unwrap_or("");
+    let frac = parts.next().unwrap_or("");
+    if parts.next().is_some() {
+        return None;
+    }
+    let scale = scale.max(0) as usize;
+    if frac.len() > scale {
+        return None;
+    }
+    let mut buf = String::with_capacity(whole.len() + scale);
+    buf.push_str(whole);
+    buf.push_str(frac);
+    for _ in frac.len()..scale {
+        buf.push('0');
+    }
+    let parsed = buf.parse::<i128>().ok()?;
+    if negative {
+        Some(-parsed)
+    } else {
+        Some(parsed)
+    }
+}
+
+fn parse_decimal_i256(value: &str, scale: i32) -> Option<arrow_buffer::i256> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    let negative = value.starts_with('-');
+    let digits = value
+        .strip_prefix('+')
+        .or_else(|| value.strip_prefix('-'))
+        .unwrap_or(value);
+    let mut parts = digits.split('.');
+    let whole = parts.next().unwrap_or("");
+    let frac = parts.next().unwrap_or("");
+    if parts.next().is_some() {
+        return None;
+    }
+    let scale = scale.max(0) as usize;
+    if frac.len() > scale {
+        return None;
+    }
+    let mut buf = String::with_capacity(whole.len() + scale);
+    buf.push_str(whole);
+    buf.push_str(frac);
+    for _ in frac.len()..scale {
+        buf.push('0');
+    }
+    let mut parsed = arrow_buffer::i256::from_string(&buf)?;
+    if negative {
+        parsed = parsed.checked_neg()?;
+    }
+    Some(parsed)
+}
+
+fn timestamp_parts_from_array(array: &ArrayRef, row: usize) -> Result<(i64, u32)> {
+    let unit = match array.data_type() {
+        DataType::Timestamp(unit, _) => *unit,
+        _ => return Err(anyhow!("timestamp type mismatch")),
+    };
+    match unit {
+        arrow_schema::TimeUnit::Second => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::TimestampSecondArray>()
+                .ok_or_else(|| anyhow!("timestamp second cast"))?;
+            Ok((arr.value(row), 0))
+        }
+        arrow_schema::TimeUnit::Millisecond => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::TimestampMillisecondArray>()
+                .ok_or_else(|| anyhow!("timestamp millisecond cast"))?;
+            let value = arr.value(row);
+            let secs = value.div_euclid(1_000);
+            let millis = value.rem_euclid(1_000) as u32;
+            Ok((secs, millis * 1_000_000))
+        }
+        arrow_schema::TimeUnit::Microsecond => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::TimestampMicrosecondArray>()
+                .ok_or_else(|| anyhow!("timestamp microsecond cast"))?;
+            let value = arr.value(row);
+            let secs = value.div_euclid(1_000_000);
+            let micros = value.rem_euclid(1_000_000) as u32;
+            Ok((secs, micros * 1_000))
+        }
+        arrow_schema::TimeUnit::Nanosecond => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::TimestampNanosecondArray>()
+                .ok_or_else(|| anyhow!("timestamp nanosecond cast"))?;
+            let value = arr.value(row);
+            let secs = value.div_euclid(1_000_000_000);
+            let nanos = value.rem_euclid(1_000_000_000) as u32;
+            Ok((secs, nanos))
+        }
+    }
+}
+
+pub struct RowValuePools {
+    strings: Vec<String>,
+    bytes: Vec<Vec<u8>>,
+    arrays_f32: Vec<Vec<f32>>,
+    arrays_f64: Vec<Vec<f64>>,
+    strings_len: usize,
+    bytes_len: usize,
+    arrays_f32_len: usize,
+    arrays_f64_len: usize,
+}
+
+impl RowValuePools {
+    fn new() -> Self {
+        Self {
+            strings: Vec::new(),
+            bytes: Vec::new(),
+            arrays_f32: Vec::new(),
+            arrays_f64: Vec::new(),
+            strings_len: 0,
+            bytes_len: 0,
+            arrays_f32_len: 0,
+            arrays_f64_len: 0,
+        }
+    }
+
+    fn reset(&mut self) {
+        self.strings_len = 0;
+        self.bytes_len = 0;
+        self.arrays_f32_len = 0;
+        self.arrays_f64_len = 0;
+    }
+
+    fn take_string_owned(&mut self, value: String) -> &str {
+        if self.strings_len < self.strings.len() {
+            self.strings[self.strings_len] = value;
+            let out = self.strings[self.strings_len].as_str();
+            self.strings_len += 1;
+            out
+        } else {
+            self.strings.push(value);
+            self.strings_len += 1;
+            self.strings.last().unwrap().as_str()
+        }
+    }
+
+    fn take_bytes_owned(&mut self, value: Vec<u8>) -> &[u8] {
+        if self.bytes_len < self.bytes.len() {
+            self.bytes[self.bytes_len] = value;
+            let out = self.bytes[self.bytes_len].as_slice();
+            self.bytes_len += 1;
+            out
+        } else {
+            self.bytes.push(value);
+            self.bytes_len += 1;
+            self.bytes.last().unwrap().as_slice()
+        }
+    }
+
+    fn take_f32_vec(&mut self, capacity: usize) -> &mut Vec<f32> {
+        if self.arrays_f32_len < self.arrays_f32.len() {
+            let slot = &mut self.arrays_f32[self.arrays_f32_len];
+            slot.clear();
+            slot.reserve(capacity);
+            self.arrays_f32_len += 1;
+            slot
+        } else {
+            self.arrays_f32.push(Vec::with_capacity(capacity));
+            self.arrays_f32_len += 1;
+            self.arrays_f32.last_mut().unwrap()
+        }
+    }
+
+    fn take_f64_vec(&mut self, capacity: usize) -> &mut Vec<f64> {
+        if self.arrays_f64_len < self.arrays_f64.len() {
+            let slot = &mut self.arrays_f64[self.arrays_f64_len];
+            slot.clear();
+            slot.reserve(capacity);
+            self.arrays_f64_len += 1;
+            slot
+        } else {
+            self.arrays_f64.push(Vec::with_capacity(capacity));
+            self.arrays_f64_len += 1;
+            self.arrays_f64.last_mut().unwrap()
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -764,15 +1923,15 @@ impl RowPackContextBuilder {
                     None => stats.observe_null(),
                     Some(v) => stats.observe_bytes_len(v.len()),
                 },
-                IngestedType::Uuid => match access.get_bytes(idx)? {
+                IngestedType::Uuid => match access.get_uuid(idx)? {
                     None => stats.observe_null(),
                     Some(_) => stats.observe_uuid(),
                 },
-                IngestedType::Uuid256 => match access.get_bytes(idx)? {
+                IngestedType::Uuid256 => match access.get_uuid256(idx)? {
                     None => stats.observe_null(),
                     Some(_) => stats.observe_uuid256(),
                 },
-                IngestedType::Ip => match access.get_bytes(idx)? {
+                IngestedType::Ip => match access.get_ip(idx)? {
                     None => stats.observe_null(),
                     Some(_) => stats.observe_ip(),
                 },
@@ -2004,42 +3163,33 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                IngestedType::Uuid => match access.get_bytes(idx)? {
+                IngestedType::Uuid => match access.get_uuid(idx)? {
                     None => 0u8,
                     Some(v) => {
                         if !matches!(col.encoding, ColumnEncoding::Uuid) {
                             return Err(anyhow!("rowpack uuid encoding mismatch"));
                         }
-                        if v.len() != 16 {
-                            return Err(anyhow!("rowpack uuid length mismatch"));
-                        }
-                        scratch.data.extend_from_slice(v);
+                        scratch.data.extend_from_slice(&v);
                         1u8
                     }
                 },
-                IngestedType::Uuid256 => match access.get_bytes(idx)? {
+                IngestedType::Uuid256 => match access.get_uuid256(idx)? {
                     None => 0u8,
                     Some(v) => {
                         if !matches!(col.encoding, ColumnEncoding::Uuid256) {
                             return Err(anyhow!("rowpack uuid256 encoding mismatch"));
                         }
-                        if v.len() != 32 {
-                            return Err(anyhow!("rowpack uuid256 length mismatch"));
-                        }
-                        scratch.data.extend_from_slice(v);
+                        scratch.data.extend_from_slice(&v);
                         1u8
                     }
                 },
-                IngestedType::Ip => match access.get_bytes(idx)? {
+                IngestedType::Ip => match access.get_ip(idx)? {
                     None => 0u8,
                     Some(v) => {
                         if !matches!(col.encoding, ColumnEncoding::Ip) {
                             return Err(anyhow!("rowpack ip encoding mismatch"));
                         }
-                        if v.len() != 16 {
-                            return Err(anyhow!("rowpack ip length mismatch"));
-                        }
-                        scratch.data.extend_from_slice(v);
+                        scratch.data.extend_from_slice(&v);
                         1u8
                     }
                 },
@@ -2330,42 +3480,33 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                IngestedType::Uuid => match access.get_bytes(idx)? {
+                IngestedType::Uuid => match access.get_uuid(idx)? {
                     None => 0u8,
                     Some(v) => {
                         if !matches!(col.encoding, ColumnEncoding::Uuid) {
                             return Err(anyhow!("rowpack uuid encoding mismatch"));
                         }
-                        if v.len() != 16 {
-                            return Err(anyhow!("rowpack uuid length mismatch"));
-                        }
-                        data.extend_from_slice(v);
+                        data.extend_from_slice(&v);
                         1u8
                     }
                 },
-                IngestedType::Uuid256 => match access.get_bytes(idx)? {
+                IngestedType::Uuid256 => match access.get_uuid256(idx)? {
                     None => 0u8,
                     Some(v) => {
                         if !matches!(col.encoding, ColumnEncoding::Uuid256) {
                             return Err(anyhow!("rowpack uuid256 encoding mismatch"));
                         }
-                        if v.len() != 32 {
-                            return Err(anyhow!("rowpack uuid256 length mismatch"));
-                        }
-                        data.extend_from_slice(v);
+                        data.extend_from_slice(&v);
                         1u8
                     }
                 },
-                IngestedType::Ip => match access.get_bytes(idx)? {
+                IngestedType::Ip => match access.get_ip(idx)? {
                     None => 0u8,
                     Some(v) => {
                         if !matches!(col.encoding, ColumnEncoding::Ip) {
                             return Err(anyhow!("rowpack ip encoding mismatch"));
                         }
-                        if v.len() != 16 {
-                            return Err(anyhow!("rowpack ip length mismatch"));
-                        }
-                        data.extend_from_slice(v);
+                        data.extend_from_slice(&v);
                         1u8
                     }
                 },

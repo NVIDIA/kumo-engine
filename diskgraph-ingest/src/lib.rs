@@ -16,7 +16,6 @@ use anyhow::{anyhow, Context, Result};
 use arrow_array::{Array, ArrayRef};
 use arrow_schema::{DataType, Field, Schema};
 use bytes::Bytes;
-use chrono::{NaiveDate, NaiveDateTime};
 use diskgraph_core::metadata::{
     DatasetMetadata, EdgeRelationMetadata, EdgeShardMetadata, EdgeSortKeyMetadata,
     EdgeSortKeyTimestampEncoding, EdgeSortKeyTimestampKind, EdgeSortKeyTimestampMetadata,
@@ -1007,7 +1006,7 @@ fn compile_weight_expr(expr: &str, table: &TableSpec) -> Result<WeightExprRuntim
 }
 
 fn access_value_to_f64(
-    access: &mut RowAccess<'_>,
+    access: &mut IngestRowAccess<'_>,
     idx: usize,
     dtype: &IngestedType,
     scale: Option<i32>,
@@ -1113,7 +1112,7 @@ fn encode_weight_value(value: Option<f64>, encoding: &WeightEncodingSpec) -> u64
     }
 }
 
-fn eval_weight_expr(expr: &mut WeightExprRuntime, access: &mut RowAccess<'_>) -> Result<Option<f64>> {
+fn eval_weight_expr(expr: &mut WeightExprRuntime, access: &mut IngestRowAccess<'_>) -> Result<Option<f64>> {
     if let Some(idx) = expr.simple_idx {
         return Ok(access_value_to_f64(
             access,
@@ -1450,9 +1449,9 @@ impl IngestContext {
                                         }
                                         let trimmed_strings =
                                             std::sync::Arc::clone(&trimmed_strings);
-                                        let mut access = RowAccess::new(
-                                            &table,
+                                        let mut access = IngestRowAccess::new(
                                             &cols,
+                                            &table.columns,
                                             &column_runtimes,
                                             &trimmed_strings,
                                         );
@@ -1461,7 +1460,7 @@ impl IngestContext {
                                                 reached_limit = true;
                                                 break;
                                             }
-                                            access.reset(row);
+                                            access.set_row(row);
                                             node_builder.observe_row_from_access(&mut access)?;
                                             sampled = sampled.saturating_add(1);
                                         }
@@ -1492,9 +1491,9 @@ impl IngestContext {
                                         }
                                         let trimmed_strings =
                                             std::sync::Arc::clone(&trimmed_strings);
-                                        let mut access = RowAccess::new(
-                                            &table,
+                                        let mut access = IngestRowAccess::new(
                                             &cols,
+                                            &table.columns,
                                             &column_runtimes,
                                             &trimmed_strings,
                                         );
@@ -1503,7 +1502,7 @@ impl IngestContext {
                                                 reached_limit = true;
                                                 break;
                                             }
-                                            access.reset(row);
+                                            access.set_row(row);
                                             node_builder.observe_row_from_access(&mut access)?;
                                             sampled = sampled.saturating_add(1);
                                         }
@@ -1605,14 +1604,18 @@ impl IngestContext {
                                 }
                                 let trimmed_strings =
                                     std::sync::Arc::clone(&self.trimmed_strings);
-                                let mut access =
-                                    RowAccess::new(table, &cols, &column_runtimes, &trimmed_strings);
+                                let mut access = IngestRowAccess::new(
+                                    &cols,
+                                    &table.columns,
+                                    &column_runtimes,
+                                    &trimmed_strings,
+                                );
                                 for row in 0..batch.num_rows() {
                                     if sampled >= sample_limit {
                                         reached_limit = true;
                                         break;
                                     }
-                                    access.reset(row);
+                                    access.set_row(row);
                                     node_builder.observe_row_from_access(&mut access)?;
                                     sampled = sampled.saturating_add(1);
                                 }
@@ -1640,14 +1643,18 @@ impl IngestContext {
                                 }
                                 let trimmed_strings =
                                     std::sync::Arc::clone(&self.trimmed_strings);
-                                let mut access =
-                                    RowAccess::new(table, &cols, &column_runtimes, &trimmed_strings);
+                                let mut access = IngestRowAccess::new(
+                                    &cols,
+                                    &table.columns,
+                                    &column_runtimes,
+                                    &trimmed_strings,
+                                );
                                 for row in 0..batch.num_rows() {
                                     if sampled >= sample_limit {
                                         reached_limit = true;
                                         break;
                                     }
-                                    access.reset(row);
+                                    access.set_row(row);
                                     node_builder.observe_row_from_access(&mut access)?;
                                     sampled = sampled.saturating_add(1);
                                 }
@@ -2148,11 +2155,15 @@ impl IngestContext {
                         cols.push(batch.column(idx).clone());
                     }
                     let trimmed_strings = std::sync::Arc::clone(trimmed_strings);
-                    let mut access =
-                        RowAccess::new(table, &cols, &column_runtimes, &trimmed_strings);
+                    let mut access = IngestRowAccess::new(
+                        &cols,
+                        &table.columns,
+                        &column_runtimes,
+                        &trimmed_strings,
+                    );
                     for row in 0..batch.num_rows() {
                         total_rows += 1;
-                        access.reset(row);
+                        access.set_row(row);
                         Self::write_node_row_from_access(
                             table,
                             pk_idx,
@@ -2188,11 +2199,15 @@ impl IngestContext {
                         cols.push(batch.column(idx).clone());
                     }
                     let trimmed_strings = std::sync::Arc::clone(trimmed_strings);
-                    let mut access =
-                        RowAccess::new(table, &cols, &column_runtimes, &trimmed_strings);
+                    let mut access = IngestRowAccess::new(
+                        &cols,
+                        &table.columns,
+                        &column_runtimes,
+                        &trimmed_strings,
+                    );
                     for row in 0..batch.num_rows() {
                         total_rows += 1;
-                        access.reset(row);
+                        access.set_row(row);
                         Self::write_node_row_from_access(
                             table,
                             pk_idx,
@@ -2236,7 +2251,7 @@ impl IngestContext {
         table: &TableSpec,
         pk_idx: Option<usize>,
         rel_specs: &[(std::sync::Arc<str>, usize, usize)],
-        access: &mut RowAccess<'_>,
+        access: &mut IngestRowAccess<'_>,
         node_encoder: &Option<RowPackEncoder>,
         batcher: &mut NodeBatcher,
         sort_key_batchers: &mut [SortKeyComponentBatcher],
@@ -2390,15 +2405,19 @@ impl IngestContext {
                         cols.push(batch.column(idx).clone());
                     }
                     let column_runtimes = build_column_runtimes(table);
-                    let mut access =
-                        RowAccess::new(table, &cols, &column_runtimes, trimmed_strings);
+                    let mut access = IngestRowAccess::new(
+                        &cols,
+                        &table.columns,
+                        &column_runtimes,
+                        trimmed_strings,
+                    );
                     let src_fast = edge_fast_path_for_array(src_fk_col, &cols[src_fk_idx]);
                     let dst_fast = edge_fast_path_for_array(dst_fk_col, &cols[dst_fk_idx]);
                     let mut src_key_buf = Vec::new();
                     let mut dst_key_buf = Vec::new();
                     let mut forward_row = Vec::new();
                     for row in 0..batch.num_rows() {
-                        access.reset(row);
+                        access.set_row(row);
                         Self::write_edge_row_from_access(
                             src_fk_idx,
                             dst_fk_idx,
@@ -2439,15 +2458,19 @@ impl IngestContext {
                         cols.push(batch.column(idx).clone());
                     }
                     let column_runtimes = build_column_runtimes(table);
-                    let mut access =
-                        RowAccess::new(table, &cols, &column_runtimes, trimmed_strings);
+                    let mut access = IngestRowAccess::new(
+                        &cols,
+                        &table.columns,
+                        &column_runtimes,
+                        trimmed_strings,
+                    );
                     let src_fast = edge_fast_path_for_array(src_fk_col, &cols[src_fk_idx]);
                     let dst_fast = edge_fast_path_for_array(dst_fk_col, &cols[dst_fk_idx]);
                     let mut src_key_buf = Vec::new();
                     let mut dst_key_buf = Vec::new();
                     let mut forward_row = Vec::new();
                     for row in 0..batch.num_rows() {
-                        access.reset(row);
+                        access.set_row(row);
                         Self::write_edge_row_from_access(
                             src_fk_idx,
                             dst_fk_idx,
@@ -2501,7 +2524,7 @@ impl IngestContext {
         row: usize,
         src_fast: Option<EdgeKeyFastKind>,
         dst_fast: Option<EdgeKeyFastKind>,
-        access: &mut RowAccess<'_>,
+        access: &mut IngestRowAccess<'_>,
         src_key_buf: &mut Vec<u8>,
         dst_key_buf: &mut Vec<u8>,
         forward_row: &mut Vec<u8>,
@@ -5883,7 +5906,7 @@ impl SortKeyComponentBatcher {
         }
     }
 
-    fn push_row(&mut self, shard: usize, access: &mut RowAccess<'_>) -> Result<()> {
+    fn push_row(&mut self, shard: usize, access: &mut IngestRowAccess<'_>) -> Result<()> {
         let value = match &mut self.encoder {
             SortKeyComponentEncoder::Timestamp { column_idx, encoding } => {
                 let ts_value = if let Some((secs, _)) = access.get_timestamp(*column_idx)? {
@@ -6458,7 +6481,7 @@ fn column_index(table: &TableSpec, name: &str) -> Result<usize> {
 }
 
 fn key_from_access_into_buf(
-    access: &mut RowAccess<'_>,
+    access: &mut IngestRowAccess<'_>,
     idx: usize,
     col: &ColumnSpec,
     out: &mut Vec<u8>,
@@ -6499,7 +6522,7 @@ fn key_from_access_into_buf(
                     let (_, array) = access
                         .column_and_array(idx)
                         .map_err(|_| KeyParseError::TypeMismatch)?;
-                    let bytes = read_bytes(array, access.row)
+                    let bytes = read_bytes(array, access.row())
                         .map_err(|_| KeyParseError::TypeMismatch)?;
                     let value = parse_base10_bytes(bytes)?;
                     out.extend_from_slice(&value.to_le_bytes());
@@ -6573,23 +6596,20 @@ fn key_from_access_into_buf(
             let uuid = match col.ingested_dtype {
                 IngestedType::Uuid => {
                     let value = access
-                        .get_bytes(idx)
+                        .get_uuid(idx)
                         .map_err(|_| KeyParseError::TypeMismatch)?
                         .ok_or(KeyParseError::TypeMismatch)?;
-                    if value.len() != 16 {
-                        return Err(KeyParseError::LengthMismatch);
-                    }
-                    buf.copy_from_slice(value);
+                    buf.copy_from_slice(&value);
                     buf
                 }
                 IngestedType::String | IngestedType::Bytes => {
                     let (_, array) = access
                         .column_and_array(idx)
                         .map_err(|_| KeyParseError::TypeMismatch)?;
-                    if let Ok(text) = read_utf8(array, access.row) {
+                    if let Ok(text) = read_utf8(array, access.row()) {
                         parse_uuid_string(text.as_bytes())?
                     } else {
-                        let data = read_bytes(array, access.row)
+                        let data = read_bytes(array, access.row())
                             .map_err(|_| KeyParseError::TypeMismatch)?;
                         if data.len() != 16 {
                             return Err(KeyParseError::LengthMismatch);
@@ -6608,23 +6628,20 @@ fn key_from_access_into_buf(
             let uuid = match col.ingested_dtype {
                 IngestedType::Uuid256 => {
                     let value = access
-                        .get_bytes(idx)
+                        .get_uuid256(idx)
                         .map_err(|_| KeyParseError::TypeMismatch)?
                         .ok_or(KeyParseError::TypeMismatch)?;
-                    if value.len() != 32 {
-                        return Err(KeyParseError::LengthMismatch);
-                    }
-                    buf.copy_from_slice(value);
+                    buf.copy_from_slice(&value);
                     buf
                 }
                 IngestedType::String | IngestedType::Bytes => {
                     let (_, array) = access
                         .column_and_array(idx)
                         .map_err(|_| KeyParseError::TypeMismatch)?;
-                    if let Ok(text) = read_utf8(array, access.row) {
+                    if let Ok(text) = read_utf8(array, access.row()) {
                         parse_uuid256_string(text.as_bytes())?
                     } else {
-                        let data = read_bytes(array, access.row)
+                        let data = read_bytes(array, access.row())
                             .map_err(|_| KeyParseError::TypeMismatch)?;
                         if data.len() != 32 {
                             return Err(KeyParseError::LengthMismatch);
@@ -6642,19 +6659,19 @@ fn key_from_access_into_buf(
             let ip = match col.ingested_dtype {
                 IngestedType::Ip => {
                     let value = access
-                        .get_bytes(idx)
+                        .get_ip(idx)
                         .map_err(|_| KeyParseError::TypeMismatch)?
                         .ok_or(KeyParseError::TypeMismatch)?;
-                    parse_ip_bytes(value)?
+                    value
                 }
                 IngestedType::String | IngestedType::Bytes => {
                     let (_, array) = access
                         .column_and_array(idx)
                         .map_err(|_| KeyParseError::TypeMismatch)?;
-                    if let Ok(text) = read_utf8(array, access.row) {
+                    if let Ok(text) = read_utf8(array, access.row()) {
                         parse_ip_string(text.as_bytes())?
                     } else {
-                        let data = read_bytes(array, access.row)
+                        let data = read_bytes(array, access.row())
                             .map_err(|_| KeyParseError::TypeMismatch)?;
                         parse_ip_bytes(data)?
                     }
@@ -7027,9 +7044,9 @@ fn record_key_parse_failure(
     }
 }
 
-fn sample_from_access(access: &RowAccess<'_>, idx: usize) -> Option<String> {
-    let array = access.cols.get(idx)?;
-    let value = value_from_array(array, access.row).ok()?;
+fn sample_from_access(access: &IngestRowAccess<'_>, idx: usize) -> Option<String> {
+    let array = access.array(idx).ok()?;
+    let value = value_from_array(array, access.row()).ok()?;
     match value {
         JsonValue::Null => None,
         JsonValue::String(s) => Some(truncate_sample(&s)),
@@ -7076,6 +7093,7 @@ fn record_key_lookup_failure(
 
 #[cfg(test)]
 mod tests {
+    use chrono::NaiveDate;
     use super::*;
     use arrow_array::{BinaryArray, Int64Array, StringArray};
 
@@ -7156,12 +7174,12 @@ mod tests {
     fn with_access(
         table: &TableSpec,
         cols: Vec<ArrayRef>,
-        f: impl FnOnce(&mut RowAccess<'_>),
+        f: impl FnOnce(&mut IngestRowAccess<'_>),
     ) {
         let runtimes = build_column_runtimes(table);
         let trimmed = std::sync::Arc::new(AtomicU64::new(0));
-        let mut access = RowAccess::new(table, &cols, &runtimes, &trimmed);
-        access.reset(0);
+        let mut access = IngestRowAccess::new(&cols, &table.columns, &runtimes, &trimmed);
+        access.set_row(0);
         f(&mut access);
     }
 
@@ -7172,8 +7190,8 @@ mod tests {
         let cols: Vec<ArrayRef> = vec![Arc::new(StringArray::from(vec![text]))];
         let expected = parse_uuid_string(text.as_bytes()).unwrap();
         with_access(&table, cols, |access| {
-            let bytes = access.get_bytes(0).unwrap().unwrap();
-            assert_eq!(bytes, expected.as_slice());
+            let uuid = access.get_uuid(0).unwrap().unwrap();
+            assert_eq!(uuid, expected);
         });
     }
 
@@ -7184,8 +7202,8 @@ mod tests {
         let cols: Vec<ArrayRef> = vec![Arc::new(StringArray::from(vec![text]))];
         let expected = parse_uuid_string(text.as_bytes()).unwrap();
         with_access(&table, cols, |access| {
-            let bytes = access.get_bytes(0).unwrap().unwrap();
-            assert_eq!(bytes, expected.as_slice());
+            let uuid = access.get_uuid(0).unwrap().unwrap();
+            assert_eq!(uuid, expected);
         });
     }
 
@@ -7196,8 +7214,8 @@ mod tests {
         let cols: Vec<ArrayRef> = vec![Arc::new(StringArray::from(vec![text]))];
         let expected = parse_uuid256_string(text.as_bytes()).unwrap();
         with_access(&table, cols, |access| {
-            let bytes = access.get_bytes(0).unwrap().unwrap();
-            assert_eq!(bytes, expected.as_slice());
+            let uuid = access.get_uuid256(0).unwrap().unwrap();
+            assert_eq!(uuid, expected);
         });
     }
 
@@ -7208,8 +7226,8 @@ mod tests {
         let cols: Vec<ArrayRef> = vec![Arc::new(StringArray::from(vec![text]))];
         let expected = parse_ip_string(text.as_bytes()).unwrap();
         with_access(&table, cols, |access| {
-            let bytes = access.get_bytes(0).unwrap().unwrap();
-            assert_eq!(bytes, expected.as_slice());
+            let ip = access.get_ip(0).unwrap().unwrap();
+            assert_eq!(ip, expected);
         });
     }
 
@@ -7721,276 +7739,94 @@ struct ColumnRuntime {
     date_parser: Option<TimestampFormatParser>,
 }
 
-struct RowAccess<'a> {
-    row: usize,
-    cols: &'a [ArrayRef],
-    table: &'a TableSpec,
+struct IngestRowAccess<'a> {
+    access: diskgraph_rowpack::RowAccess<'a>,
+    columns: &'a [ColumnSpec],
     runtimes: &'a [ColumnRuntime],
-    pools: RowValuePools,
     trimmed_strings: &'a Arc<AtomicU64>,
 }
 
-impl<'a> RowAccess<'a> {
+impl<'a> IngestRowAccess<'a> {
     fn new(
-        table: &'a TableSpec,
         cols: &'a [ArrayRef],
+        columns: &'a [ColumnSpec],
         runtimes: &'a [ColumnRuntime],
         trimmed_strings: &'a Arc<AtomicU64>,
     ) -> Self {
         Self {
-            row: 0,
-            cols,
-            table,
+            access: diskgraph_rowpack::RowAccess::new(cols),
+            columns,
             runtimes,
-            pools: RowValuePools::new(),
             trimmed_strings,
         }
     }
 
-    fn reset(&mut self, row: usize) {
-        self.row = row;
-        self.pools.reset();
+    fn set_row(&mut self, row: usize) {
+        self.access.set_row(row);
+    }
+
+    fn row(&self) -> usize {
+        self.access.row()
+    }
+
+    fn array(&self, idx: usize) -> Result<&ArrayRef> {
+        self.access.array(idx)
+    }
+
+    fn column(&self, idx: usize) -> Result<&ColumnSpec> {
+        self.columns
+            .get(idx)
+            .ok_or_else(|| anyhow!("missing column {}", idx))
     }
 
     fn column_and_array(&self, idx: usize) -> Result<(&ColumnSpec, &ArrayRef)> {
-        let col = self
-            .table
-            .columns
-            .get(idx)
-            .ok_or_else(|| anyhow!("missing column {}", idx))?;
-        let array = self
-            .cols
-            .get(idx)
-            .ok_or_else(|| anyhow!("missing column {}", col.name))?;
+        let col = self.column(idx)?;
+        let array = self.access.array(idx)?;
         Ok((col, array))
     }
-
-    fn pool_str(&mut self, value: String) -> &'a str {
-        let slice = self.pools.take_string_owned(value);
-        unsafe { std::mem::transmute::<&str, &'a str>(slice) }
-    }
-
-    fn pool_bytes(&mut self, value: Vec<u8>) -> &'a [u8] {
-        let slice = self.pools.take_bytes_owned(value);
-        unsafe { std::mem::transmute::<&[u8], &'a [u8]>(slice) }
-    }
-
 }
 
-impl<'a> diskgraph_rowpack::RowValueAccess for RowAccess<'a> {
+impl<'a> diskgraph_rowpack::RowValueAccess for IngestRowAccess<'a> {
     fn get_int64(&mut self, idx: usize) -> Result<Option<i64>> {
-        let (col, array) = self.column_and_array(idx)?;
-        if array.is_null(self.row) {
-            return Ok(None);
-        }
-        if col.ingested_dtype != IngestedType::Int64 {
-            return Ok(None);
-        }
-        match array.data_type() {
-            DataType::Int64
-            | DataType::Int32
-            | DataType::Int16
-            | DataType::Int8
-            | DataType::UInt64
-            | DataType::UInt32
-            | DataType::UInt16
-            | DataType::UInt8 => Ok(Some(read_i64(array, self.row)?)),
-            DataType::Utf8
-            | DataType::LargeUtf8
-            | DataType::Binary
-            | DataType::LargeBinary
-            | DataType::FixedSizeBinary(_) => {
-                let text = read_utf8(array, self.row)?;
-                Ok(parse_i64(text))
-            }
-            _ => Ok(None),
-        }
+        self.access.get_int64(idx)
     }
 
     fn get_int32(&mut self, idx: usize) -> Result<Option<i32>> {
-        let (col, array) = self.column_and_array(idx)?;
-        if array.is_null(self.row) {
-            return Ok(None);
-        }
-        match col.ingested_dtype {
-            IngestedType::Int32 | IngestedType::Int16 | IngestedType::Int8 => {}
-            _ => return Ok(None),
-        }
-        match array.data_type() {
-            DataType::Int64 | DataType::Int32 | DataType::Int16 | DataType::Int8 => {
-                Ok(Some(read_i64(array, self.row)? as i32))
-            }
-            DataType::Utf8
-            | DataType::LargeUtf8
-            | DataType::Binary
-            | DataType::LargeBinary
-            | DataType::FixedSizeBinary(_) => {
-                let text = read_utf8(array, self.row)?;
-                Ok(parse_i32(text))
-            }
-            _ => Ok(None),
-        }
+        self.access.get_int32(idx)
     }
 
     fn get_uint64(&mut self, idx: usize) -> Result<Option<u64>> {
-        let (col, array) = self.column_and_array(idx)?;
-        if array.is_null(self.row) {
-            return Ok(None);
-        }
-        if col.ingested_dtype != IngestedType::UInt64 {
-            return Ok(None);
-        }
-        match array.data_type() {
-            DataType::UInt64 | DataType::UInt32 | DataType::UInt16 | DataType::UInt8 => {
-                Ok(Some(read_u64(array, self.row)?))
-            }
-            DataType::Utf8
-            | DataType::LargeUtf8
-            | DataType::Binary
-            | DataType::LargeBinary
-            | DataType::FixedSizeBinary(_) => {
-                let text = read_utf8(array, self.row)?;
-                Ok(parse_u64(text))
-            }
-            _ => Ok(None),
-        }
+        self.access.get_uint64(idx)
     }
 
     fn get_uint32(&mut self, idx: usize) -> Result<Option<u32>> {
-        let (col, array) = self.column_and_array(idx)?;
-        if array.is_null(self.row) {
-            return Ok(None);
-        }
-        match col.ingested_dtype {
-            IngestedType::UInt32 | IngestedType::UInt16 | IngestedType::UInt8 => {}
-            _ => return Ok(None),
-        }
-        match array.data_type() {
-            DataType::UInt32 | DataType::UInt16 | DataType::UInt8 => {
-                Ok(Some(read_u64(array, self.row)? as u32))
-            }
-            DataType::Utf8
-            | DataType::LargeUtf8
-            | DataType::Binary
-            | DataType::LargeBinary
-            | DataType::FixedSizeBinary(_) => {
-                let text = read_utf8(array, self.row)?;
-                Ok(parse_u32(text))
-            }
-            _ => Ok(None),
-        }
+        self.access.get_uint32(idx)
     }
 
     fn get_float64(&mut self, idx: usize) -> Result<Option<f64>> {
-        let (col, array) = self.column_and_array(idx)?;
-        if array.is_null(self.row) {
-            return Ok(None);
-        }
-        if col.ingested_dtype != IngestedType::Float64 {
-            return Ok(None);
-        }
-        match array.data_type() {
-            DataType::Float64 => {
-                let arr = array
-                    .as_any()
-                    .downcast_ref::<arrow_array::Float64Array>()
-                    .ok_or_else(|| anyhow!("float64 cast"))?;
-                Ok(Some(arr.value(self.row)))
-            }
-            DataType::Float32 => {
-                let arr = array
-                    .as_any()
-                    .downcast_ref::<arrow_array::Float32Array>()
-                    .ok_or_else(|| anyhow!("float32 cast"))?;
-                Ok(Some(arr.value(self.row) as f64))
-            }
-            DataType::Utf8
-            | DataType::LargeUtf8
-            | DataType::Binary
-            | DataType::LargeBinary
-            | DataType::FixedSizeBinary(_) => {
-                let text = read_utf8(array, self.row)?;
-                Ok(parse_f64(text))
-            }
-            _ => Ok(None),
-        }
+        self.access.get_float64(idx)
     }
 
     fn get_float32(&mut self, idx: usize) -> Result<Option<f32>> {
-        let (col, array) = self.column_and_array(idx)?;
-        if array.is_null(self.row) {
-            return Ok(None);
-        }
-        if col.ingested_dtype != IngestedType::Float32 {
-            return Ok(None);
-        }
-        match array.data_type() {
-            DataType::Float32 => {
-                let arr = array
-                    .as_any()
-                    .downcast_ref::<arrow_array::Float32Array>()
-                    .ok_or_else(|| anyhow!("float32 cast"))?;
-                Ok(Some(arr.value(self.row)))
-            }
-            DataType::Float64 => {
-                let arr = array
-                    .as_any()
-                    .downcast_ref::<arrow_array::Float64Array>()
-                    .ok_or_else(|| anyhow!("float64 cast"))?;
-                Ok(Some(arr.value(self.row) as f32))
-            }
-            DataType::Utf8
-            | DataType::LargeUtf8
-            | DataType::Binary
-            | DataType::LargeBinary
-            | DataType::FixedSizeBinary(_) => {
-                let text = read_utf8(array, self.row)?;
-                Ok(parse_f32(text))
-            }
-            _ => Ok(None),
-        }
+        self.access.get_float32(idx)
     }
 
     fn get_bool(&mut self, idx: usize) -> Result<Option<bool>> {
-        let (col, array) = self.column_and_array(idx)?;
-        if array.is_null(self.row) {
-            return Ok(None);
-        }
-        if col.ingested_dtype != IngestedType::Bool {
-            return Ok(None);
-        }
-        match array.data_type() {
-            DataType::Boolean => {
-                let arr = array
-                    .as_any()
-                    .downcast_ref::<arrow_array::BooleanArray>()
-                    .ok_or_else(|| anyhow!("bool cast"))?;
-                Ok(Some(arr.value(self.row)))
-            }
-            DataType::Utf8
-            | DataType::LargeUtf8
-            | DataType::Binary
-            | DataType::LargeBinary
-            | DataType::FixedSizeBinary(_) => {
-                let text = read_utf8(array, self.row)?;
-                Ok(parse_bool(text))
-            }
-            _ => Ok(None),
-        }
+        self.access.get_bool(idx)
     }
 
     fn get_string(&mut self, idx: usize) -> Result<Option<&str>> {
-        let (col, array) = self.column_and_array(idx)?;
-        if array.is_null(self.row) {
-            return Ok(None);
-        }
-        if col.ingested_dtype != IngestedType::String {
+        let array = self.access.array(idx)?;
+        if array.is_null(self.access.row()) {
             return Ok(None);
         }
         let text = match array.data_type() {
             DataType::Utf8 | DataType::LargeUtf8 | DataType::Binary | DataType::LargeBinary
             | DataType::FixedSizeBinary(_) => {
-                let text = read_utf8(array, self.row)?;
+                let text = match self.access.read_utf8(idx)? {
+                    Some(text) => text,
+                    None => return Ok(None),
+                };
                 if text.len() > MAX_INPUT_STRING_BYTES {
                     self.trimmed_strings.fetch_add(1, Ordering::Relaxed);
                     trim_str_bytes(text, MAX_INPUT_STRING_BYTES).to_string()
@@ -7999,7 +7835,7 @@ impl<'a> diskgraph_rowpack::RowValueAccess for RowAccess<'a> {
                 }
             }
             _ => {
-                let value = value_from_array(array, self.row)?;
+                let value = value_from_array(array, self.access.row())?;
                 match value {
                     JsonValue::Null => return Ok(None),
                     JsonValue::String(s) => s,
@@ -8009,481 +7845,136 @@ impl<'a> diskgraph_rowpack::RowValueAccess for RowAccess<'a> {
                 }
             }
         };
-        Ok(Some(self.pool_str(text)))
+        Ok(Some(self.access.pool_str(text)))
     }
 
     fn get_bytes(&mut self, idx: usize) -> Result<Option<&[u8]>> {
-        let (col, array) = self.column_and_array(idx)?;
-        if array.is_null(self.row) {
+        let array = self.access.array(idx)?;
+        if array.is_null(self.access.row()) {
             return Ok(None);
         }
-        let bytes = match col.ingested_dtype {
-            IngestedType::Bytes => {
-                let data = read_bytes(array, self.row)?;
-                if data.len() > MAX_INPUT_STRING_BYTES {
-                    self.trimmed_strings.fetch_add(1, Ordering::Relaxed);
-                    data[..MAX_INPUT_STRING_BYTES].to_vec()
-                } else {
-                    data.to_vec()
-                }
-            }
-            IngestedType::Uuid => {
-                if let Ok(text) = read_utf8(array, self.row) {
-                    if let Ok(uuid) = parse_uuid_string(text.as_bytes()) {
-                        return Ok(Some(self.pool_bytes(uuid.to_vec())));
-                    }
-                }
-                if let Ok(data) = read_bytes(array, self.row) {
-                    if data.len() == 16 {
-                        data.to_vec()
-                    } else {
-                        return Ok(None);
-                    }
-                } else {
-                    return Ok(None);
-                }
-            }
-            IngestedType::Uuid256 => {
-                if let Ok(text) = read_utf8(array, self.row) {
-                    if let Ok(uuid) = parse_uuid256_string(text.as_bytes()) {
-                        return Ok(Some(self.pool_bytes(uuid.to_vec())));
-                    }
-                }
-                if let Ok(data) = read_bytes(array, self.row) {
-                    if data.len() == 32 {
-                        data.to_vec()
-                    } else {
-                        return Ok(None);
-                    }
-                } else {
-                    return Ok(None);
-                }
-            }
-            IngestedType::Ip => {
-                if let Ok(text) = read_utf8(array, self.row) {
-                    if let Ok(ip) = parse_ip_string(text.as_bytes()) {
-                        return Ok(Some(self.pool_bytes(ip.to_vec())));
-                    }
-                }
-                if let Ok(data) = read_bytes(array, self.row) {
-                    if let Ok(ip) = parse_ip_bytes(data) {
-                        return Ok(Some(self.pool_bytes(ip.to_vec())));
-                    } else {
-                        return Ok(None);
-                    }
-                } else {
-                    return Ok(None);
-                }
-            }
+        match array.data_type() {
+            DataType::Utf8
+            | DataType::LargeUtf8
+            | DataType::Binary
+            | DataType::LargeBinary
+            | DataType::FixedSizeBinary(_) => {}
             _ => return Ok(None),
+        }
+        let data = match self.access.read_bytes(idx)? {
+            Some(bytes) => bytes,
+            None => return Ok(None),
         };
-        Ok(Some(self.pool_bytes(bytes)))
+        let bytes = if data.len() > MAX_INPUT_STRING_BYTES {
+            self.trimmed_strings.fetch_add(1, Ordering::Relaxed);
+            data[..MAX_INPUT_STRING_BYTES].to_vec()
+        } else {
+            data.to_vec()
+        };
+        Ok(Some(self.access.pool_bytes(bytes)))
+    }
+
+    fn get_uuid(&mut self, idx: usize) -> Result<Option<[u8; 16]>> {
+        self.access.get_uuid(idx)
+    }
+
+    fn get_uuid256(&mut self, idx: usize) -> Result<Option<[u8; 32]>> {
+        self.access.get_uuid256(idx)
+    }
+
+    fn get_ip(&mut self, idx: usize) -> Result<Option<[u8; 16]>> {
+        self.access.get_ip(idx)
     }
 
     fn get_date(&mut self, idx: usize) -> Result<Option<i32>> {
         let (col, array) = self.column_and_array(idx)?;
-        if array.is_null(self.row) {
+        if array.is_null(self.access.row()) {
             return Ok(None);
         }
-        if col.ingested_dtype != IngestedType::Date {
-            return Ok(None);
-        }
-        match array.data_type() {
-            DataType::Date32 => {
-                let arr = array
-                    .as_any()
-                    .downcast_ref::<arrow_array::Date32Array>()
-                    .ok_or_else(|| anyhow!("date cast"))?;
-                Ok(Some(arr.value(self.row)))
-            }
+        let unit = to_arrow_time_unit(col.timestamp_unit.as_ref());
+        let format = col.timestamp_format.as_deref();
+        if matches!(
+            array.data_type(),
             DataType::Utf8
-            | DataType::LargeUtf8
-            | DataType::Binary
-            | DataType::LargeBinary
-            | DataType::FixedSizeBinary(_) => {
-                let text = read_utf8(array, self.row)?;
-                if let Some(parser) = self
-                    .runtimes
-                    .get(idx)
-                    .and_then(|r| r.date_parser.as_ref())
-                {
+                | DataType::LargeUtf8
+                | DataType::Binary
+                | DataType::LargeBinary
+                | DataType::FixedSizeBinary(_)
+        ) {
+            if let Some(parser) = self
+                .runtimes
+                .get(idx)
+                .and_then(|r| r.date_parser.as_ref())
+            {
+                if let Some(text) = self.access.read_utf8(idx)? {
                     if let Some(days) = parser.parse_date(text) {
                         return Ok(Some(days));
                     }
                 }
-                if let Some(days) = parse_date_text(text, col.timestamp_format.as_deref()) {
-                    return Ok(Some(days));
-                }
-                if let Some(value) = parse_i64(text) {
-                    let days = if let Some(unit) = col.timestamp_unit.as_ref() {
-                        let (secs, _) = timestamp_from_int(value, unit.clone());
-                        days_from_secs(secs)
-                    } else {
-                        value as i32
-                    };
-                    return Ok(Some(days));
-                }
-                Ok(None)
             }
-            DataType::Int8
-            | DataType::Int16
-            | DataType::Int32
-            | DataType::Int64
-            | DataType::UInt8
-            | DataType::UInt16
-            | DataType::UInt32
-            | DataType::UInt64 => {
-                let value = read_i64(array, self.row)?;
-                let days = if let Some(unit) = col.timestamp_unit.as_ref() {
-                    let (secs, _) = timestamp_from_int(value, unit.clone());
-                    days_from_secs(secs)
-                } else {
-                    value as i32
-                };
-                Ok(Some(days))
-            }
-            _ => Ok(None),
         }
+        self.access.get_date(idx, format, unit)
     }
 
     fn get_timestamp(&mut self, idx: usize) -> Result<Option<(i64, u32)>> {
         let (col, array) = self.column_and_array(idx)?;
-        if array.is_null(self.row) {
+        if array.is_null(self.access.row()) {
             return Ok(None);
         }
-        if col.ingested_dtype != IngestedType::Timestamp {
-            return Ok(None);
-        }
-        match array.data_type() {
-            DataType::Timestamp(_, _) => {
-                let (secs, nanos) = timestamp_parts_from_array(array, self.row)?;
-                Ok(Some((secs, nanos)))
-            }
+        let unit = to_arrow_time_unit(col.timestamp_unit.as_ref());
+        let format = col.timestamp_format.as_deref();
+        if matches!(
+            array.data_type(),
             DataType::Utf8
-            | DataType::LargeUtf8
-            | DataType::Binary
-            | DataType::LargeBinary
-            | DataType::FixedSizeBinary(_) => {
-                let text = read_utf8(array, self.row)?;
-                if let Some(parser) = self
-                    .runtimes
-                    .get(idx)
-                    .and_then(|r| r.timestamp_parser.as_ref())
-                {
+                | DataType::LargeUtf8
+                | DataType::Binary
+                | DataType::LargeBinary
+                | DataType::FixedSizeBinary(_)
+        ) {
+            if let Some(parser) = self
+                .runtimes
+                .get(idx)
+                .and_then(|r| r.timestamp_parser.as_ref())
+            {
+                if let Some(text) = self.access.read_utf8(idx)? {
                     if let Some((secs, nanos)) = parser.parse_timestamp(text) {
                         return Ok(Some((secs, nanos)));
                     }
                 }
-                if let Some((secs, nanos)) =
-                    parse_timestamp_text(text, col.timestamp_format.as_deref())
-                {
-                    return Ok(Some((secs, nanos)));
-                }
-                if let Some(value) = parse_i64(text) {
-                    let unit = col
-                        .timestamp_unit
-                        .clone()
-                        .unwrap_or(TimestampUnit::Seconds);
-                    return Ok(Some(timestamp_from_int(value, unit)));
-                }
-                Ok(None)
             }
-            DataType::Int8
-            | DataType::Int16
-            | DataType::Int32
-            | DataType::Int64
-            | DataType::UInt8
-            | DataType::UInt16
-            | DataType::UInt32
-            | DataType::UInt64 => {
-                let value = read_i64(array, self.row)?;
-                let unit = col
-                    .timestamp_unit
-                    .clone()
-                    .unwrap_or(TimestampUnit::Seconds);
-                Ok(Some(timestamp_from_int(value, unit)))
-            }
-            _ => Ok(None),
         }
+        self.access.get_timestamp(idx, format, unit)
     }
 
     fn get_decimal128(&mut self, idx: usize) -> Result<Option<i128>> {
-        let (col, array) = self.column_and_array(idx)?;
-        if array.is_null(self.row) {
-            return Ok(None);
-        }
-        if col.ingested_dtype != IngestedType::Decimal128 {
-            return Ok(None);
-        }
-        match array.data_type() {
-            DataType::Decimal128(_, _) => {
-                let arr = array
-                    .as_any()
-                    .downcast_ref::<arrow_array::Decimal128Array>()
-                    .ok_or_else(|| anyhow!("decimal128 cast"))?;
-                Ok(Some(arr.value(self.row)))
-            }
-            DataType::Utf8
-            | DataType::LargeUtf8
-            | DataType::Binary
-            | DataType::LargeBinary
-            | DataType::FixedSizeBinary(_) => {
-                let text = read_utf8(array, self.row)?;
-                Ok(parse_decimal_i128(text, col.scale.unwrap_or(0)))
-            }
-            _ => Ok(None),
-        }
+        let scale = self.column(idx)?.scale;
+        self.access.get_decimal128(idx, scale)
     }
 
     fn get_decimal256(&mut self, idx: usize) -> Result<Option<[u8; 32]>> {
-        let (col, array) = self.column_and_array(idx)?;
-        if array.is_null(self.row) {
-            return Ok(None);
-        }
-        if col.ingested_dtype != IngestedType::Decimal256 {
-            return Ok(None);
-        }
-        match array.data_type() {
-            DataType::Decimal256(_, _) => {
-                let arr = array
-                    .as_any()
-                    .downcast_ref::<arrow_array::Decimal256Array>()
-                    .ok_or_else(|| anyhow!("decimal256 cast"))?;
-                Ok(Some(arr.value(self.row).to_le_bytes()))
-            }
-            DataType::Utf8
-            | DataType::LargeUtf8
-            | DataType::Binary
-            | DataType::LargeBinary
-            | DataType::FixedSizeBinary(_) => {
-                let text = read_utf8(array, self.row)?;
-                Ok(parse_decimal_i256(text, col.scale.unwrap_or(0)).map(|v| v.to_le_bytes()))
-            }
-            _ => Ok(None),
-        }
+        let scale = self.column(idx)?.scale;
+        self.access.get_decimal256(idx, scale)
     }
 
     fn get_float32_array(&mut self, idx: usize) -> Result<Option<&[f32]>> {
-        let (ingested_dtype, array) = {
-            let (col, array) = self.column_and_array(idx)?;
-            (col.ingested_dtype.clone(), array.clone())
-        };
-        if array.is_null(self.row) {
-            return Ok(None);
-        }
-        match ingested_dtype {
-            IngestedType::Float32Array | IngestedType::Float16Array => {}
-            _ => return Ok(None),
-        }
-        let (start, end, values) = if let Some(list) =
-            array.as_any().downcast_ref::<arrow_array::ListArray>()
-        {
-            let offsets = list.value_offsets();
-            (
-                offsets[self.row] as usize,
-                offsets[self.row + 1] as usize,
-                list.values(),
-            )
-        } else if let Some(list) = array
-            .as_any()
-            .downcast_ref::<arrow_array::LargeListArray>()
-        {
-            let offsets = list.value_offsets();
-            (
-                offsets[self.row] as usize,
-                offsets[self.row + 1] as usize,
-                list.values(),
-            )
-        } else {
-            return Err(anyhow!("list cast"));
-        };
-        match values.data_type() {
-            DataType::Float32 => {
-                let values_arr = values
-                    .as_any()
-                    .downcast_ref::<arrow_array::Float32Array>()
-                    .ok_or_else(|| anyhow!("float32 list cast"))?;
-                let vec = self.pools.take_f32_vec(end.saturating_sub(start));
-                for idx in start..end {
-                    if values_arr.is_null(idx) {
-                        vec.push(0.0);
-                    } else {
-                        vec.push(values_arr.value(idx));
-                    }
-                }
-                Ok(Some(unsafe { std::mem::transmute::<&[f32], &'a [f32]>(vec.as_slice()) }))
-            }
-            DataType::Float64 => {
-                let values_arr = values
-                    .as_any()
-                    .downcast_ref::<arrow_array::Float64Array>()
-                    .ok_or_else(|| anyhow!("float64 list cast"))?;
-                let vec = self.pools.take_f32_vec(end.saturating_sub(start));
-                for idx in start..end {
-                    if values_arr.is_null(idx) {
-                        vec.push(0.0);
-                    } else {
-                        vec.push(values_arr.value(idx) as f32);
-                    }
-                }
-                Ok(Some(unsafe { std::mem::transmute::<&[f32], &'a [f32]>(vec.as_slice()) }))
-            }
-            DataType::Float16 => {
-                let values_arr = values
-                    .as_any()
-                    .downcast_ref::<arrow_array::Float16Array>()
-                    .ok_or_else(|| anyhow!("float16 list cast"))?;
-                let vec = self.pools.take_f32_vec(end.saturating_sub(start));
-                for idx in start..end {
-                    if values_arr.is_null(idx) {
-                        vec.push(0.0);
-                    } else {
-                        vec.push(values_arr.value(idx).to_f32());
-                    }
-                }
-                Ok(Some(unsafe { std::mem::transmute::<&[f32], &'a [f32]>(vec.as_slice()) }))
-            }
-            _ => Ok(None),
-        }
+        self.access.get_float32_array(idx)
     }
 
     fn get_float64_array(&mut self, idx: usize) -> Result<Option<&[f64]>> {
-        let (ingested_dtype, array) = {
-            let (col, array) = self.column_and_array(idx)?;
-            (col.ingested_dtype.clone(), array.clone())
-        };
-        if array.is_null(self.row) {
-            return Ok(None);
-        }
-        if ingested_dtype != IngestedType::Float64Array {
-            return Ok(None);
-        }
-        let (start, end, values) = if let Some(list) =
-            array.as_any().downcast_ref::<arrow_array::ListArray>()
-        {
-            let offsets = list.value_offsets();
-            (
-                offsets[self.row] as usize,
-                offsets[self.row + 1] as usize,
-                list.values(),
-            )
-        } else if let Some(list) = array
-            .as_any()
-            .downcast_ref::<arrow_array::LargeListArray>()
-        {
-            let offsets = list.value_offsets();
-            (
-                offsets[self.row] as usize,
-                offsets[self.row + 1] as usize,
-                list.values(),
-            )
-        } else {
-            return Err(anyhow!("list cast"));
-        };
-        let values_arr = values
-            .as_any()
-            .downcast_ref::<arrow_array::Float64Array>()
-            .ok_or_else(|| anyhow!("float64 list cast"))?;
-        let vec = self.pools.take_f64_vec(end.saturating_sub(start));
-        for idx in start..end {
-            if values_arr.is_null(idx) {
-                vec.push(0.0);
-            } else {
-                vec.push(values_arr.value(idx));
-            }
-        }
-        Ok(Some(unsafe { std::mem::transmute::<&[f64], &'a [f64]>(vec.as_slice()) }))
+        self.access.get_float64_array(idx)
     }
 }
 
-struct RowValuePools {
-    strings: Vec<String>,
-    bytes: Vec<Vec<u8>>,
-    arrays_f32: Vec<Vec<f32>>,
-    arrays_f64: Vec<Vec<f64>>,
-    strings_len: usize,
-    bytes_len: usize,
-    arrays_f32_len: usize,
-    arrays_f64_len: usize,
-}
-
-impl RowValuePools {
-    fn new() -> Self {
-        Self {
-            strings: Vec::new(),
-            bytes: Vec::new(),
-            arrays_f32: Vec::new(),
-            arrays_f64: Vec::new(),
-            strings_len: 0,
-            bytes_len: 0,
-            arrays_f32_len: 0,
-            arrays_f64_len: 0,
-        }
-    }
-
-    fn reset(&mut self) {
-        self.strings_len = 0;
-        self.bytes_len = 0;
-        self.arrays_f32_len = 0;
-        self.arrays_f64_len = 0;
-    }
-
-    fn take_string_owned(&mut self, value: String) -> &str {
-        if self.strings_len < self.strings.len() {
-            self.strings[self.strings_len] = value;
-            let out = self.strings[self.strings_len].as_str();
-            self.strings_len += 1;
-            out
-        } else {
-            self.strings.push(value);
-            self.strings_len += 1;
-            self.strings.last().unwrap().as_str()
-        }
-    }
-
-    fn take_bytes_owned(&mut self, value: Vec<u8>) -> &[u8] {
-        if self.bytes_len < self.bytes.len() {
-            self.bytes[self.bytes_len] = value;
-            let out = self.bytes[self.bytes_len].as_slice();
-            self.bytes_len += 1;
-            out
-        } else {
-            self.bytes.push(value);
-            self.bytes_len += 1;
-            self.bytes.last().unwrap().as_slice()
-        }
-    }
-
-    fn take_f32_vec(&mut self, capacity: usize) -> &mut Vec<f32> {
-        if self.arrays_f32_len < self.arrays_f32.len() {
-            let slot = &mut self.arrays_f32[self.arrays_f32_len];
-            slot.clear();
-            slot.reserve(capacity);
-            self.arrays_f32_len += 1;
-            slot
-        } else {
-            self.arrays_f32.push(Vec::with_capacity(capacity));
-            self.arrays_f32_len += 1;
-            self.arrays_f32.last_mut().unwrap()
-        }
-    }
-
-    fn take_f64_vec(&mut self, capacity: usize) -> &mut Vec<f64> {
-        if self.arrays_f64_len < self.arrays_f64.len() {
-            let slot = &mut self.arrays_f64[self.arrays_f64_len];
-            slot.clear();
-            slot.reserve(capacity);
-            self.arrays_f64_len += 1;
-            slot
-        } else {
-            self.arrays_f64.push(Vec::with_capacity(capacity));
-            self.arrays_f64_len += 1;
-            self.arrays_f64.last_mut().unwrap()
-        }
+fn to_arrow_time_unit(unit: Option<&TimestampUnit>) -> Option<arrow_schema::TimeUnit> {
+    match unit? {
+        TimestampUnit::Seconds => Some(arrow_schema::TimeUnit::Second),
+        TimestampUnit::Millis => Some(arrow_schema::TimeUnit::Millisecond),
+        TimestampUnit::Micros => Some(arrow_schema::TimeUnit::Microsecond),
+        TimestampUnit::Nanos => Some(arrow_schema::TimeUnit::Nanosecond),
     }
 }
 
- 
+
 fn read_utf8<'a>(array: &'a ArrayRef, row: usize) -> Result<&'a str> {
     match array.data_type() {
         DataType::Utf8 => {
@@ -8566,134 +8057,6 @@ fn read_bytes<'a>(array: &'a ArrayRef, row: usize) -> Result<&'a [u8]> {
     }
 }
 
-fn read_i64(array: &ArrayRef, row: usize) -> Result<i64> {
-    match array.data_type() {
-        DataType::Int64 => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<arrow_array::Int64Array>()
-                .ok_or_else(|| anyhow!("int64 cast"))?;
-            Ok(arr.value(row))
-        }
-        DataType::Int32 => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<arrow_array::Int32Array>()
-                .ok_or_else(|| anyhow!("int32 cast"))?;
-            Ok(arr.value(row) as i64)
-        }
-        DataType::Int16 => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<arrow_array::Int16Array>()
-                .ok_or_else(|| anyhow!("int16 cast"))?;
-            Ok(arr.value(row) as i64)
-        }
-        DataType::Int8 => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<arrow_array::Int8Array>()
-                .ok_or_else(|| anyhow!("int8 cast"))?;
-            Ok(arr.value(row) as i64)
-        }
-        DataType::UInt64 => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<arrow_array::UInt64Array>()
-                .ok_or_else(|| anyhow!("uint64 cast"))?;
-            Ok(arr.value(row) as i64)
-        }
-        DataType::UInt32 => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<arrow_array::UInt32Array>()
-                .ok_or_else(|| anyhow!("uint32 cast"))?;
-            Ok(arr.value(row) as i64)
-        }
-        DataType::UInt16 => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<arrow_array::UInt16Array>()
-                .ok_or_else(|| anyhow!("uint16 cast"))?;
-            Ok(arr.value(row) as i64)
-        }
-        DataType::UInt8 => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<arrow_array::UInt8Array>()
-                .ok_or_else(|| anyhow!("uint8 cast"))?;
-            Ok(arr.value(row) as i64)
-        }
-        _ => Err(anyhow!("unsupported int source")),
-    }
-}
-
-fn read_u64(array: &ArrayRef, row: usize) -> Result<u64> {
-    match array.data_type() {
-        DataType::UInt64 => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<arrow_array::UInt64Array>()
-                .ok_or_else(|| anyhow!("uint64 cast"))?;
-            Ok(arr.value(row))
-        }
-        DataType::UInt32 => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<arrow_array::UInt32Array>()
-                .ok_or_else(|| anyhow!("uint32 cast"))?;
-            Ok(arr.value(row) as u64)
-        }
-        DataType::UInt16 => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<arrow_array::UInt16Array>()
-                .ok_or_else(|| anyhow!("uint16 cast"))?;
-            Ok(arr.value(row) as u64)
-        }
-        DataType::UInt8 => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<arrow_array::UInt8Array>()
-                .ok_or_else(|| anyhow!("uint8 cast"))?;
-            Ok(arr.value(row) as u64)
-        }
-        _ => Err(anyhow!("unsupported uint source")),
-    }
-}
-
-fn parse_bool(value: &str) -> Option<bool> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "true" | "1" => Some(true),
-        "false" | "0" => Some(false),
-        _ => None,
-    }
-}
-
-fn parse_i64(value: &str) -> Option<i64> {
-    value.trim().parse::<i64>().ok()
-}
-
-fn parse_i32(value: &str) -> Option<i32> {
-    value.trim().parse::<i32>().ok()
-}
-
-fn parse_u64(value: &str) -> Option<u64> {
-    value.trim().parse::<u64>().ok()
-}
-
-fn parse_u32(value: &str) -> Option<u32> {
-    value.trim().parse::<u32>().ok()
-}
-
-fn parse_f64(value: &str) -> Option<f64> {
-    value.trim().parse::<f64>().ok()
-}
-
-fn parse_f32(value: &str) -> Option<f32> {
-    value.trim().parse::<f32>().ok()
-}
-
 fn trim_str_bytes(value: &str, max: usize) -> &str {
     if value.len() <= max {
         return value;
@@ -8703,49 +8066,6 @@ fn trim_str_bytes(value: &str, max: usize) -> &str {
         end -= 1;
     }
     &value[..end]
-}
-
-fn parse_timestamp_text(value: &str, format: Option<&str>) -> Option<(i64, u32)> {
-    let ts = if let Some(fmt) = format {
-        if fmt == "rfc3339" {
-            chrono::DateTime::parse_from_rfc3339(value)
-                .ok()
-                .map(|v| v.naive_utc())
-        } else {
-            NaiveDateTime::parse_from_str(value, fmt).ok().or_else(|| {
-                NaiveDate::parse_from_str(value, fmt)
-                    .ok()
-                    .map(|d| d.and_hms_opt(0, 0, 0).unwrap())
-            })
-        }
-    } else {
-        chrono::DateTime::parse_from_rfc3339(value)
-            .ok()
-            .map(|v| v.naive_utc())
-            .or_else(|| NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S").ok())
-            .or_else(|| NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S%.f").ok())
-            .or_else(|| NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M").ok())
-            .or_else(|| NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S").ok())
-            .or_else(|| NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S%.f").ok())
-            .or_else(|| NaiveDate::parse_from_str(value, "%Y-%m-%d").ok().map(|d| d.and_hms_opt(0, 0, 0).unwrap()))
-    }?;
-    let ts = ts.and_utc();
-    Some((ts.timestamp(), ts.timestamp_subsec_nanos()))
-}
-
-fn parse_date_text(value: &str, format: Option<&str>) -> Option<i32> {
-    let dt = if let Some(fmt) = format {
-        NaiveDate::parse_from_str(value, fmt)
-            .ok()
-            .or_else(|| NaiveDateTime::parse_from_str(value, fmt).ok().map(|v| v.date()))
-    } else {
-        NaiveDate::parse_from_str(value, "%Y-%m-%d")
-            .ok()
-            .or_else(|| NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S").ok().map(|v| v.date()))
-            .or_else(|| chrono::DateTime::parse_from_rfc3339(value).ok().map(|v| v.date_naive()))
-    }?;
-    let ts = dt.and_hms_opt(0, 0, 0)?.and_utc().timestamp();
-    Some(days_from_secs(ts))
 }
 
 #[derive(Clone, Debug)]
@@ -8973,96 +8293,8 @@ fn fraction_to_nanos(value: u32, digits: usize) -> u32 {
     }
 }
 
-fn timestamp_from_int(value: i64, unit: TimestampUnit) -> (i64, u32) {
-    match unit {
-        TimestampUnit::Seconds => (value, 0),
-        TimestampUnit::Millis => {
-            let secs = value.div_euclid(1_000);
-            let millis = value.rem_euclid(1_000) as u32;
-            (secs, millis * 1_000_000)
-        }
-        TimestampUnit::Micros => {
-            let secs = value.div_euclid(1_000_000);
-            let micros = value.rem_euclid(1_000_000) as u32;
-            (secs, micros * 1_000)
-        }
-        TimestampUnit::Nanos => {
-            let secs = value.div_euclid(1_000_000_000);
-            let nanos = value.rem_euclid(1_000_000_000) as u32;
-            (secs, nanos)
-        }
-    }
-}
-
 fn days_from_secs(secs: i64) -> i32 {
     secs.div_euclid(86_400) as i32
-}
-
-fn parse_decimal_i128(value: &str, scale: i32) -> Option<i128> {
-    let value = value.trim();
-    if value.is_empty() {
-        return None;
-    }
-    let negative = value.starts_with('-');
-    let digits = value
-        .strip_prefix('+')
-        .or_else(|| value.strip_prefix('-'))
-        .unwrap_or(value);
-    let mut parts = digits.split('.');
-    let whole = parts.next().unwrap_or("");
-    let frac = parts.next().unwrap_or("");
-    if parts.next().is_some() {
-        return None;
-    }
-    let scale = scale.max(0) as usize;
-    if frac.len() > scale {
-        return None;
-    }
-    let mut buf = String::with_capacity(whole.len() + scale);
-    buf.push_str(whole);
-    buf.push_str(frac);
-    for _ in frac.len()..scale {
-        buf.push('0');
-    }
-    let parsed = buf.parse::<i128>().ok()?;
-    if negative {
-        Some(-parsed)
-    } else {
-        Some(parsed)
-    }
-}
-
-fn parse_decimal_i256(value: &str, scale: i32) -> Option<arrow_buffer::i256> {
-    let value = value.trim();
-    if value.is_empty() {
-        return None;
-    }
-    let negative = value.starts_with('-');
-    let digits = value
-        .strip_prefix('+')
-        .or_else(|| value.strip_prefix('-'))
-        .unwrap_or(value);
-    let mut parts = digits.split('.');
-    let whole = parts.next().unwrap_or("");
-    let frac = parts.next().unwrap_or("");
-    if parts.next().is_some() {
-        return None;
-    }
-    let scale = scale.max(0) as usize;
-    if frac.len() > scale {
-        return None;
-    }
-    let mut buf = String::with_capacity(whole.len() + scale);
-    buf.push_str(whole);
-    buf.push_str(frac);
-    for _ in frac.len()..scale {
-        buf.push('0');
-    }
-    let mut parsed = arrow_buffer::i256::from_string(&buf)?;
-    if negative {
-        parsed = parsed.checked_neg()?;
-    }
-    Some(parsed)
 }
 
 fn value_from_array(array: &ArrayRef, row: usize) -> Result<JsonValue> {
