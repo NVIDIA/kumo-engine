@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Result};
+use gxhash::GxHasher;
 use memmap2::Mmap;
 use ptr_hash::hash::{FxHash, Xx128};
 use ptr_hash::DefaultPtrHash;
@@ -10,6 +11,7 @@ const PK_DATA_MAGIC: &[u8; 8] = b"DGPKDAT\0";
 const PK_DATA_VERSION: u32 = 1;
 const PK_DATA_HEADER_LEN: usize = 8 + 4 + 1 + 1 + 4 + 8 + 8;
 const PK_DATA_ENTRY_LEN: usize = 8 + 4;
+const GXHASH_FINGERPRINT_SEED: u64 = 0x6a09e667f3bcc909;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyType {
@@ -106,12 +108,12 @@ impl PkDataHeader {
 
 
 #[derive(Clone, epserde::prelude::Epserde)]
-pub struct PkXxHash;
+pub struct PkGxHash;
 
-impl PkXxHash {
+impl PkGxHash {
     #[inline(always)]
     pub(crate) fn hash<Key: std::hash::Hash + ?Sized>(x: &Key, seed: u64) -> u64 {
-        let mut hasher = twox_hash::XxHash64::with_seed(seed);
+        let mut hasher = GxHasher::with_seed(seed as i64);
         x.hash(&mut hasher);
         hasher.finish()
     }
@@ -334,19 +336,18 @@ pub fn write_pk_data_header(
 
 pub fn fingerprint_for_key(key: &Key, seed: u64) -> u64 {
     match key {
-        Key::Int(value) => PkXxHash::hash(value, seed),
-        Key::Bytes(bytes) => PkXxHash::hash(bytes, seed),
-        Key::Uuid(value) => PkXxHash::hash(value, seed),
-        Key::Uuid256(value) => PkXxHash::hash(value, seed),
-        Key::Ip(value) => PkXxHash::hash(value, seed),
+        Key::Int(value) => PkGxHash::hash(value, seed),
+        Key::Bytes(bytes) => PkGxHash::hash(bytes, seed),
+        Key::Uuid(value) => PkGxHash::hash(value, seed),
+        Key::Uuid256(value) => PkGxHash::hash(value, seed),
+        Key::Ip(value) => PkGxHash::hash(value, seed),
     }
 }
 
 pub fn fingerprint_seed_for(table: &str, shard: usize) -> u64 {
-    let mut hasher = twox_hash::XxHash64::with_seed(0);
-    hasher.write(table.as_bytes());
-    hasher.write_u64(shard as u64);
-    hasher.finish()
+    let _ = table;
+    let _ = shard;
+    GXHASH_FINGERPRINT_SEED
 }
 
 pub fn write_pk_data_entry(

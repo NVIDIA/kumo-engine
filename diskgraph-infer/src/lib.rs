@@ -2,7 +2,6 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use ahash::AHashMap;
 use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
 use chrono::{NaiveDate, NaiveDateTime, Utc};
@@ -1975,7 +1974,7 @@ fn infer_edge_sort_keys(
     let weight_encoding = WeightEncodingSpec {
         dtype: WeightEncodingKind::Float16,
     };
-    let mut rel_specs = AHashMap::new();
+    let mut rel_specs = HashMap::new();
     for rel in rels {
         let Some(dst_table) = table_map.get(rel.dst_table.as_str()) else {
             continue;
@@ -1992,7 +1991,7 @@ fn infer_edge_sort_keys(
             );
         }
     }
-    let mut edge_specs = AHashMap::new();
+    let mut edge_specs = HashMap::new();
     for table in tables {
         let Some(edge_table) = &table.edge_table else {
             continue;

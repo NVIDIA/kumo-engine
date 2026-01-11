@@ -1,22 +1,19 @@
 use anyhow::{anyhow, Result};
-use ahash::RandomState;
 use diskgraph_core::metadata::PrimaryKeyMap;
 use epserde::prelude::{Deserialize as EpDeserialize, Flags as EpFlags};
+use gxhash::GxHasher;
 use memmap2::Mmap;
 use ptr_hash::hash::{FxHash, Xx128};
 use ptr_hash::DefaultPtrHash;
 use std::fs::File;
-use std::hash::{BuildHasher, Hash, Hasher};
+use std::hash::{Hash, Hasher};
 
 const PK_DATA_MAGIC: &[u8; 8] = b"DGPKDAT\0";
 const PK_DATA_VERSION: u32 = 1;
 const PK_DATA_HEADER_LEN: usize = 8 + 4 + 1 + 1 + 4 + 8 + 8;
 const PK_DATA_ENTRY_LEN: usize = 8 + 4;
 
-const AHASH_SEED_1: u64 = 0x9e3779b185ebca87;
-const AHASH_SEED_2: u64 = 0xc2b2ae3d27d4eb4f;
-const AHASH_SEED_3: u64 = 0x165667b19e3779f9;
-const AHASH_SEED_4: u64 = 0xd6e8feb86659fd93;
+const GXHASH_SHARD_SEED: u64 = 0x6a09e667f3bcc909;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyType {
@@ -363,7 +360,7 @@ pub fn shard_for_key(key: &Key, num_shards: usize) -> usize {
     }
     let mut scratch = [0u8; 16];
     let bytes = key_hash_bytes(key, &mut scratch);
-    let mut hasher = fixed_hash_state().build_hasher();
+    let mut hasher = GxHasher::with_seed(GXHASH_SHARD_SEED as i64);
     hasher.write(bytes);
     (hasher.finish() as usize) % num_shards
 }
@@ -438,17 +435,8 @@ fn key_hash_bytes<'a>(key: &'a Key, scratch: &'a mut [u8; 16]) -> &'a [u8] {
     }
 }
 
-fn fixed_hash_state() -> RandomState {
-    RandomState::with_seeds(
-        AHASH_SEED_1,
-        AHASH_SEED_2,
-        AHASH_SEED_3,
-        AHASH_SEED_4,
-    )
-}
-
 fn fingerprint_for_key(key: &Key, seed: u64) -> u64 {
-    let mut hasher = twox_hash::XxHash64::with_seed(seed);
+    let mut hasher = GxHasher::with_seed(seed as i64);
     match key {
         Key::Int(v) => v.hash(&mut hasher),
         Key::Uuid(v) => v.hash(&mut hasher),

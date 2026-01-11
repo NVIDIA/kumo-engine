@@ -5,7 +5,7 @@ pub mod source_metadata;
 
 use crate::mapping::{
     fingerprint_seed_for, write_pk_data_entry, write_pk_data_header, Key, KeyType, PkHashShard,
-    PkHashStore, PkXxHash,
+    PkHashStore, PkGxHash,
 };
 use crate::source_metadata::{
     relationship_name, ColumnSpec, ColumnType, SortKeySpec, TableFormat, TableSpec,
@@ -45,18 +45,18 @@ use pprof::protos::Message;
 use pprof::ProfilerGuard;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
-use ahash::{AHashMap as HashMap, RandomState};
+use gxhash::GxHasher;
 use epserde::prelude::Serialize as EpSerialize;
 use ptr_hash::hash::{FxHash, Xx128};
 use ptr_hash::DefaultPtrHash;
 use std::fs;
 use std::io::{self, BufWriter, Read, Write};
-use std::hash::{BuildHasher, Hash, Hasher};
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::collections::hash_map::Entry;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 use std::process::{Command, Stdio};
 use tokio::runtime::Runtime;
@@ -76,23 +76,7 @@ const SAMPLE_ROW_TARGET: usize = 10_000;
 const MAX_NODE_DATA_LEN: usize = 60 * 1024;
 const PROGRESS_ROW_BATCH: u64 = 1_000_000;
 const MAX_VAR_KEY_LEN: usize = u16::MAX as usize;
-const AHASH_SEED_1: u64 = 0x9e3779b185ebca87;
-const AHASH_SEED_2: u64 = 0xc2b2ae3d27d4eb4f;
-const AHASH_SEED_3: u64 = 0x165667b19e3779f9;
-const AHASH_SEED_4: u64 = 0xd6e8feb86659fd93;
-
-fn fixed_hash_state() -> RandomState {
-    RandomState::with_seeds(
-        AHASH_SEED_1,
-        AHASH_SEED_2,
-        AHASH_SEED_3,
-        AHASH_SEED_4,
-    )
-}
-
-fn fixed_hash_map<K, V>() -> HashMap<K, V> {
-    HashMap::with_hasher(fixed_hash_state())
-}
+const GXHASH_SHARD_SEED: u64 = 0x6a09e667f3bcc909;
 
 #[derive(Clone, Copy, Debug)]
 enum KeyParseError {
@@ -201,7 +185,7 @@ struct TableIndexTotals {
 
 impl IndexProgressAdapter {
     fn new(cb: ProgressCallback, table_totals: HashMap<String, TableIndexTotals>) -> Self {
-        let mut table_states = fixed_hash_map();
+        let mut table_states = HashMap::new();
         for (table, totals) in table_totals {
             table_states.insert(
                 table,
@@ -217,7 +201,7 @@ impl IndexProgressAdapter {
         Self {
             cb,
             state: Mutex::new(IndexProgressTracker {
-                shard_states: fixed_hash_map(),
+                shard_states: HashMap::new(),
                 table_states,
             }),
         }
@@ -1431,20 +1415,20 @@ impl IngestContext {
             },
             index_mem_budget,
             num_shards,
-            table_rows: fixed_hash_map(),
-            table_contexts: fixed_hash_map(),
-            shard_rows: fixed_hash_map(),
-            shard_offsets: fixed_hash_map(),
-            pk_hash_paths: fixed_hash_map(),
+            table_rows: HashMap::new(),
+            table_contexts: HashMap::new(),
+            shard_rows: HashMap::new(),
+            shard_offsets: HashMap::new(),
+            pk_hash_paths: HashMap::new(),
             relation_defs,
             relationships,
-            edge_counts: fixed_hash_map(),
-            pk_duplicate_counts: fixed_hash_map(),
-            pk_duplicate_samples: fixed_hash_map(),
+            edge_counts: HashMap::new(),
+            pk_duplicate_counts: HashMap::new(),
+            pk_duplicate_samples: HashMap::new(),
             key_parse_failures: 0,
             key_lookup_failures: 0,
             key_failure_samples: Vec::new(),
-            key_failures_by_context: fixed_hash_map(),
+            key_failures_by_context: HashMap::new(),
             output: output.to_string(),
             trimmed_strings: std::sync::Arc::new(AtomicU64::new(0)),
             progress: options.progress,
@@ -1839,7 +1823,7 @@ impl IngestContext {
         let root = require_local_output(&self.target)?.to_path_buf();
         let temp_root = root.join(TEMP_DIR_NAME);
         fs::create_dir_all(&temp_root)?;
-        let mut table_rows: HashMap<String, u64> = fixed_hash_map();
+        let mut table_rows: HashMap<String, u64> = HashMap::new();
         let tables = self.source.tables.clone();
         if let Some(pool) = self.pool.as_deref() {
             #[derive(Default)]
@@ -2770,14 +2754,14 @@ impl IngestContext {
     fn build_sharded_pk_maps(&mut self) -> Result<()> {
         let root = require_local_output(&self.target)?.to_path_buf();
         let pk_map_time = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
-        let duplicate_counts = std::sync::Arc::new(std::sync::Mutex::new(fixed_hash_map()));
-        let duplicate_samples = std::sync::Arc::new(std::sync::Mutex::new(fixed_hash_map()));
+        let duplicate_counts = std::sync::Arc::new(std::sync::Mutex::new(HashMap::new()));
+        let duplicate_samples = std::sync::Arc::new(std::sync::Mutex::new(HashMap::new()));
         let mut tasks = Vec::new();
         let mut pk_hash_handles: HashMap<
             String,
             std::sync::Arc<std::sync::Mutex<Vec<Option<PkHashPaths>>>>,
         > =
-            fixed_hash_map();
+            HashMap::new();
         for table in &self.source.tables {
             if table.edge_table.is_some() || table.primary_key.is_none() {
                 continue;
@@ -2870,7 +2854,7 @@ impl IngestContext {
                                 let mut entries = vec![(0u64, 0u32); slots];
                                 for (key, value) in keys.iter().zip(values.iter()) {
                                     let idx = mphf.index_no_remap(key);
-                                    let fp = PkXxHash::hash(key, fingerprint_seed);
+                                    let fp = PkGxHash::hash(key, fingerprint_seed);
                                     entries[idx] = (fp, *value);
                                 }
                                 let hash_rel = format!(
@@ -2944,7 +2928,7 @@ impl IngestContext {
                                 let mut entries = vec![(0u64, 0u32); slots];
                                 for (key, value) in keys.iter().zip(values.iter()) {
                                     let idx = mphf.index_no_remap(key);
-                                    let fp = PkXxHash::hash(key, fingerprint_seed);
+                                    let fp = PkGxHash::hash(key, fingerprint_seed);
                                     entries[idx] = (fp, *value);
                                 }
                                 let hash_rel = format!(
@@ -3013,7 +2997,7 @@ impl IngestContext {
                                 let mut entries = vec![(0u64, 0u32); slots];
                                 for (key, value) in keys.iter().zip(values.iter()) {
                                     let idx = mphf.index_no_remap(key);
-                                    let fp = PkXxHash::hash(key, fingerprint_seed);
+                                    let fp = PkGxHash::hash(key, fingerprint_seed);
                                     entries[idx] = (fp, *value);
                                 }
                                 let hash_rel = format!(
@@ -3082,7 +3066,7 @@ impl IngestContext {
                                 let mut entries = vec![(0u64, 0u32); slots];
                                 for (key, value) in keys.iter().zip(values.iter()) {
                                     let idx = mphf.index_no_remap(key);
-                                    let fp = PkXxHash::hash(key, fingerprint_seed);
+                                    let fp = PkGxHash::hash(key, fingerprint_seed);
                                     entries[idx] = (fp, *value);
                                 }
                                 let hash_rel = format!(
@@ -3150,7 +3134,7 @@ impl IngestContext {
                                 let mut entries = vec![(0u64, 0u32); slots];
                                 for (key, value) in keys.iter().zip(values.iter()) {
                                     let idx = mphf.index_no_remap(key);
-                                    let fp = PkXxHash::hash(key, fingerprint_seed);
+                                    let fp = PkGxHash::hash(key, fingerprint_seed);
                                     entries[idx] = (fp, *value);
                                 }
                                 let hash_rel = format!(
@@ -3318,8 +3302,8 @@ impl IngestContext {
     fn edge_build_context(&mut self) -> Result<EdgeBuildContext> {
         let root = require_local_output(&self.target)?.to_path_buf();
         self.build_shard_offsets();
-        let mut rel_sort_bits = fixed_hash_map();
-        let mut rel_sort_keys = fixed_hash_map();
+        let mut rel_sort_bits = HashMap::new();
+        let mut rel_sort_keys = HashMap::new();
         for rel in &self.relation_defs {
             let sort_bits = rel.sort_key.as_ref().map(|cfg| cfg.width_bits);
             rel_sort_bits.insert(rel.name.clone(), sort_bits);
@@ -3347,7 +3331,7 @@ impl IngestContext {
                 );
             }
         }
-        let mut max_ids = fixed_hash_map();
+        let mut max_ids = HashMap::new();
         for (table, counts) in &self.shard_rows {
             let total: u64 = counts.iter().sum();
             let max_id = total.saturating_sub(1);
@@ -3423,8 +3407,8 @@ impl IngestContext {
             let (tx, rx) = std::sync::mpsc::channel::<Result<EdgeMapResult>>();
             let mut tasks = Vec::new();
             let mut task_count = 0u64;
-            let mut expected = fixed_hash_map();
-            let mut totals = fixed_hash_map();
+            let mut expected = HashMap::new();
+            let mut totals = HashMap::new();
 
             for rel in &self.relationships {
                 let rel = rel.clone();
@@ -3931,7 +3915,7 @@ impl IngestContext {
 
             drop(tx);
             run_tasks(tasks, 0, Some(task_time.clone()), Some(pool))?;
-            let mut done = fixed_hash_map();
+            let mut done = HashMap::new();
             for _ in 0..task_count {
                 let result = rx
                     .recv()
@@ -4511,7 +4495,7 @@ impl IngestContext {
     }
 
     fn build_shard_offsets(&mut self) {
-        let mut offsets = fixed_hash_map();
+        let mut offsets = HashMap::new();
         for (table, counts) in &self.shard_rows {
             let mut shard_offsets = Vec::with_capacity(counts.len());
             let mut acc = 0u64;
@@ -4614,7 +4598,7 @@ impl IngestContext {
             }
             drop(tx);
             let pool_result = pool.run_tasks(tasks, None);
-            let mut shard_stats = fixed_hash_map();
+            let mut shard_stats = HashMap::new();
             let mut total_shard_ms = 0u64;
             let mut total_shards = 0u64;
             let mut err: Option<anyhow::Error> = None;
@@ -4683,7 +4667,7 @@ impl IngestContext {
     }
 
     fn index_table_totals(&self) -> HashMap<String, TableIndexTotals> {
-        let mut totals = fixed_hash_map();
+        let mut totals = HashMap::new();
         for table in &self.source.tables {
             if table.edge_table.is_some() {
                 continue;
@@ -4836,7 +4820,7 @@ impl IngestContext {
         perf.encode_tasks = self.encode_tasks;
         perf.edges_map_tasks = self.edges_map_tasks;
         perf.index_tasks = self.index_tasks;
-        let mut node_counts = fixed_hash_map();
+        let mut node_counts = HashMap::new();
         for node in metadata.node_types.iter() {
             let count = node.max_id.saturating_add(1);
             node_counts.insert(node.name.clone(), count);
@@ -7720,7 +7704,7 @@ fn shard_for_key(bytes: &[u8], num_shards: usize) -> usize {
     if num_shards <= 1 {
         return 0;
     }
-    let mut hasher = fixed_hash_state().build_hasher();
+    let mut hasher = GxHasher::with_seed(GXHASH_SHARD_SEED as i64);
     hasher.write(bytes);
     (hasher.finish() as usize) % num_shards
 }

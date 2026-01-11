@@ -25,8 +25,7 @@ object_store = { version = "0.12.4", features = ["aws", "gcp", "azure"] }
 bytes = "1"
 url = "2"
 tempfile = "3"
-ahash = { version = "0.8", features = ["serde"] }
-twox-hash = "1.6"
+gxhash = "3.5.0"
 base64 = "0.22"
 num-bigint = "0.4"
 num-traits = "0.2"

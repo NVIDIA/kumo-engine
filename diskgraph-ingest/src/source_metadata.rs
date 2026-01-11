@@ -3,22 +3,7 @@ use diskgraph_core::metadata::EdgeStorageFormat;
 use diskgraph_rowpack::RowPackConfig;
 use fasteval::{Evaler, Parser, Slab};
 use serde::{Deserialize, Serialize};
-use ahash::{AHashMap as HashMap, RandomState};
-use std::collections::HashSet;
-
-const AHASH_SEED_1: u64 = 0x9e3779b185ebca87;
-const AHASH_SEED_2: u64 = 0xc2b2ae3d27d4eb4f;
-const AHASH_SEED_3: u64 = 0x165667b19e3779f9;
-const AHASH_SEED_4: u64 = 0xd6e8feb86659fd93;
-
-fn fixed_hash_state() -> RandomState {
-    RandomState::with_seeds(
-        AHASH_SEED_1,
-        AHASH_SEED_2,
-        AHASH_SEED_3,
-        AHASH_SEED_4,
-    )
-}
+use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceMetadata {
@@ -245,7 +230,7 @@ impl SourceMetadata {
             }
         }
         let mut table_names = HashSet::new();
-        let mut table_map: HashMap<&str, &TableSpec> = HashMap::with_hasher(fixed_hash_state());
+        let mut table_map: HashMap<&str, &TableSpec> = HashMap::new();
         let mut rel_keys = HashSet::new();
         for table in &self.tables {
             if table.name.trim().is_empty() {
@@ -758,7 +743,7 @@ fn validate_weight_expr(expr: &str, table: &TableSpec) -> Result<()> {
 
 fn rewrite_weight_expr(expr: &str) -> Result<(String, HashMap<String, String>)> {
     let mut out = String::new();
-    let mut map: HashMap<String, String> = HashMap::with_hasher(fixed_hash_state());
+    let mut map: HashMap<String, String> = HashMap::new();
     let mut chars = expr.chars().peekable();
     let mut idx = 0usize;
     while let Some(ch) = chars.next() {
