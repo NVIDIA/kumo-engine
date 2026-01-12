@@ -241,7 +241,6 @@ pub struct RowAccess<'p> {
     row: usize,
     cols_ptr: *const ArrayRef,
     cols_len: usize,
-    pools: &'p mut RowValuePools,
     _stats: RowAccessStats<'p>,
     hints: Vec<RowAccessHints>,
     fast_parsers: Vec<Option<TimestampFormatParser>>,
@@ -250,7 +249,6 @@ pub struct RowAccess<'p> {
 impl<'p> RowAccess<'p> {
     pub fn new(
         hints: Vec<RowAccessHints>,
-        pools: &'p mut RowValuePools,
         stats: RowAccessStats<'p>,
     ) -> Self {
         let fast_parsers = hints
@@ -265,7 +263,6 @@ impl<'p> RowAccess<'p> {
             row: 0,
             cols_ptr: std::ptr::null(),
             cols_len: 0,
-            pools,
             _stats: stats,
             hints,
             fast_parsers,
@@ -279,7 +276,6 @@ impl<'p> RowAccess<'p> {
 
     pub fn set_row(&mut self, row: usize) {
         self.row = row;
-        self.pools.reset();
     }
 
     pub fn row(&self) -> usize {
@@ -293,16 +289,6 @@ impl<'p> RowAccess<'p> {
         let cols = unsafe { std::slice::from_raw_parts(self.cols_ptr, self.cols_len) };
         cols.get(idx)
             .ok_or_else(|| anyhow!("missing column {}", idx))
-    }
-
-    pub fn pool_str(&mut self, value: String) -> &str {
-        let slice = self.pools.take_string_owned(value);
-        unsafe { std::mem::transmute::<&str, &str>(slice) }
-    }
-
-    pub fn pool_bytes(&mut self, value: Vec<u8>) -> &[u8] {
-        let slice = self.pools.take_bytes_owned(value);
-        unsafe { std::mem::transmute::<&[u8], &[u8]>(slice) }
     }
 
     fn hint(&self, idx: usize) -> Result<&RowAccessHints> {
@@ -1076,142 +1062,164 @@ impl<'p> RowAccess<'p> {
         }
     }
 
-    pub fn get_string(&mut self, idx: usize) -> Result<Option<&str>> {
+    pub fn with_string<T>(
+        &mut self,
+        idx: usize,
+        f: impl FnOnce(&str) -> Result<T>,
+    ) -> Result<Option<T>> {
         let array = self.array(idx)?;
         if array.is_null(self.row) {
             return Ok(None);
         }
+        let trimmed = self._stats.trimmed_strings;
         let value = match array.data_type() {
             DataType::Utf8 => array
                 .as_any()
                 .downcast_ref::<arrow_array::StringArray>()
                 .ok_or_else(|| anyhow!("string cast"))?
-                .value(self.row)
-                .to_string(),
+                .value(self.row),
             DataType::LargeUtf8 => array
                 .as_any()
                 .downcast_ref::<arrow_array::LargeStringArray>()
                 .ok_or_else(|| anyhow!("large string cast"))?
-                .value(self.row)
-                .to_string(),
+                .value(self.row),
             DataType::Binary => std::str::from_utf8(
                 array
                     .as_any()
                     .downcast_ref::<arrow_array::BinaryArray>()
                     .ok_or_else(|| anyhow!("binary cast"))?
                     .value(self.row),
-            )?
-            .to_string(),
+            )?,
             DataType::LargeBinary => std::str::from_utf8(
                 array
                     .as_any()
                     .downcast_ref::<arrow_array::LargeBinaryArray>()
                     .ok_or_else(|| anyhow!("large binary cast"))?
                     .value(self.row),
-            )?
-            .to_string(),
+            )?,
             DataType::FixedSizeBinary(_) => std::str::from_utf8(
                 array
                     .as_any()
                     .downcast_ref::<arrow_array::FixedSizeBinaryArray>()
                     .ok_or_else(|| anyhow!("fixed binary cast"))?
                     .value(self.row),
-            )?
-            .to_string(),
-            DataType::Int64 => array
-                .as_any()
-                .downcast_ref::<arrow_array::Int64Array>()
-                .ok_or_else(|| anyhow!("int64 cast"))?
-                .value(self.row)
-                .to_string(),
-            DataType::Int32 => array
-                .as_any()
-                .downcast_ref::<arrow_array::Int32Array>()
-                .ok_or_else(|| anyhow!("int32 cast"))?
-                .value(self.row)
-                .to_string(),
-            DataType::Int16 => array
-                .as_any()
-                .downcast_ref::<arrow_array::Int16Array>()
-                .ok_or_else(|| anyhow!("int16 cast"))?
-                .value(self.row)
-                .to_string(),
-            DataType::Int8 => array
-                .as_any()
-                .downcast_ref::<arrow_array::Int8Array>()
-                .ok_or_else(|| anyhow!("int8 cast"))?
-                .value(self.row)
-                .to_string(),
-            DataType::UInt64 => array
-                .as_any()
-                .downcast_ref::<arrow_array::UInt64Array>()
-                .ok_or_else(|| anyhow!("uint64 cast"))?
-                .value(self.row)
-                .to_string(),
-            DataType::UInt32 => array
-                .as_any()
-                .downcast_ref::<arrow_array::UInt32Array>()
-                .ok_or_else(|| anyhow!("uint32 cast"))?
-                .value(self.row)
-                .to_string(),
-            DataType::UInt16 => array
-                .as_any()
-                .downcast_ref::<arrow_array::UInt16Array>()
-                .ok_or_else(|| anyhow!("uint16 cast"))?
-                .value(self.row)
-                .to_string(),
-            DataType::UInt8 => array
-                .as_any()
-                .downcast_ref::<arrow_array::UInt8Array>()
-                .ok_or_else(|| anyhow!("uint8 cast"))?
-                .value(self.row)
-                .to_string(),
-            DataType::Float64 => array
-                .as_any()
-                .downcast_ref::<arrow_array::Float64Array>()
-                .ok_or_else(|| anyhow!("float64 cast"))?
-                .value(self.row)
-                .to_string(),
-            DataType::Float32 => array
-                .as_any()
-                .downcast_ref::<arrow_array::Float32Array>()
-                .ok_or_else(|| anyhow!("float32 cast"))?
-                .value(self.row)
-                .to_string(),
-            DataType::Boolean => array
-                .as_any()
-                .downcast_ref::<arrow_array::BooleanArray>()
-                .ok_or_else(|| anyhow!("bool cast"))?
-                .value(self.row)
-                .to_string(),
-            DataType::Date32 => array
-                .as_any()
-                .downcast_ref::<arrow_array::Date32Array>()
-                .ok_or_else(|| anyhow!("date cast"))?
-                .value(self.row)
-                .to_string(),
+            )?,
+            DataType::Int64 => {
+                let value = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Int64Array>()
+                    .ok_or_else(|| anyhow!("int64 cast"))?
+                    .value(self.row);
+                return Ok(Some(with_stack_str(value, trimmed, f)?));
+            }
+            DataType::Int32 => {
+                let value = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Int32Array>()
+                    .ok_or_else(|| anyhow!("int32 cast"))?
+                    .value(self.row);
+                return Ok(Some(with_stack_str(value, trimmed, f)?));
+            }
+            DataType::Int16 => {
+                let value = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Int16Array>()
+                    .ok_or_else(|| anyhow!("int16 cast"))?
+                    .value(self.row);
+                return Ok(Some(with_stack_str(value, trimmed, f)?));
+            }
+            DataType::Int8 => {
+                let value = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Int8Array>()
+                    .ok_or_else(|| anyhow!("int8 cast"))?
+                    .value(self.row);
+                return Ok(Some(with_stack_str(value, trimmed, f)?));
+            }
+            DataType::UInt64 => {
+                let value = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::UInt64Array>()
+                    .ok_or_else(|| anyhow!("uint64 cast"))?
+                    .value(self.row);
+                return Ok(Some(with_stack_str(value, trimmed, f)?));
+            }
+            DataType::UInt32 => {
+                let value = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::UInt32Array>()
+                    .ok_or_else(|| anyhow!("uint32 cast"))?
+                    .value(self.row);
+                return Ok(Some(with_stack_str(value, trimmed, f)?));
+            }
+            DataType::UInt16 => {
+                let value = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::UInt16Array>()
+                    .ok_or_else(|| anyhow!("uint16 cast"))?
+                    .value(self.row);
+                return Ok(Some(with_stack_str(value, trimmed, f)?));
+            }
+            DataType::UInt8 => {
+                let value = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::UInt8Array>()
+                    .ok_or_else(|| anyhow!("uint8 cast"))?
+                    .value(self.row);
+                return Ok(Some(with_stack_str(value, trimmed, f)?));
+            }
+            DataType::Float64 => {
+                let value = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Float64Array>()
+                    .ok_or_else(|| anyhow!("float64 cast"))?
+                    .value(self.row);
+                return Ok(Some(with_stack_str(value, trimmed, f)?));
+            }
+            DataType::Float32 => {
+                let value = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Float32Array>()
+                    .ok_or_else(|| anyhow!("float32 cast"))?
+                    .value(self.row);
+                return Ok(Some(with_stack_str(value, trimmed, f)?));
+            }
+            DataType::Boolean => {
+                let value = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::BooleanArray>()
+                    .ok_or_else(|| anyhow!("bool cast"))?
+                    .value(self.row);
+                return Ok(Some(f(if value { "true" } else { "false" })?));
+            }
+            DataType::Date32 => {
+                let value = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Date32Array>()
+                    .ok_or_else(|| anyhow!("date cast"))?
+                    .value(self.row);
+                return Ok(Some(with_stack_str(value, trimmed, f)?));
+            }
             DataType::Timestamp(_, _) => {
                 let (secs, _) = timestamp_parts_from_array(array, self.row)?;
-                secs.to_string()
+                return Ok(Some(with_stack_str(secs, trimmed, f)?));
             }
             _ => return Err(anyhow!("string type mismatch")),
         };
-        let value = if value.len() > MAX_INPUT_STRING_BYTES {
-            if let Some(counter) = self._stats.trimmed_strings {
-                counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            }
-            trim_str_bytes(&value, MAX_INPUT_STRING_BYTES).to_string()
-        } else {
-            value
-        };
-        Ok(Some(self.pool_str(value)))
+        let value = trim_borrowed_str(value, MAX_INPUT_STRING_BYTES, trimmed);
+        Ok(Some(f(value)?))
     }
 
-    pub fn get_bytes(&mut self, idx: usize) -> Result<Option<&[u8]>> {
+    pub fn with_bytes<T>(
+        &mut self,
+        idx: usize,
+        f: impl FnOnce(&[u8]) -> Result<T>,
+    ) -> Result<Option<T>> {
         let array = self.array(idx)?;
         if array.is_null(self.row) {
             return Ok(None);
         }
+        let trimmed = self._stats.trimmed_strings;
         let data = match array.data_type() {
             DataType::Utf8 => array
                 .as_any()
@@ -1242,15 +1250,8 @@ impl<'p> RowAccess<'p> {
                 .value(self.row),
             _ => return Err(anyhow!("bytes type mismatch")),
         };
-        let bytes = if data.len() > MAX_INPUT_STRING_BYTES {
-            if let Some(counter) = self._stats.trimmed_strings {
-                counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            }
-            data[..MAX_INPUT_STRING_BYTES].to_vec()
-        } else {
-            data.to_vec()
-        };
-        Ok(Some(self.pool_bytes(bytes)))
+        let data = trim_borrowed_bytes(data, MAX_INPUT_STRING_BYTES, trimmed);
+        Ok(Some(f(data)?))
     }
 
     pub fn get_uuid(&self, idx: usize) -> Result<Option<[u8; 16]>> {
@@ -1816,7 +1817,11 @@ impl<'p> RowAccess<'p> {
         }
     }
 
-    pub fn get_float32_array(&mut self, idx: usize) -> Result<Option<&[f32]>> {
+    pub fn with_float32_array<T>(
+        &mut self,
+        idx: usize,
+        f: impl FnOnce(&[f32]) -> Result<T>,
+    ) -> Result<Option<T>> {
         let array = self.array(idx)?.clone();
         if array.is_null(self.row) {
             return Ok(None);
@@ -1846,7 +1851,10 @@ impl<'p> RowAccess<'p> {
                     .as_any()
                     .downcast_ref::<arrow_array::Float32Array>()
                     .ok_or_else(|| anyhow!("float32 list cast"))?;
-                let vec = self.pools.take_f32_vec(end.saturating_sub(start));
+                if values_arr.null_count() == 0 {
+                    return Ok(Some(f(&values_arr.values()[start..end])?));
+                }
+                let mut vec = Vec::with_capacity(end.saturating_sub(start));
                 for idx in start..end {
                     if values_arr.is_null(idx) {
                         vec.push(0.0);
@@ -1854,16 +1862,14 @@ impl<'p> RowAccess<'p> {
                         vec.push(values_arr.value(idx));
                     }
                 }
-                Ok(Some(unsafe {
-                    std::mem::transmute::<&[f32], &[f32]>(vec.as_slice())
-                }))
+                Ok(Some(f(&vec)?))
             }
             DataType::Float64 => {
                 let values_arr = values
                     .as_any()
                     .downcast_ref::<arrow_array::Float64Array>()
                     .ok_or_else(|| anyhow!("float64 list cast"))?;
-                let vec = self.pools.take_f32_vec(end.saturating_sub(start));
+                let mut vec = Vec::with_capacity(end.saturating_sub(start));
                 for idx in start..end {
                     if values_arr.is_null(idx) {
                         vec.push(0.0);
@@ -1871,16 +1877,14 @@ impl<'p> RowAccess<'p> {
                         vec.push(values_arr.value(idx) as f32);
                     }
                 }
-                Ok(Some(unsafe {
-                    std::mem::transmute::<&[f32], &[f32]>(vec.as_slice())
-                }))
+                Ok(Some(f(&vec)?))
             }
             DataType::Float16 => {
                 let values_arr = values
                     .as_any()
                     .downcast_ref::<arrow_array::Float16Array>()
                     .ok_or_else(|| anyhow!("float16 list cast"))?;
-                let vec = self.pools.take_f32_vec(end.saturating_sub(start));
+                let mut vec = Vec::with_capacity(end.saturating_sub(start));
                 for idx in start..end {
                     if values_arr.is_null(idx) {
                         vec.push(0.0);
@@ -1888,15 +1892,17 @@ impl<'p> RowAccess<'p> {
                         vec.push(values_arr.value(idx).to_f32());
                     }
                 }
-                Ok(Some(unsafe {
-                    std::mem::transmute::<&[f32], &[f32]>(vec.as_slice())
-                }))
+                Ok(Some(f(&vec)?))
             }
             _ => Err(anyhow!("float32 array type mismatch")),
         }
     }
 
-    pub fn get_float64_array(&mut self, idx: usize) -> Result<Option<&[f64]>> {
+    pub fn with_float64_array<T>(
+        &mut self,
+        idx: usize,
+        f: impl FnOnce(&[f64]) -> Result<T>,
+    ) -> Result<Option<T>> {
         let array = self.array(idx)?.clone();
         if array.is_null(self.row) {
             return Ok(None);
@@ -1924,7 +1930,10 @@ impl<'p> RowAccess<'p> {
             .as_any()
             .downcast_ref::<arrow_array::Float64Array>()
             .ok_or_else(|| anyhow!("float64 list cast"))?;
-        let vec = self.pools.take_f64_vec(end.saturating_sub(start));
+        if values_arr.null_count() == 0 {
+            return Ok(Some(f(&values_arr.values()[start..end])?));
+        }
+        let mut vec = Vec::with_capacity(end.saturating_sub(start));
         for idx in start..end {
             if values_arr.is_null(idx) {
                 vec.push(0.0);
@@ -1932,9 +1941,7 @@ impl<'p> RowAccess<'p> {
                 vec.push(values_arr.value(idx));
             }
         }
-        Ok(Some(unsafe {
-            std::mem::transmute::<&[f64], &[f64]>(vec.as_slice())
-        }))
+        Ok(Some(f(&vec)?))
     }
 }
 
@@ -1996,6 +2003,77 @@ fn trim_str_bytes(value: &str, max: usize) -> &str {
         end -= 1;
     }
     &value[..end]
+}
+
+fn trim_borrowed_str<'a>(
+    value: &'a str,
+    max: usize,
+    counter: Option<&std::sync::atomic::AtomicU64>,
+) -> &'a str {
+    if value.len() <= max {
+        return value;
+    }
+    if let Some(counter) = counter {
+        counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    trim_str_bytes(value, max)
+}
+
+fn trim_borrowed_bytes<'a>(
+    value: &'a [u8],
+    max: usize,
+    counter: Option<&std::sync::atomic::AtomicU64>,
+) -> &'a [u8] {
+    if value.len() <= max {
+        return value;
+    }
+    if let Some(counter) = counter {
+        counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    &value[..max]
+}
+
+struct StackStr {
+    buf: [u8; 64],
+    len: usize,
+}
+
+impl StackStr {
+    fn new() -> Self {
+        Self {
+            buf: [0u8; 64],
+            len: 0,
+        }
+    }
+
+    fn as_str(&self) -> Result<&str> {
+        std::str::from_utf8(&self.buf[..self.len]).map_err(|_| anyhow!("utf8 format failed"))
+    }
+}
+
+impl std::fmt::Write for StackStr {
+    fn write_str(&mut self, s: &str) -> std::fmt::Result {
+        let bytes = s.as_bytes();
+        if self.len + bytes.len() > self.buf.len() {
+            return Err(std::fmt::Error);
+        }
+        self.buf[self.len..self.len + bytes.len()].copy_from_slice(bytes);
+        self.len += bytes.len();
+        Ok(())
+    }
+}
+
+fn with_stack_str<Out, V: std::fmt::Display>(
+    value: V,
+    counter: Option<&std::sync::atomic::AtomicU64>,
+    f: impl FnOnce(&str) -> Result<Out>,
+) -> Result<Out> {
+    use std::fmt::Write as _;
+    let mut buf = StackStr::new();
+    write!(&mut buf, "{}", value).map_err(|_| anyhow!("string format overflow"))?;
+    let s = buf.as_str()?;
+    let s = trim_borrowed_str(s, MAX_INPUT_STRING_BYTES, counter);
+    f(s)
 }
 
 fn parse_uuid_string(bytes: &[u8]) -> Option<[u8; 16]> {
@@ -2619,92 +2697,6 @@ fn timestamp_parts_from_array(array: &ArrayRef, row: usize) -> Result<(i64, u32)
     }
 }
 
-pub struct RowValuePools {
-    strings: Vec<String>,
-    bytes: Vec<Vec<u8>>,
-    arrays_f32: Vec<Vec<f32>>,
-    arrays_f64: Vec<Vec<f64>>,
-    strings_len: usize,
-    bytes_len: usize,
-    arrays_f32_len: usize,
-    arrays_f64_len: usize,
-}
-
-impl RowValuePools {
-    pub fn new() -> Self {
-        Self {
-            strings: Vec::new(),
-            bytes: Vec::new(),
-            arrays_f32: Vec::new(),
-            arrays_f64: Vec::new(),
-            strings_len: 0,
-            bytes_len: 0,
-            arrays_f32_len: 0,
-            arrays_f64_len: 0,
-        }
-    }
-
-    fn reset(&mut self) {
-        self.strings_len = 0;
-        self.bytes_len = 0;
-        self.arrays_f32_len = 0;
-        self.arrays_f64_len = 0;
-    }
-
-    fn take_string_owned(&mut self, value: String) -> &str {
-        if self.strings_len < self.strings.len() {
-            self.strings[self.strings_len] = value;
-            let out = self.strings[self.strings_len].as_str();
-            self.strings_len += 1;
-            out
-        } else {
-            self.strings.push(value);
-            self.strings_len += 1;
-            self.strings.last().unwrap().as_str()
-        }
-    }
-
-    fn take_bytes_owned(&mut self, value: Vec<u8>) -> &[u8] {
-        if self.bytes_len < self.bytes.len() {
-            self.bytes[self.bytes_len] = value;
-            let out = self.bytes[self.bytes_len].as_slice();
-            self.bytes_len += 1;
-            out
-        } else {
-            self.bytes.push(value);
-            self.bytes_len += 1;
-            self.bytes.last().unwrap().as_slice()
-        }
-    }
-
-    fn take_f32_vec(&mut self, capacity: usize) -> &mut Vec<f32> {
-        if self.arrays_f32_len < self.arrays_f32.len() {
-            let slot = &mut self.arrays_f32[self.arrays_f32_len];
-            slot.clear();
-            slot.reserve(capacity);
-            self.arrays_f32_len += 1;
-            slot
-        } else {
-            self.arrays_f32.push(Vec::with_capacity(capacity));
-            self.arrays_f32_len += 1;
-            self.arrays_f32.last_mut().unwrap()
-        }
-    }
-
-    fn take_f64_vec(&mut self, capacity: usize) -> &mut Vec<f64> {
-        if self.arrays_f64_len < self.arrays_f64.len() {
-            let slot = &mut self.arrays_f64[self.arrays_f64_len];
-            slot.clear();
-            slot.reserve(capacity);
-            self.arrays_f64_len += 1;
-            slot
-        } else {
-            self.arrays_f64.push(Vec::with_capacity(capacity));
-            self.arrays_f64_len += 1;
-            self.arrays_f64.last_mut().unwrap()
-        }
-    }
-}
 
 pub struct RowAccessStats<'a> {
     pub trimmed_strings: Option<&'a std::sync::atomic::AtomicU64>,
@@ -2723,6 +2715,7 @@ impl<'a> Default for RowAccessStats<'a> {
         }
     }
 }
+
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RowPackContext {
@@ -3245,13 +3238,18 @@ impl RowPackContextBuilder {
                     None => stats.observe_null(),
                     Some(v) => stats.observe_float32(v),
                 },
-                IngestedType::String => match access.get_string(idx).ok().flatten() {
+                IngestedType::String => {
+                    match access.with_string(idx, |v| {
+                        stats.observe_string(v, &self.config);
+                        Ok(())
+                    })? {
+                        None => stats.observe_null(),
+                        Some(_) => {}
+                    }
+                }
+                IngestedType::Bytes => match access.with_bytes(idx, |v| Ok(v.len()))? {
                     None => stats.observe_null(),
-                    Some(v) => stats.observe_string(v, &self.config),
-                },
-                IngestedType::Bytes => match access.get_bytes(idx).ok().flatten() {
-                    None => stats.observe_null(),
-                    Some(v) => stats.observe_bytes_len(v.len()),
+                    Some(len) => stats.observe_bytes_len(len),
                 },
                 IngestedType::Uuid => match access.get_uuid(idx).ok().flatten() {
                     None => stats.observe_null(),
@@ -3282,15 +3280,23 @@ impl RowPackContextBuilder {
                     Some(_) => stats.count = stats.count.saturating_add(1),
                 },
                 IngestedType::Float32Array | IngestedType::Float16Array => {
-                    match access.get_float32_array(idx).ok().flatten() {
+                    match access.with_float32_array(idx, |values| {
+                        stats.observe_array_f32(values);
+                        Ok(())
+                    })? {
                         None => stats.observe_null(),
-                        Some(values) => stats.observe_array_f32(values),
+                        Some(_) => {}
                     }
                 }
-                IngestedType::Float64Array => match access.get_float64_array(idx).ok().flatten() {
-                    None => stats.observe_null(),
-                    Some(values) => stats.observe_array_f64(values),
-                },
+                IngestedType::Float64Array => {
+                    match access.with_float64_array(idx, |values| {
+                        stats.observe_array_f64(values);
+                        Ok(())
+                    })? {
+                        None => stats.observe_null(),
+                        Some(_) => {}
+                    }
+                }
             }
         }
         self.samples_seen += 1;
@@ -4483,42 +4489,48 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                IngestedType::String => match access.get_string(idx).ok().flatten() {
-                    None => 0u8,
-                    Some(v) => encode_string(
-                        &mut scratch.data,
-                        v,
-                        col,
-                        self.dict_maps[idx].as_ref(),
-                        self.alphabet_maps[idx].as_ref(),
-                        self.bpe_tries[idx].as_ref(),
-                        Some(&mut scratch.bpe_tokens),
-                        Some(&mut scratch.lz4_buf),
-                    )?,
-                },
-                IngestedType::Bytes => match access.get_bytes(idx).ok().flatten() {
-                    None => 0u8,
-                    Some(v) => {
+                IngestedType::String => {
+                    match access.with_string(idx, |v| {
+                        encode_string(
+                            &mut scratch.data,
+                            v,
+                            col,
+                            self.dict_maps[idx].as_ref(),
+                            self.alphabet_maps[idx].as_ref(),
+                            self.bpe_tries[idx].as_ref(),
+                            Some(&mut scratch.bpe_tokens),
+                            Some(&mut scratch.lz4_buf),
+                        )
+                    })? {
+                        None => 0u8,
+                        Some(tag) => tag,
+                    }
+                }
+                IngestedType::Bytes => {
+                    match access.with_bytes(idx, |v| {
                         if let ColumnEncoding::Bytes { fixed_len } = &col.encoding {
                             if let Some(len) = fixed_len {
                                 if *len == v.len() {
                                     scratch.data.extend_from_slice(v);
-                                    1u8
+                                    Ok(1u8)
                                 } else {
                                     write_varint(v.len() as u64, &mut scratch.data);
                                     scratch.data.extend_from_slice(v);
-                                    2u8
+                                    Ok(2u8)
                                 }
                             } else {
                                 write_varint(v.len() as u64, &mut scratch.data);
                                 scratch.data.extend_from_slice(v);
-                                1u8
+                                Ok(1u8)
                             }
                         } else {
-                            return Err(anyhow!("rowpack bytes encoding mismatch"));
+                            Err(anyhow!("rowpack bytes encoding mismatch"))
                         }
+                    })? {
+                        None => 0u8,
+                        Some(tag) => tag,
                     }
-                },
+                }
                 IngestedType::Uuid => match access.get_uuid(idx).ok().flatten() {
                     None => 0u8,
                     Some(v) => {
@@ -4618,51 +4630,57 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                IngestedType::Float32Array => match access.get_float32_array(idx).ok().flatten() {
-                    None => 0u8,
-                    Some(values) => {
+                IngestedType::Float32Array => {
+                    match access.with_float32_array(idx, |values| {
                         if let ColumnEncoding::FloatArray { storage } = &col.encoding {
                             encode_float_array_f32_with_tag(
                                 &mut scratch.data,
                                 col.logical_type,
                                 *storage,
                                 values,
-                            )?
+                            )
                         } else {
-                            return Err(anyhow!("rowpack float32 array encoding mismatch"));
+                            Err(anyhow!("rowpack float32 array encoding mismatch"))
                         }
+                    })? {
+                        None => 0u8,
+                        Some(tag) => tag,
                     }
-                },
-                IngestedType::Float16Array => match access.get_float32_array(idx).ok().flatten() {
-                    None => 0u8,
-                    Some(values) => {
+                }
+                IngestedType::Float16Array => {
+                    match access.with_float32_array(idx, |values| {
                         if let ColumnEncoding::FloatArray { storage } = &col.encoding {
                             encode_float_array_f32_with_tag(
                                 &mut scratch.data,
                                 col.logical_type,
                                 *storage,
                                 values,
-                            )?
+                            )
                         } else {
-                            return Err(anyhow!("rowpack float16 array encoding mismatch"));
+                            Err(anyhow!("rowpack float16 array encoding mismatch"))
                         }
+                    })? {
+                        None => 0u8,
+                        Some(tag) => tag,
                     }
-                },
-                IngestedType::Float64Array => match access.get_float64_array(idx).ok().flatten() {
-                    None => 0u8,
-                    Some(values) => {
+                }
+                IngestedType::Float64Array => {
+                    match access.with_float64_array(idx, |values| {
                         if let ColumnEncoding::FloatArray { storage } = &col.encoding {
                             encode_float_array_f64_with_tag(
                                 &mut scratch.data,
                                 col.logical_type,
                                 *storage,
                                 values,
-                            )?
+                            )
                         } else {
-                            return Err(anyhow!("rowpack float64 array encoding mismatch"));
+                            Err(anyhow!("rowpack float64 array encoding mismatch"))
                         }
+                    })? {
+                        None => 0u8,
+                        Some(tag) => tag,
                     }
-                },
+                }
             };
             scratch.tags.write_bits(tag, 2);
         }
@@ -4846,42 +4864,48 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                IngestedType::String => match access.get_string(idx).ok().flatten() {
-                    None => 0u8,
-                    Some(v) => encode_string(
-                        data,
-                        v,
-                        col,
-                        self.dict_maps[idx].as_ref(),
-                        self.alphabet_maps[idx].as_ref(),
-                        self.bpe_tries[idx].as_ref(),
-                        None,
-                        None,
-                    )?,
-                },
-                IngestedType::Bytes => match access.get_bytes(idx).ok().flatten() {
-                    None => 0u8,
-                    Some(v) => {
+                IngestedType::String => {
+                    match access.with_string(idx, |v| {
+                        encode_string(
+                            data,
+                            v,
+                            col,
+                            self.dict_maps[idx].as_ref(),
+                            self.alphabet_maps[idx].as_ref(),
+                            self.bpe_tries[idx].as_ref(),
+                            None,
+                            None,
+                        )
+                    })? {
+                        None => 0u8,
+                        Some(tag) => tag,
+                    }
+                }
+                IngestedType::Bytes => {
+                    match access.with_bytes(idx, |v| {
                         if let ColumnEncoding::Bytes { fixed_len } = &col.encoding {
                             if let Some(len) = fixed_len {
                                 if *len == v.len() {
                                     data.extend_from_slice(v);
-                                    1u8
+                                    Ok(1u8)
                                 } else {
                                     write_varint(v.len() as u64, data);
                                     data.extend_from_slice(v);
-                                    2u8
+                                    Ok(2u8)
                                 }
                             } else {
                                 write_varint(v.len() as u64, data);
                                 data.extend_from_slice(v);
-                                1u8
+                                Ok(1u8)
                             }
                         } else {
-                            return Err(anyhow!("rowpack bytes encoding mismatch"));
+                            Err(anyhow!("rowpack bytes encoding mismatch"))
                         }
+                    })? {
+                        None => 0u8,
+                        Some(tag) => tag,
                     }
-                },
+                }
                 IngestedType::Uuid => {
                     let buf = &key_bufs[idx];
                     if buf.len() == 16 {
@@ -4984,51 +5008,57 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                IngestedType::Float32Array => match access.get_float32_array(idx).ok().flatten() {
-                    None => 0u8,
-                    Some(values) => {
+                IngestedType::Float32Array => {
+                    match access.with_float32_array(idx, |values| {
                         if let ColumnEncoding::FloatArray { storage } = &col.encoding {
                             encode_float_array_f32_with_tag(
                                 data,
                                 col.logical_type,
                                 *storage,
                                 values,
-                            )?
+                            )
                         } else {
-                            return Err(anyhow!("rowpack float32 array encoding mismatch"));
+                            Err(anyhow!("rowpack float32 array encoding mismatch"))
                         }
+                    })? {
+                        None => 0u8,
+                        Some(tag) => tag,
                     }
-                },
-                IngestedType::Float16Array => match access.get_float32_array(idx).ok().flatten() {
-                    None => 0u8,
-                    Some(values) => {
+                }
+                IngestedType::Float16Array => {
+                    match access.with_float32_array(idx, |values| {
                         if let ColumnEncoding::FloatArray { storage } = &col.encoding {
                             encode_float_array_f32_with_tag(
                                 data,
                                 col.logical_type,
                                 *storage,
                                 values,
-                            )?
+                            )
                         } else {
-                            return Err(anyhow!("rowpack float16 array encoding mismatch"));
+                            Err(anyhow!("rowpack float16 array encoding mismatch"))
                         }
+                    })? {
+                        None => 0u8,
+                        Some(tag) => tag,
                     }
-                },
-                IngestedType::Float64Array => match access.get_float64_array(idx).ok().flatten() {
-                    None => 0u8,
-                    Some(values) => {
+                }
+                IngestedType::Float64Array => {
+                    match access.with_float64_array(idx, |values| {
                         if let ColumnEncoding::FloatArray { storage } = &col.encoding {
                             encode_float_array_f64_with_tag(
                                 data,
                                 col.logical_type,
                                 *storage,
                                 values,
-                            )?
+                            )
                         } else {
-                            return Err(anyhow!("rowpack float64 array encoding mismatch"));
+                            Err(anyhow!("rowpack float64 array encoding mismatch"))
                         }
+                    })? {
+                        None => 0u8,
+                        Some(tag) => tag,
                     }
-                },
+                }
             };
             tag_writer.write_bits(tag, 2);
         }
@@ -7049,8 +7079,7 @@ mod tests {
             timestamp_unit: None,
             decimal_scale: None,
         }];
-        let mut pools = RowValuePools::new();
-        let mut access = RowAccess::new(hints, &mut pools, RowAccessStats::new(None));
+        let mut access = RowAccess::new(hints, RowAccessStats::new(None));
         access.set_cols(&cols);
 
         access.set_row(0);
@@ -7070,8 +7099,7 @@ mod tests {
             timestamp_unit: None,
             decimal_scale: None,
         }];
-        let mut pools = RowValuePools::new();
-        let mut access = RowAccess::new(hints, &mut pools, RowAccessStats::new(None));
+        let mut access = RowAccess::new(hints, RowAccessStats::new(None));
         access.set_cols(&cols);
 
         access.set_row(0);
@@ -7092,8 +7120,7 @@ mod tests {
             timestamp_unit: None,
             decimal_scale: None,
         }];
-        let mut pools = RowValuePools::new();
-        let mut access = RowAccess::new(hints, &mut pools, RowAccessStats::new(None));
+        let mut access = RowAccess::new(hints, RowAccessStats::new(None));
         access.set_cols(&cols);
         access.set_row(0);
         assert_eq!(access.get_bool(0).unwrap(), Some(false));
@@ -8058,9 +8085,8 @@ mod tests {
             timestamp_unit: None,
             decimal_scale: None,
         }];
-        let mut pools = RowValuePools::new();
         let stats = RowAccessStats::default();
-        let mut access = RowAccess::new(hints, &mut pools, stats);
+        let mut access = RowAccess::new(hints, stats);
         access.set_cols(&cols);
         access.set_row(0);
         assert!(access.get_uuid(0).is_err());
@@ -8078,9 +8104,8 @@ mod tests {
             timestamp_unit: None,
             decimal_scale: None,
         }];
-        let mut pools = RowValuePools::new();
         let stats = RowAccessStats::default();
-        let mut access = RowAccess::new(hints, &mut pools, stats);
+        let mut access = RowAccess::new(hints, stats);
         access.set_cols(&cols);
         access.set_row(0);
         assert!(access.get_uuid256(0).is_err());
@@ -8097,9 +8122,8 @@ mod tests {
             timestamp_unit: None,
             decimal_scale: None,
         }];
-        let mut pools = RowValuePools::new();
         let stats = RowAccessStats::default();
-        let mut access = RowAccess::new(hints, &mut pools, stats);
+        let mut access = RowAccess::new(hints, stats);
         access.set_cols(&cols);
         access.set_row(0);
         assert!(access.get_ip(0).is_err());

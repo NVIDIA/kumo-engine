@@ -26,7 +26,7 @@ use diskgraph_fs::{
 };
 use diskgraph_rowpack::{
     IngestedType as RowpackType, RowAccess, RowAccessHints, RowAccessStats, RowPackConfig,
-    RowPackContextBuilder, RowPackEncoder, RowPackRowLens, RowValuePools,
+    RowPackContextBuilder, RowPackEncoder, RowPackRowLens,
 };
 use diskgraph_index::builder::MemoryBudget;
 use diskgraph_index::graph::{
@@ -1374,9 +1374,8 @@ impl IngestContext {
                     let mut sampled = 0usize;
                     let sample_limit = rowpack_config.sample_rows().min(SAMPLE_ROW_LIMIT);
                     let row_access_hints = build_row_access_hints(&table);
-                    let mut pools = RowValuePools::new();
                     let stats = RowAccessStats::new(Some(trimmed_strings.as_ref()));
-                    let mut access = RowAccess::new(row_access_hints, &mut pools, stats);
+                    let mut access = RowAccess::new(row_access_hints, stats);
                     let mut reached_limit = false;
                     let mut processed_paths = 0u64;
                     if table.paths.is_empty() {
@@ -1811,9 +1810,8 @@ impl IngestContext {
         }
         let mut total_rows = 0u64;
         let row_access_hints = build_row_access_hints(table);
-        let mut pools = RowValuePools::new();
         let stats = RowAccessStats::new(Some(trimmed_strings.as_ref()));
-        let mut access = RowAccess::new(row_access_hints, &mut pools, stats);
+        let mut access = RowAccess::new(row_access_hints, stats);
         let ctx_path = root.join(temp_node_context_path(&table.name));
         let ctx_bytes =
             fs::read(&ctx_path).with_context(|| format!("read {}", ctx_path.display()))?;
@@ -2112,9 +2110,8 @@ impl IngestContext {
         }
         let local = localize_input(path)?;
         let row_access_hints = build_row_access_hints(table);
-        let mut pools = RowValuePools::new();
         let stats = RowAccessStats::new(Some(trimmed_strings.as_ref()));
-        let mut access = RowAccess::new(row_access_hints, &mut pools, stats);
+        let mut access = RowAccess::new(row_access_hints, stats);
         match table.format {
             TableFormat::Parquet => {
                 let file = fs::File::open(&local.path)
@@ -5693,18 +5690,30 @@ fn key_from_access_into_buf(
             Ok(())
         }
         KeyType::VarBytes => {
-            let bytes = match col.ingested_dtype {
-                IngestedType::Bytes => access
-                    .get_bytes(idx)
-                    .map_err(|_| KeyParseError::TypeMismatch)?
-                    .ok_or(KeyParseError::TypeMismatch)?
-                    .to_vec(),
+            let mut write_len_prefixed = |bytes: &[u8]| -> KeyParseResult<()> {
+                let start = out.len();
+                out.extend_from_slice(&[0u8; 2]);
+                let len = write_normalized_numeric_bytes(out, bytes, col)?;
+                let len_u16 = u16::try_from(len).map_err(|_| KeyParseError::TooLarge)?;
+                out[start..start + 2].copy_from_slice(&len_u16.to_le_bytes());
+                Ok(())
+            };
+            match col.ingested_dtype {
+                IngestedType::Bytes => {
+                    let array = access
+                        .array(idx)
+                        .map_err(|_| KeyParseError::TypeMismatch)?;
+                    let bytes = read_bytes(array, access.row())
+                        .map_err(|_| KeyParseError::TypeMismatch)?;
+                    write_len_prefixed(bytes)?;
+                }
                 IngestedType::String => {
-                    let value = access
-                        .get_string(idx)
-                        .map_err(|_| KeyParseError::TypeMismatch)?
-                        .ok_or(KeyParseError::TypeMismatch)?;
-                    normalize_numeric_bytes(value.as_bytes(), col)?
+                    let array = access
+                        .array(idx)
+                        .map_err(|_| KeyParseError::TypeMismatch)?;
+                    let text = read_utf8(array, access.row())
+                        .map_err(|_| KeyParseError::TypeMismatch)?;
+                    write_len_prefixed(text.as_bytes())?;
                 }
                 IngestedType::Int64 => {
                     let value = access
@@ -5714,7 +5723,11 @@ fn key_from_access_into_buf(
                     if value < 0 {
                         return Err(KeyParseError::Negative);
                     }
-                    value.to_string().into_bytes()
+                    let start = out.len();
+                    out.extend_from_slice(&[0u8; 2]);
+                    let len = write_display_to_vec(out, value);
+                    let len_u16 = u16::try_from(len).map_err(|_| KeyParseError::TooLarge)?;
+                    out[start..start + 2].copy_from_slice(&len_u16.to_le_bytes());
                 }
                 IngestedType::Int32 | IngestedType::Int16 | IngestedType::Int8 => {
                     let value = access
@@ -5724,27 +5737,36 @@ fn key_from_access_into_buf(
                     if value < 0 {
                         return Err(KeyParseError::Negative);
                     }
-                    value.to_string().into_bytes()
+                    let start = out.len();
+                    out.extend_from_slice(&[0u8; 2]);
+                    let len = write_display_to_vec(out, value);
+                    let len_u16 = u16::try_from(len).map_err(|_| KeyParseError::TooLarge)?;
+                    out[start..start + 2].copy_from_slice(&len_u16.to_le_bytes());
                 }
                 IngestedType::UInt64 => {
                     let value = access
                         .get_uint64(idx)
                         .map_err(|_| KeyParseError::TypeMismatch)?
                         .ok_or(KeyParseError::TypeMismatch)?;
-                    value.to_string().into_bytes()
+                    let start = out.len();
+                    out.extend_from_slice(&[0u8; 2]);
+                    let len = write_display_to_vec(out, value);
+                    let len_u16 = u16::try_from(len).map_err(|_| KeyParseError::TooLarge)?;
+                    out[start..start + 2].copy_from_slice(&len_u16.to_le_bytes());
                 }
                 IngestedType::UInt32 | IngestedType::UInt16 | IngestedType::UInt8 => {
                     let value = access
                         .get_uint32(idx)
                         .map_err(|_| KeyParseError::TypeMismatch)?
                         .ok_or(KeyParseError::TypeMismatch)?;
-                    value.to_string().into_bytes()
+                    let start = out.len();
+                    out.extend_from_slice(&[0u8; 2]);
+                    let len = write_display_to_vec(out, value);
+                    let len_u16 = u16::try_from(len).map_err(|_| KeyParseError::TooLarge)?;
+                    out[start..start + 2].copy_from_slice(&len_u16.to_le_bytes());
                 }
                 _ => return Err(KeyParseError::TypeMismatch),
             };
-            let len = u16::try_from(bytes.len()).map_err(|_| KeyParseError::TooLarge)?;
-            out.extend_from_slice(&len.to_le_bytes());
-            out.extend_from_slice(&bytes);
             Ok(())
         }
         KeyType::Uuid => {
@@ -6011,7 +6033,11 @@ fn ip_to_ipv6_bytes(ip: std::net::IpAddr) -> [u8; 16] {
     }
 }
 
-fn normalize_numeric_bytes(bytes: &[u8], target_col: &ColumnSpec) -> KeyParseResult<Vec<u8>> {
+fn write_normalized_numeric_bytes(
+    out: &mut Vec<u8>,
+    bytes: &[u8],
+    target_col: &ColumnSpec,
+) -> KeyParseResult<usize> {
     if matches!(
         target_col.ingested_dtype,
         IngestedType::Float32
@@ -6019,12 +6045,13 @@ fn normalize_numeric_bytes(bytes: &[u8], target_col: &ColumnSpec) -> KeyParseRes
             | IngestedType::Decimal128
             | IngestedType::Decimal256
     ) {
-        return normalize_base10_bytes(bytes);
+        return write_normalized_base10_bytes(out, bytes);
     }
-    Ok(bytes.to_vec())
+    out.extend_from_slice(bytes);
+    Ok(bytes.len())
 }
 
-fn normalize_base10_bytes(bytes: &[u8]) -> KeyParseResult<Vec<u8>> {
+fn write_normalized_base10_bytes(out: &mut Vec<u8>, bytes: &[u8]) -> KeyParseResult<usize> {
     let s = std::str::from_utf8(bytes).map_err(|_| KeyParseError::NotUtf8)?;
     if s.is_empty() {
         return Err(KeyParseError::Empty);
@@ -6048,17 +6075,32 @@ fn normalize_base10_bytes(bytes: &[u8]) -> KeyParseResult<Vec<u8>> {
     }
     let int_trimmed = int_part.trim_start_matches('0');
     let int_out = if int_trimmed.is_empty() { "0" } else { int_trimmed };
-    let frac_out = frac_part
-        .unwrap_or("")
-        .trim_end_matches('0');
-    if frac_out.is_empty() {
-        return Ok(int_out.as_bytes().to_vec());
-    }
-    let mut out = Vec::with_capacity(int_out.len() + 1 + frac_out.len());
+    let frac_out = frac_part.unwrap_or("").trim_end_matches('0');
     out.extend_from_slice(int_out.as_bytes());
+    if frac_out.is_empty() {
+        return Ok(int_out.len());
+    }
     out.push(b'.');
     out.extend_from_slice(frac_out.as_bytes());
-    Ok(out)
+    Ok(int_out.len() + 1 + frac_out.len())
+}
+
+struct VecWrite<'a> {
+    buf: &'a mut Vec<u8>,
+}
+
+impl<'a> std::fmt::Write for VecWrite<'a> {
+    fn write_str(&mut self, s: &str) -> std::fmt::Result {
+        self.buf.extend_from_slice(s.as_bytes());
+        Ok(())
+    }
+}
+
+fn write_display_to_vec<T: std::fmt::Display>(out: &mut Vec<u8>, value: T) -> usize {
+    let start = out.len();
+    let mut writer = VecWrite { buf: out };
+    let _ = std::fmt::write(&mut writer, format_args!("{}", value));
+    out.len() - start
 }
 
 fn sample_key(key: &Key) -> Option<String> {
@@ -6258,9 +6300,8 @@ mod tests {
     ) {
         let trimmed = std::sync::Arc::new(AtomicU64::new(0));
         let hints = build_row_access_hints(table);
-        let mut pools = RowValuePools::new();
         let stats = RowAccessStats::new(Some(trimmed.as_ref()));
-        let mut access = RowAccess::new(hints, &mut pools, stats);
+        let mut access = RowAccess::new(hints, stats);
         access.set_cols(&cols);
         access.set_row(0);
         f(&mut access);
@@ -6328,7 +6369,7 @@ mod tests {
                 name: "created_at".to_string(),
                 ingested_dtype: IngestedType::Timestamp,
                 fixed_len: None,
-                timestamp_format: Some("rfc3339".to_string()),
+                timestamp_format: None,
                 timestamp_unit: None,
                 precision: None,
                 scale: None,
@@ -6454,7 +6495,10 @@ mod tests {
         let arr = Int64Array::from(vec![42_i64]);
         let cols: Vec<ArrayRef> = vec![Arc::new(arr)];
         with_access(&table, cols, |access| {
-            let value = access.get_string(0).unwrap().unwrap();
+            let value = access
+                .with_string(0, |v| Ok(v.to_string()))
+                .unwrap()
+                .unwrap();
             assert_eq!(value, "42");
         });
     }
