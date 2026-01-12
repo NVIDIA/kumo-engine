@@ -545,6 +545,13 @@ fn truncates_large_node_without_sort_key() {
         dst: 999,
         dest_sort_key: None,
     });
+    for i in 2..70 {
+        edges.push(EdgeRow {
+            src: i as i64,
+            dst: (1000 + i) as i64,
+            dest_sort_key: None,
+        });
+    }
     write_edges(&edge_path, &edges, false).unwrap();
 
     let node_meta = node_meta("User", 80_000);
@@ -705,15 +712,22 @@ fn selects_wider_offsets_for_large_edge_lists() {
             dest_sort_key: None,
         });
     }
-    // Second node to ensure following nodes still decode correctly.
+    // Following nodes to ensure later chunks decode correctly.
     edges.push(EdgeRow {
         src: 1,
         dst: 999,
         dest_sort_key: None,
     });
+    for i in 2..70 {
+        edges.push(EdgeRow {
+            src: i as i64,
+            dst: (1000 + i) as i64,
+            dest_sort_key: None,
+        });
+    }
     write_edges(&edge_path, &edges, false).unwrap();
 
-    let node_meta = node_meta("User", big as u64);
+    let node_meta = node_meta("User", big.max(70) as u64);
     let relation_meta = relation_meta("Follows", "User", "User", None);
     let output_dir = dir.path().join("out");
     let builder = ShardBuilder::new(ShardBuildParams {
@@ -759,41 +773,42 @@ fn selects_wider_offsets_for_large_edge_lists() {
     assert_eq!(decoded.len(), big);
     assert_eq!(decoded.first(), Some(&(0, None)));
     assert_eq!(decoded.last(), Some(&((big - 1) as u64, None)));
-    // Following node still decodes.
+    // Following nodes in later chunks still decode.
     assert_eq!(decode_relation(&reader, 1, 0), vec![(999, None)]);
+    assert_eq!(decode_relation(&reader, 63, 0), vec![(1063, None)]);
+    assert_eq!(decode_relation(&reader, 64, 0), vec![(1064, None)]);
 }
 
 #[test]
 fn selects_32bit_offsets_with_large_node_data_budget() {
     let dir = tempdir().unwrap();
     let edge_path = dir.path().join("edges.bin");
-    let edges = vec![
-        EdgeRow {
-            src: 0,
-            dst: 10,
+    let mut edges = Vec::with_capacity(70);
+    for i in 0..70 {
+        edges.push(EdgeRow {
+            src: i as i64,
+            dst: (10 + i) as i64,
             dest_sort_key: None,
-        },
-        EdgeRow {
-            src: 1,
-            dst: 11,
-            dest_sort_key: None,
-        },
-    ];
+        });
+    }
     write_edges(&edge_path, &edges, false).unwrap();
 
     let node_data_path = dir.path().join("nodes.bin");
-    let node_data = vec![vec![1, 2, 3], vec![4, 5]];
+    let mut node_data = Vec::with_capacity(70);
+    for i in 0..70u8 {
+        node_data.push(vec![i, i.wrapping_add(1), i.wrapping_add(2)]);
+    }
     write_node_data(&node_data_path, &node_data).unwrap();
 
     let node_meta = NodeTypeMetadata {
         name: "User".into(),
-        max_id: 20,
+        max_id: 80,
         has_node_data: true,
         node_data_compression: None,
         primary_key_map: None,
         shards: vec![NodeShardMetadata {
             min_id: 0,
-            max_id: 1,
+            max_id: 69,
             node_data_paths: Some(vec!["nodes.bin".into()]),
         }],
     };
@@ -820,14 +835,17 @@ fn selects_32bit_offsets_with_large_node_data_budget() {
 
     let reader = ShardReader::open(&output_dir, built.layouts.clone(), true).unwrap();
     assert_eq!(reader.header().delta_bytes, 4);
-    let view0 = reader.edges_for_node(0).unwrap();
-    let segs0 = view0.relation_segments().unwrap();
-    assert_eq!(segs0[0].count, 1);
-    assert_eq!(decode_relation(&reader, 0, 0), vec![(10, None)]);
-    assert_eq!(view0.node_data().unwrap().unwrap(), node_data[0].as_slice());
-    let view1 = reader.edges_for_node(1).unwrap();
-    assert_eq!(decode_relation(&reader, 1, 0), vec![(11, None)]);
-    assert_eq!(view1.node_data().unwrap().unwrap(), node_data[1].as_slice());
+    for node_id in [0u64, 63u64, 64u64, 69u64] {
+        let view = reader.edges_for_node(node_id).unwrap();
+        let segs = view.relation_segments().unwrap();
+        assert_eq!(segs[0].count, 1);
+        let expected_dst = 10 + node_id as u64;
+        assert_eq!(decode_relation(&reader, node_id, 0), vec![(expected_dst, None)]);
+        assert_eq!(
+            view.node_data().unwrap().unwrap(),
+            node_data[node_id as usize].as_slice()
+        );
+    }
 }
 
 #[test]
