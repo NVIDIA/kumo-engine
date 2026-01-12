@@ -201,6 +201,7 @@ enum ColumnTypeReport {
     Timestamp,
     Decimal128,
     Decimal256,
+    Float16Array,
     Float32Array,
     Float64Array,
 }
@@ -228,6 +229,7 @@ impl ColumnTypeReport {
             ColumnTypeReport::Timestamp => "timestamp",
             ColumnTypeReport::Decimal128 => "decimal128",
             ColumnTypeReport::Decimal256 => "decimal256",
+            ColumnTypeReport::Float16Array => "float16_array",
             ColumnTypeReport::Float32Array => "float32_array",
             ColumnTypeReport::Float64Array => "float64_array",
         }
