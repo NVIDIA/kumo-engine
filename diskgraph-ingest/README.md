@@ -117,7 +117,7 @@ Notes:
 - `expr` is a math expression over numeric columns in `table`.
   Use backticks for column names with special characters: `` `weight-kg` * 2 ``.
 - Encodings:
-  - timestamp `kind`: `int16|int32`
+  - timestamp `kind`: `int8|int16|int32`
   - weight `dtype`: `byte|uint16|uint32|float16|float32`
 
 ### ColumnSpec
@@ -132,7 +132,7 @@ Notes:
 ```
 
 Fields:
-- `ingested_dtype` (required): `int8|int16|int32|int64|uint8|uint16|uint32|uint64|float32|float64|bool|string|bytes|uuid|uuid256|ip|date|timestamp|decimal128|decimal256|float32_array|float64_array`
+- `ingested_dtype` (required): `int8|int16|int32|int64|uint8|uint16|uint32|uint64|float32|float64|bool|string|bytes|uuid|uuid256|ip|date|timestamp|decimal128|decimal256|float16_array|float32_array|float64_array`
 - `fixed_len` (optional): only valid for `string`/`bytes`.
 - `timestamp_format` (optional): format string for string timestamps.
 - `timestamp_unit` (optional): `seconds|millis|micros|nanos` for integer timestamps.
@@ -186,7 +186,7 @@ Ingestion expects schemas to match `source_metadata.json` and supports:
 - **Date**: `Date32`
 - **Timestamp**: `Timestamp` with `Second|Millisecond|Microsecond|Nanosecond` units (timezone accepted, normalized to UTC)
 - **Decimal**: `Decimal128`, `Decimal256` (requires `precision` + `scale` in metadata)
-- **Arrays**: `List(Float32)` and `List(Float64)` only
+- **Arrays**: `List(Float16)`, `List(Float32)`, and `List(Float64)` only
 
 Other Parquet/Arrow types are rejected during ingest.
 
@@ -196,6 +196,7 @@ Other Parquet/Arrow types are rejected during ingest.
 
 - `index_metadata.json`
 - `ingest_stats.json`
+- `build_stats.json`
 - `nodes/<table>/shard-<id>/offsets.bin`
 - `nodes/<table>/shard-<id>/edges.bin`
 - `nodes/<table>/pk_data-<id>.bin`
@@ -235,7 +236,7 @@ Flags:
 - `--output`: local output directory for the index.
 - `--dest`: must be `local` (index build requires local output).
 - `--profile [dir]`: enable CPU profiling and emit `*-profile.pb`/`*-profile.svg`.
-- `-m, --mem-profile`: enable jemalloc heap dump watchdog (writes `heap-*.heap` when RSS anon exceeds 80%; requires the `mem-profile` Cargo feature and `_RJEM_MALLOC_CONF=prof:true`).
+- `-m, --mem-profile`: enable jemalloc heap dump watchdog (writes one `heap-*.heap` when anon RSS exceeds 80%; requires the `mem-profile` Cargo feature and `_RJEM_MALLOC_CONF=prof:true`).
 
 Helper script:
 - `scripts/ingest_local.sh`

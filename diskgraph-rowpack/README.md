@@ -14,7 +14,7 @@ Rowpack is a fast, row-oriented compression codec for DiskGraph node payloads. I
 
 The context file is a binary format with:
 
-- **Schema**: column order, names, and logical types (int/float/string/bytes/bool/timestamp/array).
+- **Schema**: column order, names, and logical types (int/float/string/bytes/bool/timestamp/array/uuid/ip).
 - **Per-column strategy**:
   - Nullability and tag width (2-bit tags).
   - Integer strategy (fixed width vs varint; bit width).
@@ -24,11 +24,10 @@ The context file is a binary format with:
   - Array strategy for float vectors (float16/float32/float64).
 - **Dictionaries**:
   - String dictionaries for categorical columns (bounded size, configurable).
-  - Hex encoding parameters (upper/lower case).
-  - ISO timestamp parsing hints.
 - **Compression knobs**:
   - Per-column thresholds used during sampling.
   - Max dictionary size budget.
+  - Decimal precision/scale metadata (when present).
 
 The context is written once during ingestion (one per node table) and loaded by the index reader to decode node blobs.
 
@@ -63,6 +62,7 @@ Rowpack is driven by `source_metadata.json` and ingestion maps Parquet/Arrow typ
 - **Timestamp**: `Timestamp` with `Second|Millisecond|Microsecond|Nanosecond` units (timezone accepted, normalized to UTC)
 - **Decimal**: `Decimal128`, `Decimal256` (requires `precision` + `scale`)
 - **Arrays**: `List(Float16)`, `List(Float32)`, and `List(Float64)`
+- **UUID/IP**: `uuid`, `uuid256`, and `ip` types are supported when declared in `source_metadata.json` (input values are parsed from string/bytes during ingest).
 
 Other Parquet types are not supported by rowpack at this time.
 
@@ -92,6 +92,10 @@ If a value does not match the inferred strategy (e.g., a non-ISO string in an IS
 - Raw length-prefixed bytes.
 - Optional fixed-length enforcement; mismatches fall back to raw.
 
+### UUID / UUID256 / IP
+- Stored as fixed-width bytes (16, 32, and 16 bytes respectively).
+- Fallback tag stores raw bytes.
+
 ### Arrays of floats
 Encodes length as a varint, followed by contiguous float payloads.
 Uses the logical type's float width (float16/float32/float64).
@@ -116,7 +120,7 @@ Sample sizes and dictionary budgets are configurable via `SourceMetadata.rowpack
 Rowpack decodes into:
 
 - **MessagePack**: preserves original scalar types (including timestamp ext).
-- **JSON**: "reasonable" JSON renderings; timestamps formatted to RFC3339 and bytes encoded as base64.
+- **JSON**: "reasonable" JSON renderings; timestamps formatted to RFC3339, bytes encoded as base64, UUIDs/UUID256 as lowercase hex, and IPs in standard string form.
 
 ## Error handling
 
@@ -144,6 +148,6 @@ It only errors on structural corruption (invalid tags, truncated payloads).
 - Parquet timestamp units (s/ms/us/ns) are normalized at ingest; timezones are accepted and normalized to UTC on output.
 
 ### Decimals
-- Stored as fixed-width two’s-complement bytes (16 for Decimal128, 32 for Decimal256) when lossless is required.
-- By default, decimals use integer encoding when `scale == 0` and float encoding when `scale != 0` (lossy).
-Decimal storage is always lossless.
+- Stored as two’s-complement bytes with width derived from logical precision.
+- Encoding chooses varint for small values and falls back to raw bytes when varint would not be smaller.
+- Decimal storage is always lossless.

@@ -33,4 +33,8 @@ diskgraph-datagenerator/scripts/generate_dataset.sh diskgraph-datagenerator/conf
 
 Each table defines a row share (`row_fraction` or `row_percent`), shard count, and columns. Each column specifies type and a generator. Primary key columns are marked with `primary_key: true`. Foreign key columns are defined via the `relationships` list (no per-column generator needed).
 
+Notes:
+- UUID/UUID256 columns emit lowercase hex strings by default; IP columns emit string IPs. Generators can override formats (e.g., dashed UUIDs or raw bytes) via `gen` config.
+- `key_encoding` controls how synthetic key bytes are encoded (decimal/hex/uint64-le) for string/bytes columns.
+
 See `diskgraph-datagenerator/configs/` for examples.

@@ -13,7 +13,7 @@ At query time a shard is mmapped and edge lists are served zero-copy by slicing 
 
 ## On-disk layout (per shard)
 
-- **Offsets header:** `OffsetFileHeader` with version, node count, total offsets, chunk size, `edge_blob_word_size`, plus `delta_bytes` and `node_data_len_bytes`.
+- **Offsets header:** `OffsetFileHeader` with version, node count, total offsets, chunk size, `edge_blob_word_size`, plus `delta_bytes` and `node_data_len_bytes` (chosen per shard based on the maximum node payload and edge list size).
 - **Offsets body:** Chunks of `DELTA_CHUNK` (64) offsets:
   - `u16 count`
   - `u64 base` (absolute byte offset for the first node in the chunk)
@@ -81,18 +81,18 @@ Steps:
    - Merge edges across relations by draining the per-relation streams for the current node id.
 3. For each node (single pass):
    - Collect edges into per-relation buckets (reused vectors).
-   - Compute per-relation counts; cap each relation at 10k edges to keep counts within the compact varint range.
-   - Estimate node blob size (counts + optional node data length/payload + edges). If the resulting offset delta would exceed `u16::MAX`, run truncation:
+   - Compute per-relation counts; cap each relation based on the shard’s offset delta budget and count varint encoding.
+   - Estimate node blob size (counts + optional node data length/payload + edges). If the resulting offset delta would exceed the shard’s delta width budget, run truncation:
      - Greedy leveling of the longest relation lists downward (bulk drops of the current longest plateau) until the node blob fits the delta budget.
      - Truncate buckets accordingly; record counters.
-   - Write compact varint counts (per relation), optional `u16` node data length, then packed edges for that relation, then node data bytes.
+   - Write compact varint counts (per relation), optional `node_data_len_bytes` length, then packed edges for that relation, then node data bytes.
    - Append the cumulative byte offset to the offsets writer.
 4. Offsets writer delta-encodes offsets in fixed chunks; writes header once finalized.
 
 Outputs: `ShardBuildOutput` with file paths, `NodeEdgeStats`, `BuildStats`, and `RelationLayout` list for the shard.
 
 ### Truncation behavior
-- Trigger: projected offset delta > `u16::MAX`.
+- Trigger: projected offset delta exceeds the shard’s delta width budget (16/24/32-bit).
 - Strategy: iteratively level the longest relation lists down in bulk (plateau drops) until the node blob fits the delta budget; preserves relative order within each relation; truncation is per node, per relation.
 - Counters: `truncated_nodes`, `truncated_edges_total`, `truncated_edges_per_relation`.
 
