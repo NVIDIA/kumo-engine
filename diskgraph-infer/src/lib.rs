@@ -1776,7 +1776,8 @@ fn infer_primary_keys(tables: &mut [TableSpec]) {
             }
             let lower = col.name.to_lowercase();
             let matches_table = column_matches_table_name(&table.name, &lower);
-            if !is_key_like_name(&lower) && !matches_table {
+            let name_match = matches_table_name_field(&table.name, &lower);
+            if !is_key_like_name(&lower) && !matches_table && !name_match {
                 continue;
             }
             if has_composite_code_version(&lower, &table.columns) {
@@ -1797,6 +1798,8 @@ fn infer_primary_keys(tables: &mut [TableSpec]) {
             }
             if strong_match {
                 score += 12;
+            } else if name_match {
+                score += 4;
             } else if has_many_key_like {
                 continue;
             } else if require_strong_for_small {
@@ -1804,6 +1807,8 @@ fn infer_primary_keys(tables: &mut [TableSpec]) {
             }
             if strong_match {
                 score += 1000;
+            } else if name_match {
+                score += 120;
             }
             if column_matches_tokens(&lower, &table_tokens) {
                 score += 3;
@@ -2245,9 +2250,6 @@ fn infer_edge_sort_keys(
         anchor: utc_midnight_seconds(),
         step: 86_400,
     };
-    let weight_encoding = WeightEncodingSpec {
-        dtype: WeightEncodingKind::Float16,
-    };
     let mut rel_specs = HashMap::new();
     for rel in rels {
         let Some(dst_table) = table_map.get(rel.dst_table.as_str()) else {
@@ -2256,8 +2258,8 @@ fn infer_edge_sort_keys(
         let Some(src_table) = table_map.get(rel.src_table.as_str()) else {
             continue;
         };
-        let forward = build_relation_sort_key(dst_table, &ts_encoding, &weight_encoding);
-        let reverse = build_relation_sort_key(src_table, &ts_encoding, &weight_encoding);
+        let forward = build_relation_sort_key(dst_table, &ts_encoding);
+        let reverse = build_relation_sort_key(src_table, &ts_encoding);
         if forward.is_some() || reverse.is_some() {
             rel_specs.insert(
                 relationship_name(rel),
@@ -2272,12 +2274,8 @@ fn infer_edge_sort_keys(
         };
         let src_table = table_map.get(edge_table.src_fk.ref_table.as_str());
         let dst_table = table_map.get(edge_table.dst_fk.ref_table.as_str());
-        let src_to_dst = dst_table.and_then(|dst| {
-            build_edge_table_sort_key(table, dst, &ts_encoding, &weight_encoding)
-        });
-        let dst_to_src = src_table.and_then(|src| {
-            build_edge_table_sort_key(table, src, &ts_encoding, &weight_encoding)
-        });
+        let src_to_dst = dst_table.and_then(|dst| build_edge_table_sort_key(table, dst, &ts_encoding));
+        let dst_to_src = src_table.and_then(|src| build_edge_table_sort_key(table, src, &ts_encoding));
         if src_to_dst.is_some() || dst_to_src.is_some() {
             edge_specs.insert(
                 table.name.clone(),
@@ -2301,7 +2299,6 @@ fn infer_edge_sort_keys(
 fn build_relation_sort_key(
     table: &TableSpec,
     ts_encoding: &TimestampEncodingSpec,
-    weight_encoding: &WeightEncodingSpec,
 ) -> Option<SortKeySpec> {
     let mut spec = SortKeySpec::default();
     if let Some(ts) = table.create_time.as_ref() {
@@ -2315,7 +2312,7 @@ fn build_relation_sort_key(
         spec.weight = Some(SortKeyWeightSpec {
             table: table.name.clone(),
             expr: weight_expr_for_column(&weight.name),
-            encoding: weight_encoding.clone(),
+            encoding: weight_encoding_for_column(weight),
         });
     }
     if spec.timestamp.is_some() || spec.weight.is_some() {
@@ -2329,7 +2326,6 @@ fn build_edge_table_sort_key(
     edge_table: &TableSpec,
     dest_table: &TableSpec,
     ts_encoding: &TimestampEncodingSpec,
-    weight_encoding: &WeightEncodingSpec,
 ) -> Option<SortKeySpec> {
     let mut spec = SortKeySpec::default();
     if let Some(ts) = edge_table.create_time.as_ref() {
@@ -2345,17 +2341,17 @@ fn build_edge_table_sort_key(
             encoding: ts_encoding.clone(),
         });
     }
-    if let Some(weight) = find_weight_column(edge_table) {
+    if let Some(weight) = find_edge_table_weight_column(edge_table) {
         spec.weight = Some(SortKeyWeightSpec {
             table: edge_table.name.clone(),
             expr: weight_expr_for_column(&weight.name),
-            encoding: weight_encoding.clone(),
+            encoding: weight_encoding_for_column(weight),
         });
     } else if let Some(weight) = find_weight_column(dest_table) {
         spec.weight = Some(SortKeyWeightSpec {
             table: dest_table.name.clone(),
             expr: weight_expr_for_column(&weight.name),
-            encoding: weight_encoding.clone(),
+            encoding: weight_encoding_for_column(weight),
         });
     }
     if spec.timestamp.is_some() || spec.weight.is_some() {
@@ -2367,6 +2363,41 @@ fn build_edge_table_sort_key(
 
 fn find_weight_column(table: &TableSpec) -> Option<&ColumnSpec> {
     table.columns.iter().find(|col| is_weight_like(col))
+}
+
+fn find_edge_table_weight_column(table: &TableSpec) -> Option<&ColumnSpec> {
+    if let Some(col) = find_weight_column(table) {
+        return Some(col);
+    }
+    let edge_spec = table.edge_table.as_ref()?;
+    let mut candidates: Vec<&ColumnSpec> = table
+        .columns
+        .iter()
+        .filter(|col| is_numeric_weight_dtype(col))
+        .filter(|col| col.name != edge_spec.src_fk.column && col.name != edge_spec.dst_fk.column)
+        .filter(|col| table.create_time.as_deref() != Some(col.name.as_str()))
+        .collect();
+    if candidates.len() == 1 {
+        candidates.pop()
+    } else {
+        None
+    }
+}
+
+fn weight_encoding_for_column(col: &ColumnSpec) -> WeightEncodingSpec {
+    let dtype = match col.ingested_dtype {
+        IngestedType::Float32 | IngestedType::Float64 => WeightEncodingKind::Float16,
+        IngestedType::Int8
+        | IngestedType::Int16
+        | IngestedType::Int32
+        | IngestedType::Int64
+        | IngestedType::UInt8
+        | IngestedType::UInt16
+        | IngestedType::UInt32
+        | IngestedType::UInt64 => WeightEncodingKind::UInt16,
+        _ => WeightEncodingKind::Float16,
+    };
+    WeightEncodingSpec { dtype }
 }
 
 fn weight_expr_for_column(name: &str) -> String {
@@ -2408,7 +2439,14 @@ fn utc_midnight_seconds() -> i64 {
 
 fn is_weight_like(col: &ColumnSpec) -> bool {
     let name = col.name.to_lowercase();
-    if !matches!(
+    if !is_numeric_weight_dtype(col) {
+        return false;
+    }
+    matches!(name.as_str(), "weight" | "score" | "strength" | "prob" | "probability")
+}
+
+fn is_numeric_weight_dtype(col: &ColumnSpec) -> bool {
+    matches!(
         col.ingested_dtype,
         IngestedType::Int8
             | IngestedType::Int16
@@ -2420,10 +2458,7 @@ fn is_weight_like(col: &ColumnSpec) -> bool {
             | IngestedType::UInt64
             | IngestedType::Float32
             | IngestedType::Float64
-    ) {
-        return false;
-    }
-    matches!(name.as_str(), "weight" | "score" | "strength" | "prob" | "probability")
+    )
 }
 
 fn relationship_exists(
@@ -2775,6 +2810,12 @@ fn column_matches_table_name(table_name: &str, col_lower: &str) -> bool {
     let table_lower = table_name.to_lowercase();
     let singular = singularize(&table_lower);
     col_lower == table_lower || col_lower == singular
+}
+
+fn matches_table_name_field(table_name: &str, col_lower: &str) -> bool {
+    let table_lower = table_name.to_lowercase();
+    let singular = singularize(&table_lower);
+    col_lower == format!("{}_name", table_lower) || col_lower == format!("{}_name", singular)
 }
 
 fn is_join_table_name(name: &str) -> bool {
