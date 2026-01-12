@@ -667,7 +667,7 @@ fn print_tables(reader: &GraphIndexReader) {
     for table in reader.tables() {
         println!(
             "  {} ({}={}, {}={})",
-            name(table.node_type()),
+            highlight(table.node_type()),
             label("shards"),
             ok(&table.shard_count().to_string()),
             label("nodes"),
