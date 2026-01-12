@@ -1769,8 +1769,14 @@ fn print_info(reader: &GraphIndexReader, table_name: &str, root: &Path) {
                 total_edges = total_edges.saturating_add(reader_shard.edge_count());
                 total_offsets = total_offsets.saturating_add(reader_shard.offsets_len());
                 total_edge_bytes = total_edge_bytes.saturating_add(reader_shard.edges_len());
+                let offsets = match header.delta_bytes {
+                    2 => "16bit",
+                    3 => "24bit",
+                    4 => "32bit",
+                    _ => "unknown",
+                };
                 println!(
-                    "    {} {}: {} {}..{} ({}={}) {}={} {}={} {}={}B {}={}B {}={} {}={}",
+                    "    {} {}: {} {}..{} ({}={}) {}={} {}={} {}={} {}={} {}={}",
                     dim("-"),
                     label(&format!("shard {:05}", idx)),
                     label("ids"),
@@ -1782,10 +1788,8 @@ fn print_info(reader: &GraphIndexReader, table_name: &str, root: &Path) {
                     ok(&format_bytes(reader_shard.offsets_len())),
                     label("edges"),
                     ok(&format_bytes(reader_shard.edges_len())),
-                    label("deltas"),
-                    ok(&header.delta_bytes.to_string()),
-                    label("node_len"),
-                    ok(&header.node_data_len_bytes.to_string()),
+                    label("offsets"),
+                    ok(offsets),
                     label("edge_count"),
                     ok(&format_number(reader_shard.edge_count())),
                     label("node_data_parts"),
