@@ -10,8 +10,13 @@ use diskgraph_core::metadata::{
 use diskgraph_index::graph::{GraphIndexReader, TableReader};
 use diskgraph_index::layout::{EDGES_FILENAME, OFFSETS_FILENAME};
 use diskgraph_rowpack::{ColumnEncoding, DecimalStorage, FloatStorage, RowPackContext, StringEncoding};
+use rustyline::completion::{Completer, Pair};
 use rustyline::error::ReadlineError;
-use rustyline::DefaultEditor;
+use rustyline::highlight::Highlighter;
+use rustyline::hint::Hinter;
+use rustyline::history::DefaultHistory;
+use rustyline::validate::Validator;
+use rustyline::{Context as ReadlineContext, Editor, Helper};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs;
@@ -364,6 +369,95 @@ fn run_explore(source_str: &str) -> Result<()> {
     Ok(())
 }
 
+struct ExploreHelper {
+    commands: Vec<String>,
+    tables: Vec<String>,
+}
+
+impl ExploreHelper {
+    fn new(reader: &GraphIndexReader) -> Self {
+        let mut tables: Vec<String> = reader
+            .tables()
+            .iter()
+            .map(|t| t.node_type().to_string())
+            .collect();
+        tables.sort();
+        let commands = vec![
+            "tables",
+            "use",
+            "info",
+            "node",
+            "pkey",
+            "formats",
+            "ingest",
+            "schema",
+            "benchmark",
+            "benchmarkall",
+            "quit",
+            "exit",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+        Self { commands, tables }
+    }
+}
+
+impl Completer for ExploreHelper {
+    type Candidate = Pair;
+
+    fn complete(
+        &self,
+        line: &str,
+        pos: usize,
+        _ctx: &ReadlineContext<'_>,
+    ) -> Result<(usize, Vec<Pair>), ReadlineError> {
+        let input = &line[..pos];
+        if let Some(rest) = input.strip_prefix("use ") {
+            let start = input.len() - rest.len();
+            let prefix = rest;
+            let matches = self
+                .tables
+                .iter()
+                .filter(|name| name.starts_with(prefix))
+                .map(|name| Pair {
+                    display: name.clone(),
+                    replacement: name.clone(),
+                })
+                .collect();
+            return Ok((start, matches));
+        }
+
+        if !input.contains(' ') {
+            let start = input
+                .rfind(|ch: char| ch.is_whitespace())
+                .map(|idx| idx + 1)
+                .unwrap_or(0);
+            let prefix = &input[start..];
+            let matches = self
+                .commands
+                .iter()
+                .filter(|cmd| cmd.starts_with(prefix))
+                .map(|cmd| Pair {
+                    display: cmd.clone(),
+                    replacement: cmd.clone(),
+                })
+                .collect();
+            return Ok((start, matches));
+        }
+
+        Ok((pos, Vec::new()))
+    }
+}
+
+impl Hinter for ExploreHelper {
+    type Hint = String;
+}
+
+impl Highlighter for ExploreHelper {}
+impl Validator for ExploreHelper {}
+impl Helper for ExploreHelper {}
+
 fn format_bytes(value: u64) -> String {
     const KB: f64 = 1024.0;
     const MB: f64 = 1024.0 * 1024.0;
@@ -481,7 +575,8 @@ fn is_indexed_graph(dir: &Path) -> bool {
 }
 
 fn repl(reader: Arc<GraphIndexReader>, default_table: String, index_root: PathBuf) -> Result<()> {
-    let mut rl = DefaultEditor::new().context("init editor")?;
+    let mut rl = Editor::<ExploreHelper, DefaultHistory>::new().context("init editor")?;
+    rl.set_helper(Some(ExploreHelper::new(&reader)));
     let mut current_table = default_table;
     println!(
         "{} {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {}",
