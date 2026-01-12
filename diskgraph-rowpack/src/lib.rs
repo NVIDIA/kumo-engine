@@ -2054,72 +2054,23 @@ fn ip_to_ipv6_bytes(ip: std::net::IpAddr) -> [u8; 16] {
 
 fn parse_timestamp_text(value: &str, format: Option<&str>) -> Option<(i64, u32)> {
     let ts = if let Some(fmt) = format {
-        if fmt == "rfc3339" {
-            chrono::DateTime::parse_from_rfc3339(value)
-                .ok()
-                .map(|v| v.naive_utc())
-        } else if fmt == "%Y-%m-%d %H:%M:%S%z"
-            || fmt == "%Y-%m-%d %H:%M:%S %z"
-            || fmt == "%Y-%m-%d %H:%M:%S%:z"
-            || fmt == "%Y-%m-%d %H:%M:%S %:z"
-            || fmt == "%Y-%m-%dT%H:%M:%S%z"
-            || fmt == "%Y-%m-%dT%H:%M:%S%:z"
-        {
+        let has_tz = fmt.contains("%z") || fmt.contains("%:z");
+        if has_tz {
             chrono::DateTime::parse_from_str(value, fmt)
                 .ok()
-                .map(|v| v.naive_utc())
+                .map(|v| v.naive_utc())?
         } else {
             NaiveDateTime::parse_from_str(value, fmt).ok().or_else(|| {
                 NaiveDate::parse_from_str(value, fmt)
                     .ok()
                     .map(|d| d.and_hms_opt(0, 0, 0).unwrap())
-            })
+            })?
         }
     } else {
         chrono::DateTime::parse_from_rfc3339(value)
             .ok()
-            .map(|v| v.naive_utc())
-            .or_else(|| NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S").ok())
-            .or_else(|| NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S%.f").ok())
-            .or_else(|| NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M").ok())
-            .or_else(|| NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S").ok())
-            .or_else(|| NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S%.f").ok())
-            .or_else(|| {
-                chrono::DateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S%z")
-                    .ok()
-                    .map(|v| v.naive_utc())
-            })
-            .or_else(|| {
-                chrono::DateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S %z")
-                    .ok()
-                    .map(|v| v.naive_utc())
-            })
-            .or_else(|| {
-                chrono::DateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S%:z")
-                    .ok()
-                    .map(|v| v.naive_utc())
-            })
-            .or_else(|| {
-                chrono::DateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S %:z")
-                    .ok()
-                    .map(|v| v.naive_utc())
-            })
-            .or_else(|| {
-                chrono::DateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S%z")
-                    .ok()
-                    .map(|v| v.naive_utc())
-            })
-            .or_else(|| {
-                chrono::DateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S%:z")
-                    .ok()
-                    .map(|v| v.naive_utc())
-            })
-            .or_else(|| {
-                NaiveDate::parse_from_str(value, "%Y-%m-%d")
-                    .ok()
-                    .map(|d| d.and_hms_opt(0, 0, 0).unwrap())
-            })
-    }?;
+            .map(|v| v.naive_utc())?
+    };
     let ts = ts.and_utc();
     Some((ts.timestamp(), ts.timestamp_subsec_nanos()))
 }
@@ -2138,11 +2089,6 @@ fn parse_date_text(value: &str, format: Option<&str>) -> Option<i32> {
                 NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S")
                     .ok()
                     .map(|v| v.date())
-            })
-            .or_else(|| {
-                chrono::DateTime::parse_from_rfc3339(value)
-                    .ok()
-                    .map(|v| v.date_naive())
             })
     }?;
     let ts = dt.and_hms_opt(0, 0, 0)?.and_utc().timestamp();
@@ -2172,13 +2118,6 @@ struct TimestampFormatParser {
 
 impl TimestampFormatParser {
     fn compile(format: &str) -> Option<Self> {
-        let format = match format {
-            "iso8601" | "ISO8601" => "%Y-%m-%dT%H:%M:%S",
-            "iso8601_nanos" | "ISO8601_NANOS" => "%Y-%m-%dT%H:%M:%S%.f",
-            "iso8601_space" | "ISO8601_SPACE" => "%Y-%m-%d %H:%M:%S",
-            "iso8601_space_nanos" | "ISO8601_SPACE_NANOS" => "%Y-%m-%d %H:%M:%S%.f",
-            other => other,
-        };
         let kind = match format {
             "%Y-%m-%d" => TimestampFormatKind::Ymd,
             "%Y-%m-%d %H:%M" => TimestampFormatKind::YmdHmSpace,
@@ -3191,10 +3130,10 @@ fn write_msgpack_timestamp(out: &mut Vec<u8>, secs: i64, nanos: u32) -> Result<(
     Ok(())
 }
 
-fn format_timestamp_rfc3339(secs: i64, nanos: u32) -> String {
+fn format_timestamp_default(secs: i64, nanos: u32) -> String {
     let dt = DateTime::<Utc>::from_timestamp(secs, nanos)
         .unwrap_or_else(|| DateTime::<Utc>::from_timestamp(0, 0).unwrap());
-    dt.to_rfc3339()
+    dt.format("%Y-%m-%d %H:%M:%S%.f").to_string()
 }
 
 #[derive(Debug, Clone)]
@@ -6202,7 +6141,7 @@ fn decode_value_json(
         ColumnEncoding::Timestamp => {
             let secs = zigzag_decode(read_varint(data)?);
             let nanos = read_varint(data)? as u32;
-            let formatted = format_timestamp_rfc3339(secs, nanos);
+            let formatted = format_timestamp_default(secs, nanos);
             JsonValue::from(formatted)
         }
         ColumnEncoding::Decimal {

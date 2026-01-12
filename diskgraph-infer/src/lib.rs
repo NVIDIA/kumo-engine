@@ -1484,7 +1484,6 @@ fn parse_timestamp(value: &str) -> Option<NaiveDateTime> {
         .or_else(|| parse_ymd_hms_offset(bytes, true, true))
         .or_else(|| parse_ymd_hms_t_offset(bytes, false))
         .or_else(|| parse_ymd_hms_t_offset(bytes, true))
-        .or_else(|| chrono::DateTime::parse_from_rfc3339(value).ok().map(|v| v.naive_utc()))
 }
 
 fn parse_timestamp_format(value: &str) -> Option<&'static str> {
@@ -1505,9 +1504,6 @@ fn parse_timestamp_format(value: &str) -> Option<&'static str> {
         if parse_timestamp_with_format(value, fmt).is_some() {
             return Some(fmt);
         }
-    }
-    if chrono::DateTime::parse_from_rfc3339(value).is_ok() {
-        return Some("rfc3339");
     }
     None
 }
