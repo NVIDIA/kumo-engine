@@ -38,6 +38,8 @@ struct IngestStatsReport {
     key_lookup_failures: u64,
     key_failure_samples: Vec<String>,
     key_failures_by_context: HashMap<String, KeyFailureCountsReport>,
+    #[serde(default)]
+    edge_counts: HashMap<String, u64>,
     pk_duplicate_counts: HashMap<String, u64>,
     pk_duplicate_total: u64,
     pk_duplicate_samples: HashMap<String, Vec<String>>,
@@ -1510,10 +1512,35 @@ fn print_info(reader: &GraphIndexReader, table_name: &str, root: &Path) {
             failures.sort_by(|a, b| a.0.cmp(b.0));
             println!("  Key failures (filtered):");
             for (ctx, counts) in failures {
-                println!(
-                    "    {}: parse {} lookup {}",
-                    ctx, counts.parse_failures, counts.lookup_failures
-                );
+                let relation = ctx
+                    .strip_prefix("src_lookup:")
+                    .or_else(|| ctx.strip_prefix("dst_lookup:"));
+                let success = relation
+                    .and_then(|name| report.stats.edge_counts.get(name))
+                    .copied()
+                    .unwrap_or(0);
+                let lookup = counts.lookup_failures;
+                let rate = if success == 0 && lookup == 0 {
+                    "n/a".to_string()
+                } else {
+                    let denom = success.saturating_add(lookup);
+                    format!("{:.2}%", (success as f64 * 100.0) / denom as f64)
+                };
+                if relation.is_some() {
+                    println!(
+                        "    {}: success {} lookup {} parse {} match {}",
+                        ctx,
+                        format_number(success),
+                        format_number(lookup),
+                        format_number(counts.parse_failures),
+                        rate
+                    );
+                } else {
+                    println!(
+                        "    {}: parse {} lookup {}",
+                        ctx, counts.parse_failures, counts.lookup_failures
+                    );
+                }
             }
         }
     }
