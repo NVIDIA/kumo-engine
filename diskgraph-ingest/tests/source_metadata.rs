@@ -272,6 +272,22 @@ fn validate_decimal_precision_on_non_decimal() {
 }
 
 #[test]
+fn validate_decimal_precision_allowed_with_source_decimal() {
+    let mut meta = base_metadata();
+    meta.tables[0].columns.push(ColumnSpec {
+        name: "castable".into(),
+        ingested_dtype: IngestedType::Int64,
+        source_dtype: Some("Decimal128(10, 2)".into()),
+        timestamp_format: None,
+        timestamp_unit: None,
+        fixed_len: None,
+        precision: Some(10),
+        scale: Some(2),
+    });
+    assert!(meta.validate().is_ok());
+}
+
+#[test]
 fn validate_edge_fk_missing_column() {
     let mut meta = base_metadata();
     meta.tables.push(TableSpec {

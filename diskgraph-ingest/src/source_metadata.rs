@@ -5,6 +5,14 @@ use fasteval::{Evaler, Parser, Slab};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
+fn source_dtype_is_decimal(dtype: Option<&str>) -> bool {
+    let Some(dtype) = dtype else {
+        return false;
+    };
+    let dtype = dtype.trim_start();
+    dtype.starts_with("Decimal128") || dtype.starts_with("Decimal256") || dtype.starts_with("Decimal")
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceMetadata {
     pub dataset_name: String,
@@ -264,7 +272,10 @@ impl SourceMetadata {
                         table.name, col.name
                     ));
                 }
-                let is_decimal = matches!(col.ingested_dtype, IngestedType::Decimal128 | IngestedType::Decimal256);
+                let is_decimal = matches!(
+                    col.ingested_dtype,
+                    IngestedType::Decimal128 | IngestedType::Decimal256
+                );
                 if is_decimal {
                     let precision = match col.precision {
                         Some(v) => v,
@@ -309,7 +320,9 @@ impl SourceMetadata {
                             table.name, col.name
                         ));
                     }
-                } else if col.precision.is_some() || col.scale.is_some() {
+                } else if (col.precision.is_some() || col.scale.is_some())
+                    && !source_dtype_is_decimal(col.source_dtype.as_deref())
+                {
                     errors.push(format!(
                         "table {} column {} precision/scale only valid for decimal",
                         table.name, col.name

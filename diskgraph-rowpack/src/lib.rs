@@ -6,6 +6,7 @@ use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
 use gxhash::{HashMap, HashMapExt};
 use half::f16;
 use num_bigint::BigInt;
+use num_traits::ToPrimitive;
 use num_traits::Signed;
 use rmp::encode as mp;
 use serde::{Deserialize, Serialize};
@@ -404,6 +405,27 @@ impl<'p> RowAccess<'p> {
                     .ok_or_else(|| anyhow!("int64 parse failed"))
                     .map(Some)
             }
+            DataType::Decimal128(_, scale) => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Decimal128Array>()
+                    .ok_or_else(|| anyhow!("decimal128 cast"))?;
+                let value = arr.value(self.row);
+                let scaled = apply_decimal_scale_i128(value, i32::from(*scale));
+                Ok(Some(scaled as i64))
+            }
+            DataType::Decimal256(_, scale) => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Decimal256Array>()
+                    .ok_or_else(|| anyhow!("decimal256 cast"))?;
+                let value = arr.value(self.row);
+                let scaled = apply_decimal_scale_i256(value, i32::from(*scale));
+                scaled
+                    .to_i64()
+                    .ok_or_else(|| anyhow!("decimal256 overflow"))
+                    .map(Some)
+            }
             _ => Err(anyhow!("int64 type mismatch")),
         }
     }
@@ -513,6 +535,27 @@ impl<'p> RowAccess<'p> {
                     .ok_or_else(|| anyhow!("fixed binary cast"))?;
                 parse_i32(std::str::from_utf8(arr.value(self.row))?)
                     .ok_or_else(|| anyhow!("int32 parse failed"))
+                    .map(Some)
+            }
+            DataType::Decimal128(_, scale) => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Decimal128Array>()
+                    .ok_or_else(|| anyhow!("decimal128 cast"))?;
+                let value = arr.value(self.row);
+                let scaled = apply_decimal_scale_i128(value, i32::from(*scale));
+                Ok(Some(scaled as i32))
+            }
+            DataType::Decimal256(_, scale) => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Decimal256Array>()
+                    .ok_or_else(|| anyhow!("decimal256 cast"))?;
+                let value = arr.value(self.row);
+                let scaled = apply_decimal_scale_i256(value, i32::from(*scale));
+                scaled
+                    .to_i32()
+                    .ok_or_else(|| anyhow!("decimal256 overflow"))
                     .map(Some)
             }
             _ => Err(anyhow!("int32 type mismatch")),
@@ -6685,6 +6728,41 @@ fn format_decimal_from_le(bytes: &[u8], scale: i32) -> String {
     out
 }
 
+fn apply_decimal_scale_i128(value: i128, scale: i32) -> i128 {
+    if scale == 0 {
+        return value;
+    }
+    if scale > 0 {
+        let pow = pow10_i128(scale as u32);
+        return value / pow;
+    }
+    let pow = pow10_i128((-scale) as u32);
+    value.saturating_mul(pow)
+}
+
+fn apply_decimal_scale_i256(value: arrow_buffer::i256, scale: i32) -> BigInt {
+    let mut out = BigInt::from_signed_bytes_le(&value.to_le_bytes());
+    if scale == 0 {
+        return out;
+    }
+    if scale > 0 {
+        let pow = BigInt::from(10u32).pow(scale as u32);
+        out /= pow;
+        return out;
+    }
+    let pow = BigInt::from(10u32).pow((-scale) as u32);
+    out *= pow;
+    out
+}
+
+fn pow10_i128(exp: u32) -> i128 {
+    let mut out = 1i128;
+    for _ in 0..exp {
+        out = out.saturating_mul(10);
+    }
+    out
+}
+
 fn format_decimal_i128(value: i128, scale: i32) -> String {
     let negative = value.is_negative();
     let mut digits = value.unsigned_abs().to_string();
@@ -7989,6 +8067,25 @@ mod tests {
         assert!(json
             .to_string()
             .contains("00112233445566778899aabbccddeeff"));
+    }
+
+    #[test]
+    fn decimal128_truncates_to_int() {
+        let array = arrow_array::Decimal128Array::from_iter_values([12345i128])
+            .with_precision_and_scale(10, 2)
+            .unwrap();
+        let cols: Vec<arrow_array::ArrayRef> = vec![std::sync::Arc::new(array)];
+        let hints = vec![RowAccessHints {
+            timestamp_format: None,
+            timestamp_unit: None,
+            decimal_scale: Some(2),
+        }];
+        let stats = RowAccessStats::new(None);
+        let mut access = RowAccess::new(hints, stats);
+        access.set_cols(&cols);
+        access.set_row(0);
+        let value = access.get_int64(0).unwrap().unwrap();
+        assert_eq!(value, 123);
     }
 
     #[test]
