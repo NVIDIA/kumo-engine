@@ -794,7 +794,7 @@ impl EdgeWriter {
         let edge_bytes = EdgeWriter::node_length_bytes_fast(&self.layouts, counts) as usize;
         let node_bytes = if let Some(node_data) = node_data {
             edge_bytes
-                .checked_add(2)
+                .checked_add(self.node_data_len_bytes as usize)
                 .and_then(|v| v.checked_add(node_data.len()))
                 .ok_or(IndexBuildError::CountOverflow)?
         } else {

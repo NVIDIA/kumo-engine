@@ -764,6 +764,73 @@ fn selects_wider_offsets_for_large_edge_lists() {
 }
 
 #[test]
+fn selects_32bit_offsets_with_large_node_data_budget() {
+    let dir = tempdir().unwrap();
+    let edge_path = dir.path().join("edges.bin");
+    let edges = vec![
+        EdgeRow {
+            src: 0,
+            dst: 10,
+            dest_sort_key: None,
+        },
+        EdgeRow {
+            src: 1,
+            dst: 11,
+            dest_sort_key: None,
+        },
+    ];
+    write_edges(&edge_path, &edges, false).unwrap();
+
+    let node_data_path = dir.path().join("nodes.bin");
+    let node_data = vec![vec![1, 2, 3], vec![4, 5]];
+    write_node_data(&node_data_path, &node_data).unwrap();
+
+    let node_meta = NodeTypeMetadata {
+        name: "User".into(),
+        max_id: 20,
+        has_node_data: true,
+        node_data_compression: None,
+        primary_key_map: None,
+        shards: vec![NodeShardMetadata {
+            min_id: 0,
+            max_id: 1,
+            node_data_paths: Some(vec!["nodes.bin".into()]),
+        }],
+    };
+    let relation_meta = relation_meta("Follows", "User", "User", None);
+    let output_dir = dir.path().join("out");
+    let builder = ShardBuilder::new(ShardBuildParams {
+        output_dir: output_dir.clone(),
+        node_meta: node_meta.clone(),
+        node_types: vec![node_meta.clone()],
+        relation_metas: vec![relation_meta.clone()],
+        shard_index: 0,
+        node_data_paths: Some(vec![node_data_path]),
+        node_data_max_len: 20_000_000,
+        mem_budget: None,
+    });
+    let built = builder
+        .build(
+            &[EdgeShardInput {
+                relation: "Follows".into(),
+                source_shard_index: 0,
+                paths: vec![edge_path],            }],
+        )
+        .unwrap();
+
+    let reader = ShardReader::open(&output_dir, built.layouts.clone(), true).unwrap();
+    assert_eq!(reader.header().delta_bytes, 4);
+    let view0 = reader.edges_for_node(0).unwrap();
+    let segs0 = view0.relation_segments().unwrap();
+    assert_eq!(segs0[0].count, 1);
+    assert_eq!(decode_relation(&reader, 0, 0), vec![(10, None)]);
+    assert_eq!(view0.node_data().unwrap().unwrap(), node_data[0].as_slice());
+    let view1 = reader.edges_for_node(1).unwrap();
+    assert_eq!(decode_relation(&reader, 1, 0), vec![(11, None)]);
+    assert_eq!(view1.node_data().unwrap().unwrap(), node_data[1].as_slice());
+}
+
+#[test]
 fn reader_rejects_invalid_header() {
     let dir = tempdir().unwrap();
     let offsets = dir.path().join("offsets.bin");
