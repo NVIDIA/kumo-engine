@@ -132,11 +132,29 @@ fn main() -> Result<()> {
     if stats.pk_duplicate_total > 0 {
         println!("Duplicate primary keys:");
         println!("  Total skipped: {}", stats.pk_duplicate_total);
-        let mut entries: Vec<_> = stats.pk_duplicate_counts.iter().collect();
+        let mut totals: std::collections::HashMap<&str, u64> = std::collections::HashMap::new();
+        for (name, count) in &stats.pk_duplicate_counts {
+            let table = name.split(':').next().unwrap_or(name.as_str());
+            let entry = totals.entry(table).or_insert(0);
+            *entry = entry.saturating_add(*count);
+        }
+        let mut samples_by_table: std::collections::HashMap<&str, Vec<String>> =
+            std::collections::HashMap::new();
+        for (name, samples) in &stats.pk_duplicate_samples {
+            let table = name.split(':').next().unwrap_or(name.as_str());
+            let entry = samples_by_table.entry(table).or_default();
+            for sample in samples {
+                if entry.len() >= 10 {
+                    break;
+                }
+                entry.push(sample.clone());
+            }
+        }
+        let mut entries: Vec<_> = totals.into_iter().collect();
         entries.sort_by(|a, b| a.0.cmp(b.0));
         for (name, count) in entries {
             println!("  {}: {}", name, count);
-            if let Some(samples) = stats.pk_duplicate_samples.get(name) {
+            if let Some(samples) = samples_by_table.get(name) {
                 if !samples.is_empty() {
                     println!("    Samples: {}", samples.join(", "));
                 }
