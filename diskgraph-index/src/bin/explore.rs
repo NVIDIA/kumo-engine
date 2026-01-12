@@ -1786,7 +1786,7 @@ fn print_info(reader: &GraphIndexReader, table_name: &str, root: &Path) {
                     ok(&format_number(node_count)),
                     label("offsets"),
                     ok(&format_bytes(reader_shard.offsets_len())),
-                    label("edges"),
+                    label("data"),
                     ok(&format_bytes(reader_shard.edges_len())),
                     label("offsets"),
                     ok(offsets),
@@ -1811,8 +1811,8 @@ fn print_info(reader: &GraphIndexReader, table_name: &str, root: &Path) {
     }
     println!(
         "  {} {}={} {}={} {}={}",
-        label("Edge storage:"),
-        label("edges"),
+        label("Storage:"),
+        label("data"),
         ok(&format_bytes(total_edge_bytes)),
         label("offsets"),
         ok(&format_bytes(total_offsets)),
