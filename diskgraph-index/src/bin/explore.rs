@@ -1445,35 +1445,44 @@ fn print_info(reader: &GraphIndexReader, table_name: &str, root: &Path) {
         );
     }
 
-    if let Ok(Some(report)) = read_build_report(root) {
-        println!(
-            "  Build stats (dataset-wide): nodes_ingested={} edges_ingested={} truncated_nodes={} truncated_edges={} capped_lists={} node_data_trimmed={}",
-            format_number(report.build_stats.nodes_ingested),
-            format_number(report.build_stats.edges_ingested),
-            format_number(report.build_stats.truncated_nodes),
-            format_number(report.build_stats.truncated_edges_total),
-            format_number(report.build_stats.capped_edge_lists),
-            format_number(report.build_stats.node_data_trimmed)
-        );
-        if !report.build_stats.truncated_edges_per_relation.is_empty() {
-            println!("  Truncated edges per relation:");
-            for (idx, count) in report
-                .build_stats
-                .truncated_edges_per_relation
-                .iter()
-                .enumerate()
-            {
-                let rel_name = table
-                    .relations()
-                    .get(idx)
-                    .map(|rel| rel.name.as_str())
-                    .unwrap_or("unknown");
-                println!("    - [{}] {}: {}", idx, rel_name, format_number(*count));
+    if let Ok(Some(report)) = read_ingest_report(root) {
+        let mut edge_stats: Vec<_> = report
+            .stats
+            .key_failures_by_context
+            .iter()
+            .filter_map(|(ctx, counts)| {
+                let relation = ctx
+                    .strip_prefix("src_lookup:")
+                    .or_else(|| ctx.strip_prefix("dst_lookup:"))?;
+                if !relation.contains(table.node_type()) {
+                    return None;
+                }
+                let success = report.stats.edge_counts.get(relation).copied().unwrap_or(0);
+                Some((ctx, relation, counts, success))
+            })
+            .collect();
+        edge_stats.sort_by(|a, b| a.0.cmp(b.0));
+        if !edge_stats.is_empty() {
+            println!("  Edge stats:");
+            for (ctx, _relation, counts, success) in edge_stats {
+                let lookup = counts.lookup_failures;
+                let rate = if success == 0 && lookup == 0 {
+                    "n/a".to_string()
+                } else {
+                    let denom = success.saturating_add(lookup);
+                    format!("{:.2}%", (success as f64 * 100.0) / denom as f64)
+                };
+                println!(
+                    "    {}: success {} lookup {} parse {} match {}",
+                    ctx,
+                    format_number(success),
+                    format_number(lookup),
+                    format_number(counts.parse_failures),
+                    rate
+                );
             }
         }
-    }
 
-    if let Ok(Some(report)) = read_ingest_report(root) {
         if let Some(table_spec) = report
             .source
             .tables
@@ -1498,49 +1507,32 @@ fn print_info(reader: &GraphIndexReader, table_name: &str, root: &Path) {
                 println!("      - {}: {}", col.name, format_column(col));
             }
         }
+    }
 
-        let mut failures: Vec<_> = report
-            .stats
-            .key_failures_by_context
-            .iter()
-            .filter(|(ctx, counts)| {
-                ctx.contains(table.node_type())
-                    && (counts.parse_failures > 0 || counts.lookup_failures > 0)
-            })
-            .collect();
-        if !failures.is_empty() {
-            failures.sort_by(|a, b| a.0.cmp(b.0));
-            println!("  Key failures (filtered):");
-            for (ctx, counts) in failures {
-                let relation = ctx
-                    .strip_prefix("src_lookup:")
-                    .or_else(|| ctx.strip_prefix("dst_lookup:"));
-                let success = relation
-                    .and_then(|name| report.stats.edge_counts.get(name))
-                    .copied()
-                    .unwrap_or(0);
-                let lookup = counts.lookup_failures;
-                let rate = if success == 0 && lookup == 0 {
-                    "n/a".to_string()
-                } else {
-                    let denom = success.saturating_add(lookup);
-                    format!("{:.2}%", (success as f64 * 100.0) / denom as f64)
-                };
-                if relation.is_some() {
-                    println!(
-                        "    {}: success {} lookup {} parse {} match {}",
-                        ctx,
-                        format_number(success),
-                        format_number(lookup),
-                        format_number(counts.parse_failures),
-                        rate
-                    );
-                } else {
-                    println!(
-                        "    {}: parse {} lookup {}",
-                        ctx, counts.parse_failures, counts.lookup_failures
-                    );
-                }
+    if let Ok(Some(report)) = read_build_report(root) {
+        println!(
+            "  Build stats (dataset-wide): nodes_ingested={} edges_ingested={} truncated_nodes={} truncated_edges={} capped_lists={} node_data_trimmed={}",
+            format_number(report.build_stats.nodes_ingested),
+            format_number(report.build_stats.edges_ingested),
+            format_number(report.build_stats.truncated_nodes),
+            format_number(report.build_stats.truncated_edges_total),
+            format_number(report.build_stats.capped_edge_lists),
+            format_number(report.build_stats.node_data_trimmed)
+        );
+        if !report.build_stats.truncated_edges_per_relation.is_empty() {
+            println!("  Truncated edges per relation:");
+            for (idx, count) in report
+                .build_stats
+                .truncated_edges_per_relation
+                .iter()
+                .enumerate()
+            {
+                let rel_name = table
+                    .relations()
+                    .get(idx)
+                    .map(|rel| rel.name.as_str())
+                    .unwrap_or("unknown");
+                println!("    - [{}] {}: {}", idx, rel_name, format_number(*count));
             }
         }
     }
