@@ -506,6 +506,7 @@ fn format_number(value: u64) -> String {
 
 const RESET: &str = "\x1b[0m";
 const DIM: &str = "\x1b[2m";
+const BOLD: &str = "\x1b[1m";
 const BLUE: &str = "\x1b[34m";
 const CYAN: &str = "\x1b[36m";
 const GREEN: &str = "\x1b[32m";
@@ -594,7 +595,8 @@ fn repl(reader: Arc<GraphIndexReader>, default_table: String, index_root: PathBu
         name("quit")
     );
     loop {
-        match rl.readline("explore> ") {
+        let prompt = format!("{BOLD}{CYAN}explore>{RESET} ");
+        match rl.readline(&prompt) {
             Ok(line) => {
                 let trimmed = line.trim();
                 if trimmed.is_empty() {
