@@ -61,7 +61,7 @@ struct SourceMetadataReport {
     edge_sort_keys: Option<EdgeSortKeysReport>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 struct TableSpecReport {
     name: String,
     columns: Vec<ColumnSpecReport>,
@@ -71,7 +71,7 @@ struct TableSpecReport {
     edge_table: Option<EdgeTableSpecReport>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 struct ColumnSpecReport {
     name: String,
     ingested_dtype: ColumnTypeReport,
@@ -162,7 +162,7 @@ enum SortKeyWeightKindReport {
     Float32,
 }
 
-#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Deserialize, PartialEq, Eq, Clone)]
 #[serde(rename_all = "snake_case")]
 enum ColumnTypeReport {
     Int8,
@@ -218,7 +218,7 @@ impl ColumnTypeReport {
     }
 }
 
-#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Deserialize, PartialEq, Eq, Clone)]
 #[serde(rename_all = "snake_case")]
 enum TimestampUnitReport {
     Seconds,
@@ -238,13 +238,13 @@ impl TimestampUnitReport {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 struct EdgeTableSpecReport {
     src_fk: ForeignKeySpecReport,
     dst_fk: ForeignKeySpecReport,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 struct ForeignKeySpecReport {
     column: String,
     ref_table: String,
@@ -1445,7 +1445,19 @@ fn print_info(reader: &GraphIndexReader, table_name: &str, root: &Path) {
         );
     }
 
+    let mut source_schema: Option<TableSpecReport> = None;
     if let Ok(Some(report)) = read_ingest_report(root) {
+        source_schema = report
+            .source
+            .tables
+            .iter()
+            .find(|t| t.name == table.node_type())
+            .map(|t| TableSpecReport {
+                name: t.name.clone(),
+                columns: t.columns.clone(),
+                primary_key: t.primary_key.clone(),
+                edge_table: t.edge_table.clone(),
+            });
         let mut edge_stats: Vec<_> = report
             .stats
             .key_failures_by_context
@@ -1483,30 +1495,6 @@ fn print_info(reader: &GraphIndexReader, table_name: &str, root: &Path) {
             }
         }
 
-        if let Some(table_spec) = report
-            .source
-            .tables
-            .iter()
-            .find(|t| t.name == table.node_type())
-        {
-            println!("  Source schema:");
-            if let Some(pk) = &table_spec.primary_key {
-                println!("    Primary key: {}", pk);
-            } else {
-                println!("    Primary key: none");
-            }
-            if let Some(edge) = &table_spec.edge_table {
-                println!(
-                    "    Edge table: {} -> {}",
-                    format_fk(table_spec, &edge.src_fk),
-                    format_fk(table_spec, &edge.dst_fk)
-                );
-            }
-            println!("    Columns:");
-            for col in &table_spec.columns {
-                println!("      - {}: {}", col.name, format_column(col));
-            }
-        }
     }
 
     if let Ok(Some(report)) = read_build_report(root) {
@@ -1534,6 +1522,26 @@ fn print_info(reader: &GraphIndexReader, table_name: &str, root: &Path) {
                     .unwrap_or("unknown");
                 println!("    - [{}] {}: {}", idx, rel_name, format_number(*count));
             }
+        }
+    }
+
+    if let Some(table_spec) = source_schema.as_ref() {
+        println!("  Source schema:");
+        if let Some(pk) = &table_spec.primary_key {
+            println!("    Primary key: {}", pk);
+        } else {
+            println!("    Primary key: none");
+        }
+        if let Some(edge) = &table_spec.edge_table {
+            println!(
+                "    Edge table: {} -> {}",
+                format_fk(table_spec, &edge.src_fk),
+                format_fk(table_spec, &edge.dst_fk)
+            );
+        }
+        println!("    Columns:");
+        for col in &table_spec.columns {
+            println!("      - {}: {}", col.name, format_column(col));
         }
     }
 }
