@@ -36,6 +36,7 @@ impl ShardReader {
         let edges_file = File::open(&edges_path)?;
         let offsets = unsafe { Mmap::map(&offsets_file)? };
         let edges = unsafe { Mmap::map(&edges_file)? };
+        advise_random(&offsets);
         advise_random(&edges);
         let header_len = bincode::serialized_size(&OffsetFileHeader::new(0, 0))
             .map_err(|_| DiskgraphError::InvalidMetadata("invalid offsets header".into()))?
