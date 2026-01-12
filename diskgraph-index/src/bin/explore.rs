@@ -339,15 +339,19 @@ fn run_explore(source_str: &str) -> Result<()> {
     let bytes_total = offsets_size + edges_size;
     let duration_display = format_duration_seconds(elapsed);
     println!(
-        "Load stats: {}, {} bytes, {} nodes, {} edges",
+        "{} {}, {} {}, {} {}, {} {}",
+        label("Load stats:"),
         duration_display,
-        format_bytes(bytes_total),
-        format_number(nodes),
-        format_number(edges),
+        label("bytes"),
+        ok(&format_bytes(bytes_total)),
+        label("nodes"),
+        ok(&format_number(nodes)),
+        label("edges"),
+        ok(&format_number(edges)),
     );
     let reader = Arc::new(reader);
     if metadata.node_types.is_empty() {
-        println!("No tables found in metadata.");
+        println!("{}", warn("No tables found in metadata."));
         return Ok(());
     }
     let default_table = metadata
@@ -406,6 +410,47 @@ fn format_number(value: u64) -> String {
     out.chars().rev().collect()
 }
 
+const RESET: &str = "\x1b[0m";
+const DIM: &str = "\x1b[2m";
+const BLUE: &str = "\x1b[34m";
+const CYAN: &str = "\x1b[36m";
+const GREEN: &str = "\x1b[32m";
+const YELLOW: &str = "\x1b[33m";
+const RED: &str = "\x1b[31m";
+const MAGENTA: &str = "\x1b[35m";
+
+fn colorize(value: &str, color: &str) -> String {
+    format!("{color}{value}{RESET}")
+}
+
+fn dim(value: &str) -> String {
+    format!("{DIM}{value}{RESET}")
+}
+
+fn ok(value: &str) -> String {
+    colorize(value, GREEN)
+}
+
+fn warn(value: &str) -> String {
+    colorize(value, YELLOW)
+}
+
+fn err(value: &str) -> String {
+    colorize(value, RED)
+}
+
+fn label(value: &str) -> String {
+    colorize(value, CYAN)
+}
+
+fn name(value: &str) -> String {
+    colorize(value, BLUE)
+}
+
+fn highlight(value: &str) -> String {
+    colorize(value, MAGENTA)
+}
+
 fn is_indexed_graph(dir: &Path) -> bool {
     let meta_path = dir.join("index_metadata.json");
     if !meta_path.exists() || !dir.join("nodes").exists() {
@@ -438,7 +483,21 @@ fn is_indexed_graph(dir: &Path) -> bool {
 fn repl(reader: Arc<GraphIndexReader>, default_table: String, index_root: PathBuf) -> Result<()> {
     let mut rl = DefaultEditor::new().context("init editor")?;
     let mut current_table = default_table;
-    println!("Commands: tables | use <table> | info | node <id> | pkey <value> | formats | ingest | schema | benchmark <threads> [duration] | benchmarkall <threads> [duration] | quit");
+    println!(
+        "{} {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {}",
+        label("Commands:"),
+        name("tables"),
+        name("use <table>"),
+        name("info"),
+        name("node <id>"),
+        name("pkey <value>"),
+        name("formats"),
+        name("ingest"),
+        name("schema"),
+        name("benchmark <threads> [duration]"),
+        name("benchmarkall <threads> [duration]"),
+        name("quit")
+    );
     loop {
         match rl.readline("explore> ") {
             Ok(line) => {
@@ -455,12 +514,12 @@ fn repl(reader: Arc<GraphIndexReader>, default_table: String, index_root: PathBu
                     continue;
                 }
                 if let Some(rest) = trimmed.strip_prefix("use ") {
-                    let name = rest.trim();
-                    if reader.table(name).is_some() {
-                        current_table = name.to_string();
-                        println!("Using table {}", current_table);
+                    let table_name = rest.trim();
+                    if reader.table(table_name).is_some() {
+                        current_table = table_name.to_string();
+                        println!("{} {}", label("Using table"), name(&current_table));
                     } else {
-                        println!("Unknown table: {name}");
+                        println!("{} {}", err("Unknown table:"), name(table_name));
                     }
                     continue;
                 }
@@ -483,14 +542,14 @@ fn repl(reader: Arc<GraphIndexReader>, default_table: String, index_root: PathBu
                 if let Some(rest) = trimmed.strip_prefix("node ") {
                     match rest.trim().parse::<u64>() {
                         Ok(id) => show_node(&reader, &current_table, id)?,
-                        Err(_) => println!("Invalid node id: {rest}"),
+                        Err(_) => println!("{} {rest}", err("Invalid node id:")),
                     }
                     continue;
                 }
                 if let Some(rest) = trimmed.strip_prefix("pkey ") {
                     let value = rest.trim();
                     if value.is_empty() {
-                        println!("Missing primary key value.");
+                        println!("{}", warn("Missing primary key value."));
                     } else {
                         show_node_by_pk(&reader, &current_table, value)?;
                     }
@@ -499,19 +558,19 @@ fn repl(reader: Arc<GraphIndexReader>, default_table: String, index_root: PathBu
                 if let Some(rest) = trimmed.strip_prefix("benchmark ") {
                     let mut parts = rest.split_whitespace();
                     let Some(thread_part) = parts.next() else {
-                        println!("Invalid benchmark command: {rest}");
+                        println!("{} {rest}", err("Invalid benchmark command:"));
                         continue;
                     };
                     let duration_part = parts.next();
                     let extra = parts.next();
                     if extra.is_some() {
-                        println!("Invalid benchmark command: {rest}");
+                        println!("{} {rest}", err("Invalid benchmark command:"));
                         continue;
                     }
                     let threads = match thread_part.parse::<usize>() {
                         Ok(threads) if threads > 0 => threads,
                         _ => {
-                            println!("Invalid thread count: {thread_part}");
+                            println!("{} {thread_part}", err("Invalid thread count:"));
                             continue;
                         }
                     };
@@ -519,7 +578,11 @@ fn repl(reader: Arc<GraphIndexReader>, default_table: String, index_root: PathBu
                         match parse_duration(raw) {
                             Some(d) => d,
                             None => {
-                                println!("Invalid duration: {raw} (expected 30s or 5m)");
+                                println!(
+                                    "{} {raw} {}",
+                                    err("Invalid duration:"),
+                                    dim("(expected 30s or 5m)")
+                                );
                                 continue;
                             }
                         }
@@ -529,7 +592,7 @@ fn repl(reader: Arc<GraphIndexReader>, default_table: String, index_root: PathBu
                     let table = match reader.table(&current_table) {
                         Some(table) => table,
                         None => {
-                            println!("Unknown table: {}", current_table);
+                            println!("{} {}", err("Unknown table:"), name(&current_table));
                             continue;
                         }
                     };
@@ -539,19 +602,19 @@ fn repl(reader: Arc<GraphIndexReader>, default_table: String, index_root: PathBu
                 if let Some(rest) = trimmed.strip_prefix("benchmarkall ") {
                     let mut parts = rest.split_whitespace();
                     let Some(thread_part) = parts.next() else {
-                        println!("Invalid benchmarkall command: {rest}");
+                        println!("{} {rest}", err("Invalid benchmarkall command:"));
                         continue;
                     };
                     let duration_part = parts.next();
                     let extra = parts.next();
                     if extra.is_some() {
-                        println!("Invalid benchmarkall command: {rest}");
+                        println!("{} {rest}", err("Invalid benchmarkall command:"));
                         continue;
                     }
                     let threads = match thread_part.parse::<usize>() {
                         Ok(threads) if threads > 0 => threads,
                         _ => {
-                            println!("Invalid thread count: {thread_part}");
+                            println!("{} {thread_part}", err("Invalid thread count:"));
                             continue;
                         }
                     };
@@ -559,7 +622,11 @@ fn repl(reader: Arc<GraphIndexReader>, default_table: String, index_root: PathBu
                         match parse_duration(raw) {
                             Some(d) => d,
                             None => {
-                                println!("Invalid duration: {raw} (expected 30s or 5m)");
+                                println!(
+                                    "{} {raw} {}",
+                                    err("Invalid duration:"),
+                                    dim("(expected 30s or 5m)")
+                                );
                                 continue;
                             }
                         }
@@ -570,7 +637,9 @@ fn repl(reader: Arc<GraphIndexReader>, default_table: String, index_root: PathBu
                     continue;
                 }
                 println!(
-                    "Unknown command. Use: tables | use <table> | info | node <id> | pkey <value> | formats | ingest | schema | benchmark <threads> [duration] | benchmarkall <threads> [duration] | quit"
+                    "{} {}",
+                    err("Unknown command."),
+                    dim("Use: tables | use <table> | info | node <id> | pkey <value> | formats | ingest | schema | benchmark <threads> [duration] | benchmarkall <threads> [duration] | quit")
                 );
             }
             Err(ReadlineError::Interrupted) | Err(ReadlineError::Eof) => break,
@@ -582,54 +651,78 @@ fn repl(reader: Arc<GraphIndexReader>, default_table: String, index_root: PathBu
 
 fn print_header(metadata: &DatasetMetadata, reader: &GraphIndexReader, current_table: &str) {
     println!(
-        "Node types: {}; Relations: {}; Current table: {}",
-        metadata.node_types.len(),
-        metadata.edge_relations.len(),
-        current_table
+        "{} {} {} {} {} {}",
+        label("Node types:"),
+        ok(&metadata.node_types.len().to_string()),
+        label("Relations:"),
+        ok(&metadata.edge_relations.len().to_string()),
+        label("Current table:"),
+        name(current_table)
     );
     print_tables(reader);
 }
 
 fn print_tables(reader: &GraphIndexReader) {
-    println!("Tables:");
+    println!("{}", label("Tables:"));
     for table in reader.tables() {
         println!(
-            "  {} (shards={}, nodes={})",
-            table.node_type(),
-            table.shard_count(),
-            format_number(table.node_count())
+            "  {} ({}={}, {}={})",
+            name(table.node_type()),
+            label("shards"),
+            ok(&table.shard_count().to_string()),
+            label("nodes"),
+            ok(&format_number(table.node_count()))
         );
         for rel in table.relations() {
             let sort_label = format_sort_key_summary(rel);
             println!(
-                "    -> {} (dst={}, sort_key={})",
-                rel.name, rel.dst_type, sort_label
+                "    {} {} ({}={}, {}={})",
+                dim("->"),
+                name(&rel.name),
+                label("dst"),
+                highlight(&rel.dst_type),
+                label("sort_key"),
+                if sort_label == "none" {
+                    dim(&sort_label)
+                } else {
+                    highlight(&sort_label)
+                }
             );
         }
     }
 }
 
 fn print_formats(metadata: &DatasetMetadata, root: &Path) -> Result<()> {
-    println!("Formats:");
+    println!("{}", label("Formats:"));
     for node in &metadata.node_types {
         println!();
-        println!("Table: {}", node.name);
+        println!("{} {}", label("Table:"), name(&node.name));
         if let Some(pk) = &node.primary_key_map {
             let fixed = pk
                 .fixed_len
                 .map(|v| v.to_string())
                 .unwrap_or_else(|| "n/a".to_string());
             println!(
-                "  Primary key: {} (dtype={}, fixed_len={}, mapping={})",
-                pk.column, pk.dtype, fixed, pk.mapping_kind
+                "  {} {} ({}={}, {}={}, {}={})",
+                label("Primary key:"),
+                name(&pk.column),
+                label("dtype"),
+                highlight(&pk.dtype),
+                label("fixed_len"),
+                if fixed == "n/a" { dim(&fixed) } else { ok(&fixed) },
+                label("mapping"),
+                highlight(&pk.mapping_kind)
             );
         } else {
-            println!("  Primary key: none");
+            println!("  {} {}", label("Primary key:"), dim("none"));
         }
         if let Some(compression) = &node.node_data_compression {
             println!(
-                "  Node data: {} (ctx={})",
-                compression.codec, compression.context_path
+                "  {} {} ({}={})",
+                label("Node data:"),
+                highlight(&compression.codec),
+                label("ctx"),
+                dim(&compression.context_path)
             );
             if compression.codec == "rowpack" {
                 let ctx_path = root.join(&compression.context_path);
@@ -637,14 +730,22 @@ fn print_formats(metadata: &DatasetMetadata, root: &Path) -> Result<()> {
                     if let Ok(ctx) = RowPackContext::from_bytes(&bytes) {
                         print_rowpack_summary(&ctx);
                     } else {
-                        println!("    Rowpack: failed to parse {}", ctx_path.display());
+                        println!(
+                            "    {} {}",
+                            err("Rowpack: failed to parse"),
+                            dim(&ctx_path.display().to_string())
+                        );
                     }
                 } else {
-                    println!("    Rowpack: missing {}", ctx_path.display());
+                    println!(
+                        "    {} {}",
+                        warn("Rowpack: missing"),
+                        dim(&ctx_path.display().to_string())
+                    );
                 }
             }
         } else {
-            println!("  Node data: none");
+            println!("  {} {}", label("Node data:"), dim("none"));
         }
     }
     Ok(())
@@ -654,12 +755,20 @@ fn print_ingest_stats(root: &Path) -> Result<()> {
     if let Some(report) = read_ingest_report(root)? {
         print_ingest_report(&report);
     } else {
-        println!("Ingest stats: ingest_stats.json not found");
+        println!(
+            "{} {}",
+            warn("Ingest stats missing:"),
+            dim("ingest_stats.json not found")
+        );
     }
     if let Some(report) = read_build_report(root)? {
         print_build_report(&report);
     } else {
-        println!("Build stats: build_stats.json not found");
+        println!(
+            "{} {}",
+            warn("Build stats missing:"),
+            dim("build_stats.json not found")
+        );
     }
     Ok(())
 }
@@ -668,7 +777,11 @@ fn print_source_schema_only(root: &Path) -> Result<()> {
     if let Some(report) = read_ingest_report(root)? {
         print_source_schema(&report.source);
     } else {
-        println!("Source schema: ingest_stats.json not found");
+        println!(
+            "{} {}",
+            warn("Source schema missing:"),
+            dim("ingest_stats.json not found")
+        );
     }
     Ok(())
 }
@@ -746,40 +859,56 @@ fn read_build_reports_recursive(root: &Path) -> Result<Option<BuildReport>> {
 
 fn print_ingest_report(report: &IngestReport) {
     println!();
-    println!("Ingest stats:");
+    println!("{}", label("Ingest stats:"));
     println!(
-        "  Key failures: parse={}, lookup={}",
-        report.stats.key_parse_failures, report.stats.key_lookup_failures
+        "  {} {}={} {}={}",
+        label("Key failures:"),
+        label("parse"),
+        err(&format_number(report.stats.key_parse_failures)),
+        label("lookup"),
+        err(&format_number(report.stats.key_lookup_failures))
     );
     if !report.stats.key_failures_by_context.is_empty() {
         let mut entries: Vec<_> = report.stats.key_failures_by_context.iter().collect();
         entries.sort_by(|a, b| a.0.cmp(b.0));
-        println!("  Key failures by context:");
+        println!("  {}", label("Key failures by context:"));
         for (ctx, counts) in entries {
             if counts.parse_failures == 0 && counts.lookup_failures == 0 {
                 continue;
             }
             println!(
-                "    {}: parse {}, lookup {}",
-                ctx, counts.parse_failures, counts.lookup_failures
+                "    {}: {} {} {} {}",
+                name(ctx),
+                label("parse"),
+                err(&format_number(counts.parse_failures)),
+                label("lookup"),
+                err(&format_number(counts.lookup_failures))
             );
         }
     }
     if !report.stats.key_failure_samples.is_empty() {
-        println!("  Key failure samples:");
+        println!("  {}", label("Key failure samples:"));
         for sample in &report.stats.key_failure_samples {
-            println!("    {}", sample);
+            println!("    {}", dim(sample));
         }
     }
     if report.stats.pk_duplicate_total > 0 {
-        println!("  Duplicate primary keys: {}", report.stats.pk_duplicate_total);
+        println!(
+            "  {} {}",
+            label("Duplicate primary keys:"),
+            warn(&format_number(report.stats.pk_duplicate_total))
+        );
         let mut entries: Vec<_> = report.stats.pk_duplicate_counts.iter().collect();
         entries.sort_by(|a, b| a.0.cmp(b.0));
         for (table, count) in entries {
-            println!("    {}: {}", table, count);
+            println!(
+                "    {}: {}",
+                name(table),
+                warn(&format_number(*count))
+            );
             if let Some(samples) = report.stats.pk_duplicate_samples.get(table) {
                 if !samples.is_empty() {
-                    println!("      samples: {}", samples.join(", "));
+                    println!("      {} {}", label("samples:"), dim(&samples.join(", ")));
                 }
             }
         }
@@ -789,7 +918,7 @@ fn print_ingest_report(report: &IngestReport) {
 
 fn print_source_schema(source: &SourceMetadataReport) {
     println!();
-    println!("Source schema: {}", source.dataset_name);
+    println!("{} {}", label("Source schema:"), name(&source.dataset_name));
     let mut tables: Vec<&TableSpecReport> = source.tables.iter().collect();
     tables.sort_by(|a, b| a.name.cmp(&b.name));
     let mut table_map: HashMap<&str, &TableSpecReport> = HashMap::new();
@@ -797,28 +926,35 @@ fn print_source_schema(source: &SourceMetadataReport) {
         table_map.insert(table.name.as_str(), table);
     }
     for table in tables {
-        println!("  Table {}:", table.name);
+        println!("  {} {}:", label("Table"), name(&table.name));
         if let Some(pk) = &table.primary_key {
             if let Some(col) = table.columns.iter().find(|c| &c.name == pk) {
-                println!("    Primary key: {} ({})", pk, format_column(col));
+                println!(
+                    "    {} {} ({})",
+                    label("Primary key:"),
+                    name(pk),
+                    highlight(&format_column(col))
+                );
             } else {
-                println!("    Primary key: {}", pk);
+                println!("    {} {}", label("Primary key:"), name(pk));
             }
         } else {
-            println!("    Primary key: none");
+            println!("    {} {}", label("Primary key:"), dim("none"));
         }
         if let Some(edge) = &table.edge_table {
             println!(
-                "    Edge table: {} -> {}",
-                format_fk(&table, &edge.src_fk),
-                format_fk(&table, &edge.dst_fk)
+                "    {} {} {} {}",
+                label("Edge table:"),
+                highlight(&format_fk(&table, &edge.src_fk)),
+                dim("->"),
+                highlight(&format_fk(&table, &edge.dst_fk))
             );
         }
     }
     if !source.relationships.is_empty() {
-        println!("  Relationships:");
+        println!("  {}", label("Relationships:"));
         for rel in &source.relationships {
-            let name = rel
+            let rel_name = rel
                 .name
                 .as_deref()
                 .unwrap_or("unnamed");
@@ -831,14 +967,15 @@ fn print_source_schema(source: &SourceMetadataReport) {
             let src_desc = src.map(format_column).unwrap_or_else(|| "unknown".to_string());
             let dst_desc = dst.map(format_column).unwrap_or_else(|| "unknown".to_string());
             println!(
-                "    {}: {}.{} ({}) -> {}.{} ({})",
-                name,
-                rel.src_table,
-                rel.src_column,
-                src_desc,
-                rel.dst_table,
-                rel.dst_column,
-                dst_desc
+                "    {}: {}.{} ({}) {} {}.{} ({})",
+                highlight(rel_name),
+                name(&rel.src_table),
+                name(&rel.src_column),
+                highlight(&src_desc),
+                dim("->"),
+                name(&rel.dst_table),
+                name(&rel.dst_column),
+                highlight(&dst_desc)
             );
         }
     }
@@ -848,7 +985,7 @@ fn print_source_schema(source: &SourceMetadataReport) {
         .filter_map(|table| table.edge_table.as_ref().map(|edge| (table, edge)))
         .collect();
     if !edge_tables.is_empty() {
-        println!("  Edge table relationships:");
+        println!("  {}", label("Edge table relationships:"));
         for (table, edge) in edge_tables {
             let src_col = table.columns.iter().find(|c| c.name == edge.src_fk.column);
             let dst_col = table.columns.iter().find(|c| c.name == edge.dst_fk.column);
@@ -869,63 +1006,71 @@ fn print_source_schema(source: &SourceMetadataReport) {
             let dst_ref_desc =
                 dst_ref_col.map(format_column).unwrap_or_else(|| "unknown".to_string());
             println!(
-                "    {}: src {} ({}) -> {}.{} ({}); dst {} ({}) -> {}.{} ({})",
-                table.name,
-                edge.src_fk.column,
-                src_desc,
-                edge.src_fk.ref_table,
-                edge.src_fk.ref_column,
-                src_ref_desc,
-                edge.dst_fk.column,
-                dst_desc,
-                edge.dst_fk.ref_table,
-                edge.dst_fk.ref_column,
-                dst_ref_desc
+                "    {}: {} {} ({}) {} {}.{} ({}); {} {} ({}) {} {}.{} ({})",
+                name(&table.name),
+                label("src"),
+                name(&edge.src_fk.column),
+                highlight(&src_desc),
+                dim("->"),
+                name(&edge.src_fk.ref_table),
+                name(&edge.src_fk.ref_column),
+                highlight(&src_ref_desc),
+                label("dst"),
+                name(&edge.dst_fk.column),
+                highlight(&dst_desc),
+                dim("->"),
+                name(&edge.dst_fk.ref_table),
+                name(&edge.dst_fk.ref_column),
+                highlight(&dst_ref_desc)
             );
         }
     }
     if let Some(sort_keys) = &source.edge_sort_keys {
         if !sort_keys.relationships.is_empty() {
-            println!("  Relationship sort keys:");
+            println!("  {}", label("Relationship sort keys:"));
             let mut names: Vec<_> = sort_keys.relationships.keys().collect();
             names.sort();
-            for name in names {
-                if let Some(cfg) = sort_keys.relationships.get(name) {
+            for rel_key in names {
+                if let Some(cfg) = sort_keys.relationships.get(rel_key) {
                     if let Some(spec) = &cfg.forward {
                         println!(
-                            "    {} forward: {}",
-                            name,
-                            format_sort_key_report(spec)
+                            "    {} {} {}",
+                            name(rel_key),
+                            label("forward:"),
+                            highlight(&format_sort_key_report(spec))
                         );
                     }
                     if let Some(spec) = &cfg.reverse {
                         println!(
-                            "    {} reverse: {}",
-                            name,
-                            format_sort_key_report(spec)
+                            "    {} {} {}",
+                            name(rel_key),
+                            label("reverse:"),
+                            highlight(&format_sort_key_report(spec))
                         );
                     }
                 }
             }
         }
         if !sort_keys.edge_tables.is_empty() {
-            println!("  Edge table sort keys:");
+            println!("  {}", label("Edge table sort keys:"));
             let mut names: Vec<_> = sort_keys.edge_tables.keys().collect();
             names.sort();
-            for name in names {
-                if let Some(cfg) = sort_keys.edge_tables.get(name) {
+            for rel_key in names {
+                if let Some(cfg) = sort_keys.edge_tables.get(rel_key) {
                     if let Some(spec) = &cfg.src_to_dst {
                         println!(
-                            "    {} src_to_dst: {}",
-                            name,
-                            format_sort_key_report(spec)
+                            "    {} {} {}",
+                            name(rel_key),
+                            label("src_to_dst:"),
+                            highlight(&format_sort_key_report(spec))
                         );
                     }
                     if let Some(spec) = &cfg.dst_to_src {
                         println!(
-                            "    {} dst_to_src: {}",
-                            name,
-                            format_sort_key_report(spec)
+                            "    {} {} {}",
+                            name(rel_key),
+                            label("dst_to_src:"),
+                            highlight(&format_sort_key_report(spec))
                         );
                     }
                 }
@@ -971,42 +1116,73 @@ fn format_column(col: &ColumnSpecReport) -> String {
 fn print_build_report(report: &BuildReport) {
     let stats = &report.build_stats;
     println!();
-    println!("Build stats:");
-    println!("  Nodes ingested: {}", format_count(stats.nodes_ingested));
-    println!("  Edges ingested: {}", format_count(stats.edges_ingested));
+    println!("{}", label("Build stats:"));
+    println!(
+        "  {} {}",
+        label("Nodes ingested:"),
+        ok(&format_count(stats.nodes_ingested))
+    );
+    println!(
+        "  {} {}",
+        label("Edges ingested:"),
+        ok(&format_count(stats.edges_ingested))
+    );
     if stats.truncated_nodes > 0 || stats.truncated_edges_total > 0 {
-        println!("  Truncated nodes: {}", format_count(stats.truncated_nodes));
         println!(
-            "  Truncated edges: {}",
-            format_count(stats.truncated_edges_total)
+            "  {} {}",
+            label("Truncated nodes:"),
+            warn(&format_count(stats.truncated_nodes))
+        );
+        println!(
+            "  {} {}",
+            label("Truncated edges:"),
+            warn(&format_count(stats.truncated_edges_total))
         );
     }
     if stats.capped_edge_lists > 0 {
         println!(
-            "  Capped edge lists: {}",
-            format_count(stats.capped_edge_lists)
+            "  {} {}",
+            label("Capped edge lists:"),
+            warn(&format_count(stats.capped_edge_lists))
         );
     }
     if stats.node_data_trimmed > 0 {
         println!(
-            "  Dropped oversized node data: {}",
-            format_count(stats.node_data_trimmed)
+            "  {} {}",
+            label("Dropped oversized node data:"),
+            warn(&format_count(stats.node_data_trimmed))
         );
     }
     if !stats.truncated_edges_per_relation.is_empty() {
         let total: u64 = stats.truncated_edges_per_relation.iter().sum();
         if total > 0 {
-            println!("  Truncated edges by relation: {}", format_count(total));
+            println!(
+                "  {} {}",
+                label("Truncated edges by relation:"),
+                warn(&format_count(total))
+            );
         }
     }
 }
 
 fn print_rowpack_summary(ctx: &RowPackContext) {
-    println!("    Rowpack: v{}, estimated_row_bytes={}", ctx.version, ctx.estimated_row_bytes);
-    println!("    Columns:");
+    println!(
+        "    {} {} {}={}",
+        label("Rowpack:"),
+        ok(&format!("v{}", ctx.version)),
+        label("estimated_row_bytes"),
+        ok(&ctx.estimated_row_bytes.to_string())
+    );
+    println!("    {}", label("Columns:"));
     for (idx, col) in ctx.columns.iter().enumerate() {
         let encoding = format_rowpack_encoding(&col.encoding);
-        println!("      [{}] {} ({:?}) {}", idx, col.name, col.logical_type, encoding);
+        println!(
+            "      [{}] {} ({}) {}",
+            idx,
+            name(&col.name),
+            highlight(&format!("{:?}", col.logical_type)),
+            highlight(&encoding)
+        );
         if let ColumnEncoding::String { encoding } = &col.encoding {
             print_rowpack_string_details(encoding);
         }
@@ -1067,16 +1243,30 @@ fn print_rowpack_string_details(encoding: &StringEncoding) {
         StringEncoding::Dict { values } => {
             let preview = values.iter().take(8);
             for (idx, value) in preview.enumerate() {
-                println!("        dict[{}]={}", idx, format_rowpack_bytes(value));
+                println!(
+                    "        {}[{}]={}",
+                    label("dict"),
+                    ok(&idx.to_string()),
+                    dim(&format_rowpack_bytes(value))
+                );
             }
         }
         StringEncoding::Alphabet { alphabet } => {
-            println!("        alphabet={}", format_rowpack_bytes(alphabet));
+            println!(
+                "        {}={}",
+                label("alphabet"),
+                dim(&format_rowpack_bytes(alphabet))
+            );
         }
         StringEncoding::Bpe { dict } => {
             let preview = dict.iter().take(8);
             for (idx, value) in preview.enumerate() {
-                println!("        bpe[{}]={}", idx, format_rowpack_bytes(value));
+                println!(
+                    "        {}[{}]={}",
+                    label("bpe"),
+                    ok(&idx.to_string()),
+                    dim(&format_rowpack_bytes(value))
+                );
             }
         }
         _ => {}
@@ -1345,7 +1535,7 @@ fn print_info(reader: &GraphIndexReader, table_name: &str, root: &Path) {
     let table = match reader.table(table_name) {
         Some(table) => table,
         None => {
-            println!("Unknown table: {table_name}");
+            println!("{} {}", err("Unknown table:"), name(table_name));
             return;
         }
     };
@@ -1356,25 +1546,28 @@ fn print_info(reader: &GraphIndexReader, table_name: &str, root: &Path) {
         .find(|n| n.name == table.node_type());
     let shard_count = table.shard_count();
     let rel_count = table.relations().len();
-    println!("Table: {}", table.node_type());
+    println!("{} {}", label("Table:"), name(table.node_type()));
     println!(
-        "  Nodes: {} (shards={})",
-        format_number(table.node_count()),
-        shard_count
+        "  {} {} ({}={})",
+        label("Nodes:"),
+        ok(&format_number(table.node_count())),
+        label("shards"),
+        ok(&shard_count.to_string())
     );
-    println!("  Relations: {}", rel_count);
+    println!("  {} {}", label("Relations:"), ok(&rel_count.to_string()));
     println!(
-        "  Node data: {}",
+        "  {} {}",
+        label("Node data:"),
         node_meta
-            .map(|n| if n.has_node_data { "enabled" } else { "disabled" })
-            .unwrap_or("unknown")
+            .map(|n| if n.has_node_data { ok("enabled") } else { dim("disabled") })
+            .unwrap_or_else(|| dim("unknown"))
     );
 
     let mut total_edges = 0u64;
     let mut total_offsets = 0u64;
     let mut total_edge_bytes = 0u64;
     if let Some(node_meta) = node_meta {
-        println!("  Shards:");
+        println!("  {}", label("Shards:"));
         for (idx, shard) in node_meta.shards.iter().enumerate() {
             let node_count = if shard.max_id >= shard.min_id {
                 shard.max_id - shard.min_id + 1
@@ -1392,37 +1585,53 @@ fn print_info(reader: &GraphIndexReader, table_name: &str, root: &Path) {
                 total_offsets = total_offsets.saturating_add(reader_shard.offsets_len());
                 total_edge_bytes = total_edge_bytes.saturating_add(reader_shard.edges_len());
                 println!(
-                    "    - shard {:05}: ids {}..{} (nodes={}) offsets={} edges={} deltas={}B node_len={}B edge_count={} node_data_parts={}",
-                    idx,
-                    shard.min_id,
-                    shard.max_id,
-                    format_number(node_count),
-                    format_bytes(reader_shard.offsets_len()),
-                    format_bytes(reader_shard.edges_len()),
-                    header.delta_bytes,
-                    header.node_data_len_bytes,
-                    format_number(reader_shard.edge_count()),
-                    node_data_paths
+                    "    {} {}: {} {}..{} ({}={}) {}={} {}={} {}={}B {}={}B {}={} {}={}",
+                    dim("-"),
+                    label(&format!("shard {:05}", idx)),
+                    label("ids"),
+                    name(&shard.min_id.to_string()),
+                    name(&shard.max_id.to_string()),
+                    label("nodes"),
+                    ok(&format_number(node_count)),
+                    label("offsets"),
+                    ok(&format_bytes(reader_shard.offsets_len())),
+                    label("edges"),
+                    ok(&format_bytes(reader_shard.edges_len())),
+                    label("deltas"),
+                    ok(&header.delta_bytes.to_string()),
+                    label("node_len"),
+                    ok(&header.node_data_len_bytes.to_string()),
+                    label("edge_count"),
+                    ok(&format_number(reader_shard.edge_count())),
+                    label("node_data_parts"),
+                    ok(&node_data_paths.to_string())
                 );
             } else {
                 println!(
-                    "    - shard {:05}: ids {}..{} (nodes={})",
-                    idx,
-                    shard.min_id,
-                    shard.max_id,
-                    format_number(node_count)
+                    "    {} {}: {} {}..{} ({}={})",
+                    dim("-"),
+                    label(&format!("shard {:05}", idx)),
+                    label("ids"),
+                    name(&shard.min_id.to_string()),
+                    name(&shard.max_id.to_string()),
+                    label("nodes"),
+                    ok(&format_number(node_count))
                 );
             }
         }
     }
     println!(
-        "  Edge storage: edges={} offsets={} total_edges={}",
-        format_bytes(total_edge_bytes),
-        format_bytes(total_offsets),
-        format_number(total_edges)
+        "  {} {}={} {}={} {}={}",
+        label("Edge storage:"),
+        label("edges"),
+        ok(&format_bytes(total_edge_bytes)),
+        label("offsets"),
+        ok(&format_bytes(total_offsets)),
+        label("total_edges"),
+        ok(&format_number(total_edges))
     );
 
-    println!("  Relation layouts:");
+    println!("  {}", label("Relation layouts:"));
     let layouts = table.layouts();
     for (idx, rel) in table.relations().iter().enumerate() {
         let sort = format_sort_key_summary(rel);
@@ -1431,17 +1640,24 @@ fn print_info(reader: &GraphIndexReader, table_name: &str, root: &Path) {
             .map(|l| (l.dst_bits, l.entry_bytes, l.dest_sort_key_bits))
             .unwrap_or((0, 0, None));
         println!(
-            "    - [{}] {} ({} -> {}), {}, dst_bits={}, entry_bytes={}, sort_bits={}",
+            "    {} [{}] {} ({} {} {}), {} {}={} {}={} {}={} {}={}",
+            dim("-"),
             idx,
-            rel.name,
-            rel.src_type,
-            rel.dst_type,
-            sort,
-            dst_bits,
-            entry_bytes,
+            name(&rel.name),
+            label("src"),
+            name(&rel.src_type),
+            dim("->"),
+            name(&rel.dst_type),
+            label("sort_key"),
+            if sort == "none" { dim(&sort) } else { highlight(&sort) },
+            label("dst_bits"),
+            ok(&dst_bits.to_string()),
+            label("entry_bytes"),
+            ok(&entry_bytes.to_string()),
+            label("sort_bits"),
             sort_bits
-                .map(|v| v.to_string())
-                .unwrap_or_else(|| "none".to_string())
+                .map(|v| ok(&v.to_string()))
+                .unwrap_or_else(|| dim("none"))
         );
     }
 
@@ -1459,7 +1675,7 @@ fn print_info(reader: &GraphIndexReader, table_name: &str, root: &Path) {
                 edge_table: t.edge_table.clone(),
             });
         if !table.relations().is_empty() {
-            println!("  Edge stats:");
+            println!("  {}", label("Edge stats:"));
             for rel in table.relations() {
                 let success = report.stats.edge_counts.get(&rel.name).copied().unwrap_or(0);
                 let ctx_src = format!("src_lookup:{}", rel.name);
@@ -1475,17 +1691,28 @@ fn print_info(reader: &GraphIndexReader, table_name: &str, root: &Path) {
                     .unwrap_or(0)
                     .saturating_add(dst_counts.map(|c| c.lookup_failures).unwrap_or(0));
                 let rate = if success == 0 && lookup == 0 {
-                    "n/a".to_string()
+                    dim("n/a")
                 } else {
                     let denom = success.saturating_add(lookup);
-                    format!("{:.2}%", (success as f64 * 100.0) / denom as f64)
+                    let pct = (success as f64 * 100.0) / denom as f64;
+                    if pct >= 99.0 {
+                        ok(&format!("{pct:.2}%"))
+                    } else if pct >= 90.0 {
+                        warn(&format!("{pct:.2}%"))
+                    } else {
+                        err(&format!("{pct:.2}%"))
+                    }
                 };
                 println!(
-                    "    {}: success {} lookup {} parse {} match {}",
-                    rel.name,
-                    format_number(success),
-                    format_number(lookup),
-                    format_number(parse),
+                    "    {}: {} {} {} {} {} {} {} {}",
+                    name(&rel.name),
+                    label("success"),
+                    ok(&format_number(success)),
+                    label("lookup"),
+                    if lookup == 0 { ok(&format_number(lookup)) } else { warn(&format_number(lookup)) },
+                    label("parse"),
+                    if parse == 0 { ok(&format_number(parse)) } else { warn(&format_number(parse)) },
+                    label("match"),
                     rate
                 );
             }
@@ -1495,16 +1722,23 @@ fn print_info(reader: &GraphIndexReader, table_name: &str, root: &Path) {
 
     if let Ok(Some(report)) = read_build_report(root) {
         println!(
-            "  Build stats (dataset-wide): nodes_ingested={} edges_ingested={} truncated_nodes={} truncated_edges={} capped_lists={} node_data_trimmed={}",
-            format_number(report.build_stats.nodes_ingested),
-            format_number(report.build_stats.edges_ingested),
-            format_number(report.build_stats.truncated_nodes),
-            format_number(report.build_stats.truncated_edges_total),
-            format_number(report.build_stats.capped_edge_lists),
-            format_number(report.build_stats.node_data_trimmed)
+            "  {} {}={} {}={} {}={} {}={} {}={} {}={}",
+            label("Build stats (dataset-wide):"),
+            label("nodes_ingested"),
+            ok(&format_number(report.build_stats.nodes_ingested)),
+            label("edges_ingested"),
+            ok(&format_number(report.build_stats.edges_ingested)),
+            label("truncated_nodes"),
+            warn(&format_number(report.build_stats.truncated_nodes)),
+            label("truncated_edges"),
+            warn(&format_number(report.build_stats.truncated_edges_total)),
+            label("capped_lists"),
+            warn(&format_number(report.build_stats.capped_edge_lists)),
+            label("node_data_trimmed"),
+            warn(&format_number(report.build_stats.node_data_trimmed))
         );
         if !report.build_stats.truncated_edges_per_relation.is_empty() {
-            println!("  Truncated edges per relation:");
+            println!("  {}", label("Truncated edges per relation:"));
             for (idx, count) in report
                 .build_stats
                 .truncated_edges_per_relation
@@ -1516,28 +1750,41 @@ fn print_info(reader: &GraphIndexReader, table_name: &str, root: &Path) {
                     .get(idx)
                     .map(|rel| rel.name.as_str())
                     .unwrap_or("unknown");
-                println!("    - [{}] {}: {}", idx, rel_name, format_number(*count));
+                println!(
+                    "    {} [{}] {}: {}",
+                    dim("-"),
+                    idx,
+                    name(rel_name),
+                    warn(&format_number(*count))
+                );
             }
         }
     }
 
     if let Some(table_spec) = source_schema.as_ref() {
-        println!("  Source schema:");
+        println!("  {}", label("Source schema:"));
         if let Some(pk) = &table_spec.primary_key {
-            println!("    Primary key: {}", pk);
+            println!("    {} {}", label("Primary key:"), name(pk));
         } else {
-            println!("    Primary key: none");
+            println!("    {} {}", label("Primary key:"), dim("none"));
         }
         if let Some(edge) = &table_spec.edge_table {
             println!(
-                "    Edge table: {} -> {}",
-                format_fk(table_spec, &edge.src_fk),
-                format_fk(table_spec, &edge.dst_fk)
+                "    {} {} {} {}",
+                label("Edge table:"),
+                highlight(&format_fk(table_spec, &edge.src_fk)),
+                dim("->"),
+                highlight(&format_fk(table_spec, &edge.dst_fk))
             );
         }
-        println!("    Columns:");
+        println!("    {}", label("Columns:"));
         for col in &table_spec.columns {
-            println!("      - {}: {}", col.name, format_column(col));
+            println!(
+                "      {} {}: {}",
+                dim("-"),
+                name(&col.name),
+                highlight(&format_column(col))
+            );
         }
     }
 }
@@ -1547,32 +1794,38 @@ fn show_node(reader: &GraphIndexReader, table_name: &str, node: u64) -> Result<(
     let table = match reader.table(table_name) {
         Some(table) => table,
         None => {
-            println!("Unknown table: {table_name}");
+            println!("{} {}", err("Unknown table:"), name(table_name));
             return Ok(());
         }
     };
     let view = match table.edges_for_node(node) {
         Ok(v) => v,
         Err(e) => {
-            println!("Error reading node {}: {}", node, e);
+            println!(
+                "{} {}: {}",
+                err("Error reading node"),
+                name(&node.to_string()),
+                err(&e.to_string())
+            );
             return Ok(());
         }
     };
     let segments = match view.relation_segments() {
         Ok(s) => s,
         Err(e) => {
-            println!("Error decoding relations: {}", e);
+            println!("{} {}", err("Error decoding relations:"), err(&e.to_string()));
             return Ok(());
         }
     };
-    println!("Node {node}:");
+    println!("{} {}", label("Node:"), name(&node.to_string()));
     for (idx, seg) in segments.iter().enumerate() {
         let rel = &table.relations()[idx];
         println!(
-            "  [{}] {}: count={}",
+            "  [{}] {} {}={}",
             idx,
-            rel.name,
-            seg.count
+            name(&rel.name),
+            label("count"),
+            ok(&seg.count.to_string())
         );
         if seg.count > 0 {
             let mut buf = [0u8; 16];
@@ -1592,37 +1845,46 @@ fn show_node(reader: &GraphIndexReader, table_name: &str, node: u64) -> Result<(
                 rows.push((dst, sort_display));
                 buf.fill(0);
             }
-            println!("    first {} edges: {:?}", rows.len(), rows);
+            println!(
+                "    {} {} {}",
+                label("first"),
+                ok(&rows.len().to_string()),
+                dim(&format!("edges: {:?}", rows))
+            );
         }
     }
     match view.node_data() {
         Ok(_) => match table.decode_node_data_json(&view) {
             Ok(Some(value)) => match serde_json::to_string_pretty(&value) {
-                Ok(pretty) => println!("  node_data:\n{pretty}"),
+                Ok(pretty) => println!("  {}{}\n{pretty}", label("node_data"), dim(":")),
                 Err(_) => {
-                    println!("  node_data: <error: json encode>");
+                    println!("  {} {}", label("node_data:"), err("<error: json encode>"));
                 }
             },
             Ok(None) => match table.decode_node_data(&view) {
                 Ok(Some(bytes)) => {
                     let escaped = escape_ascii(&bytes);
-                    println!("  node_data: \"{}\"", escaped);
+                    println!("  {} \"{}\"", label("node_data:"), dim(&escaped));
                 }
                 Ok(None) => {}
                 Err(e) => {
-                    println!("  node_data: <error: {}>", e);
+                    println!("  {} {}", label("node_data:"), err(&format!("<error: {e}>")));
                 }
             },
             Err(e) => {
-                println!("  node_data: <error: {}>", e);
+                println!("  {} {}", label("node_data:"), err(&format!("<error: {e}>")));
             }
         },
         Err(e) => {
-            println!("  node_data: <error: {}>", e);
+            println!("  {} {}", label("node_data:"), err(&format!("<error: {e}>")));
         }
     }
     let elapsed = start.elapsed();
-    println!("  lookup: {:.3} ms", elapsed.as_secs_f64() * 1000.0);
+    println!(
+        "  {} {}",
+        label("lookup:"),
+        ok(&format!("{:.3} ms", elapsed.as_secs_f64() * 1000.0))
+    );
     Ok(())
 }
 
@@ -1630,29 +1892,41 @@ fn show_node_by_pk(reader: &GraphIndexReader, table_name: &str, key: &str) -> Re
     let table = match reader.table(table_name) {
         Some(table) => table,
         None => {
-            println!("Unknown table: {table_name}");
+            println!("{} {}", err("Unknown table:"), name(table_name));
             return Ok(());
         }
     };
     if table.primary_key_map().is_none() {
-        println!("Table {table_name} has no primary key map");
+        println!(
+            "{} {}",
+            warn("Table has no primary key map:"),
+            name(table_name)
+        );
         return Ok(());
     }
     let key = match table.parse_pk_key(key) {
         Ok(key) => key,
-        Err(err) => {
-            println!("Invalid primary key: {err}");
+        Err(parse_err) => {
+            println!(
+                "{} {}",
+                err("Invalid primary key:"),
+                err(&parse_err.to_string())
+            );
             return Ok(());
         }
     };
     let node_id = match table.node_id_from_pk(&key) {
         Ok(Some(node_id)) => node_id,
         Ok(None) => {
-            println!("Primary key not found");
+            println!("{}", warn("Primary key not found."));
             return Ok(());
         }
-        Err(err) => {
-            println!("Primary key lookup error: {err}");
+        Err(lookup_err) => {
+            println!(
+                "{} {}",
+                err("Primary key lookup error:"),
+                err(&lookup_err.to_string())
+            );
             return Ok(());
         }
     };
@@ -1678,7 +1952,7 @@ fn run_benchmark_all(
         .filter(|t| t.node_count() > 0)
         .collect();
     if tables.is_empty() {
-        println!("Benchmark skipped: no nodes across tables.");
+        println!("{}", warn("Benchmark skipped: no nodes across tables."));
         return Ok(());
     }
     run_benchmark_tables(tables, true, threads, duration)
@@ -1692,18 +1966,22 @@ fn run_benchmark_tables(
 ) -> Result<()> {
     let table_count = tables.len();
     if table_count == 1 && tables[0].node_count() == 0 {
-        println!("Benchmark skipped: no nodes in table.");
+        println!("{}", warn("Benchmark skipped: no nodes in table."));
         return Ok(());
     }
     let total_nodes: u64 = tables.iter().map(|t| t.node_count()).sum();
-    let label = if round_robin { "Benchmark all" } else { "Benchmark" };
+    let heading = if round_robin { "Benchmark all" } else { "Benchmark" };
     println!(
-        "{}: threads={}, duration={}s, tables={}, nodes={}",
-        label,
-        threads,
-        duration.as_secs(),
-        table_count,
-        format_number(total_nodes)
+        "{} {}={} {}={} {}={} {}={}",
+        label(heading),
+        label("threads"),
+        ok(&threads.to_string()),
+        label("duration"),
+        ok(&format!("{}s", duration.as_secs())),
+        label("tables"),
+        ok(&table_count.to_string()),
+        label("nodes"),
+        ok(&format_number(total_nodes))
     );
     let start_time = std::time::Instant::now();
     let end_time = start_time + duration;
@@ -1901,50 +2179,108 @@ fn run_benchmark_tables(
     } else {
         0
     };
-    println!("Results:");
+    println!("{}", label("Results:"));
     let (offsets_bytes, edges_bytes) = total_table_bytes(&tables);
     let data_bytes = offsets_bytes.saturating_add(edges_bytes);
-    println!("  offsets bytes: {}", format_bytes(offsets_bytes));
-    println!("  edge bytes: {}", format_bytes(edges_bytes));
+    println!(
+        "  {} {}",
+        label("offsets bytes:"),
+        ok(&format_bytes(offsets_bytes))
+    );
+    println!(
+        "  {} {}",
+        label("edge bytes:"),
+        ok(&format_bytes(edges_bytes))
+    );
     if let Some(available) = available_memory_bytes() {
-        println!("  available ram: {}", format_bytes(available));
+        println!(
+            "  {} {}",
+            label("available ram:"),
+            ok(&format_bytes(available))
+        );
         let load_factor = if available > 0 {
             data_bytes as f64 / available as f64
         } else {
             0.0
         };
-        println!("  load factor: {:.2}", load_factor);
+        println!("  {} {}", label("load factor:"), ok(&format!("{load_factor:.2}")));
     } else {
-        println!("  available ram: n/a");
-        println!("  load factor: n/a");
+        println!("  {} {}", label("available ram:"), dim("n/a"));
+        println!("  {} {}", label("load factor:"), dim("n/a"));
     }
-    println!("  ops: {}", format_number(total_ops));
-    println!("  ops/s: {}", format_number(ops_per_sec));
-    println!("  errors: {}", format_number(total_errors));
-    println!("  edges read: {}", format_number(total_edges));
+    println!("  {} {}", label("ops:"), ok(&format_number(total_ops)));
+    println!("  {} {}", label("ops/s:"), ok(&format_number(ops_per_sec)));
     println!(
-        "  edges/s: {}",
-        format_number((total_edges as f64 / elapsed).round() as u64)
+        "  {} {}",
+        label("errors:"),
+        if total_errors == 0 {
+            ok(&format_number(total_errors))
+        } else {
+            warn(&format_number(total_errors))
+        }
     );
-    println!("  edge bytes: {}", format_bytes(total_edge_bytes));
+    println!(
+        "  {} {}",
+        label("edges read:"),
+        ok(&format_number(total_edges))
+    );
+    println!(
+        "  {} {}",
+        label("edges/s:"),
+        ok(&format_number((total_edges as f64 / elapsed).round() as u64))
+    );
+    println!(
+        "  {} {}",
+        label("edge bytes:"),
+        ok(&format_bytes(total_edge_bytes))
+    );
     let edge_bps = (total_edge_bytes as f64 / elapsed).round() as u64;
-    println!("  edge bytes/s: {}/s", format_bytes(edge_bps));
-    println!("  node_data bytes: {}", format_bytes(total_node_data));
+    println!(
+        "  {} {}/s",
+        label("edge bytes/s:"),
+        ok(&format_bytes(edge_bps))
+    );
+    println!(
+        "  {} {}",
+        label("node_data bytes:"),
+        ok(&format_bytes(total_node_data))
+    );
     let node_data_bps = (total_node_data as f64 / elapsed).round() as u64;
     println!(
-        "  node_data bytes/s: {}/s",
-        format_bytes(node_data_bps)
+        "  {} {}/s",
+        label("node_data bytes/s:"),
+        ok(&format_bytes(node_data_bps))
     );
-    println!("  checksum: {}", checksum);
-    println!("  avg: {}", format_duration_ns(avg_ns as u128));
+    println!("  {} {}", label("checksum:"), dim(&checksum.to_string()));
+    println!(
+        "  {} {}",
+        label("avg:"),
+        ok(&format_duration_ns(avg_ns as u128))
+    );
     if min_ns != u128::MAX {
-        println!("  min: {}", format_duration_ns(min_ns));
+        println!(
+            "  {} {}",
+            label("min:"),
+            ok(&format_duration_ns(min_ns))
+        );
     }
-    println!("  max: {}", format_duration_ns(max_ns));
-    println!("  p50: {}", format_duration_ns(percentile_ns(&hist, &BUCKETS_US, 0.50)));
-    println!("  p90: {}", format_duration_ns(percentile_ns(&hist, &BUCKETS_US, 0.90)));
-    println!("  p99: {}", format_duration_ns(percentile_ns(&hist, &BUCKETS_US, 0.99)));
-    println!("Latency histogram:");
+    println!("  {} {}", label("max:"), ok(&format_duration_ns(max_ns)));
+    println!(
+        "  {} {}",
+        label("p50:"),
+        ok(&format_duration_ns(percentile_ns(&hist, &BUCKETS_US, 0.50)))
+    );
+    println!(
+        "  {} {}",
+        label("p90:"),
+        warn(&format_duration_ns(percentile_ns(&hist, &BUCKETS_US, 0.90)))
+    );
+    println!(
+        "  {} {}",
+        label("p99:"),
+        warn(&format_duration_ns(percentile_ns(&hist, &BUCKETS_US, 0.99)))
+    );
+    println!("{}", label("Latency histogram:"));
     for (i, count) in hist.iter().enumerate() {
         if *count == 0 {
             continue;
@@ -1952,16 +2288,18 @@ fn run_benchmark_tables(
         if i < BUCKETS_US.len() {
             let bound_ns = (BUCKETS_US[i] as u128) * 1_000;
             println!(
-                "  <= {:>9}: {}",
-                format_duration_ns(bound_ns),
-                format_number(*count)
+                "  {} {} {}",
+                dim("<="),
+                highlight(&format_duration_ns(bound_ns)),
+                ok(&format_number(*count))
             );
         } else {
             let bound_ns = (BUCKETS_US[BUCKETS_US.len() - 1] as u128) * 1_000;
             println!(
-                "  >  {:>9}: {}",
-                format_duration_ns(bound_ns),
-                format_number(*count)
+                "  {} {} {}",
+                dim(">"),
+                highlight(&format_duration_ns(bound_ns)),
+                ok(&format_number(*count))
             );
         }
     }
@@ -2024,15 +2362,22 @@ fn render_benchmark_display(
     let mut out = String::new();
     out.push_str("\x1b[2J\x1b[H");
     out.push_str(&format!(
-        "Benchmark running: {} / {}\n",
-        format_duration_short(elapsed),
-        format_duration_short(duration)
+        "{} {} {} {}\n",
+        label("Benchmark running:"),
+        ok(&format_duration_short(elapsed)),
+        dim("/"),
+        ok(&format_duration_short(duration))
     ));
-    out.push_str(&format!("Ops so far: {}\n", format_number(total_ops)));
+    out.push_str(&format!(
+        "{} {}\n",
+        label("Ops so far:"),
+        ok(&format_number(total_ops))
+    ));
     let current_ops = samples.last().copied().unwrap_or(0);
     out.push_str(&format!(
-        "Current ops/s: {}\n",
-        format_number(current_ops)
+        "{} {}\n",
+        label("Current ops/s:"),
+        highlight(&format_number(current_ops))
     ));
     out.push_str(&render_progress_bar(width, elapsed, duration));
     out.push('\n');
