@@ -69,11 +69,22 @@ struct SourceMetadataReport {
 #[derive(Debug, Deserialize, Clone)]
 struct TableSpecReport {
     name: String,
+    #[serde(default)]
+    format: Option<TableFormatReport>,
+    #[serde(default)]
+    paths: Vec<String>,
     columns: Vec<ColumnSpecReport>,
     #[serde(default)]
     primary_key: Option<String>,
     #[serde(default)]
     edge_table: Option<EdgeTableSpecReport>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "snake_case")]
+enum TableFormatReport {
+    Csv,
+    Parquet,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -850,7 +861,7 @@ fn print_formats(metadata: &DatasetMetadata, root: &Path) -> Result<()> {
 
 fn print_ingest_stats(root: &Path) -> Result<()> {
     if let Some(report) = read_ingest_report(root)? {
-        print_ingest_report(&report);
+        print_ingest_report(&report, root);
     } else {
         println!(
             "{} {}",
@@ -954,9 +965,86 @@ fn read_build_reports_recursive(root: &Path) -> Result<Option<BuildReport>> {
     Ok(Some(BuildReport { build_stats: agg }))
 }
 
-fn print_ingest_report(report: &IngestReport) {
+fn sum_path_bytes(path: &Path) -> io::Result<u64> {
+    let mut total = 0u64;
+    let mut stack = vec![path.to_path_buf()];
+    while let Some(current) = stack.pop() {
+        let meta = fs::metadata(&current)?;
+        if meta.is_file() {
+            total = total.saturating_add(meta.len());
+            continue;
+        }
+        if meta.is_dir() {
+            for entry in fs::read_dir(&current)? {
+                let entry = entry?;
+                stack.push(entry.path());
+            }
+        }
+    }
+    Ok(total)
+}
+
+fn sum_table_paths(root: &Path, paths: &[String]) -> Option<u64> {
+    if paths.is_empty() {
+        return None;
+    }
+    let mut total = 0u64;
+    for path in paths {
+        let raw = Path::new(path);
+        let resolved = if raw.is_absolute() {
+            raw.to_path_buf()
+        } else {
+            root.join(raw)
+        };
+        let bytes = sum_path_bytes(&resolved).ok()?;
+        total = total.saturating_add(bytes);
+    }
+    Some(total)
+}
+
+fn print_ingest_report(report: &IngestReport, root: &Path) {
     println!();
     println!("{}", label("Ingest stats:"));
+    if !report.source.tables.is_empty() {
+        let mut table_sizes = Vec::new();
+        let mut total = 0u64;
+        let mut has_total = true;
+        for table in &report.source.tables {
+            let size = sum_table_paths(root, &table.paths);
+            if let Some(bytes) = size {
+                total = total.saturating_add(bytes);
+            } else {
+                has_total = false;
+            }
+            table_sizes.push((table.name.as_str(), size, table.format.as_ref()));
+        }
+        println!(
+            "  {} {}",
+            label("Data size:"),
+            if has_total {
+                ok(&format_bytes(total))
+            } else {
+                warn("partial")
+            }
+        );
+        for (table_name, size, format) in table_sizes {
+            let format_label = match format {
+                Some(TableFormatReport::Csv) => "csv",
+                Some(TableFormatReport::Parquet) => "parquet",
+                None => "unknown",
+            };
+            println!(
+                "    {} {} {} {}",
+                name(table_name),
+                dim(format_label),
+                label("size"),
+                match size {
+                    Some(bytes) => ok(&format_bytes(bytes)),
+                    None => warn("n/a"),
+                }
+            );
+        }
+    }
     println!(
         "  {} {}={} {}={}",
         label("Key failures:"),
@@ -1767,6 +1855,8 @@ fn print_info(reader: &GraphIndexReader, table_name: &str, root: &Path) {
             .find(|t| t.name == table.node_type())
             .map(|t| TableSpecReport {
                 name: t.name.clone(),
+                format: t.format.clone(),
+                paths: t.paths.clone(),
                 columns: t.columns.clone(),
                 primary_key: t.primary_key.clone(),
                 edge_table: t.edge_table.clone(),
