@@ -1458,26 +1458,22 @@ fn print_info(reader: &GraphIndexReader, table_name: &str, root: &Path) {
                 primary_key: t.primary_key.clone(),
                 edge_table: t.edge_table.clone(),
             });
-        let mut edge_stats: Vec<_> = report
-            .stats
-            .key_failures_by_context
-            .iter()
-            .filter_map(|(ctx, counts)| {
-                let relation = ctx
-                    .strip_prefix("src_lookup:")
-                    .or_else(|| ctx.strip_prefix("dst_lookup:"))?;
-                if !relation.contains(table.node_type()) {
-                    return None;
-                }
-                let success = report.stats.edge_counts.get(relation).copied().unwrap_or(0);
-                Some((ctx, relation, counts, success))
-            })
-            .collect();
-        edge_stats.sort_by(|a, b| a.0.cmp(b.0));
-        if !edge_stats.is_empty() {
+        if !table.relations().is_empty() {
             println!("  Edge stats:");
-            for (ctx, _relation, counts, success) in edge_stats {
-                let lookup = counts.lookup_failures;
+            for rel in table.relations() {
+                let success = report.stats.edge_counts.get(&rel.name).copied().unwrap_or(0);
+                let ctx_src = format!("src_lookup:{}", rel.name);
+                let ctx_dst = format!("dst_lookup:{}", rel.name);
+                let src_counts = report.stats.key_failures_by_context.get(&ctx_src);
+                let dst_counts = report.stats.key_failures_by_context.get(&ctx_dst);
+                let parse = src_counts
+                    .map(|c| c.parse_failures)
+                    .unwrap_or(0)
+                    .saturating_add(dst_counts.map(|c| c.parse_failures).unwrap_or(0));
+                let lookup = src_counts
+                    .map(|c| c.lookup_failures)
+                    .unwrap_or(0)
+                    .saturating_add(dst_counts.map(|c| c.lookup_failures).unwrap_or(0));
                 let rate = if success == 0 && lookup == 0 {
                     "n/a".to_string()
                 } else {
@@ -1486,10 +1482,10 @@ fn print_info(reader: &GraphIndexReader, table_name: &str, root: &Path) {
                 };
                 println!(
                     "    {}: success {} lookup {} parse {} match {}",
-                    ctx,
+                    rel.name,
                     format_number(success),
                     format_number(lookup),
-                    format_number(counts.parse_failures),
+                    format_number(parse),
                     rate
                 );
             }
