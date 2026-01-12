@@ -12,6 +12,7 @@ fn base_table(name: &str) -> TableSpec {
             ColumnSpec {
                 name: "id".into(),
                 ingested_dtype: IngestedType::Int64,
+                source_dtype: None,
                 timestamp_format: None,
                 timestamp_unit: None,
                 fixed_len: None,
@@ -21,6 +22,7 @@ fn base_table(name: &str) -> TableSpec {
             ColumnSpec {
                 name: "name".into(),
                 ingested_dtype: IngestedType::String,
+                source_dtype: None,
                 timestamp_format: None,
                 timestamp_unit: None,
                 fixed_len: Some(8),
@@ -84,6 +86,7 @@ fn validate_missing_pk_column() {
             columns: vec![ColumnSpec {
                 name: "name".into(),
                 ingested_dtype: IngestedType::String,
+                source_dtype: None,
                 timestamp_format: None,
                 timestamp_unit: None,
                 fixed_len: Some(8),
@@ -139,6 +142,7 @@ fn validate_duplicate_column_names() {
     meta.tables[0].columns.push(ColumnSpec {
         name: "id".into(),
         ingested_dtype: IngestedType::Int64,
+        source_dtype: None,
         timestamp_format: None,
         timestamp_unit: None,
         fixed_len: None,
@@ -193,6 +197,7 @@ fn validate_decimal_missing_precision() {
     meta.tables[0].columns.push(ColumnSpec {
         name: "amount".into(),
         ingested_dtype: IngestedType::Decimal128,
+        source_dtype: None,
         timestamp_format: None,
         timestamp_unit: None,
         fixed_len: None,
@@ -208,6 +213,7 @@ fn validate_decimal_missing_scale() {
     meta.tables[0].columns.push(ColumnSpec {
         name: "amount".into(),
         ingested_dtype: IngestedType::Decimal128,
+        source_dtype: None,
         timestamp_format: None,
         timestamp_unit: None,
         fixed_len: None,
@@ -223,6 +229,7 @@ fn validate_decimal_precision_out_of_range() {
     meta.tables[0].columns.push(ColumnSpec {
         name: "amount".into(),
         ingested_dtype: IngestedType::Decimal128,
+        source_dtype: None,
         timestamp_format: None,
         timestamp_unit: None,
         fixed_len: None,
@@ -238,6 +245,7 @@ fn validate_decimal_scale_out_of_range() {
     meta.tables[0].columns.push(ColumnSpec {
         name: "amount".into(),
         ingested_dtype: IngestedType::Decimal128,
+        source_dtype: None,
         timestamp_format: None,
         timestamp_unit: None,
         fixed_len: None,
@@ -253,6 +261,7 @@ fn validate_decimal_precision_on_non_decimal() {
     meta.tables[0].columns.push(ColumnSpec {
         name: "bad".into(),
         ingested_dtype: IngestedType::Int64,
+        source_dtype: None,
         timestamp_format: None,
         timestamp_unit: None,
         fixed_len: None,
@@ -272,6 +281,7 @@ fn validate_edge_fk_missing_column() {
         columns: vec![ColumnSpec {
             name: "src_id".into(),
             ingested_dtype: IngestedType::Int64,
+            source_dtype: None,
             timestamp_format: None,
             timestamp_unit: None,
             fixed_len: None,
@@ -309,6 +319,7 @@ fn validate_edge_fk_missing_table() {
             ColumnSpec {
                 name: "src_id".into(),
                 ingested_dtype: IngestedType::Int64,
+                source_dtype: None,
                 timestamp_format: None,
                 timestamp_unit: None,
                 fixed_len: None,
@@ -318,6 +329,7 @@ fn validate_edge_fk_missing_table() {
             ColumnSpec {
                 name: "dst_id".into(),
                 ingested_dtype: IngestedType::Int64,
+                source_dtype: None,
                 timestamp_format: None,
                 timestamp_unit: None,
                 fixed_len: None,
@@ -357,6 +369,7 @@ fn validate_edge_fk_not_pk() {
             ColumnSpec {
                 name: "src_id".into(),
                 ingested_dtype: IngestedType::Int64,
+                source_dtype: None,
                 timestamp_format: None,
                 timestamp_unit: None,
                 fixed_len: None,
@@ -366,6 +379,7 @@ fn validate_edge_fk_not_pk() {
             ColumnSpec {
                 name: "dst_id".into(),
                 ingested_dtype: IngestedType::Int64,
+                source_dtype: None,
                 timestamp_format: None,
                 timestamp_unit: None,
                 fixed_len: None,
@@ -638,6 +652,7 @@ fn validate_relationship_int_string_ok() {
     meta.tables[1].columns.push(ColumnSpec {
         name: "fk".into(),
         ingested_dtype: IngestedType::String,
+        source_dtype: None,
         timestamp_format: None,
         timestamp_unit: None,
         fixed_len: None,
@@ -679,6 +694,7 @@ fn validate_relationship_int_bytes_ok() {
     meta.tables[1].columns.push(ColumnSpec {
         name: "fk".into(),
         ingested_dtype: IngestedType::Bytes,
+        source_dtype: None,
         timestamp_format: None,
         timestamp_unit: None,
         fixed_len: None,
@@ -725,6 +741,7 @@ fn validate_edge_fk_int_string_ok() {
             ColumnSpec {
                 name: "src_id".into(),
                 ingested_dtype: IngestedType::String,
+                source_dtype: None,
                 timestamp_format: None,
                 timestamp_unit: None,
                 fixed_len: None,
@@ -734,6 +751,7 @@ fn validate_edge_fk_int_string_ok() {
             ColumnSpec {
                 name: "dst_id".into(),
                 ingested_dtype: IngestedType::Int64,
+                source_dtype: None,
                 timestamp_format: None,
                 timestamp_unit: None,
                 fixed_len: None,
@@ -772,6 +790,7 @@ fn validate_edge_fk_string_int_ok() {
             ColumnSpec {
                 name: "src_id".into(),
                 ingested_dtype: IngestedType::Int64,
+                source_dtype: None,
                 timestamp_format: None,
                 timestamp_unit: None,
                 fixed_len: None,
@@ -781,6 +800,7 @@ fn validate_edge_fk_string_int_ok() {
             ColumnSpec {
                 name: "dst_id".into(),
                 ingested_dtype: IngestedType::String,
+                source_dtype: None,
                 timestamp_format: None,
                 timestamp_unit: None,
                 fixed_len: None,
@@ -863,6 +883,7 @@ fn validate_edge_fk_string_bytes_ok() {
             ColumnSpec {
                 name: "src_id".into(),
                 ingested_dtype: IngestedType::String,
+                source_dtype: None,
                 timestamp_format: None,
                 timestamp_unit: None,
                 fixed_len: Some(8),
@@ -872,6 +893,7 @@ fn validate_edge_fk_string_bytes_ok() {
             ColumnSpec {
                 name: "dst_id".into(),
                 ingested_dtype: IngestedType::Bytes,
+                source_dtype: None,
                 timestamp_format: None,
                 timestamp_unit: None,
                 fixed_len: Some(8),
@@ -918,6 +940,7 @@ fn validate_edge_fk_string_bytes_len_mismatch() {
             ColumnSpec {
                 name: "src_id".into(),
                 ingested_dtype: IngestedType::String,
+                source_dtype: None,
                 timestamp_format: None,
                 timestamp_unit: None,
                 fixed_len: Some(4),
@@ -927,6 +950,7 @@ fn validate_edge_fk_string_bytes_len_mismatch() {
             ColumnSpec {
                 name: "dst_id".into(),
                 ingested_dtype: IngestedType::Bytes,
+                source_dtype: None,
                 timestamp_format: None,
                 timestamp_unit: None,
                 fixed_len: Some(8),
@@ -967,6 +991,7 @@ fn validate_edge_fk_uuid_ok() {
         columns: vec![ColumnSpec {
             name: "src_id".into(),
             ingested_dtype: IngestedType::Uuid,
+            source_dtype: None,
             timestamp_format: None,
             timestamp_unit: None,
             fixed_len: None,
@@ -1006,6 +1031,7 @@ fn validate_edge_fk_uuid_mismatch() {
         columns: vec![ColumnSpec {
             name: "src_id".into(),
             ingested_dtype: IngestedType::Bytes,
+            source_dtype: None,
             timestamp_format: None,
             timestamp_unit: None,
             fixed_len: None,

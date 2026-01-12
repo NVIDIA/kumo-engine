@@ -801,6 +801,7 @@ fn infer_parquet_schema_from_arrow(schema: &Schema) -> Result<Vec<ColumnSpec>> {
         columns.push(ColumnSpec {
             name: field.name().to_string(),
             ingested_dtype,
+            source_dtype: Some(field.data_type().to_string()),
             fixed_len,
             timestamp_format: None,
             timestamp_unit: None,
@@ -1411,6 +1412,7 @@ impl ColumnStats {
         ColumnSpec {
             name: name.to_string(),
             ingested_dtype,
+            source_dtype: Some("string".to_string()),
             fixed_len,
             timestamp_format,
             timestamp_unit,
@@ -3191,6 +3193,7 @@ mod tests {
                 .map(|(n, t)| ColumnSpec {
                     name: n.to_string(),
                     ingested_dtype: t.clone(),
+                    source_dtype: None,
                     fixed_len: None,
                     timestamp_format: None,
                     timestamp_unit: None,
@@ -3259,6 +3262,7 @@ mod tests {
                 ColumnSpec {
                     name: "customer_id".to_string(),
                     ingested_dtype: IngestedType::String,
+                    source_dtype: None,
                     timestamp_format: None,
                     timestamp_unit: None,
                     fixed_len: None,
@@ -3268,6 +3272,7 @@ mod tests {
                 ColumnSpec {
                     name: "postal_code".to_string(),
                     ingested_dtype: IngestedType::String,
+                    source_dtype: None,
                     timestamp_format: None,
                     timestamp_unit: None,
                     fixed_len: None,
@@ -3700,6 +3705,7 @@ mod tests {
                 columns: vec![ColumnSpec {
                     name: "user_id".to_string(),
                     ingested_dtype: IngestedType::Int64,
+                    source_dtype: None,
                     timestamp_format: None,
                     timestamp_unit: None,
                     fixed_len: None,
@@ -3719,6 +3725,7 @@ mod tests {
                 columns: vec![ColumnSpec {
                     name: "user_id".to_string(),
                     ingested_dtype: IngestedType::Int64,
+                    source_dtype: None,
                     timestamp_format: None,
                     timestamp_unit: None,
                     fixed_len: None,
@@ -3750,6 +3757,7 @@ mod tests {
                 columns: vec![ColumnSpec {
                     name: "device_id".to_string(),
                     ingested_dtype: IngestedType::Uuid,
+                    source_dtype: None,
                     timestamp_format: None,
                     timestamp_unit: None,
                     fixed_len: None,
@@ -3769,6 +3777,7 @@ mod tests {
                 columns: vec![ColumnSpec {
                     name: "device_id".to_string(),
                     ingested_dtype: IngestedType::Bytes,
+                    source_dtype: None,
                     timestamp_format: None,
                     timestamp_unit: None,
                     fixed_len: None,
@@ -3817,6 +3826,7 @@ mod tests {
                 columns: vec![ColumnSpec {
                     name: "itemid".to_string(),
                     ingested_dtype: IngestedType::Int64,
+                    source_dtype: None,
                     timestamp_format: None,
                     timestamp_unit: None,
                     fixed_len: None,
@@ -3836,6 +3846,7 @@ mod tests {
                 columns: vec![ColumnSpec {
                     name: "itemid".to_string(),
                     ingested_dtype: IngestedType::Int64,
+                    source_dtype: None,
                     timestamp_format: None,
                     timestamp_unit: None,
                     fixed_len: None,
@@ -3855,6 +3866,7 @@ mod tests {
                 columns: vec![ColumnSpec {
                     name: "itemid".to_string(),
                     ingested_dtype: IngestedType::Int64,
+                    source_dtype: None,
                     timestamp_format: None,
                     timestamp_unit: None,
                     fixed_len: None,
@@ -3886,6 +3898,7 @@ mod tests {
                 ColumnSpec {
                     name: "poe_id".to_string(),
                     ingested_dtype: IngestedType::String,
+                    source_dtype: None,
                     timestamp_format: None,
                     timestamp_unit: None,
                     fixed_len: None,
@@ -3895,6 +3908,7 @@ mod tests {
                 ColumnSpec {
                     name: "discontinue_of_poe_id".to_string(),
                     ingested_dtype: IngestedType::String,
+                    source_dtype: None,
                     timestamp_format: None,
                     timestamp_unit: None,
                     fixed_len: None,
@@ -3982,6 +3996,7 @@ mod tests {
                 columns: vec![ColumnSpec {
                     name: "code".to_string(),
                     ingested_dtype: IngestedType::String,
+                    source_dtype: None,
                     timestamp_format: None,
                     timestamp_unit: None,
                     fixed_len: None,
@@ -4001,6 +4016,7 @@ mod tests {
                 columns: vec![ColumnSpec {
                     name: "hcpcs_cd".to_string(),
                     ingested_dtype: IngestedType::String,
+                    source_dtype: None,
                     timestamp_format: None,
                     timestamp_unit: None,
                     fixed_len: None,
@@ -4032,6 +4048,7 @@ mod tests {
                 columns: vec![ColumnSpec {
                     name: "code".to_string(),
                     ingested_dtype: IngestedType::String,
+                    source_dtype: None,
                     timestamp_format: None,
                     timestamp_unit: None,
                     fixed_len: None,
@@ -4051,6 +4068,7 @@ mod tests {
                 columns: vec![ColumnSpec {
                     name: "icd_code".to_string(),
                     ingested_dtype: IngestedType::String,
+                    source_dtype: None,
                     timestamp_format: None,
                     timestamp_unit: None,
                     fixed_len: None,
@@ -4095,6 +4113,7 @@ mod tests {
                 columns: vec![ColumnSpec {
                     name: "poe_id".to_string(),
                     ingested_dtype: IngestedType::String,
+                    source_dtype: None,
                     timestamp_format: None,
                     timestamp_unit: None,
                     fixed_len: None,
@@ -4114,6 +4133,7 @@ mod tests {
                 columns: vec![ColumnSpec {
                     name: "poe_id".to_string(),
                     ingested_dtype: IngestedType::String,
+                    source_dtype: None,
                     timestamp_format: None,
                     timestamp_unit: None,
                     fixed_len: None,
@@ -4133,6 +4153,7 @@ mod tests {
                 columns: vec![ColumnSpec {
                     name: "poe_id".to_string(),
                     ingested_dtype: IngestedType::String,
+                    source_dtype: None,
                     timestamp_format: None,
                     timestamp_unit: None,
                     fixed_len: None,
@@ -4163,6 +4184,7 @@ mod tests {
                 columns: vec![ColumnSpec {
                     name: "hadm_id".to_string(),
                     ingested_dtype: IngestedType::Int64,
+                    source_dtype: None,
                     timestamp_format: None,
                     timestamp_unit: None,
                     fixed_len: None,
@@ -4182,6 +4204,7 @@ mod tests {
                 columns: vec![ColumnSpec {
                     name: "hadm_id".to_string(),
                     ingested_dtype: IngestedType::Int64,
+                    source_dtype: None,
                     timestamp_format: None,
                     timestamp_unit: None,
                     fixed_len: None,
@@ -4212,6 +4235,7 @@ mod tests {
                 columns: vec![ColumnSpec {
                     name: "itemid".to_string(),
                     ingested_dtype: IngestedType::Int64,
+                    source_dtype: None,
                     timestamp_format: None,
                     timestamp_unit: None,
                     fixed_len: None,
@@ -4231,6 +4255,7 @@ mod tests {
                 columns: vec![ColumnSpec {
                     name: "itemid".to_string(),
                     ingested_dtype: IngestedType::Int64,
+                    source_dtype: None,
                     timestamp_format: None,
                     timestamp_unit: None,
                     fixed_len: None,
@@ -4250,6 +4275,7 @@ mod tests {
                 columns: vec![ColumnSpec {
                     name: "itemid".to_string(),
                     ingested_dtype: IngestedType::Int64,
+                    source_dtype: None,
                     timestamp_format: None,
                     timestamp_unit: None,
                     fixed_len: None,
@@ -4280,6 +4306,7 @@ mod tests {
                 columns: vec![ColumnSpec {
                     name: "user_id".to_string(),
                     ingested_dtype: IngestedType::Int64,
+                    source_dtype: None,
                     fixed_len: None,
                     timestamp_format: None,
                     timestamp_unit: None,
@@ -4299,6 +4326,7 @@ mod tests {
                 columns: vec![ColumnSpec {
                     name: "user_id".to_string(),
                     ingested_dtype: IngestedType::Int64,
+                    source_dtype: None,
                     fixed_len: None,
                     timestamp_format: None,
                     timestamp_unit: None,
@@ -4330,6 +4358,7 @@ mod tests {
                 columns: vec![ColumnSpec {
                     name: "id".to_string(),
                     ingested_dtype: IngestedType::Int64,
+                    source_dtype: None,
                     fixed_len: None,
                     timestamp_format: None,
                     timestamp_unit: None,
@@ -4349,6 +4378,7 @@ mod tests {
                 columns: vec![ColumnSpec {
                     name: "id".to_string(),
                     ingested_dtype: IngestedType::Int64,
+                    source_dtype: None,
                     fixed_len: None,
                     timestamp_format: None,
                     timestamp_unit: None,
@@ -4629,6 +4659,7 @@ mod tests {
         let a = ColumnSpec {
             name: "user_id".to_string(),
             ingested_dtype: IngestedType::Int64,
+            source_dtype: None,
             timestamp_format: None,
             timestamp_unit: None,
             fixed_len: None,
@@ -4638,6 +4669,7 @@ mod tests {
         let b = ColumnSpec {
             name: "id".to_string(),
             ingested_dtype: IngestedType::String,
+            source_dtype: None,
             timestamp_format: None,
             timestamp_unit: None,
             fixed_len: None,
@@ -4652,6 +4684,7 @@ mod tests {
         let a = ColumnSpec {
             name: "device_id".to_string(),
             ingested_dtype: IngestedType::Uuid,
+            source_dtype: None,
             timestamp_format: None,
             timestamp_unit: None,
             fixed_len: None,
@@ -4661,6 +4694,7 @@ mod tests {
         let b = ColumnSpec {
             name: "id".to_string(),
             ingested_dtype: IngestedType::Bytes,
+            source_dtype: None,
             timestamp_format: None,
             timestamp_unit: None,
             fixed_len: None,
@@ -4675,6 +4709,7 @@ mod tests {
         let a = ColumnSpec {
             name: "id".to_string(),
             ingested_dtype: IngestedType::Uuid,
+            source_dtype: None,
             timestamp_format: None,
             timestamp_unit: None,
             fixed_len: None,
@@ -4684,6 +4719,7 @@ mod tests {
         let b = ColumnSpec {
             name: "id".to_string(),
             ingested_dtype: IngestedType::Uuid,
+            source_dtype: None,
             timestamp_format: None,
             timestamp_unit: None,
             fixed_len: None,

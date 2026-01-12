@@ -42,6 +42,8 @@ pub struct TableSpec {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ColumnSpec {
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_dtype: Option<String>,
     pub ingested_dtype: IngestedType,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fixed_len: Option<usize>,

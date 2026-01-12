@@ -6279,6 +6279,7 @@ mod tests {
             columns: vec![ColumnSpec {
                 name: "id".to_string(),
                 ingested_dtype: ingested,
+                source_dtype: None,
                 fixed_len: None,
                 timestamp_format: None,
                 timestamp_unit: None,
@@ -6368,6 +6369,7 @@ mod tests {
             columns: vec![ColumnSpec {
                 name: "created_at".to_string(),
                 ingested_dtype: IngestedType::Timestamp,
+                source_dtype: None,
                 fixed_len: None,
                 timestamp_format: None,
                 timestamp_unit: None,
@@ -6398,6 +6400,7 @@ mod tests {
             columns: vec![ColumnSpec {
                 name: "created_at".to_string(),
                 ingested_dtype: IngestedType::Timestamp,
+                source_dtype: None,
                 fixed_len: None,
                 timestamp_format: None,
                 timestamp_unit: Some(TimestampUnit::Millis),
@@ -6443,6 +6446,7 @@ mod tests {
             columns: vec![ColumnSpec {
                 name: "created_date".to_string(),
                 ingested_dtype: IngestedType::Date,
+                source_dtype: None,
                 fixed_len: None,
                 timestamp_format: Some("%Y-%m-%d".to_string()),
                 timestamp_unit: None,
@@ -6480,6 +6484,7 @@ mod tests {
             columns: vec![ColumnSpec {
                 name: "id".to_string(),
                 ingested_dtype: IngestedType::String,
+                source_dtype: None,
                 fixed_len: None,
                 timestamp_format: None,
                 timestamp_unit: None,
@@ -6512,6 +6517,7 @@ mod tests {
             columns: vec![ColumnSpec {
                 name: "id".to_string(),
                 ingested_dtype: IngestedType::Int32,
+                source_dtype: None,
                 fixed_len: None,
                 timestamp_format: None,
                 timestamp_unit: None,
