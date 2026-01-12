@@ -13,7 +13,7 @@ use serde_json::Value as JsonValue;
 use uuid_simd::{format_simple, parse_hyphenated, parse_simple, AsOut, AsciiCase};
 
 const ROWPACK_VERSION: u8 = 3;
-const MAX_FIELD_BYTES: usize = 8 * 1024 * 1024;
+const MAX_FIELD_BYTES: usize = 64 * 1024 * 1024;
 const MAX_ARRAY_LEN: usize = 1_000_000;
 const ALPHABET_MAX_CHARS: usize = 64;
 const ALPHABET_MIN_COVERAGE: f32 = 0.95;
@@ -228,7 +228,7 @@ pub struct RowPackColumn {
     pub scale: Option<i32>,
 }
 
-const MAX_INPUT_STRING_BYTES: usize = 32 * 1024;
+const MAX_INPUT_STRING_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Debug, Clone)]
 pub struct RowAccessHints {

@@ -13,17 +13,17 @@ At query time a shard is mmapped and edge lists are served zero-copy by slicing 
 
 ## On-disk layout (per shard)
 
-- **Offsets header:** `OffsetFileHeader` with version, node count, total offsets, chunk size, and `edge_blob_word_size` (bytes).
+- **Offsets header:** `OffsetFileHeader` with version, node count, total offsets, chunk size, `edge_blob_word_size`, plus `delta_bytes` and `node_data_len_bytes`.
 - **Offsets body:** Chunks of `DELTA_CHUNK` (64) offsets:
   - `u16 count`
   - `u64 base` (absolute byte offset for the first node in the chunk)
-  - `(count-1) * u16` deltas to subsequent offsets (must fit in `u16`).
+  - `(count-1) * delta_bytes` deltas to subsequent offsets (`delta_bytes` is 2, 3, or 4).
 - **Edge blob (edges.bin):** For each node:
   - If the node has zero edges across all relations, nothing is written; its start/end offsets are equal.
   - Otherwise: Prefix compact varint counts for every relation (fixed order), then optional node data length, then per relation `count * entry_bytes` packed edges, then optional node data payload.
-    - Count encoding: 1 byte for 0–63 (`00xxxxxx`), 2 bytes for 64–16,383 (`01xxxxxx xxxxxxxx`). Higher values are truncated by the builder (hard cap at the encoding limit, 0x3FFF edges per relation per node).
+    - Count encoding: 1 byte for 0–63 (`00xxxxxx`), 2 bytes for 64–16,383 (`01xxxxxx xxxxxxxx`), 3 bytes for 16,384–4,194,303 (`10xxxxxx xxxxxxxx xxxxxxxx`), and 4 bytes for 4,194,304–1,073,741,823 (`11xxxxxx xxxxxxxx xxxxxxxx xxxxxxxx`). Counts are truncated when a node’s payload would exceed the shard’s delta budget.
     - Entry packing: `dst_id` masked to the minimum bits needed for the destination type, followed by optional `dest_sort_key` bits (if present for that relation). Relation IDs are implicit by position, not stored per edge.
-    - Node data length: `u16` byte length (little-endian) stored immediately after the counts when node data is enabled. Node data bytes follow all relation segments (rowpack-compressed).
+    - Node data length: `node_data_len_bytes` (2, 3, or 4) byte length (little-endian) stored immediately after the counts when node data is enabled. Node data bytes follow all relation segments (rowpack-compressed).
 
 All offsets are byte-based (not words).
 
@@ -61,7 +61,7 @@ edges.bin
 +--------+-------------------------------------------------------------------------+
 ```
 
-Counts use the compact 1–2 byte scheme in prefix order (R0 then R1), followed by optional `node_len` (u16), then contiguous segments for each relation in the same order. Node data bytes (when enabled) come last.
+Counts use the compact 1–4 byte scheme in prefix order (R0 then R1), followed by optional `node_len` (2–4 bytes), then contiguous segments for each relation in the same order. Node data bytes (when enabled) come last.
 
 ## Build algorithm (ShardBuilder)
 

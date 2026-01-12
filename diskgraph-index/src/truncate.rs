@@ -13,11 +13,12 @@ pub(crate) fn truncate_counts(
     current_offset: u64,
     prev_offset: u64,
     extra_bytes: u64,
+    max_delta: u64,
 ) -> Result<(), IndexBuildError> {
     let base_span = current_offset
         .checked_sub(prev_offset)
         .ok_or(IndexBuildError::CountOverflow)?;
-    let budget = (u16::MAX as u64)
+    let budget = max_delta
         .checked_sub(base_span)
         .ok_or(IndexBuildError::OffsetDeltaOverflow)?;
 

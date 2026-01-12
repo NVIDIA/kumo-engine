@@ -15,11 +15,95 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::cell::RefCell;
 use thiserror::Error;
 
-/// Hard cap on edges per relation for a single node to keep varint encoding small.
-/// Compact varint supports up to 14 bits (0x3FFF). We cap relation edge lists
-/// at that limit to guarantee counts fit the encoding without overflow.
-const MAX_RELATION_EDGE_COUNT: usize = 0x3FFF;
-const MAX_NODE_DATA_LEN: usize = 60 * 1024;
+const MAX_NODE_DATA_LEN: usize = 64 * 1024 * 1024;
+const OFFSET_OVERHEAD_BYTES: u64 = 128;
+const MAX_VARINT_COUNT: usize = 0x3FFF_FFFF;
+
+fn count_len(count: usize) -> u64 {
+    if count <= 63 {
+        1
+    } else if count <= 0x3FFF {
+        2
+    } else if count <= 0x3F_FFFF {
+        3
+    } else {
+        4
+    }
+}
+
+fn max_delta_for_bytes(delta_bytes: u8) -> u64 {
+    match delta_bytes {
+        2 => u16::MAX as u64,
+        3 => 0xFF_FF_FF,
+        4 => u32::MAX as u64,
+        _ => 0,
+    }
+}
+
+fn write_len_le(out: &mut Vec<u8>, len: u32, len_bytes: u8) -> Result<()> {
+    match len_bytes {
+        2 => {
+            let len_u16 = u16::try_from(len)
+                .map_err(|_| IndexBuildError::ValueOutOfRange("node_data_len"))?;
+            out.extend_from_slice(&len_u16.to_le_bytes());
+        }
+        3 => {
+            if len > 0xFF_FF_FF {
+                return Err(IndexBuildError::ValueOutOfRange("node_data_len").into());
+            }
+            out.push((len & 0xFF) as u8);
+            out.push(((len >> 8) & 0xFF) as u8);
+            out.push(((len >> 16) & 0xFF) as u8);
+        }
+        4 => {
+            out.extend_from_slice(&len.to_le_bytes());
+        }
+        _ => return Err(IndexBuildError::NotImplemented("node data len width").into()),
+    }
+    Ok(())
+}
+
+fn estimate_max_node_bytes(
+    layouts: &[RelationLayout],
+    max_counts: &[usize],
+    node_data_max_len: u32,
+    node_data_len_bytes: u8,
+    has_node_data: bool,
+) -> u64 {
+    let mut total = OFFSET_OVERHEAD_BYTES;
+    for (layout, &count) in layouts.iter().zip(max_counts.iter()) {
+        total = total
+            .saturating_add(count_len(count))
+            .saturating_add((count as u64).saturating_mul(layout.entry_bytes as u64));
+    }
+    if has_node_data && node_data_max_len > 0 {
+        total = total
+            .saturating_add(node_data_len_bytes as u64)
+            .saturating_add(node_data_max_len as u64);
+    }
+    total
+}
+
+fn select_delta_bytes(
+    layouts: &[RelationLayout],
+    max_counts: &[usize],
+    node_data_max_len: u32,
+    has_node_data: bool,
+) -> Result<u8> {
+    for delta_bytes in [2u8, 3u8, 4u8] {
+        let required = estimate_max_node_bytes(
+            layouts,
+            max_counts,
+            node_data_max_len,
+            delta_bytes,
+            has_node_data,
+        );
+        if required <= max_delta_for_bytes(delta_bytes) {
+            return Ok(delta_bytes);
+        }
+    }
+    Err(IndexBuildError::OffsetDeltaOverflow.into())
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BuildStage {
@@ -172,6 +256,8 @@ pub struct ShardBuildParams {
     pub shard_index: usize,
     /// Optional node data sources for this shard.
     pub node_data_paths: Option<Vec<PathBuf>>,
+    /// Maximum node data payload length observed for this shard (bytes).
+    pub node_data_max_len: u32,
     pub mem_budget: Option<Arc<MemoryBudget>>,
 }
 
@@ -254,9 +340,39 @@ impl ShardBuilder {
             None
         };
         let mut node_data_buf: Vec<u8> = Vec::new();
+        let rel_count = self.params.relation_metas.len();
+        let max_counts = edge_stream.max_edges_per_relation(rel_count);
+        let node_data_max_len = self.params.node_data_max_len.min(MAX_NODE_DATA_LEN as u32);
+        let delta_bytes = select_delta_bytes(
+            &layouts,
+            &max_counts,
+            node_data_max_len,
+            self.params.node_meta.has_node_data,
+        )?;
+        let node_data_len_bytes = delta_bytes;
+        let max_delta = max_delta_for_bytes(delta_bytes);
+        let counts_min_bytes = rel_count as u64;
+        let mut max_edge_counts = Vec::with_capacity(rel_count);
+        for layout in layouts.iter() {
+            let mut budget = max_delta.saturating_sub(OFFSET_OVERHEAD_BYTES);
+            if self.params.node_meta.has_node_data && node_data_max_len > 0 {
+                budget = budget
+                    .saturating_sub(node_data_max_len as u64)
+                    .saturating_sub(node_data_len_bytes as u64);
+            }
+            budget = budget.saturating_sub(counts_min_bytes);
+            let cap = if layout.entry_bytes == 0 {
+                0
+            } else {
+                (budget / layout.entry_bytes as u64) as usize
+            };
+            max_edge_counts.push(cap.min(MAX_VARINT_COUNT));
+        }
 
-        let mut offsets_writer = OffsetChunkWriter::try_new(&offsets_path)?;
-        let mut edges_writer = EdgeWriter::try_new(&edges_path, layouts.clone())?;
+        let mut offsets_writer =
+            OffsetChunkWriter::try_new(&offsets_path, delta_bytes, node_data_len_bytes)?;
+        let mut edges_writer =
+            EdgeWriter::try_new(&edges_path, layouts.clone(), node_data_len_bytes)?;
         let mut node_buf: Vec<u8> = Vec::new();
 
         let mut nodes_seen = 0u64;
@@ -270,7 +386,6 @@ impl ShardBuilder {
         // lookups simpler on the read path.
         offsets_writer.push(edges_writer.byte_offset())?;
         // Reuse allocations for buckets and counts to avoid per-node Vec allocations.
-        let rel_count = self.params.relation_metas.len();
         let mut buckets: Vec<Vec<EdgeRec>> = vec![Vec::new(); rel_count];
         let mut counts: Vec<usize> = vec![0; rel_count];
         let mut last_counts: Vec<usize> = vec![0; rel_count];
@@ -331,10 +446,11 @@ impl ShardBuilder {
                 lens[i] = len;
                 counts[i] = len;
                 total_edges = total_edges.saturating_add(len);
-                if len > MAX_RELATION_EDGE_COUNT {
-                    buckets[i].truncate(MAX_RELATION_EDGE_COUNT);
-                    counts[i] = MAX_RELATION_EDGE_COUNT;
-                    total_edges = total_edges.saturating_sub(len - MAX_RELATION_EDGE_COUNT);
+                let cap = max_edge_counts.get(i).copied().unwrap_or(0);
+                if cap > 0 && len > cap {
+                    buckets[i].truncate(cap);
+                    counts[i] = cap;
+                    total_edges = total_edges.saturating_sub(len - cap);
                     truncated_node = true;
                     any_truncated = true;
                     build_stats.capped_edge_lists = build_stats.capped_edge_lists.saturating_add(1);
@@ -350,7 +466,7 @@ impl ShardBuilder {
                 continue;
             }
             let extra_bytes = node_data_len
-                .map(|len| 2u64.saturating_add(len as u64))
+                .map(|len| node_data_len_bytes as u64 + len as u64)
                 .unwrap_or(0);
             let node_bytes = EdgeWriter::node_length_bytes_fast(&layouts, &counts)
                 .saturating_add(extra_bytes);
@@ -359,7 +475,7 @@ impl ShardBuilder {
             let base_span = start_offset
                 .checked_sub(prev_offset)
                 .ok_or(IndexBuildError::CountOverflow)?;
-            let budget = (u16::MAX as u64)
+            let budget = max_delta
                 .checked_sub(base_span)
                 .ok_or(IndexBuildError::OffsetDeltaOverflow)?;
             if node_bytes > budget {
@@ -374,6 +490,7 @@ impl ShardBuilder {
                     start_offset,
                     prev_offset,
                     extra_bytes,
+                    max_delta,
                 )?;
                 truncated_node = true;
             }
@@ -467,7 +584,7 @@ pub struct BuildStats {
     pub truncated_nodes: u64,
     pub truncated_edges_total: u64,
     pub truncated_edges_per_relation: Vec<u64>,
-    /// Number of per-relation edge lists that were capped at MAX_RELATION_EDGE_COUNT.
+    /// Number of per-relation edge lists that were capped by delta budget.
     pub capped_edge_lists: u64,
     /// Number of nodes whose payload exceeded MAX_NODE_DATA_LEN and was dropped.
     pub node_data_trimmed: u64,
@@ -526,8 +643,12 @@ fn bits_for_id(max_id: u64) -> u8 {
 }
 
 /// Delta-encode offsets in fixed-size chunks. Each chunk is stored as:
-/// [u16 count][u64 base][(count-1) * u16 deltas].
-fn delta_encode_offsets_into(offsets: &[u64], out: &mut Vec<u8>) -> Result<()> {
+/// [u16 count][u64 base][(count-1) * delta_bytes].
+fn delta_encode_offsets_into(
+    offsets: &[u64],
+    out: &mut Vec<u8>,
+    delta_bytes: u8,
+) -> Result<()> {
     if offsets.is_empty() {
         return Ok(());
     }
@@ -543,10 +664,32 @@ fn delta_encode_offsets_into(offsets: &[u64], out: &mut Vec<u8>) -> Result<()> {
             let delta = off
                 .checked_sub(prev)
                 .ok_or(IndexBuildError::EdgeOrderingViolation)?;
-            let delta_u16: u16 = delta
-                .try_into()
-                .map_err(|_| IndexBuildError::OffsetDeltaOverflow)?;
-            out.extend_from_slice(&delta_u16.to_le_bytes());
+            match delta_bytes {
+                2 => {
+                    let delta_u16: u16 = delta
+                        .try_into()
+                        .map_err(|_| IndexBuildError::OffsetDeltaOverflow)?;
+                    out.extend_from_slice(&delta_u16.to_le_bytes());
+                }
+                3 => {
+                    let delta_u32: u32 = delta
+                        .try_into()
+                        .map_err(|_| IndexBuildError::OffsetDeltaOverflow)?;
+                    if delta_u32 > 0xFF_FF_FF {
+                        return Err(IndexBuildError::OffsetDeltaOverflow.into());
+                    }
+                    out.push((delta_u32 & 0xFF) as u8);
+                    out.push(((delta_u32 >> 8) & 0xFF) as u8);
+                    out.push(((delta_u32 >> 16) & 0xFF) as u8);
+                }
+                4 => {
+                    let delta_u32: u32 = delta
+                        .try_into()
+                        .map_err(|_| IndexBuildError::OffsetDeltaOverflow)?;
+                    out.extend_from_slice(&delta_u32.to_le_bytes());
+                }
+                _ => return Err(IndexBuildError::NotImplemented("offset delta width").into()),
+            }
             prev = off;
         }
         idx = chunk_end;
@@ -558,10 +701,12 @@ struct OffsetChunkWriter {
     pub(crate) writer: BufWriter<File>,
     chunk_buf: Vec<u64>,
     total_offsets: u64,
+    delta_bytes: u8,
+    node_data_len_bytes: u8,
 }
 
 impl OffsetChunkWriter {
-    fn try_new(path: &Path) -> Result<Self> {
+    fn try_new(path: &Path, delta_bytes: u8, node_data_len_bytes: u8) -> Result<Self> {
         // Use a larger buffer to reduce flushes on many small writes.
         let mut writer = BufWriter::with_capacity(1024 * 1024, File::create(path)?);
         let header_len =
@@ -571,6 +716,8 @@ impl OffsetChunkWriter {
             writer,
             chunk_buf: Vec::with_capacity(DELTA_CHUNK),
             total_offsets: 0,
+            delta_bytes,
+            node_data_len_bytes,
         })
     }
 
@@ -588,7 +735,7 @@ impl OffsetChunkWriter {
             return Ok(());
         }
         scratch.clear();
-        delta_encode_offsets_into(&self.chunk_buf, &mut scratch)?;
+        delta_encode_offsets_into(&self.chunk_buf, &mut scratch, self.delta_bytes)?;
         self.writer.write_all(&scratch)?;
         self.chunk_buf.clear();
         Ok(())
@@ -598,6 +745,8 @@ impl OffsetChunkWriter {
         self.flush_chunk(Vec::new())?;
         self.writer.flush()?;
         let mut header = OffsetFileHeader::new(node_count, self.total_offsets);
+        header.delta_bytes = self.delta_bytes;
+        header.node_data_len_bytes = self.node_data_len_bytes;
         header.edge_count = edge_count;
         let header_bytes = bincode::serialize(&header)
             .map_err(|_| IndexBuildError::NotImplemented("offset encoding"))?;
@@ -613,10 +762,15 @@ pub(crate) struct EdgeWriter {
     bytes_written: u64,
     edge_count: u64,
     layouts: Arc<Vec<RelationLayout>>,
+    node_data_len_bytes: u8,
 }
 
 impl EdgeWriter {
-    fn try_new(path: &Path, layouts: Arc<Vec<RelationLayout>>) -> Result<Self> {
+    fn try_new(
+        path: &Path,
+        layouts: Arc<Vec<RelationLayout>>,
+        node_data_len_bytes: u8,
+    ) -> Result<Self> {
         // Larger buffer to reduce syscalls while writing large edge blobs.
         let writer = BufWriter::with_capacity(1024 * 1024, File::create(path)?);
         Ok(Self {
@@ -624,6 +778,7 @@ impl EdgeWriter {
             bytes_written: 0,
             edge_count: 0,
             layouts,
+            node_data_len_bytes,
         })
     }
 
@@ -649,22 +804,39 @@ impl EdgeWriter {
             scratch.reserve(node_bytes - scratch.capacity());
         }
         for &count in counts.iter() {
-            debug_assert!(count <= MAX_RELATION_EDGE_COUNT);
             if count <= 63 {
                 scratch.push((count & 0x3F) as u8);
-            } else {
+            } else if count <= 0x3FFF {
                 let b0 = 0x40 | (((count >> 8) & 0x3F) as u8);
                 let b1 = (count & 0xFF) as u8;
                 scratch.push(b0);
                 scratch.push(b1);
+            } else if count <= 0x3F_FFFF {
+                let b0 = 0x80 | (((count >> 16) & 0x3F) as u8);
+                let b1 = ((count >> 8) & 0xFF) as u8;
+                let b2 = (count & 0xFF) as u8;
+                scratch.push(b0);
+                scratch.push(b1);
+                scratch.push(b2);
+            } else if count <= MAX_VARINT_COUNT {
+                let b0 = 0xC0 | (((count >> 24) & 0x3F) as u8);
+                let b1 = ((count >> 16) & 0xFF) as u8;
+                let b2 = ((count >> 8) & 0xFF) as u8;
+                let b3 = (count & 0xFF) as u8;
+                scratch.push(b0);
+                scratch.push(b1);
+                scratch.push(b2);
+                scratch.push(b3);
+            } else {
+                return Err(IndexBuildError::ValueOutOfRange("edge_count").into());
             }
         }
         if let Some(node_data) = node_data {
-            let len: u16 = node_data
+            let len = node_data
                 .len()
                 .try_into()
                 .map_err(|_| IndexBuildError::ValueOutOfRange("node_data_len"))?;
-            scratch.extend_from_slice(&len.to_le_bytes());
+            write_len_le(scratch, len, self.node_data_len_bytes)?;
         }
         for (rel_idx, (layout, rel_edges)) in
             self.layouts.iter().zip(buckets.iter()).enumerate()
@@ -721,7 +893,7 @@ impl EdgeWriter {
     ) -> std::result::Result<u64, IndexBuildError> {
         let mut len: u64 = 0;
         for (layout, &count) in layouts.iter().zip(counts.iter()) {
-            let count_len = if count <= 63 { 1 } else { 2 };
+            let count_len = count_len(count);
             len = len
                 .checked_add(count_len)
                 .ok_or(IndexBuildError::CountOverflow)?;
@@ -740,7 +912,7 @@ impl EdgeWriter {
     pub(crate) fn node_length_bytes_fast(layouts: &[RelationLayout], counts: &[usize]) -> u64 {
         let mut len: u64 = 0;
         for (layout, &count) in layouts.iter().zip(counts.iter()) {
-            let count_len = if count <= 63 { 1 } else { 2 };
+            let count_len = count_len(count);
             len = len
                 .saturating_add(count_len)
                 .saturating_add((count as u64).saturating_mul(layout.entry_bytes as u64));
@@ -830,6 +1002,7 @@ struct MemoryEdgeSubStream {
     index: usize,
     relation_id: u16,
     sort_width: u8,
+    max_edges_per_src: usize,
 }
 
 impl EdgeSubStream {
@@ -843,11 +1016,13 @@ impl EdgeSubStream {
         if sort_width > 0 {
             sort_edge_ranges_by_sort_key(&mut records);
         }
+        let max_edges_per_src = max_edges_per_src(&records);
         Ok(EdgeSubStream::Memory(MemoryEdgeSubStream {
             records,
             index: 0,
             relation_id,
             sort_width,
+            max_edges_per_src,
         }))
     }
 
@@ -864,6 +1039,18 @@ impl EdgeSubStream {
     ) -> Result<Option<u64>> {
         match self {
             EdgeSubStream::Memory(inner) => inner.drain_edges(node_id, buckets),
+        }
+    }
+
+    fn max_edges_per_src(&self) -> usize {
+        match self {
+            EdgeSubStream::Memory(inner) => inner.max_edges_per_src,
+        }
+    }
+
+    fn relation_id(&self) -> u16 {
+        match self {
+            EdgeSubStream::Memory(inner) => inner.relation_id,
         }
     }
 }
@@ -896,6 +1083,22 @@ impl MemoryEdgeSubStream {
         }
         Ok(self.records.get(self.index).map(|r| r.src_id))
     }
+}
+
+fn max_edges_per_src(records: &[EdgeRecord]) -> usize {
+    let mut max_len = 0usize;
+    let mut cur = 0usize;
+    let mut last = None;
+    for rec in records {
+        if last == Some(rec.src_id) {
+            cur += 1;
+        } else {
+            max_len = max_len.max(cur);
+            cur = 1;
+            last = Some(rec.src_id);
+        }
+    }
+    max_len.max(cur)
 }
 
 fn read_u64_width_slice(buf: &[u8], width: u8) -> u64 {
@@ -1173,7 +1376,7 @@ impl MultiBinaryNodeDataStream {
                 .reader
                 .as_mut()
                 .ok_or(IndexBuildError::NotImplemented("node data reader missing"))?;
-            match read_u16_len(reader) {
+            match read_u32_len(reader) {
                 Ok(Some(len)) => {
                     out.clear();
                     if len > 0 {
@@ -1198,8 +1401,8 @@ impl MultiBinaryNodeDataStream {
     }
 }
 
-fn read_u16_len(reader: &mut impl Read) -> Result<Option<u16>> {
-    let mut buf = [0u8; 2];
+fn read_u32_len(reader: &mut impl Read) -> Result<Option<u32>> {
+    let mut buf = [0u8; 4];
     let mut read = 0usize;
     while read < buf.len() {
         let n = reader.read(&mut buf[read..])?;
@@ -1211,7 +1414,7 @@ fn read_u16_len(reader: &mut impl Read) -> Result<Option<u16>> {
         }
         read += n;
     }
-    Ok(Some(u16::from_le_bytes(buf)))
+    Ok(Some(u32::from_le_bytes(buf)))
 }
 
 struct MergedEdgeStream {
@@ -1242,6 +1445,17 @@ impl MergedEdgeStream {
             streams,
             head_srcs,
         })
+    }
+
+    fn max_edges_per_relation(&self, rel_count: usize) -> Vec<usize> {
+        let mut maxes = vec![0usize; rel_count];
+        for stream in &self.streams {
+            let rel_idx = stream.relation_id() as usize;
+            if let Some(entry) = maxes.get_mut(rel_idx) {
+                *entry = (*entry).max(stream.max_edges_per_src());
+            }
+        }
+        maxes
     }
 
     fn peek_any(&self) -> Option<u64> {

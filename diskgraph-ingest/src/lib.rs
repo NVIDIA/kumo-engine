@@ -67,9 +67,9 @@ const NODE_BATCH_SIZE: usize = 100_000;
 const MAX_KEY_SAMPLE_LEN: usize = 64;
 const TEMP_DIR_NAME: &str = "_tmp";
 const TEMP_META_MAGIC: [u8; 4] = *b"DGTP";
-const TEMP_META_VERSION: u8 = 1;
+const TEMP_META_VERSION: u8 = 2;
 const SAMPLE_ROW_LIMIT: usize = 100_000;
-const MAX_NODE_DATA_LEN: usize = 60 * 1024;
+const MAX_NODE_DATA_LEN: usize = 64 * 1024 * 1024;
 const PROGRESS_ROW_BATCH: u64 = 1_000_000;
 const MAX_VAR_KEY_LEN: usize = u16::MAX as usize;
 const GXHASH_SHARD_SEED: u64 = 0x6a09e667f3bcc909;
@@ -627,6 +627,8 @@ struct PkHashPaths {
 
 struct TempRowpackMeta {
     row_count: u64,
+    #[allow(dead_code)]
+    max_row_len: u32,
 }
 
 struct TempRowWriter {
@@ -1695,10 +1697,16 @@ impl IngestContext {
                 if node_rows == 0 {
                     ensure_temp_file(&self.target, &temp_node_data_path(&table.name, shard))?;
                 }
+                let max_len = node_stats
+                    .node_data_max_len
+                    .get(&(table.name.clone(), shard))
+                    .copied()
+                    .unwrap_or(0);
                 write_temp_meta(
                     &self.target,
                     &temp_node_data_meta_path(&table.name, shard),
                     node_rows,
+                    max_len,
                 )?;
                 if table.primary_key.is_some() {
                     let pkey_rows = node_stats.pkey_rows.get(&node_key).copied().unwrap_or(0);
@@ -1709,6 +1717,7 @@ impl IngestContext {
                         &self.target,
                         &temp_pkey_meta_path(&table.name, shard),
                         pkey_rows,
+                        0,
                     )?;
                 }
                 for rel in self
@@ -1732,6 +1741,7 @@ impl IngestContext {
                         &self.target,
                         &temp_fkey_meta_path(&table.name, &rel.name_forward, shard),
                         rows,
+                        0,
                     )?;
                 }
             }
@@ -1752,6 +1762,7 @@ impl IngestContext {
                     &self.target,
                     &temp_edge_meta_path(&forward_name, shard),
                     rows,
+                    0,
                 )?;
             }
         }
@@ -3976,12 +3987,18 @@ fn temp_sort_key_component_path(rel: &str, kind: SortKeyComponentKind, shard: us
     )
 }
 
-fn write_temp_meta(target: &OutputTarget, rel_path: &str, row_count: u64) -> Result<()> {
-    let mut payload = Vec::with_capacity(16);
+fn write_temp_meta(
+    target: &OutputTarget,
+    rel_path: &str,
+    row_count: u64,
+    max_row_len: u32,
+) -> Result<()> {
+    let mut payload = Vec::with_capacity(24);
     payload.extend_from_slice(&TEMP_META_MAGIC);
     payload.push(TEMP_META_VERSION);
     payload.push(0u8);
     payload.extend_from_slice(&row_count.to_le_bytes());
+    payload.extend_from_slice(&max_row_len.to_le_bytes());
     let ctx_len = 0u32;
     payload.extend_from_slice(&ctx_len.to_le_bytes());
     target.write_bytes(rel_path, payload)
@@ -3989,7 +4006,7 @@ fn write_temp_meta(target: &OutputTarget, rel_path: &str, row_count: u64) -> Res
 
 fn read_temp_meta(path: &Path) -> Result<TempRowpackMeta> {
     let bytes = fs::read(path).with_context(|| format!("read {}", path.display()))?;
-    if bytes.len() < 4 + 1 + 1 + 8 + 4 {
+    if bytes.len() < 4 + 1 + 1 + 8 + 4 + 4 {
         return Err(anyhow!("temp meta truncated"));
     }
     if bytes[0..4] != TEMP_META_MAGIC {
@@ -3999,11 +4016,15 @@ fn read_temp_meta(path: &Path) -> Result<TempRowpackMeta> {
         return Err(anyhow!("temp meta version mismatch"));
     }
     let row_count = u64::from_le_bytes(bytes[6..14].try_into().unwrap());
-    let ctx_len = u32::from_le_bytes(bytes[14..18].try_into().unwrap()) as usize;
-    if bytes.len() < 18 + ctx_len {
+    let max_row_len = u32::from_le_bytes(bytes[14..18].try_into().unwrap());
+    let ctx_len = u32::from_le_bytes(bytes[18..22].try_into().unwrap()) as usize;
+    if bytes.len() < 22 + ctx_len {
         return Err(anyhow!("temp meta context truncated"));
     }
-    Ok(TempRowpackMeta { row_count })
+    Ok(TempRowpackMeta {
+        row_count,
+        max_row_len,
+    })
 }
 
 fn open_temp_row_writer(target: &OutputTarget, rel_path: &str) -> Result<TempRowWriter> {
@@ -4092,27 +4113,19 @@ fn write_temp_rows_batch(writer: &mut TempRowWriter, data: &[u8], rows: u64) -> 
     Ok(())
 }
 
-#[derive(Clone, Copy)]
-enum TempRowLenKind {
-    U16,
-}
-
 fn write_temp_rows_segments(
     writer: &mut TempRowWriter,
     batch: &RowPackSegmentBatch,
-    len_kind: TempRowLenKind,
-) -> Result<()> {
+) -> Result<u32> {
     let mut tag_offset = 0usize;
     let mut bool_offset = 0usize;
     let mut data_offset = 0usize;
+    let mut max_row_len = 0u32;
     for lens in &batch.rows {
         let row_len = lens.tag_bytes + lens.bool_bytes + lens.data_bytes;
-        match len_kind {
-            TempRowLenKind::U16 => {
-                let len = u16::try_from(row_len).map_err(|_| anyhow!("temp row too large"))?;
-                writer.writer.write_all(&len.to_le_bytes())?;
-            }
-        }
+        max_row_len = max_row_len.max(row_len as u32);
+        let len = u32::try_from(row_len).map_err(|_| anyhow!("temp row too large"))?;
+        writer.writer.write_all(&len.to_le_bytes())?;
         if lens.tag_bytes > 0 {
             writer.writer.write_all(
                 &batch.tags[tag_offset..tag_offset.saturating_add(lens.tag_bytes)],
@@ -4133,7 +4146,7 @@ fn write_temp_rows_segments(
         data_offset = data_offset.saturating_add(lens.data_bytes);
     }
     writer.row_count = writer.row_count.saturating_add(batch.rows.len() as u64);
-    Ok(())
+    Ok(max_row_len)
 }
 
 fn finish_temp_writer(writer: TempRowWriter) -> Result<u64> {
@@ -4553,6 +4566,7 @@ struct NodeWriterStats {
     node_rows: HashMap<(String, usize), u64>,
     pkey_rows: HashMap<(String, usize), u64>,
     fkey_rows: HashMap<(String, String, usize), u64>,
+    node_data_max_len: HashMap<(String, usize), u32>,
 }
 
 impl NodeWriterStats {
@@ -4568,6 +4582,10 @@ impl NodeWriterStats {
         for (key, value) in other.fkey_rows {
             let entry = self.fkey_rows.entry(key).or_insert(0);
             *entry = entry.saturating_add(value);
+        }
+        for (key, value) in other.node_data_max_len {
+            let entry = self.node_data_max_len.entry(key).or_insert(0);
+            *entry = (*entry).max(value);
         }
     }
 }
@@ -4675,10 +4693,13 @@ fn node_writer_worker(
                         batch.shard
                     ));
                 }
-                write_temp_rows_segments(&mut writer.node, &batch.node_data, TempRowLenKind::U16)?;
+                let batch_max_len = write_temp_rows_segments(&mut writer.node, &batch.node_data)?;
                 let node_key = (batch.table.to_string(), batch.shard);
                 let entry = stats.node_rows.entry(node_key).or_insert(0);
                 *entry = entry.saturating_add(batch.node_data.rows.len() as u64);
+                let max_key = (batch.table.to_string(), batch.shard);
+                let entry = stats.node_data_max_len.entry(max_key).or_insert(0);
+                *entry = (*entry).max(batch_max_len);
                 if let Some(data) = batch.pkey_data {
                     if writer.pkey.is_none() {
                         writer.pkey = Some(open_temp_row_writer(

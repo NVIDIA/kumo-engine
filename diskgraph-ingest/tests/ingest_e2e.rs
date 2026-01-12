@@ -1177,6 +1177,94 @@ fn ingest_parquet_with_uuid_ip_types() -> Result<()> {
 }
 
 #[test]
+fn ingest_parquet_to_index_reader_e2e() -> Result<()> {
+    let dir = tempdir()?;
+    let input_root = dir.path().join("input");
+    let output_root = dir.path().join("output");
+
+    let user_schema = Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("name", DataType::Utf8, false),
+    ]);
+    let user_ids = Arc::new(Int64Array::from(vec![0, 1, 2])) as ArrayRef;
+    let user_names = Arc::new(StringArray::from(vec!["alice", "bob", "cora"])) as ArrayRef;
+    write_parquet(
+        &input_root.join("users.parquet"),
+        user_schema,
+        vec![user_ids, user_names],
+    )?;
+
+    let order_schema = Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("user_id", DataType::Int64, false),
+    ]);
+    let order_ids = Arc::new(Int64Array::from(vec![100, 101, 102])) as ArrayRef;
+    let order_user_ids = Arc::new(Int64Array::from(vec![0, 1, 1])) as ArrayRef;
+    write_parquet(
+        &input_root.join("orders.parquet"),
+        order_schema,
+        vec![order_ids, order_user_ids],
+    )?;
+
+    let metadata = serde_json::json!({
+        "dataset_name": "parquet_e2e_index",
+        "tables": [
+            {
+                "name": "User",
+                "format": "parquet",
+                "paths": [input_root.join("users.parquet").to_string_lossy()],
+                "primary_key": "id",
+                "columns": [
+                    {"name": "id", "ingested_dtype": "int64"},
+                    {"name": "name", "ingested_dtype": "string"}
+                ]
+            },
+            {
+                "name": "Order",
+                "format": "parquet",
+                "paths": [input_root.join("orders.parquet").to_string_lossy()],
+                "primary_key": "id",
+                "columns": [
+                    {"name": "id", "ingested_dtype": "int64"},
+                    {"name": "user_id", "ingested_dtype": "int64"}
+                ]
+            }
+        ],
+        "relationships": [
+            {
+                "name": "order_user",
+                "src_table": "Order",
+                "src_column": "user_id",
+                "dst_table": "User",
+                "dst_column": "id"
+            }
+        ],
+        "relationships_reverse": [],
+        "edge_sort_keys": {
+            "relationships": {},
+            "edge_tables": {}
+        }
+    });
+    let source_path = input_root.join("source_metadata.json");
+    fs::write(&source_path, serde_json::to_vec_pretty(&metadata)?)?;
+
+    let options = IngestOptions::default();
+    ingest(
+        &source_path,
+        output_root.to_str().unwrap(),
+        Dest::Local,
+        options,
+    )?;
+
+    let index_metadata = output_root.join("index_metadata.json");
+    let reader = GraphIndexReader::open(&index_metadata, &output_root)?;
+    let order_table = reader.table("Order").ok_or_else(|| anyhow!("missing Order"))?;
+    let total_edges = sum_relation_edges(&order_table, "order_user")?;
+    assert_eq!(total_edges, 3);
+    Ok(())
+}
+
+#[test]
 fn ingest_weight_expr_with_backticks() -> Result<()> {
     let dir = tempdir()?;
     let input_root = dir.path().join("input");

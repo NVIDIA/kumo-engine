@@ -17,6 +17,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use serde_json;
 
+const TEMP_META_MAGIC: [u8; 4] = *b"DGTP";
+const TEMP_META_VERSION: u8 = 2;
+
 pub struct GraphIndexBuilder {
     metadata: DatasetMetadata,
     source: GraphDataSource,
@@ -127,14 +130,17 @@ impl GraphIndexBuilder {
                     .join("nodes")
                     .join(&node_type.name)
                     .join(format!("shard-{:05}", shard_idx));
-                let node_data = if node_type.has_node_data {
+                let (node_data, node_data_max_len) = if node_type.has_node_data {
                     let paths = shard_meta
                         .node_data_paths
                         .clone()
                         .ok_or_else(|| anyhow!("node data paths missing for {shard_key}"))?;
-                    Some(paths.into_iter().map(|path| self.resolve_path(&path)).collect())
+                    let resolved: Vec<PathBuf> =
+                        paths.into_iter().map(|path| self.resolve_path(&path)).collect();
+                    let max_len = read_node_data_max_len(&resolved)?;
+                    (Some(resolved), max_len)
                 } else {
-                    None
+                    (None, 0)
                 };
                 let edge_inputs = relations
                     .iter()
@@ -158,6 +164,7 @@ impl GraphIndexBuilder {
                     relation_metas: relations.clone(),
                     shard_index: shard_idx,
                     node_data_paths: node_data,
+                    node_data_max_len,
                     edge_inputs,
                     expected_nodes: shard_node_count(node_type, shard_idx)?,
                 };
@@ -192,6 +199,32 @@ impl GraphIndexBuilder {
     }
 }
 
+fn read_node_data_max_len(paths: &[PathBuf]) -> Result<u32> {
+    let Some(path) = paths.first() else {
+        return Ok(0);
+    };
+    let Some(dir) = path.parent() else {
+        return Ok(0);
+    };
+    let meta_path = dir.join("node_data.meta");
+    if !meta_path.exists() {
+        return Ok(0);
+    }
+    let bytes = fs::read(&meta_path)
+        .with_context(|| format!("read {}", meta_path.display()))?;
+    if bytes.len() < 4 + 1 + 1 + 8 + 4 + 4 {
+        return Err(anyhow!("node data meta truncated"));
+    }
+    if bytes[0..4] != TEMP_META_MAGIC {
+        return Err(anyhow!("node data meta magic mismatch"));
+    }
+    if bytes[4] != TEMP_META_VERSION {
+        return Err(anyhow!("node data meta version mismatch"));
+    }
+    let max_row_len = u32::from_le_bytes(bytes[14..18].try_into().unwrap());
+    Ok(max_row_len)
+}
+
 pub struct ShardBuildJob {
     shard_key: String,
     output_dir: PathBuf,
@@ -200,6 +233,7 @@ pub struct ShardBuildJob {
     relation_metas: Vec<EdgeRelationMetadata>,
     shard_index: usize,
     node_data_paths: Option<Vec<PathBuf>>,
+    node_data_max_len: u32,
     edge_inputs: Vec<EdgeShardInput>,
     expected_nodes: u64,
 }
@@ -234,6 +268,7 @@ impl ShardBuildJob {
             relation_metas: self.relation_metas.clone(),
             shard_index: self.shard_index,
             node_data_paths: self.node_data_paths.clone(),
+            node_data_max_len: self.node_data_max_len,
             mem_budget,
         };
         let builder = ShardBuilder::new(params);

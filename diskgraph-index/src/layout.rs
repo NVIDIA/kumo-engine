@@ -1,9 +1,10 @@
 use serde::{Deserialize, Serialize};
 
 /// Logical layout version for on-disk shard artifacts.
+/// v4: offset deltas are 16/24/32-bit; node_data_len width stored in header.
 /// v3: compact count varints (1–2 bytes, capped at 10k per relation per node).
 /// v2: zero-edge nodes write no counts or data; offsets may repeat (delta 0).
-pub const LAYOUT_VERSION: u32 = 3;
+pub const LAYOUT_VERSION: u32 = 4;
 
 /// Filename conventions for artifacts emitted per shard.
 pub const OFFSETS_FILENAME: &str = "offsets.bin";
@@ -21,6 +22,10 @@ pub struct OffsetFileHeader {
     pub delta_chunk: u16,
     /// Offsets refer to byte positions in the edge blob.
     pub edge_blob_word_size: u16,
+    /// Number of bytes per delta in offsets.bin (2, 3, or 4).
+    pub delta_bytes: u8,
+    /// Number of bytes used to store node_data_len in edges.bin (2, 3, or 4).
+    pub node_data_len_bytes: u8,
     /// Total edges encoded across all relations (optional; may be zero if not set).
     pub edge_count: u64,
 }
@@ -33,6 +38,8 @@ impl OffsetFileHeader {
             total_offsets,
             delta_chunk: DELTA_CHUNK as u16,
             edge_blob_word_size: 1,
+            delta_bytes: 2,
+            node_data_len_bytes: 2,
             edge_count: 0,
         }
     }
@@ -64,6 +71,7 @@ pub struct EdgeListView<'a> {
     pub raw: &'a [u8],
     pub layouts: std::sync::Arc<Vec<RelationLayout>>,
     pub has_node_data: bool,
+    pub node_data_len_bytes: u8,
 }
 
 impl<'a> EdgeListView<'a> {
@@ -106,11 +114,15 @@ impl<'a> EdgeListView<'a> {
             counts.push((layout.clone(), count));
         }
         let node_data_len = if self.has_node_data {
-            if cursor + 2 > self.raw.len() {
+            let len_bytes = self.node_data_len_bytes as usize;
+            if len_bytes == 0 || len_bytes > 4 {
+                return Err(std::io::ErrorKind::InvalidData.into());
+            }
+            if cursor + len_bytes > self.raw.len() {
                 return Err(std::io::ErrorKind::UnexpectedEof.into());
             }
-            let len = u16::from_le_bytes([self.raw[cursor], self.raw[cursor + 1]]) as usize;
-            cursor += 2;
+            let len = read_len_le(&self.raw[cursor..cursor + len_bytes]);
+            cursor += len_bytes;
             Some(len)
         } else {
             None
@@ -162,6 +174,15 @@ pub struct RelationSegment<'a> {
     pub data: &'a [u8],
 }
 
+fn read_len_le(buf: &[u8]) -> usize {
+    match buf.len() {
+        2 => u16::from_le_bytes([buf[0], buf[1]]) as usize,
+        3 => (buf[0] as u32 | ((buf[1] as u32) << 8) | ((buf[2] as u32) << 16)) as usize,
+        4 => u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize,
+        _ => 0,
+    }
+}
+
 fn decode_varint(buf: &[u8]) -> Result<(u32, usize), std::io::Error> {
     if buf.is_empty() {
         return Err(std::io::ErrorKind::UnexpectedEof.into());
@@ -180,6 +201,26 @@ fn decode_varint(buf: &[u8]) -> Result<(u32, usize), std::io::Error> {
         let hi = (first & 0x3F) as u32;
         let lo = buf[1] as u32;
         return Ok(((hi << 8) | lo, 2));
+    }
+    // Extended counts: 3 or 4 bytes.
+    if tag == 2 {
+        if buf.len() < 3 {
+            return Err(std::io::ErrorKind::UnexpectedEof.into());
+        }
+        let b0 = (first & 0x3F) as u32;
+        let b1 = buf[1] as u32;
+        let b2 = buf[2] as u32;
+        return Ok(((b0 << 16) | (b1 << 8) | b2, 3));
+    }
+    if tag == 3 {
+        if buf.len() < 4 {
+            return Err(std::io::ErrorKind::UnexpectedEof.into());
+        }
+        let b0 = (first & 0x3F) as u32;
+        let b1 = buf[1] as u32;
+        let b2 = buf[2] as u32;
+        let b3 = buf[3] as u32;
+        return Ok(((b0 << 24) | (b1 << 16) | (b2 << 8) | b3, 4));
     }
     Err(std::io::ErrorKind::InvalidData.into())
 }

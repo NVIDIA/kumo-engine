@@ -58,6 +58,8 @@ fn build_and_read_round_trip_basic() {
         relation_metas: vec![relation_meta.clone()],
         shard_index: 0,
         node_data_paths: None,
+
+        node_data_max_len: 0,
         mem_budget: None,
     });
     let built = builder
@@ -100,6 +102,8 @@ fn build_handles_all_zero_edges() {
         relation_metas: vec![relation_meta.clone()],
         shard_index: 0,
         node_data_paths: None,
+
+        node_data_max_len: 0,
         mem_budget: None,
     });
     let built = builder
@@ -141,6 +145,8 @@ fn build_rejects_dangling_edges() {
         relation_metas: vec![relation_meta.clone()],
         shard_index: 0,
         node_data_paths: None,
+
+        node_data_max_len: 0,
         mem_budget: None,
     });
     let msg = match builder.build(
@@ -191,6 +197,8 @@ fn build_sorts_edge_ordering_violation() {
         relation_metas: vec![relation_meta.clone()],
         shard_index: 0,
         node_data_paths: None,
+
+        node_data_max_len: 0,
         mem_budget: None,
     });
     let built = builder
@@ -263,6 +271,8 @@ fn offsets_span_multiple_chunks_and_edges_decode_correctly() {
         relation_metas: vec![relation_meta.clone()],
         shard_index: 0,
         node_data_paths: None,
+
+        node_data_max_len: 0,
         mem_budget: None,
     });
     let built = builder
@@ -327,6 +337,8 @@ fn sort_key_round_trip_decodes_correctly() {
         relation_metas: vec![relation_meta.clone()],
         shard_index: 0,
         node_data_paths: None,
+
+        node_data_max_len: 0,
         mem_budget: None,
     });
     let built = builder
@@ -397,6 +409,8 @@ fn multi_relation_counts_and_edges_decode_correctly() {
         relation_metas: vec![follows.clone(), temporal.clone()],
         shard_index: 0,
         node_data_paths: None,
+
+        node_data_max_len: 0,
         mem_budget: None,
     });
     let built = builder
@@ -478,6 +492,8 @@ fn multi_relation_mixed_dst_widths_and_partial_edges() {
         relation_metas: vec![follows.clone(), temporal.clone()],
         shard_index: 0,
         node_data_paths: None,
+
+        node_data_max_len: 0,
         mem_budget: None,
     });
     let built = builder
@@ -541,6 +557,8 @@ fn truncates_large_node_without_sort_key() {
         relation_metas: vec![relation_meta.clone()],
         shard_index: 0,
         node_data_paths: None,
+
+        node_data_max_len: 0,
         mem_budget: None,
     });
     let built = builder
@@ -559,18 +577,27 @@ fn truncates_large_node_without_sort_key() {
         .unwrap();
     let seg = &segments0[0];
     let entry_bytes = seg.layout.entry_bytes as u64;
-    let budget = u16::MAX as u64; // base_span is 0 for first node.
+    let budget = match reader.header().delta_bytes {
+        2 => u16::MAX as u64,
+        3 => 0xFF_FF_FF,
+        4 => u32::MAX as u64,
+        _ => 0,
+    }; // base_span is 0 for first node.
     let node_bytes =
         varint_len_u64(seg.count as u64) as u64 + (seg.count as u64).saturating_mul(entry_bytes);
-    assert!(
-        seg.count < big_count as u32,
-        "expected truncation below original"
-    );
+    let truncated = seg.count < big_count as u32;
+    if reader.header().delta_bytes == 2 {
+        assert!(truncated, "expected truncation below original");
+    }
     assert!(
         node_bytes <= budget,
         "truncated node payload should fit budget"
     );
-    assert!(built.build_stats.truncated_edges_total > 0);
+    if truncated {
+        assert!(built.build_stats.truncated_edges_total > 0);
+    } else {
+        assert_eq!(built.build_stats.truncated_edges_total, 0);
+    }
     // Next node should still decode correctly.
     let segments1 = reader
         .edges_for_node(1)
@@ -618,6 +645,8 @@ fn truncates_large_node_with_sort_key() {
         relation_metas: vec![relation_meta.clone()],
         shard_index: 0,
         node_data_paths: None,
+
+        node_data_max_len: 0,
         mem_budget: None,
     });
     let built = builder
@@ -636,18 +665,27 @@ fn truncates_large_node_with_sort_key() {
         .unwrap();
     let seg0 = &segments0[0];
     let entry_bytes = seg0.layout.entry_bytes as u64;
-    let budget = u16::MAX as u64;
+    let budget = match reader.header().delta_bytes {
+        2 => u16::MAX as u64,
+        3 => 0xFF_FF_FF,
+        4 => u32::MAX as u64,
+        _ => 0,
+    };
     let node_bytes =
         varint_len_u64(seg0.count as u64) as u64 + (seg0.count as u64).saturating_mul(entry_bytes);
-    assert!(
-        seg0.count < big_count as u32,
-        "expected truncation with sort key"
-    );
+    let truncated = seg0.count < big_count as u32;
+    if reader.header().delta_bytes == 2 {
+        assert!(truncated, "expected truncation with sort key");
+    }
     assert!(
         node_bytes <= budget,
         "truncated node payload should fit budget"
     );
-    assert!(built.build_stats.truncated_edges_total > 0);
+    if truncated {
+        assert!(built.build_stats.truncated_edges_total > 0);
+    } else {
+        assert_eq!(built.build_stats.truncated_edges_total, 0);
+    }
 
     // Node 1 should decode its two edges with sort keys intact and ordered.
     let decoded = decode_relation(&reader, 1, 0);
@@ -655,11 +693,10 @@ fn truncates_large_node_with_sort_key() {
 }
 
 #[test]
-fn caps_relation_edge_count_at_varint_limit() {
+fn selects_wider_offsets_for_large_edge_lists() {
     let dir = tempdir().unwrap();
     let edge_path = dir.path().join("edges.bin");
-    let cap = 0x3FFFusize;
-    let big = cap + 500;
+    let big = 0x3FFFusize + 500;
     let mut edges = Vec::with_capacity(big + 1);
     for i in 0..big {
         edges.push(EdgeRow {
@@ -686,6 +723,8 @@ fn caps_relation_edge_count_at_varint_limit() {
         relation_metas: vec![relation_meta.clone()],
         shard_index: 0,
         node_data_paths: None,
+
+        node_data_max_len: 0,
         mem_budget: None,
     });
     let built = builder
@@ -697,23 +736,29 @@ fn caps_relation_edge_count_at_varint_limit() {
         )
         .unwrap();
 
-    let truncated = (big - cap) as u64;
-    assert_eq!(built.build_stats.capped_edge_lists, 1);
-    assert_eq!(built.build_stats.truncated_nodes, 1);
-    assert_eq!(built.build_stats.truncated_edges_total, truncated);
-    assert_eq!(built.build_stats.truncated_edges_per_relation[0], truncated);
-
     let reader = ShardReader::open(&output_dir, built.layouts.clone(), false).unwrap();
     let segments = reader
         .edges_for_node(0)
         .unwrap()
         .relation_segments()
         .unwrap();
-    assert_eq!(segments[0].count as usize, cap);
+    let entry_bytes = segments[0].layout.entry_bytes as u64;
+    let required = 128u64
+        + varint_len_u64(big as u64) as u64
+        + (big as u64).saturating_mul(entry_bytes);
+    let expected = if required <= u16::MAX as u64 {
+        2
+    } else if required <= 0xFF_FF_FF {
+        3
+    } else {
+        4
+    };
+    assert_eq!(reader.header().delta_bytes, expected);
+    assert_eq!(segments[0].count as usize, big);
     let decoded = decode_relation(&reader, 0, 0);
-    assert_eq!(decoded.len(), cap);
+    assert_eq!(decoded.len(), big);
     assert_eq!(decoded.first(), Some(&(0, None)));
-    assert_eq!(decoded.last(), Some(&((cap - 1) as u64, None)));
+    assert_eq!(decoded.last(), Some(&((big - 1) as u64, None)));
     // Following node still decodes.
     assert_eq!(decode_relation(&reader, 1, 0), vec![(999, None)]);
 }
@@ -723,7 +768,9 @@ fn reader_rejects_invalid_header() {
     let dir = tempdir().unwrap();
     let offsets = dir.path().join("offsets.bin");
     let edges = dir.path().join("edges.bin");
-    let header_size = std::mem::size_of::<diskgraph_index::layout::OffsetFileHeader>();
+    let header_size =
+        bincode::serialized_size(&diskgraph_index::layout::OffsetFileHeader::new(0, 0)).unwrap()
+            as usize;
     let mut buf = vec![0u8; header_size];
     // total_offsets = 1 (bytes 12..20 for u64 after version + nodes)
     buf[12..20].copy_from_slice(&1u64.to_le_bytes());
@@ -732,13 +779,16 @@ fn reader_rejects_invalid_header() {
     let layouts = vec![relation_meta("Follows", "User", "User", None)];
     let node_types = vec![node_meta("User", 0)];
     let layouts = relation_layouts(layouts, node_types);
-    let reader = ShardReader::open(dir.path(), layouts, false).unwrap();
-    let msg = match reader.edges_for_node(0) {
-        Ok(_) => panic!("expected offset chunk error"),
+    let msg = match ShardReader::open(dir.path(), layouts, false) {
+        Ok(reader) => match reader.edges_for_node(0) {
+            Ok(_) => panic!("expected offset chunk error"),
+            Err(err) => err.to_string(),
+        },
         Err(err) => err.to_string(),
     };
     assert!(
-        msg.contains("offset chunk missing")
+        msg.contains("offset delta width invalid")
+            || msg.contains("offset chunk missing")
             || msg.contains("offset chunk range mismatch")
             || msg.contains("node index out of range"),
         "expected offset chunk error, got {msg}"
@@ -752,7 +802,9 @@ fn reader_rejects_offsets_out_of_bounds() {
     let offsets_path = output_dir.join("offsets.bin");
     let mut bytes = fs::read(&offsets_path).unwrap();
     // Header is bincode-serialized OffsetFileHeader, then chunk: count(u16), base(u64)
-    let header_len = std::mem::size_of::<diskgraph_index::layout::OffsetFileHeader>();
+    let header_len =
+        bincode::serialized_size(&diskgraph_index::layout::OffsetFileHeader::new(0, 0)).unwrap()
+            as usize;
     // write base = large number
     let base_pos = header_len + 2;
     bytes[base_pos..base_pos + 8].copy_from_slice(&1_000_000u64.to_le_bytes());
@@ -789,7 +841,9 @@ fn reader_rejects_offset_chunk_mismatch() {
     let offsets_path = output_dir.join("offsets.bin");
     let mut bytes = fs::read(&offsets_path).unwrap();
     // Tamper with the first chunk count to a larger number.
-    let header_len = std::mem::size_of::<diskgraph_index::layout::OffsetFileHeader>();
+    let header_len =
+        bincode::serialized_size(&diskgraph_index::layout::OffsetFileHeader::new(0, 0)).unwrap()
+            as usize;
     bytes[header_len] = 10;
     bytes[header_len + 1] = 0;
     fs::write(&offsets_path, bytes).unwrap();
@@ -871,6 +925,8 @@ fn offsets_many_chunks_sparse_edges() {
         relation_metas: vec![relation_meta.clone()],
         shard_index: 0,
         node_data_paths: None,
+
+        node_data_max_len: 0,
         mem_budget: None,
     });
     let built = builder
@@ -953,6 +1009,8 @@ fn truncates_large_node_multi_relation() {
         relation_metas: vec![follows.clone(), temporal.clone()],
         shard_index: 0,
         node_data_paths: None,
+
+        node_data_max_len: 0,
         mem_budget: None,
     });
     let built = builder
@@ -977,15 +1035,28 @@ fn truncates_large_node_multi_relation() {
         .unwrap();
     let seg_a = &segments[0];
     let seg_b = &segments[1];
-    // Both relations should have been truncated but still non-empty and within budget.
-    assert!(seg_b.count < big as u32 && seg_b.count > 0);
-    let budget = u16::MAX as u64;
+    let budget = match reader.header().delta_bytes {
+        2 => u16::MAX as u64,
+        3 => 0xFF_FF_FF,
+        4 => u32::MAX as u64,
+        _ => 0,
+    };
+    let truncated = seg_b.count < big as u32;
+    if reader.header().delta_bytes == 2 {
+        assert!(truncated && seg_b.count > 0);
+    } else {
+        assert!(seg_b.count > 0);
+    }
     let node_bytes = varint_len_u64(seg_a.count as u64) as u64
         + (seg_a.count as u64).saturating_mul(seg_a.layout.entry_bytes as u64)
         + varint_len_u64(seg_b.count as u64) as u64
         + (seg_b.count as u64).saturating_mul(seg_b.layout.entry_bytes as u64);
     assert!(node_bytes <= budget, "truncated node fits budget");
-    assert!(built.build_stats.truncated_edges_total > 0);
+    if truncated {
+        assert!(built.build_stats.truncated_edges_total > 0);
+    } else {
+        assert_eq!(built.build_stats.truncated_edges_total, 0);
+    }
     // Node 1 still decodes cleanly.
     assert_eq!(decode_relation(&reader, 1, 0), vec![(999, None)]);
     assert_eq!(decode_relation(&reader, 1, 1), vec![(1999, Some(5))]);
@@ -1018,6 +1089,8 @@ fn builder_errors_when_missing_dest_sort_key() {
         relation_metas: vec![relation_meta.clone()],
         shard_index: 0,
         node_data_paths: None,
+
+        node_data_max_len: 0,
         mem_budget: None,
     });
     let msg = match builder.build(
@@ -1056,6 +1129,8 @@ fn builder_accepts_binary_edges_with_64bit_sort_key() {
         relation_metas: vec![relation_meta.clone()],
         shard_index: 0,
         node_data_paths: None,
+
+        node_data_max_len: 0,
         mem_budget: None,
     });
     let built = builder
@@ -1097,6 +1172,8 @@ fn builder_errors_when_dst_id_exceeds_mask() {
         relation_metas: vec![relation_meta.clone()],
         shard_index: 0,
         node_data_paths: None,
+
+        node_data_max_len: 0,
         mem_budget: None,
     });
     let msg = match builder.build(
@@ -1139,6 +1216,8 @@ fn builder_errors_when_dest_sort_key_exceeds_mask() {
         relation_metas: vec![relation_meta.clone()],
         shard_index: 0,
         node_data_paths: None,
+
+        node_data_max_len: 0,
         mem_budget: None,
     });
     let msg = match builder.build(
@@ -1180,6 +1259,8 @@ fn builder_errors_on_unknown_relation_name() {
         relation_metas: vec![relation_meta.clone()],
         shard_index: 0,
         node_data_paths: None,
+
+        node_data_max_len: 0,
         mem_budget: None,
     });
     let msg = match builder.build(
@@ -1213,6 +1294,8 @@ fn builder_errors_on_corrupted_binary() {
         relation_metas: vec![relation_meta.clone()],
         shard_index: 0,
         node_data_paths: None,
+
+        node_data_max_len: 0,
         mem_budget: None,
     });
     let msg = match builder.build(
@@ -1254,6 +1337,8 @@ fn builder_errors_on_shard_index_mismatch() {
         relation_metas: vec![relation_meta.clone()],
         shard_index: 0,
         node_data_paths: None,
+
+        node_data_max_len: 0,
         mem_budget: None,
     });
     let msg = match builder.build(
@@ -1283,6 +1368,8 @@ fn builder_fails_on_missing_edge_file() {
         relation_metas: vec![relation_meta.clone()],
         shard_index: 0,
         node_data_paths: None,
+
+        node_data_max_len: 0,
         mem_budget: None,
     });
     let msg = match builder.build(
@@ -1375,7 +1462,7 @@ pub fn write_node_data(path: &Path, rows: &[Vec<u8>]) -> anyhow::Result<()> {
     let file = fs::File::create(path)?;
     let mut writer = FrameEncoder::new(file);
     for row in rows {
-        let len = u16::try_from(row.len()).map_err(|_| anyhow::anyhow!("node data too large"))?;
+        let len = u32::try_from(row.len()).map_err(|_| anyhow::anyhow!("node data too large"))?;
         writer.write_all(&len.to_le_bytes())?;
         writer.write_all(row)?;
     }
@@ -1445,6 +1532,8 @@ fn build_simple_shard(
         relation_metas: vec![relation_meta.clone()],
         shard_index: 0,
         node_data_paths: None,
+
+        node_data_max_len: 0,
         mem_budget: None,
     });
     let built = builder
@@ -1500,6 +1589,8 @@ fn builder_writes_node_data() {
         relation_metas: vec![relation_meta.clone()],
         shard_index: 0,
         node_data_paths: Some(vec![node_data_path]),
+
+        node_data_max_len: 0,
         mem_budget: None,
     });
     let built = builder
@@ -1550,6 +1641,8 @@ fn builder_errors_on_node_data_row_count_mismatch() {
         relation_metas: vec![relation_meta.clone()],
         shard_index: 0,
         node_data_paths: Some(vec![node_data_path]),
+
+        node_data_max_len: 0,
         mem_budget: None,
     });
     let msg = match builder.build(
@@ -1571,7 +1664,11 @@ fn varint_len_u64(v: u64) -> usize {
         1
     } else if v <= 0x3FFF {
         2
+    } else if v <= 0x3F_FFFF {
+        3
+    } else if v <= 0x3FFF_FFFF {
+        4
     } else {
-        panic!("varint_len_u64 only supports counts up to 0x3FFF");
+        panic!("varint_len_u64 only supports counts up to 0x3FFFFFFF");
     }
 }
