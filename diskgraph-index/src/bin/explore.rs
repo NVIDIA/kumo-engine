@@ -918,6 +918,57 @@ fn read_build_report(root: &Path) -> Result<Option<BuildReport>> {
     Ok(Some(report))
 }
 
+fn print_edge_stats(stats: &IngestStatsReport, relations: &[&EdgeRelationMetadata]) {
+    for rel in relations {
+        let success = stats.edge_counts.get(&rel.name).copied().unwrap_or(0);
+        let ctx_src = format!("src_lookup:{}", rel.name);
+        let ctx_dst = format!("dst_lookup:{}", rel.name);
+        let src_counts = stats.key_failures_by_context.get(&ctx_src);
+        let dst_counts = stats.key_failures_by_context.get(&ctx_dst);
+        let parse = src_counts
+            .map(|c| c.parse_failures)
+            .unwrap_or(0)
+            .saturating_add(dst_counts.map(|c| c.parse_failures).unwrap_or(0));
+        let lookup = src_counts
+            .map(|c| c.lookup_failures)
+            .unwrap_or(0)
+            .saturating_add(dst_counts.map(|c| c.lookup_failures).unwrap_or(0));
+        let rate = if success == 0 && lookup == 0 {
+            dim("n/a")
+        } else {
+            let denom = success.saturating_add(lookup);
+            let pct = (success as f64 * 100.0) / denom as f64;
+            if pct >= 99.0 {
+                ok(&format!("{pct:.2}%"))
+            } else if pct >= 90.0 {
+                warn(&format!("{pct:.2}%"))
+            } else {
+                err(&format!("{pct:.2}%"))
+            }
+        };
+        println!(
+            "    {}: {} {} {} {} {} {} {} {}",
+            name(&rel.name),
+            label("success"),
+            ok(&format_number(success)),
+            label("lookup"),
+            if lookup == 0 {
+                ok(&format_number(lookup))
+            } else {
+                warn(&format_number(lookup))
+            },
+            label("parse"),
+            if parse == 0 {
+                ok(&format_number(parse))
+            } else {
+                warn(&format_number(parse))
+            },
+            label("match"),
+            rate
+        );
+    }
+}
+
 fn read_build_reports_recursive(root: &Path) -> Result<Option<BuildReport>> {
     let nodes_root = root.join("nodes");
     if !nodes_root.exists() {
@@ -1867,48 +1918,25 @@ fn print_info(reader: &GraphIndexReader, table_name: &str, root: &Path) {
                 primary_key: t.primary_key.clone(),
                 edge_table: t.edge_table.clone(),
             });
-        if !table.relations().is_empty() {
-            println!("  {}", label("Edge stats:"));
-            for rel in table.relations() {
-                let success = report.stats.edge_counts.get(&rel.name).copied().unwrap_or(0);
-                let ctx_src = format!("src_lookup:{}", rel.name);
-                let ctx_dst = format!("dst_lookup:{}", rel.name);
-                let src_counts = report.stats.key_failures_by_context.get(&ctx_src);
-                let dst_counts = report.stats.key_failures_by_context.get(&ctx_dst);
-                let parse = src_counts
-                    .map(|c| c.parse_failures)
-                    .unwrap_or(0)
-                    .saturating_add(dst_counts.map(|c| c.parse_failures).unwrap_or(0));
-                let lookup = src_counts
-                    .map(|c| c.lookup_failures)
-                    .unwrap_or(0)
-                    .saturating_add(dst_counts.map(|c| c.lookup_failures).unwrap_or(0));
-                let rate = if success == 0 && lookup == 0 {
-                    dim("n/a")
-                } else {
-                    let denom = success.saturating_add(lookup);
-                    let pct = (success as f64 * 100.0) / denom as f64;
-                    if pct >= 99.0 {
-                        ok(&format!("{pct:.2}%"))
-                    } else if pct >= 90.0 {
-                        warn(&format!("{pct:.2}%"))
-                    } else {
-                        err(&format!("{pct:.2}%"))
-                    }
-                };
-                println!(
-                    "    {}: {} {} {} {} {} {} {} {}",
-                    name(&rel.name),
-                    label("success"),
-                    ok(&format_number(success)),
-                    label("lookup"),
-                    if lookup == 0 { ok(&format_number(lookup)) } else { warn(&format_number(lookup)) },
-                    label("parse"),
-                    if parse == 0 { ok(&format_number(parse)) } else { warn(&format_number(parse)) },
-                    label("match"),
-                    rate
-                );
-            }
+        let incoming: Vec<_> = reader
+            .metadata()
+            .edge_relations
+            .iter()
+            .filter(|rel| rel.dst_type == table.node_type())
+            .collect();
+        let outgoing: Vec<_> = reader
+            .metadata()
+            .edge_relations
+            .iter()
+            .filter(|rel| rel.src_type == table.node_type())
+            .collect();
+        if !incoming.is_empty() {
+            println!("  {}", label("Incoming edge stats:"));
+            print_edge_stats(&report.stats, &incoming);
+        }
+        if !outgoing.is_empty() {
+            println!("  {}", label("Outgoing edge stats:"));
+            print_edge_stats(&report.stats, &outgoing);
         }
 
     }
