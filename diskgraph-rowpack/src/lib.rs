@@ -875,6 +875,25 @@ impl<'p> RowAccess<'p> {
                     .ok_or_else(|| anyhow!("float64 parse failed"))
                     .map(Some)
             }
+            DataType::Decimal128(_, scale) => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Decimal128Array>()
+                    .ok_or_else(|| anyhow!("decimal128 cast"))?;
+                let value = arr.value(self.row);
+                let scaled = decimal_i128_to_f64(value, i32::from(*scale));
+                Ok(Some(scaled))
+            }
+            DataType::Decimal256(_, scale) => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Decimal256Array>()
+                    .ok_or_else(|| anyhow!("decimal256 cast"))?;
+                let value = arr.value(self.row);
+                decimal_i256_to_f64(value, i32::from(*scale))
+                    .ok_or_else(|| anyhow!("decimal256 overflow"))
+                    .map(Some)
+            }
             _ => Err(anyhow!("float64 type mismatch")),
         }
     }
@@ -968,6 +987,26 @@ impl<'p> RowAccess<'p> {
                 };
                 parse_f32(text)
                     .ok_or_else(|| anyhow!("float32 parse failed"))
+                    .map(Some)
+            }
+            DataType::Decimal128(_, scale) => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Decimal128Array>()
+                    .ok_or_else(|| anyhow!("decimal128 cast"))?;
+                let value = arr.value(self.row);
+                let scaled = decimal_i128_to_f64(value, i32::from(*scale));
+                Ok(Some(scaled as f32))
+            }
+            DataType::Decimal256(_, scale) => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Decimal256Array>()
+                    .ok_or_else(|| anyhow!("decimal256 cast"))?;
+                let value = arr.value(self.row);
+                decimal_i256_to_f64(value, i32::from(*scale))
+                    .map(|v| v as f32)
+                    .ok_or_else(|| anyhow!("decimal256 overflow"))
                     .map(Some)
             }
             _ => Err(anyhow!("float32 type mismatch")),
@@ -6755,6 +6794,30 @@ fn apply_decimal_scale_i256(value: arrow_buffer::i256, scale: i32) -> BigInt {
     out
 }
 
+fn decimal_i128_to_f64(value: i128, scale: i32) -> f64 {
+    if scale == 0 {
+        return value as f64;
+    }
+    if scale > 0 {
+        return (value as f64) / 10_f64.powi(scale);
+    }
+    (value as f64) * 10_f64.powi(-scale)
+}
+
+fn decimal_i256_to_f64(value: arrow_buffer::i256, scale: i32) -> Option<f64> {
+    let out = BigInt::from_signed_bytes_le(&value.to_le_bytes());
+    let mut v = out.to_f64()?;
+    if scale == 0 {
+        return Some(v);
+    }
+    if scale > 0 {
+        v /= 10_f64.powi(scale);
+    } else {
+        v *= 10_f64.powi(-scale);
+    }
+    Some(v)
+}
+
 fn pow10_i128(exp: u32) -> i128 {
     let mut out = 1i128;
     for _ in 0..exp {
@@ -8086,6 +8149,25 @@ mod tests {
         access.set_row(0);
         let value = access.get_int64(0).unwrap().unwrap();
         assert_eq!(value, 123);
+    }
+
+    #[test]
+    fn decimal128_scales_to_float() {
+        let array = arrow_array::Decimal128Array::from_iter_values([12345i128])
+            .with_precision_and_scale(10, 2)
+            .unwrap();
+        let cols: Vec<arrow_array::ArrayRef> = vec![std::sync::Arc::new(array)];
+        let hints = vec![RowAccessHints {
+            timestamp_format: None,
+            timestamp_unit: None,
+            decimal_scale: Some(2),
+        }];
+        let stats = RowAccessStats::new(None);
+        let mut access = RowAccess::new(hints, stats);
+        access.set_cols(&cols);
+        access.set_row(0);
+        let value = access.get_float64(0).unwrap().unwrap();
+        assert!((value - 123.45).abs() < 1e-6);
     }
 
     #[test]
