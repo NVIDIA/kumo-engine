@@ -1369,9 +1369,16 @@ impl ColumnStats {
         if self.bool_ok {
             ingested_dtype = IngestedType::Bool;
         } else if self.ts_ok {
-            ingested_dtype = IngestedType::Timestamp;
-            // Preserve the parse format for string-backed timestamps.
-            timestamp_format = self.ts_format.clone();
+            if self.date_ok
+                && matches!(self.ts_format.as_deref(), Some("%Y-%m-%d"))
+            {
+                ingested_dtype = IngestedType::Date;
+                timestamp_format = self.date_format.clone();
+            } else {
+                ingested_dtype = IngestedType::Timestamp;
+                // Preserve the parse format for string-backed timestamps.
+                timestamp_format = self.ts_format.clone();
+            }
         } else if time_name_score(&name_lower) > 0
             && self.int_ok
             && int_looks_like_timestamp(self.int_min, self.int_max).is_some()
@@ -1464,43 +1471,269 @@ fn parse_date(value: &str) -> Option<NaiveDate> {
 }
 
 fn parse_timestamp(value: &str) -> Option<NaiveDateTime> {
-    if let Ok(ts) = chrono::DateTime::parse_from_rfc3339(value) {
-        return Some(ts.naive_utc());
-    }
-    if let Ok(ts) = NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S") {
-        return Some(ts);
-    }
-    if let Ok(ts) = NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S%.f") {
-        return Some(ts);
-    }
-    if let Ok(ts) = NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M") {
-        return Some(ts);
-    }
-    if let Ok(ts) = NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S") {
-        return Some(ts);
-    }
-    if let Ok(ts) = NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S%.f") {
-        return Some(ts);
-    }
-    None
+    let bytes = value.as_bytes();
+    parse_ymd(bytes)
+        .or_else(|| parse_ymd_hm(bytes))
+        .or_else(|| parse_ymd_hms(bytes, false))
+        .or_else(|| parse_ymd_hms(bytes, true))
+        .or_else(|| parse_ymd_hms_t(bytes, false))
+        .or_else(|| parse_ymd_hms_t(bytes, true))
+        .or_else(|| parse_ymd_hms_offset(bytes, false, false))
+        .or_else(|| parse_ymd_hms_offset(bytes, true, false))
+        .or_else(|| parse_ymd_hms_offset(bytes, false, true))
+        .or_else(|| parse_ymd_hms_offset(bytes, true, true))
+        .or_else(|| parse_ymd_hms_t_offset(bytes, false))
+        .or_else(|| parse_ymd_hms_t_offset(bytes, true))
+        .or_else(|| chrono::DateTime::parse_from_rfc3339(value).ok().map(|v| v.naive_utc()))
 }
 
 fn parse_timestamp_format(value: &str) -> Option<&'static str> {
-    if chrono::DateTime::parse_from_rfc3339(value).is_ok() {
-        return Some("rfc3339");
-    }
     for fmt in [
+        "%Y-%m-%d",
         "%Y-%m-%d %H:%M:%S",
         "%Y-%m-%d %H:%M:%S%.f",
         "%Y-%m-%d %H:%M",
         "%Y-%m-%dT%H:%M:%S",
         "%Y-%m-%dT%H:%M:%S%.f",
+        "%Y-%m-%d %H:%M:%S%z",
+        "%Y-%m-%d %H:%M:%S %z",
+        "%Y-%m-%d %H:%M:%S%:z",
+        "%Y-%m-%d %H:%M:%S %:z",
+        "%Y-%m-%dT%H:%M:%S%z",
+        "%Y-%m-%dT%H:%M:%S%:z",
     ] {
-        if NaiveDateTime::parse_from_str(value, fmt).is_ok() {
+        if parse_timestamp_with_format(value, fmt).is_some() {
             return Some(fmt);
         }
     }
+    if chrono::DateTime::parse_from_rfc3339(value).is_ok() {
+        return Some("rfc3339");
+    }
     None
+}
+
+fn parse_timestamp_with_format(value: &str, fmt: &str) -> Option<NaiveDateTime> {
+    let bytes = value.as_bytes();
+    match fmt {
+        "%Y-%m-%d" => parse_ymd(bytes),
+        "%Y-%m-%d %H:%M" => parse_ymd_hm(bytes),
+        "%Y-%m-%d %H:%M:%S" => parse_ymd_hms(bytes, false),
+        "%Y-%m-%d %H:%M:%S%.f" => parse_ymd_hms(bytes, true),
+        "%Y-%m-%dT%H:%M:%S" => parse_ymd_hms_t(bytes, false),
+        "%Y-%m-%dT%H:%M:%S%.f" => parse_ymd_hms_t(bytes, true),
+        "%Y-%m-%d %H:%M:%S%z" => parse_ymd_hms_offset(bytes, false, false),
+        "%Y-%m-%d %H:%M:%S %z" => parse_ymd_hms_offset(bytes, false, true),
+        "%Y-%m-%d %H:%M:%S%:z" => parse_ymd_hms_offset(bytes, true, false),
+        "%Y-%m-%d %H:%M:%S %:z" => parse_ymd_hms_offset(bytes, true, true),
+        "%Y-%m-%dT%H:%M:%S%z" => parse_ymd_hms_t_offset(bytes, false),
+        "%Y-%m-%dT%H:%M:%S%:z" => parse_ymd_hms_t_offset(bytes, true),
+        _ => NaiveDateTime::parse_from_str(value, fmt).ok(),
+    }
+}
+
+fn parse_ymd(bytes: &[u8]) -> Option<NaiveDateTime> {
+    if bytes.len() != 10 {
+        return None;
+    }
+    let year = parse_fixed_u32(bytes, 0, 4)? as i32;
+    let month = parse_fixed_u32(bytes, 5, 2)?;
+    let day = parse_fixed_u32(bytes, 8, 2)?;
+    timestamp_from_parts(year, month, day, 0, 0, 0, 0)
+}
+
+fn parse_ymd_hm(bytes: &[u8]) -> Option<NaiveDateTime> {
+    if bytes.len() != 16 {
+        return None;
+    }
+    let year = parse_fixed_u32(bytes, 0, 4)? as i32;
+    let month = parse_fixed_u32(bytes, 5, 2)?;
+    let day = parse_fixed_u32(bytes, 8, 2)?;
+    let hour = parse_fixed_u32(bytes, 11, 2)?;
+    let minute = parse_fixed_u32(bytes, 14, 2)?;
+    timestamp_from_parts(year, month, day, hour, minute, 0, 0)
+}
+
+fn parse_ymd_hms(bytes: &[u8], allow_fraction: bool) -> Option<NaiveDateTime> {
+    if bytes.len() < 19 {
+        return None;
+    }
+    let year = parse_fixed_u32(bytes, 0, 4)? as i32;
+    let month = parse_fixed_u32(bytes, 5, 2)?;
+    let day = parse_fixed_u32(bytes, 8, 2)?;
+    let hour = parse_fixed_u32(bytes, 11, 2)?;
+    let minute = parse_fixed_u32(bytes, 14, 2)?;
+    let second = parse_fixed_u32(bytes, 17, 2)?;
+    let mut nanos = 0u32;
+    if allow_fraction {
+        if bytes.len() < 21 {
+            return None;
+        }
+        let (fraction, digits, next) = parse_fraction(bytes, 20)?;
+        nanos = fraction_to_nanos(fraction, digits);
+        if next != bytes.len() {
+            return None;
+        }
+    } else if bytes.len() != 19 {
+        return None;
+    }
+    timestamp_from_parts(year, month, day, hour, minute, second, nanos)
+}
+
+fn parse_ymd_hms_t(bytes: &[u8], allow_fraction: bool) -> Option<NaiveDateTime> {
+    parse_ymd_hms(bytes, allow_fraction)
+}
+
+fn parse_ymd_hms_offset(bytes: &[u8], colon: bool, spaced: bool) -> Option<NaiveDateTime> {
+    let base_len = 19 + if spaced { 1 } else { 0 };
+    let tz_len = if colon { 6 } else { 5 };
+    let total_len = base_len + tz_len;
+    if bytes.len() != total_len {
+        return None;
+    }
+    let year = parse_fixed_u32(bytes, 0, 4)? as i32;
+    let month = parse_fixed_u32(bytes, 5, 2)?;
+    let day = parse_fixed_u32(bytes, 8, 2)?;
+    let hour = parse_fixed_u32(bytes, 11, 2)?;
+    let minute = parse_fixed_u32(bytes, 14, 2)?;
+    let second = parse_fixed_u32(bytes, 17, 2)?;
+    let mut pos = 19 + if spaced { 1 } else { 0 };
+    let sign = match *bytes.get(pos)? {
+        b'+' => 1i64,
+        b'-' => -1i64,
+        _ => return None,
+    };
+    pos += 1;
+    let off_hour = parse_fixed_u32(bytes, pos, 2)? as i64;
+    pos += 2;
+    if colon {
+        pos += 1;
+    }
+    let off_min = parse_fixed_u32(bytes, pos, 2)? as i64;
+    let (secs, nanos) = timestamp_from_parts_secs(year, month, day, hour, minute, second, 0)?;
+    let offset_secs = sign * (off_hour * 3_600 + off_min * 60);
+    chrono::DateTime::from_timestamp(secs.saturating_sub(offset_secs), nanos).map(|dt| dt.naive_utc())
+}
+
+fn parse_ymd_hms_t_offset(bytes: &[u8], colon: bool) -> Option<NaiveDateTime> {
+    parse_ymd_hms_offset(bytes, colon, false)
+}
+
+fn timestamp_from_parts(
+    year: i32,
+    month: u32,
+    day: u32,
+    hour: u32,
+    minute: u32,
+    second: u32,
+    nanos: u32,
+) -> Option<NaiveDateTime> {
+    let (secs, nanos) = timestamp_from_parts_secs(year, month, day, hour, minute, second, nanos)?;
+    chrono::DateTime::from_timestamp(secs, nanos).map(|dt| dt.naive_utc())
+}
+
+fn timestamp_from_parts_secs(
+    year: i32,
+    month: u32,
+    day: u32,
+    hour: u32,
+    minute: u32,
+    second: u32,
+    nanos: u32,
+) -> Option<(i64, u32)> {
+    if hour >= 24 || minute >= 60 || second >= 60 || nanos >= 1_000_000_000 {
+        return None;
+    }
+    let days = days_from_civil(year, month, day)?;
+    let secs = days
+        .saturating_mul(86_400)
+        .saturating_add(hour as i64 * 3_600)
+        .saturating_add(minute as i64 * 60)
+        .saturating_add(second as i64);
+    Some((secs, nanos))
+}
+
+fn days_from_civil(year: i32, month: u32, day: u32) -> Option<i64> {
+    let dim = days_in_month(year, month)?;
+    if day == 0 || day > dim {
+        return None;
+    }
+    let mut y = year as i64;
+    let m = month as i64;
+    let d = day as i64;
+    y -= if m <= 2 { 1 } else { 0 };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let mp = m + if m > 2 { -3 } else { 9 };
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    Some(era * 146097 + doe - 719468)
+}
+
+fn days_in_month(year: i32, month: u32) -> Option<u32> {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => Some(31),
+        4 | 6 | 9 | 11 => Some(30),
+        2 => Some(if is_leap_year(year) { 29 } else { 28 }),
+        _ => None,
+    }
+}
+
+fn is_leap_year(year: i32) -> bool {
+    (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
+}
+
+fn parse_fixed_u32(bytes: &[u8], pos: usize, len: usize) -> Option<u32> {
+    if pos + len > bytes.len() {
+        return None;
+    }
+    let mut val: u32 = 0;
+    for idx in pos..pos + len {
+        let b = bytes[idx];
+        if !b.is_ascii_digit() {
+            return None;
+        }
+        val = val.saturating_mul(10).saturating_add((b - b'0') as u32);
+    }
+    Some(val)
+}
+
+fn parse_fraction(bytes: &[u8], pos: usize) -> Option<(u32, usize, usize)> {
+    let mut idx = pos;
+    let mut val: u32 = 0;
+    let mut digits = 0usize;
+    while idx < bytes.len() && bytes[idx].is_ascii_digit() {
+        if digits < 9 {
+            val = val.saturating_mul(10).saturating_add((bytes[idx] - b'0') as u32);
+        }
+        digits += 1;
+        idx += 1;
+    }
+    if digits == 0 {
+        return None;
+    }
+    Some((val, digits.min(9), idx))
+}
+
+fn fraction_to_nanos(value: u32, digits: usize) -> u32 {
+    const POW10: [u32; 10] = [
+        1_000_000_000,
+        100_000_000,
+        10_000_000,
+        1_000_000,
+        100_000,
+        10_000,
+        1_000,
+        100,
+        10,
+        1,
+    ];
+    if digits == 0 {
+        0
+    } else if digits >= 9 {
+        value
+    } else {
+        value.saturating_mul(POW10[digits])
+    }
 }
 
 fn infer_primary_keys(tables: &mut [TableSpec]) {

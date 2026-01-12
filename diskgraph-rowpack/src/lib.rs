@@ -3,14 +3,14 @@ use arrow_array::{Array, ArrayRef};
 use arrow_schema::DataType;
 use base64::Engine;
 use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
+use gxhash::{HashMap, HashMapExt};
 use half::f16;
 use num_bigint::BigInt;
 use num_traits::Signed;
 use rmp::encode as mp;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
-use gxhash::{HashMap, HashMapExt};
-use uuid_simd::{parse_hyphenated, parse_simple, format_simple, AsOut, AsciiCase};
+use uuid_simd::{format_simple, parse_hyphenated, parse_simple, AsOut, AsciiCase};
 
 const ROWPACK_VERSION: u8 = 3;
 const MAX_FIELD_BYTES: usize = 8 * 1024 * 1024;
@@ -189,7 +189,6 @@ impl RowPackConfig {
     fn string_long_min_ratio(&self) -> f32 {
         self.string_long_min_ratio.unwrap_or(0.85)
     }
-
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -292,7 +291,8 @@ impl<'p> RowAccess<'p> {
             return Err(anyhow!("row access columns not set"));
         }
         let cols = unsafe { std::slice::from_raw_parts(self.cols_ptr, self.cols_len) };
-        cols.get(idx).ok_or_else(|| anyhow!("missing column {}", idx))
+        cols.get(idx)
+            .ok_or_else(|| anyhow!("missing column {}", idx))
     }
 
     pub fn pool_str(&mut self, value: String) -> &str {
@@ -1830,10 +1830,7 @@ impl<'p> RowAccess<'p> {
                 offsets[self.row + 1] as usize,
                 list.values(),
             )
-        } else if let Some(list) = array
-            .as_any()
-            .downcast_ref::<arrow_array::LargeListArray>()
-        {
+        } else if let Some(list) = array.as_any().downcast_ref::<arrow_array::LargeListArray>() {
             let offsets = list.value_offsets();
             (
                 offsets[self.row] as usize,
@@ -1857,7 +1854,9 @@ impl<'p> RowAccess<'p> {
                         vec.push(values_arr.value(idx));
                     }
                 }
-                Ok(Some(unsafe { std::mem::transmute::<&[f32], &[f32]>(vec.as_slice()) }))
+                Ok(Some(unsafe {
+                    std::mem::transmute::<&[f32], &[f32]>(vec.as_slice())
+                }))
             }
             DataType::Float64 => {
                 let values_arr = values
@@ -1872,7 +1871,9 @@ impl<'p> RowAccess<'p> {
                         vec.push(values_arr.value(idx) as f32);
                     }
                 }
-                Ok(Some(unsafe { std::mem::transmute::<&[f32], &[f32]>(vec.as_slice()) }))
+                Ok(Some(unsafe {
+                    std::mem::transmute::<&[f32], &[f32]>(vec.as_slice())
+                }))
             }
             DataType::Float16 => {
                 let values_arr = values
@@ -1887,7 +1888,9 @@ impl<'p> RowAccess<'p> {
                         vec.push(values_arr.value(idx).to_f32());
                     }
                 }
-                Ok(Some(unsafe { std::mem::transmute::<&[f32], &[f32]>(vec.as_slice()) }))
+                Ok(Some(unsafe {
+                    std::mem::transmute::<&[f32], &[f32]>(vec.as_slice())
+                }))
             }
             _ => Err(anyhow!("float32 array type mismatch")),
         }
@@ -1907,10 +1910,7 @@ impl<'p> RowAccess<'p> {
                 offsets[self.row + 1] as usize,
                 list.values(),
             )
-        } else if let Some(list) = array
-            .as_any()
-            .downcast_ref::<arrow_array::LargeListArray>()
-        {
+        } else if let Some(list) = array.as_any().downcast_ref::<arrow_array::LargeListArray>() {
             let offsets = list.value_offsets();
             (
                 offsets[self.row] as usize,
@@ -1932,7 +1932,9 @@ impl<'p> RowAccess<'p> {
                 vec.push(values_arr.value(idx));
             }
         }
-        Ok(Some(unsafe { std::mem::transmute::<&[f64], &[f64]>(vec.as_slice()) }))
+        Ok(Some(unsafe {
+            std::mem::transmute::<&[f64], &[f64]>(vec.as_slice())
+        }))
     }
 }
 
@@ -2056,6 +2058,16 @@ fn parse_timestamp_text(value: &str, format: Option<&str>) -> Option<(i64, u32)>
             chrono::DateTime::parse_from_rfc3339(value)
                 .ok()
                 .map(|v| v.naive_utc())
+        } else if fmt == "%Y-%m-%d %H:%M:%S%z"
+            || fmt == "%Y-%m-%d %H:%M:%S %z"
+            || fmt == "%Y-%m-%d %H:%M:%S%:z"
+            || fmt == "%Y-%m-%d %H:%M:%S %:z"
+            || fmt == "%Y-%m-%dT%H:%M:%S%z"
+            || fmt == "%Y-%m-%dT%H:%M:%S%:z"
+        {
+            chrono::DateTime::parse_from_str(value, fmt)
+                .ok()
+                .map(|v| v.naive_utc())
         } else {
             NaiveDateTime::parse_from_str(value, fmt).ok().or_else(|| {
                 NaiveDate::parse_from_str(value, fmt)
@@ -2072,9 +2084,41 @@ fn parse_timestamp_text(value: &str, format: Option<&str>) -> Option<(i64, u32)>
             .or_else(|| NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M").ok())
             .or_else(|| NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S").ok())
             .or_else(|| NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S%.f").ok())
-            .or_else(|| NaiveDate::parse_from_str(value, "%Y-%m-%d").ok().map(|d| {
-                d.and_hms_opt(0, 0, 0).unwrap()
-            }))
+            .or_else(|| {
+                chrono::DateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S%z")
+                    .ok()
+                    .map(|v| v.naive_utc())
+            })
+            .or_else(|| {
+                chrono::DateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S %z")
+                    .ok()
+                    .map(|v| v.naive_utc())
+            })
+            .or_else(|| {
+                chrono::DateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S%:z")
+                    .ok()
+                    .map(|v| v.naive_utc())
+            })
+            .or_else(|| {
+                chrono::DateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S %:z")
+                    .ok()
+                    .map(|v| v.naive_utc())
+            })
+            .or_else(|| {
+                chrono::DateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S%z")
+                    .ok()
+                    .map(|v| v.naive_utc())
+            })
+            .or_else(|| {
+                chrono::DateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S%:z")
+                    .ok()
+                    .map(|v| v.naive_utc())
+            })
+            .or_else(|| {
+                NaiveDate::parse_from_str(value, "%Y-%m-%d")
+                    .ok()
+                    .map(|d| d.and_hms_opt(0, 0, 0).unwrap())
+            })
     }?;
     let ts = ts.and_utc();
     Some((ts.timestamp(), ts.timestamp_subsec_nanos()))
@@ -2082,9 +2126,11 @@ fn parse_timestamp_text(value: &str, format: Option<&str>) -> Option<(i64, u32)>
 
 fn parse_date_text(value: &str, format: Option<&str>) -> Option<i32> {
     let dt = if let Some(fmt) = format {
-        NaiveDate::parse_from_str(value, fmt)
-            .ok()
-            .or_else(|| NaiveDateTime::parse_from_str(value, fmt).ok().map(|v| v.date()))
+        NaiveDate::parse_from_str(value, fmt).ok().or_else(|| {
+            NaiveDateTime::parse_from_str(value, fmt)
+                .ok()
+                .map(|v| v.date())
+        })
     } else {
         NaiveDate::parse_from_str(value, "%Y-%m-%d")
             .ok()
@@ -2093,53 +2139,40 @@ fn parse_date_text(value: &str, format: Option<&str>) -> Option<i32> {
                     .ok()
                     .map(|v| v.date())
             })
-            .or_else(|| chrono::DateTime::parse_from_rfc3339(value).ok().map(|v| v.date_naive()))
+            .or_else(|| {
+                chrono::DateTime::parse_from_rfc3339(value)
+                    .ok()
+                    .map(|v| v.date_naive())
+            })
     }?;
     let ts = dt.and_hms_opt(0, 0, 0)?.and_utc().timestamp();
     Some(days_from_secs(ts))
 }
 
 #[derive(Clone, Debug)]
-enum TimestampToken {
-    Literal(Vec<u8>),
-    Year,
-    Month,
-    Day,
-    Hour,
-    Minute,
-    Second,
-    Fraction,
-}
-
-#[derive(Clone, Debug)]
 enum TimestampFormatKind {
-    Tokens,
-    Rfc3339,
     Ymd,
     YmdHmSpace,
     YmdHmsSpace,
     YmdHmsSpaceFrac,
     YmdHmsT,
     YmdHmsTFrac,
+    YmdHmsSpaceOffset,
+    YmdHmsSpaceOffsetColon,
+    YmdHmsSpaceOffsetSpaced,
+    YmdHmsSpaceOffsetColonSpaced,
+    YmdHmsTOffset,
+    YmdHmsTOffsetColon,
 }
 
 #[derive(Clone, Debug)]
 struct TimestampFormatParser {
     kind: TimestampFormatKind,
-    tokens: Vec<TimestampToken>,
-    has_date: bool,
 }
 
 impl TimestampFormatParser {
     fn compile(format: &str) -> Option<Self> {
         let format = match format {
-            "rfc3339" | "RFC3339" => {
-                return Some(Self {
-                    kind: TimestampFormatKind::Rfc3339,
-                    tokens: Vec::new(),
-                    has_date: true,
-                })
-            }
             "iso8601" | "ISO8601" => "%Y-%m-%dT%H:%M:%S",
             "iso8601_nanos" | "ISO8601_NANOS" => "%Y-%m-%dT%H:%M:%S%.f",
             "iso8601_space" | "ISO8601_SPACE" => "%Y-%m-%d %H:%M:%S",
@@ -2147,189 +2180,62 @@ impl TimestampFormatParser {
             other => other,
         };
         let kind = match format {
-            "%Y-%m-%d" => Some(TimestampFormatKind::Ymd),
-            "%Y-%m-%d %H:%M" => Some(TimestampFormatKind::YmdHmSpace),
-            "%Y-%m-%d %H:%M:%S" => Some(TimestampFormatKind::YmdHmsSpace),
-            "%Y-%m-%d %H:%M:%S%.f" => Some(TimestampFormatKind::YmdHmsSpaceFrac),
-            "%Y-%m-%dT%H:%M:%S" => Some(TimestampFormatKind::YmdHmsT),
-            "%Y-%m-%dT%H:%M:%S%.f" => Some(TimestampFormatKind::YmdHmsTFrac),
-            _ => None,
+            "%Y-%m-%d" => TimestampFormatKind::Ymd,
+            "%Y-%m-%d %H:%M" => TimestampFormatKind::YmdHmSpace,
+            "%Y-%m-%d %H:%M:%S" => TimestampFormatKind::YmdHmsSpace,
+            "%Y-%m-%d %H:%M:%S%.f" => TimestampFormatKind::YmdHmsSpaceFrac,
+            "%Y-%m-%dT%H:%M:%S" => TimestampFormatKind::YmdHmsT,
+            "%Y-%m-%dT%H:%M:%S%.f" => TimestampFormatKind::YmdHmsTFrac,
+            "%Y-%m-%d %H:%M:%S%z" => TimestampFormatKind::YmdHmsSpaceOffset,
+            "%Y-%m-%d %H:%M:%S %z" => TimestampFormatKind::YmdHmsSpaceOffsetSpaced,
+            "%Y-%m-%d %H:%M:%S%:z" => TimestampFormatKind::YmdHmsSpaceOffsetColon,
+            "%Y-%m-%d %H:%M:%S %:z" => TimestampFormatKind::YmdHmsSpaceOffsetColonSpaced,
+            "%Y-%m-%dT%H:%M:%S%z" => TimestampFormatKind::YmdHmsTOffset,
+            "%Y-%m-%dT%H:%M:%S%:z" => TimestampFormatKind::YmdHmsTOffsetColon,
+            _ => return None,
         };
-        if let Some(kind) = kind {
-            return Some(Self {
-                kind,
-                tokens: Vec::new(),
-                has_date: true,
-            });
-        }
-        let mut tokens = Vec::new();
-        let mut literal = Vec::new();
-        let mut chars = format.chars().peekable();
-        let mut has_date = false;
-        let mut has_time = false;
-        while let Some(ch) = chars.next() {
-            if ch == '%' {
-                if let Some(spec) = chars.next() {
-                    if !literal.is_empty() {
-                        tokens.push(TimestampToken::Literal(std::mem::take(&mut literal)));
-                    }
-                    match spec {
-                        '%' => literal.push(b'%'),
-                        'Y' => {
-                            tokens.push(TimestampToken::Year);
-                            has_date = true;
-                        }
-                        'm' => {
-                            tokens.push(TimestampToken::Month);
-                            has_date = true;
-                        }
-                        'd' => {
-                            tokens.push(TimestampToken::Day);
-                            has_date = true;
-                        }
-                        'H' => {
-                            tokens.push(TimestampToken::Hour);
-                            has_time = true;
-                        }
-                        'M' => {
-                            tokens.push(TimestampToken::Minute);
-                            has_time = true;
-                        }
-                        'S' => {
-                            tokens.push(TimestampToken::Second);
-                            has_time = true;
-                        }
-                        'f' => {
-                            tokens.push(TimestampToken::Fraction);
-                            has_time = true;
-                        }
-                        'F' => {
-                            tokens.push(TimestampToken::Year);
-                            tokens.push(TimestampToken::Literal(vec![b'-']));
-                            tokens.push(TimestampToken::Month);
-                            tokens.push(TimestampToken::Literal(vec![b'-']));
-                            tokens.push(TimestampToken::Day);
-                            has_date = true;
-                        }
-                        'T' => {
-                            tokens.push(TimestampToken::Hour);
-                            tokens.push(TimestampToken::Literal(vec![b':']));
-                            tokens.push(TimestampToken::Minute);
-                            tokens.push(TimestampToken::Literal(vec![b':']));
-                            tokens.push(TimestampToken::Second);
-                            has_time = true;
-                        }
-                        _ => return None,
-                    }
-                } else {
-                    return None;
-                }
-            } else if ch.is_ascii() {
-                literal.push(ch as u8);
-            } else {
-                return None;
-            }
-        }
-        if !literal.is_empty() {
-            tokens.push(TimestampToken::Literal(literal));
-        }
-        let _ = has_time;
-        Some(Self {
-            kind: TimestampFormatKind::Tokens,
-            tokens,
-            has_date,
-        })
+        Some(Self { kind })
     }
 
     fn parse_timestamp(&self, value: &str) -> Option<(i64, u32)> {
         match self.kind {
-            TimestampFormatKind::Rfc3339 => {
-                return parse_rfc3339_timestamp(value.as_bytes());
-            }
             TimestampFormatKind::Ymd => {
-                return parse_ymd(value.as_bytes());
+                return parse_ymd_fast(value.as_bytes());
             }
             TimestampFormatKind::YmdHmSpace => {
-                return parse_ymd_hm(value.as_bytes(), b' ');
+                return parse_ymd_hm_space_fast(value.as_bytes());
             }
             TimestampFormatKind::YmdHmsSpace => {
-                return parse_ymd_hms(value.as_bytes(), b' ', false);
+                return parse_ymd_hms_space_fast(value.as_bytes());
             }
             TimestampFormatKind::YmdHmsSpaceFrac => {
-                return parse_ymd_hms(value.as_bytes(), b' ', true);
+                return parse_ymd_hms_space_frac_fast(value.as_bytes());
             }
             TimestampFormatKind::YmdHmsT => {
-                return parse_ymd_hms(value.as_bytes(), b'T', false);
+                return parse_ymd_hms_space_fast(value.as_bytes());
             }
             TimestampFormatKind::YmdHmsTFrac => {
-                return parse_ymd_hms(value.as_bytes(), b'T', true);
+                return parse_ymd_hms_space_frac_fast(value.as_bytes());
             }
-            TimestampFormatKind::Tokens => {}
-        }
-        if !self.has_date {
-            return None;
-        }
-        let bytes = value.as_bytes();
-        let mut pos = 0usize;
-        let mut year: i32 = 0;
-        let mut month: u32 = 1;
-        let mut day: u32 = 1;
-        let mut hour: u32 = 0;
-        let mut minute: u32 = 0;
-        let mut second: u32 = 0;
-        let mut nanos: u32 = 0;
-        for token in &self.tokens {
-            match token {
-                TimestampToken::Literal(lit) => {
-                    if pos + lit.len() > bytes.len() {
-                        return None;
-                    }
-                    if &bytes[pos..pos + lit.len()] != lit.as_slice() {
-                        return None;
-                    }
-                    pos += lit.len();
-                }
-                TimestampToken::Year => {
-                    let (val, next) = parse_fixed_u32(bytes, pos, 4)?;
-                    year = val as i32;
-                    pos = next;
-                }
-                TimestampToken::Month => {
-                    let (val, next) = parse_fixed_u32(bytes, pos, 2)?;
-                    month = val;
-                    pos = next;
-                }
-                TimestampToken::Day => {
-                    let (val, next) = parse_fixed_u32(bytes, pos, 2)?;
-                    day = val;
-                    pos = next;
-                }
-                TimestampToken::Hour => {
-                    let (val, next) = parse_fixed_u32(bytes, pos, 2)?;
-                    hour = val;
-                    pos = next;
-                }
-                TimestampToken::Minute => {
-                    let (val, next) = parse_fixed_u32(bytes, pos, 2)?;
-                    minute = val;
-                    pos = next;
-                }
-                TimestampToken::Second => {
-                    let (val, next) = parse_fixed_u32(bytes, pos, 2)?;
-                    second = val;
-                    pos = next;
-                }
-                TimestampToken::Fraction => {
-                    let (val, digits, next) = parse_fraction(bytes, pos)?;
-                    nanos = fraction_to_nanos(val, digits);
-                    pos = next;
-                }
+            TimestampFormatKind::YmdHmsSpaceOffset => {
+                return parse_ymd_hms_offset_nocolon_fast(value.as_bytes());
+            }
+            TimestampFormatKind::YmdHmsSpaceOffsetColon => {
+                return parse_ymd_hms_offset_colon_fast(value.as_bytes());
+            }
+            TimestampFormatKind::YmdHmsSpaceOffsetSpaced => {
+                return parse_ymd_hms_offset_nocolon_spaced_fast(value.as_bytes());
+            }
+            TimestampFormatKind::YmdHmsSpaceOffsetColonSpaced => {
+                return parse_ymd_hms_offset_colon_spaced_fast(value.as_bytes());
+            }
+            TimestampFormatKind::YmdHmsTOffset => {
+                return parse_ymd_hms_offset_nocolon_fast(value.as_bytes());
+            }
+            TimestampFormatKind::YmdHmsTOffsetColon => {
+                return parse_ymd_hms_offset_colon_fast(value.as_bytes());
             }
         }
-        if pos != bytes.len() {
-            return None;
-        }
-        timestamp_from_parts(year, month, day, hour, minute, second, nanos)
     }
 
     fn parse_date(&self, value: &str) -> Option<i32> {
@@ -2338,28 +2244,15 @@ impl TimestampFormatParser {
     }
 }
 
-fn parse_fixed_u32(bytes: &[u8], pos: usize, len: usize) -> Option<(u32, usize)> {
-    if pos + len > bytes.len() {
-        return None;
-    }
-    let mut val: u32 = 0;
-    for idx in pos..pos + len {
-        let b = bytes[idx];
-        if !b.is_ascii_digit() {
-            return None;
-        }
-        val = val.saturating_mul(10).saturating_add((b - b'0') as u32);
-    }
-    Some((val, pos + len))
-}
-
 fn parse_fraction(bytes: &[u8], pos: usize) -> Option<(u32, usize, usize)> {
     let mut idx = pos;
     let mut val: u32 = 0;
     let mut digits = 0usize;
     while idx < bytes.len() && bytes[idx].is_ascii_digit() {
         if digits < 9 {
-            val = val.saturating_mul(10).saturating_add((bytes[idx] - b'0') as u32);
+            val = val
+                .saturating_mul(10)
+                .saturating_add((bytes[idx] - b'0') as u32);
         }
         digits += 1;
         idx += 1;
@@ -2392,227 +2285,260 @@ fn fraction_to_nanos(value: u32, digits: usize) -> u32 {
     }
 }
 
-fn timestamp_from_parts(
+// "%Y-%m-%d"
+fn parse_ymd_fast(bytes: &[u8]) -> Option<(i64, u32)> {
+    if bytes.len() != 10 {
+        return None;
+    }
+    let a = unsafe { std::ptr::read_unaligned(bytes.as_ptr() as *const u64) };
+    let mut tail = [0u8; 8];
+    tail[..2].copy_from_slice(&bytes[8..10]);
+    let b = u64::from_le_bytes(tail);
+
+    const ZERO: u64 = 0x3030_3030_3030_3030;
+    const MASK_A: u64 = u64::from_le_bytes([0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0xFF, 0xFF, 0x00]);
+    const MASK_B: u64 = u64::from_le_bytes([0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+
+    let x_a = (a & MASK_A) | (!MASK_A & ZERO);
+    let x_b = (b & MASK_B) | (!MASK_B & ZERO);
+    if !all_digits(x_a) || !all_digits(x_b) {
+        return None;
+    }
+
+    let da = x_a.wrapping_sub(ZERO);
+    let db = x_b.wrapping_sub(ZERO);
+    let year =
+        byte_u32(da, 0) * 1000 + byte_u32(da, 8) * 100 + byte_u32(da, 16) * 10 + byte_u32(da, 24);
+    let month = byte_u32(da, 40) * 10 + byte_u32(da, 48);
+    let day = byte_u32(db, 0) * 10 + byte_u32(db, 8);
+
+    let secs = timestamp_from_parts_fast(year as i32, month, day, 0, 0, 0);
+    Some((secs, 0))
+}
+
+// "%Y-%m-%d %H:%M"
+fn parse_ymd_hm_space_fast(bytes: &[u8]) -> Option<(i64, u32)> {
+    if bytes.len() != 16 {
+        return None;
+    }
+    let a = unsafe { std::ptr::read_unaligned(bytes.as_ptr() as *const u64) };
+    let b = unsafe { std::ptr::read_unaligned(bytes.as_ptr().add(8) as *const u64) };
+
+    const ZERO: u64 = 0x3030_3030_3030_3030;
+    const MASK_A: u64 = u64::from_le_bytes([0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0xFF, 0xFF, 0x00]);
+    const MASK_B: u64 = u64::from_le_bytes([0xFF, 0xFF, 0x00, 0xFF, 0xFF, 0x00, 0xFF, 0xFF]);
+
+    let x_a = (a & MASK_A) | (!MASK_A & ZERO);
+    let x_b = (b & MASK_B) | (!MASK_B & ZERO);
+    if !all_digits(x_a) || !all_digits(x_b) {
+        return None;
+    }
+
+    let da = x_a.wrapping_sub(ZERO);
+    let db = x_b.wrapping_sub(ZERO);
+    let year =
+        byte_u32(da, 0) * 1000 + byte_u32(da, 8) * 100 + byte_u32(da, 16) * 10 + byte_u32(da, 24);
+    let month = byte_u32(da, 40) * 10 + byte_u32(da, 48);
+    let day = byte_u32(db, 0) * 10 + byte_u32(db, 8);
+    let hour = byte_u32(db, 24) * 10 + byte_u32(db, 32);
+    let minute = byte_u32(db, 48) * 10 + byte_u32(db, 56);
+
+    let secs = timestamp_from_parts_fast(year as i32, month, day, hour, minute, 0);
+    Some((secs, 0))
+}
+
+#[inline]
+fn parse_ymd_hms_digits(bytes: &[u8]) -> Option<(u32, u32, u32, u32, u32, u32)> {
+    if bytes.len() < 19 {
+        return None;
+    }
+    let a = unsafe { std::ptr::read_unaligned(bytes.as_ptr() as *const u64) };
+    let b = unsafe { std::ptr::read_unaligned(bytes.as_ptr().add(8) as *const u64) };
+    let mut tail = [0u8; 8];
+    tail[..3].copy_from_slice(&bytes[16..19]);
+    let c = u64::from_le_bytes(tail);
+
+    const ZERO: u64 = 0x3030_3030_3030_3030;
+    const MASK_A: u64 = u64::from_le_bytes([0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0xFF, 0xFF, 0x00]);
+    const MASK_B: u64 = u64::from_le_bytes([0xFF, 0xFF, 0x00, 0xFF, 0xFF, 0x00, 0xFF, 0xFF]);
+    const MASK_C: u64 = u64::from_le_bytes([0x00, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00]);
+
+    let x_a = (a & MASK_A) | (!MASK_A & ZERO);
+    let x_b = (b & MASK_B) | (!MASK_B & ZERO);
+    let x_c = (c & MASK_C) | (!MASK_C & ZERO);
+    if !all_digits(x_a) || !all_digits(x_b) || !all_digits(x_c) {
+        return None;
+    }
+
+    let da = x_a.wrapping_sub(ZERO);
+    let db = x_b.wrapping_sub(ZERO);
+    let dc = x_c.wrapping_sub(ZERO);
+
+    let year =
+        byte_u32(da, 0) * 1000 + byte_u32(da, 8) * 100 + byte_u32(da, 16) * 10 + byte_u32(da, 24);
+    let month = byte_u32(da, 40) * 10 + byte_u32(da, 48);
+    let day = byte_u32(db, 0) * 10 + byte_u32(db, 8);
+    let hour = byte_u32(db, 24) * 10 + byte_u32(db, 32);
+    let minute = byte_u32(db, 48) * 10 + byte_u32(db, 56);
+    let second = byte_u32(dc, 8) * 10 + byte_u32(dc, 16);
+
+    Some((year, month, day, hour, minute, second))
+}
+
+// "%Y-%m-%d %H:%M:%S" / "%Y-%m-%dT%H:%M:%S"
+fn parse_ymd_hms_space_fast(bytes: &[u8]) -> Option<(i64, u32)> {
+    if bytes.len() != 19 {
+        return None;
+    }
+    let (year, month, day, hour, minute, second) = parse_ymd_hms_digits(bytes)?;
+    let secs = timestamp_from_parts_fast(year as i32, month, day, hour, minute, second);
+    Some((secs, 0))
+}
+
+// "%Y-%m-%d %H:%M:%S%.f" / "%Y-%m-%dT%H:%M:%S%.f"
+fn parse_ymd_hms_space_frac_fast(bytes: &[u8]) -> Option<(i64, u32)> {
+    if bytes.len() < 21 {
+        return None;
+    }
+    let (year, month, day, hour, minute, second) = parse_ymd_hms_digits(bytes)?;
+    let (fraction, digits, next) = parse_fraction(bytes, 20)?;
+    if next != bytes.len() {
+        return None;
+    }
+    let nanos = fraction_to_nanos(fraction, digits);
+    let secs = timestamp_from_parts_fast(year as i32, month, day, hour, minute, second);
+    Some((secs, nanos))
+}
+
+#[inline]
+fn parse_offset_hhmm(bytes: &[u8], pos: usize) -> Option<i64> {
+    let sign = match *bytes.get(pos)? {
+        b'+' => 1,
+        b'-' => -1,
+        _ => return None,
+    };
+    let mut tail = [0u8; 8];
+    tail[..4].copy_from_slice(bytes.get(pos + 1..pos + 5)?);
+    let word = u64::from_le_bytes(tail);
+    const ZERO: u64 = 0x3030_3030_3030_3030;
+    const MASK: u64 = u64::from_le_bytes([0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00]);
+    let x = (word & MASK) | (!MASK & ZERO);
+    if !all_digits(x) {
+        return None;
+    }
+    let d = x.wrapping_sub(ZERO);
+    let hour = byte_u32(d, 0) * 10 + byte_u32(d, 8);
+    let minute = byte_u32(d, 16) * 10 + byte_u32(d, 24);
+    Some(sign * (hour as i64 * 3_600 + minute as i64 * 60))
+}
+
+#[inline]
+fn parse_offset_hhmm_colon(bytes: &[u8], pos: usize) -> Option<i64> {
+    let sign = match *bytes.get(pos)? {
+        b'+' => 1,
+        b'-' => -1,
+        _ => return None,
+    };
+    let mut tail = [0u8; 8];
+    tail[..5].copy_from_slice(bytes.get(pos + 1..pos + 6)?);
+    let word = u64::from_le_bytes(tail);
+    const ZERO: u64 = 0x3030_3030_3030_3030;
+    const MASK: u64 = u64::from_le_bytes([0xFF, 0xFF, 0x00, 0xFF, 0xFF, 0x00, 0x00, 0x00]);
+    let x = (word & MASK) | (!MASK & ZERO);
+    if !all_digits(x) {
+        return None;
+    }
+    let d = x.wrapping_sub(ZERO);
+    let hour = byte_u32(d, 0) * 10 + byte_u32(d, 8);
+    let minute = byte_u32(d, 24) * 10 + byte_u32(d, 32);
+    Some(sign * (hour as i64 * 3_600 + minute as i64 * 60))
+}
+
+// "%Y-%m-%d %H:%M:%S%z" / "%Y-%m-%dT%H:%M:%S%z"
+fn parse_ymd_hms_offset_nocolon_fast(bytes: &[u8]) -> Option<(i64, u32)> {
+    if bytes.len() != 24 {
+        return None;
+    }
+    let (year, month, day, hour, minute, second) = parse_ymd_hms_digits(bytes)?;
+    let offset_secs = parse_offset_hhmm(bytes, 19)?;
+    let secs = timestamp_from_parts_fast(year as i32, month, day, hour, minute, second)
+        .saturating_sub(offset_secs);
+    Some((secs, 0))
+}
+
+// "%Y-%m-%d %H:%M:%S%:z" / "%Y-%m-%dT%H:%M:%S%:z"
+fn parse_ymd_hms_offset_colon_fast(bytes: &[u8]) -> Option<(i64, u32)> {
+    if bytes.len() != 25 {
+        return None;
+    }
+    let (year, month, day, hour, minute, second) = parse_ymd_hms_digits(bytes)?;
+    let offset_secs = parse_offset_hhmm_colon(bytes, 19)?;
+    let secs = timestamp_from_parts_fast(year as i32, month, day, hour, minute, second)
+        .saturating_sub(offset_secs);
+    Some((secs, 0))
+}
+
+// "%Y-%m-%d %H:%M:%S %z"
+fn parse_ymd_hms_offset_nocolon_spaced_fast(bytes: &[u8]) -> Option<(i64, u32)> {
+    if bytes.len() != 25 {
+        return None;
+    }
+    let (year, month, day, hour, minute, second) = parse_ymd_hms_digits(bytes)?;
+    let offset_secs = parse_offset_hhmm(bytes, 20)?;
+    let secs = timestamp_from_parts_fast(year as i32, month, day, hour, minute, second)
+        .saturating_sub(offset_secs);
+    Some((secs, 0))
+}
+
+// "%Y-%m-%d %H:%M:%S %:z"
+fn parse_ymd_hms_offset_colon_spaced_fast(bytes: &[u8]) -> Option<(i64, u32)> {
+    if bytes.len() != 26 {
+        return None;
+    }
+    let (year, month, day, hour, minute, second) = parse_ymd_hms_digits(bytes)?;
+    let offset_secs = parse_offset_hhmm_colon(bytes, 20)?;
+    let secs = timestamp_from_parts_fast(year as i32, month, day, hour, minute, second)
+        .saturating_sub(offset_secs);
+    Some((secs, 0))
+}
+
+#[inline]
+fn byte_u32(value: u64, shift: u32) -> u32 {
+    ((value >> shift) & 0xFF) as u32
+}
+
+#[inline]
+fn all_digits(value: u64) -> bool {
+    const ZERO: u64 = 0x3030_3030_3030_3030;
+    const HIGH: u64 = 0x8080_8080_8080_8080;
+    let add = value.wrapping_add(0x4646_4646_4646_4646);
+    let sub = value.wrapping_sub(ZERO);
+    ((add | sub) & HIGH) == 0
+}
+
+fn timestamp_from_parts_fast(
     year: i32,
     month: u32,
     day: u32,
     hour: u32,
     minute: u32,
     second: u32,
-    nanos: u32,
-) -> Option<(i64, u32)> {
-    if hour >= 24 || minute >= 60 || second >= 60 || nanos >= 1_000_000_000 {
-        return None;
-    }
-    let days = days_from_civil(year, month, day)?;
-    let secs = days
-        .saturating_mul(86_400)
-        .saturating_add(hour as i64 * 3_600)
-        .saturating_add(minute as i64 * 60)
-        .saturating_add(second as i64);
-    Some((secs, nanos))
+) -> i64 {
+    let days = days_from_civil_fast(year, month, day);
+    days * 86_400 + hour as i64 * 3_600 + minute as i64 * 60 + second as i64
 }
 
-fn days_from_civil(year: i32, month: u32, day: u32) -> Option<i64> {
-    let dim = days_in_month(year, month)?;
-    if day == 0 || day > dim {
-        return None;
-    }
+fn days_from_civil_fast(year: i32, month: u32, day: u32) -> i64 {
     let mut y = year as i64;
     let m = month as i64;
     let d = day as i64;
-    y -= if m <= 2 { 1 } else { 0 };
+    y -= (m <= 2) as i64;
     let era = if y >= 0 { y } else { y - 399 } / 400;
     let yoe = y - era * 400;
-    let mp = m + if m > 2 { -3 } else { 9 };
+    let mp = m + 9 - (m > 2) as i64 * 12;
     let doy = (153 * mp + 2) / 5 + d - 1;
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    Some(era * 146097 + doe - 719468)
-}
-
-fn days_in_month(year: i32, month: u32) -> Option<u32> {
-    match month {
-        1 | 3 | 5 | 7 | 8 | 10 | 12 => Some(31),
-        4 | 6 | 9 | 11 => Some(30),
-        2 => Some(if is_leap_year(year) { 29 } else { 28 }),
-        _ => None,
-    }
-}
-
-fn is_leap_year(year: i32) -> bool {
-    (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
-}
-
-fn parse_rfc3339_timestamp(bytes: &[u8]) -> Option<(i64, u32)> {
-    if bytes.len() < 20 {
-        return None;
-    }
-    let (year, mut pos) = parse_fixed_u32(bytes, 0, 4)?;
-    if bytes.get(pos)? != &b'-' {
-        return None;
-    }
-    pos += 1;
-    let (month, next) = parse_fixed_u32(bytes, pos, 2)?;
-    pos = next;
-    if bytes.get(pos)? != &b'-' {
-        return None;
-    }
-    pos += 1;
-    let (day, next) = parse_fixed_u32(bytes, pos, 2)?;
-    pos = next;
-    let sep = *bytes.get(pos)?;
-    if sep != b'T' && sep != b't' {
-        return None;
-    }
-    pos += 1;
-    let (hour, next) = parse_fixed_u32(bytes, pos, 2)?;
-    pos = next;
-    if bytes.get(pos)? != &b':' {
-        return None;
-    }
-    pos += 1;
-    let (minute, next) = parse_fixed_u32(bytes, pos, 2)?;
-    pos = next;
-    if bytes.get(pos)? != &b':' {
-        return None;
-    }
-    pos += 1;
-    let (second, next) = parse_fixed_u32(bytes, pos, 2)?;
-    pos = next;
-    let mut nanos = 0u32;
-    if bytes.get(pos) == Some(&b'.') {
-        let (fraction, digits, next) = parse_fraction(bytes, pos + 1)?;
-        nanos = fraction_to_nanos(fraction, digits);
-        pos = next;
-    }
-    let mut offset_secs = 0i64;
-    match bytes.get(pos)? {
-        b'Z' | b'z' => {
-            pos += 1;
-        }
-        b'+' | b'-' => {
-            let sign = if bytes[pos] == b'+' { 1i64 } else { -1i64 };
-            pos += 1;
-            let (off_hour, next) = parse_fixed_u32(bytes, pos, 2)?;
-            pos = next;
-            if bytes.get(pos) == Some(&b':') {
-                pos += 1;
-            }
-            let (off_min, next) = parse_fixed_u32(bytes, pos, 2)?;
-            pos = next;
-            offset_secs = sign * (off_hour as i64 * 3_600 + off_min as i64 * 60);
-        }
-        _ => return None,
-    }
-    if pos != bytes.len() {
-        return None;
-    }
-    let (secs, nanos) = timestamp_from_parts(
-        year as i32,
-        month,
-        day,
-        hour,
-        minute,
-        second,
-        nanos,
-    )?;
-    Some((secs.saturating_sub(offset_secs), nanos))
-}
-
-fn parse_ymd(bytes: &[u8]) -> Option<(i64, u32)> {
-    let (year, mut pos) = parse_fixed_u32(bytes, 0, 4)?;
-    if bytes.get(pos)? != &b'-' {
-        return None;
-    }
-    pos += 1;
-    let (month, next) = parse_fixed_u32(bytes, pos, 2)?;
-    pos = next;
-    if bytes.get(pos)? != &b'-' {
-        return None;
-    }
-    pos += 1;
-    let (day, next) = parse_fixed_u32(bytes, pos, 2)?;
-    pos = next;
-    if pos != bytes.len() {
-        return None;
-    }
-    timestamp_from_parts(year as i32, month, day, 0, 0, 0, 0)
-}
-
-fn parse_ymd_hm(bytes: &[u8], sep: u8) -> Option<(i64, u32)> {
-    let (year, mut pos) = parse_fixed_u32(bytes, 0, 4)?;
-    if bytes.get(pos)? != &b'-' {
-        return None;
-    }
-    pos += 1;
-    let (month, next) = parse_fixed_u32(bytes, pos, 2)?;
-    pos = next;
-    if bytes.get(pos)? != &b'-' {
-        return None;
-    }
-    pos += 1;
-    let (day, next) = parse_fixed_u32(bytes, pos, 2)?;
-    pos = next;
-    if bytes.get(pos)? != &sep {
-        return None;
-    }
-    pos += 1;
-    let (hour, next) = parse_fixed_u32(bytes, pos, 2)?;
-    pos = next;
-    if bytes.get(pos)? != &b':' {
-        return None;
-    }
-    pos += 1;
-    let (minute, next) = parse_fixed_u32(bytes, pos, 2)?;
-    pos = next;
-    if pos != bytes.len() {
-        return None;
-    }
-    timestamp_from_parts(year as i32, month, day, hour, minute, 0, 0)
-}
-
-fn parse_ymd_hms(bytes: &[u8], sep: u8, allow_fraction: bool) -> Option<(i64, u32)> {
-    let (year, mut pos) = parse_fixed_u32(bytes, 0, 4)?;
-    if bytes.get(pos)? != &b'-' {
-        return None;
-    }
-    pos += 1;
-    let (month, next) = parse_fixed_u32(bytes, pos, 2)?;
-    pos = next;
-    if bytes.get(pos)? != &b'-' {
-        return None;
-    }
-    pos += 1;
-    let (day, next) = parse_fixed_u32(bytes, pos, 2)?;
-    pos = next;
-    if bytes.get(pos)? != &sep {
-        return None;
-    }
-    pos += 1;
-    let (hour, next) = parse_fixed_u32(bytes, pos, 2)?;
-    pos = next;
-    if bytes.get(pos)? != &b':' {
-        return None;
-    }
-    pos += 1;
-    let (minute, next) = parse_fixed_u32(bytes, pos, 2)?;
-    pos = next;
-    if bytes.get(pos)? != &b':' {
-        return None;
-    }
-    pos += 1;
-    let (second, next) = parse_fixed_u32(bytes, pos, 2)?;
-    pos = next;
-    let mut nanos = 0u32;
-    if allow_fraction && bytes.get(pos) == Some(&b'.') {
-        let (fraction, digits, next) = parse_fraction(bytes, pos + 1)?;
-        nanos = fraction_to_nanos(fraction, digits);
-        pos = next;
-    }
-    if pos != bytes.len() {
-        return None;
-    }
-    timestamp_from_parts(year as i32, month, day, hour, minute, second, nanos)
+    era * 146097 + doe - 719468
 }
 
 fn timestamp_from_int(value: i64, unit: Option<arrow_schema::TimeUnit>) -> (i64, u32) {
@@ -2853,7 +2779,9 @@ impl<'a> RowAccessStats<'a> {
 
 impl<'a> Default for RowAccessStats<'a> {
     fn default() -> Self {
-        Self { trimmed_strings: None }
+        Self {
+            trimmed_strings: None,
+        }
     }
 }
 
@@ -2889,15 +2817,28 @@ pub struct ColumnContext {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ColumnEncoding {
-    Int { signed: bool, varint: bool, bits: u8 },
-    Float { storage: FloatStorage },
+    Int {
+        signed: bool,
+        varint: bool,
+        bits: u8,
+    },
+    Float {
+        storage: FloatStorage,
+    },
     Bool,
-    String { encoding: StringEncoding },
-    Bytes { fixed_len: Option<usize> },
+    String {
+        encoding: StringEncoding,
+    },
+    Bytes {
+        fixed_len: Option<usize>,
+    },
     Uuid,
     Uuid256,
     Ip,
-    Date { varint: bool, bits: u8 },
+    Date {
+        varint: bool,
+        bits: u8,
+    },
     Timestamp,
     Decimal {
         precision: u32,
@@ -2905,7 +2846,9 @@ pub enum ColumnEncoding {
         bytes: u8,
         storage: DecimalStorage,
     },
-    FloatArray { storage: FloatStorage },
+    FloatArray {
+        storage: FloatStorage,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -3284,17 +3227,11 @@ impl RowPackContextBuilder {
             fixed_lens.push(col.fixed_len);
             let spec = match col.logical_type {
                 IngestedType::Decimal128 => match (col.precision, col.scale) {
-                    (Some(precision), Some(scale)) => Some(DecimalSpec {
-                        precision,
-                        scale,
-                    }),
+                    (Some(precision), Some(scale)) => Some(DecimalSpec { precision, scale }),
                     _ => None,
                 },
                 IngestedType::Decimal256 => match (col.precision, col.scale) {
-                    (Some(precision), Some(scale)) => Some(DecimalSpec {
-                        precision,
-                        scale,
-                    }),
+                    (Some(precision), Some(scale)) => Some(DecimalSpec { precision, scale }),
                     _ => None,
                 },
                 _ => None,
@@ -3763,8 +3700,8 @@ impl ColumnStats {
                     self.string_long_raw += raw_total;
                     let max = lz4_flex::block::get_maximum_output_size(raw_len);
                     let mut buf = vec![0u8; max];
-                    let written = lz4_flex::block::compress_into(bytes, &mut buf)
-                        .unwrap_or(raw_len);
+                    let written =
+                        lz4_flex::block::compress_into(bytes, &mut buf).unwrap_or(raw_len);
                     let compressed_total = varint_bytes_u64(raw_len as u64)
                         + varint_bytes_u64(written as u64)
                         + written;
@@ -3917,9 +3854,8 @@ impl ColumnStats {
             let max = lz4_flex::block::get_maximum_output_size(raw_len);
             let mut buf = vec![0u8; max];
             let written = lz4_flex::block::compress_into(bytes, &mut buf).unwrap_or(raw_len);
-            let compressed_total = varint_bytes_u64(raw_len as u64)
-                + varint_bytes_u64(written as u64)
-                + written;
+            let compressed_total =
+                varint_bytes_u64(raw_len as u64) + varint_bytes_u64(written as u64) + written;
             self.string_long_compressed += compressed_total;
         }
     }
@@ -4086,8 +4022,7 @@ fn choose_string_encoding(stats: &ColumnStats, config: &RowPackConfig) -> Result
     } else {
         stats.string_bytes / stats.string_total
     };
-    let bpe_allowed =
-        avg_len >= config.bpe_min_avg_len() && avg_len < config.string_long_min_len();
+    let bpe_allowed = avg_len >= config.bpe_min_avg_len() && avg_len < config.string_long_min_len();
     if stats.alphabet_ok && stats.alphabet_len > 1 {
         let coverage_ratio = stats.alphabet_hits as f32 / total;
         if coverage_ratio >= ALPHABET_MIN_COVERAGE {
@@ -4154,9 +4089,7 @@ fn choose_string_encoding(stats: &ColumnStats, config: &RowPackConfig) -> Result
         }
         let coverage_ratio = coverage as f32 / total;
         let avg_hits = coverage as f32 / values.len().max(1) as f32;
-        if coverage_ratio >= config.string_dict_coverage()
-            && avg_hits >= 2.0
-            && !values.is_empty()
+        if coverage_ratio >= config.string_dict_coverage() && avg_hits >= 2.0 && !values.is_empty()
         {
             return Ok(StringEncoding::Dict { values });
         }
@@ -4182,8 +4115,7 @@ fn train_bpe_dict(samples: &[Vec<u8>], max_entries: usize, max_bytes: usize) -> 
     let mut dict_entries = Vec::new();
     let mut dict_bytes = 0usize;
     for _ in 0..max_entries {
-        let mut pair_counts: FastHashMap<(u16, u16), usize> =
-            FastHashMap::new();
+        let mut pair_counts: FastHashMap<(u16, u16), usize> = FastHashMap::new();
         for seq in &sequences {
             if seq.len() < 2 {
                 continue;
@@ -4311,7 +4243,9 @@ impl RowPackScratch {
             .count();
         let bool_bytes = (bool_columns + 7) / 8;
         if self.bools.buf.capacity() < bool_bytes {
-            self.bools.buf.reserve(bool_bytes - self.bools.buf.capacity());
+            self.bools
+                .buf
+                .reserve(bool_bytes - self.bools.buf.capacity());
         }
         if self.data.capacity() < ctx.estimated_row_bytes as usize {
             self.data
@@ -4335,8 +4269,7 @@ impl RowPackEncoder {
                 ColumnEncoding::String {
                     encoding: StringEncoding::Dict { values },
                 } => {
-                    let mut map =
-                        FastHashMap::with_capacity(values.len());
+                    let mut map = FastHashMap::with_capacity(values.len());
                     for (idx, value) in values.iter().enumerate() {
                         map.insert(value.clone(), idx as u32);
                     }
@@ -4362,11 +4295,7 @@ impl RowPackEncoder {
                         6 => AlphabetPacker::Bits6,
                         _ => AlphabetPacker::Generic { bits },
                     };
-                    alphabet_maps.push(Some(AlphabetMap {
-                        map,
-                        bits,
-                        packer,
-                    }));
+                    alphabet_maps.push(Some(AlphabetMap { map, bits, packer }));
                 }
                 _ => alphabet_maps.push(None),
             }
@@ -4414,18 +4343,16 @@ impl RowPackEncoder {
                     1u8
                 }
                 _ => match (&col.encoding, value) {
-                    (ColumnEncoding::String { .. }, ValueRef::String(v)) => {
-                        encode_string(
-                            &mut scratch.data,
-                            v,
-                            col,
-                            self.dict_maps[idx].as_ref(),
-                            self.alphabet_maps[idx].as_ref(),
-                            self.bpe_tries[idx].as_ref(),
-                            Some(&mut scratch.bpe_tokens),
-                            Some(&mut scratch.lz4_buf),
-                        )?
-                    }
+                    (ColumnEncoding::String { .. }, ValueRef::String(v)) => encode_string(
+                        &mut scratch.data,
+                        v,
+                        col,
+                        self.dict_maps[idx].as_ref(),
+                        self.alphabet_maps[idx].as_ref(),
+                        self.bpe_tries[idx].as_ref(),
+                        Some(&mut scratch.bpe_tokens),
+                        Some(&mut scratch.lz4_buf),
+                    )?,
                     _ => encode_value_with_tag(
                         &mut scratch.data,
                         col,
@@ -4441,9 +4368,7 @@ impl RowPackEncoder {
             scratch.tags.write_bits(tag, 2);
         }
         out.clear();
-        out.reserve(
-            scratch.tags.buf.len() + scratch.bools.buf.len() + scratch.data.len() + 8,
-        );
+        out.reserve(scratch.tags.buf.len() + scratch.bools.buf.len() + scratch.data.len() + 8);
         scratch.tags.append_to(out);
         scratch.bools.append_to(out);
         out.extend_from_slice(&scratch.data);
@@ -4469,7 +4394,12 @@ impl RowPackEncoder {
                 IngestedType::Int64 => match access.get_int64(idx).ok().flatten() {
                     None => 0u8,
                     Some(v) => {
-                        if let ColumnEncoding::Int { signed, varint, bits } = &col.encoding {
+                        if let ColumnEncoding::Int {
+                            signed,
+                            varint,
+                            bits,
+                        } = &col.encoding
+                        {
                             encode_int(&mut scratch.data, *signed, *varint, *bits, v as i128)?;
                             1u8
                         } else {
@@ -4480,7 +4410,12 @@ impl RowPackEncoder {
                 IngestedType::Int16 => match access.get_int32(idx).ok().flatten() {
                     None => 0u8,
                     Some(v) => {
-                        if let ColumnEncoding::Int { signed, varint, bits } = &col.encoding {
+                        if let ColumnEncoding::Int {
+                            signed,
+                            varint,
+                            bits,
+                        } = &col.encoding
+                        {
                             encode_int(&mut scratch.data, *signed, *varint, *bits, v as i128)?;
                             1u8
                         } else {
@@ -4491,7 +4426,12 @@ impl RowPackEncoder {
                 IngestedType::Int8 => match access.get_int32(idx).ok().flatten() {
                     None => 0u8,
                     Some(v) => {
-                        if let ColumnEncoding::Int { signed, varint, bits } = &col.encoding {
+                        if let ColumnEncoding::Int {
+                            signed,
+                            varint,
+                            bits,
+                        } = &col.encoding
+                        {
                             encode_int(&mut scratch.data, *signed, *varint, *bits, v as i128)?;
                             1u8
                         } else {
@@ -4502,7 +4442,12 @@ impl RowPackEncoder {
                 IngestedType::Int32 => match access.get_int32(idx).ok().flatten() {
                     None => 0u8,
                     Some(v) => {
-                        if let ColumnEncoding::Int { signed, varint, bits } = &col.encoding {
+                        if let ColumnEncoding::Int {
+                            signed,
+                            varint,
+                            bits,
+                        } = &col.encoding
+                        {
                             encode_int(&mut scratch.data, *signed, *varint, *bits, v as i128)?;
                             1u8
                         } else {
@@ -4513,7 +4458,12 @@ impl RowPackEncoder {
                 IngestedType::UInt64 => match access.get_uint64(idx).ok().flatten() {
                     None => 0u8,
                     Some(v) => {
-                        if let ColumnEncoding::Int { signed, varint, bits } = &col.encoding {
+                        if let ColumnEncoding::Int {
+                            signed,
+                            varint,
+                            bits,
+                        } = &col.encoding
+                        {
                             encode_uint(&mut scratch.data, *signed, *varint, *bits, v)?;
                             1u8
                         } else {
@@ -4524,7 +4474,12 @@ impl RowPackEncoder {
                 IngestedType::UInt16 => match access.get_uint32(idx).ok().flatten() {
                     None => 0u8,
                     Some(v) => {
-                        if let ColumnEncoding::Int { signed, varint, bits } = &col.encoding {
+                        if let ColumnEncoding::Int {
+                            signed,
+                            varint,
+                            bits,
+                        } = &col.encoding
+                        {
                             encode_uint(&mut scratch.data, *signed, *varint, *bits, v as u64)?;
                             1u8
                         } else {
@@ -4535,7 +4490,12 @@ impl RowPackEncoder {
                 IngestedType::UInt8 => match access.get_uint32(idx).ok().flatten() {
                     None => 0u8,
                     Some(v) => {
-                        if let ColumnEncoding::Int { signed, varint, bits } = &col.encoding {
+                        if let ColumnEncoding::Int {
+                            signed,
+                            varint,
+                            bits,
+                        } = &col.encoding
+                        {
                             encode_uint(&mut scratch.data, *signed, *varint, *bits, v as u64)?;
                             1u8
                         } else {
@@ -4546,7 +4506,12 @@ impl RowPackEncoder {
                 IngestedType::UInt32 => match access.get_uint32(idx).ok().flatten() {
                     None => 0u8,
                     Some(v) => {
-                        if let ColumnEncoding::Int { signed, varint, bits } = &col.encoding {
+                        if let ColumnEncoding::Int {
+                            signed,
+                            varint,
+                            bits,
+                        } = &col.encoding
+                        {
                             encode_uint(&mut scratch.data, *signed, *varint, *bits, v as u64)?;
                             1u8
                         } else {
@@ -4581,18 +4546,16 @@ impl RowPackEncoder {
                 },
                 IngestedType::String => match access.get_string(idx).ok().flatten() {
                     None => 0u8,
-                    Some(v) => {
-                        encode_string(
-                            &mut scratch.data,
-                            v,
-                            col,
-                            self.dict_maps[idx].as_ref(),
-                            self.alphabet_maps[idx].as_ref(),
-                            self.bpe_tries[idx].as_ref(),
-                            Some(&mut scratch.bpe_tokens),
-                            Some(&mut scratch.lz4_buf),
-                        )?
-                    }
+                    Some(v) => encode_string(
+                        &mut scratch.data,
+                        v,
+                        col,
+                        self.dict_maps[idx].as_ref(),
+                        self.alphabet_maps[idx].as_ref(),
+                        self.bpe_tries[idx].as_ref(),
+                        Some(&mut scratch.bpe_tokens),
+                        Some(&mut scratch.lz4_buf),
+                    )?,
                 },
                 IngestedType::Bytes => match access.get_bytes(idx).ok().flatten() {
                     None => 0u8,
@@ -4669,8 +4632,12 @@ impl RowPackEncoder {
                 IngestedType::Decimal128 => match access.get_decimal128(idx).ok().flatten() {
                     None => 0u8,
                     Some(v) => {
-                        if let ColumnEncoding::Decimal { bytes, scale, storage, .. } =
-                            &col.encoding
+                        if let ColumnEncoding::Decimal {
+                            bytes,
+                            scale,
+                            storage,
+                            ..
+                        } = &col.encoding
                         {
                             if *bytes == 0 || *bytes > 16 {
                                 return Err(anyhow!("rowpack decimal size mismatch"));
@@ -4690,8 +4657,12 @@ impl RowPackEncoder {
                 IngestedType::Decimal256 => match access.get_decimal256(idx).ok().flatten() {
                     None => 0u8,
                     Some(v) => {
-                        if let ColumnEncoding::Decimal { bytes, scale, storage, .. } =
-                            &col.encoding
+                        if let ColumnEncoding::Decimal {
+                            bytes,
+                            scale,
+                            storage,
+                            ..
+                        } = &col.encoding
                         {
                             if *bytes == 0 || *bytes > 32 {
                                 return Err(anyhow!("rowpack decimal size mismatch"));
@@ -4757,9 +4728,7 @@ impl RowPackEncoder {
             scratch.tags.write_bits(tag, 2);
         }
         out.clear();
-        out.reserve(
-            scratch.tags.buf.len() + scratch.bools.buf.len() + scratch.data.len() + 8,
-        );
+        out.reserve(scratch.tags.buf.len() + scratch.bools.buf.len() + scratch.data.len() + 8);
         scratch.tags.append_to(out);
         scratch.bools.append_to(out);
         out.extend_from_slice(&scratch.data);
@@ -4793,7 +4762,12 @@ impl RowPackEncoder {
                 IngestedType::Int64 => match access.get_int64(idx).ok().flatten() {
                     None => 0u8,
                     Some(v) => {
-                        if let ColumnEncoding::Int { signed, varint, bits } = &col.encoding {
+                        if let ColumnEncoding::Int {
+                            signed,
+                            varint,
+                            bits,
+                        } = &col.encoding
+                        {
                             encode_int(data, *signed, *varint, *bits, v as i128)?;
                             1u8
                         } else {
@@ -4804,7 +4778,12 @@ impl RowPackEncoder {
                 IngestedType::Int16 => match access.get_int32(idx).ok().flatten() {
                     None => 0u8,
                     Some(v) => {
-                        if let ColumnEncoding::Int { signed, varint, bits } = &col.encoding {
+                        if let ColumnEncoding::Int {
+                            signed,
+                            varint,
+                            bits,
+                        } = &col.encoding
+                        {
                             encode_int(data, *signed, *varint, *bits, v as i128)?;
                             1u8
                         } else {
@@ -4815,7 +4794,12 @@ impl RowPackEncoder {
                 IngestedType::Int8 => match access.get_int32(idx).ok().flatten() {
                     None => 0u8,
                     Some(v) => {
-                        if let ColumnEncoding::Int { signed, varint, bits } = &col.encoding {
+                        if let ColumnEncoding::Int {
+                            signed,
+                            varint,
+                            bits,
+                        } = &col.encoding
+                        {
                             encode_int(data, *signed, *varint, *bits, v as i128)?;
                             1u8
                         } else {
@@ -4826,7 +4810,12 @@ impl RowPackEncoder {
                 IngestedType::Int32 => match access.get_int32(idx).ok().flatten() {
                     None => 0u8,
                     Some(v) => {
-                        if let ColumnEncoding::Int { signed, varint, bits } = &col.encoding {
+                        if let ColumnEncoding::Int {
+                            signed,
+                            varint,
+                            bits,
+                        } = &col.encoding
+                        {
                             encode_int(data, *signed, *varint, *bits, v as i128)?;
                             1u8
                         } else {
@@ -4837,7 +4826,12 @@ impl RowPackEncoder {
                 IngestedType::UInt64 => match access.get_uint64(idx).ok().flatten() {
                     None => 0u8,
                     Some(v) => {
-                        if let ColumnEncoding::Int { signed, varint, bits } = &col.encoding {
+                        if let ColumnEncoding::Int {
+                            signed,
+                            varint,
+                            bits,
+                        } = &col.encoding
+                        {
                             encode_uint(data, *signed, *varint, *bits, v)?;
                             1u8
                         } else {
@@ -4848,7 +4842,12 @@ impl RowPackEncoder {
                 IngestedType::UInt16 => match access.get_uint32(idx).ok().flatten() {
                     None => 0u8,
                     Some(v) => {
-                        if let ColumnEncoding::Int { signed, varint, bits } = &col.encoding {
+                        if let ColumnEncoding::Int {
+                            signed,
+                            varint,
+                            bits,
+                        } = &col.encoding
+                        {
                             encode_uint(data, *signed, *varint, *bits, v as u64)?;
                             1u8
                         } else {
@@ -4859,7 +4858,12 @@ impl RowPackEncoder {
                 IngestedType::UInt8 => match access.get_uint32(idx).ok().flatten() {
                     None => 0u8,
                     Some(v) => {
-                        if let ColumnEncoding::Int { signed, varint, bits } = &col.encoding {
+                        if let ColumnEncoding::Int {
+                            signed,
+                            varint,
+                            bits,
+                        } = &col.encoding
+                        {
                             encode_uint(data, *signed, *varint, *bits, v as u64)?;
                             1u8
                         } else {
@@ -4870,7 +4874,12 @@ impl RowPackEncoder {
                 IngestedType::UInt32 => match access.get_uint32(idx).ok().flatten() {
                     None => 0u8,
                     Some(v) => {
-                        if let ColumnEncoding::Int { signed, varint, bits } = &col.encoding {
+                        if let ColumnEncoding::Int {
+                            signed,
+                            varint,
+                            bits,
+                        } = &col.encoding
+                        {
                             encode_uint(data, *signed, *varint, *bits, v as u64)?;
                             1u8
                         } else {
@@ -4900,18 +4909,16 @@ impl RowPackEncoder {
                 },
                 IngestedType::String => match access.get_string(idx).ok().flatten() {
                     None => 0u8,
-                    Some(v) => {
-                        encode_string(
-                            data,
-                            v,
-                            col,
-                            self.dict_maps[idx].as_ref(),
-                            self.alphabet_maps[idx].as_ref(),
-                            self.bpe_tries[idx].as_ref(),
-                            None,
-                            None,
-                        )?
-                    }
+                    Some(v) => encode_string(
+                        data,
+                        v,
+                        col,
+                        self.dict_maps[idx].as_ref(),
+                        self.alphabet_maps[idx].as_ref(),
+                        self.bpe_tries[idx].as_ref(),
+                        None,
+                        None,
+                    )?,
                 },
                 IngestedType::Bytes => match access.get_bytes(idx).ok().flatten() {
                     None => 0u8,
@@ -5003,19 +5010,17 @@ impl RowPackEncoder {
                 IngestedType::Decimal128 => match access.get_decimal128(idx).ok().flatten() {
                     None => 0u8,
                     Some(v) => {
-                        if let ColumnEncoding::Decimal { bytes, scale, storage, .. } =
-                            &col.encoding
+                        if let ColumnEncoding::Decimal {
+                            bytes,
+                            scale,
+                            storage,
+                            ..
+                        } = &col.encoding
                         {
                             if *bytes == 0 || *bytes > 16 {
                                 return Err(anyhow!("rowpack decimal size mismatch"));
                             }
-                            encode_decimal_i128_with_tag(
-                                data,
-                                v,
-                                *scale,
-                                storage,
-                                *bytes,
-                            )?
+                            encode_decimal_i128_with_tag(data, v, *scale, storage, *bytes)?
                         } else {
                             return Err(anyhow!("rowpack decimal128 encoding mismatch"));
                         }
@@ -5024,19 +5029,17 @@ impl RowPackEncoder {
                 IngestedType::Decimal256 => match access.get_decimal256(idx).ok().flatten() {
                     None => 0u8,
                     Some(v) => {
-                        if let ColumnEncoding::Decimal { bytes, scale, storage, .. } =
-                            &col.encoding
+                        if let ColumnEncoding::Decimal {
+                            bytes,
+                            scale,
+                            storage,
+                            ..
+                        } = &col.encoding
                         {
                             if *bytes == 0 || *bytes > 32 {
                                 return Err(anyhow!("rowpack decimal size mismatch"));
                             }
-                            encode_decimal_i256_with_tag(
-                                data,
-                                &v,
-                                *scale,
-                                storage,
-                                *bytes,
-                            )?
+                            encode_decimal_i256_with_tag(data, &v, *scale, storage, *bytes)?
                         } else {
                             return Err(anyhow!("rowpack decimal256 encoding mismatch"));
                         }
@@ -5115,21 +5118,14 @@ fn encode_string(
     };
     match encoding {
         StringEncoding::Raw => encode_string_raw(out, value),
-        StringEncoding::Dict { .. } => {
-            encode_string_dict(out, value, _dict)
-        }
-        StringEncoding::Alphabet { .. } => {
-            encode_string_alphabet(out, value, _alphabet)
-        }
+        StringEncoding::Dict { .. } => encode_string_dict(out, value, _dict),
+        StringEncoding::Alphabet { .. } => encode_string_alphabet(out, value, _alphabet),
         StringEncoding::Bpe { .. } => encode_string_bpe(out, value, _bpe, _bpe_tokens),
         StringEncoding::Lz4 => encode_string_lz4(out, value, _lz4_buf),
     }
 }
 
-fn encode_string_raw(
-    out: &mut Vec<u8>,
-    value: &str,
-) -> Result<u8> {
+fn encode_string_raw(out: &mut Vec<u8>, value: &str) -> Result<u8> {
     let bytes = value.as_bytes();
     write_varint(bytes.len() as u64, out);
     out.extend_from_slice(bytes);
@@ -5258,19 +5254,47 @@ fn encode_value_with_tag<'a>(
     _lz4_buf: Option<&mut Vec<u8>>,
 ) -> Result<u8> {
     match (&col.encoding, value) {
-        (ColumnEncoding::Int { signed, varint, bits }, ValueRef::Int64(v)) => {
+        (
+            ColumnEncoding::Int {
+                signed,
+                varint,
+                bits,
+            },
+            ValueRef::Int64(v),
+        ) => {
             encode_int(out, *signed, *varint, *bits, *v as i128)?;
             Ok(1)
         }
-        (ColumnEncoding::Int { signed, varint, bits }, ValueRef::Int32(v)) => {
+        (
+            ColumnEncoding::Int {
+                signed,
+                varint,
+                bits,
+            },
+            ValueRef::Int32(v),
+        ) => {
             encode_int(out, *signed, *varint, *bits, *v as i128)?;
             Ok(1)
         }
-        (ColumnEncoding::Int { signed, varint, bits }, ValueRef::UInt64(v)) => {
+        (
+            ColumnEncoding::Int {
+                signed,
+                varint,
+                bits,
+            },
+            ValueRef::UInt64(v),
+        ) => {
             encode_uint(out, *signed, *varint, *bits, *v)?;
             Ok(1)
         }
-        (ColumnEncoding::Int { signed, varint, bits }, ValueRef::UInt32(v)) => {
+        (
+            ColumnEncoding::Int {
+                signed,
+                varint,
+                bits,
+            },
+            ValueRef::UInt32(v),
+        ) => {
             encode_uint(out, *signed, *varint, *bits, *v as u64)?;
             Ok(1)
         }
@@ -5350,21 +5374,11 @@ fn encode_value_with_tag<'a>(
             Err(anyhow!("rowpack string encoding mismatch"))
         }
         (ColumnEncoding::FloatArray { storage }, ValueRef::Float32Array(values)) => {
-            let tag = encode_float_array_f32_with_tag(
-                out,
-                col.logical_type,
-                *storage,
-                *values,
-            )?;
+            let tag = encode_float_array_f32_with_tag(out, col.logical_type, *storage, *values)?;
             Ok(tag)
         }
         (ColumnEncoding::FloatArray { storage }, ValueRef::Float64Array(values)) => {
-            let tag = encode_float_array_f64_with_tag(
-                out,
-                col.logical_type,
-                *storage,
-                *values,
-            )?;
+            let tag = encode_float_array_f64_with_tag(out, col.logical_type, *storage, *values)?;
             Ok(tag)
         }
         _ => Err(anyhow!("rowpack value type mismatch")),
@@ -5563,12 +5577,7 @@ fn pack_bits_generic(
     true
 }
 
-fn pack_bits_1(
-    out: &mut Vec<u8>,
-    bytes: &[u8],
-    map: &[u8; 256],
-    payload_start: usize,
-) -> bool {
+fn pack_bits_1(out: &mut Vec<u8>, bytes: &[u8], map: &[u8; 256], payload_start: usize) -> bool {
     let mut i = 0usize;
     while i + 8 <= bytes.len() {
         let mut cur: u8 = 0;
@@ -5591,12 +5600,7 @@ fn pack_bits_1(
     true
 }
 
-fn pack_bits_2(
-    out: &mut Vec<u8>,
-    bytes: &[u8],
-    map: &[u8; 256],
-    payload_start: usize,
-) -> bool {
+fn pack_bits_2(out: &mut Vec<u8>, bytes: &[u8], map: &[u8; 256], payload_start: usize) -> bool {
     let mut i = 0usize;
     while i + 4 <= bytes.len() {
         let b0 = match alphabet_index(map, bytes[i]) {
@@ -5627,10 +5631,7 @@ fn pack_bits_2(
                 return false;
             }
         };
-        let cur = (b0 & 0x3)
-            | ((b1 & 0x3) << 2)
-            | ((b2 & 0x3) << 4)
-            | ((b3 & 0x3) << 6);
+        let cur = (b0 & 0x3) | ((b1 & 0x3) << 2) | ((b2 & 0x3) << 4) | ((b3 & 0x3) << 6);
         out.push(cur);
         i += 4;
     }
@@ -5640,12 +5641,7 @@ fn pack_bits_2(
     true
 }
 
-fn pack_bits_3(
-    out: &mut Vec<u8>,
-    bytes: &[u8],
-    map: &[u8; 256],
-    payload_start: usize,
-) -> bool {
+fn pack_bits_3(out: &mut Vec<u8>, bytes: &[u8], map: &[u8; 256], payload_start: usize) -> bool {
     let mut i = 0usize;
     while i + 8 <= bytes.len() {
         let mut cur: u32 = 0;
@@ -5670,12 +5666,7 @@ fn pack_bits_3(
     true
 }
 
-fn pack_bits_4(
-    out: &mut Vec<u8>,
-    bytes: &[u8],
-    map: &[u8; 256],
-    payload_start: usize,
-) -> bool {
+fn pack_bits_4(out: &mut Vec<u8>, bytes: &[u8], map: &[u8; 256], payload_start: usize) -> bool {
     let mut i = 0usize;
     while i + 2 <= bytes.len() {
         let b0 = match alphabet_index(map, bytes[i]) {
@@ -5702,12 +5693,7 @@ fn pack_bits_4(
     true
 }
 
-fn pack_bits_5(
-    out: &mut Vec<u8>,
-    bytes: &[u8],
-    map: &[u8; 256],
-    payload_start: usize,
-) -> bool {
+fn pack_bits_5(out: &mut Vec<u8>, bytes: &[u8], map: &[u8; 256], payload_start: usize) -> bool {
     let mut i = 0usize;
     while i + 8 <= bytes.len() {
         let mut cur: u64 = 0;
@@ -5734,12 +5720,7 @@ fn pack_bits_5(
     true
 }
 
-fn pack_bits_6(
-    out: &mut Vec<u8>,
-    bytes: &[u8],
-    map: &[u8; 256],
-    payload_start: usize,
-) -> bool {
+fn pack_bits_6(out: &mut Vec<u8>, bytes: &[u8], map: &[u8; 256], payload_start: usize) -> bool {
     let mut i = 0usize;
     while i + 4 <= bytes.len() {
         let mut cur: u32 = 0;
@@ -5956,12 +5937,7 @@ impl RowPackDecoder {
                 bool_idx += 1;
                 JsonValue::Bool(v)
             } else {
-                decode_value_json(
-                    col,
-                    tag,
-                    &mut data,
-                    self.dict_values[idx].as_ref(),
-                )?
+                decode_value_json(col, tag, &mut data, self.dict_values[idx].as_ref())?
             };
             map.insert(col.name.clone(), value);
         }
@@ -6013,7 +5989,13 @@ impl RowPackDecoder {
                 continue;
             }
             if idx == col_idx {
-                return decode_value_ref(col, tag, &mut data, self.dict_values[idx].as_ref(), scratch);
+                return decode_value_ref(
+                    col,
+                    tag,
+                    &mut data,
+                    self.dict_values[idx].as_ref(),
+                    scratch,
+                );
             }
             decode_value_skip(col, tag, &mut data, self.dict_values[idx].as_ref())?;
         }
@@ -6029,7 +6011,11 @@ fn decode_value_msgpack(
     dict: Option<&Vec<Vec<u8>>>,
 ) -> Result<()> {
     match &col.encoding {
-        ColumnEncoding::Int { signed, varint, bits } => {
+        ColumnEncoding::Int {
+            signed,
+            varint,
+            bits,
+        } => {
             if *signed {
                 let v = decode_int(data, *varint, *bits)?;
                 mp::write_sint(out, v)?;
@@ -6158,7 +6144,11 @@ fn decode_value_json(
     dict: Option<&Vec<Vec<u8>>>,
 ) -> Result<JsonValue> {
     let value = match &col.encoding {
-        ColumnEncoding::Int { signed, varint, bits } => {
+        ColumnEncoding::Int {
+            signed,
+            varint,
+            bits,
+        } => {
             if *signed {
                 JsonValue::from(decode_int(data, *varint, *bits)?)
             } else {
@@ -6208,9 +6198,7 @@ fn decode_value_json(
             let bytes = decode_fixed_bytes::<16>(data)?;
             JsonValue::from(format_ip(bytes))
         }
-        ColumnEncoding::Date { varint, bits } => {
-            JsonValue::from(decode_int(data, *varint, *bits)?)
-        }
+        ColumnEncoding::Date { varint, bits } => JsonValue::from(decode_int(data, *varint, *bits)?),
         ColumnEncoding::Timestamp => {
             let secs = zigzag_decode(read_varint(data)?);
             let nanos = read_varint(data)? as u32;
@@ -6284,7 +6272,11 @@ fn decode_value_ref<'a>(
     scratch: &'a mut RowPackDecodeScratch,
 ) -> Result<ValueRef<'a>> {
     match &col.encoding {
-        ColumnEncoding::Int { signed, varint, bits } => {
+        ColumnEncoding::Int {
+            signed,
+            varint,
+            bits,
+        } => {
             if *signed {
                 Ok(ValueRef::Int64(decode_int(data, *varint, *bits)?))
             } else {
@@ -6403,7 +6395,11 @@ fn decode_value_skip(
     dict: Option<&Vec<Vec<u8>>>,
 ) -> Result<()> {
     match &col.encoding {
-        ColumnEncoding::Int { signed, varint, bits } => {
+        ColumnEncoding::Int {
+            signed,
+            varint,
+            bits,
+        } => {
             if *signed {
                 let _ = decode_int(data, *varint, *bits)?;
             } else {
@@ -6436,7 +6432,12 @@ fn decode_value_skip(
             let _ = read_varint(data)?;
             let _ = read_varint(data)?;
         }
-        ColumnEncoding::Decimal { scale, bytes, storage, .. } => {
+        ColumnEncoding::Decimal {
+            scale,
+            bytes,
+            storage,
+            ..
+        } => {
             if tag == 2 || matches!(storage, DecimalStorage::Raw) {
                 let _ = decode_decimal_bytes(data, *bytes as usize)?;
             } else {
@@ -7023,12 +7024,15 @@ fn push_utf8_lossy(out: &mut String, bytes: &[u8]) {
 mod tests {
     use super::*;
     use arrow_array::{Float32Array, Float64Array, Int32Array};
+    use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime};
     use std::sync::Arc;
 
     fn encode_row(encoder: &RowPackEncoder, row: &[ValueRef<'_>]) -> Vec<u8> {
         let mut out = Vec::new();
         let mut scratch = RowPackScratch::new(encoder.context());
-        encoder.encode_row_into(row, &mut out, &mut scratch).unwrap();
+        encoder
+            .encode_row_into(row, &mut out, &mut scratch)
+            .unwrap();
         out
     }
 
@@ -7120,12 +7124,8 @@ mod tests {
 
     #[test]
     fn bool_from_numeric_floats() {
-        let cols: Vec<ArrayRef> = vec![Arc::new(Float64Array::from(vec![
-            0.0,
-            1.0,
-            -0.5,
-            f64::NAN,
-        ]))];
+        let cols: Vec<ArrayRef> =
+            vec![Arc::new(Float64Array::from(vec![0.0, 1.0, -0.5, f64::NAN]))];
         let hints = vec![RowAccessHints {
             timestamp_format: None,
             timestamp_unit: None,
@@ -7179,54 +7179,84 @@ mod tests {
     }
 
     #[test]
-    fn parse_rfc3339_fast_offsets() {
-        let parser = TimestampFormatParser::compile("rfc3339").unwrap();
-        let (secs, nanos) = parser.parse_timestamp("1970-01-01T00:00:00Z").unwrap();
-        assert_eq!(secs, 0);
-        assert_eq!(nanos, 0);
-        let (secs, _) = parser.parse_timestamp("1970-01-01T00:00:00+01:00").unwrap();
-        assert_eq!(secs, -3600);
-        let (secs, _) = parser.parse_timestamp("1970-01-01T00:00:00-02:30").unwrap();
-        assert_eq!(secs, 9000);
-        let (secs, nanos) = parser
-            .parse_timestamp("1970-01-01T00:00:00.123456789Z")
-            .unwrap();
-        assert_eq!(secs, 0);
-        assert_eq!(nanos, 123_456_789);
-    }
+    fn parse_precompiled_timestamp_formats_match_chrono() {
+        let cases: Vec<(&str, Vec<&str>)> = vec![
+            ("%Y-%m-%d", vec!["1970-01-01", "2020-02-29"]),
+            (
+                "%Y-%m-%d %H:%M",
+                vec!["1970-01-01 00:00", "2020-02-29 23:59"],
+            ),
+            (
+                "%Y-%m-%d %H:%M:%S",
+                vec!["1970-01-01 00:00:01", "2020-02-29 23:59:59"],
+            ),
+            (
+                "%Y-%m-%d %H:%M:%S%.f",
+                vec![
+                    "1970-01-01 00:00:00.5",
+                    "2020-02-29 23:59:59.123456789",
+                    "2020-02-29 23:59:59.000000001",
+                ],
+            ),
+            (
+                "%Y-%m-%dT%H:%M:%S",
+                vec!["1970-01-01T00:00:02", "2020-02-29T23:59:59"],
+            ),
+            (
+                "%Y-%m-%dT%H:%M:%S%.f",
+                vec!["1970-01-01T00:00:03.250", "2020-02-29T23:59:59.999999999"],
+            ),
+            (
+                "%Y-%m-%d %H:%M:%S%z",
+                vec![
+                    "1970-01-01 00:00:00+0000",
+                    "1970-01-01 01:00:00+0100",
+                    "2020-02-29 23:59:59-0530",
+                ],
+            ),
+            (
+                "%Y-%m-%d %H:%M:%S %z",
+                vec!["1970-01-01 00:00:00 +0000", "1970-01-01 01:00:00 +0100"],
+            ),
+            (
+                "%Y-%m-%d %H:%M:%S%:z",
+                vec!["1970-01-01 00:00:00+00:00", "1970-01-01 01:00:00+01:00"],
+            ),
+            (
+                "%Y-%m-%d %H:%M:%S %:z",
+                vec!["1970-01-01 00:00:00 +00:00", "1970-01-01 01:00:00 +01:00"],
+            ),
+            (
+                "%Y-%m-%dT%H:%M:%S%z",
+                vec!["1970-01-01T00:00:00+0000", "1970-01-01T01:00:00+0100"],
+            ),
+            (
+                "%Y-%m-%dT%H:%M:%S%:z",
+                vec!["1970-01-01T00:00:00+00:00", "1970-01-01T01:00:00+01:00"],
+            ),
+        ];
 
-    #[test]
-    fn parse_common_timestamp_formats() {
-        let parser = TimestampFormatParser::compile("%Y-%m-%d %H:%M:%S").unwrap();
-        let (secs, nanos) = parser.parse_timestamp("1970-01-01 00:00:01").unwrap();
-        assert_eq!(secs, 1);
-        assert_eq!(nanos, 0);
-
-        let parser = TimestampFormatParser::compile("%Y-%m-%d %H:%M:%S%.f").unwrap();
-        let (secs, nanos) = parser.parse_timestamp("1970-01-01 00:00:00.5").unwrap();
-        assert_eq!(secs, 0);
-        assert_eq!(nanos, 500_000_000);
-
-        let parser = TimestampFormatParser::compile("%Y-%m-%d %H:%M").unwrap();
-        let (secs, nanos) = parser.parse_timestamp("1970-01-01 00:01").unwrap();
-        assert_eq!(secs, 60);
-        assert_eq!(nanos, 0);
-
-        let parser = TimestampFormatParser::compile("%Y-%m-%dT%H:%M:%S").unwrap();
-        let (secs, nanos) = parser.parse_timestamp("1970-01-01T00:00:02").unwrap();
-        assert_eq!(secs, 2);
-        assert_eq!(nanos, 0);
-
-        let parser = TimestampFormatParser::compile("%Y-%m-%dT%H:%M:%S%.f").unwrap();
-        let (secs, nanos) = parser
-            .parse_timestamp("1970-01-01T00:00:03.250").unwrap();
-        assert_eq!(secs, 3);
-        assert_eq!(nanos, 250_000_000);
-
-        let parser = TimestampFormatParser::compile("%Y-%m-%d").unwrap();
-        let (secs, nanos) = parser.parse_timestamp("1970-01-02").unwrap();
-        assert_eq!(secs, 86_400);
-        assert_eq!(nanos, 0);
+        for (fmt, values) in cases {
+            let parser = TimestampFormatParser::compile(fmt).unwrap();
+            for value in values {
+                let (fast_secs, fast_nanos) = parser.parse_timestamp(value).unwrap();
+                let (chrono_secs, chrono_nanos) = if fmt.contains("%z") || fmt.contains("%:z") {
+                    let dt: DateTime<FixedOffset> = DateTime::parse_from_str(value, fmt).unwrap();
+                    let utc = dt.naive_utc().and_utc();
+                    (utc.timestamp(), utc.timestamp_subsec_nanos())
+                } else if fmt == "%Y-%m-%d" {
+                    let date = NaiveDate::parse_from_str(value, fmt).unwrap();
+                    let dt = date.and_hms_opt(0, 0, 0).unwrap();
+                    let utc = dt.and_utc();
+                    (utc.timestamp(), utc.timestamp_subsec_nanos())
+                } else {
+                    let dt = NaiveDateTime::parse_from_str(value, fmt).unwrap();
+                    let utc = dt.and_utc();
+                    (utc.timestamp(), utc.timestamp_subsec_nanos())
+                };
+                assert_eq!((fast_secs, fast_nanos), (chrono_secs, chrono_nanos));
+            }
+        }
     }
 
     #[test]
@@ -7262,7 +7292,7 @@ mod tests {
                 logical_type: IngestedType::Timestamp,
                 encoding: ColumnEncoding::Timestamp,
             }],
-        estimated_row_bytes: 0,
+            estimated_row_bytes: 0,
         };
         let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
         let row = vec![ValueRef::Timestamp {
@@ -7289,7 +7319,7 @@ mod tests {
                     storage: DecimalStorage::Varint,
                 },
             }],
-        estimated_row_bytes: 0,
+            estimated_row_bytes: 0,
         };
         let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
         let row = vec![ValueRef::Decimal128(-12345i128)];
@@ -7316,7 +7346,7 @@ mod tests {
                     storage: DecimalStorage::Raw,
                 },
             }],
-        estimated_row_bytes: 0,
+            estimated_row_bytes: 0,
         };
         let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
         let big = BigInt::parse_bytes(b"123456789012345678901234567890", 10).unwrap();
@@ -7435,7 +7465,7 @@ mod tests {
                     storage: DecimalStorage::Varint,
                 },
             }],
-        estimated_row_bytes: 0,
+            estimated_row_bytes: 0,
         };
         let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
         let big = i128::MAX;
@@ -7507,7 +7537,6 @@ mod tests {
         assert!(json.to_string().contains("carol"));
     }
 
-
     #[test]
     fn alphabet_encoding_roundtrip() {
         let ctx = RowPackContext {
@@ -7521,7 +7550,7 @@ mod tests {
                     },
                 },
             }],
-        estimated_row_bytes: 0,
+            estimated_row_bytes: 0,
         };
         let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
         let row = vec![ValueRef::String("USER-0001")];
@@ -7547,7 +7576,7 @@ mod tests {
                     },
                 },
             }],
-        estimated_row_bytes: 0,
+            estimated_row_bytes: 0,
         };
         let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
         let row = vec![ValueRef::String("USER-0001?")];
@@ -7625,7 +7654,7 @@ mod tests {
                     },
                 },
             }],
-        estimated_row_bytes: 0,
+            estimated_row_bytes: 0,
         };
         let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
         let row = vec![ValueRef::String("TOKEN123TOKEN123")];
@@ -7684,7 +7713,7 @@ mod tests {
                     },
                 },
             }],
-        estimated_row_bytes: 0,
+            estimated_row_bytes: 0,
         };
         let decoder = RowPackDecoder::new(ctx).unwrap();
         let mut tags = BitWriter::with_capacity(1);
@@ -7711,7 +7740,7 @@ mod tests {
                     },
                 },
             }],
-        estimated_row_bytes: 0,
+            estimated_row_bytes: 0,
         };
         let decoder = RowPackDecoder::new(ctx).unwrap();
         let mut tags = BitWriter::with_capacity(1);
@@ -7730,7 +7759,7 @@ mod tests {
                 logical_type: IngestedType::String,
                 encoding: ColumnEncoding::String { encoding },
             }],
-        estimated_row_bytes: 0,
+            estimated_row_bytes: 0,
         };
         let encoder = RowPackEncoder::new(ctx).unwrap();
         let row = vec![ValueRef::String(value)];
@@ -7762,7 +7791,10 @@ mod tests {
         };
         let bpe_config = RowPackConfig::default();
         let bpe_dict = train_bpe_dict(
-            &samples.iter().map(|s| s.as_bytes().to_vec()).collect::<Vec<_>>(),
+            &samples
+                .iter()
+                .map(|s| s.as_bytes().to_vec())
+                .collect::<Vec<_>>(),
             bpe_config.bpe_max_dict_entries(),
             bpe_config.bpe_max_dict_bytes(),
         );
@@ -7819,7 +7851,10 @@ mod tests {
             panic!("expected alphabet encoding");
         };
         let bpe_dict = train_bpe_dict(
-            &samples.iter().map(|s| s.as_bytes().to_vec()).collect::<Vec<_>>(),
+            &samples
+                .iter()
+                .map(|s| s.as_bytes().to_vec())
+                .collect::<Vec<_>>(),
             256,
             32 * 1024,
         );
@@ -7917,7 +7952,7 @@ mod tests {
                 logical_type: IngestedType::Bytes,
                 encoding: ColumnEncoding::Bytes { fixed_len: None },
             }],
-        estimated_row_bytes: 0,
+            estimated_row_bytes: 0,
         };
         let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
         let row = vec![ValueRef::Bytes(b"xyz")];
@@ -7936,7 +7971,7 @@ mod tests {
                 logical_type: IngestedType::Bytes,
                 encoding: ColumnEncoding::Bytes { fixed_len: Some(4) },
             }],
-        estimated_row_bytes: 0,
+            estimated_row_bytes: 0,
         };
         let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
         let row = vec![ValueRef::Bytes(b"ABCD")];
@@ -7955,7 +7990,7 @@ mod tests {
                 logical_type: IngestedType::Bytes,
                 encoding: ColumnEncoding::Bytes { fixed_len: Some(4) },
             }],
-        estimated_row_bytes: 0,
+            estimated_row_bytes: 0,
         };
         let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
         let row = vec![ValueRef::Bytes(b"ABCDE")];
@@ -7978,8 +8013,8 @@ mod tests {
         };
         let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
         let value = [
-            0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc,
-            0xdd, 0xee, 0xff,
+            0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd,
+            0xee, 0xff,
         ];
         let row = vec![ValueRef::Uuid(value)];
         let encoded = encode_row(&encoder, &row);
@@ -8003,8 +8038,8 @@ mod tests {
         };
         let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
         let value = [
-            0xde, 0xad, 0xbe, 0xef, 0x12, 0x34, 0x56, 0x78, 0x90, 0xab, 0xcd, 0xef, 0x01,
-            0x23, 0x45, 0x67,
+            0xde, 0xad, 0xbe, 0xef, 0x12, 0x34, 0x56, 0x78, 0x90, 0xab, 0xcd, 0xef, 0x01, 0x23,
+            0x45, 0x67,
         ];
         let row = vec![ValueRef::Uuid(value)];
         let encoded = encode_row(&encoder, &row);
@@ -8143,7 +8178,9 @@ mod tests {
             estimated_row_bytes: 0,
         };
         let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
-        let ip = std::net::Ipv4Addr::new(127, 0, 0, 1).to_ipv6_mapped().octets();
+        let ip = std::net::Ipv4Addr::new(127, 0, 0, 1)
+            .to_ipv6_mapped()
+            .octets();
         let row = vec![ValueRef::Ip(ip)];
         let encoded = encode_row(&encoder, &row);
         let decoder = RowPackDecoder::new(ctx).unwrap();
@@ -8219,7 +8256,7 @@ mod tests {
                     },
                 },
             ],
-        estimated_row_bytes: 0,
+            estimated_row_bytes: 0,
         };
         let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
         let row = vec![
@@ -8250,7 +8287,7 @@ mod tests {
                     bits: 32,
                 },
             }],
-        estimated_row_bytes: 0,
+            estimated_row_bytes: 0,
         };
         let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
         let row = vec![ValueRef::Int32(-12345)];
@@ -8339,7 +8376,7 @@ mod tests {
                     },
                 },
             }],
-        estimated_row_bytes: 0,
+            estimated_row_bytes: 0,
         };
         let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
         let row = vec![ValueRef::String("carol")];
@@ -8371,7 +8408,7 @@ mod tests {
                     },
                 },
             ],
-        estimated_row_bytes: 0,
+            estimated_row_bytes: 0,
         };
         let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
         let row = vec![ValueRef::Null, ValueRef::Null];
@@ -8392,7 +8429,7 @@ mod tests {
                     encoding: StringEncoding::Raw,
                 },
             }],
-        estimated_row_bytes: 0,
+            estimated_row_bytes: 0,
         };
         let decoder = RowPackDecoder::new(ctx).unwrap();
         let mut tags = BitWriter::new();
@@ -8418,7 +8455,7 @@ mod tests {
                     storage: FloatStorage::F32,
                 },
             }],
-        estimated_row_bytes: 0,
+            estimated_row_bytes: 0,
         };
         let decoder = RowPackDecoder::new(ctx).unwrap();
         let mut tags = BitWriter::new();
@@ -8442,7 +8479,7 @@ mod tests {
                 logical_type: IngestedType::Bool,
                 encoding: ColumnEncoding::Bool,
             }],
-        estimated_row_bytes: 0,
+            estimated_row_bytes: 0,
         };
         let decoder = RowPackDecoder::new(ctx).unwrap();
         let mut tags = BitWriter::new();
@@ -8465,7 +8502,7 @@ mod tests {
                     bits: 64,
                 },
             }],
-        estimated_row_bytes: 0,
+            estimated_row_bytes: 0,
         };
         let decoder = RowPackDecoder::new(ctx).unwrap();
         let mut tags = BitWriter::new();
@@ -8486,7 +8523,7 @@ mod tests {
                     encoding: StringEncoding::Lz4,
                 },
             }],
-        estimated_row_bytes: 0,
+            estimated_row_bytes: 0,
         };
         let decoder = RowPackDecoder::new(ctx).unwrap();
         let mut tags = BitWriter::new();
