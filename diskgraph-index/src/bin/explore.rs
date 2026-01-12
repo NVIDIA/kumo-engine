@@ -463,7 +463,7 @@ fn repl(reader: Arc<GraphIndexReader>, default_table: String, index_root: PathBu
                     continue;
                 }
                 if trimmed.eq_ignore_ascii_case("info") {
-                    print_info(&reader, &current_table);
+                    print_info(&reader, &current_table, &index_root);
                     continue;
                 }
                 if trimmed.eq_ignore_ascii_case("formats") {
@@ -1339,7 +1339,7 @@ fn format_decimal_storage(storage: &DecimalStorage) -> String {
     }
 }
 
-fn print_info(reader: &GraphIndexReader, table_name: &str) {
+fn print_info(reader: &GraphIndexReader, table_name: &str, root: &Path) {
     let table = match reader.table(table_name) {
         Some(table) => table,
         None => {
@@ -1347,15 +1347,175 @@ fn print_info(reader: &GraphIndexReader, table_name: &str) {
             return;
         }
     };
+    let node_meta = reader
+        .metadata()
+        .node_types
+        .iter()
+        .find(|n| n.name == table.node_type());
+    let shard_count = table.shard_count();
+    let rel_count = table.relations().len();
+    println!("Table: {}", table.node_type());
     println!(
-        "Table: {} (nodes={}, relations={})",
-        table.node_type(),
+        "  Nodes: {} (shards={})",
         format_number(table.node_count()),
-        table.relations().len()
+        shard_count
     );
+    println!("  Relations: {}", rel_count);
+    println!(
+        "  Node data: {}",
+        node_meta
+            .map(|n| if n.has_node_data { "enabled" } else { "disabled" })
+            .unwrap_or("unknown")
+    );
+
+    let mut total_edges = 0u64;
+    let mut total_offsets = 0u64;
+    let mut total_edge_bytes = 0u64;
+    if let Some(node_meta) = node_meta {
+        println!("  Shards:");
+        for (idx, shard) in node_meta.shards.iter().enumerate() {
+            let node_count = if shard.max_id >= shard.min_id {
+                shard.max_id - shard.min_id + 1
+            } else {
+                0
+            };
+            if let Some(reader_shard) = table.shard(idx) {
+                let header = reader_shard.header();
+                let node_data_paths = shard
+                    .node_data_paths
+                    .as_ref()
+                    .map(|v| v.len())
+                    .unwrap_or(0);
+                total_edges = total_edges.saturating_add(reader_shard.edge_count());
+                total_offsets = total_offsets.saturating_add(reader_shard.offsets_len());
+                total_edge_bytes = total_edge_bytes.saturating_add(reader_shard.edges_len());
+                println!(
+                    "    - shard {:05}: ids {}..{} (nodes={}) offsets={} edges={} deltas={}B node_len={}B edge_count={} node_data_parts={}",
+                    idx,
+                    shard.min_id,
+                    shard.max_id,
+                    format_number(node_count),
+                    format_bytes(reader_shard.offsets_len()),
+                    format_bytes(reader_shard.edges_len()),
+                    header.delta_bytes,
+                    header.node_data_len_bytes,
+                    format_number(reader_shard.edge_count()),
+                    node_data_paths
+                );
+            } else {
+                println!(
+                    "    - shard {:05}: ids {}..{} (nodes={})",
+                    idx,
+                    shard.min_id,
+                    shard.max_id,
+                    format_number(node_count)
+                );
+            }
+        }
+    }
+    println!(
+        "  Edge storage: edges={} offsets={} total_edges={}",
+        format_bytes(total_edge_bytes),
+        format_bytes(total_offsets),
+        format_number(total_edges)
+    );
+
+    println!("  Relation layouts:");
+    let layouts = table.layouts();
     for (idx, rel) in table.relations().iter().enumerate() {
         let sort = format_sort_key_summary(rel);
-        println!("  [{}] {} ({} -> {}), {}", idx, rel.name, rel.src_type, rel.dst_type, sort);
+        let layout = layouts.get(idx);
+        let (dst_bits, entry_bytes, sort_bits) = layout
+            .map(|l| (l.dst_bits, l.entry_bytes, l.dest_sort_key_bits))
+            .unwrap_or((0, 0, None));
+        println!(
+            "    - [{}] {} ({} -> {}), {}, dst_bits={}, entry_bytes={}, sort_bits={}",
+            idx,
+            rel.name,
+            rel.src_type,
+            rel.dst_type,
+            sort,
+            dst_bits,
+            entry_bytes,
+            sort_bits
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "none".to_string())
+        );
+    }
+
+    if let Ok(Some(report)) = read_build_report(root) {
+        println!(
+            "  Build stats (dataset-wide): nodes_ingested={} edges_ingested={} truncated_nodes={} truncated_edges={} capped_lists={} node_data_trimmed={}",
+            format_number(report.build_stats.nodes_ingested),
+            format_number(report.build_stats.edges_ingested),
+            format_number(report.build_stats.truncated_nodes),
+            format_number(report.build_stats.truncated_edges_total),
+            format_number(report.build_stats.capped_edge_lists),
+            format_number(report.build_stats.node_data_trimmed)
+        );
+        if !report.build_stats.truncated_edges_per_relation.is_empty() {
+            println!("  Truncated edges per relation:");
+            for (idx, count) in report
+                .build_stats
+                .truncated_edges_per_relation
+                .iter()
+                .enumerate()
+            {
+                let rel_name = table
+                    .relations()
+                    .get(idx)
+                    .map(|rel| rel.name.as_str())
+                    .unwrap_or("unknown");
+                println!("    - [{}] {}: {}", idx, rel_name, format_number(*count));
+            }
+        }
+    }
+
+    if let Ok(Some(report)) = read_ingest_report(root) {
+        if let Some(table_spec) = report
+            .source
+            .tables
+            .iter()
+            .find(|t| t.name == table.node_type())
+        {
+            println!("  Source schema:");
+            if let Some(pk) = &table_spec.primary_key {
+                println!("    Primary key: {}", pk);
+            } else {
+                println!("    Primary key: none");
+            }
+            if let Some(edge) = &table_spec.edge_table {
+                println!(
+                    "    Edge table: {} -> {}",
+                    format_fk(table_spec, &edge.src_fk),
+                    format_fk(table_spec, &edge.dst_fk)
+                );
+            }
+            println!("    Columns:");
+            for col in &table_spec.columns {
+                println!("      - {}: {}", col.name, format_column(col));
+            }
+        }
+
+        let mut failures: Vec<_> = report
+            .stats
+            .key_failures_by_context
+            .iter()
+            .filter(|(ctx, counts)| {
+                ctx.contains(table.node_type())
+                    && (counts.parse_failures > 0 || counts.lookup_failures > 0)
+            })
+            .collect();
+        if !failures.is_empty() {
+            failures.sort_by(|a, b| a.0.cmp(b.0));
+            println!("  Key failures (filtered):");
+            for (ctx, counts) in failures {
+                println!(
+                    "    {}: parse {} lookup {}",
+                    ctx, counts.parse_failures, counts.lookup_failures
+                );
+            }
+        }
     }
 }
 
