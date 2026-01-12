@@ -3162,7 +3162,11 @@ impl IngestContext {
                                 {
                                     Some(id) => u64::from(id),
                                     None => {
-                                        let sample = sample_key(&dst_key);
+                                        let sample = if result.key_failures.samples.len() < 10 {
+                                            sample_key(&dst_key)
+                                        } else {
+                                            None
+                                        };
                                         record_key_lookup_failure(
                                             &mut result.key_failures.lookup_failures,
                                             &mut result.key_failures.samples,
@@ -3402,7 +3406,11 @@ impl IngestContext {
                                 {
                                     Some(id) => u64::from(id),
                                     None => {
-                                        let sample = sample_key(&src_key);
+                                        let sample = if result.key_failures.samples.len() < 10 {
+                                            sample_key(&src_key)
+                                        } else {
+                                            None
+                                        };
                                         record_key_lookup_failure(
                                             &mut result.key_failures.lookup_failures,
                                             &mut result.key_failures.samples,
@@ -3419,7 +3427,11 @@ impl IngestContext {
                                 {
                                     Some(id) => u64::from(id),
                                     None => {
-                                        let sample = sample_key(&dst_key);
+                                        let sample = if result.key_failures.samples.len() < 10 {
+                                            sample_key(&dst_key)
+                                        } else {
+                                            None
+                                        };
                                         record_key_lookup_failure(
                                             &mut result.key_failures.lookup_failures,
                                             &mut result.key_failures.samples,
