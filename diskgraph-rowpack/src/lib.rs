@@ -2112,13 +2112,56 @@ enum TimestampToken {
 }
 
 #[derive(Clone, Debug)]
+enum TimestampFormatKind {
+    Tokens,
+    Rfc3339,
+    Ymd,
+    YmdHmSpace,
+    YmdHmsSpace,
+    YmdHmsSpaceFrac,
+    YmdHmsT,
+    YmdHmsTFrac,
+}
+
+#[derive(Clone, Debug)]
 struct TimestampFormatParser {
+    kind: TimestampFormatKind,
     tokens: Vec<TimestampToken>,
     has_date: bool,
 }
 
 impl TimestampFormatParser {
     fn compile(format: &str) -> Option<Self> {
+        let format = match format {
+            "rfc3339" | "RFC3339" => {
+                return Some(Self {
+                    kind: TimestampFormatKind::Rfc3339,
+                    tokens: Vec::new(),
+                    has_date: true,
+                })
+            }
+            "iso8601" | "ISO8601" => "%Y-%m-%dT%H:%M:%S",
+            "iso8601_nanos" | "ISO8601_NANOS" => "%Y-%m-%dT%H:%M:%S%.f",
+            "iso8601_space" | "ISO8601_SPACE" => "%Y-%m-%d %H:%M:%S",
+            "iso8601_space_nanos" | "ISO8601_SPACE_NANOS" => "%Y-%m-%d %H:%M:%S%.f",
+            other => other,
+        };
+        let kind = match format {
+            "%Y-%m-%d" => Some(TimestampFormatKind::Ymd),
+            "%Y-%m-%d %H:%M" => Some(TimestampFormatKind::YmdHmSpace),
+            "%Y-%m-%d %H:%M:%S" => Some(TimestampFormatKind::YmdHmsSpace),
+            "%Y-%m-%d %H:%M:%S%.f" => Some(TimestampFormatKind::YmdHmsSpaceFrac),
+            "%Y-%m-%dT%H:%M:%S" => Some(TimestampFormatKind::YmdHmsT),
+            "%Y-%m-%dT%H:%M:%S%.f" => Some(TimestampFormatKind::YmdHmsTFrac),
+            _ => None,
+        };
+        if let Some(kind) = kind {
+            return Some(Self {
+                kind,
+                tokens: Vec::new(),
+                has_date: true,
+            });
+        }
         let mut tokens = Vec::new();
         let mut literal = Vec::new();
         let mut chars = format.chars().peekable();
@@ -2191,10 +2234,38 @@ impl TimestampFormatParser {
             tokens.push(TimestampToken::Literal(literal));
         }
         let _ = has_time;
-        Some(Self { tokens, has_date })
+        Some(Self {
+            kind: TimestampFormatKind::Tokens,
+            tokens,
+            has_date,
+        })
     }
 
     fn parse_timestamp(&self, value: &str) -> Option<(i64, u32)> {
+        match self.kind {
+            TimestampFormatKind::Rfc3339 => {
+                return parse_rfc3339_timestamp(value.as_bytes());
+            }
+            TimestampFormatKind::Ymd => {
+                return parse_ymd(value.as_bytes());
+            }
+            TimestampFormatKind::YmdHmSpace => {
+                return parse_ymd_hm(value.as_bytes(), b' ');
+            }
+            TimestampFormatKind::YmdHmsSpace => {
+                return parse_ymd_hms(value.as_bytes(), b' ', false);
+            }
+            TimestampFormatKind::YmdHmsSpaceFrac => {
+                return parse_ymd_hms(value.as_bytes(), b' ', true);
+            }
+            TimestampFormatKind::YmdHmsT => {
+                return parse_ymd_hms(value.as_bytes(), b'T', false);
+            }
+            TimestampFormatKind::YmdHmsTFrac => {
+                return parse_ymd_hms(value.as_bytes(), b'T', true);
+            }
+            TimestampFormatKind::Tokens => {}
+        }
         if !self.has_date {
             return None;
         }
@@ -2258,10 +2329,7 @@ impl TimestampFormatParser {
         if pos != bytes.len() {
             return None;
         }
-        let date = chrono::NaiveDate::from_ymd_opt(year, month, day)?;
-        let time = chrono::NaiveTime::from_hms_nano_opt(hour, minute, second, nanos)?;
-        let dt = chrono::NaiveDateTime::new(date, time);
-        Some((dt.and_utc().timestamp(), nanos))
+        timestamp_from_parts(year, month, day, hour, minute, second, nanos)
     }
 
     fn parse_date(&self, value: &str) -> Option<i32> {
@@ -2322,6 +2390,229 @@ fn fraction_to_nanos(value: u32, digits: usize) -> u32 {
     } else {
         value.saturating_mul(POW10[digits])
     }
+}
+
+fn timestamp_from_parts(
+    year: i32,
+    month: u32,
+    day: u32,
+    hour: u32,
+    minute: u32,
+    second: u32,
+    nanos: u32,
+) -> Option<(i64, u32)> {
+    if hour >= 24 || minute >= 60 || second >= 60 || nanos >= 1_000_000_000 {
+        return None;
+    }
+    let days = days_from_civil(year, month, day)?;
+    let secs = days
+        .saturating_mul(86_400)
+        .saturating_add(hour as i64 * 3_600)
+        .saturating_add(minute as i64 * 60)
+        .saturating_add(second as i64);
+    Some((secs, nanos))
+}
+
+fn days_from_civil(year: i32, month: u32, day: u32) -> Option<i64> {
+    let dim = days_in_month(year, month)?;
+    if day == 0 || day > dim {
+        return None;
+    }
+    let mut y = year as i64;
+    let m = month as i64;
+    let d = day as i64;
+    y -= if m <= 2 { 1 } else { 0 };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let mp = m + if m > 2 { -3 } else { 9 };
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    Some(era * 146097 + doe - 719468)
+}
+
+fn days_in_month(year: i32, month: u32) -> Option<u32> {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => Some(31),
+        4 | 6 | 9 | 11 => Some(30),
+        2 => Some(if is_leap_year(year) { 29 } else { 28 }),
+        _ => None,
+    }
+}
+
+fn is_leap_year(year: i32) -> bool {
+    (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
+}
+
+fn parse_rfc3339_timestamp(bytes: &[u8]) -> Option<(i64, u32)> {
+    if bytes.len() < 20 {
+        return None;
+    }
+    let (year, mut pos) = parse_fixed_u32(bytes, 0, 4)?;
+    if bytes.get(pos)? != &b'-' {
+        return None;
+    }
+    pos += 1;
+    let (month, next) = parse_fixed_u32(bytes, pos, 2)?;
+    pos = next;
+    if bytes.get(pos)? != &b'-' {
+        return None;
+    }
+    pos += 1;
+    let (day, next) = parse_fixed_u32(bytes, pos, 2)?;
+    pos = next;
+    let sep = *bytes.get(pos)?;
+    if sep != b'T' && sep != b't' {
+        return None;
+    }
+    pos += 1;
+    let (hour, next) = parse_fixed_u32(bytes, pos, 2)?;
+    pos = next;
+    if bytes.get(pos)? != &b':' {
+        return None;
+    }
+    pos += 1;
+    let (minute, next) = parse_fixed_u32(bytes, pos, 2)?;
+    pos = next;
+    if bytes.get(pos)? != &b':' {
+        return None;
+    }
+    pos += 1;
+    let (second, next) = parse_fixed_u32(bytes, pos, 2)?;
+    pos = next;
+    let mut nanos = 0u32;
+    if bytes.get(pos) == Some(&b'.') {
+        let (fraction, digits, next) = parse_fraction(bytes, pos + 1)?;
+        nanos = fraction_to_nanos(fraction, digits);
+        pos = next;
+    }
+    let mut offset_secs = 0i64;
+    match bytes.get(pos)? {
+        b'Z' | b'z' => {
+            pos += 1;
+        }
+        b'+' | b'-' => {
+            let sign = if bytes[pos] == b'+' { 1i64 } else { -1i64 };
+            pos += 1;
+            let (off_hour, next) = parse_fixed_u32(bytes, pos, 2)?;
+            pos = next;
+            if bytes.get(pos) == Some(&b':') {
+                pos += 1;
+            }
+            let (off_min, next) = parse_fixed_u32(bytes, pos, 2)?;
+            pos = next;
+            offset_secs = sign * (off_hour as i64 * 3_600 + off_min as i64 * 60);
+        }
+        _ => return None,
+    }
+    if pos != bytes.len() {
+        return None;
+    }
+    let (secs, nanos) = timestamp_from_parts(
+        year as i32,
+        month,
+        day,
+        hour,
+        minute,
+        second,
+        nanos,
+    )?;
+    Some((secs.saturating_sub(offset_secs), nanos))
+}
+
+fn parse_ymd(bytes: &[u8]) -> Option<(i64, u32)> {
+    let (year, mut pos) = parse_fixed_u32(bytes, 0, 4)?;
+    if bytes.get(pos)? != &b'-' {
+        return None;
+    }
+    pos += 1;
+    let (month, next) = parse_fixed_u32(bytes, pos, 2)?;
+    pos = next;
+    if bytes.get(pos)? != &b'-' {
+        return None;
+    }
+    pos += 1;
+    let (day, next) = parse_fixed_u32(bytes, pos, 2)?;
+    pos = next;
+    if pos != bytes.len() {
+        return None;
+    }
+    timestamp_from_parts(year as i32, month, day, 0, 0, 0, 0)
+}
+
+fn parse_ymd_hm(bytes: &[u8], sep: u8) -> Option<(i64, u32)> {
+    let (year, mut pos) = parse_fixed_u32(bytes, 0, 4)?;
+    if bytes.get(pos)? != &b'-' {
+        return None;
+    }
+    pos += 1;
+    let (month, next) = parse_fixed_u32(bytes, pos, 2)?;
+    pos = next;
+    if bytes.get(pos)? != &b'-' {
+        return None;
+    }
+    pos += 1;
+    let (day, next) = parse_fixed_u32(bytes, pos, 2)?;
+    pos = next;
+    if bytes.get(pos)? != &sep {
+        return None;
+    }
+    pos += 1;
+    let (hour, next) = parse_fixed_u32(bytes, pos, 2)?;
+    pos = next;
+    if bytes.get(pos)? != &b':' {
+        return None;
+    }
+    pos += 1;
+    let (minute, next) = parse_fixed_u32(bytes, pos, 2)?;
+    pos = next;
+    if pos != bytes.len() {
+        return None;
+    }
+    timestamp_from_parts(year as i32, month, day, hour, minute, 0, 0)
+}
+
+fn parse_ymd_hms(bytes: &[u8], sep: u8, allow_fraction: bool) -> Option<(i64, u32)> {
+    let (year, mut pos) = parse_fixed_u32(bytes, 0, 4)?;
+    if bytes.get(pos)? != &b'-' {
+        return None;
+    }
+    pos += 1;
+    let (month, next) = parse_fixed_u32(bytes, pos, 2)?;
+    pos = next;
+    if bytes.get(pos)? != &b'-' {
+        return None;
+    }
+    pos += 1;
+    let (day, next) = parse_fixed_u32(bytes, pos, 2)?;
+    pos = next;
+    if bytes.get(pos)? != &sep {
+        return None;
+    }
+    pos += 1;
+    let (hour, next) = parse_fixed_u32(bytes, pos, 2)?;
+    pos = next;
+    if bytes.get(pos)? != &b':' {
+        return None;
+    }
+    pos += 1;
+    let (minute, next) = parse_fixed_u32(bytes, pos, 2)?;
+    pos = next;
+    if bytes.get(pos)? != &b':' {
+        return None;
+    }
+    pos += 1;
+    let (second, next) = parse_fixed_u32(bytes, pos, 2)?;
+    pos = next;
+    let mut nanos = 0u32;
+    if allow_fraction && bytes.get(pos) == Some(&b'.') {
+        let (fraction, digits, next) = parse_fraction(bytes, pos + 1)?;
+        nanos = fraction_to_nanos(fraction, digits);
+        pos = next;
+    }
+    if pos != bytes.len() {
+        return None;
+    }
+    timestamp_from_parts(year as i32, month, day, hour, minute, second, nanos)
 }
 
 fn timestamp_from_int(value: i64, unit: Option<arrow_schema::TimeUnit>) -> (i64, u32) {
@@ -6885,6 +7176,57 @@ mod tests {
         }
         assert_eq!(parse_bool("\"yes\""), Some(true));
         assert_eq!(parse_bool("\"0\""), Some(false));
+    }
+
+    #[test]
+    fn parse_rfc3339_fast_offsets() {
+        let parser = TimestampFormatParser::compile("rfc3339").unwrap();
+        let (secs, nanos) = parser.parse_timestamp("1970-01-01T00:00:00Z").unwrap();
+        assert_eq!(secs, 0);
+        assert_eq!(nanos, 0);
+        let (secs, _) = parser.parse_timestamp("1970-01-01T00:00:00+01:00").unwrap();
+        assert_eq!(secs, -3600);
+        let (secs, _) = parser.parse_timestamp("1970-01-01T00:00:00-02:30").unwrap();
+        assert_eq!(secs, 9000);
+        let (secs, nanos) = parser
+            .parse_timestamp("1970-01-01T00:00:00.123456789Z")
+            .unwrap();
+        assert_eq!(secs, 0);
+        assert_eq!(nanos, 123_456_789);
+    }
+
+    #[test]
+    fn parse_common_timestamp_formats() {
+        let parser = TimestampFormatParser::compile("%Y-%m-%d %H:%M:%S").unwrap();
+        let (secs, nanos) = parser.parse_timestamp("1970-01-01 00:00:01").unwrap();
+        assert_eq!(secs, 1);
+        assert_eq!(nanos, 0);
+
+        let parser = TimestampFormatParser::compile("%Y-%m-%d %H:%M:%S%.f").unwrap();
+        let (secs, nanos) = parser.parse_timestamp("1970-01-01 00:00:00.5").unwrap();
+        assert_eq!(secs, 0);
+        assert_eq!(nanos, 500_000_000);
+
+        let parser = TimestampFormatParser::compile("%Y-%m-%d %H:%M").unwrap();
+        let (secs, nanos) = parser.parse_timestamp("1970-01-01 00:01").unwrap();
+        assert_eq!(secs, 60);
+        assert_eq!(nanos, 0);
+
+        let parser = TimestampFormatParser::compile("%Y-%m-%dT%H:%M:%S").unwrap();
+        let (secs, nanos) = parser.parse_timestamp("1970-01-01T00:00:02").unwrap();
+        assert_eq!(secs, 2);
+        assert_eq!(nanos, 0);
+
+        let parser = TimestampFormatParser::compile("%Y-%m-%dT%H:%M:%S%.f").unwrap();
+        let (secs, nanos) = parser
+            .parse_timestamp("1970-01-01T00:00:03.250").unwrap();
+        assert_eq!(secs, 3);
+        assert_eq!(nanos, 250_000_000);
+
+        let parser = TimestampFormatParser::compile("%Y-%m-%d").unwrap();
+        let (secs, nanos) = parser.parse_timestamp("1970-01-02").unwrap();
+        assert_eq!(secs, 86_400);
+        assert_eq!(nanos, 0);
     }
 
     #[test]
