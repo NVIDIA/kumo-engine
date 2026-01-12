@@ -1735,6 +1735,7 @@ fn fraction_to_nanos(value: u32, digits: usize) -> u32 {
 }
 
 fn infer_primary_keys(tables: &mut [TableSpec]) {
+    let fallback_freq = tables.len().max(1) as i32;
     let mut freq = HashMap::new();
     for table in tables.iter() {
         for col in &table.columns {
@@ -1783,10 +1784,12 @@ fn infer_primary_keys(tables: &mut [TableSpec]) {
             if has_composite_code_version(&lower, &table.columns) {
                 continue;
             }
-            let count = if matches_table {
+            let count = if matches_table || name_match {
                 1
             } else {
-                *freq.get(&lower).unwrap_or(&usize::MAX) as i32
+                freq.get(&lower)
+                    .map(|v| (*v).min(i32::MAX as usize) as i32)
+                    .unwrap_or(fallback_freq)
             };
             if count <= 0 {
                 continue;
@@ -1856,7 +1859,14 @@ fn infer_foreign_keys(
         let lower = table.name.to_lowercase();
         name_alias_map.entry(lower.clone()).or_default().push(table);
         let singular = singularize(&lower);
-        name_alias_map.entry(singular).or_default().push(table);
+        name_alias_map.entry(singular.clone()).or_default().push(table);
+        let name_field = format!("{}_name", lower);
+        name_alias_map.entry(name_field).or_default().push(table);
+        let singular_name_field = format!("{}_name", singular);
+        name_alias_map
+            .entry(singular_name_field)
+            .or_default()
+            .push(table);
     }
     for table in tables {
         let table_pk = table.primary_key.as_deref();
@@ -2181,6 +2191,14 @@ fn infer_edge_tables(tables: &mut [TableSpec], rels: &[RelationshipSpec]) {
                 continue;
             }
             if is_weight_like(col) {
+                if seen_weight {
+                    allowed = false;
+                    break;
+                }
+                seen_weight = true;
+                continue;
+            }
+            if is_numeric_weight_dtype(col) {
                 if seen_weight {
                     allowed = false;
                     break;
