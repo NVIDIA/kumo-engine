@@ -110,4 +110,4 @@ fi
 if [[ "${PARALLEL_ENABLED}" == "true" ]]; then
   args+=(--parallel)
 fi
-env "${env_args[@]}" "${args[@]}"
+env ${env_args[@]+"${env_args[@]}"} "${args[@]}"

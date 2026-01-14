@@ -304,11 +304,11 @@ fn infer_local_tables(
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().to_string();
         if path.is_dir() {
-            let table = infer_dir_table(&name, &path, options, warnings)?;
+            let table = infer_dir_table(&name, &path, root, options, warnings)?;
             if let Some(table) = table {
                 tables.push(table);
             }
-        } else if let Some(table) = infer_file_table(&name, &path, options)? {
+        } else if let Some(table) = infer_file_table(&name, &path, root, options)? {
             tables.push(table);
         }
     }
@@ -318,7 +318,12 @@ fn infer_local_tables(
     Ok(tables)
 }
 
-fn infer_file_table(name: &str, path: &Path, options: &InferOptions) -> Result<Option<TableInput>> {
+fn infer_file_table(
+    name: &str,
+    path: &Path,
+    root: &Path,
+    options: &InferOptions,
+) -> Result<Option<TableInput>> {
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
@@ -329,10 +334,11 @@ fn infer_file_table(name: &str, path: &Path, options: &InferOptions) -> Result<O
             eprintln!("infer_source: reading {}", path.display());
             let size = std::fs::metadata(path)?.len();
             let columns = infer_csv_schema(path, options)?;
+            let rel_path = path.strip_prefix(root).unwrap_or(path);
             Ok(Some(TableInput {
                 name: name.trim_end_matches(".csv").to_string(),
                 format: TableFormat::Csv,
-                paths: vec![path.to_string_lossy().to_string()],
+                paths: vec![rel_path.to_string_lossy().to_string()],
                 columns,
                 total_bytes: size,
             }))
@@ -341,10 +347,11 @@ fn infer_file_table(name: &str, path: &Path, options: &InferOptions) -> Result<O
             eprintln!("infer_source: reading {}", path.display());
             let size = std::fs::metadata(path)?.len();
             let columns = infer_parquet_schema_local(path, options)?;
+            let rel_path = path.strip_prefix(root).unwrap_or(path);
             Ok(Some(TableInput {
                 name: name.trim_end_matches(".parquet").to_string(),
                 format: TableFormat::Parquet,
-                paths: vec![path.to_string_lossy().to_string()],
+                paths: vec![rel_path.to_string_lossy().to_string()],
                 columns,
                 total_bytes: size,
             }))
@@ -356,6 +363,7 @@ fn infer_file_table(name: &str, path: &Path, options: &InferOptions) -> Result<O
 fn infer_dir_table(
     name: &str,
     dir: &Path,
+    root: &Path,
     options: &InferOptions,
     warnings: &mut InferWarnings,
 ) -> Result<Option<TableInput>> {
@@ -381,7 +389,8 @@ fn infer_dir_table(
         match &mut table {
             Some(existing) => {
                 if !options.validate_dir_schemas {
-                    existing.paths.push(path.to_string_lossy().to_string());
+                    let rel_path = path.strip_prefix(root).unwrap_or(&path);
+                    existing.paths.push(rel_path.to_string_lossy().to_string());
                     existing.total_bytes = existing.total_bytes.saturating_add(size);
                     continue;
                 }
@@ -404,7 +413,8 @@ fn infer_dir_table(
                         continue;
                     }
                 }
-                existing.paths.push(path.to_string_lossy().to_string());
+                let rel_path = path.strip_prefix(root).unwrap_or(&path);
+                existing.paths.push(rel_path.to_string_lossy().to_string());
                 existing.total_bytes = existing.total_bytes.saturating_add(size);
             }
             None => {
@@ -413,10 +423,11 @@ fn infer_dir_table(
                     TableFormat::Csv => infer_csv_schema(&path, options)?,
                     TableFormat::Parquet => infer_parquet_schema_local(&path, options)?,
                 };
+                let rel_path = path.strip_prefix(root).unwrap_or(&path);
                 table = Some(TableInput {
                     name: name.to_string(),
                     format,
-                    paths: vec![path.to_string_lossy().to_string()],
+                    paths: vec![rel_path.to_string_lossy().to_string()],
                     columns,
                     total_bytes: size,
                 });
