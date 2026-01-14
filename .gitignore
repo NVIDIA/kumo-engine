@@ -9,3 +9,4 @@ Cargo.lock
 heap-*.heap
 heap-*.svg
 heap-*.txt
+data

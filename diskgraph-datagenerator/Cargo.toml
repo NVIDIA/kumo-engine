@@ -13,7 +13,7 @@ arrow-array = "57.1.0"
 arrow-schema = "57.1.0"
 clap = { version = "4.4", features = ["derive"] }
 indicatif = "0.17"
-parquet = { version = "57.1.0", features = ["arrow"] }
+parquet = { version = "57.1.0", features = ["arrow", "async", "object_store"] }
 chrono = "0.4"
 anyhow = { workspace = true }
 serde = { workspace = true }
@@ -25,6 +25,13 @@ aws-sdk-s3 = "1"
 futures-util = "0.3"
 tokio = { version = "1", features = ["fs", "io-util", "macros", "rt-multi-thread", "sync"] }
 url = "2"
+diskgraph-infer = { path = "../diskgraph-infer" }
+diskgraph-ingest = { path = "../diskgraph-ingest" }
+diskgraph-index = { path = "../diskgraph-index" }
+diskgraph-core = { path = "../diskgraph-core" }
+object_store = { version = "0.12.4", features = ["aws", "gcp", "azure"] }
+tempfile = "3"
+uuid = { version = "1.4", features = ["v4"] }
 
 [[bin]]
 name = "diskgraph-datagenerator"
@@ -33,3 +40,7 @@ path = "src/main.rs"
 [[bin]]
 name = "download-ingested-graph"
 path = "src/bin/download_ingested_graph.rs"
+
+[[bin]]
+name = "validate-s3-ingest"
+path = "src/bin/validate_s3.rs"
