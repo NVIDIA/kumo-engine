@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-DEST_ROOT="${1:-/mnt/localssd/datasets/hnm}"
+DEFAULT_ROOT="${DISKGRAPH_DATA_ROOT:-/mnt/localssd}"
+DEST_ROOT="${1:-${DEFAULT_ROOT%/}/datasets/hnm}"
 TXN_SUBDIR="${2:-transactions}"
 DUP_COUNT="${3:-100}"
 

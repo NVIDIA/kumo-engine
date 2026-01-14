@@ -7229,7 +7229,11 @@ fn localize_input(path: &str) -> Result<LocalizedInput> {
 }
 
 fn scratch_root() -> Result<PathBuf> {
-    let ssd = PathBuf::from("/mnt/localssd/diskgraph-ingest-tmp");
+    let ssd_root = std::env::var("DISKGRAPH_DATA_ROOT")
+        .ok()
+        .filter(|root| !root.trim().is_empty())
+        .unwrap_or_else(|| "/mnt/localssd".to_string());
+    let ssd = PathBuf::from(ssd_root.trim_end_matches('/')).join("diskgraph-ingest-tmp");
     if ssd.exists() {
         return Ok(ssd);
     }

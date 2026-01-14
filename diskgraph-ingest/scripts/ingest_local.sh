@@ -51,7 +51,9 @@ if [[ -z "${SOURCE}" ]]; then
 fi
 
 if [[ -z "${OUTPUT}" ]]; then
-  if [[ -d /mnt/localssd ]]; then
+  if [[ -n "${DISKGRAPH_DATA_ROOT:-}" ]]; then
+    DEFAULT_OUT_ROOT="${DISKGRAPH_DATA_ROOT%/}/diskgraph-index"
+  elif [[ -d /mnt/localssd ]]; then
     DEFAULT_OUT_ROOT="/mnt/localssd/diskgraph-index"
   else
     DEFAULT_OUT_ROOT="/tmp/diskgraph-index"

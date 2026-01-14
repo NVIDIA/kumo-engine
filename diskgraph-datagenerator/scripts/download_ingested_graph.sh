@@ -9,6 +9,7 @@ set -euo pipefail
 #
 # Optional flags (passed through):
 #   --out-root /mnt/localssd/datasets
+#   DISKGRAPH_DATA_ROOT=/custom/root (overrides /mnt/localssd when --out-root not set)
 #   --max-requests 64
 #   --part-size-mb 64
 #   --multipart-threshold-mb 128

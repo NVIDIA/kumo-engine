@@ -9,7 +9,8 @@ fi
 CONFIG_PATH="$1"
 CONFIG_NAME="$(basename "$CONFIG_PATH")"
 DATASET_NAME="${CONFIG_NAME%.json}"
-OUT_ROOT="/mnt/localssd/datasets/${DATASET_NAME}"
+DATA_ROOT="${DISKGRAPH_DATA_ROOT:-/mnt/localssd}"
+OUT_ROOT="${DATA_ROOT%/}/datasets/${DATASET_NAME}"
 
 if [[ -d "$OUT_ROOT" ]]; then
   rm -rf "$OUT_ROOT"
@@ -22,5 +23,5 @@ if cargo run -p diskgraph-datagenerator --bin diskgraph-datagenerator --release 
   echo "Next steps:"
   echo "  ./diskgraph-infer/scripts/infer_source.sh \"$OUT_ROOT\""
   echo "  ./diskgraph-ingest/scripts/ingest_local.sh \"$OUT_ROOT\""
-  echo "  ./diskgraph-index/scripts/explore_local.sh /mnt/localssd/diskgraph-index/${DATASET_NAME}"
+  echo "  ./diskgraph-index/scripts/explore_local.sh ${DATA_ROOT%/}/diskgraph-index/${DATASET_NAME}"
 fi

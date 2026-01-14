@@ -15,6 +15,7 @@ use url::Url;
 
 const DEFAULT_BUCKET: &str = "kumo-prod-dataplane-bucket";
 const DOORDASH_BUCKET: &str = "kumo-doordash-cache";
+const DEFAULT_OUT_ROOT: &str = "/mnt/localssd/datasets";
 
 #[derive(Parser, Debug)]
 #[command(about = "Download ingested graph parquet files for a training or bp job.")]
@@ -22,8 +23,8 @@ struct Args {
     /// Inputs: <customer_name> <job_id> or <job_url>.
     #[arg(value_name = "INPUT")]
     inputs: Vec<String>,
-    /// Output root directory.
-    #[arg(long, default_value = "/mnt/localssd/datasets")]
+    /// Output root directory (defaults to /mnt/localssd/datasets or DISKGRAPH_DATA_ROOT/datasets).
+    #[arg(long, default_value = DEFAULT_OUT_ROOT)]
     out_root: PathBuf,
     /// Max in-flight S3 requests (objects + parts).
     #[arg(long, default_value_t = 64)]
@@ -206,13 +207,25 @@ fn parse_args() -> Result<ResolvedArgs> {
     Ok(ResolvedArgs {
         customer_name,
         job_id,
-        out_root: raw.out_root,
+        out_root: resolve_out_root(raw.out_root),
         max_requests: raw.max_requests,
         part_size_mb: raw.part_size_mb,
         multipart_threshold_mb: raw.multipart_threshold_mb,
         part_concurrency: raw.part_concurrency,
         dry_run: raw.dry_run,
     })
+}
+
+fn resolve_out_root(out_root: PathBuf) -> PathBuf {
+    if out_root == PathBuf::from(DEFAULT_OUT_ROOT) {
+        if let Ok(data_root) = std::env::var("DISKGRAPH_DATA_ROOT") {
+            let data_root = data_root.trim();
+            if !data_root.is_empty() {
+                return PathBuf::from(data_root).join("datasets");
+            }
+        }
+    }
+    out_root
 }
 
 #[derive(Debug)]

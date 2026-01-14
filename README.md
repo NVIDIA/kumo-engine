@@ -12,13 +12,15 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
 ### 1) Start a VM and mount Local SSD
 
-We have a helper that formats and mounts local SSDs as `/mnt/localssd`. It is **destructive** and has only been tested on GCP so far.
+We have a helper that formats and mounts local SSDs as `/mnt/localssd` (override with `DISKGRAPH_DATA_ROOT`). It is **destructive** and has only been tested on GCP so far. If you do not have attached NVMe devices (e.g., on a laptop), set `export DISKGRAPH_DATA_ROOT="$HOME/diskgraph-data"` and skip the local SSD setup.
 
 ```bash
 sudo ./scripts/localssd-raid0-xfs-tui.sh
 ```
 
 ### 2) Download data to `/mnt/localssd/datasets/`
+
+If you want to use a different base directory, set `DISKGRAPH_DATA_ROOT=/path/to/data` and keep the rest of the paths the same.
 
 Use the H&M download helper (defaults to `/mnt/localssd/datasets/hnm`):
 

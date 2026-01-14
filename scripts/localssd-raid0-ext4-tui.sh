@@ -176,7 +176,7 @@ main() {
 
   # Random-read oriented defaults.
   local chunk_k="1024"
-  local mountpoint="/mnt/localssd"
+  local mountpoint="${DISKGRAPH_DATA_ROOT:-/mnt/localssd}"
   local stripe_cache="4096"
   local block_k="4"
 

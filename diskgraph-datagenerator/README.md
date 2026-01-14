@@ -16,6 +16,8 @@ cargo run -p diskgraph-datagenerator -- \
   --output /mnt/localssd/datasets/small_100m
 ```
 
+Set `DISKGRAPH_DATA_ROOT=/path/to/data` to override the `/mnt/localssd` base when using wrapper scripts.
+
 Or use the wrapper script:
 
 ```bash

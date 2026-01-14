@@ -176,7 +176,7 @@ main() {
 
   # Sequential-write optimized defaults.
   local chunk_k="1024"
-  local mountpoint="/mnt/localssd"
+  local mountpoint="${DISKGRAPH_DATA_ROOT:-/mnt/localssd}"
   local stripe_cache="8192"
   local log_size="1g"
   local logbufs="8"
