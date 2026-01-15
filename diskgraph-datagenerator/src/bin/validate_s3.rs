@@ -1,8 +1,11 @@
 use anyhow::{Context, Result};
 use clap::Parser;
-use diskgraph_datagenerator::downloader::{download_job, DownloadOptions};
+use diskgraph_datagenerator::downloader::{download_job, parse_job_spec, DownloadOptions};
 use diskgraph_infer::{infer_source_metadata, parse_root_source, InferOptions};
 use diskgraph_ingest::{ingest_with_stats, Dest, IngestOptions};
+use diskgraph_ingest::progress::{build_progress, format_count};
+use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -25,6 +28,21 @@ struct Args {
     /// Keep downloaded data and indices after validation.
     #[arg(long, default_value_t = false)]
     keep: bool,
+
+    /// Output path for the incremental JSON validation report.
+    #[arg(long, default_value = "validation_report.json")]
+    report_file: PathBuf,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct JobResult {
+    job_spec: String,
+    customer: String,
+    job_id: String,
+    status: String,
+    error: Option<String>,
+    #[serde(flatten)]
+    report: Option<ValidationReport>,
 }
 
 #[tokio::main]
@@ -34,12 +52,12 @@ async fn main() -> Result<()> {
 
     let output_root = args.output_root.unwrap_or_else(|| {
         std::env::var("DISKGRAPH_DATA_ROOT")
-            .map(PathBuf::from)
+            .map(|v| PathBuf::from(v).join("index"))
             .unwrap_or_else(|_| PathBuf::from("/tmp/diskgraph-validate/index"))
     });
     let download_root = args.download_root.unwrap_or_else(|| {
         std::env::var("DISKGRAPH_DATA_ROOT")
-            .map(PathBuf::from)
+            .map(|v| PathBuf::from(v).join("raw"))
             .unwrap_or_else(|_| PathBuf::from("/tmp/diskgraph-validate/raw"))
     });
 
@@ -50,11 +68,24 @@ async fn main() -> Result<()> {
         fs::create_dir_all(&download_root).context("create download root")?;
     }
 
-    let mut results = Vec::new();
+    let mut results: Vec<JobResult> = load_existing_report(&args.report_file)?;
+    let mut completed_jobs: HashSet<(String, String)> = results
+        .iter()
+        .filter(|r| r.status == "Success")
+        .map(|r| (r.customer.clone(), r.job_id.clone()))
+        .collect();
 
     for job in &args.jobs {
+        let (customer, job_id) = parse_job_spec(job).unwrap_or(("unknown".to_string(), "unknown".to_string()));
+        if completed_jobs.contains(&(customer.clone(), job_id.clone())) {
+            println!("\n>>> Skipping already validated job: {} ({}/{})", job, customer, job_id);
+            continue;
+        }
+
         println!("\n>>> Processing Job: {}", job);
-        let (customer, job_id) = extract_job_info(job);
+
+        // Remove any prior entry for this job (e.g. if it failed previously)
+        results.retain(|r| r.customer != customer || r.job_id != job_id);
 
         loop {
             let start = Instant::now();
@@ -62,7 +93,17 @@ async fn main() -> Result<()> {
                 Ok(report) => {
                     let duration = start.elapsed();
                     println!(">>> Finished Job: {} in {:?}", job, duration);
-                    results.push((job.clone(), Ok(report)));
+                    let result = JobResult {
+                        job_spec: job.clone(),
+                        customer: customer.clone(),
+                        job_id: job_id.clone(),
+                        status: "Success".to_string(),
+                        error: None,
+                        report: Some(report),
+                    };
+                    results.push(result);
+                    completed_jobs.insert((customer.clone(), job_id.clone()));
+                    save_incremental_report(&results, &args.report_file)?;
                     break;
                 }
                 Err(e) => {
@@ -78,7 +119,16 @@ async fn main() -> Result<()> {
                             ">>> Internal Error for Customer: {}, Job: {}. Error: {:?}",
                             customer, job_id, e
                         );
-                        results.push((job.clone(), Err(e)));
+                        let result = JobResult {
+                            job_spec: job.clone(),
+                            customer: customer.clone(),
+                            job_id: job_id.clone(),
+                            status: "Error".to_string(),
+                            error: Some(format!("{:?}", e)),
+                            report: None,
+                        };
+                        results.push(result);
+                        save_incremental_report(&results, &args.report_file)?;
                         break;
                     }
                 }
@@ -91,29 +141,22 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn extract_job_info(job_spec: &str) -> (String, String) {
-    if job_spec.starts_with("http") {
-        if let Ok(url) = url::Url::parse(job_spec) {
-            let host = url.host_str().unwrap_or("unknown");
-            let customer = host.split('.').next().unwrap_or("unknown").to_string();
-            // simple heuristic to find job id in path
-            let path = url.path();
-            let job_id = if let Some(idx) = path.find("trainingjob-") {
-                path[idx..].split('/').next().unwrap_or("unknown").to_string()
-            } else if let Some(idx) = path.find("bp-job-") {
-                path[idx..].split('/').next().unwrap_or("unknown").to_string()
-            } else {
-                "unknown".to_string()
-            };
-            return (customer, job_id);
-        }
-    } else {
-        let parts: Vec<&str> = job_spec.split_whitespace().collect();
-        if parts.len() >= 2 {
-            return (parts[0].to_string(), parts[1].to_string());
-        }
+fn load_existing_report(path: &Path) -> Result<Vec<JobResult>> {
+    if !path.exists() {
+        return Ok(Vec::new());
     }
-    ("unknown".to_string(), "unknown".to_string())
+    let file = fs::File::open(path)?;
+    // If file is empty or invalid JSON, return empty vec but warn?
+    // For now, if it fails to parse, we assume it's corrupt or not compatible and fail hard to avoid overwrite.
+    // Or we could return empty to start fresh. Let's fail hard for safety.
+    let results: Vec<JobResult> = serde_json::from_reader(file).context("parse existing report")?;
+    Ok(results)
+}
+
+fn save_incremental_report(results: &[JobResult], path: &Path) -> Result<()> {
+    let file = fs::File::create(path).context("create report file")?;
+    serde_json::to_writer_pretty(file, results).context("write report file")?;
+    Ok(())
 }
 
 fn is_network_error(e: &anyhow::Error) -> bool {
@@ -133,6 +176,7 @@ fn is_network_error(e: &anyhow::Error) -> bool {
         || msg.contains("504 gateway timeout")
 }
 
+#[derive(Serialize, Deserialize, Clone)]
 struct ValidationReport {
     total_nodes: u64,
     total_edges: u64,
@@ -176,6 +220,7 @@ async fn validate_job(
     println!("Ingesting to {}...", output_path.display());
     let options = IngestOptions {
         parallel: true,
+        progress: build_progress(),
         ..Default::default()
     };
     let (_, stats) = ingest_with_stats(
@@ -222,7 +267,7 @@ fn get_dir_size(path: &Path) -> Result<u64> {
     Ok(total)
 }
 
-fn print_report(results: &[(String, Result<ValidationReport>)]) {
+fn print_report(results: &[JobResult]) {
     println!("\nIngestion Validation Summary:");
     let line = "-".repeat(120);
     println!("{}", line);
@@ -231,20 +276,24 @@ fn print_report(results: &[(String, Result<ValidationReport>)]) {
         "Job Spec", "Nodes", "Edges", "Time (ms)", "Size (MB)"
     );
     println!("{}", line);
-    for (url, res) in results {
-        match res {
-            Ok(report) => {
+    for res in results {
+        match &res.report {
+            Some(report) => {
                 println!(
                     "{:<40} | {:>12} | {:>12} | {:>12} | {:>12.2}",
-                    truncate_str(url, 40),
+                    truncate_str(&res.job_spec, 40),
                     format_count(report.total_nodes),
                     format_count(report.total_edges),
                     report.ingest_time_ms,
                     report.index_size_bytes as f64 / 1024.0 / 1024.0
                 );
             }
-            Err(e) => {
-                println!("{:<40} | ERROR: {}", truncate_str(url, 40), truncate_error(e));
+            None => {
+                println!(
+                    "{:<40} | ERROR: {}",
+                    truncate_str(&res.job_spec, 40),
+                    res.error.as_deref().unwrap_or("Unknown error")
+                );
             }
         }
     }
@@ -256,26 +305,5 @@ fn truncate_str(s: &str, max: usize) -> String {
         s.to_string()
     } else {
         format!("...{}", &s[s.len() - max + 3..])
-    }
-}
-
-fn truncate_error(e: &anyhow::Error) -> String {
-    let s = format!("{:?}", e);
-    if s.len() > 60 {
-        format!("{}...", &s[..57])
-    } else {
-        s
-    }
-}
-
-fn format_count(value: u64) -> String {
-    if value >= 1_000_000_000 {
-        format!("{:.1}B", value as f64 / 1_000_000_000.0)
-    } else if value >= 1_000_000 {
-        format!("{:.1}M", value as f64 / 1_000_000.0)
-    } else if value >= 1_000 {
-        format!("{:.1}K", value as f64 / 1_000.0)
-    } else {
-        value.to_string()
     }
 }

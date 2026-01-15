@@ -2,6 +2,7 @@
 
 mod mapping;
 pub mod source_metadata;
+pub mod progress;
 
 use crate::mapping::{
     fingerprint_seed_for, write_pk_data_entry, write_pk_data_header, GxPtrHash64, Key, KeyType,

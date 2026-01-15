@@ -180,7 +180,7 @@ pub async fn download_job(job_spec: &str, options: DownloadOptions) -> Result<Pa
     Ok(out_dir)
 }
 
-fn parse_job_spec(input: &str) -> Result<(String, String)> {
+pub fn parse_job_spec(input: &str) -> Result<(String, String)> {
     if input.starts_with("http") || input.starts_with("https") {
         parse_job_url(input)
     } else {
