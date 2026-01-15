@@ -333,7 +333,8 @@ fn infer_file_table(
         "csv" => {
             eprintln!("infer_source: reading {}", path.display());
             let size = std::fs::metadata(path)?.len();
-            let columns = infer_csv_schema(path, options)?;
+            let columns = infer_csv_schema(path, options)
+                .with_context(|| format!("infer schema for table {} at {}", name, path.display()))?;
             let rel_path = path.strip_prefix(root).unwrap_or(path);
             Ok(Some(TableInput {
                 name: name.trim_end_matches(".csv").to_string(),
@@ -346,7 +347,8 @@ fn infer_file_table(
         "parquet" => {
             eprintln!("infer_source: reading {}", path.display());
             let size = std::fs::metadata(path)?.len();
-            let columns = infer_parquet_schema_local(path, options)?;
+            let columns = infer_parquet_schema_local(path, options)
+                .with_context(|| format!("infer schema for table {} at {}", name, path.display()))?;
             let rel_path = path.strip_prefix(root).unwrap_or(path);
             Ok(Some(TableInput {
                 name: name.trim_end_matches(".parquet").to_string(),
@@ -396,8 +398,10 @@ fn infer_dir_table(
                 }
                 eprintln!("infer_source: reading {}", path.display());
                 let columns = match format {
-                    TableFormat::Csv => infer_csv_schema(&path, options)?,
-                    TableFormat::Parquet => infer_parquet_schema_local(&path, options)?,
+                    TableFormat::Csv => infer_csv_schema(&path, options)
+                        .with_context(|| format!("infer schema for table {} at {}", name, path.display()))?,
+                    TableFormat::Parquet => infer_parquet_schema_local(&path, options)
+                        .with_context(|| format!("infer schema for table {} at {}", name, path.display()))?,
                 };
                 if !same_table_format(&existing.format, &format)
                     || !columns_match(&existing.columns, &columns)
@@ -420,8 +424,10 @@ fn infer_dir_table(
             None => {
                 eprintln!("infer_source: reading {}", path.display());
                 let columns = match format {
-                    TableFormat::Csv => infer_csv_schema(&path, options)?,
-                    TableFormat::Parquet => infer_parquet_schema_local(&path, options)?,
+                    TableFormat::Csv => infer_csv_schema(&path, options)
+                        .with_context(|| format!("infer schema for table {} at {}", name, path.display()))?,
+                    TableFormat::Parquet => infer_parquet_schema_local(&path, options)
+                        .with_context(|| format!("infer schema for table {} at {}", name, path.display()))?,
                 };
                 let rel_path = path.strip_prefix(root).unwrap_or(&path);
                 table = Some(TableInput {
@@ -492,14 +498,16 @@ fn infer_remote_tables(
                         &obj.location,
                         obj.size,
                         options,
-                    )?,
+                    )
+                    .with_context(|| format!("infer schema for table {} at {}", table_name, path_str))?,
                     TableFormat::Csv => infer_csv_schema_remote(
                         &rt,
                         store.as_ref(),
                         &obj.location,
                         obj.size,
                         options,
-                    )?,
+                    )
+                    .with_context(|| format!("infer schema for table {} at {}", table_name, path_str))?,
                 };
                 let entry = tables.entry(table_name.to_string()).or_insert_with(|| TableInput {
                     name: table_name.to_string(),
@@ -552,14 +560,16 @@ fn infer_remote_tables(
                         &obj.location,
                         obj.size,
                         options,
-                    )?,
+                    )
+                    .with_context(|| format!("infer schema for table {} at {}", table_name, path_str))?,
                     TableFormat::Csv => infer_csv_schema_remote(
                         &rt,
                         store.as_ref(),
                         &obj.location,
                         obj.size,
                         options,
-                    )?,
+                    )
+                    .with_context(|| format!("infer schema for table {} at {}", table_name, path_str))?,
                 };
                 let entry = tables.entry(table_name.to_string()).or_insert_with(|| TableInput {
                     name: table_name.to_string(),
@@ -790,7 +800,13 @@ fn infer_parquet_schema_from_arrow(schema: &Schema) -> Result<Vec<ColumnSpec>> {
             DataType::Timestamp(_, _) => IngestedType::Timestamp,
             DataType::Decimal128(_, _) => IngestedType::Decimal128,
             DataType::Decimal256(_, _) => IngestedType::Decimal256,
-            _ => return Err(anyhow!("unsupported parquet type {}", field.data_type())),
+            _ => {
+                return Err(anyhow!(
+                    "unsupported parquet type {} for column {}",
+                    field.data_type(),
+                    field.name()
+                ))
+            }
         };
         if matches!(
             field.data_type(),
@@ -1184,9 +1200,15 @@ fn arrow_type_metadata(
         }
         DataType::List(field) | DataType::LargeList(field) => match field.data_type() {
             DataType::Float16 | DataType::Float32 | DataType::Float64 => {}
-            _ => return Err(anyhow!("unsupported list type {}", field.data_type())),
+            _ => {
+                return Err(anyhow!(
+                    "unsupported list element type {} for field {}",
+                    field.data_type(),
+                    field.name()
+                ))
+            }
         },
-        _ => return Err(anyhow!("unsupported parquet type {}", source_dtype)),
+        _ => return Err(anyhow!("unsupported arrow type {}", source_dtype)),
     };
     Ok((fixed_len, precision, scale))
 }
