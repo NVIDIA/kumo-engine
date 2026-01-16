@@ -3541,7 +3541,7 @@ fn varint_bytes_u128(value: u128) -> usize {
 }
 
 fn int_bits(min: i64, max: i64) -> u8 {
-    let max_abs = min.abs().max(max.abs()) as u64;
+    let max_abs = min.unsigned_abs().max(max.unsigned_abs());
     let bits = 64 - max_abs.leading_zeros() as u8;
     bits.max(1)
 }
@@ -4024,7 +4024,7 @@ impl ColumnStats {
 }
 
 fn int_use_varint(min: i64, max: i64) -> bool {
-    let max_abs = min.abs().max(max.abs()) as u64;
+    let max_abs = min.unsigned_abs().max(max.unsigned_abs());
     let bits = 64 - max_abs.leading_zeros() as u8;
     bits <= 32
 }
