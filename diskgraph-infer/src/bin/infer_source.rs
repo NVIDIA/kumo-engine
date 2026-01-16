@@ -20,13 +20,25 @@ struct Args {
     /// Validate schema consistency across all files in each table.
     #[arg(long)]
     validate_all: bool,
+    /// Path to graph config.json.
+    #[arg(long)]
+    graph_config: Option<PathBuf>,
 }
 
 fn main() -> Result<()> {
     let args = Args::parse();
     let root = parse_root_source(&args.input)?;
+
+    let graph_config = if let Some(path) = args.graph_config {
+        let bytes = std::fs::read(&path)?;
+        Some(serde_json::from_slice(&bytes)?)
+    } else {
+        None
+    };
+
     let options = InferOptions {
         validate_dir_schemas: args.validate_all,
+        graph_config,
         ..InferOptions::default()
     };
     eprintln!("infer_source: inferring metadata");

@@ -28,10 +28,41 @@ use parquet::arrow::ParquetRecordBatchStreamBuilder;
 use parquet::errors::ParquetError;
 use tokio::runtime::Runtime;
 use url::Url;
+use serde::Deserialize;
 
 const DEFAULT_SAMPLE_ROWS: usize = 2_000;
 const DEFAULT_CSV_SAMPLE_BYTES: u64 = 256 * 1024;
 const DEFAULT_CSV_SAMPLE_ROWS: usize = 2_000;
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct GraphConfig {
+    pub tables: Vec<GraphTable>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct GraphTable {
+    pub table_name: String,
+    pub cols: Vec<GraphCol>,
+    pub fkeys: Vec<GraphFKey>,
+    pub pkey: Option<GraphPKey>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct GraphPKey {
+    pub name: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct GraphCol {
+    pub name: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct GraphFKey {
+    pub name: String,
+    pub dst_table: String,
+    pub dst_key: String,
+}
 
 #[derive(Clone, Debug)]
 pub struct InferOptions {
@@ -39,6 +70,7 @@ pub struct InferOptions {
     pub csv_sample_bytes: u64,
     pub csv_sample_rows: usize,
     pub validate_dir_schemas: bool,
+    pub graph_config: Option<GraphConfig>,
 }
 
 impl Default for InferOptions {
@@ -48,6 +80,7 @@ impl Default for InferOptions {
             csv_sample_bytes: DEFAULT_CSV_SAMPLE_BYTES,
             csv_sample_rows: DEFAULT_CSV_SAMPLE_ROWS,
             validate_dir_schemas: false,
+            graph_config: None,
         }
     }
 }
@@ -134,7 +167,7 @@ pub fn infer_source_metadata(root: &RootSource, options: InferOptions) -> Result
         schema_mismatches: Vec::new(),
         notes: Vec::new(),
     };
-    let tables = match root {
+    let mut tables = match root {
         RootSource::Local(path) => infer_local_tables(path, &options, &mut warnings)?,
         RootSource::S3 { bucket, prefix } => infer_remote_tables(
             root,
@@ -163,6 +196,35 @@ pub fn infer_source_metadata(root: &RootSource, options: InferOptions) -> Result
         )?,
     };
 
+    if let Some(config) = &options.graph_config {
+        let config_tables: HashMap<String, &GraphTable> = config
+            .tables
+            .iter()
+            .map(|t| (t.table_name.clone(), t))
+            .collect();
+
+        tables.retain(|t| config_tables.contains_key(&t.name));
+
+        for table in &mut tables {
+            if let Some(cfg) = config_tables.get(&table.name) {
+                let mut allowed_cols: HashSet<String> = cfg
+                    .cols
+                    .iter()
+                    .map(|c| c.name.clone())
+                    .collect();
+
+                if let Some(pk) = &cfg.pkey {
+                    allowed_cols.insert(pk.name.clone());
+                }
+                for fk in &cfg.fkeys {
+                    allowed_cols.insert(fk.name.clone());
+                }
+
+                table.columns.retain(|c| allowed_cols.contains(&c.name));
+            }
+        }
+    }
+
     let mut table_specs: Vec<TableSpec> = tables
         .iter()
         .map(|table| TableSpec {
@@ -181,7 +243,7 @@ pub fn infer_source_metadata(root: &RootSource, options: InferOptions) -> Result
     let mut relationships = Vec::new();
     infer_primary_keys(&mut table_specs);
     infer_create_time(&mut table_specs);
-    infer_foreign_keys(&table_specs, &mut relationships, &mut warnings.notes);
+    infer_foreign_keys(&table_specs, &mut relationships, &mut warnings.notes, options.graph_config.as_ref());
     drop_join_table_primary_keys(&mut table_specs, &relationships);
     prune_relationships_without_primary_key(&table_specs, &mut relationships);
     infer_primary_key_relationships(&table_specs, &mut relationships);
@@ -1877,7 +1939,43 @@ fn infer_foreign_keys(
     tables: &[TableSpec],
     rels: &mut Vec<RelationshipSpec>,
     notes: &mut Vec<String>,
+    config: Option<&GraphConfig>,
 ) {
+    if let Some(config) = config {
+        let config_tables: HashMap<String, &GraphTable> = config
+            .tables
+            .iter()
+            .map(|t| (t.table_name.clone(), t))
+            .collect();
+
+        for table in tables {
+            if let Some(cfg) = config_tables.get(&table.name) {
+                if cfg.fkeys.is_empty() {
+                    eprintln!("INFO: No fkeys defined for table {}", table.name);
+                }
+                for fk in &cfg.fkeys {
+                    if !table.columns.iter().any(|c| c.name == fk.name) {
+                        let msg = format!("Config fkey {} in table {} refers to missing column", fk.name, table.name);
+                        eprintln!("WARN: {}", msg);
+                        notes.push(msg);
+                        continue;
+                    }
+
+                    eprintln!("INFO: Adding config fkey {} from {} to {}.{}", fk.name, table.name, fk.dst_table, fk.dst_key);
+
+                    rels.push(RelationshipSpec {
+                        name: None,
+                        src_table: table.name.clone(),
+                        src_column: fk.name.clone(),
+                        dst_table: fk.dst_table.clone(),
+                        dst_column: fk.dst_key.clone(),
+                    });
+                }
+            }
+        }
+        return;
+    }
+
     let mut table_map = HashMap::new();
     let mut pk_name_map: HashMap<String, Vec<&TableSpec>> = HashMap::new();
     let mut name_alias_map: HashMap<String, Vec<&TableSpec>> = HashMap::new();

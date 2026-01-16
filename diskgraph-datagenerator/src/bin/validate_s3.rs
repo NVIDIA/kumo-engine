@@ -203,9 +203,23 @@ async fn validate_job(
 
     // 2. Infer
     println!("Inferring metadata...");
+
+    // Check for graph config
+    let graph_config_path = data_dir.join("config.json");
+    let graph_config = if graph_config_path.exists() {
+        println!("Found graph config at {}", graph_config_path.display());
+        let bytes = fs::read(&graph_config_path)?;
+        Some(serde_json::from_slice(&bytes)?)
+    } else {
+        None
+    };
+
     let source_root = parse_root_source(data_dir.to_str().unwrap())?;
-    let infer_res = infer_source_metadata(&source_root, InferOptions::default())?;
-    
+    let mut infer_opts = InferOptions::default();
+    infer_opts.graph_config = graph_config;
+
+    let infer_res = infer_source_metadata(&source_root, infer_opts)?;
+
     let metadata_path = data_dir.join("source_metadata.json");
     fs::write(&metadata_path, serde_json::to_vec_pretty(&infer_res.metadata)?)?;
 

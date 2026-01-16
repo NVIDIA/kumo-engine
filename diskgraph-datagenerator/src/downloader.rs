@@ -91,6 +91,36 @@ pub async fn download_job(job_spec: &str, options: DownloadOptions) -> Result<Pa
         .join(format!("{}_{}", customer_name, job_id));
     prepare_output_dir(&out_dir, &options.out_root).await?;
 
+    // Attempt to download config.json if it exists at graphs_prefix_key
+    let config_key = format!("{}config.json", graphs_prefix_key);
+    let config_resp = client
+        .get_object()
+        .bucket(bucket)
+        .key(&config_key)
+        .send()
+        .await;
+
+    match config_resp {
+        Ok(resp) => {
+            progress.log("Downloading config.json".to_string());
+            let mut reader = resp.body.into_async_read();
+            let config_out = out_dir.join("config.json");
+            let mut file = tokio::fs::File::create(config_out).await?;
+            tokio::io::copy(&mut reader, &mut file).await?;
+            file.flush().await?;
+        }
+        Err(aws_sdk_s3::error::SdkError::ServiceError(service_err)) => {
+            let err = service_err.err();
+            if !err.is_no_such_key() {
+                eprintln!("Warning: failed to check/download config.json: {:?}", service_err);
+            }
+        }
+        Err(e) => {
+            // Log warning but continue if config.json fails for other reasons
+            eprintln!("Warning: failed to check/download config.json: {:?}", e);
+        }
+    }
+
     let request_sema = std::sync::Arc::new(Semaphore::new(options.max_requests));
     let mut download_items = Vec::new();
     for table_prefix in table_prefixes {
