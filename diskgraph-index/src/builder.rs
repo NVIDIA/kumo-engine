@@ -1380,8 +1380,13 @@ impl MultiBinaryNodeDataStream {
                 Ok(Some(len)) => {
                     out.clear();
                     if len > 0 {
-                        out.resize(len as usize, 0u8);
+                        out.reserve(len as usize);
+                        // SAFETY: read_exact fills the full buffer; clear on error avoids exposing uninit bytes.
+                        unsafe {
+                            out.set_len(len as usize);
+                        }
                         if let Err(_) = reader.read_exact(out.as_mut_slice()) {
+                            out.clear();
                             return Err(IndexBuildError::NotImplemented(
                                 "node data row truncated",
                             )
