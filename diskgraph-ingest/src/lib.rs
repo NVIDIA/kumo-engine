@@ -439,13 +439,7 @@ pub fn ingest_with_stats(
         ctx.build_edges_mapped(&edge_ctx)?;
     }
     let edges_map_wall = edges_map_start.elapsed();
-        let edge_ctx_drop_start = std::time::Instant::now();
-        eprintln!("edges_map: edge_ctx drop start");
-        drop_edge_ctx_parallel(edge_ctx);
-        eprintln!(
-            "edges_map: edge_ctx drop end elapsed_ms={}",
-            edge_ctx_drop_start.elapsed().as_millis()
-        );
+    drop_edge_ctx_parallel(edge_ctx);
         let index_start = std::time::Instant::now();
     let index_metadata = ctx.build_index_metadata()?;
     if let Some(profile_dir) = &profile_dir {
@@ -2924,21 +2918,9 @@ impl IngestContext {
                 edge_tables.insert(table.name.clone());
             }
         }
-        let rel_sort_lookup_start = std::time::Instant::now();
-        eprintln!("edges_map: sort_key mmap start");
         let rel_sort_lookups =
             self.build_sort_key_lookups_parallel(&root, &edge_tables, &rel_sort_keys)?;
-        eprintln!(
-            "edges_map: sort_key mmap end elapsed_ms={}",
-            rel_sort_lookup_start.elapsed().as_millis()
-        );
-        let pk_hash_start = std::time::Instant::now();
-        eprintln!("edges_map: pk_hash mmap start");
         let pk_hash_store = Arc::new(self.build_pk_hash_store_parallel(&root)?);
-        eprintln!(
-            "edges_map: pk_hash mmap end elapsed_ms={}",
-            pk_hash_start.elapsed().as_millis()
-        );
         Ok(EdgeBuildContext {
             root,
             rel_sort_bits,
@@ -3112,11 +3094,6 @@ impl IngestContext {
                 let tx = tx.clone();
                 let src_table = table_by_name(&source, &rel.src_table)?;
                 let src_fk_col = column_spec(src_table, &rel.src_column)?;
-                let meta_start = std::time::Instant::now();
-                eprintln!(
-                    "edges_map: fkey meta scan start relation={}",
-                    rel.name_forward
-                );
                 let mut total_rows = 0u64;
                 for shard in 0..num_shards {
                     let fkey_meta = root.join(temp_fkey_meta_path(
@@ -3127,11 +3104,6 @@ impl IngestContext {
                     let meta = read_temp_meta(&fkey_meta)?;
                     total_rows = total_rows.saturating_add(meta.row_count);
                 }
-                eprintln!(
-                    "edges_map: fkey meta scan end relation={} elapsed_ms={}",
-                    rel.name_forward,
-                    meta_start.elapsed().as_millis()
-                );
                 if let Some(cb) = &progress {
                     cb(ProgressEvent {
                         phase: ProgressPhase::EdgesPassA,
@@ -3377,22 +3349,12 @@ impl IngestContext {
                     .clone();
                 let forward_name = format!("edge_{}_src_to_dst", table.name);
                 let reverse_name = format!("edge_{}_dst_to_src", table.name);
-                let meta_start = std::time::Instant::now();
-                eprintln!(
-                    "edges_map: edge meta scan start table={}",
-                    table.name
-                );
                 let mut total_rows = 0u64;
                 for shard in 0..num_shards {
                     let meta =
                         read_temp_meta(&root.join(temp_edge_meta_path(&forward_name, shard)))?;
                     total_rows = total_rows.saturating_add(meta.row_count);
                 }
-                eprintln!(
-                    "edges_map: edge meta scan end table={} elapsed_ms={}",
-                    table.name,
-                    meta_start.elapsed().as_millis()
-                );
                 if let Some(cb) = &progress {
                     cb(ProgressEvent {
                         phase: ProgressPhase::EdgesPassA,
@@ -3661,61 +3623,19 @@ impl IngestContext {
                 }
             }
             drop(writer_senders);
-            let writer_finish_start = std::time::Instant::now();
-            eprintln!("edges_map: writer_pool finish start");
             writer_pool.finish()?;
-            eprintln!(
-                "edges_map: writer_pool finish end elapsed_ms={}",
-                writer_finish_start.elapsed().as_millis()
-            );
-            let ensure_start = std::time::Instant::now();
-            eprintln!("edges_map: ensure_edge_map_shards start");
             self.ensure_edge_map_shards(edge_ctx)?;
-            eprintln!(
-                "edges_map: ensure_edge_map_shards end elapsed_ms={}",
-                ensure_start.elapsed().as_millis()
-            );
-            let edges_src_bytes_start = std::time::Instant::now();
-            eprintln!("edges_map: record_edge_stage_bytes edges_src start");
             self.temp_edges_src_bytes = self
                 .temp_edges_src_bytes
                 .saturating_add(self.record_edge_stage_bytes("edges_src")?);
-            eprintln!(
-                "edges_map: record_edge_stage_bytes edges_src end elapsed_ms={}",
-                edges_src_bytes_start.elapsed().as_millis()
-            );
-            let fkeys_bytes_start = std::time::Instant::now();
-            eprintln!("edges_map: record_edge_stage_bytes fkeys start");
             self.temp_fkeys_bytes = self
                 .temp_fkeys_bytes
                 .saturating_add(self.record_edge_stage_bytes("fkeys")?);
-            eprintln!(
-                "edges_map: record_edge_stage_bytes fkeys end elapsed_ms={}",
-                fkeys_bytes_start.elapsed().as_millis()
-            );
-            let edges_map_bytes_start = std::time::Instant::now();
-            eprintln!("edges_map: record_edge_stage_bytes edges_map start");
             self.temp_edges_map_bytes = self
                 .temp_edges_map_bytes
                 .saturating_add(self.record_edge_stage_bytes("edges_map")?);
-            eprintln!(
-                "edges_map: record_edge_stage_bytes edges_map end elapsed_ms={}",
-                edges_map_bytes_start.elapsed().as_millis()
-            );
-            let cleanup_edges_src_start = std::time::Instant::now();
-            eprintln!("edges_map: cleanup_edge_stage edges_src start");
             self.cleanup_edge_stage("edges_src")?;
-            eprintln!(
-                "edges_map: cleanup_edge_stage edges_src end elapsed_ms={}",
-                cleanup_edges_src_start.elapsed().as_millis()
-            );
-            let cleanup_fkeys_start = std::time::Instant::now();
-            eprintln!("edges_map: cleanup_edge_stage fkeys start");
             self.cleanup_edge_stage("fkeys")?;
-            eprintln!(
-                "edges_map: cleanup_edge_stage fkeys end elapsed_ms={}",
-                cleanup_fkeys_start.elapsed().as_millis()
-            );
             return Ok(());
         }
 
