@@ -83,7 +83,6 @@ pub mod bucket_fn;
 mod bucket_idx;
 mod build;
 mod reduce;
-mod shard;
 mod sort_buckets;
 #[doc(hidden)]
 pub mod stats;
@@ -97,7 +96,6 @@ use bucket_fn::CubicEps;
 use bucket_fn::Linear;
 use bucket_fn::SquareEps;
 use cacheline_ef::CachelineEfVec;
-use itertools::izip;
 use itertools::Itertools;
 use log::trace;
 use log::warn;
@@ -105,7 +103,6 @@ use mem_dbg::MemSize;
 use pack::MutPacked;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
-pub use shard::Sharding;
 use stats::BucketStats;
 use std::array::from_fn;
 use std::{borrow::Borrow, default::Default, marker::PhantomData, time::Instant};
@@ -129,13 +126,6 @@ pub struct PtrHashParams<BF> {
     pub lambda: f64,
     /// Bucket function
     pub bucket_fn: BF,
-    /// Upper bound on number of keys per shard.
-    /// Default is 2^32, or 32GB of hashes per shard.
-    pub keys_per_shard: usize,
-    /// When true, write each shard to a file instead of iterating multiple
-    /// times.
-    pub sharding: Sharding,
-
     /// Force using a single part, so that [`PtrHash::index_single_part()`] can be used.
     ///
     /// This makes construction up to 5x slower, but can make queries up to 30% faster.
@@ -155,8 +145,6 @@ impl PtrHashParams<Linear> {
             alpha: 0.99,
             lambda: 3.0,
             bucket_fn: Linear,
-            keys_per_shard: 1 << 31,
-            sharding: Sharding::None,
             single_part: false,
         }
     }
@@ -170,8 +158,6 @@ impl PtrHashParams<SquareEps> {
             alpha: 0.99,
             lambda: 3.5,
             bucket_fn: SquareEps,
-            keys_per_shard: 1 << 31,
-            sharding: Sharding::None,
             single_part: false,
         }
     }
@@ -190,8 +176,6 @@ impl PtrHashParams<CubicEps> {
             alpha: 0.99,
             lambda: 3.5,
             bucket_fn: CubicEps,
-            keys_per_shard: 1 << 31,
-            sharding: Sharding::None,
             single_part: false,
         }
     }
@@ -209,8 +193,6 @@ impl PtrHashParams<CubicEps> {
             alpha: 0.99,
             lambda: 3.9,
             bucket_fn: CubicEps,
-            keys_per_shard: 1 << 31,
-            sharding: Sharding::None,
             single_part: false,
         }
     }
@@ -291,8 +273,6 @@ pub struct PtrHash<
     n: usize,
     /// The total number of parts.
     parts: usize,
-    /// The number of shards.
-    shards: usize,
     /// The maximal number of parts per shard.
     /// The last shard may have fewer parts.
     parts_per_shard: usize,
@@ -306,8 +286,6 @@ pub struct PtrHash<
     buckets: usize,
 
     // Precomputed fast modulo operations.
-    /// Fast %shards.
-    rem_shards: Rp,
     /// Fast %parts.
     rem_parts: Rp,
     /// Fast %b.
@@ -341,13 +319,11 @@ where
 
             n: 0,
             parts: 0,
-            shards: 0,
             parts_per_shard: 0,
             slots_total: 0,
             buckets_total: 0,
             slots: 0,
             buckets: 0,
-            rem_shards: FastReduce::new(0),
             rem_parts: FastReduce::new(0),
             rem_buckets: FastReduce::new(0),
             rem_buckets_total: FastReduce::new(0),
@@ -422,10 +398,7 @@ impl<Key: KeyT, BF: BucketFn, F: MutPacked, Hx: Hasher<Key>> PtrHash<Key, BF, F,
     fn init(n: usize, mut params: PtrHashParams<BF>) -> Self {
         assert!(n < (1 << 40), "Number of keys must be less than 2^40.");
 
-        let shards = match params.sharding {
-            Sharding::None => 1,
-            _ => n.div_ceil(params.keys_per_shard),
-        };
+        let shards = 1;
 
         // Formula of Vigna, eps-cost-sharding.
         let eps = 1.0 - params.alpha;
@@ -464,13 +437,11 @@ impl<Key: KeyT, BF: BucketFn, F: MutPacked, Hx: Hasher<Key>> PtrHash<Key, BF, F,
             params,
             n,
             parts,
-            shards,
             parts_per_shard,
             slots_total,
             slots: slots_per_part,
             buckets_total,
             buckets: buckets_per_part,
-            rem_shards: Rp::new(shards),
             rem_parts: Rp::new(parts),
             rem_buckets: Rb::new(buckets_per_part),
             rem_buckets_total: Rb::new(buckets_total),
@@ -522,35 +493,29 @@ impl<Key: KeyT, BF: BucketFn, F: MutPacked, Hx: Hasher<Key>> PtrHash<Key, BF, F,
             }
             taken.resize_with(self.parts, || bitvec![0; self.slots]);
 
-            // Iterate over shards.
-            let shard_hashes = self.shards(keys.clone());
-            // Avoid chunks_mut(0) when n=0.
-            let shard_pilots = pilots.chunks_mut((self.buckets * self.parts_per_shard).max(1));
-            let shard_taken = taken.chunks_mut(self.parts_per_shard);
             let mut stats = BucketStats::default();
-            // eprintln!("Num shards (keys) {}", shard_keys.());
-            for (shard, (hashes, pilots, taken)) in
-                izip!(shard_hashes, shard_pilots, shard_taken).enumerate()
-            {
-                // Determine the buckets.
-                let start = std::time::Instant::now();
-                let Some((hashes, part_starts)) = self.sort_parts(shard, hashes) else {
-                    trace!("Found duplicate hashes");
-                    // Found duplicate hashes.
-                    continue 's;
-                };
-                let start = log_duration("sort buckets", start);
+            let collect_start = std::time::Instant::now();
+            let hashes: Vec<_> = keys.clone().map(|key| self.hash_key(key.borrow())).collect();
+            log_duration("collect hash", collect_start);
 
-                // Compute pilots.
-                if let Some(shard_stats) =
-                    self.build_shard(shard, &hashes, &part_starts, pilots, taken)
-                {
-                    stats.merge(shard_stats);
-                    log_duration("find pilots", start);
-                } else {
-                    trace!("Could not find pilots");
-                    continue 's;
-                }
+            // Determine the buckets.
+            let start = std::time::Instant::now();
+            let Some((hashes, part_starts)) = self.sort_parts(0, hashes) else {
+                trace!("Found duplicate hashes");
+                // Found duplicate hashes.
+                continue 's;
+            };
+            let start = log_duration("sort buckets", start);
+
+            // Compute pilots.
+            if let Some(shard_stats) =
+                self.build_shard(0, &hashes, &part_starts, &mut pilots, &mut taken)
+            {
+                stats.merge(shard_stats);
+                log_duration("find pilots", start);
+            } else {
+                trace!("Could not find pilots");
+                continue 's;
             }
 
             let start = std::time::Instant::now();
@@ -941,10 +906,6 @@ impl<Key: KeyT, BF: BucketFn, F: Packed, Hx: Hasher<Key>, V: AsRef<[u8]>>
 
     fn hash_pilot(&self, p: Pilot) -> PilotHash {
         MulHash::hash(&p, self.seed)
-    }
-
-    fn shard(&self, hx: Hx::H) -> usize {
-        self.rem_shards.reduce(hx.high())
     }
 
     fn part(&self, hx: Hx::H) -> usize {
