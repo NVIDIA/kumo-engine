@@ -50,7 +50,7 @@ impl<Key: KeyT, BF: BucketFn, F: Packed, Hx: Hasher<Key>> PtrHash<Key, BF, F, Hx
     /// Return an iterator over the Vec of hashes of each shard.
     pub(crate) fn shards<'a>(
         &'a self,
-        keys: impl ParallelIterator<Item = impl Borrow<Key>> + Clone + 'a,
+        keys: impl Iterator<Item = impl Borrow<Key>> + Clone + 'a,
     ) -> Box<dyn Iterator<Item = Vec<Hx::H>> + 'a> {
         match self.params.sharding {
             Sharding::None => self.no_sharding(keys.clone()),
@@ -63,7 +63,7 @@ impl<Key: KeyT, BF: BucketFn, F: Packed, Hx: Hasher<Key>> PtrHash<Key, BF, F, Hx
     /// Collect all hashes to a Vec directly and return it.
     fn no_sharding<'a>(
         &'a self,
-        keys: impl ParallelIterator<Item = impl Borrow<Key>> + Clone + 'a,
+        keys: impl Iterator<Item = impl Borrow<Key>> + Clone + 'a,
     ) -> Box<dyn Iterator<Item = Vec<Hx::H>> + 'a> {
         trace!("No sharding: collecting all {} hashes in memory.", self.n);
         let start = std::time::Instant::now();
@@ -77,7 +77,7 @@ impl<Key: KeyT, BF: BucketFn, F: Packed, Hx: Hasher<Key>> PtrHash<Key, BF, F, Hx
     /// For each shard, a filtered copy of the ParallelIterator is returned.
     fn shard_keys_in_memory<'a>(
         &'a self,
-        keys: impl ParallelIterator<Item = impl Borrow<Key>> + Clone + 'a,
+        keys: impl Iterator<Item = impl Borrow<Key>> + Clone + 'a,
     ) -> Box<dyn Iterator<Item = Vec<Hx::H>> + 'a> {
         trace!(
             "In-memory sharding: iterate keys once for each of {} shards, each of ~{} keys.",
@@ -109,7 +109,7 @@ impl<Key: KeyT, BF: BucketFn, F: Packed, Hx: Hasher<Key>> PtrHash<Key, BF, F, Hx
     fn shard_keys_hybrid<'a>(
         &'a self,
         mem: usize,
-        keys: impl ParallelIterator<Item = impl Borrow<Key>> + Clone + 'a,
+        keys: impl Iterator<Item = impl Borrow<Key>> + Clone + 'a,
     ) -> Box<dyn Iterator<Item = Vec<Hx::H>> + 'a> {
         let total_shards = self.shards;
         let keys_per_shard = self.n / total_shards;
@@ -158,16 +158,15 @@ impl<Key: KeyT, BF: BucketFn, F: Packed, Hx: Hasher<Key>> PtrHash<Key, BF, F, Hx
                     .collect_vec();
 
                 // Each thread has a local buffer per shard.
-                let init = || writers.iter().map(ThreadLocalBuf::new).collect_vec();
-                // Iterate over keys.
-                keys.clone()
-                    .map(|key| self.hash_key(key.borrow()))
-                    .for_each_init(init, |bufs, h| {
-                        let shard = self.shard(h);
-                        if shard_range.contains(&shard) {
-                            bufs[shard - shard_range.start].push(h);
-                        }
-                    });
+                let mut bufs: Vec<_> = writers.iter().map(ThreadLocalBuf::new).collect_vec();
+                for key in keys.clone() {
+                    let h = self.hash_key(key.borrow());
+                    let shard = self.shard(h);
+                    if shard_range.contains(&shard) {
+                        bufs[shard - shard_range.start].push(h);
+                    }
+                }
+                drop(bufs);
                 let start = log_duration("Writing files", start);
 
                 // Flush writers and convert to files.

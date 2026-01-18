@@ -105,7 +105,6 @@ use mem_dbg::MemSize;
 use pack::MutPacked;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
-use rayon::prelude::*;
 pub use shard::Sharding;
 use stats::BucketStats;
 use std::array::from_fn;
@@ -351,7 +350,7 @@ impl<Key: KeyT, BF: BucketFn, F: MutPacked, Hx: Hasher<Key>> PtrHash<Key, BF, F,
     /// NOTE: Only up to 2^40 keys are supported.
     pub fn new(keys: &[Key], params: PtrHashParams<BF>) -> Self {
         let mut ptr_hash = Self::init(keys.len(), params);
-        ptr_hash.compute_pilots(keys.par_iter()).unwrap();
+        ptr_hash.compute_pilots(keys.iter()).unwrap();
         ptr_hash
     }
 
@@ -359,7 +358,7 @@ impl<Key: KeyT, BF: BucketFn, F: MutPacked, Hx: Hasher<Key>> PtrHash<Key, BF, F,
     #[doc(hidden)]
     pub fn new_with_stats(keys: &[Key], params: PtrHashParams<BF>) -> (Self, BucketStats) {
         let mut ptr_hash = Self::init(keys.len(), params);
-        let stats = ptr_hash.compute_pilots(keys.par_iter()).unwrap();
+        let stats = ptr_hash.compute_pilots(keys.iter()).unwrap();
         (ptr_hash, stats)
     }
 
@@ -368,18 +367,18 @@ impl<Key: KeyT, BF: BucketFn, F: MutPacked, Hx: Hasher<Key>> PtrHash<Key, BF, F,
     /// parameters) and the eviction chains become too long.
     pub fn try_new(keys: &[Key], params: PtrHashParams<BF>) -> Option<Self> {
         let mut ptr_hash = Self::init(keys.len(), params);
-        ptr_hash.compute_pilots(keys.par_iter())?;
+        ptr_hash.compute_pilots(keys.iter())?;
         Some(ptr_hash)
     }
 
-    /// Same as `new` above, but takes a `ParallelIterator` over keys instead of a slice.
+    /// Same as `new` above, but takes an iterator over keys instead of a slice.
     ///
     /// The iterator must be cloneable, since construction can fail for the
     /// first seed (e.g. due to duplicate hashes), in which case a new pass over
     /// keys is need.
     pub fn new_from_par_iter<'a>(
         n: usize,
-        keys: impl ParallelIterator<Item = impl Borrow<Key>> + Clone + 'a,
+        keys: impl Iterator<Item = impl Borrow<Key>> + Clone + 'a,
         params: PtrHashParams<BF>,
     ) -> Self {
         let mut ptr_hash = Self::init(n, params);
@@ -454,7 +453,7 @@ impl<Key: KeyT, BF: BucketFn, F: MutPacked, Hx: Hasher<Key>> PtrHash<Key, BF, F,
 
     fn compute_pilots<'a>(
         &mut self,
-        keys: impl ParallelIterator<Item = impl Borrow<Key>> + Clone + 'a,
+        keys: impl Iterator<Item = impl Borrow<Key>> + Clone + 'a,
     ) -> Option<BucketStats> {
         let overall_start = std::time::Instant::now();
         // Initialize arrays;

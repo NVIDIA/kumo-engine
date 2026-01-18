@@ -40,5 +40,5 @@ parking_lot = "0.12"
 chrono = { version = "0.4", features = ["serde"] }
 serde_with = "3.4"
 futures = "0.3"
-ptr_hash = { path = "diskgraph-ptrhash", features = ["epserde"] }
+ptr_hash = { package = "diskgraph-ptrhash", path = "diskgraph-ptrhash", features = ["epserde"] }
 epserde = { version = "0.8", features = ["std", "derive"] }

@@ -4,7 +4,6 @@ use super::*;
 use colored::Colorize;
 use log::{trace, warn};
 use rand::{rng, Rng};
-use rayon::prelude::*;
 use rdst::RadixSort;
 
 /// Prefetch the given cacheline into L1 cache.
@@ -56,16 +55,14 @@ pub fn generate_keys(n: usize) -> Vec<u64> {
     let start = Instant::now();
     let keys = loop {
         let start = Instant::now();
-        let keys: Vec<_> = (0..n)
-            .into_par_iter()
-            .map_init(rng, |rng, _| rng.random())
-            .collect();
+        let mut r = rng();
+        let keys: Vec<_> = (0..n).map(|_| r.random()).collect();
         let start = log_duration("┌   gen keys", start);
-        let mut keys2: Vec<_> = keys.par_iter().copied().collect();
+        let mut keys2: Vec<_> = keys.iter().copied().collect();
         let start = log_duration("├      clone", start);
         keys2.radix_sort_unstable();
         let start = log_duration("├       sort", start);
-        let distinct = keys2.par_windows(2).all(|w| w[0] < w[1]);
+        let distinct = keys2.windows(2).all(|w| w[0] < w[1]);
         log_duration("├ duplicates", start);
         if distinct {
             break keys;
@@ -79,13 +76,16 @@ pub fn generate_keys(n: usize) -> Vec<u64> {
 pub fn generate_string_keys(n: usize) -> Vec<Vec<u8>> {
     let start = Instant::now();
     // let start = Instant::now();
-    let keys: Vec<_> = (0..n)
-        .into_par_iter()
-        .map_init(rng, |rng, _| {
-            let len = rng.random_range(10..=50);
-            (0..len).map(|_| rng.random_range(1..=255)).collect()
-        })
-        .collect();
+    let mut r = rng();
+    let mut keys: Vec<Vec<u8>> = Vec::with_capacity(n);
+    for _ in 0..n {
+        let len = r.random_range(10..=50);
+        let mut key = Vec::with_capacity(len);
+        for _ in 0..len {
+            key.push(r.random_range(1..=255));
+        }
+        keys.push(key);
+    }
     log_duration("generatekeys", start);
     keys
 }

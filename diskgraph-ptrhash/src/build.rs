@@ -1,7 +1,6 @@
 use super::*;
 use crate::{bucket_idx::BucketIdx, stats::BucketStats};
 use bitvec::{slice::BitSlice, vec::BitVec};
-use rayon::prelude::*;
 use std::{
     collections::BinaryHeap,
     iter::zip,
@@ -20,7 +19,7 @@ impl<Key: KeyT, BF: BucketFn, F: Packed, Hx: Hasher<Key>> PtrHash<Key, BF, F, Hx
         pilots: &mut [u8],
         taken: &mut [BitVec],
     ) -> Option<BucketStats> {
-        let pilots_per_part = pilots.par_chunks_exact_mut(self.buckets);
+        let pilots_per_part = pilots.chunks_exact_mut(self.buckets);
 
         let iter = pilots_per_part.zip(taken).enumerate();
 
@@ -28,11 +27,13 @@ impl<Key: KeyT, BF: BucketFn, F: Packed, Hx: Hasher<Key>> PtrHash<Key, BF, F, Hx
         let parts_done = AtomicUsize::new(shard * self.parts_per_shard);
         let stats = Mutex::new(BucketStats::new());
 
-        let ok = iter.try_for_each(|(part_in_shard, (pilots, taken))| {
+        for (part_in_shard, (pilots, taken)) in iter {
             let part = shard * self.parts_per_shard + part_in_shard;
             let hashes = &hashes
                 [part_starts[part_in_shard] as usize..part_starts[part_in_shard + 1] as usize];
-            let _cnt = self.build_part(part, hashes, pilots, taken, &stats)?;
+            if self.build_part(part, hashes, pilots, taken, &stats).is_none() {
+                return None;
+            }
             let _parts_done = parts_done.fetch_add(1, Ordering::Relaxed);
             // total_evictions.fetch_add(cnt, Ordering::Relaxed);
 
@@ -44,12 +45,9 @@ impl<Key: KeyT, BF: BucketFn, F: Packed, Hx: Hasher<Key>> PtrHash<Key, BF, F, Hx
             //     );
             // }
 
-            Some(())
-        });
-
-        if ok.is_none() {
-            return None;
         }
+
+        // All parts completed.
 
         assert_eq!(
             parts_done.load(Ordering::Relaxed),

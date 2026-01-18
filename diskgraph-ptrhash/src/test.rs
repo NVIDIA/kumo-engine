@@ -42,14 +42,14 @@ fn index_batch() {
 fn new_par_iter() {
     let n = 10_000_000;
     let keys = generate_keys(n);
-    <PtrHash>::new_from_par_iter(n, keys.par_iter(), Default::default());
+    <PtrHash>::new_from_par_iter(n, keys.iter(), Default::default());
 }
 
 #[test]
 fn in_memory_sharding() {
     let n = 1 << 25;
     let range = 0..n as u64;
-    let keys = range.clone().into_par_iter();
+    let keys = range.clone();
     let ptr_hash = <PtrHash<_, _, CachelineEfVec, FxHash, _>>::new_from_par_iter(
         n,
         keys.clone(),
@@ -72,7 +72,7 @@ fn in_memory_sharding() {
 fn on_disk_sharding() {
     let n = 1 << 25;
     let range = 0..n as u64;
-    let keys = range.clone().into_par_iter();
+    let keys = range.clone();
     let ptr_hash = <PtrHash<_, _, CachelineEfVec, FxHash, _>>::new_from_par_iter(
         n,
         keys.clone(),
@@ -98,7 +98,7 @@ fn many_keys_memory() {
     let n = 1 << 33;
     let n_query = 1 << 27;
     let range = 0..n as u64;
-    let keys = range.clone().into_par_iter();
+    let keys = range.clone();
     let ptr_hash = <PtrHash<_, _, CachelineEfVec, FxHash, _>>::new_from_par_iter(
         n,
         keys.clone(),
@@ -128,7 +128,7 @@ fn many_keys_disk() {
     let n = 1 << 33;
     let n_query = 1 << 27;
     let range = 0..n as u64;
-    let keys = range.clone().into_par_iter();
+    let keys = range.clone();
     let ptr_hash = <PtrHash<_, _, CachelineEfVec, FxHash, _>>::new_from_par_iter(
         n,
         keys.clone(),

@@ -439,7 +439,14 @@ pub fn ingest_with_stats(
         ctx.build_edges_mapped(&edge_ctx)?;
     }
     let edges_map_wall = edges_map_start.elapsed();
-    let index_start = std::time::Instant::now();
+        let edge_ctx_drop_start = std::time::Instant::now();
+        eprintln!("edges_map: edge_ctx drop start");
+        drop_edge_ctx_parallel(edge_ctx);
+        eprintln!(
+            "edges_map: edge_ctx drop end elapsed_ms={}",
+            edge_ctx_drop_start.elapsed().as_millis()
+        );
+        let index_start = std::time::Instant::now();
     let index_metadata = ctx.build_index_metadata()?;
     if let Some(profile_dir) = &profile_dir {
         profile_phase(profile_dir, "index", || ctx.build_index(index_metadata.clone()))?;
@@ -2917,18 +2924,21 @@ impl IngestContext {
                 edge_tables.insert(table.name.clone());
             }
         }
-        let mut rel_sort_lookups = HashMap::new();
-        for rel in &self.relation_defs {
-            let lookup = build_sort_key_lookup(
-                &root,
-                &edge_tables,
-                &rel_sort_keys,
-                &rel.name,
-                self.num_shards,
-            )?;
-            rel_sort_lookups.insert(rel.name.clone(), lookup.map(std::sync::Arc::new));
-        }
-        let pk_hash_store = Arc::new(self.build_pk_hash_store(&root)?);
+        let rel_sort_lookup_start = std::time::Instant::now();
+        eprintln!("edges_map: sort_key mmap start");
+        let rel_sort_lookups =
+            self.build_sort_key_lookups_parallel(&root, &edge_tables, &rel_sort_keys)?;
+        eprintln!(
+            "edges_map: sort_key mmap end elapsed_ms={}",
+            rel_sort_lookup_start.elapsed().as_millis()
+        );
+        let pk_hash_start = std::time::Instant::now();
+        eprintln!("edges_map: pk_hash mmap start");
+        let pk_hash_store = Arc::new(self.build_pk_hash_store_parallel(&root)?);
+        eprintln!(
+            "edges_map: pk_hash mmap end elapsed_ms={}",
+            pk_hash_start.elapsed().as_millis()
+        );
         Ok(EdgeBuildContext {
             root,
             rel_sort_bits,
@@ -2937,8 +2947,9 @@ impl IngestContext {
             pk_hash_store,
         })
     }
-    fn build_pk_hash_store(&self, root: &Path) -> Result<PkHashStore> {
-        let mut tables = std::collections::HashMap::new();
+    fn build_pk_hash_store_parallel(&self, root: &Path) -> Result<PkHashStore> {
+        let mut shard_jobs: Vec<(String, usize, KeyType, PathBuf, PathBuf)> = Vec::new();
+        let mut table_shard_counts = HashMap::new();
         for table in &self.source.tables {
             if table.edge_table.is_some() || table.primary_key.is_none() {
                 continue;
@@ -2950,16 +2961,114 @@ impl IngestContext {
                 .pk_hash_paths
                 .get(&table.name)
                 .ok_or_else(|| anyhow!("missing pk hash paths for {}", table.name))?;
-            let mut shards = Vec::with_capacity(paths.len());
-            for shard_paths in paths {
+            table_shard_counts.insert(table.name.clone(), paths.len());
+            for (shard_idx, shard_paths) in paths.iter().enumerate() {
                 let hash_path = root.join(&shard_paths.hash_path);
                 let data_path = root.join(&shard_paths.data_path);
-                let shard = PkHashShard::load(&hash_path, &data_path, key_type)?;
-                shards.push(shard);
+                shard_jobs.push((
+                    table.name.clone(),
+                    shard_idx,
+                    key_type,
+                    hash_path,
+                    data_path,
+                ));
             }
-            tables.insert(table.name.clone(), shards);
         }
-        Ok(PkHashStore::new(tables))
+        if shard_jobs.is_empty() {
+            return Ok(PkHashStore::new(HashMap::new()));
+        }
+        let (tx, rx) = std::sync::mpsc::channel::<Result<(String, usize, PkHashShard)>>();
+        let mut tasks = Vec::with_capacity(shard_jobs.len());
+        for (table_name, shard_idx, key_type, hash_path, data_path) in shard_jobs {
+            let tx = tx.clone();
+            tasks.push(WorkItem {
+                bucket: None,
+                run: Box::new(move || {
+                    let shard = PkHashShard::load(&hash_path, &data_path, key_type)?;
+                    let _ = tx.send(Ok((table_name, shard_idx, shard)));
+                    Ok(())
+                }),
+            });
+        }
+        drop(tx);
+        run_tasks(tasks, &self.pool)?;
+        let mut tables: HashMap<String, Vec<Option<PkHashShard>>> = HashMap::new();
+        for (table_name, shard_count) in table_shard_counts {
+            let shards = (0..shard_count).map(|_| None).collect();
+            tables.insert(table_name, shards);
+        }
+        for _ in 0..tables.values().map(|v| v.len()).sum::<usize>() {
+            match rx.recv().map_err(|e| anyhow!("pk hash output error: {e}"))? {
+                Ok((table_name, shard_idx, shard)) => {
+                    let entry = tables
+                        .get_mut(&table_name)
+                        .ok_or_else(|| anyhow!("pk hash table missing {}", table_name))?;
+                    if shard_idx >= entry.len() {
+                        return Err(anyhow!("pk hash shard out of range {}:{}", table_name, shard_idx));
+                    }
+                    entry[shard_idx] = Some(shard);
+                }
+                Err(err) => return Err(err),
+            }
+        }
+        let mut final_tables = HashMap::new();
+        for (table_name, shards) in tables {
+            let mut resolved = Vec::with_capacity(shards.len());
+            for shard in shards {
+                resolved.push(
+                    shard.ok_or_else(|| anyhow!("missing pk hash shard {}", table_name))?,
+                );
+            }
+            final_tables.insert(table_name, resolved);
+        }
+        Ok(PkHashStore::new(final_tables))
+    }
+
+    fn build_sort_key_lookups_parallel(
+        &self,
+        root: &Path,
+        edge_tables: &HashSet<String>,
+        rel_sort_keys: &HashMap<String, RelationSortKeyInfo>,
+    ) -> Result<HashMap<String, Option<std::sync::Arc<SortKeyLookup>>>> {
+        let edge_tables = std::sync::Arc::new(edge_tables.clone());
+        let rel_sort_keys = std::sync::Arc::new(rel_sort_keys.clone());
+        let (tx, rx) = std::sync::mpsc::channel::<Result<(String, Option<std::sync::Arc<SortKeyLookup>>)>>();
+        let mut tasks = Vec::with_capacity(self.relation_defs.len());
+        for rel in &self.relation_defs {
+            let rel_name = rel.name.clone();
+            let root = root.to_path_buf();
+            let edge_tables = std::sync::Arc::clone(&edge_tables);
+            let rel_sort_keys = std::sync::Arc::clone(&rel_sort_keys);
+            let tx = tx.clone();
+            let num_shards = self.num_shards;
+            tasks.push(WorkItem {
+                bucket: None,
+                run: Box::new(move || {
+                    let lookup = build_sort_key_lookup(
+                        &root,
+                        edge_tables.as_ref(),
+                        rel_sort_keys.as_ref(),
+                        &rel_name,
+                        num_shards,
+                    )?;
+                    let lookup = lookup.map(std::sync::Arc::new);
+                    let _ = tx.send(Ok((rel_name, lookup)));
+                    Ok(())
+                }),
+            });
+        }
+        drop(tx);
+        run_tasks(tasks, &self.pool)?;
+        let mut lookups = HashMap::with_capacity(self.relation_defs.len());
+        for _ in 0..self.relation_defs.len() {
+            match rx.recv().map_err(|e| anyhow!("sort key output error: {e}"))? {
+                Ok((rel_name, lookup)) => {
+                    lookups.insert(rel_name, lookup);
+                }
+                Err(err) => return Err(err),
+            }
+        }
+        Ok(lookups)
     }
 
 
@@ -3003,6 +3112,11 @@ impl IngestContext {
                 let tx = tx.clone();
                 let src_table = table_by_name(&source, &rel.src_table)?;
                 let src_fk_col = column_spec(src_table, &rel.src_column)?;
+                let meta_start = std::time::Instant::now();
+                eprintln!(
+                    "edges_map: fkey meta scan start relation={}",
+                    rel.name_forward
+                );
                 let mut total_rows = 0u64;
                 for shard in 0..num_shards {
                     let fkey_meta = root.join(temp_fkey_meta_path(
@@ -3013,6 +3127,11 @@ impl IngestContext {
                     let meta = read_temp_meta(&fkey_meta)?;
                     total_rows = total_rows.saturating_add(meta.row_count);
                 }
+                eprintln!(
+                    "edges_map: fkey meta scan end relation={} elapsed_ms={}",
+                    rel.name_forward,
+                    meta_start.elapsed().as_millis()
+                );
                 if let Some(cb) = &progress {
                     cb(ProgressEvent {
                         phase: ProgressPhase::EdgesPassA,
@@ -3258,12 +3377,22 @@ impl IngestContext {
                     .clone();
                 let forward_name = format!("edge_{}_src_to_dst", table.name);
                 let reverse_name = format!("edge_{}_dst_to_src", table.name);
+                let meta_start = std::time::Instant::now();
+                eprintln!(
+                    "edges_map: edge meta scan start table={}",
+                    table.name
+                );
                 let mut total_rows = 0u64;
                 for shard in 0..num_shards {
                     let meta =
                         read_temp_meta(&root.join(temp_edge_meta_path(&forward_name, shard)))?;
                     total_rows = total_rows.saturating_add(meta.row_count);
                 }
+                eprintln!(
+                    "edges_map: edge meta scan end table={} elapsed_ms={}",
+                    table.name,
+                    meta_start.elapsed().as_millis()
+                );
                 if let Some(cb) = &progress {
                     cb(ProgressEvent {
                         phase: ProgressPhase::EdgesPassA,
@@ -3532,19 +3661,61 @@ impl IngestContext {
                 }
             }
             drop(writer_senders);
+            let writer_finish_start = std::time::Instant::now();
+            eprintln!("edges_map: writer_pool finish start");
             writer_pool.finish()?;
+            eprintln!(
+                "edges_map: writer_pool finish end elapsed_ms={}",
+                writer_finish_start.elapsed().as_millis()
+            );
+            let ensure_start = std::time::Instant::now();
+            eprintln!("edges_map: ensure_edge_map_shards start");
             self.ensure_edge_map_shards(edge_ctx)?;
+            eprintln!(
+                "edges_map: ensure_edge_map_shards end elapsed_ms={}",
+                ensure_start.elapsed().as_millis()
+            );
+            let edges_src_bytes_start = std::time::Instant::now();
+            eprintln!("edges_map: record_edge_stage_bytes edges_src start");
             self.temp_edges_src_bytes = self
                 .temp_edges_src_bytes
                 .saturating_add(self.record_edge_stage_bytes("edges_src")?);
+            eprintln!(
+                "edges_map: record_edge_stage_bytes edges_src end elapsed_ms={}",
+                edges_src_bytes_start.elapsed().as_millis()
+            );
+            let fkeys_bytes_start = std::time::Instant::now();
+            eprintln!("edges_map: record_edge_stage_bytes fkeys start");
             self.temp_fkeys_bytes = self
                 .temp_fkeys_bytes
                 .saturating_add(self.record_edge_stage_bytes("fkeys")?);
+            eprintln!(
+                "edges_map: record_edge_stage_bytes fkeys end elapsed_ms={}",
+                fkeys_bytes_start.elapsed().as_millis()
+            );
+            let edges_map_bytes_start = std::time::Instant::now();
+            eprintln!("edges_map: record_edge_stage_bytes edges_map start");
             self.temp_edges_map_bytes = self
                 .temp_edges_map_bytes
                 .saturating_add(self.record_edge_stage_bytes("edges_map")?);
+            eprintln!(
+                "edges_map: record_edge_stage_bytes edges_map end elapsed_ms={}",
+                edges_map_bytes_start.elapsed().as_millis()
+            );
+            let cleanup_edges_src_start = std::time::Instant::now();
+            eprintln!("edges_map: cleanup_edge_stage edges_src start");
             self.cleanup_edge_stage("edges_src")?;
+            eprintln!(
+                "edges_map: cleanup_edge_stage edges_src end elapsed_ms={}",
+                cleanup_edges_src_start.elapsed().as_millis()
+            );
+            let cleanup_fkeys_start = std::time::Instant::now();
+            eprintln!("edges_map: cleanup_edge_stage fkeys start");
             self.cleanup_edge_stage("fkeys")?;
+            eprintln!(
+                "edges_map: cleanup_edge_stage fkeys end elapsed_ms={}",
+                cleanup_fkeys_start.elapsed().as_millis()
+            );
             return Ok(());
         }
 
@@ -4572,6 +4743,20 @@ fn hash_name(name: &str) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     name.hash(&mut hasher);
     hasher.finish()
+}
+
+fn drop_edge_ctx_parallel(edge_ctx: EdgeBuildContext) {
+    let EdgeBuildContext {
+        rel_sort_lookups,
+        pk_hash_store,
+        root: _,
+        rel_sort_bits: _,
+        max_ids: _,
+    } = edge_ctx;
+    std::thread::scope(|scope| {
+        scope.spawn(move || drop(rel_sort_lookups));
+        scope.spawn(move || drop(pk_hash_store));
+    });
 }
 
 struct NodeWriteBatch {
