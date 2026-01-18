@@ -38,7 +38,6 @@ impl<Key: KeyT, BF: BucketFn, F: Packed, Hx: Hasher<Key>> PtrHash<Key, BF, F, Hx
         let distinct = hashes.windows(2).all(|w| w[0] != w[1]);
         let start = log_duration("├ check dups", start);
         if !distinct {
-            eprintln!("Hashes are not distinct!");
             return None;
         }
 

@@ -23,6 +23,7 @@ use thiserror::Error;
 const MAX_NODE_DATA_LEN: usize = 64 * 1024 * 1024;
 const OFFSET_OVERHEAD_BYTES: u64 = 128;
 const MAX_VARINT_COUNT: usize = 0x3FFF_FFFF;
+const INDEX_PROGRESS_ROW_BATCH: u64 = 1_000_000;
 
 #[cfg(target_os = "linux")]
 fn advise_willneed(file: &File) {
@@ -454,7 +455,7 @@ impl ShardBuilder {
             nodes_seen += 1;
             build_stats.nodes_ingested += 1;
             if let Some(progress) = progress {
-                if nodes_seen - last_progress_at >= 100_000 {
+                if nodes_seen - last_progress_at >= INDEX_PROGRESS_ROW_BATCH {
                     progress.report(BuildProgress {
                         stage: BuildStage::BuildIndex,
                         current: nodes_seen,

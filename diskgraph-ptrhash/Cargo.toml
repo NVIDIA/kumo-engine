@@ -16,7 +16,7 @@ include = ["src/**/*", "examples/*", "readme.md"]
 
 [dependencies]
 anyhow = "1.0.75"
-bitvec = "1.0.1"
+bitvec = { version = "1.0.1", default-features = false, features = ["std"] }
 clap = { version = "4.4.6", features = ["derive"] }
 colored = "3.0.0"
 common_traits = "0.11.2"
