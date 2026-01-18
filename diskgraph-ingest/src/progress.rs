@@ -102,7 +102,11 @@ fn progress_label(event: &ProgressEvent) -> String {
         ProgressPhase::Index => "index",
     };
     if matches!(event.phase, ProgressPhase::Index) {
-        return format!("{} {}", phase, event.table);
+        let label = format!("{} {}", phase, event.table);
+        return match &event.status {
+            Some(status) => format!("{} {}", label, status),
+            None => label,
+        };
     }
     match event.shard {
         Some(shard) => format!("{} {} shard-{:05}", phase, event.table, shard),

@@ -8,6 +8,7 @@ use crate::mapping::{
     fingerprint_seed_for, write_pk_data_entry, write_pk_data_header, GxPtrHash64, Key, KeyType,
     PkHashShard, PkHashStore, PkGxHash,
 };
+use crate::progress::format_bytes;
 use crate::source_metadata::{
     relationship_name, ColumnSpec, IngestedType, SortKeySpec, TableFormat, TableSpec,
     TimestampEncodingKind, TimestampEncodingSpec, WeightEncodingKind, WeightEncodingSpec,
@@ -148,6 +149,7 @@ pub struct ProgressEvent {
     pub kind: ProgressKind,
     pub delta: u64,
     pub total: Option<u64>,
+    pub status: Option<String>,
 }
 
 pub type ProgressCallback = std::sync::Arc<dyn Fn(ProgressEvent) + Send + Sync>;
@@ -155,11 +157,36 @@ pub type ProgressCallback = std::sync::Arc<dyn Fn(ProgressEvent) + Send + Sync>;
 struct IndexProgressAdapter {
     cb: ProgressCallback,
     state: Mutex<IndexProgressTracker>,
+    task_status: Option<std::sync::Arc<IndexTaskStatus>>,
+    mem_budget: Option<std::sync::Arc<MemoryBudget>>,
 }
 
 struct IndexProgressTracker {
     shard_states: HashMap<(String, Option<usize>), IndexProgressState>,
     table_states: HashMap<String, TableProgressState>,
+}
+
+struct IndexTaskStatus {
+    total: usize,
+    started: std::sync::atomic::AtomicUsize,
+    completed: std::sync::atomic::AtomicUsize,
+}
+
+impl IndexTaskStatus {
+    fn new(total: usize) -> Self {
+        Self {
+            total,
+            started: std::sync::atomic::AtomicUsize::new(0),
+            completed: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+
+    fn snapshot(&self) -> (usize, usize, usize) {
+        let started = self.started.load(std::sync::atomic::Ordering::Relaxed);
+        let completed = self.completed.load(std::sync::atomic::Ordering::Relaxed);
+        let running = started.saturating_sub(completed);
+        (started, completed, running)
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -183,7 +210,12 @@ struct TableIndexTotals {
 }
 
 impl IndexProgressAdapter {
-    fn new(cb: ProgressCallback, table_totals: HashMap<String, TableIndexTotals>) -> Self {
+    fn new(
+        cb: ProgressCallback,
+        table_totals: HashMap<String, TableIndexTotals>,
+        task_status: Option<std::sync::Arc<IndexTaskStatus>>,
+        mem_budget: Option<std::sync::Arc<MemoryBudget>>,
+    ) -> Self {
         let mut table_states = HashMap::new();
         for (table, totals) in table_totals {
             table_states.insert(
@@ -203,6 +235,8 @@ impl IndexProgressAdapter {
                 shard_states: HashMap::new(),
                 table_states,
             }),
+            task_status,
+            mem_budget,
         }
     }
 
@@ -223,6 +257,30 @@ impl GraphProgressSink for IndexProgressAdapter {
             | GraphBuildStage::Complete { shard } => Self::shard_key(shard.as_ref()),
         };
         let key = (table.clone(), shard);
+        let status = self.task_status.as_ref().map(|tasks| {
+            let (_started, completed, running) = tasks.snapshot();
+            let mut parts = Vec::new();
+            if let Some(budget) = &self.mem_budget {
+                let snapshot = budget.snapshot();
+                let waiting = snapshot.waiters;
+                let active = running.saturating_sub(waiting);
+                parts.push(format!(
+                    "tasks active={} waiting={} done={}/{}",
+                    active, waiting, completed, tasks.total
+                ));
+                parts.push(format!(
+                    "mem={}/{}",
+                    format_bytes(snapshot.in_use),
+                    format_bytes(snapshot.total)
+                ));
+            } else {
+                parts.push(format!(
+                    "tasks running={} done={}/{}",
+                    running, completed, tasks.total
+                ));
+            }
+            format!("[{}]", parts.join(", "))
+        });
         let mut state = self.state.lock().unwrap();
         match update.stage {
             GraphBuildStage::BuildShard { .. } => {
@@ -264,6 +322,7 @@ impl GraphProgressSink for IndexProgressAdapter {
                         kind: ProgressKind::Start,
                         delta: 0,
                         total: table_state.total,
+                        status: status.clone(),
                     });
                 }
                 if delta > 0 {
@@ -275,6 +334,7 @@ impl GraphProgressSink for IndexProgressAdapter {
                         kind: ProgressKind::Advance,
                         delta,
                         total: table_state.total,
+                        status: status.clone(),
                     });
                 }
             }
@@ -307,6 +367,7 @@ impl GraphProgressSink for IndexProgressAdapter {
                         kind: ProgressKind::Finish,
                         delta: 0,
                         total: table_state.total.or(Some(table_state.current)),
+                        status,
                     });
                 }
             }
@@ -439,7 +500,7 @@ pub fn ingest_with_stats(
         ctx.build_edges_mapped(&edge_ctx)?;
     }
     let edges_map_wall = edges_map_start.elapsed();
-    drop_edge_ctx_parallel(edge_ctx);
+    drop(edge_ctx);
         let index_start = std::time::Instant::now();
     let index_metadata = ctx.build_index_metadata()?;
     if let Some(profile_dir) = &profile_dir {
@@ -1370,7 +1431,8 @@ impl IngestContext {
                             kind: ProgressKind::Start,
                             delta: 0,
                             total: Some(table.paths.len() as u64),
-                        });
+                            status: None,
+});
                     }
                     let rowpack_config = rowpack_config_for_table(rowpack_cfg.as_ref(), &table);
                     let node_columns = rowpack_columns(&table)?;
@@ -1466,7 +1528,8 @@ impl IngestContext {
                                 kind: ProgressKind::Advance,
                                 delta: 1,
                                 total: Some(table.paths.len() as u64),
-                            });
+                                status: None,
+});
                         }
                         if reached_limit {
                             break 'file_loop;
@@ -1484,7 +1547,8 @@ impl IngestContext {
                             kind: ProgressKind::Finish,
                             delta: 0,
                             total: Some(processed_paths.max(1)),
-                        });
+                            status: None,
+});
                     }
                     tx.send(Ok((
                         table.name.clone(),
@@ -1547,7 +1611,8 @@ impl IngestContext {
                     kind: ProgressKind::Start,
                     delta: 0,
                     total: Some(table.paths.len() as u64),
-                });
+                    status: None,
+});
             }
             let table = table.clone();
             let relationships = relationships.clone();
@@ -1655,7 +1720,8 @@ impl IngestContext {
                     kind: ProgressKind::Finish,
                     delta: 0,
                     total: Some(expected),
-                });
+                    status: None,
+});
             }
         }
         drop(node_senders);
@@ -1954,7 +2020,8 @@ impl IngestContext {
                 kind: ProgressKind::Advance,
                 delta: 1,
                 total: Some(table.paths.len() as u64),
-            });
+                status: None,
+});
         }
         Ok(TempNodeFileResult {
             total_rows,
@@ -2239,7 +2306,8 @@ impl IngestContext {
                 kind: ProgressKind::Advance,
                 delta: 1,
                 total: Some(table.paths.len() as u64),
-            });
+                status: None,
+});
         }
         Ok(())
     }
@@ -2376,7 +2444,8 @@ impl IngestContext {
                 kind: ProgressKind::Start,
                 delta: 0,
                 total: Some(self.num_shards as u64),
-            });
+                status: None,
+});
             let pk_name = table.primary_key.clone().unwrap();
             let pk_col = column_spec(table, &pk_name)?;
             let pk_hash_paths = std::sync::Arc::new(std::sync::Mutex::new(vec![
@@ -2788,7 +2857,8 @@ impl IngestContext {
                                 kind: ProgressKind::Advance,
                                 delta: 1,
                                 total: Some(num_shards),
-                            });
+                                status: None,
+});
                         }
                         Ok(())
                     }),
@@ -2818,7 +2888,8 @@ impl IngestContext {
                 kind: ProgressKind::Finish,
                 delta: 0,
                 total: Some(self.num_shards as u64),
-            });
+                status: None,
+});
         }
         if let Ok(counts) = std::sync::Arc::try_unwrap(duplicate_counts) {
             self.pk_duplicate_counts = counts.into_inner().unwrap();
@@ -2848,7 +2919,8 @@ impl IngestContext {
                 fs::create_dir_all(parent)?;
             }
         }
-        let mut hash_writer = BufWriter::with_capacity(1024 * 1024, target.sink(&hash_path)?);
+        let mut hash_writer =
+            BufWriter::with_capacity(32 * 1024 * 1024, target.sink(&hash_path)?);
         mphf.serialize(&mut hash_writer)?;
         hash_writer.flush()?;
         let hash_sink = hash_writer
@@ -2856,7 +2928,8 @@ impl IngestContext {
             .map_err(|_| anyhow!("pk hash flush failed"))?;
         hash_sink.finish()?;
 
-        let mut data_writer = BufWriter::with_capacity(1024 * 1024, target.sink(&data_path)?);
+        let mut data_writer =
+            BufWriter::with_capacity(32 * 1024 * 1024, target.sink(&data_path)?);
         write_pk_data_header(
             &mut data_writer,
             key_type,
@@ -3112,7 +3185,8 @@ impl IngestContext {
                         kind: ProgressKind::Start,
                         delta: 0,
                         total: Some(total_rows),
-                    });
+                        status: None,
+});
                 }
                 expected.insert(rel.name_forward.clone(), num_shards as u64);
                 totals.insert(rel.name_forward.clone(), total_rows);
@@ -3220,7 +3294,8 @@ impl IngestContext {
                                             kind: ProgressKind::Advance,
                                             delta: pending,
                                             total: Some(total_rows),
-                                        });
+                                            status: None,
+});
                                     }
                                     pending = 0;
                                 }
@@ -3316,7 +3391,8 @@ impl IngestContext {
                                         kind: ProgressKind::Advance,
                                         delta: pending,
                                         total: Some(total_rows),
-                                    });
+                                        status: None,
+});
                                 }
                             }
                             result
@@ -3363,7 +3439,8 @@ impl IngestContext {
                         kind: ProgressKind::Start,
                         delta: 0,
                         total: Some(total_rows),
-                    });
+                        status: None,
+});
                 }
                 expected.insert(forward_name.clone(), num_shards as u64);
                 totals.insert(forward_name.clone(), total_rows);
@@ -3477,7 +3554,8 @@ impl IngestContext {
                                             kind: ProgressKind::Advance,
                                             delta: pending,
                                             total: Some(total_rows),
-                                        });
+                                            status: None,
+});
                                     }
                                     pending = 0;
                                 }
@@ -3578,7 +3656,8 @@ impl IngestContext {
                                         kind: ProgressKind::Advance,
                                         delta: pending,
                                         total: Some(total_rows),
-                                    });
+                                        status: None,
+});
                                 }
                             }
                             result.edge_counts.insert(forward_name, forward_count);
@@ -3617,7 +3696,8 @@ impl IngestContext {
                                 kind: ProgressKind::Finish,
                                 delta: 0,
                                 total,
-                            });
+                                status: None,
+});
                         }
                     }
                 }
@@ -3724,19 +3804,41 @@ impl IngestContext {
         let adapter = self
             .progress
             .clone()
-            .map(|cb| IndexProgressAdapter::new(cb, table_totals.clone()));
+            .map(|cb| {
+                IndexProgressAdapter::new(
+                    cb,
+                    table_totals.clone(),
+                    Some(std::sync::Arc::new(IndexTaskStatus::new(jobs.len()))),
+                    mem_budget.clone(),
+                )
+            });
         let adapter = adapter.map(std::sync::Arc::new);
+        let task_status = adapter
+            .as_ref()
+            .and_then(|value| value.task_status.clone());
         let mut tasks = Vec::with_capacity(jobs.len());
         for job in jobs {
             let adapter = adapter.clone();
             let mem_budget = mem_budget.clone();
+            let task_status = task_status.clone();
             tasks.push(WorkItem {
                 bucket: None,
                 run: Box::new(move || {
+                    if let Some(status) = &task_status {
+                        status
+                            .started
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
                     let progress = adapter
                         .as_ref()
                         .map(|value| value.as_ref() as &dyn GraphProgressSink);
-                    job.run_with_budget(progress, mem_budget).map(|_| ())
+                    let result = job.run_with_budget(progress, mem_budget).map(|_| ());
+                    if let Some(status) = &task_status {
+                        status
+                            .completed
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    result
                 }),
             });
         }
@@ -4663,20 +4765,6 @@ fn hash_name(name: &str) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     name.hash(&mut hasher);
     hasher.finish()
-}
-
-fn drop_edge_ctx_parallel(edge_ctx: EdgeBuildContext) {
-    let EdgeBuildContext {
-        rel_sort_lookups,
-        pk_hash_store,
-        root: _,
-        rel_sort_bits: _,
-        max_ids: _,
-    } = edge_ctx;
-    std::thread::scope(|scope| {
-        scope.spawn(move || drop(rel_sort_lookups));
-        scope.spawn(move || drop(pk_hash_store));
-    });
 }
 
 struct NodeWriteBatch {

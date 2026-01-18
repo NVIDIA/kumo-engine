@@ -13,7 +13,10 @@ use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
 #[cfg(target_os = "linux")]
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{
+    atomic::{AtomicU64, AtomicUsize, Ordering},
+    Arc, Condvar, Mutex,
+};
 use std::cell::RefCell;
 use thiserror::Error;
 
@@ -184,11 +187,20 @@ pub struct MemoryBudget {
     total: u64,
     available: Mutex<u64>,
     cvar: Condvar,
+    in_use: AtomicU64,
+    waiters: AtomicUsize,
 }
 
 pub struct MemoryBudgetGuard {
     budget: Arc<MemoryBudget>,
     bytes: u64,
+}
+
+#[derive(Clone, Copy)]
+pub struct MemoryBudgetSnapshot {
+    pub in_use: u64,
+    pub total: u64,
+    pub waiters: usize,
 }
 
 impl MemoryBudget {
@@ -197,6 +209,8 @@ impl MemoryBudget {
             total,
             available: Mutex::new(total),
             cvar: Condvar::new(),
+            in_use: AtomicU64::new(0),
+            waiters: AtomicUsize::new(0),
         }
     }
 
@@ -214,10 +228,19 @@ impl MemoryBudget {
             .into());
         }
         let mut available = self.available.lock().unwrap();
+        let mut waited = false;
         while *available < bytes {
+            if !waited {
+                self.waiters.fetch_add(1, Ordering::Relaxed);
+                waited = true;
+            }
             available = self.cvar.wait(available).unwrap();
         }
+        if waited {
+            self.waiters.fetch_sub(1, Ordering::Relaxed);
+        }
         *available = available.saturating_sub(bytes);
+        self.in_use.fetch_add(bytes, Ordering::Relaxed);
         Ok(MemoryBudgetGuard {
             budget: Arc::clone(self),
             bytes,
@@ -225,9 +248,20 @@ impl MemoryBudget {
     }
 
     fn release(&self, bytes: u64) {
+        if bytes > 0 {
+            self.in_use.fetch_sub(bytes, Ordering::Relaxed);
+        }
         let mut available = self.available.lock().unwrap();
         *available = available.saturating_add(bytes).min(self.total);
         self.cvar.notify_all();
+    }
+
+    pub fn snapshot(&self) -> MemoryBudgetSnapshot {
+        MemoryBudgetSnapshot {
+            in_use: self.in_use.load(Ordering::Relaxed),
+            total: self.total,
+            waiters: self.waiters.load(Ordering::Relaxed),
+        }
     }
 }
 
@@ -720,7 +754,7 @@ struct OffsetChunkWriter {
 impl OffsetChunkWriter {
     fn try_new(path: &Path, delta_bytes: u8, node_data_len_bytes: u8) -> Result<Self> {
         // Use a larger buffer to reduce flushes on many small writes.
-        let mut writer = BufWriter::with_capacity(1024 * 1024, File::create(path)?);
+        let mut writer = BufWriter::with_capacity(32 * 1024 * 1024, File::create(path)?);
         let header_len =
             bincode::serialized_size(&OffsetFileHeader::new(0, 0)).unwrap_or(32) as usize;
         writer.write_all(&vec![0u8; header_len])?;
@@ -784,7 +818,7 @@ impl EdgeWriter {
         node_data_len_bytes: u8,
     ) -> Result<Self> {
         // Larger buffer to reduce syscalls while writing large edge blobs.
-        let writer = BufWriter::with_capacity(1024 * 1024, File::create(path)?);
+        let writer = BufWriter::with_capacity(32 * 1024 * 1024, File::create(path)?);
         Ok(Self {
             writer,
             bytes_written: 0,
