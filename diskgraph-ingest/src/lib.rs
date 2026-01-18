@@ -96,7 +96,7 @@ enum KeyParseError {
 
 type KeyParseResult<T> = std::result::Result<T, KeyParseError>;
 
-const DEFAULT_INDEX_MEM_BUDGET_FRAC: f64 = 0.9;
+const DEFAULT_INDEX_MEM_BUDGET_FRAC: f64 = 1.0;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct IngestReport {
@@ -4252,7 +4252,7 @@ fn open_sort_key_writer(target: &OutputTarget, rel_path: &str) -> Result<BufWrit
             fs::create_dir_all(parent)?;
         }
     }
-    Ok(BufWriter::with_capacity(1024 * 1024, target.sink(&path)?))
+    Ok(BufWriter::with_capacity(32 * 1024 * 1024, target.sink(&path)?))
 }
 
 fn ensure_sort_key_file(target: &OutputTarget, rel_path: &str) -> Result<()> {
@@ -4290,7 +4290,7 @@ fn open_fkey_bitmap_writer(target: &OutputTarget, rel_path: &str) -> Result<BufW
             fs::create_dir_all(parent)?;
         }
     }
-    Ok(BufWriter::with_capacity(1024 * 1024, target.sink(&path)?))
+    Ok(BufWriter::with_capacity(32 * 1024 * 1024, target.sink(&path)?))
 }
 
 fn ensure_fkey_bitmap_file(target: &OutputTarget, rel_path: &str) -> Result<()> {
@@ -4543,7 +4543,7 @@ impl EdgePartWriter {
                 fs::create_dir_all(parent)?;
             }
         }
-        let mut writer = BufWriter::with_capacity(1024 * 1024, target.sink(path)?);
+        let mut writer = BufWriter::with_capacity(32 * 1024 * 1024, target.sink(path)?);
         write_edge_bin_header(&mut writer, spec)?;
         Ok(Self {
             writer,
