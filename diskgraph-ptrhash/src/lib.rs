@@ -235,6 +235,31 @@ pub type DefaultPtrHash<Hx = hash::FxHash, Key = u64, BF = bucket_fn::CubicEps> 
 pub trait KeyT: Send + Sync + std::hash::Hash {}
 impl<T: Send + Sync + std::hash::Hash> KeyT for T {}
 
+/// Restartable source of keys for PtrHash construction.
+pub trait KeySource<Key: KeyT> {
+    type Iter<'a>: Iterator<Item = &'a Key> + Clone
+    where
+        Self: 'a,
+        Key: 'a;
+    fn len(&self) -> usize;
+    fn iter(&self) -> Self::Iter<'_>;
+}
+
+impl<Key: KeyT + Eq, V> KeySource<Key> for std::collections::HashMap<Key, V> {
+    type Iter<'a> = std::collections::hash_map::Keys<'a, Key, V>
+    where
+        Self: 'a,
+        Key: 'a;
+
+    fn len(&self) -> usize {
+        std::collections::HashMap::len(self)
+    }
+
+    fn iter(&self) -> Self::Iter<'_> {
+        self.keys()
+    }
+}
+
 // Some fixed algorithmic decisions.
 type Rp = FastReduce;
 type Rb = FastReduce;
@@ -368,6 +393,13 @@ impl<Key: KeyT, BF: BucketFn, F: MutPacked, Hx: Hasher<Key>> PtrHash<Key, BF, F,
     pub fn try_new(keys: &[Key], params: PtrHashParams<BF>) -> Option<Self> {
         let mut ptr_hash = Self::init(keys.len(), params);
         ptr_hash.compute_pilots(keys.iter())?;
+        Some(ptr_hash)
+    }
+
+    /// Build from a restartable key source.
+    pub fn try_new_from_source<S: KeySource<Key>>(source: &S, params: PtrHashParams<BF>) -> Option<Self> {
+        let mut ptr_hash = Self::init(source.len(), params);
+        ptr_hash.compute_pilots(source.iter())?;
         Some(ptr_hash)
     }
 

@@ -705,6 +705,27 @@ struct TempNodeFileResult {
     node_data_dropped: u64,
 }
 
+#[derive(Default)]
+struct PkMapPhaseStats {
+    meta_ms: Vec<u64>,
+    scan_ms: Vec<u64>,
+    materialize_ms: Vec<u64>,
+    mphf_ms: Vec<u64>,
+    entries_ms: Vec<u64>,
+    write_ms: Vec<u64>,
+    dup_meta_ms: Vec<u64>,
+    publish_ms: Vec<u64>,
+}
+
+fn median_ms(values: &[u64]) -> u64 {
+    if values.is_empty() {
+        return 0;
+    }
+    let mut sorted = values.to_vec();
+    sorted.sort_unstable();
+    sorted[sorted.len() / 2]
+}
+
 fn spawn_background_delete(path: PathBuf) {
     if !path.exists() {
         return;
@@ -2427,6 +2448,7 @@ impl IngestContext {
         let root = require_local_output(&self.target)?.to_path_buf();
         let duplicate_counts = std::sync::Arc::new(std::sync::Mutex::new(HashMap::new()));
         let duplicate_samples = std::sync::Arc::new(std::sync::Mutex::new(HashMap::new()));
+        let phase_stats = std::sync::Arc::new(std::sync::Mutex::new(HashMap::new()));
         let mut tasks = Vec::new();
         let mut pk_hash_handles: HashMap<
             String,
@@ -2462,23 +2484,28 @@ impl IngestContext {
                 let pk_hash_paths = std::sync::Arc::clone(&pk_hash_paths);
                 let duplicate_counts = std::sync::Arc::clone(&duplicate_counts);
                 let duplicate_samples = std::sync::Arc::clone(&duplicate_samples);
+                let phase_stats = std::sync::Arc::clone(&phase_stats);
                 let root = root.clone();
                 tasks.push(WorkItem {
                     bucket: None,
                     run: Box::new(move || {
                         let key_type = key_type_for_column(&pk_col)?;
+                        let meta_start = std::time::Instant::now();
                         let meta_path = root.join(temp_pkey_meta_path(&table_name, shard));
                         let meta = read_temp_meta(&meta_path)?;
+                        let meta_ms = meta_start.elapsed().as_millis() as u64;
                         let total_rows = meta.row_count;
                         let mut duplicate_count = 0u64;
                         let mut duplicate_samples_local: Vec<Key> = Vec::new();
                         let mut row_id = 0u64;
                         let fingerprint_seed = fingerprint_seed_for(&table_name, shard);
-                        let (hash_rel, data_rel) = match key_type {
+                        let (hash_rel, data_rel, scan_ms, mphf_ms, entries_ms, write_ms) =
+                            match key_type {
                             KeyType::Int64 => {
                                 let mut seen: std::collections::HashMap<u64, u32> =
                                     std::collections::HashMap::with_capacity(total_rows as usize);
                                 let data_path = root.join(temp_pkey_path(&table_name, shard));
+                                let scan_start = std::time::Instant::now();
                                 read_temp_rows(&data_path, |row| {
                                     let mut data = row;
                                     let key = read_key_from_buf(&mut data, &pk_col)?;
@@ -2501,25 +2528,24 @@ impl IngestContext {
                                     row_id += 1;
                                     Ok(())
                                 })?;
-                                let mut keys = Vec::with_capacity(seen.len());
-                                let mut values = Vec::with_capacity(seen.len());
-                                for (key, value) in seen.into_iter() {
-                                    keys.push(key);
-                                    values.push(value);
-                                }
+                                let scan_ms = scan_start.elapsed().as_millis() as u64;
                                 let params = ptr_hash::PtrHashParams::default();
-                                let mphf = DefaultPtrHash::<GxPtrHash64, u64>::try_new(
-                                    &keys,
+                                let mphf_start = std::time::Instant::now();
+                                let mphf = DefaultPtrHash::<GxPtrHash64, u64>::try_new_from_source(
+                                    &seen,
                                     params,
                                 )
                                 .ok_or_else(|| anyhow!("ptrhash construction failed"))?;
+                                let mphf_ms = mphf_start.elapsed().as_millis() as u64;
+                                let entries_start = std::time::Instant::now();
                                 let slots = mphf.max_index();
                                 let mut entries = vec![(0u64, 0u32); slots];
-                                for (key, value) in keys.iter().zip(values.iter()) {
+                                for (key, value) in seen.iter() {
                                     let idx = mphf.index_no_remap(key);
                                     let fp = PkGxHash::hash(key, fingerprint_seed);
                                     entries[idx] = (fp, *value);
                                 }
+                                let entries_ms = entries_start.elapsed().as_millis() as u64;
                                 let hash_rel = format!(
                                     "nodes/{}/pk_hash-{:05}.bin",
                                     table_name.to_lowercase(),
@@ -2530,6 +2556,7 @@ impl IngestContext {
                                     table_name.to_lowercase(),
                                     shard
                                 );
+                                let write_start = std::time::Instant::now();
                                 IngestContext::write_pk_hash_and_data(
                                     &target,
                                     &hash_rel,
@@ -2539,12 +2566,14 @@ impl IngestContext {
                                     &mphf,
                                     &entries,
                                 )?;
-                                (hash_rel, data_rel)
+                                let write_ms = write_start.elapsed().as_millis() as u64;
+                                (hash_rel, data_rel, scan_ms, mphf_ms, entries_ms, write_ms)
                             }
                             KeyType::VarBytes => {
                                 let mut seen: std::collections::HashMap<Vec<u8>, u32> =
                                     std::collections::HashMap::with_capacity(total_rows as usize);
                                 let data_path = root.join(temp_pkey_path(&table_name, shard));
+                                let scan_start = std::time::Instant::now();
                                 read_temp_rows(&data_path, |row| {
                                     let mut data = row;
                                     let key = read_key_from_buf(&mut data, &pk_col)?;
@@ -2572,25 +2601,24 @@ impl IngestContext {
                                     row_id += 1;
                                     Ok(())
                                 })?;
-                                let mut keys = Vec::with_capacity(seen.len());
-                                let mut values = Vec::with_capacity(seen.len());
-                                for (key, value) in seen.into_iter() {
-                                    keys.push(key);
-                                    values.push(value);
-                                }
+                                let scan_ms = scan_start.elapsed().as_millis() as u64;
                                 let params = ptr_hash::PtrHashParams::default();
-                                let mphf = DefaultPtrHash::<GxPtrHash64, Vec<u8>>::try_new(
-                                    &keys,
+                                let mphf_start = std::time::Instant::now();
+                                let mphf = DefaultPtrHash::<GxPtrHash64, Vec<u8>>::try_new_from_source(
+                                    &seen,
                                     params,
                                 )
                                 .ok_or_else(|| anyhow!("ptrhash construction failed"))?;
+                                let mphf_ms = mphf_start.elapsed().as_millis() as u64;
+                                let entries_start = std::time::Instant::now();
                                 let slots = mphf.max_index();
                                 let mut entries = vec![(0u64, 0u32); slots];
-                                for (key, value) in keys.iter().zip(values.iter()) {
+                                for (key, value) in seen.iter() {
                                     let idx = mphf.index_no_remap(key);
                                     let fp = PkGxHash::hash(key, fingerprint_seed);
                                     entries[idx] = (fp, *value);
                                 }
+                                let entries_ms = entries_start.elapsed().as_millis() as u64;
                                 let hash_rel = format!(
                                     "nodes/{}/pk_hash-{:05}.bin",
                                     table_name.to_lowercase(),
@@ -2601,6 +2629,7 @@ impl IngestContext {
                                     table_name.to_lowercase(),
                                     shard
                                 );
+                                let write_start = std::time::Instant::now();
                                 IngestContext::write_pk_hash_and_data(
                                     &target,
                                     &hash_rel,
@@ -2610,12 +2639,14 @@ impl IngestContext {
                                     &mphf,
                                     &entries,
                                 )?;
-                                (hash_rel, data_rel)
+                                let write_ms = write_start.elapsed().as_millis() as u64;
+                                (hash_rel, data_rel, scan_ms, mphf_ms, entries_ms, write_ms)
                             }
                             KeyType::Uuid => {
                                 let mut seen: std::collections::HashMap<[u8; 16], u32> =
                                     std::collections::HashMap::with_capacity(total_rows as usize);
                                 let data_path = root.join(temp_pkey_path(&table_name, shard));
+                                let scan_start = std::time::Instant::now();
                                 read_temp_rows(&data_path, |row| {
                                     let mut data = row;
                                     let key = read_key_from_buf(&mut data, &pk_col)?;
@@ -2638,25 +2669,25 @@ impl IngestContext {
                                     row_id += 1;
                                     Ok(())
                                 })?;
-                                let mut keys = Vec::with_capacity(seen.len());
-                                let mut values = Vec::with_capacity(seen.len());
-                                for (key, value) in seen.into_iter() {
-                                    keys.push(key);
-                                    values.push(value);
-                                }
+                                let scan_ms = scan_start.elapsed().as_millis() as u64;
                                 let params = ptr_hash::PtrHashParams::default();
-                                let mphf = DefaultPtrHash::<GxPtrHash64, [u8; 16]>::try_new(
-                                    &keys,
-                                    params,
-                                )
+                                let mphf_start = std::time::Instant::now();
+                                let mphf =
+                                    DefaultPtrHash::<GxPtrHash64, [u8; 16]>::try_new_from_source(
+                                        &seen,
+                                        params,
+                                    )
                                 .ok_or_else(|| anyhow!("ptrhash construction failed"))?;
+                                let mphf_ms = mphf_start.elapsed().as_millis() as u64;
+                                let entries_start = std::time::Instant::now();
                                 let slots = mphf.max_index();
                                 let mut entries = vec![(0u64, 0u32); slots];
-                                for (key, value) in keys.iter().zip(values.iter()) {
+                                for (key, value) in seen.iter() {
                                     let idx = mphf.index_no_remap(key);
                                     let fp = PkGxHash::hash(key, fingerprint_seed);
                                     entries[idx] = (fp, *value);
                                 }
+                                let entries_ms = entries_start.elapsed().as_millis() as u64;
                                 let hash_rel = format!(
                                     "nodes/{}/pk_hash-{:05}.bin",
                                     table_name.to_lowercase(),
@@ -2667,6 +2698,7 @@ impl IngestContext {
                                     table_name.to_lowercase(),
                                     shard
                                 );
+                                let write_start = std::time::Instant::now();
                                 IngestContext::write_pk_hash_and_data(
                                     &target,
                                     &hash_rel,
@@ -2676,12 +2708,14 @@ impl IngestContext {
                                     &mphf,
                                     &entries,
                                 )?;
-                                (hash_rel, data_rel)
+                                let write_ms = write_start.elapsed().as_millis() as u64;
+                                (hash_rel, data_rel, scan_ms, mphf_ms, entries_ms, write_ms)
                             }
                             KeyType::Uuid256 => {
                                 let mut seen: std::collections::HashMap<[u8; 32], u32> =
                                     std::collections::HashMap::with_capacity(total_rows as usize);
                                 let data_path = root.join(temp_pkey_path(&table_name, shard));
+                                let scan_start = std::time::Instant::now();
                                 read_temp_rows(&data_path, |row| {
                                     let mut data = row;
                                     let key = read_key_from_buf(&mut data, &pk_col)?;
@@ -2705,25 +2739,25 @@ impl IngestContext {
                                     row_id += 1;
                                     Ok(())
                                 })?;
-                                let mut keys = Vec::with_capacity(seen.len());
-                                let mut values = Vec::with_capacity(seen.len());
-                                for (key, value) in seen.into_iter() {
-                                    keys.push(key);
-                                    values.push(value);
-                                }
+                                let scan_ms = scan_start.elapsed().as_millis() as u64;
                                 let params = ptr_hash::PtrHashParams::default();
-                                let mphf = DefaultPtrHash::<GxPtrHash64, [u8; 32]>::try_new(
-                                    &keys,
-                                    params,
-                                )
+                                let mphf_start = std::time::Instant::now();
+                                let mphf =
+                                    DefaultPtrHash::<GxPtrHash64, [u8; 32]>::try_new_from_source(
+                                        &seen,
+                                        params,
+                                    )
                                 .ok_or_else(|| anyhow!("ptrhash construction failed"))?;
+                                let mphf_ms = mphf_start.elapsed().as_millis() as u64;
+                                let entries_start = std::time::Instant::now();
                                 let slots = mphf.max_index();
                                 let mut entries = vec![(0u64, 0u32); slots];
-                                for (key, value) in keys.iter().zip(values.iter()) {
+                                for (key, value) in seen.iter() {
                                     let idx = mphf.index_no_remap(key);
                                     let fp = PkGxHash::hash(key, fingerprint_seed);
                                     entries[idx] = (fp, *value);
                                 }
+                                let entries_ms = entries_start.elapsed().as_millis() as u64;
                                 let hash_rel = format!(
                                     "nodes/{}/pk_hash-{:05}.bin",
                                     table_name.to_lowercase(),
@@ -2734,6 +2768,7 @@ impl IngestContext {
                                     table_name.to_lowercase(),
                                     shard
                                 );
+                                let write_start = std::time::Instant::now();
                                 IngestContext::write_pk_hash_and_data(
                                     &target,
                                     &hash_rel,
@@ -2743,12 +2778,14 @@ impl IngestContext {
                                     &mphf,
                                     &entries,
                                 )?;
-                                (hash_rel, data_rel)
+                                let write_ms = write_start.elapsed().as_millis() as u64;
+                                (hash_rel, data_rel, scan_ms, mphf_ms, entries_ms, write_ms)
                             }
                             KeyType::Ip => {
                                 let mut seen: std::collections::HashMap<[u8; 16], u32> =
                                     std::collections::HashMap::with_capacity(total_rows as usize);
                                 let data_path = root.join(temp_pkey_path(&table_name, shard));
+                                let scan_start = std::time::Instant::now();
                                 read_temp_rows(&data_path, |row| {
                                     let mut data = row;
                                     let key = read_key_from_buf(&mut data, &pk_col)?;
@@ -2771,25 +2808,25 @@ impl IngestContext {
                                     row_id += 1;
                                     Ok(())
                                 })?;
-                                let mut keys = Vec::with_capacity(seen.len());
-                                let mut values = Vec::with_capacity(seen.len());
-                                for (key, value) in seen.into_iter() {
-                                    keys.push(key);
-                                    values.push(value);
-                                }
+                                let scan_ms = scan_start.elapsed().as_millis() as u64;
                                 let params = ptr_hash::PtrHashParams::default();
-                                let mphf = DefaultPtrHash::<GxPtrHash64, [u8; 16]>::try_new(
-                                    &keys,
-                                    params,
-                                )
+                                let mphf_start = std::time::Instant::now();
+                                let mphf =
+                                    DefaultPtrHash::<GxPtrHash64, [u8; 16]>::try_new_from_source(
+                                        &seen,
+                                        params,
+                                    )
                                 .ok_or_else(|| anyhow!("ptrhash construction failed"))?;
+                                let mphf_ms = mphf_start.elapsed().as_millis() as u64;
+                                let entries_start = std::time::Instant::now();
                                 let slots = mphf.max_index();
                                 let mut entries = vec![(0u64, 0u32); slots];
-                                for (key, value) in keys.iter().zip(values.iter()) {
+                                for (key, value) in seen.iter() {
                                     let idx = mphf.index_no_remap(key);
                                     let fp = PkGxHash::hash(key, fingerprint_seed);
                                     entries[idx] = (fp, *value);
                                 }
+                                let entries_ms = entries_start.elapsed().as_millis() as u64;
                                 let hash_rel = format!(
                                     "nodes/{}/pk_hash-{:05}.bin",
                                     table_name.to_lowercase(),
@@ -2800,6 +2837,7 @@ impl IngestContext {
                                     table_name.to_lowercase(),
                                     shard
                                 );
+                                let write_start = std::time::Instant::now();
                                 IngestContext::write_pk_hash_and_data(
                                     &target,
                                     &hash_rel,
@@ -2809,7 +2847,8 @@ impl IngestContext {
                                     &mphf,
                                     &entries,
                                 )?;
-                                (hash_rel, data_rel)
+                                let write_ms = write_start.elapsed().as_millis() as u64;
+                                (hash_rel, data_rel, scan_ms, mphf_ms, entries_ms, write_ms)
                             }
                         };
                         if duplicate_count > 0 {
@@ -2843,7 +2882,10 @@ impl IngestContext {
                             "duplicate_count": duplicate_count,
                             "duplicate_samples": samples,
                         });
+                        let dup_meta_start = std::time::Instant::now();
                         target.write_bytes(&dup_meta, serde_json::to_vec_pretty(&meta)?)?;
+                        let dup_meta_ms = dup_meta_start.elapsed().as_millis() as u64;
+                        let publish_start = std::time::Instant::now();
                         let mut guard = pk_hash_paths.lock().unwrap();
                         guard[shard] = Some(PkHashPaths {
                             hash_path: hash_rel,
@@ -2860,6 +2902,19 @@ impl IngestContext {
                                 status: None,
 });
                         }
+                        let publish_ms = publish_start.elapsed().as_millis() as u64;
+                        let mut guard = phase_stats.lock().unwrap();
+                        let entry = guard
+                            .entry(table_name.clone())
+                            .or_insert_with(PkMapPhaseStats::default);
+                        entry.meta_ms.push(meta_ms);
+                        entry.scan_ms.push(scan_ms);
+                        entry.materialize_ms.push(0);
+                        entry.mphf_ms.push(mphf_ms);
+                        entry.entries_ms.push(entries_ms);
+                        entry.write_ms.push(write_ms);
+                        entry.dup_meta_ms.push(dup_meta_ms);
+                        entry.publish_ms.push(publish_ms);
                         Ok(())
                     }),
                 });
@@ -2896,6 +2951,29 @@ impl IngestContext {
         }
         if let Ok(samples) = std::sync::Arc::try_unwrap(duplicate_samples) {
             self.pk_duplicate_samples = samples.into_inner().unwrap();
+        }
+        if let Ok(stats) = std::sync::Arc::try_unwrap(phase_stats) {
+            let stats = stats.into_inner().unwrap();
+            eprintln!("pk_map phase timings (median ms per shard):");
+            for table in &self.source.tables {
+                if table.edge_table.is_some() || table.primary_key.is_none() {
+                    continue;
+                }
+                if let Some(phases) = stats.get(&table.name) {
+                    eprintln!(
+                        "pk_map table={} meta={} scan={} materialize={} mphf={} entries={} write={} dup_meta={} publish={}",
+                        table.name,
+                        median_ms(&phases.meta_ms),
+                        median_ms(&phases.scan_ms),
+                        median_ms(&phases.materialize_ms),
+                        median_ms(&phases.mphf_ms),
+                        median_ms(&phases.entries_ms),
+                        median_ms(&phases.write_ms),
+                        median_ms(&phases.dup_meta_ms),
+                        median_ms(&phases.publish_ms),
+                    );
+                }
+            }
         }
         Ok(())
     }
