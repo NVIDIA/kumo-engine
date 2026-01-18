@@ -536,10 +536,9 @@ struct IngestContext {
 struct EdgeBuildContext {
     root: PathBuf,
     rel_sort_bits: HashMap<String, Option<u8>>,
-    rel_sort_keys: HashMap<String, RelationSortKeyInfo>,
+    rel_sort_lookups: std::sync::Arc<HashMap<String, Option<std::sync::Arc<SortKeyLookup>>>>,
     max_ids: HashMap<String, u64>,
     pk_hash_store: Arc<PkHashStore>,
-    edge_tables: HashSet<String>,
 }
 
 struct SortKeyComponentStore {
@@ -2910,14 +2909,24 @@ impl IngestContext {
                 edge_tables.insert(table.name.clone());
             }
         }
+        let mut rel_sort_lookups = HashMap::new();
+        for rel in &self.relation_defs {
+            let lookup = build_sort_key_lookup(
+                &root,
+                &edge_tables,
+                &rel_sort_keys,
+                &rel.name,
+                self.num_shards,
+            )?;
+            rel_sort_lookups.insert(rel.name.clone(), lookup.map(std::sync::Arc::new));
+        }
         let pk_hash_store = Arc::new(self.build_pk_hash_store(&root)?);
         Ok(EdgeBuildContext {
             root,
             rel_sort_bits,
-            rel_sort_keys,
+            rel_sort_lookups: std::sync::Arc::new(rel_sort_lookups),
             max_ids,
             pk_hash_store,
-            edge_tables,
         })
     }
     fn build_pk_hash_store(&self, root: &Path) -> Result<PkHashStore> {
@@ -2966,8 +2975,7 @@ impl IngestContext {
             let pk_hash_store = edge_ctx.pk_hash_store.clone();
             let max_ids = edge_ctx.max_ids.clone();
             let rel_sort_bits = edge_ctx.rel_sort_bits.clone();
-            let rel_sort_keys = edge_ctx.rel_sort_keys.clone();
-            let edge_tables = edge_ctx.edge_tables.clone();
+            let rel_sort_lookups = std::sync::Arc::clone(&edge_ctx.rel_sort_lookups);
             let source = self.source.clone();
             let num_shards = self.num_shards;
             let (tx, rx) = std::sync::mpsc::channel::<Result<EdgeMapResult>>();
@@ -3016,9 +3024,8 @@ impl IngestContext {
                     let pk_hash_store = pk_hash_store.clone();
                     let max_ids = max_ids.clone();
                     let rel_sort_bits = rel_sort_bits.clone();
-                    let rel_sort_keys = rel_sort_keys.clone();
-                    let edge_tables = edge_tables.clone();
-                    let root = root.clone();
+                let rel_sort_lookups = std::sync::Arc::clone(&rel_sort_lookups);
+                let root = root.clone();
                     let writer_senders = std::sync::Arc::clone(&writer_senders);
                     let tx = tx.clone();
                     let src_fk_col = src_fk_col.clone();
@@ -3046,20 +3053,12 @@ impl IngestContext {
                                 .get(&rel.name_reverse)
                                 .copied()
                                 .flatten();
-                            let forward_lookup = build_sort_key_lookup(
-                                &root,
-                                &edge_tables,
-                                &rel_sort_keys,
-                                &rel.name_forward,
-                                num_shards,
-                            )?;
-                            let reverse_lookup = build_sort_key_lookup(
-                                &root,
-                                &edge_tables,
-                                &rel_sort_keys,
-                                &rel.name_reverse,
-                                num_shards,
-                            )?;
+                            let forward_lookup = rel_sort_lookups
+                                .get(&rel.name_forward)
+                                .and_then(|lookup| lookup.as_ref().map(std::sync::Arc::clone));
+                            let reverse_lookup = rel_sort_lookups
+                                .get(&rel.name_reverse)
+                                .and_then(|lookup| lookup.as_ref().map(std::sync::Arc::clone));
                             let forward_spec = edge_binary_spec(
                                 max_ids.get(&rel.src_table).copied().unwrap_or(0),
                                 max_ids.get(&rel.dst_table).copied().unwrap_or(0),
@@ -3287,9 +3286,8 @@ impl IngestContext {
                     let pk_hash_store = pk_hash_store.clone();
                     let max_ids = max_ids.clone();
                     let rel_sort_bits = rel_sort_bits.clone();
-                    let rel_sort_keys = rel_sort_keys.clone();
-                    let edge_tables = edge_tables.clone();
-                    let root = root.clone();
+                let rel_sort_lookups = std::sync::Arc::clone(&rel_sort_lookups);
+                let root = root.clone();
                     let tx = tx.clone();
                     let writer_senders = std::sync::Arc::clone(&writer_senders);
                     let edge = edge.clone();
@@ -3320,20 +3318,12 @@ impl IngestContext {
                                 .get(&reverse_name)
                                 .copied()
                                 .flatten();
-                            let forward_lookup = build_sort_key_lookup(
-                                &root,
-                                &edge_tables,
-                                &rel_sort_keys,
-                                &forward_name,
-                                num_shards,
-                            )?;
-                            let reverse_lookup = build_sort_key_lookup(
-                                &root,
-                                &edge_tables,
-                                &rel_sort_keys,
-                                &reverse_name,
-                                num_shards,
-                            )?;
+                            let forward_lookup = rel_sort_lookups
+                                .get(&forward_name)
+                                .and_then(|lookup| lookup.as_ref().map(std::sync::Arc::clone));
+                            let reverse_lookup = rel_sort_lookups
+                                .get(&reverse_name)
+                                .and_then(|lookup| lookup.as_ref().map(std::sync::Arc::clone));
                             let forward_spec = edge_binary_spec(
                                 max_ids
                                     .get(&edge.src_fk.ref_table)
@@ -4241,9 +4231,23 @@ fn load_sort_key_component_shards(
         let file = fs::File::open(&path)
             .with_context(|| format!("open {}", path.display()))?;
         let data = unsafe { Mmap::map(&file)? };
+        advise_willneed(&data);
         shards.push(SortKeyComponentStore { width_bytes, data });
     }
     Ok(shards)
+}
+
+fn advise_willneed(map: &Mmap) {
+    let ret = unsafe {
+        libc::madvise(
+            map.as_ptr() as *mut libc::c_void,
+            map.len(),
+            libc::MADV_WILLNEED,
+        )
+    };
+    if ret != 0 {
+        let _ = std::io::Error::last_os_error();
+    }
 }
 
 fn build_sort_key_lookup(
