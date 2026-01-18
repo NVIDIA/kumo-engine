@@ -51,6 +51,8 @@ use std::fs;
 use std::io::{self, BufWriter, Read, Write};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
+#[cfg(target_os = "linux")]
+use std::os::unix::io::AsRawFd;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::collections::hash_map::Entry;
@@ -1392,6 +1394,7 @@ impl IngestContext {
                             TableFormat::Parquet => {
                                 let file = fs::File::open(&local.path)
                                     .with_context(|| format!("open {}", local.path.display()))?;
+                                advise_file_willneed(&file);
                                 let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
                                 let reader = builder.with_batch_size(NODE_BATCH_SIZE).build()?;
                                 for batch in reader {
@@ -1422,6 +1425,7 @@ impl IngestContext {
                             TableFormat::Csv => {
                                 let file = fs::File::open(&local.path)
                                     .with_context(|| format!("open {}", local.path.display()))?;
+                                advise_file_willneed(&file);
                                 let schema = table_schema(&table)?;
                                 let builder =
                                     arrow_csv::ReaderBuilder::new(Arc::new(schema)).with_header(true);
@@ -1862,6 +1866,7 @@ impl IngestContext {
             TableFormat::Parquet => {
                 let file = fs::File::open(&local.path)
                     .with_context(|| format!("open {}", local.path.display()))?;
+                advise_file_willneed(&file);
                 let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
                 let reader = builder.with_batch_size(NODE_BATCH_SIZE).build()?;
                 for batch in reader {
@@ -1899,6 +1904,7 @@ impl IngestContext {
             TableFormat::Csv => {
                 let file = fs::File::open(&local.path)
                     .with_context(|| format!("open {}", local.path.display()))?;
+                advise_file_willneed(&file);
                 let schema = table_schema(table)?;
                 let builder = arrow_csv::ReaderBuilder::new(Arc::new(schema)).with_header(true);
                 let reader = builder.build(file)?;
@@ -2127,6 +2133,7 @@ impl IngestContext {
             TableFormat::Parquet => {
                 let file = fs::File::open(&local.path)
                     .with_context(|| format!("open {}", local.path.display()))?;
+                advise_file_willneed(&file);
                 let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
                 let reader = builder.with_batch_size(NODE_BATCH_SIZE).build()?;
                 for batch in reader {
@@ -2173,6 +2180,7 @@ impl IngestContext {
             TableFormat::Csv => {
                 let file = fs::File::open(&local.path)
                     .with_context(|| format!("open {}", local.path.display()))?;
+                advise_file_willneed(&file);
                 let builder = arrow_csv::ReaderBuilder::new(Arc::new(schema.clone()))
                     .with_header(true);
                 let reader = builder.build(file)?;
@@ -4184,6 +4192,7 @@ fn append_fkey_bit(bits: &mut Vec<u8>, row_idx: u64, present: bool) -> usize {
 
 fn read_temp_rows(path: &Path, mut f: impl FnMut(&[u8]) -> Result<()>) -> Result<()> {
     let file = fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
+    advise_file_willneed(&file);
     let mut file = FrameDecoder::new(file);
     let mut len_buf = [0u8; 4];
     let mut data = Vec::new();
@@ -4249,6 +4258,16 @@ fn advise_willneed(map: &Mmap) {
         let _ = std::io::Error::last_os_error();
     }
 }
+
+#[cfg(target_os = "linux")]
+fn advise_file_willneed(file: &fs::File) {
+    unsafe {
+        libc::posix_fadvise(file.as_raw_fd(), 0, 0, libc::POSIX_FADV_WILLNEED);
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn advise_file_willneed(_file: &fs::File) {}
 
 fn build_sort_key_lookup(
     root: &Path,

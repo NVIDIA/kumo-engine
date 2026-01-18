@@ -10,6 +10,8 @@ use serde_json;
 use serde::Serialize;
 use std::fs::{self, File};
 use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
+#[cfg(target_os = "linux")]
+use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
 use std::cell::RefCell;
@@ -18,6 +20,16 @@ use thiserror::Error;
 const MAX_NODE_DATA_LEN: usize = 64 * 1024 * 1024;
 const OFFSET_OVERHEAD_BYTES: u64 = 128;
 const MAX_VARINT_COUNT: usize = 0x3FFF_FFFF;
+
+#[cfg(target_os = "linux")]
+fn advise_willneed(file: &File) {
+    unsafe {
+        libc::posix_fadvise(file.as_raw_fd(), 0, 0, libc::POSIX_FADV_WILLNEED);
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn advise_willneed(_file: &File) {}
 
 fn count_len(count: usize) -> u64 {
     if count <= 63 {
@@ -1119,6 +1131,7 @@ fn read_edge_parts(
     let mut spec: Option<(u8, u8, u8)> = None;
     for path in paths {
         let file = std::fs::File::open(path)?;
+        advise_willneed(&file);
         let file_len = file.metadata()?.len();
         if file_len < 3 {
             return Err(IndexBuildError::NotImplemented("binary edge file too small").into());
@@ -1370,6 +1383,7 @@ impl MultiBinaryNodeDataStream {
                 }
                 let path = &self.files[self.current_idx];
                 let file = std::fs::File::open(path)?;
+                advise_willneed(&file);
                 self.reader = Some(FrameDecoder::new(file));
             }
             let reader = self
