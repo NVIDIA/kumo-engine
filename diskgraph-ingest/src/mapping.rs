@@ -208,12 +208,23 @@ pub struct PkHashShard {
     header: PkDataHeader,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub enum PkDataAdvice {
+    WillNeed,
+    Random,
+}
+
 impl PkHashShard {
-    pub fn load(hash_path: &std::path::Path, data_path: &std::path::Path, key_type: KeyType) -> Result<Self> {
+    pub fn load(
+        hash_path: &std::path::Path,
+        data_path: &std::path::Path,
+        key_type: KeyType,
+        data_advice: PkDataAdvice,
+    ) -> Result<Self> {
         let data_file = File::open(data_path)
             .map_err(|e| anyhow!("open pk data {}: {e}", data_path.display()))?;
         let data = unsafe { Mmap::map(&data_file)? };
-        advise_willneed(&data);
+        advise_data(&data, data_advice);
         let header = PkDataHeader::read_from(&data)?;
         let header_key_type = header.key_type()?;
         if header_key_type != key_type {
@@ -375,5 +386,18 @@ fn advise_willneed(map: &Mmap) {
         unsafe { libc::madvise(map.as_ptr() as *mut libc::c_void, map.len(), libc::MADV_WILLNEED) };
     if ret != 0 {
         let _ = std::io::Error::last_os_error();
+    }
+}
+
+fn advise_data(map: &Mmap, advice: PkDataAdvice) {
+    match advice {
+        PkDataAdvice::WillNeed => advise_willneed(map),
+        PkDataAdvice::Random => {
+            let ret =
+                unsafe { libc::madvise(map.as_ptr() as *mut libc::c_void, map.len(), libc::MADV_RANDOM) };
+            if ret != 0 {
+                let _ = std::io::Error::last_os_error();
+            }
+        }
     }
 }

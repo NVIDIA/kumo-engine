@@ -5,8 +5,8 @@ pub mod source_metadata;
 pub mod progress;
 
 use crate::mapping::{
-    fingerprint_seed_for, write_pk_data_entry, write_pk_data_header, Key, KeyType, PkGxHash,
-    PkHashShard, PkHashStore, PkPtrHash, PkPtrHashOutput,
+    fingerprint_seed_for, write_pk_data_entry, write_pk_data_header, Key, KeyType, PkDataAdvice,
+    PkGxHash, PkHashShard, PkHashStore, PkPtrHash, PkPtrHashOutput,
 };
 use crate::progress::format_duration;
 use crate::source_metadata::{
@@ -3199,14 +3199,30 @@ impl IngestContext {
         if shard_jobs.is_empty() {
             return Ok(PkHashStore::new(HashMap::new()));
         }
+        let mut total_bytes = 0u64;
+        for (_, _, _, hash_path, data_path) in &shard_jobs {
+            let hash_len = fs::metadata(hash_path)
+                .with_context(|| format!("stat pk hash {}", hash_path.display()))?
+                .len();
+            let data_len = fs::metadata(data_path)
+                .with_context(|| format!("stat pk data {}", data_path.display()))?
+                .len();
+            total_bytes = total_bytes.saturating_add(hash_len);
+            total_bytes = total_bytes.saturating_add(data_len);
+        }
+        let data_advice = match total_memory_bytes() {
+            Some(total_mem) if total_bytes <= total_mem => PkDataAdvice::WillNeed,
+            _ => PkDataAdvice::Random,
+        };
         let (tx, rx) = std::sync::mpsc::channel::<Result<(String, usize, PkHashShard)>>();
         let mut tasks = Vec::with_capacity(shard_jobs.len());
         for (table_name, shard_idx, key_type, hash_path, data_path) in shard_jobs {
             let tx = tx.clone();
+            let data_advice = data_advice;
             tasks.push(WorkItem {
                 bucket: None,
                 run: Box::new(move |_scratch| {
-                    let shard = PkHashShard::load(&hash_path, &data_path, key_type)?;
+                    let shard = PkHashShard::load(&hash_path, &data_path, key_type, data_advice)?;
                     let _ = tx.send(Ok((table_name, shard_idx, shard)));
                     Ok(())
                 }),
