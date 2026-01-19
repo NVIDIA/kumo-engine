@@ -52,15 +52,16 @@ fn build_and_read_round_trip_basic() {
     let relation_meta = relation_meta("Follows", "User", "User", None);
     let output_dir = dir.path().join("out");
     let builder = ShardBuilder::new(ShardBuildParams {
-        output_dir: output_dir.clone(),
-        node_meta: node_meta.clone(),
-        node_types: vec![node_meta.clone()],
-        relation_metas: vec![relation_meta.clone()],
+        output_dir: Arc::new(output_dir.clone()),
+        node_meta: Arc::new(node_meta.clone()),
+        node_types: Arc::new(vec![node_meta.clone()]),
+        relation_metas: Arc::new(vec![relation_meta.clone()]),
         shard_index: 0,
         node_data_paths: None,
 
         node_data_max_len: 0,
         mem_budget: None,
+        edge_buffer_pool: None,
     });
     let built = builder
         .build(
@@ -96,15 +97,16 @@ fn build_handles_all_zero_edges() {
     let relation_meta = relation_meta("Follows", "User", "User", None);
     let output_dir = dir.path().join("out");
     let builder = ShardBuilder::new(ShardBuildParams {
-        output_dir: output_dir.clone(),
-        node_meta: node_meta.clone(),
-        node_types: vec![node_meta.clone()],
-        relation_metas: vec![relation_meta.clone()],
+        output_dir: Arc::new(output_dir.clone()),
+        node_meta: Arc::new(node_meta.clone()),
+        node_types: Arc::new(vec![node_meta.clone()]),
+        relation_metas: Arc::new(vec![relation_meta.clone()]),
         shard_index: 0,
         node_data_paths: None,
 
         node_data_max_len: 0,
         mem_budget: None,
+        edge_buffer_pool: None,
     });
     let built = builder
         .build(
@@ -139,15 +141,16 @@ fn build_rejects_dangling_edges() {
     let relation_meta = relation_meta("Follows", "User", "User", None);
     let output_dir = dir.path().join("out");
     let builder = ShardBuilder::new(ShardBuildParams {
-        output_dir: output_dir.clone(),
-        node_meta: node_meta.clone(),
-        node_types: vec![node_meta.clone()],
-        relation_metas: vec![relation_meta.clone()],
+        output_dir: Arc::new(output_dir.clone()),
+        node_meta: Arc::new(node_meta.clone()),
+        node_types: Arc::new(vec![node_meta.clone()]),
+        relation_metas: Arc::new(vec![relation_meta.clone()]),
         shard_index: 0,
         node_data_paths: None,
 
         node_data_max_len: 0,
         mem_budget: None,
+        edge_buffer_pool: None,
     });
     let msg = match builder.build(
         &[EdgeShardInput {
@@ -191,15 +194,16 @@ fn build_sorts_edge_ordering_violation() {
     let relation_meta = relation_meta("Follows", "User", "User", None);
     let output_dir = dir.path().join("out");
     let builder = ShardBuilder::new(ShardBuildParams {
-        output_dir: output_dir.clone(),
-        node_meta: node_meta.clone(),
-        node_types: vec![node_meta.clone()],
-        relation_metas: vec![relation_meta.clone()],
+        output_dir: Arc::new(output_dir.clone()),
+        node_meta: Arc::new(node_meta.clone()),
+        node_types: Arc::new(vec![node_meta.clone()]),
+        relation_metas: Arc::new(vec![relation_meta.clone()]),
         shard_index: 0,
         node_data_paths: None,
 
         node_data_max_len: 0,
         mem_budget: None,
+        edge_buffer_pool: None,
     });
     let built = builder
         .build(&[EdgeShardInput {
@@ -265,15 +269,16 @@ fn offsets_span_multiple_chunks_and_edges_decode_correctly() {
     let relation_meta = relation_meta("Follows", "User", "User", None);
     let output_dir = dir.path().join("out");
     let builder = ShardBuilder::new(ShardBuildParams {
-        output_dir: output_dir.clone(),
-        node_meta: node_meta.clone(),
-        node_types: vec![node_meta.clone()],
-        relation_metas: vec![relation_meta.clone()],
+        output_dir: Arc::new(output_dir.clone()),
+        node_meta: Arc::new(node_meta.clone()),
+        node_types: Arc::new(vec![node_meta.clone()]),
+        relation_metas: Arc::new(vec![relation_meta.clone()]),
         shard_index: 0,
         node_data_paths: None,
 
         node_data_max_len: 0,
         mem_budget: None,
+        edge_buffer_pool: None,
     });
     let built = builder
         .build(
@@ -331,15 +336,16 @@ fn sort_key_round_trip_decodes_correctly() {
     let relation_meta = relation_meta("Temporal", "User", "User", Some(8));
     let output_dir = dir.path().join("out");
     let builder = ShardBuilder::new(ShardBuildParams {
-        output_dir: output_dir.clone(),
-        node_meta: node_meta.clone(),
-        node_types: vec![node_meta.clone()],
-        relation_metas: vec![relation_meta.clone()],
+        output_dir: Arc::new(output_dir.clone()),
+        node_meta: Arc::new(node_meta.clone()),
+        node_types: Arc::new(vec![node_meta.clone()]),
+        relation_metas: Arc::new(vec![relation_meta.clone()]),
         shard_index: 0,
         node_data_paths: None,
 
         node_data_max_len: 0,
         mem_budget: None,
+        edge_buffer_pool: None,
     });
     let built = builder
         .build(
@@ -403,15 +409,16 @@ fn multi_relation_counts_and_edges_decode_correctly() {
     let temporal = relation_meta("Temporal", "User", "User", Some(16));
     let output_dir = dir.path().join("out");
     let builder = ShardBuilder::new(ShardBuildParams {
-        output_dir: output_dir.clone(),
-        node_meta: node_meta.clone(),
-        node_types: vec![node_meta.clone()],
-        relation_metas: vec![follows.clone(), temporal.clone()],
+        output_dir: Arc::new(output_dir.clone()),
+        node_meta: Arc::new(node_meta.clone()),
+        node_types: Arc::new(vec![node_meta.clone()]),
+        relation_metas: Arc::new(vec![follows.clone(), temporal.clone()]),
         shard_index: 0,
         node_data_paths: None,
 
         node_data_max_len: 0,
         mem_budget: None,
+        edge_buffer_pool: None,
     });
     let built = builder
         .build(
@@ -486,15 +493,16 @@ fn multi_relation_mixed_dst_widths_and_partial_edges() {
     let temporal = relation_meta("Temporal", "User", "User", Some(8));
     let output_dir = dir.path().join("out");
     let builder = ShardBuilder::new(ShardBuildParams {
-        output_dir: output_dir.clone(),
-        node_meta: node_meta.clone(),
-        node_types: vec![node_meta.clone()],
-        relation_metas: vec![follows.clone(), temporal.clone()],
+        output_dir: Arc::new(output_dir.clone()),
+        node_meta: Arc::new(node_meta.clone()),
+        node_types: Arc::new(vec![node_meta.clone()]),
+        relation_metas: Arc::new(vec![follows.clone(), temporal.clone()]),
         shard_index: 0,
         node_data_paths: None,
 
         node_data_max_len: 0,
         mem_budget: None,
+        edge_buffer_pool: None,
     });
     let built = builder
         .build(
@@ -558,15 +566,16 @@ fn truncates_large_node_without_sort_key() {
     let relation_meta = relation_meta("Follows", "User", "User", None);
     let output_dir = dir.path().join("out");
     let builder = ShardBuilder::new(ShardBuildParams {
-        output_dir: output_dir.clone(),
-        node_meta: node_meta.clone(),
-        node_types: vec![node_meta.clone()],
-        relation_metas: vec![relation_meta.clone()],
+        output_dir: Arc::new(output_dir.clone()),
+        node_meta: Arc::new(node_meta.clone()),
+        node_types: Arc::new(vec![node_meta.clone()]),
+        relation_metas: Arc::new(vec![relation_meta.clone()]),
         shard_index: 0,
         node_data_paths: None,
 
         node_data_max_len: 0,
         mem_budget: None,
+        edge_buffer_pool: None,
     });
     let built = builder
         .build(
@@ -646,15 +655,16 @@ fn truncates_large_node_with_sort_key() {
     let relation_meta = relation_meta("Temporal", "User", "User", Some(16));
     let output_dir = dir.path().join("out");
     let builder = ShardBuilder::new(ShardBuildParams {
-        output_dir: output_dir.clone(),
-        node_meta: node_meta.clone(),
-        node_types: vec![node_meta.clone()],
-        relation_metas: vec![relation_meta.clone()],
+        output_dir: Arc::new(output_dir.clone()),
+        node_meta: Arc::new(node_meta.clone()),
+        node_types: Arc::new(vec![node_meta.clone()]),
+        relation_metas: Arc::new(vec![relation_meta.clone()]),
         shard_index: 0,
         node_data_paths: None,
 
         node_data_max_len: 0,
         mem_budget: None,
+        edge_buffer_pool: None,
     });
     let built = builder
         .build(
@@ -731,15 +741,16 @@ fn selects_wider_offsets_for_large_edge_lists() {
     let relation_meta = relation_meta("Follows", "User", "User", None);
     let output_dir = dir.path().join("out");
     let builder = ShardBuilder::new(ShardBuildParams {
-        output_dir: output_dir.clone(),
-        node_meta: node_meta.clone(),
-        node_types: vec![node_meta.clone()],
-        relation_metas: vec![relation_meta.clone()],
+        output_dir: Arc::new(output_dir.clone()),
+        node_meta: Arc::new(node_meta.clone()),
+        node_types: Arc::new(vec![node_meta.clone()]),
+        relation_metas: Arc::new(vec![relation_meta.clone()]),
         shard_index: 0,
         node_data_paths: None,
 
         node_data_max_len: 0,
         mem_budget: None,
+        edge_buffer_pool: None,
     });
     let built = builder
         .build(
@@ -815,14 +826,15 @@ fn selects_32bit_offsets_with_large_node_data_budget() {
     let relation_meta = relation_meta("Follows", "User", "User", None);
     let output_dir = dir.path().join("out");
     let builder = ShardBuilder::new(ShardBuildParams {
-        output_dir: output_dir.clone(),
-        node_meta: node_meta.clone(),
-        node_types: vec![node_meta.clone()],
-        relation_metas: vec![relation_meta.clone()],
+        output_dir: Arc::new(output_dir.clone()),
+        node_meta: Arc::new(node_meta.clone()),
+        node_types: Arc::new(vec![node_meta.clone()]),
+        relation_metas: Arc::new(vec![relation_meta.clone()]),
         shard_index: 0,
-        node_data_paths: Some(vec![node_data_path]),
+        node_data_paths: Some(Arc::new(vec![node_data_path])),
         node_data_max_len: 20_000_000,
         mem_budget: None,
+        edge_buffer_pool: None,
     });
     let built = builder
         .build(
@@ -1004,15 +1016,16 @@ fn offsets_many_chunks_sparse_edges() {
     let relation_meta = relation_meta("Follows", "User", "User", None);
     let output_dir = dir.path().join("out");
     let builder = ShardBuilder::new(ShardBuildParams {
-        output_dir: output_dir.clone(),
-        node_meta: node_meta.clone(),
-        node_types: vec![node_meta.clone()],
-        relation_metas: vec![relation_meta.clone()],
+        output_dir: Arc::new(output_dir.clone()),
+        node_meta: Arc::new(node_meta.clone()),
+        node_types: Arc::new(vec![node_meta.clone()]),
+        relation_metas: Arc::new(vec![relation_meta.clone()]),
         shard_index: 0,
         node_data_paths: None,
 
         node_data_max_len: 0,
         mem_budget: None,
+        edge_buffer_pool: None,
     });
     let built = builder
         .build(
@@ -1088,15 +1101,16 @@ fn truncates_large_node_multi_relation() {
     let temporal = relation_meta("Temporal", "User", "User", Some(56));
     let output_dir = dir.path().join("out");
     let builder = ShardBuilder::new(ShardBuildParams {
-        output_dir: output_dir.clone(),
-        node_meta: node_meta.clone(),
-        node_types: vec![node_meta.clone()],
-        relation_metas: vec![follows.clone(), temporal.clone()],
+        output_dir: Arc::new(output_dir.clone()),
+        node_meta: Arc::new(node_meta.clone()),
+        node_types: Arc::new(vec![node_meta.clone()]),
+        relation_metas: Arc::new(vec![follows.clone(), temporal.clone()]),
         shard_index: 0,
         node_data_paths: None,
 
         node_data_max_len: 0,
         mem_budget: None,
+        edge_buffer_pool: None,
     });
     let built = builder
         .build(
@@ -1168,15 +1182,16 @@ fn builder_errors_when_missing_dest_sort_key() {
     let node_meta = node_meta("User", 1);
     let relation_meta = relation_meta("Temporal", "User", "User", Some(8));
     let builder = ShardBuilder::new(ShardBuildParams {
-        output_dir: dir.path().join("out"),
-        node_meta: node_meta.clone(),
-        node_types: vec![node_meta.clone()],
-        relation_metas: vec![relation_meta.clone()],
+        output_dir: Arc::new(dir.path().join("out")),
+        node_meta: Arc::new(node_meta.clone()),
+        node_types: Arc::new(vec![node_meta.clone()]),
+        relation_metas: Arc::new(vec![relation_meta.clone()]),
         shard_index: 0,
         node_data_paths: None,
 
         node_data_max_len: 0,
         mem_budget: None,
+        edge_buffer_pool: None,
     });
     let msg = match builder.build(
         &[EdgeShardInput {
@@ -1208,15 +1223,16 @@ fn builder_accepts_binary_edges_with_64bit_sort_key() {
     let relation_meta = relation_meta("Temporal", "User", "User", Some(64));
     let output_dir = dir.path().join("out");
     let builder = ShardBuilder::new(ShardBuildParams {
-        output_dir: output_dir.clone(),
-        node_meta: node_meta.clone(),
-        node_types: vec![node_meta.clone()],
-        relation_metas: vec![relation_meta.clone()],
+        output_dir: Arc::new(output_dir.clone()),
+        node_meta: Arc::new(node_meta.clone()),
+        node_types: Arc::new(vec![node_meta.clone()]),
+        relation_metas: Arc::new(vec![relation_meta.clone()]),
         shard_index: 0,
         node_data_paths: None,
 
         node_data_max_len: 0,
         mem_budget: None,
+        edge_buffer_pool: None,
     });
     let built = builder
         .build(
@@ -1251,15 +1267,16 @@ fn builder_errors_when_dst_id_exceeds_mask() {
     let node_meta = node_meta("User", 10);
     let relation_meta = relation_meta("Follows", "User", "User", None);
     let builder = ShardBuilder::new(ShardBuildParams {
-        output_dir: dir.path().join("out"),
-        node_meta: node_meta.clone(),
-        node_types: vec![node_meta.clone()],
-        relation_metas: vec![relation_meta.clone()],
+        output_dir: Arc::new(dir.path().join("out")),
+        node_meta: Arc::new(node_meta.clone()),
+        node_types: Arc::new(vec![node_meta.clone()]),
+        relation_metas: Arc::new(vec![relation_meta.clone()]),
         shard_index: 0,
         node_data_paths: None,
 
         node_data_max_len: 0,
         mem_budget: None,
+        edge_buffer_pool: None,
     });
     let msg = match builder.build(
         &[EdgeShardInput {
@@ -1295,15 +1312,16 @@ fn builder_errors_when_dest_sort_key_exceeds_mask() {
     let node_meta = node_meta("User", 1);
     let relation_meta = relation_meta("Temporal", "User", "User", Some(8));
     let builder = ShardBuilder::new(ShardBuildParams {
-        output_dir: dir.path().join("out"),
-        node_meta: node_meta.clone(),
-        node_types: vec![node_meta.clone()],
-        relation_metas: vec![relation_meta.clone()],
+        output_dir: Arc::new(dir.path().join("out")),
+        node_meta: Arc::new(node_meta.clone()),
+        node_types: Arc::new(vec![node_meta.clone()]),
+        relation_metas: Arc::new(vec![relation_meta.clone()]),
         shard_index: 0,
         node_data_paths: None,
 
         node_data_max_len: 0,
         mem_budget: None,
+        edge_buffer_pool: None,
     });
     let msg = match builder.build(
         &[EdgeShardInput {
@@ -1338,15 +1356,16 @@ fn builder_errors_on_unknown_relation_name() {
     let node_meta = node_meta("User", 1);
     let relation_meta = relation_meta("Follows", "User", "User", None);
     let builder = ShardBuilder::new(ShardBuildParams {
-        output_dir: dir.path().join("out"),
-        node_meta: node_meta.clone(),
-        node_types: vec![node_meta.clone()],
-        relation_metas: vec![relation_meta.clone()],
+        output_dir: Arc::new(dir.path().join("out")),
+        node_meta: Arc::new(node_meta.clone()),
+        node_types: Arc::new(vec![node_meta.clone()]),
+        relation_metas: Arc::new(vec![relation_meta.clone()]),
         shard_index: 0,
         node_data_paths: None,
 
         node_data_max_len: 0,
         mem_budget: None,
+        edge_buffer_pool: None,
     });
     let msg = match builder.build(
         &[EdgeShardInput {
@@ -1373,15 +1392,16 @@ fn builder_errors_on_corrupted_binary() {
     let node_meta = node_meta("User", 0);
     let relation_meta = relation_meta("Follows", "User", "User", None);
     let builder = ShardBuilder::new(ShardBuildParams {
-        output_dir: dir.path().join("out"),
-        node_meta: node_meta.clone(),
-        node_types: vec![node_meta.clone()],
-        relation_metas: vec![relation_meta.clone()],
+        output_dir: Arc::new(dir.path().join("out")),
+        node_meta: Arc::new(node_meta.clone()),
+        node_types: Arc::new(vec![node_meta.clone()]),
+        relation_metas: Arc::new(vec![relation_meta.clone()]),
         shard_index: 0,
         node_data_paths: None,
 
         node_data_max_len: 0,
         mem_budget: None,
+        edge_buffer_pool: None,
     });
     let msg = match builder.build(
         &[EdgeShardInput {
@@ -1416,15 +1436,16 @@ fn builder_errors_on_shard_index_mismatch() {
     let node_meta = node_meta("User", 1);
     let relation_meta = relation_meta("Follows", "User", "User", None);
     let builder = ShardBuilder::new(ShardBuildParams {
-        output_dir: dir.path().join("out"),
-        node_meta: node_meta.clone(),
-        node_types: vec![node_meta.clone()],
-        relation_metas: vec![relation_meta.clone()],
+        output_dir: Arc::new(dir.path().join("out")),
+        node_meta: Arc::new(node_meta.clone()),
+        node_types: Arc::new(vec![node_meta.clone()]),
+        relation_metas: Arc::new(vec![relation_meta.clone()]),
         shard_index: 0,
         node_data_paths: None,
 
         node_data_max_len: 0,
         mem_budget: None,
+        edge_buffer_pool: None,
     });
     let msg = match builder.build(
         &[EdgeShardInput {
@@ -1447,15 +1468,16 @@ fn builder_fails_on_missing_edge_file() {
     let node_meta = node_meta("User", 0);
     let relation_meta = relation_meta("Follows", "User", "User", None);
     let builder = ShardBuilder::new(ShardBuildParams {
-        output_dir: dir.path().join("out"),
-        node_meta: node_meta.clone(),
-        node_types: vec![node_meta.clone()],
-        relation_metas: vec![relation_meta.clone()],
+        output_dir: Arc::new(dir.path().join("out")),
+        node_meta: Arc::new(node_meta.clone()),
+        node_types: Arc::new(vec![node_meta.clone()]),
+        relation_metas: Arc::new(vec![relation_meta.clone()]),
         shard_index: 0,
         node_data_paths: None,
 
         node_data_max_len: 0,
         mem_budget: None,
+        edge_buffer_pool: None,
     });
     let msg = match builder.build(
         &[EdgeShardInput {
@@ -1611,15 +1633,16 @@ fn build_simple_shard(
     let relation_meta = relation_meta("Follows", "User", "User", None);
     let output_dir = dir.path().join("out");
     let builder = ShardBuilder::new(ShardBuildParams {
-        output_dir: output_dir.clone(),
-        node_meta: node_meta.clone(),
-        node_types: vec![node_meta.clone()],
-        relation_metas: vec![relation_meta.clone()],
+        output_dir: Arc::new(output_dir.clone()),
+        node_meta: Arc::new(node_meta.clone()),
+        node_types: Arc::new(vec![node_meta.clone()]),
+        relation_metas: Arc::new(vec![relation_meta.clone()]),
         shard_index: 0,
         node_data_paths: None,
 
         node_data_max_len: 0,
         mem_budget: None,
+        edge_buffer_pool: None,
     });
     let built = builder
         .build(
@@ -1668,15 +1691,16 @@ fn builder_writes_node_data() {
     let relation_meta = relation_meta("Follows", "User", "User", None);
     let output_dir = dir.path().join("out");
     let builder = ShardBuilder::new(ShardBuildParams {
-        output_dir: output_dir.clone(),
-        node_meta: node_meta.clone(),
-        node_types: vec![node_meta.clone()],
-        relation_metas: vec![relation_meta.clone()],
+        output_dir: Arc::new(output_dir.clone()),
+        node_meta: Arc::new(node_meta.clone()),
+        node_types: Arc::new(vec![node_meta.clone()]),
+        relation_metas: Arc::new(vec![relation_meta.clone()]),
         shard_index: 0,
-        node_data_paths: Some(vec![node_data_path]),
+        node_data_paths: Some(Arc::new(vec![node_data_path])),
 
         node_data_max_len: 0,
         mem_budget: None,
+        edge_buffer_pool: None,
     });
     let built = builder
         .build(
@@ -1720,15 +1744,16 @@ fn builder_errors_on_node_data_row_count_mismatch() {
     let relation_meta = relation_meta("Follows", "User", "User", None);
     let output_dir = dir.path().join("out");
     let builder = ShardBuilder::new(ShardBuildParams {
-        output_dir: output_dir.clone(),
-        node_meta: node_meta.clone(),
-        node_types: vec![node_meta.clone()],
-        relation_metas: vec![relation_meta.clone()],
+        output_dir: Arc::new(output_dir.clone()),
+        node_meta: Arc::new(node_meta.clone()),
+        node_types: Arc::new(vec![node_meta.clone()]),
+        relation_metas: Arc::new(vec![relation_meta.clone()]),
         shard_index: 0,
-        node_data_paths: Some(vec![node_data_path]),
+        node_data_paths: Some(Arc::new(vec![node_data_path])),
 
         node_data_max_len: 0,
         mem_budget: None,
+        edge_buffer_pool: None,
     });
     let msg = match builder.build(
         &[EdgeShardInput {

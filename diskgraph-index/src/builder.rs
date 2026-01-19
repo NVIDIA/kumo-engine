@@ -275,37 +275,190 @@ impl Drop for MemoryBudgetGuard {
 }
 
 impl MemoryBudgetGuard {
-    fn release_bytes(&mut self, bytes: u64) {
-        let released = bytes.min(self.bytes);
-        if released == 0 {
-            return;
-        }
-        self.bytes = self.bytes.saturating_sub(released);
-        self.budget.release(released);
+    fn into_bytes(mut self) -> u64 {
+        let bytes = self.bytes;
+        self.bytes = 0;
+        bytes
     }
 }
-fn localize_edge_inputs(
-    edge_shards: &[EdgeShardInput],
-    node_data: Option<&[PathBuf]>,
-) -> Result<(Vec<EdgeShardInput>, Option<Vec<PathBuf>>)> {
-    Ok((edge_shards.to_vec(), node_data.map(|paths| paths.to_vec())))
+
+struct BudgetReservation {
+    budget: Arc<MemoryBudget>,
+    bytes: u64,
 }
 
+impl BudgetReservation {
+    fn new(budget: Arc<MemoryBudget>, bytes: u64) -> Result<Self> {
+        if bytes == 0 {
+            return Ok(Self { budget, bytes: 0 });
+        }
+        let guard = budget.acquire(bytes)?;
+        Ok(Self {
+            budget,
+            bytes: guard.into_bytes(),
+        })
+    }
+
+    fn grow(&mut self, bytes: u64) -> Result<()> {
+        if bytes == 0 {
+            return Ok(());
+        }
+        let guard = self.budget.acquire(bytes)?;
+        self.bytes = self.bytes.saturating_add(guard.into_bytes());
+        Ok(())
+    }
+}
+
+impl Drop for BudgetReservation {
+    fn drop(&mut self) {
+        if self.bytes > 0 {
+            self.budget.release(self.bytes);
+        }
+    }
+}
+
+pub struct EdgeBufferPool {
+    budget: Option<Arc<MemoryBudget>>,
+    buffers: Mutex<Vec<PooledEdgeBuffer>>,
+}
+
+struct PooledEdgeBuffer {
+    buf: Vec<EdgeRecord>,
+    reservation: Option<BudgetReservation>,
+}
+
+impl std::fmt::Debug for EdgeBufferPool {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let count = self.buffers.lock().map(|b| b.len()).unwrap_or(0);
+        f.debug_struct("EdgeBufferPool")
+            .field("buffer_count", &count)
+            .field("has_budget", &self.budget.is_some())
+            .finish()
+    }
+}
+
+impl EdgeBufferPool {
+    pub fn new(budget: Option<Arc<MemoryBudget>>) -> Self {
+        Self {
+            budget,
+            buffers: Mutex::new(Vec::new()),
+        }
+    }
+
+    pub fn acquire(self: &Arc<Self>, min_capacity: usize) -> Result<EdgeBufferLease> {
+        let mut buffers = self.buffers.lock().unwrap();
+        let mut best_idx = None;
+        let mut best_cap = usize::MAX;
+        for (idx, entry) in buffers.iter().enumerate() {
+            let cap = entry.buf.capacity();
+            if cap >= min_capacity && cap < best_cap {
+                best_cap = cap;
+                best_idx = Some(idx);
+            }
+        }
+        if let Some(idx) = best_idx {
+            let entry = buffers.swap_remove(idx);
+            return Ok(EdgeBufferLease {
+                pool: Arc::clone(self),
+                buf: entry.buf,
+                reservation: entry.reservation,
+            });
+        }
+        drop(buffers);
+        let reservation = if let Some(budget) = &self.budget {
+            let bytes = edge_record_bytes(min_capacity);
+            Some(BudgetReservation::new(Arc::clone(budget), bytes)?)
+        } else {
+            None
+        };
+        Ok(EdgeBufferLease {
+            pool: Arc::clone(self),
+            buf: Vec::with_capacity(min_capacity),
+            reservation,
+        })
+    }
+
+    fn release(&self, buf: Vec<EdgeRecord>, reservation: Option<BudgetReservation>) {
+        let mut buffers = self.buffers.lock().unwrap();
+        buffers.push(PooledEdgeBuffer { buf, reservation });
+    }
+}
+
+pub struct EdgeBufferLease {
+    pool: Arc<EdgeBufferPool>,
+    buf: Vec<EdgeRecord>,
+    reservation: Option<BudgetReservation>,
+}
+
+impl EdgeBufferLease {
+    fn ensure_capacity(&mut self, min_capacity: usize) -> Result<()> {
+        if self.buf.capacity() >= min_capacity {
+            return Ok(());
+        }
+        let before = self.buf.capacity();
+        self.buf.reserve(min_capacity - before);
+        let after = self.buf.capacity();
+        let added = after.saturating_sub(before);
+        if added == 0 {
+            return Ok(());
+        }
+        if let Some(reservation) = &mut self.reservation {
+            reservation.grow(edge_record_bytes(added))?;
+        } else if let Some(budget) = &self.pool.budget {
+            self.reservation = Some(BudgetReservation::new(
+                Arc::clone(budget),
+                edge_record_bytes(added),
+            )?);
+        }
+        Ok(())
+    }
+
+    fn resize_len(&mut self, len: usize) -> Result<()> {
+        self.ensure_capacity(len)?;
+        self.buf.resize(len, EdgeRecord::zeroed());
+        Ok(())
+    }
+
+    fn clear(&mut self) {
+        self.buf.clear();
+    }
+
+    fn as_mut(&mut self) -> &mut Vec<EdgeRecord> {
+        &mut self.buf
+    }
+
+    fn as_slice(&self) -> &[EdgeRecord] {
+        &self.buf
+    }
+}
+
+impl Drop for EdgeBufferLease {
+    fn drop(&mut self) {
+        let buf = std::mem::take(&mut self.buf);
+        let reservation = self.reservation.take();
+        self.pool.release(buf, reservation);
+    }
+}
+
+fn edge_record_bytes(capacity: usize) -> u64 {
+    (capacity as u64).saturating_mul(std::mem::size_of::<EdgeRecord>() as u64)
+}
 /// Parameters for building a single shard index.
 #[derive(Debug, Clone)]
 pub struct ShardBuildParams {
-    pub output_dir: PathBuf,
-    pub node_meta: NodeTypeMetadata,
+    pub output_dir: Arc<PathBuf>,
+    pub node_meta: Arc<NodeTypeMetadata>,
     /// All node type metadata, used to derive destination id bit widths per relation.
-    pub node_types: Vec<NodeTypeMetadata>,
-    pub relation_metas: Vec<EdgeRelationMetadata>,
+    pub node_types: Arc<Vec<NodeTypeMetadata>>,
+    pub relation_metas: Arc<Vec<EdgeRelationMetadata>>,
     /// Shard index we are building (used for selecting aligned edge shards).
     pub shard_index: usize,
     /// Optional node data sources for this shard.
-    pub node_data_paths: Option<Vec<PathBuf>>,
+    pub node_data_paths: Option<Arc<Vec<PathBuf>>>,
     /// Maximum node data payload length observed for this shard (bytes).
     pub node_data_max_len: u32,
     pub mem_budget: Option<Arc<MemoryBudget>>,
+    pub edge_buffer_pool: Option<Arc<EdgeBufferPool>>,
 }
 
 /// Consumes node shard metadata and all aligned edge shards (across relations) and emits two files:
@@ -343,18 +496,19 @@ impl ShardBuilder {
                 .into());
             }
         }
-        fs::create_dir_all(&self.params.output_dir)?;
+        fs::create_dir_all(&*self.params.output_dir)?;
         let offsets_path = self.params.output_dir.join(OFFSETS_FILENAME);
         let edges_path = self.params.output_dir.join(EDGES_FILENAME);
-
-        let (edge_inputs, localized_node_data) =
-            localize_edge_inputs(edge_shards, self.params.node_data_paths.as_deref())?;
-
-        let record_bytes = estimate_edge_record_bytes(&edge_inputs)?;
-        let mut budget_guard = match &self.params.mem_budget {
-            Some(budget) => Some(budget.acquire(record_bytes.saturating_mul(2))?),
-            None => None,
-        };
+        let node_data_paths = self
+            .params
+            .node_data_paths
+            .as_ref()
+            .map(|paths| paths.as_slice());
+        let pool = self
+            .params
+            .edge_buffer_pool
+            .clone()
+            .unwrap_or_else(|| Arc::new(EdgeBufferPool::new(self.params.mem_budget.clone())));
 
         let layouts = Arc::new(compute_relation_layouts(
             &self.params.relation_metas,
@@ -364,10 +518,7 @@ impl ShardBuilder {
         let mut node_stream =
             NodeStream::try_new(&self.params.node_meta, self.params.shard_index)?;
         let mut edge_stream =
-            MergedEdgeStream::try_new(&edge_inputs, &self.params.relation_metas)?;
-        if let Some(guard) = &mut budget_guard {
-            guard.release_bytes(record_bytes);
-        }
+            MergedEdgeStream::try_new(edge_shards, &self.params.relation_metas, &pool)?;
         let expected_nodes = shard_node_count(&self.params.node_meta, self.params.shard_index)?;
         if !self.params.node_meta.has_node_data && self.params.node_data_paths.is_some() {
             return Err(IndexBuildError::NotImplemented(
@@ -376,7 +527,7 @@ impl ShardBuilder {
             .into());
         }
         let mut node_data_stream = if self.params.node_meta.has_node_data {
-            let sources = localized_node_data
+            let sources = node_data_paths
                 .as_ref()
                 .ok_or(IndexBuildError::NotImplemented("node data missing for shard"))?;
             Some(NodeDataStream::try_new(
@@ -597,7 +748,10 @@ impl ShardBuilder {
             build_stats: build_stats.clone(),
         };
         let report_path = self.params.output_dir.join("build_stats.json");
-        fs::write(&report_path, serde_json::to_vec_pretty(&report)?)?;
+        let report_file = File::create(&report_path)?;
+        let mut report_writer = BufWriter::new(report_file);
+        serde_json::to_writer_pretty(&mut report_writer, &report)?;
+        report_writer.flush()?;
 
         Ok(ShardBuildOutput {
             offsets_path,
@@ -747,6 +901,7 @@ fn delta_encode_offsets_into(
 struct OffsetChunkWriter {
     pub(crate) writer: BufWriter<File>,
     chunk_buf: Vec<u64>,
+    scratch: Vec<u8>,
     total_offsets: u64,
     delta_bytes: u8,
     node_data_len_bytes: u8,
@@ -758,10 +913,14 @@ impl OffsetChunkWriter {
         let mut writer = BufWriter::with_capacity(32 * 1024 * 1024, File::create(path)?);
         let header_len =
             bincode::serialized_size(&OffsetFileHeader::new(0, 0)).unwrap_or(32) as usize;
-        writer.write_all(&vec![0u8; header_len])?;
+        let mut scratch = Vec::new();
+        scratch.resize(header_len, 0u8);
+        writer.write_all(&scratch)?;
+        scratch.clear();
         Ok(Self {
             writer,
             chunk_buf: Vec::with_capacity(DELTA_CHUNK),
+            scratch,
             total_offsets: 0,
             delta_bytes,
             node_data_len_bytes,
@@ -772,34 +931,33 @@ impl OffsetChunkWriter {
         self.chunk_buf.push(offset);
         self.total_offsets += 1;
         if self.chunk_buf.len() == DELTA_CHUNK {
-            self.flush_chunk(Vec::new())?;
+            self.flush_chunk()?;
         }
         Ok(())
     }
 
-    fn flush_chunk(&mut self, mut scratch: Vec<u8>) -> Result<()> {
+    fn flush_chunk(&mut self) -> Result<()> {
         if self.chunk_buf.is_empty() {
             return Ok(());
         }
-        scratch.clear();
-        delta_encode_offsets_into(&self.chunk_buf, &mut scratch, self.delta_bytes)?;
-        self.writer.write_all(&scratch)?;
+        self.scratch.clear();
+        delta_encode_offsets_into(&self.chunk_buf, &mut self.scratch, self.delta_bytes)?;
+        self.writer.write_all(&self.scratch)?;
         self.chunk_buf.clear();
         Ok(())
     }
 
     fn finish(mut self, node_count: u64, edge_count: u64) -> Result<u64> {
-        self.flush_chunk(Vec::new())?;
+        self.flush_chunk()?;
         self.writer.flush()?;
         let mut header = OffsetFileHeader::new(node_count, self.total_offsets);
         header.delta_bytes = self.delta_bytes;
         header.node_data_len_bytes = self.node_data_len_bytes;
         header.edge_count = edge_count;
-        let header_bytes = bincode::serialize(&header)
-            .map_err(|_| IndexBuildError::NotImplemented("offset encoding"))?;
         let mut file = self.writer.into_inner()?;
         file.seek(SeekFrom::Start(0))?;
-        file.write_all(&header_bytes)?;
+        bincode::serialize_into(&mut file, &header)
+            .map_err(|_| IndexBuildError::NotImplemented("offset encoding"))?;
         Ok(self.total_offsets)
     }
 }
@@ -1044,8 +1202,18 @@ struct EdgeRecord {
     sort_key: u64,
 }
 
+impl EdgeRecord {
+    fn zeroed() -> Self {
+        Self {
+            src_id: 0,
+            dst_id: 0,
+            sort_key: 0,
+        }
+    }
+}
+
 struct MemoryEdgeSubStream {
-    records: Vec<EdgeRecord>,
+    buffer: EdgeBufferLease,
     index: usize,
     relation_id: u16,
     sort_width: u8,
@@ -1057,15 +1225,17 @@ impl EdgeSubStream {
         input: &EdgeShardInput,
         relation_id: u16,
         dest_sort_key_bits: Option<u8>,
+        pool: &Arc<EdgeBufferPool>,
     ) -> Result<Self> {
-        let (sort_width, mut records) = read_edge_parts(&input.paths, dest_sort_key_bits)?;
-        radix_sort_edge_records(&mut records);
+        let (sort_width, mut buffer) =
+            read_edge_parts(&input.paths, dest_sort_key_bits, pool)?;
+        radix_sort_edge_records(buffer.as_mut(), pool)?;
         if sort_width > 0 {
-            sort_edge_ranges_by_sort_key(&mut records);
+            sort_edge_ranges_by_sort_key(buffer.as_mut());
         }
-        let max_edges_per_src = max_edges_per_src(&records);
+        let max_edges_per_src = max_edges_per_src(buffer.as_slice());
         Ok(EdgeSubStream::Memory(MemoryEdgeSubStream {
-            records,
+            buffer,
             index: 0,
             relation_id,
             sort_width,
@@ -1104,7 +1274,7 @@ impl EdgeSubStream {
 
 impl MemoryEdgeSubStream {
     fn peek_src(&mut self) -> Result<Option<u64>> {
-        Ok(self.records.get(self.index).map(|r| r.src_id))
+        Ok(self.buffer.as_slice().get(self.index).map(|r| r.src_id))
     }
 
     fn drain_edges(
@@ -1112,7 +1282,7 @@ impl MemoryEdgeSubStream {
         node_id: u64,
         buckets: &mut [Vec<EdgeRec>],
     ) -> Result<Option<u64>> {
-        while let Some(record) = self.records.get(self.index) {
+        while let Some(record) = self.buffer.as_slice().get(self.index) {
             if record.src_id != node_id {
                 break;
             }
@@ -1128,7 +1298,7 @@ impl MemoryEdgeSubStream {
             });
             self.index += 1;
         }
-        Ok(self.records.get(self.index).map(|r| r.src_id))
+        Ok(self.buffer.as_slice().get(self.index).map(|r| r.src_id))
     }
 }
 
@@ -1157,13 +1327,25 @@ fn read_u64_width_slice(buf: &[u8], width: u8) -> u64 {
 fn read_edge_parts(
     paths: &[PathBuf],
     dest_sort_key_bits: Option<u8>,
-) -> Result<(u8, Vec<EdgeRecord>)> {
-    let mut records = Vec::new();
+    pool: &Arc<EdgeBufferPool>,
+) -> Result<(u8, EdgeBufferLease)> {
+    let mut buffer = pool.acquire(0)?;
+    buffer.clear();
     if paths.is_empty() {
         let sort_width = if dest_sort_key_bits.is_some() { 1 } else { 0 };
-        return Ok((sort_width, records));
+        return Ok((sort_width, buffer));
     }
+    struct EdgePartReader {
+        reader: std::io::BufReader<std::fs::File>,
+        src_width: u8,
+        dst_width: u8,
+        sort_width: u8,
+        record_size: usize,
+        remaining: u64,
+    }
+    let mut parts: Vec<EdgePartReader> = Vec::new();
     let mut spec: Option<(u8, u8, u8)> = None;
+    let mut total_records = 0u64;
     for path in paths {
         let file = std::fs::File::open(path)?;
         advise_willneed(&file);
@@ -1211,28 +1393,38 @@ fn read_edge_parts(
             .into());
         }
         let remaining = payload / record_size;
-        let reserve = usize::try_from(remaining).unwrap_or(usize::MAX);
-        records.reserve(reserve);
-        let mut buf = [0u8; 24];
-        for _ in 0..remaining {
-            let record_size = record_size as usize;
-            reader.read_exact(&mut buf[..record_size])?;
-            let src_id = read_u64_width_slice(&buf[..src_width as usize], src_width);
-            let dst_off = src_width as usize;
+        total_records = total_records.saturating_add(remaining);
+        parts.push(EdgePartReader {
+            reader,
+            src_width,
+            dst_width,
+            sort_width,
+            record_size: record_size as usize,
+            remaining,
+        });
+    }
+    let reserve = usize::try_from(total_records).unwrap_or(usize::MAX);
+    buffer.ensure_capacity(reserve)?;
+    let mut buf = [0u8; 24];
+    for mut part in parts {
+        for _ in 0..part.remaining {
+            part.reader.read_exact(&mut buf[..part.record_size])?;
+            let src_id = read_u64_width_slice(&buf[..part.src_width as usize], part.src_width);
+            let dst_off = part.src_width as usize;
             let dst_id = read_u64_width_slice(
-                &buf[dst_off..dst_off + dst_width as usize],
-                dst_width,
+                &buf[dst_off..dst_off + part.dst_width as usize],
+                part.dst_width,
             );
-            let sort_key = if sort_width > 0 {
-                let sort_off = dst_off + dst_width as usize;
+            let sort_key = if part.sort_width > 0 {
+                let sort_off = dst_off + part.dst_width as usize;
                 read_u64_width_slice(
-                    &buf[sort_off..sort_off + sort_width as usize],
-                    sort_width,
+                    &buf[sort_off..sort_off + part.sort_width as usize],
+                    part.sort_width,
                 )
             } else {
                 0
             };
-            records.push(EdgeRecord {
+            buffer.as_mut().push(EdgeRecord {
                 src_id,
                 dst_id,
                 sort_key,
@@ -1240,7 +1432,7 @@ fn read_edge_parts(
         }
     }
     let sort_width = spec.map(|(_, _, sort)| sort).unwrap_or(0);
-    Ok((sort_width, records))
+    Ok((sort_width, buffer))
 }
 
 pub fn estimate_edge_record_bytes(edge_inputs: &[EdgeShardInput]) -> Result<u64> {
@@ -1307,9 +1499,12 @@ fn sort_edge_ranges_by_sort_key(records: &mut [EdgeRecord]) {
     }
 }
 
-fn radix_sort_edge_records(records: &mut [EdgeRecord]) {
+fn radix_sort_edge_records(
+    records: &mut [EdgeRecord],
+    pool: &Arc<EdgeBufferPool>,
+) -> Result<()> {
     if records.len() <= 1 {
-        return;
+        return Ok(());
     }
     let mut or_src = 0u64;
     for rec in records.iter() {
@@ -1318,20 +1513,14 @@ fn radix_sort_edge_records(records: &mut [EdgeRecord]) {
     let mut passes = ((64 - or_src.leading_zeros() + 7) / 8) as usize;
     passes = passes.max(1).min(8);
     if passes == 0 {
-        return;
+        return Ok(());
     }
-    let mut tmp = vec![
-        EdgeRecord {
-            src_id: 0,
-            dst_id: 0,
-            sort_key: 0,
-        };
-        records.len()
-    ];
+    let mut tmp = pool.acquire(records.len())?;
+    tmp.resize_len(records.len())?;
     let mut swapped = false;
     {
         let mut from: &mut [EdgeRecord] = records;
-        let mut to: &mut [EdgeRecord] = tmp.as_mut_slice();
+        let mut to: &mut [EdgeRecord] = tmp.as_mut().as_mut_slice();
         for pass in 0..passes {
             let shift = pass * 8;
             let mut counts = [0usize; 256];
@@ -1358,6 +1547,7 @@ fn radix_sort_edge_records(records: &mut [EdgeRecord]) {
             to.copy_from_slice(from);
         }
     }
+    Ok(())
 }
 
 enum NodeDataStream {
@@ -1480,6 +1670,7 @@ impl MergedEdgeStream {
     fn try_new(
         inputs: &[EdgeShardInput],
         relation_metas: &[EdgeRelationMetadata],
+        pool: &Arc<EdgeBufferPool>,
     ) -> Result<Self> {
         let mut rel_lookup = std::collections::HashMap::new();
         for (idx, meta) in relation_metas.iter().enumerate() {
@@ -1491,7 +1682,7 @@ impl MergedEdgeStream {
             let (relation_id, sort_bits) = rel_lookup
                 .get(&input.relation)
                 .ok_or(IndexBuildError::UnknownRelation)?;
-            let stream = EdgeSubStream::try_new(input, *relation_id, *sort_bits)?;
+            let stream = EdgeSubStream::try_new(input, *relation_id, *sort_bits, pool)?;
             streams.push(stream);
             head_srcs.push(streams.last_mut().unwrap().peek_src()?);
         }
@@ -1531,5 +1722,27 @@ impl MergedEdgeStream {
             self.head_srcs[idx] = next_src;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn edge_buffer_pool_reuses_budget() {
+        let budget = Arc::new(MemoryBudget::new(1024 * 1024));
+        let pool = Arc::new(EdgeBufferPool::new(Some(Arc::clone(&budget))));
+        {
+            let mut lease = pool.acquire(128).unwrap();
+            lease.resize_len(128).unwrap();
+        }
+        let snap_after = budget.snapshot();
+        assert!(snap_after.in_use > 0);
+        {
+            let _lease = pool.acquire(64).unwrap();
+            let snap_reuse = budget.snapshot();
+            assert_eq!(snap_after.in_use, snap_reuse.in_use);
+        }
     }
 }

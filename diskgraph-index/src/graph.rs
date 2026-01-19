@@ -1,6 +1,6 @@
 use crate::builder::{
     compute_relation_layouts, estimate_edge_record_bytes, shard_node_count, BuildStats,
-    MemoryBudget, ShardBuildParams, ShardBuilder,
+    EdgeBufferPool, MemoryBudget, ShardBuildParams, ShardBuilder,
 };
 use crate::layout::RelationLayout;
 use crate::pkmap::{self, Key, PkHashTable};
@@ -16,6 +16,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use serde_json;
+use std::io::{BufWriter, Write};
 
 const TEMP_META_MAGIC: [u8; 4] = *b"DGTP";
 const TEMP_META_VERSION: u8 = 2;
@@ -93,16 +94,19 @@ impl GraphIndexBuilder {
     pub fn build(&self, progress: Option<&dyn GraphProgressSink>) -> Result<GraphBuildOutput> {
         fs::create_dir_all(&self.output_root)?;
         let metadata_path = self.output_root.join("index_metadata.json");
-        fs::write(metadata_path, serde_json::to_vec_pretty(&self.metadata)?)?;
+        let metadata_file = fs::File::create(&metadata_path)?;
+        let mut metadata_writer = BufWriter::new(metadata_file);
+        serde_json::to_writer_pretty(&mut metadata_writer, &self.metadata)?;
+        metadata_writer.flush()?;
 
-        let jobs = self.prepare_jobs()?;
+        let jobs = self.prepare_jobs_with_pool(None)?;
         let mut shard_stats = HashMap::new();
         let mut total_shard_ms = 0u64;
         let mut total_shards = 0u64;
         for job in jobs {
             let shard_key = job.shard_key.clone();
             let output = job.run(progress)?;
-            shard_stats.insert(shard_key, output.build_stats);
+            shard_stats.insert(shard_key.to_string(), output.build_stats);
             total_shard_ms = total_shard_ms.saturating_add(output.wall_ms);
             total_shards = total_shards.saturating_add(1);
         }
@@ -114,7 +118,15 @@ impl GraphIndexBuilder {
     }
 
     pub fn prepare_jobs(&self) -> Result<Vec<ShardBuildJob>> {
+        self.prepare_jobs_with_pool(None)
+    }
+
+    pub fn prepare_jobs_with_pool(
+        &self,
+        edge_buffer_pool: Option<Arc<EdgeBufferPool>>,
+    ) -> Result<Vec<ShardBuildJob>> {
         let mut jobs = Vec::new();
+        let node_types = Arc::new(self.metadata.node_types.clone());
         for node_type in &self.metadata.node_types {
             let relations: Vec<EdgeRelationMetadata> = self
                 .metadata
@@ -123,13 +135,18 @@ impl GraphIndexBuilder {
                 .filter(|rel| rel.src_type == node_type.name)
                 .cloned()
                 .collect();
+            let relation_metas = Arc::new(relations);
+            let node_meta = Arc::new(node_type.clone());
             for (shard_idx, shard_meta) in node_type.shards.iter().enumerate() {
-                let shard_key = format!("{}/shard-{:05}", node_type.name, shard_idx);
-                let output_dir = self
+                let shard_key: Arc<str> =
+                    Arc::from(format!("{}/shard-{:05}", node_type.name, shard_idx));
+                let output_dir = Arc::new(
+                    self
                     .output_root
                     .join("nodes")
                     .join(&node_type.name)
-                    .join(format!("shard-{:05}", shard_idx));
+                    .join(format!("shard-{:05}", shard_idx)),
+                );
                 let (node_data, node_data_max_len) = if node_type.has_node_data {
                     let paths = shard_meta
                         .node_data_paths
@@ -138,11 +155,11 @@ impl GraphIndexBuilder {
                     let resolved: Vec<PathBuf> =
                         paths.into_iter().map(|path| self.resolve_path(&path)).collect();
                     let max_len = read_node_data_max_len(&resolved)?;
-                    (Some(resolved), max_len)
+                    (Some(Arc::new(resolved)), max_len)
                 } else {
                     (None, 0)
                 };
-                let edge_inputs = relations
+                let edge_inputs = relation_metas
                     .iter()
                     .map(|rel| {
                         let shard = rel
@@ -159,14 +176,15 @@ impl GraphIndexBuilder {
                 let job = ShardBuildJob {
                     shard_key,
                     output_dir,
-                    node_meta: node_type.clone(),
-                    node_types: self.metadata.node_types.clone(),
-                    relation_metas: relations.clone(),
+                    node_meta: Arc::clone(&node_meta),
+                    node_types: Arc::clone(&node_types),
+                    relation_metas: Arc::clone(&relation_metas),
                     shard_index: shard_idx,
                     node_data_paths: node_data,
                     node_data_max_len,
-                    edge_inputs,
+                    edge_inputs: Arc::new(edge_inputs),
                     expected_nodes: shard_node_count(node_type, shard_idx)?,
+                    edge_buffer_pool: edge_buffer_pool.clone(),
                 };
                 jobs.push(job);
             }
@@ -226,25 +244,26 @@ fn read_node_data_max_len(paths: &[PathBuf]) -> Result<u32> {
 }
 
 pub struct ShardBuildJob {
-    shard_key: String,
-    output_dir: PathBuf,
-    node_meta: NodeTypeMetadata,
-    node_types: Vec<NodeTypeMetadata>,
-    relation_metas: Vec<EdgeRelationMetadata>,
+    shard_key: Arc<str>,
+    output_dir: Arc<PathBuf>,
+    node_meta: Arc<NodeTypeMetadata>,
+    node_types: Arc<Vec<NodeTypeMetadata>>,
+    relation_metas: Arc<Vec<EdgeRelationMetadata>>,
     shard_index: usize,
-    node_data_paths: Option<Vec<PathBuf>>,
+    node_data_paths: Option<Arc<Vec<PathBuf>>>,
     node_data_max_len: u32,
-    edge_inputs: Vec<EdgeShardInput>,
+    edge_inputs: Arc<Vec<EdgeShardInput>>,
     expected_nodes: u64,
+    edge_buffer_pool: Option<Arc<EdgeBufferPool>>,
 }
 
 impl ShardBuildJob {
     pub fn shard_key(&self) -> &str {
-        &self.shard_key
+        self.shard_key.as_ref()
     }
 
     pub fn estimated_edge_record_bytes(&self) -> Result<u64> {
-        estimate_edge_record_bytes(&self.edge_inputs)
+        estimate_edge_record_bytes(self.edge_inputs.as_ref())
     }
 
     pub fn run(
@@ -260,20 +279,20 @@ impl ShardBuildJob {
         mem_budget: Option<Arc<MemoryBudget>>,
     ) -> Result<crate::builder::ShardBuildOutput> {
         let start = std::time::Instant::now();
-        fs::create_dir_all(&self.output_dir)?;
+        fs::create_dir_all(&*self.output_dir)?;
         let params = ShardBuildParams {
-            output_dir: self.output_dir.clone(),
-            node_meta: self.node_meta.clone(),
-            node_types: self.node_types.clone(),
-            relation_metas: self.relation_metas.clone(),
+            output_dir: Arc::clone(&self.output_dir),
+            node_meta: Arc::clone(&self.node_meta),
+            node_types: Arc::clone(&self.node_types),
+            relation_metas: Arc::clone(&self.relation_metas),
             shard_index: self.shard_index,
-            node_data_paths: self.node_data_paths.clone(),
+            node_data_paths: self.node_data_paths.as_ref().map(Arc::clone),
             node_data_max_len: self.node_data_max_len,
             mem_budget,
+            edge_buffer_pool: self.edge_buffer_pool.clone(),
         };
         let builder = ShardBuilder::new(params);
-        let shard_key: Arc<str> = Arc::from(self.shard_key.as_str());
-        let adapter = progress.map(|sink| ShardProgressAdapter::new(Arc::clone(&shard_key), sink));
+        let adapter = progress.map(|sink| ShardProgressAdapter::new(Arc::clone(&self.shard_key), sink));
         let result = builder.build_with_progress(
             &self.edge_inputs,
             Some(self.expected_nodes),
@@ -282,7 +301,9 @@ impl ShardBuildJob {
         );
         if let Some(sink) = progress {
             sink.report(GraphBuildProgress {
-                stage: GraphBuildStage::Complete { shard: shard_key },
+                stage: GraphBuildStage::Complete {
+                    shard: Arc::clone(&self.shard_key),
+                },
                 current: 0,
                 total: None,
             });

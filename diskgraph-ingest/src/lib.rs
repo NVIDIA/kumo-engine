@@ -30,7 +30,7 @@ use diskgraph_rowpack::{
     IngestedType as RowpackType, RowAccess, RowAccessHints, RowAccessStats, RowPackConfig,
     RowPackContextBuilder, RowPackEncoder, RowPackRowLens,
 };
-use diskgraph_index::builder::MemoryBudget;
+use diskgraph_index::builder::{EdgeBufferPool as IndexEdgeBufferPool, MemoryBudget};
 use diskgraph_index::graph::{
     GraphBuildProgress, GraphBuildStage, GraphDataSource, GraphIndexBuilder, GraphProgressSink,
 };
@@ -4018,10 +4018,16 @@ impl IngestContext {
         );
         let table_totals = self.index_table_totals();
         let mem_budget = self.index_mem_budget.clone();
+        let edge_buffer_pool = mem_budget
+            .as_ref()
+            .map(|_| std::sync::Arc::new(IndexEdgeBufferPool::new(mem_budget.clone())));
         fs::create_dir_all(&root)?;
         let metadata_path = root.join("index_metadata.json");
-        fs::write(&metadata_path, serde_json::to_vec_pretty(builder.metadata())?)?;
-        let jobs = builder.prepare_jobs()?;
+        let metadata_file = fs::File::create(&metadata_path)?;
+        let mut metadata_writer = BufWriter::new(metadata_file);
+        serde_json::to_writer_pretty(&mut metadata_writer, builder.metadata())?;
+        metadata_writer.flush()?;
+        let jobs = builder.prepare_jobs_with_pool(edge_buffer_pool)?;
         let adapter = self
             .progress
             .clone()
