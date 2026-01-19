@@ -84,6 +84,98 @@ thread_local! {
         std::cell::RefCell::new(PtrHashScratch::new());
 }
 
+struct PkMapScratch {
+    seen_u64: std::collections::HashMap<u64, u32>,
+    seen_uuid: std::collections::HashMap<[u8; 16], u32>,
+    seen_uuid256: std::collections::HashMap<[u8; 32], u32>,
+    seen_ip: std::collections::HashMap<[u8; 16], u32>,
+    seen_bytes: std::collections::HashMap<Vec<u8>, u32>,
+    entries: Vec<(u64, u32)>,
+}
+
+impl PkMapScratch {
+    fn new() -> Self {
+        Self {
+            seen_u64: std::collections::HashMap::new(),
+            seen_uuid: std::collections::HashMap::new(),
+            seen_uuid256: std::collections::HashMap::new(),
+            seen_ip: std::collections::HashMap::new(),
+            seen_bytes: std::collections::HashMap::new(),
+            entries: Vec::new(),
+        }
+    }
+
+    fn clear_others_for(&mut self, key_type: KeyType) {
+        match key_type {
+            KeyType::Int64 => {
+                self.seen_bytes.clear();
+                self.seen_bytes.shrink_to_fit();
+                self.seen_uuid.clear();
+                self.seen_uuid.shrink_to_fit();
+                self.seen_uuid256.clear();
+                self.seen_uuid256.shrink_to_fit();
+                self.seen_ip.clear();
+                self.seen_ip.shrink_to_fit();
+            }
+            KeyType::VarBytes => {
+                self.seen_u64.clear();
+                self.seen_u64.shrink_to_fit();
+                self.seen_uuid.clear();
+                self.seen_uuid.shrink_to_fit();
+                self.seen_uuid256.clear();
+                self.seen_uuid256.shrink_to_fit();
+                self.seen_ip.clear();
+                self.seen_ip.shrink_to_fit();
+            }
+            KeyType::Uuid => {
+                self.seen_u64.clear();
+                self.seen_u64.shrink_to_fit();
+                self.seen_bytes.clear();
+                self.seen_bytes.shrink_to_fit();
+                self.seen_uuid256.clear();
+                self.seen_uuid256.shrink_to_fit();
+                self.seen_ip.clear();
+                self.seen_ip.shrink_to_fit();
+            }
+            KeyType::Uuid256 => {
+                self.seen_u64.clear();
+                self.seen_u64.shrink_to_fit();
+                self.seen_bytes.clear();
+                self.seen_bytes.shrink_to_fit();
+                self.seen_uuid.clear();
+                self.seen_uuid.shrink_to_fit();
+                self.seen_ip.clear();
+                self.seen_ip.shrink_to_fit();
+            }
+            KeyType::Ip => {
+                self.seen_u64.clear();
+                self.seen_u64.shrink_to_fit();
+                self.seen_bytes.clear();
+                self.seen_bytes.shrink_to_fit();
+                self.seen_uuid.clear();
+                self.seen_uuid.shrink_to_fit();
+                self.seen_uuid256.clear();
+                self.seen_uuid256.shrink_to_fit();
+            }
+        }
+    }
+}
+
+thread_local! {
+    static PKMAP_SCRATCH: std::cell::RefCell<PkMapScratch> =
+        std::cell::RefCell::new(PkMapScratch::new());
+}
+
+fn reserve_map<K: std::cmp::Eq + std::hash::Hash, V>(
+    map: &mut std::collections::HashMap<K, V>,
+    target: usize,
+) {
+    let cap = map.capacity();
+    if cap < target {
+        map.reserve(target - cap);
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 enum KeyParseError {
     TypeMismatch,
@@ -2570,447 +2662,550 @@ impl IngestContext {
                         let (hash_rel, data_rel, scan_ms, mphf_ms, entries_ms, write_ms) =
                             match key_type {
                             KeyType::Int64 => {
-                                let mut seen: std::collections::HashMap<u64, u32> =
-                                    std::collections::HashMap::with_capacity(total_rows as usize);
-                                let data_path = root.join(temp_pkey_path(&table_name, shard));
-                                let scan_start = std::time::Instant::now();
-                                {
-                                    let _scan_guard = phase_counters.guard(PkMapPhaseKind::Scan);
-                                    read_temp_rows(&data_path, |row| {
-                                    let mut data = row;
-                                    let key = read_key_from_buf(&mut data, &pk_col)?;
-                                    if let Key::Int(v) = key {
-                                        let local_id = u32::try_from(row_id)
-                                            .map_err(|_| anyhow!("pk local id overflow"))?;
-                                        match seen.entry(v) {
-                                            Entry::Vacant(entry) => {
-                                                entry.insert(local_id);
-                                            }
-                                            Entry::Occupied(_) => {
-                                                duplicate_count =
-                                                    duplicate_count.saturating_add(1);
-                                                if duplicate_samples_local.len() < 10 {
-                                                    duplicate_samples_local.push(Key::Int(v));
+                                PKMAP_SCRATCH.with(|scratch| {
+                                    let mut scratch = scratch.borrow_mut();
+                                    let scratch = &mut *scratch;
+                                    scratch.clear_others_for(KeyType::Int64);
+                                    let total_rows_usize =
+                                        usize::try_from(total_rows).unwrap_or(usize::MAX);
+                                    scratch.seen_u64.clear();
+                                    reserve_map(&mut scratch.seen_u64, total_rows_usize);
+                                    duplicate_samples_local.clear();
+                                    let data_path = root.join(temp_pkey_path(&table_name, shard));
+                                    let scan_start = std::time::Instant::now();
+                                    {
+                                        let _scan_guard = phase_counters.guard(PkMapPhaseKind::Scan);
+                                        let seen = &mut scratch.seen_u64;
+                                        read_temp_rows(&data_path, |row| {
+                                            let mut data = row;
+                                            let key = read_key_from_buf(&mut data, &pk_col)?;
+                                            if let Key::Int(v) = key {
+                                                let local_id = u32::try_from(row_id)
+                                                    .map_err(|_| anyhow!("pk local id overflow"))?;
+                                                match seen.entry(v) {
+                                                    Entry::Vacant(entry) => {
+                                                        entry.insert(local_id);
+                                                    }
+                                                    Entry::Occupied(_) => {
+                                                        duplicate_count =
+                                                            duplicate_count.saturating_add(1);
+                                                        if duplicate_samples_local.len() < 10 {
+                                                            duplicate_samples_local.push(Key::Int(v));
+                                                        }
+                                                    }
                                                 }
                                             }
-                                        }
-                                    }
-                                    row_id += 1;
-                                    Ok(())
-                                    })?;
-                                }
-                                let scan_ms = scan_start.elapsed().as_millis() as u64;
-                                let params = ptr_hash::PtrHashParams::default();
-                                let mphf_start = std::time::Instant::now();
-                                let mphf = {
-                                    let _mphf_guard = phase_counters.guard(PkMapPhaseKind::Mphf);
-                                    PTRHASH_SCRATCH.with(|scratch| {
-                                        let mut scratch = scratch.borrow_mut();
-                                        DefaultPtrHash::<GxPtrHash64, u64>::try_new_from_source_with_scratch(
-                                            &seen,
-                                            params,
-                                            &mut *scratch,
-                                        )
-                                    })
-                                    .ok_or_else(|| anyhow!("ptrhash construction failed"))?
-                                };
-                                let mphf_ms = mphf_start.elapsed().as_millis() as u64;
-                                let entries_start = std::time::Instant::now();
-                                let entries = {
-                                    let _entries_guard =
-                                        phase_counters.guard(PkMapPhaseKind::Entries);
-                                    let slots = mphf.max_index();
-                                    let mut entries = vec![(0u64, 0u32); slots];
-                                    for (key, value) in seen.iter() {
-                                        let idx = mphf.index_no_remap(key);
-                                        let fp = PkGxHash::hash(key, fingerprint_seed);
-                                        entries[idx] = (fp, *value);
-                                    }
-                                    entries
-                                };
-                                let entries_ms = entries_start.elapsed().as_millis() as u64;
-                                let hash_rel = format!(
-                                    "nodes/{}/pk_hash-{:05}.bin",
-                                    table_name.to_lowercase(),
-                                    shard
-                                );
-                                let data_rel = format!(
-                                    "nodes/{}/pk_data-{:05}.bin",
-                                    table_name.to_lowercase(),
-                                    shard
-                                );
-                                let write_start = std::time::Instant::now();
-                                {
-                                    let _write_guard =
-                                        phase_counters.guard(PkMapPhaseKind::Write);
-                                    IngestContext::write_pk_hash_and_data(
-                                        &target,
-                                        &hash_rel,
-                                        &data_rel,
-                                        key_type,
-                                        fingerprint_seed,
-                                        &mphf,
-                                        &entries,
-                                    )?;
-                                }
-                                let write_ms = write_start.elapsed().as_millis() as u64;
-                                (hash_rel, data_rel, scan_ms, mphf_ms, entries_ms, write_ms)
-                            }
-                            KeyType::VarBytes => {
-                                let mut seen: std::collections::HashMap<Vec<u8>, u32> =
-                                    std::collections::HashMap::with_capacity(total_rows as usize);
-                                let data_path = root.join(temp_pkey_path(&table_name, shard));
-                                let scan_start = std::time::Instant::now();
-                                {
-                                    let _scan_guard = phase_counters.guard(PkMapPhaseKind::Scan);
-                                    read_temp_rows(&data_path, |row| {
-                                    let mut data = row;
-                                    let key = read_key_from_buf(&mut data, &pk_col)?;
-                                    let bytes = match key {
-                                        Key::Bytes(bytes) => bytes,
-                                        _ => {
                                             row_id += 1;
-                                            return Ok(());
-                                        }
-                                    };
-                                    let local_id = u32::try_from(row_id)
-                                        .map_err(|_| anyhow!("pk local id overflow"))?;
-                                    match seen.entry(bytes) {
-                                        Entry::Vacant(entry) => {
-                                            entry.insert(local_id);
-                                        }
-                                        Entry::Occupied(entry) => {
-                                            duplicate_count = duplicate_count.saturating_add(1);
-                                            if duplicate_samples_local.len() < 10 {
-                                                let sample = entry.key().clone();
-                                                duplicate_samples_local.push(Key::Bytes(sample));
-                                            }
-                                        }
+                                            Ok(())
+                                        })?;
                                     }
-                                    row_id += 1;
-                                    Ok(())
-                                    })?;
-                                }
-                                let scan_ms = scan_start.elapsed().as_millis() as u64;
-                                let params = ptr_hash::PtrHashParams::default();
-                                let mphf_start = std::time::Instant::now();
-                                let mphf =
-                                    {
+                                    let scan_ms = scan_start.elapsed().as_millis() as u64;
+                                    let params = ptr_hash::PtrHashParams::default();
+                                    let mphf_start = std::time::Instant::now();
+                                    let seen = std::mem::take(&mut scratch.seen_u64);
+                                    let mphf = {
                                         let _mphf_guard =
                                             phase_counters.guard(PkMapPhaseKind::Mphf);
-                                        PTRHASH_SCRATCH.with(|scratch| {
-                                            let mut scratch = scratch.borrow_mut();
-                                            DefaultPtrHash::<GxPtrHash64, Vec<u8>>::try_new_from_source_with_scratch(
+                                        PTRHASH_SCRATCH.with(|scratch_ptr| {
+                                            let mut scratch_ptr = scratch_ptr.borrow_mut();
+                                            DefaultPtrHash::<GxPtrHash64, u64>::try_new_from_source_with_scratch(
                                                 &seen,
                                                 params,
-                                                &mut *scratch,
+                                                &mut *scratch_ptr,
                                             )
                                         })
                                         .ok_or_else(|| anyhow!("ptrhash construction failed"))?
                                     };
-                                let mphf_ms = mphf_start.elapsed().as_millis() as u64;
-                                let entries_start = std::time::Instant::now();
-                                let entries = {
-                                    let _entries_guard =
-                                        phase_counters.guard(PkMapPhaseKind::Entries);
-                                    let slots = mphf.max_index();
-                                    let mut entries = vec![(0u64, 0u32); slots];
-                                    for (key, value) in seen.iter() {
-                                        let idx = mphf.index_no_remap(key);
-                                        let fp = PkGxHash::hash(key, fingerprint_seed);
-                                        entries[idx] = (fp, *value);
+                                    let mphf_ms = mphf_start.elapsed().as_millis() as u64;
+                                    let entries_start = std::time::Instant::now();
+                                    let entries = {
+                                        let _entries_guard =
+                                            phase_counters.guard(PkMapPhaseKind::Entries);
+                                        let slots = mphf.max_index();
+                                        let mut entries = std::mem::take(&mut scratch.entries);
+                                        entries.resize(slots, (0u64, 0u32));
+                                        for (key, value) in seen.iter() {
+                                            let idx = mphf.index_no_remap(key);
+                                            let fp = PkGxHash::hash(key, fingerprint_seed);
+                                            entries[idx] = (fp, *value);
+                                        }
+                                        scratch.entries = entries;
+                                        scratch.seen_u64 = seen;
+                                        scratch.entries.as_slice()
+                                    };
+                                    let entries_ms = entries_start.elapsed().as_millis() as u64;
+                                    let hash_rel = format!(
+                                        "nodes/{}/pk_hash-{:05}.bin",
+                                        table_name.to_lowercase(),
+                                        shard
+                                    );
+                                    let data_rel = format!(
+                                        "nodes/{}/pk_data-{:05}.bin",
+                                        table_name.to_lowercase(),
+                                        shard
+                                    );
+                                    let write_start = std::time::Instant::now();
+                                    {
+                                        let _write_guard =
+                                            phase_counters.guard(PkMapPhaseKind::Write);
+                                        IngestContext::write_pk_hash_and_data(
+                                            &target,
+                                            &hash_rel,
+                                            &data_rel,
+                                            key_type,
+                                            fingerprint_seed,
+                                            &mphf,
+                                            entries,
+                                        )?;
                                     }
-                                    entries
-                                };
-                                let entries_ms = entries_start.elapsed().as_millis() as u64;
-                                let hash_rel = format!(
-                                    "nodes/{}/pk_hash-{:05}.bin",
-                                    table_name.to_lowercase(),
-                                    shard
-                                );
-                                let data_rel = format!(
-                                    "nodes/{}/pk_data-{:05}.bin",
-                                    table_name.to_lowercase(),
-                                    shard
-                                );
-                                let write_start = std::time::Instant::now();
-                                {
-                                    let _write_guard =
-                                        phase_counters.guard(PkMapPhaseKind::Write);
-                                    IngestContext::write_pk_hash_and_data(
-                                        &target,
-                                        &hash_rel,
-                                        &data_rel,
-                                        key_type,
-                                        fingerprint_seed,
-                                        &mphf,
-                                        &entries,
-                                    )?;
-                                }
-                                let write_ms = write_start.elapsed().as_millis() as u64;
-                                (hash_rel, data_rel, scan_ms, mphf_ms, entries_ms, write_ms)
+                                    let write_ms = write_start.elapsed().as_millis() as u64;
+                                    Ok::<_, anyhow::Error>((
+                                        hash_rel,
+                                        data_rel,
+                                        scan_ms,
+                                        mphf_ms,
+                                        entries_ms,
+                                        write_ms,
+                                    ))
+                                })?
+                            }
+                            KeyType::VarBytes => {
+                                PKMAP_SCRATCH.with(|scratch| {
+                                    let mut scratch = scratch.borrow_mut();
+                                    let scratch = &mut *scratch;
+                                    scratch.clear_others_for(KeyType::VarBytes);
+                                    let total_rows_usize =
+                                        usize::try_from(total_rows).unwrap_or(usize::MAX);
+                                    scratch.seen_bytes.clear();
+                                    reserve_map(&mut scratch.seen_bytes, total_rows_usize);
+                                    duplicate_samples_local.clear();
+                                    let data_path = root.join(temp_pkey_path(&table_name, shard));
+                                    let scan_start = std::time::Instant::now();
+                                    {
+                                        let _scan_guard = phase_counters.guard(PkMapPhaseKind::Scan);
+                                        let seen = &mut scratch.seen_bytes;
+                                        read_temp_rows(&data_path, |row| {
+                                            let mut data = row;
+                                            let key = read_key_from_buf(&mut data, &pk_col)?;
+                                            let bytes = match key {
+                                                Key::Bytes(bytes) => bytes,
+                                                _ => {
+                                                    row_id += 1;
+                                                    return Ok(());
+                                                }
+                                            };
+                                            let local_id = u32::try_from(row_id)
+                                                .map_err(|_| anyhow!("pk local id overflow"))?;
+                                            match seen.entry(bytes) {
+                                                Entry::Vacant(entry) => {
+                                                    entry.insert(local_id);
+                                                }
+                                                Entry::Occupied(entry) => {
+                                                    duplicate_count =
+                                                        duplicate_count.saturating_add(1);
+                                                    if duplicate_samples_local.len() < 10 {
+                                                        let sample = entry.key().clone();
+                                                        duplicate_samples_local.push(Key::Bytes(sample));
+                                                    }
+                                                }
+                                            }
+                                            row_id += 1;
+                                            Ok(())
+                                        })?;
+                                    }
+                                    let scan_ms = scan_start.elapsed().as_millis() as u64;
+                                    let params = ptr_hash::PtrHashParams::default();
+                                    let mphf_start = std::time::Instant::now();
+                                    let seen = std::mem::take(&mut scratch.seen_bytes);
+                                    let mphf = {
+                                        let _mphf_guard =
+                                            phase_counters.guard(PkMapPhaseKind::Mphf);
+                                        PTRHASH_SCRATCH.with(|scratch_ptr| {
+                                            let mut scratch_ptr = scratch_ptr.borrow_mut();
+                                            DefaultPtrHash::<GxPtrHash64, Vec<u8>>::try_new_from_source_with_scratch(
+                                                &seen,
+                                                params,
+                                                &mut *scratch_ptr,
+                                            )
+                                        })
+                                        .ok_or_else(|| anyhow!("ptrhash construction failed"))?
+                                    };
+                                    let mphf_ms = mphf_start.elapsed().as_millis() as u64;
+                                    let entries_start = std::time::Instant::now();
+                                    let entries = {
+                                        let _entries_guard =
+                                            phase_counters.guard(PkMapPhaseKind::Entries);
+                                        let slots = mphf.max_index();
+                                        let mut entries = std::mem::take(&mut scratch.entries);
+                                        entries.resize(slots, (0u64, 0u32));
+                                        for (key, value) in seen.iter() {
+                                            let idx = mphf.index_no_remap(key);
+                                            let fp = PkGxHash::hash(key, fingerprint_seed);
+                                            entries[idx] = (fp, *value);
+                                        }
+                                        scratch.entries = entries;
+                                        scratch.seen_bytes = seen;
+                                        scratch.entries.as_slice()
+                                    };
+                                    let entries_ms = entries_start.elapsed().as_millis() as u64;
+                                    let hash_rel = format!(
+                                        "nodes/{}/pk_hash-{:05}.bin",
+                                        table_name.to_lowercase(),
+                                        shard
+                                    );
+                                    let data_rel = format!(
+                                        "nodes/{}/pk_data-{:05}.bin",
+                                        table_name.to_lowercase(),
+                                        shard
+                                    );
+                                    let write_start = std::time::Instant::now();
+                                    {
+                                        let _write_guard =
+                                            phase_counters.guard(PkMapPhaseKind::Write);
+                                        IngestContext::write_pk_hash_and_data(
+                                            &target,
+                                            &hash_rel,
+                                            &data_rel,
+                                            key_type,
+                                            fingerprint_seed,
+                                            &mphf,
+                                            entries,
+                                        )?;
+                                    }
+                                    let write_ms = write_start.elapsed().as_millis() as u64;
+                                    Ok::<_, anyhow::Error>((
+                                        hash_rel,
+                                        data_rel,
+                                        scan_ms,
+                                        mphf_ms,
+                                        entries_ms,
+                                        write_ms,
+                                    ))
+                                })?
                             }
                             KeyType::Uuid => {
-                                let mut seen: std::collections::HashMap<[u8; 16], u32> =
-                                    std::collections::HashMap::with_capacity(total_rows as usize);
-                                let data_path = root.join(temp_pkey_path(&table_name, shard));
-                                let scan_start = std::time::Instant::now();
-                                {
-                                    let _scan_guard = phase_counters.guard(PkMapPhaseKind::Scan);
-                                    read_temp_rows(&data_path, |row| {
-                                    let mut data = row;
-                                    let key = read_key_from_buf(&mut data, &pk_col)?;
-                                    if let Key::Uuid(uuid) = key {
-                                        let local_id = u32::try_from(row_id)
-                                            .map_err(|_| anyhow!("pk local id overflow"))?;
-                                        match seen.entry(uuid) {
-                                            Entry::Vacant(entry) => {
-                                                entry.insert(local_id);
-                                            }
-                                            Entry::Occupied(_) => {
-                                                duplicate_count =
-                                                    duplicate_count.saturating_add(1);
-                                                if duplicate_samples_local.len() < 10 {
-                                                    duplicate_samples_local.push(Key::Uuid(uuid));
+                                PKMAP_SCRATCH.with(|scratch| {
+                                    let mut scratch = scratch.borrow_mut();
+                                    let scratch = &mut *scratch;
+                                    scratch.clear_others_for(KeyType::Uuid);
+                                    let total_rows_usize =
+                                        usize::try_from(total_rows).unwrap_or(usize::MAX);
+                                    scratch.seen_uuid.clear();
+                                    reserve_map(&mut scratch.seen_uuid, total_rows_usize);
+                                    duplicate_samples_local.clear();
+                                    let data_path = root.join(temp_pkey_path(&table_name, shard));
+                                    let scan_start = std::time::Instant::now();
+                                    {
+                                        let _scan_guard = phase_counters.guard(PkMapPhaseKind::Scan);
+                                        let seen = &mut scratch.seen_uuid;
+                                        read_temp_rows(&data_path, |row| {
+                                            let mut data = row;
+                                            let key = read_key_from_buf(&mut data, &pk_col)?;
+                                            if let Key::Uuid(uuid) = key {
+                                                let local_id = u32::try_from(row_id)
+                                                    .map_err(|_| anyhow!("pk local id overflow"))?;
+                                                match seen.entry(uuid) {
+                                                    Entry::Vacant(entry) => {
+                                                        entry.insert(local_id);
+                                                    }
+                                                Entry::Occupied(_) => {
+                                                    duplicate_count =
+                                                        duplicate_count.saturating_add(1);
+                                                    if duplicate_samples_local.len() < 10 {
+                                                        duplicate_samples_local.push(Key::Uuid(uuid));
+                                                    }
                                                 }
                                             }
+                                            }
+                                            row_id += 1;
+                                            Ok(())
+                                        })?;
+                                    }
+                                    let scan_ms = scan_start.elapsed().as_millis() as u64;
+                                    let params = ptr_hash::PtrHashParams::default();
+                                    let mphf_start = std::time::Instant::now();
+                                    let seen = std::mem::take(&mut scratch.seen_uuid);
+                                    let mphf = {
+                                        let _mphf_guard =
+                                            phase_counters.guard(PkMapPhaseKind::Mphf);
+                                        PTRHASH_SCRATCH.with(|scratch_ptr| {
+                                            let mut scratch_ptr = scratch_ptr.borrow_mut();
+                                            DefaultPtrHash::<GxPtrHash64, [u8; 16]>::try_new_from_source_with_scratch(
+                                                &seen,
+                                                params,
+                                                &mut *scratch_ptr,
+                                            )
+                                        })
+                                        .ok_or_else(|| anyhow!("ptrhash construction failed"))?
+                                    };
+                                    let mphf_ms = mphf_start.elapsed().as_millis() as u64;
+                                    let entries_start = std::time::Instant::now();
+                                    let entries = {
+                                        let _entries_guard =
+                                            phase_counters.guard(PkMapPhaseKind::Entries);
+                                        let slots = mphf.max_index();
+                                        let mut entries = std::mem::take(&mut scratch.entries);
+                                        entries.resize(slots, (0u64, 0u32));
+                                        for (key, value) in seen.iter() {
+                                            let idx = mphf.index_no_remap(key);
+                                            let fp = PkGxHash::hash(key, fingerprint_seed);
+                                            entries[idx] = (fp, *value);
                                         }
+                                        scratch.entries = entries;
+                                        scratch.seen_uuid = seen;
+                                        scratch.entries.as_slice()
+                                    };
+                                    let entries_ms = entries_start.elapsed().as_millis() as u64;
+                                    let hash_rel = format!(
+                                        "nodes/{}/pk_hash-{:05}.bin",
+                                        table_name.to_lowercase(),
+                                        shard
+                                    );
+                                    let data_rel = format!(
+                                        "nodes/{}/pk_data-{:05}.bin",
+                                        table_name.to_lowercase(),
+                                        shard
+                                    );
+                                    let write_start = std::time::Instant::now();
+                                    {
+                                        let _write_guard =
+                                            phase_counters.guard(PkMapPhaseKind::Write);
+                                        IngestContext::write_pk_hash_and_data(
+                                            &target,
+                                            &hash_rel,
+                                            &data_rel,
+                                            key_type,
+                                            fingerprint_seed,
+                                            &mphf,
+                                            entries,
+                                        )?;
                                     }
-                                    row_id += 1;
-                                    Ok(())
-                                    })?;
-                                }
-                                let scan_ms = scan_start.elapsed().as_millis() as u64;
-                                let params = ptr_hash::PtrHashParams::default();
-                                let mphf_start = std::time::Instant::now();
-                                let mphf = {
-                                    let _mphf_guard = phase_counters.guard(PkMapPhaseKind::Mphf);
-                                    PTRHASH_SCRATCH.with(|scratch| {
-                                        let mut scratch = scratch.borrow_mut();
-                                        DefaultPtrHash::<GxPtrHash64, [u8; 16]>::try_new_from_source_with_scratch(
-                                            &seen,
-                                            params,
-                                            &mut *scratch,
-                                        )
-                                    })
-                                    .ok_or_else(|| anyhow!("ptrhash construction failed"))?
-                                };
-                                let mphf_ms = mphf_start.elapsed().as_millis() as u64;
-                                let entries_start = std::time::Instant::now();
-                                let entries = {
-                                    let _entries_guard =
-                                        phase_counters.guard(PkMapPhaseKind::Entries);
-                                    let slots = mphf.max_index();
-                                    let mut entries = vec![(0u64, 0u32); slots];
-                                    for (key, value) in seen.iter() {
-                                        let idx = mphf.index_no_remap(key);
-                                        let fp = PkGxHash::hash(key, fingerprint_seed);
-                                        entries[idx] = (fp, *value);
-                                    }
-                                    entries
-                                };
-                                let entries_ms = entries_start.elapsed().as_millis() as u64;
-                                let hash_rel = format!(
-                                    "nodes/{}/pk_hash-{:05}.bin",
-                                    table_name.to_lowercase(),
-                                    shard
-                                );
-                                let data_rel = format!(
-                                    "nodes/{}/pk_data-{:05}.bin",
-                                    table_name.to_lowercase(),
-                                    shard
-                                );
-                                let write_start = std::time::Instant::now();
-                                {
-                                    let _write_guard =
-                                        phase_counters.guard(PkMapPhaseKind::Write);
-                                    IngestContext::write_pk_hash_and_data(
-                                        &target,
-                                        &hash_rel,
-                                        &data_rel,
-                                        key_type,
-                                        fingerprint_seed,
-                                        &mphf,
-                                        &entries,
-                                    )?;
-                                }
-                                let write_ms = write_start.elapsed().as_millis() as u64;
-                                (hash_rel, data_rel, scan_ms, mphf_ms, entries_ms, write_ms)
+                                    let write_ms = write_start.elapsed().as_millis() as u64;
+                                    Ok::<_, anyhow::Error>((
+                                        hash_rel,
+                                        data_rel,
+                                        scan_ms,
+                                        mphf_ms,
+                                        entries_ms,
+                                        write_ms,
+                                    ))
+                                })?
                             }
                             KeyType::Uuid256 => {
-                                let mut seen: std::collections::HashMap<[u8; 32], u32> =
-                                    std::collections::HashMap::with_capacity(total_rows as usize);
-                                let data_path = root.join(temp_pkey_path(&table_name, shard));
-                                let scan_start = std::time::Instant::now();
-                                {
-                                    let _scan_guard = phase_counters.guard(PkMapPhaseKind::Scan);
-                                    read_temp_rows(&data_path, |row| {
-                                    let mut data = row;
-                                    let key = read_key_from_buf(&mut data, &pk_col)?;
-                                    if let Key::Uuid256(uuid) = key {
-                                        let local_id = u32::try_from(row_id)
-                                            .map_err(|_| anyhow!("pk local id overflow"))?;
-                                        match seen.entry(uuid) {
-                                            Entry::Vacant(entry) => {
-                                                entry.insert(local_id);
-                                            }
-                                            Entry::Occupied(_) => {
-                                                duplicate_count =
-                                                    duplicate_count.saturating_add(1);
-                                                if duplicate_samples_local.len() < 10 {
-                                                    duplicate_samples_local
-                                                        .push(Key::Uuid256(uuid));
+                                PKMAP_SCRATCH.with(|scratch| {
+                                    let mut scratch = scratch.borrow_mut();
+                                    let scratch = &mut *scratch;
+                                    scratch.clear_others_for(KeyType::Uuid256);
+                                    let total_rows_usize =
+                                        usize::try_from(total_rows).unwrap_or(usize::MAX);
+                                    scratch.seen_uuid256.clear();
+                                    reserve_map(&mut scratch.seen_uuid256, total_rows_usize);
+                                    duplicate_samples_local.clear();
+                                    let data_path = root.join(temp_pkey_path(&table_name, shard));
+                                    let scan_start = std::time::Instant::now();
+                                    {
+                                        let _scan_guard = phase_counters.guard(PkMapPhaseKind::Scan);
+                                        let seen = &mut scratch.seen_uuid256;
+                                        read_temp_rows(&data_path, |row| {
+                                            let mut data = row;
+                                            let key = read_key_from_buf(&mut data, &pk_col)?;
+                                            if let Key::Uuid256(uuid) = key {
+                                                let local_id = u32::try_from(row_id)
+                                                    .map_err(|_| anyhow!("pk local id overflow"))?;
+                                                match seen.entry(uuid) {
+                                                    Entry::Vacant(entry) => {
+                                                        entry.insert(local_id);
+                                                    }
+                                                Entry::Occupied(_) => {
+                                                    duplicate_count =
+                                                        duplicate_count.saturating_add(1);
+                                                    if duplicate_samples_local.len() < 10 {
+                                                        duplicate_samples_local.push(Key::Uuid256(uuid));
+                                                    }
                                                 }
                                             }
+                                            }
+                                            row_id += 1;
+                                            Ok(())
+                                        })?;
+                                    }
+                                    let scan_ms = scan_start.elapsed().as_millis() as u64;
+                                    let params = ptr_hash::PtrHashParams::default();
+                                    let mphf_start = std::time::Instant::now();
+                                    let seen = std::mem::take(&mut scratch.seen_uuid256);
+                                    let mphf = {
+                                        let _mphf_guard =
+                                            phase_counters.guard(PkMapPhaseKind::Mphf);
+                                        PTRHASH_SCRATCH.with(|scratch_ptr| {
+                                            let mut scratch_ptr = scratch_ptr.borrow_mut();
+                                            DefaultPtrHash::<GxPtrHash64, [u8; 32]>::try_new_from_source_with_scratch(
+                                                &seen,
+                                                params,
+                                                &mut *scratch_ptr,
+                                            )
+                                        })
+                                        .ok_or_else(|| anyhow!("ptrhash construction failed"))?
+                                    };
+                                    let mphf_ms = mphf_start.elapsed().as_millis() as u64;
+                                    let entries_start = std::time::Instant::now();
+                                    let entries = {
+                                        let _entries_guard =
+                                            phase_counters.guard(PkMapPhaseKind::Entries);
+                                        let slots = mphf.max_index();
+                                        let mut entries = std::mem::take(&mut scratch.entries);
+                                        entries.resize(slots, (0u64, 0u32));
+                                        for (key, value) in seen.iter() {
+                                            let idx = mphf.index_no_remap(key);
+                                            let fp = PkGxHash::hash(key, fingerprint_seed);
+                                            entries[idx] = (fp, *value);
                                         }
+                                        scratch.entries = entries;
+                                        scratch.seen_uuid256 = seen;
+                                        scratch.entries.as_slice()
+                                    };
+                                    let entries_ms = entries_start.elapsed().as_millis() as u64;
+                                    let hash_rel = format!(
+                                        "nodes/{}/pk_hash-{:05}.bin",
+                                        table_name.to_lowercase(),
+                                        shard
+                                    );
+                                    let data_rel = format!(
+                                        "nodes/{}/pk_data-{:05}.bin",
+                                        table_name.to_lowercase(),
+                                        shard
+                                    );
+                                    let write_start = std::time::Instant::now();
+                                    {
+                                        let _write_guard =
+                                            phase_counters.guard(PkMapPhaseKind::Write);
+                                        IngestContext::write_pk_hash_and_data(
+                                            &target,
+                                            &hash_rel,
+                                            &data_rel,
+                                            key_type,
+                                            fingerprint_seed,
+                                            &mphf,
+                                            entries,
+                                        )?;
                                     }
-                                    row_id += 1;
-                                    Ok(())
-                                    })?;
-                                }
-                                let scan_ms = scan_start.elapsed().as_millis() as u64;
-                                let params = ptr_hash::PtrHashParams::default();
-                                let mphf_start = std::time::Instant::now();
-                                let mphf = {
-                                    let _mphf_guard = phase_counters.guard(PkMapPhaseKind::Mphf);
-                                    PTRHASH_SCRATCH.with(|scratch| {
-                                        let mut scratch = scratch.borrow_mut();
-                                        DefaultPtrHash::<GxPtrHash64, [u8; 32]>::try_new_from_source_with_scratch(
-                                            &seen,
-                                            params,
-                                            &mut *scratch,
-                                        )
-                                    })
-                                    .ok_or_else(|| anyhow!("ptrhash construction failed"))?
-                                };
-                                let mphf_ms = mphf_start.elapsed().as_millis() as u64;
-                                let entries_start = std::time::Instant::now();
-                                let entries = {
-                                    let _entries_guard =
-                                        phase_counters.guard(PkMapPhaseKind::Entries);
-                                    let slots = mphf.max_index();
-                                    let mut entries = vec![(0u64, 0u32); slots];
-                                    for (key, value) in seen.iter() {
-                                        let idx = mphf.index_no_remap(key);
-                                        let fp = PkGxHash::hash(key, fingerprint_seed);
-                                        entries[idx] = (fp, *value);
-                                    }
-                                    entries
-                                };
-                                let entries_ms = entries_start.elapsed().as_millis() as u64;
-                                let hash_rel = format!(
-                                    "nodes/{}/pk_hash-{:05}.bin",
-                                    table_name.to_lowercase(),
-                                    shard
-                                );
-                                let data_rel = format!(
-                                    "nodes/{}/pk_data-{:05}.bin",
-                                    table_name.to_lowercase(),
-                                    shard
-                                );
-                                let write_start = std::time::Instant::now();
-                                {
-                                    let _write_guard =
-                                        phase_counters.guard(PkMapPhaseKind::Write);
-                                    IngestContext::write_pk_hash_and_data(
-                                        &target,
-                                        &hash_rel,
-                                        &data_rel,
-                                        key_type,
-                                        fingerprint_seed,
-                                        &mphf,
-                                        &entries,
-                                    )?;
-                                }
-                                let write_ms = write_start.elapsed().as_millis() as u64;
-                                (hash_rel, data_rel, scan_ms, mphf_ms, entries_ms, write_ms)
+                                    let write_ms = write_start.elapsed().as_millis() as u64;
+                                    Ok::<_, anyhow::Error>((
+                                        hash_rel,
+                                        data_rel,
+                                        scan_ms,
+                                        mphf_ms,
+                                        entries_ms,
+                                        write_ms,
+                                    ))
+                                })?
                             }
                             KeyType::Ip => {
-                                let mut seen: std::collections::HashMap<[u8; 16], u32> =
-                                    std::collections::HashMap::with_capacity(total_rows as usize);
-                                let data_path = root.join(temp_pkey_path(&table_name, shard));
-                                let scan_start = std::time::Instant::now();
-                                {
-                                    let _scan_guard = phase_counters.guard(PkMapPhaseKind::Scan);
-                                    read_temp_rows(&data_path, |row| {
-                                    let mut data = row;
-                                    let key = read_key_from_buf(&mut data, &pk_col)?;
-                                    if let Key::Ip(ip) = key {
-                                        let local_id = u32::try_from(row_id)
-                                            .map_err(|_| anyhow!("pk local id overflow"))?;
-                                        match seen.entry(ip) {
-                                            Entry::Vacant(entry) => {
-                                                entry.insert(local_id);
-                                            }
-                                            Entry::Occupied(_) => {
-                                                duplicate_count =
-                                                    duplicate_count.saturating_add(1);
-                                                if duplicate_samples_local.len() < 10 {
-                                                    duplicate_samples_local.push(Key::Ip(ip));
+                                PKMAP_SCRATCH.with(|scratch| {
+                                    let mut scratch = scratch.borrow_mut();
+                                    let scratch = &mut *scratch;
+                                    scratch.clear_others_for(KeyType::Ip);
+                                    let total_rows_usize =
+                                        usize::try_from(total_rows).unwrap_or(usize::MAX);
+                                    scratch.seen_ip.clear();
+                                    reserve_map(&mut scratch.seen_ip, total_rows_usize);
+                                    duplicate_samples_local.clear();
+                                    let data_path = root.join(temp_pkey_path(&table_name, shard));
+                                    let scan_start = std::time::Instant::now();
+                                    {
+                                        let _scan_guard = phase_counters.guard(PkMapPhaseKind::Scan);
+                                        let seen = &mut scratch.seen_ip;
+                                        read_temp_rows(&data_path, |row| {
+                                            let mut data = row;
+                                            let key = read_key_from_buf(&mut data, &pk_col)?;
+                                            if let Key::Ip(ip) = key {
+                                                let local_id = u32::try_from(row_id)
+                                                    .map_err(|_| anyhow!("pk local id overflow"))?;
+                                                match seen.entry(ip) {
+                                                    Entry::Vacant(entry) => {
+                                                        entry.insert(local_id);
+                                                    }
+                                                Entry::Occupied(_) => {
+                                                    duplicate_count =
+                                                        duplicate_count.saturating_add(1);
+                                                    if duplicate_samples_local.len() < 10 {
+                                                        duplicate_samples_local.push(Key::Ip(ip));
+                                                    }
                                                 }
                                             }
+                                            }
+                                            row_id += 1;
+                                            Ok(())
+                                        })?;
+                                    }
+                                    let scan_ms = scan_start.elapsed().as_millis() as u64;
+                                    let params = ptr_hash::PtrHashParams::default();
+                                    let mphf_start = std::time::Instant::now();
+                                    let seen = std::mem::take(&mut scratch.seen_ip);
+                                    let mphf = {
+                                        let _mphf_guard =
+                                            phase_counters.guard(PkMapPhaseKind::Mphf);
+                                        PTRHASH_SCRATCH.with(|scratch_ptr| {
+                                            let mut scratch_ptr = scratch_ptr.borrow_mut();
+                                            DefaultPtrHash::<GxPtrHash64, [u8; 16]>::try_new_from_source_with_scratch(
+                                                &seen,
+                                                params,
+                                                &mut *scratch_ptr,
+                                            )
+                                        })
+                                        .ok_or_else(|| anyhow!("ptrhash construction failed"))?
+                                    };
+                                    let mphf_ms = mphf_start.elapsed().as_millis() as u64;
+                                    let entries_start = std::time::Instant::now();
+                                    let entries = {
+                                        let _entries_guard =
+                                            phase_counters.guard(PkMapPhaseKind::Entries);
+                                        let slots = mphf.max_index();
+                                        let mut entries = std::mem::take(&mut scratch.entries);
+                                        entries.resize(slots, (0u64, 0u32));
+                                        for (key, value) in seen.iter() {
+                                            let idx = mphf.index_no_remap(key);
+                                            let fp = PkGxHash::hash(key, fingerprint_seed);
+                                            entries[idx] = (fp, *value);
                                         }
+                                        scratch.entries = entries;
+                                        scratch.seen_ip = seen;
+                                        scratch.entries.as_slice()
+                                    };
+                                    let entries_ms = entries_start.elapsed().as_millis() as u64;
+                                    let hash_rel = format!(
+                                        "nodes/{}/pk_hash-{:05}.bin",
+                                        table_name.to_lowercase(),
+                                        shard
+                                    );
+                                    let data_rel = format!(
+                                        "nodes/{}/pk_data-{:05}.bin",
+                                        table_name.to_lowercase(),
+                                        shard
+                                    );
+                                    let write_start = std::time::Instant::now();
+                                    {
+                                        let _write_guard =
+                                            phase_counters.guard(PkMapPhaseKind::Write);
+                                        IngestContext::write_pk_hash_and_data(
+                                            &target,
+                                            &hash_rel,
+                                            &data_rel,
+                                            key_type,
+                                            fingerprint_seed,
+                                            &mphf,
+                                            entries,
+                                        )?;
                                     }
-                                    row_id += 1;
-                                    Ok(())
-                                    })?;
-                                }
-                                let scan_ms = scan_start.elapsed().as_millis() as u64;
-                                let params = ptr_hash::PtrHashParams::default();
-                                let mphf_start = std::time::Instant::now();
-                                let mphf = {
-                                    let _mphf_guard = phase_counters.guard(PkMapPhaseKind::Mphf);
-                                    PTRHASH_SCRATCH.with(|scratch| {
-                                        let mut scratch = scratch.borrow_mut();
-                                        DefaultPtrHash::<GxPtrHash64, [u8; 16]>::try_new_from_source_with_scratch(
-                                            &seen,
-                                            params,
-                                            &mut *scratch,
-                                        )
-                                    })
-                                    .ok_or_else(|| anyhow!("ptrhash construction failed"))?
-                                };
-                                let mphf_ms = mphf_start.elapsed().as_millis() as u64;
-                                let entries_start = std::time::Instant::now();
-                                let entries = {
-                                    let _entries_guard =
-                                        phase_counters.guard(PkMapPhaseKind::Entries);
-                                    let slots = mphf.max_index();
-                                    let mut entries = vec![(0u64, 0u32); slots];
-                                    for (key, value) in seen.iter() {
-                                        let idx = mphf.index_no_remap(key);
-                                        let fp = PkGxHash::hash(key, fingerprint_seed);
-                                        entries[idx] = (fp, *value);
-                                    }
-                                    entries
-                                };
-                                let entries_ms = entries_start.elapsed().as_millis() as u64;
-                                let hash_rel = format!(
-                                    "nodes/{}/pk_hash-{:05}.bin",
-                                    table_name.to_lowercase(),
-                                    shard
-                                );
-                                let data_rel = format!(
-                                    "nodes/{}/pk_data-{:05}.bin",
-                                    table_name.to_lowercase(),
-                                    shard
-                                );
-                                let write_start = std::time::Instant::now();
-                                {
-                                    let _write_guard =
-                                        phase_counters.guard(PkMapPhaseKind::Write);
-                                    IngestContext::write_pk_hash_and_data(
-                                        &target,
-                                        &hash_rel,
-                                        &data_rel,
-                                        key_type,
-                                        fingerprint_seed,
-                                        &mphf,
-                                        &entries,
-                                    )?;
-                                }
-                                let write_ms = write_start.elapsed().as_millis() as u64;
-                                (hash_rel, data_rel, scan_ms, mphf_ms, entries_ms, write_ms)
+                                    let write_ms = write_start.elapsed().as_millis() as u64;
+                                    Ok::<_, anyhow::Error>((
+                                        hash_rel,
+                                        data_rel,
+                                        scan_ms,
+                                        mphf_ms,
+                                        entries_ms,
+                                        write_ms,
+                                    ))
+                                })?
                             }
                         };
                         if duplicate_count > 0 {
