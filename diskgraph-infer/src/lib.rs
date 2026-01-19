@@ -330,9 +330,25 @@ fn shard_target_bytes(total_bytes: u64) -> u64 {
 
 fn smooth_shard_target(per_cpu_bytes: u64, total_bytes: u64) -> u64 {
     let total_gb = total_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
-    let t = ((total_gb - 10.0) / 30.0).clamp(0.0, 1.0);
-    let smooth = t * t * (3.0 - 2.0 * t);
-    let divisor = 16.0 - 12.0 * smooth;
+    let divisor = if total_gb <= 40.0 {
+        let t = ((total_gb - 10.0) / 30.0).clamp(0.0, 1.0);
+        let smooth = t * t * (3.0 - 2.0 * t);
+        16.0 - 12.0 * smooth
+    } else if total_gb <= 1024.0 {
+        let t = ((total_gb - 40.0) / (1024.0 - 40.0)).clamp(0.0, 1.0);
+        let smooth = t * t * (3.0 - 2.0 * t);
+        4.0 - 3.0 * smooth
+    } else if total_gb <= 10_240.0 {
+        let t = ((total_gb - 1024.0) / (10_240.0 - 1024.0)).clamp(0.0, 1.0);
+        let smooth = t * t * (3.0 - 2.0 * t);
+        1.0 - 0.5 * smooth
+    } else if total_gb <= 20_480.0 {
+        let t = ((total_gb - 10_240.0) / (20_480.0 - 10_240.0)).clamp(0.0, 1.0);
+        let smooth = t * t * (3.0 - 2.0 * t);
+        0.5 - 0.25 * smooth
+    } else {
+        0.25
+    };
     (per_cpu_bytes as f64 / divisor).round() as u64
 }
 
@@ -3556,7 +3572,7 @@ mod tests {
         infer_create_time(&mut tables);
         let mut rels = Vec::new();
         let mut notes = Vec::new();
-        infer_foreign_keys(&tables, &mut rels, &mut notes);
+        infer_foreign_keys(&tables, &mut rels, &mut notes, None);
         drop_join_table_primary_keys(&mut tables, &rels);
         infer_primary_key_relationships(&tables, &mut rels);
 
@@ -3610,7 +3626,7 @@ mod tests {
         infer_primary_keys(&mut tables);
         let mut rels = Vec::new();
         let mut notes = Vec::new();
-        infer_foreign_keys(&tables, &mut rels, &mut notes);
+        infer_foreign_keys(&tables, &mut rels, &mut notes, None);
 
         let customer = tables.iter().find(|t| t.name == "customer").unwrap();
         assert_eq!(customer.primary_key.as_deref(), Some("CUSTOMER"));
@@ -3652,7 +3668,7 @@ mod tests {
         infer_create_time(&mut tables);
         let mut rels = Vec::new();
         let mut notes = Vec::new();
-        infer_foreign_keys(&tables, &mut rels, &mut notes);
+        infer_foreign_keys(&tables, &mut rels, &mut notes, None);
         drop_join_table_primary_keys(&mut tables, &rels);
         infer_primary_key_relationships(&tables, &mut rels);
 
@@ -3695,7 +3711,7 @@ mod tests {
         infer_create_time(&mut tables);
         let mut rels = Vec::new();
         let mut notes = Vec::new();
-        infer_foreign_keys(&tables, &mut rels, &mut notes);
+        infer_foreign_keys(&tables, &mut rels, &mut notes, None);
         drop_join_table_primary_keys(&mut tables, &rels);
         infer_primary_key_relationships(&tables, &mut rels);
 
@@ -3746,7 +3762,7 @@ mod tests {
         infer_create_time(&mut tables);
         let mut rels = Vec::new();
         let mut notes = Vec::new();
-        infer_foreign_keys(&tables, &mut rels, &mut notes);
+        infer_foreign_keys(&tables, &mut rels, &mut notes, None);
         drop_join_table_primary_keys(&mut tables, &rels);
         prune_relationships_without_primary_key(&tables, &mut rels);
         infer_primary_key_relationships(&tables, &mut rels);
@@ -3792,7 +3808,7 @@ mod tests {
         infer_create_time(&mut tables);
         let mut rels = Vec::new();
         let mut notes = Vec::new();
-        infer_foreign_keys(&tables, &mut rels, &mut notes);
+        infer_foreign_keys(&tables, &mut rels, &mut notes, None);
         drop_join_table_primary_keys(&mut tables, &rels);
         prune_relationships_without_primary_key(&tables, &mut rels);
         infer_primary_key_relationships(&tables, &mut rels);
@@ -3857,7 +3873,7 @@ mod tests {
         infer_create_time(&mut tables);
         let mut rels = Vec::new();
         let mut notes = Vec::new();
-        infer_foreign_keys(&tables, &mut rels, &mut notes);
+        infer_foreign_keys(&tables, &mut rels, &mut notes, None);
         drop_join_table_primary_keys(&mut tables, &rels);
         prune_relationships_without_primary_key(&tables, &mut rels);
         infer_primary_key_relationships(&tables, &mut rels);
@@ -3931,7 +3947,7 @@ mod tests {
         ];
         let mut rels = Vec::new();
         let mut notes = Vec::new();
-        infer_foreign_keys(&tables, &mut rels, &mut notes);
+        infer_foreign_keys(&tables, &mut rels, &mut notes, None);
         assert_eq!(rels.len(), 1);
         assert_eq!(rels[0].src_table, "orders");
         assert_eq!(rels[0].dst_table, "users");
@@ -3983,7 +3999,7 @@ mod tests {
         ];
         let mut rels = Vec::new();
         let mut notes = Vec::new();
-        infer_foreign_keys(&tables, &mut rels, &mut notes);
+        infer_foreign_keys(&tables, &mut rels, &mut notes, None);
         assert!(rels.is_empty());
         assert!(!notes.is_empty());
     }
@@ -4072,7 +4088,7 @@ mod tests {
         ];
         let mut rels = Vec::new();
         let mut notes = Vec::new();
-        infer_foreign_keys(&tables, &mut rels, &mut notes);
+        infer_foreign_keys(&tables, &mut rels, &mut notes, None);
         assert_eq!(rels.len(), 1);
         assert_eq!(rels[0].src_table, "labevents");
         assert_eq!(rels[0].dst_table, "d_lab");
@@ -4114,7 +4130,7 @@ mod tests {
         }];
         let mut rels = Vec::new();
         let mut notes = Vec::new();
-        infer_foreign_keys(&tables, &mut rels, &mut notes);
+        infer_foreign_keys(&tables, &mut rels, &mut notes, None);
         assert_eq!(rels.len(), 1);
         assert_eq!(rels[0].src_table, "poe");
         assert_eq!(rels[0].dst_table, "poe");
@@ -4222,7 +4238,7 @@ mod tests {
         ];
         let mut rels = Vec::new();
         let mut notes = Vec::new();
-        infer_foreign_keys(&tables, &mut rels, &mut notes);
+        infer_foreign_keys(&tables, &mut rels, &mut notes, None);
         assert_eq!(rels.len(), 1);
         assert_eq!(rels[0].src_table, "hcpcs");
         assert_eq!(rels[0].dst_table, "d_hcpcs");
@@ -4274,7 +4290,7 @@ mod tests {
         ];
         let mut rels = Vec::new();
         let mut notes = Vec::new();
-        infer_foreign_keys(&tables, &mut rels, &mut notes);
+        infer_foreign_keys(&tables, &mut rels, &mut notes, None);
         assert!(rels.is_empty());
     }
 
@@ -4359,7 +4375,7 @@ mod tests {
         ];
         let mut rels = Vec::new();
         let mut notes = Vec::new();
-        infer_foreign_keys(&tables, &mut rels, &mut notes);
+        infer_foreign_keys(&tables, &mut rels, &mut notes, None);
         assert_eq!(rels.len(), 1);
         assert_eq!(rels[0].dst_table, "poe");
     }
@@ -4410,7 +4426,7 @@ mod tests {
         ];
         let mut rels = Vec::new();
         let mut notes = Vec::new();
-        infer_foreign_keys(&tables, &mut rels, &mut notes);
+        infer_foreign_keys(&tables, &mut rels, &mut notes, None);
         assert_eq!(rels.len(), 1);
         assert_eq!(rels[0].dst_table, "admits");
     }
@@ -4481,7 +4497,7 @@ mod tests {
         ];
         let mut rels = Vec::new();
         let mut notes = Vec::new();
-        infer_foreign_keys(&tables, &mut rels, &mut notes);
+        infer_foreign_keys(&tables, &mut rels, &mut notes, None);
         assert_eq!(rels.len(), 1);
         assert_eq!(rels[0].dst_table, "d_lab");
     }
@@ -4532,7 +4548,7 @@ mod tests {
         ];
         let mut rels = Vec::new();
         let mut notes = Vec::new();
-        infer_foreign_keys(&tables, &mut rels, &mut notes);
+        infer_foreign_keys(&tables, &mut rels, &mut notes, None);
         infer_primary_key_relationships(&tables, &mut rels);
         assert_eq!(rels.len(), 1);
         assert!(rels[0].src_table == "user" || rels[0].src_table == "user_profile");
@@ -4584,7 +4600,7 @@ mod tests {
         ];
         let mut rels = Vec::new();
         let mut notes = Vec::new();
-        infer_foreign_keys(&tables, &mut rels, &mut notes);
+        infer_foreign_keys(&tables, &mut rels, &mut notes, None);
         infer_primary_key_relationships(&tables, &mut rels);
         assert!(rels.is_empty());
     }

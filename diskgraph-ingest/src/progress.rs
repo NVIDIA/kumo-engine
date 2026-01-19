@@ -65,8 +65,12 @@ pub fn build_progress() -> Option<ProgressCallback> {
                             format_count(total)
                         ));
                     } else {
-                        let count = format_count(bar.position());
-                        bar.set_message(format!("{} {}", label, count));
+                        if event.status.is_some() {
+                            bar.set_message(label);
+                        } else {
+                            let count = format_count(bar.position());
+                            bar.set_message(format!("{} {}", label, count));
+                        }
                     }
                 }
             }
@@ -102,11 +106,27 @@ fn progress_label(event: &ProgressEvent) -> String {
         ProgressPhase::Index => "index",
     };
     if matches!(event.phase, ProgressPhase::Index) {
-        return format!("{} {}", phase, event.table);
+        let label = format!("{} {}", phase, event.table);
+        return match &event.status {
+            Some(status) => format!("{} {}", label, status),
+            None => label,
+        };
     }
     match event.shard {
-        Some(shard) => format!("{} {} shard-{:05}", phase, event.table, shard),
-        None => format!("{} {}", phase, event.table),
+        Some(shard) => {
+            let label = format!("{} {} shard-{:05}", phase, event.table, shard);
+            match &event.status {
+                Some(status) => format!("{} {}", label, status),
+                None => label,
+            }
+        }
+        None => {
+            let label = format!("{} {}", phase, event.table);
+            match &event.status {
+                Some(status) => format!("{} {}", label, status),
+                None => label,
+            }
+        }
     }
 }
 

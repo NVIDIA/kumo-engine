@@ -5,9 +5,10 @@ pub mod source_metadata;
 pub mod progress;
 
 use crate::mapping::{
-    fingerprint_seed_for, write_pk_data_entry, write_pk_data_header, GxPtrHash64, Key, KeyType,
-    PkHashShard, PkHashStore, PkGxHash,
+    fingerprint_seed_for, write_pk_data_entry, write_pk_data_header, Key, KeyType, PkGxHash,
+    PkHashShard, PkHashStore, PkPtrHash, PkPtrHashOutput,
 };
+use crate::progress::format_duration;
 use crate::source_metadata::{
     relationship_name, ColumnSpec, IngestedType, SortKeySpec, TableFormat, TableSpec,
     TimestampEncodingKind, TimestampEncodingSpec, WeightEncodingKind, WeightEncodingSpec,
@@ -34,6 +35,7 @@ use diskgraph_index::graph::{
     GraphBuildProgress, GraphBuildStage, GraphDataSource, GraphIndexBuilder, GraphProgressSink,
 };
 use lz4_flex::frame::{FrameDecoder, FrameEncoder};
+use ptr_hash::PtrHashScratch;
 use fasteval::{eval_compiled_ref, Compiler, Evaler, Parser, Slab};
 use half::f16;
 use memmap2::Mmap;
@@ -51,6 +53,8 @@ use std::fs;
 use std::io::{self, BufWriter, Read, Write};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
+#[cfg(target_os = "linux")]
+use std::os::unix::io::AsRawFd;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::collections::hash_map::Entry;
@@ -75,6 +79,103 @@ const PROGRESS_ROW_BATCH: u64 = 1_000_000;
 const MAX_VAR_KEY_LEN: usize = u16::MAX as usize;
 const GXHASH_SHARD_SEED: u64 = 0x6a09e667f3bcc909;
 
+thread_local! {
+    static PTRHASH_SCRATCH: std::cell::RefCell<PtrHashScratch<PkPtrHashOutput>> =
+        std::cell::RefCell::new(PtrHashScratch::new());
+}
+
+struct PkMapScratch {
+    seen_u64: std::collections::HashMap<u64, u32>,
+    seen_uuid: std::collections::HashMap<[u8; 16], u32>,
+    seen_uuid256: std::collections::HashMap<[u8; 32], u32>,
+    seen_ip: std::collections::HashMap<[u8; 16], u32>,
+    seen_bytes: std::collections::HashMap<Vec<u8>, u32>,
+    entries: Vec<(u64, u32)>,
+}
+
+impl PkMapScratch {
+    fn new() -> Self {
+        Self {
+            seen_u64: std::collections::HashMap::new(),
+            seen_uuid: std::collections::HashMap::new(),
+            seen_uuid256: std::collections::HashMap::new(),
+            seen_ip: std::collections::HashMap::new(),
+            seen_bytes: std::collections::HashMap::new(),
+            entries: Vec::new(),
+        }
+    }
+
+    fn clear_others_for(&mut self, key_type: KeyType) {
+        match key_type {
+            KeyType::Int64 => {
+                self.seen_bytes.clear();
+                self.seen_bytes.shrink_to_fit();
+                self.seen_uuid.clear();
+                self.seen_uuid.shrink_to_fit();
+                self.seen_uuid256.clear();
+                self.seen_uuid256.shrink_to_fit();
+                self.seen_ip.clear();
+                self.seen_ip.shrink_to_fit();
+            }
+            KeyType::VarBytes => {
+                self.seen_u64.clear();
+                self.seen_u64.shrink_to_fit();
+                self.seen_uuid.clear();
+                self.seen_uuid.shrink_to_fit();
+                self.seen_uuid256.clear();
+                self.seen_uuid256.shrink_to_fit();
+                self.seen_ip.clear();
+                self.seen_ip.shrink_to_fit();
+            }
+            KeyType::Uuid => {
+                self.seen_u64.clear();
+                self.seen_u64.shrink_to_fit();
+                self.seen_bytes.clear();
+                self.seen_bytes.shrink_to_fit();
+                self.seen_uuid256.clear();
+                self.seen_uuid256.shrink_to_fit();
+                self.seen_ip.clear();
+                self.seen_ip.shrink_to_fit();
+            }
+            KeyType::Uuid256 => {
+                self.seen_u64.clear();
+                self.seen_u64.shrink_to_fit();
+                self.seen_bytes.clear();
+                self.seen_bytes.shrink_to_fit();
+                self.seen_uuid.clear();
+                self.seen_uuid.shrink_to_fit();
+                self.seen_ip.clear();
+                self.seen_ip.shrink_to_fit();
+            }
+            KeyType::Ip => {
+                self.seen_u64.clear();
+                self.seen_u64.shrink_to_fit();
+                self.seen_bytes.clear();
+                self.seen_bytes.shrink_to_fit();
+                self.seen_uuid.clear();
+                self.seen_uuid.shrink_to_fit();
+                self.seen_uuid256.clear();
+                self.seen_uuid256.shrink_to_fit();
+            }
+        }
+    }
+}
+
+thread_local! {
+    static PKMAP_SCRATCH: std::cell::RefCell<PkMapScratch> =
+        std::cell::RefCell::new(PkMapScratch::new());
+}
+
+fn reserve_map<K: std::cmp::Eq + std::hash::Hash, V>(
+    map: &mut std::collections::HashMap<K, V>,
+    target: usize,
+) {
+    let cap = map.capacity();
+    if cap < target {
+        map.reserve(target - cap);
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 enum KeyParseError {
     TypeMismatch,
@@ -93,7 +194,7 @@ enum KeyParseError {
 
 type KeyParseResult<T> = std::result::Result<T, KeyParseError>;
 
-const DEFAULT_INDEX_MEM_BUDGET_FRAC: f64 = 0.9;
+const DEFAULT_INDEX_MEM_BUDGET_FRAC: f64 = 1.0;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct IngestReport {
@@ -146,6 +247,7 @@ pub struct ProgressEvent {
     pub kind: ProgressKind,
     pub delta: u64,
     pub total: Option<u64>,
+    pub status: Option<String>,
 }
 
 pub type ProgressCallback = std::sync::Arc<dyn Fn(ProgressEvent) + Send + Sync>;
@@ -181,7 +283,10 @@ struct TableIndexTotals {
 }
 
 impl IndexProgressAdapter {
-    fn new(cb: ProgressCallback, table_totals: HashMap<String, TableIndexTotals>) -> Self {
+    fn new(
+        cb: ProgressCallback,
+        table_totals: HashMap<String, TableIndexTotals>,
+    ) -> Self {
         let mut table_states = HashMap::new();
         for (table, totals) in table_totals {
             table_states.insert(
@@ -262,6 +367,7 @@ impl GraphProgressSink for IndexProgressAdapter {
                         kind: ProgressKind::Start,
                         delta: 0,
                         total: table_state.total,
+                        status: None,
                     });
                 }
                 if delta > 0 {
@@ -273,6 +379,7 @@ impl GraphProgressSink for IndexProgressAdapter {
                         kind: ProgressKind::Advance,
                         delta,
                         total: table_state.total,
+                        status: None,
                     });
                 }
             }
@@ -305,6 +412,7 @@ impl GraphProgressSink for IndexProgressAdapter {
                         kind: ProgressKind::Finish,
                         delta: 0,
                         total: table_state.total.or(Some(table_state.current)),
+                        status: None,
                     });
                 }
             }
@@ -415,6 +523,10 @@ pub fn ingest_with_stats(
         ctx.build_node_contexts()?;
     }
     let context_wall = context_start.elapsed();
+    eprintln!(
+        "context stage complete elapsed={}",
+        format_duration(context_wall.as_millis() as u64)
+    );
     let encode_start = std::time::Instant::now();
     if let Some(profile_dir) = &profile_dir {
         profile_phase(profile_dir, "encode", || ctx.build_temp_shards())?;
@@ -422,6 +534,10 @@ pub fn ingest_with_stats(
         ctx.build_temp_shards()?;
     }
     let encode_wall = encode_start.elapsed();
+    eprintln!(
+        "encode stage complete elapsed={}",
+        format_duration(encode_wall.as_millis() as u64)
+    );
     let pk_map_start = std::time::Instant::now();
     if let Some(profile_dir) = &profile_dir {
         profile_phase(profile_dir, "pk_map", || ctx.build_sharded_pk_maps())?;
@@ -429,6 +545,10 @@ pub fn ingest_with_stats(
         ctx.build_sharded_pk_maps()?;
     }
     let pk_map_wall = pk_map_start.elapsed();
+    eprintln!(
+        "pk_map stage complete elapsed={}",
+        format_duration(pk_map_wall.as_millis() as u64)
+    );
     let edge_ctx = ctx.edge_build_context()?;
     let edges_map_start = std::time::Instant::now();
     if let Some(profile_dir) = &profile_dir {
@@ -437,7 +557,12 @@ pub fn ingest_with_stats(
         ctx.build_edges_mapped(&edge_ctx)?;
     }
     let edges_map_wall = edges_map_start.elapsed();
-    let index_start = std::time::Instant::now();
+    eprintln!(
+        "edges_map stage complete elapsed={}",
+        format_duration(edges_map_wall.as_millis() as u64)
+    );
+    drop(edge_ctx);
+        let index_start = std::time::Instant::now();
     let index_metadata = ctx.build_index_metadata()?;
     if let Some(profile_dir) = &profile_dir {
         profile_phase(profile_dir, "index", || ctx.build_index(index_metadata.clone()))?;
@@ -445,6 +570,10 @@ pub fn ingest_with_stats(
         ctx.build_index(index_metadata.clone())?;
     }
     let index_wall = index_start.elapsed();
+    eprintln!(
+        "index stage complete elapsed={}",
+        format_duration(index_wall.as_millis() as u64)
+    );
     let finalize_start = std::time::Instant::now();
     let index_metadata = ctx.finalize_metadata(index_metadata)?;
     if let OutputTarget::Local { root } = &*ctx.target {
@@ -459,6 +588,10 @@ pub fn ingest_with_stats(
     }
     ctx.cleanup_temp()?;
     let finalize_wall = finalize_start.elapsed();
+    eprintln!(
+        "finalize stage complete elapsed={}",
+        format_duration(finalize_wall.as_millis() as u64)
+    );
     let wall_time = wall_start.elapsed();
     let bytes_read = sum_input_bytes(&ctx.source);
     let bytes_written = match &*ctx.target {
@@ -536,10 +669,9 @@ struct IngestContext {
 struct EdgeBuildContext {
     root: PathBuf,
     rel_sort_bits: HashMap<String, Option<u8>>,
-    rel_sort_keys: HashMap<String, RelationSortKeyInfo>,
+    rel_sort_lookups: std::sync::Arc<HashMap<String, Option<std::sync::Arc<SortKeyLookup>>>>,
     max_ids: HashMap<String, u64>,
     pk_hash_store: Arc<PkHashStore>,
-    edge_tables: HashSet<String>,
 }
 
 struct SortKeyComponentStore {
@@ -1368,7 +1500,8 @@ impl IngestContext {
                             kind: ProgressKind::Start,
                             delta: 0,
                             total: Some(table.paths.len() as u64),
-                        });
+                            status: None,
+});
                     }
                     let rowpack_config = rowpack_config_for_table(rowpack_cfg.as_ref(), &table);
                     let node_columns = rowpack_columns(&table)?;
@@ -1393,6 +1526,7 @@ impl IngestContext {
                             TableFormat::Parquet => {
                                 let file = fs::File::open(&local.path)
                                     .with_context(|| format!("open {}", local.path.display()))?;
+                                advise_file_willneed(&file);
                                 let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
                                 let reader = builder.with_batch_size(NODE_BATCH_SIZE).build()?;
                                 for batch in reader {
@@ -1423,6 +1557,7 @@ impl IngestContext {
                             TableFormat::Csv => {
                                 let file = fs::File::open(&local.path)
                                     .with_context(|| format!("open {}", local.path.display()))?;
+                                advise_file_willneed(&file);
                                 let schema = table_schema(&table)?;
                                 let builder =
                                     arrow_csv::ReaderBuilder::new(Arc::new(schema)).with_header(true);
@@ -1462,7 +1597,8 @@ impl IngestContext {
                                 kind: ProgressKind::Advance,
                                 delta: 1,
                                 total: Some(table.paths.len() as u64),
-                            });
+                                status: None,
+});
                         }
                         if reached_limit {
                             break 'file_loop;
@@ -1480,7 +1616,8 @@ impl IngestContext {
                             kind: ProgressKind::Finish,
                             delta: 0,
                             total: Some(processed_paths.max(1)),
-                        });
+                            status: None,
+});
                     }
                     tx.send(Ok((
                         table.name.clone(),
@@ -1543,7 +1680,8 @@ impl IngestContext {
                     kind: ProgressKind::Start,
                     delta: 0,
                     total: Some(table.paths.len() as u64),
-                });
+                    status: None,
+});
             }
             let table = table.clone();
             let relationships = relationships.clone();
@@ -1651,7 +1789,8 @@ impl IngestContext {
                     kind: ProgressKind::Finish,
                     delta: 0,
                     total: Some(expected),
-                });
+                    status: None,
+});
             }
         }
         drop(node_senders);
@@ -1863,6 +2002,7 @@ impl IngestContext {
             TableFormat::Parquet => {
                 let file = fs::File::open(&local.path)
                     .with_context(|| format!("open {}", local.path.display()))?;
+                advise_file_willneed(&file);
                 let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
                 let reader = builder.with_batch_size(NODE_BATCH_SIZE).build()?;
                 for batch in reader {
@@ -1900,6 +2040,7 @@ impl IngestContext {
             TableFormat::Csv => {
                 let file = fs::File::open(&local.path)
                     .with_context(|| format!("open {}", local.path.display()))?;
+                advise_file_willneed(&file);
                 let schema = table_schema(table)?;
                 let builder = arrow_csv::ReaderBuilder::new(Arc::new(schema)).with_header(true);
                 let reader = builder.build(file)?;
@@ -1948,7 +2089,8 @@ impl IngestContext {
                 kind: ProgressKind::Advance,
                 delta: 1,
                 total: Some(table.paths.len() as u64),
-            });
+                status: None,
+});
         }
         Ok(TempNodeFileResult {
             total_rows,
@@ -2128,6 +2270,7 @@ impl IngestContext {
             TableFormat::Parquet => {
                 let file = fs::File::open(&local.path)
                     .with_context(|| format!("open {}", local.path.display()))?;
+                advise_file_willneed(&file);
                 let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
                 let reader = builder.with_batch_size(NODE_BATCH_SIZE).build()?;
                 for batch in reader {
@@ -2174,6 +2317,7 @@ impl IngestContext {
             TableFormat::Csv => {
                 let file = fs::File::open(&local.path)
                     .with_context(|| format!("open {}", local.path.display()))?;
+                advise_file_willneed(&file);
                 let builder = arrow_csv::ReaderBuilder::new(Arc::new(schema.clone()))
                     .with_header(true);
                 let reader = builder.build(file)?;
@@ -2231,7 +2375,8 @@ impl IngestContext {
                 kind: ProgressKind::Advance,
                 delta: 1,
                 total: Some(table.paths.len() as u64),
-            });
+                status: None,
+});
         }
         Ok(())
     }
@@ -2368,6 +2513,7 @@ impl IngestContext {
                 kind: ProgressKind::Start,
                 delta: 0,
                 total: Some(self.num_shards as u64),
+                status: None,
             });
             let pk_name = table.primary_key.clone().unwrap();
             let pk_col = column_spec(table, &pk_name)?;
@@ -2397,342 +2543,446 @@ impl IngestContext {
                         let mut duplicate_samples_local: Vec<Key> = Vec::new();
                         let mut row_id = 0u64;
                         let fingerprint_seed = fingerprint_seed_for(&table_name, shard);
-                        let (hash_rel, data_rel) = match key_type {
+                        let (hash_rel, data_rel) =
+                            match key_type {
                             KeyType::Int64 => {
-                                let mut seen: std::collections::HashMap<u64, u32> =
-                                    std::collections::HashMap::with_capacity(total_rows as usize);
-                                let data_path = root.join(temp_pkey_path(&table_name, shard));
-                                read_temp_rows(&data_path, |row| {
-                                    let mut data = row;
-                                    let key = read_key_from_buf(&mut data, &pk_col)?;
-                                    if let Key::Int(v) = key {
-                                        let local_id = u32::try_from(row_id)
-                                            .map_err(|_| anyhow!("pk local id overflow"))?;
-                                        match seen.entry(v) {
-                                            Entry::Vacant(entry) => {
-                                                entry.insert(local_id);
-                                            }
-                                            Entry::Occupied(_) => {
-                                                duplicate_count =
-                                                    duplicate_count.saturating_add(1);
-                                                if duplicate_samples_local.len() < 10 {
-                                                    duplicate_samples_local.push(Key::Int(v));
+                                PKMAP_SCRATCH.with(|scratch| {
+                                    let mut scratch = scratch.borrow_mut();
+                                    let scratch = &mut *scratch;
+                                    scratch.clear_others_for(KeyType::Int64);
+                                    let total_rows_usize =
+                                        usize::try_from(total_rows).unwrap_or(usize::MAX);
+                                    scratch.seen_u64.clear();
+                                    reserve_map(&mut scratch.seen_u64, total_rows_usize);
+                                    duplicate_samples_local.clear();
+                                    let data_path = root.join(temp_pkey_path(&table_name, shard));
+                                    {
+                                        let seen = &mut scratch.seen_u64;
+                                        read_temp_rows(&data_path, |row| {
+                                            let mut data = row;
+                                            let key = read_key_from_buf(&mut data, &pk_col)?;
+                                            if let Key::Int(v) = key {
+                                                let local_id = u32::try_from(row_id)
+                                                    .map_err(|_| anyhow!("pk local id overflow"))?;
+                                                match seen.entry(v) {
+                                                    Entry::Vacant(entry) => {
+                                                        entry.insert(local_id);
+                                                    }
+                                                    Entry::Occupied(_) => {
+                                                        duplicate_count =
+                                                            duplicate_count.saturating_add(1);
+                                                        if duplicate_samples_local.len() < 10 {
+                                                            duplicate_samples_local.push(Key::Int(v));
+                                                        }
+                                                    }
                                                 }
                                             }
-                                        }
+                                            row_id += 1;
+                                            Ok(())
+                                        })?;
                                     }
-                                    row_id += 1;
-                                    Ok(())
-                                })?;
-                                let mut keys = Vec::with_capacity(seen.len());
-                                let mut values = Vec::with_capacity(seen.len());
-                                for (key, value) in seen.into_iter() {
-                                    keys.push(key);
-                                    values.push(value);
-                                }
-                                let params = ptr_hash::PtrHashParams::default();
-                                let mphf = DefaultPtrHash::<GxPtrHash64, u64>::try_new(
-                                    &keys,
-                                    params,
-                                )
-                                .ok_or_else(|| anyhow!("ptrhash construction failed"))?;
-                                let slots = mphf.max_index();
-                                let mut entries = vec![(0u64, 0u32); slots];
-                                for (key, value) in keys.iter().zip(values.iter()) {
-                                    let idx = mphf.index_no_remap(key);
-                                    let fp = PkGxHash::hash(key, fingerprint_seed);
-                                    entries[idx] = (fp, *value);
-                                }
-                                let hash_rel = format!(
-                                    "nodes/{}/pk_hash-{:05}.bin",
-                                    table_name.to_lowercase(),
-                                    shard
-                                );
-                                let data_rel = format!(
-                                    "nodes/{}/pk_data-{:05}.bin",
-                                    table_name.to_lowercase(),
-                                    shard
-                                );
-                                IngestContext::write_pk_hash_and_data(
-                                    &target,
-                                    &hash_rel,
-                                    &data_rel,
-                                    key_type,
-                                    fingerprint_seed,
-                                    &mphf,
-                                    &entries,
-                                )?;
-                                (hash_rel, data_rel)
+                                    let params = ptr_hash::PtrHashParams::default();
+                                    let seen = std::mem::take(&mut scratch.seen_u64);
+                                    let mphf = {
+                                        PTRHASH_SCRATCH.with(|scratch_ptr| {
+                                            let mut scratch_ptr = scratch_ptr.borrow_mut();
+                                            DefaultPtrHash::<PkPtrHash, u64>::try_new_from_source_with_scratch(
+                                                &seen,
+                                                params,
+                                                &mut *scratch_ptr,
+                                            )
+                                        })
+                                        .ok_or_else(|| anyhow!("ptrhash construction failed"))?
+                                    };
+                                    let entries = {
+                                        let slots = mphf.max_index();
+                                        let mut entries = std::mem::take(&mut scratch.entries);
+                                        entries.resize(slots, (0u64, 0u32));
+                                        for (key, value) in seen.iter() {
+                                            let idx = mphf.index_no_remap(key);
+                                            let fp = PkGxHash::hash(key, fingerprint_seed);
+                                            entries[idx] = (fp, *value);
+                                        }
+                                        scratch.entries = entries;
+                                        scratch.seen_u64 = seen;
+                                        scratch.entries.as_slice()
+                                    };
+                                    let hash_rel = format!(
+                                        "nodes/{}/pk_hash-{:05}.bin",
+                                        table_name.to_lowercase(),
+                                        shard
+                                    );
+                                    let data_rel = format!(
+                                        "nodes/{}/pk_data-{:05}.bin",
+                                        table_name.to_lowercase(),
+                                        shard
+                                    );
+                                    {
+                                        IngestContext::write_pk_hash_and_data(
+                                            &target,
+                                            &hash_rel,
+                                            &data_rel,
+                                            key_type,
+                                            fingerprint_seed,
+                                            &mphf,
+                                            entries,
+                                        )?;
+                                    }
+                                    Ok::<_, anyhow::Error>((hash_rel, data_rel))
+                                })?
                             }
                             KeyType::VarBytes => {
-                                let mut seen: std::collections::HashMap<Vec<u8>, u32> =
-                                    std::collections::HashMap::with_capacity(total_rows as usize);
-                                let data_path = root.join(temp_pkey_path(&table_name, shard));
-                                read_temp_rows(&data_path, |row| {
-                                    let mut data = row;
-                                    let key = read_key_from_buf(&mut data, &pk_col)?;
-                                    let bytes = match key {
-                                        Key::Bytes(bytes) => bytes,
-                                        _ => {
-                                            row_id += 1;
-                                            return Ok(());
-                                        }
-                                    };
-                                    let local_id = u32::try_from(row_id)
-                                        .map_err(|_| anyhow!("pk local id overflow"))?;
-                                    match seen.entry(bytes) {
-                                        Entry::Vacant(entry) => {
-                                            entry.insert(local_id);
-                                        }
-                                        Entry::Occupied(entry) => {
-                                            duplicate_count = duplicate_count.saturating_add(1);
-                                            if duplicate_samples_local.len() < 10 {
-                                                let sample = entry.key().clone();
-                                                duplicate_samples_local.push(Key::Bytes(sample));
+                                PKMAP_SCRATCH.with(|scratch| {
+                                    let mut scratch = scratch.borrow_mut();
+                                    let scratch = &mut *scratch;
+                                    scratch.clear_others_for(KeyType::VarBytes);
+                                    let total_rows_usize =
+                                        usize::try_from(total_rows).unwrap_or(usize::MAX);
+                                    scratch.seen_bytes.clear();
+                                    reserve_map(&mut scratch.seen_bytes, total_rows_usize);
+                                    duplicate_samples_local.clear();
+                                    let data_path = root.join(temp_pkey_path(&table_name, shard));
+                                    {
+                                        let seen = &mut scratch.seen_bytes;
+                                        read_temp_rows(&data_path, |row| {
+                                            let mut data = row;
+                                            let key = read_key_from_buf(&mut data, &pk_col)?;
+                                            let bytes = match key {
+                                                Key::Bytes(bytes) => bytes,
+                                                _ => {
+                                                    row_id += 1;
+                                                    return Ok(());
+                                                }
+                                            };
+                                            let local_id = u32::try_from(row_id)
+                                                .map_err(|_| anyhow!("pk local id overflow"))?;
+                                            match seen.entry(bytes) {
+                                                Entry::Vacant(entry) => {
+                                                    entry.insert(local_id);
+                                                }
+                                                Entry::Occupied(entry) => {
+                                                    duplicate_count =
+                                                        duplicate_count.saturating_add(1);
+                                                    if duplicate_samples_local.len() < 10 {
+                                                        let sample = entry.key().clone();
+                                                        duplicate_samples_local.push(Key::Bytes(sample));
+                                                    }
+                                                }
                                             }
-                                        }
+                                            row_id += 1;
+                                            Ok(())
+                                        })?;
                                     }
-                                    row_id += 1;
-                                    Ok(())
-                                })?;
-                                let mut keys = Vec::with_capacity(seen.len());
-                                let mut values = Vec::with_capacity(seen.len());
-                                for (key, value) in seen.into_iter() {
-                                    keys.push(key);
-                                    values.push(value);
-                                }
-                                let params = ptr_hash::PtrHashParams::default();
-                                let mphf = DefaultPtrHash::<GxPtrHash64, Vec<u8>>::try_new(
-                                    &keys,
-                                    params,
-                                )
-                                .ok_or_else(|| anyhow!("ptrhash construction failed"))?;
-                                let slots = mphf.max_index();
-                                let mut entries = vec![(0u64, 0u32); slots];
-                                for (key, value) in keys.iter().zip(values.iter()) {
-                                    let idx = mphf.index_no_remap(key);
-                                    let fp = PkGxHash::hash(key, fingerprint_seed);
-                                    entries[idx] = (fp, *value);
-                                }
-                                let hash_rel = format!(
-                                    "nodes/{}/pk_hash-{:05}.bin",
-                                    table_name.to_lowercase(),
-                                    shard
-                                );
-                                let data_rel = format!(
-                                    "nodes/{}/pk_data-{:05}.bin",
-                                    table_name.to_lowercase(),
-                                    shard
-                                );
-                                IngestContext::write_pk_hash_and_data(
-                                    &target,
-                                    &hash_rel,
-                                    &data_rel,
-                                    key_type,
-                                    fingerprint_seed,
-                                    &mphf,
-                                    &entries,
-                                )?;
-                                (hash_rel, data_rel)
+                                    let params = ptr_hash::PtrHashParams::default();
+                                    let seen = std::mem::take(&mut scratch.seen_bytes);
+                                    let mphf = {
+                                        PTRHASH_SCRATCH.with(|scratch_ptr| {
+                                            let mut scratch_ptr = scratch_ptr.borrow_mut();
+                                            DefaultPtrHash::<PkPtrHash, Vec<u8>>::try_new_from_source_with_scratch(
+                                                &seen,
+                                                params,
+                                                &mut *scratch_ptr,
+                                            )
+                                        })
+                                        .ok_or_else(|| anyhow!("ptrhash construction failed"))?
+                                    };
+                                    let entries = {
+                                        let slots = mphf.max_index();
+                                        let mut entries = std::mem::take(&mut scratch.entries);
+                                        entries.resize(slots, (0u64, 0u32));
+                                        for (key, value) in seen.iter() {
+                                            let idx = mphf.index_no_remap(key);
+                                            let fp = PkGxHash::hash(key, fingerprint_seed);
+                                            entries[idx] = (fp, *value);
+                                        }
+                                        scratch.entries = entries;
+                                        scratch.seen_bytes = seen;
+                                        scratch.entries.as_slice()
+                                    };
+                                    let hash_rel = format!(
+                                        "nodes/{}/pk_hash-{:05}.bin",
+                                        table_name.to_lowercase(),
+                                        shard
+                                    );
+                                    let data_rel = format!(
+                                        "nodes/{}/pk_data-{:05}.bin",
+                                        table_name.to_lowercase(),
+                                        shard
+                                    );
+                                    {
+                                        IngestContext::write_pk_hash_and_data(
+                                            &target,
+                                            &hash_rel,
+                                            &data_rel,
+                                            key_type,
+                                            fingerprint_seed,
+                                            &mphf,
+                                            entries,
+                                        )?;
+                                    }
+                                    Ok::<_, anyhow::Error>((hash_rel, data_rel))
+                                })?
                             }
                             KeyType::Uuid => {
-                                let mut seen: std::collections::HashMap<[u8; 16], u32> =
-                                    std::collections::HashMap::with_capacity(total_rows as usize);
-                                let data_path = root.join(temp_pkey_path(&table_name, shard));
-                                read_temp_rows(&data_path, |row| {
-                                    let mut data = row;
-                                    let key = read_key_from_buf(&mut data, &pk_col)?;
-                                    if let Key::Uuid(uuid) = key {
-                                        let local_id = u32::try_from(row_id)
-                                            .map_err(|_| anyhow!("pk local id overflow"))?;
-                                        match seen.entry(uuid) {
-                                            Entry::Vacant(entry) => {
-                                                entry.insert(local_id);
-                                            }
-                                            Entry::Occupied(_) => {
-                                                duplicate_count =
-                                                    duplicate_count.saturating_add(1);
-                                                if duplicate_samples_local.len() < 10 {
-                                                    duplicate_samples_local.push(Key::Uuid(uuid));
+                                PKMAP_SCRATCH.with(|scratch| {
+                                    let mut scratch = scratch.borrow_mut();
+                                    let scratch = &mut *scratch;
+                                    scratch.clear_others_for(KeyType::Uuid);
+                                    let total_rows_usize =
+                                        usize::try_from(total_rows).unwrap_or(usize::MAX);
+                                    scratch.seen_uuid.clear();
+                                    reserve_map(&mut scratch.seen_uuid, total_rows_usize);
+                                    duplicate_samples_local.clear();
+                                    let data_path = root.join(temp_pkey_path(&table_name, shard));
+                                    {
+                                        let seen = &mut scratch.seen_uuid;
+                                        read_temp_rows(&data_path, |row| {
+                                            let mut data = row;
+                                            let key = read_key_from_buf(&mut data, &pk_col)?;
+                                            if let Key::Uuid(uuid) = key {
+                                                let local_id = u32::try_from(row_id)
+                                                    .map_err(|_| anyhow!("pk local id overflow"))?;
+                                                match seen.entry(uuid) {
+                                                    Entry::Vacant(entry) => {
+                                                        entry.insert(local_id);
+                                                    }
+                                                    Entry::Occupied(_) => {
+                                                        duplicate_count =
+                                                            duplicate_count.saturating_add(1);
+                                                        if duplicate_samples_local.len() < 10 {
+                                                            duplicate_samples_local
+                                                                .push(Key::Uuid(uuid));
+                                                        }
+                                                    }
                                                 }
                                             }
-                                        }
+                                            row_id += 1;
+                                            Ok(())
+                                        })?;
                                     }
-                                    row_id += 1;
-                                    Ok(())
-                                })?;
-                                let mut keys = Vec::with_capacity(seen.len());
-                                let mut values = Vec::with_capacity(seen.len());
-                                for (key, value) in seen.into_iter() {
-                                    keys.push(key);
-                                    values.push(value);
-                                }
-                                let params = ptr_hash::PtrHashParams::default();
-                                let mphf = DefaultPtrHash::<GxPtrHash64, [u8; 16]>::try_new(
-                                    &keys,
-                                    params,
-                                )
-                                .ok_or_else(|| anyhow!("ptrhash construction failed"))?;
-                                let slots = mphf.max_index();
-                                let mut entries = vec![(0u64, 0u32); slots];
-                                for (key, value) in keys.iter().zip(values.iter()) {
-                                    let idx = mphf.index_no_remap(key);
-                                    let fp = PkGxHash::hash(key, fingerprint_seed);
-                                    entries[idx] = (fp, *value);
-                                }
-                                let hash_rel = format!(
-                                    "nodes/{}/pk_hash-{:05}.bin",
-                                    table_name.to_lowercase(),
-                                    shard
-                                );
-                                let data_rel = format!(
-                                    "nodes/{}/pk_data-{:05}.bin",
-                                    table_name.to_lowercase(),
-                                    shard
-                                );
-                                IngestContext::write_pk_hash_and_data(
-                                    &target,
-                                    &hash_rel,
-                                    &data_rel,
-                                    key_type,
-                                    fingerprint_seed,
-                                    &mphf,
-                                    &entries,
-                                )?;
-                                (hash_rel, data_rel)
+                                    let params = ptr_hash::PtrHashParams::default();
+                                    let seen = std::mem::take(&mut scratch.seen_uuid);
+                                    let mphf = {
+                                        PTRHASH_SCRATCH.with(|scratch_ptr| {
+                                            let mut scratch_ptr = scratch_ptr.borrow_mut();
+                                            DefaultPtrHash::<PkPtrHash, [u8; 16]>::try_new_from_source_with_scratch(
+                                                &seen,
+                                                params,
+                                                &mut *scratch_ptr,
+                                            )
+                                        })
+                                        .ok_or_else(|| anyhow!("ptrhash construction failed"))?
+                                    };
+                                    let entries = {
+                                        let slots = mphf.max_index();
+                                        let mut entries = std::mem::take(&mut scratch.entries);
+                                        entries.resize(slots, (0u64, 0u32));
+                                        for (key, value) in seen.iter() {
+                                            let idx = mphf.index_no_remap(key);
+                                            let fp = PkGxHash::hash(key, fingerprint_seed);
+                                            entries[idx] = (fp, *value);
+                                        }
+                                        scratch.entries = entries;
+                                        scratch.seen_uuid = seen;
+                                        scratch.entries.as_slice()
+                                    };
+                                    let hash_rel = format!(
+                                        "nodes/{}/pk_hash-{:05}.bin",
+                                        table_name.to_lowercase(),
+                                        shard
+                                    );
+                                    let data_rel = format!(
+                                        "nodes/{}/pk_data-{:05}.bin",
+                                        table_name.to_lowercase(),
+                                        shard
+                                    );
+                                    {
+                                        IngestContext::write_pk_hash_and_data(
+                                            &target,
+                                            &hash_rel,
+                                            &data_rel,
+                                            key_type,
+                                            fingerprint_seed,
+                                            &mphf,
+                                            entries,
+                                        )?;
+                                    }
+                                    Ok::<_, anyhow::Error>((hash_rel, data_rel))
+                                })?
                             }
                             KeyType::Uuid256 => {
-                                let mut seen: std::collections::HashMap<[u8; 32], u32> =
-                                    std::collections::HashMap::with_capacity(total_rows as usize);
-                                let data_path = root.join(temp_pkey_path(&table_name, shard));
-                                read_temp_rows(&data_path, |row| {
-                                    let mut data = row;
-                                    let key = read_key_from_buf(&mut data, &pk_col)?;
-                                    if let Key::Uuid256(uuid) = key {
-                                        let local_id = u32::try_from(row_id)
-                                            .map_err(|_| anyhow!("pk local id overflow"))?;
-                                        match seen.entry(uuid) {
-                                            Entry::Vacant(entry) => {
-                                                entry.insert(local_id);
-                                            }
-                                            Entry::Occupied(_) => {
-                                                duplicate_count =
-                                                    duplicate_count.saturating_add(1);
-                                                if duplicate_samples_local.len() < 10 {
-                                                    duplicate_samples_local
-                                                        .push(Key::Uuid256(uuid));
+                                PKMAP_SCRATCH.with(|scratch| {
+                                    let mut scratch = scratch.borrow_mut();
+                                    let scratch = &mut *scratch;
+                                    scratch.clear_others_for(KeyType::Uuid256);
+                                    let total_rows_usize =
+                                        usize::try_from(total_rows).unwrap_or(usize::MAX);
+                                    scratch.seen_uuid256.clear();
+                                    reserve_map(&mut scratch.seen_uuid256, total_rows_usize);
+                                    duplicate_samples_local.clear();
+                                    let data_path = root.join(temp_pkey_path(&table_name, shard));
+                                    {
+                                        let seen = &mut scratch.seen_uuid256;
+                                        read_temp_rows(&data_path, |row| {
+                                            let mut data = row;
+                                            let key = read_key_from_buf(&mut data, &pk_col)?;
+                                            if let Key::Uuid256(uuid) = key {
+                                                let local_id = u32::try_from(row_id)
+                                                    .map_err(|_| anyhow!("pk local id overflow"))?;
+                                                match seen.entry(uuid) {
+                                                    Entry::Vacant(entry) => {
+                                                        entry.insert(local_id);
+                                                    }
+                                                    Entry::Occupied(_) => {
+                                                        duplicate_count =
+                                                            duplicate_count.saturating_add(1);
+                                                        if duplicate_samples_local.len() < 10 {
+                                                            duplicate_samples_local
+                                                                .push(Key::Uuid256(uuid));
+                                                        }
+                                                    }
                                                 }
                                             }
-                                        }
+                                            row_id += 1;
+                                            Ok(())
+                                        })?;
                                     }
-                                    row_id += 1;
-                                    Ok(())
-                                })?;
-                                let mut keys = Vec::with_capacity(seen.len());
-                                let mut values = Vec::with_capacity(seen.len());
-                                for (key, value) in seen.into_iter() {
-                                    keys.push(key);
-                                    values.push(value);
-                                }
-                                let params = ptr_hash::PtrHashParams::default();
-                                let mphf = DefaultPtrHash::<GxPtrHash64, [u8; 32]>::try_new(
-                                    &keys,
-                                    params,
-                                )
-                                .ok_or_else(|| anyhow!("ptrhash construction failed"))?;
-                                let slots = mphf.max_index();
-                                let mut entries = vec![(0u64, 0u32); slots];
-                                for (key, value) in keys.iter().zip(values.iter()) {
-                                    let idx = mphf.index_no_remap(key);
-                                    let fp = PkGxHash::hash(key, fingerprint_seed);
-                                    entries[idx] = (fp, *value);
-                                }
-                                let hash_rel = format!(
-                                    "nodes/{}/pk_hash-{:05}.bin",
-                                    table_name.to_lowercase(),
-                                    shard
-                                );
-                                let data_rel = format!(
-                                    "nodes/{}/pk_data-{:05}.bin",
-                                    table_name.to_lowercase(),
-                                    shard
-                                );
-                                IngestContext::write_pk_hash_and_data(
-                                    &target,
-                                    &hash_rel,
-                                    &data_rel,
-                                    key_type,
-                                    fingerprint_seed,
-                                    &mphf,
-                                    &entries,
-                                )?;
-                                (hash_rel, data_rel)
+                                    let params = ptr_hash::PtrHashParams::default();
+                                    let seen = std::mem::take(&mut scratch.seen_uuid256);
+                                    let mphf = {
+                                        PTRHASH_SCRATCH.with(|scratch_ptr| {
+                                            let mut scratch_ptr = scratch_ptr.borrow_mut();
+                                            DefaultPtrHash::<PkPtrHash, [u8; 32]>::try_new_from_source_with_scratch(
+                                                &seen,
+                                                params,
+                                                &mut *scratch_ptr,
+                                            )
+                                        })
+                                        .ok_or_else(|| anyhow!("ptrhash construction failed"))?
+                                    };
+                                    let entries = {
+                                        let slots = mphf.max_index();
+                                        let mut entries = std::mem::take(&mut scratch.entries);
+                                        entries.resize(slots, (0u64, 0u32));
+                                        for (key, value) in seen.iter() {
+                                            let idx = mphf.index_no_remap(key);
+                                            let fp = PkGxHash::hash(key, fingerprint_seed);
+                                            entries[idx] = (fp, *value);
+                                        }
+                                        scratch.entries = entries;
+                                        scratch.seen_uuid256 = seen;
+                                        scratch.entries.as_slice()
+                                    };
+                                    let hash_rel = format!(
+                                        "nodes/{}/pk_hash-{:05}.bin",
+                                        table_name.to_lowercase(),
+                                        shard
+                                    );
+                                    let data_rel = format!(
+                                        "nodes/{}/pk_data-{:05}.bin",
+                                        table_name.to_lowercase(),
+                                        shard
+                                    );
+                                    {
+                                        IngestContext::write_pk_hash_and_data(
+                                            &target,
+                                            &hash_rel,
+                                            &data_rel,
+                                            key_type,
+                                            fingerprint_seed,
+                                            &mphf,
+                                            entries,
+                                        )?;
+                                    }
+                                    Ok::<_, anyhow::Error>((hash_rel, data_rel))
+                                })?
                             }
                             KeyType::Ip => {
-                                let mut seen: std::collections::HashMap<[u8; 16], u32> =
-                                    std::collections::HashMap::with_capacity(total_rows as usize);
-                                let data_path = root.join(temp_pkey_path(&table_name, shard));
-                                read_temp_rows(&data_path, |row| {
-                                    let mut data = row;
-                                    let key = read_key_from_buf(&mut data, &pk_col)?;
-                                    if let Key::Ip(ip) = key {
-                                        let local_id = u32::try_from(row_id)
-                                            .map_err(|_| anyhow!("pk local id overflow"))?;
-                                        match seen.entry(ip) {
-                                            Entry::Vacant(entry) => {
-                                                entry.insert(local_id);
-                                            }
-                                            Entry::Occupied(_) => {
-                                                duplicate_count =
-                                                    duplicate_count.saturating_add(1);
-                                                if duplicate_samples_local.len() < 10 {
-                                                    duplicate_samples_local.push(Key::Ip(ip));
+                                PKMAP_SCRATCH.with(|scratch| {
+                                    let mut scratch = scratch.borrow_mut();
+                                    let scratch = &mut *scratch;
+                                    scratch.clear_others_for(KeyType::Ip);
+                                    let total_rows_usize =
+                                        usize::try_from(total_rows).unwrap_or(usize::MAX);
+                                    scratch.seen_ip.clear();
+                                    reserve_map(&mut scratch.seen_ip, total_rows_usize);
+                                    duplicate_samples_local.clear();
+                                    let data_path = root.join(temp_pkey_path(&table_name, shard));
+                                    {
+                                        let seen = &mut scratch.seen_ip;
+                                        read_temp_rows(&data_path, |row| {
+                                            let mut data = row;
+                                            let key = read_key_from_buf(&mut data, &pk_col)?;
+                                            if let Key::Ip(ip) = key {
+                                                let local_id = u32::try_from(row_id)
+                                                    .map_err(|_| anyhow!("pk local id overflow"))?;
+                                                match seen.entry(ip) {
+                                                    Entry::Vacant(entry) => {
+                                                        entry.insert(local_id);
+                                                    }
+                                                    Entry::Occupied(_) => {
+                                                        duplicate_count =
+                                                            duplicate_count.saturating_add(1);
+                                                        if duplicate_samples_local.len() < 10 {
+                                                            duplicate_samples_local
+                                                                .push(Key::Ip(ip));
+                                                        }
+                                                    }
                                                 }
                                             }
-                                        }
+                                            row_id += 1;
+                                            Ok(())
+                                        })?;
                                     }
-                                    row_id += 1;
-                                    Ok(())
-                                })?;
-                                let mut keys = Vec::with_capacity(seen.len());
-                                let mut values = Vec::with_capacity(seen.len());
-                                for (key, value) in seen.into_iter() {
-                                    keys.push(key);
-                                    values.push(value);
-                                }
-                                let params = ptr_hash::PtrHashParams::default();
-                                let mphf = DefaultPtrHash::<GxPtrHash64, [u8; 16]>::try_new(
-                                    &keys,
-                                    params,
-                                )
-                                .ok_or_else(|| anyhow!("ptrhash construction failed"))?;
-                                let slots = mphf.max_index();
-                                let mut entries = vec![(0u64, 0u32); slots];
-                                for (key, value) in keys.iter().zip(values.iter()) {
-                                    let idx = mphf.index_no_remap(key);
-                                    let fp = PkGxHash::hash(key, fingerprint_seed);
-                                    entries[idx] = (fp, *value);
-                                }
-                                let hash_rel = format!(
-                                    "nodes/{}/pk_hash-{:05}.bin",
-                                    table_name.to_lowercase(),
-                                    shard
-                                );
-                                let data_rel = format!(
-                                    "nodes/{}/pk_data-{:05}.bin",
-                                    table_name.to_lowercase(),
-                                    shard
-                                );
-                                IngestContext::write_pk_hash_and_data(
-                                    &target,
-                                    &hash_rel,
-                                    &data_rel,
-                                    key_type,
-                                    fingerprint_seed,
-                                    &mphf,
-                                    &entries,
-                                )?;
-                                (hash_rel, data_rel)
+                                    let params = ptr_hash::PtrHashParams::default();
+                                    let seen = std::mem::take(&mut scratch.seen_ip);
+                                    let mphf = {
+                                        PTRHASH_SCRATCH.with(|scratch_ptr| {
+                                            let mut scratch_ptr = scratch_ptr.borrow_mut();
+                                            DefaultPtrHash::<PkPtrHash, [u8; 16]>::try_new_from_source_with_scratch(
+                                                &seen,
+                                                params,
+                                                &mut *scratch_ptr,
+                                            )
+                                        })
+                                        .ok_or_else(|| anyhow!("ptrhash construction failed"))?
+                                    };
+                                    let entries = {
+                                        let slots = mphf.max_index();
+                                        let mut entries = std::mem::take(&mut scratch.entries);
+                                        entries.resize(slots, (0u64, 0u32));
+                                        for (key, value) in seen.iter() {
+                                            let idx = mphf.index_no_remap(key);
+                                            let fp = PkGxHash::hash(key, fingerprint_seed);
+                                            entries[idx] = (fp, *value);
+                                        }
+                                        scratch.entries = entries;
+                                        scratch.seen_ip = seen;
+                                        scratch.entries.as_slice()
+                                    };
+                                    let hash_rel = format!(
+                                        "nodes/{}/pk_hash-{:05}.bin",
+                                        table_name.to_lowercase(),
+                                        shard
+                                    );
+                                    let data_rel = format!(
+                                        "nodes/{}/pk_data-{:05}.bin",
+                                        table_name.to_lowercase(),
+                                        shard
+                                    );
+                                    {
+                                        IngestContext::write_pk_hash_and_data(
+                                            &target,
+                                            &hash_rel,
+                                            &data_rel,
+                                            key_type,
+                                            fingerprint_seed,
+                                            &mphf,
+                                            entries,
+                                        )?;
+                                    }
+                                    Ok::<_, anyhow::Error>((hash_rel, data_rel))
+                                })?
                             }
                         };
                         if duplicate_count > 0 {
@@ -2766,7 +3016,9 @@ impl IngestContext {
                             "duplicate_count": duplicate_count,
                             "duplicate_samples": samples,
                         });
-                        target.write_bytes(&dup_meta, serde_json::to_vec_pretty(&meta)?)?;
+                        {
+                            target.write_bytes(&dup_meta, serde_json::to_vec_pretty(&meta)?)?;
+                        }
                         let mut guard = pk_hash_paths.lock().unwrap();
                         guard[shard] = Some(PkHashPaths {
                             hash_path: hash_rel,
@@ -2780,6 +3032,7 @@ impl IngestContext {
                                 kind: ProgressKind::Advance,
                                 delta: 1,
                                 total: Some(num_shards),
+                                status: None,
                             });
                         }
                         Ok(())
@@ -2787,7 +3040,8 @@ impl IngestContext {
                 });
             }
         }
-        run_tasks(tasks.drain(..).collect(), &self.pool)?;
+        let run_result = run_tasks(tasks.drain(..).collect(), &self.pool);
+        run_result?;
         for table in &self.source.tables {
             if table.edge_table.is_some() || table.primary_key.is_none() {
                 continue;
@@ -2810,6 +3064,7 @@ impl IngestContext {
                 kind: ProgressKind::Finish,
                 delta: 0,
                 total: Some(self.num_shards as u64),
+                status: None,
             });
         }
         if let Ok(counts) = std::sync::Arc::try_unwrap(duplicate_counts) {
@@ -2840,7 +3095,8 @@ impl IngestContext {
                 fs::create_dir_all(parent)?;
             }
         }
-        let mut hash_writer = BufWriter::with_capacity(1024 * 1024, target.sink(&hash_path)?);
+        let mut hash_writer =
+            BufWriter::with_capacity(32 * 1024 * 1024, target.sink(&hash_path)?);
         mphf.serialize(&mut hash_writer)?;
         hash_writer.flush()?;
         let hash_sink = hash_writer
@@ -2848,7 +3104,8 @@ impl IngestContext {
             .map_err(|_| anyhow!("pk hash flush failed"))?;
         hash_sink.finish()?;
 
-        let mut data_writer = BufWriter::with_capacity(1024 * 1024, target.sink(&data_path)?);
+        let mut data_writer =
+            BufWriter::with_capacity(32 * 1024 * 1024, target.sink(&data_path)?);
         write_pk_data_header(
             &mut data_writer,
             key_type,
@@ -2910,18 +3167,20 @@ impl IngestContext {
                 edge_tables.insert(table.name.clone());
             }
         }
-        let pk_hash_store = Arc::new(self.build_pk_hash_store(&root)?);
+        let rel_sort_lookups =
+            self.build_sort_key_lookups_parallel(&root, &edge_tables, &rel_sort_keys)?;
+        let pk_hash_store = Arc::new(self.build_pk_hash_store_parallel(&root)?);
         Ok(EdgeBuildContext {
             root,
             rel_sort_bits,
-            rel_sort_keys,
+            rel_sort_lookups: std::sync::Arc::new(rel_sort_lookups),
             max_ids,
             pk_hash_store,
-            edge_tables,
         })
     }
-    fn build_pk_hash_store(&self, root: &Path) -> Result<PkHashStore> {
-        let mut tables = std::collections::HashMap::new();
+    fn build_pk_hash_store_parallel(&self, root: &Path) -> Result<PkHashStore> {
+        let mut shard_jobs: Vec<(String, usize, KeyType, PathBuf, PathBuf)> = Vec::new();
+        let mut table_shard_counts = HashMap::new();
         for table in &self.source.tables {
             if table.edge_table.is_some() || table.primary_key.is_none() {
                 continue;
@@ -2933,16 +3192,114 @@ impl IngestContext {
                 .pk_hash_paths
                 .get(&table.name)
                 .ok_or_else(|| anyhow!("missing pk hash paths for {}", table.name))?;
-            let mut shards = Vec::with_capacity(paths.len());
-            for shard_paths in paths {
+            table_shard_counts.insert(table.name.clone(), paths.len());
+            for (shard_idx, shard_paths) in paths.iter().enumerate() {
                 let hash_path = root.join(&shard_paths.hash_path);
                 let data_path = root.join(&shard_paths.data_path);
-                let shard = PkHashShard::load(&hash_path, &data_path, key_type)?;
-                shards.push(shard);
+                shard_jobs.push((
+                    table.name.clone(),
+                    shard_idx,
+                    key_type,
+                    hash_path,
+                    data_path,
+                ));
             }
-            tables.insert(table.name.clone(), shards);
         }
-        Ok(PkHashStore::new(tables))
+        if shard_jobs.is_empty() {
+            return Ok(PkHashStore::new(HashMap::new()));
+        }
+        let (tx, rx) = std::sync::mpsc::channel::<Result<(String, usize, PkHashShard)>>();
+        let mut tasks = Vec::with_capacity(shard_jobs.len());
+        for (table_name, shard_idx, key_type, hash_path, data_path) in shard_jobs {
+            let tx = tx.clone();
+            tasks.push(WorkItem {
+                bucket: None,
+                run: Box::new(move || {
+                    let shard = PkHashShard::load(&hash_path, &data_path, key_type)?;
+                    let _ = tx.send(Ok((table_name, shard_idx, shard)));
+                    Ok(())
+                }),
+            });
+        }
+        drop(tx);
+        run_tasks(tasks, &self.pool)?;
+        let mut tables: HashMap<String, Vec<Option<PkHashShard>>> = HashMap::new();
+        for (table_name, shard_count) in table_shard_counts {
+            let shards = (0..shard_count).map(|_| None).collect();
+            tables.insert(table_name, shards);
+        }
+        for _ in 0..tables.values().map(|v| v.len()).sum::<usize>() {
+            match rx.recv().map_err(|e| anyhow!("pk hash output error: {e}"))? {
+                Ok((table_name, shard_idx, shard)) => {
+                    let entry = tables
+                        .get_mut(&table_name)
+                        .ok_or_else(|| anyhow!("pk hash table missing {}", table_name))?;
+                    if shard_idx >= entry.len() {
+                        return Err(anyhow!("pk hash shard out of range {}:{}", table_name, shard_idx));
+                    }
+                    entry[shard_idx] = Some(shard);
+                }
+                Err(err) => return Err(err),
+            }
+        }
+        let mut final_tables = HashMap::new();
+        for (table_name, shards) in tables {
+            let mut resolved = Vec::with_capacity(shards.len());
+            for shard in shards {
+                resolved.push(
+                    shard.ok_or_else(|| anyhow!("missing pk hash shard {}", table_name))?,
+                );
+            }
+            final_tables.insert(table_name, resolved);
+        }
+        Ok(PkHashStore::new(final_tables))
+    }
+
+    fn build_sort_key_lookups_parallel(
+        &self,
+        root: &Path,
+        edge_tables: &HashSet<String>,
+        rel_sort_keys: &HashMap<String, RelationSortKeyInfo>,
+    ) -> Result<HashMap<String, Option<std::sync::Arc<SortKeyLookup>>>> {
+        let edge_tables = std::sync::Arc::new(edge_tables.clone());
+        let rel_sort_keys = std::sync::Arc::new(rel_sort_keys.clone());
+        let (tx, rx) = std::sync::mpsc::channel::<Result<(String, Option<std::sync::Arc<SortKeyLookup>>)>>();
+        let mut tasks = Vec::with_capacity(self.relation_defs.len());
+        for rel in &self.relation_defs {
+            let rel_name = rel.name.clone();
+            let root = root.to_path_buf();
+            let edge_tables = std::sync::Arc::clone(&edge_tables);
+            let rel_sort_keys = std::sync::Arc::clone(&rel_sort_keys);
+            let tx = tx.clone();
+            let num_shards = self.num_shards;
+            tasks.push(WorkItem {
+                bucket: None,
+                run: Box::new(move || {
+                    let lookup = build_sort_key_lookup(
+                        &root,
+                        edge_tables.as_ref(),
+                        rel_sort_keys.as_ref(),
+                        &rel_name,
+                        num_shards,
+                    )?;
+                    let lookup = lookup.map(std::sync::Arc::new);
+                    let _ = tx.send(Ok((rel_name, lookup)));
+                    Ok(())
+                }),
+            });
+        }
+        drop(tx);
+        run_tasks(tasks, &self.pool)?;
+        let mut lookups = HashMap::with_capacity(self.relation_defs.len());
+        for _ in 0..self.relation_defs.len() {
+            match rx.recv().map_err(|e| anyhow!("sort key output error: {e}"))? {
+                Ok((rel_name, lookup)) => {
+                    lookups.insert(rel_name, lookup);
+                }
+                Err(err) => return Err(err),
+            }
+        }
+        Ok(lookups)
     }
 
 
@@ -2966,8 +3323,7 @@ impl IngestContext {
             let pk_hash_store = edge_ctx.pk_hash_store.clone();
             let max_ids = edge_ctx.max_ids.clone();
             let rel_sort_bits = edge_ctx.rel_sort_bits.clone();
-            let rel_sort_keys = edge_ctx.rel_sort_keys.clone();
-            let edge_tables = edge_ctx.edge_tables.clone();
+            let rel_sort_lookups = std::sync::Arc::clone(&edge_ctx.rel_sort_lookups);
             let source = self.source.clone();
             let num_shards = self.num_shards;
             let (tx, rx) = std::sync::mpsc::channel::<Result<EdgeMapResult>>();
@@ -3005,7 +3361,8 @@ impl IngestContext {
                         kind: ProgressKind::Start,
                         delta: 0,
                         total: Some(total_rows),
-                    });
+                        status: None,
+});
                 }
                 expected.insert(rel.name_forward.clone(), num_shards as u64);
                 totals.insert(rel.name_forward.clone(), total_rows);
@@ -3016,9 +3373,8 @@ impl IngestContext {
                     let pk_hash_store = pk_hash_store.clone();
                     let max_ids = max_ids.clone();
                     let rel_sort_bits = rel_sort_bits.clone();
-                    let rel_sort_keys = rel_sort_keys.clone();
-                    let edge_tables = edge_tables.clone();
-                    let root = root.clone();
+                let rel_sort_lookups = std::sync::Arc::clone(&rel_sort_lookups);
+                let root = root.clone();
                     let writer_senders = std::sync::Arc::clone(&writer_senders);
                     let tx = tx.clone();
                     let src_fk_col = src_fk_col.clone();
@@ -3046,20 +3402,12 @@ impl IngestContext {
                                 .get(&rel.name_reverse)
                                 .copied()
                                 .flatten();
-                            let forward_lookup = build_sort_key_lookup(
-                                &root,
-                                &edge_tables,
-                                &rel_sort_keys,
-                                &rel.name_forward,
-                                num_shards,
-                            )?;
-                            let reverse_lookup = build_sort_key_lookup(
-                                &root,
-                                &edge_tables,
-                                &rel_sort_keys,
-                                &rel.name_reverse,
-                                num_shards,
-                            )?;
+                            let forward_lookup = rel_sort_lookups
+                                .get(&rel.name_forward)
+                                .and_then(|lookup| lookup.as_ref().map(std::sync::Arc::clone));
+                            let reverse_lookup = rel_sort_lookups
+                                .get(&rel.name_reverse)
+                                .and_then(|lookup| lookup.as_ref().map(std::sync::Arc::clone));
                             let forward_spec = edge_binary_spec(
                                 max_ids.get(&rel.src_table).copied().unwrap_or(0),
                                 max_ids.get(&rel.dst_table).copied().unwrap_or(0),
@@ -3122,7 +3470,8 @@ impl IngestContext {
                                             kind: ProgressKind::Advance,
                                             delta: pending,
                                             total: Some(total_rows),
-                                        });
+                                            status: None,
+});
                                     }
                                     pending = 0;
                                 }
@@ -3218,7 +3567,8 @@ impl IngestContext {
                                         kind: ProgressKind::Advance,
                                         delta: pending,
                                         total: Some(total_rows),
-                                    });
+                                        status: None,
+});
                                 }
                             }
                             result
@@ -3265,7 +3615,8 @@ impl IngestContext {
                         kind: ProgressKind::Start,
                         delta: 0,
                         total: Some(total_rows),
-                    });
+                        status: None,
+});
                 }
                 expected.insert(forward_name.clone(), num_shards as u64);
                 totals.insert(forward_name.clone(), total_rows);
@@ -3287,9 +3638,8 @@ impl IngestContext {
                     let pk_hash_store = pk_hash_store.clone();
                     let max_ids = max_ids.clone();
                     let rel_sort_bits = rel_sort_bits.clone();
-                    let rel_sort_keys = rel_sort_keys.clone();
-                    let edge_tables = edge_tables.clone();
-                    let root = root.clone();
+                let rel_sort_lookups = std::sync::Arc::clone(&rel_sort_lookups);
+                let root = root.clone();
                     let tx = tx.clone();
                     let writer_senders = std::sync::Arc::clone(&writer_senders);
                     let edge = edge.clone();
@@ -3320,20 +3670,12 @@ impl IngestContext {
                                 .get(&reverse_name)
                                 .copied()
                                 .flatten();
-                            let forward_lookup = build_sort_key_lookup(
-                                &root,
-                                &edge_tables,
-                                &rel_sort_keys,
-                                &forward_name,
-                                num_shards,
-                            )?;
-                            let reverse_lookup = build_sort_key_lookup(
-                                &root,
-                                &edge_tables,
-                                &rel_sort_keys,
-                                &reverse_name,
-                                num_shards,
-                            )?;
+                            let forward_lookup = rel_sort_lookups
+                                .get(&forward_name)
+                                .and_then(|lookup| lookup.as_ref().map(std::sync::Arc::clone));
+                            let reverse_lookup = rel_sort_lookups
+                                .get(&reverse_name)
+                                .and_then(|lookup| lookup.as_ref().map(std::sync::Arc::clone));
                             let forward_spec = edge_binary_spec(
                                 max_ids
                                     .get(&edge.src_fk.ref_table)
@@ -3388,7 +3730,8 @@ impl IngestContext {
                                             kind: ProgressKind::Advance,
                                             delta: pending,
                                             total: Some(total_rows),
-                                        });
+                                            status: None,
+});
                                     }
                                     pending = 0;
                                 }
@@ -3489,7 +3832,8 @@ impl IngestContext {
                                         kind: ProgressKind::Advance,
                                         delta: pending,
                                         total: Some(total_rows),
-                                    });
+                                        status: None,
+});
                                 }
                             }
                             result.edge_counts.insert(forward_name, forward_count);
@@ -3528,7 +3872,8 @@ impl IngestContext {
                                 kind: ProgressKind::Finish,
                                 delta: 0,
                                 total,
-                            });
+                                status: None,
+});
                         }
                     }
                 }
@@ -3635,7 +3980,9 @@ impl IngestContext {
         let adapter = self
             .progress
             .clone()
-            .map(|cb| IndexProgressAdapter::new(cb, table_totals.clone()));
+            .map(|cb| {
+                IndexProgressAdapter::new(cb, table_totals.clone())
+            });
         let adapter = adapter.map(std::sync::Arc::new);
         let mut tasks = Vec::with_capacity(jobs.len());
         for job in jobs {
@@ -3647,7 +3994,8 @@ impl IngestContext {
                     let progress = adapter
                         .as_ref()
                         .map(|value| value.as_ref() as &dyn GraphProgressSink);
-                    job.run_with_budget(progress, mem_budget).map(|_| ())
+                    let result = job.run_with_budget(progress, mem_budget).map(|_| ());
+                    result
                 }),
             });
         }
@@ -4061,7 +4409,7 @@ fn open_sort_key_writer(target: &OutputTarget, rel_path: &str) -> Result<BufWrit
             fs::create_dir_all(parent)?;
         }
     }
-    Ok(BufWriter::with_capacity(1024 * 1024, target.sink(&path)?))
+    Ok(BufWriter::with_capacity(32 * 1024 * 1024, target.sink(&path)?))
 }
 
 fn ensure_sort_key_file(target: &OutputTarget, rel_path: &str) -> Result<()> {
@@ -4099,7 +4447,7 @@ fn open_fkey_bitmap_writer(target: &OutputTarget, rel_path: &str) -> Result<BufW
             fs::create_dir_all(parent)?;
         }
     }
-    Ok(BufWriter::with_capacity(1024 * 1024, target.sink(&path)?))
+    Ok(BufWriter::with_capacity(32 * 1024 * 1024, target.sink(&path)?))
 }
 
 fn ensure_fkey_bitmap_file(target: &OutputTarget, rel_path: &str) -> Result<()> {
@@ -4194,6 +4542,7 @@ fn append_fkey_bit(bits: &mut Vec<u8>, row_idx: u64, present: bool) -> usize {
 
 fn read_temp_rows(path: &Path, mut f: impl FnMut(&[u8]) -> Result<()>) -> Result<()> {
     let file = fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
+    advise_file_willneed(&file);
     let mut file = FrameDecoder::new(file);
     let mut len_buf = [0u8; 4];
     let mut data = Vec::new();
@@ -4241,10 +4590,34 @@ fn load_sort_key_component_shards(
         let file = fs::File::open(&path)
             .with_context(|| format!("open {}", path.display()))?;
         let data = unsafe { Mmap::map(&file)? };
+        advise_willneed(&data);
         shards.push(SortKeyComponentStore { width_bytes, data });
     }
     Ok(shards)
 }
+
+fn advise_willneed(map: &Mmap) {
+    let ret = unsafe {
+        libc::madvise(
+            map.as_ptr() as *mut libc::c_void,
+            map.len(),
+            libc::MADV_WILLNEED,
+        )
+    };
+    if ret != 0 {
+        let _ = std::io::Error::last_os_error();
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn advise_file_willneed(file: &fs::File) {
+    unsafe {
+        libc::posix_fadvise(file.as_raw_fd(), 0, 0, libc::POSIX_FADV_WILLNEED);
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn advise_file_willneed(_file: &fs::File) {}
 
 fn build_sort_key_lookup(
     root: &Path,
@@ -4327,7 +4700,7 @@ impl EdgePartWriter {
                 fs::create_dir_all(parent)?;
             }
         }
-        let mut writer = BufWriter::with_capacity(1024 * 1024, target.sink(path)?);
+        let mut writer = BufWriter::with_capacity(32 * 1024 * 1024, target.sink(path)?);
         write_edge_bin_header(&mut writer, spec)?;
         Ok(Self {
             writer,

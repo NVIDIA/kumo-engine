@@ -3,7 +3,10 @@ use diskgraph_core::metadata::PrimaryKeyMap;
 use epserde::prelude::{Deserialize as EpDeserialize, Flags as EpFlags};
 use gxhash::GxHasher;
 use memmap2::Mmap;
-use ptr_hash::hash::Hasher as PtrHasher;
+#[cfg(not(feature = "pkhash128"))]
+use ptr_hash::hash::GxHash64;
+#[cfg(feature = "pkhash128")]
+use ptr_hash::hash::GxHash128;
 use ptr_hash::DefaultPtrHash;
 use std::fs::File;
 use std::hash::{Hash, Hasher};
@@ -16,103 +19,10 @@ const PK_DATA_ENTRY_LEN: usize = 8 + 4;
 
 const GXHASH_SHARD_SEED: u64 = 0x6a09e667f3bcc909;
 
-#[derive(Clone, epserde::prelude::Epserde)]
-struct GxPtrHash64;
-
-impl GxPtrHash64 {
-    #[inline(always)]
-    fn hash_bytes(bytes: &[u8], seed: u64) -> u64 {
-        let mut hasher = GxHasher::with_seed(seed as i64);
-        hasher.write(bytes);
-        hasher.finish()
-    }
-}
-
-impl PtrHasher<u64> for GxPtrHash64 {
-    type H = u64;
-    #[inline(always)]
-    fn hash(x: &u64, seed: u64) -> u64 {
-        let mut hasher = GxHasher::with_seed(seed as i64);
-        x.hash(&mut hasher);
-        hasher.finish()
-    }
-}
-
-impl PtrHasher<[u8]> for GxPtrHash64 {
-    type H = u64;
-    #[inline(always)]
-    fn hash(x: &[u8], seed: u64) -> u64 {
-        Self::hash_bytes(x, seed)
-    }
-}
-
-impl PtrHasher<Vec<u8>> for GxPtrHash64 {
-    type H = u64;
-    #[inline(always)]
-    fn hash(x: &Vec<u8>, seed: u64) -> u64 {
-        Self::hash_bytes(x.as_slice(), seed)
-    }
-}
-
-impl PtrHasher<[u8; 16]> for GxPtrHash64 {
-    type H = u64;
-    #[inline(always)]
-    fn hash(x: &[u8; 16], seed: u64) -> u64 {
-        let mut hasher = GxHasher::with_seed(seed as i64);
-        let value = unsafe { std::ptr::read_unaligned(x.as_ptr() as *const u128) };
-        let value = u128::from_le(value);
-        hasher.write_u128(value);
-        hasher.finish()
-    }
-}
-
-impl PtrHasher<[u8; 32]> for GxPtrHash64 {
-    type H = u64;
-    #[inline(always)]
-    fn hash(x: &[u8; 32], seed: u64) -> u64 {
-        let mut hasher = GxHasher::with_seed(seed as i64);
-        let first = unsafe { std::ptr::read_unaligned(x.as_ptr() as *const u128) };
-        let second =
-            unsafe { std::ptr::read_unaligned(x.as_ptr().add(16) as *const u128) };
-        hasher.write_u128(u128::from_le(first));
-        hasher.write_u128(u128::from_le(second));
-        hasher.finish()
-    }
-}
-
-impl PtrHasher<&[u8]> for GxPtrHash64 {
-    type H = u64;
-    #[inline(always)]
-    fn hash(x: &&[u8], seed: u64) -> u64 {
-        Self::hash_bytes(*x, seed)
-    }
-}
-
-impl PtrHasher<&[u8; 16]> for GxPtrHash64 {
-    type H = u64;
-    #[inline(always)]
-    fn hash(x: &&[u8; 16], seed: u64) -> u64 {
-        let mut hasher = GxHasher::with_seed(seed as i64);
-        let value = unsafe { std::ptr::read_unaligned((*x).as_ptr() as *const u128) };
-        let value = u128::from_le(value);
-        hasher.write_u128(value);
-        hasher.finish()
-    }
-}
-
-impl PtrHasher<&[u8; 32]> for GxPtrHash64 {
-    type H = u64;
-    #[inline(always)]
-    fn hash(x: &&[u8; 32], seed: u64) -> u64 {
-        let mut hasher = GxHasher::with_seed(seed as i64);
-        let first = unsafe { std::ptr::read_unaligned((*x).as_ptr() as *const u128) };
-        let second =
-            unsafe { std::ptr::read_unaligned((*x).as_ptr().add(16) as *const u128) };
-        hasher.write_u128(u128::from_le(first));
-        hasher.write_u128(u128::from_le(second));
-        hasher.finish()
-    }
-}
+#[cfg(not(feature = "pkhash128"))]
+type PkPtrHash = GxHash64;
+#[cfg(feature = "pkhash128")]
+type PkPtrHash = GxHash128;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyType {
@@ -223,19 +133,19 @@ impl PkDataHeader {
 }
 
 type MphfInt = epserde::prelude::MemCase<
-    epserde::prelude::DeserType<'static, DefaultPtrHash<GxPtrHash64, u64>>,
+    epserde::prelude::DeserType<'static, DefaultPtrHash<PkPtrHash, u64>>,
 >;
 type MphfBytes = epserde::prelude::MemCase<
-    epserde::prelude::DeserType<'static, DefaultPtrHash<GxPtrHash64, Vec<u8>>>,
+    epserde::prelude::DeserType<'static, DefaultPtrHash<PkPtrHash, Vec<u8>>>,
 >;
 type MphfUuid = epserde::prelude::MemCase<
-    epserde::prelude::DeserType<'static, DefaultPtrHash<GxPtrHash64, [u8; 16]>>,
+    epserde::prelude::DeserType<'static, DefaultPtrHash<PkPtrHash, [u8; 16]>>,
 >;
 type MphfUuid256 = epserde::prelude::MemCase<
-    epserde::prelude::DeserType<'static, DefaultPtrHash<GxPtrHash64, [u8; 32]>>,
+    epserde::prelude::DeserType<'static, DefaultPtrHash<PkPtrHash, [u8; 32]>>,
 >;
 type MphfIp = epserde::prelude::MemCase<
-    epserde::prelude::DeserType<'static, DefaultPtrHash<GxPtrHash64, [u8; 16]>>,
+    epserde::prelude::DeserType<'static, DefaultPtrHash<PkPtrHash, [u8; 16]>>,
 >;
 
 enum PkHashMphf {
@@ -318,41 +228,41 @@ impl PkHashShard {
         }
         let mphf = match key_type {
             KeyType::Int64 => {
-                let mphf: MphfInt = DefaultPtrHash::<GxPtrHash64, u64>::load_mmap(
+                let mphf: MphfInt = DefaultPtrHash::<PkPtrHash, u64>::load_mmap(
                     hash_path,
-                    EpFlags::RANDOM_ACCESS | EpFlags::TRANSPARENT_HUGE_PAGES,
+                    EpFlags::WILLNEED,
                 )
                 .map_err(|e| anyhow!("load pk hash {}: {e}", hash_path.display()))?;
                 PkHashMphf::Int(mphf)
             }
             KeyType::VarBytes => {
-                let mphf: MphfBytes = DefaultPtrHash::<GxPtrHash64, Vec<u8>>::load_mmap(
+                let mphf: MphfBytes = DefaultPtrHash::<PkPtrHash, Vec<u8>>::load_mmap(
                     hash_path,
-                    EpFlags::RANDOM_ACCESS | EpFlags::TRANSPARENT_HUGE_PAGES,
+                    EpFlags::WILLNEED,
                 )
                 .map_err(|e| anyhow!("load pk hash {}: {e}", hash_path.display()))?;
                 PkHashMphf::Bytes(mphf)
             }
             KeyType::Uuid => {
-                let mphf: MphfUuid = DefaultPtrHash::<GxPtrHash64, [u8; 16]>::load_mmap(
+                let mphf: MphfUuid = DefaultPtrHash::<PkPtrHash, [u8; 16]>::load_mmap(
                     hash_path,
-                    EpFlags::RANDOM_ACCESS | EpFlags::TRANSPARENT_HUGE_PAGES,
+                    EpFlags::WILLNEED,
                 )
                 .map_err(|e| anyhow!("load pk hash {}: {e}", hash_path.display()))?;
                 PkHashMphf::Uuid(mphf)
             }
             KeyType::Uuid256 => {
-                let mphf: MphfUuid256 = DefaultPtrHash::<GxPtrHash64, [u8; 32]>::load_mmap(
+                let mphf: MphfUuid256 = DefaultPtrHash::<PkPtrHash, [u8; 32]>::load_mmap(
                     hash_path,
-                    EpFlags::RANDOM_ACCESS | EpFlags::TRANSPARENT_HUGE_PAGES,
+                    EpFlags::WILLNEED,
                 )
                 .map_err(|e| anyhow!("load pk hash {}: {e}", hash_path.display()))?;
                 PkHashMphf::Uuid256(mphf)
             }
             KeyType::Ip => {
-                let mphf: MphfIp = DefaultPtrHash::<GxPtrHash64, [u8; 16]>::load_mmap(
+                let mphf: MphfIp = DefaultPtrHash::<PkPtrHash, [u8; 16]>::load_mmap(
                     hash_path,
-                    EpFlags::RANDOM_ACCESS | EpFlags::TRANSPARENT_HUGE_PAGES,
+                    EpFlags::WILLNEED,
                 )
                 .map_err(|e| anyhow!("load pk hash {}: {e}", hash_path.display()))?;
                 PkHashMphf::Ip(mphf)

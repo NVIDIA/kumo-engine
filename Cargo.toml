@@ -7,6 +7,7 @@ members = [
     "diskgraph-fs",
     "diskgraph-rowpack",
     "diskgraph-infer",
+    "diskgraph-ptrhash",
 ]
 resolver = "2"
 
@@ -39,5 +40,5 @@ parking_lot = "0.12"
 chrono = { version = "0.4", features = ["serde"] }
 serde_with = "3.4"
 futures = "0.3"
-ptr_hash = { version = "1.0.0", features = ["epserde"] }
+ptr_hash = { package = "diskgraph-ptrhash", path = "diskgraph-ptrhash", features = ["epserde"] }
 epserde = { version = "0.8", features = ["std", "derive"] }

@@ -10,14 +10,30 @@ use serde_json;
 use serde::Serialize;
 use std::fs::{self, File};
 use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
+#[cfg(target_os = "linux")]
+use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{
+    atomic::{AtomicU64, AtomicUsize, Ordering},
+    Arc, Condvar, Mutex,
+};
 use std::cell::RefCell;
 use thiserror::Error;
 
 const MAX_NODE_DATA_LEN: usize = 64 * 1024 * 1024;
 const OFFSET_OVERHEAD_BYTES: u64 = 128;
 const MAX_VARINT_COUNT: usize = 0x3FFF_FFFF;
+const INDEX_PROGRESS_ROW_BATCH: u64 = 1_000_000;
+
+#[cfg(target_os = "linux")]
+fn advise_willneed(file: &File) {
+    unsafe {
+        libc::posix_fadvise(file.as_raw_fd(), 0, 0, libc::POSIX_FADV_WILLNEED);
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn advise_willneed(_file: &File) {}
 
 fn count_len(count: usize) -> u64 {
     if count <= 63 {
@@ -172,11 +188,20 @@ pub struct MemoryBudget {
     total: u64,
     available: Mutex<u64>,
     cvar: Condvar,
+    in_use: AtomicU64,
+    waiters: AtomicUsize,
 }
 
 pub struct MemoryBudgetGuard {
     budget: Arc<MemoryBudget>,
     bytes: u64,
+}
+
+#[derive(Clone, Copy)]
+pub struct MemoryBudgetSnapshot {
+    pub in_use: u64,
+    pub total: u64,
+    pub waiters: usize,
 }
 
 impl MemoryBudget {
@@ -185,6 +210,8 @@ impl MemoryBudget {
             total,
             available: Mutex::new(total),
             cvar: Condvar::new(),
+            in_use: AtomicU64::new(0),
+            waiters: AtomicUsize::new(0),
         }
     }
 
@@ -202,10 +229,19 @@ impl MemoryBudget {
             .into());
         }
         let mut available = self.available.lock().unwrap();
+        let mut waited = false;
         while *available < bytes {
+            if !waited {
+                self.waiters.fetch_add(1, Ordering::Relaxed);
+                waited = true;
+            }
             available = self.cvar.wait(available).unwrap();
         }
+        if waited {
+            self.waiters.fetch_sub(1, Ordering::Relaxed);
+        }
         *available = available.saturating_sub(bytes);
+        self.in_use.fetch_add(bytes, Ordering::Relaxed);
         Ok(MemoryBudgetGuard {
             budget: Arc::clone(self),
             bytes,
@@ -213,9 +249,20 @@ impl MemoryBudget {
     }
 
     fn release(&self, bytes: u64) {
+        if bytes > 0 {
+            self.in_use.fetch_sub(bytes, Ordering::Relaxed);
+        }
         let mut available = self.available.lock().unwrap();
         *available = available.saturating_add(bytes).min(self.total);
         self.cvar.notify_all();
+    }
+
+    pub fn snapshot(&self) -> MemoryBudgetSnapshot {
+        MemoryBudgetSnapshot {
+            in_use: self.in_use.load(Ordering::Relaxed),
+            total: self.total,
+            waiters: self.waiters.load(Ordering::Relaxed),
+        }
     }
 }
 
@@ -408,7 +455,7 @@ impl ShardBuilder {
             nodes_seen += 1;
             build_stats.nodes_ingested += 1;
             if let Some(progress) = progress {
-                if nodes_seen - last_progress_at >= 100_000 {
+                if nodes_seen - last_progress_at >= INDEX_PROGRESS_ROW_BATCH {
                     progress.report(BuildProgress {
                         stage: BuildStage::BuildIndex,
                         current: nodes_seen,
@@ -708,7 +755,7 @@ struct OffsetChunkWriter {
 impl OffsetChunkWriter {
     fn try_new(path: &Path, delta_bytes: u8, node_data_len_bytes: u8) -> Result<Self> {
         // Use a larger buffer to reduce flushes on many small writes.
-        let mut writer = BufWriter::with_capacity(1024 * 1024, File::create(path)?);
+        let mut writer = BufWriter::with_capacity(32 * 1024 * 1024, File::create(path)?);
         let header_len =
             bincode::serialized_size(&OffsetFileHeader::new(0, 0)).unwrap_or(32) as usize;
         writer.write_all(&vec![0u8; header_len])?;
@@ -772,7 +819,7 @@ impl EdgeWriter {
         node_data_len_bytes: u8,
     ) -> Result<Self> {
         // Larger buffer to reduce syscalls while writing large edge blobs.
-        let writer = BufWriter::with_capacity(1024 * 1024, File::create(path)?);
+        let writer = BufWriter::with_capacity(32 * 1024 * 1024, File::create(path)?);
         Ok(Self {
             writer,
             bytes_written: 0,
@@ -1119,6 +1166,7 @@ fn read_edge_parts(
     let mut spec: Option<(u8, u8, u8)> = None;
     for path in paths {
         let file = std::fs::File::open(path)?;
+        advise_willneed(&file);
         let file_len = file.metadata()?.len();
         if file_len < 3 {
             return Err(IndexBuildError::NotImplemented("binary edge file too small").into());
@@ -1370,6 +1418,7 @@ impl MultiBinaryNodeDataStream {
                 }
                 let path = &self.files[self.current_idx];
                 let file = std::fs::File::open(path)?;
+                advise_willneed(&file);
                 self.reader = Some(FrameDecoder::new(file));
             }
             let reader = self
@@ -1380,8 +1429,13 @@ impl MultiBinaryNodeDataStream {
                 Ok(Some(len)) => {
                     out.clear();
                     if len > 0 {
-                        out.resize(len as usize, 0u8);
+                        out.reserve(len as usize);
+                        // SAFETY: read_exact fills the full buffer; clear on error avoids exposing uninit bytes.
+                        unsafe {
+                            out.set_len(len as usize);
+                        }
                         if let Err(_) = reader.read_exact(out.as_mut_slice()) {
+                            out.clear();
                             return Err(IndexBuildError::NotImplemented(
                                 "node data row truncated",
                             )
