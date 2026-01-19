@@ -413,12 +413,6 @@ impl EdgeBufferLease {
         Ok(())
     }
 
-    fn resize_len(&mut self, len: usize) -> Result<()> {
-        self.ensure_capacity(len)?;
-        self.buf.resize(len, EdgeRecord::zeroed());
-        Ok(())
-    }
-
     fn set_len_uninit(&mut self, len: usize) -> Result<()> {
         self.ensure_capacity(len)?;
         // SAFETY: used only by radix_sort_edge_records, which writes every slot by index
@@ -1212,16 +1206,6 @@ struct EdgeRecord {
     sort_key: u64,
 }
 
-impl EdgeRecord {
-    fn zeroed() -> Self {
-        Self {
-            src_id: 0,
-            dst_id: 0,
-            sort_key: 0,
-        }
-    }
-}
-
 struct MemoryEdgeSubStream {
     buffer: EdgeBufferLease,
     index: usize,
@@ -1745,7 +1729,7 @@ mod tests {
         let pool = Arc::new(EdgeBufferPool::new(Some(Arc::clone(&budget))));
         {
             let mut lease = pool.acquire(128).unwrap();
-            lease.resize_len(128).unwrap();
+            lease.set_len_uninit(128).unwrap();
         }
         let snap_after = budget.snapshot();
         assert!(snap_after.in_use > 0);
