@@ -24,6 +24,12 @@ Or use the wrapper script:
 diskgraph-datagenerator/scripts/generate_dataset.sh diskgraph-datagenerator/configs/small_100m.json
 ```
 
+Cloud example (auto-detects AWS/GCP/Azure metadata, writes to `kumo-unit-test` by default):
+
+```bash
+diskgraph-datagenerator/scripts/cloud_generate_dataset.sh diskgraph-datagenerator/configs/small_100m.json
+```
+
 ## JSON config overview
 
 - `total_rows`: total rows across all tables.

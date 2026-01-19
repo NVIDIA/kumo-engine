@@ -72,6 +72,12 @@ Use the JSON-driven datagenerator to write Parquet shards under `/mnt/localssd/d
 ./diskgraph-ingest/scripts/ingest_local.sh /mnt/localssd/datasets/small_100m
 ```
 
+Cloud example (auto-detects AWS/GCP/Azure metadata, writes to `kumo-unit-test` by default):
+
+```bash
+./diskgraph-datagenerator/scripts/cloud_generate_dataset.sh diskgraph-datagenerator/configs/small_100m.json
+```
+
 ## Download ingested graph data from a job
 
 Use this when you have a training or bp job ID and want the raw parquet tables for ingest.
