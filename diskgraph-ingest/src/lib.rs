@@ -5,8 +5,8 @@ pub mod source_metadata;
 pub mod progress;
 
 use crate::mapping::{
-    fingerprint_seed_for, write_pk_data_entry, write_pk_data_header, GxPtrHash64, Key, KeyType,
-    PkHashShard, PkHashStore, PkGxHash,
+    fingerprint_seed_for, write_pk_data_entry, write_pk_data_header, Key, KeyType, PkGxHash,
+    PkHashShard, PkHashStore, PkPtrHash, PkPtrHashOutput,
 };
 use crate::progress::format_duration;
 use crate::source_metadata::{
@@ -80,7 +80,7 @@ const MAX_VAR_KEY_LEN: usize = u16::MAX as usize;
 const GXHASH_SHARD_SEED: u64 = 0x6a09e667f3bcc909;
 
 thread_local! {
-    static PTRHASH_SCRATCH: std::cell::RefCell<PtrHashScratch<u64>> =
+    static PTRHASH_SCRATCH: std::cell::RefCell<PtrHashScratch<PkPtrHashOutput>> =
         std::cell::RefCell::new(PtrHashScratch::new());
 }
 
@@ -523,6 +523,10 @@ pub fn ingest_with_stats(
         ctx.build_node_contexts()?;
     }
     let context_wall = context_start.elapsed();
+    eprintln!(
+        "context stage complete elapsed={}",
+        format_duration(context_wall.as_millis() as u64)
+    );
     let encode_start = std::time::Instant::now();
     if let Some(profile_dir) = &profile_dir {
         profile_phase(profile_dir, "encode", || ctx.build_temp_shards())?;
@@ -530,6 +534,10 @@ pub fn ingest_with_stats(
         ctx.build_temp_shards()?;
     }
     let encode_wall = encode_start.elapsed();
+    eprintln!(
+        "encode stage complete elapsed={}",
+        format_duration(encode_wall.as_millis() as u64)
+    );
     let pk_map_start = std::time::Instant::now();
     if let Some(profile_dir) = &profile_dir {
         profile_phase(profile_dir, "pk_map", || ctx.build_sharded_pk_maps())?;
@@ -549,6 +557,10 @@ pub fn ingest_with_stats(
         ctx.build_edges_mapped(&edge_ctx)?;
     }
     let edges_map_wall = edges_map_start.elapsed();
+    eprintln!(
+        "edges_map stage complete elapsed={}",
+        format_duration(edges_map_wall.as_millis() as u64)
+    );
     drop(edge_ctx);
         let index_start = std::time::Instant::now();
     let index_metadata = ctx.build_index_metadata()?;
@@ -558,6 +570,10 @@ pub fn ingest_with_stats(
         ctx.build_index(index_metadata.clone())?;
     }
     let index_wall = index_start.elapsed();
+    eprintln!(
+        "index stage complete elapsed={}",
+        format_duration(index_wall.as_millis() as u64)
+    );
     let finalize_start = std::time::Instant::now();
     let index_metadata = ctx.finalize_metadata(index_metadata)?;
     if let OutputTarget::Local { root } = &*ctx.target {
@@ -572,6 +588,10 @@ pub fn ingest_with_stats(
     }
     ctx.cleanup_temp()?;
     let finalize_wall = finalize_start.elapsed();
+    eprintln!(
+        "finalize stage complete elapsed={}",
+        format_duration(finalize_wall.as_millis() as u64)
+    );
     let wall_time = wall_start.elapsed();
     let bytes_read = sum_input_bytes(&ctx.source);
     let bytes_written = match &*ctx.target {
@@ -2566,7 +2586,7 @@ impl IngestContext {
                                     let mphf = {
                                         PTRHASH_SCRATCH.with(|scratch_ptr| {
                                             let mut scratch_ptr = scratch_ptr.borrow_mut();
-                                            DefaultPtrHash::<GxPtrHash64, u64>::try_new_from_source_with_scratch(
+                                            DefaultPtrHash::<PkPtrHash, u64>::try_new_from_source_with_scratch(
                                                 &seen,
                                                 params,
                                                 &mut *scratch_ptr,
@@ -2658,7 +2678,7 @@ impl IngestContext {
                                     let mphf = {
                                         PTRHASH_SCRATCH.with(|scratch_ptr| {
                                             let mut scratch_ptr = scratch_ptr.borrow_mut();
-                                            DefaultPtrHash::<GxPtrHash64, Vec<u8>>::try_new_from_source_with_scratch(
+                                            DefaultPtrHash::<PkPtrHash, Vec<u8>>::try_new_from_source_with_scratch(
                                                 &seen,
                                                 params,
                                                 &mut *scratch_ptr,
@@ -2745,7 +2765,7 @@ impl IngestContext {
                                     let mphf = {
                                         PTRHASH_SCRATCH.with(|scratch_ptr| {
                                             let mut scratch_ptr = scratch_ptr.borrow_mut();
-                                            DefaultPtrHash::<GxPtrHash64, [u8; 16]>::try_new_from_source_with_scratch(
+                                            DefaultPtrHash::<PkPtrHash, [u8; 16]>::try_new_from_source_with_scratch(
                                                 &seen,
                                                 params,
                                                 &mut *scratch_ptr,
@@ -2832,7 +2852,7 @@ impl IngestContext {
                                     let mphf = {
                                         PTRHASH_SCRATCH.with(|scratch_ptr| {
                                             let mut scratch_ptr = scratch_ptr.borrow_mut();
-                                            DefaultPtrHash::<GxPtrHash64, [u8; 32]>::try_new_from_source_with_scratch(
+                                            DefaultPtrHash::<PkPtrHash, [u8; 32]>::try_new_from_source_with_scratch(
                                                 &seen,
                                                 params,
                                                 &mut *scratch_ptr,
@@ -2919,7 +2939,7 @@ impl IngestContext {
                                     let mphf = {
                                         PTRHASH_SCRATCH.with(|scratch_ptr| {
                                             let mut scratch_ptr = scratch_ptr.borrow_mut();
-                                            DefaultPtrHash::<GxPtrHash64, [u8; 16]>::try_new_from_source_with_scratch(
+                                            DefaultPtrHash::<PkPtrHash, [u8; 16]>::try_new_from_source_with_scratch(
                                                 &seen,
                                                 params,
                                                 &mut *scratch_ptr,

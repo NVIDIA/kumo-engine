@@ -29,6 +29,7 @@ sucds = "0.8.0"
 fastrand = "2.0.1"
 serde = { version = "1.0.215", features = ["derive"] }
 mem_dbg = "0.3.0"
+gxhash = "3.5.0"
 
 cacheline-ef = "1.1.0"
 

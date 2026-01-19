@@ -2,7 +2,9 @@
 use mem_dbg::MemSize;
 
 use crate::KeyT;
+use gxhash::GxHasher;
 use std::fmt::Debug;
+use std::hash::{Hash as StdHash, Hasher as StdHasher};
 
 /// The `Hasher` trait returns a 64 or 128-bit `Hash`. From this, two `u64` values are extracted.
 ///
@@ -74,6 +76,15 @@ pub struct Xx64;
 #[cfg_attr(feature = "epserde", derive(epserde::prelude::Epserde))]
 #[derive(Clone)]
 pub struct Xx128;
+
+/// Fast 64-bit hash with gxhash.
+#[cfg_attr(feature = "epserde", derive(epserde::prelude::Epserde))]
+#[derive(Clone, MemSize)]
+pub struct GxHash64;
+/// 128-bit gxhash output.
+#[cfg_attr(feature = "epserde", derive(epserde::prelude::Epserde))]
+#[derive(Clone, MemSize)]
+pub struct GxHash128;
 
 /// Very fast weak 64bit hash with more quality than FxHash.
 #[cfg(feature = "hashers")]
@@ -264,6 +275,113 @@ impl Hasher<Vec<u8>> for Xx128 {
     #[inline(always)]
     fn hash(x: &Vec<u8>, seed: u64) -> u128 {
         xxhash_rust::xxh3::xxh3_128_with_seed(to_bytes(x.as_slice()), seed)
+    }
+}
+
+impl GxHash64 {
+    #[inline(always)]
+    fn hash_bytes(bytes: &[u8], seed: u64) -> u64 {
+        let mut hasher = GxHasher::with_seed(seed as i64);
+        hasher.write(bytes);
+        hasher.finish()
+    }
+}
+
+impl Hasher<u64> for GxHash64 {
+    type H = u64;
+    #[inline(always)]
+    fn hash(x: &u64, seed: u64) -> u64 {
+        let mut hasher = GxHasher::with_seed(seed as i64);
+        x.hash(&mut hasher);
+        hasher.finish()
+    }
+}
+
+impl Hasher<[u8]> for GxHash64 {
+    type H = u64;
+    #[inline(always)]
+    fn hash(x: &[u8], seed: u64) -> u64 {
+        Self::hash_bytes(x, seed)
+    }
+}
+
+impl Hasher<Vec<u8>> for GxHash64 {
+    type H = u64;
+    #[inline(always)]
+    fn hash(x: &Vec<u8>, seed: u64) -> u64 {
+        Self::hash_bytes(x.as_slice(), seed)
+    }
+}
+
+impl<const N: usize> Hasher<[u8; N]> for GxHash64 {
+    type H = u64;
+    #[inline(always)]
+    fn hash(x: &[u8; N], seed: u64) -> u64 {
+        Self::hash_bytes(x.as_slice(), seed)
+    }
+}
+
+impl Hasher<&[u8]> for GxHash64 {
+    type H = u64;
+    #[inline(always)]
+    fn hash(x: &&[u8], seed: u64) -> u64 {
+        Self::hash_bytes(*x, seed)
+    }
+}
+
+impl<const N: usize> Hasher<&[u8; N]> for GxHash64 {
+    type H = u64;
+    #[inline(always)]
+    fn hash(x: &&[u8; N], seed: u64) -> u64 {
+        Self::hash_bytes((*x).as_slice(), seed)
+    }
+}
+
+impl Hasher<u64> for GxHash128 {
+    type H = u128;
+    #[inline(always)]
+    fn hash(x: &u64, seed: u64) -> u128 {
+        gxhash::gxhash128(to_bytes(x), seed as i64)
+    }
+}
+
+impl Hasher<[u8]> for GxHash128 {
+    type H = u128;
+    #[inline(always)]
+    fn hash(x: &[u8], seed: u64) -> u128 {
+        gxhash::gxhash128(to_bytes(x), seed as i64)
+    }
+}
+
+impl Hasher<Vec<u8>> for GxHash128 {
+    type H = u128;
+    #[inline(always)]
+    fn hash(x: &Vec<u8>, seed: u64) -> u128 {
+        gxhash::gxhash128(to_bytes(x.as_slice()), seed as i64)
+    }
+}
+
+impl<const N: usize> Hasher<[u8; N]> for GxHash128 {
+    type H = u128;
+    #[inline(always)]
+    fn hash(x: &[u8; N], seed: u64) -> u128 {
+        gxhash::gxhash128(to_bytes(x), seed as i64)
+    }
+}
+
+impl Hasher<&[u8]> for GxHash128 {
+    type H = u128;
+    #[inline(always)]
+    fn hash(x: &&[u8], seed: u64) -> u128 {
+        gxhash::gxhash128(to_bytes(*x), seed as i64)
+    }
+}
+
+impl<const N: usize> Hasher<&[u8; N]> for GxHash128 {
+    type H = u128;
+    #[inline(always)]
+    fn hash(x: &&[u8; N], seed: u64) -> u128 {
+        gxhash::gxhash128(to_bytes(*x), seed as i64)
     }
 }
 
