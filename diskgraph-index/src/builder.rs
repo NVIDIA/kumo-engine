@@ -419,6 +419,16 @@ impl EdgeBufferLease {
         Ok(())
     }
 
+    fn set_len_uninit(&mut self, len: usize) -> Result<()> {
+        self.ensure_capacity(len)?;
+        // SAFETY: used only by radix_sort_edge_records, which writes every slot by index
+        // before any read; no element is observed uninitialized.
+        unsafe {
+            self.buf.set_len(len);
+        }
+        Ok(())
+    }
+
     fn clear(&mut self) {
         self.buf.clear();
     }
@@ -1516,7 +1526,7 @@ fn radix_sort_edge_records(
         return Ok(());
     }
     let mut tmp = pool.acquire(records.len())?;
-    tmp.resize_len(records.len())?;
+    tmp.set_len_uninit(records.len())?;
     let mut swapped = false;
     {
         let mut from: &mut [EdgeRecord] = records;
