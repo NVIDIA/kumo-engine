@@ -4,7 +4,7 @@ use super::*;
 use colored::Colorize;
 use log::{trace, warn};
 use rand::{rng, Rng};
-use rdst::RadixSort;
+use crate::radix::radix_sort_hashes;
 
 /// Prefetch the given cacheline into L1 cache.
 pub(crate) fn prefetch_index<T>(s: &[T], index: usize) {
@@ -60,7 +60,7 @@ pub fn generate_keys(n: usize) -> Vec<u64> {
         let start = log_duration("┌   gen keys", start);
         let mut keys2: Vec<_> = keys.iter().copied().collect();
         let start = log_duration("├      clone", start);
-        keys2.radix_sort_unstable();
+        radix_sort_hashes(&mut keys2, &mut Vec::new());
         let start = log_duration("├       sort", start);
         let distinct = keys2.windows(2).all(|w| w[0] < w[1]);
         log_duration("├ duplicates", start);

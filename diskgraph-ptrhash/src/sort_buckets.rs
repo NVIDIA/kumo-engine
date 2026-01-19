@@ -1,6 +1,6 @@
 use super::*;
 use crate::bucket_idx::BucketIdx;
-use rdst::RadixSort;
+use crate::radix::radix_sort_hashes;
 use std::time::Instant;
 
 impl<Key: KeyT, BF: BucketFn, F: Packed, Hx: Hasher<Key>> PtrHash<Key, BF, F, Hx, Vec<u8>> {
@@ -11,11 +11,13 @@ impl<Key: KeyT, BF: BucketFn, F: Packed, Hx: Hasher<Key>> PtrHash<Key, BF, F, Hx
     ///
     /// This returns None if duplicate hashes are found.
     #[must_use]
-    pub(super) fn sort_parts(
+    pub(super) fn sort_parts_with_scratch(
         &self,
         shard: usize,
-        mut hashes: Vec<Hx::H>,
-    ) -> Option<(Vec<Hx::H>, Vec<u32>)> {
+        hashes: &mut Vec<Hx::H>,
+        part_starts: &mut Vec<u32>,
+        hashes_tmp: &mut Vec<Hx::H>,
+    ) -> Option<()> {
         // For FastReduce methods, we can just sort by hash directly
         // instead of sorting by bucket id: For FR32L, first partition by those
         // <self.p1 and those >=self.p1, and then sort each group using the low
@@ -31,7 +33,7 @@ impl<Key: KeyT, BF: BucketFn, F: Packed, Hx: Hasher<Key>> PtrHash<Key, BF, F, Hx
         // TODO: Write robinhood sort that inserts in the right place directly.
         // A) Sort L1 sized ranges.
         // B) Splat the front of each range to the next part of the target interval.
-        hashes.radix_sort_unstable();
+        radix_sort_hashes(hashes, hashes_tmp);
         let start = log_duration("┌ radix sort", start);
 
         // 3. Check duplicates.
@@ -46,7 +48,7 @@ impl<Key: KeyT, BF: BucketFn, F: Packed, Hx: Hasher<Key>> PtrHash<Key, BF, F, Hx
             assert!(shard * self.parts_per_shard <= self.part(hashes[0]));
             assert!(self.part(*hashes.last().unwrap()) < (shard + 1) * self.parts_per_shard);
         }
-        let mut part_starts = vec![0u32; self.parts_per_shard + 1];
+        part_starts.resize(self.parts_per_shard + 1, 0);
         for part_in_shard in 1..=self.parts_per_shard {
             part_starts[part_in_shard] = hashes
                 .binary_search_by(|h| {
@@ -105,19 +107,29 @@ impl<Key: KeyT, BF: BucketFn, F: Packed, Hx: Hasher<Key>> PtrHash<Key, BF, F, Hx
 
         log_duration("├part starts", start);
 
-        Some((hashes, part_starts))
+        Some(())
     }
 
     // Sort the buckets in the given part and corresponding range of hashes.
-    pub(super) fn sort_buckets(&self, part: usize, hashes: &[Hx::H]) -> (Vec<u32>, Vec<BucketIdx>) {
+    pub(super) fn sort_buckets_into(
+        &self,
+        part: usize,
+        hashes: &[Hx::H],
+        bucket_starts: &mut Vec<u32>,
+        order: &mut Vec<BucketIdx>,
+        bucket_len_cnt: &mut Vec<usize>,
+    ) {
         // Where each bucket starts in hashes.
-        let mut bucket_starts = Vec::with_capacity(self.buckets + 1);
+        bucket_starts.clear();
+        bucket_starts.reserve(self.buckets + 1);
 
         // The order of buckets, from large to small.
-        let mut order: Vec<BucketIdx> = vec![BucketIdx::NONE; self.buckets];
+        order.clear();
+        order.resize(self.buckets, BucketIdx::NONE);
 
         // The number of buckets of each length.
-        let mut bucket_len_cnt = vec![0; 32];
+        bucket_len_cnt.clear();
+        bucket_len_cnt.resize(32, 0);
 
         let mut end = 0;
         bucket_starts.push(end as u32);
@@ -162,6 +174,6 @@ impl<Key: KeyT, BF: BucketFn, F: Packed, Hx: Hasher<Key>> PtrHash<Key, BF, F, Hx
             bucket_len_cnt[l] += 1;
         }
 
-        (bucket_starts, order)
+        // Results written to bucket_starts and order.
     }
 }

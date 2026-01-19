@@ -13,7 +13,7 @@ use std::fmt::Debug;
 ///
 /// Our method never needs the full hash value, and instead uses the two hashes
 /// in different places to extract sufficient entropy.
-pub trait Hash: Copy + Debug + Default + Send + Sync + Eq + rdst::RadixKey {
+pub trait Hash: Copy + Debug + Default + Send + Sync + Eq {
     /// Returns the low 64bits of the hash.
     fn low(&self) -> u64;
     /// Returns the high 64bits of the hash.

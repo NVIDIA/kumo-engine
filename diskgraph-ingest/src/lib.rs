@@ -35,6 +35,7 @@ use diskgraph_index::graph::{
     GraphBuildProgress, GraphBuildStage, GraphDataSource, GraphIndexBuilder, GraphProgressSink,
 };
 use lz4_flex::frame::{FrameDecoder, FrameEncoder};
+use ptr_hash::PtrHashScratch;
 use fasteval::{eval_compiled_ref, Compiler, Evaler, Parser, Slab};
 use half::f16;
 use memmap2::Mmap;
@@ -77,6 +78,11 @@ const MAX_NODE_DATA_LEN: usize = 64 * 1024 * 1024;
 const PROGRESS_ROW_BATCH: u64 = 1_000_000;
 const MAX_VAR_KEY_LEN: usize = u16::MAX as usize;
 const GXHASH_SHARD_SEED: u64 = 0x6a09e667f3bcc909;
+
+thread_local! {
+    static PTRHASH_SCRATCH: std::cell::RefCell<PtrHashScratch<u64>> =
+        std::cell::RefCell::new(PtrHashScratch::new());
+}
 
 #[derive(Clone, Copy, Debug)]
 enum KeyParseError {
@@ -2598,10 +2604,14 @@ impl IngestContext {
                                 let mphf_start = std::time::Instant::now();
                                 let mphf = {
                                     let _mphf_guard = phase_counters.guard(PkMapPhaseKind::Mphf);
-                                    DefaultPtrHash::<GxPtrHash64, u64>::try_new_from_source(
-                                        &seen,
-                                        params,
-                                    )
+                                    PTRHASH_SCRATCH.with(|scratch| {
+                                        let mut scratch = scratch.borrow_mut();
+                                        DefaultPtrHash::<GxPtrHash64, u64>::try_new_from_source_with_scratch(
+                                            &seen,
+                                            params,
+                                            &mut *scratch,
+                                        )
+                                    })
                                     .ok_or_else(|| anyhow!("ptrhash construction failed"))?
                                 };
                                 let mphf_ms = mphf_start.elapsed().as_millis() as u64;
@@ -2688,10 +2698,14 @@ impl IngestContext {
                                     {
                                         let _mphf_guard =
                                             phase_counters.guard(PkMapPhaseKind::Mphf);
-                                        DefaultPtrHash::<GxPtrHash64, Vec<u8>>::try_new_from_source(
-                                            &seen,
-                                            params,
-                                        )
+                                        PTRHASH_SCRATCH.with(|scratch| {
+                                            let mut scratch = scratch.borrow_mut();
+                                            DefaultPtrHash::<GxPtrHash64, Vec<u8>>::try_new_from_source_with_scratch(
+                                                &seen,
+                                                params,
+                                                &mut *scratch,
+                                            )
+                                        })
                                         .ok_or_else(|| anyhow!("ptrhash construction failed"))?
                                     };
                                 let mphf_ms = mphf_start.elapsed().as_millis() as u64;
@@ -2771,10 +2785,14 @@ impl IngestContext {
                                 let mphf_start = std::time::Instant::now();
                                 let mphf = {
                                     let _mphf_guard = phase_counters.guard(PkMapPhaseKind::Mphf);
-                                    DefaultPtrHash::<GxPtrHash64, [u8; 16]>::try_new_from_source(
-                                        &seen,
-                                        params,
-                                    )
+                                    PTRHASH_SCRATCH.with(|scratch| {
+                                        let mut scratch = scratch.borrow_mut();
+                                        DefaultPtrHash::<GxPtrHash64, [u8; 16]>::try_new_from_source_with_scratch(
+                                            &seen,
+                                            params,
+                                            &mut *scratch,
+                                        )
+                                    })
                                     .ok_or_else(|| anyhow!("ptrhash construction failed"))?
                                 };
                                 let mphf_ms = mphf_start.elapsed().as_millis() as u64;
@@ -2855,10 +2873,14 @@ impl IngestContext {
                                 let mphf_start = std::time::Instant::now();
                                 let mphf = {
                                     let _mphf_guard = phase_counters.guard(PkMapPhaseKind::Mphf);
-                                    DefaultPtrHash::<GxPtrHash64, [u8; 32]>::try_new_from_source(
-                                        &seen,
-                                        params,
-                                    )
+                                    PTRHASH_SCRATCH.with(|scratch| {
+                                        let mut scratch = scratch.borrow_mut();
+                                        DefaultPtrHash::<GxPtrHash64, [u8; 32]>::try_new_from_source_with_scratch(
+                                            &seen,
+                                            params,
+                                            &mut *scratch,
+                                        )
+                                    })
                                     .ok_or_else(|| anyhow!("ptrhash construction failed"))?
                                 };
                                 let mphf_ms = mphf_start.elapsed().as_millis() as u64;
@@ -2938,10 +2960,14 @@ impl IngestContext {
                                 let mphf_start = std::time::Instant::now();
                                 let mphf = {
                                     let _mphf_guard = phase_counters.guard(PkMapPhaseKind::Mphf);
-                                    DefaultPtrHash::<GxPtrHash64, [u8; 16]>::try_new_from_source(
-                                        &seen,
-                                        params,
-                                    )
+                                    PTRHASH_SCRATCH.with(|scratch| {
+                                        let mut scratch = scratch.borrow_mut();
+                                        DefaultPtrHash::<GxPtrHash64, [u8; 16]>::try_new_from_source_with_scratch(
+                                            &seen,
+                                            params,
+                                            &mut *scratch,
+                                        )
+                                    })
                                     .ok_or_else(|| anyhow!("ptrhash construction failed"))?
                                 };
                                 let mphf_ms = mphf_start.elapsed().as_millis() as u64;

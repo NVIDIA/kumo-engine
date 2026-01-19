@@ -78,11 +78,14 @@ pub mod hash;
 pub mod pack;
 /// Some internal logging and testing utilities.
 pub mod util;
+pub use scratch::PtrHashScratch;
 
 pub mod bucket_fn;
 mod bucket_idx;
 mod build;
 mod reduce;
+mod radix;
+mod scratch;
 mod sort_buckets;
 #[doc(hidden)]
 pub mod stats;
@@ -358,8 +361,19 @@ impl<Key: KeyT, BF: BucketFn, F: MutPacked, Hx: Hasher<Key>> PtrHash<Key, BF, F,
     /// Version that returns build statistics.
     #[doc(hidden)]
     pub fn new_with_stats(keys: &[Key], params: PtrHashParams<BF>) -> (Self, BucketStats) {
+        let mut scratch = PtrHashScratch::new();
+        Self::new_with_stats_with_scratch(keys, params, &mut scratch)
+    }
+
+    pub fn new_with_stats_with_scratch(
+        keys: &[Key],
+        params: PtrHashParams<BF>,
+        scratch: &mut PtrHashScratch<Hx::H>,
+    ) -> (Self, BucketStats) {
         let mut ptr_hash = Self::init(keys.len(), params);
-        let stats = ptr_hash.compute_pilots(keys.iter()).unwrap();
+        let stats = ptr_hash
+            .compute_pilots_with_scratch(keys.iter(), scratch)
+            .unwrap();
         (ptr_hash, stats)
     }
 
@@ -367,15 +381,36 @@ impl<Key: KeyT, BF: BucketFn, F: MutPacked, Hx: Hasher<Key>> PtrHash<Key, BF, F,
     /// This can happen when `lambda` is too larger (e.g. for `default_compact`
     /// parameters) and the eviction chains become too long.
     pub fn try_new(keys: &[Key], params: PtrHashParams<BF>) -> Option<Self> {
+        let mut scratch = PtrHashScratch::new();
+        Self::try_new_with_scratch(keys, params, &mut scratch)
+    }
+
+    pub fn try_new_with_scratch(
+        keys: &[Key],
+        params: PtrHashParams<BF>,
+        scratch: &mut PtrHashScratch<Hx::H>,
+    ) -> Option<Self> {
         let mut ptr_hash = Self::init(keys.len(), params);
-        ptr_hash.compute_pilots(keys.iter())?;
+        ptr_hash.compute_pilots_with_scratch(keys.iter(), scratch)?;
         Some(ptr_hash)
     }
 
     /// Build from a restartable key source.
-    pub fn try_new_from_source<S: KeySource<Key>>(source: &S, params: PtrHashParams<BF>) -> Option<Self> {
+    pub fn try_new_from_source<S: KeySource<Key>>(
+        source: &S,
+        params: PtrHashParams<BF>,
+    ) -> Option<Self> {
+        let mut scratch = PtrHashScratch::new();
+        Self::try_new_from_source_with_scratch(source, params, &mut scratch)
+    }
+
+    pub fn try_new_from_source_with_scratch<S: KeySource<Key>>(
+        source: &S,
+        params: PtrHashParams<BF>,
+        scratch: &mut PtrHashScratch<Hx::H>,
+    ) -> Option<Self> {
         let mut ptr_hash = Self::init(source.len(), params);
-        ptr_hash.compute_pilots(source.iter())?;
+        ptr_hash.compute_pilots_with_scratch(source.iter(), scratch)?;
         Some(ptr_hash)
     }
 
@@ -390,7 +425,8 @@ impl<Key: KeyT, BF: BucketFn, F: MutPacked, Hx: Hasher<Key>> PtrHash<Key, BF, F,
         params: PtrHashParams<BF>,
     ) -> Self {
         let mut ptr_hash = Self::init(n, params);
-        ptr_hash.compute_pilots(keys);
+        let mut scratch = PtrHashScratch::new();
+        ptr_hash.compute_pilots_with_scratch(keys, &mut scratch);
         ptr_hash
     }
 
@@ -458,10 +494,19 @@ impl<Key: KeyT, BF: BucketFn, F: MutPacked, Hx: Hasher<Key>> PtrHash<Key, BF, F,
         &mut self,
         keys: impl Iterator<Item = impl Borrow<Key>> + Clone + 'a,
     ) -> Option<BucketStats> {
+        let mut scratch = PtrHashScratch::new();
+        self.compute_pilots_with_scratch(keys, &mut scratch)
+    }
+
+    fn compute_pilots_with_scratch<'a>(
+        &mut self,
+        keys: impl Iterator<Item = impl Borrow<Key>> + Clone + 'a,
+        scratch: &mut PtrHashScratch<Hx::H>,
+    ) -> Option<BucketStats> {
         let overall_start = std::time::Instant::now();
         // Initialize arrays;
-        let mut taken: Vec<BitVec> = vec![];
-        let mut pilots: Vec<u8> = vec![];
+        scratch.taken.clear();
+        scratch.pilots.clear();
 
         let mut tries = 0;
         const MAX_TRIES: usize = 10;
@@ -483,24 +528,35 @@ impl<Key: KeyT, BF: BucketFn, F: MutPacked, Hx: Hasher<Key>> PtrHash<Key, BF, F,
             self.seed = rng.random();
 
             // Reset output-memory.
-            pilots.clear();
-            pilots.resize(self.buckets_total, 0);
+            scratch.pilots.clear();
+            scratch.pilots.resize(self.buckets_total, 0);
 
             // TODO: Compress taken on the fly, instead of pre-allocating the entire thing.
-            for taken in taken.iter_mut() {
+            for taken in scratch.taken.iter_mut() {
                 taken.clear();
                 taken.resize(self.slots, false);
             }
-            taken.resize_with(self.parts, || bitvec![0; self.slots]);
+            scratch
+                .taken
+                .resize_with(self.parts, || bitvec![0; self.slots]);
 
             let mut stats = BucketStats::default();
             let collect_start = std::time::Instant::now();
-            let hashes: Vec<_> = keys.clone().map(|key| self.hash_key(key.borrow())).collect();
+            scratch.hashes.clear();
+            scratch.hashes.reserve(self.n);
+            scratch
+                .hashes
+                .extend(keys.clone().map(|key| self.hash_key(key.borrow())));
             log_duration("collect hash", collect_start);
 
             // Determine the buckets.
             let start = std::time::Instant::now();
-            let Some((hashes, part_starts)) = self.sort_parts(0, hashes) else {
+            let Some(()) = self.sort_parts_with_scratch(
+                0,
+                &mut scratch.hashes,
+                &mut scratch.part_starts,
+                &mut scratch.hashes_tmp,
+            ) else {
                 trace!("Found duplicate hashes");
                 // Found duplicate hashes.
                 continue 's;
@@ -508,9 +564,15 @@ impl<Key: KeyT, BF: BucketFn, F: MutPacked, Hx: Hasher<Key>> PtrHash<Key, BF, F,
             let start = log_duration("sort buckets", start);
 
             // Compute pilots.
-            if let Some(shard_stats) =
-                self.build_shard(0, &hashes, &part_starts, &mut pilots, &mut taken)
-            {
+            let mut hashes = Vec::new();
+            let mut part_starts = Vec::new();
+            std::mem::swap(&mut scratch.hashes, &mut hashes);
+            std::mem::swap(&mut scratch.part_starts, &mut part_starts);
+            let shard_stats =
+                self.build_shard(0, &hashes, &part_starts, scratch);
+            std::mem::swap(&mut scratch.hashes, &mut hashes);
+            std::mem::swap(&mut scratch.part_starts, &mut part_starts);
+            if let Some(shard_stats) = shard_stats {
                 stats.merge(shard_stats);
                 log_duration("find pilots", start);
             } else {
@@ -519,7 +581,7 @@ impl<Key: KeyT, BF: BucketFn, F: MutPacked, Hx: Hasher<Key>> PtrHash<Key, BF, F,
             }
 
             let start = std::time::Instant::now();
-            let remap = self.remap_free_slots(&taken);
+            let remap = self.remap_free_slots_with_scratch(&scratch.taken, &mut scratch.free_slots);
             log_duration("remap free", start);
             if remap.is_err() {
                 trace!("Failed to construct CachelineEF");
@@ -530,7 +592,7 @@ impl<Key: KeyT, BF: BucketFn, F: MutPacked, Hx: Hasher<Key>> PtrHash<Key, BF, F,
         };
 
         // Pack the data.
-        self.pilots = pilots;
+        self.pilots.clone_from(&scratch.pilots);
 
         let (p, r) = self.bits_per_element();
         trace!("bits/element: {}", p + r);
@@ -538,7 +600,11 @@ impl<Key: KeyT, BF: BucketFn, F: MutPacked, Hx: Hasher<Key>> PtrHash<Key, BF, F,
         Some(stats)
     }
 
-    fn remap_free_slots(&mut self, taken: &Vec<BitVec>) -> Result<(), ()> {
+    fn remap_free_slots_with_scratch(
+        &mut self,
+        taken: &Vec<BitVec>,
+        free_slots: &mut Vec<u64>,
+    ) -> Result<(), ()> {
         assert_eq!(
             taken.iter().map(|t| t.count_zeros()).sum::<usize>(),
             self.slots_total - self.n,
@@ -552,7 +618,8 @@ impl<Key: KeyT, BF: BucketFn, F: MutPacked, Hx: Hasher<Key>> PtrHash<Key, BF, F,
         }
 
         // Compute the free spots.
-        let mut v = Vec::with_capacity(self.slots_total - self.n);
+        free_slots.clear();
+        free_slots.reserve(self.slots_total - self.n);
         let get = |t: &Vec<BitVec>, idx: usize| t[idx / self.slots][idx % self.slots];
         for i in taken
             .iter()
@@ -563,12 +630,12 @@ impl<Key: KeyT, BF: BucketFn, F: MutPacked, Hx: Hasher<Key>> PtrHash<Key, BF, F,
             })
             .take_while(|&i| i < self.n)
         {
-            while !get(&taken, self.n + v.len()) {
-                v.push(i as u64);
+            while !get(&taken, self.n + free_slots.len()) {
+                free_slots.push(i as u64);
             }
-            v.push(i as u64);
+            free_slots.push(i as u64);
         }
-        self.remap = MutPacked::try_new(v).ok_or(())?;
+        self.remap = MutPacked::try_new(free_slots.clone()).ok_or(())?;
         Ok(())
     }
 }

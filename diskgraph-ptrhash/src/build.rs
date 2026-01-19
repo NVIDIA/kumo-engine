@@ -1,8 +1,7 @@
 use super::*;
-use crate::{bucket_idx::BucketIdx, stats::BucketStats};
-use bitvec::{slice::BitSlice, vec::BitVec};
+use crate::{bucket_idx::BucketIdx, scratch::PtrHashScratch, stats::BucketStats};
+use bitvec::slice::BitSlice;
 use std::{
-    collections::BinaryHeap,
     iter::zip,
     sync::{
         atomic::{AtomicUsize, Ordering},
@@ -16,12 +15,19 @@ impl<Key: KeyT, BF: BucketFn, F: Packed, Hx: Hasher<Key>> PtrHash<Key, BF, F, Hx
         shard: usize,
         hashes: &[Hx::H],
         part_starts: &[u32],
-        pilots: &mut [u8],
-        taken: &mut [BitVec],
+        scratch: &mut PtrHashScratch<Hx::H>,
     ) -> Option<BucketStats> {
-        let pilots_per_part = pilots.chunks_exact_mut(self.buckets);
+        let pilots = scratch.pilots.as_mut_slice();
+        let taken = scratch.taken.as_mut_slice();
+        let bucket_starts = &mut scratch.bucket_starts;
+        let bucket_order = &mut scratch.bucket_order;
+        let bucket_len_cnt = &mut scratch.bucket_len_cnt;
+        let slots = &mut scratch.slots;
+        let slots_tmp = &mut scratch.slots_tmp;
+        let stack = &mut scratch.stack;
 
-        let iter = pilots_per_part.zip(taken).enumerate();
+        let pilots_per_part = pilots.chunks_exact_mut(self.buckets);
+        let iter = pilots_per_part.zip(taken.iter_mut()).enumerate();
 
         // let total_evictions = AtomicUsize::new(0);
         let parts_done = AtomicUsize::new(shard * self.parts_per_shard);
@@ -31,7 +37,22 @@ impl<Key: KeyT, BF: BucketFn, F: Packed, Hx: Hasher<Key>> PtrHash<Key, BF, F, Hx
             let part = shard * self.parts_per_shard + part_in_shard;
             let hashes = &hashes
                 [part_starts[part_in_shard] as usize..part_starts[part_in_shard + 1] as usize];
-            if self.build_part(part, hashes, pilots, taken, &stats).is_none() {
+            if self
+                .build_part(
+                    part,
+                    hashes,
+                    pilots,
+                    taken,
+                    &stats,
+                    bucket_starts,
+                    bucket_order,
+                    bucket_len_cnt,
+                    slots,
+                    slots_tmp,
+                    stack,
+                )
+                .is_none()
+            {
                 return None;
             }
             let _parts_done = parts_done.fetch_add(1, Ordering::Relaxed);
@@ -84,12 +105,21 @@ impl<Key: KeyT, BF: BucketFn, F: Packed, Hx: Hasher<Key>> PtrHash<Key, BF, F, Hx
         pilots: &mut [u8],
         taken: &mut BitSlice,
         _stats: &Mutex<BucketStats>,
+        bucket_starts: &mut Vec<u32>,
+        bucket_order: &mut Vec<BucketIdx>,
+        bucket_len_cnt: &mut Vec<usize>,
+        slots: &mut Vec<BucketIdx>,
+        slots_tmp: &mut Vec<usize>,
+        stack: &mut std::collections::BinaryHeap<(usize, BucketIdx)>,
     ) -> Option<usize> {
-        let (starts, bucket_order) = self.sort_buckets(part, hashes);
+        self.sort_buckets_into(part, hashes, bucket_starts, bucket_order, bucket_len_cnt);
+        let starts = bucket_starts.as_slice();
+        let bucket_order = bucket_order.as_slice();
 
         let kmax = 256;
 
-        let mut slots = vec![BucketIdx::NONE; self.slots];
+        slots.resize(self.slots, BucketIdx::NONE);
+        slots.fill(BucketIdx::NONE);
         let bucket_len = |b: BucketIdx| (starts[b + 1] - starts[b]) as usize;
 
         let max_bucket_len = bucket_len(bucket_order[0]);
@@ -98,7 +128,7 @@ impl<Key: KeyT, BF: BucketFn, F: Packed, Hx: Hasher<Key>> PtrHash<Key, BF, F, Hx
         // TODO: Use bucket queue instead?
         // NOTE: I tried 'rattle-kicking' where we prefer evicting buckets with a small pilot,
         //       but in practice this ends up slower, even though it saves ~15% of evictions.
-        let mut stack = BinaryHeap::new();
+        stack.clear();
 
         let slots_for_bucket = |b: BucketIdx, p: Pilot| unsafe {
             let hp = self.hash_pilot(p);
@@ -107,14 +137,13 @@ impl<Key: KeyT, BF: BucketFn, F: Packed, Hx: Hasher<Key>> PtrHash<Key, BF, F, Hx
                 .iter()
                 .map(move |&hx| self.slot_in_part_hp(hx, hp))
         };
-        let mut duplicate_slots = {
-            let mut slots_tmp = vec![0; max_bucket_len];
-            move |b: BucketIdx, p: Pilot| {
-                slots_tmp.clear();
-                slots_tmp.extend(slots_for_bucket(b, p));
-                slots_tmp.sort_unstable();
-                slots_tmp.iter().tuple_windows().any(|(a, b)| a == b)
-            }
+        slots_tmp.clear();
+        slots_tmp.reserve(max_bucket_len);
+        let mut duplicate_slots = move |b: BucketIdx, p: Pilot| {
+            slots_tmp.clear();
+            slots_tmp.extend(slots_for_bucket(b, p));
+            slots_tmp.sort_unstable();
+            slots_tmp.iter().tuple_windows().any(|(a, b)| a == b)
         };
 
         let mut recent = [BucketIdx::NONE; 16];
