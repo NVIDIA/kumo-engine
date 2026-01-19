@@ -33,8 +33,10 @@ impl CloudTransferConfig {
             env_usize("DISKGRAPH_CLOUD_FILES_IN_FLIGHT", cpu_default.max(1) / 4 + 1);
         let max_part_requests = env_usize("DISKGRAPH_CLOUD_MAX_REQUESTS", cpu_default.max(1));
         let part_size = env_usize("DISKGRAPH_CLOUD_PART_SIZE_MB", 64) * 1024 * 1024;
-        let buffer_count =
-            env_usize("DISKGRAPH_CLOUD_FILE_BUFFER_COUNT", max_queue.max(1));
+        let buffer_count = env_usize(
+            "DISKGRAPH_CLOUD_FILE_BUFFER_COUNT",
+            cpu_default.saturating_mul(2).max(1),
+        );
         let max_file_retries = env_usize("DISKGRAPH_CLOUD_FILE_RETRY_MAX", 2);
         Self {
             part_size,
