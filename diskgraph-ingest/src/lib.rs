@@ -8,7 +8,7 @@ use crate::mapping::{
     fingerprint_seed_for, write_pk_data_entry, write_pk_data_header, GxPtrHash64, Key, KeyType,
     PkHashShard, PkHashStore, PkGxHash,
 };
-use crate::progress::{format_bytes, format_duration};
+use crate::progress::format_duration;
 use crate::source_metadata::{
     relationship_name, ColumnSpec, IngestedType, SortKeySpec, TableFormat, TableSpec,
     TimestampEncodingKind, TimestampEncodingSpec, WeightEncodingKind, WeightEncodingSpec,
@@ -56,7 +56,7 @@ use std::path::{Path, PathBuf};
 #[cfg(target_os = "linux")]
 use std::os::unix::io::AsRawFd;
 use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
@@ -255,36 +255,11 @@ pub type ProgressCallback = std::sync::Arc<dyn Fn(ProgressEvent) + Send + Sync>;
 struct IndexProgressAdapter {
     cb: ProgressCallback,
     state: Mutex<IndexProgressTracker>,
-    task_status: Option<std::sync::Arc<IndexTaskStatus>>,
-    mem_budget: Option<std::sync::Arc<MemoryBudget>>,
 }
 
 struct IndexProgressTracker {
     shard_states: HashMap<(String, Option<usize>), IndexProgressState>,
     table_states: HashMap<String, TableProgressState>,
-}
-
-struct IndexTaskStatus {
-    total: usize,
-    started: std::sync::atomic::AtomicUsize,
-    completed: std::sync::atomic::AtomicUsize,
-}
-
-impl IndexTaskStatus {
-    fn new(total: usize) -> Self {
-        Self {
-            total,
-            started: std::sync::atomic::AtomicUsize::new(0),
-            completed: std::sync::atomic::AtomicUsize::new(0),
-        }
-    }
-
-    fn snapshot(&self) -> (usize, usize, usize) {
-        let started = self.started.load(std::sync::atomic::Ordering::Relaxed);
-        let completed = self.completed.load(std::sync::atomic::Ordering::Relaxed);
-        let running = started.saturating_sub(completed);
-        (started, completed, running)
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -311,8 +286,6 @@ impl IndexProgressAdapter {
     fn new(
         cb: ProgressCallback,
         table_totals: HashMap<String, TableIndexTotals>,
-        task_status: Option<std::sync::Arc<IndexTaskStatus>>,
-        mem_budget: Option<std::sync::Arc<MemoryBudget>>,
     ) -> Self {
         let mut table_states = HashMap::new();
         for (table, totals) in table_totals {
@@ -333,8 +306,6 @@ impl IndexProgressAdapter {
                 shard_states: HashMap::new(),
                 table_states,
             }),
-            task_status,
-            mem_budget,
         }
     }
 
@@ -355,30 +326,6 @@ impl GraphProgressSink for IndexProgressAdapter {
             | GraphBuildStage::Complete { shard } => Self::shard_key(shard.as_ref()),
         };
         let key = (table.clone(), shard);
-        let status = self.task_status.as_ref().map(|tasks| {
-            let (_started, completed, running) = tasks.snapshot();
-            let mut parts = Vec::new();
-            if let Some(budget) = &self.mem_budget {
-                let snapshot = budget.snapshot();
-                let waiting = snapshot.waiters;
-                let active = running.saturating_sub(waiting);
-                parts.push(format!(
-                    "tasks active={} waiting={} done={}/{}",
-                    active, waiting, completed, tasks.total
-                ));
-                parts.push(format!(
-                    "mem={}/{}",
-                    format_bytes(snapshot.in_use),
-                    format_bytes(snapshot.total)
-                ));
-            } else {
-                parts.push(format!(
-                    "tasks running={} done={}/{}",
-                    running, completed, tasks.total
-                ));
-            }
-            format!("[{}]", parts.join(", "))
-        });
         let mut state = self.state.lock().unwrap();
         match update.stage {
             GraphBuildStage::BuildShard { .. } => {
@@ -420,7 +367,7 @@ impl GraphProgressSink for IndexProgressAdapter {
                         kind: ProgressKind::Start,
                         delta: 0,
                         total: table_state.total,
-                        status: status.clone(),
+                        status: None,
                     });
                 }
                 if delta > 0 {
@@ -432,7 +379,7 @@ impl GraphProgressSink for IndexProgressAdapter {
                         kind: ProgressKind::Advance,
                         delta,
                         total: table_state.total,
-                        status: status.clone(),
+                        status: None,
                     });
                 }
             }
@@ -465,7 +412,7 @@ impl GraphProgressSink for IndexProgressAdapter {
                         kind: ProgressKind::Finish,
                         delta: 0,
                         total: table_state.total.or(Some(table_state.current)),
-                        status,
+                        status: None,
                     });
                 }
             }
@@ -805,27 +752,6 @@ struct TempRowWriter {
 struct TempNodeFileResult {
     total_rows: u64,
     node_data_dropped: u64,
-}
-
-#[derive(Default)]
-struct PkMapPhaseStats {
-    meta_ms: Vec<u64>,
-    scan_ms: Vec<u64>,
-    materialize_ms: Vec<u64>,
-    mphf_ms: Vec<u64>,
-    entries_ms: Vec<u64>,
-    write_ms: Vec<u64>,
-    dup_meta_ms: Vec<u64>,
-    publish_ms: Vec<u64>,
-}
-
-fn median_ms(values: &[u64]) -> u64 {
-    if values.is_empty() {
-        return 0;
-    }
-    let mut sorted = values.to_vec();
-    sorted.sort_unstable();
-    sorted[sorted.len() / 2]
 }
 
 fn spawn_background_delete(path: PathBuf) {
@@ -2550,61 +2476,6 @@ impl IngestContext {
         let root = require_local_output(&self.target)?.to_path_buf();
         let duplicate_counts = std::sync::Arc::new(std::sync::Mutex::new(HashMap::new()));
         let duplicate_samples = std::sync::Arc::new(std::sync::Mutex::new(HashMap::new()));
-        let phase_stats = std::sync::Arc::new(std::sync::Mutex::new(HashMap::new()));
-        let phase_counters = std::sync::Arc::new(PkMapPhaseCounters::new());
-        let phase_stop = std::sync::Arc::new(AtomicBool::new(false));
-        let progress_cb = self.progress.clone();
-        if let Some(cb) = &progress_cb {
-            cb(ProgressEvent {
-                phase: ProgressPhase::PkMap,
-                table: "__workers".to_string(),
-                shard: None,
-                kind: ProgressKind::Start,
-                delta: 0,
-                total: None,
-                status: Some("meta=0 scan=0 mphf=0 entries=0 write=0 publish=0".to_string()),
-            });
-        }
-        let phase_thread = {
-            let phase_counters = std::sync::Arc::clone(&phase_counters);
-            let phase_stop = std::sync::Arc::clone(&phase_stop);
-            let progress_cb = progress_cb.clone();
-            std::thread::spawn(move || {
-                let mut next_tick = std::time::Instant::now()
-                    .checked_add(std::time::Duration::from_secs(1))
-                    .unwrap_or_else(std::time::Instant::now);
-                while !phase_stop.load(Ordering::Relaxed) {
-                    let now = std::time::Instant::now();
-                    if now < next_tick {
-                        std::thread::sleep(next_tick - now);
-                    }
-                    if phase_stop.load(Ordering::Relaxed) {
-                        break;
-                    }
-                    let (meta, scan, mphf, entries, write, publish) = phase_counters.snapshot();
-                    let status = format!(
-                        "meta={} scan={} mphf={} entries={} write={} publish={}",
-                        meta, scan, mphf, entries, write, publish
-                    );
-                    if let Some(cb) = &progress_cb {
-                        cb(ProgressEvent {
-                            phase: ProgressPhase::PkMap,
-                            table: "__workers".to_string(),
-                            shard: None,
-                            kind: ProgressKind::Advance,
-                            delta: 0,
-                            total: None,
-                            status: Some(status),
-                        });
-                    } else {
-                        eprintln!("pk_map workers: {}", status);
-                    }
-                    next_tick = std::time::Instant::now()
-                        .checked_add(std::time::Duration::from_secs(1))
-                        .unwrap_or_else(std::time::Instant::now);
-                }
-            })
-        };
         let mut tasks = Vec::new();
         let mut pk_hash_handles: HashMap<
             String,
@@ -2640,26 +2511,19 @@ impl IngestContext {
                 let pk_hash_paths = std::sync::Arc::clone(&pk_hash_paths);
                 let duplicate_counts = std::sync::Arc::clone(&duplicate_counts);
                 let duplicate_samples = std::sync::Arc::clone(&duplicate_samples);
-                let phase_stats = std::sync::Arc::clone(&phase_stats);
-                let phase_counters = std::sync::Arc::clone(&phase_counters);
                 let root = root.clone();
                 tasks.push(WorkItem {
                     bucket: None,
                     run: Box::new(move || {
                         let key_type = key_type_for_column(&pk_col)?;
-                        let meta_start = std::time::Instant::now();
-                        let meta = {
-                            let _meta_guard = phase_counters.guard(PkMapPhaseKind::Meta);
-                            let meta_path = root.join(temp_pkey_meta_path(&table_name, shard));
-                            read_temp_meta(&meta_path)?
-                        };
-                        let meta_ms = meta_start.elapsed().as_millis() as u64;
+                        let meta_path = root.join(temp_pkey_meta_path(&table_name, shard));
+                        let meta = read_temp_meta(&meta_path)?;
                         let total_rows = meta.row_count;
                         let mut duplicate_count = 0u64;
                         let mut duplicate_samples_local: Vec<Key> = Vec::new();
                         let mut row_id = 0u64;
                         let fingerprint_seed = fingerprint_seed_for(&table_name, shard);
-                        let (hash_rel, data_rel, scan_ms, mphf_ms, entries_ms, write_ms) =
+                        let (hash_rel, data_rel) =
                             match key_type {
                             KeyType::Int64 => {
                                 PKMAP_SCRATCH.with(|scratch| {
@@ -2672,9 +2536,7 @@ impl IngestContext {
                                     reserve_map(&mut scratch.seen_u64, total_rows_usize);
                                     duplicate_samples_local.clear();
                                     let data_path = root.join(temp_pkey_path(&table_name, shard));
-                                    let scan_start = std::time::Instant::now();
                                     {
-                                        let _scan_guard = phase_counters.guard(PkMapPhaseKind::Scan);
                                         let seen = &mut scratch.seen_u64;
                                         read_temp_rows(&data_path, |row| {
                                             let mut data = row;
@@ -2699,13 +2561,9 @@ impl IngestContext {
                                             Ok(())
                                         })?;
                                     }
-                                    let scan_ms = scan_start.elapsed().as_millis() as u64;
                                     let params = ptr_hash::PtrHashParams::default();
-                                    let mphf_start = std::time::Instant::now();
                                     let seen = std::mem::take(&mut scratch.seen_u64);
                                     let mphf = {
-                                        let _mphf_guard =
-                                            phase_counters.guard(PkMapPhaseKind::Mphf);
                                         PTRHASH_SCRATCH.with(|scratch_ptr| {
                                             let mut scratch_ptr = scratch_ptr.borrow_mut();
                                             DefaultPtrHash::<GxPtrHash64, u64>::try_new_from_source_with_scratch(
@@ -2716,11 +2574,7 @@ impl IngestContext {
                                         })
                                         .ok_or_else(|| anyhow!("ptrhash construction failed"))?
                                     };
-                                    let mphf_ms = mphf_start.elapsed().as_millis() as u64;
-                                    let entries_start = std::time::Instant::now();
                                     let entries = {
-                                        let _entries_guard =
-                                            phase_counters.guard(PkMapPhaseKind::Entries);
                                         let slots = mphf.max_index();
                                         let mut entries = std::mem::take(&mut scratch.entries);
                                         entries.resize(slots, (0u64, 0u32));
@@ -2733,7 +2587,6 @@ impl IngestContext {
                                         scratch.seen_u64 = seen;
                                         scratch.entries.as_slice()
                                     };
-                                    let entries_ms = entries_start.elapsed().as_millis() as u64;
                                     let hash_rel = format!(
                                         "nodes/{}/pk_hash-{:05}.bin",
                                         table_name.to_lowercase(),
@@ -2744,10 +2597,7 @@ impl IngestContext {
                                         table_name.to_lowercase(),
                                         shard
                                     );
-                                    let write_start = std::time::Instant::now();
                                     {
-                                        let _write_guard =
-                                            phase_counters.guard(PkMapPhaseKind::Write);
                                         IngestContext::write_pk_hash_and_data(
                                             &target,
                                             &hash_rel,
@@ -2758,15 +2608,7 @@ impl IngestContext {
                                             entries,
                                         )?;
                                     }
-                                    let write_ms = write_start.elapsed().as_millis() as u64;
-                                    Ok::<_, anyhow::Error>((
-                                        hash_rel,
-                                        data_rel,
-                                        scan_ms,
-                                        mphf_ms,
-                                        entries_ms,
-                                        write_ms,
-                                    ))
+                                    Ok::<_, anyhow::Error>((hash_rel, data_rel))
                                 })?
                             }
                             KeyType::VarBytes => {
@@ -2780,9 +2622,7 @@ impl IngestContext {
                                     reserve_map(&mut scratch.seen_bytes, total_rows_usize);
                                     duplicate_samples_local.clear();
                                     let data_path = root.join(temp_pkey_path(&table_name, shard));
-                                    let scan_start = std::time::Instant::now();
                                     {
-                                        let _scan_guard = phase_counters.guard(PkMapPhaseKind::Scan);
                                         let seen = &mut scratch.seen_bytes;
                                         read_temp_rows(&data_path, |row| {
                                             let mut data = row;
@@ -2813,13 +2653,9 @@ impl IngestContext {
                                             Ok(())
                                         })?;
                                     }
-                                    let scan_ms = scan_start.elapsed().as_millis() as u64;
                                     let params = ptr_hash::PtrHashParams::default();
-                                    let mphf_start = std::time::Instant::now();
                                     let seen = std::mem::take(&mut scratch.seen_bytes);
                                     let mphf = {
-                                        let _mphf_guard =
-                                            phase_counters.guard(PkMapPhaseKind::Mphf);
                                         PTRHASH_SCRATCH.with(|scratch_ptr| {
                                             let mut scratch_ptr = scratch_ptr.borrow_mut();
                                             DefaultPtrHash::<GxPtrHash64, Vec<u8>>::try_new_from_source_with_scratch(
@@ -2830,11 +2666,7 @@ impl IngestContext {
                                         })
                                         .ok_or_else(|| anyhow!("ptrhash construction failed"))?
                                     };
-                                    let mphf_ms = mphf_start.elapsed().as_millis() as u64;
-                                    let entries_start = std::time::Instant::now();
                                     let entries = {
-                                        let _entries_guard =
-                                            phase_counters.guard(PkMapPhaseKind::Entries);
                                         let slots = mphf.max_index();
                                         let mut entries = std::mem::take(&mut scratch.entries);
                                         entries.resize(slots, (0u64, 0u32));
@@ -2847,7 +2679,6 @@ impl IngestContext {
                                         scratch.seen_bytes = seen;
                                         scratch.entries.as_slice()
                                     };
-                                    let entries_ms = entries_start.elapsed().as_millis() as u64;
                                     let hash_rel = format!(
                                         "nodes/{}/pk_hash-{:05}.bin",
                                         table_name.to_lowercase(),
@@ -2858,10 +2689,7 @@ impl IngestContext {
                                         table_name.to_lowercase(),
                                         shard
                                     );
-                                    let write_start = std::time::Instant::now();
                                     {
-                                        let _write_guard =
-                                            phase_counters.guard(PkMapPhaseKind::Write);
                                         IngestContext::write_pk_hash_and_data(
                                             &target,
                                             &hash_rel,
@@ -2872,15 +2700,7 @@ impl IngestContext {
                                             entries,
                                         )?;
                                     }
-                                    let write_ms = write_start.elapsed().as_millis() as u64;
-                                    Ok::<_, anyhow::Error>((
-                                        hash_rel,
-                                        data_rel,
-                                        scan_ms,
-                                        mphf_ms,
-                                        entries_ms,
-                                        write_ms,
-                                    ))
+                                    Ok::<_, anyhow::Error>((hash_rel, data_rel))
                                 })?
                             }
                             KeyType::Uuid => {
@@ -2894,9 +2714,7 @@ impl IngestContext {
                                     reserve_map(&mut scratch.seen_uuid, total_rows_usize);
                                     duplicate_samples_local.clear();
                                     let data_path = root.join(temp_pkey_path(&table_name, shard));
-                                    let scan_start = std::time::Instant::now();
                                     {
-                                        let _scan_guard = phase_counters.guard(PkMapPhaseKind::Scan);
                                         let seen = &mut scratch.seen_uuid;
                                         read_temp_rows(&data_path, |row| {
                                             let mut data = row;
@@ -2908,26 +2726,23 @@ impl IngestContext {
                                                     Entry::Vacant(entry) => {
                                                         entry.insert(local_id);
                                                     }
-                                                Entry::Occupied(_) => {
-                                                    duplicate_count =
-                                                        duplicate_count.saturating_add(1);
-                                                    if duplicate_samples_local.len() < 10 {
-                                                        duplicate_samples_local.push(Key::Uuid(uuid));
+                                                    Entry::Occupied(_) => {
+                                                        duplicate_count =
+                                                            duplicate_count.saturating_add(1);
+                                                        if duplicate_samples_local.len() < 10 {
+                                                            duplicate_samples_local
+                                                                .push(Key::Uuid(uuid));
+                                                        }
                                                     }
                                                 }
-                                            }
                                             }
                                             row_id += 1;
                                             Ok(())
                                         })?;
                                     }
-                                    let scan_ms = scan_start.elapsed().as_millis() as u64;
                                     let params = ptr_hash::PtrHashParams::default();
-                                    let mphf_start = std::time::Instant::now();
                                     let seen = std::mem::take(&mut scratch.seen_uuid);
                                     let mphf = {
-                                        let _mphf_guard =
-                                            phase_counters.guard(PkMapPhaseKind::Mphf);
                                         PTRHASH_SCRATCH.with(|scratch_ptr| {
                                             let mut scratch_ptr = scratch_ptr.borrow_mut();
                                             DefaultPtrHash::<GxPtrHash64, [u8; 16]>::try_new_from_source_with_scratch(
@@ -2938,11 +2753,7 @@ impl IngestContext {
                                         })
                                         .ok_or_else(|| anyhow!("ptrhash construction failed"))?
                                     };
-                                    let mphf_ms = mphf_start.elapsed().as_millis() as u64;
-                                    let entries_start = std::time::Instant::now();
                                     let entries = {
-                                        let _entries_guard =
-                                            phase_counters.guard(PkMapPhaseKind::Entries);
                                         let slots = mphf.max_index();
                                         let mut entries = std::mem::take(&mut scratch.entries);
                                         entries.resize(slots, (0u64, 0u32));
@@ -2955,7 +2766,6 @@ impl IngestContext {
                                         scratch.seen_uuid = seen;
                                         scratch.entries.as_slice()
                                     };
-                                    let entries_ms = entries_start.elapsed().as_millis() as u64;
                                     let hash_rel = format!(
                                         "nodes/{}/pk_hash-{:05}.bin",
                                         table_name.to_lowercase(),
@@ -2966,10 +2776,7 @@ impl IngestContext {
                                         table_name.to_lowercase(),
                                         shard
                                     );
-                                    let write_start = std::time::Instant::now();
                                     {
-                                        let _write_guard =
-                                            phase_counters.guard(PkMapPhaseKind::Write);
                                         IngestContext::write_pk_hash_and_data(
                                             &target,
                                             &hash_rel,
@@ -2980,15 +2787,7 @@ impl IngestContext {
                                             entries,
                                         )?;
                                     }
-                                    let write_ms = write_start.elapsed().as_millis() as u64;
-                                    Ok::<_, anyhow::Error>((
-                                        hash_rel,
-                                        data_rel,
-                                        scan_ms,
-                                        mphf_ms,
-                                        entries_ms,
-                                        write_ms,
-                                    ))
+                                    Ok::<_, anyhow::Error>((hash_rel, data_rel))
                                 })?
                             }
                             KeyType::Uuid256 => {
@@ -3002,9 +2801,7 @@ impl IngestContext {
                                     reserve_map(&mut scratch.seen_uuid256, total_rows_usize);
                                     duplicate_samples_local.clear();
                                     let data_path = root.join(temp_pkey_path(&table_name, shard));
-                                    let scan_start = std::time::Instant::now();
                                     {
-                                        let _scan_guard = phase_counters.guard(PkMapPhaseKind::Scan);
                                         let seen = &mut scratch.seen_uuid256;
                                         read_temp_rows(&data_path, |row| {
                                             let mut data = row;
@@ -3016,26 +2813,23 @@ impl IngestContext {
                                                     Entry::Vacant(entry) => {
                                                         entry.insert(local_id);
                                                     }
-                                                Entry::Occupied(_) => {
-                                                    duplicate_count =
-                                                        duplicate_count.saturating_add(1);
-                                                    if duplicate_samples_local.len() < 10 {
-                                                        duplicate_samples_local.push(Key::Uuid256(uuid));
+                                                    Entry::Occupied(_) => {
+                                                        duplicate_count =
+                                                            duplicate_count.saturating_add(1);
+                                                        if duplicate_samples_local.len() < 10 {
+                                                            duplicate_samples_local
+                                                                .push(Key::Uuid256(uuid));
+                                                        }
                                                     }
                                                 }
-                                            }
                                             }
                                             row_id += 1;
                                             Ok(())
                                         })?;
                                     }
-                                    let scan_ms = scan_start.elapsed().as_millis() as u64;
                                     let params = ptr_hash::PtrHashParams::default();
-                                    let mphf_start = std::time::Instant::now();
                                     let seen = std::mem::take(&mut scratch.seen_uuid256);
                                     let mphf = {
-                                        let _mphf_guard =
-                                            phase_counters.guard(PkMapPhaseKind::Mphf);
                                         PTRHASH_SCRATCH.with(|scratch_ptr| {
                                             let mut scratch_ptr = scratch_ptr.borrow_mut();
                                             DefaultPtrHash::<GxPtrHash64, [u8; 32]>::try_new_from_source_with_scratch(
@@ -3046,11 +2840,7 @@ impl IngestContext {
                                         })
                                         .ok_or_else(|| anyhow!("ptrhash construction failed"))?
                                     };
-                                    let mphf_ms = mphf_start.elapsed().as_millis() as u64;
-                                    let entries_start = std::time::Instant::now();
                                     let entries = {
-                                        let _entries_guard =
-                                            phase_counters.guard(PkMapPhaseKind::Entries);
                                         let slots = mphf.max_index();
                                         let mut entries = std::mem::take(&mut scratch.entries);
                                         entries.resize(slots, (0u64, 0u32));
@@ -3063,7 +2853,6 @@ impl IngestContext {
                                         scratch.seen_uuid256 = seen;
                                         scratch.entries.as_slice()
                                     };
-                                    let entries_ms = entries_start.elapsed().as_millis() as u64;
                                     let hash_rel = format!(
                                         "nodes/{}/pk_hash-{:05}.bin",
                                         table_name.to_lowercase(),
@@ -3074,10 +2863,7 @@ impl IngestContext {
                                         table_name.to_lowercase(),
                                         shard
                                     );
-                                    let write_start = std::time::Instant::now();
                                     {
-                                        let _write_guard =
-                                            phase_counters.guard(PkMapPhaseKind::Write);
                                         IngestContext::write_pk_hash_and_data(
                                             &target,
                                             &hash_rel,
@@ -3088,15 +2874,7 @@ impl IngestContext {
                                             entries,
                                         )?;
                                     }
-                                    let write_ms = write_start.elapsed().as_millis() as u64;
-                                    Ok::<_, anyhow::Error>((
-                                        hash_rel,
-                                        data_rel,
-                                        scan_ms,
-                                        mphf_ms,
-                                        entries_ms,
-                                        write_ms,
-                                    ))
+                                    Ok::<_, anyhow::Error>((hash_rel, data_rel))
                                 })?
                             }
                             KeyType::Ip => {
@@ -3110,9 +2888,7 @@ impl IngestContext {
                                     reserve_map(&mut scratch.seen_ip, total_rows_usize);
                                     duplicate_samples_local.clear();
                                     let data_path = root.join(temp_pkey_path(&table_name, shard));
-                                    let scan_start = std::time::Instant::now();
                                     {
-                                        let _scan_guard = phase_counters.guard(PkMapPhaseKind::Scan);
                                         let seen = &mut scratch.seen_ip;
                                         read_temp_rows(&data_path, |row| {
                                             let mut data = row;
@@ -3124,26 +2900,23 @@ impl IngestContext {
                                                     Entry::Vacant(entry) => {
                                                         entry.insert(local_id);
                                                     }
-                                                Entry::Occupied(_) => {
-                                                    duplicate_count =
-                                                        duplicate_count.saturating_add(1);
-                                                    if duplicate_samples_local.len() < 10 {
-                                                        duplicate_samples_local.push(Key::Ip(ip));
+                                                    Entry::Occupied(_) => {
+                                                        duplicate_count =
+                                                            duplicate_count.saturating_add(1);
+                                                        if duplicate_samples_local.len() < 10 {
+                                                            duplicate_samples_local
+                                                                .push(Key::Ip(ip));
+                                                        }
                                                     }
                                                 }
-                                            }
                                             }
                                             row_id += 1;
                                             Ok(())
                                         })?;
                                     }
-                                    let scan_ms = scan_start.elapsed().as_millis() as u64;
                                     let params = ptr_hash::PtrHashParams::default();
-                                    let mphf_start = std::time::Instant::now();
                                     let seen = std::mem::take(&mut scratch.seen_ip);
                                     let mphf = {
-                                        let _mphf_guard =
-                                            phase_counters.guard(PkMapPhaseKind::Mphf);
                                         PTRHASH_SCRATCH.with(|scratch_ptr| {
                                             let mut scratch_ptr = scratch_ptr.borrow_mut();
                                             DefaultPtrHash::<GxPtrHash64, [u8; 16]>::try_new_from_source_with_scratch(
@@ -3154,11 +2927,7 @@ impl IngestContext {
                                         })
                                         .ok_or_else(|| anyhow!("ptrhash construction failed"))?
                                     };
-                                    let mphf_ms = mphf_start.elapsed().as_millis() as u64;
-                                    let entries_start = std::time::Instant::now();
                                     let entries = {
-                                        let _entries_guard =
-                                            phase_counters.guard(PkMapPhaseKind::Entries);
                                         let slots = mphf.max_index();
                                         let mut entries = std::mem::take(&mut scratch.entries);
                                         entries.resize(slots, (0u64, 0u32));
@@ -3171,7 +2940,6 @@ impl IngestContext {
                                         scratch.seen_ip = seen;
                                         scratch.entries.as_slice()
                                     };
-                                    let entries_ms = entries_start.elapsed().as_millis() as u64;
                                     let hash_rel = format!(
                                         "nodes/{}/pk_hash-{:05}.bin",
                                         table_name.to_lowercase(),
@@ -3182,10 +2950,7 @@ impl IngestContext {
                                         table_name.to_lowercase(),
                                         shard
                                     );
-                                    let write_start = std::time::Instant::now();
                                     {
-                                        let _write_guard =
-                                            phase_counters.guard(PkMapPhaseKind::Write);
                                         IngestContext::write_pk_hash_and_data(
                                             &target,
                                             &hash_rel,
@@ -3196,15 +2961,7 @@ impl IngestContext {
                                             entries,
                                         )?;
                                     }
-                                    let write_ms = write_start.elapsed().as_millis() as u64;
-                                    Ok::<_, anyhow::Error>((
-                                        hash_rel,
-                                        data_rel,
-                                        scan_ms,
-                                        mphf_ms,
-                                        entries_ms,
-                                        write_ms,
-                                    ))
+                                    Ok::<_, anyhow::Error>((hash_rel, data_rel))
                                 })?
                             }
                         };
@@ -3239,13 +2996,9 @@ impl IngestContext {
                             "duplicate_count": duplicate_count,
                             "duplicate_samples": samples,
                         });
-                        let dup_meta_start = std::time::Instant::now();
                         {
-                            let _publish_guard = phase_counters.guard(PkMapPhaseKind::Publish);
                             target.write_bytes(&dup_meta, serde_json::to_vec_pretty(&meta)?)?;
                         }
-                        let dup_meta_ms = dup_meta_start.elapsed().as_millis() as u64;
-                        let publish_start = std::time::Instant::now();
                         let mut guard = pk_hash_paths.lock().unwrap();
                         guard[shard] = Some(PkHashPaths {
                             hash_path: hash_rel,
@@ -3262,38 +3015,12 @@ impl IngestContext {
                                 status: None,
 });
                         }
-                        let publish_ms = publish_start.elapsed().as_millis() as u64;
-                        let mut guard = phase_stats.lock().unwrap();
-                        let entry = guard
-                            .entry(table_name.clone())
-                            .or_insert_with(PkMapPhaseStats::default);
-                        entry.meta_ms.push(meta_ms);
-                        entry.scan_ms.push(scan_ms);
-                        entry.materialize_ms.push(0);
-                        entry.mphf_ms.push(mphf_ms);
-                        entry.entries_ms.push(entries_ms);
-                        entry.write_ms.push(write_ms);
-                        entry.dup_meta_ms.push(dup_meta_ms);
-                        entry.publish_ms.push(publish_ms);
                         Ok(())
                     }),
                 });
             }
         }
         let run_result = run_tasks(tasks.drain(..).collect(), &self.pool);
-        phase_stop.store(true, Ordering::Relaxed);
-        let _ = phase_thread.join();
-        if let Some(cb) = &progress_cb {
-            cb(ProgressEvent {
-                phase: ProgressPhase::PkMap,
-                table: "__workers".to_string(),
-                shard: None,
-                kind: ProgressKind::Finish,
-                delta: 0,
-                total: None,
-                status: None,
-            });
-        }
         run_result?;
         for table in &self.source.tables {
             if table.edge_table.is_some() || table.primary_key.is_none() {
@@ -3325,29 +3052,6 @@ impl IngestContext {
         }
         if let Ok(samples) = std::sync::Arc::try_unwrap(duplicate_samples) {
             self.pk_duplicate_samples = samples.into_inner().unwrap();
-        }
-        if let Ok(stats) = std::sync::Arc::try_unwrap(phase_stats) {
-            let stats = stats.into_inner().unwrap();
-            eprintln!("pk_map phase timings (median ms per shard):");
-            for table in &self.source.tables {
-                if table.edge_table.is_some() || table.primary_key.is_none() {
-                    continue;
-                }
-                if let Some(phases) = stats.get(&table.name) {
-                    eprintln!(
-                        "pk_map table={} meta={} scan={} materialize={} mphf={} entries={} write={} dup_meta={} publish={}",
-                        table.name,
-                        median_ms(&phases.meta_ms),
-                        median_ms(&phases.scan_ms),
-                        median_ms(&phases.materialize_ms),
-                        median_ms(&phases.mphf_ms),
-                        median_ms(&phases.entries_ms),
-                        median_ms(&phases.write_ms),
-                        median_ms(&phases.dup_meta_ms),
-                        median_ms(&phases.publish_ms),
-                    );
-                }
-            }
         }
         Ok(())
     }
@@ -4257,39 +3961,20 @@ impl IngestContext {
             .progress
             .clone()
             .map(|cb| {
-                IndexProgressAdapter::new(
-                    cb,
-                    table_totals.clone(),
-                    Some(std::sync::Arc::new(IndexTaskStatus::new(jobs.len()))),
-                    mem_budget.clone(),
-                )
+                IndexProgressAdapter::new(cb, table_totals.clone())
             });
         let adapter = adapter.map(std::sync::Arc::new);
-        let task_status = adapter
-            .as_ref()
-            .and_then(|value| value.task_status.clone());
         let mut tasks = Vec::with_capacity(jobs.len());
         for job in jobs {
             let adapter = adapter.clone();
             let mem_budget = mem_budget.clone();
-            let task_status = task_status.clone();
             tasks.push(WorkItem {
                 bucket: None,
                 run: Box::new(move || {
-                    if let Some(status) = &task_status {
-                        status
-                            .started
-                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    }
                     let progress = adapter
                         .as_ref()
                         .map(|value| value.as_ref() as &dyn GraphProgressSink);
                     let result = job.run_with_budget(progress, mem_budget).map(|_| ());
-                    if let Some(status) = &task_status {
-                        status
-                            .completed
-                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    }
                     result
                 }),
             });
@@ -6204,81 +5889,6 @@ fn parse_kb_line(value: &str) -> Option<u64> {
 struct WorkItem {
     run: Box<dyn FnOnce() -> Result<()> + Send>,
     bucket: Option<std::sync::Arc<std::sync::atomic::AtomicU64>>,
-}
-
-#[derive(Clone, Copy)]
-enum PkMapPhaseKind {
-    Meta,
-    Scan,
-    Mphf,
-    Entries,
-    Write,
-    Publish,
-}
-
-struct PkMapPhaseCounters {
-    meta: std::sync::atomic::AtomicUsize,
-    scan: std::sync::atomic::AtomicUsize,
-    mphf: std::sync::atomic::AtomicUsize,
-    entries: std::sync::atomic::AtomicUsize,
-    write: std::sync::atomic::AtomicUsize,
-    publish: std::sync::atomic::AtomicUsize,
-}
-
-impl PkMapPhaseCounters {
-    fn new() -> Self {
-        Self {
-            meta: std::sync::atomic::AtomicUsize::new(0),
-            scan: std::sync::atomic::AtomicUsize::new(0),
-            mphf: std::sync::atomic::AtomicUsize::new(0),
-            entries: std::sync::atomic::AtomicUsize::new(0),
-            write: std::sync::atomic::AtomicUsize::new(0),
-            publish: std::sync::atomic::AtomicUsize::new(0),
-        }
-    }
-
-    fn guard(&self, phase: PkMapPhaseKind) -> PkMapPhaseGuard<'_> {
-        self.bump(phase, 1);
-        PkMapPhaseGuard { counters: self, phase }
-    }
-
-    fn bump(&self, phase: PkMapPhaseKind, delta: isize) {
-        let target = match phase {
-            PkMapPhaseKind::Meta => &self.meta,
-            PkMapPhaseKind::Scan => &self.scan,
-            PkMapPhaseKind::Mphf => &self.mphf,
-            PkMapPhaseKind::Entries => &self.entries,
-            PkMapPhaseKind::Write => &self.write,
-            PkMapPhaseKind::Publish => &self.publish,
-        };
-        if delta > 0 {
-            target.fetch_add(delta as usize, Ordering::Relaxed);
-        } else {
-            target.fetch_sub((-delta) as usize, Ordering::Relaxed);
-        }
-    }
-
-    fn snapshot(&self) -> (usize, usize, usize, usize, usize, usize) {
-        (
-            self.meta.load(Ordering::Relaxed),
-            self.scan.load(Ordering::Relaxed),
-            self.mphf.load(Ordering::Relaxed),
-            self.entries.load(Ordering::Relaxed),
-            self.write.load(Ordering::Relaxed),
-            self.publish.load(Ordering::Relaxed),
-        )
-    }
-}
-
-struct PkMapPhaseGuard<'a> {
-    counters: &'a PkMapPhaseCounters,
-    phase: PkMapPhaseKind,
-}
-
-impl Drop for PkMapPhaseGuard<'_> {
-    fn drop(&mut self) {
-        self.counters.bump(self.phase, -1);
-    }
 }
 
 struct PoolTask {
