@@ -1,6 +1,4 @@
 use std::collections::{HashMap, VecDeque};
-use std::fs::{self, File};
-use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -22,11 +20,17 @@ use crate::config::{
     ColumnConfig, ColumnType, DatasetConfig, FkDistribution, GeneratorSpec, KeyEncoding,
     TableConfig, TimestampUnit,
 };
+use crate::output::OutputTarget;
 use crate::progress::ProgressState;
 
-pub fn run(config: DatasetConfig, output_root: &Path, workers: usize) -> Result<()> {
+pub fn run(config: DatasetConfig, output: OutputTarget, workers: usize) -> Result<()> {
     let plan = build_plan(&config)?;
-    prepare_output_dirs(output_root, &plan)?;
+    let table_names = plan
+        .tables
+        .iter()
+        .map(|table| table.name.clone())
+        .collect::<Vec<_>>();
+    output.prepare(&table_names)?;
 
     let total_rows = plan.total_rows;
     let progress = Arc::new(Mutex::new(ProgressState::new()));
@@ -46,8 +50,8 @@ pub fn run(config: DatasetConfig, output_root: &Path, workers: usize) -> Result<
         let plan = Arc::clone(&plan);
         let tasks = Arc::clone(&tasks);
         let completed = Arc::clone(&completed);
-        let output_root = output_root.to_path_buf();
-        let handle = thread::spawn(move || worker_loop(plan, tasks, completed, output_root));
+        let output = output.clone();
+        let handle = thread::spawn(move || worker_loop(plan, tasks, completed, output));
         handles.push(handle);
     }
 
@@ -76,14 +80,6 @@ pub fn run(config: DatasetConfig, output_root: &Path, workers: usize) -> Result<
         progress.finish("Done");
     }
 
-    Ok(())
-}
-
-fn prepare_output_dirs(output_root: &Path, plan: &Plan) -> Result<()> {
-    fs::create_dir_all(output_root)?;
-    for table in &plan.tables {
-        fs::create_dir_all(output_root.join(&table.name))?;
-    }
     Ok(())
 }
 
@@ -116,7 +112,7 @@ fn worker_loop(
     plan: Arc<Plan>,
     tasks: Arc<Mutex<VecDeque<ShardTask>>>,
     completed: Arc<AtomicU64>,
-    output_root: PathBuf,
+    output: OutputTarget,
 ) -> Result<()> {
     loop {
         let task = {
@@ -124,7 +120,7 @@ fn worker_loop(
             guard.pop_front()
         };
         let Some(task) = task else { break };
-        generate_shard(&plan, &task, &output_root, &completed)?;
+        generate_shard(&plan, &task, &output, &completed)?;
     }
     Ok(())
 }
@@ -546,21 +542,17 @@ fn build_relationship_map(
 fn generate_shard(
     plan: &Plan,
     task: &ShardTask,
-    output_root: &Path,
+    output: &OutputTarget,
     completed: &AtomicU64,
 ) -> Result<()> {
     let table = &plan.tables[task.table_idx];
     let range = &table.shard_ranges[task.shard_idx];
-    let filename = format!("part-{:05}.parquet", task.shard_idx);
-    let path = output_root.join(&table.name).join(filename);
-    let file = File::create(&path).with_context(|| format!("create {}", path.display()))?;
+    let sink = output.parquet_sink(&table.name, task.shard_idx)?;
     let props = WriterProperties::builder()
         .set_max_row_group_size(plan.row_group_size)
         .build();
-    let mut writer =
-        ArrowWriter::try_new(file, Arc::clone(&table.schema), Some(props)).with_context(|| {
-            format!("create parquet writer for {}", path.display())
-        })?;
+    let mut writer = ArrowWriter::try_new(sink, Arc::clone(&table.schema), Some(props))
+        .with_context(|| format!("create parquet writer for {}", table.name))?;
 
     let mut remaining = range.len;
     let mut row_start = range.start;
@@ -573,7 +565,8 @@ fn generate_shard(
         completed.fetch_add(batch_len as u64, Ordering::Relaxed);
     }
 
-    writer.close()?;
+    let sink = writer.into_inner()?;
+    sink.finish()?;
     Ok(())
 }
 

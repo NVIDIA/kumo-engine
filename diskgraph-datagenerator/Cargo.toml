@@ -32,6 +32,7 @@ diskgraph-core = { path = "../diskgraph-core" }
 object_store = { version = "0.12.4", features = ["aws", "gcp", "azure"] }
 tempfile = "3"
 uuid = { version = "1.4", features = ["v4"] }
+diskgraph-fs = { path = "../diskgraph-fs" }
 
 [[bin]]
 name = "diskgraph-datagenerator"

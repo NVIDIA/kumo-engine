@@ -1,14 +1,20 @@
-use std::sync::Arc;
+use std::io::{self, SeekFrom, Write};
+use std::sync::{Arc, Condvar, Mutex};
+use std::thread;
 
 use anyhow::{anyhow, Result};
 use aws_config::{self, BehaviorVersion};
 use aws_credential_types::provider::ProvideCredentials;
 use aws_types::region::Region;
+use bytes::Bytes;
 use object_store::aws::AmazonS3Builder;
 use object_store::azure::MicrosoftAzureBuilder;
 use object_store::gcp::GoogleCloudStorageBuilder;
+use object_store::path::Path as ObjectPath;
 use object_store::ObjectStore;
+use object_store::WriteMultipart;
 use tokio::runtime::Runtime;
+use tokio::sync::{mpsc, oneshot};
 
 /// Parse a bool environment flag (e.g., "1", "true").
 fn env_flag(name: &str) -> Option<bool> {
@@ -258,4 +264,299 @@ pub fn build_adls_client(cfg: AdlsConfig) -> Result<AdlsClient> {
             tenant_id: cfg.tenant_id,
         },
     })
+}
+
+#[derive(Clone, Debug)]
+pub struct UploadBufferPool {
+    inner: Arc<UploadBufferPoolInner>,
+}
+
+#[derive(Debug)]
+struct UploadBufferPoolInner {
+    buffers: Mutex<Vec<Vec<u8>>>,
+    available: Condvar,
+    buffer_size: usize,
+}
+
+impl UploadBufferPool {
+    pub fn new(buffer_size: usize, buffer_count: usize) -> Self {
+        let mut buffers = Vec::with_capacity(buffer_count);
+        for _ in 0..buffer_count {
+            buffers.push(Vec::with_capacity(buffer_size));
+        }
+        Self {
+            inner: Arc::new(UploadBufferPoolInner {
+                buffers: Mutex::new(buffers),
+                available: Condvar::new(),
+                buffer_size,
+            }),
+        }
+    }
+
+    pub fn buffer_size(&self) -> usize {
+        self.inner.buffer_size
+    }
+
+    fn acquire(&self) -> Vec<u8> {
+        let mut guard = self.inner.buffers.lock().expect("upload buffer pool lock");
+        loop {
+            if let Some(mut buffer) = guard.pop() {
+                buffer.clear();
+                return buffer;
+            }
+            guard = self.inner.available.wait(guard).expect("upload buffer pool wait");
+        }
+    }
+
+    fn release(&self, mut buffer: Vec<u8>) {
+        buffer.clear();
+        let mut guard = self.inner.buffers.lock().expect("upload buffer pool lock");
+        guard.push(buffer);
+        self.inner.available.notify_one();
+    }
+}
+
+#[derive(Debug)]
+struct PoolBuffer {
+    data: Vec<u8>,
+    len: usize,
+    pool: UploadBufferPool,
+}
+
+impl AsRef<[u8]> for PoolBuffer {
+    fn as_ref(&self) -> &[u8] {
+        &self.data[..self.len]
+    }
+}
+
+impl Drop for PoolBuffer {
+    fn drop(&mut self) {
+        let buffer = std::mem::take(&mut self.data);
+        self.pool.release(buffer);
+    }
+}
+
+#[derive(Debug)]
+enum UploadCommand {
+    Part(PoolBuffer),
+    Finish(oneshot::Sender<Result<()>>),
+    Abort,
+}
+
+#[derive(Debug)]
+pub struct MultipartUploadWriter {
+    sender: mpsc::Sender<UploadCommand>,
+    pool: UploadBufferPool,
+    buffer: Vec<u8>,
+    part_size: usize,
+    position: u64,
+    join: Option<thread::JoinHandle<Result<()>>>,
+    error: Arc<Mutex<Option<anyhow::Error>>>,
+}
+
+impl MultipartUploadWriter {
+    pub fn new(
+        store: Arc<dyn ObjectStore>,
+        path: ObjectPath,
+        pool: UploadBufferPool,
+        max_concurrency: usize,
+    ) -> Result<Self> {
+        let part_size = pool.buffer_size();
+        let (sender, receiver) = mpsc::channel(max_concurrency.max(1) * 2);
+        let error = Arc::new(Mutex::new(None));
+        let error_clone = Arc::clone(&error);
+        let join = thread::spawn(move || {
+            let rt = Runtime::new()?;
+            rt.block_on(run_upload_loop(
+                store,
+                path,
+                receiver,
+                part_size,
+                max_concurrency.max(1),
+                error_clone,
+            ))
+        });
+        Ok(Self {
+            sender,
+            pool: pool.clone(),
+            buffer: pool.acquire(),
+            part_size,
+            position: 0,
+            join: Some(join),
+            error,
+        })
+    }
+
+    pub fn finish(mut self) -> Result<()> {
+        self.flush_buffer(true)?;
+        let (tx, rx) = oneshot::channel();
+        self.sender
+            .blocking_send(UploadCommand::Finish(tx))
+            .map_err(|_| anyhow!("multipart upload worker stopped"))?;
+        let result = rx
+            .blocking_recv()
+            .map_err(|_| anyhow!("multipart upload worker dropped"))?;
+        let join = self.join.take().expect("upload join handle");
+        let join_result = join
+            .join()
+            .map_err(|_| anyhow!("multipart upload thread panicked"))?;
+        result?;
+        join_result
+    }
+
+    fn flush_buffer(&mut self, final_flush: bool) -> Result<()> {
+        if self.buffer.is_empty() && !final_flush {
+            return Ok(());
+        }
+        if self.buffer.is_empty() && final_flush {
+            let buffer = std::mem::take(&mut self.buffer);
+            if buffer.capacity() >= self.part_size && self.part_size > 0 {
+                self.pool.release(buffer);
+            }
+            return Ok(());
+        }
+        let data = std::mem::take(&mut self.buffer);
+        let len = data.len();
+        let part = PoolBuffer {
+            data,
+            len,
+            pool: self.pool.clone(),
+        };
+        self.sender
+            .blocking_send(UploadCommand::Part(part))
+            .map_err(|_| anyhow!("multipart upload worker stopped"))?;
+        if !final_flush {
+            self.buffer = Vec::new();
+        }
+        Ok(())
+    }
+
+    fn check_error(&self) -> io::Result<()> {
+        if let Some(err) = self.error.lock().expect("upload error lock").as_ref() {
+            return Err(io::Error::new(io::ErrorKind::Other, err.to_string()));
+        }
+        Ok(())
+    }
+}
+
+impl Write for MultipartUploadWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.check_error()?;
+        if self.buffer.capacity() == 0 {
+            self.buffer = self.pool.acquire();
+        }
+        let mut offset = 0;
+        while offset < buf.len() {
+            let remaining = self.part_size - self.buffer.len();
+            let to_write = remaining.min(buf.len() - offset);
+            self.buffer.extend_from_slice(&buf[offset..offset + to_write]);
+            offset += to_write;
+            self.position += to_write as u64;
+            if self.buffer.len() == self.part_size {
+                self.flush_buffer(false)
+                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+            }
+        }
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.check_error()
+    }
+}
+
+impl io::Seek for MultipartUploadWriter {
+    fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
+        match pos {
+            SeekFrom::Current(0) => Ok(self.position),
+            SeekFrom::End(0) => Ok(self.position),
+            SeekFrom::Start(offset) if offset == self.position => Ok(self.position),
+            _ => Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "multipart upload writer only supports no-op seeks",
+            )),
+        }
+    }
+}
+
+impl Drop for MultipartUploadWriter {
+    fn drop(&mut self) {
+        if self.join.is_none() {
+            return;
+        }
+        let sender = self.sender.clone();
+        let _ = sender.try_send(UploadCommand::Abort);
+        if self.buffer.capacity() >= self.part_size && self.part_size > 0 {
+            let buffer = std::mem::take(&mut self.buffer);
+            self.pool.release(buffer);
+        }
+        if let Some(join) = self.join.take() {
+            let _ = join.join();
+        }
+    }
+}
+
+async fn run_upload_loop(
+    store: Arc<dyn ObjectStore>,
+    path: ObjectPath,
+    mut receiver: mpsc::Receiver<UploadCommand>,
+    part_size: usize,
+    max_concurrency: usize,
+    error: Arc<Mutex<Option<anyhow::Error>>>,
+) -> Result<()> {
+    let upload = store.put_multipart(&path).await?;
+    let mut writer = WriteMultipart::new_with_chunk_size(upload, part_size);
+    while let Some(command) = receiver.recv().await {
+        match command {
+            UploadCommand::Part(part) => {
+                writer.wait_for_capacity(max_concurrency).await?;
+                let payload = Bytes::from_owner(part);
+                writer.put(payload);
+            }
+            UploadCommand::Finish(done) => {
+                let result: Result<()> = writer
+                    .finish()
+                    .await
+                    .map(|_| ())
+                    .map_err(|e| anyhow!(e.to_string()));
+                if let Err(err) = &result {
+                    if let Ok(mut guard) = error.lock() {
+                        *guard = Some(anyhow!(err.to_string()));
+                    }
+                }
+                let _ = done.send(result);
+                return Ok(());
+            }
+            UploadCommand::Abort => {
+                let _ = writer.abort().await;
+                return Ok(());
+            }
+        }
+    }
+    let _ = writer.abort().await;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use object_store::memory::InMemory;
+
+    #[test]
+    fn multipart_upload_writer_reuses_buffers() -> Result<()> {
+        let store = Arc::new(InMemory::new()) as Arc<dyn ObjectStore>;
+        let path = ObjectPath::from("test/part.parquet");
+        let pool = UploadBufferPool::new(8, 2);
+        let writer = MultipartUploadWriter::new(store.clone(), path.clone(), pool.clone(), 2)?;
+        let mut writer = writer;
+        writer.write_all(b"abcdef")?;
+        writer.write_all(b"ghijklmnop")?;
+        writer.finish()?;
+        let rt = Runtime::new()?;
+        let data = rt
+            .block_on(async { store.get(&path).await?.bytes().await })
+            .map_err(|e| anyhow!(e.to_string()))?;
+        assert_eq!(data.as_ref(), b"abcdefghijklmnop");
+        Ok(())
+    }
 }

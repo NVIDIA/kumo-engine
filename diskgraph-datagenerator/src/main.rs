@@ -1,5 +1,6 @@
 mod config;
 mod generator;
+mod output;
 mod progress;
 
 use std::fs;
@@ -9,6 +10,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 
 use crate::config::DatasetConfig;
+use crate::output::OutputTarget;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about = "Synthetic parquet generator from JSON config.")]
@@ -18,7 +20,7 @@ struct Cli {
     config: PathBuf,
     /// Output directory where table folders are written.
     #[arg(short, long, value_name = "PATH")]
-    output: PathBuf,
+    output: String,
     /// Number of worker threads (defaults to available cores).
     #[arg(long)]
     workers: Option<usize>,
@@ -31,7 +33,8 @@ fn main() -> Result<()> {
     let workers = cli
         .workers
         .unwrap_or_else(|| std::thread::available_parallelism().map(|v| v.get()).unwrap_or(1));
-    generator::run(config, &cli.output, workers)
+    let output = OutputTarget::parse(&cli.output, workers)?;
+    generator::run(config, output, workers)
 }
 
 fn load_config(path: &PathBuf) -> Result<DatasetConfig> {
