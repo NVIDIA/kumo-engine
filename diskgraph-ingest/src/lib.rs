@@ -2494,7 +2494,7 @@ impl IngestContext {
                 delta: 0,
                 total: Some(self.num_shards as u64),
                 status: None,
-});
+            });
             let pk_name = table.primary_key.clone().unwrap();
             let pk_col = column_spec(table, &pk_name)?;
             let pk_hash_paths = std::sync::Arc::new(std::sync::Mutex::new(vec![
@@ -3013,7 +3013,7 @@ impl IngestContext {
                                 delta: 1,
                                 total: Some(num_shards),
                                 status: None,
-});
+                            });
                         }
                         Ok(())
                     }),
@@ -3045,7 +3045,7 @@ impl IngestContext {
                 delta: 0,
                 total: Some(self.num_shards as u64),
                 status: None,
-});
+            });
         }
         if let Ok(counts) = std::sync::Arc::try_unwrap(duplicate_counts) {
             self.pk_duplicate_counts = counts.into_inner().unwrap();

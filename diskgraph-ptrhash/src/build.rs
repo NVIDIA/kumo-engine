@@ -204,6 +204,13 @@ Eviction chain length: {evictions:>9}
                             taken.len(),
                             100. * num_taken_slots as f32 / taken.len() as f32,
                         );
+                        warn!(
+                            "PtrHash build failed: eviction chain too long (part {} bucket_len {} slots {} evictions {})",
+                            part,
+                            new_b_len,
+                            self.slots,
+                            evictions
+                        );
                         return None;
                     }
                 }

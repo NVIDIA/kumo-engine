@@ -17,7 +17,7 @@ impl<Key: KeyT, BF: BucketFn, F: Packed, Hx: Hasher<Key>> PtrHash<Key, BF, F, Hx
         hashes: &mut Vec<Hx::H>,
         part_starts: &mut Vec<u32>,
         hashes_tmp: &mut Vec<Hx::H>,
-    ) -> Option<()> {
+    ) -> Result<(), SortPartsError> {
         // For FastReduce methods, we can just sort by hash directly
         // instead of sorting by bucket id: For FR32L, first partition by those
         // <self.p1 and those >=self.p1, and then sort each group using the low
@@ -40,7 +40,7 @@ impl<Key: KeyT, BF: BucketFn, F: Packed, Hx: Hasher<Key>> PtrHash<Key, BF, F, Hx
         let distinct = hashes.windows(2).all(|w| w[0] != w[1]);
         let start = log_duration("├ check dups", start);
         if !distinct {
-            return None;
+            return Err(SortPartsError::DuplicateHashes);
         }
 
         // 4. Find the start of each part using binary search.
@@ -98,16 +98,12 @@ impl<Key: KeyT, BF: BucketFn, F: Packed, Hx: Hasher<Key>> PtrHash<Key, BF, F, Hx
         );
 
         if max_part_len as usize > self.slots {
-            trace!(
-                    "Shard {shard}: Part has more elements than slots! elements {max_part_len} > {} slots",
-                    self.slots
-                );
-            return None;
+            return Err(SortPartsError::PartOverflow);
         }
 
         log_duration("├part starts", start);
 
-        Some(())
+        Ok(())
     }
 
     // Sort the buckets in the given part and corresponding range of hashes.

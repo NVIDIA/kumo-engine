@@ -112,6 +112,12 @@ use std::{borrow::Borrow, default::Default, marker::PhantomData, time::Instant};
 
 use crate::{hash::*, pack::Packed, reduce::*, util::log_duration};
 
+#[derive(Debug)]
+pub(crate) enum SortPartsError {
+    DuplicateHashes,
+    PartOverflow,
+}
+
 /// Parameters for PtrHash construction.
 ///
 /// While all fields are public, prefer one of the default functions,
@@ -439,21 +445,46 @@ impl<Key: KeyT, BF: BucketFn, F: MutPacked, Hx: Hasher<Key>> PtrHash<Key, BF, F,
         // Formula of Vigna, eps-cost-sharding.
         let eps = 1.0 - params.alpha;
         let x = n as f64 * eps * eps / 2.0;
-        let target_parts = x / x.ln();
+        let target_parts = if x <= 1.0 { 1.0 } else { x / x.ln() };
         let parts_per_shard = (target_parts.floor() as usize) / shards;
-        let parts = parts_per_shard.max(1) * shards;
+        let mut parts = parts_per_shard.max(1) * shards;
 
-        let keys_per_part = n / parts;
-        let parts_per_shard = parts / shards;
-        let mut slots_per_part = (keys_per_part as f64 / params.alpha) as usize;
-        // Avoid powers of two, since then %S does not depend on all bits.
-        if slots_per_part.is_power_of_two() {
-            slots_per_part += 1;
+        let mut keys_per_part;
+        let mut slots_per_part;
+        let mut buckets_per_part;
+        let mut slots_total;
+        let mut buckets_total;
+
+        loop {
+            keys_per_part = n / parts;
+            slots_per_part = (keys_per_part as f64 / params.alpha) as usize;
+            // Avoid powers of two, since then %S does not depend on all bits.
+            if slots_per_part.is_power_of_two() {
+                slots_per_part += 1;
+            }
+            slots_total = parts * slots_per_part;
+            // Add a few extra buckets to avoid collisions for small n.
+            buckets_per_part = (keys_per_part as f64 / params.lambda).ceil() as usize + 3;
+            buckets_total = parts * buckets_per_part;
+
+            if parts == 1 {
+                break;
+            }
+
+            // Ensure the expected maximum part size fits the available slots.
+            let exp_keys_per_part = n as f64 / parts as f64;
+            let stddev = exp_keys_per_part.sqrt();
+            let stddevs_away = ((parts as f64).ln() * 2.0).sqrt();
+            let exp_max = exp_keys_per_part + stddev * stddevs_away;
+            let buf_max = exp_max + 2.0 * stddev;
+            if buf_max < slots_per_part as f64 {
+                break;
+            }
+
+            parts = (parts / 2).max(1);
         }
-        let slots_total = parts * slots_per_part;
-        // Add a few extra buckets to avoid collisions for small n.
-        let buckets_per_part = (keys_per_part as f64 / params.lambda).ceil() as usize + 3;
-        let buckets_total = parts * buckets_per_part;
+
+        let parts_per_shard = parts / shards;
 
         trace!("        keys: {n:>10}");
         trace!("      shards: {shards:>10}");
@@ -526,6 +557,17 @@ impl<Key: KeyT, BF: BucketFn, F: MutPacked, Hx: Hasher<Key>> PtrHash<Key, BF, F,
 
             // Choose a global seed s.
             self.seed = rng.random();
+            trace!(
+                "PtrHash build try {} seed={} n={} parts={} slots/part={} buckets/part={} alpha={} lambda={}",
+                tries,
+                self.seed,
+                self.n,
+                self.parts,
+                self.slots,
+                self.buckets,
+                self.params.alpha,
+                self.params.lambda
+            );
 
             // Reset output-memory.
             scratch.pilots.clear();
@@ -551,16 +593,15 @@ impl<Key: KeyT, BF: BucketFn, F: MutPacked, Hx: Hasher<Key>> PtrHash<Key, BF, F,
 
             // Determine the buckets.
             let start = std::time::Instant::now();
-            let Some(()) = self.sort_parts_with_scratch(
+            let sorted = self.sort_parts_with_scratch(
                 0,
                 &mut scratch.hashes,
                 &mut scratch.part_starts,
                 &mut scratch.hashes_tmp,
-            ) else {
-                trace!("Found duplicate hashes");
-                // Found duplicate hashes.
+            );
+            if sorted.is_err() {
                 continue 's;
-            };
+            }
             let start = log_duration("sort buckets", start);
 
             // Compute pilots.
