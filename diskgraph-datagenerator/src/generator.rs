@@ -33,7 +33,7 @@ pub fn run(config: DatasetConfig, output: OutputTarget, workers: usize) -> Resul
         .collect::<Vec<_>>();
     output.prepare(&table_names)?;
 
-    let total_rows = plan.total_rows;
+    let total_files = plan.tasks.len() as u64;
     let progress = Arc::new(Mutex::new(ProgressState::new()));
     let completed = Arc::new(AtomicU64::new(0));
     let done = Arc::new(AtomicBool::new(false));
@@ -42,7 +42,7 @@ pub fn run(config: DatasetConfig, output: OutputTarget, workers: usize) -> Resul
         Arc::clone(&progress),
         Arc::clone(&completed),
         Arc::clone(&done),
-        total_rows,
+        total_files,
         upload_stats,
     );
 
@@ -90,7 +90,7 @@ fn spawn_progress(
     progress: Arc<Mutex<ProgressState>>,
     completed: Arc<AtomicU64>,
     done: Arc<AtomicBool>,
-    total_rows: u64,
+    total_files: u64,
     upload_stats: Option<CloudTransferStatsHandle>,
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
@@ -99,7 +99,7 @@ fn spawn_progress(
             let current = completed.load(Ordering::Relaxed);
             if let Ok(mut progress) = progress.lock() {
                 if last == 0 {
-                    progress.start_stage("Generating rows", Some(total_rows));
+                    progress.start_stage("Generating shards", Some(total_files));
                 }
                 progress.set_position(current);
                 if let Some(stats) = upload_stats.as_ref() {
@@ -122,7 +122,7 @@ fn spawn_progress(
                 }
             }
             last = current;
-            if done.load(Ordering::Relaxed) || current >= total_rows {
+            if done.load(Ordering::Relaxed) || current >= total_files {
                 break;
             }
             thread::sleep(Duration::from_millis(250));
@@ -158,7 +158,6 @@ fn worker_loop(
 
 #[derive(Clone, Debug)]
 struct Plan {
-    total_rows: u64,
     tables: Vec<TablePlan>,
     tasks: Vec<ShardTask>,
     seed: u64,
@@ -169,7 +168,6 @@ struct Plan {
 #[derive(Clone, Debug)]
 struct TablePlan {
     name: String,
-    row_count: u64,
     shards: usize,
     shard_ranges: Vec<RowRange>,
     schema: Arc<Schema>,
@@ -307,7 +305,6 @@ fn build_plan(config: &DatasetConfig) -> Result<Plan> {
         let shard_ranges = shard_ranges(row_count, table.shards)?;
         tables.push(TablePlan {
             name: table.name.clone(),
-            row_count,
             shards: table.shards,
             shard_ranges,
             schema,
@@ -326,9 +323,7 @@ fn build_plan(config: &DatasetConfig) -> Result<Plan> {
         }
     }
 
-    let total_rows = tables.iter().map(|t| t.row_count).sum();
     Ok(Plan {
-        total_rows,
         tables,
         tasks,
         seed: config.seed,
@@ -593,11 +588,12 @@ fn generate_shard(
         writer.write(&batch)?;
         row_start += batch_len as u64;
         remaining -= batch_len as u64;
-        completed.fetch_add(batch_len as u64, Ordering::Relaxed);
     }
 
     let sink = writer.into_inner()?;
-    sink.finish()?;
+    let completion = sink.finish()?;
+    completion.wait()?;
+    completed.fetch_add(1, Ordering::Relaxed);
     Ok(())
 }
 

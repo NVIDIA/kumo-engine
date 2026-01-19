@@ -5,7 +5,8 @@ use std::path::PathBuf;
 use anyhow::{anyhow, Context, Result};
 use diskgraph_fs::{
     build_adls_client, build_gcs_client, build_s3_client, AdlsConfig, CloudTransfer,
-    CloudTransferConfig, CloudTransferStatsHandle, GcsConfig, PooledBuffer, S3Config,
+    CloudTransferConfig, CloudTransferStatsHandle, CloudTransferTicket, GcsConfig, PooledBuffer,
+    S3Config,
 };
 use object_store::path::Path as ObjectPath;
 
@@ -125,9 +126,9 @@ pub enum ParquetSink {
 }
 
 impl ParquetSink {
-    pub fn finish(self) -> Result<()> {
+    pub fn finish(self) -> Result<CloudTransferTicket> {
         match self {
-            ParquetSink::Local(_) => Ok(()),
+            ParquetSink::Local(_) => Ok(CloudTransferTicket::ready(Ok(()))),
             ParquetSink::Cloud(writer) => writer.finish(),
         }
     }
@@ -174,7 +175,7 @@ impl CloudSink {
         }
     }
 
-    fn finish(self) -> Result<()> {
+    fn finish(self) -> Result<CloudTransferTicket> {
         let buffer = self.buffer.into_inner();
         self.transfer.submit(self.path, buffer)
     }

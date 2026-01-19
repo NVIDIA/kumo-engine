@@ -67,6 +67,31 @@ pub struct CloudTransferStatsSnapshot {
 }
 
 #[derive(Debug)]
+pub struct CloudTransferTicket {
+    result: Option<Result<()>>,
+    receiver: Option<oneshot::Receiver<Result<()>>>,
+}
+
+impl CloudTransferTicket {
+    pub fn ready(result: Result<()>) -> Self {
+        Self {
+            result: Some(result),
+            receiver: None,
+        }
+    }
+
+    pub fn wait(mut self) -> Result<()> {
+        if let Some(result) = self.result.take() {
+            return result;
+        }
+        let receiver = self.receiver.take().expect("cloud transfer ticket");
+        receiver
+            .blocking_recv()
+            .map_err(|_| anyhow!("cloud transfer stopped"))?
+    }
+}
+
+#[derive(Debug)]
 struct CloudTransferStatsInner {
     total_buffers: usize,
     available_buffers: AtomicUsize,
@@ -237,7 +262,7 @@ impl CloudTransfer {
         self.inner.pool.acquire()
     }
 
-    pub fn submit(&self, path: ObjectPath, buffer: Vec<u8>) -> Result<()> {
+    pub fn submit(&self, path: ObjectPath, buffer: Vec<u8>) -> Result<CloudTransferTicket> {
         let (tx, rx) = oneshot::channel();
         let job = UploadJob {
             path,
@@ -258,10 +283,10 @@ impl CloudTransfer {
             self.inner.pool.release(job.buffer);
             return Err(anyhow!("cloud transfer stopped"));
         }
-        match rx.blocking_recv() {
-            Ok(result) => result,
-            Err(_) => Err(anyhow!("cloud transfer stopped")),
-        }
+        Ok(CloudTransferTicket {
+            result: None,
+            receiver: Some(rx),
+        })
     }
 
     pub fn stats_handle(&self) -> CloudTransferStatsHandle {
@@ -532,7 +557,9 @@ mod tests {
         let mut buffer = transfer.acquire_buffer();
         buffer.write_all(b"hello world")?;
         let path = ObjectPath::from("test/part.parquet");
-        transfer.submit(path.clone(), buffer.into_inner())?;
+        transfer
+            .submit(path.clone(), buffer.into_inner())?
+            .wait()?;
         let rt = Runtime::new()?;
         let data = rt
             .block_on(async { store.get(&path).await?.bytes().await })
