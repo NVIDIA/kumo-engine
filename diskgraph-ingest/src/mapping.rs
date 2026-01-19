@@ -1,9 +1,9 @@
 use anyhow::{anyhow, Result};
 use gxhash::GxHasher;
 use memmap2::Mmap;
-#[cfg(feature = "pkhash64")]
+#[cfg(not(feature = "pkhash128"))]
 use ptr_hash::hash::GxHash64;
-#[cfg(not(feature = "pkhash64"))]
+#[cfg(feature = "pkhash128")]
 use ptr_hash::hash::GxHash128;
 use ptr_hash::hash::Hasher as PtrHasher;
 use ptr_hash::DefaultPtrHash;
@@ -123,9 +123,9 @@ impl PkGxHash {
     }
 }
 
-#[cfg(feature = "pkhash64")]
+#[cfg(not(feature = "pkhash128"))]
 pub type PkPtrHash = GxHash64;
-#[cfg(not(feature = "pkhash64"))]
+#[cfg(feature = "pkhash128")]
 pub type PkPtrHash = GxHash128;
 pub type PkPtrHashOutput = <PkPtrHash as PtrHasher<u64>>::H;
 

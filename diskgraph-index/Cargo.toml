@@ -35,4 +35,4 @@ chrono = { workspace = true }
 tempfile = "3"
 
 [features]
-pkhash64 = []
+pkhash128 = []
