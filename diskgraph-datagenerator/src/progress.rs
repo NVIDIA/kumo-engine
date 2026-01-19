@@ -5,6 +5,7 @@ pub struct ProgressState {
     pb: ProgressBar,
     last_stage: Option<String>,
     last_total: Option<u64>,
+    last_status: Option<String>,
 }
 
 impl ProgressState {
@@ -16,6 +17,7 @@ impl ProgressState {
             pb,
             last_stage: None,
             last_total: None,
+            last_status: None,
         }
     }
 
@@ -25,6 +27,7 @@ impl ProgressState {
             self.pb.set_message(message.clone());
             self.last_stage = Some(message);
             self.last_total = None;
+            self.last_status = None;
         }
         match total {
             Some(total) => {
@@ -60,6 +63,21 @@ impl ProgressState {
 
     pub fn finish(&self, message: &str) {
         self.pb.finish_with_message(message.to_string());
+    }
+
+    pub fn set_status(&mut self, status: Option<String>) {
+        if status == self.last_status {
+            return;
+        }
+        self.last_status = status.clone();
+        let Some(stage) = self.last_stage.as_ref() else {
+            return;
+        };
+        if let Some(status) = status {
+            self.pb.set_message(format!("{} {}", stage, status));
+        } else {
+            self.pb.set_message(stage.clone());
+        }
     }
 }
 

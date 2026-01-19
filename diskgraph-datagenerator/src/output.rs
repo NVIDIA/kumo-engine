@@ -4,38 +4,40 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
-use diskgraph_fs::{
-    build_adls_client, build_gcs_client, build_s3_client, AdlsConfig, GcsConfig,
-    MultipartUploadWriter, S3Config, UploadBufferPool,
-};
+use diskgraph_fs::{build_adls_client, build_gcs_client, build_s3_client, AdlsConfig, GcsConfig, S3Config};
 use object_store::path::Path as ObjectPath;
-use object_store::ObjectStore;
+
+use crate::uploader::{CloudSink, FileBufferPool, UploadExecutor, UploadStatsHandle};
 
 #[derive(Clone, Debug)]
 pub enum OutputTarget {
     Local { root: PathBuf },
     S3 {
         prefix: String,
-        store: Arc<dyn ObjectStore>,
-        pool: UploadBufferPool,
-        max_concurrency: usize,
+        pool: FileBufferPool,
+        uploader: UploadExecutor,
     },
     Gcs {
         prefix: String,
-        store: Arc<dyn ObjectStore>,
-        pool: UploadBufferPool,
-        max_concurrency: usize,
+        pool: FileBufferPool,
+        uploader: UploadExecutor,
     },
     Adls {
         prefix: String,
-        store: Arc<dyn ObjectStore>,
-        pool: UploadBufferPool,
-        max_concurrency: usize,
+        pool: FileBufferPool,
+        uploader: UploadExecutor,
     },
 }
 
 impl OutputTarget {
-    pub fn parse(output: &str, workers: usize) -> Result<Self> {
+    pub fn parse(output: &str, _workers: usize) -> Result<Self> {
+        let part_size = env_usize("DISKGRAPH_CLOUD_PART_SIZE_MB", 64) * 1024 * 1024;
+        let cpu_default = std::thread::available_parallelism()
+            .map(|v| v.get())
+            .unwrap_or(1);
+        let max_requests = env_usize("DISKGRAPH_CLOUD_MAX_REQUESTS", cpu_default);
+        let buffer_count = env_usize("DISKGRAPH_CLOUD_FILE_BUFFER_COUNT", max_requests.max(1));
+        let max_retries = env_usize("DISKGRAPH_CLOUD_FILE_RETRY_MAX", 2);
         if output.starts_with("s3://") {
             let (bucket, prefix) = parse_s3_url(output)?;
             let s3 = build_s3_client(S3Config {
@@ -49,22 +51,34 @@ impl OutputTarget {
                 secret_access_key: None,
                 session_token: None,
             })?;
-            let pool = UploadBufferPool::new(64 * 1024 * 1024, pool_buffer_count(workers, 8));
+            let pool = FileBufferPool::new(buffer_count.max(1));
+            let uploader = UploadExecutor::new(
+                Arc::clone(&s3.store),
+                pool.clone(),
+                part_size,
+                max_requests.max(1),
+                max_retries,
+            );
             Ok(OutputTarget::S3 {
                 prefix,
-                store: s3.store,
                 pool,
-                max_concurrency: 8,
+                uploader,
             })
         } else if output.starts_with("gs://") {
             let (bucket, prefix) = parse_gs_url(output)?;
             let gcs = build_gcs_client(GcsConfig { bucket })?;
-            let pool = UploadBufferPool::new(64 * 1024 * 1024, pool_buffer_count(workers, 8));
+            let pool = FileBufferPool::new(buffer_count.max(1));
+            let uploader = UploadExecutor::new(
+                Arc::clone(&gcs.store),
+                pool.clone(),
+                part_size,
+                max_requests.max(1),
+                max_retries,
+            );
             Ok(OutputTarget::Gcs {
                 prefix,
-                store: gcs.store,
                 pool,
-                max_concurrency: 8,
+                uploader,
             })
         } else if output.starts_with("az://") {
             let (account, container, prefix) = parse_az_url(output)?;
@@ -80,12 +94,18 @@ impl OutputTarget {
                 client_secret: std::env::var("AZURE_CLIENT_SECRET").ok(),
                 tenant_id: std::env::var("AZURE_TENANT_ID").ok(),
             })?;
-            let pool = UploadBufferPool::new(64 * 1024 * 1024, pool_buffer_count(workers, 8));
+            let pool = FileBufferPool::new(buffer_count.max(1));
+            let uploader = UploadExecutor::new(
+                Arc::clone(&adls.store),
+                pool.clone(),
+                part_size,
+                max_requests.max(1),
+                max_retries,
+            );
             Ok(OutputTarget::Adls {
                 prefix,
-                store: adls.store,
                 pool,
-                max_concurrency: 8,
+                uploader,
             })
         } else {
             Ok(OutputTarget::Local {
@@ -118,31 +138,39 @@ impl OutputTarget {
             }
             OutputTarget::S3 {
                 prefix,
-                store,
                 pool,
-                max_concurrency,
+                uploader,
+                ..
             }
             | OutputTarget::Gcs {
                 prefix,
-                store,
                 pool,
-                max_concurrency,
+                uploader,
+                ..
             }
             | OutputTarget::Adls {
                 prefix,
-                store,
                 pool,
-                max_concurrency,
+                uploader,
+                ..
             } => {
                 let key = join_prefix(prefix, &format!("{}/{}", table, filename));
-                let writer = MultipartUploadWriter::new(
-                    Arc::clone(store),
+                let buffer = pool.acquire();
+                Ok(ParquetSink::Cloud(CloudSink::new(
+                    uploader.clone(),
                     ObjectPath::from(key),
-                    pool.clone(),
-                    *max_concurrency,
-                )?;
-                Ok(ParquetSink::Cloud(writer))
+                    buffer,
+                )))
             }
+        }
+    }
+
+    pub fn stats_handle(&self) -> Option<UploadStatsHandle> {
+        match self {
+            OutputTarget::Local { .. } => None,
+            OutputTarget::S3 { uploader, .. }
+            | OutputTarget::Gcs { uploader, .. }
+            | OutputTarget::Adls { uploader, .. } => Some(uploader.stats_handle()),
         }
     }
 }
@@ -150,7 +178,7 @@ impl OutputTarget {
 #[derive(Debug)]
 pub enum ParquetSink {
     Local(File),
-    Cloud(MultipartUploadWriter),
+    Cloud(CloudSink),
 }
 
 impl ParquetSink {
@@ -187,61 +215,50 @@ impl Seek for ParquetSink {
     }
 }
 
-fn join_prefix(prefix: &str, name: &str) -> String {
+fn env_usize(name: &str, default: usize) -> usize {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(default)
+}
+
+fn parse_s3_url(url: &str) -> Result<(String, String)> {
+    let url = url.strip_prefix("s3://").ok_or_else(|| anyhow!("bad s3 url"))?;
+    let mut parts = url.splitn(2, '/');
+    let bucket = parts.next().unwrap_or_default();
+    let prefix = parts.next().unwrap_or_default();
+    if bucket.is_empty() {
+        return Err(anyhow!("s3 url must include bucket"));
+    }
+    Ok((bucket.to_string(), prefix.to_string()))
+}
+
+fn parse_gs_url(url: &str) -> Result<(String, String)> {
+    let url = url.strip_prefix("gs://").ok_or_else(|| anyhow!("bad gs url"))?;
+    let mut parts = url.splitn(2, '/');
+    let bucket = parts.next().unwrap_or_default();
+    let prefix = parts.next().unwrap_or_default();
+    if bucket.is_empty() {
+        return Err(anyhow!("gs url must include bucket"));
+    }
+    Ok((bucket.to_string(), prefix.to_string()))
+}
+
+fn parse_az_url(url: &str) -> Result<(String, String, String)> {
+    let url = url.strip_prefix("az://").ok_or_else(|| anyhow!("bad az url"))?;
+    let mut parts = url.splitn(3, '/');
+    let account = parts.next().unwrap_or_default();
+    let container = parts.next().unwrap_or_default();
+    let prefix = parts.next().unwrap_or_default();
+    if account.is_empty() || container.is_empty() {
+        return Err(anyhow!("az url must include account/container"));
+    }
+    Ok((account.to_string(), container.to_string(), prefix.to_string()))
+}
+
+fn join_prefix(prefix: &str, path: &str) -> String {
     if prefix.is_empty() {
-        name.to_string()
-    } else {
-        format!("{}/{}", prefix.trim_end_matches('/'), name)
+        return path.to_string();
     }
-}
-
-fn pool_buffer_count(workers: usize, max_concurrency: usize) -> usize {
-    let min_buffers = max_concurrency.saturating_mul(2);
-    let mut buffers = max_concurrency.saturating_mul(workers.max(1));
-    if buffers < min_buffers {
-        buffers = min_buffers;
-    }
-    if buffers > 64 {
-        buffers = 64;
-    }
-    buffers
-}
-
-fn parse_s3_url(raw: &str) -> Result<(String, String)> {
-    let url = url::Url::parse(raw).map_err(|e| anyhow!("invalid s3 url {raw}: {e}"))?;
-    let bucket = url
-        .host_str()
-        .ok_or_else(|| anyhow!("missing bucket in s3 url"))?
-        .to_string();
-    let key = url.path().trim_start_matches('/').to_string();
-    Ok((bucket, key))
-}
-
-fn parse_gs_url(raw: &str) -> Result<(String, String)> {
-    let url = url::Url::parse(raw).map_err(|e| anyhow!("invalid gs url {raw}: {e}"))?;
-    let bucket = url
-        .host_str()
-        .ok_or_else(|| anyhow!("missing bucket in gs url"))?
-        .to_string();
-    let key = url.path().trim_start_matches('/').to_string();
-    Ok((bucket, key))
-}
-
-fn parse_az_url(raw: &str) -> Result<(String, String, String)> {
-    let url = url::Url::parse(raw).map_err(|e| anyhow!("invalid az url {raw}: {e}"))?;
-    let account = url
-        .host_str()
-        .ok_or_else(|| anyhow!("missing account in az url"))?
-        .to_string();
-    let mut segments = url
-        .path()
-        .trim_start_matches('/')
-        .split('/')
-        .filter(|s| !s.is_empty());
-    let container = segments
-        .next()
-        .ok_or_else(|| anyhow!("missing container in az url"))?
-        .to_string();
-    let key = segments.collect::<Vec<_>>().join("/");
-    Ok((account, container, key))
+    format!("{}/{}", prefix.trim_end_matches('/'), path)
 }

@@ -22,6 +22,7 @@ use crate::config::{
 };
 use crate::output::OutputTarget;
 use crate::progress::ProgressState;
+use crate::uploader::UploadStatsHandle;
 
 pub fn run(config: DatasetConfig, output: OutputTarget, workers: usize) -> Result<()> {
     let plan = build_plan(&config)?;
@@ -36,11 +37,13 @@ pub fn run(config: DatasetConfig, output: OutputTarget, workers: usize) -> Resul
     let progress = Arc::new(Mutex::new(ProgressState::new()));
     let completed = Arc::new(AtomicU64::new(0));
     let done = Arc::new(AtomicBool::new(false));
+    let upload_stats = output.stats_handle();
     let progress_handle = spawn_progress(
         Arc::clone(&progress),
         Arc::clone(&completed),
         Arc::clone(&done),
         total_rows,
+        upload_stats,
     );
 
     let tasks = Arc::new(Mutex::new(VecDeque::from(plan.tasks.clone())));
@@ -88,6 +91,7 @@ fn spawn_progress(
     completed: Arc<AtomicU64>,
     done: Arc<AtomicBool>,
     total_rows: u64,
+    upload_stats: Option<UploadStatsHandle>,
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         let mut last = 0u64;
@@ -98,6 +102,23 @@ fn spawn_progress(
                     progress.start_stage("Generating rows", Some(total_rows));
                 }
                 progress.set_position(current);
+                if let Some(stats) = upload_stats.as_ref() {
+                    let snapshot = stats.snapshot();
+                    let mut status = format!(
+                        "upload buf={}/{} queued={} inflight={} started={} err={}",
+                        snapshot.available_buffers,
+                        snapshot.total_buffers,
+                        snapshot.queued_jobs,
+                        snapshot.inflight_parts,
+                        snapshot.parts_started,
+                        snapshot.parts_errors
+                    );
+                    if let Some(err) = snapshot.last_error.as_ref() {
+                        status.push_str(" last_err=");
+                        status.push_str(&truncate_status(err, 60));
+                    }
+                    progress.set_status(Some(status));
+                }
             }
             last = current;
             if done.load(Ordering::Relaxed) || current >= total_rows {
@@ -106,6 +127,15 @@ fn spawn_progress(
             thread::sleep(Duration::from_millis(250));
         }
     })
+}
+
+fn truncate_status(input: &str, max_len: usize) -> String {
+    if input.len() <= max_len {
+        return input.to_string();
+    }
+    let mut out = input.chars().take(max_len.saturating_sub(3)).collect::<String>();
+    out.push_str("...");
+    out
 }
 
 fn worker_loop(
