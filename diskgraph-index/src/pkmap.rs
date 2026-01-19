@@ -3,9 +3,9 @@ use diskgraph_core::metadata::PrimaryKeyMap;
 use epserde::prelude::{Deserialize as EpDeserialize, Flags as EpFlags};
 use gxhash::GxHasher;
 use memmap2::Mmap;
-#[cfg(feature = "pkhash64")]
+#[cfg(not(feature = "pkhash128"))]
 use ptr_hash::hash::GxHash64;
-#[cfg(not(feature = "pkhash64"))]
+#[cfg(feature = "pkhash128")]
 use ptr_hash::hash::GxHash128;
 use ptr_hash::DefaultPtrHash;
 use std::fs::File;
@@ -19,9 +19,9 @@ const PK_DATA_ENTRY_LEN: usize = 8 + 4;
 
 const GXHASH_SHARD_SEED: u64 = 0x6a09e667f3bcc909;
 
-#[cfg(feature = "pkhash64")]
+#[cfg(not(feature = "pkhash128"))]
 type PkPtrHash = GxHash64;
-#[cfg(not(feature = "pkhash64"))]
+#[cfg(feature = "pkhash128")]
 type PkPtrHash = GxHash128;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
