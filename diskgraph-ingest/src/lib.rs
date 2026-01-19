@@ -84,6 +84,25 @@ thread_local! {
         std::cell::RefCell::new(PtrHashScratch::new());
 }
 
+struct EdgeMapScratch {
+    key_buf: Vec<u8>,
+    fkey_bitmap: Vec<u8>,
+}
+
+impl EdgeMapScratch {
+    fn new() -> Self {
+        Self {
+            key_buf: Vec::new(),
+            fkey_bitmap: Vec::new(),
+        }
+    }
+}
+
+thread_local! {
+    static EDGE_MAP_SCRATCH: std::cell::RefCell<EdgeMapScratch> =
+        std::cell::RefCell::new(EdgeMapScratch::new());
+}
+
 struct PkMapScratch {
     seen_u64: std::collections::HashMap<u64, u32>,
     seen_uuid: std::collections::HashMap<[u8; 16], u32>,
@@ -3317,7 +3336,12 @@ impl IngestContext {
             }
             let progress = self.progress.clone();
             let target = std::sync::Arc::clone(&self.target);
-            let writer_pool = EdgeWriterPool::new(std::sync::Arc::clone(&target), edge_writer_workers());
+            let buffer_pool = std::sync::Arc::new(EdgeBufferPool::new());
+            let writer_pool = EdgeWriterPool::new(
+                std::sync::Arc::clone(&target),
+                edge_writer_workers(),
+                std::sync::Arc::clone(&buffer_pool),
+            );
             let writer_senders = writer_pool.senders();
             let shard_offsets = self.shard_offsets.clone();
             let pk_hash_store = edge_ctx.pk_hash_store.clone();
@@ -3376,6 +3400,7 @@ impl IngestContext {
                 let rel_sort_lookups = std::sync::Arc::clone(&rel_sort_lookups);
                 let root = root.clone();
                     let writer_senders = std::sync::Arc::clone(&writer_senders);
+                    let buffer_pool = std::sync::Arc::clone(&buffer_pool);
                     let tx = tx.clone();
                     let src_fk_col = src_fk_col.clone();
                     tasks.push(WorkItem {
@@ -3425,6 +3450,7 @@ impl IngestContext {
                                 num_shards,
                                 buffer_limit,
                                 std::sync::Arc::clone(&writer_senders),
+                                std::sync::Arc::clone(&buffer_pool),
                             );
                             let mut reverse_batcher = EdgeBatcher::new(
                                 std::sync::Arc::<str>::from(rel.name_reverse.clone()),
@@ -3432,6 +3458,7 @@ impl IngestContext {
                                 num_shards,
                                 buffer_limit,
                                 std::sync::Arc::clone(&writer_senders),
+                                std::sync::Arc::clone(&buffer_pool),
                             );
                             let fkey_meta = root.join(temp_fkey_meta_path(
                                 &rel.src_table,
@@ -3457,103 +3484,112 @@ impl IngestContext {
                                 &rel.name_forward,
                                 shard,
                             ));
-                            let fkey_bitmap = read_fkey_bitmap(&bitmap_path, meta.row_count)?;
-                            let mut key_buf = Vec::new();
-                            read_temp_rows(&fkey_path, |row| {
-                                pending = pending.saturating_add(1);
-                                if pending >= PROGRESS_ROW_BATCH {
-                                    if let Some(cb) = &progress {
-                                        cb(ProgressEvent {
-                                            phase: ProgressPhase::EdgesPassA,
-                                            table: rel.name_forward.clone(),
-                                            shard: None,
-                                            kind: ProgressKind::Advance,
-                                            delta: pending,
-                                            total: Some(total_rows),
-                                            status: None,
+                            EDGE_MAP_SCRATCH.with(|scratch| -> Result<()> {
+                                let mut scratch = scratch.borrow_mut();
+                                scratch.key_buf.clear();
+                                let mut bitmap_buf = std::mem::take(&mut scratch.fkey_bitmap);
+                                let fkey_bitmap =
+                                    read_fkey_bitmap_into(&bitmap_path, meta.row_count, &mut bitmap_buf)?;
+                                let key_buf = &mut scratch.key_buf;
+                                let result = read_temp_rows(&fkey_path, |row| {
+                                    pending = pending.saturating_add(1);
+                                    if pending >= PROGRESS_ROW_BATCH {
+                                        if let Some(cb) = &progress {
+                                            cb(ProgressEvent {
+                                                phase: ProgressPhase::EdgesPassA,
+                                                table: rel.name_forward.clone(),
+                                                shard: None,
+                                                kind: ProgressKind::Advance,
+                                                delta: pending,
+                                                total: Some(total_rows),
+                                                status: None,
 });
+                                        }
+                                        pending = 0;
                                     }
-                                    pending = 0;
-                                }
-                                let src_local = local_count;
-                                let src_id = src_offsets
-                                    .get(shard)
-                                    .copied()
-                                    .unwrap_or(0)
-                                    .saturating_add(local_count);
-                                local_count = local_count.saturating_add(1);
-                                let byte_idx = (src_local / 8) as usize;
-                                if byte_idx >= fkey_bitmap.len() {
-                                    return Err(anyhow!("fkey bitmap truncated"));
-                                }
-                                let bit = (src_local % 8) as u8;
-                                if (fkey_bitmap[byte_idx] >> bit) & 1u8 == 0u8 {
-                                    return Ok(());
-                                }
-                                let mut data = row;
-                                let dst_key = match read_key_from_buf(&mut data, &src_fk_col) {
-                                    Ok(key) => key,
-                                    Err(_) => {
-                                        record_key_parse_failure(
-                                            &mut result.key_failures.parse_failures,
-                                            &mut result.key_failures.samples,
-                                            &mut result.key_failures.by_context,
-                                            &failure_context,
-                                            row,
-                                        );
+                                    let src_local = local_count;
+                                    let src_id = src_offsets
+                                        .get(shard)
+                                        .copied()
+                                        .unwrap_or(0)
+                                        .saturating_add(local_count);
+                                    local_count = local_count.saturating_add(1);
+                                    let byte_idx = (src_local / 8) as usize;
+                                    if byte_idx >= fkey_bitmap.len() {
+                                        return Err(anyhow!("fkey bitmap truncated"));
+                                    }
+                                    let bit = (src_local % 8) as u8;
+                                    if (fkey_bitmap[byte_idx] >> bit) & 1u8 == 0u8 {
                                         return Ok(());
                                     }
-                                };
-                                let dst_shard =
-                                    shard_for_key_from_key(&dst_key, &mut key_buf, num_shards)?;
-                                let dst_local = match dst_maps
-                                    .get(dst_shard)
-                                    .and_then(|map| map.lookup(&dst_key))
-                                {
-                                    Some(id) => u64::from(id),
-                                    None => {
-                                        let sample = if result.key_failures.samples.len() < 10 {
-                                            sample_key(&dst_key)
-                                        } else {
-                                            None
-                                        };
-                                        record_key_lookup_failure(
-                                            &mut result.key_failures.lookup_failures,
-                                            &mut result.key_failures.samples,
-                                            &mut result.key_failures.by_context,
-                                            &lookup_context,
-                                            sample,
-                                        );
-                                        return Ok(());
-                                    }
-                                };
-                                let dst_id = dst_offsets
-                                    .get(dst_shard)
-                                    .copied()
-                                    .unwrap_or(0)
-                                    .saturating_add(dst_local);
-                                let forward_sort_key = match &forward_lookup {
-                                    Some(lookup) => lookup.sort_key(
-                                        dst_shard,
-                                        dst_local,
-                                        shard,
-                                        0,
-                                    )?,
-                                    None => 0,
-                                };
-                                let reverse_sort_key = match &reverse_lookup {
-                                    Some(lookup) => lookup.sort_key(
-                                        shard,
-                                        src_local,
-                                        shard,
-                                        0,
-                                    )?,
-                                    None => 0,
-                                };
-                                forward_batcher.push(shard, src_id, dst_id, forward_sort_key)?;
-                                reverse_batcher.push(dst_shard, dst_id, src_id, reverse_sort_key)?;
-                                forward_count = forward_count.saturating_add(1);
-                                reverse_count = reverse_count.saturating_add(1);
+                                    let mut data = row;
+                                    let dst_key = match read_key_from_buf(&mut data, &src_fk_col) {
+                                        Ok(key) => key,
+                                        Err(_) => {
+                                            record_key_parse_failure(
+                                                &mut result.key_failures.parse_failures,
+                                                &mut result.key_failures.samples,
+                                                &mut result.key_failures.by_context,
+                                                &failure_context,
+                                                row,
+                                            );
+                                            return Ok(());
+                                        }
+                                    };
+                                    let dst_shard =
+                                        shard_for_key_from_key(&dst_key, key_buf, num_shards)?;
+                                    let dst_local = match dst_maps
+                                        .get(dst_shard)
+                                        .and_then(|map| map.lookup(&dst_key))
+                                    {
+                                        Some(id) => u64::from(id),
+                                        None => {
+                                            let sample = if result.key_failures.samples.len() < 10 {
+                                                sample_key(&dst_key)
+                                            } else {
+                                                None
+                                            };
+                                            record_key_lookup_failure(
+                                                &mut result.key_failures.lookup_failures,
+                                                &mut result.key_failures.samples,
+                                                &mut result.key_failures.by_context,
+                                                &lookup_context,
+                                                sample,
+                                            );
+                                            return Ok(());
+                                        }
+                                    };
+                                    let dst_id = dst_offsets
+                                        .get(dst_shard)
+                                        .copied()
+                                        .unwrap_or(0)
+                                        .saturating_add(dst_local);
+                                    let forward_sort_key = match &forward_lookup {
+                                        Some(lookup) => lookup.sort_key(
+                                            dst_shard,
+                                            dst_local,
+                                            shard,
+                                            0,
+                                        )?,
+                                        None => 0,
+                                    };
+                                    let reverse_sort_key = match &reverse_lookup {
+                                        Some(lookup) => lookup.sort_key(
+                                            shard,
+                                            src_local,
+                                            shard,
+                                            0,
+                                        )?,
+                                        None => 0,
+                                    };
+                                    forward_batcher.push(shard, src_id, dst_id, forward_sort_key)?;
+                                    reverse_batcher.push(dst_shard, dst_id, src_id, reverse_sort_key)?;
+                                    forward_count = forward_count.saturating_add(1);
+                                    reverse_count = reverse_count.saturating_add(1);
+                                    Ok(())
+                                });
+                                scratch.fkey_bitmap = bitmap_buf;
+                                result?;
                                 Ok(())
                             })?;
                             forward_batcher.flush_all()?;
@@ -3642,6 +3678,7 @@ impl IngestContext {
                 let root = root.clone();
                     let tx = tx.clone();
                     let writer_senders = std::sync::Arc::clone(&writer_senders);
+                    let buffer_pool = std::sync::Arc::clone(&buffer_pool);
                     let edge = edge.clone();
                     let forward_name = forward_name.clone();
                     let reverse_name = reverse_name.clone();
@@ -3705,6 +3742,7 @@ impl IngestContext {
                                 num_shards,
                                 buffer_limit,
                                 std::sync::Arc::clone(&writer_senders),
+                                std::sync::Arc::clone(&buffer_pool),
                             );
                             let mut reverse_batcher = EdgeBatcher::new(
                                 std::sync::Arc::<str>::from(reverse_name.clone()),
@@ -3712,17 +3750,21 @@ impl IngestContext {
                                 num_shards,
                                 buffer_limit,
                                 std::sync::Arc::clone(&writer_senders),
+                                std::sync::Arc::clone(&buffer_pool),
                             );
                             let mut pending = 0u64;
                             let mut forward_count = 0u64;
                             let mut reverse_count = 0u64;
                             let forward_path = root.join(temp_edge_path(&forward_name, shard));
                             let mut row_idx = 0u64;
-                            let mut key_buf = Vec::new();
-                            read_temp_rows(&forward_path, |row| {
-                                pending = pending.saturating_add(1);
-                                if pending >= PROGRESS_ROW_BATCH {
-                                    if let Some(cb) = &progress {
+                            EDGE_MAP_SCRATCH.with(|scratch| -> Result<()> {
+                                let mut scratch = scratch.borrow_mut();
+                                scratch.key_buf.clear();
+                                let key_buf = &mut scratch.key_buf;
+                                let result = read_temp_rows(&forward_path, |row| {
+                                    pending = pending.saturating_add(1);
+                                    if pending >= PROGRESS_ROW_BATCH {
+                                        if let Some(cb) = &progress {
                                         cb(ProgressEvent {
                                             phase: ProgressPhase::EdgesPassA,
                                             table: forward_name.clone(),
@@ -3741,9 +3783,9 @@ impl IngestContext {
                                 let dst_key = read_key_from_buf(&mut data, &dst_pk_col)
                                     .map_err(|_| anyhow!("dst key parse"))?;
                                 let src_shard =
-                                    shard_for_key_from_key(&src_key, &mut key_buf, num_shards)?;
+                                    shard_for_key_from_key(&src_key, key_buf, num_shards)?;
                                 let dst_shard =
-                                    shard_for_key_from_key(&dst_key, &mut key_buf, num_shards)?;
+                                    shard_for_key_from_key(&dst_key, key_buf, num_shards)?;
                                 let src_local = match pk_hash_store
                                     .shard(&edge.src_fk.ref_table, src_shard)?
                                     .lookup(&src_key)
@@ -3819,6 +3861,9 @@ impl IngestContext {
                                 forward_count = forward_count.saturating_add(1);
                                 reverse_count = reverse_count.saturating_add(1);
                                 row_idx = row_idx.saturating_add(1);
+                                Ok(())
+                                });
+                                result?;
                                 Ok(())
                             })?;
                             forward_batcher.flush_all()?;
@@ -4562,19 +4607,25 @@ fn read_temp_rows(path: &Path, mut f: impl FnMut(&[u8]) -> Result<()>) -> Result
     }
 }
 
-fn read_fkey_bitmap(path: &Path, row_count: u64) -> Result<Vec<u8>> {
+fn read_fkey_bitmap_into<'a>(
+    path: &Path,
+    row_count: u64,
+    buf: &'a mut Vec<u8>,
+) -> Result<&'a [u8]> {
     let expected = ((row_count + 7) / 8) as usize;
-    let data = fs::read(path).with_context(|| format!("read {}", path.display()))?;
-    if data.len() < expected {
+    buf.clear();
+    let mut file = fs::File::open(path).with_context(|| format!("read {}", path.display()))?;
+    file.read_to_end(buf)?;
+    if buf.len() < expected {
         return Err(anyhow!(
             "fkey bitmap length mismatch: expected {expected}, got {}",
-            data.len()
+            buf.len()
         ));
     }
-    if data.len() == expected {
-        return Ok(data);
+    if buf.len() > expected {
+        buf.truncate(expected);
     }
-    Ok(data[..expected].to_vec())
+    Ok(buf.as_slice())
 }
 
 fn load_sort_key_component_shards(
@@ -4767,13 +4818,18 @@ struct EdgeWriterPool {
 }
 
 impl EdgeWriterPool {
-    fn new(target: std::sync::Arc<OutputTarget>, workers: usize) -> Self {
+    fn new(
+        target: std::sync::Arc<OutputTarget>,
+        workers: usize,
+        buffer_pool: std::sync::Arc<EdgeBufferPool>,
+    ) -> Self {
         let mut senders = Vec::with_capacity(workers);
         let mut handles = Vec::with_capacity(workers);
         for _ in 0..workers {
             let (tx, rx) = std::sync::mpsc::sync_channel::<EdgeWriteMessage>(EDGE_WRITE_QUEUE_DEPTH);
             let target = std::sync::Arc::clone(&target);
-            handles.push(std::thread::spawn(move || edge_writer_worker(target, rx)));
+            let buffer_pool = std::sync::Arc::clone(&buffer_pool);
+            handles.push(std::thread::spawn(move || edge_writer_worker(target, buffer_pool, rx)));
             senders.push(tx);
         }
         Self {
@@ -4800,6 +4856,7 @@ impl EdgeWriterPool {
 
 fn edge_writer_worker(
     target: std::sync::Arc<OutputTarget>,
+    buffer_pool: std::sync::Arc<EdgeBufferPool>,
     rx: std::sync::mpsc::Receiver<EdgeWriteMessage>,
 ) -> Result<()> {
     let mut writers: HashMap<(std::sync::Arc<str>, usize), EdgePartWriter> = HashMap::new();
@@ -4816,11 +4873,13 @@ fn edge_writer_worker(
                         ));
                     }
                     writer.write_batch(&batch.data, batch.row_count)?;
+                    buffer_pool.release(batch.data);
                     continue;
                 }
                 let path = target.join(&temp_edge_map_part_path(&batch.relation, batch.shard));
                 let mut writer = EdgePartWriter::open(&target, &path, batch.spec)?;
                 writer.write_batch(&batch.data, batch.row_count)?;
+                buffer_pool.release(batch.data);
                 writers.insert(key, writer);
             }
         }
@@ -4836,6 +4895,36 @@ struct EdgeBuffer {
     row_count: u64,
 }
 
+struct EdgeBufferPool {
+    buffers: std::sync::Mutex<Vec<Vec<u8>>>,
+}
+
+impl EdgeBufferPool {
+    fn new() -> Self {
+        Self {
+            buffers: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    fn take_with_capacity(&self, min_capacity: usize) -> Vec<u8> {
+        let mut buffers = self.buffers.lock().unwrap();
+        if let Some(mut buf) = buffers.pop() {
+            if buf.capacity() < min_capacity {
+                buf.reserve(min_capacity - buf.capacity());
+            }
+            buf.clear();
+            return buf;
+        }
+        Vec::with_capacity(min_capacity)
+    }
+
+    fn release(&self, mut buf: Vec<u8>) {
+        buf.clear();
+        let mut buffers = self.buffers.lock().unwrap();
+        buffers.push(buf);
+    }
+}
+
 struct EdgeBatcher {
     relation: std::sync::Arc<str>,
     relation_hash: u64,
@@ -4843,6 +4932,7 @@ struct EdgeBatcher {
     buffers: Vec<EdgeBuffer>,
     buffer_limit: usize,
     senders: std::sync::Arc<Vec<std::sync::mpsc::SyncSender<EdgeWriteMessage>>>,
+    buffer_pool: std::sync::Arc<EdgeBufferPool>,
 }
 
 impl EdgeBatcher {
@@ -4852,13 +4942,14 @@ impl EdgeBatcher {
         num_shards: usize,
         buffer_limit: usize,
         senders: std::sync::Arc<Vec<std::sync::mpsc::SyncSender<EdgeWriteMessage>>>,
+        buffer_pool: std::sync::Arc<EdgeBufferPool>,
     ) -> Self {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         relation.hash(&mut hasher);
         let relation_hash = hasher.finish();
         let buffers = (0..num_shards)
             .map(|_| EdgeBuffer {
-                data: Vec::new(),
+                data: buffer_pool.take_with_capacity(buffer_limit),
                 row_count: 0,
             })
             .collect();
@@ -4869,6 +4960,7 @@ impl EdgeBatcher {
             buffers,
             buffer_limit,
             senders,
+            buffer_pool,
         }
     }
 
@@ -4893,7 +4985,9 @@ impl EdgeBatcher {
         if buffer.row_count == 0 {
             return Ok(());
         }
-        let mut data = Vec::with_capacity(buffer.data.capacity());
+        let mut data = self
+            .buffer_pool
+            .take_with_capacity(buffer.data.capacity().max(self.buffer_limit));
         std::mem::swap(&mut data, &mut buffer.data);
         let batch = EdgeWriteBatch {
             relation: std::sync::Arc::clone(&self.relation),
@@ -4915,6 +5009,18 @@ impl EdgeBatcher {
             self.flush_shard(shard)?;
         }
         Ok(())
+    }
+}
+
+impl Drop for EdgeBatcher {
+    fn drop(&mut self) {
+        for buffer in &mut self.buffers {
+            if !buffer.data.is_empty() {
+                buffer.data.clear();
+            }
+            let data = std::mem::take(&mut buffer.data);
+            self.buffer_pool.release(data);
+        }
     }
 }
 
