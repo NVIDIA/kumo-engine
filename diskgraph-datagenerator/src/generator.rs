@@ -22,7 +22,7 @@ use crate::config::{
 };
 use crate::output::OutputTarget;
 use crate::progress::ProgressState;
-use crate::uploader::UploadStatsHandle;
+use diskgraph_fs::CloudTransferStatsHandle;
 
 pub fn run(config: DatasetConfig, output: OutputTarget, workers: usize) -> Result<()> {
     let plan = build_plan(&config)?;
@@ -91,7 +91,7 @@ fn spawn_progress(
     completed: Arc<AtomicU64>,
     done: Arc<AtomicBool>,
     total_rows: u64,
-    upload_stats: Option<UploadStatsHandle>,
+    upload_stats: Option<CloudTransferStatsHandle>,
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         let mut last = 0u64;
@@ -105,10 +105,11 @@ fn spawn_progress(
                 if let Some(stats) = upload_stats.as_ref() {
                     let snapshot = stats.snapshot();
                     let mut status = format!(
-                        "upload buf={}/{} queued={} inflight={} started={} err={}",
+                        "upload buf={}/{} queued={} inflight_files={} inflight_parts={} started={} err={}",
                         snapshot.available_buffers,
                         snapshot.total_buffers,
                         snapshot.queued_jobs,
+                        snapshot.inflight_files,
                         snapshot.inflight_parts,
                         snapshot.parts_started,
                         snapshot.parts_errors

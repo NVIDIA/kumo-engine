@@ -2,7 +2,6 @@ mod config;
 mod generator;
 mod output;
 mod progress;
-mod uploader;
 
 use std::fs;
 use std::path::PathBuf;

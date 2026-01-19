@@ -54,6 +54,12 @@ pub struct S3Client {
     pub resolved: ResolvedS3,
 }
 
+pub mod cloud_transfer;
+pub use cloud_transfer::{
+    BufferPool, CloudTransfer, CloudTransferConfig, CloudTransferStatsHandle,
+    CloudTransferStatsSnapshot, PooledBuffer,
+};
+
 pub fn build_s3_client(cfg: S3Config) -> Result<S3Client> {
     let allow_http = cfg
         .allow_http

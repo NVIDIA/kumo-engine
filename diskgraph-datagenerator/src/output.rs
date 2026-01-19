@@ -1,43 +1,34 @@
 use std::fs::File;
 use std::io::{self, Seek, Write};
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
-use diskgraph_fs::{build_adls_client, build_gcs_client, build_s3_client, AdlsConfig, GcsConfig, S3Config};
+use diskgraph_fs::{
+    build_adls_client, build_gcs_client, build_s3_client, AdlsConfig, CloudTransfer,
+    CloudTransferConfig, CloudTransferStatsHandle, GcsConfig, PooledBuffer, S3Config,
+};
 use object_store::path::Path as ObjectPath;
-
-use crate::uploader::{CloudSink, FileBufferPool, UploadExecutor, UploadStatsHandle};
 
 #[derive(Clone, Debug)]
 pub enum OutputTarget {
     Local { root: PathBuf },
     S3 {
         prefix: String,
-        pool: FileBufferPool,
-        uploader: UploadExecutor,
+        transfer: CloudTransfer,
     },
     Gcs {
         prefix: String,
-        pool: FileBufferPool,
-        uploader: UploadExecutor,
+        transfer: CloudTransfer,
     },
     Adls {
         prefix: String,
-        pool: FileBufferPool,
-        uploader: UploadExecutor,
+        transfer: CloudTransfer,
     },
 }
 
 impl OutputTarget {
     pub fn parse(output: &str, _workers: usize) -> Result<Self> {
-        let part_size = env_usize("DISKGRAPH_CLOUD_PART_SIZE_MB", 64) * 1024 * 1024;
-        let cpu_default = std::thread::available_parallelism()
-            .map(|v| v.get())
-            .unwrap_or(1);
-        let max_requests = env_usize("DISKGRAPH_CLOUD_MAX_REQUESTS", cpu_default);
-        let buffer_count = env_usize("DISKGRAPH_CLOUD_FILE_BUFFER_COUNT", max_requests.max(1));
-        let max_retries = env_usize("DISKGRAPH_CLOUD_FILE_RETRY_MAX", 2);
+        let config = CloudTransferConfig::from_env();
         if output.starts_with("s3://") {
             let (bucket, prefix) = parse_s3_url(output)?;
             let s3 = build_s3_client(S3Config {
@@ -51,35 +42,13 @@ impl OutputTarget {
                 secret_access_key: None,
                 session_token: None,
             })?;
-            let pool = FileBufferPool::new(buffer_count.max(1));
-            let uploader = UploadExecutor::new(
-                Arc::clone(&s3.store),
-                pool.clone(),
-                part_size,
-                max_requests.max(1),
-                max_retries,
-            );
-            Ok(OutputTarget::S3 {
-                prefix,
-                pool,
-                uploader,
-            })
+            let transfer = CloudTransfer::new(s3.store, config);
+            Ok(OutputTarget::S3 { prefix, transfer })
         } else if output.starts_with("gs://") {
             let (bucket, prefix) = parse_gs_url(output)?;
             let gcs = build_gcs_client(GcsConfig { bucket })?;
-            let pool = FileBufferPool::new(buffer_count.max(1));
-            let uploader = UploadExecutor::new(
-                Arc::clone(&gcs.store),
-                pool.clone(),
-                part_size,
-                max_requests.max(1),
-                max_retries,
-            );
-            Ok(OutputTarget::Gcs {
-                prefix,
-                pool,
-                uploader,
-            })
+            let transfer = CloudTransfer::new(gcs.store, config);
+            Ok(OutputTarget::Gcs { prefix, transfer })
         } else if output.starts_with("az://") {
             let (account, container, prefix) = parse_az_url(output)?;
             let adls = build_adls_client(AdlsConfig {
@@ -94,19 +63,8 @@ impl OutputTarget {
                 client_secret: std::env::var("AZURE_CLIENT_SECRET").ok(),
                 tenant_id: std::env::var("AZURE_TENANT_ID").ok(),
             })?;
-            let pool = FileBufferPool::new(buffer_count.max(1));
-            let uploader = UploadExecutor::new(
-                Arc::clone(&adls.store),
-                pool.clone(),
-                part_size,
-                max_requests.max(1),
-                max_retries,
-            );
-            Ok(OutputTarget::Adls {
-                prefix,
-                pool,
-                uploader,
-            })
+            let transfer = CloudTransfer::new(adls.store, config);
+            Ok(OutputTarget::Adls { prefix, transfer })
         } else {
             Ok(OutputTarget::Local {
                 root: PathBuf::from(output),
@@ -136,28 +94,13 @@ impl OutputTarget {
                     File::create(&path).with_context(|| format!("create {}", path.display()))?;
                 Ok(ParquetSink::Local(file))
             }
-            OutputTarget::S3 {
-                prefix,
-                pool,
-                uploader,
-                ..
-            }
-            | OutputTarget::Gcs {
-                prefix,
-                pool,
-                uploader,
-                ..
-            }
-            | OutputTarget::Adls {
-                prefix,
-                pool,
-                uploader,
-                ..
-            } => {
+            OutputTarget::S3 { prefix, transfer }
+            | OutputTarget::Gcs { prefix, transfer }
+            | OutputTarget::Adls { prefix, transfer } => {
                 let key = join_prefix(prefix, &format!("{}/{}", table, filename));
-                let buffer = pool.acquire();
+                let buffer = transfer.acquire_buffer();
                 Ok(ParquetSink::Cloud(CloudSink::new(
-                    uploader.clone(),
+                    transfer.clone(),
                     ObjectPath::from(key),
                     buffer,
                 )))
@@ -165,12 +108,12 @@ impl OutputTarget {
         }
     }
 
-    pub fn stats_handle(&self) -> Option<UploadStatsHandle> {
+    pub fn stats_handle(&self) -> Option<CloudTransferStatsHandle> {
         match self {
             OutputTarget::Local { .. } => None,
-            OutputTarget::S3 { uploader, .. }
-            | OutputTarget::Gcs { uploader, .. }
-            | OutputTarget::Adls { uploader, .. } => Some(uploader.stats_handle()),
+            OutputTarget::S3 { transfer, .. }
+            | OutputTarget::Gcs { transfer, .. }
+            | OutputTarget::Adls { transfer, .. } => Some(transfer.stats_handle()),
         }
     }
 }
@@ -215,11 +158,42 @@ impl Seek for ParquetSink {
     }
 }
 
-fn env_usize(name: &str, default: usize) -> usize {
-    std::env::var(name)
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(default)
+#[derive(Debug)]
+pub struct CloudSink {
+    transfer: CloudTransfer,
+    path: ObjectPath,
+    buffer: PooledBuffer,
+}
+
+impl CloudSink {
+    fn new(transfer: CloudTransfer, path: ObjectPath, buffer: PooledBuffer) -> Self {
+        Self {
+            transfer,
+            path,
+            buffer,
+        }
+    }
+
+    fn finish(self) -> Result<()> {
+        let buffer = self.buffer.into_inner();
+        self.transfer.submit(self.path, buffer)
+    }
+}
+
+impl Write for CloudSink {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.buffer.write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.buffer.flush()
+    }
+}
+
+impl Seek for CloudSink {
+    fn seek(&mut self, pos: io::SeekFrom) -> io::Result<u64> {
+        self.buffer.seek(pos)
+    }
 }
 
 fn parse_s3_url(url: &str) -> Result<(String, String)> {
