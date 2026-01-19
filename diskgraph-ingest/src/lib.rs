@@ -8,7 +8,7 @@ use crate::mapping::{
     fingerprint_seed_for, write_pk_data_entry, write_pk_data_header, GxPtrHash64, Key, KeyType,
     PkHashShard, PkHashStore, PkGxHash,
 };
-use crate::progress::format_bytes;
+use crate::progress::{format_bytes, format_duration};
 use crate::source_metadata::{
     relationship_name, ColumnSpec, IngestedType, SortKeySpec, TableFormat, TableSpec,
     TimestampEncodingKind, TimestampEncodingSpec, WeightEncodingKind, WeightEncodingSpec,
@@ -492,6 +492,10 @@ pub fn ingest_with_stats(
         ctx.build_sharded_pk_maps()?;
     }
     let pk_map_wall = pk_map_start.elapsed();
+    eprintln!(
+        "pk_map stage complete elapsed={}",
+        format_duration(pk_map_wall.as_millis() as u64)
+    );
     let edge_ctx = ctx.edge_build_context()?;
     let edges_map_start = std::time::Instant::now();
     if let Some(profile_dir) = &profile_dir {
