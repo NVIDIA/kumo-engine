@@ -1,9 +1,9 @@
 use anyhow::{anyhow, Result};
 use gxhash::GxHasher;
 use memmap2::Mmap;
-#[cfg(not(feature = "pkhash128"))]
+#[cfg(feature = "pkhash64")]
 use ptr_hash::hash::GxHash64;
-#[cfg(feature = "pkhash128")]
+#[cfg(not(feature = "pkhash64"))]
 use ptr_hash::hash::GxHash128;
 use ptr_hash::hash::Hasher as PtrHasher;
 use ptr_hash::DefaultPtrHash;
@@ -123,9 +123,9 @@ impl PkGxHash {
     }
 }
 
-#[cfg(not(feature = "pkhash128"))]
+#[cfg(feature = "pkhash64")]
 pub type PkPtrHash = GxHash64;
-#[cfg(feature = "pkhash128")]
+#[cfg(not(feature = "pkhash64"))]
 pub type PkPtrHash = GxHash128;
 pub type PkPtrHashOutput = <PkPtrHash as PtrHasher<u64>>::H;
 
@@ -227,7 +227,7 @@ impl PkHashShard {
             KeyType::Int64 => {
                 let mphf: MphfInt = DefaultPtrHash::<PkPtrHash, u64>::load_mmap(
                     hash_path,
-                    EpFlags::RANDOM_ACCESS | EpFlags::TRANSPARENT_HUGE_PAGES,
+                    EpFlags::WILLNEED,
                 )
                 .map_err(|e| anyhow!("load pk hash {}: {e}", hash_path.display()))?;
                 PkHashMphf::Int(mphf)
@@ -235,7 +235,7 @@ impl PkHashShard {
             KeyType::VarBytes => {
                 let mphf: MphfBytes = DefaultPtrHash::<PkPtrHash, Vec<u8>>::load_mmap(
                     hash_path,
-                    EpFlags::RANDOM_ACCESS | EpFlags::TRANSPARENT_HUGE_PAGES,
+                    EpFlags::WILLNEED,
                 )
                 .map_err(|e| anyhow!("load pk hash {}: {e}", hash_path.display()))?;
                 PkHashMphf::Bytes(mphf)
@@ -243,7 +243,7 @@ impl PkHashShard {
             KeyType::Uuid => {
                 let mphf: MphfUuid = DefaultPtrHash::<PkPtrHash, [u8; 16]>::load_mmap(
                     hash_path,
-                    EpFlags::RANDOM_ACCESS | EpFlags::TRANSPARENT_HUGE_PAGES,
+                    EpFlags::WILLNEED,
                 )
                 .map_err(|e| anyhow!("load pk hash {}: {e}", hash_path.display()))?;
                 PkHashMphf::Uuid(mphf)
@@ -251,7 +251,7 @@ impl PkHashShard {
             KeyType::Uuid256 => {
                 let mphf: MphfUuid256 = DefaultPtrHash::<PkPtrHash, [u8; 32]>::load_mmap(
                     hash_path,
-                    EpFlags::RANDOM_ACCESS | EpFlags::TRANSPARENT_HUGE_PAGES,
+                    EpFlags::WILLNEED,
                 )
                 .map_err(|e| anyhow!("load pk hash {}: {e}", hash_path.display()))?;
                 PkHashMphf::Uuid256(mphf)
@@ -259,7 +259,7 @@ impl PkHashShard {
             KeyType::Ip => {
                 let mphf: MphfIp = DefaultPtrHash::<PkPtrHash, [u8; 16]>::load_mmap(
                     hash_path,
-                    EpFlags::RANDOM_ACCESS | EpFlags::TRANSPARENT_HUGE_PAGES,
+                    EpFlags::WILLNEED,
                 )
                 .map_err(|e| anyhow!("load pk hash {}: {e}", hash_path.display()))?;
                 PkHashMphf::Ip(mphf)
