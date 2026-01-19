@@ -227,7 +227,7 @@ impl PkHashShard {
             KeyType::Int64 => {
                 let mphf: MphfInt = DefaultPtrHash::<PkPtrHash, u64>::load_mmap(
                     hash_path,
-                    EpFlags::WILLNEED,
+                    EpFlags::SEQUENTIAL,
                 )
                 .map_err(|e| anyhow!("load pk hash {}: {e}", hash_path.display()))?;
                 PkHashMphf::Int(mphf)
@@ -235,7 +235,7 @@ impl PkHashShard {
             KeyType::VarBytes => {
                 let mphf: MphfBytes = DefaultPtrHash::<PkPtrHash, Vec<u8>>::load_mmap(
                     hash_path,
-                    EpFlags::WILLNEED,
+                    EpFlags::SEQUENTIAL,
                 )
                 .map_err(|e| anyhow!("load pk hash {}: {e}", hash_path.display()))?;
                 PkHashMphf::Bytes(mphf)
@@ -243,7 +243,7 @@ impl PkHashShard {
             KeyType::Uuid => {
                 let mphf: MphfUuid = DefaultPtrHash::<PkPtrHash, [u8; 16]>::load_mmap(
                     hash_path,
-                    EpFlags::WILLNEED,
+                    EpFlags::SEQUENTIAL,
                 )
                 .map_err(|e| anyhow!("load pk hash {}: {e}", hash_path.display()))?;
                 PkHashMphf::Uuid(mphf)
@@ -251,7 +251,7 @@ impl PkHashShard {
             KeyType::Uuid256 => {
                 let mphf: MphfUuid256 = DefaultPtrHash::<PkPtrHash, [u8; 32]>::load_mmap(
                     hash_path,
-                    EpFlags::WILLNEED,
+                    EpFlags::SEQUENTIAL,
                 )
                 .map_err(|e| anyhow!("load pk hash {}: {e}", hash_path.display()))?;
                 PkHashMphf::Uuid256(mphf)
@@ -259,7 +259,7 @@ impl PkHashShard {
             KeyType::Ip => {
                 let mphf: MphfIp = DefaultPtrHash::<PkPtrHash, [u8; 16]>::load_mmap(
                     hash_path,
-                    EpFlags::WILLNEED,
+                    EpFlags::SEQUENTIAL,
                 )
                 .map_err(|e| anyhow!("load pk hash {}: {e}", hash_path.display()))?;
                 PkHashMphf::Ip(mphf)
