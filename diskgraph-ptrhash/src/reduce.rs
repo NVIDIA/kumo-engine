@@ -36,3 +36,28 @@ impl Reduce for FastReduce {
         ((r >> 64) as usize, r as u64)
     }
 }
+
+/// FastMod32, using the low 32 bits of the hash.
+/// Taken from https://github.com/lemire/fastmod/blob/master/include/fastmod.h
+#[derive(Copy, Clone, Debug, MemSize)]
+#[cfg_attr(feature = "epserde", derive(epserde::prelude::Epserde))]
+#[cfg_attr(feature = "epserde", deep_copy)]
+pub struct FM32 {
+    d: u64,
+    m: u64,
+}
+impl Reduce for FM32 {
+    fn new(d: usize) -> Self {
+        assert!(d <= u32::MAX as usize);
+        let d = d as u64;
+        let d = d.max(1);
+        Self {
+            d,
+            m: u64::MAX / d + 1,
+        }
+    }
+    fn reduce(self, h: u64) -> usize {
+        let lowbits = self.m.wrapping_mul(h);
+        ((lowbits as u128 * self.d as u128) >> 64) as usize
+    }
+}

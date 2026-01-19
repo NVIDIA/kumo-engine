@@ -254,6 +254,7 @@ impl<Key: KeyT + Eq, V> KeySource<Key> for std::collections::HashMap<Key, V> {
 // Some fixed algorithmic decisions.
 type Rp = FastReduce;
 type Rb = FastReduce;
+type RemSlots = FM32;
 type Pilot = u64;
 type PilotHash = u64;
 
@@ -303,7 +304,7 @@ pub struct PtrHash<
     rem_buckets_total: Rb,
 
     /// Fast %s when there is only a single part.
-    rem_slots: Rp,
+    rem_slots: RemSlots,
 
     // Computed state.
     /// The global seed.
@@ -336,7 +337,7 @@ where
             rem_parts: FastReduce::new(0),
             rem_buckets: FastReduce::new(0),
             rem_buckets_total: FastReduce::new(0),
-            rem_slots: FastReduce::new(0),
+            rem_slots: RemSlots::new(1),
             seed: 0,
             pilots: vec![],
             remap: F::default(),
@@ -440,6 +441,18 @@ impl<Key: KeyT, BF: BucketFn, F: MutPacked, Hx: Hasher<Key>> PtrHash<Key, BF, F,
     fn init(n: usize, mut params: PtrHashParams<BF>) -> Self {
         assert!(n < (1 << 40), "Number of keys must be less than 2^40.");
 
+        const SMALL_N_THRESHOLD: usize = 1_000_000;
+        if n <= SMALL_N_THRESHOLD {
+            // Small-n path: bias toward more buckets and higher slack to avoid
+            // indistinguishable buckets on tiny inputs.
+            if params.alpha < 0.99 {
+                params.alpha = 0.99;
+            }
+            if params.lambda > 3.0 {
+                params.lambda = 3.0;
+            }
+        }
+
         let shards = 1;
 
         // Formula of Vigna, eps-cost-sharding.
@@ -512,7 +525,7 @@ impl<Key: KeyT, BF: BucketFn, F: MutPacked, Hx: Hasher<Key>> PtrHash<Key, BF, F,
             rem_parts: Rp::new(parts),
             rem_buckets: Rb::new(buckets_per_part),
             rem_buckets_total: Rb::new(buckets_total),
-            rem_slots: Rp::new(slots_per_part),
+            rem_slots: RemSlots::new(slots_per_part),
             seed: 0,
             pilots: Default::default(),
             remap: F::default(),
@@ -1059,7 +1072,6 @@ impl<Key: KeyT, BF: BucketFn, F: Packed, Hx: Hasher<Key>, V: AsRef<[u8]>>
 
     /// Slot uses the 64 low bits of the hash.
     fn slot_in_part_hp(&self, hx: Hx::H, hp: PilotHash) -> usize {
-        self.rem_slots
-            .reduce(MulHash::C.wrapping_mul(hx.low() ^ hp))
+        self.rem_slots.reduce(hx.low() ^ hp)
     }
 }
