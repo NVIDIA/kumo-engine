@@ -561,7 +561,7 @@ fn infer_remote_tables(
                             "{}://{}/{}",
                             root_scheme(root),
                             bucket,
-                            rel_path
+                            path_str
                         ));
                         entry.total_bytes = entry.total_bytes.saturating_add(obj.size);
                         continue;
@@ -604,7 +604,7 @@ fn infer_remote_tables(
                         "{}://{}/{}",
                         root_scheme(root),
                         bucket,
-                        rel_path
+                        path_str
                     ));
                     entry.total_bytes = entry.total_bytes.saturating_add(obj.size);
                 }
@@ -621,7 +621,7 @@ fn infer_remote_tables(
                             "{}://{}/{}",
                             root_scheme(root),
                             bucket,
-                            rel_path
+                            path_str
                         ));
                         entry.total_bytes = entry.total_bytes.saturating_add(obj.size);
                         continue;
@@ -664,7 +664,7 @@ fn infer_remote_tables(
                         "{}://{}/{}",
                         root_scheme(root),
                         bucket,
-                        rel_path
+                        path_str
                     ));
                     entry.total_bytes = entry.total_bytes.saturating_add(obj.size);
                 }
