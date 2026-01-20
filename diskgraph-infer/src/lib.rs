@@ -6,7 +6,8 @@ use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
 use chrono::{NaiveDate, NaiveDateTime, Utc};
 use diskgraph_fs::{
-    build_adls_client, build_gcs_client, build_s3_client, AdlsConfig, GcsConfig, S3Config,
+    build_adls_client, build_gcs_client, build_s3_client, AdlsConfig, CloudTransfer,
+    CloudTransferConfig, GcsConfig, S3Config,
 };
 use diskgraph_ingest::source_metadata::{
     relationship_name, ColumnSpec, EdgeSortKeysSpec, EdgeTableSortKeysSpec, EdgeTableSpec,
@@ -21,11 +22,8 @@ use arrow_array::{
 };
 use arrow_schema::{ArrowError, DataType, Schema};
 use futures::StreamExt;
-use object_store::{path::Path as ObjectPath, ObjectStore};
-use parquet::arrow::async_reader::ParquetObjectReader;
+use object_store::{path::Path as ObjectPath, ObjectStore, ObjectStoreExt};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
-use parquet::arrow::ParquetRecordBatchStreamBuilder;
-use parquet::errors::ParquetError;
 use tokio::runtime::Runtime;
 use url::Url;
 use serde::Deserialize;
@@ -529,6 +527,7 @@ fn infer_remote_tables(
     warnings: &mut InferWarnings,
 ) -> Result<Vec<TableInput>> {
     let (rt, store) = build_store(root)?;
+    let transfer = CloudTransfer::new(Arc::clone(&store), CloudTransferConfig::from_env());
     let mut tables: HashMap<String, TableInput> = HashMap::new();
     let mut prefixes = HashSet::new();
     let normalized = prefix.trim_matches('/');
@@ -571,8 +570,7 @@ fn infer_remote_tables(
                 eprintln!("infer_source: reading {}", path_str);
                 let columns = match format {
                     TableFormat::Parquet => infer_parquet_schema_remote(
-                        &rt,
-                        Arc::clone(&store),
+                        &transfer,
                         &obj.location,
                         obj.size,
                         options,
@@ -633,8 +631,7 @@ fn infer_remote_tables(
                 eprintln!("infer_source: reading {}", path_str);
                 let columns = match format {
                     TableFormat::Parquet => infer_parquet_schema_remote(
-                        &rt,
-                        Arc::clone(&store),
+                        &transfer,
                         &obj.location,
                         obj.size,
                         options,
@@ -821,29 +818,22 @@ fn infer_parquet_schema_local(path: &Path, options: &InferOptions) -> Result<Vec
 }
 
 fn infer_parquet_schema_remote(
-    rt: &Runtime,
-    store: Arc<dyn ObjectStore>,
+    transfer: &CloudTransfer,
     path: &ObjectPath,
-    size: u64,
+    _size: u64,
     options: &InferOptions,
 ) -> Result<Vec<ColumnSpec>> {
-    let reader = ParquetObjectReader::new(store, path.clone())
-        .with_file_size(size)
-        .with_runtime(rt.handle().clone());
-    let builder = rt.block_on(ParquetRecordBatchStreamBuilder::new(reader))?;
+    let buffer = transfer.submit_download(path.clone())?.wait()?;
+    let bytes = Bytes::from(buffer.into_inner());
+    let builder = ParquetRecordBatchReaderBuilder::try_new(bytes)?;
     let schema = builder.schema();
     let mut columns = infer_parquet_schema_from_arrow(schema.as_ref())?;
     if columns.is_empty() {
         return Ok(columns);
     }
-    let sample_rows = options.sample_rows;
-    if sample_rows > 0 {
-        let stream = builder.with_batch_size(1024).build()?;
-        rt.block_on(apply_parquet_string_samples_stream(
-            &mut columns,
-            stream,
-            sample_rows,
-        ))?;
+    if options.sample_rows > 0 {
+        let mut reader = builder.with_batch_size(1024).build()?;
+        apply_parquet_string_samples(&mut columns, &mut reader, options.sample_rows)?;
     }
     Ok(columns)
 }
@@ -1018,106 +1008,6 @@ where
     Ok(())
 }
 
-async fn apply_parquet_string_samples_stream<S>(
-    columns: &mut [ColumnSpec],
-    mut stream: S,
-    sample_rows: usize,
-) -> Result<()>
-where
-    S: futures::Stream<Item = std::result::Result<RecordBatch, ParquetError>> + Unpin,
-{
-    let mut stats: Vec<Option<ColumnStats>> =
-        (0..columns.len()).map(|_| Some(ColumnStats::default())).collect();
-    let mut seen = 0usize;
-    while let Some(batch) = stream.next().await {
-        let batch = batch.map_err(|err| anyhow!(err))?;
-        if seen >= sample_rows {
-            break;
-        }
-        let rows = batch.num_rows().min(sample_rows - seen);
-        for idx in 0..columns.len() {
-            if let Some(st) = stats[idx].as_mut() {
-                let array = batch.column(idx);
-                match array.data_type() {
-                    DataType::Utf8 => {
-                        let arr = array
-                            .as_any()
-                            .downcast_ref::<StringArray>()
-                            .ok_or_else(|| anyhow!("string cast"))?;
-                        sample_string_array(arr, rows, st);
-                    }
-                    DataType::LargeUtf8 => {
-                        let arr = array
-                            .as_any()
-                            .downcast_ref::<LargeStringArray>()
-                            .ok_or_else(|| anyhow!("large string cast"))?;
-                        sample_large_string_array(arr, rows, st);
-                    }
-                    DataType::Int64 => {
-                        let arr = array
-                            .as_any()
-                            .downcast_ref::<Int64Array>()
-                            .ok_or_else(|| anyhow!("int64 cast"))?;
-                        sample_int64_array(arr, rows, st);
-                    }
-                    DataType::Int32 => {
-                        let arr = array
-                            .as_any()
-                            .downcast_ref::<Int32Array>()
-                            .ok_or_else(|| anyhow!("int32 cast"))?;
-                        sample_int32_array(arr, rows, st);
-                    }
-                    DataType::Int16 => {
-                        let arr = array
-                            .as_any()
-                            .downcast_ref::<Int16Array>()
-                            .ok_or_else(|| anyhow!("int16 cast"))?;
-                        sample_int16_array(arr, rows, st);
-                    }
-                    DataType::Int8 => {
-                        let arr = array
-                            .as_any()
-                            .downcast_ref::<Int8Array>()
-                            .ok_or_else(|| anyhow!("int8 cast"))?;
-                        sample_int8_array(arr, rows, st);
-                    }
-                    DataType::UInt64 => {
-                        let arr = array
-                            .as_any()
-                            .downcast_ref::<UInt64Array>()
-                            .ok_or_else(|| anyhow!("uint64 cast"))?;
-                        sample_uint64_array(arr, rows, st);
-                    }
-                    DataType::UInt32 => {
-                        let arr = array
-                            .as_any()
-                            .downcast_ref::<UInt32Array>()
-                            .ok_or_else(|| anyhow!("uint32 cast"))?;
-                        sample_uint32_array(arr, rows, st);
-                    }
-                    DataType::UInt16 => {
-                        let arr = array
-                            .as_any()
-                            .downcast_ref::<UInt16Array>()
-                            .ok_or_else(|| anyhow!("uint16 cast"))?;
-                        sample_uint16_array(arr, rows, st);
-                    }
-                    DataType::UInt8 => {
-                        let arr = array
-                            .as_any()
-                            .downcast_ref::<UInt8Array>()
-                            .ok_or_else(|| anyhow!("uint8 cast"))?;
-                        sample_uint8_array(arr, rows, st);
-                    }
-                    _ => continue,
-                }
-            }
-        }
-        seen += rows;
-    }
-    apply_string_stats_overrides(columns, &stats);
-    Ok(())
-}
 
 fn sample_string_array(array: &StringArray, rows: usize, stats: &mut ColumnStats) {
     for i in 0..rows {

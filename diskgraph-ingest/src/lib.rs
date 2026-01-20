@@ -40,7 +40,7 @@ use fasteval::{eval_compiled_ref, Compiler, Evaler, Parser, Slab};
 use half::f16;
 use memmap2::Mmap;
 use num_traits::{Signed, ToPrimitive};
-use object_store::{path::Path as ObjectPath, ObjectStore, WriteMultipart};
+use object_store::{path::Path as ObjectPath, ObjectStore, ObjectStoreExt, WriteMultipart};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use pprof::protos::Message;
 use pprof::ProfilerGuard;

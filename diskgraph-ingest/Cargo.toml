@@ -16,12 +16,12 @@ diskgraph-core = { path = "../diskgraph-core" }
 diskgraph-fs = { path = "../diskgraph-fs" }
 diskgraph-rowpack = { path = "../diskgraph-rowpack" }
 diskgraph-index = { path = "../diskgraph-index" }
-arrow-array = "57.1.0"
-arrow-buffer = "57.1.0"
-arrow-schema = "57.1.0"
-arrow-csv = "57.1.0"
-parquet = { version = "57.1.0", features = ["arrow"] }
-object_store = { version = "0.12.4", features = ["aws", "gcp", "azure"] }
+arrow-array = "57.2.0"
+arrow-buffer = "57.2.0"
+arrow-schema = "57.2.0"
+arrow-csv = "57.2.0"
+parquet = { version = "57.2.0", features = ["arrow"] }
+object_store = { version = "0.13.1", features = ["aws", "gcp", "azure"] }
 bytes = "1"
 url = "2"
 tempfile = "3"

@@ -9,7 +9,7 @@ use anyhow::{anyhow, Result};
 use bytes::Bytes;
 use futures_util::TryStreamExt;
 use object_store::path::Path as ObjectPath;
-use object_store::{ObjectStore, PutPayload};
+use object_store::{ObjectStore, ObjectStoreExt, PutPayload};
 use tokio::runtime::Runtime;
 use tokio::sync::{mpsc, oneshot, Semaphore};
 use tokio::task::JoinSet;

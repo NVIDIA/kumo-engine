@@ -15,5 +15,5 @@ aws-credential-types = "1"
 aws-types = "1"
 bytes = { workspace = true }
 futures-util = "0.3"
-object_store = { version = "0.12.4", features = ["aws", "gcp", "azure"] }
+object_store = { version = "0.13.1", features = ["aws", "gcp", "azure"] }
 tokio = { workspace = true, features = ["rt-multi-thread"] }

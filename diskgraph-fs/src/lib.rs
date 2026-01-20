@@ -11,7 +11,7 @@ use object_store::aws::AmazonS3Builder;
 use object_store::azure::MicrosoftAzureBuilder;
 use object_store::gcp::GoogleCloudStorageBuilder;
 use object_store::path::Path as ObjectPath;
-use object_store::ObjectStore;
+use object_store::{ObjectStore, ObjectStoreExt};
 use object_store::WriteMultipart;
 use tokio::runtime::Runtime;
 use tokio::sync::{mpsc, oneshot};

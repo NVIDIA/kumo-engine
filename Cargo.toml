@@ -33,9 +33,9 @@ axum = { version = "0.6", features = ["json"] }
 hyper = { version = "0.14", features = ["full"] }
 http = "0.2"
 bytes = "1.5"
-arrow-array = "57.1.0"
-arrow-buffer = "57.1.0"
-arrow-schema = "57.1.0"
+arrow-array = "57.2.0"
+arrow-buffer = "57.2.0"
+arrow-schema = "57.2.0"
 parking_lot = "0.12"
 chrono = { version = "0.4", features = ["serde"] }
 serde_with = "3.4"
