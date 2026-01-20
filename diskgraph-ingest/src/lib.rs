@@ -690,6 +690,8 @@ struct EdgeBuildContext {
     rel_sort_lookups: std::sync::Arc<HashMap<String, Option<std::sync::Arc<SortKeyLookup>>>>,
     max_ids: HashMap<String, u64>,
     pk_hash_store: Arc<PkHashStore>,
+    pk_hash_total_bytes: u64,
+    sort_key_total_bytes: u64,
 }
 
 struct SortKeyComponentStore {
@@ -721,6 +723,10 @@ impl SortKeyComponentStore {
         buf[..self.width_bytes].copy_from_slice(&self.data[offset..end]);
         Ok(u64::from_le_bytes(buf))
     }
+
+    fn total_bytes(&self) -> u64 {
+        self.data.len() as u64
+    }
 }
 
 impl SortKeyComponentSource {
@@ -740,6 +746,15 @@ impl SortKeyComponentSource {
                 .get(edge_shard)
                 .ok_or_else(|| anyhow!("sort key edge shard missing"))?
                 .get(edge_row),
+        }
+    }
+
+    fn total_bytes(&self) -> u64 {
+        match self {
+            SortKeyComponentSource::DestTable { shards }
+            | SortKeyComponentSource::EdgeTable { shards } => {
+                shards.iter().map(|shard| shard.total_bytes()).sum()
+            }
         }
     }
 }
@@ -767,6 +782,17 @@ impl SortKeyLookup {
         } else {
             Ok(ts_val)
         }
+    }
+
+    fn total_bytes(&self) -> u64 {
+        let mut total = 0u64;
+        if let Some(ts) = &self.timestamp {
+            total = total.saturating_add(ts.total_bytes());
+        }
+        if let Some(weight) = &self.weight {
+            total = total.saturating_add(weight.total_bytes());
+        }
+        total
     }
 }
 
@@ -3612,16 +3638,24 @@ impl IngestContext {
         }
         let rel_sort_lookups =
             self.build_sort_key_lookups_parallel(&root, &edge_tables, &rel_sort_keys)?;
-        let pk_hash_store = Arc::new(self.build_pk_hash_store_parallel(&root)?);
+        let sort_key_total_bytes = rel_sort_lookups
+            .values()
+            .filter_map(|lookup| lookup.as_ref())
+            .map(|lookup| lookup.total_bytes())
+            .sum();
+        let (pk_hash_store, pk_hash_total_bytes) = self.build_pk_hash_store_parallel(&root)?;
+        let pk_hash_store = Arc::new(pk_hash_store);
         Ok(EdgeBuildContext {
             root,
             rel_sort_bits,
             rel_sort_lookups: std::sync::Arc::new(rel_sort_lookups),
             max_ids,
             pk_hash_store,
+            pk_hash_total_bytes,
+            sort_key_total_bytes,
         })
     }
-    fn build_pk_hash_store_parallel(&self, root: &Path) -> Result<PkHashStore> {
+    fn build_pk_hash_store_parallel(&self, root: &Path) -> Result<(PkHashStore, u64)> {
         let mut shard_jobs: Vec<(String, usize, KeyType, PathBuf, PathBuf)> = Vec::new();
         let mut table_shard_counts = HashMap::new();
         for table in &self.source.tables {
@@ -3649,7 +3683,7 @@ impl IngestContext {
             }
         }
         if shard_jobs.is_empty() {
-            return Ok(PkHashStore::new(HashMap::new()));
+            return Ok((PkHashStore::new(HashMap::new()), 0));
         }
         let mut total_bytes = 0u64;
         for (_, _, _, hash_path, data_path) in &shard_jobs {
@@ -3725,7 +3759,7 @@ impl IngestContext {
             }
             final_tables.insert(table_name, resolved);
         }
-        Ok(PkHashStore::new(final_tables))
+        Ok((PkHashStore::new(final_tables), total_bytes))
     }
 
     fn build_sort_key_lookups_parallel(
@@ -3788,6 +3822,17 @@ impl IngestContext {
                 relation: String,
                 key_failures: KeyFailureState,
                 edge_counts: HashMap<String, u64>,
+            }
+            if let Some(total_mem) = total_memory_bytes() {
+                println!(
+                    "edges_map mmap sizes: pk_hash_bytes={} sort_key_bytes={} total_mem={}",
+                    edge_ctx.pk_hash_total_bytes, edge_ctx.sort_key_total_bytes, total_mem
+                );
+            } else {
+                println!(
+                    "edges_map mmap sizes: pk_hash_bytes={} sort_key_bytes={} total_mem=unknown",
+                    edge_ctx.pk_hash_total_bytes, edge_ctx.sort_key_total_bytes
+                );
             }
             let progress = self.progress.clone();
             let target = std::sync::Arc::clone(&self.target);
