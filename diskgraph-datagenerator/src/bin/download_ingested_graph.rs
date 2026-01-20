@@ -14,18 +14,6 @@ struct Args {
     /// Output root directory (defaults to /mnt/localssd/datasets or DISKGRAPH_DATA_ROOT/datasets).
     #[arg(long, default_value = DEFAULT_OUT_ROOT)]
     out_root: PathBuf,
-    /// Max in-flight S3 requests (objects + parts).
-    #[arg(long, default_value_t = 64)]
-    max_requests: usize,
-    /// Part size in MB for multipart downloads.
-    #[arg(long, default_value_t = 64)]
-    part_size_mb: u64,
-    /// Multipart threshold in MB (objects smaller than this are single-part).
-    #[arg(long, default_value_t = 128)]
-    multipart_threshold_mb: u64,
-    /// Max concurrent parts per object.
-    #[arg(long, default_value_t = 8)]
-    part_concurrency: usize,
     /// Skip downloading parquet files.
     #[arg(long, default_value_t = false)]
     dry_run: bool,
@@ -63,10 +51,6 @@ fn parse_args() -> Result<ResolvedArgs> {
         inputs: raw.inputs,
         options: DownloadOptions {
             out_root: resolve_out_root(raw.out_root),
-            max_requests: raw.max_requests,
-            part_size_mb: raw.part_size_mb,
-            multipart_threshold_mb: raw.multipart_threshold_mb,
-            part_concurrency: raw.part_concurrency,
             dry_run: raw.dry_run,
         },
     })

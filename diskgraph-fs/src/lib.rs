@@ -57,7 +57,7 @@ pub struct S3Client {
 pub mod cloud_transfer;
 pub use cloud_transfer::{
     BufferPool, CloudTransfer, CloudTransferConfig, CloudTransferStatsHandle,
-    CloudTransferStatsSnapshot, CloudTransferTicket, PooledBuffer,
+    CloudTransferDownloadTicket, CloudTransferStatsSnapshot, CloudTransferTicket, PooledBuffer,
 };
 
 pub fn build_s3_client(cfg: S3Config) -> Result<S3Client> {
@@ -90,6 +90,91 @@ pub fn build_s3_client(cfg: S3Config) -> Result<S3Client> {
             .await
             .map_err(|e| anyhow!("Failed to load AWS credentials: {e}"))
     })?;
+
+    let region = cfg
+        .region
+        .clone()
+        .or_else(|| std::env::var("S3_REGION").ok())
+        .or_else(|| aws_conf.region().map(|r| r.as_ref().to_string()))
+        .unwrap_or_else(|| "us-east-1".to_string());
+    let virtual_hosted = cfg
+        .virtual_hosted
+        .or_else(|| env_flag("S3_VIRTUAL_HOSTED"))
+        .unwrap_or_else(|| endpoint.as_ref().map_or(true, |ep| ep.contains("amazonaws.com")));
+    let access_key_id = cfg
+        .access_key_id
+        .clone()
+        .or_else(|| std::env::var("S3_ACCESS_KEY").ok())
+        .or_else(|| std::env::var("AWS_ACCESS_KEY_ID").ok())
+        .unwrap_or_else(|| creds.access_key_id().to_string());
+    let secret_access_key = cfg
+        .secret_access_key
+        .clone()
+        .or_else(|| std::env::var("S3_SECRET_KEY").ok())
+        .or_else(|| std::env::var("AWS_SECRET_ACCESS_KEY").ok())
+        .unwrap_or_else(|| creds.secret_access_key().to_string());
+    let session_token = cfg
+        .session_token
+        .clone()
+        .or_else(|| std::env::var("S3_SESSION_TOKEN").ok())
+        .or_else(|| creds.session_token().map(|t| t.to_string()));
+
+    let mut builder = AmazonS3Builder::new()
+        .with_bucket_name(&cfg.bucket)
+        .with_region(&region)
+        .with_virtual_hosted_style_request(virtual_hosted)
+        .with_allow_http(allow_http)
+        .with_access_key_id(access_key_id.clone())
+        .with_secret_access_key(secret_access_key.clone());
+    if let Some(ep) = &endpoint {
+        builder = builder.with_endpoint(ep);
+    }
+    if let Some(token) = &session_token {
+        builder = builder.with_token(token);
+    }
+    let store = Arc::new(builder.build()?);
+    Ok(S3Client {
+        store,
+        resolved: ResolvedS3 {
+            bucket: cfg.bucket,
+            region,
+            endpoint,
+            allow_http,
+            virtual_hosted,
+            access_key_id,
+            secret_access_key,
+            session_token,
+        },
+    })
+}
+
+pub async fn build_s3_client_async(cfg: S3Config) -> Result<S3Client> {
+    let allow_http = cfg
+        .allow_http
+        .or_else(|| env_flag("S3_ALLOW_HTTP"))
+        .or_else(|| env_flag("AWS_ALLOW_HTTP"))
+        .unwrap_or(false);
+    let endpoint = cfg.endpoint.clone().or_else(|| std::env::var("S3_ENDPOINT").ok());
+    let profile = cfg
+        .profile
+        .clone()
+        .or_else(|| std::env::var("S3_PROFILE").ok())
+        .or_else(|| std::env::var("AWS_PROFILE").ok());
+    let mut loader = aws_config::defaults(BehaviorVersion::latest());
+    if let Some(p) = profile.clone() {
+        loader = loader.profile_name(p);
+    }
+    if let Some(region) = cfg.region.clone().or_else(|| std::env::var("S3_REGION").ok()) {
+        loader = loader.region(Region::new(region));
+    }
+    let aws_conf = loader.load().await;
+    let creds_provider = aws_conf
+        .credentials_provider()
+        .ok_or_else(|| anyhow!("No AWS credentials provider found; ensure AWS_PROFILE/SSO is set"))?;
+    let creds = creds_provider
+        .provide_credentials()
+        .await
+        .map_err(|e| anyhow!("Failed to load AWS credentials: {e}"))?;
 
     let region = cfg
         .region

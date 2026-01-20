@@ -2,13 +2,14 @@ use anyhow::{anyhow, bail, Context, Result};
 use aws_config::BehaviorVersion;
 use aws_sdk_s3::types::Object;
 use aws_sdk_s3::{Client, Config};
+use diskgraph_fs::{build_s3_client_async, CloudTransfer, CloudTransferConfig, S3Config};
 use futures_util::stream::{self, StreamExt, TryStreamExt};
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use std::collections::VecDeque;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
-use tokio::io::{AsyncSeekExt, AsyncWriteExt};
-use tokio::sync::Semaphore;
+use tokio::io::AsyncWriteExt;
+use object_store::path::Path as ObjectPath;
 use url::Url;
 
 const DEFAULT_BUCKET: &str = "kumo-prod-dataplane-bucket";
@@ -17,10 +18,6 @@ const DOORDASH_BUCKET: &str = "kumo-doordash-cache";
 #[derive(Debug, Clone)]
 pub struct DownloadOptions {
     pub out_root: PathBuf,
-    pub max_requests: usize,
-    pub part_size_mb: u64,
-    pub multipart_threshold_mb: u64,
-    pub part_concurrency: usize,
     pub dry_run: bool,
 }
 
@@ -28,10 +25,6 @@ impl Default for DownloadOptions {
     fn default() -> Self {
         Self {
             out_root: PathBuf::from("/mnt/localssd/datasets"),
-            max_requests: 64,
-            part_size_mb: 64,
-            multipart_threshold_mb: 128,
-            part_concurrency: 8,
             dry_run: false,
         }
     }
@@ -121,7 +114,20 @@ pub async fn download_job(job_spec: &str, options: DownloadOptions) -> Result<Pa
         }
     }
 
-    let request_sema = std::sync::Arc::new(Semaphore::new(options.max_requests));
+    let s3 = build_s3_client_async(S3Config {
+        bucket: bucket.to_string(),
+        region: None,
+        endpoint: None,
+        allow_http: None,
+        virtual_hosted: None,
+        profile: std::env::var("S3_PROFILE").ok(),
+        access_key_id: None,
+        secret_access_key: None,
+        session_token: None,
+    })
+    .await?;
+    let transfer_config = CloudTransferConfig::from_env();
+    let transfer = CloudTransfer::new(s3.store, transfer_config.clone());
     let mut download_items = Vec::new();
     for table_prefix in table_prefixes {
         let attrs_key = format!("{}{}attributes.json", graphs_prefix_key, table_prefix);
@@ -175,29 +181,20 @@ pub async fn download_job(job_spec: &str, options: DownloadOptions) -> Result<Pa
         return Ok(out_dir);
     }
 
-    let part_size = options.part_size_mb * 1024 * 1024;
-    let threshold = options.multipart_threshold_mb * 1024 * 1024;
-    let client_ref = client.clone();
-    let request_sema = request_sema.clone();
-    let part_concurrency = options.part_concurrency;
-    let max_requests = options.max_requests;
-    
+    let transfer_ref = transfer.clone();
+    let max_requests = std::thread::available_parallelism()
+        .map(|v| v.get() * 2)
+        .unwrap_or(2);
+
     stream::iter(download_items)
         .map(Ok::<_, anyhow::Error>)
         .try_for_each_concurrent(max_requests, |item| {
-            let client = client_ref.clone();
-            let request_sema = request_sema.clone();
+            let transfer = transfer_ref.clone();
             let progress = progress.clone();
-            let bucket = bucket.to_string();
             async move {
                 download_path(
-                    &client,
-                    &bucket,
                     item,
-                    part_size,
-                    threshold,
-                    part_concurrency,
-                    &request_sema,
+                    transfer,
                     &progress,
                 )
                 .await
@@ -405,13 +402,8 @@ struct DownloadItem {
 }
 
 async fn download_path(
-    client: &Client,
-    bucket: &str,
     item: DownloadItem,
-    part_size: u64,
-    threshold: u64,
-    part_concurrency: usize,
-    request_sema: &Semaphore,
+    transfer: CloudTransfer,
     progress: &std::sync::Arc<ProgressTracker>,
 ) -> Result<()> {
     let key = item.key;
@@ -428,106 +420,16 @@ async fn download_path(
         }
     }
 
-    if size >= threshold {
-        let parts = build_ranges(size, part_size);
-        let file = tokio::fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(&out_path)
-            .await?;
-        file.set_len(size).await?;
-        drop(file);
-
-        let key_ref = key.as_str();
-        stream::iter(parts)
-            .map(Ok::<_, anyhow::Error>)
-            .try_for_each_concurrent(part_concurrency, |(start, end)| {
-                let client = client.clone();
-                let out_path = out_path.clone();
-                let progress = progress.clone();
-                async move {
-                    download_range(
-                        &client,
-                        bucket,
-                        key_ref,
-                        &out_path,
-                        start,
-                        end,
-                        request_sema,
-                        &progress,
-                    )
-                    .await
-                }
-            })
-            .await?;
-    } else {
-        download_full(client, bucket, &key, &out_path, request_sema).await?;
-        progress.add_bytes(size);
-    }
+    let path = ObjectPath::from(key.clone());
+    let buffer = tokio::task::spawn_blocking(move || transfer.submit_download(path)?.wait())
+        .await
+        .map_err(|err| anyhow!("download task panicked: {}", err))??;
+    let mut file = tokio::fs::File::create(&out_path).await?;
+    file.write_all(buffer.as_slice()).await?;
+    file.flush().await?;
+    progress.add_bytes(size);
     progress.add_file_done();
     Ok(())
-}
-
-async fn download_full(
-    client: &Client,
-    bucket: &str,
-    key: &str,
-    out_path: &Path,
-    request_sema: &Semaphore,
-) -> Result<()> {
-    let _permit = request_sema.acquire().await?;
-    let resp = client.get_object().bucket(bucket).key(key).send().await?;
-    let mut reader = resp.body.into_async_read();
-    let mut file = tokio::fs::File::create(out_path).await?;
-    tokio::io::copy(&mut reader, &mut file).await?;
-    file.flush().await?;
-    Ok(())
-}
-
-async fn download_range(
-    client: &Client,
-    bucket: &str,
-    key: &str,
-    out_path: &Path,
-    start: u64,
-    end: u64,
-    request_sema: &Semaphore,
-    progress: &std::sync::Arc<ProgressTracker>,
-) -> Result<()> {
-    let _permit = request_sema.acquire().await?;
-    let range = format!("bytes={}-{}", start, end);
-    let resp = client
-        .get_object()
-        .bucket(bucket)
-        .key(key)
-        .range(range)
-        .send()
-        .await?;
-    let mut reader = resp.body.into_async_read();
-    let mut file = tokio::fs::OpenOptions::new()
-        .write(true)
-        .open(out_path)
-        .await?;
-    file.seek(std::io::SeekFrom::Start(start)).await?;
-    tokio::io::copy(&mut reader, &mut file).await?;
-    file.flush().await?;
-    progress.add_bytes((end - start) + 1);
-    Ok(())
-}
-
-fn build_ranges(size: u64, part_size: u64) -> Vec<(u64, u64)> {
-    let mut ranges = Vec::new();
-    let mut start = 0;
-    while start < size {
-        let mut end = start + part_size - 1;
-        if end >= size {
-            end = size - 1;
-        }
-        ranges.push((start, end));
-        start = end + 1;
-    }
-    ranges
 }
 
 async fn prepare_output_dir(out_dir: &Path, out_root: &Path) -> Result<()> {
