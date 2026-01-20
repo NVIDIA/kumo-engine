@@ -220,7 +220,7 @@ async fn validate_job(
 
     let infer_res = infer_source_metadata(&source_root, infer_opts)?;
 
-    let metadata_path = data_dir.join("source_metadata.json");
+    let metadata_path = data_dir.join("diskgraph_config.json");
     fs::write(&metadata_path, serde_json::to_vec_pretty(&infer_res.metadata)?)?;
 
     // 3. Ingest

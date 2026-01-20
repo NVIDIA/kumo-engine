@@ -21,7 +21,7 @@ if cargo run -p diskgraph-datagenerator --bin diskgraph-datagenerator --release 
   --config "$CONFIG_PATH" \
   --output "$OUT_ROOT"; then
   echo "Next steps:"
-  echo "  ./diskgraph-infer/scripts/infer_source.sh \"$OUT_ROOT\""
+  echo "  ./diskgraph-infer/scripts/infer_config.sh \"$OUT_ROOT\""
   echo "  ./diskgraph-ingest/scripts/ingest_local.sh \"$OUT_ROOT\""
   echo "  ./diskgraph-index/scripts/explore_local.sh ${DATA_ROOT%/}/diskgraph-index/${DATASET_NAME}"
 fi

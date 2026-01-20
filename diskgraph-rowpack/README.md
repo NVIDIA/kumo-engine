@@ -50,7 +50,7 @@ This layout keeps parsing simple: read tags, then parse each column according to
 
 ## Supported Parquet types
 
-Rowpack is driven by `source_metadata.json` and ingestion maps Parquet/Arrow types as:
+Rowpack is driven by `diskgraph_config.json` and ingestion maps Parquet/Arrow types as:
 
 - **Int**: `Int8`, `Int16`, `Int32`, `Int64`
 - **UInt**: `UInt8`, `UInt16`, `UInt32`, `UInt64`
@@ -62,7 +62,7 @@ Rowpack is driven by `source_metadata.json` and ingestion maps Parquet/Arrow typ
 - **Timestamp**: `Timestamp` with `Second|Millisecond|Microsecond|Nanosecond` units (timezone accepted, normalized to UTC)
 - **Decimal**: `Decimal128`, `Decimal256` (requires `precision` + `scale`)
 - **Arrays**: `List(Float16)`, `List(Float32)`, and `List(Float64)`
-- **UUID/IP**: `uuid`, `uuid256`, and `ip` types are supported when declared in `source_metadata.json` (input values are parsed from string/bytes during ingest).
+- **UUID/IP**: `uuid`, `uuid256`, and `ip` types are supported when declared in `diskgraph_config.json` (input values are parsed from string/bytes during ingest).
 
 Other Parquet types are not supported by rowpack at this time.
 

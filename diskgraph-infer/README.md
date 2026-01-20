@@ -1,6 +1,6 @@
 # diskgraph-infer
 
-`diskgraph-infer` scans CSV/Parquet tables and produces a `source_metadata.json` that `diskgraph-ingest` can consume. It infers column types, primary keys, foreign keys, edge tables, and optional edge sort keys using a mix of schema inspection and column-name heuristics.
+`diskgraph-infer` scans CSV/Parquet tables and produces a `diskgraph_config.json` that `diskgraph-ingest` can consume. It infers column types, primary keys, foreign keys, edge tables, and optional edge sort keys using a mix of schema inspection and column-name heuristics.
 
 ## Inputs and layout
 
@@ -20,7 +20,7 @@ Files are grouped by table name (filename or top-level directory). Only `.csv` a
 
 ## Output
 
-Writes `source_metadata.json` with:
+Writes `diskgraph_config.json` with:
 
 - `tables[]` + inferred `columns[]`, `format`, `paths`
 - inferred `primary_key`, `create_time`
@@ -74,21 +74,21 @@ If none of the above match, columns default to `string` (or `float32`/`int64` wh
 ## CLI usage
 
 ```bash
-cargo run -p diskgraph-infer --bin infer_source --release -- \
+cargo run -p diskgraph-infer --bin infer_config --release -- \
   --input /mnt/localssd/datasets/hnm \
-  --output /mnt/localssd/datasets/hnm/source_metadata.json
+  --output /mnt/localssd/datasets/hnm/diskgraph_config.json
 ```
 
 Options:
 
 - `--input`: root directory or cloud URL.
-- `--output`: output path for `source_metadata.json`.
+- `--output`: output path for `diskgraph_config.json`.
 - `--validate_all`: validate schema consistency across all files in a table (slower).
 
 Wrapper script:
 
 ```bash
-./diskgraph-infer/scripts/infer_source.sh /mnt/localssd/datasets/hnm
+./diskgraph-infer/scripts/infer_config.sh /mnt/localssd/datasets/hnm
 ```
 
 ## Warnings and diagnostics

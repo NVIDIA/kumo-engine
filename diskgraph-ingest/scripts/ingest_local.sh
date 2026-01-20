@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Run diskgraph-ingest on a local source directory or source_metadata.json.
+# Run diskgraph-ingest on a local source directory or diskgraph_config.json.
 #
 # Quick usage:
 #   ./diskgraph-ingest/scripts/ingest_local.sh /path/to/source_dir

@@ -21,4 +21,4 @@ for i in $(seq -w 1 "${DUP_COUNT}"); do
   cp -f "${TXN_SOURCE}" "${DEST_ROOT}/${TXN_SUBDIR}/transactions_train_${i}.parquet"
 done
 
-echo "Next: ./diskgraph-infer/scripts/infer_source.sh ${DEST_ROOT}"
+echo "Next: ./diskgraph-infer/scripts/infer_config.sh ${DEST_ROOT}"

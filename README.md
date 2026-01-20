@@ -28,13 +28,13 @@ Use the H&M download helper (defaults to `/mnt/localssd/datasets/hnm`):
 ./diskgraph-datagenerator/scripts/hnm100_download.sh
 ```
 
-### 3) Infer `source_metadata.json`
+### 3) Infer `diskgraph_config.json`
 
 ```bash
-./diskgraph-infer/scripts/infer_source.sh /mnt/localssd/datasets/hnm
+./diskgraph-infer/scripts/infer_config.sh /mnt/localssd/datasets/hnm
 ```
 
-This writes `/mnt/localssd/datasets/hnm/source_metadata.json`.
+This writes `/mnt/localssd/datasets/hnm/diskgraph_config.json`.
 
 ### 4) Ingest to a DiskGraph index
 
@@ -68,7 +68,7 @@ Use the JSON-driven datagenerator to write Parquet shards under `/mnt/localssd/d
 
 ```bash
 ./diskgraph-datagenerator/scripts/generate_dataset.sh diskgraph-datagenerator/configs/small_100m.json
-./diskgraph-infer/scripts/infer_source.sh /mnt/localssd/datasets/small_100m
+./diskgraph-infer/scripts/infer_config.sh /mnt/localssd/datasets/small_100m
 ./diskgraph-ingest/scripts/ingest_local.sh /mnt/localssd/datasets/small_100m
 ```
 
@@ -84,6 +84,6 @@ Use this when you have a training or bp job ID and want the raw parquet tables f
 
 ```bash
 ./diskgraph-datagenerator/scripts/download_ingested_graph.sh <customer_name> <job_id>
-./diskgraph-infer/scripts/infer_source.sh /mnt/localssd/datasets/<customer_name>_<job_id>
+./diskgraph-infer/scripts/infer_config.sh /mnt/localssd/datasets/<customer_name>_<job_id>
 ./diskgraph-ingest/scripts/ingest_local.sh /mnt/localssd/datasets/<customer_name>_<job_id>
 ```

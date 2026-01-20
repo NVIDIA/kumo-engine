@@ -85,5 +85,5 @@ if cargo run -p diskgraph-datagenerator --bin diskgraph-datagenerator --release 
   --output "$OUT_ROOT"; then
   echo "Output: ${OUT_ROOT}"
   echo "Next steps:"
-  echo "  ./diskgraph-infer/scripts/infer_source.sh \"${OUT_ROOT}\""
+  echo "  ./diskgraph-infer/scripts/infer_config.sh \"${OUT_ROOT}\""
 fi

@@ -234,7 +234,7 @@ fn ingest_csv_with_edges_and_rowpack() -> Result<()> {
             }
         }
     });
-    let source_path = dir.path().join("source_metadata.json");
+    let source_path = dir.path().join("diskgraph_config.json");
     fs::write(&source_path, serde_json::to_vec_pretty(&source)?)?;
 
     let metadata = ingest(
@@ -435,7 +435,7 @@ fn ingest_csv_multi_file_table_with_two_shards() -> Result<()> {
             }
         ]
     });
-    let source_path = dir.path().join("source_metadata.json");
+    let source_path = dir.path().join("diskgraph_config.json");
     fs::write(&source_path, serde_json::to_vec_pretty(&source)?)?;
 
     let metadata = ingest(
@@ -525,7 +525,7 @@ fn ingest_parquet_with_sorted_mapping() -> Result<()> {
         ],
         "relationships": []
     });
-    let source_path = dir.path().join("source_metadata.json");
+    let source_path = dir.path().join("diskgraph_config.json");
     fs::write(&source_path, serde_json::to_vec_pretty(&source)?)?;
 
     let options = IngestOptions {
@@ -587,7 +587,7 @@ fn ingest_csv_with_bytes_pk_mapping() -> Result<()> {
         ],
         "relationships": []
     });
-    let source_path = dir.path().join("source_metadata.json");
+    let source_path = dir.path().join("diskgraph_config.json");
     fs::write(&source_path, serde_json::to_vec_pretty(&source)?)?;
 
     let options = IngestOptions {
@@ -696,7 +696,7 @@ fn ingest_relationship_uses_dest_timestamp_sort_key() -> Result<()> {
             }
         }
     });
-    let source_path = dir.path().join("source_metadata.json");
+    let source_path = dir.path().join("diskgraph_config.json");
     fs::write(&source_path, serde_json::to_vec_pretty(&source)?)?;
 
     let metadata = ingest(
@@ -818,7 +818,7 @@ fn ingest_invalid_fields_records_failures_and_builds() -> Result<()> {
             }
         ]
     });
-    let source_path = dir.path().join("source_metadata.json");
+    let source_path = dir.path().join("diskgraph_config.json");
     fs::write(&source_path, serde_json::to_vec_pretty(&source)?)?;
 
     let (_metadata, stats) = ingest_with_stats(
@@ -956,7 +956,7 @@ fn ingest_edge_table_mixed_sort_keys() -> Result<()> {
             }
         }
     });
-    let source_path = dir.path().join("source_metadata.json");
+    let source_path = dir.path().join("diskgraph_config.json");
     fs::write(&source_path, serde_json::to_vec_pretty(&source)?)?;
 
     let metadata = ingest(
@@ -1154,7 +1154,7 @@ fn ingest_parquet_with_uuid_ip_types() -> Result<()> {
         ]
     });
 
-    let source_path = dir.path().join("source_metadata.json");
+    let source_path = dir.path().join("diskgraph_config.json");
     fs::write(&source_path, serde_json::to_vec_pretty(&source)?)?;
 
     let (_metadata, stats) = ingest_with_stats(
@@ -1245,7 +1245,7 @@ fn ingest_parquet_to_index_reader_e2e() -> Result<()> {
             "edge_tables": {}
         }
     });
-    let source_path = input_root.join("source_metadata.json");
+    let source_path = input_root.join("diskgraph_config.json");
     fs::write(&source_path, serde_json::to_vec_pretty(&metadata)?)?;
 
     let options = IngestOptions::default();
@@ -1328,7 +1328,7 @@ fn ingest_weight_expr_with_backticks() -> Result<()> {
             }
         }
     });
-    let source_path = dir.path().join("source_metadata.json");
+    let source_path = dir.path().join("diskgraph_config.json");
     fs::write(&source_path, serde_json::to_vec_pretty(&source)?)?;
 
     let metadata = ingest(
@@ -1417,7 +1417,7 @@ fn ingest_weight_expr_with_log_and_abs() -> Result<()> {
             }
         }
     });
-    let source_path = dir.path().join("source_metadata.json");
+    let source_path = dir.path().join("diskgraph_config.json");
     fs::write(&source_path, serde_json::to_vec_pretty(&source)?)?;
 
     let metadata = ingest(
@@ -1505,7 +1505,7 @@ fn ingest_missing_dst_key_records_lookup() -> Result<()> {
             }
         ]
     });
-    let source_path = dir.path().join("source_metadata.json");
+    let source_path = dir.path().join("diskgraph_config.json");
     fs::write(&source_path, serde_json::to_vec_pretty(&source)?)?;
 
     let (_metadata, stats) = ingest_with_stats(

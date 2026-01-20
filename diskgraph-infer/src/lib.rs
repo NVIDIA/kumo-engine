@@ -407,7 +407,7 @@ fn infer_file_table(
         .to_lowercase();
     match ext.as_str() {
         "csv" => {
-            eprintln!("infer_source: reading {}", path.display());
+            eprintln!("infer_config: reading {}", path.display());
             let size = std::fs::metadata(path)?.len();
             let columns = infer_csv_schema(path, options)
                 .with_context(|| format!("infer schema for table {} at {}", name, path.display()))?;
@@ -421,7 +421,7 @@ fn infer_file_table(
             }))
         }
         "parquet" => {
-            eprintln!("infer_source: reading {}", path.display());
+            eprintln!("infer_config: reading {}", path.display());
             let size = std::fs::metadata(path)?.len();
             let columns = infer_parquet_schema_local(path, options)
                 .with_context(|| format!("infer schema for table {} at {}", name, path.display()))?;
@@ -472,7 +472,7 @@ fn infer_dir_table(
                     existing.total_bytes = existing.total_bytes.saturating_add(size);
                     continue;
                 }
-                eprintln!("infer_source: reading {}", path.display());
+                eprintln!("infer_config: reading {}", path.display());
                 let columns = match format {
                     TableFormat::Csv => infer_csv_schema(&path, options)
                         .with_context(|| format!("infer schema for table {} at {}", name, path.display()))?,
@@ -498,7 +498,7 @@ fn infer_dir_table(
                 existing.total_bytes = existing.total_bytes.saturating_add(size);
             }
             None => {
-                eprintln!("infer_source: reading {}", path.display());
+                eprintln!("infer_config: reading {}", path.display());
                 let columns = match format {
                     TableFormat::Csv => infer_csv_schema(&path, options)
                         .with_context(|| format!("infer schema for table {} at {}", name, path.display()))?,
@@ -567,7 +567,7 @@ fn infer_remote_tables(
                         continue;
                     }
                 }
-                eprintln!("infer_source: reading {}", path_str);
+                eprintln!("infer_config: reading {}", path_str);
                 let columns = match format {
                     TableFormat::Parquet => infer_parquet_schema_remote(
                         &transfer,
@@ -627,7 +627,7 @@ fn infer_remote_tables(
                         continue;
                     }
                 }
-                eprintln!("infer_source: reading {}", path_str);
+                eprintln!("infer_config: reading {}", path_str);
                 let columns = match format {
                     TableFormat::Parquet => infer_parquet_schema_remote(
                         &transfer,

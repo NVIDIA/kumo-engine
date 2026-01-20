@@ -10,4 +10,4 @@ mkdir -p "${DEST_ROOT}"
 
 aws s3 sync "${S3_PREFIX}" "${DEST_ROOT}"
 
-echo "Next: ./diskgraph-infer/scripts/infer_source.sh ${DEST_ROOT}"
+echo "Next: ./diskgraph-infer/scripts/infer_config.sh ${DEST_ROOT}"

@@ -12,7 +12,7 @@ static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
 #[derive(Parser, Debug)]
 #[command(author, version, about = "Ingest raw CSV/Parquet into diskgraph index format.")]
 struct Args {
-    /// Path to source_metadata.json
+    /// Path to diskgraph_config.json
     #[arg(long)]
     source: PathBuf,
     /// Output destination root (path or URL).
@@ -49,13 +49,13 @@ fn main() -> Result<()> {
         .init();
     let args = Args::parse();
     let source_path = if args.source.is_dir() {
-        args.source.join("source_metadata.json")
+        args.source.join("diskgraph_config.json")
     } else {
         args.source.clone()
     };
     if !source_path.is_file() {
         anyhow::bail!(
-            "source metadata not found at {}",
+            "diskgraph config not found at {}",
             source_path.display()
         );
     }

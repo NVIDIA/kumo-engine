@@ -189,7 +189,7 @@ pub async fn download_job(job_spec: &str, options: DownloadOptions) -> Result<Pa
     if !options.dry_run {
         println!("Next steps:");
         println!(
-            "  ./diskgraph-infer/scripts/infer_source.sh \"{}\"",
+            "  ./diskgraph-infer/scripts/infer_config.sh \"{}\"",
             out_dir.display()
         );
     }

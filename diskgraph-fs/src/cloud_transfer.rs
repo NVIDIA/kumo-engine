@@ -570,6 +570,10 @@ impl CloudTransfer {
         })
     }
 
+    pub fn upload_bytes(&self, path: ObjectPath, buffer: Vec<u8>) -> Result<()> {
+        self.submit_upload(path, buffer)?.wait()
+    }
+
     pub fn submit_download(&self, path: ObjectPath) -> Result<CloudTransferDownloadTicket> {
         let (tx, rx) = oneshot::channel();
         let job = DownloadJob {

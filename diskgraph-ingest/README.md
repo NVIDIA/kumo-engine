@@ -1,10 +1,10 @@
 # diskgraph-ingest
 
-`diskgraph-ingest` turns CSV/Parquet source tables plus `source_metadata.json` into a local DiskGraph index. It builds rowpack contexts, sharded primary key maps, and edge shards, then runs the index builder to produce the binary `edges.bin`/`offsets.bin` files under the output directory.
+`diskgraph-ingest` turns CSV/Parquet source tables plus `diskgraph_config.json` into a local DiskGraph index. It builds rowpack contexts, sharded primary key maps, and edge shards, then runs the index builder to produce the binary `edges.bin`/`offsets.bin` files under the output directory.
 
 ## Inputs
 
-- A `source_metadata.json` file describing:
+- A `diskgraph_config.json` file describing:
   - node tables and schemas
   - explicit edge tables (optional)
   - foreign-key / primary-key relationships (implicit edges)
@@ -13,7 +13,7 @@
   - optional rowpack configuration
 - Source data files (CSV or Parquet). Paths may be local or `s3://`, `gs://`, `az://`.
 
-## source_metadata.json
+## diskgraph_config.json
 
 Top-level schema (all fields optional except `dataset_name` and `tables`):
 
@@ -175,7 +175,7 @@ Key matching behavior:
 
 ## Supported Parquet types
 
-Ingestion expects schemas to match `source_metadata.json` and supports:
+Ingestion expects schemas to match `diskgraph_config.json` and supports:
 
 - **Int**: `Int8`, `Int16`, `Int32`, `Int64`
 - **UInt**: `UInt8`, `UInt16`, `UInt32`, `UInt64`
@@ -232,7 +232,7 @@ cargo run -p diskgraph-ingest --bin ingest --release -- \
 ```
 
 Flags:
-- `--source`: directory containing `source_metadata.json` or the path to it.
+- `--source`: directory containing `diskgraph_config.json` or the path to it.
 - `--output`: local output directory for the index.
 - `--dest`: must be `local` (index build requires local output).
 - `--profile [dir]`: enable CPU profiling and emit `*-profile.pb`/`*-profile.svg`.
