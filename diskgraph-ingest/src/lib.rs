@@ -3539,7 +3539,7 @@ impl IngestContext {
             }
         }
         let mut hash_writer =
-            BufWriter::with_capacity(32 * 1024 * 1024, target.sink(&hash_path)?);
+            BufWriter::with_capacity(4 * 1024 * 1024, target.sink(&hash_path)?);
         mphf.serialize(&mut hash_writer)?;
         hash_writer.flush()?;
         let hash_sink = hash_writer
@@ -3548,7 +3548,7 @@ impl IngestContext {
         hash_sink.finish()?;
 
         let mut data_writer =
-            BufWriter::with_capacity(32 * 1024 * 1024, target.sink(&data_path)?);
+            BufWriter::with_capacity(4 * 1024 * 1024, target.sink(&data_path)?);
         write_pk_data_header(
             &mut data_writer,
             key_type,
@@ -3663,7 +3663,9 @@ impl IngestContext {
             total_bytes = total_bytes.saturating_add(data_len);
         }
         let data_advice = match total_memory_bytes() {
-            Some(total_mem) if total_bytes <= total_mem => PkDataAdvice::WillNeed,
+            Some(total_mem) if total_bytes <= total_mem.saturating_mul(9) / 10 => {
+                PkDataAdvice::WillNeed
+            }
             _ => PkDataAdvice::Random,
         };
         let (tx, rx) = std::sync::mpsc::channel::<Result<(String, usize, PkHashShard)>>();
@@ -4901,7 +4903,7 @@ fn open_sort_key_writer(target: &OutputTarget, rel_path: &str) -> Result<BufWrit
             fs::create_dir_all(parent)?;
         }
     }
-    Ok(BufWriter::with_capacity(32 * 1024 * 1024, target.sink(&path)?))
+    Ok(BufWriter::with_capacity(4 * 1024 * 1024, target.sink(&path)?))
 }
 
 fn ensure_sort_key_file(target: &OutputTarget, rel_path: &str) -> Result<()> {
@@ -4939,7 +4941,7 @@ fn open_fkey_bitmap_writer(target: &OutputTarget, rel_path: &str) -> Result<BufW
             fs::create_dir_all(parent)?;
         }
     }
-    Ok(BufWriter::with_capacity(32 * 1024 * 1024, target.sink(&path)?))
+    Ok(BufWriter::with_capacity(4 * 1024 * 1024, target.sink(&path)?))
 }
 
 fn ensure_fkey_bitmap_file(target: &OutputTarget, rel_path: &str) -> Result<()> {
@@ -5198,7 +5200,7 @@ impl EdgePartWriter {
                 fs::create_dir_all(parent)?;
             }
         }
-        let mut writer = BufWriter::with_capacity(32 * 1024 * 1024, target.sink(path)?);
+        let mut writer = BufWriter::with_capacity(4 * 1024 * 1024, target.sink(path)?);
         write_edge_bin_header(&mut writer, spec)?;
         Ok(Self {
             writer,
