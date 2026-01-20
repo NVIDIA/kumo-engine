@@ -3663,7 +3663,7 @@ impl IngestContext {
             total_bytes = total_bytes.saturating_add(data_len);
         }
         let data_advice = match total_memory_bytes() {
-            Some(total_mem) if total_bytes <= total_mem.saturating_mul(9) / 10 => {
+            Some(total_mem) if total_bytes <= total_mem.saturating_mul(8) / 10 => {
                 PkDataAdvice::WillNeed
             }
             _ => PkDataAdvice::Random,
