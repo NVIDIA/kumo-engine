@@ -1769,6 +1769,7 @@ impl IngestContext {
             SortKeyWritePool::new(std::sync::Arc::clone(&target), edge_writer_workers());
         let node_senders = node_pool.senders();
         let edge_senders = edge_pool.senders();
+        let edge_errors = edge_pool.error();
         let sort_key_senders = sort_key_pool.senders();
         let input_transfer = self.input_transfer.clone();
         let trimmed_strings = std::sync::Arc::clone(&self.trimmed_strings);
@@ -1809,6 +1810,7 @@ impl IngestContext {
                 let relation_defs = std::sync::Arc::clone(&relation_defs);
                 let input_transfer = input_transfer.clone();
                 let tx = tx.clone();
+                let edge_errors = std::sync::Arc::clone(&edge_errors);
                 tasks.push(WorkItem {
                     bucket: None,
                     run: Box::new(move |_scratch| {
@@ -1824,6 +1826,7 @@ impl IngestContext {
                                 &progress,
                                 &mut key_failures,
                                 &edge_senders,
+                                &edge_errors,
                                 &sort_key_senders,
                                 relation_defs.as_ref(),
                             )?;
@@ -2492,6 +2495,7 @@ impl IngestContext {
         progress: &Option<ProgressCallback>,
         key_failures: &mut KeyFailureState,
         senders: &std::sync::Arc<Vec<std::sync::mpsc::SyncSender<EdgeSrcWriteMessage>>>,
+        error: &std::sync::Arc<std::sync::Mutex<Option<String>>>,
         sort_key_senders: &std::sync::Arc<Vec<std::sync::mpsc::SyncSender<SortKeyWriteMessage>>>,
         relation_defs: &[RelationDef],
     ) -> Result<()> {
@@ -2513,6 +2517,7 @@ impl IngestContext {
             num_shards,
             buffer_limit,
             std::sync::Arc::clone(senders),
+            std::sync::Arc::clone(error),
         );
         let mut sort_key_batchers = build_sort_key_batchers_for_edge_table(
             table,
@@ -6191,27 +6196,46 @@ impl EdgeSrcWriterStats {
 struct EdgeSrcWritePool {
     senders: std::sync::Arc<Vec<std::sync::mpsc::SyncSender<EdgeSrcWriteMessage>>>,
     handles: Vec<std::thread::JoinHandle<Result<EdgeSrcWriterStats>>>,
+    error: std::sync::Arc<std::sync::Mutex<Option<String>>>,
 }
 
 impl EdgeSrcWritePool {
     fn new(target: std::sync::Arc<OutputTarget>, workers: usize) -> Self {
         let mut senders = Vec::with_capacity(workers);
         let mut handles = Vec::with_capacity(workers);
+        let error = std::sync::Arc::new(std::sync::Mutex::new(None));
         for _ in 0..workers {
             let (tx, rx) =
                 std::sync::mpsc::sync_channel::<EdgeSrcWriteMessage>(EDGE_WRITE_QUEUE_DEPTH);
             let target = std::sync::Arc::clone(&target);
-            handles.push(std::thread::spawn(move || edge_src_writer_worker(target, rx)));
+            let error = std::sync::Arc::clone(&error);
+            handles.push(std::thread::spawn(move || {
+                match edge_src_writer_worker(target, rx) {
+                    Ok(stats) => Ok(stats),
+                    Err(err) => {
+                        let mut guard = error.lock().unwrap_or_else(|e| e.into_inner());
+                        if guard.is_none() {
+                            *guard = Some(format!("{err:#}"));
+                        }
+                        Err(err)
+                    }
+                }
+            }));
             senders.push(tx);
         }
         Self {
             senders: std::sync::Arc::new(senders),
             handles,
+            error,
         }
     }
 
     fn senders(&self) -> std::sync::Arc<Vec<std::sync::mpsc::SyncSender<EdgeSrcWriteMessage>>> {
         std::sync::Arc::clone(&self.senders)
+    }
+
+    fn error(&self) -> std::sync::Arc<std::sync::Mutex<Option<String>>> {
+        std::sync::Arc::clone(&self.error)
     }
 
     fn finish(self) -> Result<EdgeSrcWriterStats> {
@@ -6223,6 +6247,11 @@ impl EdgeSrcWritePool {
                     stats.merge(result?);
                 }
                 Err(_) => return Err(anyhow!("edge src writer thread panicked")),
+            }
+        }
+        if let Ok(guard) = self.error.lock() {
+            if let Some(message) = guard.as_ref() {
+                return Err(anyhow!("edge src writer failed: {message}"));
             }
         }
         Ok(stats)
@@ -6275,6 +6304,7 @@ struct EdgeSrcBatcher {
     buffers: Vec<EdgeSrcBuffer>,
     buffer_limit: usize,
     senders: std::sync::Arc<Vec<std::sync::mpsc::SyncSender<EdgeSrcWriteMessage>>>,
+    error: std::sync::Arc<std::sync::Mutex<Option<String>>>,
 }
 
 impl EdgeSrcBatcher {
@@ -6283,6 +6313,7 @@ impl EdgeSrcBatcher {
         num_shards: usize,
         buffer_limit: usize,
         senders: std::sync::Arc<Vec<std::sync::mpsc::SyncSender<EdgeSrcWriteMessage>>>,
+        error: std::sync::Arc<std::sync::Mutex<Option<String>>>,
     ) -> Self {
         let rel_hash = hash_name(&rel);
         let buffers = (0..num_shards)
@@ -6297,6 +6328,7 @@ impl EdgeSrcBatcher {
             buffers,
             buffer_limit,
             senders,
+            error,
         }
     }
 
@@ -6314,6 +6346,11 @@ impl EdgeSrcBatcher {
     }
 
     fn flush_shard(&mut self, shard: usize) -> Result<()> {
+        if let Ok(guard) = self.error.lock() {
+            if let Some(message) = guard.as_ref() {
+                return Err(anyhow!("edge src writer failed: {message}"));
+            }
+        }
         let buffer = self
             .buffers
             .get_mut(shard)
@@ -6333,7 +6370,14 @@ impl EdgeSrcBatcher {
         let idx = edge_writer_index(self.rel_hash, shard, self.senders.len());
         self.senders[idx]
             .send(EdgeSrcWriteMessage::Batch(batch))
-            .map_err(|e| anyhow!("edge src writer channel error: {e}"))?;
+            .map_err(|e| {
+                if let Ok(guard) = self.error.lock() {
+                    if let Some(message) = guard.as_ref() {
+                        return anyhow!("edge src writer failed: {message}");
+                    }
+                }
+                anyhow!("edge src writer channel error: {e}")
+            })?;
         Ok(())
     }
 

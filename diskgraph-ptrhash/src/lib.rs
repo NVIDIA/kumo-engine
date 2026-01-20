@@ -259,11 +259,11 @@ impl<Key: KeyT, BF: BucketFn, F: MutPacked, Hx: Hasher<Key>> PtrHash<Key, BF, F,
         if n <= SMALL_N_THRESHOLD {
             // Small-n path: bias toward more buckets and higher slack to avoid
             // indistinguishable buckets on tiny inputs.
-            if params.alpha < 0.99 {
-                params.alpha = 0.99;
+            if params.alpha < 0.995 {
+                params.alpha = 0.995;
             }
-            if params.lambda > 3.0 {
-                params.lambda = 3.0;
+            if params.lambda > 2.0 {
+                params.lambda = 2.0;
             }
         }
 
