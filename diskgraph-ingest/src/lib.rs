@@ -3663,11 +3663,22 @@ impl IngestContext {
             total_bytes = total_bytes.saturating_add(data_len);
         }
         let data_advice = match total_memory_bytes() {
-            Some(total_mem) if total_bytes <= total_mem.saturating_mul(8) / 10 => {
+            Some(total_mem) if total_bytes <= total_mem.saturating_mul(75) / 100 => {
                 PkDataAdvice::WillNeed
             }
             _ => PkDataAdvice::Random,
         };
+        if let Some(total_mem) = total_memory_bytes() {
+            println!(
+                "pk_hash mmap hint: total_bytes={} total_mem={} advice={:?}",
+                total_bytes, total_mem, data_advice
+            );
+        } else {
+            println!(
+                "pk_hash mmap hint: total_bytes={} total_mem=unknown advice={:?}",
+                total_bytes, data_advice
+            );
+        }
         let (tx, rx) = std::sync::mpsc::channel::<Result<(String, usize, PkHashShard)>>();
         let mut tasks = Vec::with_capacity(shard_jobs.len());
         for (table_name, shard_idx, key_type, hash_path, data_path) in shard_jobs {
