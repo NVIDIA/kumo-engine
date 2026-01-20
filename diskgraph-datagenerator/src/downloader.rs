@@ -1,7 +1,6 @@
 use anyhow::{anyhow, bail, Context, Result};
-use aws_config::BehaviorVersion;
-use aws_sdk_s3::types::Object;
-use aws_sdk_s3::{Client, Config};
+use object_store::path::Path as ObjectPath;
+use object_store::ObjectMeta;
 use diskgraph_fs::{build_s3_client_async, CloudTransfer, CloudTransferConfig, S3Config};
 use futures_util::stream::{self, StreamExt, TryStreamExt};
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
@@ -9,7 +8,6 @@ use std::collections::VecDeque;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use tokio::io::AsyncWriteExt;
-use object_store::path::Path as ObjectPath;
 use url::Url;
 
 const DEFAULT_BUCKET: &str = "kumo-prod-dataplane-bucket";
@@ -37,83 +35,6 @@ pub async fn download_job(job_spec: &str, options: DownloadOptions) -> Result<Pa
 
     let bucket = bucket_for_customer(&customer_name);
     let customer_path = customer_for_paths(&customer_name);
-
-    let config = aws_config::load_defaults(BehaviorVersion::latest()).await;
-    let s3_config = Config::new(&config);
-    let client = Client::from_conf(s3_config);
-
-    let graphs_prefix_key = format!("{}/prod/jobs/{}/graphs/", customer_path, job_id);
-    let graphs_prefix_s3 = format!("s3://{}/{}", bucket, graphs_prefix_key);
-    let progress = ProgressTracker::new();
-    let progress_task = spawn_progress(progress.clone());
-    progress.log("Listing graphs".to_string());
-
-    let mut graph_prefixes = list_prefixes(&client, bucket, &graphs_prefix_key)
-        .await
-        .context("list graphs")?;
-    if graph_prefixes.is_empty() {
-        bail!("no entries found under {}", graphs_prefix_s3);
-    }
-
-    let mut table_prefixes = Vec::new();
-    let mut graphs_prefix_key = graphs_prefix_key;
-    let first_prefix = graph_prefixes.remove(0);
-    if attributes_exist(&client, bucket, &(graphs_prefix_key.clone() + &first_prefix)).await? {
-        table_prefixes.push(first_prefix);
-        table_prefixes.extend(graph_prefixes);
-    } else {
-        if !graph_prefixes.is_empty() {
-            bail!(
-                "multiple graph directories under {}; please use a specific job",
-                graphs_prefix_s3
-            );
-        }
-        graphs_prefix_key = format!("{}{}", graphs_prefix_key, first_prefix);
-        let graph_s3 = format!("s3://{}/{}", bucket, graphs_prefix_key);
-        progress.log("Listing tables".to_string());
-        table_prefixes = list_prefixes(&client, bucket, &graphs_prefix_key)
-            .await
-            .context("list tables")?;
-        if table_prefixes.is_empty() {
-            bail!("no table directories found under {}", graph_s3);
-        }
-    }
-
-    let out_dir = options
-        .out_root
-        .join(format!("{}_{}", customer_name, job_id));
-    prepare_output_dir(&out_dir, &options.out_root).await?;
-
-    // Attempt to download config.json if it exists at graphs_prefix_key
-    let config_key = format!("{}config.json", graphs_prefix_key);
-    let config_resp = client
-        .get_object()
-        .bucket(bucket)
-        .key(&config_key)
-        .send()
-        .await;
-
-    match config_resp {
-        Ok(resp) => {
-            progress.log("Downloading config.json".to_string());
-            let mut reader = resp.body.into_async_read();
-            let config_out = out_dir.join("config.json");
-            let mut file = tokio::fs::File::create(config_out).await?;
-            tokio::io::copy(&mut reader, &mut file).await?;
-            file.flush().await?;
-        }
-        Err(aws_sdk_s3::error::SdkError::ServiceError(service_err)) => {
-            let err = service_err.err();
-            if !err.is_no_such_key() {
-                eprintln!("Warning: failed to check/download config.json: {:?}", service_err);
-            }
-        }
-        Err(e) => {
-            // Log warning but continue if config.json fails for other reasons
-            eprintln!("Warning: failed to check/download config.json: {:?}", e);
-        }
-    }
-
     let s3 = build_s3_client_async(S3Config {
         bucket: bucket.to_string(),
         region: None,
@@ -128,12 +49,75 @@ pub async fn download_job(job_spec: &str, options: DownloadOptions) -> Result<Pa
     .await?;
     let transfer_config = CloudTransferConfig::from_env();
     let transfer = CloudTransfer::new(s3.store, transfer_config.clone());
+
+    let graphs_prefix_key = format!("{}/prod/jobs/{}/graphs/", customer_path, job_id);
+    let graphs_prefix_s3 = format!("s3://{}/{}", bucket, graphs_prefix_key);
+    let progress = ProgressTracker::new();
+    let progress_task = spawn_progress(progress.clone());
+    progress.log("Listing graphs".to_string());
+
+    let mut graph_prefixes = list_prefixes(&transfer, &graphs_prefix_key)
+        .await
+        .context("list graphs")?;
+    if graph_prefixes.is_empty() {
+        bail!("no entries found under {}", graphs_prefix_s3);
+    }
+
+    let mut table_prefixes = Vec::new();
+    let mut graphs_prefix_key = graphs_prefix_key;
+    let first_prefix = graph_prefixes.remove(0);
+    if attributes_exist(&transfer, &(graphs_prefix_key.clone() + &first_prefix)).await? {
+        table_prefixes.push(first_prefix);
+        table_prefixes.extend(graph_prefixes);
+    } else {
+        if !graph_prefixes.is_empty() {
+            bail!(
+                "multiple graph directories under {}; please use a specific job",
+                graphs_prefix_s3
+            );
+        }
+        graphs_prefix_key = format!("{}{}", graphs_prefix_key, first_prefix);
+        let graph_s3 = format!("s3://{}/{}", bucket, graphs_prefix_key);
+        progress.log("Listing tables".to_string());
+        table_prefixes = list_prefixes(&transfer, &graphs_prefix_key)
+            .await
+            .context("list tables")?;
+        if table_prefixes.is_empty() {
+            bail!("no table directories found under {}", graph_s3);
+        }
+    }
+
+    let out_dir = options
+        .out_root
+        .join(format!("{}_{}", customer_name, job_id));
+    prepare_output_dir(&out_dir, &options.out_root).await?;
+
+    // Attempt to download config.json if it exists at graphs_prefix_key
+    let config_key = format!("{}config.json", graphs_prefix_key);
+    match transfer
+        .get_bytes(&ObjectPath::from(config_key.as_str()))
+        .await
+    {
+        Ok(bytes) => {
+            progress.log("Downloading config.json".to_string());
+            let config_out = out_dir.join("config.json");
+            let mut file = tokio::fs::File::create(config_out).await?;
+            file.write_all(bytes.as_ref()).await?;
+            file.flush().await?;
+        }
+        Err(err) => {
+            if !is_not_found(&err) {
+                eprintln!("Warning: failed to check/download config.json: {:?}", err);
+            }
+        }
+    }
+
     let mut download_items = Vec::new();
     for table_prefix in table_prefixes {
         let attrs_key = format!("{}{}attributes.json", graphs_prefix_key, table_prefix);
         let attrs_s3 = format!("s3://{}/{}", bucket, attrs_key);
         progress.log("Reading metadata".to_string());
-        let attrs = get_object_string(&client, bucket, &attrs_key).await?;
+        let attrs = get_object_string(&transfer, &attrs_key).await?;
         let table_meta = parse_table_metadata(&attrs)
             .with_context(|| format!("parse metadata from {}", attrs_s3))?;
         validate_table_name(&table_meta.table_name)?;
@@ -144,7 +128,7 @@ pub async fn download_job(job_spec: &str, options: DownloadOptions) -> Result<Pa
         );
         let raw_prefix_s3 = format!("s3://{}/{}", bucket, raw_prefix_key);
 
-        let parquet_objects = list_parquet_objects(&client, bucket, &raw_prefix_key).await?;
+        let parquet_objects = list_parquet_objects(&transfer, &raw_prefix_key).await?;
         if parquet_objects.is_empty() {
             bail!("raw ingest data not found (likely GC'd): {}", raw_prefix_s3);
         }
@@ -152,17 +136,15 @@ pub async fn download_job(job_spec: &str, options: DownloadOptions) -> Result<Pa
         let table_out = out_dir.join(&table_meta.table_name);
         tokio::fs::create_dir_all(&table_out).await?;
         for obj in parquet_objects {
-            let Some(key) = obj.key() else {
-                continue;
-            };
-            let size = obj.size().unwrap_or(0) as u64;
+            let key = obj.location.to_string();
+            let size = obj.size as u64;
             let relative = key
                 .strip_prefix(&raw_prefix_key)
-                .unwrap_or(key)
+                .unwrap_or(&key)
                 .trim_start_matches('/');
             let out_path = table_out.join(relative);
             download_items.push(DownloadItem {
-                key: key.to_string(),
+                key,
                 size,
                 out_path,
             });
@@ -204,6 +186,13 @@ pub async fn download_job(job_spec: &str, options: DownloadOptions) -> Result<Pa
 
     progress.finish();
     let _ = progress_task.await;
+    if !options.dry_run {
+        println!("Next steps:");
+        println!(
+            "  ./diskgraph-infer/scripts/infer_source.sh \"{}\"",
+            out_dir.display()
+        );
+    }
     Ok(out_dir)
 }
 
@@ -263,58 +252,37 @@ fn extract_job_id(path: &str) -> Option<String> {
     None
 }
 
-async fn list_prefixes(client: &Client, bucket: &str, base_prefix: &str) -> Result<Vec<String>> {
+async fn list_prefixes(transfer: &CloudTransfer, base_prefix: &str) -> Result<Vec<String>> {
+    let prefix = ObjectPath::from(base_prefix);
     let mut prefixes = Vec::new();
-    let mut token = None;
-    loop {
-        let mut req = client
-            .list_objects_v2()
-            .bucket(bucket)
-            .prefix(base_prefix)
-            .delimiter("/");
-        if let Some(t) = token {
-            req = req.continuation_token(t);
+    for prefix in transfer.list_prefixes(&prefix).await? {
+        let full = prefix.to_string();
+        let rel = full.strip_prefix(base_prefix).unwrap_or(&full);
+        let mut rel = rel.to_string();
+        if !rel.is_empty() && !rel.ends_with('/') {
+            rel.push('/');
         }
-        let resp = req.send().await?;
-        for p in resp.common_prefixes() {
-            if let Some(prefix) = p.prefix() {
-                let rel = prefix.strip_prefix(base_prefix).unwrap_or(prefix);
-                prefixes.push(rel.to_string());
-            }
-        }
-        token = resp.next_continuation_token().map(|s| s.to_string());
-        if token.is_none() {
-            break;
-        }
+        prefixes.push(rel);
     }
     Ok(prefixes)
 }
 
-async fn attributes_exist(client: &Client, bucket: &str, prefix: &str) -> Result<bool> {
+async fn attributes_exist(transfer: &CloudTransfer, prefix: &str) -> Result<bool> {
     let key = format!("{}attributes.json", prefix);
-    let resp = client.head_object().bucket(bucket).key(key).send().await;
-    match resp {
+    match transfer.head(&ObjectPath::from(key)).await {
         Ok(_) => Ok(true),
-        Err(aws_sdk_s3::error::SdkError::ServiceError(service_err)) => {
-            if service_err.err().is_not_found() {
+        Err(err) => {
+            if is_not_found(&err) {
                 Ok(false)
             } else {
-                Err(anyhow!(service_err.err().to_string()))
+                Err(err)
             }
         }
-        Err(err) => Err(err.into()),
     }
 }
 
-async fn get_object_string(client: &Client, bucket: &str, key: &str) -> Result<String> {
-    let resp = client
-        .get_object()
-        .bucket(bucket)
-        .key(key)
-        .send()
-        .await?;
-    let bytes = resp.body.collect().await?.into_bytes();
-    Ok(String::from_utf8(bytes.to_vec())?)
+async fn get_object_string(transfer: &CloudTransfer, key: &str) -> Result<String> {
+    transfer.get_string(&ObjectPath::from(key)).await
 }
 
 #[derive(Debug)]
@@ -371,25 +339,21 @@ fn validate_token(label: &str, value: &str) -> Result<()> {
     }
 }
 
-async fn list_parquet_objects(client: &Client, bucket: &str, prefix: &str) -> Result<Vec<Object>> {
+fn is_not_found(err: &anyhow::Error) -> bool {
+    err.downcast_ref::<object_store::Error>()
+        .map(|inner| matches!(inner, object_store::Error::NotFound { .. }))
+        .unwrap_or(false)
+}
+
+async fn list_parquet_objects(
+    transfer: &CloudTransfer,
+    prefix: &str,
+) -> Result<Vec<ObjectMeta>> {
     let mut objects = Vec::new();
-    let mut token = None;
-    loop {
-        let mut req = client.list_objects_v2().bucket(bucket).prefix(prefix);
-        if let Some(t) = token {
-            req = req.continuation_token(t);
-        }
-        let resp = req.send().await?;
-        for obj in resp.contents() {
-            if let Some(key) = obj.key() {
-                if key.ends_with(".parquet") {
-                    objects.push(obj.clone());
-                }
-            }
-        }
-        token = resp.next_continuation_token().map(|s| s.to_string());
-        if token.is_none() {
-            break;
+    let prefix = ObjectPath::from(prefix);
+    for obj in transfer.list_objects(&prefix).await? {
+        if obj.location.as_ref().ends_with(".parquet") {
+            objects.push(obj);
         }
     }
     Ok(objects)

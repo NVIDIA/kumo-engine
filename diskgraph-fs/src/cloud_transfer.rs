@@ -7,6 +7,7 @@ use std::thread;
 
 use anyhow::{anyhow, Result};
 use bytes::Bytes;
+use futures_util::TryStreamExt;
 use object_store::path::Path as ObjectPath;
 use object_store::{ObjectStore, PutPayload};
 use tokio::runtime::Runtime;
@@ -275,6 +276,7 @@ pub struct CloudTransfer {
 }
 
 struct CloudTransferInner {
+    store: Arc<dyn ObjectStore>,
     sender: mpsc::Sender<TransferJob>,
     pool: BufferPool,
     stats: Arc<CloudTransferStatsInner>,
@@ -291,6 +293,7 @@ impl CloudTransfer {
         let pool = BufferPool::new(config.buffer_count);
         let stats = Arc::clone(&pool.inner.stats);
         let (sender, receiver) = mpsc::channel(config.max_queue);
+        let store_clone = Arc::clone(&store);
         let pool_clone = pool.clone();
         let stats_clone = Arc::clone(&stats);
         thread::spawn(move || {
@@ -304,7 +307,12 @@ impl CloudTransfer {
             ));
         });
         Self {
-            inner: Arc::new(CloudTransferInner { sender, pool, stats }),
+            inner: Arc::new(CloudTransferInner {
+                store: store_clone,
+                sender,
+                pool,
+                stats,
+            }),
         }
     }
 
@@ -368,6 +376,36 @@ impl CloudTransfer {
         CloudTransferStatsHandle {
             inner: Arc::clone(&self.inner.stats),
         }
+    }
+
+    pub async fn list_prefixes(&self, prefix: &ObjectPath) -> Result<Vec<ObjectPath>> {
+        let result = self
+            .inner
+            .store
+            .list_with_delimiter(Some(prefix))
+            .await?;
+        Ok(result.common_prefixes)
+    }
+
+    pub async fn list_objects(&self, prefix: &ObjectPath) -> Result<Vec<object_store::ObjectMeta>> {
+        let stream = self.inner.store.list(Some(prefix));
+        let objects = stream.try_collect().await?;
+        Ok(objects)
+    }
+
+    pub async fn head(&self, path: &ObjectPath) -> Result<object_store::ObjectMeta> {
+        Ok(self.inner.store.head(path).await?)
+    }
+
+    pub async fn get_bytes(&self, path: &ObjectPath) -> Result<Bytes> {
+        let result = self.inner.store.get(path).await?;
+        Ok(result.bytes().await?)
+    }
+
+    pub async fn get_string(&self, path: &ObjectPath) -> Result<String> {
+        let bytes = self.get_bytes(path).await?;
+        let text = String::from_utf8(bytes.to_vec())?;
+        Ok(text)
     }
 }
 
@@ -831,6 +869,54 @@ mod tests {
         rt.block_on(async { store.put(&path, Bytes::from_static(b"read-back").into()).await })?;
         let buffer = transfer.submit_download(path)?.wait()?;
         assert_eq!(buffer.as_slice(), b"read-back");
+        Ok(())
+    }
+
+    #[test]
+    fn cloud_transfer_lists_prefixes() -> Result<()> {
+        let store = Arc::new(InMemory::new()) as Arc<dyn ObjectStore>;
+        let config = CloudTransferConfig {
+            part_size: 5,
+            download_part_size: 5,
+            max_queue: 4,
+            max_files_in_flight: 2,
+            max_part_requests: 2,
+            max_file_retries: 1,
+            buffer_count: 2,
+        };
+        let transfer = CloudTransfer::new(store.clone(), config);
+        let rt = Runtime::new()?;
+        rt.block_on(async {
+            store
+                .put(
+                    &ObjectPath::from("root/a/file.txt"),
+                    Bytes::from_static(b"one").into(),
+                )
+                .await?;
+            store
+                .put(
+                    &ObjectPath::from("root/b/file.txt"),
+                    Bytes::from_static(b"two").into(),
+                )
+                .await?;
+            store
+                .put(
+                    &ObjectPath::from("root/c/sub/file.txt"),
+                    Bytes::from_static(b"three").into(),
+                )
+                .await?;
+            let prefixes = transfer
+                .list_prefixes(&ObjectPath::from("root/"))
+                .await?;
+            let mut prefix_strings: Vec<String> =
+                prefixes.into_iter().map(|p| p.to_string()).collect();
+            prefix_strings.sort();
+            assert_eq!(
+                prefix_strings,
+                vec!["root/a".to_string(), "root/b".to_string(), "root/c".to_string()]
+            );
+            Ok::<_, anyhow::Error>(())
+        })?;
         Ok(())
     }
 }

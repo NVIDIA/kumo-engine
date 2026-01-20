@@ -168,7 +168,7 @@ fn is_network_error(e: &anyhow::Error) -> bool {
         || msg.contains("broken pipe")
         || msg.contains("hyper")
         || msg.contains("reqwest")
-        || msg.contains("aws_sdk_s3")
+        || msg.contains("object_store")
         || msg.contains("service error")
         || msg.contains("500 internal server error")
         || msg.contains("503 service unavailable")

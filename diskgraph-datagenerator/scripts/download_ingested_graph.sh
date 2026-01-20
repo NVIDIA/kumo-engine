@@ -36,28 +36,4 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-cargo run -p diskgraph-datagenerator --bin download-ingested-graph --release -- "${positional[@]}"
-
-if [[ "$dry_run" -eq 1 ]]; then
-  exit 0
-fi
-
-customer=""
-job_id=""
-if [[ "${#positional[@]}" -eq 1 && "${positional[0]}" == http* ]]; then
-  url="${positional[0]}"
-  customer="$(echo "$url" | awk -F[/:] '{print $4}' | cut -d. -f1)"
-  job_id="$(echo "$url" | sed -n 's#.*/\\(bp-job-[^/?]*\\).*#\\1#p')"
-elif [[ "${#positional[@]}" -ge 2 ]]; then
-  customer="${positional[0]}"
-  job_id="${positional[1]}"
-fi
-
-if [[ -n "$customer" && -n "$job_id" ]]; then
-  out_dir="${out_root}/${customer}_${job_id}"
-  echo "Next steps:"
-  echo "  ./diskgraph-infer/scripts/infer_source.sh \"${out_dir}\""
-else
-  echo "Next steps:"
-  echo "  ./diskgraph-infer/scripts/infer_source.sh <downloaded_path>"
-fi
+exec cargo run -p diskgraph-datagenerator --bin download-ingested-graph --release -- "${positional[@]}"
