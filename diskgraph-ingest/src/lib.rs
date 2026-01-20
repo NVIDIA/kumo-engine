@@ -692,11 +692,14 @@ struct EdgeBuildContext {
     pk_hash_store: Arc<PkHashStore>,
     pk_hash_total_bytes: u64,
     sort_key_total_bytes: u64,
+    sort_key_edge_bytes: u64,
+    sort_key_dest_bytes: u64,
 }
 
 struct SortKeyComponentStore {
     width_bytes: usize,
     data: Mmap,
+    is_edge: bool,
 }
 
 enum SortKeyComponentSource {
@@ -727,6 +730,22 @@ impl SortKeyComponentStore {
     fn total_bytes(&self) -> u64 {
         self.data.len() as u64
     }
+
+    fn edge_bytes(&self) -> u64 {
+        if self.is_edge {
+            self.total_bytes()
+        } else {
+            0
+        }
+    }
+
+    fn dest_bytes(&self) -> u64 {
+        if self.is_edge {
+            0
+        } else {
+            self.total_bytes()
+        }
+    }
 }
 
 impl SortKeyComponentSource {
@@ -754,6 +773,24 @@ impl SortKeyComponentSource {
             SortKeyComponentSource::DestTable { shards }
             | SortKeyComponentSource::EdgeTable { shards } => {
                 shards.iter().map(|shard| shard.total_bytes()).sum()
+            }
+        }
+    }
+
+    fn edge_bytes(&self) -> u64 {
+        match self {
+            SortKeyComponentSource::DestTable { shards }
+            | SortKeyComponentSource::EdgeTable { shards } => {
+                shards.iter().map(|shard| shard.edge_bytes()).sum()
+            }
+        }
+    }
+
+    fn dest_bytes(&self) -> u64 {
+        match self {
+            SortKeyComponentSource::DestTable { shards }
+            | SortKeyComponentSource::EdgeTable { shards } => {
+                shards.iter().map(|shard| shard.dest_bytes()).sum()
             }
         }
     }
@@ -791,6 +828,28 @@ impl SortKeyLookup {
         }
         if let Some(weight) = &self.weight {
             total = total.saturating_add(weight.total_bytes());
+        }
+        total
+    }
+
+    fn edge_bytes(&self) -> u64 {
+        let mut total = 0u64;
+        if let Some(ts) = &self.timestamp {
+            total = total.saturating_add(ts.edge_bytes());
+        }
+        if let Some(weight) = &self.weight {
+            total = total.saturating_add(weight.edge_bytes());
+        }
+        total
+    }
+
+    fn dest_bytes(&self) -> u64 {
+        let mut total = 0u64;
+        if let Some(ts) = &self.timestamp {
+            total = total.saturating_add(ts.dest_bytes());
+        }
+        if let Some(weight) = &self.weight {
+            total = total.saturating_add(weight.dest_bytes());
         }
         total
     }
@@ -3638,11 +3697,14 @@ impl IngestContext {
         }
         let rel_sort_lookups =
             self.build_sort_key_lookups_parallel(&root, &edge_tables, &rel_sort_keys)?;
-        let sort_key_total_bytes = rel_sort_lookups
-            .values()
-            .filter_map(|lookup| lookup.as_ref())
-            .map(|lookup| lookup.total_bytes())
-            .sum();
+        let mut sort_key_total_bytes = 0u64;
+        let mut sort_key_edge_bytes = 0u64;
+        let mut sort_key_dest_bytes = 0u64;
+        for lookup in rel_sort_lookups.values().filter_map(|lookup| lookup.as_ref()) {
+            sort_key_total_bytes = sort_key_total_bytes.saturating_add(lookup.total_bytes());
+            sort_key_edge_bytes = sort_key_edge_bytes.saturating_add(lookup.edge_bytes());
+            sort_key_dest_bytes = sort_key_dest_bytes.saturating_add(lookup.dest_bytes());
+        }
         let (pk_hash_store, pk_hash_total_bytes) = self.build_pk_hash_store_parallel(&root)?;
         let pk_hash_store = Arc::new(pk_hash_store);
         Ok(EdgeBuildContext {
@@ -3653,6 +3715,8 @@ impl IngestContext {
             pk_hash_store,
             pk_hash_total_bytes,
             sort_key_total_bytes,
+            sort_key_edge_bytes,
+            sort_key_dest_bytes,
         })
     }
     fn build_pk_hash_store_parallel(&self, root: &Path) -> Result<(PkHashStore, u64)> {
@@ -3825,13 +3889,20 @@ impl IngestContext {
             }
             if let Some(total_mem) = total_memory_bytes() {
                 println!(
-                    "edges_map mmap sizes: pk_hash_bytes={} sort_key_bytes={} total_mem={}",
-                    edge_ctx.pk_hash_total_bytes, edge_ctx.sort_key_total_bytes, total_mem
+                    "edges_map mmap sizes: pk_hash_bytes={} sort_key_bytes={} (edge={} dest={}) total_mem={}",
+                    edge_ctx.pk_hash_total_bytes,
+                    edge_ctx.sort_key_total_bytes,
+                    edge_ctx.sort_key_edge_bytes,
+                    edge_ctx.sort_key_dest_bytes,
+                    total_mem
                 );
             } else {
                 println!(
-                    "edges_map mmap sizes: pk_hash_bytes={} sort_key_bytes={} total_mem=unknown",
-                    edge_ctx.pk_hash_total_bytes, edge_ctx.sort_key_total_bytes
+                    "edges_map mmap sizes: pk_hash_bytes={} sort_key_bytes={} (edge={} dest={}) total_mem=unknown",
+                    edge_ctx.pk_hash_total_bytes,
+                    edge_ctx.sort_key_total_bytes,
+                    edge_ctx.sort_key_edge_bytes,
+                    edge_ctx.sort_key_dest_bytes
                 );
             }
             let progress = self.progress.clone();
@@ -5139,6 +5210,7 @@ fn load_sort_key_component_shards(
     kind: SortKeyComponentKind,
     num_shards: usize,
     width_bytes: usize,
+    sequential: bool,
 ) -> Result<Vec<SortKeyComponentStore>> {
     let mut shards = Vec::with_capacity(num_shards);
     for shard in 0..num_shards {
@@ -5146,8 +5218,16 @@ fn load_sort_key_component_shards(
         let file = fs::File::open(&path)
             .with_context(|| format!("open {}", path.display()))?;
         let data = unsafe { Mmap::map(&file)? };
-        advise_willneed(&data);
-        shards.push(SortKeyComponentStore { width_bytes, data });
+        if sequential {
+            advise_sequential(&data);
+        } else {
+            advise_willneed(&data);
+        }
+        shards.push(SortKeyComponentStore {
+            width_bytes,
+            data,
+            is_edge: sequential,
+        });
     }
     Ok(shards)
 }
@@ -5158,6 +5238,19 @@ fn advise_willneed(map: &Mmap) {
             map.as_ptr() as *mut libc::c_void,
             map.len(),
             libc::MADV_WILLNEED,
+        )
+    };
+    if ret != 0 {
+        let _ = std::io::Error::last_os_error();
+    }
+}
+
+fn advise_sequential(map: &Mmap) {
+    let ret = unsafe {
+        libc::madvise(
+            map.as_ptr() as *mut libc::c_void,
+            map.len(),
+            libc::MADV_SEQUENTIAL,
         )
     };
     if ret != 0 {
@@ -5190,8 +5283,16 @@ fn build_sort_key_lookup(
     let mut weight = None;
     if let Some(ts) = &info.timestamp {
         let width_bytes = (ts.spec.width_bits / 8) as usize;
-        let shards = load_sort_key_component_shards(root, rel_name, ts.spec.kind, num_shards, width_bytes)?;
-        let source = if edge_tables.contains(&ts.spec.table) {
+        let sequential = edge_tables.contains(&ts.spec.table);
+        let shards = load_sort_key_component_shards(
+            root,
+            rel_name,
+            ts.spec.kind,
+            num_shards,
+            width_bytes,
+            sequential,
+        )?;
+        let source = if sequential {
             SortKeyComponentSource::EdgeTable { shards }
         } else {
             SortKeyComponentSource::DestTable { shards }
@@ -5200,8 +5301,16 @@ fn build_sort_key_lookup(
     }
     if let Some(w) = &info.weight {
         let width_bytes = (w.spec.width_bits / 8) as usize;
-        let shards = load_sort_key_component_shards(root, rel_name, w.spec.kind, num_shards, width_bytes)?;
-        let source = if edge_tables.contains(&w.spec.table) {
+        let sequential = edge_tables.contains(&w.spec.table);
+        let shards = load_sort_key_component_shards(
+            root,
+            rel_name,
+            w.spec.kind,
+            num_shards,
+            width_bytes,
+            sequential,
+        )?;
+        let source = if sequential {
             SortKeyComponentSource::EdgeTable { shards }
         } else {
             SortKeyComponentSource::DestTable { shards }
