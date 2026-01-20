@@ -8179,6 +8179,11 @@ fn build_input_transfer(source: &SourceMetadata) -> Result<Option<CloudTransfer>
     Ok(None)
 }
 
+pub fn build_transfer_for_cloud_path(path: &str) -> Result<CloudTransfer> {
+    let store = build_store_for_cloud_path(path)?;
+    Ok(CloudTransfer::new(store, CloudTransferConfig::from_env()))
+}
+
 fn build_store_for_cloud_path(path: &str) -> Result<Arc<dyn ObjectStore>> {
     if path.starts_with("s3://") {
         let (bucket, _key) = parse_s3_url(path)?;
@@ -8218,7 +8223,7 @@ fn build_store_for_cloud_path(path: &str) -> Result<Arc<dyn ObjectStore>> {
     }
 }
 
-fn object_path_from_cloud_url(path: &str) -> Result<ObjectPath> {
+pub fn object_path_from_cloud_url(path: &str) -> Result<ObjectPath> {
     if path.starts_with("s3://") {
         let (_bucket, key) = parse_s3_url(path)?;
         Ok(ObjectPath::from(key))

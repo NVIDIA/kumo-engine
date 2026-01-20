@@ -22,28 +22,33 @@ done
 set -- "${POSITIONAL[@]}"
 
 SOURCE="${SOURCE:-${1:-}}"
+OUTPUT="${OUT_ROOT:-${2:-}}"
 
 if [[ -z "${SOURCE}" ]]; then
-  echo "Usage: $0 <path_or_s3> [-p] [-d]" >&2
+  echo "Usage: $0 <path_or_s3> [output_dir] [-p] [-d]" >&2
   exit 1
 fi
 
-if [[ -n "${DISKGRAPH_DATA_ROOT:-}" ]]; then
-  DEFAULT_OUT_ROOT="${DISKGRAPH_DATA_ROOT%/}/diskgraph-index"
-elif [[ -d /mnt/localssd ]]; then
-  DEFAULT_OUT_ROOT="/mnt/localssd/diskgraph-index"
-else
-  DEFAULT_OUT_ROOT="/tmp/diskgraph-index"
+if [[ -z "${OUTPUT}" ]]; then
+  if [[ -n "${DISKGRAPH_DATA_ROOT:-}" ]]; then
+    DEFAULT_OUT_ROOT="${DISKGRAPH_DATA_ROOT%/}/diskgraph-index"
+  elif [[ -d /mnt/localssd ]]; then
+    DEFAULT_OUT_ROOT="/mnt/localssd/diskgraph-index"
+  else
+    DEFAULT_OUT_ROOT="/tmp/diskgraph-index"
+  fi
+  if [[ -d "${SOURCE}" ]]; then
+    INPUT_NAME="$(basename "${SOURCE}")"
+  else
+    INPUT_NAME="$(basename "$(dirname "${SOURCE}")")"
+  fi
+  OUTPUT="${DEFAULT_OUT_ROOT}/${INPUT_NAME}"
 fi
-if [[ -d "${SOURCE}" ]]; then
-  INPUT_NAME="$(basename "${SOURCE}")"
-else
-  INPUT_NAME="$(basename "$(dirname "${SOURCE}")")"
-fi
-OUTPUT="${OUT_ROOT:-${DEFAULT_OUT_ROOT}}/${INPUT_NAME}"
 
-export AWS_EC2_METADATA_DISABLED=true
-export AWS_SDK_LOAD_CONFIG=1
+CMD=(cargo run -p diskgraph-ingest --bin ingest --release -- --source "${SOURCE}" --output "${OUTPUT}" --dest local)
+if [[ "${PROFILE_ENABLED}" == "true" ]]; then
+  CMD+=(--profile)
+fi
 
 env_args=()
 if [[ "${DEBUGINFO_ENABLED}" == "true" ]]; then
@@ -51,15 +56,4 @@ if [[ "${DEBUGINFO_ENABLED}" == "true" ]]; then
   env_args+=(RUSTFLAGS="${RUSTFLAGS:-} -C debuginfo=1 -C force-frame-pointers=yes")
 fi
 
-if [[ "${PROFILE_ENABLED}" == "true" ]]; then
-  env "${env_args[@]}" cargo run -p diskgraph-ingest --bin ingest --release -- \
-    --profile \
-    --source "${SOURCE}" \
-    --output "${OUTPUT}" \
-    --dest local
-else
-  env "${env_args[@]}" cargo run -p diskgraph-ingest --bin ingest --release -- \
-    --source "${SOURCE}" \
-    --output "${OUTPUT}" \
-    --dest local
-fi
+env "${env_args[@]}" "${CMD[@]}"
