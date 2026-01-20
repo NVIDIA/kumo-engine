@@ -1,11 +1,11 @@
 use super::*;
-use crate::{bucket_idx::BucketIdx, scratch::PtrHashScratch, stats::BucketStats};
+use crate::{bucket_idx::BucketIdx, scratch::PtrHashScratch};
 use bitvec::slice::BitSlice;
+use itertools::Itertools;
 use std::{
     iter::zip,
     sync::{
         atomic::{AtomicUsize, Ordering},
-        Mutex,
     },
 };
 
@@ -16,7 +16,7 @@ impl<Key: KeyT, BF: BucketFn, F: Packed, Hx: Hasher<Key>> PtrHash<Key, BF, F, Hx
         hashes: &[Hx::H],
         part_starts: &[u32],
         scratch: &mut PtrHashScratch<Hx::H>,
-    ) -> Option<BucketStats> {
+    ) -> bool {
         let pilots = scratch.pilots.as_mut_slice();
         let taken = scratch.taken.as_mut_slice();
         let bucket_starts = &mut scratch.bucket_starts;
@@ -31,7 +31,6 @@ impl<Key: KeyT, BF: BucketFn, F: Packed, Hx: Hasher<Key>> PtrHash<Key, BF, F, Hx
 
         // let total_evictions = AtomicUsize::new(0);
         let parts_done = AtomicUsize::new(shard * self.parts_per_shard);
-        let stats = Mutex::new(BucketStats::new());
 
         for (part_in_shard, (pilots, taken)) in iter {
             let part = shard * self.parts_per_shard + part_in_shard;
@@ -43,7 +42,6 @@ impl<Key: KeyT, BF: BucketFn, F: Packed, Hx: Hasher<Key>> PtrHash<Key, BF, F, Hx
                     hashes,
                     pilots,
                     taken,
-                    &stats,
                     bucket_starts,
                     bucket_order,
                     bucket_len_cnt,
@@ -53,7 +51,7 @@ impl<Key: KeyT, BF: BucketFn, F: Packed, Hx: Hasher<Key>> PtrHash<Key, BF, F, Hx
                 )
                 .is_none()
             {
-                return None;
+                return false;
             }
             let _parts_done = parts_done.fetch_add(1, Ordering::Relaxed);
             // total_evictions.fetch_add(cnt, Ordering::Relaxed);
@@ -95,7 +93,7 @@ impl<Key: KeyT, BF: BucketFn, F: Packed, Hx: Hasher<Key>> PtrHash<Key, BF, F, Hx
         //     stats.lock().unwrap().print();
         // }
 
-        Some(stats.into_inner().unwrap())
+        true
     }
 
     fn build_part(
@@ -104,7 +102,6 @@ impl<Key: KeyT, BF: BucketFn, F: Packed, Hx: Hasher<Key>> PtrHash<Key, BF, F, Hx
         hashes: &[Hx::H],
         pilots: &mut [u8],
         taken: &mut BitSlice,
-        _stats: &Mutex<BucketStats>,
         bucket_starts: &mut Vec<u32>,
         bucket_order: &mut Vec<BucketIdx>,
         bucket_len_cnt: &mut Vec<usize>,

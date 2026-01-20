@@ -1,7 +1,6 @@
 use super::*;
 use crate::bucket_idx::BucketIdx;
 use crate::radix::radix_sort_hashes;
-use std::time::Instant;
 
 impl<Key: KeyT, BF: BucketFn, F: Packed, Hx: Hasher<Key>> PtrHash<Key, BF, F, Hx, Vec<u8>> {
     /// Returns:
@@ -24,7 +23,6 @@ impl<Key: KeyT, BF: BucketFn, F: Packed, Hx: Hasher<Key>> PtrHash<Key, BF, F, Hx
         // 32 bits.
         // NOTE: This does not work for other reduction methods.
 
-        let start = Instant::now();
         // 2. Radix sort hashes.
         // HOT: This takes half the time for 128bit hashes.
         // TODO: Just append each hash to its part directly, where each part has
@@ -34,11 +32,9 @@ impl<Key: KeyT, BF: BucketFn, F: Packed, Hx: Hasher<Key>> PtrHash<Key, BF, F, Hx
         // A) Sort L1 sized ranges.
         // B) Splat the front of each range to the next part of the target interval.
         radix_sort_hashes(hashes, hashes_tmp);
-        let start = log_duration("┌ radix sort", start);
 
         // 3. Check duplicates.
         let distinct = hashes.windows(2).all(|w| w[0] != w[1]);
-        let start = log_duration("├ check dups", start);
         if !distinct {
             return Err(SortPartsError::DuplicateHashes);
         }
@@ -63,8 +59,8 @@ impl<Key: KeyT, BF: BucketFn, F: Packed, Hx: Hasher<Key>> PtrHash<Key, BF, F, Hx
 
         // Check max part len.
         let mut max_part_len = 0;
-        for (start, end) in part_starts.iter().tuple_windows() {
-            let len = (end - start) as usize;
+        for idx in 0..part_starts.len().saturating_sub(1) {
+            let len = (part_starts[idx + 1] - part_starts[idx]) as usize;
             max_part_len = max_part_len.max(len);
         }
         let exp = self.n / self.parts;
@@ -100,8 +96,6 @@ impl<Key: KeyT, BF: BucketFn, F: Packed, Hx: Hasher<Key>> PtrHash<Key, BF, F, Hx
         if max_part_len as usize > self.slots {
             return Err(SortPartsError::PartOverflow);
         }
-
-        log_duration("├part starts", start);
 
         Ok(())
     }

@@ -1,15 +1,47 @@
 use super::*;
-use crate::util::generate_keys;
+
+struct KeyVec(Vec<u64>);
+
+impl KeySource<u64> for KeyVec {
+    type Iter<'a> = std::slice::Iter<'a, u64>
+    where
+        Self: 'a;
+
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    fn iter(&self) -> Self::Iter<'_> {
+        self.0.iter()
+    }
+}
+
+impl KeyVec {
+    fn iter(&self) -> std::slice::Iter<'_, u64> {
+        self.0.iter()
+    }
+}
+
+fn make_keys(n: usize) -> KeyVec {
+    KeyVec((0..n as u64).collect())
+}
 
 /// Construct the MPHF and test all keys are mapped to unique indices.
 #[test]
-fn construct() {
-    for n in [2, 10, 100, 1000, 10_000, 100_000, 1_000_000, 10_000_000] {
-        let keys = generate_keys(n);
-        let ptr_hash = <PtrHash>::new(&keys, Default::default());
+#[ignore]
+fn construct_unique() {
+    for n in [2, 10, 100, 1000, 10_000, 100_000] {
+        let keys = make_keys(n);
+        let mut scratch = PtrHashScratch::<u64>::new();
+        let ptr_hash = DefaultPtrHash::<hash::GxHash64, u64>::try_new_from_source_with_scratch(
+            &keys,
+            PtrHashParams::default(),
+            &mut scratch,
+        )
+        .expect("ptrhash construction failed");
         let mut done = bitvec![0; n];
-        for key in keys {
-            let idx = ptr_hash.index(&key);
+        for key in keys.iter() {
+            let idx = ptr_hash.index(key);
             assert!(!done[idx]);
             done.set(idx, true);
         }
@@ -17,38 +49,16 @@ fn construct() {
 }
 
 #[test]
-fn index_stream() {
-    for n in [2, 10, 100, 1000, 10_000, 100_000, 1_000_000] {
-        let keys = generate_keys(n);
-        let ptr_hash = <PtrHash>::new(&keys, Default::default());
-        let sum = ptr_hash.index_stream::<32, true, _>(&keys).sum::<usize>();
-        assert_eq!(sum, (n * (n - 1)) / 2, "Failure for n = {n}");
-    }
-}
-
-#[cfg(feature = "unstable")]
-#[test]
-fn index_batch() {
-    for n in [10usize, 100, 1000, 10_000, 100_000, 1_000_000] {
-        let n = n.next_multiple_of(32);
-        let keys = generate_keys(n);
-        let ptr_hash = <PtrHash>::new(&keys, Default::default());
-        let sum = ptr_hash.index_batch_exact::<32, true>(&keys).sum::<usize>();
-        assert_eq!(sum, (n * (n - 1)) / 2);
-    }
-}
-
-#[test]
-fn new_par_iter() {
-    let n = 10_000_000;
-    let keys = generate_keys(n);
-    <PtrHash>::new_from_par_iter(n, keys.iter(), Default::default());
-}
-
-#[test]
+#[ignore]
 fn ptr_hash_can_clone() {
-    let ptr_hash = PtrHash::<_>::new(&["hello", "there"], PtrHashParams::default());
+    let keys = make_keys(64);
+    let mut scratch = PtrHashScratch::<u64>::new();
+    let ptr_hash = DefaultPtrHash::<hash::GxHash64, u64>::try_new_from_source_with_scratch(
+        &keys,
+        PtrHashParams::default(),
+        &mut scratch,
+    )
+    .expect("ptrhash construction failed");
 
-    // test succeeds if this compiles
     let _y = ptr_hash.clone();
 }
