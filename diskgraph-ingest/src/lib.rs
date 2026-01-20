@@ -494,14 +494,26 @@ pub fn ingest_with_stats(
     dest: Dest,
     options: IngestOptions,
 ) -> Result<(DatasetMetadata, IngestStats)> {
-    let wall_start = std::time::Instant::now();
     let metadata_bytes = fs::read(source_metadata_path)
         .with_context(|| format!("read {}", source_metadata_path.display()))?;
-    let mut source: SourceMetadata = serde_json::from_slice(&metadata_bytes)?;
+    let source: SourceMetadata = serde_json::from_slice(&metadata_bytes)?;
     let base_dir = source_metadata_path
         .parent()
         .ok_or_else(|| anyhow!("missing parent for {}", source_metadata_path.display()))?;
-    resolve_local_paths(&mut source, base_dir);
+    ingest_with_stats_from_source(source, Some(base_dir), output, dest, options)
+}
+
+pub fn ingest_with_stats_from_source(
+    mut source: SourceMetadata,
+    base_dir: Option<&Path>,
+    output: &str,
+    dest: Dest,
+    options: IngestOptions,
+) -> Result<(DatasetMetadata, IngestStats)> {
+    let wall_start = std::time::Instant::now();
+    if let Some(base_dir) = base_dir {
+        resolve_local_paths(&mut source, base_dir);
+    }
     source.validate()?;
 
     let target = std::sync::Arc::new(OutputTarget::parse(output, dest)?);

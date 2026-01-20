@@ -1,9 +1,16 @@
 use std::path::PathBuf;
-use anyhow::Result;
+
+use anyhow::{anyhow, Result};
 use clap::{Parser, ValueEnum};
-use diskgraph_ingest::{ingest_with_stats, Dest, IngestOptions};
+use diskgraph_fs::{
+    build_adls_client, build_gcs_client, build_s3_client, AdlsConfig, CloudTransfer,
+    CloudTransferConfig, GcsConfig, S3Config,
+};
+use diskgraph_ingest::{ingest_with_stats, ingest_with_stats_from_source, Dest, IngestOptions, SourceMetadata};
 use diskgraph_ingest::progress::{build_progress, format_bytes, format_duration};
 use std::fs;
+use object_store::path::Path as ObjectPath;
+use url::Url;
 
 #[cfg(all(feature = "mem-profile", target_os = "linux"))]
 #[global_allocator]
@@ -12,7 +19,7 @@ static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
 #[derive(Parser, Debug)]
 #[command(author, version, about = "Ingest raw CSV/Parquet into diskgraph index format.")]
 struct Args {
-    /// Path to diskgraph_config.json
+    /// Path or URL to diskgraph_config.json, or a directory containing it.
     #[arg(long)]
     source: PathBuf,
     /// Output destination root (path or URL).
@@ -48,12 +55,13 @@ fn main() -> Result<()> {
         .with_env_filter("info,pprof=warn")
         .init();
     let args = Args::parse();
+    let source_str = args.source.to_string_lossy();
     let source_path = if args.source.is_dir() {
         args.source.join("diskgraph_config.json")
     } else {
         args.source.clone()
     };
-    if !source_path.is_file() {
+    if !is_cloud_url(&source_str) && !source_path.is_file() {
         anyhow::bail!(
             "diskgraph config not found at {}",
             source_path.display()
@@ -96,7 +104,14 @@ fn main() -> Result<()> {
         DestArg::Gcs => Dest::Gcs,
         DestArg::Adls => Dest::Adls,
     };
-    let (_metadata, stats) = ingest_with_stats(&source_path, &args.output, dest, options)?;
+    let (_metadata, stats) = if is_cloud_url(&source_str) {
+        let config_url = ensure_config_url(&source_str);
+        let metadata_bytes = download_cloud_config_bytes(&config_url)?;
+        let source: SourceMetadata = serde_json::from_slice(&metadata_bytes)?;
+        ingest_with_stats_from_source(source, None, &args.output, dest, options)?
+    } else {
+        ingest_with_stats(&source_path, &args.output, dest, options)?
+    };
     drop(mem_watchdog);
     println!("Output: {}", stats.output);
     println!(
@@ -496,4 +511,111 @@ mod mem_watchdog {
 fn explore_command_hint(dest: &DestArg, output: &str) -> String {
     let _ = dest;
     format!("./diskgraph-index/scripts/explore_local.sh {}", output)
+}
+
+fn is_cloud_url(path: &str) -> bool {
+    path.starts_with("s3://") || path.starts_with("gs://") || path.starts_with("az://")
+}
+
+fn ensure_config_url(path: &str) -> String {
+    if path.ends_with("diskgraph_config.json") {
+        path.to_string()
+    } else {
+        format!("{}/diskgraph_config.json", path.trim_end_matches('/'))
+    }
+}
+
+enum CloudConfigLocation {
+    S3 { bucket: String, key: String },
+    Gcs { bucket: String, key: String },
+    Adls {
+        account: String,
+        container: String,
+        key: String,
+    },
+}
+
+fn parse_cloud_location(url: &str) -> Result<CloudConfigLocation> {
+    let url = Url::parse(url)?;
+    match url.scheme() {
+        "s3" => {
+            let bucket = url.host_str().unwrap_or_default().to_string();
+            let key = url.path().trim_start_matches('/').to_string();
+            if bucket.is_empty() || key.is_empty() {
+                return Err(anyhow!("invalid s3 config url {}", url));
+            }
+            Ok(CloudConfigLocation::S3 { bucket, key })
+        }
+        "gs" | "gcs" => {
+            let bucket = url.host_str().unwrap_or_default().to_string();
+            let key = url.path().trim_start_matches('/').to_string();
+            if bucket.is_empty() || key.is_empty() {
+                return Err(anyhow!("invalid gs config url {}", url));
+            }
+            Ok(CloudConfigLocation::Gcs { bucket, key })
+        }
+        "az" | "adls" => {
+            let account = url.host_str().unwrap_or_default().to_string();
+            let mut parts = url.path().trim_start_matches('/').splitn(2, '/');
+            let container = parts.next().unwrap_or_default().to_string();
+            let key = parts.next().unwrap_or("").to_string();
+            if account.is_empty() || container.is_empty() || key.is_empty() {
+                return Err(anyhow!("invalid az config url {}", url));
+            }
+            Ok(CloudConfigLocation::Adls {
+                account,
+                container,
+                key,
+            })
+        }
+        _ => Err(anyhow!("unsupported config url scheme {}", url.scheme())),
+    }
+}
+
+fn download_cloud_config_bytes(url: &str) -> Result<Vec<u8>> {
+    let location = parse_cloud_location(url)?;
+    let (transfer, key) = match location {
+        CloudConfigLocation::S3 { bucket, key } => {
+            let client = build_s3_client(S3Config {
+                bucket,
+                region: std::env::var("S3_REGION").ok(),
+                endpoint: std::env::var("S3_ENDPOINT").ok(),
+                allow_http: None,
+                virtual_hosted: None,
+                profile: std::env::var("S3_PROFILE").ok(),
+                access_key_id: None,
+                secret_access_key: None,
+                session_token: None,
+            })?;
+            (CloudTransfer::new(client.store, CloudTransferConfig::from_env()), key)
+        }
+        CloudConfigLocation::Gcs { bucket, key } => {
+            let client = build_gcs_client(GcsConfig { bucket })?;
+            (CloudTransfer::new(client.store, CloudTransferConfig::from_env()), key)
+        }
+        CloudConfigLocation::Adls {
+            account,
+            container,
+            key,
+        } => {
+            let client = build_adls_client(AdlsConfig {
+                account,
+                container,
+                endpoint: std::env::var("AZURE_ENDPOINT").ok(),
+                allow_http: None,
+                access_key: std::env::var("AZURE_ACCESS_KEY").ok(),
+                sas_key: std::env::var("AZURE_SAS_KEY").ok(),
+                bearer_token: std::env::var("AZURE_BEARER_TOKEN").ok(),
+                client_id: std::env::var("AZURE_CLIENT_ID").ok(),
+                client_secret: std::env::var("AZURE_CLIENT_SECRET").ok(),
+                tenant_id: std::env::var("AZURE_TENANT_ID").ok(),
+            })?;
+            (CloudTransfer::new(client.store, CloudTransferConfig::from_env()), key)
+        }
+    };
+
+    let pooled = transfer
+        .submit_download_bytes(ObjectPath::from(key.as_str()))?
+        .wait()?;
+    Ok(pooled.bytes().to_vec())
 }
