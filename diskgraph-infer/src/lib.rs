@@ -22,7 +22,7 @@ use arrow_array::{
 };
 use arrow_schema::{ArrowError, DataType, Schema};
 use futures::StreamExt;
-use object_store::{path::Path as ObjectPath, ObjectStore, ObjectStoreExt};
+use object_store::{path::Path as ObjectPath, ObjectStore};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use tokio::runtime::Runtime;
 use url::Url;
@@ -577,8 +577,7 @@ fn infer_remote_tables(
                     )
                     .with_context(|| format!("infer schema for table {} at {}", table_name, path_str))?,
                     TableFormat::Csv => infer_csv_schema_remote(
-                        &rt,
-                        store.as_ref(),
+                        &transfer,
                         &obj.location,
                         obj.size,
                         options,
@@ -638,8 +637,7 @@ fn infer_remote_tables(
                     )
                     .with_context(|| format!("infer schema for table {} at {}", table_name, path_str))?,
                     TableFormat::Csv => infer_csv_schema_remote(
-                        &rt,
-                        store.as_ref(),
+                        &transfer,
                         &obj.location,
                         obj.size,
                         options,
@@ -1210,16 +1208,16 @@ fn infer_csv_schema(path: &Path, options: &InferOptions) -> Result<Vec<ColumnSpe
 }
 
 fn infer_csv_schema_remote(
-    rt: &Runtime,
-    store: &dyn ObjectStore,
+    transfer: &CloudTransfer,
     path: &ObjectPath,
     size: u64,
     options: &InferOptions,
 ) -> Result<Vec<ColumnSpec>> {
     let max = size.min(options.csv_sample_bytes);
-    let range = 0..max;
-    let bytes = rt.block_on(store.get_range(path, range))?;
-    infer_csv_schema_from_bytes(&bytes, options)
+    let buffer = transfer.submit_download(path.clone())?.wait()?;
+    let bytes = Bytes::from(buffer.into_inner());
+    let limited = bytes.slice(0..max as usize);
+    infer_csv_schema_from_bytes(&limited, options)
 }
 
 fn infer_csv_schema_from_bytes(bytes: &Bytes, options: &InferOptions) -> Result<Vec<ColumnSpec>> {
