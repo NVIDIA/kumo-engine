@@ -23,6 +23,7 @@ pub struct CloudTransferConfig {
     pub max_part_requests: usize,
     pub max_file_retries: usize,
     pub buffer_count: usize,
+    pub max_bytes: u64,
 }
 
 impl CloudTransferConfig {
@@ -41,6 +42,7 @@ impl CloudTransferConfig {
             cpu_default.saturating_mul(2).max(1),
         );
         let max_file_retries = env_usize("DISKGRAPH_CLOUD_FILE_RETRY_MAX", 2);
+        let max_bytes = env_u64("DISKGRAPH_CLOUD_MAX_BYTES", default_cloud_max_bytes());
         Self {
             part_size,
             download_part_size,
@@ -49,6 +51,7 @@ impl CloudTransferConfig {
             max_part_requests: max_part_requests.max(1),
             max_file_retries,
             buffer_count: buffer_count.max(1),
+            max_bytes,
         }
     }
 }
@@ -67,6 +70,8 @@ pub struct CloudTransferStatsSnapshot {
     pub inflight_parts: usize,
     pub parts_started: u64,
     pub parts_errors: u64,
+    pub budget_max_bytes: u64,
+    pub budget_used_bytes: u64,
     pub last_error: Option<String>,
 }
 
@@ -113,6 +118,18 @@ impl CloudTransferDownloadTicket {
 }
 
 #[derive(Debug)]
+pub struct CloudTransferBytesTicket {
+    ticket: CloudTransferDownloadTicket,
+}
+
+impl CloudTransferBytesTicket {
+    pub fn wait(self) -> Result<PooledBytes> {
+        let buffer = self.ticket.wait()?;
+        Ok(buffer.into_pooled_bytes())
+    }
+}
+
+#[derive(Debug)]
 struct CloudTransferStatsInner {
     total_buffers: usize,
     available_buffers: AtomicUsize,
@@ -121,6 +138,7 @@ struct CloudTransferStatsInner {
     inflight_parts: AtomicUsize,
     parts_started: AtomicU64,
     parts_errors: AtomicU64,
+    budget: Arc<ByteBudget>,
     last_error: Mutex<Option<String>>,
 }
 
@@ -143,8 +161,65 @@ impl CloudTransferStatsHandle {
             inflight_parts: self.inner.inflight_parts.load(Ordering::Relaxed),
             parts_started: self.inner.parts_started.load(Ordering::Relaxed),
             parts_errors: self.inner.parts_errors.load(Ordering::Relaxed),
+            budget_max_bytes: self.inner.budget.max_bytes(),
+            budget_used_bytes: self.inner.budget.used_bytes(),
             last_error,
         }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct ByteBudget {
+    max_bytes: u64,
+    used_bytes: AtomicU64,
+}
+
+impl ByteBudget {
+    fn new(max_bytes: u64) -> Self {
+        Self {
+            max_bytes,
+            used_bytes: AtomicU64::new(0),
+        }
+    }
+
+    fn max_bytes(&self) -> u64 {
+        self.max_bytes
+    }
+
+    fn used_bytes(&self) -> u64 {
+        self.used_bytes.load(Ordering::Relaxed)
+    }
+
+    fn reserve(&self, bytes: u64) -> Result<()> {
+        if bytes == 0 {
+            return Ok(());
+        }
+        loop {
+            let used = self.used_bytes.load(Ordering::Relaxed);
+            let next = used.saturating_add(bytes);
+            if next > self.max_bytes {
+                return Err(anyhow!(
+                    "cloud transfer budget exceeded: used {} + {} > {}",
+                    used,
+                    bytes,
+                    self.max_bytes
+                ));
+            }
+            if self
+                .used_bytes
+                .compare_exchange(used, next, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+            {
+                return Ok(());
+            }
+        }
+    }
+
+    fn release(&self, bytes: u64) {
+        if bytes == 0 {
+            return;
+        }
+        self.used_bytes.fetch_sub(bytes, Ordering::SeqCst);
     }
 }
 
@@ -158,10 +233,11 @@ struct BufferPoolInner {
     buffers: Mutex<Vec<Vec<u8>>>,
     available: Condvar,
     stats: Arc<CloudTransferStatsInner>,
+    budget: Arc<ByteBudget>,
 }
 
 impl BufferPool {
-    pub fn new(buffer_count: usize) -> Self {
+    pub(crate) fn new(buffer_count: usize, budget: Arc<ByteBudget>) -> Self {
         let mut buffers = Vec::with_capacity(buffer_count);
         for _ in 0..buffer_count {
             buffers.push(Vec::new());
@@ -174,6 +250,7 @@ impl BufferPool {
             inflight_parts: AtomicUsize::new(0),
             parts_started: AtomicU64::new(0),
             parts_errors: AtomicU64::new(0),
+            budget: Arc::clone(&budget),
             last_error: Mutex::new(None),
         });
         Self {
@@ -181,13 +258,14 @@ impl BufferPool {
                 buffers: Mutex::new(buffers),
                 available: Condvar::new(),
                 stats,
+                budget,
             }),
         }
     }
 
     pub fn acquire(&self) -> PooledBuffer {
         let buffer = self.acquire_raw();
-        self.wrap(buffer)
+        self.wrap_accounted(buffer)
     }
 
     pub fn acquire_raw(&self) -> Vec<u8> {
@@ -204,6 +282,32 @@ impl BufferPool {
         }
     }
 
+    pub fn acquire_raw_sized(&self, len: usize) -> Result<Vec<u8>> {
+        let mut buffer = self.acquire_raw();
+        let old_cap = buffer.capacity();
+        let mut reserved = 0usize;
+        if len > old_cap {
+            reserved = len - old_cap;
+            if let Err(err) = self.inner.budget.reserve(reserved as u64) {
+                self.release(buffer);
+                return Err(err);
+            }
+        }
+        buffer.resize(len, 0);
+        let new_cap = buffer.capacity();
+        if new_cap > old_cap + reserved {
+            let extra = new_cap - (old_cap + reserved);
+            if let Err(err) = self.inner.budget.reserve(extra as u64) {
+                self.release(buffer);
+                return Err(err);
+            }
+        } else if new_cap < old_cap + reserved {
+            let give_back = old_cap + reserved - new_cap;
+            self.inner.budget.release(give_back as u64);
+        }
+        Ok(buffer)
+    }
+
     fn release(&self, mut buffer: Vec<u8>) {
         buffer.clear();
         let mut guard = self.inner.buffers.lock().expect("cloud buffer pool lock");
@@ -216,9 +320,29 @@ impl BufferPool {
     }
 
     pub fn wrap(&self, buffer: Vec<u8>) -> PooledBuffer {
+        self.wrap_unaccounted(buffer)
+    }
+
+    fn wrap_accounted(&self, buffer: Vec<u8>) -> PooledBuffer {
+        self.wrap_with_budget(buffer, false)
+    }
+
+    fn wrap_unaccounted(&self, buffer: Vec<u8>) -> PooledBuffer {
+        self.wrap_with_budget(buffer, true)
+    }
+
+    fn wrap_with_budget(&self, buffer: Vec<u8>, reserve_capacity: bool) -> PooledBuffer {
+        let capacity = buffer.capacity();
+        if reserve_capacity && capacity > 0 {
+            if let Err(err) = self.inner.budget.reserve(capacity as u64) {
+                panic!("cloud transfer budget exceeded: {err}");
+            }
+        }
         PooledBuffer {
             cursor: Cursor::new(buffer),
             pool: Some(self.clone()),
+            budget: Some(Arc::clone(&self.inner.budget)),
+            tracked_capacity: capacity,
         }
     }
 }
@@ -227,11 +351,14 @@ impl BufferPool {
 pub struct PooledBuffer {
     cursor: Cursor<Vec<u8>>,
     pool: Option<BufferPool>,
+    budget: Option<Arc<ByteBudget>>,
+    tracked_capacity: usize,
 }
 
 impl PooledBuffer {
     pub fn into_inner(mut self) -> Vec<u8> {
         self.pool = None;
+        self.budget = None;
         let cursor = std::mem::replace(&mut self.cursor, Cursor::new(Vec::new()));
         cursor.into_inner()
     }
@@ -240,14 +367,68 @@ impl PooledBuffer {
         self.cursor.get_ref().as_slice()
     }
 
-    pub fn resize(&mut self, len: usize) {
+    pub fn resize(&mut self, len: usize) -> Result<()> {
+        let old_cap = self.tracked_capacity;
+        let mut reserved = 0usize;
+        if len > old_cap {
+            reserved = len - old_cap;
+            if let Some(budget) = &self.budget {
+                budget.reserve(reserved as u64)?;
+            }
+        }
         self.cursor.get_mut().resize(len, 0);
+        let new_cap = self.cursor.get_ref().capacity();
+        if let Some(budget) = &self.budget {
+            if new_cap > old_cap + reserved {
+                let extra = new_cap - (old_cap + reserved);
+                budget.reserve(extra as u64)?;
+            } else if new_cap < old_cap + reserved {
+                let give_back = old_cap + reserved - new_cap;
+                budget.release(give_back as u64);
+            }
+        }
+        self.tracked_capacity = new_cap;
+        Ok(())
+    }
+
+    pub fn into_pooled_bytes(mut self) -> PooledBytes {
+        let pool = self.pool.take();
+        self.budget = None;
+        let buffer = std::mem::take(self.cursor.get_mut());
+        PooledBytes::new(buffer, pool)
     }
 }
 
 impl Write for PooledBuffer {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.cursor.write(buf)
+        let old_cap = self.tracked_capacity;
+        let pos = self.cursor.position() as usize;
+        let cur_len = self.cursor.get_ref().len();
+        let desired_len = cur_len.max(pos.saturating_add(buf.len()));
+        let mut reserved = 0usize;
+        if desired_len > old_cap {
+            reserved = desired_len - old_cap;
+            if let Some(budget) = &self.budget {
+                budget
+                    .reserve(reserved as u64)
+                    .map_err(|err| io::Error::new(io::ErrorKind::Other, err.to_string()))?;
+            }
+        }
+        let written = self.cursor.write(buf)?;
+        let new_cap = self.cursor.get_ref().capacity();
+        if let Some(budget) = &self.budget {
+            if new_cap > old_cap + reserved {
+                let extra = new_cap - (old_cap + reserved);
+                budget
+                    .reserve(extra as u64)
+                    .map_err(|err| io::Error::new(io::ErrorKind::Other, err.to_string()))?;
+            } else if new_cap < old_cap + reserved {
+                let give_back = old_cap + reserved - new_cap;
+                budget.release(give_back as u64);
+            }
+        }
+        self.tracked_capacity = new_cap;
+        Ok(written)
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -266,6 +447,43 @@ impl Drop for PooledBuffer {
         if let Some(pool) = self.pool.take() {
             let buffer = std::mem::take(self.cursor.get_mut());
             pool.release(buffer);
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct PooledBytes {
+    bytes: Bytes,
+    owner: Arc<Vec<u8>>,
+    pool: Option<BufferPool>,
+}
+
+impl PooledBytes {
+    fn new(buffer: Vec<u8>, pool: Option<BufferPool>) -> Self {
+        let owner = Arc::new(buffer);
+        let len = owner.len();
+        let bytes = Bytes::from_owner(SharedSlice {
+            data: Arc::clone(&owner),
+            start: 0,
+            end: len,
+        });
+        Self { bytes, owner, pool }
+    }
+
+    pub fn bytes(&self) -> Bytes {
+        self.bytes.clone()
+    }
+}
+
+impl Drop for PooledBytes {
+    fn drop(&mut self) {
+        if let Some(pool) = self.pool.take() {
+            let bytes = std::mem::take(&mut self.bytes);
+            drop(bytes);
+            match Arc::try_unwrap(std::mem::take(&mut self.owner)) {
+                Ok(buffer) => pool.release(buffer),
+                Err(owner) => pool.release((*owner).clone()),
+            }
         }
     }
 }
@@ -290,7 +508,8 @@ impl fmt::Debug for CloudTransfer {
 
 impl CloudTransfer {
     pub fn new(store: Arc<dyn ObjectStore>, config: CloudTransferConfig) -> Self {
-        let pool = BufferPool::new(config.buffer_count);
+        let budget = Arc::new(ByteBudget::new(config.max_bytes));
+        let pool = BufferPool::new(config.buffer_count, Arc::clone(&budget));
         let stats = Arc::clone(&pool.inner.stats);
         let (sender, receiver) = mpsc::channel(config.max_queue);
         let store_clone = Arc::clone(&store);
@@ -370,6 +589,12 @@ impl CloudTransfer {
             return Err(anyhow!("cloud transfer stopped"));
         }
         Ok(CloudTransferDownloadTicket { receiver: Some(rx) })
+    }
+
+    pub fn submit_download_bytes(&self, path: ObjectPath) -> Result<CloudTransferBytesTicket> {
+        Ok(CloudTransferBytesTicket {
+            ticket: self.submit_download(path)?,
+        })
     }
 
     pub fn stats_handle(&self) -> CloudTransferStatsHandle {
@@ -666,10 +891,9 @@ async fn download_file_once(
             path
         )
     })?;
-    let mut buffer = pool.acquire_raw();
-    buffer.resize(size, 0);
+    let buffer = pool.acquire_raw_sized(size)?;
     if size == 0 {
-        return Ok(pool.wrap(buffer));
+        return Ok(pool.wrap_accounted(buffer));
     }
     let buffer = Arc::new(tokio::sync::Mutex::new(buffer));
     let mut tasks: JoinSet<object_store::Result<()>> = JoinSet::new();
@@ -737,7 +961,7 @@ async fn download_file_once(
         return Err(err);
     }
 
-    Ok(pool.wrap(buffer))
+    Ok(pool.wrap_accounted(buffer))
 }
 
 async fn upload_file_once(
@@ -819,6 +1043,37 @@ fn env_usize(name: &str, default: usize) -> usize {
         .unwrap_or(default)
 }
 
+fn env_u64(name: &str, default: u64) -> u64 {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(default)
+}
+
+fn default_cloud_max_bytes() -> u64 {
+    let total = host_mem_bytes().unwrap_or(8 * 1024 * 1024 * 1024);
+    total.saturating_mul(75) / 100
+}
+
+#[cfg(target_os = "linux")]
+fn host_mem_bytes() -> Option<u64> {
+    let contents = std::fs::read_to_string("/proc/meminfo").ok()?;
+    for line in contents.lines() {
+        if line.starts_with("MemTotal:") {
+            let mut parts = line.split_whitespace();
+            let _label = parts.next()?;
+            let value = parts.next()?.parse::<u64>().ok()?;
+            return Some(value.saturating_mul(1024));
+        }
+    }
+    None
+}
+
+#[cfg(not(target_os = "linux"))]
+fn host_mem_bytes() -> Option<u64> {
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -835,6 +1090,7 @@ mod tests {
             max_part_requests: 2,
             max_file_retries: 1,
             buffer_count: 2,
+            max_bytes: 1024 * 1024,
         };
         let transfer = CloudTransfer::new(store.clone(), config);
         let mut buffer = transfer.acquire_buffer();
@@ -862,6 +1118,7 @@ mod tests {
             max_part_requests: 2,
             max_file_retries: 1,
             buffer_count: 2,
+            max_bytes: 1024 * 1024,
         };
         let transfer = CloudTransfer::new(store.clone(), config);
         let path = ObjectPath::from("test/read.parquet");
@@ -883,6 +1140,7 @@ mod tests {
             max_part_requests: 2,
             max_file_retries: 1,
             buffer_count: 2,
+            max_bytes: 1024 * 1024,
         };
         let transfer = CloudTransfer::new(store.clone(), config);
         let rt = Runtime::new()?;

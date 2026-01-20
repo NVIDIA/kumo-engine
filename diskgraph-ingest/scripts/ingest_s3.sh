@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Run diskgraph-ingest to S3 output (source paths can be local or s3://).
+# Run diskgraph-ingest from local or s3:// source to local output.
 
 PROFILE_ENABLED="false"
 DEBUGINFO_ENABLED="false"
@@ -22,12 +22,25 @@ done
 set -- "${POSITIONAL[@]}"
 
 SOURCE="${SOURCE:-${1:-}}"
-OUTPUT="${OUTPUT:-${2:-}}"
 
-if [[ -z "${SOURCE}" || -z "${OUTPUT}" ]]; then
-  echo "Usage: SOURCE=path OUTPUT=s3://bucket/prefix $0 [-p] [-d]" >&2
+if [[ -z "${SOURCE}" ]]; then
+  echo "Usage: $0 <path_or_s3> [-p] [-d]" >&2
   exit 1
 fi
+
+if [[ -n "${DISKGRAPH_DATA_ROOT:-}" ]]; then
+  DEFAULT_OUT_ROOT="${DISKGRAPH_DATA_ROOT%/}/diskgraph-index"
+elif [[ -d /mnt/localssd ]]; then
+  DEFAULT_OUT_ROOT="/mnt/localssd/diskgraph-index"
+else
+  DEFAULT_OUT_ROOT="/tmp/diskgraph-index"
+fi
+if [[ -d "${SOURCE}" ]]; then
+  INPUT_NAME="$(basename "${SOURCE}")"
+else
+  INPUT_NAME="$(basename "$(dirname "${SOURCE}")")"
+fi
+OUTPUT="${OUT_ROOT:-${DEFAULT_OUT_ROOT}}/${INPUT_NAME}"
 
 export AWS_EC2_METADATA_DISABLED=true
 export AWS_SDK_LOAD_CONFIG=1
@@ -43,10 +56,10 @@ if [[ "${PROFILE_ENABLED}" == "true" ]]; then
     --profile \
     --source "${SOURCE}" \
     --output "${OUTPUT}" \
-    --dest s3
+    --dest local
 else
   env "${env_args[@]}" cargo run -p diskgraph-ingest --bin ingest --release -- \
     --source "${SOURCE}" \
     --output "${OUTPUT}" \
-    --dest s3
+    --dest local
 fi

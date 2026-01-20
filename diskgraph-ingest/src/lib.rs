@@ -24,7 +24,8 @@ use diskgraph_core::metadata::{
     NodeDataCompression, NodeShardMetadata, NodeTypeMetadata, PrimaryKeyMap,
 };
 use diskgraph_fs::{
-    build_adls_client, build_gcs_client, build_s3_client, AdlsConfig, GcsConfig, S3Config,
+    build_adls_client, build_gcs_client, build_s3_client, AdlsConfig, CloudTransfer,
+    CloudTransferConfig, GcsConfig, PooledBytes, S3Config,
 };
 use diskgraph_rowpack::{
     IngestedType as RowpackType, RowAccess, RowAccessHints, RowAccessStats, RowPackConfig,
@@ -50,7 +51,7 @@ use gxhash::GxHasher;
 use epserde::prelude::Serialize as EpSerialize;
 use ptr_hash::DefaultPtrHash;
 use std::fs;
-use std::io::{self, BufWriter, Read, Write};
+use std::io::{self, BufWriter, Cursor, Read, Write};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 #[cfg(target_os = "linux")]
@@ -647,6 +648,7 @@ struct IngestContext {
     parallel: bool,
     index_mem_budget: Option<std::sync::Arc<MemoryBudget>>,
     num_shards: usize,
+    input_transfer: Option<CloudTransfer>,
     table_rows: HashMap<String, u64>,
     table_contexts: HashMap<String, String>,
     shard_rows: HashMap<String, Vec<u64>>,
@@ -1451,6 +1453,7 @@ impl IngestContext {
                 relation_defs.push(dst_rel);
             }
         }
+        let input_transfer = build_input_transfer(&source)?;
         Ok(Self {
             source,
             target,
@@ -1458,6 +1461,7 @@ impl IngestContext {
             parallel: options.parallel,
             index_mem_budget,
             num_shards,
+            input_transfer,
             table_rows: HashMap::new(),
             table_contexts: HashMap::new(),
             shard_rows: HashMap::new(),
@@ -1487,6 +1491,7 @@ impl IngestContext {
         let (tx, rx) = std::sync::mpsc::channel::<Result<(String, String)>>();
         let mut tasks = Vec::new();
         let source_rowpack = self.source.rowpack.clone();
+        let input_transfer = self.input_transfer.clone();
         for table in &tables {
             if table.edge_table.is_some() {
                 continue;
@@ -1497,6 +1502,7 @@ impl IngestContext {
             let progress = self.progress.clone();
             let tx = tx.clone();
             let rowpack_cfg = source_rowpack.clone();
+            let input_transfer = input_transfer.clone();
             tasks.push(WorkItem {
                 bucket: None,
                 run: Box::new(move |_scratch| {
@@ -1529,69 +1535,143 @@ impl IngestContext {
                         if !is_cloud_path(path) && !Path::new(path).exists() {
                             return Err(anyhow!("input path not found {}", path));
                         }
-                        let local = localize_input(path)?;
+                        let pooled = if let Some(transfer) = &input_transfer {
+                            if is_cloud_path(path) {
+                                Some(download_cloud_bytes(transfer, path)?)
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        };
                         match table.format {
                             TableFormat::Parquet => {
-                                let file = fs::File::open(&local.path)
-                                    .with_context(|| format!("open {}", local.path.display()))?;
-                                advise_file_willneed(&file);
-                                let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
-                                let reader = builder.with_batch_size(NODE_BATCH_SIZE).build()?;
-                                for batch in reader {
-                                    let batch = batch?;
-                                    let mut cols = Vec::with_capacity(table.columns.len());
-                                    for col in &table.columns {
-                                        let idx = batch
-                                            .schema()
-                                            .index_of(&col.name)
-                                            .context("missing column in batch")?;
-                                        cols.push(batch.column(idx).clone());
-                                    }
-                                    access.set_cols(&cols);
-                                    for row in 0..batch.num_rows() {
-                                        if sampled >= sample_limit {
-                                            reached_limit = true;
+                                if let Some(pooled) = pooled {
+                                    let bytes = pooled.bytes();
+                                    let builder = ParquetRecordBatchReaderBuilder::try_new(bytes)?;
+                                    let reader =
+                                        builder.with_batch_size(NODE_BATCH_SIZE).build()?;
+                                    for batch in reader {
+                                        let batch = batch?;
+                                        let mut cols = Vec::with_capacity(table.columns.len());
+                                        for col in &table.columns {
+                                            let idx = batch
+                                                .schema()
+                                                .index_of(&col.name)
+                                                .context("missing column in batch")?;
+                                            cols.push(batch.column(idx).clone());
+                                        }
+                                        access.set_cols(&cols);
+                                        for row in 0..batch.num_rows() {
+                                            if sampled >= sample_limit {
+                                                reached_limit = true;
+                                                break;
+                                            }
+                                            access.set_row(row);
+                                            node_builder.observe_row_from_access(&mut access)?;
+                                            sampled = sampled.saturating_add(1);
+                                        }
+                                        if reached_limit {
                                             break;
                                         }
-                                        access.set_row(row);
-                                        node_builder.observe_row_from_access(&mut access)?;
-                                        sampled = sampled.saturating_add(1);
                                     }
-                                    if reached_limit {
-                                        break;
+                                    drop(pooled);
+                                } else {
+                                    let file = fs::File::open(path)
+                                        .with_context(|| format!("open {}", path))?;
+                                    advise_file_willneed(&file);
+                                    let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
+                                    let reader =
+                                        builder.with_batch_size(NODE_BATCH_SIZE).build()?;
+                                    for batch in reader {
+                                        let batch = batch?;
+                                        let mut cols = Vec::with_capacity(table.columns.len());
+                                        for col in &table.columns {
+                                            let idx = batch
+                                                .schema()
+                                                .index_of(&col.name)
+                                                .context("missing column in batch")?;
+                                            cols.push(batch.column(idx).clone());
+                                        }
+                                        access.set_cols(&cols);
+                                        for row in 0..batch.num_rows() {
+                                            if sampled >= sample_limit {
+                                                reached_limit = true;
+                                                break;
+                                            }
+                                            access.set_row(row);
+                                            node_builder.observe_row_from_access(&mut access)?;
+                                            sampled = sampled.saturating_add(1);
+                                        }
+                                        if reached_limit {
+                                            break;
+                                        }
                                     }
                                 }
                             }
                             TableFormat::Csv => {
-                                let file = fs::File::open(&local.path)
-                                    .with_context(|| format!("open {}", local.path.display()))?;
-                                advise_file_willneed(&file);
                                 let schema = table_schema(&table)?;
-                                let builder =
-                                    arrow_csv::ReaderBuilder::new(Arc::new(schema)).with_header(true);
-                                let reader = builder.build(file)?;
-                                for batch in reader {
-                                    let batch = batch?;
-                                    let mut cols = Vec::with_capacity(table.columns.len());
-                                    for col in &table.columns {
-                                        let idx = batch
-                                            .schema()
-                                            .index_of(&col.name)
-                                            .context("missing column in batch")?;
-                                        cols.push(batch.column(idx).clone());
-                                    }
-                                    access.set_cols(&cols);
-                                    for row in 0..batch.num_rows() {
-                                        if sampled >= sample_limit {
-                                            reached_limit = true;
+                                if let Some(pooled) = pooled {
+                                    let bytes = pooled.bytes();
+                                    let cursor = Cursor::new(bytes);
+                                    let builder = arrow_csv::ReaderBuilder::new(Arc::new(schema))
+                                        .with_header(true);
+                                    let reader = builder.build(cursor)?;
+                                    for batch in reader {
+                                        let batch = batch?;
+                                        let mut cols = Vec::with_capacity(table.columns.len());
+                                        for col in &table.columns {
+                                            let idx = batch
+                                                .schema()
+                                                .index_of(&col.name)
+                                                .context("missing column in batch")?;
+                                            cols.push(batch.column(idx).clone());
+                                        }
+                                        access.set_cols(&cols);
+                                        for row in 0..batch.num_rows() {
+                                            if sampled >= sample_limit {
+                                                reached_limit = true;
+                                                break;
+                                            }
+                                            access.set_row(row);
+                                            node_builder.observe_row_from_access(&mut access)?;
+                                            sampled = sampled.saturating_add(1);
+                                        }
+                                        if reached_limit {
                                             break;
                                         }
-                                        access.set_row(row);
-                                        node_builder.observe_row_from_access(&mut access)?;
-                                        sampled = sampled.saturating_add(1);
                                     }
-                                    if reached_limit {
-                                        break;
+                                    drop(pooled);
+                                } else {
+                                    let file = fs::File::open(path)
+                                        .with_context(|| format!("open {}", path))?;
+                                    advise_file_willneed(&file);
+                                    let builder = arrow_csv::ReaderBuilder::new(Arc::new(schema))
+                                        .with_header(true);
+                                    let reader = builder.build(file)?;
+                                    for batch in reader {
+                                        let batch = batch?;
+                                        let mut cols = Vec::with_capacity(table.columns.len());
+                                        for col in &table.columns {
+                                            let idx = batch
+                                                .schema()
+                                                .index_of(&col.name)
+                                                .context("missing column in batch")?;
+                                            cols.push(batch.column(idx).clone());
+                                        }
+                                        access.set_cols(&cols);
+                                        for row in 0..batch.num_rows() {
+                                            if sampled >= sample_limit {
+                                                reached_limit = true;
+                                                break;
+                                            }
+                                            access.set_row(row);
+                                            node_builder.observe_row_from_access(&mut access)?;
+                                            sampled = sampled.saturating_add(1);
+                                        }
+                                        if reached_limit {
+                                            break;
+                                        }
                                     }
                                 }
                             }
@@ -1678,6 +1758,7 @@ impl IngestContext {
         let node_senders = node_pool.senders();
         let edge_senders = edge_pool.senders();
         let sort_key_senders = sort_key_pool.senders();
+        let input_transfer = self.input_transfer.clone();
         let trimmed_strings = std::sync::Arc::clone(&self.trimmed_strings);
         let progress = self.progress.clone();
         for table in &tables {
@@ -1714,6 +1795,7 @@ impl IngestContext {
                 let progress = progress.clone();
                 let root = root.clone();
                 let relation_defs = std::sync::Arc::clone(&relation_defs);
+                let input_transfer = input_transfer.clone();
                 let tx = tx.clone();
                 tasks.push(WorkItem {
                     bucket: None,
@@ -1725,6 +1807,7 @@ impl IngestContext {
                                 file_idx,
                                 num_shards,
                                 &target,
+                                input_transfer.clone(),
                                 &trimmed_strings,
                                 &progress,
                                 &mut key_failures,
@@ -1749,6 +1832,7 @@ impl IngestContext {
                             num_shards,
                             &target,
                             &root,
+                            input_transfer.clone(),
                             &trimmed_strings,
                             &progress,
                             &mut key_failures,
@@ -1944,6 +2028,7 @@ impl IngestContext {
         num_shards: usize,
         _target: &std::sync::Arc<OutputTarget>,
         root: &Path,
+        input_transfer: Option<CloudTransfer>,
         trimmed_strings: &std::sync::Arc<AtomicU64>,
         progress: &Option<ProgressCallback>,
         key_failures: &mut KeyFailureState,
@@ -2006,83 +2091,242 @@ impl IngestContext {
         if !is_cloud_path(path) && !Path::new(path).exists() {
             return Err(anyhow!("input path not found {}", path));
         }
-        let local = localize_input(path)?;
         let mut row_id = 0u64;
         match table.format {
             TableFormat::Parquet => {
-                let file = fs::File::open(&local.path)
-                    .with_context(|| format!("open {}", local.path.display()))?;
-                advise_file_willneed(&file);
-                let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
-                let reader = builder.with_batch_size(NODE_BATCH_SIZE).build()?;
-                for batch in reader {
-                    let batch = batch?;
-                    let mut cols = Vec::with_capacity(table.columns.len());
-                    for col in &table.columns {
-                        let idx = batch
-                            .schema()
-                            .index_of(&col.name)
-                            .context("missing column in batch")?;
-                        cols.push(batch.column(idx).clone());
+                if let Some(transfer) = &input_transfer {
+                    if is_cloud_path(path) {
+                        let pooled = download_cloud_bytes(transfer, path)?;
+                        let bytes = pooled.bytes();
+                        let builder = ParquetRecordBatchReaderBuilder::try_new(bytes)?;
+                        let reader = builder.with_batch_size(NODE_BATCH_SIZE).build()?;
+                        for batch in reader {
+                            let batch = batch?;
+                            let mut cols = Vec::with_capacity(table.columns.len());
+                            for col in &table.columns {
+                                let idx = batch
+                                    .schema()
+                                    .index_of(&col.name)
+                                    .context("missing column in batch")?;
+                                cols.push(batch.column(idx).clone());
+                            }
+                            access.set_cols(&cols);
+                            for row in 0..batch.num_rows() {
+                                total_rows += 1;
+                                access.set_row(row);
+                                Self::write_node_row_from_access(
+                                    table,
+                                    pk_idx,
+                                    &rel_specs,
+                                    &mut access,
+                                    &node_encoder,
+                                    &mut batcher,
+                                    &mut sort_key_batchers,
+                                    &mut row_id,
+                                    pk_col,
+                                    &mut key_bufs,
+                                    &mut node_data_dropped,
+                                    num_shards,
+                                    key_failures,
+                                )?;
+                            }
+                        }
+                        drop(pooled);
+                    } else {
+                        let file = fs::File::open(path)
+                            .with_context(|| format!("open {}", path))?;
+                        advise_file_willneed(&file);
+                        let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
+                        let reader = builder.with_batch_size(NODE_BATCH_SIZE).build()?;
+                        for batch in reader {
+                            let batch = batch?;
+                            let mut cols = Vec::with_capacity(table.columns.len());
+                            for col in &table.columns {
+                                let idx = batch
+                                    .schema()
+                                    .index_of(&col.name)
+                                    .context("missing column in batch")?;
+                                cols.push(batch.column(idx).clone());
+                            }
+                            access.set_cols(&cols);
+                            for row in 0..batch.num_rows() {
+                                total_rows += 1;
+                                access.set_row(row);
+                                Self::write_node_row_from_access(
+                                    table,
+                                    pk_idx,
+                                    &rel_specs,
+                                    &mut access,
+                                    &node_encoder,
+                                    &mut batcher,
+                                    &mut sort_key_batchers,
+                                    &mut row_id,
+                                    pk_col,
+                                    &mut key_bufs,
+                                    &mut node_data_dropped,
+                                    num_shards,
+                                    key_failures,
+                                )?;
+                            }
+                        }
                     }
-                    access.set_cols(&cols);
-                    for row in 0..batch.num_rows() {
-                        total_rows += 1;
-                        access.set_row(row);
-                        Self::write_node_row_from_access(
-                            table,
-                            pk_idx,
-                            &rel_specs,
-                            &mut access,
-                            &node_encoder,
-                            &mut batcher,
-                            &mut sort_key_batchers,
-                            &mut row_id,
-                            pk_col,
-                            &mut key_bufs,
-                            &mut node_data_dropped,
-                            num_shards,
-                            key_failures,
-                        )?;
+                } else {
+                    let file = fs::File::open(path)
+                        .with_context(|| format!("open {}", path))?;
+                    advise_file_willneed(&file);
+                    let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
+                    let reader = builder.with_batch_size(NODE_BATCH_SIZE).build()?;
+                    for batch in reader {
+                        let batch = batch?;
+                        let mut cols = Vec::with_capacity(table.columns.len());
+                        for col in &table.columns {
+                            let idx = batch
+                                .schema()
+                                .index_of(&col.name)
+                                .context("missing column in batch")?;
+                            cols.push(batch.column(idx).clone());
+                        }
+                        access.set_cols(&cols);
+                        for row in 0..batch.num_rows() {
+                            total_rows += 1;
+                            access.set_row(row);
+                            Self::write_node_row_from_access(
+                                table,
+                                pk_idx,
+                                &rel_specs,
+                                &mut access,
+                                &node_encoder,
+                                &mut batcher,
+                                &mut sort_key_batchers,
+                                &mut row_id,
+                                pk_col,
+                                &mut key_bufs,
+                                &mut node_data_dropped,
+                                num_shards,
+                                key_failures,
+                            )?;
+                        }
                     }
                 }
             }
             TableFormat::Csv => {
-                let file = fs::File::open(&local.path)
-                    .with_context(|| format!("open {}", local.path.display()))?;
-                advise_file_willneed(&file);
                 let schema = table_schema(table)?;
-                let builder = arrow_csv::ReaderBuilder::new(Arc::new(schema)).with_header(true);
-                let reader = builder.build(file)?;
-                for batch in reader {
-                    let batch = batch?;
-                    let mut cols = Vec::with_capacity(table.columns.len());
-                    for col in &table.columns {
-                        let idx = batch
-                            .schema()
-                            .index_of(&col.name)
-                            .context("missing column in batch")?;
-                        cols.push(batch.column(idx).clone());
+                if let Some(transfer) = &input_transfer {
+                    if is_cloud_path(path) {
+                        let pooled = download_cloud_bytes(transfer, path)?;
+                        let bytes = pooled.bytes();
+                        let cursor = Cursor::new(bytes);
+                        let builder =
+                            arrow_csv::ReaderBuilder::new(Arc::new(schema)).with_header(true);
+                        let reader = builder.build(cursor)?;
+                        for batch in reader {
+                            let batch = batch?;
+                            let mut cols = Vec::with_capacity(table.columns.len());
+                            for col in &table.columns {
+                                let idx = batch
+                                    .schema()
+                                    .index_of(&col.name)
+                                    .context("missing column in batch")?;
+                                cols.push(batch.column(idx).clone());
+                            }
+                            access.set_cols(&cols);
+                            for row in 0..batch.num_rows() {
+                                total_rows += 1;
+                                access.set_row(row);
+                                Self::write_node_row_from_access(
+                                    table,
+                                    pk_idx,
+                                    &rel_specs,
+                                    &mut access,
+                                    &node_encoder,
+                                    &mut batcher,
+                                    &mut sort_key_batchers,
+                                    &mut row_id,
+                                    pk_col,
+                                    &mut key_bufs,
+                                    &mut node_data_dropped,
+                                    num_shards,
+                                    key_failures,
+                                )?;
+                            }
+                        }
+                        drop(pooled);
+                    } else {
+                        let file = fs::File::open(path)
+                            .with_context(|| format!("open {}", path))?;
+                        advise_file_willneed(&file);
+                        let builder = arrow_csv::ReaderBuilder::new(Arc::new(schema))
+                            .with_header(true);
+                        let reader = builder.build(file)?;
+                        for batch in reader {
+                            let batch = batch?;
+                            let mut cols = Vec::with_capacity(table.columns.len());
+                            for col in &table.columns {
+                                let idx = batch
+                                    .schema()
+                                    .index_of(&col.name)
+                                    .context("missing column in batch")?;
+                                cols.push(batch.column(idx).clone());
+                            }
+                            access.set_cols(&cols);
+                            for row in 0..batch.num_rows() {
+                                total_rows += 1;
+                                access.set_row(row);
+                                Self::write_node_row_from_access(
+                                    table,
+                                    pk_idx,
+                                    &rel_specs,
+                                    &mut access,
+                                    &node_encoder,
+                                    &mut batcher,
+                                    &mut sort_key_batchers,
+                                    &mut row_id,
+                                    pk_col,
+                                    &mut key_bufs,
+                                    &mut node_data_dropped,
+                                    num_shards,
+                                    key_failures,
+                                )?;
+                            }
+                        }
                     }
-                    access.set_cols(&cols);
-                    for row in 0..batch.num_rows() {
-                        total_rows += 1;
-                        access.set_row(row);
-                        Self::write_node_row_from_access(
-                            table,
-                            pk_idx,
-                            &rel_specs,
-                            &mut access,
-                            &node_encoder,
-                            &mut batcher,
-                            &mut sort_key_batchers,
-                            &mut row_id,
-                            pk_col,
-                            &mut key_bufs,
-                            &mut node_data_dropped,
-                            num_shards,
-                            key_failures,
-                        )?;
+                } else {
+                    let file = fs::File::open(path)
+                        .with_context(|| format!("open {}", path))?;
+                    advise_file_willneed(&file);
+                    let builder =
+                        arrow_csv::ReaderBuilder::new(Arc::new(schema)).with_header(true);
+                    let reader = builder.build(file)?;
+                    for batch in reader {
+                        let batch = batch?;
+                        let mut cols = Vec::with_capacity(table.columns.len());
+                        for col in &table.columns {
+                            let idx = batch
+                                .schema()
+                                .index_of(&col.name)
+                                .context("missing column in batch")?;
+                            cols.push(batch.column(idx).clone());
+                        }
+                        access.set_cols(&cols);
+                        for row in 0..batch.num_rows() {
+                            total_rows += 1;
+                            access.set_row(row);
+                            Self::write_node_row_from_access(
+                                table,
+                                pk_idx,
+                                &rel_specs,
+                                &mut access,
+                                &node_encoder,
+                                &mut batcher,
+                                &mut sort_key_batchers,
+                                &mut row_id,
+                                pk_col,
+                                &mut key_bufs,
+                                &mut node_data_dropped,
+                                num_shards,
+                                key_failures,
+                            )?;
+                        }
                     }
                 }
             }
@@ -2231,6 +2475,7 @@ impl IngestContext {
         file_idx: usize,
         num_shards: usize,
         _target: &std::sync::Arc<OutputTarget>,
+        input_transfer: Option<CloudTransfer>,
         trimmed_strings: &std::sync::Arc<AtomicU64>,
         progress: &Option<ProgressCallback>,
         key_failures: &mut KeyFailureState,
@@ -2272,103 +2517,293 @@ impl IngestContext {
         if !is_cloud_path(path) && !Path::new(path).exists() {
             return Err(anyhow!("input path not found {}", path));
         }
-        let local = localize_input(path)?;
         let row_access_hints = build_row_access_hints(table);
         let stats = RowAccessStats::new(Some(trimmed_strings.as_ref()));
         let mut access = RowAccess::new(row_access_hints, stats);
         match table.format {
             TableFormat::Parquet => {
-                let file = fs::File::open(&local.path)
-                    .with_context(|| format!("open {}", local.path.display()))?;
-                advise_file_willneed(&file);
-                let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
-                let reader = builder.with_batch_size(NODE_BATCH_SIZE).build()?;
-                for batch in reader {
-                    let batch = batch?;
-                    let mut cols = Vec::with_capacity(table.columns.len());
-                    for col in &table.columns {
-                        let idx = batch
-                            .schema()
-                            .index_of(&col.name)
-                            .context("missing column in batch")?;
-                        cols.push(batch.column(idx).clone());
+                if let Some(transfer) = &input_transfer {
+                    if is_cloud_path(path) {
+                        let pooled = download_cloud_bytes(transfer, path)?;
+                        let bytes = pooled.bytes();
+                        let builder = ParquetRecordBatchReaderBuilder::try_new(bytes)?;
+                        let reader = builder.with_batch_size(NODE_BATCH_SIZE).build()?;
+                        for batch in reader {
+                            let batch = batch?;
+                            let mut cols = Vec::with_capacity(table.columns.len());
+                            for col in &table.columns {
+                                let idx = batch
+                                    .schema()
+                                    .index_of(&col.name)
+                                    .context("missing column in batch")?;
+                                cols.push(batch.column(idx).clone());
+                            }
+                            access.set_cols(&cols);
+                            let src_fast = edge_fast_path_for_array(src_fk_col, &cols[src_fk_idx]);
+                            let dst_fast = edge_fast_path_for_array(dst_fk_col, &cols[dst_fk_idx]);
+                            let mut src_key_buf = Vec::new();
+                            let mut dst_key_buf = Vec::new();
+                            let mut forward_row = Vec::new();
+                            for row in 0..batch.num_rows() {
+                                access.set_row(row);
+                                Self::write_edge_row_from_access(
+                                    src_fk_idx,
+                                    dst_fk_idx,
+                                    src_fk_col,
+                                    dst_fk_col,
+                                    &src_context,
+                                    &dst_context,
+                                    &cols,
+                                    row,
+                                    src_fast,
+                                    dst_fast,
+                                    &mut access,
+                                    &mut src_key_buf,
+                                    &mut dst_key_buf,
+                                    &mut forward_row,
+                                    &mut batcher,
+                                    &mut sort_key_batchers,
+                                    num_shards,
+                                    key_failures,
+                                )?;
+                            }
+                        }
+                        drop(pooled);
+                    } else {
+                        let file = fs::File::open(path)
+                            .with_context(|| format!("open {}", path))?;
+                        advise_file_willneed(&file);
+                        let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
+                        let reader = builder.with_batch_size(NODE_BATCH_SIZE).build()?;
+                        for batch in reader {
+                            let batch = batch?;
+                            let mut cols = Vec::with_capacity(table.columns.len());
+                            for col in &table.columns {
+                                let idx = batch
+                                    .schema()
+                                    .index_of(&col.name)
+                                    .context("missing column in batch")?;
+                                cols.push(batch.column(idx).clone());
+                            }
+                            access.set_cols(&cols);
+                            let src_fast = edge_fast_path_for_array(src_fk_col, &cols[src_fk_idx]);
+                            let dst_fast = edge_fast_path_for_array(dst_fk_col, &cols[dst_fk_idx]);
+                            let mut src_key_buf = Vec::new();
+                            let mut dst_key_buf = Vec::new();
+                            let mut forward_row = Vec::new();
+                            for row in 0..batch.num_rows() {
+                                access.set_row(row);
+                                Self::write_edge_row_from_access(
+                                    src_fk_idx,
+                                    dst_fk_idx,
+                                    src_fk_col,
+                                    dst_fk_col,
+                                    &src_context,
+                                    &dst_context,
+                                    &cols,
+                                    row,
+                                    src_fast,
+                                    dst_fast,
+                                    &mut access,
+                                    &mut src_key_buf,
+                                    &mut dst_key_buf,
+                                    &mut forward_row,
+                                    &mut batcher,
+                                    &mut sort_key_batchers,
+                                    num_shards,
+                                    key_failures,
+                                )?;
+                            }
+                        }
                     }
-                    access.set_cols(&cols);
-                    let src_fast = edge_fast_path_for_array(src_fk_col, &cols[src_fk_idx]);
-                    let dst_fast = edge_fast_path_for_array(dst_fk_col, &cols[dst_fk_idx]);
-                    let mut src_key_buf = Vec::new();
-                    let mut dst_key_buf = Vec::new();
-                    let mut forward_row = Vec::new();
-                    for row in 0..batch.num_rows() {
-                        access.set_row(row);
-                        Self::write_edge_row_from_access(
-                            src_fk_idx,
-                            dst_fk_idx,
-                            src_fk_col,
-                            dst_fk_col,
-                            &src_context,
-                            &dst_context,
-                            &cols,
-                            row,
-                            src_fast,
-                            dst_fast,
-                            &mut access,
-                            &mut src_key_buf,
-                            &mut dst_key_buf,
-                            &mut forward_row,
-                            &mut batcher,
-                            &mut sort_key_batchers,
-                            num_shards,
-                            key_failures,
-                        )?;
+                } else {
+                    let file = fs::File::open(path)
+                        .with_context(|| format!("open {}", path))?;
+                    advise_file_willneed(&file);
+                    let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
+                    let reader = builder.with_batch_size(NODE_BATCH_SIZE).build()?;
+                    for batch in reader {
+                        let batch = batch?;
+                        let mut cols = Vec::with_capacity(table.columns.len());
+                        for col in &table.columns {
+                            let idx = batch
+                                .schema()
+                                .index_of(&col.name)
+                                .context("missing column in batch")?;
+                            cols.push(batch.column(idx).clone());
+                        }
+                        access.set_cols(&cols);
+                        let src_fast = edge_fast_path_for_array(src_fk_col, &cols[src_fk_idx]);
+                        let dst_fast = edge_fast_path_for_array(dst_fk_col, &cols[dst_fk_idx]);
+                        let mut src_key_buf = Vec::new();
+                        let mut dst_key_buf = Vec::new();
+                        let mut forward_row = Vec::new();
+                        for row in 0..batch.num_rows() {
+                            access.set_row(row);
+                            Self::write_edge_row_from_access(
+                                src_fk_idx,
+                                dst_fk_idx,
+                                src_fk_col,
+                                dst_fk_col,
+                                &src_context,
+                                &dst_context,
+                                &cols,
+                                row,
+                                src_fast,
+                                dst_fast,
+                                &mut access,
+                                &mut src_key_buf,
+                                &mut dst_key_buf,
+                                &mut forward_row,
+                                &mut batcher,
+                                &mut sort_key_batchers,
+                                num_shards,
+                                key_failures,
+                            )?;
+                        }
                     }
                 }
             }
             TableFormat::Csv => {
-                let file = fs::File::open(&local.path)
-                    .with_context(|| format!("open {}", local.path.display()))?;
-                advise_file_willneed(&file);
                 let builder = arrow_csv::ReaderBuilder::new(Arc::new(schema.clone()))
                     .with_header(true);
-                let reader = builder.build(file)?;
-                for batch in reader {
-                    let batch = batch?;
-                    let mut cols = Vec::with_capacity(table.columns.len());
-                    for col in &table.columns {
-                        let idx = batch
-                            .schema()
-                            .index_of(&col.name)
-                            .context("missing column in batch")?;
-                        cols.push(batch.column(idx).clone());
+                if let Some(transfer) = &input_transfer {
+                    if is_cloud_path(path) {
+                        let pooled = download_cloud_bytes(transfer, path)?;
+                        let bytes = pooled.bytes();
+                        let cursor = Cursor::new(bytes);
+                        let reader = builder.build(cursor)?;
+                        for batch in reader {
+                            let batch = batch?;
+                            let mut cols = Vec::with_capacity(table.columns.len());
+                            for col in &table.columns {
+                                let idx = batch
+                                    .schema()
+                                    .index_of(&col.name)
+                                    .context("missing column in batch")?;
+                                cols.push(batch.column(idx).clone());
+                            }
+                            access.set_cols(&cols);
+                            let src_fast = edge_fast_path_for_array(src_fk_col, &cols[src_fk_idx]);
+                            let dst_fast = edge_fast_path_for_array(dst_fk_col, &cols[dst_fk_idx]);
+                            let mut src_key_buf = Vec::new();
+                            let mut dst_key_buf = Vec::new();
+                            let mut forward_row = Vec::new();
+                            for row in 0..batch.num_rows() {
+                                access.set_row(row);
+                                Self::write_edge_row_from_access(
+                                    src_fk_idx,
+                                    dst_fk_idx,
+                                    src_fk_col,
+                                    dst_fk_col,
+                                    &src_context,
+                                    &dst_context,
+                                    &cols,
+                                    row,
+                                    src_fast,
+                                    dst_fast,
+                                    &mut access,
+                                    &mut src_key_buf,
+                                    &mut dst_key_buf,
+                                    &mut forward_row,
+                                    &mut batcher,
+                                    &mut sort_key_batchers,
+                                    num_shards,
+                                    key_failures,
+                                )?;
+                            }
+                        }
+                        drop(pooled);
+                    } else {
+                        let file = fs::File::open(path)
+                            .with_context(|| format!("open {}", path))?;
+                        advise_file_willneed(&file);
+                        let reader = builder.build(file)?;
+                        for batch in reader {
+                            let batch = batch?;
+                            let mut cols = Vec::with_capacity(table.columns.len());
+                            for col in &table.columns {
+                                let idx = batch
+                                    .schema()
+                                    .index_of(&col.name)
+                                    .context("missing column in batch")?;
+                                cols.push(batch.column(idx).clone());
+                            }
+                            access.set_cols(&cols);
+                            let src_fast = edge_fast_path_for_array(src_fk_col, &cols[src_fk_idx]);
+                            let dst_fast = edge_fast_path_for_array(dst_fk_col, &cols[dst_fk_idx]);
+                            let mut src_key_buf = Vec::new();
+                            let mut dst_key_buf = Vec::new();
+                            let mut forward_row = Vec::new();
+                            for row in 0..batch.num_rows() {
+                                access.set_row(row);
+                                Self::write_edge_row_from_access(
+                                    src_fk_idx,
+                                    dst_fk_idx,
+                                    src_fk_col,
+                                    dst_fk_col,
+                                    &src_context,
+                                    &dst_context,
+                                    &cols,
+                                    row,
+                                    src_fast,
+                                    dst_fast,
+                                    &mut access,
+                                    &mut src_key_buf,
+                                    &mut dst_key_buf,
+                                    &mut forward_row,
+                                    &mut batcher,
+                                    &mut sort_key_batchers,
+                                    num_shards,
+                                    key_failures,
+                                )?;
+                            }
+                        }
                     }
-                    access.set_cols(&cols);
-                    let src_fast = edge_fast_path_for_array(src_fk_col, &cols[src_fk_idx]);
-                    let dst_fast = edge_fast_path_for_array(dst_fk_col, &cols[dst_fk_idx]);
-                    let mut src_key_buf = Vec::new();
-                    let mut dst_key_buf = Vec::new();
-                    let mut forward_row = Vec::new();
-                    for row in 0..batch.num_rows() {
-                        access.set_row(row);
-                        Self::write_edge_row_from_access(
-                            src_fk_idx,
-                            dst_fk_idx,
-                            src_fk_col,
-                            dst_fk_col,
-                            &src_context,
-                            &dst_context,
-                            &cols,
-                            row,
-                            src_fast,
-                            dst_fast,
-                            &mut access,
-                            &mut src_key_buf,
-                            &mut dst_key_buf,
-                            &mut forward_row,
-                            &mut batcher,
-                            &mut sort_key_batchers,
-                            num_shards,
-                            key_failures,
-                        )?;
+                } else {
+                    let file = fs::File::open(path)
+                        .with_context(|| format!("open {}", path))?;
+                    advise_file_willneed(&file);
+                    let reader = builder.build(file)?;
+                    for batch in reader {
+                        let batch = batch?;
+                        let mut cols = Vec::with_capacity(table.columns.len());
+                        for col in &table.columns {
+                            let idx = batch
+                                .schema()
+                                .index_of(&col.name)
+                                .context("missing column in batch")?;
+                            cols.push(batch.column(idx).clone());
+                        }
+                        access.set_cols(&cols);
+                        let src_fast = edge_fast_path_for_array(src_fk_col, &cols[src_fk_idx]);
+                        let dst_fast = edge_fast_path_for_array(dst_fk_col, &cols[dst_fk_idx]);
+                        let mut src_key_buf = Vec::new();
+                        let mut dst_key_buf = Vec::new();
+                        let mut forward_row = Vec::new();
+                        for row in 0..batch.num_rows() {
+                            access.set_row(row);
+                            Self::write_edge_row_from_access(
+                                src_fk_idx,
+                                dst_fk_idx,
+                                src_fk_col,
+                                dst_fk_col,
+                                &src_context,
+                                &dst_context,
+                                &cols,
+                                row,
+                                src_fast,
+                                dst_fast,
+                                &mut access,
+                                &mut src_key_buf,
+                                &mut dst_key_buf,
+                                &mut forward_row,
+                                &mut batcher,
+                                &mut sort_key_batchers,
+                                num_shards,
+                                key_failures,
+                            )?;
+                        }
                     }
                 }
             }
@@ -7680,90 +8115,6 @@ fn format_decimal_from_bigint(value: &num_bigint::BigInt, scale: i32) -> String 
 }
 
 
-struct LocalizedInput {
-    path: PathBuf,
-    _guard: Option<tempfile::TempPath>,
-}
-
-fn localize_input(path: &str) -> Result<LocalizedInput> {
-    if path.starts_with("s3://") || path.starts_with("gs://") || path.starts_with("az://") {
-        let scratch = scratch_root()?;
-        fs::create_dir_all(&scratch)?;
-        let tmp = tempfile::Builder::new()
-            .prefix("ingest-source-")
-            .tempfile_in(&scratch)?;
-        let (store, object_path) = build_store_for_path(path)?;
-        let rt = Runtime::new()?;
-        let obj = rt.block_on(store.get(&object_path))?;
-        let bytes = rt.block_on(obj.bytes())?;
-        fs::write(tmp.path(), &bytes)?;
-        Ok(LocalizedInput {
-            path: tmp.path().to_path_buf(),
-            _guard: Some(tmp.into_temp_path()),
-        })
-    } else {
-        Ok(LocalizedInput {
-            path: PathBuf::from(path),
-            _guard: None,
-        })
-    }
-}
-
-fn scratch_root() -> Result<PathBuf> {
-    let ssd_root = std::env::var("DISKGRAPH_DATA_ROOT")
-        .ok()
-        .filter(|root| !root.trim().is_empty())
-        .unwrap_or_else(|| "/mnt/localssd".to_string());
-    let ssd = PathBuf::from(ssd_root.trim_end_matches('/')).join("diskgraph-ingest-tmp");
-    if ssd.exists() {
-        return Ok(ssd);
-    }
-    if ssd.parent().map(|p| p.exists()).unwrap_or(false) {
-        fs::create_dir_all(&ssd)?;
-        return Ok(ssd);
-    }
-    Ok(PathBuf::from("/tmp/diskgraph-ingest-tmp"))
-}
-
-fn build_store_for_path(path: &str) -> Result<(Arc<dyn ObjectStore>, ObjectPath)> {
-    if path.starts_with("s3://") {
-        let (bucket, key) = parse_s3_url(path)?;
-        let s3 = build_s3_client(S3Config {
-            bucket: bucket.clone(),
-            region: std::env::var("S3_REGION").ok(),
-            endpoint: std::env::var("S3_ENDPOINT").ok(),
-            allow_http: None,
-            virtual_hosted: None,
-            profile: std::env::var("S3_PROFILE").ok(),
-            access_key_id: None,
-            secret_access_key: None,
-            session_token: None,
-        })?;
-        Ok((s3.store, ObjectPath::from(key)))
-    } else if path.starts_with("gs://") {
-        let (bucket, key) = parse_gs_url(path)?;
-        let gcs = build_gcs_client(GcsConfig { bucket: bucket.clone() })?;
-        Ok((gcs.store, ObjectPath::from(key)))
-    } else if path.starts_with("az://") {
-        let (account, container, key) = parse_az_url(path)?;
-        let adls = build_adls_client(AdlsConfig {
-            account: account.clone(),
-            container: container.clone(),
-            endpoint: std::env::var("AZURE_ENDPOINT").ok(),
-            allow_http: None,
-            access_key: std::env::var("AZURE_ACCESS_KEY").ok(),
-            sas_key: std::env::var("AZURE_SAS_KEY").ok(),
-            bearer_token: std::env::var("AZURE_BEARER_TOKEN").ok(),
-            client_id: std::env::var("AZURE_CLIENT_ID").ok(),
-            client_secret: std::env::var("AZURE_CLIENT_SECRET").ok(),
-            tenant_id: std::env::var("AZURE_TENANT_ID").ok(),
-        })?;
-        Ok((adls.store, ObjectPath::from(key)))
-    } else {
-        Err(anyhow!("unsupported source path {}", path))
-    }
-}
-
 fn parse_s3_url(raw: &str) -> Result<(String, String)> {
     let url = url::Url::parse(raw).map_err(|e| anyhow!("invalid s3 url {raw}: {e}"))?;
     let bucket = url
@@ -7801,6 +8152,78 @@ fn parse_az_url(raw: &str) -> Result<(String, String, String)> {
         .to_string();
     let key = segments.collect::<Vec<_>>().join("/");
     Ok((account, container, key))
+}
+
+fn build_input_transfer(source: &SourceMetadata) -> Result<Option<CloudTransfer>> {
+    for table in &source.tables {
+        for path in &table.paths {
+            if is_cloud_path(path) {
+                let store = build_store_for_cloud_path(path)?;
+                let transfer = CloudTransfer::new(store, CloudTransferConfig::from_env());
+                return Ok(Some(transfer));
+            }
+        }
+    }
+    Ok(None)
+}
+
+fn build_store_for_cloud_path(path: &str) -> Result<Arc<dyn ObjectStore>> {
+    if path.starts_with("s3://") {
+        let (bucket, _key) = parse_s3_url(path)?;
+        let s3 = build_s3_client(S3Config {
+            bucket: bucket.clone(),
+            region: std::env::var("S3_REGION").ok(),
+            endpoint: std::env::var("S3_ENDPOINT").ok(),
+            allow_http: None,
+            virtual_hosted: None,
+            profile: std::env::var("S3_PROFILE").ok(),
+            access_key_id: None,
+            secret_access_key: None,
+            session_token: None,
+        })?;
+        Ok(s3.store)
+    } else if path.starts_with("gs://") {
+        let (bucket, _key) = parse_gs_url(path)?;
+        let gcs = build_gcs_client(GcsConfig { bucket: bucket.clone() })?;
+        Ok(gcs.store)
+    } else if path.starts_with("az://") {
+        let (account, container, _key) = parse_az_url(path)?;
+        let adls = build_adls_client(AdlsConfig {
+            account: account.clone(),
+            container: container.clone(),
+            endpoint: std::env::var("AZURE_ENDPOINT").ok(),
+            allow_http: None,
+            access_key: std::env::var("AZURE_ACCESS_KEY").ok(),
+            sas_key: std::env::var("AZURE_SAS_KEY").ok(),
+            bearer_token: std::env::var("AZURE_BEARER_TOKEN").ok(),
+            client_id: std::env::var("AZURE_CLIENT_ID").ok(),
+            client_secret: std::env::var("AZURE_CLIENT_SECRET").ok(),
+            tenant_id: std::env::var("AZURE_TENANT_ID").ok(),
+        })?;
+        Ok(adls.store)
+    } else {
+        Err(anyhow!("unsupported source path {}", path))
+    }
+}
+
+fn object_path_from_cloud_url(path: &str) -> Result<ObjectPath> {
+    if path.starts_with("s3://") {
+        let (_bucket, key) = parse_s3_url(path)?;
+        Ok(ObjectPath::from(key))
+    } else if path.starts_with("gs://") {
+        let (_bucket, key) = parse_gs_url(path)?;
+        Ok(ObjectPath::from(key))
+    } else if path.starts_with("az://") {
+        let (_account, _container, key) = parse_az_url(path)?;
+        Ok(ObjectPath::from(key))
+    } else {
+        Err(anyhow!("unsupported source path {}", path))
+    }
+}
+
+fn download_cloud_bytes(transfer: &CloudTransfer, path: &str) -> Result<PooledBytes> {
+    let object_path = object_path_from_cloud_url(path)?;
+    transfer.submit_download_bytes(object_path)?.wait()
 }
 
 fn resolve_local_paths(source: &mut SourceMetadata, base_dir: &Path) {

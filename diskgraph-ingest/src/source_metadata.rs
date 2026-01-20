@@ -219,6 +219,50 @@ pub fn relationship_name(rel: &RelationshipSpec) -> String {
     })
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum CloudSource {
+    S3 { bucket: String },
+    Gcs { bucket: String },
+    Adls { account: String, container: String },
+}
+
+fn parse_cloud_source(path: &str) -> Result<Option<CloudSource>> {
+    if let Some(rest) = path.strip_prefix("s3://") {
+        let mut parts = rest.splitn(2, '/');
+        let bucket = parts
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if bucket.is_empty() {
+            return Err(anyhow!("invalid s3 path {path}"));
+        }
+        return Ok(Some(CloudSource::S3 { bucket }));
+    }
+    if let Some(rest) = path.strip_prefix("gs://") {
+        let mut parts = rest.splitn(2, '/');
+        let bucket = parts
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if bucket.is_empty() {
+            return Err(anyhow!("invalid gs path {path}"));
+        }
+        return Ok(Some(CloudSource::Gcs { bucket }));
+    }
+    if let Some(rest) = path.strip_prefix("az://") {
+        let mut parts = rest.splitn(3, '/');
+        let account = parts.next().unwrap_or("").trim().to_string();
+        let container = parts.next().unwrap_or("").trim().to_string();
+        if account.is_empty() || container.is_empty() {
+            return Err(anyhow!("invalid az path {path}"));
+        }
+        return Ok(Some(CloudSource::Adls { account, container }));
+    }
+    Ok(None)
+}
+
 impl SourceMetadata {
     pub fn validate(&self) -> Result<()> {
         let mut errors = Vec::new();
@@ -241,6 +285,8 @@ impl SourceMetadata {
         let mut table_names = HashSet::new();
         let mut table_map: HashMap<&str, &TableSpec> = HashMap::new();
         let mut rel_keys = HashSet::new();
+        let mut cloud_source: Option<CloudSource> = None;
+        let mut has_local_paths = false;
         for table in &self.tables {
             if table.name.trim().is_empty() {
                 errors.push("table name cannot be empty".to_string());
@@ -256,6 +302,38 @@ impl SourceMetadata {
                 errors.push(format!("table {} has no columns", table.name));
             }
             let mut col_names = HashSet::new();
+            for path in &table.paths {
+                match parse_cloud_source(path) {
+                    Ok(Some(source)) => {
+                        if has_local_paths {
+                            errors.push(format!(
+                                "table {} mixes local and cloud paths",
+                                table.name
+                            ));
+                        }
+                        if let Some(existing) = &cloud_source {
+                            if existing != &source {
+                                errors.push(
+                                    "all cloud paths must share the same bucket/container"
+                                        .to_string(),
+                                );
+                            }
+                        } else {
+                            cloud_source = Some(source);
+                        }
+                    }
+                    Ok(None) => {
+                        if cloud_source.is_some() {
+                            errors.push(format!(
+                                "table {} mixes local and cloud paths",
+                                table.name
+                            ));
+                        }
+                        has_local_paths = true;
+                    }
+                    Err(err) => errors.push(err.to_string()),
+                }
+            }
             for col in &table.columns {
                 if col.name.trim().is_empty() {
                     errors.push(format!("table {} has empty column name", table.name));
