@@ -76,6 +76,8 @@ Cloud example (auto-detects AWS/GCP/Azure metadata, writes to `kumo-unit-test` b
 
 ```bash
 ./diskgraph-datagenerator/scripts/cloud_generate_dataset.sh diskgraph-datagenerator/configs/small_100m.json
+./diskgraph-infer/scripts/infer_config.sh s3://kumo-unit-test/diskgraph-datagenerator/small_100m
+./diskgraph-ingest/scripts/ingest_s3.sh s3://kumo-unit-test/diskgraph-datagenerator/small_100m
 ```
 
 ## Download ingested graph data from a job
