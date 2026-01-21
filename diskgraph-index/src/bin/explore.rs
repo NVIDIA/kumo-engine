@@ -9,7 +9,10 @@ use diskgraph_core::metadata::{
 };
 use diskgraph_index::graph::{GraphIndexReader, TableReader};
 use diskgraph_index::layout::{EDGES_FILENAME, OFFSETS_FILENAME};
-use diskgraph_rowpack::{ColumnEncoding, DecimalStorage, FloatStorage, RowPackContext, StringEncoding};
+use diskgraph_rowpack::{
+    ColumnEncoding, DecimalStorage, FloatStorage, RowPackContext, RowPackDecodeScratch,
+    StringEncoding, ValueRef,
+};
 use rustyline::completion::{Completer, Pair};
 use rustyline::error::ReadlineError;
 use rustyline::highlight::Highlighter;
@@ -2151,7 +2154,61 @@ fn show_node_by_pk(reader: &GraphIndexReader, table_name: &str, key: &str) -> Re
             return Ok(());
         }
     };
+    if !pk_matches_node(&table, node_id, &key)? {
+        println!("{}", warn("Primary key not found."));
+        return Ok(());
+    }
     show_node(reader, table_name, node_id)
+}
+
+fn pk_matches_node(table: &diskgraph_index::graph::TableReader, node_id: u64, key: &diskgraph_index::pkmap::Key) -> Result<bool> {
+    let pk = match table.primary_key_map() {
+        Some(pk) => pk,
+        None => return Ok(false),
+    };
+    let view = table
+        .edges_for_node(node_id)
+        .map_err(|e| anyhow!("node lookup failed: {e}"))?;
+    let raw = match view.node_data()? {
+        Some(raw) => raw,
+        None => return Ok(false),
+    };
+    let compression = table
+        .node_data_compression()
+        .ok_or_else(|| anyhow!("node data compression missing"))?;
+    if compression.codec != "rowpack" {
+        return Ok(false);
+    }
+    let decoder = table
+        .node_data_decoder()
+        .ok_or_else(|| anyhow!("rowpack ctx missing for {}", table.node_type()))?;
+    let ctx = decoder.context();
+    let col_idx = if let Some(idx) = pk.pk_column_index {
+        idx
+    } else {
+        ctx.columns
+            .iter()
+            .position(|col| col.name == pk.column)
+            .ok_or_else(|| anyhow!("pk column {} not found in rowpack context", pk.column))?
+    };
+    let mut scratch = RowPackDecodeScratch::default();
+    let value = decoder.decode_column_value(raw, col_idx, &mut scratch)?;
+    Ok(pk_value_matches(key, &value))
+}
+
+fn pk_value_matches(key: &diskgraph_index::pkmap::Key, value: &ValueRef<'_>) -> bool {
+    match (key, value) {
+        (diskgraph_index::pkmap::Key::Int(k), ValueRef::Int64(v)) => *v >= 0 && *k == *v as u64,
+        (diskgraph_index::pkmap::Key::Int(k), ValueRef::Int32(v)) => *v >= 0 && *k == *v as u64,
+        (diskgraph_index::pkmap::Key::Int(k), ValueRef::UInt64(v)) => *k == *v,
+        (diskgraph_index::pkmap::Key::Int(k), ValueRef::UInt32(v)) => *k == *v as u64,
+        (diskgraph_index::pkmap::Key::Bytes(k), ValueRef::Bytes(v)) => k.as_slice() == *v,
+        (diskgraph_index::pkmap::Key::Bytes(k), ValueRef::String(v)) => k.as_slice() == v.as_bytes(),
+        (diskgraph_index::pkmap::Key::Uuid(k), ValueRef::Uuid(v)) => k == v,
+        (diskgraph_index::pkmap::Key::Uuid256(k), ValueRef::Uuid256(v)) => k == v,
+        (diskgraph_index::pkmap::Key::Ip(k), ValueRef::Ip(v)) => k == v,
+        _ => false,
+    }
 }
 
 fn run_benchmark(

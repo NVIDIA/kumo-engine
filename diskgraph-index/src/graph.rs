@@ -488,6 +488,14 @@ impl TableReader {
         self.primary_key_map.as_ref()
     }
 
+    pub fn node_data_compression(&self) -> Option<&NodeDataCompression> {
+        self.node_data_compression.as_ref()
+    }
+
+    pub fn node_data_decoder(&self) -> Option<&diskgraph_rowpack::RowPackDecoder> {
+        self.node_data_decoder.as_ref()
+    }
+
     pub fn relations(&self) -> &[EdgeRelationMetadata] {
         &self.relations
     }

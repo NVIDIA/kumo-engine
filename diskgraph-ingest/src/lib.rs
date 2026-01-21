@@ -5,8 +5,8 @@ pub mod source_metadata;
 pub mod progress;
 
 use crate::mapping::{
-    fingerprint_seed_for, write_pk_data_entry, write_pk_data_header, Key, KeyType, PkDataAdvice,
-    PkGxHash, PkHashShard, PkHashStore, PkPtrHash, PkPtrHashOutput,
+    write_pk_data_entry, write_pk_data_header, Key, KeyType, PkDataAdvice, PkHashShard,
+    PkHashStore, PkPtrHash, PkPtrHashOutput,
 };
 use crate::progress::{format_bytes, format_duration};
 use crate::source_metadata::{
@@ -246,22 +246,6 @@ fn estimate_varbytes_avg_len_multi(row_count: u64, max_row_len: u32, paths: &[Pa
         avg_key = avg_key.min(max_row_len);
     }
     avg_key
-}
-
-fn fingerprint_mask(bits: u8) -> u64 {
-    match bits {
-        64 => u64::MAX,
-        0 => 0,
-        _ => (1u64 << bits) - 1,
-    }
-}
-
-fn fp_zero<T: Hash>(_key: &T, _seed: u64, _mask: u64) -> u64 {
-    0
-}
-
-fn fp_hash<T: Hash>(key: &T, seed: u64, mask: u64) -> u64 {
-    PkGxHash::hash(key, seed) & mask
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -3242,7 +3226,6 @@ impl IngestContext {
             });
             let pk_name = table.primary_key.clone().unwrap();
             let pk_col = column_spec(table, &pk_name)?;
-            let fingerprint_bits = table.fingerprint_bits.unwrap_or(0);
             let pk_hash_paths = std::sync::Arc::new(std::sync::Mutex::new(vec![
                 None;
                 self.num_shards
@@ -3258,7 +3241,6 @@ impl IngestContext {
                 let duplicate_counts = std::sync::Arc::clone(&duplicate_counts);
                 let duplicate_samples = std::sync::Arc::clone(&duplicate_samples);
                 let root = root.clone();
-                let fingerprint_bits = fingerprint_bits;
                 let pk_map_budget = pk_map_budget.clone();
                 let relationships = relationships.clone();
                 let source = source.clone();
@@ -3332,8 +3314,6 @@ impl IngestContext {
                         let mut duplicate_count = 0u64;
                         let mut duplicate_samples_local: Vec<Key> = Vec::new();
                         let mut row_id = 0u64;
-                        let fingerprint_seed = fingerprint_seed_for(&table_name, shard);
-                        let fp_mask = fingerprint_mask(fingerprint_bits);
                         let (hash_rel, data_rel) =
                             match key_type {
                             KeyType::Int64 => {
@@ -3397,12 +3377,9 @@ impl IngestContext {
                                         let slots = mphf.max_index();
                                         let mut entries = std::mem::take(&mut pkmap.entries);
                                         entries.resize(slots, (0u64, 0u32));
-                                        let fp_fn: fn(&u64, u64, u64) -> u64 =
-                                            if fingerprint_bits == 0 { fp_zero } else { fp_hash };
                                         for (key, value) in seen.iter() {
                                             let idx = mphf.index_no_remap(key);
-                                            let fp = fp_fn(key, fingerprint_seed, fp_mask);
-                                            entries[idx] = (fp, *value);
+                                            entries[idx] = (0, *value);
                                         }
                                         pkmap.entries = entries;
                                         pkmap.seen_u64 = seen;
@@ -3424,8 +3401,6 @@ impl IngestContext {
                                         &hash_rel,
                                         &data_rel,
                                         key_type,
-                                        fingerprint_seed,
-                                        fingerprint_bits,
                                         &mphf,
                                         entries,
                                     )?;
@@ -3499,12 +3474,9 @@ impl IngestContext {
                                         let slots = mphf.max_index();
                                         let mut entries = std::mem::take(&mut pkmap.entries);
                                         entries.resize(slots, (0u64, 0u32));
-                                        let fp_fn: fn(&Vec<u8>, u64, u64) -> u64 =
-                                            if fingerprint_bits == 0 { fp_zero } else { fp_hash };
                                         for (key, value) in seen.iter() {
                                             let idx = mphf.index_no_remap(key);
-                                            let fp = fp_fn(key, fingerprint_seed, fp_mask);
-                                            entries[idx] = (fp, *value);
+                                            entries[idx] = (0, *value);
                                         }
                                         pkmap.entries = entries;
                                         pkmap.seen_bytes = seen;
@@ -3526,8 +3498,6 @@ impl IngestContext {
                                         &hash_rel,
                                         &data_rel,
                                         key_type,
-                                        fingerprint_seed,
-                                        fingerprint_bits,
                                         &mphf,
                                         entries,
                                     )?;
@@ -3596,12 +3566,9 @@ impl IngestContext {
                                         let slots = mphf.max_index();
                                         let mut entries = std::mem::take(&mut pkmap.entries);
                                         entries.resize(slots, (0u64, 0u32));
-                                        let fp_fn: fn(&[u8; 16], u64, u64) -> u64 =
-                                            if fingerprint_bits == 0 { fp_zero } else { fp_hash };
                                         for (key, value) in seen.iter() {
                                             let idx = mphf.index_no_remap(key);
-                                            let fp = fp_fn(key, fingerprint_seed, fp_mask);
-                                            entries[idx] = (fp, *value);
+                                            entries[idx] = (0, *value);
                                         }
                                         pkmap.entries = entries;
                                         pkmap.seen_uuid = seen;
@@ -3623,8 +3590,6 @@ impl IngestContext {
                                         &hash_rel,
                                         &data_rel,
                                         key_type,
-                                        fingerprint_seed,
-                                        fingerprint_bits,
                                         &mphf,
                                         entries,
                                     )?;
@@ -3693,12 +3658,9 @@ impl IngestContext {
                                         let slots = mphf.max_index();
                                         let mut entries = std::mem::take(&mut pkmap.entries);
                                         entries.resize(slots, (0u64, 0u32));
-                                        let fp_fn: fn(&[u8; 32], u64, u64) -> u64 =
-                                            if fingerprint_bits == 0 { fp_zero } else { fp_hash };
                                         for (key, value) in seen.iter() {
                                             let idx = mphf.index_no_remap(key);
-                                            let fp = fp_fn(key, fingerprint_seed, fp_mask);
-                                            entries[idx] = (fp, *value);
+                                            entries[idx] = (0, *value);
                                         }
                                         pkmap.entries = entries;
                                         pkmap.seen_uuid256 = seen;
@@ -3720,8 +3682,6 @@ impl IngestContext {
                                         &hash_rel,
                                         &data_rel,
                                         key_type,
-                                        fingerprint_seed,
-                                        fingerprint_bits,
                                         &mphf,
                                         entries,
                                     )?;
@@ -3790,12 +3750,9 @@ impl IngestContext {
                                         let slots = mphf.max_index();
                                         let mut entries = std::mem::take(&mut pkmap.entries);
                                         entries.resize(slots, (0u64, 0u32));
-                                        let fp_fn: fn(&[u8; 16], u64, u64) -> u64 =
-                                            if fingerprint_bits == 0 { fp_zero } else { fp_hash };
                                         for (key, value) in seen.iter() {
                                             let idx = mphf.index_no_remap(key);
-                                            let fp = fp_fn(key, fingerprint_seed, fp_mask);
-                                            entries[idx] = (fp, *value);
+                                            entries[idx] = (0, *value);
                                         }
                                         pkmap.entries = entries;
                                         pkmap.seen_ip = seen;
@@ -3817,8 +3774,6 @@ impl IngestContext {
                                         &hash_rel,
                                         &data_rel,
                                         key_type,
-                                        fingerprint_seed,
-                                        fingerprint_bits,
                                         &mphf,
                                         entries,
                                     )?;
@@ -3923,8 +3878,6 @@ impl IngestContext {
         hash_rel: &str,
         data_rel: &str,
         key_type: KeyType,
-        fingerprint_seed: u64,
-        fingerprint_bits: u8,
         mphf: &H,
         entries: &[(u64, u32)],
     ) -> Result<()> {
@@ -3949,15 +3902,9 @@ impl IngestContext {
 
         let mut data_writer =
             BufWriter::with_capacity(4 * 1024 * 1024, target.sink(&data_path)?);
-        write_pk_data_header(
-            &mut data_writer,
-            key_type,
-            entries.len() as u64,
-            fingerprint_seed,
-            fingerprint_bits,
-        )?;
-        for (fingerprint, value) in entries {
-            write_pk_data_entry(&mut data_writer, *fingerprint, fingerprint_bits, *value)?;
+        write_pk_data_header(&mut data_writer, key_type, entries.len() as u64)?;
+        for (_key_hash, value) in entries {
+            write_pk_data_entry(&mut data_writer, *value)?;
         }
         data_writer.flush()?;
         let data_sink = data_writer
@@ -5023,7 +4970,7 @@ impl IngestContext {
                     .iter()
                     .find(|c| c.name == *pk)
                     .and_then(|c| c.fixed_len),
-                fingerprint_bits: table.fingerprint_bits.unwrap_or(64),
+                pk_column_index: Some(0),
             });
             let max_id = shard_rows.iter().sum::<u64>().saturating_sub(1);
             node_types.push(NodeTypeMetadata {
@@ -8241,7 +8188,6 @@ mod tests {
                 scale: None,
             }],
             primary_key: None,
-            fingerprint_bits: None,
             create_time: None,
             weight: None,
             edge_table: None,
@@ -8332,7 +8278,6 @@ mod tests {
                 scale: None,
             }],
             primary_key: None,
-            fingerprint_bits: None,
             create_time: None,
             weight: None,
             edge_table: None,
@@ -8364,7 +8309,6 @@ mod tests {
                 scale: None,
             }],
             primary_key: None,
-            fingerprint_bits: None,
             create_time: None,
             weight: None,
             edge_table: None,
@@ -8411,7 +8355,6 @@ mod tests {
                 scale: None,
             }],
             primary_key: None,
-            fingerprint_bits: None,
             create_time: None,
             weight: None,
             edge_table: None,
@@ -8450,7 +8393,6 @@ mod tests {
                 scale: None,
             }],
             primary_key: None,
-            fingerprint_bits: None,
             create_time: None,
             weight: None,
             edge_table: None,
@@ -8484,7 +8426,6 @@ mod tests {
                 scale: None,
             }],
             primary_key: None,
-            fingerprint_bits: None,
             create_time: None,
             weight: None,
             edge_table: None,
@@ -8554,7 +8495,14 @@ fn to_arrow_time_unit(
 
 fn rowpack_columns(table: &TableSpec) -> Result<Vec<diskgraph_rowpack::RowPackColumn>> {
     let mut columns = Vec::with_capacity(table.columns.len());
-    for col in &table.columns {
+    let mut ordered: Vec<&ColumnSpec> = table.columns.iter().collect();
+    if let Some(pk) = table.primary_key.as_ref() {
+        if let Some(pos) = ordered.iter().position(|col| col.name == *pk) {
+            let pk_col = ordered.remove(pos);
+            ordered.insert(0, pk_col);
+        }
+    }
+    for col in ordered {
         let dtype = match col.ingested_dtype {
             IngestedType::Int8 => RowpackType::Int8,
             IngestedType::Int16 => RowpackType::Int16,

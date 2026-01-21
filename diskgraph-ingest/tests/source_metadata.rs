@@ -31,7 +31,6 @@ fn base_table(name: &str) -> TableSpec {
             },
         ],
         primary_key: Some("id".into()),
-        fingerprint_bits: None,
         create_time: None,
         weight: None,
         edge_table: None,
@@ -95,7 +94,6 @@ fn validate_missing_pk_column() {
                 scale: None,
             }],
             primary_key: Some("id".into()),
-            fingerprint_bits: None,
             create_time: None,
             weight: None,
             edge_table: None,
@@ -108,39 +106,6 @@ fn validate_missing_pk_column() {
         edge_format: None,
     };
     assert!(meta.validate().is_err());
-}
-
-#[test]
-fn validate_invalid_fingerprint_bits() {
-    let mut table = base_table("User");
-    table.fingerprint_bits = Some(7);
-    let meta = SourceMetadata {
-        dataset_name: "test".into(),
-        tables: vec![table],
-        relationships: Vec::new(),
-        edge_sort_keys: None,
-        rowpack: None,
-        num_shards: None,
-        edge_format: None,
-    };
-    assert_err_contains(meta, "fingerprint_bits");
-}
-
-#[test]
-fn validate_fingerprint_bits_requires_primary_key() {
-    let mut table = base_table("User");
-    table.primary_key = None;
-    table.fingerprint_bits = Some(32);
-    let meta = SourceMetadata {
-        dataset_name: "test".into(),
-        tables: vec![table],
-        relationships: Vec::new(),
-        edge_sort_keys: None,
-        rowpack: None,
-        num_shards: None,
-        edge_format: None,
-    };
-    assert_err_contains(meta, "fingerprint_bits requires a primary_key");
 }
 
 #[test]
@@ -340,7 +305,6 @@ fn validate_edge_fk_missing_column() {
             scale: None,
         }],
         primary_key: None,
-        fingerprint_bits: None,
         create_time: None,
         weight: None,
         edge_table: Some(EdgeTableSpec {
@@ -390,7 +354,6 @@ fn validate_edge_fk_missing_table() {
             },
         ],
         primary_key: None,
-        fingerprint_bits: None,
         create_time: None,
         weight: None,
         edge_table: Some(EdgeTableSpec {
@@ -441,7 +404,6 @@ fn validate_edge_fk_not_pk() {
             },
         ],
         primary_key: None,
-        fingerprint_bits: None,
         create_time: None,
         weight: None,
         edge_table: Some(EdgeTableSpec {
@@ -814,7 +776,6 @@ fn validate_edge_fk_int_string_ok() {
             },
         ],
         primary_key: None,
-        fingerprint_bits: None,
         create_time: None,
         weight: None,
         edge_table: Some(EdgeTableSpec {
@@ -864,7 +825,6 @@ fn validate_edge_fk_string_int_ok() {
             },
         ],
         primary_key: None,
-        fingerprint_bits: None,
         create_time: None,
         weight: None,
         edge_table: Some(EdgeTableSpec {
@@ -958,7 +918,6 @@ fn validate_edge_fk_string_bytes_ok() {
             },
         ],
         primary_key: None,
-        fingerprint_bits: None,
         create_time: None,
         weight: None,
         edge_table: Some(EdgeTableSpec {
@@ -1016,7 +975,6 @@ fn validate_edge_fk_string_bytes_len_mismatch() {
             },
         ],
         primary_key: None,
-        fingerprint_bits: None,
         create_time: None,
         weight: None,
         edge_table: Some(EdgeTableSpec {
@@ -1057,7 +1015,6 @@ fn validate_edge_fk_uuid_ok() {
             scale: None,
         }],
         primary_key: None,
-        fingerprint_bits: None,
         create_time: None,
         weight: None,
         edge_table: Some(EdgeTableSpec {
@@ -1098,7 +1055,6 @@ fn validate_edge_fk_uuid_mismatch() {
             scale: None,
         }],
         primary_key: None,
-        fingerprint_bits: None,
         create_time: None,
         weight: None,
         edge_table: Some(EdgeTableSpec {

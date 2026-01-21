@@ -616,7 +616,7 @@ fn ingest_csv_with_bytes_pk_mapping() -> Result<()> {
 }
 
 #[test]
-fn ingest_pk_map_with_zero_bit_fingerprint() -> Result<()> {
+fn ingest_pk_map_header_has_expected_format() -> Result<()> {
     let dir = tempdir()?;
     let input_root = dir.path().join("input");
     let output_root = dir.path().join("output");
@@ -638,7 +638,6 @@ fn ingest_pk_map_with_zero_bit_fingerprint() -> Result<()> {
                 "format": "parquet",
                 "paths": [table_path.to_string_lossy()],
                 "primary_key": "id",
-                "fingerprint_bits": 0,
                 "columns": [
                     {"name": "id", "ingested_dtype": "bytes", "fixed_len": 4},
                     {"name": "name", "ingested_dtype": "string"}
@@ -656,28 +655,23 @@ fn ingest_pk_map_with_zero_bit_fingerprint() -> Result<()> {
         parallel: true,
         index_mem_budget_bytes: None,
     };
-    let metadata = ingest(&source_path, output_root.to_str().unwrap(), Dest::Local, options)?;
-    let asset = metadata
-        .node_types
-        .iter()
-        .find(|n| n.name == "Asset")
-        .unwrap();
-    let pk = asset.primary_key_map.as_ref().unwrap();
-    assert_eq!(pk.fingerprint_bits, 0);
-
+    let _metadata = ingest(&source_path, output_root.to_str().unwrap(), Dest::Local, options)?;
     let data_path = output_root.join("nodes/asset/pk_data-00000.bin");
     let bytes = fs::read(&data_path)?;
     assert!(bytes.starts_with(b"DGPKDAT\0"));
     let version = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
-    assert_eq!(version, 2);
-    assert_eq!(bytes[13], 0);
+    assert_eq!(version, 3);
+    let key_type_tag = bytes[12];
+    assert_eq!(key_type_tag, 2);
+    let key_len = u32::from_le_bytes(bytes[13..17].try_into().unwrap());
+    assert_eq!(key_len, 0);
     assert!(bytes.len() > 0);
 
     Ok(())
 }
 
 #[test]
-fn ingest_zero_bit_fingerprint_skips_missing_fkeys() -> Result<()> {
+fn ingest_missing_fkeys_do_not_create_edges() -> Result<()> {
     let dir = tempdir()?;
     let input_root = dir.path().join("input");
     let output_root = dir.path().join("output");
@@ -707,7 +701,6 @@ fn ingest_zero_bit_fingerprint_skips_missing_fkeys() -> Result<()> {
                 "format": "csv",
                 "paths": [input_root.join("assets.csv").to_string_lossy()],
                 "primary_key": "id",
-                "fingerprint_bits": 0,
                 "columns": [
                     {"name": "id", "ingested_dtype": "int64"},
                     {"name": "name", "ingested_dtype": "string"}

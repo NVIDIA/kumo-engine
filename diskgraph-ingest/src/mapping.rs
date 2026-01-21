@@ -1,5 +1,4 @@
 use anyhow::{anyhow, Result};
-use gxhash::GxHasher;
 use memmap2::Mmap;
 #[cfg(not(feature = "pkhash128"))]
 use ptr_hash::hash::GxHash64;
@@ -8,13 +7,11 @@ use ptr_hash::hash::GxHash128;
 use ptr_hash::hash::Hasher as PtrHasher;
 use ptr_hash::DefaultPtrHash;
 use std::fs::File;
-use std::hash::{Hash, Hasher};
 use epserde::prelude::{Deserialize as EpDeserialize, Flags as EpFlags};
 
 const PK_DATA_MAGIC: &[u8; 8] = b"DGPKDAT\0";
-const PK_DATA_VERSION: u32 = 2;
-const PK_DATA_HEADER_LEN: usize = 8 + 4 + 1 + 1 + 4 + 8 + 8;
-const GXHASH_FINGERPRINT_SEED: u64 = 0x6a09e667f3bcc909;
+const PK_DATA_VERSION: u32 = 3;
+const PK_DATA_HEADER_LEN: usize = 8 + 4 + 1 + 4 + 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyType {
@@ -49,10 +46,8 @@ impl Key {
 #[derive(Debug, Clone, Copy)]
 struct PkDataHeader {
     key_type_tag: u8,
-    fingerprint_bits: u8,
     key_len: u32,
     count: u64,
-    fingerprint_seed: u64,
 }
 
 impl PkDataHeader {
@@ -60,10 +55,8 @@ impl PkDataHeader {
         out.write_all(PK_DATA_MAGIC)?;
         out.write_all(&PK_DATA_VERSION.to_le_bytes())?;
         out.write_all(&[self.key_type_tag])?;
-        out.write_all(&[self.fingerprint_bits])?;
         out.write_all(&self.key_len.to_le_bytes())?;
         out.write_all(&self.count.to_le_bytes())?;
-        out.write_all(&self.fingerprint_seed.to_le_bytes())?;
         Ok(())
     }
 
@@ -83,19 +76,13 @@ impl PkDataHeader {
         }
         let key_type_tag = bytes[offset];
         offset += 1;
-        let fingerprint_bits = bytes[offset];
-        offset += 1;
         let key_len = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
         offset += 4;
         let count = u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap());
-        offset += 8;
-        let fingerprint_seed = u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap());
         Ok(Self {
             key_type_tag,
-            fingerprint_bits,
             key_len,
             count,
-            fingerprint_seed,
         })
     }
 
@@ -112,18 +99,6 @@ impl PkDataHeader {
 }
 
 
-
-#[derive(Clone, epserde::prelude::Epserde)]
-pub struct PkGxHash;
-
-impl PkGxHash {
-    #[inline(always)]
-    pub(crate) fn hash<Key: std::hash::Hash + ?Sized>(x: &Key, seed: u64) -> u64 {
-        let mut hasher = GxHasher::with_seed(seed as i64);
-        x.hash(&mut hasher);
-        hasher.finish()
-    }
-}
 
 #[cfg(not(feature = "pkhash128"))]
 pub type PkPtrHash = GxHash64;
@@ -208,8 +183,6 @@ pub struct PkHashShard {
     mphf: PkHashMphf,
     data: Mmap,
     header: PkDataHeader,
-    fp_mask: u64,
-    fp_bytes: usize,
     entry_len: usize,
     lookup_fn: fn(&PkHashShard, &Key) -> Option<u32>,
 }
@@ -240,18 +213,8 @@ impl PkHashShard {
                 header_key_type
             ));
         }
-        let fp_bits = header.fingerprint_bits;
-        let fp_bytes = fingerprint_bytes(fp_bits)?;
-        let entry_len = fp_bytes + 4;
-        let fp_mask = fingerprint_mask(fp_bits);
-        let lookup_fn = match fp_bits {
-            64 => lookup_fp64,
-            32 => lookup_fp32,
-            16 => lookup_fp16,
-            8 => lookup_fp8,
-            0 => lookup_fp0,
-            _ => return Err(anyhow!("invalid fingerprint_bits {}", fp_bits)),
-        };
+        let entry_len = 4;
+        let lookup_fn = lookup_id_only;
         let mphf = match key_type {
             KeyType::Int64 => {
                 let mphf: MphfInt = DefaultPtrHash::<PkPtrHash, u64>::load_mmap(
@@ -299,8 +262,6 @@ impl PkHashShard {
             mphf,
             data,
             header,
-            fp_mask,
-            fp_bytes,
             entry_len,
             lookup_fn,
         })
@@ -345,176 +306,25 @@ pub fn write_pk_data_header(
     mut out: impl std::io::Write,
     key_type: KeyType,
     count: u64,
-    fingerprint_seed: u64,
-    fingerprint_bits: u8,
 ) -> std::io::Result<()> {
     let (key_type_tag, key_len) = key_type_tag(key_type);
     let header = PkDataHeader {
         key_type_tag,
-        fingerprint_bits,
         key_len,
         count,
-        fingerprint_seed,
     };
     header.write_to(&mut out)
 }
 
-pub fn fingerprint_for_key(key: &Key, seed: u64) -> u64 {
-    match key {
-        Key::Int(value) => PkGxHash::hash(value, seed),
-        Key::Bytes(bytes) => PkGxHash::hash(bytes, seed),
-        Key::Uuid(value) => PkGxHash::hash(value, seed),
-        Key::Uuid256(value) => PkGxHash::hash(value, seed),
-        Key::Ip(value) => PkGxHash::hash(value, seed),
-    }
-}
-
-pub fn fingerprint_seed_for(table: &str, shard: usize) -> u64 {
-    let _ = table;
-    let _ = shard;
-    GXHASH_FINGERPRINT_SEED
-}
-
 pub fn write_pk_data_entry(
     mut out: impl std::io::Write,
-    fingerprint: u64,
-    fingerprint_bits: u8,
     value: u32,
 ) -> std::io::Result<()> {
-    let fp_bytes = fingerprint_bytes(fingerprint_bits).map_err(|err| {
-        std::io::Error::new(std::io::ErrorKind::InvalidInput, err.to_string())
-    })?;
-    if fp_bytes > 0 {
-        out.write_all(&fingerprint.to_le_bytes()[..fp_bytes])?;
-    }
     out.write_all(&value.to_le_bytes())?;
     Ok(())
 }
 
-fn fingerprint_bytes(bits: u8) -> Result<usize> {
-    match bits {
-        64 | 32 | 16 | 8 | 0 => Ok((bits / 8) as usize),
-        _ => Err(anyhow!("invalid fingerprint_bits {}", bits)),
-    }
-}
-
-fn fingerprint_mask(bits: u8) -> u64 {
-    match bits {
-        64 => u64::MAX,
-        0 => 0,
-        _ => (1u64 << bits) - 1,
-    }
-}
-
-fn lookup_fp64(shard: &PkHashShard, key: &Key) -> Option<u32> {
-    if key.key_type() != shard.key_type {
-        return None;
-    }
-    let idx = shard.mphf.index(key)?;
-    if idx >= shard.header.count as usize {
-        return None;
-    }
-    let offset = PK_DATA_HEADER_LEN + idx * shard.entry_len;
-    if shard.data.len() < offset + shard.entry_len {
-        return None;
-    }
-    let fp = u64::from_le_bytes(shard.data[offset..offset + 8].try_into().ok()?);
-    let value = u32::from_le_bytes(
-        shard.data[offset + shard.fp_bytes..offset + shard.fp_bytes + 4]
-            .try_into()
-            .ok()?,
-    );
-    if fp != fingerprint_for_key(key, shard.header.fingerprint_seed) {
-        return None;
-    }
-    if value == u32::MAX {
-        return None;
-    }
-    Some(value)
-}
-
-fn lookup_fp32(shard: &PkHashShard, key: &Key) -> Option<u32> {
-    if key.key_type() != shard.key_type {
-        return None;
-    }
-    let idx = shard.mphf.index(key)?;
-    if idx >= shard.header.count as usize {
-        return None;
-    }
-    let offset = PK_DATA_HEADER_LEN + idx * shard.entry_len;
-    if shard.data.len() < offset + shard.entry_len {
-        return None;
-    }
-    let fp = u32::from_le_bytes(shard.data[offset..offset + 4].try_into().ok()?) as u64;
-    let value = u32::from_le_bytes(
-        shard.data[offset + shard.fp_bytes..offset + shard.fp_bytes + 4]
-            .try_into()
-            .ok()?,
-    );
-    if fp != (fingerprint_for_key(key, shard.header.fingerprint_seed) & shard.fp_mask) {
-        return None;
-    }
-    if value == u32::MAX {
-        return None;
-    }
-    Some(value)
-}
-
-fn lookup_fp16(shard: &PkHashShard, key: &Key) -> Option<u32> {
-    if key.key_type() != shard.key_type {
-        return None;
-    }
-    let idx = shard.mphf.index(key)?;
-    if idx >= shard.header.count as usize {
-        return None;
-    }
-    let offset = PK_DATA_HEADER_LEN + idx * shard.entry_len;
-    if shard.data.len() < offset + shard.entry_len {
-        return None;
-    }
-    let fp = u16::from_le_bytes(shard.data[offset..offset + 2].try_into().ok()?) as u64;
-    let value = u32::from_le_bytes(
-        shard.data[offset + shard.fp_bytes..offset + shard.fp_bytes + 4]
-            .try_into()
-            .ok()?,
-    );
-    if fp != (fingerprint_for_key(key, shard.header.fingerprint_seed) & shard.fp_mask) {
-        return None;
-    }
-    if value == u32::MAX {
-        return None;
-    }
-    Some(value)
-}
-
-fn lookup_fp8(shard: &PkHashShard, key: &Key) -> Option<u32> {
-    if key.key_type() != shard.key_type {
-        return None;
-    }
-    let idx = shard.mphf.index(key)?;
-    if idx >= shard.header.count as usize {
-        return None;
-    }
-    let offset = PK_DATA_HEADER_LEN + idx * shard.entry_len;
-    if shard.data.len() < offset + shard.entry_len {
-        return None;
-    }
-    let fp = shard.data.get(offset).copied()? as u64;
-    let value = u32::from_le_bytes(
-        shard.data[offset + shard.fp_bytes..offset + shard.fp_bytes + 4]
-            .try_into()
-            .ok()?,
-    );
-    if fp != (fingerprint_for_key(key, shard.header.fingerprint_seed) & shard.fp_mask) {
-        return None;
-    }
-    if value == u32::MAX {
-        return None;
-    }
-    Some(value)
-}
-
-fn lookup_fp0(shard: &PkHashShard, key: &Key) -> Option<u32> {
+fn lookup_id_only(shard: &PkHashShard, key: &Key) -> Option<u32> {
     if key.key_type() != shard.key_type {
         return None;
     }
@@ -527,9 +337,7 @@ fn lookup_fp0(shard: &PkHashShard, key: &Key) -> Option<u32> {
         return None;
     }
     let value = u32::from_le_bytes(
-        shard.data[offset + shard.fp_bytes..offset + shard.fp_bytes + 4]
-            .try_into()
-            .ok()?,
+        shard.data[offset..offset + 4].try_into().ok()?,
     );
     if value == u32::MAX {
         return None;
