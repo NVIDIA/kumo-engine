@@ -3183,9 +3183,9 @@ impl IngestContext {
         let forward_shard = shard_for_key(src_key_buf, num_shards);
         let dst_shard = shard_for_key(dst_key_buf, num_shards);
         forward_row.clear();
-        forward_row.reserve(src_key_buf.len().saturating_add(dst_key_buf.len()));
-        forward_row.extend_from_slice(src_key_buf);
-        forward_row.extend_from_slice(dst_key_buf);
+        forward_row.reserve(src_key_buf.len().saturating_add(dst_key_buf.len()).saturating_add(4));
+        append_key_bytes_with_len_prefix(forward_row, src_key_buf, src_col)?;
+        append_key_bytes_with_len_prefix(forward_row, dst_key_buf, dst_col)?;
         batcher.push(forward_shard, forward_row)?;
         edge_key_batcher.push_src(forward_shard, src_key_buf)?;
         edge_key_batcher.push_dst(dst_shard, dst_key_buf)?;
@@ -4614,9 +4614,9 @@ impl IngestContext {
                                     pending = 0;
                                 }
                                 let mut data = row;
-                                let src_key = read_key_from_buf(&mut data, &src_pk_col)
+                                let src_key = read_key_from_buf_len_prefixed(&mut data, &src_pk_col)
                                     .map_err(|_| anyhow!("src key parse"))?;
-                                let dst_key = read_key_from_buf(&mut data, &dst_pk_col)
+                                let dst_key = read_key_from_buf_len_prefixed(&mut data, &dst_pk_col)
                                     .map_err(|_| anyhow!("dst key parse"))?;
                                 let src_shard =
                                     shard_for_key_from_key(&src_key, key_buf, num_shards)?;
@@ -7791,6 +7791,25 @@ fn write_key_to_buf(buf: &mut Vec<u8>, key: &Key) -> Result<()> {
     Ok(())
 }
 
+fn append_key_bytes_with_len_prefix(
+    row: &mut Vec<u8>,
+    key_bytes: &[u8],
+    col: &ColumnSpec,
+) -> Result<()> {
+    match key_type_for_column(col)? {
+        KeyType::VarBytes => {
+            let len = u16::try_from(key_bytes.len())
+                .map_err(|_| anyhow!("temp key too large"))?;
+            row.extend_from_slice(&len.to_le_bytes());
+            row.extend_from_slice(key_bytes);
+        }
+        _ => {
+            row.extend_from_slice(key_bytes);
+        }
+    }
+    Ok(())
+}
+
 fn read_key_from_buf(data: &mut &[u8], col: &ColumnSpec) -> Result<Key> {
     let key_type = key_type_for_column(col)?;
     match key_type {
@@ -7841,6 +7860,63 @@ fn read_key_from_buf(data: &mut &[u8], col: &ColumnSpec) -> Result<Key> {
     }
 }
 
+fn read_key_from_buf_len_prefixed(data: &mut &[u8], col: &ColumnSpec) -> Result<Key> {
+    let key_type = key_type_for_column(col)?;
+    match key_type {
+        KeyType::Int64 => {
+            if data.len() < 8 {
+                return Err(anyhow!("temp key truncated"));
+            }
+            let mut buf = [0u8; 8];
+            buf.copy_from_slice(&data[..8]);
+            *data = &data[8..];
+            Ok(Key::Int(u64::from_le_bytes(buf)))
+        }
+        KeyType::Uuid => {
+            if data.len() < 16 {
+                return Err(anyhow!("temp key truncated"));
+            }
+            let mut buf = [0u8; 16];
+            buf.copy_from_slice(&data[..16]);
+            *data = &data[16..];
+            Ok(Key::Uuid(buf))
+        }
+        KeyType::Uuid256 => {
+            if data.len() < 32 {
+                return Err(anyhow!("temp key truncated"));
+            }
+            let mut buf = [0u8; 32];
+            buf.copy_from_slice(&data[..32]);
+            *data = &data[32..];
+            Ok(Key::Uuid256(buf))
+        }
+        KeyType::Ip => {
+            if data.len() < 16 {
+                return Err(anyhow!("temp key truncated"));
+            }
+            let mut buf = [0u8; 16];
+            buf.copy_from_slice(&data[..16]);
+            *data = &data[16..];
+            Ok(Key::Ip(buf))
+        }
+        KeyType::VarBytes => {
+            if data.len() < 2 {
+                return Err(anyhow!("temp key truncated"));
+            }
+            let len = u16::from_le_bytes(data[..2].try_into().unwrap()) as usize;
+            *data = &data[2..];
+            if data.len() < len {
+                return Err(anyhow!("temp key truncated"));
+            }
+            if len > MAX_VAR_KEY_LEN {
+                return Err(anyhow!("temp key too large"));
+            }
+            let bytes = data[..len].to_vec();
+            *data = &data[len..];
+            Ok(Key::Bytes(bytes))
+        }
+    }
+}
 fn parse_base10_bytes(bytes: &[u8]) -> KeyParseResult<u64> {
     if bytes.is_empty() {
         return Err(KeyParseError::Empty);
