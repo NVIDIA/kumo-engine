@@ -58,7 +58,8 @@ if [[ -z "${OUTPUT}" ]]; then
   else
     DEFAULT_OUT_ROOT="/tmp/diskgraph-index"
   fi
-  INPUT_NAME="$(basename "$(dirname "${SOURCE}")")"
+  SOURCE_TRIMMED="${SOURCE%/}"
+  INPUT_NAME="$(basename "${SOURCE_TRIMMED}")"
   OUTPUT="${OUT_ROOT:-${DEFAULT_OUT_ROOT}}/${INPUT_NAME}"
 fi
 
