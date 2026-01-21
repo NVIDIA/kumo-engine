@@ -41,6 +41,32 @@ fn write_parquet(path: &Path, schema: Schema, columns: Vec<ArrayRef>) -> Result<
     Ok(())
 }
 
+fn assert_pkey_lookups(reader: &GraphIndexReader, table_name: &str, keys: &[&str]) -> Result<()> {
+    let table = reader
+        .table(table_name)
+        .ok_or_else(|| anyhow!("missing table {table_name}"))?;
+    let pk = table
+        .primary_key_map()
+        .ok_or_else(|| anyhow!("missing pk metadata for {table_name}"))?;
+    let decoder = table
+        .node_data_decoder()
+        .ok_or_else(|| anyhow!("missing rowpack decoder for {table_name}"))?;
+    for key_str in keys {
+        let key = table.parse_pk_key(key_str)?;
+        let node_id = table
+            .node_id_from_pk(&key)?
+            .ok_or_else(|| anyhow!("missing pk lookup for {table_name}:{key_str}"))?;
+        let view = table.edges_for_node(node_id)?;
+        let matches = view
+            .pk_matches(pk, decoder, &key)?
+            .ok_or_else(|| anyhow!("missing node data for {table_name}:{key_str}"))?;
+        if !matches {
+            return Err(anyhow!("pk mismatch for {table_name}:{key_str}"));
+        }
+    }
+    Ok(())
+}
+
 fn sum_relation_edges(
     table: &diskgraph_index::graph::TableReader,
     rel_name: &str,
@@ -504,12 +530,22 @@ fn ingest_parquet_with_sorted_mapping() -> Result<()> {
         Field::new("id", DataType::Utf8, false),
         Field::new("weight", DataType::Float32, false),
     ]);
-    let ids = Arc::new(StringArray::from(vec!["SKU00001", "SKU00002"])) as ArrayRef;
-    let weights = Arc::new(Float32Array::from(vec![1.0_f32, 2.0_f32])) as ArrayRef;
+    let ids = Arc::new(StringArray::from(vec![
+        "SKU00001",
+        "SKU00002",
+        "SKU00003",
+        "SKU00004",
+        "SKU00005",
+        "SKU00006",
+    ])) as ArrayRef;
+    let weights = Arc::new(Float32Array::from(vec![
+        1.0_f32, 2.0_f32, 3.0_f32, 4.0_f32, 5.0_f32, 6.0_f32,
+    ])) as ArrayRef;
     write_parquet(&table_path, schema, vec![ids, weights])?;
 
     let source = serde_json::json!({
         "dataset_name": "parquet_test",
+        "num_shards": 2,
         "tables": [
             {
                 "name": "Sku",
@@ -552,6 +588,106 @@ fn ingest_parquet_with_sorted_mapping() -> Result<()> {
     assert!(hash_path.exists());
     assert!(fs::metadata(data_path)?.len() > 0);
     assert!(fs::metadata(hash_path)?.len() > 0);
+
+    let reader = GraphIndexReader::open(&output_root.join("index_metadata.json"), &output_root)?;
+    let table = reader.table("Sku").ok_or_else(|| anyhow!("missing Sku table"))?;
+    let mut shard_seen = vec![false; table.shard_count()];
+    let pk = table
+        .primary_key_map()
+        .ok_or_else(|| anyhow!("missing pk metadata"))?;
+    let decoder = table
+        .node_data_decoder()
+        .ok_or_else(|| anyhow!("missing rowpack decoder"))?;
+    for expected in [
+        "SKU00001",
+        "SKU00002",
+        "SKU00003",
+        "SKU00004",
+        "SKU00005",
+        "SKU00006",
+    ] {
+        let key = table.parse_pk_key(expected)?;
+        let node_id = table
+            .node_id_from_pk(&key)?
+            .ok_or_else(|| anyhow!("missing pk lookup for {expected}"))?;
+        let shard_idx = table
+            .shard_for_node(node_id)
+            .map(|(idx, _)| idx)
+            .ok_or_else(|| anyhow!("missing shard for node {node_id}"))?;
+        shard_seen[shard_idx] = true;
+        let view = table.edges_for_node(node_id)?;
+        let matches = view
+            .pk_matches(pk, decoder, &key)?
+            .ok_or_else(|| anyhow!("missing node data for {expected}"))?;
+        if !matches {
+            let actual = table
+                .decode_node_data_json(&view)?
+                .and_then(|v| v.get("id").cloned())
+                .unwrap_or(serde_json::Value::Null);
+            panic!("pk mismatch for {expected}, node id value={actual}");
+        }
+    }
+    assert!(
+        shard_seen.iter().all(|seen| *seen),
+        "expected keys to cover all shards, got {shard_seen:?}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn ingest_parquet_with_int_pk_lookup() -> Result<()> {
+    let dir = tempdir()?;
+    let input_root = dir.path().join("input");
+    let output_root = dir.path().join("output");
+
+    let table_path = input_root.join("items.parquet");
+    write_parquet(
+        &table_path,
+        Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("name", DataType::Utf8, false),
+        ]),
+        vec![
+            Arc::new(Int64Array::from(vec![1_i64, 2, 3, 4])) as ArrayRef,
+            Arc::new(StringArray::from(vec!["a", "b", "c", "d"])) as ArrayRef,
+        ],
+    )?;
+
+    let source = serde_json::json!({
+        "dataset_name": "int_pk_test",
+        "num_shards": 2,
+        "tables": [
+            {
+                "name": "Item",
+                "format": "parquet",
+                "paths": [table_path.to_string_lossy()],
+                "primary_key": "id",
+                "columns": [
+                    {"name": "id", "ingested_dtype": "int64"},
+                    {"name": "name", "ingested_dtype": "string"}
+                ]
+            }
+        ],
+        "relationships": []
+    });
+    let source_path = dir.path().join("diskgraph_config.json");
+    fs::write(&source_path, serde_json::to_vec_pretty(&source)?)?;
+
+    ingest(
+        &source_path,
+        output_root.to_str().unwrap(),
+        Dest::Local,
+        IngestOptions {
+            profile_dir: None,
+            progress: None,
+            parallel: true,
+            index_mem_budget_bytes: None,
+        },
+    )?;
+
+    let reader = GraphIndexReader::open(&output_root.join("index_metadata.json"), &output_root)?;
+    assert_pkey_lookups(&reader, "Item", &["1", "2", "3", "4"])?;
 
     Ok(())
 }
@@ -611,6 +747,9 @@ fn ingest_csv_with_bytes_pk_mapping() -> Result<()> {
     assert!(hash_path.exists());
     assert!(fs::metadata(data_path)?.len() > 0);
     assert!(fs::metadata(hash_path)?.len() > 0);
+
+    let reader = GraphIndexReader::open(&output_root.join("index_metadata.json"), &output_root)?;
+    assert_pkey_lookups(&reader, "Asset", &["ABCD", "EFGH"])?;
 
     Ok(())
 }
@@ -1307,6 +1446,17 @@ fn ingest_parquet_with_uuid_ip_types() -> Result<()> {
     assert_eq!(reader.table("User").unwrap().node_count(), 2);
     assert_eq!(reader.table("DeviceToken").unwrap().node_count(), 2);
     assert_eq!(reader.table("IpAddress").unwrap().node_count(), 2);
+    assert_pkey_lookups(&reader, "User", &user_ids)?;
+    assert_pkey_lookups(&reader, "DeviceToken", &token_ids)?;
+    assert_pkey_lookups(&reader, "IpAddress", &ip_ids)?;
+    assert_pkey_lookups(
+        &reader,
+        "TokenEvent",
+        &[
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        ],
+    )?;
 
     Ok(())
 }

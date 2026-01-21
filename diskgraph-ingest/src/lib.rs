@@ -79,7 +79,7 @@ const MAX_NODE_DATA_LEN: usize = 64 * 1024 * 1024;
 const PROGRESS_ROW_BATCH: u64 = 1_000_000;
 const MAX_VAR_KEY_LEN: usize = u16::MAX as usize;
 const GXHASH_SHARD_SEED: u64 = 0x6a09e667f3bcc909;
-const PK_MAP_MEM_BUDGET_FRAC: f64 = 0.8;
+const PK_MAP_MEM_BUDGET_FRAC: f64 = 0.9;
 const PK_MAP_LOAD_FACTOR_NUM: u64 = 8;
 const PK_MAP_LOAD_FACTOR_DEN: u64 = 7;
 const PK_MAP_MPHF_FACTOR_NUM: u64 = 125;
@@ -266,7 +266,7 @@ enum KeyParseError {
 
 type KeyParseResult<T> = std::result::Result<T, KeyParseError>;
 
-const DEFAULT_INDEX_MEM_BUDGET_FRAC: f64 = 0.8;
+const DEFAULT_INDEX_MEM_BUDGET_FRAC: f64 = 0.7;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct IngestReport {
@@ -4970,7 +4970,7 @@ impl IngestContext {
                     .iter()
                     .find(|c| c.name == *pk)
                     .and_then(|c| c.fixed_len),
-                pk_column_index: Some(0),
+                pk_column_index: table.columns.iter().position(|c| c.name == *pk),
             });
             let max_id = shard_rows.iter().sum::<u64>().saturating_sub(1);
             node_types.push(NodeTypeMetadata {
@@ -7591,12 +7591,13 @@ fn key_from_access_into_buf(
             Ok(())
         }
         KeyType::VarBytes => {
-            let mut write_len_prefixed = |bytes: &[u8]| -> KeyParseResult<()> {
+            let mut write_bytes = |bytes: &[u8]| -> KeyParseResult<()> {
                 let start = out.len();
-                out.extend_from_slice(&[0u8; 2]);
                 let len = write_normalized_numeric_bytes(out, bytes, col)?;
-                let len_u16 = u16::try_from(len).map_err(|_| KeyParseError::TooLarge)?;
-                out[start..start + 2].copy_from_slice(&len_u16.to_le_bytes());
+                if len > MAX_VAR_KEY_LEN {
+                    out.truncate(start);
+                    return Err(KeyParseError::TooLarge);
+                }
                 Ok(())
             };
             match col.ingested_dtype {
@@ -7606,15 +7607,19 @@ fn key_from_access_into_buf(
                         .map_err(|_| KeyParseError::TypeMismatch)?;
                     let bytes = read_bytes(array, access.row())
                         .map_err(|_| KeyParseError::TypeMismatch)?;
-                    write_len_prefixed(bytes)?;
+                    write_bytes(bytes)?;
                 }
                 IngestedType::String => {
                     let array = access
                         .array(idx)
                         .map_err(|_| KeyParseError::TypeMismatch)?;
-                    let text = read_utf8(array, access.row())
-                        .map_err(|_| KeyParseError::TypeMismatch)?;
-                    write_len_prefixed(text.as_bytes())?;
+                    if let Ok(text) = read_utf8(array, access.row()) {
+                        write_bytes(text.as_bytes())?;
+                    } else {
+                        let bytes = read_bytes(array, access.row())
+                            .map_err(|_| KeyParseError::TypeMismatch)?;
+                        write_bytes(bytes)?;
+                    }
                 }
                 IngestedType::Int64 => {
                     let value = access
@@ -7625,10 +7630,11 @@ fn key_from_access_into_buf(
                         return Err(KeyParseError::Negative);
                     }
                     let start = out.len();
-                    out.extend_from_slice(&[0u8; 2]);
                     let len = write_display_to_vec(out, value);
-                    let len_u16 = u16::try_from(len).map_err(|_| KeyParseError::TooLarge)?;
-                    out[start..start + 2].copy_from_slice(&len_u16.to_le_bytes());
+                    if len > MAX_VAR_KEY_LEN {
+                        out.truncate(start);
+                        return Err(KeyParseError::TooLarge);
+                    }
                 }
                 IngestedType::Int32 | IngestedType::Int16 | IngestedType::Int8 => {
                     let value = access
@@ -7639,10 +7645,11 @@ fn key_from_access_into_buf(
                         return Err(KeyParseError::Negative);
                     }
                     let start = out.len();
-                    out.extend_from_slice(&[0u8; 2]);
                     let len = write_display_to_vec(out, value);
-                    let len_u16 = u16::try_from(len).map_err(|_| KeyParseError::TooLarge)?;
-                    out[start..start + 2].copy_from_slice(&len_u16.to_le_bytes());
+                    if len > MAX_VAR_KEY_LEN {
+                        out.truncate(start);
+                        return Err(KeyParseError::TooLarge);
+                    }
                 }
                 IngestedType::UInt64 => {
                     let value = access
@@ -7650,10 +7657,11 @@ fn key_from_access_into_buf(
                         .map_err(|_| KeyParseError::TypeMismatch)?
                         .ok_or(KeyParseError::TypeMismatch)?;
                     let start = out.len();
-                    out.extend_from_slice(&[0u8; 2]);
                     let len = write_display_to_vec(out, value);
-                    let len_u16 = u16::try_from(len).map_err(|_| KeyParseError::TooLarge)?;
-                    out[start..start + 2].copy_from_slice(&len_u16.to_le_bytes());
+                    if len > MAX_VAR_KEY_LEN {
+                        out.truncate(start);
+                        return Err(KeyParseError::TooLarge);
+                    }
                 }
                 IngestedType::UInt32 | IngestedType::UInt16 | IngestedType::UInt8 => {
                     let value = access
@@ -7661,10 +7669,11 @@ fn key_from_access_into_buf(
                         .map_err(|_| KeyParseError::TypeMismatch)?
                         .ok_or(KeyParseError::TypeMismatch)?;
                     let start = out.len();
-                    out.extend_from_slice(&[0u8; 2]);
                     let len = write_display_to_vec(out, value);
-                    let len_u16 = u16::try_from(len).map_err(|_| KeyParseError::TooLarge)?;
-                    out[start..start + 2].copy_from_slice(&len_u16.to_le_bytes());
+                    if len > MAX_VAR_KEY_LEN {
+                        out.truncate(start);
+                        return Err(KeyParseError::TooLarge);
+                    }
                 }
                 _ => return Err(KeyParseError::TypeMismatch),
             };
@@ -7776,9 +7785,6 @@ fn write_key_to_buf(buf: &mut Vec<u8>, key: &Key) -> Result<()> {
         Key::Uuid256(v) => buf.extend_from_slice(v),
         Key::Ip(v) => buf.extend_from_slice(v),
         Key::Bytes(v) => {
-            let len = u16::try_from(v.len())
-                .map_err(|_| anyhow!("temp key too large"))?;
-            buf.extend_from_slice(&len.to_le_bytes());
             buf.extend_from_slice(v);
         }
     }
@@ -7825,19 +7831,11 @@ fn read_key_from_buf(data: &mut &[u8], col: &ColumnSpec) -> Result<Key> {
             Ok(Key::Ip(buf))
         }
         KeyType::VarBytes => {
-            if data.len() < 2 {
-                return Err(anyhow!("temp key truncated"));
-            }
-            let len = u16::from_le_bytes(data[..2].try_into().unwrap()) as usize;
-            *data = &data[2..];
-            if data.len() < len {
-                return Err(anyhow!("temp key truncated"));
-            }
-            if len > MAX_VAR_KEY_LEN {
+            if data.len() > MAX_VAR_KEY_LEN {
                 return Err(anyhow!("temp key too large"));
             }
-            let bytes = data[..len].to_vec();
-            *data = &data[len..];
+            let bytes = data.to_vec();
+            *data = &[];
             Ok(Key::Bytes(bytes))
         }
     }
@@ -8495,14 +8493,7 @@ fn to_arrow_time_unit(
 
 fn rowpack_columns(table: &TableSpec) -> Result<Vec<diskgraph_rowpack::RowPackColumn>> {
     let mut columns = Vec::with_capacity(table.columns.len());
-    let mut ordered: Vec<&ColumnSpec> = table.columns.iter().collect();
-    if let Some(pk) = table.primary_key.as_ref() {
-        if let Some(pos) = ordered.iter().position(|col| col.name == *pk) {
-            let pk_col = ordered.remove(pos);
-            ordered.insert(0, pk_col);
-        }
-    }
-    for col in ordered {
+    for col in &table.columns {
         let dtype = match col.ingested_dtype {
             IngestedType::Int8 => RowpackType::Int8,
             IngestedType::Int16 => RowpackType::Int16,

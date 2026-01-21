@@ -602,7 +602,14 @@ impl TableReader {
             .get(shard_idx)
             .map(|range| range.min_id)
             .unwrap_or(0);
-        Ok(Some(min_id.saturating_add(local as u64)))
+        let node_id = min_id.saturating_add(local as u64);
+        if let Some(validated) = self.validate_pk_at_node(node_id, key)? {
+            if validated {
+                return Ok(Some(node_id));
+            }
+            return Ok(None);
+        }
+        Ok(Some(node_id))
     }
 
     pub fn node_id_from_offset(&self, offset: u64) -> Option<u64> {
@@ -624,7 +631,26 @@ impl TableReader {
         None
     }
 
-    fn shard_for_node(&self, node_id: u64) -> Option<(usize, u64)> {
+    fn validate_pk_at_node(&self, node_id: u64, key: &Key) -> Result<Option<bool>> {
+        let Some(pk) = self.primary_key_map.as_ref() else {
+            return Ok(None);
+        };
+        let Some(compression) = self.node_data_compression.as_ref() else {
+            return Ok(None);
+        };
+        if compression.codec != "rowpack" {
+            return Ok(None);
+        }
+        let Some(decoder) = self.node_data_decoder.as_ref() else {
+            return Ok(None);
+        };
+        let view = self.edges_for_node(node_id)?;
+        view.pk_matches(pk, decoder, key)
+            .map_err(|e| anyhow!("node lookup failed: {e}"))
+    }
+
+
+    pub fn shard_for_node(&self, node_id: u64) -> Option<(usize, u64)> {
         for (idx, shard) in self.shard_ranges.iter().enumerate() {
             if node_id >= shard.min_id && node_id <= shard.max_id {
                 return Some((idx, node_id - shard.min_id));

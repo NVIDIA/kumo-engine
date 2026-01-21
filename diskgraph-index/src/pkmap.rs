@@ -369,8 +369,6 @@ pub fn shard_for_key(key: &Key, num_shards: usize) -> usize {
         Key::Uuid256(v) => hasher.write(v),
         Key::Ip(v) => hasher.write(v),
         Key::Bytes(v) => {
-            let len = (v.len() as u16).to_le_bytes();
-            hasher.write(&len);
             hasher.write(v);
         }
     }

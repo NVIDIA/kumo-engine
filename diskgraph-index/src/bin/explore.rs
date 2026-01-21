@@ -9,10 +9,7 @@ use diskgraph_core::metadata::{
 };
 use diskgraph_index::graph::{GraphIndexReader, TableReader};
 use diskgraph_index::layout::{EDGES_FILENAME, OFFSETS_FILENAME};
-use diskgraph_rowpack::{
-    ColumnEncoding, DecimalStorage, FloatStorage, RowPackContext, RowPackDecodeScratch,
-    StringEncoding, ValueRef,
-};
+use diskgraph_rowpack::{ColumnEncoding, DecimalStorage, FloatStorage, RowPackContext, StringEncoding};
 use rustyline::completion::{Completer, Pair};
 use rustyline::error::ReadlineError;
 use rustyline::highlight::Highlighter;
@@ -2150,24 +2147,6 @@ fn show_node_by_pk(reader: &GraphIndexReader, table_name: &str, key: &str) -> Re
     let node_id = match table.node_id_from_pk(&key) {
         Ok(Some(node_id)) => node_id,
         Ok(None) => {
-            if let Some(pk_map) = table.pk_map() {
-                let shard_idx = diskgraph_index::pkmap::shard_for_key(&key, pk_map.shard_count());
-                println!(
-                    "{} {}",
-                    dim("pkey shard:"),
-                    dim(&format!("{shard_idx}"))
-                );
-                if let Some((found_shard, found_local)) =
-                    debug_scan_pk_all_shards(table.as_ref(), &key)
-                {
-                    println!(
-                        "{} shard={} local_id={}",
-                        warn("pkey found in alternate shard:"),
-                        found_shard,
-                        found_local
-                    );
-                }
-            }
             println!("{}", warn("Primary key not found."));
             return Ok(());
         }
@@ -2180,25 +2159,22 @@ fn show_node_by_pk(reader: &GraphIndexReader, table_name: &str, key: &str) -> Re
             return Ok(());
         }
     };
-    if !pk_matches_node(&table, node_id, &key)? {
-        println!("{}", warn("Primary key not found."));
-        return Ok(());
-    }
-    show_node(reader, table_name, node_id)
-}
-
-fn debug_scan_pk_all_shards(
-    table: &diskgraph_index::graph::TableReader,
-    key: &diskgraph_index::pkmap::Key,
-) -> Option<(usize, u32)> {
-    let pk_map = table.pk_map()?;
-    for shard_idx in 0..pk_map.shard_count() {
-        let shard = pk_map.shard(shard_idx)?;
-        if let Some(local) = shard.lookup(key) {
-            return Some((shard_idx, local));
+    if let (Some(pk), Some(compression), Some(decoder)) = (
+        table.primary_key_map(),
+        table.node_data_compression(),
+        table.node_data_decoder(),
+    ) {
+        if compression.codec == "rowpack" {
+            let view = table.edges_for_node(node_id)?;
+            if let Ok(Some(matches)) = view.pk_matches(pk, decoder, &key) {
+                if !matches {
+                    println!("{}", warn("Primary key not found."));
+                    return Ok(());
+                }
+            }
         }
     }
-    None
+    show_node(reader, table_name, node_id)
 }
 
 fn format_pk_key_debug(key: &diskgraph_index::pkmap::Key) -> String {
@@ -2223,62 +2199,6 @@ fn hex_bytes(bytes: &[u8]) -> String {
     out
 }
 
-fn pk_matches_node(table: &diskgraph_index::graph::TableReader, node_id: u64, key: &diskgraph_index::pkmap::Key) -> Result<bool> {
-    let pk = match table.primary_key_map() {
-        Some(pk) => pk,
-        None => return Ok(true),
-    };
-    let view = table
-        .edges_for_node(node_id)
-        .map_err(|e| anyhow!("node lookup failed: {e}"))?;
-    let raw = match view.node_data()? {
-        Some(raw) => raw,
-        None => return Ok(true),
-    };
-    let compression = table
-        .node_data_compression()
-        .ok_or_else(|| anyhow!("node data compression missing"))?;
-    if compression.codec != "rowpack" {
-        return Ok(true);
-    }
-    let decoder = table
-        .node_data_decoder()
-        .ok_or_else(|| anyhow!("rowpack ctx missing for {}", table.node_type()))?;
-    let ctx = decoder.context();
-    let col_idx = match pk.pk_column_index.and_then(|idx| {
-        ctx.columns
-            .get(idx)
-            .filter(|col| col.name == pk.column)
-            .map(|_| idx)
-    }) {
-        Some(idx) => idx,
-        None => match ctx.columns.iter().position(|col| col.name == pk.column) {
-            Some(idx) => idx,
-            None => return Ok(true),
-        },
-    };
-    let mut scratch = RowPackDecodeScratch::default();
-    let value = match decoder.decode_column_value(raw, col_idx, &mut scratch) {
-        Ok(value) => value,
-        Err(_) => return Ok(true),
-    };
-    Ok(pk_value_matches(key, &value))
-}
-
-fn pk_value_matches(key: &diskgraph_index::pkmap::Key, value: &ValueRef<'_>) -> bool {
-    match (key, value) {
-        (diskgraph_index::pkmap::Key::Int(k), ValueRef::Int64(v)) => *v >= 0 && *k == *v as u64,
-        (diskgraph_index::pkmap::Key::Int(k), ValueRef::Int32(v)) => *v >= 0 && *k == *v as u64,
-        (diskgraph_index::pkmap::Key::Int(k), ValueRef::UInt64(v)) => *k == *v,
-        (diskgraph_index::pkmap::Key::Int(k), ValueRef::UInt32(v)) => *k == *v as u64,
-        (diskgraph_index::pkmap::Key::Bytes(k), ValueRef::Bytes(v)) => k.as_slice() == *v,
-        (diskgraph_index::pkmap::Key::Bytes(k), ValueRef::String(v)) => k.as_slice() == v.as_bytes(),
-        (diskgraph_index::pkmap::Key::Uuid(k), ValueRef::Uuid(v)) => k == v,
-        (diskgraph_index::pkmap::Key::Uuid256(k), ValueRef::Uuid256(v)) => k == v,
-        (diskgraph_index::pkmap::Key::Ip(k), ValueRef::Ip(v)) => k == v,
-        _ => false,
-    }
-}
 
 fn run_benchmark(
     table: Arc<TableReader>,

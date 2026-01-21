@@ -1,4 +1,7 @@
 use serde::{Deserialize, Serialize};
+use crate::pkmap::Key;
+use diskgraph_core::metadata::PrimaryKeyMap;
+use diskgraph_rowpack::{RowPackDecodeScratch, RowPackDecoder, ValueRef};
 
 /// Logical layout version for on-disk shard artifacts.
 /// v4: offset deltas are 16/24/32-bit; node_data_len width stored in header.
@@ -85,6 +88,37 @@ impl<'a> EdgeListView<'a> {
         Ok(self.parse()?.1)
     }
 
+    pub fn pk_matches(
+        &self,
+        pk: &PrimaryKeyMap,
+        decoder: &RowPackDecoder,
+        key: &Key,
+    ) -> Result<Option<bool>, std::io::Error> {
+        let raw = match self.node_data()? {
+            Some(raw) => raw,
+            None => return Ok(None),
+        };
+        let ctx = decoder.context();
+        let col_idx = match pk.pk_column_index.and_then(|idx| {
+            ctx.columns
+                .get(idx)
+                .filter(|col| col.name == pk.column)
+                .map(|_| idx)
+        }) {
+            Some(idx) => idx,
+            None => match ctx.columns.iter().position(|col| col.name == pk.column) {
+                Some(idx) => idx,
+                None => return Ok(None),
+            },
+        };
+        let mut scratch = RowPackDecodeScratch::default();
+        let value = match decoder.decode_column_value(raw, col_idx, &mut scratch) {
+            Ok(value) => value,
+            Err(_) => return Ok(None),
+        };
+        Ok(Some(pk_value_matches(key, &value)))
+    }
+
     fn parse(&self) -> Result<(Vec<RelationSegment<'a>>, Option<&'a [u8]>), std::io::Error> {
         if self.raw.is_empty() {
             if self.has_node_data {
@@ -164,6 +198,32 @@ impl<'a> EdgeListView<'a> {
             None
         };
         Ok((segments, node_data))
+    }
+}
+
+fn pk_value_matches(key: &Key, value: &ValueRef<'_>) -> bool {
+    match (key, value) {
+        (Key::Int(k), ValueRef::Int64(v)) => *v >= 0 && *k == *v as u64,
+        (Key::Int(k), ValueRef::Int32(v)) => *v >= 0 && *k == *v as u64,
+        (Key::Int(k), ValueRef::UInt64(v)) => *k == *v,
+        (Key::Int(k), ValueRef::UInt32(v)) => *k == *v as u64,
+        (Key::Bytes(k), ValueRef::Bytes(v)) => k.as_slice() == *v,
+        (Key::Bytes(k), ValueRef::String(v)) => {
+            let bytes = v.as_bytes();
+            let trimmed = trim_trailing_nuls(bytes);
+            k.as_slice() == trimmed
+        }
+        (Key::Uuid(k), ValueRef::Uuid(v)) => k == v,
+        (Key::Uuid256(k), ValueRef::Uuid256(v)) => k == v,
+        (Key::Ip(k), ValueRef::Ip(v)) => k == v,
+        _ => false,
+    }
+}
+
+fn trim_trailing_nuls(bytes: &[u8]) -> &[u8] {
+    match bytes.iter().rposition(|b| *b != 0) {
+        Some(idx) => &bytes[..=idx],
+        None => &[],
     }
 }
 
