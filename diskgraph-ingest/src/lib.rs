@@ -79,6 +79,12 @@ const MAX_NODE_DATA_LEN: usize = 64 * 1024 * 1024;
 const PROGRESS_ROW_BATCH: u64 = 1_000_000;
 const MAX_VAR_KEY_LEN: usize = u16::MAX as usize;
 const GXHASH_SHARD_SEED: u64 = 0x6a09e667f3bcc909;
+const PK_MAP_MEM_BUDGET_FRAC: f64 = 0.9;
+const PK_MAP_LOAD_FACTOR_NUM: u64 = 8;
+const PK_MAP_LOAD_FACTOR_DEN: u64 = 7;
+const PK_MAP_MPHF_FACTOR_NUM: u64 = 125;
+const PK_MAP_MPHF_FACTOR_DEN: u64 = 100;
+const PK_MAP_ESTIMATE_PAD_PCT: u64 = 25;
 
 #[derive(Default)]
 struct EdgeMapScratch {
@@ -179,6 +185,61 @@ fn reserve_map<K: std::cmp::Eq + std::hash::Hash, V>(
     if cap < target {
         map.reserve(target - cap);
     }
+}
+
+fn estimate_pk_map_bytes(row_count: u64, key_type: KeyType, avg_var_bytes: u64) -> u64 {
+    if row_count == 0 {
+        return 0;
+    }
+    let capacity = row_count
+        .saturating_mul(PK_MAP_LOAD_FACTOR_NUM)
+        .saturating_add(PK_MAP_LOAD_FACTOR_DEN - 1)
+        / PK_MAP_LOAD_FACTOR_DEN;
+    let entry_size = match key_type {
+        KeyType::Int64 => std::mem::size_of::<(u64, u32)>(),
+        KeyType::VarBytes => std::mem::size_of::<(Vec<u8>, u32)>(),
+        KeyType::Uuid => std::mem::size_of::<([u8; 16], u32)>(),
+        KeyType::Uuid256 => std::mem::size_of::<([u8; 32], u32)>(),
+        KeyType::Ip => std::mem::size_of::<([u8; 16], u32)>(),
+    } as u64;
+    let ctrl_bytes = capacity;
+    let map_bytes = capacity
+        .saturating_mul(entry_size)
+        .saturating_add(ctrl_bytes);
+    let key_bytes = if matches!(key_type, KeyType::VarBytes) {
+        row_count.saturating_mul(avg_var_bytes)
+    } else {
+        0
+    };
+    let slots = row_count
+        .saturating_mul(PK_MAP_MPHF_FACTOR_NUM)
+        .saturating_add(PK_MAP_MPHF_FACTOR_DEN - 1)
+        / PK_MAP_MPHF_FACTOR_DEN;
+    let entries_bytes = slots.saturating_mul(std::mem::size_of::<(u64, u32)>() as u64);
+    let base = map_bytes
+        .saturating_add(key_bytes)
+        .saturating_add(entries_bytes);
+    base.saturating_mul(100 + PK_MAP_ESTIMATE_PAD_PCT) / 100
+}
+
+fn estimate_varbytes_avg_len(row_count: u64, max_row_len: u32, data_path: &Path) -> u64 {
+    if row_count == 0 {
+        return 0;
+    }
+    let max_row_len = max_row_len as u64;
+    let file_len = fs::metadata(data_path).map(|m| m.len()).unwrap_or(0);
+    if file_len == 0 {
+        return max_row_len;
+    }
+    let avg_row = file_len / row_count;
+    let mut avg_key = avg_row.saturating_sub(4);
+    if avg_key == 0 {
+        avg_key = max_row_len;
+    }
+    if max_row_len > 0 {
+        avg_key = avg_key.min(max_row_len);
+    }
+    avg_key
 }
 
 fn fingerprint_mask(bits: u8) -> u64 {
@@ -3057,6 +3118,10 @@ impl IngestContext {
 
     fn build_sharded_pk_maps(&mut self) -> Result<()> {
         let root = require_local_output(&self.target)?.to_path_buf();
+        let pk_map_budget = total_memory_bytes().map(|total| {
+            let budget = (total as f64 * PK_MAP_MEM_BUDGET_FRAC) as u64;
+            std::sync::Arc::new(MemoryBudget::new(budget))
+        });
         let duplicate_counts = std::sync::Arc::new(std::sync::Mutex::new(HashMap::new()));
         let duplicate_samples = std::sync::Arc::new(std::sync::Mutex::new(HashMap::new()));
         let mut tasks = Vec::new();
@@ -3097,6 +3162,7 @@ impl IngestContext {
                 let duplicate_samples = std::sync::Arc::clone(&duplicate_samples);
                 let root = root.clone();
                 let fingerprint_bits = fingerprint_bits;
+                let pk_map_budget = pk_map_budget.clone();
                 tasks.push(WorkItem {
                     bucket: None,
                     run: Box::new(move |scratch: &mut PkMapScratch| {
@@ -3104,6 +3170,24 @@ impl IngestContext {
                         let meta_path = root.join(temp_pkey_meta_path(&table_name, shard));
                         let meta = read_temp_meta(&meta_path)?;
                         let total_rows = meta.row_count;
+                        let data_path = root.join(temp_pkey_path(&table_name, shard));
+                        let avg_var_bytes = if matches!(key_type, KeyType::VarBytes) {
+                            estimate_varbytes_avg_len(total_rows, meta.max_row_len, &data_path)
+                        } else {
+                            0
+                        };
+                        let estimate = estimate_pk_map_bytes(total_rows, key_type, avg_var_bytes);
+                        let _budget_guard = if let Some(budget) = pk_map_budget.as_ref() {
+                            let budget_total = budget.snapshot().total;
+                            if budget_total == 0 || estimate == 0 {
+                                None
+                            } else {
+                                let request = estimate.min(budget_total);
+                                Some(budget.acquire(request)?)
+                            }
+                        } else {
+                            None
+                        };
                         let mut duplicate_count = 0u64;
                         let mut duplicate_samples_local: Vec<Key> = Vec::new();
                         let mut row_id = 0u64;
@@ -3122,7 +3206,6 @@ impl IngestContext {
                                     pkmap.seen_u64.clear();
                                     reserve_map(&mut pkmap.seen_u64, total_rows_usize);
                                     duplicate_samples_local.clear();
-                                    let data_path = root.join(temp_pkey_path(&table_name, shard));
                                     {
                                         let seen = &mut pkmap.seen_u64;
                                         read_temp_rows(&data_path, |row| {
@@ -3207,7 +3290,6 @@ impl IngestContext {
                                     pkmap.seen_bytes.clear();
                                     reserve_map(&mut pkmap.seen_bytes, total_rows_usize);
                                     duplicate_samples_local.clear();
-                                    let data_path = root.join(temp_pkey_path(&table_name, shard));
                                     {
                                         let seen = &mut pkmap.seen_bytes;
                                         read_temp_rows(&data_path, |row| {
@@ -3298,7 +3380,6 @@ impl IngestContext {
                                     pkmap.seen_uuid.clear();
                                     reserve_map(&mut pkmap.seen_uuid, total_rows_usize);
                                     duplicate_samples_local.clear();
-                                    let data_path = root.join(temp_pkey_path(&table_name, shard));
                                     {
                                         let seen = &mut pkmap.seen_uuid;
                                         read_temp_rows(&data_path, |row| {
@@ -3384,7 +3465,6 @@ impl IngestContext {
                                     pkmap.seen_uuid256.clear();
                                     reserve_map(&mut pkmap.seen_uuid256, total_rows_usize);
                                     duplicate_samples_local.clear();
-                                    let data_path = root.join(temp_pkey_path(&table_name, shard));
                                     {
                                         let seen = &mut pkmap.seen_uuid256;
                                         read_temp_rows(&data_path, |row| {
@@ -3470,7 +3550,6 @@ impl IngestContext {
                                     pkmap.seen_ip.clear();
                                     reserve_map(&mut pkmap.seen_ip, total_rows_usize);
                                     duplicate_samples_local.clear();
-                                    let data_path = root.join(temp_pkey_path(&table_name, shard));
                                     {
                                         let seen = &mut pkmap.seen_ip;
                                         read_temp_rows(&data_path, |row| {
@@ -7756,7 +7835,20 @@ mod tests {
         });
     }
 
- 
+    #[test]
+    fn pk_map_estimate_scales_with_rows() {
+        let small = estimate_pk_map_bytes(1_000, KeyType::Int64, 0);
+        let large = estimate_pk_map_bytes(2_000, KeyType::Int64, 0);
+        assert!(large > small);
+    }
+
+    #[test]
+    fn pk_map_estimate_varbytes_respects_avg_len() {
+        let small = estimate_pk_map_bytes(10_000, KeyType::VarBytes, 8);
+        let large = estimate_pk_map_bytes(10_000, KeyType::VarBytes, 64);
+        assert!(large > small);
+    }
+
 }
 
 fn table_schema(table: &TableSpec) -> Result<Schema> {

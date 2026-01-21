@@ -341,12 +341,8 @@ fn smooth_shard_target(per_cpu_bytes: u64, total_bytes: u64) -> u64 {
         let t = ((total_gb - 1024.0) / (10_240.0 - 1024.0)).clamp(0.0, 1.0);
         let smooth = t * t * (3.0 - 2.0 * t);
         1.0 - 0.5 * smooth
-    } else if total_gb <= 20_480.0 {
-        let t = ((total_gb - 10_240.0) / (20_480.0 - 10_240.0)).clamp(0.0, 1.0);
-        let smooth = t * t * (3.0 - 2.0 * t);
-        0.5 - 0.25 * smooth
     } else {
-        0.25
+        0.5
     };
     (per_cpu_bytes as f64 / divisor).round() as u64
 }
