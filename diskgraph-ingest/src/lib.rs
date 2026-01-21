@@ -276,7 +276,7 @@ enum KeyParseError {
 
 type KeyParseResult<T> = std::result::Result<T, KeyParseError>;
 
-const DEFAULT_INDEX_MEM_BUDGET_FRAC: f64 = 1.0;
+const DEFAULT_INDEX_MEM_BUDGET_FRAC: f64 = 0.9;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct IngestReport {
