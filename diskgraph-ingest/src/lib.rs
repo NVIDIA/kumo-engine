@@ -8,7 +8,7 @@ use crate::mapping::{
     fingerprint_seed_for, write_pk_data_entry, write_pk_data_header, Key, KeyType, PkDataAdvice,
     PkGxHash, PkHashShard, PkHashStore, PkPtrHash, PkPtrHashOutput,
 };
-use crate::progress::format_duration;
+use crate::progress::{format_bytes, format_duration};
 use crate::source_metadata::{
     relationship_name, ColumnSpec, IngestedType, SortKeySpec, TableFormat, TableSpec,
     TimestampEncodingKind, TimestampEncodingSpec, WeightEncodingKind, WeightEncodingSpec,
@@ -179,6 +179,22 @@ fn reserve_map<K: std::cmp::Eq + std::hash::Hash, V>(
     if cap < target {
         map.reserve(target - cap);
     }
+}
+
+fn fingerprint_mask(bits: u8) -> u64 {
+    match bits {
+        64 => u64::MAX,
+        0 => 0,
+        _ => (1u64 << bits) - 1,
+    }
+}
+
+fn fp_zero<T: Hash>(_key: &T, _seed: u64, _mask: u64) -> u64 {
+    0
+}
+
+fn fp_hash<T: Hash>(key: &T, seed: u64, mask: u64) -> u64 {
+    PkGxHash::hash(key, seed) & mask
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -3064,6 +3080,7 @@ impl IngestContext {
             });
             let pk_name = table.primary_key.clone().unwrap();
             let pk_col = column_spec(table, &pk_name)?;
+            let fingerprint_bits = table.fingerprint_bits.unwrap_or(64);
             let pk_hash_paths = std::sync::Arc::new(std::sync::Mutex::new(vec![
                 None;
                 self.num_shards
@@ -3079,6 +3096,7 @@ impl IngestContext {
                 let duplicate_counts = std::sync::Arc::clone(&duplicate_counts);
                 let duplicate_samples = std::sync::Arc::clone(&duplicate_samples);
                 let root = root.clone();
+                let fingerprint_bits = fingerprint_bits;
                 tasks.push(WorkItem {
                     bucket: None,
                     run: Box::new(move |scratch: &mut PkMapScratch| {
@@ -3090,6 +3108,7 @@ impl IngestContext {
                         let mut duplicate_samples_local: Vec<Key> = Vec::new();
                         let mut row_id = 0u64;
                         let fingerprint_seed = fingerprint_seed_for(&table_name, shard);
+                        let fp_mask = fingerprint_mask(fingerprint_bits);
                         let (hash_rel, data_rel) =
                             match key_type {
                             KeyType::Int64 => {
@@ -3142,9 +3161,11 @@ impl IngestContext {
                                         let slots = mphf.max_index();
                                         let mut entries = std::mem::take(&mut pkmap.entries);
                                         entries.resize(slots, (0u64, 0u32));
+                                        let fp_fn: fn(&u64, u64, u64) -> u64 =
+                                            if fingerprint_bits == 0 { fp_zero } else { fp_hash };
                                         for (key, value) in seen.iter() {
                                             let idx = mphf.index_no_remap(key);
-                                            let fp = PkGxHash::hash(key, fingerprint_seed);
+                                            let fp = fp_fn(key, fingerprint_seed, fp_mask);
                                             entries[idx] = (fp, *value);
                                         }
                                         pkmap.entries = entries;
@@ -3168,6 +3189,7 @@ impl IngestContext {
                                         &data_rel,
                                         key_type,
                                         fingerprint_seed,
+                                        fingerprint_bits,
                                         &mphf,
                                         entries,
                                     )?;
@@ -3230,9 +3252,11 @@ impl IngestContext {
                                         let slots = mphf.max_index();
                                         let mut entries = std::mem::take(&mut pkmap.entries);
                                         entries.resize(slots, (0u64, 0u32));
+                                        let fp_fn: fn(&Vec<u8>, u64, u64) -> u64 =
+                                            if fingerprint_bits == 0 { fp_zero } else { fp_hash };
                                         for (key, value) in seen.iter() {
                                             let idx = mphf.index_no_remap(key);
-                                            let fp = PkGxHash::hash(key, fingerprint_seed);
+                                            let fp = fp_fn(key, fingerprint_seed, fp_mask);
                                             entries[idx] = (fp, *value);
                                         }
                                         pkmap.entries = entries;
@@ -3256,6 +3280,7 @@ impl IngestContext {
                                         &data_rel,
                                         key_type,
                                         fingerprint_seed,
+                                        fingerprint_bits,
                                         &mphf,
                                         entries,
                                     )?;
@@ -3313,9 +3338,11 @@ impl IngestContext {
                                         let slots = mphf.max_index();
                                         let mut entries = std::mem::take(&mut pkmap.entries);
                                         entries.resize(slots, (0u64, 0u32));
+                                        let fp_fn: fn(&[u8; 16], u64, u64) -> u64 =
+                                            if fingerprint_bits == 0 { fp_zero } else { fp_hash };
                                         for (key, value) in seen.iter() {
                                             let idx = mphf.index_no_remap(key);
-                                            let fp = PkGxHash::hash(key, fingerprint_seed);
+                                            let fp = fp_fn(key, fingerprint_seed, fp_mask);
                                             entries[idx] = (fp, *value);
                                         }
                                         pkmap.entries = entries;
@@ -3339,6 +3366,7 @@ impl IngestContext {
                                         &data_rel,
                                         key_type,
                                         fingerprint_seed,
+                                        fingerprint_bits,
                                         &mphf,
                                         entries,
                                     )?;
@@ -3396,9 +3424,11 @@ impl IngestContext {
                                         let slots = mphf.max_index();
                                         let mut entries = std::mem::take(&mut pkmap.entries);
                                         entries.resize(slots, (0u64, 0u32));
+                                        let fp_fn: fn(&[u8; 32], u64, u64) -> u64 =
+                                            if fingerprint_bits == 0 { fp_zero } else { fp_hash };
                                         for (key, value) in seen.iter() {
                                             let idx = mphf.index_no_remap(key);
-                                            let fp = PkGxHash::hash(key, fingerprint_seed);
+                                            let fp = fp_fn(key, fingerprint_seed, fp_mask);
                                             entries[idx] = (fp, *value);
                                         }
                                         pkmap.entries = entries;
@@ -3422,6 +3452,7 @@ impl IngestContext {
                                         &data_rel,
                                         key_type,
                                         fingerprint_seed,
+                                        fingerprint_bits,
                                         &mphf,
                                         entries,
                                     )?;
@@ -3479,9 +3510,11 @@ impl IngestContext {
                                         let slots = mphf.max_index();
                                         let mut entries = std::mem::take(&mut pkmap.entries);
                                         entries.resize(slots, (0u64, 0u32));
+                                        let fp_fn: fn(&[u8; 16], u64, u64) -> u64 =
+                                            if fingerprint_bits == 0 { fp_zero } else { fp_hash };
                                         for (key, value) in seen.iter() {
                                             let idx = mphf.index_no_remap(key);
-                                            let fp = PkGxHash::hash(key, fingerprint_seed);
+                                            let fp = fp_fn(key, fingerprint_seed, fp_mask);
                                             entries[idx] = (fp, *value);
                                         }
                                         pkmap.entries = entries;
@@ -3505,6 +3538,7 @@ impl IngestContext {
                                         &data_rel,
                                         key_type,
                                         fingerprint_seed,
+                                        fingerprint_bits,
                                         &mphf,
                                         entries,
                                     )?;
@@ -3610,6 +3644,7 @@ impl IngestContext {
         data_rel: &str,
         key_type: KeyType,
         fingerprint_seed: u64,
+        fingerprint_bits: u8,
         mphf: &H,
         entries: &[(u64, u32)],
     ) -> Result<()> {
@@ -3639,9 +3674,10 @@ impl IngestContext {
             key_type,
             entries.len() as u64,
             fingerprint_seed,
+            fingerprint_bits,
         )?;
         for (fingerprint, value) in entries {
-            write_pk_data_entry(&mut data_writer, *fingerprint, *value)?;
+            write_pk_data_entry(&mut data_writer, *fingerprint, fingerprint_bits, *value)?;
         }
         data_writer.flush()?;
         let data_sink = data_writer
@@ -3769,12 +3805,15 @@ impl IngestContext {
         if let Some(total_mem) = total_memory_bytes() {
             println!(
                 "pk_hash mmap hint: total_bytes={} total_mem={} advice={:?}",
-                total_bytes, total_mem, data_advice
+                format_bytes(total_bytes),
+                format_bytes(total_mem),
+                data_advice
             );
         } else {
             println!(
                 "pk_hash mmap hint: total_bytes={} total_mem=unknown advice={:?}",
-                total_bytes, data_advice
+                format_bytes(total_bytes),
+                data_advice
             );
         }
         let (tx, rx) = std::sync::mpsc::channel::<Result<(String, usize, PkHashShard)>>();
@@ -3890,19 +3929,19 @@ impl IngestContext {
             if let Some(total_mem) = total_memory_bytes() {
                 println!(
                     "edges_map mmap sizes: pk_hash_bytes={} sort_key_bytes={} (edge={} dest={}) total_mem={}",
-                    edge_ctx.pk_hash_total_bytes,
-                    edge_ctx.sort_key_total_bytes,
-                    edge_ctx.sort_key_edge_bytes,
-                    edge_ctx.sort_key_dest_bytes,
-                    total_mem
+                    format_bytes(edge_ctx.pk_hash_total_bytes),
+                    format_bytes(edge_ctx.sort_key_total_bytes),
+                    format_bytes(edge_ctx.sort_key_edge_bytes),
+                    format_bytes(edge_ctx.sort_key_dest_bytes),
+                    format_bytes(total_mem)
                 );
             } else {
                 println!(
                     "edges_map mmap sizes: pk_hash_bytes={} sort_key_bytes={} (edge={} dest={}) total_mem=unknown",
-                    edge_ctx.pk_hash_total_bytes,
-                    edge_ctx.sort_key_total_bytes,
-                    edge_ctx.sort_key_edge_bytes,
-                    edge_ctx.sort_key_dest_bytes
+                    format_bytes(edge_ctx.pk_hash_total_bytes),
+                    format_bytes(edge_ctx.sort_key_total_bytes),
+                    format_bytes(edge_ctx.sort_key_edge_bytes),
+                    format_bytes(edge_ctx.sort_key_dest_bytes)
                 );
             }
             let progress = self.progress.clone();
@@ -4700,6 +4739,7 @@ impl IngestContext {
                     .iter()
                     .find(|c| c.name == *pk)
                     .and_then(|c| c.fixed_len),
+                fingerprint_bits: table.fingerprint_bits.unwrap_or(64),
             });
             let max_id = shard_rows.iter().sum::<u64>().saturating_sub(1);
             node_types.push(NodeTypeMetadata {
@@ -7459,6 +7499,7 @@ mod tests {
                 scale: None,
             }],
             primary_key: None,
+            fingerprint_bits: None,
             create_time: None,
             weight: None,
             edge_table: None,
@@ -7549,6 +7590,7 @@ mod tests {
                 scale: None,
             }],
             primary_key: None,
+            fingerprint_bits: None,
             create_time: None,
             weight: None,
             edge_table: None,
@@ -7580,6 +7622,7 @@ mod tests {
                 scale: None,
             }],
             primary_key: None,
+            fingerprint_bits: None,
             create_time: None,
             weight: None,
             edge_table: None,
@@ -7626,6 +7669,7 @@ mod tests {
                 scale: None,
             }],
             primary_key: None,
+            fingerprint_bits: None,
             create_time: None,
             weight: None,
             edge_table: None,
@@ -7664,6 +7708,7 @@ mod tests {
                 scale: None,
             }],
             primary_key: None,
+            fingerprint_bits: None,
             create_time: None,
             weight: None,
             edge_table: None,
@@ -7697,6 +7742,7 @@ mod tests {
                 scale: None,
             }],
             primary_key: None,
+            fingerprint_bits: None,
             create_time: None,
             weight: None,
             edge_table: None,

@@ -37,6 +37,8 @@ pub struct TableSpec {
     pub columns: Vec<ColumnSpec>,
     #[serde(default)]
     pub primary_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fingerprint_bits: Option<u8>,
     #[serde(default)]
     pub create_time: Option<String>,
     #[serde(default)]
@@ -437,6 +439,19 @@ impl SourceMetadata {
                     ));
                 }
                 }
+                if let Some(bits) = table.fingerprint_bits {
+                    if !matches!(bits, 64 | 32 | 16 | 8 | 0) {
+                        errors.push(format!(
+                            "table {} fingerprint_bits must be one of 64, 32, 16, 8, 0",
+                            table.name
+                        ));
+                    }
+                }
+            } else if table.fingerprint_bits.is_some() {
+                errors.push(format!(
+                    "table {} fingerprint_bits requires a primary_key",
+                    table.name
+                ));
             }
             if let Some(weight) = &table.weight {
                 if !col_names.contains(weight.as_str()) {

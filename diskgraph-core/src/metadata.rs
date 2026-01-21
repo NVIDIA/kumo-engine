@@ -20,6 +20,12 @@ pub struct PrimaryKeyMap {
     pub mapping_kind: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fixed_len: Option<usize>,
+    #[serde(default = "default_fingerprint_bits")]
+    pub fingerprint_bits: u8,
+}
+
+fn default_fingerprint_bits() -> u8 {
+    64
 }
 
 /// Per-shard node metadata to route lookups.
