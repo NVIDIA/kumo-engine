@@ -525,6 +525,7 @@ fn ingest_parquet_with_sorted_mapping() -> Result<()> {
     let input_root = dir.path().join("input");
     let output_root = dir.path().join("output");
     let table_path = input_root.join("sku.parquet");
+    let edge_path = input_root.join("sku_edges.parquet");
 
     let schema = Schema::new(vec![
         Field::new("id", DataType::Utf8, false),
@@ -542,6 +543,17 @@ fn ingest_parquet_with_sorted_mapping() -> Result<()> {
         1.0_f32, 2.0_f32, 3.0_f32, 4.0_f32, 5.0_f32, 6.0_f32,
     ])) as ArrayRef;
     write_parquet(&table_path, schema, vec![ids, weights])?;
+    write_parquet(
+        &edge_path,
+        Schema::new(vec![
+            Field::new("src_id", DataType::Utf8, false),
+            Field::new("dst_id", DataType::Utf8, false),
+        ]),
+        vec![
+            Arc::new(StringArray::from(vec!["SKU00001", "SKU00002"])) as ArrayRef,
+            Arc::new(StringArray::from(vec!["SKU00002", "SKU00003"])) as ArrayRef,
+        ],
+    )?;
 
     let source = serde_json::json!({
         "dataset_name": "parquet_test",
@@ -556,6 +568,19 @@ fn ingest_parquet_with_sorted_mapping() -> Result<()> {
                 "columns": [
                     {"name": "id", "ingested_dtype": "string", "fixed_len": 8},
                     {"name": "weight", "ingested_dtype": "float32"}
+                ]
+            },
+            {
+                "name": "SkuEdge",
+                "format": "parquet",
+                "paths": [edge_path.to_string_lossy()],
+                "edge_table": {
+                    "src_fk": {"column": "src_id", "ref_table": "Sku", "ref_column": "id"},
+                    "dst_fk": {"column": "dst_id", "ref_table": "Sku", "ref_column": "id"}
+                },
+                "columns": [
+                    {"name": "src_id", "ingested_dtype": "string", "fixed_len": 8},
+                    {"name": "dst_id", "ingested_dtype": "string", "fixed_len": 8}
                 ]
             }
         ],
@@ -572,7 +597,7 @@ fn ingest_parquet_with_sorted_mapping() -> Result<()> {
     };
     let metadata = ingest(&source_path, output_root.to_str().unwrap(), Dest::Local, options)?;
     assert_eq!(metadata.node_types.len(), 1);
-    assert!(metadata.edge_relations.is_empty());
+    assert_eq!(metadata.edge_relations.len(), 2);
 
     let sku = metadata
         .node_types
@@ -642,6 +667,7 @@ fn ingest_parquet_with_int_pk_lookup() -> Result<()> {
     let output_root = dir.path().join("output");
 
     let table_path = input_root.join("items.parquet");
+    let edge_path = input_root.join("item_edges.parquet");
     write_parquet(
         &table_path,
         Schema::new(vec![
@@ -651,6 +677,17 @@ fn ingest_parquet_with_int_pk_lookup() -> Result<()> {
         vec![
             Arc::new(Int64Array::from(vec![1_i64, 2, 3, 4])) as ArrayRef,
             Arc::new(StringArray::from(vec!["a", "b", "c", "d"])) as ArrayRef,
+        ],
+    )?;
+    write_parquet(
+        &edge_path,
+        Schema::new(vec![
+            Field::new("src_id", DataType::Int64, false),
+            Field::new("dst_id", DataType::Int64, false),
+        ]),
+        vec![
+            Arc::new(Int64Array::from(vec![1_i64, 2])) as ArrayRef,
+            Arc::new(Int64Array::from(vec![2_i64, 3])) as ArrayRef,
         ],
     )?;
 
@@ -666,6 +703,19 @@ fn ingest_parquet_with_int_pk_lookup() -> Result<()> {
                 "columns": [
                     {"name": "id", "ingested_dtype": "int64"},
                     {"name": "name", "ingested_dtype": "string"}
+                ]
+            },
+            {
+                "name": "ItemEdge",
+                "format": "parquet",
+                "paths": [edge_path.to_string_lossy()],
+                "edge_table": {
+                    "src_fk": {"column": "src_id", "ref_table": "Item", "ref_column": "id"},
+                    "dst_fk": {"column": "dst_id", "ref_table": "Item", "ref_column": "id"}
+                },
+                "columns": [
+                    {"name": "src_id", "ingested_dtype": "int64"},
+                    {"name": "dst_id", "ingested_dtype": "int64"}
                 ]
             }
         ],
@@ -699,6 +749,7 @@ fn ingest_csv_with_bytes_pk_mapping() -> Result<()> {
     let output_root = dir.path().join("output");
 
     let table_path = input_root.join("assets.parquet");
+    let edge_path = input_root.join("asset_edges.parquet");
     let schema = Schema::new(vec![
         Field::new("id", DataType::Binary, false),
         Field::new("name", DataType::Utf8, false),
@@ -706,6 +757,20 @@ fn ingest_csv_with_bytes_pk_mapping() -> Result<()> {
     let ids = Arc::new(BinaryArray::from(vec![b"ABCD".as_ref(), b"EFGH".as_ref()])) as ArrayRef;
     let names = Arc::new(StringArray::from(vec!["asset-a", "asset-b"])) as ArrayRef;
     write_parquet(&table_path, schema, vec![ids, names])?;
+    let edge_ids_src = Arc::new(BinaryArray::from(vec![
+        b"ABCD".as_ref(),
+        b"EFGH".as_ref(),
+    ])) as ArrayRef;
+    let edge_ids_dst =
+        Arc::new(BinaryArray::from(vec![b"EFGH".as_ref(), b"ABCD".as_ref()])) as ArrayRef;
+    write_parquet(
+        &edge_path,
+        Schema::new(vec![
+            Field::new("src_id", DataType::Binary, false),
+            Field::new("dst_id", DataType::Binary, false),
+        ]),
+        vec![edge_ids_src, edge_ids_dst],
+    )?;
 
     let source = serde_json::json!({
         "dataset_name": "bytes_pk_test",
@@ -718,6 +783,19 @@ fn ingest_csv_with_bytes_pk_mapping() -> Result<()> {
                 "columns": [
                     {"name": "id", "ingested_dtype": "bytes", "fixed_len": 4},
                     {"name": "name", "ingested_dtype": "string"}
+                ]
+            },
+            {
+                "name": "AssetEdge",
+                "format": "parquet",
+                "paths": [edge_path.to_string_lossy()],
+                "edge_table": {
+                    "src_fk": {"column": "src_id", "ref_table": "Asset", "ref_column": "id"},
+                    "dst_fk": {"column": "dst_id", "ref_table": "Asset", "ref_column": "id"}
+                },
+                "columns": [
+                    {"name": "src_id", "ingested_dtype": "bytes", "fixed_len": 4},
+                    {"name": "dst_id", "ingested_dtype": "bytes", "fixed_len": 4}
                 ]
             }
         ],
