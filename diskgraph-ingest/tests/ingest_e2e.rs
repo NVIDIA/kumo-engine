@@ -677,6 +677,87 @@ fn ingest_pk_map_with_zero_bit_fingerprint() -> Result<()> {
 }
 
 #[test]
+fn ingest_zero_bit_fingerprint_skips_missing_fkeys() -> Result<()> {
+    let dir = tempdir()?;
+    let input_root = dir.path().join("input");
+    let output_root = dir.path().join("output");
+
+    write_csv(
+        &input_root.join("assets.csv"),
+        &["id", "name"],
+        &[
+            vec!["0".into(), "asset-a".into()],
+            vec!["1".into(), "asset-b".into()],
+        ],
+    )?;
+    write_csv(
+        &input_root.join("events.csv"),
+        &["id", "asset_id"],
+        &[
+            vec!["0".into(), "0".into()],
+            vec!["1".into(), "999".into()],
+        ],
+    )?;
+
+    let source = serde_json::json!({
+        "dataset_name": "zero_fp_fkey_test",
+        "tables": [
+            {
+                "name": "Asset",
+                "format": "csv",
+                "paths": [input_root.join("assets.csv").to_string_lossy()],
+                "primary_key": "id",
+                "fingerprint_bits": 0,
+                "columns": [
+                    {"name": "id", "ingested_dtype": "int64"},
+                    {"name": "name", "ingested_dtype": "string"}
+                ]
+            },
+            {
+                "name": "Event",
+                "format": "csv",
+                "paths": [input_root.join("events.csv").to_string_lossy()],
+                "primary_key": "id",
+                "columns": [
+                    {"name": "id", "ingested_dtype": "int64"},
+                    {"name": "asset_id", "ingested_dtype": "int64"}
+                ]
+            }
+        ],
+        "relationships": [
+            {
+                "name": "event_asset",
+                "src_table": "Event",
+                "src_column": "asset_id",
+                "dst_table": "Asset",
+                "dst_column": "id"
+            }
+        ]
+    });
+    let source_path = dir.path().join("diskgraph_config.json");
+    fs::write(&source_path, serde_json::to_vec_pretty(&source)?)?;
+
+    let options = IngestOptions::default();
+    ingest(
+        &source_path,
+        output_root.to_str().unwrap(),
+        Dest::Local,
+        options,
+    )?;
+
+    let index_metadata = output_root.join("index_metadata.json");
+    let reader = GraphIndexReader::open(&index_metadata, &output_root)?;
+    let event_table = reader.table("Event").ok_or_else(|| anyhow!("missing Event"))?;
+    let asset_table = reader.table("Asset").ok_or_else(|| anyhow!("missing Asset"))?;
+    let forward_rows = sum_relation_edges(&event_table, "event_asset")?;
+    let reverse_rows = sum_relation_edges(&asset_table, "event_asset_reverse")?;
+    assert_eq!(forward_rows, 1);
+    assert_eq!(reverse_rows, 1);
+
+    Ok(())
+}
+
+#[test]
 fn ingest_relationship_uses_dest_timestamp_sort_key() -> Result<()> {
     let dir = tempdir()?;
     let input_root = dir.path().join("input");

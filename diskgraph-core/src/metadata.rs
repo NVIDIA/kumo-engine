@@ -25,7 +25,7 @@ pub struct PrimaryKeyMap {
 }
 
 fn default_fingerprint_bits() -> u8 {
-    64
+    0
 }
 
 /// Per-shard node metadata to route lookups.

@@ -427,6 +427,9 @@ fn lookup_fp64(shard: &PkHashShard, key: &Key) -> Option<u32> {
     if fp != fingerprint_for_key(key, shard.header.fingerprint_seed) {
         return None;
     }
+    if value == u32::MAX {
+        return None;
+    }
     Some(value)
 }
 
@@ -449,6 +452,9 @@ fn lookup_fp32(shard: &PkHashShard, key: &Key) -> Option<u32> {
             .ok()?,
     );
     if fp != (fingerprint_for_key(key, shard.header.fingerprint_seed) & shard.fp_mask) {
+        return None;
+    }
+    if value == u32::MAX {
         return None;
     }
     Some(value)
@@ -475,6 +481,9 @@ fn lookup_fp16(shard: &PkHashShard, key: &Key) -> Option<u32> {
     if fp != (fingerprint_for_key(key, shard.header.fingerprint_seed) & shard.fp_mask) {
         return None;
     }
+    if value == u32::MAX {
+        return None;
+    }
     Some(value)
 }
 
@@ -499,6 +508,9 @@ fn lookup_fp8(shard: &PkHashShard, key: &Key) -> Option<u32> {
     if fp != (fingerprint_for_key(key, shard.header.fingerprint_seed) & shard.fp_mask) {
         return None;
     }
+    if value == u32::MAX {
+        return None;
+    }
     Some(value)
 }
 
@@ -519,6 +531,9 @@ fn lookup_fp0(shard: &PkHashShard, key: &Key) -> Option<u32> {
             .try_into()
             .ok()?,
     );
+    if value == u32::MAX {
+        return None;
+    }
     Some(value)
 }
 

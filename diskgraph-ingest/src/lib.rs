@@ -79,12 +79,13 @@ const MAX_NODE_DATA_LEN: usize = 64 * 1024 * 1024;
 const PROGRESS_ROW_BATCH: u64 = 1_000_000;
 const MAX_VAR_KEY_LEN: usize = u16::MAX as usize;
 const GXHASH_SHARD_SEED: u64 = 0x6a09e667f3bcc909;
-const PK_MAP_MEM_BUDGET_FRAC: f64 = 0.9;
+const PK_MAP_MEM_BUDGET_FRAC: f64 = 0.8;
 const PK_MAP_LOAD_FACTOR_NUM: u64 = 8;
 const PK_MAP_LOAD_FACTOR_DEN: u64 = 7;
 const PK_MAP_MPHF_FACTOR_NUM: u64 = 125;
 const PK_MAP_MPHF_FACTOR_DEN: u64 = 100;
 const PK_MAP_ESTIMATE_PAD_PCT: u64 = 25;
+const INVALID_LOCAL_ID: u32 = u32::MAX;
 
 #[derive(Default)]
 struct EdgeMapScratch {
@@ -222,16 +223,21 @@ fn estimate_pk_map_bytes(row_count: u64, key_type: KeyType, avg_var_bytes: u64) 
     base.saturating_mul(100 + PK_MAP_ESTIMATE_PAD_PCT) / 100
 }
 
-fn estimate_varbytes_avg_len(row_count: u64, max_row_len: u32, data_path: &Path) -> u64 {
+fn estimate_varbytes_avg_len_multi(row_count: u64, max_row_len: u32, paths: &[PathBuf]) -> u64 {
     if row_count == 0 {
         return 0;
     }
     let max_row_len = max_row_len as u64;
-    let file_len = fs::metadata(data_path).map(|m| m.len()).unwrap_or(0);
-    if file_len == 0 {
+    let mut total_bytes = 0u64;
+    for path in paths {
+        if let Ok(meta) = fs::metadata(path) {
+            total_bytes = total_bytes.saturating_add(meta.len());
+        }
+    }
+    if total_bytes == 0 {
         return max_row_len;
     }
-    let avg_row = file_len / row_count;
+    let avg_row = total_bytes / row_count;
     let mut avg_key = avg_row.saturating_sub(4);
     if avg_key == 0 {
         avg_key = max_row_len;
@@ -276,7 +282,7 @@ enum KeyParseError {
 
 type KeyParseResult<T> = std::result::Result<T, KeyParseError>;
 
-const DEFAULT_INDEX_MEM_BUDGET_FRAC: f64 = 0.9;
+const DEFAULT_INDEX_MEM_BUDGET_FRAC: f64 = 0.8;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct IngestReport {
@@ -1927,11 +1933,14 @@ impl IngestContext {
         let target = std::sync::Arc::clone(&self.target);
         let node_pool = NodeWritePool::new(std::sync::Arc::clone(&target), edge_writer_workers());
         let edge_pool = EdgeSrcWritePool::new(std::sync::Arc::clone(&target), edge_writer_workers());
+        let dest_key_pool = DestKeyWritePool::new(std::sync::Arc::clone(&target), edge_writer_workers());
         let sort_key_pool =
             SortKeyWritePool::new(std::sync::Arc::clone(&target), edge_writer_workers());
         let node_senders = node_pool.senders();
         let edge_senders = edge_pool.senders();
         let edge_errors = edge_pool.error();
+        let dest_key_senders = dest_key_pool.senders();
+        let dest_key_errors = dest_key_pool.error();
         let sort_key_senders = sort_key_pool.senders();
         let input_transfer = self.input_transfer.clone();
         let trimmed_strings = std::sync::Arc::clone(&self.trimmed_strings);
@@ -1965,6 +1974,8 @@ impl IngestContext {
                 let target = std::sync::Arc::clone(&target);
                 let node_senders = std::sync::Arc::clone(&node_senders);
                 let edge_senders = std::sync::Arc::clone(&edge_senders);
+                let dest_key_senders = std::sync::Arc::clone(&dest_key_senders);
+                let dest_key_errors = std::sync::Arc::clone(&dest_key_errors);
                 let sort_key_senders = std::sync::Arc::clone(&sort_key_senders);
                 let trimmed_strings = std::sync::Arc::clone(&trimmed_strings);
                 let progress = progress.clone();
@@ -1989,6 +2000,8 @@ impl IngestContext {
                                 &mut key_failures,
                                 &edge_senders,
                                 &edge_errors,
+                                &dest_key_senders,
+                                &dest_key_errors,
                                 &sort_key_senders,
                                 relation_defs.as_ref(),
                             )?;
@@ -2014,6 +2027,8 @@ impl IngestContext {
                             &progress,
                             &mut key_failures,
                             &node_senders,
+                            &dest_key_senders,
+                            &dest_key_errors,
                             &sort_key_senders,
                         )?;
                         tx.send(Ok(EncodeResult {
@@ -2066,11 +2081,13 @@ impl IngestContext {
         }
         drop(node_senders);
         drop(edge_senders);
+        drop(dest_key_senders);
         drop(sort_key_senders);
         let node_stats = node_pool.finish()?;
         let edge_stats = edge_pool.finish()?;
+        let dest_key_stats = dest_key_pool.finish()?;
         let _sort_key_stats = sort_key_pool.finish()?;
-        self.write_consolidated_meta(&node_stats, &edge_stats)?;
+        self.write_consolidated_meta(&node_stats, &edge_stats, &dest_key_stats)?;
         self.refresh_shard_rows_from_stats(&node_stats);
         self.table_rows = table_rows;
         Ok(())
@@ -2097,6 +2114,7 @@ impl IngestContext {
         &self,
         node_stats: &NodeWriterStats,
         edge_stats: &EdgeSrcWriterStats,
+        dest_key_stats: &DestKeyWriterStats,
     ) -> Result<()> {
         for table in &self.source.tables {
             if table.edge_table.is_some() {
@@ -2154,6 +2172,24 @@ impl IngestContext {
                         rows,
                         0,
                     )?;
+                    let dst_key = (table.name.clone(), rel.name_forward.clone(), shard);
+                    let dst_rows = dest_key_stats
+                        .node_fkey_rows
+                        .get(&dst_key)
+                        .copied()
+                        .unwrap_or(0);
+                    if dst_rows == 0 {
+                        ensure_temp_file(
+                            &self.target,
+                            &temp_fkey_dst_path(&table.name, &rel.name_forward, shard),
+                        )?;
+                    }
+                    write_temp_meta(
+                        &self.target,
+                        &temp_fkey_dst_meta_path(&table.name, &rel.name_forward, shard),
+                        dst_rows,
+                        0,
+                    )?;
                 }
             }
         }
@@ -2175,6 +2211,25 @@ impl IngestContext {
                     rows,
                     0,
                 )?;
+                for kind in [EdgeKeyKind::Src, EdgeKeyKind::Dst] {
+                    let key_rows = dest_key_stats
+                        .edge_key_rows
+                        .get(&(table.name.clone(), kind, shard))
+                        .copied()
+                        .unwrap_or(0);
+                    if key_rows == 0 {
+                        ensure_temp_file(
+                            &self.target,
+                            &temp_edge_key_path(&table.name, kind, shard),
+                        )?;
+                    }
+                    write_temp_meta(
+                        &self.target,
+                        &temp_edge_key_meta_path(&table.name, kind, shard),
+                        key_rows,
+                        0,
+                    )?;
+                }
             }
         }
         for rel in &self.relation_defs {
@@ -2210,6 +2265,8 @@ impl IngestContext {
         progress: &Option<ProgressCallback>,
         key_failures: &mut KeyFailureState,
         senders: &std::sync::Arc<Vec<std::sync::mpsc::SyncSender<NodeWriteMessage>>>,
+        dest_key_senders: &std::sync::Arc<Vec<std::sync::mpsc::SyncSender<DestKeyWriteMessage>>>,
+        dest_key_errors: &std::sync::Arc<std::sync::Mutex<Option<String>>>,
         sort_key_senders: &std::sync::Arc<Vec<std::sync::mpsc::SyncSender<SortKeyWriteMessage>>>,
     ) -> Result<TempNodeFileResult> {
         let pk_col = table.primary_key.as_ref().and_then(|pk| column_spec(table, pk).ok());
@@ -2252,6 +2309,14 @@ impl IngestContext {
             num_shards,
             buffer_limit,
             std::sync::Arc::clone(senders),
+        );
+        let mut dest_fkey_batcher = DestFkeyBatcher::new(
+            std::sync::Arc::<str>::from(table.name.clone()),
+            std::sync::Arc::clone(&rel_names),
+            num_shards,
+            buffer_limit,
+            std::sync::Arc::clone(dest_key_senders),
+            std::sync::Arc::clone(dest_key_errors),
         );
         let mut sort_key_batchers = build_sort_key_batchers_for_node_table(
             table,
@@ -2298,6 +2363,7 @@ impl IngestContext {
                                     &mut access,
                                     &node_encoder,
                                     &mut batcher,
+                                    &mut dest_fkey_batcher,
                                     &mut sort_key_batchers,
                                     &mut row_id,
                                     pk_col,
@@ -2336,6 +2402,7 @@ impl IngestContext {
                                     &mut access,
                                     &node_encoder,
                                     &mut batcher,
+                                    &mut dest_fkey_batcher,
                                     &mut sort_key_batchers,
                                     &mut row_id,
                                     pk_col,
@@ -2374,6 +2441,7 @@ impl IngestContext {
                                 &mut access,
                                 &node_encoder,
                                 &mut batcher,
+                                &mut dest_fkey_batcher,
                                 &mut sort_key_batchers,
                                 &mut row_id,
                                 pk_col,
@@ -2417,6 +2485,7 @@ impl IngestContext {
                                     &mut access,
                                     &node_encoder,
                                     &mut batcher,
+                                    &mut dest_fkey_batcher,
                                     &mut sort_key_batchers,
                                     &mut row_id,
                                     pk_col,
@@ -2456,6 +2525,7 @@ impl IngestContext {
                                     &mut access,
                                     &node_encoder,
                                     &mut batcher,
+                                    &mut dest_fkey_batcher,
                                     &mut sort_key_batchers,
                                     &mut row_id,
                                     pk_col,
@@ -2495,6 +2565,7 @@ impl IngestContext {
                                 &mut access,
                                 &node_encoder,
                                 &mut batcher,
+                                &mut dest_fkey_batcher,
                                 &mut sort_key_batchers,
                                 &mut row_id,
                                 pk_col,
@@ -2509,6 +2580,7 @@ impl IngestContext {
             }
         }
         batcher.flush_all()?;
+        dest_fkey_batcher.flush_all()?;
         for batcher in &mut sort_key_batchers {
             batcher.flush_all()?;
         }
@@ -2536,6 +2608,7 @@ impl IngestContext {
         access: &mut RowAccess<'_>,
         node_encoder: &Option<RowPackEncoder>,
         batcher: &mut NodeBatcher,
+        dest_fkey_batcher: &mut DestFkeyBatcher,
         sort_key_batchers: &mut [SortKeyComponentBatcher],
         row_id: &mut u64,
         pk_col: Option<&ColumnSpec>,
@@ -2639,6 +2712,8 @@ impl IngestContext {
                     batcher.push_fkey_empty(shard, *rel_pos)?;
                 } else {
                     batcher.push_fkey(shard, *rel_pos, buf)?;
+                    let dst_shard = shard_for_key(buf, num_shards);
+                    dest_fkey_batcher.push(dst_shard, *rel_pos, buf)?;
                 }
             }
         }
@@ -2658,6 +2733,8 @@ impl IngestContext {
         key_failures: &mut KeyFailureState,
         senders: &std::sync::Arc<Vec<std::sync::mpsc::SyncSender<EdgeSrcWriteMessage>>>,
         error: &std::sync::Arc<std::sync::Mutex<Option<String>>>,
+        dest_key_senders: &std::sync::Arc<Vec<std::sync::mpsc::SyncSender<DestKeyWriteMessage>>>,
+        dest_key_errors: &std::sync::Arc<std::sync::Mutex<Option<String>>>,
         sort_key_senders: &std::sync::Arc<Vec<std::sync::mpsc::SyncSender<SortKeyWriteMessage>>>,
         relation_defs: &[RelationDef],
     ) -> Result<()> {
@@ -2680,6 +2757,13 @@ impl IngestContext {
             buffer_limit,
             std::sync::Arc::clone(senders),
             std::sync::Arc::clone(error),
+        );
+        let mut edge_key_batcher = EdgeKeyBatcher::new(
+            std::sync::Arc::<str>::from(table.name.clone()),
+            num_shards,
+            buffer_limit,
+            std::sync::Arc::clone(dest_key_senders),
+            std::sync::Arc::clone(dest_key_errors),
         );
         let mut sort_key_batchers = build_sort_key_batchers_for_edge_table(
             table,
@@ -2741,6 +2825,7 @@ impl IngestContext {
                                     &mut dst_key_buf,
                                     &mut forward_row,
                                     &mut batcher,
+                                    &mut edge_key_batcher,
                                     &mut sort_key_batchers,
                                     num_shards,
                                     key_failures,
@@ -2788,6 +2873,7 @@ impl IngestContext {
                                     &mut dst_key_buf,
                                     &mut forward_row,
                                     &mut batcher,
+                                    &mut edge_key_batcher,
                                     &mut sort_key_batchers,
                                     num_shards,
                                     key_failures,
@@ -2835,6 +2921,7 @@ impl IngestContext {
                                 &mut dst_key_buf,
                                 &mut forward_row,
                                 &mut batcher,
+                                &mut edge_key_batcher,
                                 &mut sort_key_batchers,
                                 num_shards,
                                 key_failures,
@@ -2886,6 +2973,7 @@ impl IngestContext {
                                     &mut dst_key_buf,
                                     &mut forward_row,
                                     &mut batcher,
+                                    &mut edge_key_batcher,
                                     &mut sort_key_batchers,
                                     num_shards,
                                     key_failures,
@@ -2932,6 +3020,7 @@ impl IngestContext {
                                     &mut dst_key_buf,
                                     &mut forward_row,
                                     &mut batcher,
+                                    &mut edge_key_batcher,
                                     &mut sort_key_batchers,
                                     num_shards,
                                     key_failures,
@@ -2978,6 +3067,7 @@ impl IngestContext {
                                 &mut dst_key_buf,
                                 &mut forward_row,
                                 &mut batcher,
+                                &mut edge_key_batcher,
                                 &mut sort_key_batchers,
                                 num_shards,
                                 key_failures,
@@ -2988,6 +3078,7 @@ impl IngestContext {
             }
         }
         batcher.flush_all()?;
+        edge_key_batcher.flush_all()?;
         for batcher in &mut sort_key_batchers {
             batcher.flush_all()?;
         }
@@ -3022,6 +3113,7 @@ impl IngestContext {
         dst_key_buf: &mut Vec<u8>,
         forward_row: &mut Vec<u8>,
         batcher: &mut EdgeSrcBatcher,
+        edge_key_batcher: &mut EdgeKeyBatcher,
         sort_key_batchers: &mut [SortKeyComponentBatcher],
         num_shards: usize,
         key_failures: &mut KeyFailureState,
@@ -3105,11 +3197,14 @@ impl IngestContext {
             }
         }
         let forward_shard = shard_for_key(src_key_buf, num_shards);
+        let dst_shard = shard_for_key(dst_key_buf, num_shards);
         forward_row.clear();
         forward_row.reserve(src_key_buf.len().saturating_add(dst_key_buf.len()));
         forward_row.extend_from_slice(src_key_buf);
         forward_row.extend_from_slice(dst_key_buf);
         batcher.push(forward_shard, forward_row)?;
+        edge_key_batcher.push_src(forward_shard, src_key_buf)?;
+        edge_key_batcher.push_dst(dst_shard, dst_key_buf)?;
         for batcher in sort_key_batchers.iter_mut() {
             batcher.push_row(forward_shard, access)?;
         }
@@ -3124,6 +3219,8 @@ impl IngestContext {
         });
         let duplicate_counts = std::sync::Arc::new(std::sync::Mutex::new(HashMap::new()));
         let duplicate_samples = std::sync::Arc::new(std::sync::Mutex::new(HashMap::new()));
+        let relationships = self.relationships.clone();
+        let source = self.source.clone();
         let mut tasks = Vec::new();
         let mut pk_hash_handles: HashMap<
             String,
@@ -3145,7 +3242,7 @@ impl IngestContext {
             });
             let pk_name = table.primary_key.clone().unwrap();
             let pk_col = column_spec(table, &pk_name)?;
-            let fingerprint_bits = table.fingerprint_bits.unwrap_or(64);
+            let fingerprint_bits = table.fingerprint_bits.unwrap_or(0);
             let pk_hash_paths = std::sync::Arc::new(std::sync::Mutex::new(vec![
                 None;
                 self.num_shards
@@ -3163,6 +3260,8 @@ impl IngestContext {
                 let root = root.clone();
                 let fingerprint_bits = fingerprint_bits;
                 let pk_map_budget = pk_map_budget.clone();
+                let relationships = relationships.clone();
+                let source = source.clone();
                 tasks.push(WorkItem {
                     bucket: None,
                     run: Box::new(move |scratch: &mut PkMapScratch| {
@@ -3171,12 +3270,54 @@ impl IngestContext {
                         let meta = read_temp_meta(&meta_path)?;
                         let total_rows = meta.row_count;
                         let data_path = root.join(temp_pkey_path(&table_name, shard));
+                        let mut fkey_inputs: Vec<(PathBuf, PathBuf, ColumnSpec)> = Vec::new();
+                        let mut edge_inputs: Vec<(PathBuf, PathBuf, ColumnSpec)> = Vec::new();
+                        for rel in relationships.iter().filter(|rel| rel.dst_table == table_name) {
+                            let src_table = table_by_name(&source, &rel.src_table)?;
+                            let src_col = column_spec(src_table, &rel.src_column)?;
+                            fkey_inputs.push((
+                                root.join(temp_fkey_dst_path(&rel.src_table, &rel.name_forward, shard)),
+                                root.join(temp_fkey_dst_meta_path(&rel.src_table, &rel.name_forward, shard)),
+                                src_col.clone(),
+                            ));
+                        }
+                        for table in source.tables.iter().filter(|t| t.edge_table.is_some()) {
+                            let edge = table.edge_table.as_ref().unwrap();
+                            if edge.src_fk.ref_table == table_name {
+                                let src_col = column_spec(table, &edge.src_fk.column)?;
+                                edge_inputs.push((
+                                    root.join(temp_edge_key_path(&table.name, EdgeKeyKind::Src, shard)),
+                                    root.join(temp_edge_key_meta_path(&table.name, EdgeKeyKind::Src, shard)),
+                                    src_col.clone(),
+                                ));
+                            }
+                            if edge.dst_fk.ref_table == table_name {
+                                let dst_col = column_spec(table, &edge.dst_fk.column)?;
+                                edge_inputs.push((
+                                    root.join(temp_edge_key_path(&table.name, EdgeKeyKind::Dst, shard)),
+                                    root.join(temp_edge_key_meta_path(&table.name, EdgeKeyKind::Dst, shard)),
+                                    dst_col.clone(),
+                                ));
+                            }
+                        }
+                        let mut union_rows = total_rows;
+                        let mut var_paths = Vec::new();
+                        if matches!(key_type, KeyType::VarBytes) {
+                            var_paths.push(data_path.clone());
+                        }
+                        for (data_path, meta_path, _) in fkey_inputs.iter().chain(edge_inputs.iter()) {
+                            let meta = read_temp_meta(meta_path)?;
+                            union_rows = union_rows.saturating_add(meta.row_count);
+                            if matches!(key_type, KeyType::VarBytes) {
+                                var_paths.push(data_path.clone());
+                            }
+                        }
                         let avg_var_bytes = if matches!(key_type, KeyType::VarBytes) {
-                            estimate_varbytes_avg_len(total_rows, meta.max_row_len, &data_path)
+                            estimate_varbytes_avg_len_multi(union_rows, meta.max_row_len, &var_paths)
                         } else {
                             0
                         };
-                        let estimate = estimate_pk_map_bytes(total_rows, key_type, avg_var_bytes);
+                        let estimate = estimate_pk_map_bytes(union_rows, key_type, avg_var_bytes);
                         let _budget_guard = if let Some(budget) = pk_map_budget.as_ref() {
                             let budget_total = budget.snapshot().total;
                             if budget_total == 0 || estimate == 0 {
@@ -3230,6 +3371,18 @@ impl IngestContext {
                                             row_id += 1;
                                             Ok(())
                                         })?;
+                                        for (path, _meta_path, col) in
+                                            fkey_inputs.iter().chain(edge_inputs.iter())
+                                        {
+                                            read_temp_rows(path, |row| {
+                                                let mut data = row;
+                                                let key = read_key_from_buf(&mut data, col)?;
+                                                if let Key::Int(v) = key {
+                                                    seen.entry(v).or_insert(INVALID_LOCAL_ID);
+                                                }
+                                                Ok(())
+                                            })?;
+                                        }
                                     }
                                     let params = ptr_hash::PtrHashParams::default();
                                     let seen = std::mem::take(&mut pkmap.seen_u64);
@@ -3320,6 +3473,18 @@ impl IngestContext {
                                             row_id += 1;
                                             Ok(())
                                         })?;
+                                        for (path, _meta_path, col) in
+                                            fkey_inputs.iter().chain(edge_inputs.iter())
+                                        {
+                                            read_temp_rows(path, |row| {
+                                                let mut data = row;
+                                                let key = read_key_from_buf(&mut data, col)?;
+                                                if let Key::Bytes(bytes) = key {
+                                                    seen.entry(bytes).or_insert(INVALID_LOCAL_ID);
+                                                }
+                                                Ok(())
+                                            })?;
+                                        }
                                     }
                                     let params = ptr_hash::PtrHashParams::default();
                                     let seen = std::mem::take(&mut pkmap.seen_bytes);
@@ -3405,6 +3570,18 @@ impl IngestContext {
                                             row_id += 1;
                                             Ok(())
                                         })?;
+                                        for (path, _meta_path, col) in
+                                            fkey_inputs.iter().chain(edge_inputs.iter())
+                                        {
+                                            read_temp_rows(path, |row| {
+                                                let mut data = row;
+                                                let key = read_key_from_buf(&mut data, col)?;
+                                                if let Key::Uuid(uuid) = key {
+                                                    seen.entry(uuid).or_insert(INVALID_LOCAL_ID);
+                                                }
+                                                Ok(())
+                                            })?;
+                                        }
                                     }
                                     let params = ptr_hash::PtrHashParams::default();
                                     let seen = std::mem::take(&mut pkmap.seen_uuid);
@@ -3490,6 +3667,18 @@ impl IngestContext {
                                             row_id += 1;
                                             Ok(())
                                         })?;
+                                        for (path, _meta_path, col) in
+                                            fkey_inputs.iter().chain(edge_inputs.iter())
+                                        {
+                                            read_temp_rows(path, |row| {
+                                                let mut data = row;
+                                                let key = read_key_from_buf(&mut data, col)?;
+                                                if let Key::Uuid256(uuid) = key {
+                                                    seen.entry(uuid).or_insert(INVALID_LOCAL_ID);
+                                                }
+                                                Ok(())
+                                            })?;
+                                        }
                                     }
                                     let params = ptr_hash::PtrHashParams::default();
                                     let seen = std::mem::take(&mut pkmap.seen_uuid256);
@@ -3575,6 +3764,18 @@ impl IngestContext {
                                             row_id += 1;
                                             Ok(())
                                         })?;
+                                        for (path, _meta_path, col) in
+                                            fkey_inputs.iter().chain(edge_inputs.iter())
+                                        {
+                                            read_temp_rows(path, |row| {
+                                                let mut data = row;
+                                                let key = read_key_from_buf(&mut data, col)?;
+                                                if let Key::Ip(ip) = key {
+                                                    seen.entry(ip).or_insert(INVALID_LOCAL_ID);
+                                                }
+                                                Ok(())
+                                            })?;
+                                        }
                                     }
                                     let params = ptr_hash::PtrHashParams::default();
                                     let seen = std::mem::take(&mut pkmap.seen_ip);
@@ -4618,12 +4819,16 @@ impl IngestContext {
                 .saturating_add(self.record_edge_stage_bytes("edges_src")?);
             self.temp_fkeys_bytes = self
                 .temp_fkeys_bytes
-                .saturating_add(self.record_edge_stage_bytes("fkeys")?);
+                .saturating_add(self.record_edge_stage_bytes("fkeys")?)
+                .saturating_add(self.record_edge_stage_bytes("fkeys_dst")?)
+                .saturating_add(self.record_edge_stage_bytes("edge_keys")?);
             self.temp_edges_map_bytes = self
                 .temp_edges_map_bytes
                 .saturating_add(self.record_edge_stage_bytes("edges_map")?);
             self.cleanup_edge_stage("edges_src")?;
             self.cleanup_edge_stage("fkeys")?;
+            self.cleanup_edge_stage("fkeys_dst")?;
+            self.cleanup_edge_stage("edge_keys")?;
             return Ok(());
         }
 
@@ -5045,6 +5250,55 @@ fn temp_fkey_meta_path(table: &str, rel: &str, shard: usize) -> String {
 
 fn temp_fkey_bitmap_path(table: &str, rel: &str, shard: usize) -> String {
     format!("{}/bitmap.bin", temp_fkey_shard_dir(table, rel, shard))
+}
+
+fn temp_fkey_dst_shard_dir(table: &str, rel: &str, shard: usize) -> String {
+    format!(
+        "{}/fkeys_dst/{}/{}/shard-{:05}",
+        TEMP_DIR_NAME,
+        table.to_lowercase(),
+        rel.to_lowercase(),
+        shard
+    )
+}
+
+fn temp_fkey_dst_path(table: &str, rel: &str, shard: usize) -> String {
+    format!("{}/rows.bin", temp_fkey_dst_shard_dir(table, rel, shard))
+}
+
+fn temp_fkey_dst_meta_path(table: &str, rel: &str, shard: usize) -> String {
+    format!("{}/rows.meta", temp_fkey_dst_shard_dir(table, rel, shard))
+}
+
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+enum EdgeKeyKind {
+    Src,
+    Dst,
+}
+
+fn edge_key_kind_name(kind: EdgeKeyKind) -> &'static str {
+    match kind {
+        EdgeKeyKind::Src => "src",
+        EdgeKeyKind::Dst => "dst",
+    }
+}
+
+fn temp_edge_key_shard_dir(edge_table: &str, kind: EdgeKeyKind, shard: usize) -> String {
+    format!(
+        "{}/edge_keys/{}/{}/shard-{:05}",
+        TEMP_DIR_NAME,
+        edge_table.to_lowercase(),
+        edge_key_kind_name(kind),
+        shard
+    )
+}
+
+fn temp_edge_key_path(edge_table: &str, kind: EdgeKeyKind, shard: usize) -> String {
+    format!("{}/rows.bin", temp_edge_key_shard_dir(edge_table, kind, shard))
+}
+
+fn temp_edge_key_meta_path(edge_table: &str, kind: EdgeKeyKind, shard: usize) -> String {
+    format!("{}/rows.meta", temp_edge_key_shard_dir(edge_table, kind, shard))
 }
 
 fn temp_edge_shard_dir(rel: &str, shard: usize) -> String {
@@ -6579,6 +6833,182 @@ fn edge_src_writer_worker(
     Ok(stats)
 }
 
+enum DestKeyWriteMessage {
+    NodeFkey {
+        table: std::sync::Arc<str>,
+        rel: std::sync::Arc<str>,
+        shard: usize,
+        data: Vec<u8>,
+        row_count: u64,
+    },
+    EdgeKey {
+        edge_table: std::sync::Arc<str>,
+        kind: EdgeKeyKind,
+        shard: usize,
+        data: Vec<u8>,
+        row_count: u64,
+    },
+}
+
+#[derive(Default)]
+struct DestKeyWriterStats {
+    node_fkey_rows: HashMap<(String, String, usize), u64>,
+    edge_key_rows: HashMap<(String, EdgeKeyKind, usize), u64>,
+}
+
+impl DestKeyWriterStats {
+    fn merge(&mut self, other: DestKeyWriterStats) {
+        for (key, value) in other.node_fkey_rows {
+            let entry = self.node_fkey_rows.entry(key).or_insert(0);
+            *entry = entry.saturating_add(value);
+        }
+        for (key, value) in other.edge_key_rows {
+            let entry = self.edge_key_rows.entry(key).or_insert(0);
+            *entry = entry.saturating_add(value);
+        }
+    }
+}
+
+struct DestKeyWritePool {
+    senders: std::sync::Arc<Vec<std::sync::mpsc::SyncSender<DestKeyWriteMessage>>>,
+    handles: Vec<std::thread::JoinHandle<Result<DestKeyWriterStats>>>,
+    error: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+}
+
+impl DestKeyWritePool {
+    fn new(target: std::sync::Arc<OutputTarget>, workers: usize) -> Self {
+        let mut senders = Vec::with_capacity(workers);
+        let mut handles = Vec::with_capacity(workers);
+        let error = std::sync::Arc::new(std::sync::Mutex::new(None));
+        for _ in 0..workers {
+            let (tx, rx) =
+                std::sync::mpsc::sync_channel::<DestKeyWriteMessage>(EDGE_WRITE_QUEUE_DEPTH);
+            let target = std::sync::Arc::clone(&target);
+            let error = std::sync::Arc::clone(&error);
+            handles.push(std::thread::spawn(move || {
+                match dest_key_writer_worker(target, rx) {
+                    Ok(stats) => Ok(stats),
+                    Err(err) => {
+                        let mut guard = error.lock().unwrap_or_else(|e| e.into_inner());
+                        if guard.is_none() {
+                            *guard = Some(format!("{err:#}"));
+                        }
+                        Err(err)
+                    }
+                }
+            }));
+            senders.push(tx);
+        }
+        Self {
+            senders: std::sync::Arc::new(senders),
+            handles,
+            error,
+        }
+    }
+
+    fn senders(&self) -> std::sync::Arc<Vec<std::sync::mpsc::SyncSender<DestKeyWriteMessage>>> {
+        std::sync::Arc::clone(&self.senders)
+    }
+
+    fn error(&self) -> std::sync::Arc<std::sync::Mutex<Option<String>>> {
+        std::sync::Arc::clone(&self.error)
+    }
+
+    fn finish(self) -> Result<DestKeyWriterStats> {
+        drop(self.senders);
+        let mut stats = DestKeyWriterStats::default();
+        for handle in self.handles {
+            match handle.join() {
+                Ok(result) => {
+                    stats.merge(result?);
+                }
+                Err(_) => return Err(anyhow!("dest key writer thread panicked")),
+            }
+        }
+        if let Ok(guard) = self.error.lock() {
+            if let Some(message) = guard.as_ref() {
+                return Err(anyhow!("dest key writer failed: {message}"));
+            }
+        }
+        Ok(stats)
+    }
+}
+
+fn dest_key_writer_worker(
+    target: std::sync::Arc<OutputTarget>,
+    rx: std::sync::mpsc::Receiver<DestKeyWriteMessage>,
+) -> Result<DestKeyWriterStats> {
+    let mut node_writers: HashMap<(std::sync::Arc<str>, std::sync::Arc<str>, usize), TempRowWriter> =
+        HashMap::new();
+    let mut edge_writers: HashMap<(std::sync::Arc<str>, EdgeKeyKind, usize), TempRowWriter> =
+        HashMap::new();
+    let mut stats = DestKeyWriterStats::default();
+    while let Ok(msg) = rx.recv() {
+        match msg {
+            DestKeyWriteMessage::NodeFkey {
+                table,
+                rel,
+                shard,
+                data,
+                row_count,
+            } => {
+                let key = (std::sync::Arc::clone(&table), std::sync::Arc::clone(&rel), shard);
+                let writer = match node_writers.get_mut(&key) {
+                    Some(writer) => writer,
+                    None => {
+                        node_writers.insert(
+                            key.clone(),
+                            open_temp_row_writer(&target, &temp_fkey_dst_path(&table, &rel, shard))?,
+                        );
+                        node_writers.get_mut(&key).unwrap()
+                    }
+                };
+                write_temp_rows_batch(writer, &data, row_count)?;
+                let entry = stats
+                    .node_fkey_rows
+                    .entry((table.to_string(), rel.to_string(), shard))
+                    .or_insert(0);
+                *entry = entry.saturating_add(row_count);
+            }
+            DestKeyWriteMessage::EdgeKey {
+                edge_table,
+                kind,
+                shard,
+                data,
+                row_count,
+            } => {
+                let key = (std::sync::Arc::clone(&edge_table), kind, shard);
+                let writer = match edge_writers.get_mut(&key) {
+                    Some(writer) => writer,
+                    None => {
+                        edge_writers.insert(
+                            key.clone(),
+                            open_temp_row_writer(
+                                &target,
+                                &temp_edge_key_path(&edge_table, kind, shard),
+                            )?,
+                        );
+                        edge_writers.get_mut(&key).unwrap()
+                    }
+                };
+                write_temp_rows_batch(writer, &data, row_count)?;
+                let entry = stats
+                    .edge_key_rows
+                    .entry((edge_table.to_string(), kind, shard))
+                    .or_insert(0);
+                *entry = entry.saturating_add(row_count);
+            }
+        }
+    }
+    for (_, writer) in node_writers {
+        finish_temp_writer(writer)?;
+    }
+    for (_, writer) in edge_writers {
+        finish_temp_writer(writer)?;
+    }
+    Ok(stats)
+}
+
 struct EdgeSrcBuffer {
     data: Vec<u8>,
     row_count: u64,
@@ -6670,6 +7100,239 @@ impl EdgeSrcBatcher {
     fn flush_all(&mut self) -> Result<()> {
         for shard in 0..self.buffers.len() {
             self.flush_shard(shard)?;
+        }
+        Ok(())
+    }
+}
+
+struct DestFkeyBuffer {
+    data: Vec<u8>,
+    row_count: u64,
+}
+
+struct DestFkeyShardBuffer {
+    fkeys: Vec<DestFkeyBuffer>,
+    bytes: usize,
+}
+
+struct DestFkeyBatcher {
+    table: std::sync::Arc<str>,
+    table_hash: u64,
+    rel_names: std::sync::Arc<Vec<std::sync::Arc<str>>>,
+    buffers: Vec<DestFkeyShardBuffer>,
+    buffer_limit: usize,
+    senders: std::sync::Arc<Vec<std::sync::mpsc::SyncSender<DestKeyWriteMessage>>>,
+    error: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+}
+
+impl DestFkeyBatcher {
+    fn new(
+        table: std::sync::Arc<str>,
+        rel_names: std::sync::Arc<Vec<std::sync::Arc<str>>>,
+        num_shards: usize,
+        buffer_limit: usize,
+        senders: std::sync::Arc<Vec<std::sync::mpsc::SyncSender<DestKeyWriteMessage>>>,
+        error: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+    ) -> Self {
+        let table_hash = hash_name(&table);
+        let buffers = (0..num_shards)
+            .map(|_| DestFkeyShardBuffer {
+                fkeys: rel_names
+                    .iter()
+                    .map(|_| DestFkeyBuffer {
+                        data: Vec::new(),
+                        row_count: 0,
+                    })
+                    .collect(),
+                bytes: 0,
+            })
+            .collect();
+        Self {
+            table,
+            table_hash,
+            rel_names,
+            buffers,
+            buffer_limit,
+            senders,
+            error,
+        }
+    }
+
+    fn push(&mut self, shard: usize, rel_idx: usize, row: &[u8]) -> Result<()> {
+        let buffer = self
+            .buffers
+            .get_mut(shard)
+            .ok_or_else(|| anyhow!("dest fkey buffer shard {} out of bounds", shard))?;
+        let fkey = buffer
+            .fkeys
+            .get_mut(rel_idx)
+            .ok_or_else(|| anyhow!("dest fkey rel {} out of bounds", rel_idx))?;
+        append_temp_row(&mut fkey.data, row)?;
+        fkey.row_count = fkey.row_count.saturating_add(1);
+        buffer.bytes = buffer.bytes.saturating_add(4 + row.len());
+        if buffer.bytes >= self.buffer_limit {
+            self.flush_shard(shard)?;
+        }
+        Ok(())
+    }
+
+    fn flush_shard(&mut self, shard: usize) -> Result<()> {
+        if let Ok(guard) = self.error.lock() {
+            if let Some(message) = guard.as_ref() {
+                return Err(anyhow!("dest key writer failed: {message}"));
+            }
+        }
+        let buffer = self
+            .buffers
+            .get_mut(shard)
+            .ok_or_else(|| anyhow!("dest fkey buffer shard {} out of bounds", shard))?;
+        if buffer.bytes == 0 {
+            return Ok(());
+        }
+        for (rel_idx, entry) in buffer.fkeys.iter_mut().enumerate() {
+            if entry.row_count == 0 {
+                continue;
+            }
+            let mut data = Vec::with_capacity(entry.data.capacity());
+            std::mem::swap(&mut data, &mut entry.data);
+            let rel = self
+                .rel_names
+                .get(rel_idx)
+                .cloned()
+                .ok_or_else(|| anyhow!("dest fkey rel {} missing", rel_idx))?;
+            let batch = DestKeyWriteMessage::NodeFkey {
+                table: std::sync::Arc::clone(&self.table),
+                rel,
+                shard,
+                data,
+                row_count: entry.row_count,
+            };
+            entry.row_count = 0;
+            let idx = edge_writer_index(self.table_hash, shard, self.senders.len());
+            self.senders[idx]
+                .send(batch)
+                .map_err(|e| anyhow!("dest key writer channel error: {e}"))?;
+        }
+        buffer.bytes = 0;
+        Ok(())
+    }
+
+    fn flush_all(&mut self) -> Result<()> {
+        for shard in 0..self.buffers.len() {
+            self.flush_shard(shard)?;
+        }
+        Ok(())
+    }
+}
+
+struct EdgeKeyBuffer {
+    data: Vec<u8>,
+    row_count: u64,
+}
+
+struct EdgeKeyBatcher {
+    edge_table: std::sync::Arc<str>,
+    edge_hash: u64,
+    buffers_src: Vec<EdgeKeyBuffer>,
+    buffers_dst: Vec<EdgeKeyBuffer>,
+    buffer_limit: usize,
+    senders: std::sync::Arc<Vec<std::sync::mpsc::SyncSender<DestKeyWriteMessage>>>,
+    error: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+}
+
+impl EdgeKeyBatcher {
+    fn new(
+        edge_table: std::sync::Arc<str>,
+        num_shards: usize,
+        buffer_limit: usize,
+        senders: std::sync::Arc<Vec<std::sync::mpsc::SyncSender<DestKeyWriteMessage>>>,
+        error: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+    ) -> Self {
+        let edge_hash = hash_name(&edge_table);
+        let buffers_src = (0..num_shards)
+            .map(|_| EdgeKeyBuffer {
+                data: Vec::new(),
+                row_count: 0,
+            })
+            .collect();
+        let buffers_dst = (0..num_shards)
+            .map(|_| EdgeKeyBuffer {
+                data: Vec::new(),
+                row_count: 0,
+            })
+            .collect();
+        Self {
+            edge_table,
+            edge_hash,
+            buffers_src,
+            buffers_dst,
+            buffer_limit,
+            senders,
+            error,
+        }
+    }
+
+    fn push_src(&mut self, shard: usize, row: &[u8]) -> Result<()> {
+        self.push_kind(EdgeKeyKind::Src, shard, row)
+    }
+
+    fn push_dst(&mut self, shard: usize, row: &[u8]) -> Result<()> {
+        self.push_kind(EdgeKeyKind::Dst, shard, row)
+    }
+
+    fn push_kind(&mut self, kind: EdgeKeyKind, shard: usize, row: &[u8]) -> Result<()> {
+        let buffers = match kind {
+            EdgeKeyKind::Src => &mut self.buffers_src,
+            EdgeKeyKind::Dst => &mut self.buffers_dst,
+        };
+        let buffer = buffers
+            .get_mut(shard)
+            .ok_or_else(|| anyhow!("edge key buffer shard {} out of bounds", shard))?;
+        append_temp_row(&mut buffer.data, row)?;
+        buffer.row_count = buffer.row_count.saturating_add(1);
+        if buffer.data.len() >= self.buffer_limit {
+            self.flush_shard(kind, shard)?;
+        }
+        Ok(())
+    }
+
+    fn flush_shard(&mut self, kind: EdgeKeyKind, shard: usize) -> Result<()> {
+        if let Ok(guard) = self.error.lock() {
+            if let Some(message) = guard.as_ref() {
+                return Err(anyhow!("dest key writer failed: {message}"));
+            }
+        }
+        let buffers = match kind {
+            EdgeKeyKind::Src => &mut self.buffers_src,
+            EdgeKeyKind::Dst => &mut self.buffers_dst,
+        };
+        let buffer = buffers
+            .get_mut(shard)
+            .ok_or_else(|| anyhow!("edge key buffer shard {} out of bounds", shard))?;
+        if buffer.row_count == 0 {
+            return Ok(());
+        }
+        let mut data = Vec::with_capacity(buffer.data.capacity());
+        std::mem::swap(&mut data, &mut buffer.data);
+        let batch = DestKeyWriteMessage::EdgeKey {
+            edge_table: std::sync::Arc::clone(&self.edge_table),
+            kind,
+            shard,
+            data,
+            row_count: buffer.row_count,
+        };
+        buffer.row_count = 0;
+        let idx = edge_writer_index(self.edge_hash, shard, self.senders.len());
+        self.senders[idx]
+            .send(batch)
+            .map_err(|e| anyhow!("dest key writer channel error: {e}"))?;
+        Ok(())
+    }
+
+    fn flush_all(&mut self) -> Result<()> {
+        for shard in 0..self.buffers_src.len() {
+            self.flush_shard(EdgeKeyKind::Src, shard)?;
+            self.flush_shard(EdgeKeyKind::Dst, shard)?;
         }
         Ok(())
     }
