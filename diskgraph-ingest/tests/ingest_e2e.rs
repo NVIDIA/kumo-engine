@@ -631,7 +631,7 @@ fn ingest_pk_map_header_has_expected_format() -> Result<()> {
     write_parquet(&table_path, schema, vec![ids, names])?;
 
     let source = serde_json::json!({
-        "dataset_name": "zero_fp_test",
+        "dataset_name": "pk_header_test",
         "tables": [
             {
                 "name": "Asset",

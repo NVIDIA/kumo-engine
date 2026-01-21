@@ -298,6 +298,10 @@ impl PkHashTable {
     pub fn shard(&self, index: usize) -> Option<&PkHashShard> {
         self.shards.get(index)
     }
+
+    pub fn shard_count(&self) -> usize {
+        self.shards.len()
+    }
 }
 
 pub fn key_type_from_metadata(pk: &PrimaryKeyMap) -> Result<KeyType> {
@@ -354,10 +358,22 @@ pub fn shard_for_key(key: &Key, num_shards: usize) -> usize {
     if num_shards <= 1 {
         return 0;
     }
-    let mut scratch = [0u8; 16];
-    let bytes = key_hash_bytes(key, &mut scratch);
     let mut hasher = GxHasher::with_seed(GXHASH_SHARD_SEED as i64);
-    hasher.write(bytes);
+    match key {
+        Key::Int(v) => {
+            let mut scratch = [0u8; 8];
+            scratch.copy_from_slice(&v.to_le_bytes());
+            hasher.write(&scratch);
+        }
+        Key::Uuid(v) => hasher.write(v),
+        Key::Uuid256(v) => hasher.write(v),
+        Key::Ip(v) => hasher.write(v),
+        Key::Bytes(v) => {
+            let len = (v.len() as u16).to_le_bytes();
+            hasher.write(&len);
+            hasher.write(v);
+        }
+    }
     (hasher.finish() as usize) % num_shards
 }
 
@@ -415,19 +431,6 @@ fn parse_ip_text(input: &str) -> Result<[u8; 16]> {
         std::net::IpAddr::V6(v6) => v6.octets(),
     };
     Ok(bytes)
-}
-
-fn key_hash_bytes<'a>(key: &'a Key, scratch: &'a mut [u8; 16]) -> &'a [u8] {
-    match key {
-        Key::Int(v) => {
-            scratch[..8].copy_from_slice(&v.to_le_bytes());
-            &scratch[..8]
-        }
-        Key::Uuid(v) => v.as_slice(),
-        Key::Uuid256(v) => v.as_slice(),
-        Key::Ip(v) => v.as_slice(),
-        Key::Bytes(v) => v.as_slice(),
-    }
 }
 
 fn lookup_id_only(shard: &PkHashShard, key: &Key) -> Option<u32> {

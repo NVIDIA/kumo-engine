@@ -488,6 +488,10 @@ impl TableReader {
         self.primary_key_map.as_ref()
     }
 
+    pub fn pk_map(&self) -> Option<&PkHashTable> {
+        self.pk_map.as_ref()
+    }
+
     pub fn node_data_compression(&self) -> Option<&NodeDataCompression> {
         self.node_data_compression.as_ref()
     }
