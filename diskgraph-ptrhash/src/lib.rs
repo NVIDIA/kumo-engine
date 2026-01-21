@@ -129,7 +129,9 @@ pub trait KeySource<Key: KeyT> {
     fn iter(&self) -> Self::Iter<'_>;
 }
 
-impl<Key: KeyT + Eq, V> KeySource<Key> for std::collections::HashMap<Key, V> {
+impl<Key: KeyT + Eq, V, S: std::hash::BuildHasher> KeySource<Key>
+    for std::collections::HashMap<Key, V, S>
+{
     type Iter<'a> = std::collections::hash_map::Keys<'a, Key, V>
     where
         Self: 'a,

@@ -52,7 +52,7 @@ use epserde::prelude::Serialize as EpSerialize;
 use ptr_hash::DefaultPtrHash;
 use std::fs;
 use std::io::{self, BufWriter, Cursor, Read, Write};
-use std::hash::{Hash, Hasher};
+use std::hash::{BuildHasherDefault, Hash, Hasher};
 use std::path::{Path, PathBuf};
 #[cfg(target_os = "linux")]
 use std::os::unix::io::AsRawFd;
@@ -93,12 +93,19 @@ struct EdgeMapScratch {
     fkey_bitmap: Vec<u8>,
 }
 
+type PkMapHasher = BuildHasherDefault<GxHasher>;
+type PkMapHashMap<K, V> = std::collections::HashMap<K, V, PkMapHasher>;
+
+fn new_pk_map<K, V>() -> PkMapHashMap<K, V> {
+    std::collections::HashMap::with_hasher(Default::default())
+}
+
 struct PkMapScratch {
-    seen_u64: std::collections::HashMap<u64, u32>,
-    seen_uuid: std::collections::HashMap<[u8; 16], u32>,
-    seen_uuid256: std::collections::HashMap<[u8; 32], u32>,
-    seen_ip: std::collections::HashMap<[u8; 16], u32>,
-    seen_bytes: std::collections::HashMap<Vec<u8>, u32>,
+    seen_u64: PkMapHashMap<u64, u32>,
+    seen_uuid: PkMapHashMap<[u8; 16], u32>,
+    seen_uuid256: PkMapHashMap<[u8; 32], u32>,
+    seen_ip: PkMapHashMap<[u8; 16], u32>,
+    seen_bytes: PkMapHashMap<Vec<u8>, u32>,
     entries: Vec<(u64, u32)>,
     ptrhash: PtrHashScratch<PkPtrHashOutput>,
 }
@@ -106,11 +113,11 @@ struct PkMapScratch {
 impl PkMapScratch {
     fn new() -> Self {
         Self {
-            seen_u64: std::collections::HashMap::new(),
-            seen_uuid: std::collections::HashMap::new(),
-            seen_uuid256: std::collections::HashMap::new(),
-            seen_ip: std::collections::HashMap::new(),
-            seen_bytes: std::collections::HashMap::new(),
+            seen_u64: new_pk_map(),
+            seen_uuid: new_pk_map(),
+            seen_uuid256: new_pk_map(),
+            seen_ip: new_pk_map(),
+            seen_bytes: new_pk_map(),
             entries: Vec::new(),
             ptrhash: PtrHashScratch::new(),
         }
@@ -178,8 +185,8 @@ impl Default for PkMapScratch {
     }
 }
 
-fn reserve_map<K: std::cmp::Eq + std::hash::Hash, V>(
-    map: &mut std::collections::HashMap<K, V>,
+fn reserve_map<K: std::cmp::Eq + std::hash::Hash, V, S: std::hash::BuildHasher>(
+    map: &mut std::collections::HashMap<K, V, S>,
     target: usize,
 ) {
     let cap = map.capacity();
@@ -3251,6 +3258,12 @@ impl IngestContext {
                         let meta_path = root.join(temp_pkey_meta_path(&table_name, shard));
                         let meta = read_temp_meta(&meta_path)?;
                         let total_rows = meta.row_count;
+                        let reserve_rows = total_rows
+                            .saturating_mul(110)
+                            .saturating_add(99)
+                            / 100;
+                        let reserve_rows_usize =
+                            usize::try_from(reserve_rows).unwrap_or(usize::MAX);
                         let data_path = root.join(temp_pkey_path(&table_name, shard));
                         let mut fkey_inputs: Vec<(PathBuf, PathBuf, ColumnSpec)> = Vec::new();
                         let mut edge_inputs: Vec<(PathBuf, PathBuf, ColumnSpec)> = Vec::new();
@@ -3322,10 +3335,8 @@ impl IngestContext {
                                     let mut ptrhash =
                                         std::mem::replace(&mut pkmap.ptrhash, PtrHashScratch::new());
                                     pkmap.clear_others_for(KeyType::Int64);
-                                    let total_rows_usize =
-                                        usize::try_from(total_rows).unwrap_or(usize::MAX);
                                     pkmap.seen_u64.clear();
-                                    reserve_map(&mut pkmap.seen_u64, total_rows_usize);
+                                    reserve_map(&mut pkmap.seen_u64, reserve_rows_usize);
                                     duplicate_samples_local.clear();
                                     {
                                         let seen = &mut pkmap.seen_u64;
@@ -3413,10 +3424,8 @@ impl IngestContext {
                                     let mut ptrhash =
                                         std::mem::replace(&mut pkmap.ptrhash, PtrHashScratch::new());
                                     pkmap.clear_others_for(KeyType::VarBytes);
-                                    let total_rows_usize =
-                                        usize::try_from(total_rows).unwrap_or(usize::MAX);
                                     pkmap.seen_bytes.clear();
-                                    reserve_map(&mut pkmap.seen_bytes, total_rows_usize);
+                                    reserve_map(&mut pkmap.seen_bytes, reserve_rows_usize);
                                     duplicate_samples_local.clear();
                                     {
                                         let seen = &mut pkmap.seen_bytes;
@@ -3510,10 +3519,8 @@ impl IngestContext {
                                     let mut ptrhash =
                                         std::mem::replace(&mut pkmap.ptrhash, PtrHashScratch::new());
                                     pkmap.clear_others_for(KeyType::Uuid);
-                                    let total_rows_usize =
-                                        usize::try_from(total_rows).unwrap_or(usize::MAX);
                                     pkmap.seen_uuid.clear();
-                                    reserve_map(&mut pkmap.seen_uuid, total_rows_usize);
+                                    reserve_map(&mut pkmap.seen_uuid, reserve_rows_usize);
                                     duplicate_samples_local.clear();
                                     {
                                         let seen = &mut pkmap.seen_uuid;
@@ -3602,10 +3609,8 @@ impl IngestContext {
                                     let mut ptrhash =
                                         std::mem::replace(&mut pkmap.ptrhash, PtrHashScratch::new());
                                     pkmap.clear_others_for(KeyType::Uuid256);
-                                    let total_rows_usize =
-                                        usize::try_from(total_rows).unwrap_or(usize::MAX);
                                     pkmap.seen_uuid256.clear();
-                                    reserve_map(&mut pkmap.seen_uuid256, total_rows_usize);
+                                    reserve_map(&mut pkmap.seen_uuid256, reserve_rows_usize);
                                     duplicate_samples_local.clear();
                                     {
                                         let seen = &mut pkmap.seen_uuid256;
@@ -3694,10 +3699,8 @@ impl IngestContext {
                                     let mut ptrhash =
                                         std::mem::replace(&mut pkmap.ptrhash, PtrHashScratch::new());
                                     pkmap.clear_others_for(KeyType::Ip);
-                                    let total_rows_usize =
-                                        usize::try_from(total_rows).unwrap_or(usize::MAX);
                                     pkmap.seen_ip.clear();
-                                    reserve_map(&mut pkmap.seen_ip, total_rows_usize);
+                                    reserve_map(&mut pkmap.seen_ip, reserve_rows_usize);
                                     duplicate_samples_local.clear();
                                     {
                                         let seen = &mut pkmap.seen_ip;
