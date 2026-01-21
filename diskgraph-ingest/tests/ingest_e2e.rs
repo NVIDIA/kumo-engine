@@ -2,6 +2,7 @@ use anyhow::{anyhow, Result};
 use diskgraph_core::metadata::DatasetMetadata;
 use diskgraph_ingest::{ingest, ingest_with_stats, Dest, IngestOptions};
 use diskgraph_index::graph::GraphIndexReader;
+use diskgraph_index::pkmap::{shard_for_key, Key};
 use parquet::arrow::ArrowWriter;
 use parquet::file::properties::WriterProperties;
 use std::fs;
@@ -67,6 +68,19 @@ fn assert_pkey_lookups(reader: &GraphIndexReader, table_name: &str, keys: &[&str
     Ok(())
 }
 
+fn assert_pkey_missing(reader: &GraphIndexReader, table_name: &str, keys: &[&str]) -> Result<()> {
+    let table = reader
+        .table(table_name)
+        .ok_or_else(|| anyhow!("missing table {table_name}"))?;
+    for key_str in keys {
+        let key = table.parse_pk_key(key_str)?;
+        if table.node_id_from_pk(&key)?.is_some() {
+            return Err(anyhow!("expected missing pk for {table_name}:{key_str}"));
+        }
+    }
+    Ok(())
+}
+
 fn sum_relation_edges(
     table: &diskgraph_index::graph::TableReader,
     rel_name: &str,
@@ -107,6 +121,37 @@ fn extract_relation_sort_keys(
             let sort = (val >> seg.layout.dst_bits as u128) & ((1u128 << bits) - 1);
             out.push(sort as u64);
         }
+        buf.fill(0);
+    }
+    Ok(out)
+}
+
+fn extract_relation_entries(
+    table: &diskgraph_index::graph::TableReader,
+    rel_name: &str,
+    node_id: u64,
+) -> Result<Vec<(u64, u64)>> {
+    let rel_idx = table
+        .relations()
+        .iter()
+        .position(|rel| rel.name == rel_name)
+        .ok_or_else(|| anyhow!("missing relation {rel_name}"))?;
+    let view = table.edges_for_node(node_id)?;
+    let segments = view.relation_segments()?;
+    let seg = &segments[rel_idx];
+    let mut buf = [0u8; 16];
+    let mut out = Vec::new();
+    for chunk in seg.data.chunks(seg.layout.entry_bytes) {
+        buf[..seg.layout.entry_bytes].copy_from_slice(chunk);
+        let val = u128::from_le_bytes(buf);
+        let dst_mask = seg.layout.dst_mask as u128;
+        let dst = (val & dst_mask) as u64;
+        let sort = if let Some(bits) = seg.layout.dest_sort_key_bits {
+            (val >> seg.layout.dst_bits as u128) & ((1u128 << bits) - 1)
+        } else {
+            0
+        };
+        out.push((dst, sort as u64));
         buf.fill(0);
     }
     Ok(out)
@@ -550,8 +595,8 @@ fn ingest_parquet_with_sorted_mapping() -> Result<()> {
             Field::new("dst_id", DataType::Utf8, false),
         ]),
         vec![
-            Arc::new(StringArray::from(vec!["SKU00001", "SKU00002"])) as ArrayRef,
-            Arc::new(StringArray::from(vec!["SKU00002", "SKU00003"])) as ArrayRef,
+            Arc::new(StringArray::from(vec!["SKU00001", "SKU00002", "SKU00003"])) as ArrayRef,
+            Arc::new(StringArray::from(vec!["SKU00002", "SKU00003", "SKU99999"])) as ArrayRef,
         ],
     )?;
 
@@ -656,6 +701,9 @@ fn ingest_parquet_with_sorted_mapping() -> Result<()> {
         shard_seen.iter().all(|seen| *seen),
         "expected keys to cover all shards, got {shard_seen:?}"
     );
+    assert_pkey_missing(&reader, "Sku", &["SKU99999"])?;
+    let total_edges = sum_relation_edges(&table, "edge_SkuEdge_src_to_dst")?;
+    assert_eq!(total_edges, 2);
 
     Ok(())
 }
@@ -668,6 +716,19 @@ fn ingest_parquet_with_int_pk_lookup() -> Result<()> {
 
     let table_path = input_root.join("items.parquet");
     let edge_path = input_root.join("item_edges.parquet");
+    let mut ids: Vec<i64> = Vec::new();
+    let mut seen = vec![false; 2];
+    let mut cursor = 1_i64;
+    while (!seen.iter().all(|v| *v) || ids.len() < 3) && ids.len() < 8 {
+        let key = Key::Int(cursor as u64);
+        let shard = shard_for_key(&key, 2);
+        if !seen[shard] {
+            seen[shard] = true;
+        }
+        ids.push(cursor);
+        cursor += 1;
+    }
+    let names: Vec<String> = ids.iter().map(|id| format!("name-{id}")).collect();
     write_parquet(
         &table_path,
         Schema::new(vec![
@@ -675,8 +736,8 @@ fn ingest_parquet_with_int_pk_lookup() -> Result<()> {
             Field::new("name", DataType::Utf8, false),
         ]),
         vec![
-            Arc::new(Int64Array::from(vec![1_i64, 2, 3, 4])) as ArrayRef,
-            Arc::new(StringArray::from(vec!["a", "b", "c", "d"])) as ArrayRef,
+            Arc::new(Int64Array::from(ids.clone())) as ArrayRef,
+            Arc::new(StringArray::from(names)) as ArrayRef,
         ],
     )?;
     write_parquet(
@@ -686,8 +747,8 @@ fn ingest_parquet_with_int_pk_lookup() -> Result<()> {
             Field::new("dst_id", DataType::Int64, false),
         ]),
         vec![
-            Arc::new(Int64Array::from(vec![1_i64, 2])) as ArrayRef,
-            Arc::new(Int64Array::from(vec![2_i64, 3])) as ArrayRef,
+            Arc::new(Int64Array::from(vec![ids[0], ids[1], ids[2]])) as ArrayRef,
+            Arc::new(Int64Array::from(vec![ids[1], ids[2], 9999_i64])) as ArrayRef,
         ],
     )?;
 
@@ -737,7 +798,13 @@ fn ingest_parquet_with_int_pk_lookup() -> Result<()> {
     )?;
 
     let reader = GraphIndexReader::open(&output_root.join("index_metadata.json"), &output_root)?;
-    assert_pkey_lookups(&reader, "Item", &["1", "2", "3", "4"])?;
+    let keys: Vec<String> = ids.iter().map(|id| id.to_string()).collect();
+    let key_refs: Vec<&str> = keys.iter().map(|s| s.as_str()).collect();
+    assert_pkey_lookups(&reader, "Item", &key_refs)?;
+    assert_pkey_missing(&reader, "Item", &["9999"])?;
+    let table = reader.table("Item").ok_or_else(|| anyhow!("missing Item table"))?;
+    let total_edges = sum_relation_edges(&table, "edge_ItemEdge_src_to_dst")?;
+    assert_eq!(total_edges, 2);
 
     Ok(())
 }
@@ -754,15 +821,37 @@ fn ingest_csv_with_bytes_pk_mapping() -> Result<()> {
         Field::new("id", DataType::Binary, false),
         Field::new("name", DataType::Utf8, false),
     ]);
-    let ids = Arc::new(BinaryArray::from(vec![b"ABCD".as_ref(), b"EFGH".as_ref()])) as ArrayRef;
-    let names = Arc::new(StringArray::from(vec!["asset-a", "asset-b"])) as ArrayRef;
-    write_parquet(&table_path, schema, vec![ids, names])?;
+    let mut ids: Vec<[u8; 4]> = Vec::new();
+    let mut seen = vec![false; 2];
+    let mut cursor = 0u8;
+    while (!seen.iter().all(|v| *v) || ids.len() < 3) && ids.len() < 16 {
+        let key = [b'A', b'A', b'A', b'A' + cursor];
+        let shard = shard_for_key(&Key::Bytes(key.to_vec()), 2);
+        if !seen[shard] {
+            seen[shard] = true;
+        }
+        ids.push(key);
+        cursor = cursor.wrapping_add(1);
+    }
+    let ids_bytes: Vec<&[u8]> = ids.iter().map(|id| id.as_ref()).collect();
+    let ids_array = Arc::new(BinaryArray::from(ids_bytes)) as ArrayRef;
+    let names: Vec<String> = ids
+        .iter()
+        .enumerate()
+        .map(|(idx, _)| format!("asset-{idx}"))
+        .collect();
+    let names = Arc::new(StringArray::from(names)) as ArrayRef;
+    write_parquet(&table_path, schema, vec![ids_array, names])?;
     let edge_ids_src = Arc::new(BinaryArray::from(vec![
-        b"ABCD".as_ref(),
-        b"EFGH".as_ref(),
+        ids[0].as_ref(),
+        ids[1].as_ref(),
+        ids[2].as_ref(),
     ])) as ArrayRef;
-    let edge_ids_dst =
-        Arc::new(BinaryArray::from(vec![b"EFGH".as_ref(), b"ABCD".as_ref()])) as ArrayRef;
+    let edge_ids_dst = Arc::new(BinaryArray::from(vec![
+        ids[1].as_ref(),
+        ids[0].as_ref(),
+        b"IJKL".as_ref(),
+    ])) as ArrayRef;
     write_parquet(
         &edge_path,
         Schema::new(vec![
@@ -774,6 +863,7 @@ fn ingest_csv_with_bytes_pk_mapping() -> Result<()> {
 
     let source = serde_json::json!({
         "dataset_name": "bytes_pk_test",
+        "num_shards": 2,
         "tables": [
             {
                 "name": "Asset",
@@ -827,7 +917,16 @@ fn ingest_csv_with_bytes_pk_mapping() -> Result<()> {
     assert!(fs::metadata(hash_path)?.len() > 0);
 
     let reader = GraphIndexReader::open(&output_root.join("index_metadata.json"), &output_root)?;
-    assert_pkey_lookups(&reader, "Asset", &["ABCD", "EFGH"])?;
+    let keys: Vec<String> = ids
+        .iter()
+        .map(|id| String::from_utf8_lossy(id).to_string())
+        .collect();
+    let key_refs: Vec<&str> = keys.iter().map(|s| s.as_str()).collect();
+    assert_pkey_lookups(&reader, "Asset", &key_refs)?;
+    assert_pkey_missing(&reader, "Asset", &["IJKL"])?;
+    let table = reader.table("Asset").ok_or_else(|| anyhow!("missing Asset table"))?;
+    let total_edges = sum_relation_edges(&table, "edge_AssetEdge_src_to_dst")?;
+    assert_eq!(total_edges, 2);
 
     Ok(())
 }
@@ -1337,6 +1436,18 @@ fn ingest_edge_table_mixed_sort_keys() -> Result<()> {
 
     let reader = GraphIndexReader::open(&output_root.join("index_metadata.json"), &output_root)?;
     let user_table = reader.table("User").unwrap();
+    let rel_idx = user_table
+        .relations()
+        .iter()
+        .position(|rel| rel.name == "edge_Click_src_to_dst")
+        .ok_or_else(|| anyhow!("missing edge_Click_src_to_dst relation"))?;
+    let segments = user_table.edges_for_node(0)?.relation_segments()?;
+    let layout = &segments[rel_idx].layout;
+    let dst_bytes = ((layout.dst_bits as usize) + 7) / 8;
+    assert!(
+        layout.entry_bytes > dst_bytes,
+        "expected edge payload bytes for edge_Click_src_to_dst"
+    );
     let sort_keys = extract_relation_sort_keys(&user_table, "edge_Click_src_to_dst", 0)?;
     let ts0 = encode_ts_i32(10, 0, 1);
     let ts1 = encode_ts_i32(20, 0, 1);
@@ -1345,6 +1456,9 @@ fn ingest_edge_table_mixed_sort_keys() -> Result<()> {
     let expected0 = (ts1 << 32) | weight1;
     let expected1 = (ts0 << 32) | weight0;
     assert_eq!(sort_keys, vec![expected0, expected1]);
+    let entries = extract_relation_entries(&user_table, "edge_Click_src_to_dst", 0)?;
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[0].1, expected0);
 
     Ok(())
 }
@@ -1425,8 +1539,16 @@ fn ingest_parquet_with_uuid_ip_types() -> Result<()> {
             Field::new("ip_id", DataType::Utf8, false),
         ]),
         vec![
-            Arc::new(StringArray::from(user_ids.clone())),
-            Arc::new(StringArray::from(ip_ids.clone())),
+            Arc::new(StringArray::from(vec![
+                user_ids[0].to_string(),
+                user_ids[1].to_string(),
+                user_ids[0].to_string(),
+            ])),
+            Arc::new(StringArray::from(vec![
+                ip_ids[0].to_string(),
+                ip_ids[1].to_string(),
+                "203.0.113.99".to_string(),
+            ])),
         ],
     )?;
 
@@ -1517,8 +1639,10 @@ fn ingest_parquet_with_uuid_ip_types() -> Result<()> {
     )?;
 
     assert_eq!(stats.key_parse_failures, 0);
-    assert_eq!(stats.key_lookup_failures, 0);
-    assert!(stats.key_failure_samples.is_empty());
+    assert!(
+        stats.key_lookup_failures <= 1,
+        "expected at most one missing edge lookup"
+    );
 
     let reader = GraphIndexReader::open(&output_root.join("index_metadata.json"), &output_root)?;
     assert_eq!(reader.table("User").unwrap().node_count(), 2);
@@ -1535,6 +1659,130 @@ fn ingest_parquet_with_uuid_ip_types() -> Result<()> {
             "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         ],
     )?;
+    assert_pkey_missing(
+        &reader,
+        "User",
+        &["ffffffffffffffffffffffffffffffff"],
+    )?;
+    assert_pkey_missing(
+        &reader,
+        "DeviceToken",
+        &[ "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff" ],
+    )?;
+    assert_pkey_missing(&reader, "IpAddress", &["203.0.113.99"])?;
+    let user_table = reader.table("User").unwrap();
+    let total_edges = sum_relation_edges(&user_table, "edge_UserIpEdge_src_to_dst")?;
+    assert_eq!(total_edges, 2);
+
+    Ok(())
+}
+
+#[test]
+fn ingest_parquet_with_utf8_string_pk_lookup() -> Result<()> {
+    let dir = tempdir()?;
+    let input_root = dir.path().join("input");
+    let output_root = dir.path().join("output");
+
+    let table_path = input_root.join("words.parquet");
+    let edge_path = input_root.join("word_edges.parquet");
+    let mut ids: Vec<String> = Vec::new();
+    let mut seen = vec![false; 2];
+    let candidates = [
+        "café-01",
+        "niño-02",
+        "résumé",
+        "jalapeño",
+        "über-05",
+        "façade",
+    ];
+    for candidate in candidates.iter() {
+        let key = Key::Bytes(candidate.as_bytes().to_vec());
+        let shard = shard_for_key(&key, 2);
+        if !seen[shard] {
+            seen[shard] = true;
+        }
+        ids.push(candidate.to_string());
+        if seen.iter().all(|v| *v) {
+            break;
+        }
+    }
+    if !seen.iter().all(|v| *v) {
+        return Err(anyhow!("failed to cover all shards with utf8 keys"));
+    }
+    write_parquet(
+        &table_path,
+        Schema::new(vec![
+            Field::new("id", DataType::Utf8, false),
+            Field::new("name", DataType::Utf8, false),
+        ]),
+        vec![
+            Arc::new(StringArray::from(ids.clone())) as ArrayRef,
+            Arc::new(StringArray::from(
+                ids.iter().map(|id| format!("{id}-name")).collect::<Vec<_>>(),
+            )) as ArrayRef,
+        ],
+    )?;
+    write_parquet(
+        &edge_path,
+        Schema::new(vec![
+            Field::new("src_id", DataType::Utf8, false),
+            Field::new("dst_id", DataType::Utf8, false),
+        ]),
+        vec![
+            Arc::new(StringArray::from(vec![ids[0].clone(), ids[1].clone(), ids[0].clone()]))
+                as ArrayRef,
+            Arc::new(StringArray::from(vec![ids[1].clone(), ids[0].clone(), "不存在".to_string()]))
+                as ArrayRef,
+        ],
+    )?;
+
+    let source = serde_json::json!({
+        "dataset_name": "utf8_string_pk_test",
+        "num_shards": 2,
+        "tables": [
+            {
+                "name": "Word",
+                "format": "parquet",
+                "paths": [table_path.to_string_lossy()],
+                "primary_key": "id",
+                "columns": [
+                    {"name": "id", "ingested_dtype": "string"},
+                    {"name": "name", "ingested_dtype": "string"}
+                ]
+            },
+            {
+                "name": "WordEdge",
+                "format": "parquet",
+                "paths": [edge_path.to_string_lossy()],
+                "edge_table": {
+                    "src_fk": {"column": "src_id", "ref_table": "Word", "ref_column": "id"},
+                    "dst_fk": {"column": "dst_id", "ref_table": "Word", "ref_column": "id"}
+                },
+                "columns": [
+                    {"name": "src_id", "ingested_dtype": "string"},
+                    {"name": "dst_id", "ingested_dtype": "string"}
+                ]
+            }
+        ],
+        "relationships": []
+    });
+    let source_path = dir.path().join("diskgraph_config.json");
+    fs::write(&source_path, serde_json::to_vec_pretty(&source)?)?;
+
+    ingest(
+        &source_path,
+        output_root.to_str().unwrap(),
+        Dest::Local,
+        IngestOptions::default(),
+    )?;
+
+    let reader = GraphIndexReader::open(&output_root.join("index_metadata.json"), &output_root)?;
+    let keys: Vec<&str> = ids.iter().map(|s| s.as_str()).collect();
+    assert_pkey_lookups(&reader, "Word", &keys)?;
+    assert_pkey_missing(&reader, "Word", &["不存在"])?;
+    let table = reader.table("Word").ok_or_else(|| anyhow!("missing Word table"))?;
+    let total_edges = sum_relation_edges(&table, "edge_WordEdge_src_to_dst")?;
+    assert_eq!(total_edges, 2);
 
     Ok(())
 }
