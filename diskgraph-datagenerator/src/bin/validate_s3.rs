@@ -330,6 +330,8 @@ async fn verify_s3_stats(data_dir: &Path, customer: &str, job_id: &str, stats: &
         customer
     };
 
+    let mut table_infos: std::collections::HashMap<String, TableMetadata> = std::collections::HashMap::new();
+
     // 1. Verify Node Counts (Table Stats)
     let mut dir_reader = fs::read_dir(data_dir)?;
     while let Some(entry) = dir_reader.next() {
@@ -348,10 +350,15 @@ async fn verify_s3_stats(data_dir: &Path, customer: &str, job_id: &str, stats: &
         let meta = attrs.get("table_metadata_config")
             .ok_or_else(|| anyhow::anyhow!("missing table_metadata_config in {:?}", attrs_path))?;
 
-        let source_name = meta.get("source_name").and_then(|v| v.as_str()).unwrap_or_default();
-        let data_source = meta.get("data_source").and_then(|v| v.as_str()).unwrap_or_default();
+        let source_name = meta.get("source_name").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+        let data_source = meta.get("data_source").and_then(|v| v.as_str()).unwrap_or_default().to_string();
         let data_version = meta.get("data_version").and_then(|v| v.as_str()).unwrap_or_default();
-        let table_name = meta.get("table_name").and_then(|v| v.as_str()).unwrap_or_default();
+        let table_name = meta.get("table_name").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+
+        table_infos.insert(table_name.clone(), TableMetadata {
+            source_name: source_name.clone(),
+            data_source: data_source.clone(),
+        });
 
         let s3_key_base = format!(
             "{}/prod/data-persist-dir/data_backend_cache/tables/{}/{}/{}/table_stats",
@@ -380,7 +387,7 @@ async fn verify_s3_stats(data_dir: &Path, customer: &str, job_id: &str, stats: &
             .and_then(|v| v.as_u64());
 
         if let Some(s3_rows) = s3_rows {
-            if let Some(&ingest_rows) = stats.node_counts.get(table_name) {
+            if let Some(&ingest_rows) = stats.node_counts.get(&table_name) {
                  if diff_pct(s3_rows, ingest_rows) < 0.01 {
                      messages.push(format!("PASS: {} (S3: {}, Ingest: {})", table_name, s3_rows, ingest_rows));
                  } else {
@@ -450,67 +457,74 @@ async fn verify_s3_stats(data_dir: &Path, customer: &str, job_id: &str, stats: &
         if output.status.success() {
             let edge_stats: serde_json::Value = serde_json::from_slice(&output.stdout)?;
             if let Some(obj) = edge_stats.as_object() {
-                let mut ingest_edges_matched = HashSet::new();
-
                 // Collect table names sorted by length descending to ensure greedy matching
-                let mut table_names: Vec<&String> = stats.node_counts.keys().collect();
-                table_names.sort_by(|a, b| b.len().cmp(&a.len()));
-
-                for (s3_key, val_obj) in obj {
-                    if !s3_key.ends_with("EDGE_COUNT") { continue; }
-                    let s3_count = val_obj.get("value").and_then(|v| v.as_u64()).unwrap_or(0);
-
-                    let mut found_any_name_match = false;
-                    for (relation_name, &ingest_count) in &stats.edge_counts {
-                        // Strip _reverse suffix
-                        let base_relation = relation_name.trim_end_matches("_reverse");
-                        let parts: Vec<&str> = base_relation.split("_to_").collect();
-                        if parts.len() != 2 { continue; }
-
-                        // Identify src and dst tables from relation name parts
-                        let mut src_table = "";
-                        for t in &table_names {
-                            if parts[0].starts_with(*t) {
-                                src_table = t;
-                                break;
-                            }
-                        }
-
-                        let mut dst_table = "";
-                        for t in &table_names {
-                            if parts[1].starts_with(*t) {
-                                dst_table = t;
-                                break;
-                            }
-                        }
-
-                        if !src_table.is_empty() && !dst_table.is_empty() {
-                            // Extract core table names (handling Databricks ____ separator)
-                            let src_core = src_table.split("____").last().unwrap_or(src_table);
-                            let dst_core = dst_table.split("____").last().unwrap_or(dst_table);
-
-                            // Check if S3 key contains these specific table names
-                            if s3_key.contains(src_core) && s3_key.contains(dst_core) {
-                                found_any_name_match = true;
-                                ingest_edges_matched.insert(relation_name.clone());
-
-                                if s3_count == ingest_count {
-                                    messages.push(format!("PASS: Edge {} (S3: {}, Ingest: {})", relation_name, s3_count, ingest_count));
-                                } else {
-                                    messages.push(format!("FAIL: Edge {} count mismatch (S3: {}, Ingest: {})", relation_name, s3_count, ingest_count));
-                                }
-                            }
-                        }
-                    }
-
-                    if !found_any_name_match {
-                        messages.push(format!("INFO: S3 Edge {} (S3 rows: {}, not in ingest edge_counts)", s3_key, s3_count));
-                    }
-                }
+                let mut sorted_table_names: Vec<String> = table_infos.keys().cloned().collect();
+                sorted_table_names.sort_by(|a, b| b.len().cmp(&a.len()));
 
                 for (relation_name, &ingest_count) in &stats.edge_counts {
-                    if !ingest_edges_matched.contains(relation_name) {
-                        messages.push(format!("FAIL: Edge {} (Ingest: {}, No matching S3 relation found)", relation_name, ingest_count));
+                    // Parse relation name: {src_table}_{src_key}_to_{dst_table}_{dst_key}
+                    let base_relation = relation_name.trim_end_matches("_reverse");
+                    let parts: Vec<&str> = base_relation.split("_to_").collect();
+                    if parts.len() != 2 {
+                         messages.push(format!("INFO: Skipping complex edge name {}", relation_name));
+                         continue;
+                    }
+
+                    let (src_part, dst_part) = (parts[0], parts[1]);
+
+                    // Helper to find table and key
+                    let find_table_key = |part: &str| -> Option<(String, String)> {
+                        for t in &sorted_table_names {
+                            if part.starts_with(t) {
+                                let key_part = &part[t.len()..];
+                                // Expecting key part to start with _ usually
+                                // The user example: sales_item_SOLDTOPARTY. Table: sales_item. Key: _SOLDTOPARTY.
+                                // S3 needs SOLDTOPARTY.
+                                let key = key_part.trim_start_matches('_');
+                                return Some((t.clone(), key.to_string()));
+                            }
+                        }
+                        None
+                    };
+
+                    let src_info = find_table_key(src_part);
+                    let dst_info = find_table_key(dst_part);
+
+                    if let (Some((src_table, src_key)), Some((dst_table, dst_key))) = (src_info, dst_info) {
+                        if let (Some(src_meta), Some(dst_meta)) = (table_infos.get(&src_table), table_infos.get(&dst_table)) {
+                             // Construct S3 Key
+                             // Pattern: {src_source}__{src_ds}__{dst_source}__{dst_ds}__{src_key}__{dst_key}__EDGE_COUNT
+                             let s3_key_forward = format!(
+                                 "{}__{}__{}__{}__{}__{}__EDGE_COUNT",
+                                 src_meta.source_name, src_meta.data_source,
+                                 dst_meta.source_name, dst_meta.data_source,
+                                 src_key, dst_key
+                             );
+
+                             let s3_key_reverse = format!(
+                                 "{}__{}__{}__{}__{}__{}__EDGE_COUNT",
+                                 dst_meta.source_name, dst_meta.data_source,
+                                 src_meta.source_name, src_meta.data_source,
+                                 dst_key, src_key
+                             );
+
+                             let matched_s3_val = obj.get(&s3_key_forward).or_else(|| obj.get(&s3_key_reverse));
+
+                             if let Some(val) = matched_s3_val {
+                                 let s3_count = val.get("value").and_then(|v| v.as_u64()).unwrap_or(0);
+                                 if s3_count == ingest_count {
+                                     messages.push(format!("PASS: Edge {} (S3: {}, Ingest: {})", relation_name, s3_count, ingest_count));
+                                 } else {
+                                     messages.push(format!("FAIL: Edge {} count mismatch (S3: {}, Ingest: {})", relation_name, s3_count, ingest_count));
+                                 }
+                             } else {
+                                 messages.push(format!("FAIL: Edge {} (Ingest: {}) - S3 key {} (or reverse) not found", relation_name, ingest_count, s3_key_forward));
+                             }
+                        } else {
+                             messages.push(format!("INFO: Missing metadata for tables in edge {}", relation_name));
+                        }
+                    } else {
+                         messages.push(format!("INFO: Could not parse tables from edge {}", relation_name));
                     }
                 }
             }
@@ -522,6 +536,11 @@ async fn verify_s3_stats(data_dir: &Path, customer: &str, job_id: &str, stats: &
     }
 
     Ok(messages)
+}
+
+struct TableMetadata {
+    source_name: String,
+    data_source: String,
 }
 
 fn diff_pct(a: u64, b: u64) -> f64 {
