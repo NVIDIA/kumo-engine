@@ -452,20 +452,45 @@ async fn verify_s3_stats(data_dir: &Path, customer: &str, job_id: &str, stats: &
             if let Some(obj) = edge_stats.as_object() {
                 let mut ingest_edges_matched = HashSet::new();
 
+                // Collect table names sorted by length descending to ensure greedy matching
+                let mut table_names: Vec<&String> = stats.node_counts.keys().collect();
+                table_names.sort_by(|a, b| b.len().cmp(&a.len()));
+
                 for (s3_key, val_obj) in obj {
                     if !s3_key.ends_with("EDGE_COUNT") { continue; }
                     let s3_count = val_obj.get("value").and_then(|v| v.as_u64()).unwrap_or(0);
 
                     let mut found_any_name_match = false;
                     for (relation_name, &ingest_count) in &stats.edge_counts {
-                        // Strip _reverse suffix for name matching
+                        // Strip _reverse suffix
                         let base_relation = relation_name.trim_end_matches("_reverse");
                         let parts: Vec<&str> = base_relation.split("_to_").collect();
-                        if parts.len() == 2 {
-                            let src_table = parts[0].split('_').next().unwrap_or("");
-                            let dst_table = parts[1].split('_').next().unwrap_or("");
+                        if parts.len() != 2 { continue; }
 
-                            if s3_key.contains(src_table) && s3_key.contains(dst_table) {
+                        // Identify src and dst tables from relation name parts
+                        let mut src_table = "";
+                        for t in &table_names {
+                            if parts[0].starts_with(*t) {
+                                src_table = t;
+                                break;
+                            }
+                        }
+
+                        let mut dst_table = "";
+                        for t in &table_names {
+                            if parts[1].starts_with(*t) {
+                                dst_table = t;
+                                break;
+                            }
+                        }
+
+                        if !src_table.is_empty() && !dst_table.is_empty() {
+                            // Extract core table names (handling Databricks ____ separator)
+                            let src_core = src_table.split("____").last().unwrap_or(src_table);
+                            let dst_core = dst_table.split("____").last().unwrap_or(dst_table);
+
+                            // Check if S3 key contains these specific table names
+                            if s3_key.contains(src_core) && s3_key.contains(dst_core) {
                                 found_any_name_match = true;
                                 ingest_edges_matched.insert(relation_name.clone());
 
