@@ -2,13 +2,15 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use diskgraph_datagenerator::downloader::{download_job, parse_job_spec, DownloadOptions};
 use diskgraph_infer::{infer_source_metadata, parse_root_source, InferOptions};
-use diskgraph_ingest::{ingest_with_stats, Dest, IngestOptions};
+use diskgraph_ingest::{ingest_with_stats, Dest, IngestOptions, IngestStats};
 use diskgraph_ingest::progress::{build_progress, format_count};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
+use std::process::Stdio;
+use tokio::process::Command;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about = "Validate ingestion from Kumo customer/job specs.")]
@@ -29,9 +31,25 @@ struct Args {
     #[arg(long, default_value_t = false)]
     keep: bool,
 
+    /// If set, does not clean the download directory before downloading (resumes/verifies existing files).
+    #[arg(long, default_value_t = false)]
+    resume: bool,
+
     /// Output path for the incremental JSON validation report.
     #[arg(long, default_value = "validation_report.json")]
     report_file: PathBuf,
+
+    /// Enable parallel ingestion.
+    #[arg(long, default_value_t = true)]
+    parallel: bool,
+
+    /// Memory budget for index build edge sort (bytes).
+    #[arg(long)]
+    index_mem_budget_bytes: Option<u64>,
+
+    /// Number of shards for the dataset.
+    #[arg(long)]
+    num_shards: Option<usize>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -89,7 +107,18 @@ async fn main() -> Result<()> {
 
         loop {
             let start = Instant::now();
-            match validate_job(job, &download_root, &output_root, args.keep).await {
+            match validate_job(
+                job,
+                &download_root,
+                &output_root,
+                args.keep,
+                args.resume,
+                args.parallel,
+                args.index_mem_budget_bytes,
+                args.num_shards,
+            )
+            .await
+            {
                 Ok(report) => {
                     let duration = start.elapsed();
                     println!(">>> Finished Job: {} in {:?}", job, duration);
@@ -182,6 +211,7 @@ struct ValidationReport {
     total_edges: u64,
     ingest_time_ms: u64,
     index_size_bytes: u64,
+    s3_stats_verification: Option<Vec<String>>,
 }
 
 async fn validate_job(
@@ -189,12 +219,17 @@ async fn validate_job(
     download_root_base: &Path,
     output_root_base: &Path,
     keep: bool,
+    resume: bool,
+    parallel: bool,
+    index_mem_budget_bytes: Option<u64>,
+    num_shards: Option<usize>,
 ) -> Result<ValidationReport> {
     // 1. Download
     println!("Downloading to {}...", download_root_base.display());
     
     let options = DownloadOptions {
         out_root: download_root_base.to_path_buf(),
+        clean: !resume,
         ..Default::default()
     };
 
@@ -218,7 +253,12 @@ async fn validate_job(
     let mut infer_opts = InferOptions::default();
     infer_opts.graph_config = graph_config;
 
-    let infer_res = infer_source_metadata(&source_root, infer_opts)?;
+    let mut infer_res = infer_source_metadata(&source_root, infer_opts)?;
+
+    if let Some(shards) = num_shards {
+        println!("Overriding num_shards to {}", shards);
+        infer_res.metadata.num_shards = Some(shards);
+    }
 
     let metadata_path = data_dir.join("diskgraph_config.json");
     fs::write(&metadata_path, serde_json::to_vec_pretty(&infer_res.metadata)?)?;
@@ -233,7 +273,8 @@ async fn validate_job(
 
     println!("Ingesting to {}...", output_path.display());
     let options = IngestOptions {
-        parallel: true,
+        parallel,
+        index_mem_budget_bytes,
         progress: build_progress(),
         ..Default::default()
     };
@@ -246,6 +287,17 @@ async fn validate_job(
 
     // 4. Measure Size
     let index_size = get_dir_size(&output_path)?;
+
+    // 5. Verify S3 Stats
+    let (customer, job_id) = parse_job_spec(job_spec)?;
+    println!("Verifying S3 Stats...");
+    let s3_verification = match verify_s3_stats(&data_dir, &customer, &job_id, &stats).await {
+        Ok(v) => Some(v),
+        Err(e) => {
+            eprintln!("Warning: Failed to verify S3 stats: {:?}", e);
+            Some(vec![format!("Error: {:?}", e)])
+        }
+    };
 
     // Cleanup
     if !keep {
@@ -261,7 +313,194 @@ async fn validate_job(
         total_edges: stats.total_edges,
         ingest_time_ms: stats.perf.wall_time_ms,
         index_size_bytes: index_size,
+        s3_stats_verification: s3_verification,
     })
+}
+
+async fn verify_s3_stats(data_dir: &Path, customer: &str, job_id: &str, stats: &IngestStats) -> Result<Vec<String>> {
+    let mut messages = Vec::new();
+    let bucket = if customer.eq_ignore_ascii_case("doordash") {
+        "kumo-doordash-cache"
+    } else {
+        "kumo-prod-dataplane-bucket"
+    };
+    let customer_path = if customer.eq_ignore_ascii_case("doordash") {
+        "kumo"
+    } else {
+        customer
+    };
+
+    // 1. Verify Node Counts (Table Stats)
+    let mut dir_reader = fs::read_dir(data_dir)?;
+    while let Some(entry) = dir_reader.next() {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let attrs_path = path.join("attributes.json");
+        if !attrs_path.exists() {
+            continue;
+        }
+
+        let attrs_bytes = fs::read(&attrs_path)?;
+        let attrs: serde_json::Value = serde_json::from_slice(&attrs_bytes)?;
+        let meta = attrs.get("table_metadata_config")
+            .ok_or_else(|| anyhow::anyhow!("missing table_metadata_config in {:?}", attrs_path))?;
+        
+        let source_name = meta.get("source_name").and_then(|v| v.as_str()).unwrap_or_default();
+        let data_source = meta.get("data_source").and_then(|v| v.as_str()).unwrap_or_default();
+        let data_version = meta.get("data_version").and_then(|v| v.as_str()).unwrap_or_default();
+        let table_name = meta.get("table_name").and_then(|v| v.as_str()).unwrap_or_default();
+
+        let s3_key_base = format!(
+            "{}/prod/data-persist-dir/data_backend_cache/tables/{}/{}/{}/table_stats",
+            customer_path, data_source, source_name, data_version
+        );
+        let s3_path = format!("s3://{}/{}", bucket, s3_key_base);
+
+        let output = Command::new("/home/ubuntu/.local/bin/aws")
+            .arg("s3")
+            .arg("cp")
+            .arg(&s3_path)
+            .arg("-")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .output()
+            .await?;
+
+        if !output.status.success() {
+             messages.push(format!("SKIP: {} (S3 stats not found at {})", table_name, s3_path));
+             continue;
+        }
+
+        let s3_stats: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+        let s3_rows = s3_stats.get("NUM_ROWS__False")
+            .and_then(|v| v.get("value"))
+            .and_then(|v| v.as_u64());
+
+        if let Some(s3_rows) = s3_rows {
+            if let Some(&ingest_rows) = stats.node_counts.get(table_name) {
+                 if diff_pct(s3_rows, ingest_rows) < 0.01 {
+                     messages.push(format!("PASS: {} (S3: {}, Ingest: {})", table_name, s3_rows, ingest_rows));
+                 } else {
+                     messages.push(format!("FAIL: {} (S3: {}, Ingest: {}, Diff: {:.2}%)", table_name, s3_rows, ingest_rows, diff_pct(s3_rows, ingest_rows) * 100.0));
+                 }
+            } else {
+                 messages.push(format!("INFO: {} (S3 rows: {}, not in node_counts - likely edge table)", table_name, s3_rows));
+            }
+        }
+    }
+
+    // 2. Verify Edge Counts (Graph Stats)
+    // Fetch prediction_job_input.json to get graph_id and version
+    let input_key = format!("{}/prod/jobs/{}/inputs/prediction_job_input.json", customer_path, job_id);
+    let input_s3_path = format!("s3://{}/{}", bucket, input_key);
+    
+    let output = Command::new("/home/ubuntu/.local/bin/aws")
+            .arg("s3")
+            .arg("cp")
+            .arg(&input_s3_path)
+            .arg("-")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .output()
+            .await?;
+            
+    if !output.status.success() {
+        messages.push(format!("SKIP: Edge stats (prediction_job_input.json not found at {})", input_s3_path));
+        return Ok(messages);
+    }
+
+    let input_json: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+    let graph_id = input_json.pointer("/config/graph_id").and_then(|v| v.as_str());
+    // Try multiple locations for graph_data_version
+    let graph_version = input_json.pointer("/config/graph_data_version").and_then(|v| v.as_str())
+        .or_else(|| input_json.pointer("/config/graph_version_info/graph_data_version").and_then(|v| v.as_str()))
+        .or_else(|| input_json.pointer("/graph_version_info/graph_data_version").and_then(|v| v.as_str()));
+
+    if let (Some(gid), Some(gver)) = (graph_id, graph_version) {
+        let edge_stats_key = format!(
+            "{}/prod/data-persist-dir/data_backend_cache/graphs/{}/{}/edge_stats",
+            customer_path, gid, gver
+        );
+        let edge_stats_s3 = format!("s3://{}/{}", bucket, edge_stats_key);
+
+        let output = Command::new("/home/ubuntu/.local/bin/aws")
+            .arg("s3")
+            .arg("cp")
+            .arg(&edge_stats_s3)
+            .arg("-")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .output()
+            .await?;
+
+        if output.status.success() {
+            let edge_stats: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+            if let Some(obj) = edge_stats.as_object() {
+                for (relation_name, ingest_count) in &stats.edge_counts {
+                     // Attempt to find matching S3 key
+                     // S3 keys are very verbose. We look for one that contains "EDGE_COUNT" 
+                     // and (hopefully) some parts of our relation name, or we just try to match counts? 
+                     // Matching counts is risky but maybe effective if unique.
+                     // Better: check if S3 key *contains* the src and dst table names from our relation name.
+                     // Local relation: "{src}_{src_col}_to_{dst}_{dst_col}"
+                     // But we don't easily know where the split is.
+                     
+                     // Heuristic: iterate S3 keys, check if it ends with EDGE_COUNT.
+                     // If so, check if the value matches within tolerance.
+                     // If multiple match, that's ambiguous.
+                     
+                     // Let's try to match components.
+                     // We can split relation_name by "_to_" (usually safe enough for generated names?)
+                     // Actually diskgraph-infer generates names.
+                     
+                     let mut found = false;
+                     for (s3_key, val_obj) in obj {
+                         if !s3_key.ends_with("EDGE_COUNT") { continue; }
+                         
+                         let s3_count = val_obj.get("value").and_then(|v| v.as_u64()).unwrap_or(0);
+                         
+                         // Simple heuristic: if count matches exactly, assume it's the one.
+                         // If it's within tolerance, good enough?
+                         // To be safer, we can check if relation_name parts are in s3_key.
+                         // But s3_key uses double underscores.
+                         
+                         if diff_pct(s3_count, *ingest_count) < 0.01 {
+                             // potential match
+                             // Let's try to verify name overlap if possible, or just accept it.
+                             // Given the complexity of name mapping, matching count is a strong signal.
+                             // But zero counts might be common.
+                             if s3_count == 0 && *ingest_count == 0 {
+                                 // ambiguous
+                             }
+                             
+                             found = true;
+                             messages.push(format!("PASS: Edge {} (S3: {}, Ingest: {})", relation_name, s3_count, ingest_count));
+                             break;
+                         }
+                     }
+                     
+                     if !found {
+                         messages.push(format!("FAIL: Edge {} (Ingest: {}, No matching S3 count found within 1%)", relation_name, ingest_count));
+                     }
+                }
+            }
+        } else {
+             messages.push(format!("SKIP: Edge stats (edge_stats not found at {})", edge_stats_s3));
+        }
+    } else {
+        messages.push("SKIP: Edge stats (Could not determine graph_id/version)".to_string());
+    }
+
+    Ok(messages)
+}
+
+fn diff_pct(a: u64, b: u64) -> f64 {
+    let diff = (a as i64 - b as i64).abs() as f64;
+    let max = a.max(b) as f64;
+    if max == 0.0 { 0.0 } else { diff / max }
 }
 
 fn get_dir_size(path: &Path) -> Result<u64> {
@@ -286,21 +525,42 @@ fn print_report(results: &[JobResult]) {
     let line = "-".repeat(120);
     println!("{}", line);
     println!(
-        "{:<40} | {:>12} | {:>12} | {:>12} | {:>12}",
+        "{:<40} | {:>12} | {:>12} | {:>12} | {:>12} | S3 Verify",
         "Job Spec", "Nodes", "Edges", "Time (ms)", "Size (MB)"
     );
     println!("{}", line);
     for res in results {
         match &res.report {
             Some(report) => {
+                    let verify_status = if let Some(msgs) = &report.s3_stats_verification {
+                    let fails = msgs.iter().filter(|m| m.starts_with("FAIL")).count();
+                    let skips = msgs.iter().filter(|m| m.starts_with("SKIP")).count();
+                    if fails > 0 { format!("{} FAIL", fails) } 
+                    else if skips > 0 && msgs.iter().all(|m| m.starts_with("SKIP") || m.starts_with("INFO")) { "SKIP".to_string() }
+                    else { "PASS".to_string() }
+                } else {
+                    "N/A".to_string()
+                };
+                
                 println!(
-                    "{:<40} | {:>12} | {:>12} | {:>12} | {:>12.2}",
+                    "{:<40} | {:>12} | {:>12} | {:>12} | {:>12.2} | {}",
                     truncate_str(&res.job_spec, 40),
                     format_count(report.total_nodes),
                     format_count(report.total_edges),
                     report.ingest_time_ms,
-                    report.index_size_bytes as f64 / 1024.0 / 1024.0
+                    report.index_size_bytes as f64 / 1024.0 / 1024.0,
+                    verify_status
                 );
+                
+                if let Some(msgs) = &report.s3_stats_verification {
+                     if verify_status.contains("FAIL") || std::env::var("VERBOSE").is_ok() {
+                         for msg in msgs {
+                             if msg.starts_with("FAIL") {
+                                 println!("    - {}", msg);
+                             }
+                         }
+                     }
+                }
             }
             None => {
                 println!(

@@ -17,6 +17,7 @@ const DOORDASH_BUCKET: &str = "kumo-doordash-cache";
 pub struct DownloadOptions {
     pub out_root: PathBuf,
     pub dry_run: bool,
+    pub clean: bool,
 }
 
 impl Default for DownloadOptions {
@@ -24,6 +25,7 @@ impl Default for DownloadOptions {
         Self {
             out_root: PathBuf::from("/mnt/localssd/datasets"),
             dry_run: false,
+            clean: true,
         }
     }
 }
@@ -32,6 +34,15 @@ pub async fn download_job(job_spec: &str, options: DownloadOptions) -> Result<Pa
     let (customer_name, job_id) = parse_job_spec(job_spec)?;
     validate_token("customer_name", &customer_name)?;
     validate_token("job_id", &job_id)?;
+
+    let out_dir = options
+        .out_root
+        .join(format!("{}_{}", customer_name, job_id));
+
+    if !options.clean && out_dir.exists() {
+        println!("Using existing data at {} (skipping S3 check)", out_dir.display());
+        return Ok(out_dir);
+    }
 
     let bucket = bucket_for_customer(&customer_name);
     let customer_path = customer_for_paths(&customer_name);
@@ -90,7 +101,7 @@ pub async fn download_job(job_spec: &str, options: DownloadOptions) -> Result<Pa
     let out_dir = options
         .out_root
         .join(format!("{}_{}", customer_name, job_id));
-    prepare_output_dir(&out_dir, &options.out_root).await?;
+    prepare_output_dir(&out_dir, &options.out_root, options.clean).await?;
 
     // Attempt to download config.json if it exists at graphs_prefix_key
     let config_key = format!("{}config.json", graphs_prefix_key);
@@ -135,6 +146,11 @@ pub async fn download_job(job_spec: &str, options: DownloadOptions) -> Result<Pa
 
         let table_out = out_dir.join(&table_meta.table_name);
         tokio::fs::create_dir_all(&table_out).await?;
+
+        // Save attributes.json for validation/metadata purposes
+        let attributes_out = table_out.join("attributes.json");
+        tokio::fs::write(&attributes_out, &attrs).await?;
+
         for obj in parquet_objects {
             let key = obj.location.to_string();
             let size = obj.size as u64;
@@ -396,7 +412,7 @@ async fn download_path(
     Ok(())
 }
 
-async fn prepare_output_dir(out_dir: &Path, out_root: &Path) -> Result<()> {
+async fn prepare_output_dir(out_dir: &Path, out_root: &Path, clean: bool) -> Result<()> {
     if !out_dir.starts_with(out_root) {
         bail!("refusing to clear output outside of {}", out_root.display());
     }
@@ -411,19 +427,21 @@ async fn prepare_output_dir(out_dir: &Path, out_root: &Path) -> Result<()> {
         bail!("refusing to clear output dir without name");
     }
 
-    match tokio::fs::metadata(out_dir).await {
-        Ok(meta) => {
-            if meta.is_dir() {
-                tokio::fs::remove_dir_all(out_dir).await?;
-            } else {
-                bail!(
-                    "output path exists and is not a directory: {}",
-                    out_dir.display()
-                );
+    if clean {
+        match tokio::fs::metadata(out_dir).await {
+            Ok(meta) => {
+                if meta.is_dir() {
+                    tokio::fs::remove_dir_all(out_dir).await?;
+                } else {
+                    bail!(
+                        "output path exists and is not a directory: {}",
+                        out_dir.display()
+                    );
+                }
             }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {} // Ignore not found error
+            Err(err) => return Err(err.into()),
         }
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {} // Ignore not found error
-        Err(err) => return Err(err.into()),
     }
 
     tokio::fs::create_dir_all(out_dir).await?;
