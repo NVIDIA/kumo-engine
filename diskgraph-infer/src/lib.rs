@@ -40,6 +40,7 @@ pub struct GraphConfig {
 #[derive(Clone, Debug, Deserialize)]
 pub struct GraphTable {
     pub table_name: String,
+    pub data_source: String,
     pub cols: Vec<GraphCol>,
     pub fkeys: Vec<GraphFKey>,
     pub pkey: Option<GraphPKey>,
@@ -241,7 +242,17 @@ pub fn infer_source_metadata(root: &RootSource, options: InferOptions) -> Result
     let mut relationships = Vec::new();
     infer_primary_keys(&mut table_specs);
     infer_create_time(&mut table_specs);
-    infer_foreign_keys(&table_specs, &mut relationships, &mut warnings.notes, options.graph_config.as_ref());
+
+    if let Some(config) = &options.graph_config {
+        let data_sources: HashSet<String> = config
+            .tables
+            .iter()
+            .map(|t| t.data_source.clone())
+            .collect();
+        infer_foreign_keys_with_config(&mut table_specs, &mut relationships, &mut warnings.notes, config, &data_sources);
+    } else {
+        infer_foreign_keys(&table_specs, &mut relationships, &mut warnings.notes, None);
+    }
     drop_join_table_primary_keys(&mut table_specs, &relationships);
     prune_relationships_without_primary_key(&table_specs, &mut relationships);
     infer_primary_key_relationships(&table_specs, &mut relationships);
@@ -1835,47 +1846,77 @@ fn infer_primary_keys(tables: &mut [TableSpec]) {
     }
 }
 
+fn infer_foreign_keys_with_config(
+    tables: &[TableSpec],
+    rels: &mut Vec<RelationshipSpec>,
+    notes: &mut Vec<String>,
+    config: &GraphConfig,
+    data_sources: &HashSet<String>,
+) {
+    let config_tables: HashMap<String, &GraphTable> = config
+        .tables
+        .iter()
+        .map(|t| (t.table_name.clone(), t))
+        .collect();
+
+    let discovered_tables: HashSet<String> = tables.iter().map(|t| t.name.clone()).collect();
+
+    for table in tables {
+        if let Some(cfg) = config_tables.get(&table.name) {
+            if cfg.fkeys.is_empty() {
+                eprintln!("INFO: No fkeys defined for table {}", table.name);
+            }
+            for fk in &cfg.fkeys {
+                if !table.columns.iter().any(|c| c.name == fk.name) {
+                    let msg = format!(
+                        "Config fkey {} in table {} refers to missing column",
+                        fk.name, table.name
+                    );
+                    eprintln!("WARN: {}", msg);
+                    notes.push(msg);
+                    continue;
+                }
+
+                let mut dst_table = fk.dst_table.clone();
+                if !discovered_tables.contains(&dst_table) {
+                    if let Some(dot_idx) = dst_table.find('.') {
+                        let prefix = &dst_table[..dot_idx];
+                        if data_sources.contains(prefix) {
+                            let stripped = &dst_table[dot_idx + 1..];
+                            if discovered_tables.contains(stripped) {
+                                eprintln!(
+                                    "INFO: Mapping prefixed dst_table {} to discovered table {}",
+                                    dst_table, stripped
+                                );
+                                dst_table = stripped.to_string();
+                            }
+                        }
+                    }
+                }
+
+                eprintln!(
+                    "INFO: Adding config fkey {} from {} to {}.{}",
+                    fk.name, table.name, dst_table, fk.dst_key
+                );
+
+                rels.push(RelationshipSpec {
+                    name: None,
+                    src_table: table.name.clone(),
+                    src_column: fk.name.clone(),
+                    dst_table,
+                    dst_column: fk.dst_key.clone(),
+                });
+            }
+        }
+    }
+}
+
 fn infer_foreign_keys(
     tables: &[TableSpec],
     rels: &mut Vec<RelationshipSpec>,
     notes: &mut Vec<String>,
-    config: Option<&GraphConfig>,
+    _config: Option<&GraphConfig>,
 ) {
-    if let Some(config) = config {
-        let config_tables: HashMap<String, &GraphTable> = config
-            .tables
-            .iter()
-            .map(|t| (t.table_name.clone(), t))
-            .collect();
-
-        for table in tables {
-            if let Some(cfg) = config_tables.get(&table.name) {
-                if cfg.fkeys.is_empty() {
-                    eprintln!("INFO: No fkeys defined for table {}", table.name);
-                }
-                for fk in &cfg.fkeys {
-                    if !table.columns.iter().any(|c| c.name == fk.name) {
-                        let msg = format!("Config fkey {} in table {} refers to missing column", fk.name, table.name);
-                        eprintln!("WARN: {}", msg);
-                        notes.push(msg);
-                        continue;
-                    }
-
-                    eprintln!("INFO: Adding config fkey {} from {} to {}.{}", fk.name, table.name, fk.dst_table, fk.dst_key);
-
-                    rels.push(RelationshipSpec {
-                        name: None,
-                        src_table: table.name.clone(),
-                        src_column: fk.name.clone(),
-                        dst_table: fk.dst_table.clone(),
-                        dst_column: fk.dst_key.clone(),
-                    });
-                }
-            }
-        }
-        return;
-    }
-
     let mut table_map = HashMap::new();
     let mut pk_name_map: HashMap<String, Vec<&TableSpec>> = HashMap::new();
     let mut name_alias_map: HashMap<String, Vec<&TableSpec>> = HashMap::new();
