@@ -6019,11 +6019,86 @@ impl NodeWriterStats {
     }
 }
 
+struct BitWriter {
+    writer: BufWriter<OutputSink>,
+    buffer: u8,
+    bits_used: u8,
+}
+
+impl BitWriter {
+    fn new(writer: BufWriter<OutputSink>) -> Self {
+        Self {
+            writer,
+            buffer: 0,
+            bits_used: 0,
+        }
+    }
+
+    fn append_bits(&mut self, data: &[u8], count: u64) -> Result<()> {
+        let mut bits_remaining = count;
+        let mut byte_idx = 0;
+        while bits_remaining > 0 {
+            let byte = data[byte_idx];
+            byte_idx += 1;
+            let take = bits_remaining.min(8) as u8;
+
+            // If we are byte-aligned and taking a full byte, fast path
+            if self.bits_used == 0 && take == 8 {
+                self.writer.write_all(&[byte])?;
+                bits_remaining -= 8;
+                continue;
+            }
+
+            // Append 'take' bits from 'byte' to self.buffer
+            // Bits in 'byte' are filled from LSB (bit 0) to MSB (bit 7).
+            // We want to preserve this order.
+            // Existing buffer has 'bits_used' bits.
+            // We append starting at 'bits_used'.
+
+            // Mask for the bits we are taking from the input byte
+            let mask = if take == 8 { 0xFF } else { (1u8 << take) - 1 };
+            let val = byte & mask;
+
+            self.buffer |= val << self.bits_used;
+            let space = 8 - self.bits_used;
+
+            if take >= space {
+                // Buffer is full
+                self.writer.write_all(&[self.buffer])?;
+                // Remaining bits from 'val' that didn't fit
+                let written = space;
+                let leftover = take - written;
+                if leftover > 0 {
+                    self.buffer = val >> written;
+                    self.bits_used = leftover;
+                } else {
+                    self.buffer = 0;
+                    self.bits_used = 0;
+                }
+            } else {
+                self.bits_used += take;
+            }
+            bits_remaining -= take as u64;
+        }
+        Ok(())
+    }
+
+    fn finish(mut self) -> Result<()> {
+        if self.bits_used > 0 {
+            self.writer.write_all(&[self.buffer])?;
+        }
+        self.writer.flush()?;
+        let sink = self.writer.into_inner().map_err(|_| anyhow!("bit writer flush failed"))?;
+        sink.finish()?;
+        Ok(())
+    }
+}
+
 struct NodeShardWriter {
     node: TempRowWriter,
     pkey: Option<TempRowWriter>,
     fkeys: Vec<TempRowWriter>,
-    fkey_bits: Vec<BufWriter<OutputSink>>,
+    fkey_bits: Vec<BitWriter>,
     rel_names: std::sync::Arc<Vec<std::sync::Arc<str>>>,
 }
 
@@ -6097,10 +6172,10 @@ fn node_writer_worker(
                                 &target,
                                 &temp_fkey_path(&batch.table, rel, batch.shard),
                             )?);
-                            fkey_bits.push(open_fkey_bitmap_writer(
+                            fkey_bits.push(BitWriter::new(open_fkey_bitmap_writer(
                                 &target,
                                 &temp_fkey_bitmap_path(&batch.table, rel, batch.shard),
-                            )?);
+                            )?));
                         }
                         writers.insert(
                             key.clone(),
@@ -6159,7 +6234,8 @@ fn node_writer_worker(
                 }
                 for (idx, bits) in batch.fkey_bits.into_iter().enumerate() {
                     if let Some(writer_bits) = writer.fkey_bits.get_mut(idx) {
-                        writer_bits.write_all(&bits)?;
+                        let rows = batch.fkey_rows.get(idx).copied().unwrap_or(0);
+                        writer_bits.append_bits(&bits, rows)?;
                     }
                 }
             }
@@ -6174,12 +6250,7 @@ fn node_writer_worker(
             finish_temp_writer(fkey)?;
         }
         for bits in writer.fkey_bits {
-            let mut bits = bits;
-            bits.flush()?;
-            let sink = bits
-                .into_inner()
-                .map_err(|_| anyhow!("fkey bitmap flush failed"))?;
-            sink.finish()?;
+            bits.finish()?;
         }
     }
     Ok(stats)
