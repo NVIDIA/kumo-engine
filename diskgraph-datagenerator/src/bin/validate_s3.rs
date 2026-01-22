@@ -461,6 +461,8 @@ async fn verify_s3_stats(data_dir: &Path, customer: &str, job_id: &str, stats: &
                 let mut sorted_table_names: Vec<String> = table_infos.keys().cloned().collect();
                 sorted_table_names.sort_by(|a, b| b.len().cmp(&a.len()));
 
+                let mut matched_s3_keys = HashSet::new();
+
                 for (relation_name, &ingest_count) in &stats.edge_counts {
                     // Parse relation name: {src_table}_{src_key}_to_{dst_table}_{dst_key}
                     let base_relation = relation_name.trim_end_matches("_reverse");
@@ -508,9 +510,10 @@ async fn verify_s3_stats(data_dir: &Path, customer: &str, job_id: &str, stats: &
                                  dst_key, src_key
                              );
 
-                             let matched_s3_val = obj.get(&s3_key_forward).or_else(|| obj.get(&s3_key_reverse));
+                             let matched_s3_entry = obj.get_key_value(&s3_key_forward).or_else(|| obj.get_key_value(&s3_key_reverse));
 
-                             if let Some(val) = matched_s3_val {
+                             if let Some((matched_key, val)) = matched_s3_entry {
+                                 matched_s3_keys.insert(matched_key.clone());
                                  let s3_count = val.get("value").and_then(|v| v.as_u64()).unwrap_or(0);
                                  if s3_count == ingest_count {
                                      messages.push(format!("PASS: Edge {} (S3: {}, Ingest: {})", relation_name, s3_count, ingest_count));
@@ -527,6 +530,52 @@ async fn verify_s3_stats(data_dir: &Path, customer: &str, job_id: &str, stats: &
                          messages.push(format!("INFO: Could not parse tables from edge {}", relation_name));
                     }
                 }
+
+                // Reverse check: Verify if any S3 edge was missed by ingestion
+                let mut reverse_table_infos: std::collections::HashMap<(String, String), Vec<String>> = std::collections::HashMap::new();
+                for (t_name, meta) in &table_infos {
+                    reverse_table_infos.entry((meta.source_name.clone(), meta.data_source.clone()))
+                        .or_default()
+                        .push(t_name.clone());
+                }
+
+                for (s3_key, val_obj) in obj {
+                    if !s3_key.ends_with("EDGE_COUNT") { continue; }
+                    if matched_s3_keys.contains(s3_key) { continue; }
+
+                    let s3_count = val_obj.get("value").and_then(|v| v.as_u64()).unwrap_or(0);
+                    if s3_count == 0 { continue; }
+
+                    // Try to identify if this S3 key belongs to tables we know about
+                    // Key format: {src_src}__{src_ds}__{dst_src}__{dst_ds}__{src_key}__{dst_key}__EDGE_COUNT
+                    let parts: Vec<&str> = s3_key.split("__").collect();
+                    if parts.len() >= 7 {
+                        let src_src = parts[0];
+                        let src_ds = parts[1];
+                        let dst_src = parts[2];
+                        let dst_ds = parts[3];
+
+                        let src_candidates = reverse_table_infos.get(&(src_src.to_string(), src_ds.to_string()));
+                        let dst_candidates = reverse_table_infos.get(&(dst_src.to_string(), dst_ds.to_string()));
+
+                        if let (Some(srcs), Some(dsts)) = (src_candidates, dst_candidates) {
+                             // We have both tables locally, so we SHOULD have seen this edge.
+                             messages.push(format!("FAIL: S3 has edge {} (count: {}), but Ingest has none. Matched local tables: Src={:?}, Dst={:?}", s3_key, s3_count, srcs, dsts));
+                        } else {
+                             // S3 has an edge but we don't have the table locally. Maybe we downloaded a subset?
+                             // But validate_s3 downloads full job.
+                             // Report as INFO or SKIP?
+                             // Actually, if we are validating a specific job, we expect full match.
+                             // But maybe the S3 stats include edges to tables not in this job's input? (Global graph stats?)
+                             // Yes, graph stats are for the graph, which might be reused.
+                             // But if the job input defines the tables, we only download those.
+                             // So it is possible S3 has edges we don't see if we didn't download those tables.
+                             // However, for this task, let's report it if we can match at least one side?
+                             // No, only fail if we have BOTH tables locally.
+                        }
+                    }
+                }
+
             }
         } else {
              messages.push(format!("SKIP: Edge stats (edge_stats not found at {})", edge_stats_s3));
