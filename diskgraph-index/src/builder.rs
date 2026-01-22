@@ -248,6 +248,28 @@ impl MemoryBudget {
         })
     }
 
+    pub fn try_acquire(self: &Arc<Self>, bytes: u64) -> Option<MemoryBudgetGuard> {
+        if bytes == 0 {
+            return Some(MemoryBudgetGuard {
+                budget: Arc::clone(self),
+                bytes,
+            });
+        }
+        if bytes > self.total {
+            return None;
+        }
+        let mut available = self.available.lock().unwrap();
+        if *available < bytes {
+            return None;
+        }
+        *available = available.saturating_sub(bytes);
+        self.in_use.fetch_add(bytes, Ordering::Relaxed);
+        Some(MemoryBudgetGuard {
+            budget: Arc::clone(self),
+            bytes,
+        })
+    }
+
     fn release(&self, bytes: u64) {
         if bytes > 0 {
             self.in_use.fetch_sub(bytes, Ordering::Relaxed);
@@ -354,6 +376,43 @@ impl EdgeBufferPool {
         }
     }
 
+    fn acquire_with_eviction(&self, budget: &Arc<MemoryBudget>, bytes: u64) -> Result<BudgetReservation> {
+
+        loop {
+            if let Some(guard) = budget.try_acquire(bytes) {
+                return Ok(BudgetReservation {
+                    budget: Arc::clone(budget),
+                    bytes: guard.into_bytes(),
+                });
+            }
+
+            let evicted = {
+                let mut buffers = self.buffers.lock().unwrap();
+                let mut best_idx = None;
+                let mut best_bytes = 0u64;
+                for (idx, entry) in buffers.iter().enumerate() {
+                    let entry_bytes = entry.reservation.as_ref().map(|r| r.bytes).unwrap_or(0);
+                    if entry_bytes > best_bytes {
+                        best_bytes = entry_bytes;
+                        best_idx = Some(idx);
+                    }
+                }
+                best_idx.map(|idx| buffers.swap_remove(idx))
+            };
+
+            if let Some(entry) = evicted {
+                drop(entry);
+                continue;
+            }
+
+            let guard = budget.acquire(bytes)?;
+            return Ok(BudgetReservation {
+                budget: Arc::clone(budget),
+                bytes: guard.into_bytes(),
+            });
+        }
+    }
+
     pub fn acquire_pair(self: &Arc<Self>, min_capacity: usize) -> Result<(EdgeBufferLease, EdgeBufferLease)> {
         let mut buffers = self.buffers.lock().unwrap();
         let take_best = |buffers: &mut Vec<PooledEdgeBuffer>, min_capacity: usize| -> Option<PooledEdgeBuffer> {
@@ -397,7 +456,7 @@ impl EdgeBufferPool {
 
         let mut new_reservation = if needed > 0 {
             if let Some(budget) = &self.budget {
-                Some(BudgetReservation::new(Arc::clone(budget), needed)?)
+                Some(self.acquire_with_eviction(budget, needed)?)
             } else {
                 None
             }
@@ -463,7 +522,7 @@ impl EdgeBufferPool {
         drop(buffers);
         let reservation = if let Some(budget) = &self.budget {
             let bytes = edge_record_bytes(min_capacity);
-            Some(BudgetReservation::new(Arc::clone(budget), bytes)?)
+            Some(self.acquire_with_eviction(budget, bytes)?)
         } else {
             None
         };
@@ -475,10 +534,8 @@ impl EdgeBufferPool {
     }
 
     fn release(&self, buf: Vec<EdgeRecord>, reservation: Option<BudgetReservation>) {
-        // Drop reservations on release so pooled buffers don't hold the global budget.
-        drop(reservation);
         let mut buffers = self.buffers.lock().unwrap();
-        buffers.push(PooledEdgeBuffer { buf, reservation: None });
+        buffers.push(PooledEdgeBuffer { buf, reservation });
     }
 }
 
@@ -1828,7 +1885,12 @@ mod tests {
             lease.set_len_uninit(128).unwrap();
         }
         let snap_after = budget.snapshot();
-        assert_eq!(snap_after.in_use, 0);
+        assert!(snap_after.in_use > 0);
+        {
+            let _lease = pool.acquire(64).unwrap();
+            let snap_reuse = budget.snapshot();
+            assert_eq!(snap_after.in_use, snap_reuse.in_use);
+        }
     }
 
     #[test]
@@ -1839,20 +1901,40 @@ mod tests {
             let (_lease_a, _lease_b) = pool.acquire_pair(128).unwrap();
         }
         let snap_after = budget.snapshot();
+        assert!(snap_after.in_use > 0);
+        {
+            let _lease = pool.acquire(64).unwrap();
+            let snap_reuse = budget.snapshot();
+            assert_eq!(snap_after.in_use, snap_reuse.in_use);
+        }
+    }
+
+    #[test]
+    fn edge_buffer_pool_releases_budget_on_pool_drop() {
+        let budget = Arc::new(MemoryBudget::new(1024 * 1024));
+        {
+            let pool = Arc::new(EdgeBufferPool::new(Some(Arc::clone(&budget))));
+            let mut lease = pool.acquire(1024).unwrap();
+            lease.set_len_uninit(1024).unwrap();
+        }
+        let snap_after = budget.snapshot();
         assert_eq!(snap_after.in_use, 0);
     }
 
     #[test]
-    fn edge_buffer_pool_releases_budget_on_drop() {
-        let budget = Arc::new(MemoryBudget::new(1024 * 1024));
+    fn edge_buffer_pool_evicts_smaller_buffers_for_large_request() {
+        let record_bytes = std::mem::size_of::<EdgeRecord>() as u64;
+        let small_cap = 64usize;
+        let large_cap = 1024usize;
+        let budget_bytes = (large_cap as u64) * record_bytes;
+        let budget = Arc::new(MemoryBudget::new(budget_bytes));
         let pool = Arc::new(EdgeBufferPool::new(Some(Arc::clone(&budget))));
         {
-            let mut lease = pool.acquire(1024).unwrap();
-            lease.set_len_uninit(1024).unwrap();
-            let snap_in_use = budget.snapshot();
-            assert!(snap_in_use.in_use > 0);
+            let _a = pool.acquire(small_cap).unwrap();
+            let _b = pool.acquire(small_cap).unwrap();
         }
         let snap_after = budget.snapshot();
-        assert_eq!(snap_after.in_use, 0);
+        assert!(snap_after.in_use > 0);
+        let _large = pool.acquire(large_cap).unwrap();
     }
 }
