@@ -375,11 +375,26 @@ fn read_system_memory_bytes() -> Option<u64> {
     }
 }
 
+fn build_table_config_map(config: &Option<GraphConfig>) -> HashMap<String, HashSet<String>> {
+    let mut map = HashMap::new();
+    if let Some(cfg) = config {
+        for table in &cfg.tables {
+             let mut cols = HashSet::new();
+             for c in &table.cols { cols.insert(c.name.clone()); }
+             if let Some(pk) = &table.pkey { cols.insert(pk.name.clone()); }
+             for fk in &table.fkeys { cols.insert(fk.name.clone()); }
+             map.insert(table.table_name.clone(), cols);
+        }
+    }
+    map
+}
+
 fn infer_local_tables(
     root: &Path,
     options: &InferOptions,
     warnings: &mut InferWarnings,
 ) -> Result<Vec<TableInput>> {
+    let config_map = build_table_config_map(&options.graph_config);
     let mut tables = Vec::new();
     let entries = std::fs::read_dir(root).with_context(|| format!("read {}", root.display()))?;
     for entry in entries {
@@ -387,12 +402,16 @@ fn infer_local_tables(
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().to_string();
         if path.is_dir() {
-            let table = infer_dir_table(&name, &path, root, options, warnings)?;
+            let allowed_cols = config_map.get(&name);
+            let table = infer_dir_table(&name, &path, root, options, warnings, allowed_cols)?;
             if let Some(table) = table {
                 tables.push(table);
             }
-        } else if let Some(table) = infer_file_table(&name, &path, root, options)? {
-            tables.push(table);
+        } else {
+            let allowed_cols = split_table_file(&name).and_then(|(t, _)| config_map.get(t));
+            if let Some(table) = infer_file_table(&name, &path, root, options, allowed_cols)? {
+                tables.push(table);
+            }
         }
     }
     if tables.is_empty() {
@@ -406,6 +425,7 @@ fn infer_file_table(
     path: &Path,
     root: &Path,
     options: &InferOptions,
+    allowed_cols: Option<&HashSet<String>>,
 ) -> Result<Option<TableInput>> {
     let ext = path
         .extension()
@@ -416,7 +436,7 @@ fn infer_file_table(
         "csv" => {
             eprintln!("infer_config: reading {}", path.display());
             let size = std::fs::metadata(path)?.len();
-            let columns = infer_csv_schema(path, options)
+            let columns = infer_csv_schema(path, options, allowed_cols)
                 .with_context(|| format!("infer schema for table {} at {}", name, path.display()))?;
             let rel_path = path.strip_prefix(root).unwrap_or(path);
             Ok(Some(TableInput {
@@ -430,7 +450,7 @@ fn infer_file_table(
         "parquet" => {
             eprintln!("infer_config: reading {}", path.display());
             let size = std::fs::metadata(path)?.len();
-            let columns = infer_parquet_schema_local(path, options)
+            let columns = infer_parquet_schema_local(path, options, allowed_cols)
                 .with_context(|| format!("infer schema for table {} at {}", name, path.display()))?;
             let rel_path = path.strip_prefix(root).unwrap_or(path);
             Ok(Some(TableInput {
@@ -451,6 +471,7 @@ fn infer_dir_table(
     root: &Path,
     options: &InferOptions,
     warnings: &mut InferWarnings,
+    allowed_cols: Option<&HashSet<String>>,
 ) -> Result<Option<TableInput>> {
     let mut table: Option<TableInput> = None;
     let entries = std::fs::read_dir(dir).with_context(|| format!("read {}", dir.display()))?;
@@ -481,9 +502,9 @@ fn infer_dir_table(
                 }
                 eprintln!("infer_config: reading {}", path.display());
                 let columns = match format {
-                    TableFormat::Csv => infer_csv_schema(&path, options)
+                    TableFormat::Csv => infer_csv_schema(&path, options, allowed_cols)
                         .with_context(|| format!("infer schema for table {} at {}", name, path.display()))?,
-                    TableFormat::Parquet => infer_parquet_schema_local(&path, options)
+                    TableFormat::Parquet => infer_parquet_schema_local(&path, options, allowed_cols)
                         .with_context(|| format!("infer schema for table {} at {}", name, path.display()))?,
                 };
                 if !same_table_format(&existing.format, &format)
@@ -507,9 +528,9 @@ fn infer_dir_table(
             None => {
                 eprintln!("infer_config: reading {}", path.display());
                 let columns = match format {
-                    TableFormat::Csv => infer_csv_schema(&path, options)
+                    TableFormat::Csv => infer_csv_schema(&path, options, allowed_cols)
                         .with_context(|| format!("infer schema for table {} at {}", name, path.display()))?,
-                    TableFormat::Parquet => infer_parquet_schema_local(&path, options)
+                    TableFormat::Parquet => infer_parquet_schema_local(&path, options, allowed_cols)
                         .with_context(|| format!("infer schema for table {} at {}", name, path.display()))?,
                 };
                 let rel_path = path.strip_prefix(root).unwrap_or(&path);
@@ -533,6 +554,7 @@ fn infer_remote_tables(
     options: &InferOptions,
     warnings: &mut InferWarnings,
 ) -> Result<Vec<TableInput>> {
+    let config_map = build_table_config_map(&options.graph_config);
     let (rt, store) = build_store(root)?;
     let transfer = CloudTransfer::new(Arc::clone(&store), CloudTransferConfig::from_env());
     let mut tables: HashMap<String, TableInput> = HashMap::new();
@@ -561,6 +583,7 @@ fn infer_remote_tables(
         }
         if parts.len() == 1 {
             if let Some((table_name, format)) = split_table_file(parts[0]) {
+                let allowed_cols = config_map.get(table_name);
                 let format_clone = format.clone();
                 if let Some(entry) = tables.get_mut(table_name) {
                     if !options.validate_dir_schemas {
@@ -581,6 +604,7 @@ fn infer_remote_tables(
                         &obj.location,
                         obj.size,
                         options,
+                        allowed_cols,
                     )
                     .with_context(|| format!("infer schema for table {} at {}", table_name, path_str))?,
                     TableFormat::Csv => infer_csv_schema_remote(
@@ -588,6 +612,7 @@ fn infer_remote_tables(
                         &obj.location,
                         obj.size,
                         options,
+                        allowed_cols,
                     )
                     .with_context(|| format!("infer schema for table {} at {}", table_name, path_str))?,
                 };
@@ -621,6 +646,7 @@ fn infer_remote_tables(
             let file = parts.last().unwrap_or(&"");
             if let Some((_, format)) = split_table_file(file) {
                 let table_name = parts[0];
+                let allowed_cols = config_map.get(table_name);
                 let format_clone = format.clone();
                 if let Some(entry) = tables.get_mut(table_name) {
                     if !options.validate_dir_schemas {
@@ -641,6 +667,7 @@ fn infer_remote_tables(
                         &obj.location,
                         obj.size,
                         options,
+                        allowed_cols,
                     )
                     .with_context(|| format!("infer schema for table {} at {}", table_name, path_str))?,
                     TableFormat::Csv => infer_csv_schema_remote(
@@ -648,6 +675,7 @@ fn infer_remote_tables(
                         &obj.location,
                         obj.size,
                         options,
+                        allowed_cols,
                     )
                     .with_context(|| format!("infer schema for table {} at {}", table_name, path_str))?,
                 };
@@ -810,11 +838,15 @@ fn build_store(root: &RootSource) -> Result<(Runtime, Arc<dyn ObjectStore>)> {
     Ok((rt, store))
 }
 
-fn infer_parquet_schema_local(path: &Path, options: &InferOptions) -> Result<Vec<ColumnSpec>> {
+fn infer_parquet_schema_local(
+    path: &Path,
+    options: &InferOptions,
+    allowed_cols: Option<&HashSet<String>>,
+) -> Result<Vec<ColumnSpec>> {
     let file = std::fs::File::open(path)?;
     let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
     let schema = builder.schema();
-    let mut columns = infer_parquet_schema_from_arrow(schema.as_ref())?;
+    let mut columns = infer_parquet_schema_from_arrow(schema.as_ref(), allowed_cols)?;
     if options.sample_rows > 0 {
     let mut reader = builder.with_batch_size(1024).build()?;
     apply_parquet_string_samples(&mut columns, &mut reader, options.sample_rows)?;
@@ -827,12 +859,13 @@ fn infer_parquet_schema_remote(
     path: &ObjectPath,
     _size: u64,
     options: &InferOptions,
+    allowed_cols: Option<&HashSet<String>>,
 ) -> Result<Vec<ColumnSpec>> {
     let buffer = transfer.submit_download(path.clone())?.wait()?;
     let bytes = Bytes::from(buffer.into_inner());
     let builder = ParquetRecordBatchReaderBuilder::try_new(bytes)?;
     let schema = builder.schema();
-    let mut columns = infer_parquet_schema_from_arrow(schema.as_ref())?;
+    let mut columns = infer_parquet_schema_from_arrow(schema.as_ref(), allowed_cols)?;
     if columns.is_empty() {
         return Ok(columns);
     }
@@ -843,9 +876,17 @@ fn infer_parquet_schema_remote(
     Ok(columns)
 }
 
-fn infer_parquet_schema_from_arrow(schema: &Schema) -> Result<Vec<ColumnSpec>> {
+fn infer_parquet_schema_from_arrow(
+    schema: &Schema,
+    allowed_cols: Option<&HashSet<String>>,
+) -> Result<Vec<ColumnSpec>> {
     let mut columns = Vec::new();
     for field in schema.fields() {
+        if let Some(allowed) = allowed_cols {
+            if !allowed.contains(field.name()) {
+                continue;
+            }
+        }
         let (fixed_len, precision, scale) = arrow_type_metadata(field.data_type())?;
         let mut ingested_dtype = match field.data_type() {
             DataType::Float64 => IngestedType::Float32,
@@ -1186,7 +1227,11 @@ fn arrow_type_metadata(
     Ok((fixed_len, precision, scale))
 }
 
-fn infer_csv_schema(path: &Path, options: &InferOptions) -> Result<Vec<ColumnSpec>> {
+fn infer_csv_schema(
+    path: &Path,
+    options: &InferOptions,
+    allowed_cols: Option<&HashSet<String>>,
+) -> Result<Vec<ColumnSpec>> {
     let mut reader = csv::ReaderBuilder::new()
         .has_headers(true)
         .flexible(true)
@@ -1197,20 +1242,31 @@ fn infer_csv_schema(path: &Path, options: &InferOptions) -> Result<Vec<ColumnSpe
         .iter()
         .map(|h| h.to_string())
         .collect::<Vec<_>>();
-    let mut stats: Vec<ColumnStats> = headers.iter().map(|_| ColumnStats::default()).collect();
+
+    let mut keep_indices = Vec::new();
+    if let Some(allowed) = allowed_cols {
+        for (i, h) in headers.iter().enumerate() {
+            if allowed.contains(h) {
+                keep_indices.push(i);
+            }
+        }
+    } else {
+        keep_indices.extend(0..headers.len());
+    }
+
+    let mut stats: Vec<ColumnStats> = keep_indices.iter().map(|_| ColumnStats::default()).collect();
     for result in reader.records().take(options.csv_sample_rows) {
         let record = result?;
-        for (idx, value) in record.iter().enumerate() {
-            if idx >= stats.len() {
-                continue;
+        for (stat_idx, &col_idx) in keep_indices.iter().enumerate() {
+            if let Some(value) = record.get(col_idx) {
+                stats[stat_idx].observe(value);
             }
-            stats[idx].observe(value);
         }
     }
-    Ok(headers
+    Ok(keep_indices
         .iter()
         .zip(stats.iter())
-        .map(|(name, st)| st.to_column_spec(name))
+        .map(|(&i, st)| st.to_column_spec(&headers[i]))
         .collect())
 }
 
@@ -1219,15 +1275,20 @@ fn infer_csv_schema_remote(
     path: &ObjectPath,
     size: u64,
     options: &InferOptions,
+    allowed_cols: Option<&HashSet<String>>,
 ) -> Result<Vec<ColumnSpec>> {
     let max = size.min(options.csv_sample_bytes);
     let buffer = transfer.submit_download(path.clone())?.wait()?;
     let bytes = Bytes::from(buffer.into_inner());
     let limited = bytes.slice(0..max as usize);
-    infer_csv_schema_from_bytes(&limited, options)
+    infer_csv_schema_from_bytes(&limited, options, allowed_cols)
 }
 
-fn infer_csv_schema_from_bytes(bytes: &Bytes, options: &InferOptions) -> Result<Vec<ColumnSpec>> {
+fn infer_csv_schema_from_bytes(
+    bytes: &Bytes,
+    options: &InferOptions,
+    allowed_cols: Option<&HashSet<String>>,
+) -> Result<Vec<ColumnSpec>> {
     let mut reader = csv::ReaderBuilder::new()
         .has_headers(true)
         .flexible(true)
@@ -1238,20 +1299,31 @@ fn infer_csv_schema_from_bytes(bytes: &Bytes, options: &InferOptions) -> Result<
         .iter()
         .map(|h| h.to_string())
         .collect::<Vec<_>>();
-    let mut stats: Vec<ColumnStats> = headers.iter().map(|_| ColumnStats::default()).collect();
+
+    let mut keep_indices = Vec::new();
+    if let Some(allowed) = allowed_cols {
+        for (i, h) in headers.iter().enumerate() {
+            if allowed.contains(h) {
+                keep_indices.push(i);
+            }
+        }
+    } else {
+        keep_indices.extend(0..headers.len());
+    }
+
+    let mut stats: Vec<ColumnStats> = keep_indices.iter().map(|_| ColumnStats::default()).collect();
     for result in reader.records().take(options.csv_sample_rows) {
         let record = result?;
-        for (idx, value) in record.iter().enumerate() {
-            if idx >= stats.len() {
-                continue;
+        for (stat_idx, &col_idx) in keep_indices.iter().enumerate() {
+            if let Some(value) = record.get(col_idx) {
+                stats[stat_idx].observe(value);
             }
-            stats[idx].observe(value);
         }
     }
-    Ok(headers
+    Ok(keep_indices
         .iter()
         .zip(stats.iter())
-        .map(|(name, st)| st.to_column_spec(name))
+        .map(|(&i, st)| st.to_column_spec(&headers[i]))
         .collect())
 }
 
