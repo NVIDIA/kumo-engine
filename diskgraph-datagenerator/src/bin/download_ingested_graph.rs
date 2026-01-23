@@ -52,6 +52,7 @@ fn parse_args() -> Result<ResolvedArgs> {
         options: DownloadOptions {
             out_root: resolve_out_root(raw.out_root),
             dry_run: raw.dry_run,
+            clean: true,
         },
     })
 }

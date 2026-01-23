@@ -90,7 +90,7 @@ const INVALID_LOCAL_ID: u32 = u32::MAX;
 #[derive(Default)]
 struct EdgeMapScratch {
     key_buf: Vec<u8>,
-    fkey_bitmap: Vec<u8>,
+    fkey_bitmap: Option<Mmap>,
 }
 
 type PkMapHasher = BuildHasherDefault<GxHasher>;
@@ -4327,9 +4327,9 @@ impl IngestContext {
                             {
                                 let edge_scratch = scratch;
                                 edge_scratch.key_buf.clear();
-                                let mut bitmap_buf = std::mem::take(&mut edge_scratch.fkey_bitmap);
-                                let fkey_bitmap =
-                                    read_fkey_bitmap_into(&bitmap_path, meta.row_count, &mut bitmap_buf)?;
+                                let fkey_bitmap = read_fkey_bitmap_mmap(&bitmap_path, meta.row_count)?;
+                                edge_scratch.fkey_bitmap = Some(fkey_bitmap);
+                                let fkey_bitmap = edge_scratch.fkey_bitmap.as_ref().unwrap();
                                 let key_buf = &mut edge_scratch.key_buf;
                                 let result = read_temp_rows(&fkey_path, |row| {
                                     pending = pending.saturating_add(1);
@@ -4428,7 +4428,6 @@ impl IngestContext {
                                     reverse_count = reverse_count.saturating_add(1);
                                     Ok(())
                                 });
-                                edge_scratch.fkey_bitmap = bitmap_buf;
                                 result?;
                             }
                             forward_batcher.flush_all()?;
@@ -5506,25 +5505,18 @@ fn read_temp_rows(path: &Path, mut f: impl FnMut(&[u8]) -> Result<()>) -> Result
     }
 }
 
-fn read_fkey_bitmap_into<'a>(
-    path: &Path,
-    row_count: u64,
-    buf: &'a mut Vec<u8>,
-) -> Result<&'a [u8]> {
+fn read_fkey_bitmap_mmap(path: &Path, row_count: u64) -> Result<Mmap> {
     let expected = ((row_count + 7) / 8) as usize;
-    buf.clear();
-    let mut file = fs::File::open(path).with_context(|| format!("read {}", path.display()))?;
-    file.read_to_end(buf)?;
-    if buf.len() < expected {
+    let file = fs::File::open(path).with_context(|| format!("read {}", path.display()))?;
+    let map = unsafe { Mmap::map(&file)? };
+    if map.len() < expected {
         return Err(anyhow!(
             "fkey bitmap length mismatch: expected {expected}, got {}",
-            buf.len()
+            map.len()
         ));
     }
-    if buf.len() > expected {
-        buf.truncate(expected);
-    }
-    Ok(buf.as_slice())
+    advise_sequential(&map);
+    Ok(map)
 }
 
 fn load_sort_key_component_shards(
