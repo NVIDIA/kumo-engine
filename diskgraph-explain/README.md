@@ -1,14 +1,12 @@
 # diskgraph-explain
 
-One-shot explainability pipeline for embedding-based predictions.
+Embedding-only explainability pipeline with raw event/feature attribution via DiskGraph.
 
 ## What it does
-- Reads a parquet with `(id, timestamp, prediction, embedding)`.
-- Builds embedding cohorts (MiniBatch k-means).
-- Computes per-row explanations (cluster context, kNN lift, ridge factors).
-- Writes two parquet outputs:
-  - `explanations.parquet` (per-row explanations)
-  - `global_trends.parquet` (cohort summaries + feature importance + trends)
+- Reads parquet with `(id, timestamp, prediction, embedding)`.
+- Clusters embeddings to form cohorts.
+- For each cohort, samples neighborhoods from DiskGraph and computes feature enrichment.
+- Produces per-row explanations grounded in **raw node attributes** and **edges**.
 
 ## Usage
 
@@ -24,40 +22,34 @@ Example config: `diskgraph-explain/config.example.json`.
 - `id` (utf8)
 - `timestamp` (int64 seconds)
 - `prediction` (float32)
-- `cluster_id` (int32)
-- `cluster_mean_pred` (float32)
-- `cluster_std_pred` (float32)
-- `cluster_rank` (float32)
-- `knn_mean_pred` (float32)
-- `knn_std_pred` (float32)
-- `knn_p90_pred` (float32)
+- `embedding` (list<float32>)
+- `cohort_id` (int32)
+- `cohort_mean_pred` (float32)
+- `cohort_std_pred` (float32)
+- `global_mean_pred` (float32)
 - `local_lift` (float32)
-- `global_lift` (float32)
-- `embedding_outlier_score` (float32)
-- `prediction_outlier_score` (float32)
-- `top_factors` (utf8, `dim:contribution` pipe-separated)
-- `lookalike_ids` (utf8, comma-separated)
+- `contrast_cohort_id` (int32)
+- `top_features` (utf8, JSON list of `{feature,lift,delta,support}`)
+- `top_events` (utf8, JSON list of `{relation,table,node_id,pk,feature,lift,delta,support}`)
 
 ### global_trends.parquet
-Rows are tagged by `artifact_type`:
-- `cohort_summary`: per cluster stats
-- `feature_importance`: per embedding dimension
-- `outlier_cluster`: clusters with unusually high variability
-- `temporal_trend`: cluster mean by time bucket
+Rows keyed by `artifact_type`:
+- `cohort_summary`
+- `cohort_feature_lift`
 
-Shared columns:
+Columns:
 - `artifact_type` (utf8)
-- `cluster_id` (int32, nullable)
-- `dim` (int32, nullable)
+- `cohort_id` (int32, nullable)
 - `time_bucket` (int32, nullable)
 - `count` (int64, nullable)
 - `mean_pred` (float32, nullable)
 - `std_pred` (float32, nullable)
-- `p10`, `p50`, `p90` (float32, nullable)
-- `weight`, `abs_weight`, `global_contribution` (float32, nullable)
-- `outlier_score` (float32, nullable)
+- `p10/p50/p90` (float32, nullable; reserved)
+- `feature_key` (utf8, nullable)
+- `lift` (float32, nullable)
+- `support` (int64, nullable)
 - `notes` (utf8, nullable)
 
 ## Notes
-- kNN uses a bounded reservoir per cluster for memory control.
-- Ridge probe is diagonal for speed and memory efficiency.
+- Explanations are statistical: features/events enriched in the user’s embedding cohort.
+- Requires DiskGraph index and node data for configured tables.

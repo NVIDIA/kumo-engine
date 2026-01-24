@@ -19,6 +19,9 @@ arrow-buffer = { workspace = true }
 arrow-schema = { workspace = true }
 chrono = { workspace = true }
 parking_lot = { workspace = true }
+diskgraph-index = { path = "../diskgraph-index" }
+diskgraph-core = { path = "../diskgraph-core" }
+diskgraph-rowpack = { path = "../diskgraph-rowpack" }
 
 parquet = "57.2.0"
 rand = "0.8"
@@ -27,6 +30,7 @@ xxhash-rust = { version = "0.8", features = ["xxh3"] }
 
 [dev-dependencies]
 tempfile = "3"
+diskgraph-ingest = { path = "../diskgraph-ingest" }
 
 [[bin]]
 name = "explain"

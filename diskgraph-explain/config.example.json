@@ -2,20 +2,40 @@
   "input_parquet": "/path/to/input.parquet",
   "output_explanations_parquet": "/path/to/explanations.parquet",
   "output_global_trends_parquet": "/path/to/global_trends.parquet",
+  "index_path": "/path/to/diskgraph-index",
+  "root_table": "users",
   "id_column": "id",
   "timestamp_column": "timestamp",
   "prediction_column": "prediction",
   "embedding_column": "embedding",
   "id_kind": "utf8",
+  "id_lookup": "primary_key",
   "timestamp_kind": "int64",
   "num_clusters": 64,
   "kmeans_passes": 2,
-  "minibatch_size": 2048,
-  "knn_k": 16,
-  "cluster_sample_size": 1024,
-  "knn_sample_size": 2048,
-  "ridge_lambda": 0.001,
-  "top_factors": 5,
   "time_bucket_secs": 86400,
-  "max_time_buckets": 30
+  "max_time_buckets": 30,
+  "max_hops": 2,
+  "relation_fanout": 100,
+  "max_nodes": 2000,
+  "skip_unbounded_relations": true,
+  "degree_buckets": [0, 1, 2, 3, 5, 8, 13, 21, 34, 55],
+  "feature_top_k": 8,
+  "event_top_k": 5,
+  "smoothing_alpha": 1.0,
+  "min_support": 5,
+  "attributes": [
+    {
+      "table": "users",
+      "columns": [
+        {"name": "country", "kind": "categorical"}
+      ]
+    },
+    {
+      "table": "devices",
+      "columns": [
+        {"name": "os", "kind": "categorical"}
+      ]
+    }
+  ]
 }
