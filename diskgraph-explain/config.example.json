@@ -1,0 +1,21 @@
+{
+  "input_parquet": "/path/to/input.parquet",
+  "output_explanations_parquet": "/path/to/explanations.parquet",
+  "output_global_trends_parquet": "/path/to/global_trends.parquet",
+  "id_column": "id",
+  "timestamp_column": "timestamp",
+  "prediction_column": "prediction",
+  "embedding_column": "embedding",
+  "id_kind": "utf8",
+  "timestamp_kind": "int64",
+  "num_clusters": 64,
+  "kmeans_passes": 2,
+  "minibatch_size": 2048,
+  "knn_k": 16,
+  "cluster_sample_size": 1024,
+  "knn_sample_size": 2048,
+  "ridge_lambda": 0.001,
+  "top_factors": 5,
+  "time_bucket_secs": 86400,
+  "max_time_buckets": 30
+}
