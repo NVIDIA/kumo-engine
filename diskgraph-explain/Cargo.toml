@@ -35,3 +35,7 @@ diskgraph-ingest = { path = "../diskgraph-ingest" }
 [[bin]]
 name = "explain"
 path = "src/bin/explain.rs"
+
+[[bin]]
+name = "explain_cli"
+path = "src/bin/explain_cli.rs"

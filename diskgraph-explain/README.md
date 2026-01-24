@@ -10,11 +10,56 @@ Embedding-only explainability pipeline with raw event/feature attribution via Di
 
 ## Usage
 
+1) Build or obtain a DiskGraph index for the dataset you want to explain.
+
+```
+# Example ingest (local files)
+./diskgraph-ingest/scripts/ingest_local.sh /path/to/source_dir_or_diskgraph_config.json
+```
+
+2) Create a config JSON for the explain pipeline.
+
+```
+cp diskgraph-explain/config.example.json /path/to/config.json
+# edit paths + table names
+```
+
+Required fields:
+- `input_parquet`: parquet with `(id, timestamp, prediction, embedding)`
+- `index_path`: DiskGraph index root containing `index_metadata.json`
+- `root_table`: table name for the `id` column
+- `output_explanations_parquet`, `output_global_trends_parquet`
+
+3) Run the explain pipeline.
+
 ```
 ./diskgraph-explain/scripts/explain_local.sh /path/to/config.json
 ```
 
-Example config: `diskgraph-explain/config.example.json`.
+Or run directly with cargo:
+
+```
+cargo run -p diskgraph-explain --bin explain --release -- /path/to/config.json
+```
+
+## Interactive inspector
+
+After generating the outputs, you can inspect explanations interactively:
+
+```
+./diskgraph-explain/scripts/explain_inspect_local.sh /path/to/explanations.parquet /path/to/global_trends.parquet
+```
+
+### Useful commands
+- `help` — list commands
+- `stats` — show row/cohort counts
+- `show <id>` — show raw row summary
+- `reason <id>` — compelling reasons for positive/negative prediction
+- `similar <id> [k]` — nearest neighbors in embedding space
+- `cohort <id>` — cohort summary + top lifted features
+- `trend <cohort_id>` — temporal trend of cohort predictions
+- `list <cohort_id> [n]` — list sample ids in cohort
+- `exit` / `quit`
 
 ## Output schemas
 
