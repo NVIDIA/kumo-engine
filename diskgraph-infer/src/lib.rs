@@ -49,11 +49,13 @@ pub struct GraphTable {
 #[derive(Clone, Debug, Deserialize)]
 pub struct GraphPKey {
     pub name: String,
+    pub dtype: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct GraphCol {
     pub name: String,
+    pub dtype: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -61,6 +63,7 @@ pub struct GraphFKey {
     pub name: String,
     pub dst_table: String,
     pub dst_key: String,
+    pub dtype: String,
 }
 
 #[derive(Clone, Debug)]
@@ -220,6 +223,27 @@ pub fn infer_source_metadata(root: &RootSource, options: InferOptions) -> Result
                 }
 
                 table.columns.retain(|c| allowed_cols.contains(&c.name));
+
+                let mut col_dtypes: HashMap<String, String> = cfg
+                    .cols
+                    .iter()
+                    .map(|c| (c.name.clone(), c.dtype.clone()))
+                    .collect();
+
+                if let Some(pk) = &cfg.pkey {
+                    col_dtypes.insert(pk.name.clone(), pk.dtype.clone());
+                }
+                for fk in &cfg.fkeys {
+                    col_dtypes.insert(fk.name.clone(), fk.dtype.clone());
+                }
+
+                for col in &mut table.columns {
+                    if let Some(dtype_str) = col_dtypes.get(&col.name) {
+                        if let Some(ingested_type) = map_kumo_dtype(dtype_str) {
+                            col.ingested_dtype = ingested_type;
+                        }
+                    }
+                }
             }
         }
     }
@@ -239,6 +263,23 @@ pub fn infer_source_metadata(root: &RootSource, options: InferOptions) -> Result
         })
         .collect();
 
+    if let Some(config) = &options.graph_config {
+        let config_tables: HashMap<String, &GraphTable> = config
+            .tables
+            .iter()
+            .map(|t| (t.table_name.clone(), t))
+            .collect();
+        for table in &mut table_specs {
+            if let Some(cfg) = config_tables.get(&table.name) {
+                if let Some(pk) = &cfg.pkey {
+                    if table.columns.iter().any(|c| c.name == pk.name) {
+                        table.primary_key = Some(pk.name.clone());
+                    }
+                }
+            }
+        }
+    }
+
     let mut relationships = Vec::new();
     infer_primary_keys(&mut table_specs);
     infer_create_time(&mut table_specs);
@@ -253,6 +294,7 @@ pub fn infer_source_metadata(root: &RootSource, options: InferOptions) -> Result
     } else {
         infer_foreign_keys(&table_specs, &mut relationships, &mut warnings.notes, None);
     }
+    unify_relationship_types(&mut table_specs, &relationships, &mut warnings.notes);
     drop_join_table_primary_keys(&mut table_specs, &relationships);
     prune_relationships_without_primary_key(&table_specs, &mut relationships);
     infer_primary_key_relationships(&table_specs, &mut relationships);
@@ -4930,5 +4972,109 @@ mod tests {
             scale: None,
         };
         assert!(compatible_key_columns(&a, &b));
+    }
+}
+
+fn unify_relationship_types(
+    tables: &mut [TableSpec],
+    relationships: &[RelationshipSpec],
+    notes: &mut Vec<String>,
+) {
+    let table_map: HashMap<String, usize> = tables
+        .iter()
+        .enumerate()
+        .map(|(i, t)| (t.name.clone(), i))
+        .collect();
+
+    let mut updates: Vec<(usize, String, IngestedType)> = Vec::new();
+
+    for rel in relationships {
+        let src_idx = match table_map.get(&rel.src_table) {
+            Some(&i) => i,
+            None => continue,
+        };
+        let dst_idx = match table_map.get(&rel.dst_table) {
+            Some(&i) => i,
+            None => continue,
+        };
+
+        let src_dtype = tables[src_idx]
+            .columns
+            .iter()
+            .find(|c| c.name == rel.src_column)
+            .map(|c| c.ingested_dtype.clone());
+        let dst_dtype = tables[dst_idx]
+            .columns
+            .iter()
+            .find(|c| c.name == rel.dst_column)
+            .map(|c| c.ingested_dtype.clone());
+
+        if let (Some(src), Some(dst)) = (src_dtype, dst_dtype) {
+            if src != dst {
+                if let Some(unified) = unify_types(&src, &dst) {
+                    if unified != src {
+                        notes.push(format!(
+                            "Downgrading column {}.{} from {:?} to {:?} to match {}.{}",
+                            rel.src_table, rel.src_column, src, unified, rel.dst_table, rel.dst_column
+                        ));
+                        updates.push((src_idx, rel.src_column.clone(), unified.clone()));
+                    }
+                    if unified != dst {
+                        notes.push(format!(
+                            "Downgrading column {}.{} from {:?} to {:?} to match {}.{}",
+                            rel.dst_table, rel.dst_column, dst, unified, rel.src_table, rel.src_column
+                        ));
+                        updates.push((dst_idx, rel.dst_column.clone(), unified.clone()));
+                    }
+                }
+            }
+        }
+    }
+
+    for (table_idx, col_name, new_type) in updates {
+        if let Some(col) = tables[table_idx]
+            .columns
+            .iter_mut()
+            .find(|c| c.name == col_name)
+        {
+            col.ingested_dtype = new_type.clone();
+            if matches!(new_type, IngestedType::String | IngestedType::Bytes) {
+                col.fixed_len = None;
+            }
+        }
+    }
+}
+
+fn unify_types(a: &IngestedType, b: &IngestedType) -> Option<IngestedType> {
+    use IngestedType::*;
+    if a == b {
+        return Some(a.clone());
+    }
+    match (a, b) {
+        (String, Uuid) | (Uuid, String) => Some(String),
+        (String, Uuid256) | (Uuid256, String) => Some(String),
+        (String, Ip) | (Ip, String) => Some(String),
+        (Bytes, Uuid) | (Uuid, Bytes) => Some(Bytes),
+        (Bytes, Uuid256) | (Uuid256, Bytes) => Some(Bytes),
+        (Bytes, Ip) | (Ip, Bytes) => Some(Bytes),
+        (Int64, Int32) | (Int32, Int64) => Some(Int64),
+        _ => None,
+    }
+}
+
+fn map_kumo_dtype(dtype: &str) -> Option<IngestedType> {
+    match dtype {
+        "bool" => Some(IngestedType::Bool),
+        "int" | "int64" => Some(IngestedType::Int64),
+        "int32" => Some(IngestedType::Int32),
+        "int16" => Some(IngestedType::Int16),
+        "byte" => Some(IngestedType::UInt8),
+        "float" | "float32" | "float64" => Some(IngestedType::Float32),
+        "string" => Some(IngestedType::String),
+        "date" => Some(IngestedType::Date),
+        "time" => Some(IngestedType::Timestamp),
+        "floatlist" => Some(IngestedType::Float16Array),
+        "binary" => Some(IngestedType::Bytes),
+        _ => None,
     }
 }
