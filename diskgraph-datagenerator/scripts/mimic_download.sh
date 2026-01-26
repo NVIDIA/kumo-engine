@@ -1,7 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-DEFAULT_ROOT="${DISKGRAPH_DATA_ROOT:-/mnt/localssd}"
+if [[ -n "${DISKGRAPH_DATA_ROOT:-}" ]]; then
+  DEFAULT_ROOT="${DISKGRAPH_DATA_ROOT}"
+elif [[ -d /mnt/localssd && -w /mnt/localssd ]]; then
+  DEFAULT_ROOT="/mnt/localssd"
+else
+  DEFAULT_ROOT="/tmp"
+fi
 DEST_ROOT="${1:-${DEFAULT_ROOT%/}/datasets/mimic}"
 S3_PREFIX="s3://kumo-public-datasets/MIMIC_IV_demo"
 
