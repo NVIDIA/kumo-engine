@@ -333,6 +333,52 @@ fn temporal_predict_comparison_e2e() {
 }
 
 #[test]
+fn temporal_where_after_for_each_e2e() {
+    let dir = tempdir().unwrap();
+    let index_root = dir.path().join("index");
+    fs::create_dir_all(&index_root).unwrap();
+
+    let metadata = build_metadata_count();
+    fs::write(
+        index_root.join("index_metadata.json"),
+        serde_json::to_vec_pretty(&metadata).unwrap(),
+    )
+    .unwrap();
+
+    write_edge_shard(
+        &index_root,
+        "users",
+        0,
+        &metadata,
+        vec![
+            vec![(1u64, 0i64), (2u64, 100i64), (1u64, 200i64)],
+            vec![],
+        ],
+    );
+    write_empty_shard(&index_root, "articles", 0, 2);
+
+    let query = parse_query(
+        "PREDICT COUNT(transactions.*, 0, 100, seconds) = 0 FOR EACH users.user_id WHERE COUNT(transactions.*, -100, 0, seconds) > 0",
+    )
+    .unwrap();
+    let options = QueryOptions {
+        temporal_sampling: TemporalSampling::Timeframe,
+        ..Default::default()
+    };
+    let rows = execute_temporal(&query, &index_root, &options).unwrap();
+    assert!(!rows.is_empty());
+
+    for row in rows {
+        let entity_id = match row.entity {
+            diskgraph_train_table::exec::Value::UInt(id) => id,
+            _ => 0,
+        };
+        let past_count = count_edges_in_window(entity_id, row.timestamp, -100, 0);
+        assert!(past_count > 0);
+    }
+}
+
+#[test]
 fn temporal_predict_comparison_sum_e2e() {
     let dir = tempdir().unwrap();
     let index_root = dir.path().join("index");

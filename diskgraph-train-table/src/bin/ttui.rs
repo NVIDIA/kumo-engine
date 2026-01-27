@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, Context, Result};
+use chrono::{DateTime, Utc};
 use diskgraph_index::graph::GraphIndexReader;
 use rayon::prelude::*;
 use rustyline::completion::{Completer, Pair};
@@ -19,7 +20,7 @@ use diskgraph_train_table::exec::{execute_simple, TargetValue, TrainRow, Value};
 use diskgraph_train_table::index_reader::IndexReader;
 use diskgraph_train_table::parquet_writer::{write_train_table, TrainTableRow};
 use diskgraph_train_table::parser::parse_query;
-use diskgraph_train_table::split::{SplitAssigner, SplitLabel};
+use diskgraph_train_table::split::{SplitAssigner, SplitBoundaryInfo, SplitLabel};
 use diskgraph_train_table::validate::{validate_query, IndexSchema};
 
 const RESET: &str = "\x1b[0m";
@@ -477,6 +478,7 @@ fn run_query(session: &mut SessionConfig, query_str: &str) -> Result<PathBuf> {
 
     let (min_ts, max_ts) = min_max_timestamp_shards(&shard_rows);
     let assigner = SplitAssigner::from_config(&session.split, min_ts, max_ts)?;
+    let split_ranges = assigner.boundaries();
 
     let assigner = Arc::new(assigner);
     let out_shards: Vec<Vec<TrainTableRow>> = shard_rows
@@ -525,6 +527,9 @@ fn run_query(session: &mut SessionConfig, query_str: &str) -> Result<PathBuf> {
         })?;
 
     print_stats_sharded(&out_shards);
+    if let Some(ranges) = split_ranges {
+        print_split_ranges(&ranges);
+    }
     print_samples_sharded(&out_shards, 10);
 
     session.last_output = Some(shard_dir.clone());
@@ -546,6 +551,29 @@ fn split_rows(rows: Vec<TrainRow>, shards: usize) -> Vec<Vec<TrainRow>> {
         out[idx % shards].push(row);
     }
     out
+}
+
+fn print_split_ranges(ranges: &[SplitBoundaryInfo]) {
+    if ranges.is_empty() {
+        return;
+    }
+    println!("{}", label("split ranges:"));
+    for range in ranges {
+        let end_marker = if range.end_inclusive { "]" } else { ")" };
+        println!(
+            "  {} [{} , {}{}",
+            name(range.label.as_str()),
+            format_ts(range.start),
+            format_ts(range.end),
+            end_marker
+        );
+    }
+}
+
+fn format_ts(ts: i64) -> String {
+    let dt = DateTime::<Utc>::from_timestamp(ts, 0)
+        .unwrap_or_else(|| DateTime::<Utc>::from_timestamp(0, 0).unwrap());
+    format!("{} ({})", ts, dt.format("%Y-%m-%d %H:%M:%S UTC"))
 }
 
 fn predict_has_window(query: &diskgraph_train_table::ast::Query) -> bool {

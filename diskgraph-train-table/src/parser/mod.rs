@@ -21,7 +21,7 @@ number = @{ "-"? ~ ASCII_DIGIT+ }
 string = @{ "'" ~ ( (!"'" ~ ANY)* ) ~ "'" }
 
 query = { KW_PREDICT ~ predict_target ~ KW_FOR ~ KW_EACH ~ entity_ref ~ assuming? ~ EOI }
-assuming = { KW_ASSUME ~ predicate }
+assuming = { (KW_ASSUME | KW_WHERE) ~ predicate }
 
 predict_target = { cmp_expr | agg_call | column_ref }
 agg_call = { agg_func ~ "(" ~ agg_args ~ ")" }
@@ -106,7 +106,14 @@ fn consume_keyword(pairs: &mut Pairs<Rule>, rule: Rule) -> anyhow::Result<()> {
 
 fn build_assuming(pair: Pair<Rule>) -> anyhow::Result<PredicateExpr> {
     let mut inner = pair.into_inner();
-    consume_keyword(&mut inner, Rule::KW_ASSUME)?;
+    if let Some(next) = inner.next() {
+        match next.as_rule() {
+            Rule::KW_ASSUME | Rule::KW_WHERE => {}
+            _ => return Err(anyhow::anyhow!("missing assume/where keyword")),
+        }
+    } else {
+        return Err(anyhow::anyhow!("missing assume/where keyword"));
+    }
     let pred = inner.next().ok_or_else(|| anyhow::anyhow!("missing predicate"))?;
     build_predicate(pred)
 }
@@ -351,6 +358,13 @@ mod tests {
     #[test]
     fn parse_assuming_predicate() {
         let q = "PREDICT SUM(transactions.price, 0, 7, days) FOR EACH user.user_id ASSUMING COUNT(promotion.* WHERE promotion.TYPE = 1, 0, 7, days) > 1";
+        let parsed = parse_query(q).expect("parse");
+        assert!(parsed.assuming.is_some());
+    }
+
+    #[test]
+    fn parse_where_after_for_each() {
+        let q = "PREDICT COUNT(transactions.*, 0, 7, days) FOR EACH customers.customer_id WHERE COUNT(transactions.*, -30, 0, days) > 0";
         let parsed = parse_query(q).expect("parse");
         assert!(parsed.assuming.is_some());
     }

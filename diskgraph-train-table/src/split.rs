@@ -30,6 +30,14 @@ pub struct SplitAssigner {
 }
 
 #[derive(Debug, Clone)]
+pub struct SplitBoundaryInfo {
+    pub label: SplitLabel,
+    pub start: i64,
+    pub end: i64,
+    pub end_inclusive: bool,
+}
+
+#[derive(Debug, Clone)]
 enum SplitKind {
     Random {
         thresholds: (f64, f64),
@@ -149,6 +157,34 @@ impl SplitAssigner {
                     .find(|b| b.contains(ts))
                     .map(|b| b.label)
             }
+        }
+    }
+
+    pub fn boundaries(&self) -> Option<Vec<SplitBoundaryInfo>> {
+        match &self.kind {
+            SplitKind::Time { boundaries } => Some(
+                boundaries
+                    .iter()
+                    .map(|b| SplitBoundaryInfo {
+                        label: b.label,
+                        start: b.start,
+                        end: b.end,
+                        end_inclusive: b.end_inclusive,
+                    })
+                    .collect(),
+            ),
+            SplitKind::Range { ranges } => Some(
+                ranges
+                    .iter()
+                    .map(|b| SplitBoundaryInfo {
+                        label: b.label,
+                        start: b.start,
+                        end: b.end,
+                        end_inclusive: b.end_inclusive,
+                    })
+                    .collect(),
+            ),
+            _ => None,
         }
     }
 }
