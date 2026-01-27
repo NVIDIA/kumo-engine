@@ -26,8 +26,10 @@ pub fn run_job(config: &JobConfig) -> Result<()> {
     }
 
     let rows = if query.predict.aggregation.window.is_some() {
+        eprintln!("run_job: executing temporal query");
         execute_temporal(&query, Path::new(&config.index_path), &config.options)?
     } else {
+        eprintln!("run_job: executing non-temporal query");
         let reader = IndexReader::open(&config.index_path)?;
         execute_simple(&query, &reader)?
     };

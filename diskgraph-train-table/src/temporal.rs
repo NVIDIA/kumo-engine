@@ -34,6 +34,10 @@ pub fn execute_temporal(query: &Query, index_path: &Path, options: &QueryOptions
 
     let mut rows = Vec::new();
     let node_count = entity_table.node_count();
+    eprintln!(
+        "temporal: start entity_table={} nodes={}",
+        query.for_each.table, node_count
+    );
     for node_id in 0..node_count {
         let view = entity_table.edges_for_node(node_id)?;
         let segments = view.relation_segments()?;
@@ -120,8 +124,20 @@ pub fn execute_temporal(query: &Query, index_path: &Path, options: &QueryOptions
                 }
             }
         }
+        if node_id > 0 && node_id % 10_000 == 0 {
+            eprintln!(
+                "temporal: processed_nodes={} rows={}",
+                node_id,
+                rows.len()
+            );
+        }
     }
 
+    eprintln!(
+        "temporal: done entity_table={} rows={}",
+        query.for_each.table,
+        rows.len()
+    );
     Ok(rows)
 }
 
