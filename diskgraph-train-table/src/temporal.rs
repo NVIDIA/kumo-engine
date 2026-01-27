@@ -94,7 +94,9 @@ pub fn execute_temporal(query: &Query, index_path: &Path, options: &QueryOptions
                         ts,
                         &segments,
                         &agg_plans,
+                        &aggs,
                         target_agg_index,
+                        query.assuming.as_ref(),
                         &mut rows,
                     )?;
                 }
@@ -108,7 +110,9 @@ pub fn execute_temporal(query: &Query, index_path: &Path, options: &QueryOptions
                             ts,
                             &segments,
                             &agg_plans,
+                            &aggs,
                             target_agg_index,
+                            query.assuming.as_ref(),
                             &mut rows,
                         )?;
                     }
@@ -126,24 +130,31 @@ fn evaluate_samples(
     ts: i64,
     segments: &[RelationSegment<'_>],
     agg_plans: &[AggPlan],
+    aggs: &[AggregationExpr],
     target_agg_index: usize,
+    assuming: Option<&PredicateExpr>,
     rows: &mut Vec<TrainRow>,
 ) -> Result<()> {
     let mut target_value = None;
+    let mut values: Vec<Option<TargetValue>> = Vec::with_capacity(agg_plans.len());
     for (idx, plan) in agg_plans.iter().enumerate() {
         let segment = segments
             .get(plan.rel.index)
             .ok_or_else(|| anyhow!("missing segment for relation {}", plan.rel.name))?;
         let value = aggregate_for_timestamp(segment, &plan.rel.meta, &plan.agg, ts, plan)?;
         if idx == target_agg_index {
-            target_value = value;
-        } else if value.is_none() {
-            return Ok(());
+            target_value = value.clone();
         }
+        values.push(value);
     }
     let Some(target_value) = target_value else { return Ok(()) };
     if is_empty_target(&target_value) {
         return Ok(());
+    }
+    if let Some(pred) = assuming {
+        if !eval_temporal_predicate(pred, aggs, &values)? {
+            return Ok(());
+        }
     }
     rows.push(TrainRow {
         entity: Value::UInt(node_id),
@@ -297,6 +308,70 @@ fn collect_aggs(query: &Query) -> Vec<AggregationExpr> {
         collect_aggs_from_pred(pred, &mut aggs);
     }
     aggs
+}
+
+fn eval_temporal_predicate(
+    pred: &PredicateExpr,
+    aggs: &[AggregationExpr],
+    values: &[Option<TargetValue>],
+) -> Result<bool> {
+    match pred {
+        PredicateExpr::Comparison { left, op, right } => {
+            let left_num = eval_predicate_expr(left, aggs, values)?;
+            let right_num = eval_predicate_expr(right, aggs, values)?;
+            let (Some(left_num), Some(right_num)) = (left_num, right_num) else {
+                return Ok(false);
+            };
+            Ok(compare_numeric(left_num, right_num, *op))
+        }
+        PredicateExpr::And(items) => {
+            for item in items {
+                if !eval_temporal_predicate(item, aggs, values)? {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        }
+        PredicateExpr::Or(items) => {
+            for item in items {
+                if eval_temporal_predicate(item, aggs, values)? {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        }
+    }
+}
+
+fn eval_predicate_expr(
+    expr: &crate::ast::Expr,
+    aggs: &[AggregationExpr],
+    values: &[Option<TargetValue>],
+) -> Result<Option<f64>> {
+    match expr {
+        crate::ast::Expr::Number(n) => Ok(Some(*n as f64)),
+        crate::ast::Expr::Agg(agg) => {
+            let idx = aggs
+                .iter()
+                .position(|a| a == agg.as_ref())
+                .ok_or_else(|| anyhow!("missing agg for predicate"))?;
+            let Some(value) = values.get(idx).and_then(|v| v.clone()) else {
+                return Ok(None);
+            };
+            Ok(target_value_to_number(&value))
+        }
+        crate::ast::Expr::String(_) | crate::ast::Expr::Column(_) => {
+            Err(anyhow!("unsupported predicate expr in temporal assuming"))
+        }
+    }
+}
+
+fn target_value_to_number(value: &TargetValue) -> Option<f64> {
+    match value {
+        TargetValue::Count(c) => Some(*c as f64),
+        TargetValue::Number(v) => Some(*v),
+        TargetValue::List(_) => None,
+    }
 }
 
 fn collect_aggs_from_pred(pred: &crate::ast::PredicateExpr, out: &mut Vec<AggregationExpr>) {

@@ -208,6 +208,167 @@ fn temporal_sum_with_filter_e2e() {
     }
 }
 
+#[test]
+fn temporal_list_distinct_e2e() {
+    let dir = tempdir().unwrap();
+    let index_root = dir.path().join("index");
+    fs::create_dir_all(&index_root).unwrap();
+
+    let metadata = build_metadata_sum();
+    fs::write(
+        index_root.join("index_metadata.json"),
+        serde_json::to_vec_pretty(&metadata).unwrap(),
+    )
+    .unwrap();
+
+    write_edge_shard(
+        &index_root,
+        "users",
+        0,
+        &metadata,
+        vec![vec![(0u64, 0i64), (1u64, 100i64), (2u64, 200i64)]],
+    );
+
+    let txn_ctx = build_transactions_ctx();
+    write_rowpack_ctx(&index_root.join("nodes/transactions/node_data.ctx"), &txn_ctx);
+    write_node_data_shard(
+        &index_root,
+        "transactions",
+        0,
+        &txn_ctx,
+        vec![
+            vec![ValueRef::Float64(5.0), ValueRef::Int64(1)],
+            vec![ValueRef::Float64(7.0), ValueRef::Int64(0)],
+            vec![ValueRef::Float64(11.0), ValueRef::Int64(1)],
+        ],
+    );
+
+    let output_path = dir.path().join("train.parquet");
+    let config = JobConfig {
+        job_name: None,
+        index_path: index_root.to_string_lossy().to_string(),
+        query: "PREDICT LIST_DISTINCT(transactions.type, 0, 100, seconds) FOR EACH users.user_id".to_string(),
+        output_parquet: output_path.to_string_lossy().to_string(),
+        split: SplitConfig {
+            split_type: SplitType::Random,
+            fractions: vec![1.0, 0.0, 0.0],
+            seed: Some(0),
+            time: None,
+            range: None,
+        },
+        options: QueryOptions {
+            temporal_sampling: TemporalSampling::Timeframe,
+            ..Default::default()
+        },
+        validation_output: None,
+    };
+
+    run_job(&config).unwrap();
+
+    let file = File::open(&output_path).unwrap();
+    let mut reader = ParquetRecordBatchReaderBuilder::try_new(file)
+        .unwrap()
+        .build()
+        .unwrap();
+    let batch = reader.next().unwrap().unwrap();
+    assert!(batch.num_rows() > 0);
+
+    let entity = batch.column(0).as_any().downcast_ref::<arrow_array::UInt64Array>().unwrap();
+    let target = batch.column(1).as_any().downcast_ref::<arrow_array::ListArray>().unwrap();
+    let timestamp = batch.column(2).as_any().downcast_ref::<arrow_array::Int64Array>().unwrap();
+
+    for row in 0..batch.num_rows() {
+        let entity_id = entity.value(row);
+        let ts = timestamp.value(row);
+        let mut expected = list_distinct_in_window(entity_id, ts, 0, 100);
+        let values = target.value(row);
+        let list = values.as_any().downcast_ref::<arrow_array::Int64Array>().unwrap();
+        let mut actual = Vec::new();
+        for i in 0..list.len() {
+            actual.push(list.value(i));
+        }
+        expected.sort();
+        actual.sort();
+        assert_eq!(expected, actual);
+    }
+}
+
+#[test]
+fn temporal_assuming_filter_e2e() {
+    let dir = tempdir().unwrap();
+    let index_root = dir.path().join("index");
+    fs::create_dir_all(&index_root).unwrap();
+
+    let metadata = build_metadata_sum();
+    fs::write(
+        index_root.join("index_metadata.json"),
+        serde_json::to_vec_pretty(&metadata).unwrap(),
+    )
+    .unwrap();
+
+    write_edge_shard(
+        &index_root,
+        "users",
+        0,
+        &metadata,
+        vec![vec![(0u64, 0i64), (1u64, 50i64), (2u64, 80i64)]],
+    );
+
+    let txn_ctx = build_transactions_ctx();
+    write_rowpack_ctx(&index_root.join("nodes/transactions/node_data.ctx"), &txn_ctx);
+    write_node_data_shard(
+        &index_root,
+        "transactions",
+        0,
+        &txn_ctx,
+        vec![
+            vec![ValueRef::Float64(5.0), ValueRef::Int64(1)],
+            vec![ValueRef::Float64(7.0), ValueRef::Int64(1)],
+            vec![ValueRef::Float64(11.0), ValueRef::Int64(0)],
+        ],
+    );
+
+    let output_path = dir.path().join("train.parquet");
+    let config = JobConfig {
+        job_name: None,
+        index_path: index_root.to_string_lossy().to_string(),
+        query: "PREDICT SUM(transactions.price WHERE transactions.type = 1, 0, 100, seconds) FOR EACH users.user_id ASSUMING COUNT(transactions.*, 0, 100, seconds) > 1".to_string(),
+        output_parquet: output_path.to_string_lossy().to_string(),
+        split: SplitConfig {
+            split_type: SplitType::Random,
+            fractions: vec![1.0, 0.0, 0.0],
+            seed: Some(0),
+            time: None,
+            range: None,
+        },
+        options: QueryOptions {
+            temporal_sampling: TemporalSampling::Timeframe,
+            ..Default::default()
+        },
+        validation_output: None,
+    };
+
+    run_job(&config).unwrap();
+
+    let file = File::open(&output_path).unwrap();
+    let mut reader = ParquetRecordBatchReaderBuilder::try_new(file)
+        .unwrap()
+        .build()
+        .unwrap();
+    let batch = reader.next().unwrap().unwrap();
+    assert!(batch.num_rows() > 0);
+
+    let target = batch.column(1).as_any().downcast_ref::<arrow_array::Float64Array>().unwrap();
+    let timestamp = batch.column(2).as_any().downcast_ref::<arrow_array::Int64Array>().unwrap();
+
+    for row in 0..batch.num_rows() {
+        let ts = timestamp.value(row);
+        assert_eq!(ts, 0);
+        let sum = target.value(row);
+        assert!((sum - 12.0).abs() < 1e-6);
+    }
+}
+
 fn build_metadata_count() -> DatasetMetadata {
     DatasetMetadata {
         dataset_name: "temporal_test".to_string(),
@@ -521,4 +682,20 @@ fn sum_edges_in_window(entity: u64, ts: i64, start: i64, end: i64) -> f64 {
         .filter(|(t, _, ty)| *t >= window_start && *t < window_end && *ty == 1)
         .map(|(_, val, _)| val)
         .sum()
+}
+
+fn list_distinct_in_window(entity: u64, ts: i64, start: i64, end: i64) -> Vec<i64> {
+    let edges = match entity {
+        0 => vec![(0i64, 1), (100i64, 0), (200i64, 1)],
+        _ => vec![],
+    };
+    let window_start = ts + start;
+    let window_end = ts + end;
+    let mut out = Vec::new();
+    for (t, ty) in edges {
+        if t >= window_start && t < window_end && !out.contains(&ty) {
+            out.push(ty);
+        }
+    }
+    out
 }
