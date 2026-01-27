@@ -8,6 +8,18 @@ Generate a train table parquet from an ingested Diskgraph index and a predictive
 ./target/debug/generate --config /path/to/job.json
 ```
 
+## Query TUI
+
+```
+./diskgraph-train-table/scripts/ttui.sh /path/to/index
+```
+
+Non-interactive mode:
+
+```
+./diskgraph-train-table/scripts/ttui.sh /path/to/index -- -C "PREDICT ..."
+```
+
 ## E2E example (H&M)
 
 ```

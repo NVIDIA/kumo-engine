@@ -19,6 +19,7 @@ arrow-array = { workspace = true }
 arrow-schema = { workspace = true }
 parquet = { version = "57.2.0", features = ["arrow"] }
 half = "2"
+rustyline = "12"
 
 [dev-dependencies]
 serde_json = { workspace = true }

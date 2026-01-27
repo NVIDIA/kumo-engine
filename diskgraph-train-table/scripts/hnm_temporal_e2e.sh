@@ -14,6 +14,7 @@ INDEX_ROOT="${2:-${DEFAULT_ROOT%/}/diskgraph-index/hnm}"
 OUTPUT_PARQUET="${3:-${DEFAULT_ROOT%/}/train-tables/hnm_temporal.parquet}"
 CONFIG_PATH="${DATASET_ROOT%/}/train_table_job.json"
 INFER_CONFIG_PATH="${DATASET_ROOT%/}/diskgraph_config.json"
+QUERY_FILTER="${QUERY_FILTER:-all}"
 
 mkdir -p "$(dirname "${OUTPUT_PARQUET}")"
 
@@ -39,6 +40,25 @@ else
   echo "index already present; skipping ingest"
 fi
 
+REL_CUSTOMER_TXN=$(python3 - <<PY
+import json, os, sys
+path = os.path.join("${INDEX_ROOT}", "index_metadata.json")
+try:
+    with open(path, "r") as f:
+        meta = json.load(f)
+    for rel in meta.get("edge_relations", []):
+        if rel.get("src_type") == "customers" and rel.get("dst_type") == "transactions":
+            print(rel.get("name", ""))
+            sys.exit(0)
+except Exception:
+    pass
+print("")
+PY
+)
+if [[ -z "${REL_CUSTOMER_TXN}" ]]; then
+  REL_CUSTOMER_TXN="transactions"
+fi
+
 cat <<JSON > "${CONFIG_PATH}"
 {
   "index_path": "${INDEX_ROOT}",
@@ -55,6 +75,33 @@ cat <<JSON > "${CONFIG_PATH}"
 }
 JSON
 
-cargo run -p diskgraph-train-table --bin generate --release -- --config "${CONFIG_PATH}"
+queries=(
+  "PREDICT COUNT(${REL_CUSTOMER_TXN}.*, 0, 7, days) FOR EACH customers.customer_id ASSUMING COUNT(${REL_CUSTOMER_TXN}.*, -30, 0, days) > 0"
+  "PREDICT SUM(transactions.price WHERE transactions.sales_channel_id = 1, 0, 30, days) FOR EACH customers.customer_id"
+  "PREDICT AVG(transactions.price, 0, 30, days) FOR EACH customers.customer_id"
+  "PREDICT LIST_DISTINCT(transactions.article_id, 0, 7, days) FOR EACH customers.customer_id"
+  "PREDICT LIST_DISTINCT(transactions.article_id) FOR EACH transactions.customer_id"
+)
 
-echo "train table written to ${OUTPUT_PARQUET}"
+run_query() {
+  local idx="$1"
+  local query="$2"
+  echo "running query ${idx}: ${query}"
+  ./diskgraph-train-table/scripts/ttui.sh "${INDEX_ROOT}" -- -C "${query}"
+}
+
+if [[ "${QUERY_FILTER}" == "all" ]]; then
+  for i in "${!queries[@]}"; do
+    run_query "$((i + 1))" "${queries[$i]}"
+  done
+else
+  IFS=',' read -r -a selected <<< "${QUERY_FILTER}"
+  for sel in "${selected[@]}"; do
+    idx=$((sel - 1))
+    if [[ "${idx}" -ge 0 && "${idx}" -lt "${#queries[@]}" ]]; then
+      run_query "${sel}" "${queries[$idx]}"
+    else
+      echo "skipping invalid query index: ${sel}" >&2
+    fi
+  done
+fi

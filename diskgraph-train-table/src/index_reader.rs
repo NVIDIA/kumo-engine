@@ -5,12 +5,15 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use diskgraph_core::metadata::{DatasetMetadata, NodeShardMetadata};
+use diskgraph_index::graph::{GraphIndexReader, TableReader};
 use diskgraph_rowpack::RowPackContext;
+use std::sync::Arc;
 
 pub struct IndexReader {
     root: PathBuf,
     pub metadata: DatasetMetadata,
     contexts: HashMap<String, RowPackContext>,
+    graph: Option<GraphIndexReader>,
 }
 
 impl IndexReader {
@@ -33,10 +36,13 @@ impl IndexReader {
             }
         }
 
+        let graph = GraphIndexReader::open(&metadata_path, &root).ok();
+
         Ok(Self {
             root,
             metadata,
             contexts,
+            graph,
         })
     }
 
@@ -63,35 +69,75 @@ impl IndexReader {
 
     pub fn iter_node_rows(&self, table: &str, shard: usize) -> Result<NodeRowIter> {
         let path = self.node_data_path(table, shard);
-        let file = File::open(&path)
-            .with_context(|| format!("open node data at {}", path.display()))?;
-        Ok(NodeRowIter { file })
+        if path.exists() {
+            let file = File::open(&path)
+                .with_context(|| format!("open node data at {}", path.display()))?;
+            return Ok(NodeRowIter::File { file });
+        }
+        let Some(graph) = &self.graph else {
+            return Err(anyhow::anyhow!("missing node data for table {table}"));
+        };
+        let table_reader = graph
+            .table(table)
+            .ok_or_else(|| anyhow::anyhow!("missing table {table}"))?;
+        Ok(NodeRowIter::Graph {
+            table: table_reader,
+            node_id: 0,
+            max: graph
+                .table(table)
+                .map(|t| t.node_count())
+                .unwrap_or(0),
+        })
     }
 }
 
-pub struct NodeRowIter {
-    file: File,
+pub enum NodeRowIter {
+    File { file: File },
+    Graph { table: Arc<TableReader>, node_id: u64, max: u64 },
 }
 
 impl NodeRowIter {
     pub fn next_row(&mut self) -> Result<Option<Vec<u8>>> {
-        let mut len_buf = [0u8; 4];
-        match self.file.read_exact(&mut len_buf) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
-            Err(e) => return Err(e.into()),
+        match self {
+            NodeRowIter::File { file } => {
+                let mut len_buf = [0u8; 4];
+                match file.read_exact(&mut len_buf) {
+                    Ok(()) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
+                    Err(e) => return Err(e.into()),
+                }
+                let len = u32::from_le_bytes(len_buf) as usize;
+                if len == 0 {
+                    return Ok(Some(Vec::new()));
+                }
+                let mut buf = vec![0u8; len];
+                file.read_exact(&mut buf)?;
+                Ok(Some(buf))
+            }
+            NodeRowIter::Graph { table, node_id, max } => {
+                if *node_id >= *max {
+                    return Ok(None);
+                }
+                let view = table.edges_for_node(*node_id)?;
+                let data = view.node_data()?;
+                *node_id += 1;
+                match data {
+                    Some(bytes) => Ok(Some(bytes.to_vec())),
+                    None => Ok(Some(Vec::new())),
+                }
+            }
         }
-        let len = u32::from_le_bytes(len_buf) as usize;
-        if len == 0 {
-            return Ok(Some(Vec::new()));
-        }
-        let mut buf = vec![0u8; len];
-        self.file.read_exact(&mut buf)?;
-        Ok(Some(buf))
     }
 
     pub fn reset(&mut self) -> Result<()> {
-        self.file.seek(SeekFrom::Start(0))?;
+        match self {
+            NodeRowIter::File { file } => {
+                file.seek(SeekFrom::Start(0))?;
+            }
+            NodeRowIter::Graph { node_id, .. } => {
+                *node_id = 0;
+            }
+        }
         Ok(())
     }
 }
