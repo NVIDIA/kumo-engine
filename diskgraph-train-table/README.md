@@ -8,6 +8,14 @@ Generate a train table parquet from an ingested Diskgraph index and a predictive
 ./target/debug/generate --config /path/to/job.json
 ```
 
+## E2E example (H&M)
+
+```
+./diskgraph-train-table/scripts/hnm_temporal_e2e.sh
+```
+
+This script downloads the H&M dataset, infers `diskgraph_config.json`, ingests a local index, and generates a temporal train table with a filter.
+
 ## Job config (JSON)
 
 ```json
