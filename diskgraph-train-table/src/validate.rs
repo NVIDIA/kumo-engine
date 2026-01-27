@@ -202,7 +202,15 @@ pub fn validate_query(query: &Query, schema: &IndexSchema) -> ValidationOutcome 
         }
         PredictExpr::Comparison(pred) => {
             match extract_predict_comparison(pred) {
-                Ok(agg) => validate_aggregation(&agg, schema, &mut outcome),
+                Ok(PredictComparison::Agg(agg)) => validate_aggregation(&agg, schema, &mut outcome),
+                Ok(PredictComparison::Column(col)) => {
+                    if col.table != query.for_each.table {
+                        outcome.error(
+                            "PREDICT_COMPARISON_TABLE_MISMATCH",
+                            "predict comparison column must come from entity table",
+                        );
+                    }
+                }
                 Err(msg) => outcome.error("PREDICT_COMPARISON_INVALID", msg),
             }
         }
@@ -451,7 +459,12 @@ fn collect_aggs_from_pred(pred: &PredicateExpr, out: &mut Vec<AggregationExpr>) 
     }
 }
 
-fn extract_predict_comparison(pred: &PredicateExpr) -> Result<AggregationExpr, String> {
+enum PredictComparison {
+    Agg(AggregationExpr),
+    Column(ColumnRef),
+}
+
+fn extract_predict_comparison(pred: &PredicateExpr) -> Result<PredictComparison, String> {
     let PredicateExpr::Comparison { left, right, .. } = pred else {
         return Err("predict comparison must be a single comparison".to_string());
     };
@@ -460,9 +473,12 @@ fn extract_predict_comparison(pred: &PredicateExpr) -> Result<AggregationExpr, S
             if matches!(agg.func, AggFunc::ListDistinct) {
                 return Err("LIST_DISTINCT is not supported in predict comparisons".to_string());
             }
-            Ok((**agg).clone())
+            Ok(PredictComparison::Agg((**agg).clone()))
         }
-        _ => Err("predict comparison must compare aggregation to a number".to_string()),
+        (Expr::Column(col), Expr::Number(_)) | (Expr::Number(_), Expr::Column(col)) => {
+            Ok(PredictComparison::Column(col.clone()))
+        }
+        _ => Err("predict comparison must compare aggregation or column to a number".to_string()),
     }
 }
 
@@ -696,6 +712,21 @@ mod tests {
         let schema = IndexSchema::from_index_path(&dir).expect("schema");
         let query = parse_query(
             "PREDICT COUNT(transactions.*, 0, 7, days) = 0 FOR EACH users.user_id",
+        )
+        .expect("parse");
+        let outcome = validate_query(&query, &schema);
+        assert!(outcome.errors.is_empty());
+    }
+
+    #[test]
+    fn validate_predict_comparison_column() {
+        let dir = temp_dir("predict_comparison_col");
+        let metadata = build_metadata(&dir);
+        write_metadata(&dir, &metadata);
+
+        let schema = IndexSchema::from_index_path(&dir).expect("schema");
+        let query = parse_query(
+            "PREDICT users.user_id = 1 FOR EACH users.user_id",
         )
         .expect("parse");
         let outcome = validate_query(&query, &schema);

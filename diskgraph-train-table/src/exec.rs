@@ -97,14 +97,18 @@ pub fn execute_simple(query: &Query, reader: &IndexReader) -> Result<Vec<TrainRo
                         continue;
                     }
                 }
-                let entity = decode_value(&decoder, &row, entity_idx, &mut scratch)?;
+                let Some(entity) = decode_value_opt(&decoder, &row, entity_idx, &mut scratch)? else {
+                    continue;
+                };
                 let entity_key = entity.clone();
                 if let Some(allowed) = &allowed_entities {
                     if !allowed.contains(&entity) {
                         continue;
                     }
                 }
-                let value = decode_numeric(&decoder, &row, target_idx, &mut scratch)?;
+                let Some(value) = decode_numeric_opt(&decoder, &row, target_idx, &mut scratch)? else {
+                    continue;
+                };
                 let entry = sums.entry(entity).or_insert((0.0, 0, value, value));
                 entry.0 += value;
                 entry.1 += 1;
@@ -147,12 +151,19 @@ pub fn execute_simple(query: &Query, reader: &IndexReader) -> Result<Vec<TrainRo
                         continue;
                     }
                 }
-                let entity = decode_value(&decoder, &row, entity_idx, &mut scratch)?;
+                let Some(entity) = decode_value_opt(&decoder, &row, entity_idx, &mut scratch)? else {
+                    continue;
+                };
                 let entity_key = entity.clone();
                 if let Some(allowed) = &allowed_entities {
                     if !allowed.contains(&entity) {
                         continue;
                     }
+                }
+                if let Some(target_idx) = target_idx {
+                    let Some(_value) = decode_value_opt(&decoder, &row, target_idx, &mut scratch)? else {
+                        continue;
+                    };
                 }
                 let entry = counts.entry(entity).or_insert(0);
                 *entry += 1;
@@ -181,14 +192,18 @@ pub fn execute_simple(query: &Query, reader: &IndexReader) -> Result<Vec<TrainRo
                         continue;
                     }
                 }
-                let entity = decode_value(&decoder, &row, entity_idx, &mut scratch)?;
+                let Some(entity) = decode_value_opt(&decoder, &row, entity_idx, &mut scratch)? else {
+                    continue;
+                };
                 let entity_key = entity.clone();
                 if let Some(allowed) = &allowed_entities {
                     if !allowed.contains(&entity) {
                         continue;
                     }
                 }
-                let target = decode_value(&decoder, &row, target_idx, &mut scratch)?;
+                let Some(target) = decode_value_opt(&decoder, &row, target_idx, &mut scratch)? else {
+                    continue;
+                };
                 values
                     .entry(entity)
                     .or_insert_with(HashSet::new)
@@ -212,6 +227,18 @@ pub fn execute_simple(query: &Query, reader: &IndexReader) -> Result<Vec<TrainRo
 }
 
 fn execute_simple_comparison(
+    reader: &IndexReader,
+    entity_table: &str,
+    pred: &crate::ast::PredicateExpr,
+    query: &Query,
+) -> Result<Vec<TrainRow>> {
+    if comparison_has_agg(pred) {
+        return execute_simple_comparison_agg(reader, entity_table, pred, query);
+    }
+    execute_simple_predicate(reader, entity_table, pred, query)
+}
+
+fn execute_simple_comparison_agg(
     reader: &IndexReader,
     entity_table: &str,
     pred: &crate::ast::PredicateExpr,
@@ -272,7 +299,9 @@ fn execute_simple_comparison(
                 continue;
             }
         }
-        let entity = decode_value(&decoder, &row, entity_idx, &mut scratch)?;
+        let Some(entity) = decode_value_opt(&decoder, &row, entity_idx, &mut scratch)? else {
+            continue;
+        };
         let entity_key = entity.clone();
         if let Some(allowed) = &allowed_entities {
             if !allowed.contains(&entity) {
@@ -282,12 +311,19 @@ fn execute_simple_comparison(
 
         match agg.func {
             AggFunc::Count => {
+                if let Some(target_idx) = target_idx {
+                    let Some(_value) = decode_value_opt(&decoder, &row, target_idx, &mut scratch)? else {
+                        continue;
+                    };
+                }
                 let entry = count_map.entry(entity).or_insert(0);
                 *entry += 1;
             }
             AggFunc::Sum | AggFunc::Avg | AggFunc::Min | AggFunc::Max => {
                 let target_idx = target_idx.ok_or_else(|| anyhow!("numeric agg requires column"))?;
-                let value = decode_numeric(&decoder, &row, target_idx, &mut scratch)?;
+                let Some(value) = decode_numeric_opt(&decoder, &row, target_idx, &mut scratch)? else {
+                    continue;
+                };
                 let entry = sum_map.entry(entity).or_insert((0.0, 0, value, value));
                 entry.0 += value;
                 entry.1 += 1;
@@ -346,6 +382,112 @@ fn execute_simple_comparison(
     Ok(rows)
 }
 
+fn execute_simple_predicate(
+    reader: &IndexReader,
+    entity_table: &str,
+    pred: &crate::ast::PredicateExpr,
+    query: &Query,
+) -> Result<Vec<TrainRow>> {
+    let ctx = reader
+        .node_context(entity_table)
+        .ok_or_else(|| anyhow!("missing rowpack context for table {entity_table}"))?;
+    let decoder = RowPackDecoder::new(ctx.clone())?;
+    let col_index = column_index_map(ctx);
+
+    let entity_col = &query.for_each.column;
+    let entity_idx = *col_index
+        .get(entity_col)
+        .ok_or_else(|| anyhow!("missing entity column {entity_col}"))?;
+    let timestamp_idx = find_timestamp_index(ctx, &col_index);
+    let pred_cols = collect_predicate_columns(pred, &col_index)?;
+
+    let mut scratch = RowPackDecodeScratch::default();
+    let mut iter = reader.iter_node_rows(entity_table, 0)?;
+    let mut rows = Vec::new();
+    while let Some(row) = iter.next_row()? {
+        let Some(entity) = decode_value_opt(&decoder, &row, entity_idx, &mut scratch)? else {
+            continue;
+        };
+        if predicate_has_null(&decoder, &row, &pred_cols, &mut scratch)? {
+            continue;
+        }
+        let result = eval_predicate_row(pred, &decoder, &row, &col_index, &mut scratch)?;
+        let ts = if let Some(ts_idx) = timestamp_idx {
+            decode_timestamp(&decoder, &row, ts_idx, &mut scratch)?.unwrap_or(0)
+        } else {
+            0
+        };
+        rows.push(TrainRow {
+            entity,
+            target: TargetValue::Scalar(Value::Bool(result)),
+            timestamp: ts,
+        });
+    }
+    Ok(rows)
+}
+
+fn collect_predicate_columns(
+    pred: &crate::ast::PredicateExpr,
+    col_index: &HashMap<String, usize>,
+) -> Result<Vec<usize>> {
+    let mut cols = Vec::new();
+    collect_predicate_columns_inner(pred, &mut cols, col_index)?;
+    Ok(cols)
+}
+
+fn collect_predicate_columns_inner(
+    pred: &crate::ast::PredicateExpr,
+    out: &mut Vec<usize>,
+    col_index: &HashMap<String, usize>,
+) -> Result<()> {
+    match pred {
+        crate::ast::PredicateExpr::Comparison { left, right, .. } => {
+            collect_predicate_columns_from_expr(left, out, col_index)?;
+            collect_predicate_columns_from_expr(right, out, col_index)?;
+        }
+        crate::ast::PredicateExpr::And(items) | crate::ast::PredicateExpr::Or(items) => {
+            for item in items {
+                collect_predicate_columns_inner(item, out, col_index)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn collect_predicate_columns_from_expr(
+    expr: &crate::ast::Expr,
+    out: &mut Vec<usize>,
+    col_index: &HashMap<String, usize>,
+) -> Result<()> {
+    match expr {
+        crate::ast::Expr::Column(col) => {
+            let idx = *col_index
+                .get(&col.column)
+                .ok_or_else(|| anyhow!("missing column {}", col.column))?;
+            if !out.contains(&idx) {
+                out.push(idx);
+            }
+        }
+        crate::ast::Expr::Agg(_) | crate::ast::Expr::Number(_) | crate::ast::Expr::String(_) => {}
+    }
+    Ok(())
+}
+
+fn predicate_has_null(
+    decoder: &RowPackDecoder,
+    row: &[u8],
+    cols: &[usize],
+    scratch: &mut RowPackDecodeScratch,
+) -> Result<bool> {
+    for idx in cols {
+        let value = decoder.decode_column_value(row, *idx, scratch)?;
+        if matches!(value, ValueRef::Null) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 fn extract_comparison_agg(
     pred: &crate::ast::PredicateExpr,
 ) -> Result<(AggregationExpr, crate::ast::CompareOp, f64)> {
@@ -361,6 +503,21 @@ fn extract_comparison_agg(
         }
         _ => Err(anyhow!("predict comparison must compare aggregation to a number")),
     }
+}
+
+fn comparison_has_agg(pred: &crate::ast::PredicateExpr) -> bool {
+    match pred {
+        crate::ast::PredicateExpr::Comparison { left, right, .. } => {
+            expr_has_agg(left) || expr_has_agg(right)
+        }
+        crate::ast::PredicateExpr::And(items) | crate::ast::PredicateExpr::Or(items) => {
+            items.iter().any(comparison_has_agg)
+        }
+    }
+}
+
+fn expr_has_agg(expr: &crate::ast::Expr) -> bool {
+    matches!(expr, crate::ast::Expr::Agg(_))
 }
 
 fn execute_simple_column(reader: &IndexReader, entity_table: &str, col: &crate::ast::ColumnRef, query: &Query) -> Result<Vec<TrainRow>> {
@@ -389,8 +546,26 @@ fn execute_simple_column(reader: &IndexReader, entity_table: &str, col: &crate::
     let mut iter = reader.iter_node_rows(entity_table, 0)?;
     let mut rows = Vec::new();
     while let Some(row) = iter.next_row()? {
-        let entity = decode_value(&decoder, &row, entity_idx, &mut scratch)?;
-        let value = decode_value(&decoder, &row, target_idx, &mut scratch)?;
+        let Some(entity) = decode_value_opt(&decoder, &row, entity_idx, &mut scratch)? else {
+            continue;
+        };
+        let value = decoder.decode_column_value(&row, target_idx, &mut scratch)?;
+        let target = match value {
+            ValueRef::Null => continue,
+            ValueRef::Float64(v) => TargetValue::Number(v),
+            ValueRef::Float32(v) => TargetValue::Number(v as f64),
+            ValueRef::Int64(v) => TargetValue::Scalar(Value::Int(v)),
+            ValueRef::Int32(v) => TargetValue::Scalar(Value::Int(v as i64)),
+            ValueRef::UInt64(v) => TargetValue::Scalar(Value::UInt(v)),
+            ValueRef::UInt32(v) => TargetValue::Scalar(Value::UInt(v as u64)),
+            ValueRef::Bool(v) => TargetValue::Scalar(Value::Bool(v)),
+            ValueRef::String(v) => TargetValue::Scalar(Value::String(v.to_string())),
+            ValueRef::Bytes(v) => TargetValue::Scalar(Value::Bytes(v.to_vec())),
+            ValueRef::Uuid(bytes) => TargetValue::Scalar(Value::String(hex_encode(&bytes))),
+            ValueRef::Uuid256(bytes) => TargetValue::Scalar(Value::String(hex_encode(&bytes))),
+            ValueRef::Ip(bytes) => TargetValue::Scalar(Value::String(hex_encode(&bytes))),
+            other => return Err(anyhow!("unsupported value type: {other:?}")),
+        };
         let ts = if let Some(ts_idx) = timestamp_idx {
             decode_timestamp(&decoder, &row, ts_idx, &mut scratch)?.unwrap_or(0)
         } else {
@@ -398,7 +573,7 @@ fn execute_simple_column(reader: &IndexReader, entity_table: &str, col: &crate::
         };
         rows.push(TrainRow {
             entity,
-            target: TargetValue::Scalar(value),
+            target,
             timestamp: ts,
         });
     }
@@ -413,14 +588,15 @@ fn column_index_map(ctx: &diskgraph_rowpack::RowPackContext) -> HashMap<String, 
         .collect()
 }
 
-fn decode_value(
+fn decode_value_opt(
     decoder: &RowPackDecoder,
     row: &[u8],
     idx: usize,
     scratch: &mut RowPackDecodeScratch,
-) -> Result<Value> {
+) -> Result<Option<Value>> {
     let value = decoder.decode_column_value(row, idx, scratch)?;
-    Ok(match value {
+    Ok(Some(match value {
+        ValueRef::Null => return Ok(None),
         ValueRef::Int64(v) => Value::Int(v),
         ValueRef::Int32(v) => Value::Int(v as i64),
         ValueRef::UInt64(v) => Value::UInt(v),
@@ -432,17 +608,18 @@ fn decode_value(
         ValueRef::Uuid256(bytes) => Value::String(hex_encode(&bytes)),
         ValueRef::Ip(bytes) => Value::String(hex_encode(&bytes)),
         other => return Err(anyhow!("unsupported value type: {other:?}")),
-    })
+    }))
 }
 
-fn decode_numeric(
+fn decode_numeric_opt(
     decoder: &RowPackDecoder,
     row: &[u8],
     idx: usize,
     scratch: &mut RowPackDecodeScratch,
-) -> Result<f64> {
+) -> Result<Option<f64>> {
     let value = decoder.decode_column_value(row, idx, scratch)?;
-    Ok(match value {
+    Ok(Some(match value {
+        ValueRef::Null => return Ok(None),
         ValueRef::Int64(v) => v as f64,
         ValueRef::Int32(v) => v as f64,
         ValueRef::UInt64(v) => v as f64,
@@ -450,7 +627,7 @@ fn decode_numeric(
         ValueRef::Float64(v) => v,
         ValueRef::Float32(v) => v as f64,
         other => return Err(anyhow!("unsupported numeric type: {other:?}")),
-    })
+    }))
 }
 
 fn decode_timestamp(
@@ -582,15 +759,24 @@ fn compute_numeric_agg(
                 continue;
             }
         }
-        let entity = decode_value(decoder, &row, entity_idx, &mut scratch)?;
+        let Some(entity) = decode_value_opt(decoder, &row, entity_idx, &mut scratch)? else {
+            continue;
+        };
         match agg.func {
             AggFunc::Count => {
+                if let Some(target_idx) = target_idx {
+                    let Some(_value) = decode_value_opt(decoder, &row, target_idx, &mut scratch)? else {
+                        continue;
+                    };
+                }
                 let entry = counts.entry(entity).or_insert(0);
                 *entry += 1;
             }
             AggFunc::Sum | AggFunc::Avg | AggFunc::Min | AggFunc::Max => {
                 let target_idx = target_idx.ok_or_else(|| anyhow!("numeric agg requires column"))?;
-                let value = decode_numeric(decoder, &row, target_idx, &mut scratch)?;
+                let Some(value) = decode_numeric_opt(decoder, &row, target_idx, &mut scratch)? else {
+                    continue;
+                };
                 let entry = sums.entry(entity).or_insert((0.0, 0, value, value));
                 entry.0 += value;
                 entry.1 += 1;
@@ -679,6 +865,7 @@ enum SimpleValue {
     Number(f64),
     String(String),
     Bool(bool),
+    Null,
 }
 
 fn eval_expr_value(
@@ -697,6 +884,7 @@ fn eval_expr_value(
                 .ok_or_else(|| anyhow!("missing column {}", col.column))?;
             let value = decoder.decode_column_value(row, idx, scratch)?;
             Ok(match value {
+                ValueRef::Null => SimpleValue::Null,
                 ValueRef::Int64(v) => SimpleValue::Number(v as f64),
                 ValueRef::Int32(v) => SimpleValue::Number(v as f64),
                 ValueRef::UInt64(v) => SimpleValue::Number(v as f64),
@@ -713,6 +901,9 @@ fn eval_expr_value(
 }
 
 fn compare_values(left: &SimpleValue, right: &SimpleValue, op: crate::ast::CompareOp) -> bool {
+    if matches!(left, SimpleValue::Null) || matches!(right, SimpleValue::Null) {
+        return false;
+    }
     match (left, right) {
         (SimpleValue::Number(l), SimpleValue::Number(r)) => compare_numeric(*l, *r, op),
         (SimpleValue::String(l), SimpleValue::String(r)) => match op {
@@ -1258,6 +1449,323 @@ mod tests {
         let query = parse_query("PREDICT customers.active FOR EACH customers.customer_id").expect("parse");
         let rows = execute_simple(&query, &reader).expect("execute");
         assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].entity, Value::Int(1));
+        assert_eq!(rows[0].target, TargetValue::Scalar(Value::Bool(true)));
+    }
+
+    #[test]
+    fn execute_predict_column_ignores_null() {
+        let dir = temp_dir("predict_col_null");
+        let ctx = RowPackContext {
+            version: 3,
+            columns: vec![
+                ColumnContext {
+                    name: "customer_id".to_string(),
+                    logical_type: IngestedType::Int64,
+                    encoding: ColumnEncoding::Int {
+                        signed: true,
+                        varint: true,
+                        bits: 64,
+                    },
+                },
+                ColumnContext {
+                    name: "active".to_string(),
+                    logical_type: IngestedType::Bool,
+                    encoding: ColumnEncoding::Bool,
+                },
+            ],
+            estimated_row_bytes: 16,
+        };
+        let ctx_path = dir.join("nodes/customers/node_data.ctx");
+        write_rowpack_ctx(&ctx_path, &ctx);
+
+        let metadata = DatasetMetadata {
+            dataset_name: "test".to_string(),
+            node_types: vec![NodeTypeMetadata {
+                name: "customers".to_string(),
+                max_id: 2,
+                has_node_data: true,
+                node_data_compression: Some(NodeDataCompression {
+                    codec: "rowpack".to_string(),
+                    context_path: "nodes/customers/node_data.ctx".to_string(),
+                }),
+                primary_key_map: None,
+                shards: vec![NodeShardMetadata {
+                    min_id: 0,
+                    max_id: 2,
+                    node_data_paths: None,
+                }],
+            }],
+            edge_relations: Vec::new(),
+        };
+        std::fs::write(dir.join("index_metadata.json"), serde_json::to_vec_pretty(&metadata).unwrap())
+            .expect("write metadata");
+
+        let encoder = RowPackEncoder::new(ctx.clone()).expect("encoder");
+        let mut scratch = RowPackScratch::new(encoder.context());
+        let mut row1 = Vec::new();
+        encoder
+            .encode_row_into(
+                &[ValueRef::Int64(1), ValueRef::Bool(true)],
+                &mut row1,
+                &mut scratch,
+            )
+            .expect("encode row");
+        let mut row2 = Vec::new();
+        encoder
+            .encode_row_into(
+                &[ValueRef::Int64(2), ValueRef::Null],
+                &mut row2,
+                &mut scratch,
+            )
+            .expect("encode row");
+
+        let node_data_path = dir.join("nodes/customers/shard-00000/node_data.bin");
+        write_node_data(&node_data_path, vec![row1, row2]);
+
+        let reader = IndexReader::open(&dir).expect("reader");
+        let query = parse_query("PREDICT customers.active FOR EACH customers.customer_id").expect("parse");
+        let rows = execute_simple(&query, &reader).expect("execute");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].entity, Value::Int(1));
+        assert_eq!(rows[0].target, TargetValue::Scalar(Value::Bool(true)));
+    }
+
+    #[test]
+    fn execute_predict_column_float() {
+        let dir = temp_dir("predict_col_float");
+        let ctx = RowPackContext {
+            version: 3,
+            columns: vec![
+                ColumnContext {
+                    name: "customer_id".to_string(),
+                    logical_type: IngestedType::Int64,
+                    encoding: ColumnEncoding::Int {
+                        signed: true,
+                        varint: true,
+                        bits: 64,
+                    },
+                },
+                ColumnContext {
+                    name: "score".to_string(),
+                    logical_type: IngestedType::Float64,
+                    encoding: ColumnEncoding::Float {
+                        storage: diskgraph_rowpack::FloatStorage::F64,
+                    },
+                },
+            ],
+            estimated_row_bytes: 16,
+        };
+        let ctx_path = dir.join("nodes/customers/node_data.ctx");
+        write_rowpack_ctx(&ctx_path, &ctx);
+
+        let metadata = DatasetMetadata {
+            dataset_name: "test".to_string(),
+            node_types: vec![NodeTypeMetadata {
+                name: "customers".to_string(),
+                max_id: 2,
+                has_node_data: true,
+                node_data_compression: Some(NodeDataCompression {
+                    codec: "rowpack".to_string(),
+                    context_path: "nodes/customers/node_data.ctx".to_string(),
+                }),
+                primary_key_map: None,
+                shards: vec![NodeShardMetadata {
+                    min_id: 0,
+                    max_id: 2,
+                    node_data_paths: None,
+                }],
+            }],
+            edge_relations: Vec::new(),
+        };
+        std::fs::write(dir.join("index_metadata.json"), serde_json::to_vec_pretty(&metadata).unwrap())
+            .expect("write metadata");
+
+        let encoder = RowPackEncoder::new(ctx.clone()).expect("encoder");
+        let mut scratch = RowPackScratch::new(encoder.context());
+        let mut row1 = Vec::new();
+        encoder
+            .encode_row_into(
+                &[ValueRef::Int64(1), ValueRef::Float64(1.5)],
+                &mut row1,
+                &mut scratch,
+            )
+            .expect("encode row");
+        let mut row2 = Vec::new();
+        encoder
+            .encode_row_into(
+                &[ValueRef::Int64(2), ValueRef::Float64(2.5)],
+                &mut row2,
+                &mut scratch,
+            )
+            .expect("encode row");
+
+        let node_data_path = dir.join("nodes/customers/shard-00000/node_data.bin");
+        write_node_data(&node_data_path, vec![row1, row2]);
+
+        let reader = IndexReader::open(&dir).expect("reader");
+        let query = parse_query("PREDICT customers.score FOR EACH customers.customer_id").expect("parse");
+        let rows = execute_simple(&query, &reader).expect("execute");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].target, TargetValue::Number(1.5));
+    }
+
+    #[test]
+    fn execute_predict_comparison_column() {
+        let dir = temp_dir("predict_cmp_col");
+        let ctx = RowPackContext {
+            version: 3,
+            columns: vec![
+                ColumnContext {
+                    name: "customer_id".to_string(),
+                    logical_type: IngestedType::Int64,
+                    encoding: ColumnEncoding::Int {
+                        signed: true,
+                        varint: true,
+                        bits: 64,
+                    },
+                },
+                ColumnContext {
+                    name: "active".to_string(),
+                    logical_type: IngestedType::Float64,
+                    encoding: ColumnEncoding::Float {
+                        storage: diskgraph_rowpack::FloatStorage::F64,
+                    },
+                },
+            ],
+            estimated_row_bytes: 16,
+        };
+        let ctx_path = dir.join("nodes/customers/node_data.ctx");
+        write_rowpack_ctx(&ctx_path, &ctx);
+
+        let metadata = DatasetMetadata {
+            dataset_name: "test".to_string(),
+            node_types: vec![NodeTypeMetadata {
+                name: "customers".to_string(),
+                max_id: 2,
+                has_node_data: true,
+                node_data_compression: Some(NodeDataCompression {
+                    codec: "rowpack".to_string(),
+                    context_path: "nodes/customers/node_data.ctx".to_string(),
+                }),
+                primary_key_map: None,
+                shards: vec![NodeShardMetadata {
+                    min_id: 0,
+                    max_id: 2,
+                    node_data_paths: None,
+                }],
+            }],
+            edge_relations: Vec::new(),
+        };
+        std::fs::write(dir.join("index_metadata.json"), serde_json::to_vec_pretty(&metadata).unwrap())
+            .expect("write metadata");
+
+        let encoder = RowPackEncoder::new(ctx.clone()).expect("encoder");
+        let mut scratch = RowPackScratch::new(encoder.context());
+        let mut row1 = Vec::new();
+        encoder
+            .encode_row_into(
+                &[ValueRef::Int64(1), ValueRef::Float64(1.0)],
+                &mut row1,
+                &mut scratch,
+            )
+            .expect("encode row");
+        let mut row2 = Vec::new();
+        encoder
+            .encode_row_into(
+                &[ValueRef::Int64(2), ValueRef::Float64(0.0)],
+                &mut row2,
+                &mut scratch,
+            )
+            .expect("encode row");
+
+        let node_data_path = dir.join("nodes/customers/shard-00000/node_data.bin");
+        write_node_data(&node_data_path, vec![row1, row2]);
+
+        let reader = IndexReader::open(&dir).expect("reader");
+        let query = parse_query("PREDICT customers.active = 1 FOR EACH customers.customer_id").expect("parse");
+        let rows = execute_simple(&query, &reader).expect("execute");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].target, TargetValue::Scalar(Value::Bool(true)));
+        assert_eq!(rows[1].target, TargetValue::Scalar(Value::Bool(false)));
+    }
+
+    #[test]
+    fn execute_predict_comparison_column_ignores_null() {
+        let dir = temp_dir("predict_cmp_col_null");
+        let ctx = RowPackContext {
+            version: 3,
+            columns: vec![
+                ColumnContext {
+                    name: "customer_id".to_string(),
+                    logical_type: IngestedType::Int64,
+                    encoding: ColumnEncoding::Int {
+                        signed: true,
+                        varint: true,
+                        bits: 64,
+                    },
+                },
+                ColumnContext {
+                    name: "active".to_string(),
+                    logical_type: IngestedType::Float64,
+                    encoding: ColumnEncoding::Float {
+                        storage: diskgraph_rowpack::FloatStorage::F64,
+                    },
+                },
+            ],
+            estimated_row_bytes: 16,
+        };
+        let ctx_path = dir.join("nodes/customers/node_data.ctx");
+        write_rowpack_ctx(&ctx_path, &ctx);
+
+        let metadata = DatasetMetadata {
+            dataset_name: "test".to_string(),
+            node_types: vec![NodeTypeMetadata {
+                name: "customers".to_string(),
+                max_id: 2,
+                has_node_data: true,
+                node_data_compression: Some(NodeDataCompression {
+                    codec: "rowpack".to_string(),
+                    context_path: "nodes/customers/node_data.ctx".to_string(),
+                }),
+                primary_key_map: None,
+                shards: vec![NodeShardMetadata {
+                    min_id: 0,
+                    max_id: 2,
+                    node_data_paths: None,
+                }],
+            }],
+            edge_relations: Vec::new(),
+        };
+        std::fs::write(dir.join("index_metadata.json"), serde_json::to_vec_pretty(&metadata).unwrap())
+            .expect("write metadata");
+
+        let encoder = RowPackEncoder::new(ctx.clone()).expect("encoder");
+        let mut scratch = RowPackScratch::new(encoder.context());
+        let mut row1 = Vec::new();
+        encoder
+            .encode_row_into(
+                &[ValueRef::Int64(1), ValueRef::Float64(1.0)],
+                &mut row1,
+                &mut scratch,
+            )
+            .expect("encode row");
+        let mut row2 = Vec::new();
+        encoder
+            .encode_row_into(
+                &[ValueRef::Int64(2), ValueRef::Null],
+                &mut row2,
+                &mut scratch,
+            )
+            .expect("encode row");
+
+        let node_data_path = dir.join("nodes/customers/shard-00000/node_data.bin");
+        write_node_data(&node_data_path, vec![row1, row2]);
+
+        let reader = IndexReader::open(&dir).expect("reader");
+        let query = parse_query("PREDICT customers.active = 1 FOR EACH customers.customer_id").expect("parse");
+        let rows = execute_simple(&query, &reader).expect("execute");
+        assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].entity, Value::Int(1));
         assert_eq!(rows[0].target, TargetValue::Scalar(Value::Bool(true)));
     }

@@ -535,7 +535,7 @@ fn aggregate_for_timestamp(
         match agg.func {
             AggFunc::Count => {}
             AggFunc::Sum | AggFunc::Avg | AggFunc::Min | AggFunc::Max => {
-                let value = decode_target_numeric(plan, edge.dst)?;
+                let Some(value) = decode_target_numeric(plan, edge.dst)? else { continue };
                 sum += value;
                 if min.map_or(true, |v| value < v) {
                     min = Some(value);
@@ -545,7 +545,7 @@ fn aggregate_for_timestamp(
                 }
             }
             AggFunc::ListDistinct => {
-                let value = decode_target_value(plan, edge.dst)?;
+                let Some(value) = decode_target_value(plan, edge.dst)? else { continue };
                 list.insert(value);
             }
         }
@@ -634,6 +634,7 @@ enum SimpleValue {
     Number(f64),
     String(String),
     Bool(bool),
+    Null,
 }
 
 fn eval_expr_value(
@@ -660,7 +661,7 @@ fn eval_expr_value(
                 diskgraph_rowpack::ValueRef::Float32(v) => SimpleValue::Number(v as f64),
                 diskgraph_rowpack::ValueRef::String(v) => SimpleValue::String(v.to_string()),
                 diskgraph_rowpack::ValueRef::Bool(v) => SimpleValue::Bool(v),
-                diskgraph_rowpack::ValueRef::Null => SimpleValue::Bool(false),
+                diskgraph_rowpack::ValueRef::Null => SimpleValue::Null,
                 diskgraph_rowpack::ValueRef::Date(v) => SimpleValue::Number(v as f64),
                 diskgraph_rowpack::ValueRef::Timestamp { secs, .. } => SimpleValue::Number(secs as f64),
                 diskgraph_rowpack::ValueRef::Decimal128(v) => SimpleValue::Number(v as f64),
@@ -690,6 +691,9 @@ fn eval_expr_value(
 }
 
 fn compare_values(left: &SimpleValue, right: &SimpleValue, op: crate::ast::CompareOp) -> bool {
+    if matches!(left, SimpleValue::Null) || matches!(right, SimpleValue::Null) {
+        return false;
+    }
     match (left, right) {
         (SimpleValue::Number(l), SimpleValue::Number(r)) => compare_numeric(*l, *r, op),
         (SimpleValue::String(l), SimpleValue::String(r)) => match op {
@@ -717,7 +721,7 @@ fn compare_numeric(left: f64, right: f64, op: crate::ast::CompareOp) -> bool {
     }
 }
 
-fn decode_target_numeric(plan: &AggPlan, node_id: u64) -> Result<f64> {
+fn decode_target_numeric(plan: &AggPlan, node_id: u64) -> Result<Option<f64>> {
     let dst_table = plan
         .dst_table
         .as_deref()
@@ -734,7 +738,8 @@ fn decode_target_numeric(plan: &AggPlan, node_id: u64) -> Result<f64> {
         .ok_or_else(|| anyhow!("missing dst node data"))?;
     let mut scratch = diskgraph_rowpack::RowPackDecodeScratch::default();
     let value = decoder.decode_column_value(data, idx, &mut scratch)?;
-    Ok(match value {
+    Ok(Some(match value {
+        diskgraph_rowpack::ValueRef::Null => return Ok(None),
         diskgraph_rowpack::ValueRef::Int64(v) => v as f64,
         diskgraph_rowpack::ValueRef::Int32(v) => v as f64,
         diskgraph_rowpack::ValueRef::UInt64(v) => v as f64,
@@ -743,10 +748,10 @@ fn decode_target_numeric(plan: &AggPlan, node_id: u64) -> Result<f64> {
         diskgraph_rowpack::ValueRef::Float32(v) => v as f64,
         diskgraph_rowpack::ValueRef::Bool(v) => if v { 1.0 } else { 0.0 },
         _ => return Err(anyhow!("target not numeric")),
-    })
+    }))
 }
 
-fn decode_target_value(plan: &AggPlan, node_id: u64) -> Result<Value> {
+fn decode_target_value(plan: &AggPlan, node_id: u64) -> Result<Option<Value>> {
     let dst_table = plan
         .dst_table
         .as_deref()
@@ -763,7 +768,8 @@ fn decode_target_value(plan: &AggPlan, node_id: u64) -> Result<Value> {
         .ok_or_else(|| anyhow!("missing dst node data"))?;
     let mut scratch = diskgraph_rowpack::RowPackDecodeScratch::default();
     let value = decoder.decode_column_value(&data, idx, &mut scratch)?;
-    Ok(match value {
+    Ok(Some(match value {
+        diskgraph_rowpack::ValueRef::Null => return Ok(None),
         diskgraph_rowpack::ValueRef::Int64(v) => Value::Int(v),
         diskgraph_rowpack::ValueRef::Int32(v) => Value::Int(v as i64),
         diskgraph_rowpack::ValueRef::UInt64(v) => Value::UInt(v),
@@ -775,7 +781,7 @@ fn decode_target_value(plan: &AggPlan, node_id: u64) -> Result<Value> {
         diskgraph_rowpack::ValueRef::Uuid256(bytes) => Value::String(hex_encode(&bytes)),
         diskgraph_rowpack::ValueRef::Ip(bytes) => Value::String(hex_encode(&bytes)),
         other => return Err(anyhow!("unsupported target value type: {other:?}")),
-    })
+    }))
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
