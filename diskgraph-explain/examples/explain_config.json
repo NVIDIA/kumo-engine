@@ -1,0 +1,66 @@
+{
+  "input_parquet": "/Users/vj/Desktop/kumo_expts/pred_results/explain_input.parquet",
+  "output_parquet": "/Users/vj/Desktop/kumo_expts/pred_results/explanations_v2.parquet",
+  "index_path": "/Users/vj/Desktop/kumo_expts/pred_results/diskgraph_index_temporal",
+
+  "root_table": "customers",
+  "id_column": "id",
+  "timestamp_column": "timestamp",
+  "prediction_column": "prediction",
+  "embedding_column": "embedding",
+
+  "id_kind": "utf8",
+  "id_lookup": "primary_key",
+  "timestamp_kind": "int64",
+
+  "max_hops": 2,
+  "fanout_per_hop": [50, 20],
+  "max_nodes": 1000,
+  "skip_unbounded_relations": false,
+
+  "motif_config": {
+    "compute_edge_counts": true,
+    "compute_unique_destinations": true,
+    "compute_recency": true,
+    "compute_frequency": true,
+    "compute_trend": true,
+    "compute_inter_arrival": true,
+    "min_edges_for_trend": 3,
+    "max_categorical_cardinality": 100,
+    "homophily_hop": 2,
+    "force_categorical": [
+      "colour_group_code",
+      "graphical_appearance_no",
+      "perceived_colour_value_id",
+      "perceived_colour_master_id",
+      "department_no",
+      "index_group_no",
+      "section_no",
+      "garment_group_no",
+      "product_type_no",
+      "product_code",
+      "article_id",
+      "sales_channel_id"
+    ]
+  },
+
+  "num_clusters": 32,
+  "kmeans_iterations": 10,
+  "min_cluster_fit": 0.2,
+  "archetype_sample_size": 100,
+
+  "num_deciles": 10,
+  "top_drivers_k": 10,
+
+  "z_threshold": 2.0,
+  "rate_ratio_threshold": 2.0,
+
+  "include_cluster_context": true,
+  "include_homophily": true,
+
+  "prompt_config": {
+    "task_description": "probability of no purchase in next 90 days",
+    "graph_description": "",
+    "domain": "retail fashion"
+  }
+}
