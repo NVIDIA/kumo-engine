@@ -113,12 +113,12 @@ fn execute_temporal_with_reader(
     let node_count = entity_table.node_count();
     let end = end.unwrap_or(node_count).min(node_count);
     let start = start.min(end);
-    let progress = if progress.is_some() {
-        progress
+    let (progress, owns_progress) = if let Some(progress) = progress {
+        (Some(progress), false)
     } else if std::io::stderr().is_terminal() && start == 0 && end == node_count {
-        Some(TemporalProgress::new(&query.for_each.table, end - start))
+        (Some(TemporalProgress::new(&query.for_each.table, end - start)), true)
     } else {
-        None
+        (None, false)
     };
     let mut local_progress = 0u64;
     for node_id in start..end {
@@ -222,7 +222,9 @@ fn execute_temporal_with_reader(
         if local_progress > 0 {
             bar.advance(local_progress);
         }
-        bar.finish(rows.len());
+        if owns_progress {
+            bar.finish(rows.len());
+        }
     }
     Ok(rows)
 }

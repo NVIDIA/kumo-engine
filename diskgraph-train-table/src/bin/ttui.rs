@@ -458,7 +458,10 @@ fn run_query(session: &mut SessionConfig, query_str: &str) -> Result<PathBuf> {
                 )
             })
             .collect();
-        collect_parallel_results(results)?
+        let shards = collect_parallel_results(results)?;
+        let total_rows: usize = shards.iter().map(|rows| rows.len()).sum();
+        progress.finish(total_rows);
+        shards
     } else {
         let reader = IndexReader::open(&session.index_path)?;
         let rows = execute_simple(&query, &reader)?;
