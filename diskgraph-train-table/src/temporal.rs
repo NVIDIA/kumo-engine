@@ -400,6 +400,7 @@ fn resolve_relation(
             if let Some(rel) = rel {
                 return Ok((rel.name.clone(), None));
             }
+            let is_node_table = metadata.node_types.iter().any(|t| t.name == tbl.table);
             let mut candidates: Vec<_> = metadata
                 .edge_relations
                 .iter()
@@ -411,10 +412,10 @@ fn resolve_relation(
                 .filter(|rel| rel.src_type == entity_table)
                 .collect();
             if by_src.len() == 1 {
-                return Ok((by_src[0].name.clone(), None));
+                return Ok((by_src[0].name.clone(), is_node_table.then(|| tbl.table.clone())));
             }
             if by_src.is_empty() && candidates.len() == 1 {
-                return Ok((candidates[0].name.clone(), None));
+                return Ok((candidates[0].name.clone(), is_node_table.then(|| tbl.table.clone())));
             }
             candidates.sort_by(|a, b| a.name.cmp(&b.name));
             if candidates.is_empty() {

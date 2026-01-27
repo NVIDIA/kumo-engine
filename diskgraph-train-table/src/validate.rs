@@ -249,11 +249,25 @@ fn validate_temporal_query(query: &Query, schema: &IndexSchema, outcome: &mut Va
         let entity_table = &query.for_each.table;
         match &agg.target {
             AggTarget::Star(tbl) => {
-                if agg.filter.is_some() {
-                    outcome.error(
-                        "temporal_filter_invalid",
-                        "filters on edge relations are not supported",
-                    );
+                if let Some(filter) = &agg.filter {
+                    if schema.has_table(&tbl.table) {
+                        let mut cols = Vec::new();
+                        collect_columns_from_pred(filter, &mut cols);
+                        for c in cols {
+                            if c.table != tbl.table {
+                                outcome.error(
+                                    "temporal_filter_invalid",
+                                    "temporal filters must reference dst node table only",
+                                );
+                                break;
+                            }
+                        }
+                    } else {
+                        outcome.error(
+                            "temporal_filter_invalid",
+                            "filters on edge relations are not supported",
+                        );
+                    }
                 }
                 let rel = schema
                     .metadata
@@ -826,6 +840,22 @@ mod tests {
         let schema = IndexSchema::from_index_path(&dir).expect("schema");
         let query = parse_query("PREDICT COUNT(transactions.*, 0, 7, days) FOR EACH users.user_id")
             .expect("parse");
+        let outcome = validate_query(&query, &schema);
+        assert!(outcome.errors.is_empty());
+    }
+
+    #[test]
+    fn validate_temporal_star_filter_on_node_table() {
+        let dir = temp_dir("temporal_star_filter");
+        let mut metadata = build_metadata(&dir);
+        metadata.edge_relations[0].name = "users_to_transactions".to_string();
+        write_metadata(&dir, &metadata);
+
+        let schema = IndexSchema::from_index_path(&dir).expect("schema");
+        let query = parse_query(
+            "PREDICT COUNT(transactions.* WHERE transactions.price > 0, 0, 7, days) FOR EACH users.user_id",
+        )
+        .expect("parse");
         let outcome = validate_query(&query, &schema);
         assert!(outcome.errors.is_empty());
     }
