@@ -86,7 +86,7 @@ pub enum PredicateExpr {
 pub enum Expr {
     Column(ColumnRef),
     Agg(Box<AggregationExpr>),
-    Number(i64),
+    Number(f64),
     String(String),
 }
 

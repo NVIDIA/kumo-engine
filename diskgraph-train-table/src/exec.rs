@@ -496,10 +496,10 @@ fn extract_comparison_agg(
     };
     match (left.as_ref(), right.as_ref()) {
         (crate::ast::Expr::Agg(agg), crate::ast::Expr::Number(n)) => {
-            Ok(((**agg).clone(), *op, *n as f64))
+            Ok(((**agg).clone(), *op, *n))
         }
         (crate::ast::Expr::Number(n), crate::ast::Expr::Agg(agg)) => {
-            Ok(((**agg).clone(), *op, *n as f64))
+            Ok(((**agg).clone(), *op, *n))
         }
         _ => Err(anyhow!("predict comparison must compare aggregation to a number")),
     }
@@ -876,7 +876,7 @@ fn eval_expr_value(
     scratch: &mut RowPackDecodeScratch,
 ) -> Result<SimpleValue> {
     match expr {
-        crate::ast::Expr::Number(n) => Ok(SimpleValue::Number(*n as f64)),
+        crate::ast::Expr::Number(n) => Ok(SimpleValue::Number(*n)),
         crate::ast::Expr::String(s) => Ok(SimpleValue::String(s.clone())),
         crate::ast::Expr::Column(col) => {
             let idx = *col_index

@@ -16,8 +16,8 @@ KW_WHERE = { "WHERE" | "where" }
 KW_AND = { "AND" | "and" }
 KW_OR = { "OR" | "or" }
 
-ident = @{ (ASCII_ALPHANUMERIC | "_" )+ }
-number = @{ "-"? ~ ASCII_DIGIT+ }
+ident = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_" )* }
+number = @{ "-"? ~ (ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT*)? | "." ~ ASCII_DIGIT+) }
 string = @{ "'" ~ ( (!"'" ~ ANY)* ) ~ "'" }
 
 query = { KW_PREDICT ~ predict_target ~ KW_FOR ~ KW_EACH ~ entity_ref ~ assuming? ~ EOI }
@@ -269,7 +269,7 @@ fn build_cmp(pair: Pair<Rule>) -> anyhow::Result<PredicateExpr> {
 fn build_expr(pair: Pair<Rule>) -> anyhow::Result<Expr> {
     match pair.as_rule() {
         Rule::column_ref => Ok(Expr::Column(build_column_ref(pair)?)),
-        Rule::number => Ok(Expr::Number(pair.as_str().parse::<i64>()?)),
+        Rule::number => Ok(Expr::Number(pair.as_str().parse::<f64>()?)),
         Rule::string => Ok(Expr::String(strip_quotes(pair.as_str()))),
         Rule::agg_call => Ok(Expr::Agg(Box::new(build_agg_call(pair)?))),
         Rule::expr => {
@@ -367,6 +367,25 @@ mod tests {
         let q = "PREDICT COUNT(transactions.*, 0, 7, days) FOR EACH customers.customer_id WHERE COUNT(transactions.*, -30, 0, days) > 0";
         let parsed = parse_query(q).expect("parse");
         assert!(parsed.assuming.is_some());
+    }
+
+    #[test]
+    fn parse_decimal_literal() {
+        let q = "PREDICT COUNT(transactions.* WHERE transactions.price > .1, 0, 7, days) FOR EACH customers.customer_id";
+        let parsed = parse_query(q).expect("parse");
+        match parsed.predict {
+            PredictExpr::Aggregation(agg) => {
+                let filter = agg.filter.expect("filter");
+                match *filter {
+                    PredicateExpr::Comparison { right, .. } => match *right {
+                        Expr::Number(n) => assert!((n - 0.1).abs() < 1e-9),
+                        _ => panic!("expected number"),
+                    },
+                    _ => panic!("expected comparison"),
+                }
+            }
+            _ => panic!("expected aggregation"),
+        }
     }
 
     #[test]

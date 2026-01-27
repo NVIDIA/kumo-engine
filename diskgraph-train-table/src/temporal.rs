@@ -398,7 +398,8 @@ fn resolve_relation(
                 .iter()
                 .find(|rel| rel.name == tbl.table);
             if let Some(rel) = rel {
-                return Ok((rel.name.clone(), None));
+                let is_node_table = metadata.node_types.iter().any(|t| t.name == tbl.table);
+                return Ok((rel.name.clone(), is_node_table.then(|| tbl.table.clone())));
             }
             let is_node_table = metadata.node_types.iter().any(|t| t.name == tbl.table);
             let mut candidates: Vec<_> = metadata
@@ -509,7 +510,7 @@ fn eval_predicate_expr(
     values: &[Option<TargetValue>],
 ) -> Result<Option<f64>> {
     match expr {
-        crate::ast::Expr::Number(n) => Ok(Some(*n as f64)),
+        crate::ast::Expr::Number(n) => Ok(Some(*n)),
         crate::ast::Expr::Agg(agg) => {
             let idx = aggs
                 .iter()

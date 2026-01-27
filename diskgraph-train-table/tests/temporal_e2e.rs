@@ -436,6 +436,66 @@ fn temporal_predict_comparison_sum_e2e() {
 }
 
 #[test]
+fn temporal_count_with_filter_e2e() {
+    let dir = tempdir().unwrap();
+    let index_root = dir.path().join("index");
+    fs::create_dir_all(&index_root).unwrap();
+
+    let metadata = build_metadata_sum();
+    fs::write(
+        index_root.join("index_metadata.json"),
+        serde_json::to_vec_pretty(&metadata).unwrap(),
+    )
+    .unwrap();
+
+    write_edge_shard(
+        &index_root,
+        "users",
+        0,
+        &metadata,
+        vec![vec![(0u64, 0i64), (1u64, 100i64), (2u64, 200i64)]],
+    );
+
+    let txn_ctx = build_transactions_ctx();
+    write_rowpack_ctx(&index_root.join("nodes/transactions/node_data.ctx"), &txn_ctx);
+    write_node_data_shard(
+        &index_root,
+        "transactions",
+        0,
+        &txn_ctx,
+        vec![
+            vec![ValueRef::Float64(5.0), ValueRef::Int64(1)],
+            vec![ValueRef::Float64(7.0), ValueRef::Int64(0)],
+            vec![ValueRef::Float64(11.0), ValueRef::Int64(1)],
+        ],
+    );
+
+    let query = parse_query(
+        "PREDICT COUNT(transactions.* WHERE transactions.type = 1, 0, 100, seconds) FOR EACH users.user_id",
+    )
+    .unwrap();
+    let options = QueryOptions {
+        temporal_sampling: TemporalSampling::Timeframe,
+        ..Default::default()
+    };
+    let rows = execute_temporal(&query, &index_root, &options).unwrap();
+    assert!(!rows.is_empty());
+
+    for row in rows {
+        let entity_id = match row.entity {
+            diskgraph_train_table::exec::Value::UInt(id) => id,
+            _ => 0,
+        };
+        let expected = count_edges_in_window_with_type(entity_id, row.timestamp, 0, 100, 1);
+        let actual = match row.target {
+            diskgraph_train_table::exec::TargetValue::Count(v) => v as i64,
+            _ => -1,
+        };
+        assert_eq!(actual, expected);
+    }
+}
+
+#[test]
 fn temporal_range_matches_serial() {
     let dir = tempdir().unwrap();
     let index_root = dir.path().join("index");
@@ -940,6 +1000,19 @@ fn count_edges_in_window(entity: u64, ts: i64, start: i64, end: i64) -> i64 {
     let window_start = ts + start;
     let window_end = ts + end;
     edges.into_iter().filter(|t| *t >= window_start && *t < window_end).count() as i64
+}
+
+fn count_edges_in_window_with_type(entity: u64, ts: i64, start: i64, end: i64, ty: i64) -> i64 {
+    let edges = match entity {
+        0 => vec![(0i64, 1), (100i64, 0), (200i64, 1)],
+        _ => vec![],
+    };
+    let window_start = ts + start;
+    let window_end = ts + end;
+    edges
+        .into_iter()
+        .filter(|(t, k)| *t >= window_start && *t < window_end && *k == ty)
+        .count() as i64
 }
 
 fn sum_edges_in_window(entity: u64, ts: i64, start: i64, end: i64) -> f64 {
