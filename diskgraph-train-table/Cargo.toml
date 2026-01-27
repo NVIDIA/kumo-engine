@@ -21,6 +21,7 @@ parquet = { version = "57.2.0", features = ["arrow"] }
 half = "2"
 rustyline = "12"
 rayon = "1"
+indicatif = "0.17"
 
 [dev-dependencies]
 serde_json = { workspace = true }

@@ -1,10 +1,14 @@
 use std::path::Path;
+use std::io::IsTerminal;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 use diskgraph_core::metadata::{EdgeRelationMetadata, EdgeSortKeyTimestampKind, EdgeSortKeyWeightKind};
 use diskgraph_index::builder::compute_relation_layouts;
 use diskgraph_index::graph::GraphIndexReader;
 use diskgraph_index::layout::RelationSegment;
+use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::ast::{AggFunc, AggTarget, AggregationExpr, PredicateExpr, PredictExpr, Query, TimeUnit};
 use crate::config::{QueryOptions, TemporalSampling};
@@ -13,7 +17,7 @@ use crate::exec::{TargetValue, TrainRow, Value};
 pub fn execute_temporal(query: &Query, index_path: &Path, options: &QueryOptions) -> Result<Vec<TrainRow>> {
     let metadata_path = index_path.join("index_metadata.json");
     let graph = GraphIndexReader::open(&metadata_path, index_path)?;
-    execute_temporal_with_reader(query, &graph, options, 0, None)
+    execute_temporal_with_reader(query, &graph, options, 0, None, None)
 }
 
 pub fn execute_temporal_range(
@@ -25,7 +29,54 @@ pub fn execute_temporal_range(
 ) -> Result<Vec<TrainRow>> {
     let metadata_path = index_path.join("index_metadata.json");
     let graph = GraphIndexReader::open(&metadata_path, index_path)?;
-    execute_temporal_with_reader(query, &graph, options, start, Some(end))
+    execute_temporal_with_reader(query, &graph, options, start, Some(end), None)
+}
+
+pub fn execute_temporal_range_with_progress(
+    query: &Query,
+    index_path: &Path,
+    options: &QueryOptions,
+    start: u64,
+    end: u64,
+    progress: Option<TemporalProgress>,
+) -> Result<Vec<TrainRow>> {
+    let metadata_path = index_path.join("index_metadata.json");
+    let graph = GraphIndexReader::open(&metadata_path, index_path)?;
+    execute_temporal_with_reader(query, &graph, options, start, Some(end), progress)
+}
+
+#[derive(Clone)]
+pub struct TemporalProgress {
+    bar: ProgressBar,
+    counter: Arc<AtomicU64>,
+}
+
+impl TemporalProgress {
+    pub fn new(table: &str, total: u64) -> Self {
+        let bar = ProgressBar::new(total);
+        bar.set_style(
+            ProgressStyle::with_template("{msg} {bar:40.cyan/blue} {percent}% {pos}/{len}")
+                .unwrap_or_else(|_| ProgressStyle::default_bar()),
+        );
+        bar.set_message(format!("temporal {table}"));
+        Self {
+            bar,
+            counter: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    pub fn advance(&self, delta: u64) {
+        let new_pos = self.counter.fetch_add(delta, Ordering::Relaxed) + delta;
+        self.bar.set_position(new_pos);
+    }
+
+    pub fn finish(&self, rows: usize) {
+        self.bar.finish_with_message(format!(
+            "{} done rows={}",
+            self.bar.message(),
+            rows
+        ));
+    }
 }
 
 fn execute_temporal_with_reader(
@@ -34,6 +85,7 @@ fn execute_temporal_with_reader(
     options: &QueryOptions,
     start: u64,
     end: Option<u64>,
+    progress: Option<TemporalProgress>,
 ) -> Result<Vec<TrainRow>> {
     if !matches!(query.predict, PredictExpr::Aggregation(_) | PredictExpr::Comparison(_)) {
         return Err(anyhow!("temporal execution requires aggregation or comparison predict"));
@@ -61,10 +113,14 @@ fn execute_temporal_with_reader(
     let node_count = entity_table.node_count();
     let end = end.unwrap_or(node_count).min(node_count);
     let start = start.min(end);
-    eprintln!(
-        "temporal: start entity_table={} nodes={}",
-        query.for_each.table, node_count
-    );
+    let (progress, owns_progress) = if let Some(progress) = progress {
+        (Some(progress), false)
+    } else if std::io::stderr().is_terminal() && start == 0 && end == node_count {
+        (Some(TemporalProgress::new(&query.for_each.table, end - start)), true)
+    } else {
+        (None, false)
+    };
+    let mut local_progress = 0u64;
     for node_id in start..end {
         let view = entity_table.edges_for_node(node_id)?;
         let segments = view.relation_segments()?;
@@ -153,20 +209,23 @@ fn execute_temporal_with_reader(
                 }
             }
         }
+        local_progress += 1;
         if node_id > 0 && node_id % 10_000 == 0 {
-            eprintln!(
-                "temporal: processed_nodes={} rows={}",
-                node_id,
-                rows.len()
-            );
+            if let Some(bar) = &progress {
+                bar.advance(local_progress);
+                local_progress = 0;
+            }
         }
     }
 
-    eprintln!(
-        "temporal: done entity_table={} rows={}",
-        query.for_each.table,
-        rows.len()
-    );
+    if let Some(bar) = &progress {
+        if local_progress > 0 {
+            bar.advance(local_progress);
+        }
+        if owns_progress {
+            bar.finish(rows.len());
+        }
+    }
     Ok(rows)
 }
 
@@ -333,7 +392,45 @@ fn resolve_relation(
     metadata: &diskgraph_core::metadata::DatasetMetadata,
 ) -> Result<(String, Option<String>)> {
     match &agg.target {
-        AggTarget::Star(tbl) => Ok((tbl.table.clone(), None)),
+        AggTarget::Star(tbl) => {
+            let rel = metadata
+                .edge_relations
+                .iter()
+                .find(|rel| rel.name == tbl.table);
+            if let Some(rel) = rel {
+                return Ok((rel.name.clone(), None));
+            }
+            let mut candidates: Vec<_> = metadata
+                .edge_relations
+                .iter()
+                .filter(|rel| rel.dst_type == tbl.table)
+                .collect();
+            let by_src: Vec<_> = candidates
+                .iter()
+                .copied()
+                .filter(|rel| rel.src_type == entity_table)
+                .collect();
+            if by_src.len() == 1 {
+                return Ok((by_src[0].name.clone(), None));
+            }
+            if by_src.is_empty() && candidates.len() == 1 {
+                return Ok((candidates[0].name.clone(), None));
+            }
+            candidates.sort_by(|a, b| a.name.cmp(&b.name));
+            if candidates.is_empty() {
+                Err(anyhow!("temporal aggregation requires edge relation {}", tbl.table))
+            } else {
+                Err(anyhow!(
+                    "multiple relations point to {} (use relation name): {}",
+                    tbl.table,
+                    candidates
+                        .iter()
+                        .map(|rel| rel.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ))
+            }
+        }
         AggTarget::Column(col) => {
             let is_node_table = metadata.node_types.iter().any(|t| t.name == col.table);
             if metadata.edge_relations.iter().any(|r| r.name == col.table) && !is_node_table {
@@ -535,7 +632,7 @@ fn aggregate_for_timestamp(
         match agg.func {
             AggFunc::Count => {}
             AggFunc::Sum | AggFunc::Avg | AggFunc::Min | AggFunc::Max => {
-                let value = decode_target_numeric(plan, edge.dst)?;
+                let Some(value) = decode_target_numeric(plan, edge.dst)? else { continue };
                 sum += value;
                 if min.map_or(true, |v| value < v) {
                     min = Some(value);
@@ -545,7 +642,7 @@ fn aggregate_for_timestamp(
                 }
             }
             AggFunc::ListDistinct => {
-                let value = decode_target_value(plan, edge.dst)?;
+                let Some(value) = decode_target_value(plan, edge.dst)? else { continue };
                 list.insert(value);
             }
         }
@@ -634,6 +731,7 @@ enum SimpleValue {
     Number(f64),
     String(String),
     Bool(bool),
+    Null,
 }
 
 fn eval_expr_value(
@@ -660,7 +758,7 @@ fn eval_expr_value(
                 diskgraph_rowpack::ValueRef::Float32(v) => SimpleValue::Number(v as f64),
                 diskgraph_rowpack::ValueRef::String(v) => SimpleValue::String(v.to_string()),
                 diskgraph_rowpack::ValueRef::Bool(v) => SimpleValue::Bool(v),
-                diskgraph_rowpack::ValueRef::Null => SimpleValue::Bool(false),
+                diskgraph_rowpack::ValueRef::Null => SimpleValue::Null,
                 diskgraph_rowpack::ValueRef::Date(v) => SimpleValue::Number(v as f64),
                 diskgraph_rowpack::ValueRef::Timestamp { secs, .. } => SimpleValue::Number(secs as f64),
                 diskgraph_rowpack::ValueRef::Decimal128(v) => SimpleValue::Number(v as f64),
@@ -690,6 +788,9 @@ fn eval_expr_value(
 }
 
 fn compare_values(left: &SimpleValue, right: &SimpleValue, op: crate::ast::CompareOp) -> bool {
+    if matches!(left, SimpleValue::Null) || matches!(right, SimpleValue::Null) {
+        return false;
+    }
     match (left, right) {
         (SimpleValue::Number(l), SimpleValue::Number(r)) => compare_numeric(*l, *r, op),
         (SimpleValue::String(l), SimpleValue::String(r)) => match op {
@@ -717,7 +818,7 @@ fn compare_numeric(left: f64, right: f64, op: crate::ast::CompareOp) -> bool {
     }
 }
 
-fn decode_target_numeric(plan: &AggPlan, node_id: u64) -> Result<f64> {
+fn decode_target_numeric(plan: &AggPlan, node_id: u64) -> Result<Option<f64>> {
     let dst_table = plan
         .dst_table
         .as_deref()
@@ -734,7 +835,8 @@ fn decode_target_numeric(plan: &AggPlan, node_id: u64) -> Result<f64> {
         .ok_or_else(|| anyhow!("missing dst node data"))?;
     let mut scratch = diskgraph_rowpack::RowPackDecodeScratch::default();
     let value = decoder.decode_column_value(data, idx, &mut scratch)?;
-    Ok(match value {
+    Ok(Some(match value {
+        diskgraph_rowpack::ValueRef::Null => return Ok(None),
         diskgraph_rowpack::ValueRef::Int64(v) => v as f64,
         diskgraph_rowpack::ValueRef::Int32(v) => v as f64,
         diskgraph_rowpack::ValueRef::UInt64(v) => v as f64,
@@ -743,10 +845,10 @@ fn decode_target_numeric(plan: &AggPlan, node_id: u64) -> Result<f64> {
         diskgraph_rowpack::ValueRef::Float32(v) => v as f64,
         diskgraph_rowpack::ValueRef::Bool(v) => if v { 1.0 } else { 0.0 },
         _ => return Err(anyhow!("target not numeric")),
-    })
+    }))
 }
 
-fn decode_target_value(plan: &AggPlan, node_id: u64) -> Result<Value> {
+fn decode_target_value(plan: &AggPlan, node_id: u64) -> Result<Option<Value>> {
     let dst_table = plan
         .dst_table
         .as_deref()
@@ -763,7 +865,8 @@ fn decode_target_value(plan: &AggPlan, node_id: u64) -> Result<Value> {
         .ok_or_else(|| anyhow!("missing dst node data"))?;
     let mut scratch = diskgraph_rowpack::RowPackDecodeScratch::default();
     let value = decoder.decode_column_value(&data, idx, &mut scratch)?;
-    Ok(match value {
+    Ok(Some(match value {
+        diskgraph_rowpack::ValueRef::Null => return Ok(None),
         diskgraph_rowpack::ValueRef::Int64(v) => Value::Int(v),
         diskgraph_rowpack::ValueRef::Int32(v) => Value::Int(v as i64),
         diskgraph_rowpack::ValueRef::UInt64(v) => Value::UInt(v),
@@ -775,7 +878,7 @@ fn decode_target_value(plan: &AggPlan, node_id: u64) -> Result<Value> {
         diskgraph_rowpack::ValueRef::Uuid256(bytes) => Value::String(hex_encode(&bytes)),
         diskgraph_rowpack::ValueRef::Ip(bytes) => Value::String(hex_encode(&bytes)),
         other => return Err(anyhow!("unsupported target value type: {other:?}")),
-    })
+    }))
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
