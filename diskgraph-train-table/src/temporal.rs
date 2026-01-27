@@ -333,7 +333,45 @@ fn resolve_relation(
     metadata: &diskgraph_core::metadata::DatasetMetadata,
 ) -> Result<(String, Option<String>)> {
     match &agg.target {
-        AggTarget::Star(tbl) => Ok((tbl.table.clone(), None)),
+        AggTarget::Star(tbl) => {
+            let rel = metadata
+                .edge_relations
+                .iter()
+                .find(|rel| rel.name == tbl.table);
+            if let Some(rel) = rel {
+                return Ok((rel.name.clone(), None));
+            }
+            let mut candidates: Vec<_> = metadata
+                .edge_relations
+                .iter()
+                .filter(|rel| rel.dst_type == tbl.table)
+                .collect();
+            let by_src: Vec<_> = candidates
+                .iter()
+                .copied()
+                .filter(|rel| rel.src_type == entity_table)
+                .collect();
+            if by_src.len() == 1 {
+                return Ok((by_src[0].name.clone(), None));
+            }
+            if by_src.is_empty() && candidates.len() == 1 {
+                return Ok((candidates[0].name.clone(), None));
+            }
+            candidates.sort_by(|a, b| a.name.cmp(&b.name));
+            if candidates.is_empty() {
+                Err(anyhow!("temporal aggregation requires edge relation {}", tbl.table))
+            } else {
+                Err(anyhow!(
+                    "multiple relations point to {} (use relation name): {}",
+                    tbl.table,
+                    candidates
+                        .iter()
+                        .map(|rel| rel.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ))
+            }
+        }
         AggTarget::Column(col) => {
             let is_node_table = metadata.node_types.iter().any(|t| t.name == col.table);
             if metadata.edge_relations.iter().any(|r| r.name == col.table) && !is_node_table {

@@ -76,8 +76,8 @@ cat <<JSON > "${CONFIG_PATH}"
 JSON
 
 queries=(
-  "PREDICT COUNT(${REL_CUSTOMER_TXN}.*, 0, 7, days) FOR EACH customers.customer_id ASSUMING COUNT(${REL_CUSTOMER_TXN}.*, -30, 0, days) > 0"
-  "PREDICT COUNT(${REL_CUSTOMER_TXN}.*, 0, 7, days) = 0 FOR EACH customers.customer_id"
+  "PREDICT COUNT(transactions.*, 0, 7, days) FOR EACH customers.customer_id ASSUMING COUNT(transactions.*, -30, 0, days) > 0"
+  "PREDICT COUNT(transactions.*, 0, 7, days) = 0 FOR EACH customers.customer_id"
   "PREDICT SUM(transactions.price, 0, 7, days) > 0 FOR EACH customers.customer_id"
   "PREDICT SUM(transactions.price WHERE transactions.sales_channel_id = 1, 0, 30, days) FOR EACH customers.customer_id"
   "PREDICT AVG(transactions.price, 0, 30, days) FOR EACH customers.customer_id"

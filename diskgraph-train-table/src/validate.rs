@@ -274,10 +274,58 @@ fn validate_temporal_query(query: &Query, schema: &IndexSchema, outcome: &mut Va
                             );
                         }
                     }
-                    None => outcome.error(
-                        "temporal_missing_relation",
-                        format!("temporal aggregation requires edge relation {}", tbl.table),
-                    ),
+                    None => {
+                        let mut candidates: Vec<_> = schema
+                            .metadata
+                            .edge_relations
+                            .iter()
+                            .filter(|rel| rel.dst_type == tbl.table)
+                            .collect();
+                        let by_src: Vec<_> = candidates
+                            .iter()
+                            .copied()
+                            .filter(|rel| rel.src_type == *entity_table)
+                            .collect();
+                        let resolved = if by_src.len() == 1 {
+                            Some(by_src[0])
+                        } else if by_src.is_empty() && candidates.len() == 1 {
+                            Some(candidates[0])
+                        } else {
+                            None
+                        };
+                        if let Some(rel) = resolved {
+                            let has_ts = rel
+                                .dest_sort_key
+                                .as_ref()
+                                .and_then(|k| k.timestamp.as_ref())
+                                .is_some();
+                            if !has_ts {
+                                outcome.error(
+                                    "temporal_missing_timestamp",
+                                    format!("relation {} missing timestamped edge list", rel.name),
+                                );
+                            }
+                        } else if candidates.is_empty() {
+                            outcome.error(
+                                "temporal_missing_relation",
+                                format!("temporal aggregation requires edge relation {}", tbl.table),
+                            );
+                        } else {
+                            candidates.sort_by(|a, b| a.name.cmp(&b.name));
+                            outcome.error(
+                                "temporal_ambiguous_relation",
+                                format!(
+                                    "multiple relations point to {} (use relation name): {}",
+                                    tbl.table,
+                                    candidates
+                                        .iter()
+                                        .map(|rel| rel.name.as_str())
+                                        .collect::<Vec<_>>()
+                                        .join(", ")
+                                ),
+                            );
+                        }
+                    }
                 }
             }
             AggTarget::Column(col) => {
@@ -729,6 +777,55 @@ mod tests {
             "PREDICT users.user_id = 1 FOR EACH users.user_id",
         )
         .expect("parse");
+        let outcome = validate_query(&query, &schema);
+        assert!(outcome.errors.is_empty());
+    }
+
+    #[test]
+    fn validate_temporal_relation_fallback_by_dst_type() {
+        let dir = temp_dir("temporal_relation_fallback");
+        let mut metadata = build_metadata(&dir);
+        metadata.edge_relations[0].name = "user_to_transactions".to_string();
+        write_metadata(&dir, &metadata);
+
+        let schema = IndexSchema::from_index_path(&dir).expect("schema");
+        let query = parse_query("PREDICT COUNT(transactions.*, 0, 7, days) FOR EACH users.user_id")
+            .expect("parse");
+        let outcome = validate_query(&query, &schema);
+        assert!(outcome.errors.is_empty());
+    }
+
+    #[test]
+    fn validate_temporal_relation_disambiguates_by_src_type() {
+        let dir = temp_dir("temporal_relation_disambiguate");
+        let mut metadata = build_metadata(&dir);
+        metadata.edge_relations[0].name = "users_to_transactions".to_string();
+        metadata.edge_relations.push(diskgraph_core::metadata::EdgeRelationMetadata {
+            name: "articles_to_transactions".to_string(),
+            src_type: "articles".to_string(),
+            dst_type: "transactions".to_string(),
+            shards: vec![],
+            dest_sort_key_bits: Some(16),
+            dest_sort_key: Some(diskgraph_core::metadata::EdgeSortKeyMetadata {
+                width_bits: 16,
+                timestamp: Some(diskgraph_core::metadata::EdgeSortKeyTimestampMetadata {
+                    table: "transactions".to_string(),
+                    column: "timestamp".to_string(),
+                    encoding: diskgraph_core::metadata::EdgeSortKeyTimestampEncoding {
+                        kind: diskgraph_core::metadata::EdgeSortKeyTimestampKind::Int16,
+                        anchor: 0,
+                        step: 1,
+                    },
+                }),
+                weight: None,
+            }),
+            format: diskgraph_core::metadata::EdgeStorageFormat::Binary,
+        });
+        write_metadata(&dir, &metadata);
+
+        let schema = IndexSchema::from_index_path(&dir).expect("schema");
+        let query = parse_query("PREDICT COUNT(transactions.*, 0, 7, days) FOR EACH users.user_id")
+            .expect("parse");
         let outcome = validate_query(&query, &schema);
         assert!(outcome.errors.is_empty());
     }
