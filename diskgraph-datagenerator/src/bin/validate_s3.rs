@@ -279,9 +279,9 @@ async fn validate_job(
         ..Default::default()
     };
     let (_, stats) = ingest_with_stats(
-        &metadata_path, 
-        output_path.to_str().unwrap(), 
-        Dest::Local, 
+        &metadata_path,
+        output_path.to_str().unwrap(),
+        Dest::Local,
         options
     )?;
 
@@ -464,6 +464,48 @@ async fn verify_s3_stats(data_dir: &Path, customer: &str, job_id: &str, stats: &
                 let mut matched_s3_keys = HashSet::new();
 
                 for (relation_name, &ingest_count) in &stats.edge_counts {
+                    // Check for Edge Table pattern: edge_{table}_src_to_dst or edge_{table}_dst_to_src
+                    if relation_name.starts_with("edge_") && (relation_name.ends_with("_src_to_dst") || relation_name.ends_with("_dst_to_src")) {
+                        let suffix = if relation_name.ends_with("_src_to_dst") { "_src_to_dst" } else { "_dst_to_src" };
+                        let table_name = &relation_name[5..relation_name.len() - suffix.len()];
+
+                        if let Some(meta) = table_infos.get(table_name) {
+                            let target_source = &meta.source_name;
+                            let target_ds = &meta.data_source;
+
+                            let mut found_match = false;
+                            for (s3_key, val_obj) in obj {
+                                if !s3_key.ends_with("EDGE_COUNT") { continue; }
+
+                                let parts: Vec<&str> = s3_key.split("__").collect();
+                                if parts.len() < 7 { continue; }
+
+                                let src_src = parts[0];
+                                let src_ds = parts[1];
+                                let dst_src = parts[2];
+                                let dst_ds = parts[3];
+
+                                let involves_table = (src_src == target_source && src_ds == target_ds) ||
+                                                    (dst_src == target_source && dst_ds == target_ds);
+
+                                if involves_table {
+                                    let s3_count = val_obj.get("value").and_then(|v| v.as_u64()).unwrap_or(0);
+                                    if diff_pct(s3_count, ingest_count) < 0.01 {
+                                        messages.push(format!("PASS: Edge Table {} (Rel: {}) (S3: {}, Ingest: {})", table_name, s3_key, s3_count, ingest_count));
+                                        matched_s3_keys.insert(s3_key.clone());
+                                        found_match = true;
+                                    }
+                                }
+                            }
+                            if !found_match {
+                                messages.push(format!("FAIL: Edge Table {} (Ingest: {}) - No matching S3 key found for {}__{}", table_name, ingest_count, target_source, target_ds));
+                            }
+                        } else {
+                             messages.push(format!("INFO: Missing metadata for edge table {}", table_name));
+                        }
+                        continue;
+                    }
+
                     // Parse relation name: {src_table}_{src_key}_to_{dst_table}_{dst_key}
                     let base_relation = relation_name.trim_end_matches("_reverse");
                     let parts: Vec<&str> = base_relation.split("_to_").collect();
@@ -630,7 +672,7 @@ fn print_report(results: &[JobResult]) {
                     let verify_status = if let Some(msgs) = &report.s3_stats_verification {
                     let fails = msgs.iter().filter(|m| m.starts_with("FAIL")).count();
                     let skips = msgs.iter().filter(|m| m.starts_with("SKIP")).count();
-                    if fails > 0 { format!("{} FAIL", fails) } 
+                    if fails > 0 { format!("{} FAIL", fails) }
                     else if skips > 0 && msgs.iter().all(|m| m.starts_with("SKIP") || m.starts_with("INFO")) { "SKIP".to_string() }
                     else { "PASS".to_string() }
                 } else {
