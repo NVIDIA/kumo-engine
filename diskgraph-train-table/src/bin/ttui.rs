@@ -20,7 +20,6 @@ use diskgraph_train_table::index_reader::IndexReader;
 use diskgraph_train_table::parquet_writer::{write_train_table, TrainTableRow};
 use diskgraph_train_table::parser::parse_query;
 use diskgraph_train_table::split::{SplitAssigner, SplitLabel};
-use diskgraph_train_table::temporal::execute_temporal_range;
 use diskgraph_train_table::validate::{validate_query, IndexSchema};
 
 const RESET: &str = "\x1b[0m";
@@ -442,15 +441,20 @@ fn run_query(session: &mut SessionConfig, query_str: &str) -> Result<PathBuf> {
             let end = (start + chunk).min(node_count);
             ranges.push((start, end));
         }
+        let progress = diskgraph_train_table::temporal::TemporalProgress::new(
+            &query.for_each.table,
+            node_count,
+        );
         let results: Vec<Result<Vec<TrainRow>>> = ranges
             .par_iter()
             .map(|(start, end)| {
-                execute_temporal_range(
+                diskgraph_train_table::temporal::execute_temporal_range_with_progress(
                     &query,
                     Path::new(&session.index_path),
                     &session.options,
                     *start,
                     *end,
+                    Some(progress.clone()),
                 )
             })
             .collect();

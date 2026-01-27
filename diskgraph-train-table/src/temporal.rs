@@ -1,10 +1,14 @@
 use std::path::Path;
+use std::io::IsTerminal;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 use diskgraph_core::metadata::{EdgeRelationMetadata, EdgeSortKeyTimestampKind, EdgeSortKeyWeightKind};
 use diskgraph_index::builder::compute_relation_layouts;
 use diskgraph_index::graph::GraphIndexReader;
 use diskgraph_index::layout::RelationSegment;
+use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::ast::{AggFunc, AggTarget, AggregationExpr, PredicateExpr, PredictExpr, Query, TimeUnit};
 use crate::config::{QueryOptions, TemporalSampling};
@@ -13,7 +17,7 @@ use crate::exec::{TargetValue, TrainRow, Value};
 pub fn execute_temporal(query: &Query, index_path: &Path, options: &QueryOptions) -> Result<Vec<TrainRow>> {
     let metadata_path = index_path.join("index_metadata.json");
     let graph = GraphIndexReader::open(&metadata_path, index_path)?;
-    execute_temporal_with_reader(query, &graph, options, 0, None)
+    execute_temporal_with_reader(query, &graph, options, 0, None, None)
 }
 
 pub fn execute_temporal_range(
@@ -25,7 +29,54 @@ pub fn execute_temporal_range(
 ) -> Result<Vec<TrainRow>> {
     let metadata_path = index_path.join("index_metadata.json");
     let graph = GraphIndexReader::open(&metadata_path, index_path)?;
-    execute_temporal_with_reader(query, &graph, options, start, Some(end))
+    execute_temporal_with_reader(query, &graph, options, start, Some(end), None)
+}
+
+pub fn execute_temporal_range_with_progress(
+    query: &Query,
+    index_path: &Path,
+    options: &QueryOptions,
+    start: u64,
+    end: u64,
+    progress: Option<TemporalProgress>,
+) -> Result<Vec<TrainRow>> {
+    let metadata_path = index_path.join("index_metadata.json");
+    let graph = GraphIndexReader::open(&metadata_path, index_path)?;
+    execute_temporal_with_reader(query, &graph, options, start, Some(end), progress)
+}
+
+#[derive(Clone)]
+pub struct TemporalProgress {
+    bar: ProgressBar,
+    counter: Arc<AtomicU64>,
+}
+
+impl TemporalProgress {
+    pub fn new(table: &str, total: u64) -> Self {
+        let bar = ProgressBar::new(total);
+        bar.set_style(
+            ProgressStyle::with_template("{msg} {bar:40.cyan/blue} {percent}% {pos}/{len}")
+                .unwrap_or_else(|_| ProgressStyle::default_bar()),
+        );
+        bar.set_message(format!("temporal {table}"));
+        Self {
+            bar,
+            counter: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    pub fn advance(&self, delta: u64) {
+        let new_pos = self.counter.fetch_add(delta, Ordering::Relaxed) + delta;
+        self.bar.set_position(new_pos);
+    }
+
+    pub fn finish(&self, rows: usize) {
+        self.bar.finish_with_message(format!(
+            "{} done rows={}",
+            self.bar.message(),
+            rows
+        ));
+    }
 }
 
 fn execute_temporal_with_reader(
@@ -34,6 +85,7 @@ fn execute_temporal_with_reader(
     options: &QueryOptions,
     start: u64,
     end: Option<u64>,
+    progress: Option<TemporalProgress>,
 ) -> Result<Vec<TrainRow>> {
     if !matches!(query.predict, PredictExpr::Aggregation(_) | PredictExpr::Comparison(_)) {
         return Err(anyhow!("temporal execution requires aggregation or comparison predict"));
@@ -61,10 +113,14 @@ fn execute_temporal_with_reader(
     let node_count = entity_table.node_count();
     let end = end.unwrap_or(node_count).min(node_count);
     let start = start.min(end);
-    eprintln!(
-        "temporal: start entity_table={} nodes={}",
-        query.for_each.table, node_count
-    );
+    let progress = if progress.is_some() {
+        progress
+    } else if std::io::stderr().is_terminal() && start == 0 && end == node_count {
+        Some(TemporalProgress::new(&query.for_each.table, end - start))
+    } else {
+        None
+    };
+    let mut local_progress = 0u64;
     for node_id in start..end {
         let view = entity_table.edges_for_node(node_id)?;
         let segments = view.relation_segments()?;
@@ -153,20 +209,21 @@ fn execute_temporal_with_reader(
                 }
             }
         }
+        local_progress += 1;
         if node_id > 0 && node_id % 10_000 == 0 {
-            eprintln!(
-                "temporal: processed_nodes={} rows={}",
-                node_id,
-                rows.len()
-            );
+            if let Some(bar) = &progress {
+                bar.advance(local_progress);
+                local_progress = 0;
+            }
         }
     }
 
-    eprintln!(
-        "temporal: done entity_table={} rows={}",
-        query.for_each.table,
-        rows.len()
-    );
+    if let Some(bar) = &progress {
+        if local_progress > 0 {
+            bar.advance(local_progress);
+        }
+        bar.finish(rows.len());
+    }
     Ok(rows)
 }
 
