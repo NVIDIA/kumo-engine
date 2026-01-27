@@ -193,7 +193,102 @@ pub fn validate_query(query: &Query, schema: &IndexSchema) -> ValidationOutcome 
         validate_predicate(assuming, schema, &mut outcome);
     }
 
+    validate_temporal_query(query, schema, &mut outcome);
+
     outcome
+}
+
+fn validate_temporal_query(query: &Query, schema: &IndexSchema, outcome: &mut ValidationOutcome) {
+    let mut aggs = Vec::new();
+    aggs.push(query.predict.aggregation.clone());
+    if let Some(assuming) = &query.assuming {
+        collect_aggs_from_pred(assuming, &mut aggs);
+    }
+    for agg in aggs {
+        if agg.window.is_none() {
+            continue;
+        }
+        let entity_table = &query.for_each.table;
+        match &agg.target {
+            AggTarget::Star(tbl) => {
+                if agg.filter.is_some() {
+                    outcome.error(
+                        "temporal_filter_invalid",
+                        "filters on edge relations are not supported",
+                    );
+                }
+                let rel = schema
+                    .metadata
+                    .edge_relations
+                    .iter()
+                    .find(|rel| rel.name == tbl.table);
+                match rel {
+                    Some(rel) => {
+                        let has_ts = rel
+                            .dest_sort_key
+                            .as_ref()
+                            .and_then(|k| k.timestamp.as_ref())
+                            .is_some();
+                        if !has_ts {
+                            outcome.error(
+                                "temporal_missing_timestamp",
+                                format!("relation {} missing timestamped edge list", tbl.table),
+                            );
+                        }
+                    }
+                    None => outcome.error(
+                        "temporal_missing_relation",
+                        format!("temporal aggregation requires edge relation {}", tbl.table),
+                    ),
+                }
+            }
+            AggTarget::Column(col) => {
+                if let Some(filter) = &agg.filter {
+                    let mut cols = Vec::new();
+                    collect_columns_from_pred(filter, &mut cols);
+                    for c in cols {
+                        if c.table != col.table {
+                            outcome.error(
+                                "temporal_filter_invalid",
+                                "temporal filters must reference dst node table only",
+                            );
+                            break;
+                        }
+                    }
+                }
+                let rels: Vec<_> = schema
+                    .metadata
+                    .edge_relations
+                    .iter()
+                    .filter(|rel| rel.src_type == *entity_table && rel.dst_type == col.table)
+                    .collect();
+                if rels.is_empty() {
+                    outcome.error(
+                        "temporal_missing_relation",
+                        format!("no relation from {} to {}", entity_table, col.table),
+                    );
+                } else if rels.len() > 1 {
+                    outcome.error(
+                        "temporal_ambiguous_relation",
+                        format!("multiple relations from {} to {}", entity_table, col.table),
+                    );
+                } else {
+                    let rel = rels[0];
+                    let has_ts = rel
+                        .dest_sort_key
+                        .as_ref()
+                        .and_then(|k| k.timestamp.as_ref())
+                        .is_some();
+                    if !has_ts {
+                        outcome.error(
+                            "temporal_missing_timestamp",
+                            format!("relation {} missing timestamped edge list", rel.name),
+                        );
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn collect_table_refs(query: &Query, out: &mut HashSet<String>) {
@@ -284,6 +379,27 @@ fn collect_columns_from_expr(expr: &Expr, out: &mut Vec<ColumnRef>) {
     }
 }
 
+fn collect_aggs_from_pred(pred: &PredicateExpr, out: &mut Vec<AggregationExpr>) {
+    match pred {
+        PredicateExpr::Comparison { left, right, .. } => {
+            collect_aggs_from_expr(left, out);
+            collect_aggs_from_expr(right, out);
+        }
+        PredicateExpr::And(items) | PredicateExpr::Or(items) => {
+            for item in items {
+                collect_aggs_from_pred(item, out);
+            }
+        }
+    }
+}
+
+fn collect_aggs_from_expr(expr: &Expr, out: &mut Vec<AggregationExpr>) {
+    match expr {
+        Expr::Agg(agg) => out.push((**agg).clone()),
+        Expr::Column(_) | Expr::Number(_) | Expr::String(_) => {}
+    }
+}
+
 fn validate_aggregation(agg: &AggregationExpr, schema: &IndexSchema, outcome: &mut ValidationOutcome) {
     let target_type = match &agg.target {
         AggTarget::Column(col) => schema.get_column_type(&col.table, &col.column),
@@ -312,42 +428,6 @@ fn validate_aggregation(agg: &AggregationExpr, schema: &IndexSchema, outcome: &m
         validate_predicate(filter, schema, outcome);
     }
 
-    if agg.window.is_some() {
-        if agg.filter.is_some() {
-            outcome.error(
-                "temporal_filter_unsupported",
-                "temporal aggregations do not support WHERE filters",
-            );
-        }
-        let table = match &agg.target {
-            AggTarget::Column(col) => &col.table,
-            AggTarget::Star(tbl) => &tbl.table,
-        };
-        let rel = schema
-            .metadata
-            .edge_relations
-            .iter()
-            .find(|rel| rel.name == *table);
-        match rel {
-            Some(rel) => {
-                let has_ts = rel
-                    .dest_sort_key
-                    .as_ref()
-                    .and_then(|k| k.timestamp.as_ref())
-                    .is_some();
-                if !has_ts {
-                    outcome.error(
-                        "temporal_missing_timestamp",
-                        format!("relation {} missing timestamped edge list", table),
-                    );
-                }
-            }
-            None => outcome.error(
-                "temporal_missing_relation",
-                format!("temporal aggregation requires edge relation {}", table),
-            ),
-        }
-    }
 }
 
 fn validate_predicate(pred: &PredicateExpr, schema: &IndexSchema, outcome: &mut ValidationOutcome) {

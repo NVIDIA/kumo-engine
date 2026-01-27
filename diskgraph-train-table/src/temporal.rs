@@ -6,10 +6,11 @@ use diskgraph_index::builder::compute_relation_layouts;
 use diskgraph_index::graph::GraphIndexReader;
 use diskgraph_index::layout::RelationSegment;
 
-use crate::ast::{AggFunc, AggTarget, AggregationExpr, Query, TimeUnit};
+use crate::ast::{AggFunc, AggTarget, AggregationExpr, PredicateExpr, Query, TimeUnit};
+use crate::config::{QueryOptions, TemporalSampling};
 use crate::exec::{TargetValue, TrainRow, Value};
 
-pub fn execute_temporal(query: &Query, index_path: &Path) -> Result<Vec<TrainRow>> {
+pub fn execute_temporal(query: &Query, index_path: &Path, options: &QueryOptions) -> Result<Vec<TrainRow>> {
     let metadata_path = index_path.join("index_metadata.json");
     let graph = GraphIndexReader::open(&metadata_path, index_path)?;
     let entity_table = graph
@@ -19,12 +20,6 @@ pub fn execute_temporal(query: &Query, index_path: &Path) -> Result<Vec<TrainRow
     let aggs = collect_aggs(query);
     if aggs.is_empty() {
         return Err(anyhow!("no aggregations found"));
-    }
-
-    for agg in &aggs {
-        if agg.filter.is_some() {
-            return Err(anyhow!("temporal aggregations do not support WHERE filters yet"));
-        }
     }
 
     let relation_map = build_relation_map(entity_table.relations(), graph.metadata())?;
@@ -45,15 +40,13 @@ pub fn execute_temporal(query: &Query, index_path: &Path) -> Result<Vec<TrainRow
 
         let mut per_agg_ranges = Vec::new();
         let mut target_range = None;
+        let mut agg_plans = Vec::new();
         for (idx, agg) in aggs.iter().enumerate() {
-            let rel = agg_relation(agg)?;
-            let rel_info = relation_map
-                .iter()
-                .find(|info| info.name == rel)
-                .ok_or_else(|| anyhow!("missing relation {rel}"))?;
+            let plan = build_agg_plan(agg, &query.for_each.table, &graph, &relation_map)?;
+            let rel_info = &plan.rel;
             let segment = segments
                 .get(rel_info.index)
-                .ok_or_else(|| anyhow!("missing segment for relation {rel}"))?;
+                .ok_or_else(|| anyhow!("missing segment for relation {}", rel_info.name))?;
             let (min_ts, max_ts) = scan_edge_range(segment, &rel_info.meta)?;
             let Some(min_ts) = min_ts else { continue };
             let Some(max_ts) = max_ts else { continue };
@@ -65,6 +58,7 @@ pub fn execute_temporal(query: &Query, index_path: &Path) -> Result<Vec<TrainRow
             if idx == target_agg_index {
                 target_range = Some((range_start, range_end));
             }
+            agg_plans.push(plan);
         }
 
         let Some((target_start, target_end)) = target_range else { continue };
@@ -86,48 +80,80 @@ pub fn execute_temporal(query: &Query, index_path: &Path) -> Result<Vec<TrainRow
             continue;
         }
 
-        let seed = (node_id as u64).wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-        let mut rng = XorShift64 { state: seed };
-        for _ in 0..samples {
-            let ts = global_start + (rng.next_f64() * (global_end - global_start) as f64) as i64;
-            let mut target_value = None;
-
-            let mut all_ok = true;
-            for (idx, agg) in aggs.iter().enumerate() {
-                let rel = agg_relation(agg)?;
-                let rel_info = relation_map
-                    .iter()
-                    .find(|info| info.name == rel)
-                    .ok_or_else(|| anyhow!("missing relation {rel}"))?;
-                let segment = segments
-                    .get(rel_info.index)
-                    .ok_or_else(|| anyhow!("missing segment for relation {rel}"))?;
-                let value = aggregate_for_timestamp(segment, &rel_info.meta, agg, ts)?;
-                if idx == target_agg_index {
-                    target_value = value;
-                } else if value.is_none() {
-                    all_ok = false;
-                    break;
+        match options.temporal_sampling {
+            TemporalSampling::Random => {
+                let seed = (node_id as u64)
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                let mut rng = XorShift64 { state: seed };
+                for _ in 0..samples {
+                    let ts =
+                        global_start + (rng.next_f64() * (global_end - global_start) as f64) as i64;
+                    evaluate_samples(
+                        node_id,
+                        ts,
+                        &segments,
+                        &agg_plans,
+                        target_agg_index,
+                        &mut rows,
+                    )?;
                 }
             }
-            if !all_ok {
-                continue;
+            TemporalSampling::Timeframe => {
+                let mut ts = target_start;
+                while ts < target_end {
+                    if ts >= global_start && ts <= global_end {
+                        evaluate_samples(
+                            node_id,
+                            ts,
+                            &segments,
+                            &agg_plans,
+                            target_agg_index,
+                            &mut rows,
+                        )?;
+                    }
+                    ts = ts.saturating_add(target_window_secs);
+                }
             }
-            let Some(target_value) = target_value else { continue };
-            if is_empty_target(&target_value) {
-                continue;
-            }
-            rows.push(TrainRow {
-                entity: Value::UInt(node_id),
-                target: target_value,
-                timestamp: ts,
-            });
         }
     }
 
     Ok(rows)
 }
 
+fn evaluate_samples(
+    node_id: u64,
+    ts: i64,
+    segments: &[RelationSegment<'_>],
+    agg_plans: &[AggPlan],
+    target_agg_index: usize,
+    rows: &mut Vec<TrainRow>,
+) -> Result<()> {
+    let mut target_value = None;
+    for (idx, plan) in agg_plans.iter().enumerate() {
+        let segment = segments
+            .get(plan.rel.index)
+            .ok_or_else(|| anyhow!("missing segment for relation {}", plan.rel.name))?;
+        let value = aggregate_for_timestamp(segment, &plan.rel.meta, &plan.agg, ts, plan)?;
+        if idx == target_agg_index {
+            target_value = value;
+        } else if value.is_none() {
+            return Ok(());
+        }
+    }
+    let Some(target_value) = target_value else { return Ok(()) };
+    if is_empty_target(&target_value) {
+        return Ok(());
+    }
+    rows.push(TrainRow {
+        entity: Value::UInt(node_id),
+        target: target_value,
+        timestamp: ts,
+    });
+    Ok(())
+}
+
+#[derive(Clone)]
 struct RelationInfo {
     name: String,
     index: usize,
@@ -150,6 +176,119 @@ fn build_relation_map(relations: &[EdgeRelationMetadata], metadata: &diskgraph_c
         // no timestamped relations
     }
     Ok(out)
+}
+
+struct AggPlan {
+    agg: AggregationExpr,
+    rel: RelationInfo,
+    dst_table: Option<std::sync::Arc<diskgraph_index::graph::TableReader>>,
+    target_col_idx: Option<usize>,
+    filter: Option<PredicateExpr>,
+    filter_col_index: Option<std::collections::HashMap<String, usize>>,
+}
+
+fn build_agg_plan(
+    agg: &AggregationExpr,
+    entity_table: &str,
+    graph: &GraphIndexReader,
+    relation_map: &[RelationInfo],
+) -> Result<AggPlan> {
+    let (rel_name, dst_table_name) = resolve_relation(entity_table, agg, graph.metadata())?;
+    let rel = relation_map
+        .iter()
+        .find(|info| info.name == rel_name)
+        .ok_or_else(|| anyhow!("missing relation {rel_name}"))?
+        .clone();
+
+    let mut target_col_idx = None;
+    let mut filter_col_index = None;
+    let dst_table = dst_table_name
+        .as_deref()
+        .and_then(|name| graph.table(name));
+
+    let filter = agg.filter.clone().map(|f| *f);
+    if let Some(filter) = &filter {
+        let dst = dst_table
+            .as_ref()
+            .ok_or_else(|| anyhow!("temporal filter requires dst node table"))?;
+        let decoder = dst
+            .node_data_decoder()
+            .ok_or_else(|| anyhow!("dst table missing node data decoder"))?;
+        let map = decoder
+            .context()
+            .columns
+            .iter()
+            .enumerate()
+            .map(|(idx, col)| (col.name.clone(), idx))
+            .collect::<std::collections::HashMap<_, _>>();
+        filter_col_index = Some(map);
+        for col in collect_columns_from_pred(filter) {
+            if col.table != dst.node_type() {
+                return Err(anyhow!("temporal filter only supports dst node columns"));
+            }
+        }
+    }
+
+    match &agg.target {
+        AggTarget::Column(col) => {
+            let dst = dst_table
+                .as_ref()
+                .ok_or_else(|| anyhow!("temporal agg requires dst node table"))?;
+            let decoder = dst
+                .node_data_decoder()
+                .ok_or_else(|| anyhow!("dst table missing node data decoder"))?;
+            let idx = decoder
+                .context()
+                .columns
+                .iter()
+                .position(|c| c.name == col.column)
+                .ok_or_else(|| anyhow!("missing target column {}", col.column))?;
+            target_col_idx = Some(idx);
+        }
+        AggTarget::Star(_) => {
+            if agg.func != AggFunc::Count {
+                return Err(anyhow!("only COUNT(*) supported for relation targets"));
+            }
+        }
+    }
+
+    Ok(AggPlan {
+        agg: agg.clone(),
+        rel,
+        dst_table,
+        target_col_idx,
+        filter,
+        filter_col_index,
+    })
+}
+
+fn resolve_relation(
+    entity_table: &str,
+    agg: &AggregationExpr,
+    metadata: &diskgraph_core::metadata::DatasetMetadata,
+) -> Result<(String, Option<String>)> {
+    match &agg.target {
+        AggTarget::Star(tbl) => Ok((tbl.table.clone(), None)),
+        AggTarget::Column(col) => {
+            let is_node_table = metadata.node_types.iter().any(|t| t.name == col.table);
+            if metadata.edge_relations.iter().any(|r| r.name == col.table) && !is_node_table {
+                return Err(anyhow!("edge tables have no columns for temporal queries"));
+            }
+            let mut rels = metadata
+                .edge_relations
+                .iter()
+                .filter(|rel| rel.src_type == entity_table && rel.dst_type == col.table)
+                .map(|rel| rel.name.clone())
+                .collect::<Vec<_>>();
+            if rels.is_empty() {
+                return Err(anyhow!("no relation from {} to {}", entity_table, col.table));
+            }
+            if rels.len() > 1 {
+                return Err(anyhow!("ambiguous relation from {} to {}", entity_table, col.table));
+            }
+            Ok((rels.remove(0), Some(col.table.clone())))
+        }
+    }
 }
 
 fn collect_aggs(query: &Query) -> Vec<AggregationExpr> {
@@ -178,13 +317,6 @@ fn collect_aggs_from_expr(expr: &crate::ast::Expr, out: &mut Vec<AggregationExpr
     match expr {
         crate::ast::Expr::Agg(agg) => out.push((**agg).clone()),
         _ => {}
-    }
-}
-
-fn agg_relation(agg: &AggregationExpr) -> Result<&str> {
-    match &agg.target {
-        AggTarget::Column(col) => Ok(&col.table),
-        AggTarget::Star(tbl) => Ok(&tbl.table),
     }
 }
 
@@ -227,6 +359,7 @@ fn aggregate_for_timestamp(
     meta: &EdgeRelationMetadata,
     agg: &AggregationExpr,
     ts: i64,
+    plan: &AggPlan,
 ) -> Result<Option<TargetValue>> {
     let window = agg.window.as_ref().ok_or_else(|| anyhow!("missing window"))?;
     let (start_offset, end_offset) = window_offsets_seconds(window);
@@ -237,25 +370,42 @@ fn aggregate_for_timestamp(
     let mut sum = 0f64;
     let mut min = None;
     let mut max = None;
-    let mut list: std::collections::HashSet<u64> = std::collections::HashSet::new();
+    let mut list: std::collections::HashSet<Value> = std::collections::HashSet::new();
 
     for edge in decode_edges(segment) {
-        let (edge_ts, weight) = decode_sort_key(meta, edge.sort_key)?;
+        let (edge_ts, _weight) = decode_sort_key(meta, edge.sort_key)?;
         let Some(edge_ts) = edge_ts else { continue };
         if edge_ts < window_start || edge_ts >= window_end {
             continue;
         }
-        count += 1;
-        if let Some(weight) = weight {
-            sum += weight;
-            if min.map_or(true, |v| weight < v) {
-                min = Some(weight);
-            }
-            if max.map_or(true, |v| weight > v) {
-                max = Some(weight);
+        if let Some(filter) = &plan.filter {
+            if !eval_node_predicate(
+                plan.dst_table.as_deref(),
+                plan.filter_col_index.as_ref(),
+                edge.dst,
+                filter,
+            )? {
+                continue;
             }
         }
-        list.insert(edge.dst);
+        count += 1;
+        match agg.func {
+            AggFunc::Count => {}
+            AggFunc::Sum | AggFunc::Avg | AggFunc::Min | AggFunc::Max => {
+                let value = decode_target_numeric(plan, edge.dst)?;
+                sum += value;
+                if min.map_or(true, |v| value < v) {
+                    min = Some(value);
+                }
+                if max.map_or(true, |v| value > v) {
+                    max = Some(value);
+                }
+            }
+            AggFunc::ListDistinct => {
+                let value = decode_target_value(plan, edge.dst)?;
+                list.insert(value);
+            }
+        }
     }
 
     let out = match agg.func {
@@ -264,9 +414,7 @@ fn aggregate_for_timestamp(
             if list.is_empty() {
                 None
             } else {
-                Some(TargetValue::List(
-                    list.into_iter().map(|id| Value::UInt(id)).collect(),
-                ))
+                Some(TargetValue::List(list.into_iter().collect()))
             }
         }
         AggFunc::Sum => {
@@ -287,6 +435,212 @@ fn aggregate_for_timestamp(
         AggFunc::Max => max.map(TargetValue::Number),
     };
     Ok(out)
+}
+
+fn eval_node_predicate(
+    dst_table: Option<&diskgraph_index::graph::TableReader>,
+    col_index: Option<&std::collections::HashMap<String, usize>>,
+    node_id: u64,
+    pred: &PredicateExpr,
+) -> Result<bool> {
+    let Some(dst_table) = dst_table else { return Err(anyhow!("missing dst table")); };
+    let Some(decoder) = dst_table.node_data_decoder() else { return Err(anyhow!("missing node data decoder")); };
+    let Some(col_index) = col_index else { return Err(anyhow!("missing predicate column index")); };
+    let view = dst_table.edges_for_node(node_id)?;
+    let data = view
+        .node_data()?
+        .ok_or_else(|| anyhow!("missing dst node data"))?;
+    let mut scratch = diskgraph_rowpack::RowPackDecodeScratch::default();
+    eval_predicate_row(pred, decoder, &data, col_index, &mut scratch)
+}
+
+fn eval_predicate_row(
+    pred: &PredicateExpr,
+    decoder: &diskgraph_rowpack::RowPackDecoder,
+    row: &[u8],
+    col_index: &std::collections::HashMap<String, usize>,
+    scratch: &mut diskgraph_rowpack::RowPackDecodeScratch,
+) -> Result<bool> {
+    match pred {
+        PredicateExpr::Comparison { left, op, right } => {
+            let left_val = eval_expr_value(left, decoder, row, col_index, scratch)?;
+            let right_val = eval_expr_value(right, decoder, row, col_index, scratch)?;
+            Ok(compare_values(&left_val, &right_val, *op))
+        }
+        PredicateExpr::And(items) => {
+            for item in items {
+                if !eval_predicate_row(item, decoder, row, col_index, scratch)? {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        }
+        PredicateExpr::Or(items) => {
+            for item in items {
+                if eval_predicate_row(item, decoder, row, col_index, scratch)? {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+enum SimpleValue {
+    Number(f64),
+    String(String),
+    Bool(bool),
+}
+
+fn eval_expr_value(
+    expr: &crate::ast::Expr,
+    decoder: &diskgraph_rowpack::RowPackDecoder,
+    row: &[u8],
+    col_index: &std::collections::HashMap<String, usize>,
+    scratch: &mut diskgraph_rowpack::RowPackDecodeScratch,
+) -> Result<SimpleValue> {
+    match expr {
+        crate::ast::Expr::Number(n) => Ok(SimpleValue::Number(*n as f64)),
+        crate::ast::Expr::String(s) => Ok(SimpleValue::String(s.clone())),
+        crate::ast::Expr::Column(col) => {
+            let idx = *col_index
+                .get(&col.column)
+                .ok_or_else(|| anyhow!("missing column {}", col.column))?;
+            let value = decoder.decode_column_value(row, idx, scratch)?;
+            Ok(match value {
+                diskgraph_rowpack::ValueRef::Int64(v) => SimpleValue::Number(v as f64),
+                diskgraph_rowpack::ValueRef::Int32(v) => SimpleValue::Number(v as f64),
+                diskgraph_rowpack::ValueRef::UInt64(v) => SimpleValue::Number(v as f64),
+                diskgraph_rowpack::ValueRef::UInt32(v) => SimpleValue::Number(v as f64),
+                diskgraph_rowpack::ValueRef::Float64(v) => SimpleValue::Number(v),
+                diskgraph_rowpack::ValueRef::Float32(v) => SimpleValue::Number(v as f64),
+                diskgraph_rowpack::ValueRef::String(v) => SimpleValue::String(v.to_string()),
+                diskgraph_rowpack::ValueRef::Bool(v) => SimpleValue::Bool(v),
+                diskgraph_rowpack::ValueRef::Null => SimpleValue::Bool(false),
+                diskgraph_rowpack::ValueRef::Date(v) => SimpleValue::Number(v as f64),
+                diskgraph_rowpack::ValueRef::Timestamp { secs, .. } => SimpleValue::Number(secs as f64),
+                diskgraph_rowpack::ValueRef::Decimal128(v) => SimpleValue::Number(v as f64),
+                diskgraph_rowpack::ValueRef::Decimal256(_) => {
+                    return Err(anyhow!("unsupported predicate value"))
+                }
+                diskgraph_rowpack::ValueRef::Bytes(v) => {
+                    SimpleValue::String(hex_encode(v))
+                }
+                diskgraph_rowpack::ValueRef::Uuid(bytes) => {
+                    SimpleValue::String(hex_encode(&bytes))
+                }
+                diskgraph_rowpack::ValueRef::Uuid256(bytes) => {
+                    SimpleValue::String(hex_encode(&bytes))
+                }
+                diskgraph_rowpack::ValueRef::Ip(bytes) => {
+                    SimpleValue::String(hex_encode(&bytes))
+                }
+                diskgraph_rowpack::ValueRef::Float32Array(_)
+                | diskgraph_rowpack::ValueRef::Float64Array(_) => {
+                    return Err(anyhow!("unsupported predicate value"))
+                }
+            })
+        }
+        crate::ast::Expr::Agg(_) => Err(anyhow!("nested agg in predicate not supported")),
+    }
+}
+
+fn compare_values(left: &SimpleValue, right: &SimpleValue, op: crate::ast::CompareOp) -> bool {
+    match (left, right) {
+        (SimpleValue::Number(l), SimpleValue::Number(r)) => compare_numeric(*l, *r, op),
+        (SimpleValue::String(l), SimpleValue::String(r)) => match op {
+            crate::ast::CompareOp::Eq => l == r,
+            crate::ast::CompareOp::Neq => l != r,
+            _ => false,
+        },
+        (SimpleValue::Bool(l), SimpleValue::Bool(r)) => match op {
+            crate::ast::CompareOp::Eq => l == r,
+            crate::ast::CompareOp::Neq => l != r,
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+fn compare_numeric(left: f64, right: f64, op: crate::ast::CompareOp) -> bool {
+    match op {
+        crate::ast::CompareOp::Eq => left == right,
+        crate::ast::CompareOp::Neq => left != right,
+        crate::ast::CompareOp::Gt => left > right,
+        crate::ast::CompareOp::Gte => left >= right,
+        crate::ast::CompareOp::Lt => left < right,
+        crate::ast::CompareOp::Lte => left <= right,
+    }
+}
+
+fn decode_target_numeric(plan: &AggPlan, node_id: u64) -> Result<f64> {
+    let dst_table = plan
+        .dst_table
+        .as_deref()
+        .ok_or_else(|| anyhow!("missing dst table"))?;
+    let decoder = dst_table
+        .node_data_decoder()
+        .ok_or_else(|| anyhow!("missing dst node decoder"))?;
+    let idx = plan
+        .target_col_idx
+        .ok_or_else(|| anyhow!("missing target column index"))?;
+    let view = dst_table.edges_for_node(node_id)?;
+    let data = view
+        .node_data()?
+        .ok_or_else(|| anyhow!("missing dst node data"))?;
+    let mut scratch = diskgraph_rowpack::RowPackDecodeScratch::default();
+    let value = decoder.decode_column_value(data, idx, &mut scratch)?;
+    Ok(match value {
+        diskgraph_rowpack::ValueRef::Int64(v) => v as f64,
+        diskgraph_rowpack::ValueRef::Int32(v) => v as f64,
+        diskgraph_rowpack::ValueRef::UInt64(v) => v as f64,
+        diskgraph_rowpack::ValueRef::UInt32(v) => v as f64,
+        diskgraph_rowpack::ValueRef::Float64(v) => v,
+        diskgraph_rowpack::ValueRef::Float32(v) => v as f64,
+        diskgraph_rowpack::ValueRef::Bool(v) => if v { 1.0 } else { 0.0 },
+        _ => return Err(anyhow!("target not numeric")),
+    })
+}
+
+fn decode_target_value(plan: &AggPlan, node_id: u64) -> Result<Value> {
+    let dst_table = plan
+        .dst_table
+        .as_deref()
+        .ok_or_else(|| anyhow!("missing dst table"))?;
+    let decoder = dst_table
+        .node_data_decoder()
+        .ok_or_else(|| anyhow!("missing dst node decoder"))?;
+    let idx = plan
+        .target_col_idx
+        .ok_or_else(|| anyhow!("missing target column index"))?;
+    let view = dst_table.edges_for_node(node_id)?;
+    let data = view
+        .node_data()?
+        .ok_or_else(|| anyhow!("missing dst node data"))?;
+    let mut scratch = diskgraph_rowpack::RowPackDecodeScratch::default();
+    let value = decoder.decode_column_value(&data, idx, &mut scratch)?;
+    Ok(match value {
+        diskgraph_rowpack::ValueRef::Int64(v) => Value::Int(v),
+        diskgraph_rowpack::ValueRef::Int32(v) => Value::Int(v as i64),
+        diskgraph_rowpack::ValueRef::UInt64(v) => Value::UInt(v),
+        diskgraph_rowpack::ValueRef::UInt32(v) => Value::UInt(v as u64),
+        diskgraph_rowpack::ValueRef::Bool(v) => Value::Bool(v),
+        diskgraph_rowpack::ValueRef::String(v) => Value::String(v.to_string()),
+        diskgraph_rowpack::ValueRef::Bytes(v) => Value::Bytes(v.to_vec()),
+        diskgraph_rowpack::ValueRef::Uuid(bytes) => Value::String(hex_encode(&bytes)),
+        diskgraph_rowpack::ValueRef::Uuid256(bytes) => Value::String(hex_encode(&bytes)),
+        diskgraph_rowpack::ValueRef::Ip(bytes) => Value::String(hex_encode(&bytes)),
+        other => return Err(anyhow!("unsupported target value type: {other:?}")),
+    })
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        out.push_str(&format!("{b:02x}"));
+    }
+    out
 }
 
 fn is_empty_target(target: &TargetValue) -> bool {
@@ -435,5 +789,31 @@ impl XorShift64 {
     fn next_f64(&mut self) -> f64 {
         let v = self.next_u64();
         (v as f64) / (u64::MAX as f64)
+    }
+}
+fn collect_columns_from_pred(pred: &PredicateExpr) -> Vec<crate::ast::ColumnRef> {
+    let mut out = Vec::new();
+    collect_columns_from_pred_inner(pred, &mut out);
+    out
+}
+
+fn collect_columns_from_pred_inner(pred: &PredicateExpr, out: &mut Vec<crate::ast::ColumnRef>) {
+    match pred {
+        PredicateExpr::Comparison { left, right, .. } => {
+            collect_columns_from_expr(left, out);
+            collect_columns_from_expr(right, out);
+        }
+        PredicateExpr::And(items) | PredicateExpr::Or(items) => {
+            for item in items {
+                collect_columns_from_pred_inner(item, out);
+            }
+        }
+    }
+}
+
+fn collect_columns_from_expr(expr: &crate::ast::Expr, out: &mut Vec<crate::ast::ColumnRef>) {
+    match expr {
+        crate::ast::Expr::Column(col) => out.push(col.clone()),
+        crate::ast::Expr::Agg(_) | crate::ast::Expr::Number(_) | crate::ast::Expr::String(_) => {}
     }
 }

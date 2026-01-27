@@ -74,6 +74,8 @@ pub struct QueryOptions {
     pub drop_earliest_timeframe: bool,
     #[serde(default)]
     pub allow_empty_target: bool,
+    #[serde(default)]
+    pub temporal_sampling: TemporalSampling,
 }
 
 impl Default for QueryOptions {
@@ -85,7 +87,21 @@ impl Default for QueryOptions {
             list_distinct_target_is_array: default_list_distinct_target_is_array(),
             drop_earliest_timeframe: default_drop_earliest_timeframe(),
             allow_empty_target: false,
+            temporal_sampling: TemporalSampling::Random,
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TemporalSampling {
+    Random,
+    Timeframe,
+}
+
+impl Default for TemporalSampling {
+    fn default() -> Self {
+        TemporalSampling::Random
     }
 }
 
