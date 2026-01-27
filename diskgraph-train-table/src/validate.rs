@@ -95,6 +95,10 @@ impl IndexSchema {
         self.metadata.node_types.iter().any(|t| t.name == name)
     }
 
+    pub fn has_relation(&self, name: &str) -> bool {
+        self.metadata.edge_relations.iter().any(|r| r.name == name)
+    }
+
     pub fn get_column_type(&self, table: &str, column: &str) -> Option<ColumnType> {
         self.tables
             .get(table)
@@ -163,9 +167,9 @@ pub fn validate_query(query: &Query, schema: &IndexSchema) -> ValidationOutcome 
     collect_table_refs(query, &mut table_refs);
 
     for table in &table_refs {
-        if !schema.has_table(table) {
+        if !schema.has_table(table) && !schema.has_relation(table) {
             outcome.error("UNKNOWN_TABLE", format!("unknown table: {table}"));
-        } else if !schema.has_schema(table) {
+        } else if schema.has_table(table) && !schema.has_schema(table) {
             outcome.warn("MISSING_SCHEMA", format!("no node schema for table: {table}"));
         }
     }
@@ -307,6 +311,43 @@ fn validate_aggregation(agg: &AggregationExpr, schema: &IndexSchema, outcome: &m
     if let Some(filter) = &agg.filter {
         validate_predicate(filter, schema, outcome);
     }
+
+    if agg.window.is_some() {
+        if agg.filter.is_some() {
+            outcome.error(
+                "temporal_filter_unsupported",
+                "temporal aggregations do not support WHERE filters",
+            );
+        }
+        let table = match &agg.target {
+            AggTarget::Column(col) => &col.table,
+            AggTarget::Star(tbl) => &tbl.table,
+        };
+        let rel = schema
+            .metadata
+            .edge_relations
+            .iter()
+            .find(|rel| rel.name == *table);
+        match rel {
+            Some(rel) => {
+                let has_ts = rel
+                    .dest_sort_key
+                    .as_ref()
+                    .and_then(|k| k.timestamp.as_ref())
+                    .is_some();
+                if !has_ts {
+                    outcome.error(
+                        "temporal_missing_timestamp",
+                        format!("relation {} missing timestamped edge list", table),
+                    );
+                }
+            }
+            None => outcome.error(
+                "temporal_missing_relation",
+                format!("temporal aggregation requires edge relation {}", table),
+            ),
+        }
+    }
 }
 
 fn validate_predicate(pred: &PredicateExpr, schema: &IndexSchema, outcome: &mut ValidationOutcome) {
@@ -416,7 +457,27 @@ mod tests {
                     shards: vec![NodeShardMetadata { min_id: 0, max_id: 0, node_data_paths: None }],
                 },
             ],
-            edge_relations: Vec::new(),
+            edge_relations: vec![diskgraph_core::metadata::EdgeRelationMetadata {
+                name: "transactions".to_string(),
+                src_type: "users".to_string(),
+                dst_type: "transactions".to_string(),
+                shards: vec![],
+                dest_sort_key_bits: Some(16),
+                dest_sort_key: Some(diskgraph_core::metadata::EdgeSortKeyMetadata {
+                    width_bits: 16,
+                    timestamp: Some(diskgraph_core::metadata::EdgeSortKeyTimestampMetadata {
+                        table: "transactions".to_string(),
+                        column: "timestamp".to_string(),
+                        encoding: diskgraph_core::metadata::EdgeSortKeyTimestampEncoding {
+                            kind: diskgraph_core::metadata::EdgeSortKeyTimestampKind::Int16,
+                            anchor: 0,
+                            step: 1,
+                        },
+                    }),
+                    weight: None,
+                }),
+                format: diskgraph_core::metadata::EdgeStorageFormat::Binary,
+            }],
         }
     }
 

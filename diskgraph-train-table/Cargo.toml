@@ -12,12 +12,15 @@ pest = "2.7"
 pest_derive = "2.7"
 diskgraph-core = { path = "../diskgraph-core" }
 diskgraph-rowpack = { path = "../diskgraph-rowpack" }
+diskgraph-index = { path = "../diskgraph-index" }
 chrono = { workspace = true }
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 arrow-array = { workspace = true }
 arrow-schema = { workspace = true }
 parquet = { version = "57.2.0", features = ["arrow"] }
+half = "2"
 
 [dev-dependencies]
 serde_json = { workspace = true }
 tempfile = "3"
+bincode = "1.3"

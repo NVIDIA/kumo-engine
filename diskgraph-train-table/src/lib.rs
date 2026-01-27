@@ -7,4 +7,5 @@ pub mod pipeline;
 pub mod parquet_writer;
 pub mod report;
 pub mod split;
+pub mod temporal;
 pub mod validate;

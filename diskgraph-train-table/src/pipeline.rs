@@ -10,6 +10,7 @@ use crate::parquet_writer::{write_train_table, TrainTableRow};
 use crate::parser::parse_query;
 use crate::report::{ValidationReport, ValidationStatus};
 use crate::split::SplitAssigner;
+use crate::temporal::execute_temporal;
 use crate::validate::{validate_query, IndexSchema};
 
 pub fn run_job(config: &JobConfig) -> Result<()> {
@@ -24,8 +25,12 @@ pub fn run_job(config: &JobConfig) -> Result<()> {
         return Err(anyhow!("validation failed"));
     }
 
-    let reader = IndexReader::open(&config.index_path)?;
-    let rows = execute_simple(&query, &reader)?;
+    let rows = if query.predict.aggregation.window.is_some() {
+        execute_temporal(&query, Path::new(&config.index_path))?
+    } else {
+        let reader = IndexReader::open(&config.index_path)?;
+        execute_simple(&query, &reader)?
+    };
     if rows.is_empty() {
         if let Some(path) = &config.validation_output {
             write_validation_report(path, &[], &[], Some(0))?;
