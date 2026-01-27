@@ -188,19 +188,49 @@ pub fn validate_query(query: &Query, schema: &IndexSchema) -> ValidationOutcome 
         }
     }
 
-    validate_aggregation(&query.predict.aggregation, schema, &mut outcome);
+    match &query.predict {
+        PredictExpr::Aggregation(agg) => {
+            validate_aggregation(agg, schema, &mut outcome);
+        }
+        PredictExpr::Column(col) => {
+            if col.table != query.for_each.table {
+                outcome.error(
+                    "PREDICT_COLUMN_TABLE_MISMATCH",
+                    "predict column must come from entity table",
+                );
+            }
+        }
+        PredictExpr::Comparison(pred) => {
+            match extract_predict_comparison(pred) {
+                Ok(agg) => validate_aggregation(&agg, schema, &mut outcome),
+                Err(msg) => outcome.error("PREDICT_COMPARISON_INVALID", msg),
+            }
+        }
+    }
     if let Some(assuming) = &query.assuming {
         validate_predicate(assuming, schema, &mut outcome);
+        if matches!(query.predict, PredictExpr::Column(_)) && has_agg_in_pred(assuming) {
+            outcome.error(
+                "PREDICT_COLUMN_ASSUMING_AGG",
+                "ASSUMING aggregations not supported for scalar predict",
+            );
+        }
     }
 
-    validate_temporal_query(query, schema, &mut outcome);
+    if matches!(query.predict, PredictExpr::Aggregation(_) | PredictExpr::Comparison(_)) {
+        validate_temporal_query(query, schema, &mut outcome);
+    }
 
     outcome
 }
 
 fn validate_temporal_query(query: &Query, schema: &IndexSchema, outcome: &mut ValidationOutcome) {
     let mut aggs = Vec::new();
-    aggs.push(query.predict.aggregation.clone());
+    match &query.predict {
+        PredictExpr::Aggregation(agg) => aggs.push(agg.clone()),
+        PredictExpr::Comparison(pred) => collect_aggs_from_pred(pred, &mut aggs),
+        PredictExpr::Column(_) => return,
+    }
     if let Some(assuming) = &query.assuming {
         collect_aggs_from_pred(assuming, &mut aggs);
     }
@@ -293,7 +323,13 @@ fn validate_temporal_query(query: &Query, schema: &IndexSchema, outcome: &mut Va
 
 fn collect_table_refs(query: &Query, out: &mut HashSet<String>) {
     out.insert(query.for_each.table.clone());
-    collect_tables_from_agg(&query.predict.aggregation, out);
+    match &query.predict {
+        PredictExpr::Aggregation(agg) => collect_tables_from_agg(agg, out),
+        PredictExpr::Column(col) => {
+            out.insert(col.table.clone());
+        }
+        PredictExpr::Comparison(pred) => collect_tables_from_pred(pred, out),
+    }
     if let Some(assuming) = &query.assuming {
         collect_tables_from_pred(assuming, out);
     }
@@ -342,9 +378,31 @@ fn collect_column_refs(query: &Query, out: &mut Vec<ColumnRef>) {
         table: query.for_each.table.clone(),
         column: query.for_each.column.clone(),
     });
-    collect_columns_from_agg(&query.predict.aggregation, out);
+    match &query.predict {
+        PredictExpr::Aggregation(agg) => collect_columns_from_agg(agg, out),
+        PredictExpr::Column(col) => out.push(col.clone()),
+        PredictExpr::Comparison(pred) => collect_columns_from_pred(pred, out),
+    }
     if let Some(assuming) = &query.assuming {
         collect_columns_from_pred(assuming, out);
+    }
+}
+
+fn has_agg_in_pred(pred: &PredicateExpr) -> bool {
+    match pred {
+        PredicateExpr::Comparison { left, right, .. } => {
+            expr_has_agg(left) || expr_has_agg(right)
+        }
+        PredicateExpr::And(items) | PredicateExpr::Or(items) => {
+            items.iter().any(has_agg_in_pred)
+        }
+    }
+}
+
+fn expr_has_agg(expr: &crate::ast::Expr) -> bool {
+    match expr {
+        crate::ast::Expr::Agg(_) => true,
+        _ => false,
     }
 }
 
@@ -390,6 +448,21 @@ fn collect_aggs_from_pred(pred: &PredicateExpr, out: &mut Vec<AggregationExpr>) 
                 collect_aggs_from_pred(item, out);
             }
         }
+    }
+}
+
+fn extract_predict_comparison(pred: &PredicateExpr) -> Result<AggregationExpr, String> {
+    let PredicateExpr::Comparison { left, right, .. } = pred else {
+        return Err("predict comparison must be a single comparison".to_string());
+    };
+    match (left.as_ref(), right.as_ref()) {
+        (Expr::Agg(agg), Expr::Number(_)) | (Expr::Number(_), Expr::Agg(agg)) => {
+            if matches!(agg.func, AggFunc::ListDistinct) {
+                return Err("LIST_DISTINCT is not supported in predict comparisons".to_string());
+            }
+            Ok((**agg).clone())
+        }
+        _ => Err("predict comparison must compare aggregation to a number".to_string()),
     }
 }
 
@@ -612,5 +685,20 @@ mod tests {
         let query = parse_query("PREDICT SUM(transactions.price, 0, 7, days) FOR EACH users.user_id ASSUMING COUNT(promotion.* WHERE promotion.TYPE = 1, 0, 7, days) > 1").expect("parse");
         let outcome = validate_query(&query, &schema);
         assert!(outcome.errors.iter().any(|e| e.code == "UNKNOWN_TABLE"));
+    }
+
+    #[test]
+    fn validate_predict_comparison() {
+        let dir = temp_dir("predict_comparison");
+        let metadata = build_metadata(&dir);
+        write_metadata(&dir, &metadata);
+
+        let schema = IndexSchema::from_index_path(&dir).expect("schema");
+        let query = parse_query(
+            "PREDICT COUNT(transactions.*, 0, 7, days) = 0 FOR EACH users.user_id",
+        )
+        .expect("parse");
+        let outcome = validate_query(&query, &schema);
+        assert!(outcome.errors.is_empty());
     }
 }

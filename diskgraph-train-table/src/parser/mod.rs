@@ -20,9 +20,10 @@ ident = @{ (ASCII_ALPHANUMERIC | "_" )+ }
 number = @{ "-"? ~ ASCII_DIGIT+ }
 string = @{ "'" ~ ( (!"'" ~ ANY)* ) ~ "'" }
 
-query = { KW_PREDICT ~ agg_call ~ KW_FOR ~ KW_EACH ~ entity_ref ~ assuming? ~ EOI }
+query = { KW_PREDICT ~ predict_target ~ KW_FOR ~ KW_EACH ~ entity_ref ~ assuming? ~ EOI }
 assuming = { KW_ASSUME ~ predicate }
 
+predict_target = { cmp_expr | agg_call | column_ref }
 agg_call = { agg_func ~ "(" ~ agg_args ~ ")" }
 agg_func = { "SUM" | "sum" | "COUNT" | "count" | "AVG" | "avg" | "MIN" | "min" | "MAX" | "max" | "LIST_DISTINCT" | "list_distinct" }
 
@@ -56,7 +57,8 @@ pub fn parse_query(input: &str) -> anyhow::Result<Query> {
 fn build_query(pair: Pair<Rule>) -> anyhow::Result<Query> {
     let mut inner = pair.into_inner();
     consume_keyword(&mut inner, Rule::KW_PREDICT)?;
-    let agg = build_agg_call(inner.next().ok_or_else(|| anyhow::anyhow!("missing agg"))?)?;
+    let target_pair = inner.next().ok_or_else(|| anyhow::anyhow!("missing predict"))?;
+    let predict = build_predict_target(target_pair)?;
     consume_keyword(&mut inner, Rule::KW_FOR)?;
     consume_keyword(&mut inner, Rule::KW_EACH)?;
     let entity = build_entity_ref(inner.next().ok_or_else(|| anyhow::anyhow!("missing entity"))?)?;
@@ -72,10 +74,26 @@ fn build_query(pair: Pair<Rule>) -> anyhow::Result<Query> {
     };
 
     Ok(Query {
-        predict: PredictExpr { aggregation: agg },
+        predict,
         for_each: entity,
         assuming,
     })
+}
+
+fn build_predict_target(pair: Pair<Rule>) -> anyhow::Result<PredictExpr> {
+    match pair.as_rule() {
+        Rule::predict_target => {
+            let inner = pair
+                .into_inner()
+                .next()
+                .ok_or_else(|| anyhow::anyhow!("missing predict target"))?;
+            build_predict_target(inner)
+        }
+        Rule::agg_call => Ok(PredictExpr::Aggregation(build_agg_call(pair)?)),
+        Rule::column_ref => Ok(PredictExpr::Column(build_column_ref(pair)?)),
+        Rule::cmp_expr => Ok(PredictExpr::Comparison(build_cmp(pair)?)),
+        _ => Err(anyhow::anyhow!("invalid predict target")),
+    }
 }
 
 fn consume_keyword(pairs: &mut Pairs<Rule>, rule: Rule) -> anyhow::Result<()> {
@@ -308,9 +326,12 @@ mod tests {
         let q = "PREDICT LIST_DISTINCT(transactions.article_id) FOR EACH customers.customer_id";
         let parsed = parse_query(q).expect("parse");
         assert_eq!(parsed.for_each.table, "customers");
-        match parsed.predict.aggregation.func {
-            AggFunc::ListDistinct => {}
-            _ => panic!("expected list_distinct"),
+        match parsed.predict {
+            PredictExpr::Aggregation(agg) => match agg.func {
+                AggFunc::ListDistinct => {}
+                _ => panic!("expected list_distinct"),
+            },
+            _ => panic!("expected aggregation"),
         }
     }
 
@@ -318,7 +339,10 @@ mod tests {
     fn parse_temporal_window() {
         let q = "PREDICT SUM(transactions.price, 0, 7, days) FOR EACH users.user_id";
         let parsed = parse_query(q).expect("parse");
-        let window = parsed.predict.aggregation.window.expect("window");
+        let window = match parsed.predict {
+            PredictExpr::Aggregation(agg) => agg.window.expect("window"),
+            _ => panic!("expected aggregation"),
+        };
         assert_eq!(window.start_offset, 0);
         assert_eq!(window.end_offset, 7);
         assert_eq!(window.unit, TimeUnit::Days);
@@ -329,5 +353,58 @@ mod tests {
         let q = "PREDICT SUM(transactions.price, 0, 7, days) FOR EACH user.user_id ASSUMING COUNT(promotion.* WHERE promotion.TYPE = 1, 0, 7, days) > 1";
         let parsed = parse_query(q).expect("parse");
         assert!(parsed.assuming.is_some());
+    }
+
+    #[test]
+    fn parse_predict_column() {
+        let q = "PREDICT customers.Active FOR EACH customers.customer_id";
+        let parsed = parse_query(q).expect("parse");
+        match parsed.predict {
+            PredictExpr::Column(col) => {
+                assert_eq!(col.table, "customers");
+                assert_eq!(col.column, "Active");
+            }
+            _ => panic!("expected predict column"),
+        }
+    }
+
+    #[test]
+    fn parse_additional_aggs() {
+        let cases = [
+            ("PREDICT AVG(transactions.price) FOR EACH transactions.customer_id", AggFunc::Avg),
+            ("PREDICT MIN(transactions.price) FOR EACH transactions.customer_id", AggFunc::Min),
+            ("PREDICT MAX(transactions.price) FOR EACH transactions.customer_id", AggFunc::Max),
+            ("PREDICT COUNT(transactions.*) FOR EACH transactions.customer_id", AggFunc::Count),
+        ];
+        for (q, expected) in cases {
+            let parsed = parse_query(q).expect("parse");
+            match parsed.predict {
+                PredictExpr::Aggregation(agg) => assert_eq!(agg.func, expected),
+                _ => panic!("expected aggregation"),
+            }
+        }
+    }
+
+    #[test]
+    fn parse_where_and_or_predicate() {
+        let q = "PREDICT COUNT(transactions.* WHERE transactions.article_id > 10 AND transactions.article_id <= 20, 0, 7, days) FOR EACH customers.customer_id";
+        let parsed = parse_query(q).expect("parse");
+        match parsed.predict {
+            PredictExpr::Aggregation(agg) => assert!(agg.filter.is_some()),
+            _ => panic!("expected aggregation"),
+        }
+    }
+
+    #[test]
+    fn parse_predict_comparison() {
+        let q = "PREDICT COUNT(transactions.*, 0, 7, days) = 0 FOR EACH customers.customer_id";
+        let parsed = parse_query(q).expect("parse");
+        match parsed.predict {
+            PredictExpr::Comparison(pred) => match pred {
+                PredicateExpr::Comparison { .. } => {}
+                _ => panic!("expected comparison predicate"),
+            },
+            _ => panic!("expected comparison predict"),
+        }
     }
 }

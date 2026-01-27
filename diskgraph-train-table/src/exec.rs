@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use anyhow::{anyhow, Result};
 use diskgraph_rowpack::{IngestedType, RowPackDecodeScratch, RowPackDecoder, ValueRef};
 
-use crate::ast::{AggFunc, AggTarget, AggregationExpr, Query};
+use crate::ast::{AggFunc, AggTarget, AggregationExpr, PredictExpr, Query};
 use crate::index_reader::IndexReader;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -20,6 +20,7 @@ pub enum TargetValue {
     Number(f64),
     List(Vec<Value>),
     Count(u64),
+    Scalar(Value),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -31,7 +32,15 @@ pub struct TrainRow {
 
 pub fn execute_simple(query: &Query, reader: &IndexReader) -> Result<Vec<TrainRow>> {
     let entity_table = &query.for_each.table;
-    let agg = &query.predict.aggregation;
+    let agg = match &query.predict {
+        PredictExpr::Aggregation(agg) => agg,
+        PredictExpr::Column(col) => {
+            return execute_simple_column(reader, entity_table, col, query);
+        }
+        PredictExpr::Comparison(pred) => {
+            return execute_simple_comparison(reader, entity_table, pred, query);
+        }
+    };
     let target_table = match &agg.target {
         AggTarget::Column(col) => &col.table,
         AggTarget::Star(table) => &table.table,
@@ -78,11 +87,16 @@ pub fn execute_simple(query: &Query, reader: &IndexReader) -> Result<Vec<TrainRo
     };
 
     match agg.func {
-        AggFunc::Sum => {
-            let target_idx = target_idx.ok_or_else(|| anyhow!("SUM requires column"))?;
-            let mut sums: HashMap<Value, f64> = HashMap::new();
+        AggFunc::Sum | AggFunc::Avg | AggFunc::Min | AggFunc::Max => {
+            let target_idx = target_idx.ok_or_else(|| anyhow!("numeric agg requires column"))?;
+            let mut sums: HashMap<Value, (f64, u64, f64, f64)> = HashMap::new();
             let mut timestamps: HashMap<Value, i64> = HashMap::new();
             while let Some(row) = iter.next_row()? {
+                if let Some(filter) = &agg.filter {
+                    if !eval_predicate_row(filter, &decoder, &row, &col_index, &mut scratch)? {
+                        continue;
+                    }
+                }
                 let entity = decode_value(&decoder, &row, entity_idx, &mut scratch)?;
                 let entity_key = entity.clone();
                 if let Some(allowed) = &allowed_entities {
@@ -91,8 +105,15 @@ pub fn execute_simple(query: &Query, reader: &IndexReader) -> Result<Vec<TrainRo
                     }
                 }
                 let value = decode_numeric(&decoder, &row, target_idx, &mut scratch)?;
-                let entry = sums.entry(entity).or_insert(0.0);
-                *entry += value;
+                let entry = sums.entry(entity).or_insert((0.0, 0, value, value));
+                entry.0 += value;
+                entry.1 += 1;
+                if value < entry.2 {
+                    entry.2 = value;
+                }
+                if value > entry.3 {
+                    entry.3 = value;
+                }
                 if let Some(ts_idx) = timestamp_idx {
                     if let Some(ts) = decode_timestamp(&decoder, &row, ts_idx, &mut scratch)? {
                         update_max_timestamp(&mut timestamps, &entity_key, ts);
@@ -101,10 +122,19 @@ pub fn execute_simple(query: &Query, reader: &IndexReader) -> Result<Vec<TrainRo
             }
             Ok(sums
                 .into_iter()
-                .map(|(entity, sum)| TrainRow {
-                    timestamp: timestamps.get(&entity).copied().unwrap_or(0),
-                    entity,
-                    target: TargetValue::Number(sum),
+                .map(|(entity, (sum, count, min, max))| {
+                    let value = match agg.func {
+                        AggFunc::Sum => sum,
+                        AggFunc::Avg => sum / count as f64,
+                        AggFunc::Min => min,
+                        AggFunc::Max => max,
+                        _ => sum,
+                    };
+                    TrainRow {
+                        timestamp: timestamps.get(&entity).copied().unwrap_or(0),
+                        entity,
+                        target: TargetValue::Number(value),
+                    }
                 })
                 .collect())
         }
@@ -112,6 +142,11 @@ pub fn execute_simple(query: &Query, reader: &IndexReader) -> Result<Vec<TrainRo
             let mut counts: HashMap<Value, u64> = HashMap::new();
             let mut timestamps: HashMap<Value, i64> = HashMap::new();
             while let Some(row) = iter.next_row()? {
+                if let Some(filter) = &agg.filter {
+                    if !eval_predicate_row(filter, &decoder, &row, &col_index, &mut scratch)? {
+                        continue;
+                    }
+                }
                 let entity = decode_value(&decoder, &row, entity_idx, &mut scratch)?;
                 let entity_key = entity.clone();
                 if let Some(allowed) = &allowed_entities {
@@ -141,6 +176,11 @@ pub fn execute_simple(query: &Query, reader: &IndexReader) -> Result<Vec<TrainRo
             let mut values: HashMap<Value, HashSet<Value>> = HashMap::new();
             let mut timestamps: HashMap<Value, i64> = HashMap::new();
             while let Some(row) = iter.next_row()? {
+                if let Some(filter) = &agg.filter {
+                    if !eval_predicate_row(filter, &decoder, &row, &col_index, &mut scratch)? {
+                        continue;
+                    }
+                }
                 let entity = decode_value(&decoder, &row, entity_idx, &mut scratch)?;
                 let entity_key = entity.clone();
                 if let Some(allowed) = &allowed_entities {
@@ -168,8 +208,201 @@ pub fn execute_simple(query: &Query, reader: &IndexReader) -> Result<Vec<TrainRo
                 })
                 .collect())
         }
-        _ => Err(anyhow!("aggregation not supported in simple executor")),
     }
+}
+
+fn execute_simple_comparison(
+    reader: &IndexReader,
+    entity_table: &str,
+    pred: &crate::ast::PredicateExpr,
+    query: &Query,
+) -> Result<Vec<TrainRow>> {
+    let (agg, op, literal) = extract_comparison_agg(pred)?;
+
+    let target_table = match &agg.target {
+        AggTarget::Column(col) => &col.table,
+        AggTarget::Star(tbl) => &tbl.table,
+    };
+    if entity_table != target_table {
+        return Err(anyhow!("cross-table aggregation not supported in simple executor"));
+    }
+
+    let ctx = reader
+        .node_context(entity_table)
+        .ok_or_else(|| anyhow!("missing rowpack context for table {entity_table}"))?;
+    let decoder = RowPackDecoder::new(ctx.clone())?;
+    let col_index = column_index_map(ctx);
+
+    let entity_col = &query.for_each.column;
+    let entity_idx = *col_index
+        .get(entity_col)
+        .ok_or_else(|| anyhow!("missing entity column {entity_col}"))?;
+    let timestamp_idx = find_timestamp_index(ctx, &col_index);
+    let target_idx = match &agg.target {
+        AggTarget::Column(col) => Some(*col_index
+            .get(&col.column)
+            .ok_or_else(|| anyhow!("missing target column {}", col.column))?),
+        AggTarget::Star(_) => None,
+    };
+
+    let mut scratch = RowPackDecodeScratch::default();
+    let mut iter = reader.iter_node_rows(entity_table, 0)?;
+
+    let allowed_entities = if let Some(assuming) = &query.assuming {
+        Some(evaluate_assuming(
+            assuming,
+            &agg,
+            reader,
+            entity_table,
+            entity_idx,
+            &decoder,
+            &col_index,
+        )?)
+    } else {
+        None
+    };
+
+    let mut timestamps: HashMap<Value, i64> = HashMap::new();
+    let mut sum_map: HashMap<Value, (f64, u64, f64, f64)> = HashMap::new();
+    let mut count_map: HashMap<Value, u64> = HashMap::new();
+
+    while let Some(row) = iter.next_row()? {
+        if let Some(filter) = &agg.filter {
+            if !eval_predicate_row(filter, &decoder, &row, &col_index, &mut scratch)? {
+                continue;
+            }
+        }
+        let entity = decode_value(&decoder, &row, entity_idx, &mut scratch)?;
+        let entity_key = entity.clone();
+        if let Some(allowed) = &allowed_entities {
+            if !allowed.contains(&entity) {
+                continue;
+            }
+        }
+
+        match agg.func {
+            AggFunc::Count => {
+                let entry = count_map.entry(entity).or_insert(0);
+                *entry += 1;
+            }
+            AggFunc::Sum | AggFunc::Avg | AggFunc::Min | AggFunc::Max => {
+                let target_idx = target_idx.ok_or_else(|| anyhow!("numeric agg requires column"))?;
+                let value = decode_numeric(&decoder, &row, target_idx, &mut scratch)?;
+                let entry = sum_map.entry(entity).or_insert((0.0, 0, value, value));
+                entry.0 += value;
+                entry.1 += 1;
+                if value < entry.2 {
+                    entry.2 = value;
+                }
+                if value > entry.3 {
+                    entry.3 = value;
+                }
+            }
+            AggFunc::ListDistinct => return Err(anyhow!("LIST_DISTINCT not supported in comparison")),
+        }
+
+        if let Some(ts_idx) = timestamp_idx {
+            if let Some(ts) = decode_timestamp(&decoder, &row, ts_idx, &mut scratch)? {
+                update_max_timestamp(&mut timestamps, &entity_key, ts);
+            }
+        }
+    }
+
+    let mut rows = Vec::new();
+    match agg.func {
+        AggFunc::Count => {
+            for (entity, count) in count_map {
+                let value = count as f64;
+                let result = compare_numeric(value, literal, op);
+                let ts = timestamps.get(&entity).copied().unwrap_or(0);
+                rows.push(TrainRow {
+                    entity,
+                    target: TargetValue::Scalar(Value::Bool(result)),
+                    timestamp: ts,
+                });
+            }
+        }
+        AggFunc::Sum | AggFunc::Avg | AggFunc::Min | AggFunc::Max => {
+            for (entity, (sum, count, min, max)) in sum_map {
+                let value = match agg.func {
+                    AggFunc::Sum => sum,
+                    AggFunc::Avg => sum / count as f64,
+                    AggFunc::Min => min,
+                    AggFunc::Max => max,
+                    _ => sum,
+                };
+                let result = compare_numeric(value, literal, op);
+                let ts = timestamps.get(&entity).copied().unwrap_or(0);
+                rows.push(TrainRow {
+                    entity,
+                    target: TargetValue::Scalar(Value::Bool(result)),
+                    timestamp: ts,
+                });
+            }
+        }
+        AggFunc::ListDistinct => {}
+    }
+
+    Ok(rows)
+}
+
+fn extract_comparison_agg(
+    pred: &crate::ast::PredicateExpr,
+) -> Result<(AggregationExpr, crate::ast::CompareOp, f64)> {
+    let crate::ast::PredicateExpr::Comparison { left, op, right } = pred else {
+        return Err(anyhow!("predict comparison must be a single comparison"));
+    };
+    match (left.as_ref(), right.as_ref()) {
+        (crate::ast::Expr::Agg(agg), crate::ast::Expr::Number(n)) => {
+            Ok(((**agg).clone(), *op, *n as f64))
+        }
+        (crate::ast::Expr::Number(n), crate::ast::Expr::Agg(agg)) => {
+            Ok(((**agg).clone(), *op, *n as f64))
+        }
+        _ => Err(anyhow!("predict comparison must compare aggregation to a number")),
+    }
+}
+
+fn execute_simple_column(reader: &IndexReader, entity_table: &str, col: &crate::ast::ColumnRef, query: &Query) -> Result<Vec<TrainRow>> {
+    if entity_table != col.table {
+        return Err(anyhow!("predict column must come from entity table"));
+    }
+    if query.assuming.is_some() {
+        return Err(anyhow!("ASSUMING not supported for non-aggregation predict"));
+    }
+    let ctx = reader
+        .node_context(entity_table)
+        .ok_or_else(|| anyhow!("missing rowpack context for table {entity_table}"))?;
+    let decoder = RowPackDecoder::new(ctx.clone())?;
+    let col_index = column_index_map(ctx);
+
+    let entity_col = &query.for_each.column;
+    let entity_idx = *col_index
+        .get(entity_col)
+        .ok_or_else(|| anyhow!("missing entity column {entity_col}"))?;
+    let target_idx = *col_index
+        .get(&col.column)
+        .ok_or_else(|| anyhow!("missing target column {}", col.column))?;
+    let timestamp_idx = find_timestamp_index(ctx, &col_index);
+
+    let mut scratch = RowPackDecodeScratch::default();
+    let mut iter = reader.iter_node_rows(entity_table, 0)?;
+    let mut rows = Vec::new();
+    while let Some(row) = iter.next_row()? {
+        let entity = decode_value(&decoder, &row, entity_idx, &mut scratch)?;
+        let value = decode_value(&decoder, &row, target_idx, &mut scratch)?;
+        let ts = if let Some(ts_idx) = timestamp_idx {
+            decode_timestamp(&decoder, &row, ts_idx, &mut scratch)?.unwrap_or(0)
+        } else {
+            0
+        };
+        rows.push(TrainRow {
+            entity,
+            target: TargetValue::Scalar(value),
+            timestamp: ts,
+        });
+    }
+    Ok(rows)
 }
 
 fn column_index_map(ctx: &diskgraph_rowpack::RowPackContext) -> HashMap<String, usize> {
@@ -332,15 +565,16 @@ fn compute_numeric_agg(
     col_index: &HashMap<String, usize>,
 ) -> Result<HashMap<Value, f64>> {
     let target_idx = match &agg.target {
-        AggTarget::Column(col) => *col_index
+        AggTarget::Column(col) => Some(*col_index
             .get(&col.column)
-            .ok_or_else(|| anyhow!("missing target column {}", col.column))?,
-        AggTarget::Star(_) => return Err(anyhow!("numeric agg requires column")),
+            .ok_or_else(|| anyhow!("missing target column {}", col.column))?),
+        AggTarget::Star(_) => None,
     };
 
     let mut iter = reader.iter_node_rows(table, 0)?;
     let mut scratch = RowPackDecodeScratch::default();
-    let mut sums: HashMap<Value, (f64, u64)> = HashMap::new();
+    let mut sums: HashMap<Value, (f64, u64, f64, f64)> = HashMap::new();
+    let mut counts: HashMap<Value, u64> = HashMap::new();
 
     while let Some(row) = iter.next_row()? {
         if let Some(filter) = &agg.filter {
@@ -349,23 +583,50 @@ fn compute_numeric_agg(
             }
         }
         let entity = decode_value(decoder, &row, entity_idx, &mut scratch)?;
-        let value = decode_numeric(decoder, &row, target_idx, &mut scratch)?;
-        let entry = sums.entry(entity).or_insert((0.0, 0));
-        entry.0 += value;
-        entry.1 += 1;
+        match agg.func {
+            AggFunc::Count => {
+                let entry = counts.entry(entity).or_insert(0);
+                *entry += 1;
+            }
+            AggFunc::Sum | AggFunc::Avg | AggFunc::Min | AggFunc::Max => {
+                let target_idx = target_idx.ok_or_else(|| anyhow!("numeric agg requires column"))?;
+                let value = decode_numeric(decoder, &row, target_idx, &mut scratch)?;
+                let entry = sums.entry(entity).or_insert((0.0, 0, value, value));
+                entry.0 += value;
+                entry.1 += 1;
+                if value < entry.2 {
+                    entry.2 = value;
+                }
+                if value > entry.3 {
+                    entry.3 = value;
+                }
+            }
+            AggFunc::ListDistinct => {
+                return Err(anyhow!("unsupported numeric agg"));
+            }
+        }
     }
 
     let mut out = HashMap::new();
-    for (entity, (sum, count)) in sums {
-        let v = match agg.func {
-            AggFunc::Sum => sum,
-            AggFunc::Count => count as f64,
-            AggFunc::Avg => sum / count as f64,
-            AggFunc::Min | AggFunc::Max | AggFunc::ListDistinct => {
-                return Err(anyhow!("unsupported numeric agg"));
+    match agg.func {
+        AggFunc::Count => {
+            for (entity, count) in counts {
+                out.insert(entity, count as f64);
             }
-        };
-        out.insert(entity, v);
+        }
+        AggFunc::Sum | AggFunc::Avg | AggFunc::Min | AggFunc::Max => {
+            for (entity, (sum, count, min, max)) in sums {
+                let v = match agg.func {
+                    AggFunc::Sum => sum,
+                    AggFunc::Avg => sum / count as f64,
+                    AggFunc::Min => min,
+                    AggFunc::Max => max,
+                    _ => sum,
+                };
+                out.insert(entity, v);
+            }
+        }
+        AggFunc::ListDistinct => {}
     }
     Ok(out)
 }
@@ -597,6 +858,135 @@ mod tests {
     }
 
     #[test]
+    fn execute_avg_min_max_same_table() {
+        let dir = temp_dir("avg_min_max");
+        let ctx = build_context();
+        let ctx_path = dir.join("nodes/transactions/node_data.ctx");
+        write_rowpack_ctx(&ctx_path, &ctx);
+
+        let metadata = DatasetMetadata {
+            dataset_name: "test".to_string(),
+            node_types: vec![NodeTypeMetadata {
+                name: "transactions".to_string(),
+                max_id: 2,
+                has_node_data: true,
+                node_data_compression: Some(NodeDataCompression {
+                    codec: "rowpack".to_string(),
+                    context_path: "nodes/transactions/node_data.ctx".to_string(),
+                }),
+                primary_key_map: None,
+                shards: vec![NodeShardMetadata {
+                    min_id: 0,
+                    max_id: 2,
+                    node_data_paths: None,
+                }],
+            }],
+            edge_relations: Vec::new(),
+        };
+        std::fs::write(dir.join("index_metadata.json"), serde_json::to_vec_pretty(&metadata).unwrap())
+            .expect("write metadata");
+
+        let encoder = RowPackEncoder::new(ctx.clone()).expect("encoder");
+        let mut scratch = RowPackScratch::new(encoder.context());
+        let mut row1 = Vec::new();
+        encoder
+            .encode_row_into(
+                &[ValueRef::Int64(1), ValueRef::Int64(10), ValueRef::Float64(2.5)],
+                &mut row1,
+                &mut scratch,
+            )
+            .expect("encode row");
+        let mut row2 = Vec::new();
+        encoder
+            .encode_row_into(
+                &[ValueRef::Int64(1), ValueRef::Int64(12), ValueRef::Float64(1.5)],
+                &mut row2,
+                &mut scratch,
+            )
+            .expect("encode row");
+
+        let node_data_path = dir.join("nodes/transactions/shard-00000/node_data.bin");
+        write_node_data(&node_data_path, vec![row1, row2]);
+
+        let reader = IndexReader::open(&dir).expect("reader");
+
+        let avg_query = parse_query("PREDICT AVG(transactions.price) FOR EACH transactions.customer_id")
+            .expect("parse");
+        let avg_rows = execute_simple(&avg_query, &reader).expect("execute");
+        assert_eq!(avg_rows[0].target, TargetValue::Number(2.0));
+
+        let min_query = parse_query("PREDICT MIN(transactions.price) FOR EACH transactions.customer_id")
+            .expect("parse");
+        let min_rows = execute_simple(&min_query, &reader).expect("execute");
+        assert_eq!(min_rows[0].target, TargetValue::Number(1.5));
+
+        let max_query = parse_query("PREDICT MAX(transactions.price) FOR EACH transactions.customer_id")
+            .expect("parse");
+        let max_rows = execute_simple(&max_query, &reader).expect("execute");
+        assert_eq!(max_rows[0].target, TargetValue::Number(2.5));
+    }
+
+    #[test]
+    fn execute_count_with_filter() {
+        let dir = temp_dir("count_filter");
+        let ctx = build_context();
+        let ctx_path = dir.join("nodes/transactions/node_data.ctx");
+        write_rowpack_ctx(&ctx_path, &ctx);
+
+        let metadata = DatasetMetadata {
+            dataset_name: "test".to_string(),
+            node_types: vec![NodeTypeMetadata {
+                name: "transactions".to_string(),
+                max_id: 2,
+                has_node_data: true,
+                node_data_compression: Some(NodeDataCompression {
+                    codec: "rowpack".to_string(),
+                    context_path: "nodes/transactions/node_data.ctx".to_string(),
+                }),
+                primary_key_map: None,
+                shards: vec![NodeShardMetadata {
+                    min_id: 0,
+                    max_id: 2,
+                    node_data_paths: None,
+                }],
+            }],
+            edge_relations: Vec::new(),
+        };
+        std::fs::write(dir.join("index_metadata.json"), serde_json::to_vec_pretty(&metadata).unwrap())
+            .expect("write metadata");
+
+        let encoder = RowPackEncoder::new(ctx.clone()).expect("encoder");
+        let mut scratch = RowPackScratch::new(encoder.context());
+        let mut row1 = Vec::new();
+        encoder
+            .encode_row_into(
+                &[ValueRef::Int64(1), ValueRef::Int64(10), ValueRef::Float64(2.5)],
+                &mut row1,
+                &mut scratch,
+            )
+            .expect("encode row");
+        let mut row2 = Vec::new();
+        encoder
+            .encode_row_into(
+                &[ValueRef::Int64(1), ValueRef::Int64(12), ValueRef::Float64(1.5)],
+                &mut row2,
+                &mut scratch,
+            )
+            .expect("encode row");
+
+        let node_data_path = dir.join("nodes/transactions/shard-00000/node_data.bin");
+        write_node_data(&node_data_path, vec![row1, row2]);
+
+        let reader = IndexReader::open(&dir).expect("reader");
+        let query = parse_query(
+            "PREDICT COUNT(transactions.* WHERE transactions.article_id > 10) FOR EACH transactions.customer_id",
+        )
+        .expect("parse");
+        let rows = execute_simple(&query, &reader).expect("execute");
+        assert_eq!(rows[0].target, TargetValue::Count(1));
+    }
+
+    #[test]
     fn execute_list_distinct_same_table() {
         let dir = temp_dir("list");
         let ctx = build_context();
@@ -661,6 +1051,67 @@ mod tests {
             }
             _ => panic!("expected list"),
         }
+    }
+
+    #[test]
+    fn execute_predict_comparison() {
+        let dir = temp_dir("predict_cmp");
+        let ctx = build_context();
+        let ctx_path = dir.join("nodes/transactions/node_data.ctx");
+        write_rowpack_ctx(&ctx_path, &ctx);
+
+        let metadata = DatasetMetadata {
+            dataset_name: "test".to_string(),
+            node_types: vec![NodeTypeMetadata {
+                name: "transactions".to_string(),
+                max_id: 2,
+                has_node_data: true,
+                node_data_compression: Some(NodeDataCompression {
+                    codec: "rowpack".to_string(),
+                    context_path: "nodes/transactions/node_data.ctx".to_string(),
+                }),
+                primary_key_map: None,
+                shards: vec![NodeShardMetadata {
+                    min_id: 0,
+                    max_id: 2,
+                    node_data_paths: None,
+                }],
+            }],
+            edge_relations: Vec::new(),
+        };
+        std::fs::write(dir.join("index_metadata.json"), serde_json::to_vec_pretty(&metadata).unwrap())
+            .expect("write metadata");
+
+        let encoder = RowPackEncoder::new(ctx.clone()).expect("encoder");
+        let mut scratch = RowPackScratch::new(encoder.context());
+        let mut row1 = Vec::new();
+        encoder
+            .encode_row_into(
+                &[ValueRef::Int64(1), ValueRef::Int64(10), ValueRef::Float64(2.5)],
+                &mut row1,
+                &mut scratch,
+            )
+            .expect("encode row");
+        let mut row2 = Vec::new();
+        encoder
+            .encode_row_into(
+                &[ValueRef::Int64(1), ValueRef::Int64(11), ValueRef::Float64(1.5)],
+                &mut row2,
+                &mut scratch,
+            )
+            .expect("encode row");
+
+        let node_data_path = dir.join("nodes/transactions/shard-00000/node_data.bin");
+        write_node_data(&node_data_path, vec![row1, row2]);
+
+        let reader = IndexReader::open(&dir).expect("reader");
+        let query = parse_query(
+            "PREDICT COUNT(transactions.*, 0, 7, days) = 2 FOR EACH transactions.customer_id",
+        )
+        .expect("parse");
+        let rows = execute_simple(&query, &reader).expect("execute");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].target, TargetValue::Scalar(Value::Bool(true)));
     }
 
     #[test]
@@ -731,5 +1182,83 @@ mod tests {
         let rows = execute_simple(&query, &reader).expect("execute");
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].entity, Value::Int(1));
+    }
+
+    #[test]
+    fn execute_predict_column() {
+        let dir = temp_dir("predict_col");
+        let ctx = RowPackContext {
+            version: 3,
+            columns: vec![
+                ColumnContext {
+                    name: "customer_id".to_string(),
+                    logical_type: IngestedType::Int64,
+                    encoding: ColumnEncoding::Int {
+                        signed: true,
+                        varint: true,
+                        bits: 64,
+                    },
+                },
+                ColumnContext {
+                    name: "active".to_string(),
+                    logical_type: IngestedType::Bool,
+                    encoding: ColumnEncoding::Bool,
+                },
+            ],
+            estimated_row_bytes: 16,
+        };
+        let ctx_path = dir.join("nodes/customers/node_data.ctx");
+        write_rowpack_ctx(&ctx_path, &ctx);
+
+        let metadata = DatasetMetadata {
+            dataset_name: "test".to_string(),
+            node_types: vec![NodeTypeMetadata {
+                name: "customers".to_string(),
+                max_id: 2,
+                has_node_data: true,
+                node_data_compression: Some(NodeDataCompression {
+                    codec: "rowpack".to_string(),
+                    context_path: "nodes/customers/node_data.ctx".to_string(),
+                }),
+                primary_key_map: None,
+                shards: vec![NodeShardMetadata {
+                    min_id: 0,
+                    max_id: 2,
+                    node_data_paths: None,
+                }],
+            }],
+            edge_relations: Vec::new(),
+        };
+        std::fs::write(dir.join("index_metadata.json"), serde_json::to_vec_pretty(&metadata).unwrap())
+            .expect("write metadata");
+
+        let encoder = RowPackEncoder::new(ctx.clone()).expect("encoder");
+        let mut scratch = RowPackScratch::new(encoder.context());
+        let mut row1 = Vec::new();
+        encoder
+            .encode_row_into(
+                &[ValueRef::Int64(1), ValueRef::Bool(true)],
+                &mut row1,
+                &mut scratch,
+            )
+            .expect("encode row");
+        let mut row2 = Vec::new();
+        encoder
+            .encode_row_into(
+                &[ValueRef::Int64(2), ValueRef::Bool(false)],
+                &mut row2,
+                &mut scratch,
+            )
+            .expect("encode row");
+
+        let node_data_path = dir.join("nodes/customers/shard-00000/node_data.bin");
+        write_node_data(&node_data_path, vec![row1, row2]);
+
+        let reader = IndexReader::open(&dir).expect("reader");
+        let query = parse_query("PREDICT customers.active FOR EACH customers.customer_id").expect("parse");
+        let rows = execute_simple(&query, &reader).expect("execute");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].entity, Value::Int(1));
+        assert_eq!(rows[0].target, TargetValue::Scalar(Value::Bool(true)));
     }
 }

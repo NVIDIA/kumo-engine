@@ -9,4 +9,4 @@ if [[ -z "${INDEX_PATH}" ]]; then
   exit 2
 fi
 
-cargo run -p diskgraph-train-table --bin ttui -- "${INDEX_PATH}" "$@"
+cargo run -p diskgraph-train-table --bin ttui --release -- "${INDEX_PATH}" "$@"

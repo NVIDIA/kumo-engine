@@ -77,8 +77,12 @@ JSON
 
 queries=(
   "PREDICT COUNT(${REL_CUSTOMER_TXN}.*, 0, 7, days) FOR EACH customers.customer_id ASSUMING COUNT(${REL_CUSTOMER_TXN}.*, -30, 0, days) > 0"
+  "PREDICT COUNT(${REL_CUSTOMER_TXN}.*, 0, 7, days) = 0 FOR EACH customers.customer_id"
+  "PREDICT SUM(transactions.price, 0, 7, days) > 0 FOR EACH customers.customer_id"
   "PREDICT SUM(transactions.price WHERE transactions.sales_channel_id = 1, 0, 30, days) FOR EACH customers.customer_id"
   "PREDICT AVG(transactions.price, 0, 30, days) FOR EACH customers.customer_id"
+  "PREDICT MIN(transactions.price, 0, 30, days) FOR EACH customers.customer_id"
+  "PREDICT MAX(transactions.price, 0, 30, days) FOR EACH customers.customer_id"
   "PREDICT LIST_DISTINCT(transactions.article_id, 0, 7, days) FOR EACH customers.customer_id"
   "PREDICT LIST_DISTINCT(transactions.article_id) FOR EACH transactions.customer_id"
 )

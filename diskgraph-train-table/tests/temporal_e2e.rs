@@ -12,7 +12,9 @@ use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use tempfile::tempdir;
 
 use diskgraph_train_table::config::{JobConfig, QueryOptions, SplitConfig, SplitType, TemporalSampling};
+use diskgraph_train_table::parser::parse_query;
 use diskgraph_train_table::pipeline::run_job;
+use diskgraph_train_table::temporal::{execute_temporal, execute_temporal_range};
 use diskgraph_rowpack::{ColumnContext, ColumnEncoding, FloatStorage, IngestedType, RowPackContext, RowPackEncoder, RowPackScratch, ValueRef};
 
 #[test]
@@ -206,6 +208,230 @@ fn temporal_sum_with_filter_e2e() {
         let expected = sum_edges_in_window(entity_id, ts, 0, 100);
         assert!((sum - expected).abs() < 1e-6);
     }
+}
+
+#[test]
+fn temporal_min_max_avg_e2e() {
+    let dir = tempdir().unwrap();
+    let index_root = dir.path().join("index");
+    fs::create_dir_all(&index_root).unwrap();
+
+    let metadata = build_metadata_sum();
+    fs::write(
+        index_root.join("index_metadata.json"),
+        serde_json::to_vec_pretty(&metadata).unwrap(),
+    )
+    .unwrap();
+
+    write_edge_shard(
+        &index_root,
+        "users",
+        0,
+        &metadata,
+        vec![vec![(0u64, 0i64), (1u64, 100i64), (2u64, 200i64)]],
+    );
+
+    let txn_ctx = build_transactions_ctx();
+    write_rowpack_ctx(&index_root.join("nodes/transactions/node_data.ctx"), &txn_ctx);
+    write_node_data_shard(
+        &index_root,
+        "transactions",
+        0,
+        &txn_ctx,
+        vec![
+            vec![ValueRef::Float64(5.0), ValueRef::Int64(1)],
+            vec![ValueRef::Float64(7.0), ValueRef::Int64(0)],
+            vec![ValueRef::Float64(11.0), ValueRef::Int64(1)],
+        ],
+    );
+
+    let options = QueryOptions {
+        temporal_sampling: TemporalSampling::Timeframe,
+        ..Default::default()
+    };
+
+    let cases = [
+        ("PREDICT AVG(transactions.price, 0, 100, seconds) FOR EACH users.user_id", "avg"),
+        ("PREDICT MIN(transactions.price, 0, 100, seconds) FOR EACH users.user_id", "min"),
+        ("PREDICT MAX(transactions.price, 0, 100, seconds) FOR EACH users.user_id", "max"),
+    ];
+
+    for (query, kind) in cases {
+        let parsed = parse_query(query).unwrap();
+        let rows = execute_temporal(&parsed, &index_root, &options).unwrap();
+        assert!(!rows.is_empty());
+        for row in rows {
+            let values = values_in_window(row.timestamp, 0, 100);
+            let expected = match kind {
+                "avg" => values.iter().sum::<f64>() / values.len() as f64,
+                "min" => values
+                    .iter()
+                    .copied()
+                    .reduce(|a, b| if a < b { a } else { b })
+                    .unwrap(),
+                "max" => values
+                    .iter()
+                    .copied()
+                    .reduce(|a, b| if a > b { a } else { b })
+                    .unwrap(),
+                _ => 0.0,
+            };
+            let actual = match row.target {
+                diskgraph_train_table::exec::TargetValue::Number(v) => v,
+                _ => 0.0,
+            };
+            assert!((actual - expected).abs() < 1e-6);
+        }
+    }
+}
+
+#[test]
+fn temporal_predict_comparison_e2e() {
+    let dir = tempdir().unwrap();
+    let index_root = dir.path().join("index");
+    fs::create_dir_all(&index_root).unwrap();
+
+    let metadata = build_metadata_count();
+    fs::write(
+        index_root.join("index_metadata.json"),
+        serde_json::to_vec_pretty(&metadata).unwrap(),
+    )
+    .unwrap();
+
+    write_edge_shard(
+        &index_root,
+        "users",
+        0,
+        &metadata,
+        vec![
+            vec![(1u64, 0i64), (2u64, 100i64), (1u64, 200i64)],
+            vec![],
+        ],
+    );
+    write_empty_shard(&index_root, "articles", 0, 2);
+
+    let query = parse_query("PREDICT COUNT(transactions.*, 0, 100, seconds) = 0 FOR EACH users.user_id")
+        .unwrap();
+    let options = QueryOptions {
+        temporal_sampling: TemporalSampling::Timeframe,
+        ..Default::default()
+    };
+    let rows = execute_temporal(&query, &index_root, &options).unwrap();
+    assert!(!rows.is_empty());
+
+    for row in rows {
+        let expected = count_edges_in_window(match row.entity {
+            diskgraph_train_table::exec::Value::UInt(id) => id,
+            _ => 0,
+        }, row.timestamp, 0, 100);
+        let actual = match row.target {
+            diskgraph_train_table::exec::TargetValue::Scalar(diskgraph_train_table::exec::Value::Bool(v)) => v,
+            _ => false,
+        };
+        assert_eq!(actual, expected == 0);
+    }
+}
+
+#[test]
+fn temporal_predict_comparison_sum_e2e() {
+    let dir = tempdir().unwrap();
+    let index_root = dir.path().join("index");
+    fs::create_dir_all(&index_root).unwrap();
+
+    let metadata = build_metadata_sum();
+    fs::write(
+        index_root.join("index_metadata.json"),
+        serde_json::to_vec_pretty(&metadata).unwrap(),
+    )
+    .unwrap();
+
+    write_edge_shard(
+        &index_root,
+        "users",
+        0,
+        &metadata,
+        vec![vec![(0u64, 0i64), (1u64, 100i64), (2u64, 200i64)]],
+    );
+
+    let txn_ctx = build_transactions_ctx();
+    write_rowpack_ctx(&index_root.join("nodes/transactions/node_data.ctx"), &txn_ctx);
+    write_node_data_shard(
+        &index_root,
+        "transactions",
+        0,
+        &txn_ctx,
+        vec![
+            vec![ValueRef::Float64(5.0), ValueRef::Int64(1)],
+            vec![ValueRef::Float64(7.0), ValueRef::Int64(0)],
+            vec![ValueRef::Float64(11.0), ValueRef::Int64(1)],
+        ],
+    );
+
+    let query = parse_query("PREDICT SUM(transactions.price, 0, 100, seconds) > 0 FOR EACH users.user_id")
+        .unwrap();
+    let options = QueryOptions {
+        temporal_sampling: TemporalSampling::Timeframe,
+        ..Default::default()
+    };
+    let rows = execute_temporal(&query, &index_root, &options).unwrap();
+    assert!(!rows.is_empty());
+
+    for row in rows {
+        let expected = sum_all_edges_in_window(match row.entity {
+            diskgraph_train_table::exec::Value::UInt(id) => id,
+            _ => 0,
+        }, row.timestamp, 0, 100);
+        let actual = match row.target {
+            diskgraph_train_table::exec::TargetValue::Scalar(diskgraph_train_table::exec::Value::Bool(v)) => v,
+            _ => false,
+        };
+        assert_eq!(actual, expected > 0.0);
+    }
+}
+
+#[test]
+fn temporal_range_matches_serial() {
+    let dir = tempdir().unwrap();
+    let index_root = dir.path().join("index");
+    fs::create_dir_all(&index_root).unwrap();
+
+    let metadata = build_metadata_count();
+    fs::write(
+        index_root.join("index_metadata.json"),
+        serde_json::to_vec_pretty(&metadata).unwrap(),
+    )
+    .unwrap();
+
+    write_edge_shard(
+        &index_root,
+        "users",
+        0,
+        &metadata,
+        vec![
+            vec![(1u64, 0i64), (2u64, 100i64), (1u64, 200i64)],
+            vec![],
+        ],
+    );
+    write_empty_shard(&index_root, "articles", 0, 2);
+
+    let query = parse_query("PREDICT COUNT(transactions.*, 0, 100, seconds) FOR EACH users.user_id").unwrap();
+    let options = QueryOptions {
+        temporal_sampling: TemporalSampling::Timeframe,
+        ..Default::default()
+    };
+
+    let serial = execute_temporal(&query, &index_root, &options).unwrap();
+    let part0 = execute_temporal_range(&query, &index_root, &options, 0, 1).unwrap();
+    let part1 = execute_temporal_range(&query, &index_root, &options, 1, 2).unwrap();
+    let mut combined = Vec::new();
+    combined.extend(part0);
+    combined.extend(part1);
+
+    let mut serial_keys: Vec<String> = serial.iter().map(row_key).collect();
+    let mut combined_keys: Vec<String> = combined.iter().map(row_key).collect();
+    serial_keys.sort();
+    combined_keys.sort();
+    assert_eq!(serial_keys, combined_keys);
 }
 
 #[test]
@@ -682,6 +908,35 @@ fn sum_edges_in_window(entity: u64, ts: i64, start: i64, end: i64) -> f64 {
         .filter(|(t, _, ty)| *t >= window_start && *t < window_end && *ty == 1)
         .map(|(_, val, _)| val)
         .sum()
+}
+
+fn sum_all_edges_in_window(entity: u64, ts: i64, start: i64, end: i64) -> f64 {
+    let edges = match entity {
+        0 => vec![(0i64, 5.0), (100i64, 7.0), (200i64, 11.0)],
+        _ => vec![],
+    };
+    let window_start = ts + start;
+    let window_end = ts + end;
+    edges
+        .into_iter()
+        .filter(|(t, _)| *t >= window_start && *t < window_end)
+        .map(|(_, val)| val)
+        .sum()
+}
+
+fn row_key(row: &diskgraph_train_table::exec::TrainRow) -> String {
+    format!("{:?}|{:?}|{}", row.entity, row.target, row.timestamp)
+}
+
+fn values_in_window(ts: i64, start: i64, end: i64) -> Vec<f64> {
+    let edges = vec![(0i64, 5.0), (100i64, 7.0), (200i64, 11.0)];
+    let window_start = ts + start;
+    let window_end = ts + end;
+    edges
+        .into_iter()
+        .filter(|(t, _)| *t >= window_start && *t < window_end)
+        .map(|(_, val)| val)
+        .collect()
 }
 
 fn list_distinct_in_window(entity: u64, ts: i64, start: i64, end: i64) -> Vec<i64> {

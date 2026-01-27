@@ -5,6 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, Context, Result};
 use diskgraph_index::graph::GraphIndexReader;
+use rayon::prelude::*;
 use rustyline::completion::{Completer, Pair};
 use rustyline::error::ReadlineError;
 use rustyline::highlight::Highlighter;
@@ -19,7 +20,7 @@ use diskgraph_train_table::index_reader::IndexReader;
 use diskgraph_train_table::parquet_writer::{write_train_table, TrainTableRow};
 use diskgraph_train_table::parser::parse_query;
 use diskgraph_train_table::split::{SplitAssigner, SplitLabel};
-use diskgraph_train_table::temporal::execute_temporal;
+use diskgraph_train_table::temporal::execute_temporal_range;
 use diskgraph_train_table::validate::{validate_query, IndexSchema};
 
 const RESET: &str = "\x1b[0m";
@@ -417,95 +418,210 @@ fn run_query(session: &mut SessionConfig, query_str: &str) -> Result<PathBuf> {
         return Err(anyhow!("validation failed"));
     }
 
-    let rows = if query.predict.aggregation.window.is_some() {
-        execute_temporal(&query, Path::new(&session.index_path), &session.options)?
+    let threads = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .max(1);
+
+    let shard_rows: Vec<Vec<TrainRow>> = if predict_has_window(&query) {
+        let graph = GraphIndexReader::open(
+            &session.index_path.join("index_metadata.json"),
+            &session.index_path,
+        )?;
+        let table = graph
+            .table(&query.for_each.table)
+            .ok_or_else(|| anyhow!("missing entity table {}", query.for_each.table))?;
+        let node_count = table.node_count();
+        let chunk = (node_count + threads as u64 - 1) / threads as u64;
+        let mut ranges = Vec::new();
+        for i in 0..threads {
+            let start = i as u64 * chunk;
+            if start >= node_count {
+                break;
+            }
+            let end = (start + chunk).min(node_count);
+            ranges.push((start, end));
+        }
+        let results: Vec<Result<Vec<TrainRow>>> = ranges
+            .par_iter()
+            .map(|(start, end)| {
+                execute_temporal_range(
+                    &query,
+                    Path::new(&session.index_path),
+                    &session.options,
+                    *start,
+                    *end,
+                )
+            })
+            .collect();
+        collect_parallel_results(results)?
     } else {
         let reader = IndexReader::open(&session.index_path)?;
-        execute_simple(&query, &reader)?
+        let rows = execute_simple(&query, &reader)?;
+        if rows.is_empty() {
+            return Err(anyhow!("no rows produced"));
+        }
+        split_rows(rows, threads)
     };
 
-    if rows.is_empty() {
+    if shard_rows.is_empty() || shard_rows.iter().all(|s| s.is_empty()) {
         return Err(anyhow!("no rows produced"));
     }
 
-    let (min_ts, max_ts) = min_max_timestamp(&rows);
+    let (min_ts, max_ts) = min_max_timestamp_shards(&shard_rows);
     let assigner = SplitAssigner::from_config(&session.split, min_ts, max_ts)?;
 
-    let mut out_rows = Vec::new();
-    for row in rows {
-        let split = assigner.assign(&row.entity, Some(row.timestamp));
-        if let Some(split) = split {
-            out_rows.push(TrainTableRow {
-                entity: row.entity,
-                target: row.target,
-                timestamp: row.timestamp,
-                weight: None,
-                split,
-            });
-        }
-    }
+    let assigner = Arc::new(assigner);
+    let out_shards: Vec<Vec<TrainTableRow>> = shard_rows
+        .into_par_iter()
+        .map(|rows| {
+            let mut out = Vec::with_capacity(rows.len());
+            for row in rows {
+                let split = assigner.assign(&row.entity, Some(row.timestamp));
+                if let Some(split) = split {
+                    out.push(TrainTableRow {
+                        entity: row.entity,
+                        target: row.target,
+                        timestamp: row.timestamp,
+                        weight: None,
+                        split,
+                    });
+                }
+            }
+            out
+        })
+        .collect();
 
-    if out_rows.is_empty() {
+    if out_shards.iter().all(|s| s.is_empty()) {
         return Err(anyhow!("no rows after split assignment"));
     }
 
-    fs::create_dir_all(&session.output_dir).context("create output dir")?;
-    let output_path = session.output_dir.join(format!(
-        "train_table_{}.parquet",
+    let shard_dir = session.output_dir.join(format!(
+        "train_table_{}_shards",
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs()
     ));
+    fs::create_dir_all(&shard_dir).context("create output dir")?;
 
-    write_train_table(&output_path, &out_rows)?;
-    print_stats(&out_rows);
-    print_samples(&out_rows, 10);
+    out_shards
+        .par_iter()
+        .enumerate()
+        .try_for_each(|(idx, rows)| -> Result<()> {
+            if rows.is_empty() {
+                return Ok(());
+            }
+            let path = shard_dir.join(format!("part-{idx:05}.parquet"));
+            write_train_table(&path, rows)?;
+            Ok(())
+        })?;
 
-    session.last_output = Some(output_path.clone());
-    Ok(output_path)
+    print_stats_sharded(&out_shards);
+    print_samples_sharded(&out_shards, 10);
+
+    session.last_output = Some(shard_dir.clone());
+    Ok(shard_dir)
 }
 
-fn min_max_timestamp(rows: &[TrainRow]) -> (Option<i64>, Option<i64>) {
+fn collect_parallel_results<T>(results: Vec<Result<T>>) -> Result<Vec<T>> {
+    let mut out = Vec::with_capacity(results.len());
+    for result in results {
+        out.push(result?);
+    }
+    Ok(out)
+}
+
+fn split_rows(rows: Vec<TrainRow>, shards: usize) -> Vec<Vec<TrainRow>> {
+    let shards = shards.max(1);
+    let mut out = vec![Vec::new(); shards];
+    for (idx, row) in rows.into_iter().enumerate() {
+        out[idx % shards].push(row);
+    }
+    out
+}
+
+fn predict_has_window(query: &diskgraph_train_table::ast::Query) -> bool {
+    match &query.predict {
+        diskgraph_train_table::ast::PredictExpr::Aggregation(agg) => agg.window.is_some(),
+        diskgraph_train_table::ast::PredictExpr::Comparison(pred) => pred_has_window(pred),
+        _ => false,
+    }
+}
+
+fn pred_has_window(pred: &diskgraph_train_table::ast::PredicateExpr) -> bool {
+    match pred {
+        diskgraph_train_table::ast::PredicateExpr::Comparison { left, right, .. } => {
+            expr_has_window(left) || expr_has_window(right)
+        }
+        diskgraph_train_table::ast::PredicateExpr::And(items)
+        | diskgraph_train_table::ast::PredicateExpr::Or(items) => items.iter().any(pred_has_window),
+    }
+}
+
+fn expr_has_window(expr: &diskgraph_train_table::ast::Expr) -> bool {
+    match expr {
+        diskgraph_train_table::ast::Expr::Agg(agg) => agg.window.is_some(),
+        _ => false,
+    }
+}
+
+fn min_max_timestamp_shards(rows: &[Vec<TrainRow>]) -> (Option<i64>, Option<i64>) {
     let mut min_ts = None;
     let mut max_ts = None;
-    for row in rows {
-        if min_ts.map_or(true, |v| row.timestamp < v) {
-            min_ts = Some(row.timestamp);
-        }
-        if max_ts.map_or(true, |v| row.timestamp > v) {
-            max_ts = Some(row.timestamp);
+    for shard in rows {
+        for row in shard {
+            if min_ts.map_or(true, |v| row.timestamp < v) {
+                min_ts = Some(row.timestamp);
+            }
+            if max_ts.map_or(true, |v| row.timestamp > v) {
+                max_ts = Some(row.timestamp);
+            }
         }
     }
     (min_ts, max_ts)
 }
 
-fn print_stats(rows: &[TrainTableRow]) {
+fn print_stats_sharded(shards: &[Vec<TrainTableRow>]) {
     let mut split_counts = [0u64; 3];
-    for row in rows {
-        split_counts[split_index(row.split)] += 1;
+    let mut total = 0usize;
+    for shard in shards {
+        total += shard.len();
+        for row in shard {
+            split_counts[split_index(row.split)] += 1;
+        }
     }
 
-    println!("{} {}", label("rows:"), rows.len());
+    println!("{} {}", label("rows:"), total);
     println!("{}", label("split counts:"));
     for split in [SplitLabel::Train, SplitLabel::Val, SplitLabel::Test] {
         let count = split_counts[split_index(split)];
         println!("  {} {}", name(split.as_str()), format_number(count));
     }
-
-    let target_kind = match rows[0].target {
+    let Some(first) = shards.iter().find(|s| !s.is_empty()).and_then(|s| s.first()) else {
+        return;
+    };
+    let target_kind = match &first.target {
         TargetValue::List(_) => TargetKind::List,
         TargetValue::Number(_) | TargetValue::Count(_) => TargetKind::Numeric,
+        TargetValue::Scalar(v) => match v {
+            Value::Int(_) | Value::UInt(_) => TargetKind::Numeric,
+            Value::Bool(_) => TargetKind::Bool,
+            Value::String(_) => TargetKind::Text,
+            Value::Bytes(_) => TargetKind::Bytes,
+        },
     };
 
     match target_kind {
         TargetKind::Numeric => {
             let mut overall = NumericAgg::new();
             let mut per_split = [NumericAgg::new(), NumericAgg::new(), NumericAgg::new()];
-            for row in rows {
-                let value = target_as_f64(&row.target).unwrap_or(0.0);
-                overall.add(value);
-                per_split[split_index(row.split)].add(value);
+            for shard in shards {
+                for row in shard {
+                    let value = target_as_f64(&row.target).unwrap_or(0.0);
+                    overall.add(value);
+                    per_split[split_index(row.split)].add(value);
+                }
             }
             println!("{}", label("label stats (numeric):"));
             print_numeric_stats("overall", &overall);
@@ -513,16 +629,58 @@ fn print_stats(rows: &[TrainTableRow]) {
                 print_numeric_stats(split.as_str(), &per_split[split_index(split)]);
             }
         }
+        TargetKind::Bool => {
+            let mut overall = BoolAgg::new();
+            let mut per_split = [BoolAgg::new(), BoolAgg::new(), BoolAgg::new()];
+            for shard in shards {
+                for row in shard {
+                    let value = matches!(row.target, TargetValue::Scalar(Value::Bool(true)));
+                    overall.add(value);
+                    per_split[split_index(row.split)].add(value);
+                }
+            }
+            println!("{}", label("label stats (bool):"));
+            print_bool_stats("overall", &overall);
+            for split in [SplitLabel::Train, SplitLabel::Val, SplitLabel::Test] {
+                print_bool_stats(split.as_str(), &per_split[split_index(split)]);
+            }
+        }
+        TargetKind::Text | TargetKind::Bytes => {
+            let mut overall = DistinctAgg::new(10_000);
+            let mut per_split = [
+                DistinctAgg::new(10_000),
+                DistinctAgg::new(10_000),
+                DistinctAgg::new(10_000),
+            ];
+            for shard in shards {
+                for row in shard {
+                    let value = match &row.target {
+                        TargetValue::Scalar(Value::String(v)) => v.clone(),
+                        TargetValue::Scalar(Value::Bytes(v)) => format!("0x{}", hex_encode(v)),
+                        _ => String::new(),
+                    };
+                    overall.add(&value);
+                    per_split[split_index(row.split)].add(&value);
+                }
+            }
+            println!("{}", label("label stats (distinct):"));
+            print_distinct_stats("overall", &overall);
+            for split in [SplitLabel::Train, SplitLabel::Val, SplitLabel::Test] {
+                print_distinct_stats(split.as_str(), &per_split[split_index(split)]);
+            }
+        }
         TargetKind::List => {
             let mut overall = ListAgg::new();
             let mut per_split = [ListAgg::new(), ListAgg::new(), ListAgg::new()];
-            for row in rows {
-                let len = match &row.target {
-                    TargetValue::List(values) => values.len() as u64,
-                    _ => 0,
-                };
-                overall.add(len);
-                per_split[split_index(row.split)].add(len);
+            for shard in shards {
+                for row in shard {
+                    let len = match &row.target {
+                        TargetValue::List(values) => values.len() as u64,
+                        _ => 0,
+                    };
+                    overall.add(len);
+                    per_split[split_index(row.split)].add(len);
+                }
             }
             println!("{}", label("label stats (list length):"));
             print_list_stats("overall", &overall);
@@ -533,10 +691,22 @@ fn print_stats(rows: &[TrainTableRow]) {
     }
 }
 
-fn print_samples(rows: &[TrainTableRow], limit: usize) {
-    let count = rows.len().min(limit);
+fn print_samples_sharded(shards: &[Vec<TrainTableRow>], limit: usize) {
+    let mut samples = Vec::new();
+    for shard in shards {
+        for row in shard {
+            samples.push(row);
+            if samples.len() >= limit {
+                break;
+            }
+        }
+        if samples.len() >= limit {
+            break;
+        }
+    }
+    let count = samples.len();
     println!("{} {}", label("sample rows:"), count);
-    for row in rows.iter().take(count) {
+    for row in samples {
         let entity = format_value(&row.entity);
         let target = format_target(&row.target);
         println!(
@@ -575,6 +745,7 @@ fn format_target(target: &TargetValue) -> String {
             out.push(']');
             out
         }
+        TargetValue::Scalar(value) => format_value(value),
     }
 }
 
@@ -604,6 +775,9 @@ fn format_number(value: u64) -> String {
 enum TargetKind {
     Numeric,
     List,
+    Bool,
+    Text,
+    Bytes,
 }
 
 #[derive(Default, Clone)]
@@ -726,11 +900,92 @@ fn print_list_stats(label_text: &str, agg: &ListAgg) {
     );
 }
 
+#[derive(Default, Clone)]
+struct BoolAgg {
+    count: u64,
+    true_count: u64,
+}
+
+impl BoolAgg {
+    fn new() -> Self {
+        Self { count: 0, true_count: 0 }
+    }
+
+    fn add(&mut self, value: bool) {
+        self.count += 1;
+        if value {
+            self.true_count += 1;
+        }
+    }
+}
+
+fn print_bool_stats(label_text: &str, agg: &BoolAgg) {
+    let false_count = agg.count.saturating_sub(agg.true_count);
+    println!(
+        "  {} count={} true={} false={}",
+        highlight(label_text),
+        format_number(agg.count),
+        format_number(agg.true_count),
+        format_number(false_count)
+    );
+}
+
+#[derive(Clone)]
+struct DistinctAgg {
+    values: std::collections::HashSet<String>,
+    max: usize,
+    truncated: bool,
+    count: u64,
+}
+
+impl DistinctAgg {
+    fn new(max: usize) -> Self {
+        Self {
+            values: std::collections::HashSet::new(),
+            max,
+            truncated: false,
+            count: 0,
+        }
+    }
+
+    fn add(&mut self, value: &str) {
+        self.count += 1;
+        if self.truncated {
+            return;
+        }
+        if self.values.len() >= self.max {
+            self.truncated = true;
+            return;
+        }
+        self.values.insert(value.to_string());
+    }
+}
+
+fn print_distinct_stats(label_text: &str, agg: &DistinctAgg) {
+    let distinct = agg.values.len();
+    let mut sample: Vec<_> = agg.values.iter().take(5).cloned().collect();
+    sample.sort();
+    let suffix = if agg.truncated { "+" } else { "" };
+    println!(
+        "  {} count={} distinct={}{suffix} sample={:?}",
+        highlight(label_text),
+        format_number(agg.count),
+        distinct,
+        sample
+    );
+}
+
 fn target_as_f64(target: &TargetValue) -> Option<f64> {
     match target {
         TargetValue::Number(v) => Some(*v),
         TargetValue::Count(v) => Some(*v as f64),
         TargetValue::List(_) => None,
+        TargetValue::Scalar(v) => match v {
+            Value::Int(v) => Some(*v as f64),
+            Value::UInt(v) => Some(*v as f64),
+            Value::Bool(v) => Some(if *v { 1.0 } else { 0.0 }),
+            Value::String(_) | Value::Bytes(_) => None,
+        },
     }
 }
 

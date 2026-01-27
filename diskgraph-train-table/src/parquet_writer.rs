@@ -38,6 +38,7 @@ enum TargetType {
     Number,
     Count,
     List(ScalarType),
+    Scalar(ScalarType),
 }
 
 pub fn write_train_table(path: impl AsRef<Path>, rows: &[TrainTableRow]) -> Result<()> {
@@ -82,6 +83,9 @@ fn infer_target_type(rows: &[TrainTableRow]) -> Result<TargetType> {
                 }
                 TargetType::List(list_type.unwrap_or(ScalarType::Utf8))
             }
+            TargetValue::Scalar(value) => {
+                TargetType::Scalar(infer_scalar_type(value).unwrap_or(ScalarType::Utf8))
+            }
         };
         match target_kind {
             None => target_kind = Some(kind),
@@ -103,6 +107,16 @@ fn infer_list_value_type(values: &[Value]) -> Option<ScalarType> {
         });
     }
     None
+}
+
+fn infer_scalar_type(value: &Value) -> Option<ScalarType> {
+    Some(match value {
+        Value::Int(_) => ScalarType::Int64,
+        Value::UInt(_) => ScalarType::UInt64,
+        Value::Bool(_) => ScalarType::Bool,
+        Value::String(_) => ScalarType::Utf8,
+        Value::Bytes(_) => ScalarType::Binary,
+    })
 }
 
 fn build_columns(
@@ -219,6 +233,62 @@ fn build_target_array(rows: &[TrainTableRow], target_type: TargetType) -> Result
             Arc::new(builder.finish())
         }
         TargetType::List(scalar_type) => build_list_array(rows, scalar_type)?,
+        TargetType::Scalar(scalar_type) => build_scalar_target_array(rows, scalar_type)?,
+    })
+}
+
+fn build_scalar_target_array(rows: &[TrainTableRow], scalar_type: ScalarType) -> Result<ArrayRef> {
+    Ok(match scalar_type {
+        ScalarType::Int64 => {
+            let mut builder = Int64Builder::new();
+            for row in rows {
+                match &row.target {
+                    TargetValue::Scalar(Value::Int(v)) => builder.append_value(*v),
+                    _ => return Err(anyhow!("target type mismatch")),
+                }
+            }
+            Arc::new(builder.finish())
+        }
+        ScalarType::UInt64 => {
+            let mut builder = UInt64Builder::new();
+            for row in rows {
+                match &row.target {
+                    TargetValue::Scalar(Value::UInt(v)) => builder.append_value(*v),
+                    _ => return Err(anyhow!("target type mismatch")),
+                }
+            }
+            Arc::new(builder.finish())
+        }
+        ScalarType::Bool => {
+            let mut builder = BooleanBuilder::new();
+            for row in rows {
+                match &row.target {
+                    TargetValue::Scalar(Value::Bool(v)) => builder.append_value(*v),
+                    _ => return Err(anyhow!("target type mismatch")),
+                }
+            }
+            Arc::new(builder.finish())
+        }
+        ScalarType::Utf8 => {
+            let mut builder = StringBuilder::new();
+            for row in rows {
+                match &row.target {
+                    TargetValue::Scalar(Value::String(v)) => builder.append_value(v),
+                    _ => return Err(anyhow!("target type mismatch")),
+                }
+            }
+            Arc::new(builder.finish())
+        }
+        ScalarType::Binary => {
+            let mut builder = BinaryBuilder::new();
+            for row in rows {
+                match &row.target {
+                    TargetValue::Scalar(Value::Bytes(v)) => builder.append_value(v),
+                    _ => return Err(anyhow!("target type mismatch")),
+                }
+            }
+            Arc::new(builder.finish())
+        }
     })
 }
 
@@ -369,6 +439,7 @@ fn target_type_to_datatype(target_type: TargetType) -> DataType {
         TargetType::List(scalar_type) => {
             DataType::List(Arc::new(Field::new("item", scalar_type_to_datatype(scalar_type), true)))
         }
+        TargetType::Scalar(scalar_type) => scalar_type_to_datatype(scalar_type),
     }
 }
 
@@ -446,5 +517,38 @@ mod tests {
         assert_eq!(batch.schema().fields().len(), 5);
         assert_eq!(batch.schema().field(3).name(), "weight");
         assert_eq!(batch.schema().field(4).name(), "split");
+    }
+
+    #[test]
+    fn writes_scalar_target() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("train.parquet");
+        let rows = vec![
+            TrainTableRow {
+                entity: Value::UInt(1),
+                target: TargetValue::Scalar(Value::Bool(true)),
+                timestamp: 10,
+                weight: None,
+                split: SplitLabel::Train,
+            },
+            TrainTableRow {
+                entity: Value::UInt(2),
+                target: TargetValue::Scalar(Value::Bool(false)),
+                timestamp: 20,
+                weight: None,
+                split: SplitLabel::Val,
+            },
+        ];
+        write_train_table(&path, &rows).unwrap();
+
+        let file = File::open(&path).unwrap();
+        let mut reader = ParquetRecordBatchReaderBuilder::try_new(file)
+            .unwrap()
+            .build()
+            .unwrap();
+        let batch = reader.next().unwrap().unwrap();
+        assert_eq!(batch.num_rows(), 2);
+        assert_eq!(batch.schema().fields().len(), 4);
+        assert_eq!(batch.schema().field(1).data_type(), &DataType::Boolean);
     }
 }

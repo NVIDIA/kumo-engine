@@ -6,8 +6,10 @@ pub struct Query {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct PredictExpr {
-    pub aggregation: AggregationExpr,
+pub enum PredictExpr {
+    Aggregation(AggregationExpr),
+    Column(ColumnRef),
+    Comparison(PredicateExpr),
 }
 
 #[derive(Debug, Clone, PartialEq)]

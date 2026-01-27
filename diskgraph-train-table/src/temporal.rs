@@ -6,13 +6,38 @@ use diskgraph_index::builder::compute_relation_layouts;
 use diskgraph_index::graph::GraphIndexReader;
 use diskgraph_index::layout::RelationSegment;
 
-use crate::ast::{AggFunc, AggTarget, AggregationExpr, PredicateExpr, Query, TimeUnit};
+use crate::ast::{AggFunc, AggTarget, AggregationExpr, PredicateExpr, PredictExpr, Query, TimeUnit};
 use crate::config::{QueryOptions, TemporalSampling};
 use crate::exec::{TargetValue, TrainRow, Value};
 
 pub fn execute_temporal(query: &Query, index_path: &Path, options: &QueryOptions) -> Result<Vec<TrainRow>> {
     let metadata_path = index_path.join("index_metadata.json");
     let graph = GraphIndexReader::open(&metadata_path, index_path)?;
+    execute_temporal_with_reader(query, &graph, options, 0, None)
+}
+
+pub fn execute_temporal_range(
+    query: &Query,
+    index_path: &Path,
+    options: &QueryOptions,
+    start: u64,
+    end: u64,
+) -> Result<Vec<TrainRow>> {
+    let metadata_path = index_path.join("index_metadata.json");
+    let graph = GraphIndexReader::open(&metadata_path, index_path)?;
+    execute_temporal_with_reader(query, &graph, options, start, Some(end))
+}
+
+fn execute_temporal_with_reader(
+    query: &Query,
+    graph: &GraphIndexReader,
+    options: &QueryOptions,
+    start: u64,
+    end: Option<u64>,
+) -> Result<Vec<TrainRow>> {
+    if !matches!(query.predict, PredictExpr::Aggregation(_) | PredictExpr::Comparison(_)) {
+        return Err(anyhow!("temporal execution requires aggregation or comparison predict"));
+    }
     let entity_table = graph
         .table(&query.for_each.table)
         .ok_or_else(|| anyhow!("missing entity table {}", query.for_each.table))?;
@@ -34,11 +59,13 @@ pub fn execute_temporal(query: &Query, index_path: &Path, options: &QueryOptions
 
     let mut rows = Vec::new();
     let node_count = entity_table.node_count();
+    let end = end.unwrap_or(node_count).min(node_count);
+    let start = start.min(end);
     eprintln!(
         "temporal: start entity_table={} nodes={}",
         query.for_each.table, node_count
     );
-    for node_id in 0..node_count {
+    for node_id in start..end {
         let view = entity_table.edges_for_node(node_id)?;
         let segments = view.relation_segments()?;
 
@@ -93,16 +120,17 @@ pub fn execute_temporal(query: &Query, index_path: &Path, options: &QueryOptions
                 for _ in 0..samples {
                     let ts =
                         global_start + (rng.next_f64() * (global_end - global_start) as f64) as i64;
-                    evaluate_samples(
-                        node_id,
-                        ts,
-                        &segments,
-                        &agg_plans,
-                        &aggs,
-                        target_agg_index,
-                        query.assuming.as_ref(),
-                        &mut rows,
-                    )?;
+                        evaluate_samples(
+                            node_id,
+                            ts,
+                            &segments,
+                            &agg_plans,
+                            &aggs,
+                            target_agg_index,
+                            &query.predict,
+                            query.assuming.as_ref(),
+                            &mut rows,
+                        )?;
                 }
             }
             TemporalSampling::Timeframe => {
@@ -116,6 +144,7 @@ pub fn execute_temporal(query: &Query, index_path: &Path, options: &QueryOptions
                             &agg_plans,
                             &aggs,
                             target_agg_index,
+                            &query.predict,
                             query.assuming.as_ref(),
                             &mut rows,
                         )?;
@@ -148,30 +177,39 @@ fn evaluate_samples(
     agg_plans: &[AggPlan],
     aggs: &[AggregationExpr],
     target_agg_index: usize,
+    predict: &PredictExpr,
     assuming: Option<&PredicateExpr>,
     rows: &mut Vec<TrainRow>,
 ) -> Result<()> {
-    let mut target_value = None;
     let mut values: Vec<Option<TargetValue>> = Vec::with_capacity(agg_plans.len());
-    for (idx, plan) in agg_plans.iter().enumerate() {
+    for (_idx, plan) in agg_plans.iter().enumerate() {
         let segment = segments
             .get(plan.rel.index)
             .ok_or_else(|| anyhow!("missing segment for relation {}", plan.rel.name))?;
         let value = aggregate_for_timestamp(segment, &plan.rel.meta, &plan.agg, ts, plan)?;
-        if idx == target_agg_index {
-            target_value = value.clone();
-        }
         values.push(value);
-    }
-    let Some(target_value) = target_value else { return Ok(()) };
-    if is_empty_target(&target_value) {
-        return Ok(());
     }
     if let Some(pred) = assuming {
         if !eval_temporal_predicate(pred, aggs, &values)? {
             return Ok(());
         }
     }
+    let target_value = match predict {
+        PredictExpr::Aggregation(_) => {
+            let Some(target_value) = values.get(target_agg_index).and_then(|v| v.clone()) else {
+                return Ok(());
+            };
+            if is_empty_target(&target_value) {
+                return Ok(());
+            }
+            target_value
+        }
+        PredictExpr::Comparison(pred) => {
+            let label = eval_temporal_predicate(pred, aggs, &values)?;
+            TargetValue::Scalar(Value::Bool(label))
+        }
+        PredictExpr::Column(_) => return Err(anyhow!("temporal predict column not supported")),
+    };
     rows.push(TrainRow {
         entity: Value::UInt(node_id),
         target: target_value,
@@ -319,7 +357,15 @@ fn resolve_relation(
 }
 
 fn collect_aggs(query: &Query) -> Vec<AggregationExpr> {
-    let mut aggs = vec![query.predict.aggregation.clone()];
+    let mut aggs = match &query.predict {
+        crate::ast::PredictExpr::Aggregation(agg) => vec![agg.clone()],
+        crate::ast::PredictExpr::Comparison(pred) => {
+            let mut out = Vec::new();
+            collect_aggs_from_pred(pred, &mut out);
+            out
+        }
+        _ => Vec::new(),
+    };
     if let Some(pred) = &query.assuming {
         collect_aggs_from_pred(pred, &mut aggs);
     }
@@ -387,6 +433,12 @@ fn target_value_to_number(value: &TargetValue) -> Option<f64> {
         TargetValue::Count(c) => Some(*c as f64),
         TargetValue::Number(v) => Some(*v),
         TargetValue::List(_) => None,
+        TargetValue::Scalar(v) => match v {
+            Value::Int(v) => Some(*v as f64),
+            Value::UInt(v) => Some(*v as f64),
+            Value::Bool(v) => Some(if *v { 1.0 } else { 0.0 }),
+            Value::String(_) | Value::Bytes(_) => None,
+        },
     }
 }
 
@@ -739,6 +791,7 @@ fn is_empty_target(target: &TargetValue) -> bool {
         TargetValue::Count(c) => *c == 0,
         TargetValue::List(list) => list.is_empty(),
         TargetValue::Number(_) => false,
+        TargetValue::Scalar(_) => false,
     }
 }
 

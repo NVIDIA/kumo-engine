@@ -25,7 +25,7 @@ pub fn run_job(config: &JobConfig) -> Result<()> {
         return Err(anyhow!("validation failed"));
     }
 
-    let rows = if query.predict.aggregation.window.is_some() {
+    let rows = if predict_has_window(&query) {
         eprintln!("run_job: executing temporal query");
         execute_temporal(&query, Path::new(&config.index_path), &config.options)?
     } else {
@@ -64,6 +64,32 @@ pub fn run_job(config: &JobConfig) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn predict_has_window(query: &crate::ast::Query) -> bool {
+    match &query.predict {
+        crate::ast::PredictExpr::Aggregation(agg) => agg.window.is_some(),
+        crate::ast::PredictExpr::Comparison(pred) => pred_has_window(pred),
+        _ => false,
+    }
+}
+
+fn pred_has_window(pred: &crate::ast::PredicateExpr) -> bool {
+    match pred {
+        crate::ast::PredicateExpr::Comparison { left, right, .. } => {
+            expr_has_window(left) || expr_has_window(right)
+        }
+        crate::ast::PredicateExpr::And(items) | crate::ast::PredicateExpr::Or(items) => {
+            items.iter().any(pred_has_window)
+        }
+    }
+}
+
+fn expr_has_window(expr: &crate::ast::Expr) -> bool {
+    match expr {
+        crate::ast::Expr::Agg(agg) => agg.window.is_some(),
+        _ => false,
+    }
 }
 
 fn min_max_timestamp(rows: &[crate::exec::TrainRow]) -> (Option<i64>, Option<i64>) {
