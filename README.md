@@ -50,6 +50,12 @@ By default the output goes to `/mnt/localssd/diskgraph-index/hnm`.
 ./diskgraph-index/scripts/explore_local.sh /mnt/localssd/diskgraph-index/hnm
 ```
 
+### 6) Run predictive queries (train table TUI)
+
+```bash
+./diskgraph-train-table/scripts/ttui.sh /mnt/localssd/diskgraph-index/hnm
+```
+
 Inside the explorer:
 
 ```

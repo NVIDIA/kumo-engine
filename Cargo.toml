@@ -9,6 +9,7 @@ members = [
     "diskgraph-infer",
     "diskgraph-ptrhash",
     "diskgraph-explain",
+    "diskgraph-train-table",
 ]
 resolver = "2"
 

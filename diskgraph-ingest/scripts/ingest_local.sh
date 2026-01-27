@@ -111,3 +111,6 @@ if [[ "${PARALLEL_ENABLED}" == "true" ]]; then
   args+=(--parallel)
 fi
 env ${env_args[@]+"${env_args[@]}"} "${args[@]}"
+
+echo "Next: ./diskgraph-index/scripts/explore_local.sh ${OUTPUT}"
+echo "Next: ./diskgraph-train-table/scripts/ttui.sh ${OUTPUT}"
