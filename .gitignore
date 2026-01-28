@@ -10,3 +10,5 @@ heap-*.heap
 heap-*.svg
 heap-*.txt
 data
+temp_data
+diskgraph_output
