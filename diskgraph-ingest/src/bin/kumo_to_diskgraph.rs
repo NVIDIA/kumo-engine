@@ -202,9 +202,9 @@ fn parse_dst_table(dst_table: &str) -> &str {
     dst_table.rsplit('.').next().unwrap_or(dst_table)
 }
 
-/// Build the persist-dir ingest path for a table
+/// Build the persist-dir ingest path for a table (fpv3 format)
 /// Pattern: s3://{bucket}/{tenant_path}/data-persist-dir/ingest/fpv3.{data_source}.{source_name}/{data_version}/
-fn build_persist_dir_path(
+fn build_persist_dir_path_fpv3(
     bucket: &str,
     tenant_path: &str,
     data_source: &str,
@@ -215,6 +215,108 @@ fn build_persist_dir_path(
         "s3://{}/{}/data-persist-dir/ingest/fpv3.{}.{}/{}/",
         bucket, tenant_path, data_source, source_name, data_version
     )
+}
+
+/// Find the persist-dir path, trying multiple patterns
+fn find_persist_dir_path(
+    bucket: &str,
+    tenant_path: &str,
+    data_source: &str,
+    source_name: &str,
+    data_version: Option<&str>,
+    table_name: &str,
+    profile: Option<&str>,
+) -> Result<String> {
+    let old_ingest_base = format!(
+        "s3://{}/{}/data-persist-dir-old/data-persist-dir/ingest/",
+        bucket, tenant_path
+    );
+
+    // If we have data_version, try version-based paths
+    if let Some(version) = data_version {
+        // Try fpv3 path first (new format)
+        let fpv3_path = build_persist_dir_path_fpv3(bucket, tenant_path, data_source, source_name, version);
+        if s3_path_exists(&fpv3_path, profile) {
+            tracing::info!("  Found at fpv3 path: {}", fpv3_path);
+            return Ok(fpv3_path);
+        }
+
+        // Try fpv1 path by version
+        tracing::info!("  Searching for fpv1 path with version {} ...", version);
+        if let Some(fpv1_path) = find_fpv1_path_by_version(&old_ingest_base, version, profile) {
+            tracing::info!("  Found at fpv1 path: {}", fpv1_path);
+            return Ok(fpv1_path);
+        }
+    }
+
+    // Try to find by table name (for kumo_views_connector tables without data_version)
+    // Pattern: kumo_views_connector.{table_name}/
+    let view_path = format!("{}{}.{}/", old_ingest_base, data_source, table_name);
+    tracing::info!("  Trying view path: {}", view_path);
+    if s3_path_exists(&view_path, profile) {
+        tracing::info!("  Found at view path: {}", view_path);
+        return Ok(view_path);
+    }
+
+    // Also try with source_name if different from table_name
+    if source_name != table_name {
+        let view_path2 = format!("{}{}.{}/", old_ingest_base, data_source, source_name);
+        tracing::info!("  Trying view path (source_name): {}", view_path2);
+        if s3_path_exists(&view_path2, profile) {
+            tracing::info!("  Found at view path: {}", view_path2);
+            return Ok(view_path2);
+        }
+    }
+
+    Err(anyhow!(
+        "Could not find data for table {} (data_source={}, data_version={:?}) in any known path",
+        table_name, data_source, data_version
+    ))
+}
+
+/// Check if an S3 path exists (has files)
+fn s3_path_exists(s3_path: &str, profile: Option<&str>) -> bool {
+    let mut cmd = Command::new("aws");
+    cmd.args(["s3", "ls", s3_path, "--recursive", "--page-size", "1"]);
+    if let Some(p) = profile {
+        cmd.args(["--profile", p]);
+    }
+
+    match cmd.output() {
+        Ok(output) => output.status.success() && !output.stdout.is_empty(),
+        Err(_) => false,
+    }
+}
+
+/// Find fpv1 path that contains the given data_version
+fn find_fpv1_path_by_version(base_path: &str, data_version: &str, profile: Option<&str>) -> Option<String> {
+    // List all fpv1 folders
+    let mut cmd = Command::new("aws");
+    cmd.args(["s3", "ls", base_path]);
+    if let Some(p) = profile {
+        cmd.args(["--profile", p]);
+    }
+
+    let output = cmd.output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Look for fpv1 folders and check if they contain the data_version
+    for line in stdout.lines() {
+        if let Some(folder) = line.split_whitespace().last() {
+            if folder.starts_with("fpv1.") {
+                let folder_path = format!("{}{}{}/", base_path, folder, data_version);
+                if s3_path_exists(&folder_path, profile) {
+                    return Some(folder_path);
+                }
+            }
+        }
+    }
+
+    None
 }
 
 // ============================================================================
@@ -309,6 +411,7 @@ fn convert_to_diskgraph(
     dataset_name: &str,
     bucket: &str,
     tenant_path: &str,
+    profile: Option<&str>,
 ) -> Result<SourceMetadata> {
     let graph = &job_input.spec.predictive_query.graph;
 
@@ -320,18 +423,14 @@ fn convert_to_diskgraph(
 
         let data_source = &table.data_source;
         let source_name = table.source_name.as_deref().unwrap_or(&table.table_name);
-        let data_version = table
-            .data_version
-            .as_deref()
-            .ok_or_else(|| anyhow!("Table {} missing data_version", table.table_name))?;
+        let data_version = table.data_version.as_deref();
 
         tracing::info!("  Data source: {}", data_source);
         tracing::info!("  Source name: {}", source_name);
-        tracing::info!("  Data version: {}", data_version);
+        tracing::info!("  Data version: {:?}", data_version);
 
-        // Build persist-dir path
-        let s3_path = build_persist_dir_path(bucket, tenant_path, data_source, source_name, data_version);
-        tracing::info!("  Persist path: {}", s3_path);
+        // Find persist-dir path (tries multiple patterns)
+        let s3_path = find_persist_dir_path(bucket, tenant_path, data_source, source_name, data_version, &table.table_name, profile)?;
 
         // Collect all columns: pkey + fkeys + cols
         let mut all_columns: Vec<ColumnSpec> = Vec::new();
@@ -467,7 +566,13 @@ fn main() -> Result<()> {
 
     // Convert to DiskGraph format (using persist-dir paths)
     tracing::info!("\nConverting to DiskGraph format...");
-    let mut source_metadata = convert_to_diskgraph(&job_input, &dataset_name, bucket, &tenant_path)?;
+    let mut source_metadata = convert_to_diskgraph(
+        &job_input,
+        &dataset_name,
+        bucket,
+        &tenant_path,
+        profile,
+    )?;
 
     // If run_ingest, download parquets and update paths
     if args.run_ingest {
