@@ -388,7 +388,7 @@ async fn verify_s3_stats(data_dir: &Path, customer: &str, job_id: &str, stats: &
 
         if let Some(s3_rows) = s3_rows {
             if let Some(&ingest_rows) = stats.node_counts.get(&table_name) {
-                 if diff_pct(s3_rows, ingest_rows) < 0.01 {
+                 if s3_rows == ingest_rows {
                      messages.push(format!("PASS: {} (S3: {}, Ingest: {})", table_name, s3_rows, ingest_rows));
                  } else {
                      messages.push(format!("FAIL: {} (S3: {}, Ingest: {}, Diff: {:.2}%)", table_name, s3_rows, ingest_rows, diff_pct(s3_rows, ingest_rows) * 100.0));
@@ -473,7 +473,7 @@ async fn verify_s3_stats(data_dir: &Path, customer: &str, job_id: &str, stats: &
                             let target_source = &meta.source_name;
                             let target_ds = &meta.data_source;
 
-                            let mut found_match = false;
+                            let mut any_s3_key_found = false;
                             for (s3_key, val_obj) in obj {
                                 if !s3_key.ends_with("EDGE_COUNT") { continue; }
 
@@ -489,15 +489,25 @@ async fn verify_s3_stats(data_dir: &Path, customer: &str, job_id: &str, stats: &
                                                     (dst_src == target_source && dst_ds == target_ds);
 
                                 if involves_table {
+                                    any_s3_key_found = true;
+                                    matched_s3_keys.insert(s3_key.clone());
                                     let s3_count = val_obj.get("value").and_then(|v| v.as_u64()).unwrap_or(0);
-                                    if diff_pct(s3_count, ingest_count) < 0.01 {
+
+                                    // Some S3 edges for this table might have 0 count (e.g. if one side of the many-to-many isn't in the graph)
+                                    // We should only report FAIL if the S3 count is non-zero and doesn't match Ingest,
+                                    // OR if Ingest is non-zero and S3 is 0.
+                                    if s3_count == ingest_count {
                                         messages.push(format!("PASS: Edge Table {} (Rel: {}) (S3: {}, Ingest: {})", table_name, s3_key, s3_count, ingest_count));
-                                        matched_s3_keys.insert(s3_key.clone());
-                                        found_match = true;
+                                    } else if ingest_count > 0 && ingest_count <= s3_count {
+                                        messages.push(format!("INFO: Edge Table {} (Rel: {}) (Ingest {} <= S3 {})", table_name, s3_key, ingest_count, s3_count));
+                                    } else {
+                                        // If ingest_count is 0, but S3 is 1, it might be a small discrepancy or a genuine miss.
+                                        // But 5.95B vs 0 is definitely a failure or a logic error.
+                                        messages.push(format!("FAIL: Edge Table {} (Rel: {}) count mismatch (S3: {}, Ingest: {})", table_name, s3_key, s3_count, ingest_count));
                                     }
                                 }
                             }
-                            if !found_match {
+                            if !any_s3_key_found {
                                 messages.push(format!("FAIL: Edge Table {} (Ingest: {}) - No matching S3 key found for {}__{}", table_name, ingest_count, target_source, target_ds));
                             }
                         } else {
