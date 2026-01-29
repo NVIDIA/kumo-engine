@@ -7676,16 +7676,12 @@ fn key_from_access_into_buf(
                     write_bytes(bytes)?;
                 }
                 IngestedType::String => {
-                    let array = access
-                        .array(idx)
+                    access
+                        .with_string(idx, |text| {
+                            write_bytes(text.as_bytes()).map_err(|_| anyhow!("key parse failed"))?;
+                            Ok(())
+                        })
                         .map_err(|_| KeyParseError::TypeMismatch)?;
-                    if let Ok(text) = read_utf8(array, access.row()) {
-                        write_bytes(text.as_bytes())?;
-                    } else {
-                        let bytes = read_bytes(array, access.row())
-                            .map_err(|_| KeyParseError::TypeMismatch)?;
-                        write_bytes(bytes)?;
-                    }
                 }
                 IngestedType::Int64 => {
                     let value = access

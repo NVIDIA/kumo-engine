@@ -426,6 +426,27 @@ impl<'p> RowAccess<'p> {
                     .ok_or_else(|| anyhow!("decimal256 overflow"))
                     .map(Some)
             }
+            DataType::Float64 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Float64Array>()
+                    .ok_or_else(|| anyhow!("float64 cast"))?;
+                Ok(Some(arr.value(self.row) as i64))
+            }
+            DataType::Float32 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Float32Array>()
+                    .ok_or_else(|| anyhow!("float32 cast"))?;
+                Ok(Some(arr.value(self.row) as i64))
+            }
+            DataType::Boolean => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::BooleanArray>()
+                    .ok_or_else(|| anyhow!("bool cast"))?;
+                Ok(Some(if arr.value(self.row) { 1 } else { 0 }))
+            }
             _ => Err(anyhow!("int64 type mismatch")),
         }
     }
@@ -894,6 +915,13 @@ impl<'p> RowAccess<'p> {
                     .ok_or_else(|| anyhow!("decimal256 overflow"))
                     .map(Some)
             }
+            DataType::Boolean => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::BooleanArray>()
+                    .ok_or_else(|| anyhow!("bool cast"))?;
+                Ok(Some(if arr.value(self.row) { 1.0 } else { 0.0 }))
+            }
             _ => Err(anyhow!("float64 type mismatch")),
         }
     }
@@ -1285,6 +1313,31 @@ impl<'p> RowAccess<'p> {
             DataType::Timestamp(_, _) => {
                 let (secs, _) = timestamp_parts_from_array(array, self.row)?;
                 return Ok(Some(with_stack_str(secs, trimmed, f)?));
+            }
+            DataType::Decimal128(_, scale) => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Decimal128Array>()
+                    .ok_or_else(|| anyhow!("decimal128 cast"))?;
+                let value = arr.value(self.row);
+                if *scale == 0 {
+                    return Ok(Some(with_stack_str(value, trimmed, f)?));
+                }
+                let float_value = decimal_i128_to_f64(value, i32::from(*scale));
+                return Ok(Some(with_stack_str(float_value, trimmed, f)?));
+            }
+            DataType::Decimal256(_, scale) => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Decimal256Array>()
+                    .ok_or_else(|| anyhow!("decimal256 cast"))?;
+                let value = arr.value(self.row);
+                if *scale == 0 {
+                    return Ok(Some(with_stack_str(value, trimmed, f)?));
+                }
+                let float_value = decimal_i256_to_f64(value, i32::from(*scale))
+                    .ok_or_else(|| anyhow!("decimal256 overflow"))?;
+                return Ok(Some(with_stack_str(float_value, trimmed, f)?));
             }
             _ => return Err(anyhow!("string type mismatch")),
         };
