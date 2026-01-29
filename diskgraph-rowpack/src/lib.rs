@@ -13,6 +13,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use uuid_simd::{format_simple, parse_hyphenated, parse_simple, AsOut, AsciiCase};
 
+#[cfg(test)]
+mod tests_casting;
+
 const ROWPACK_VERSION: u8 = 3;
 const MAX_FIELD_BYTES: usize = 64 * 1024 * 1024;
 const MAX_ARRAY_LEN: usize = 1_000_000;

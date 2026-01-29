@@ -3,6 +3,8 @@
 mod mapping;
 pub mod source_metadata;
 pub mod progress;
+#[cfg(test)]
+mod tests_unit;
 
 use crate::mapping::{
     write_pk_data_entry, write_pk_data_header, Key, KeyType, PkDataAdvice, PkHashShard,

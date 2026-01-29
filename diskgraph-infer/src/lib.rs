@@ -28,6 +28,9 @@ use tokio::runtime::Runtime;
 use url::Url;
 use serde::Deserialize;
 
+#[cfg(test)]
+mod tests_infer;
+
 const DEFAULT_SAMPLE_ROWS: usize = 2_000;
 const DEFAULT_CSV_SAMPLE_BYTES: u64 = 256 * 1024;
 const DEFAULT_CSV_SAMPLE_ROWS: usize = 2_000;
@@ -4771,7 +4774,7 @@ mod tests {
                 true,
             ),
         ]);
-        let cols = infer_parquet_schema_from_arrow(&schema).unwrap();
+        let cols = infer_parquet_schema_from_arrow(&schema, None).unwrap();
         let vec32 = cols.iter().find(|c| c.name == "vec32").unwrap();
         let vec64 = cols.iter().find(|c| c.name == "vec64").unwrap();
         assert!(matches!(vec32.ingested_dtype, IngestedType::Float16Array));
