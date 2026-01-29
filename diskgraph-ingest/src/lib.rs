@@ -265,7 +265,6 @@ enum KeyParseError {
     NotInteger,
     NotBase10,
     NotUtf8,
-    Negative,
     InvalidUuid,
     InvalidUuid256,
     InvalidIp,
@@ -7582,8 +7581,8 @@ fn key_type_for_column(col: &ColumnSpec) -> Result<KeyType> {
         | IngestedType::UInt8 => Ok(KeyType::Int64),
         IngestedType::Float32
         | IngestedType::Float64
-        | IngestedType::Decimal128
-        | IngestedType::Decimal256 => Ok(KeyType::Int64),
+        | IngestedType::Decimal128 => Ok(KeyType::Int64),
+        IngestedType::Decimal256 => Ok(KeyType::VarBytes),
         IngestedType::String | IngestedType::Bytes => Ok(KeyType::VarBytes),
         IngestedType::Uuid => Ok(KeyType::Uuid),
         IngestedType::Uuid256 => Ok(KeyType::Uuid256),
@@ -7638,6 +7637,23 @@ fn key_from_access_into_buf(
                     out.extend_from_slice(&(value as u64).to_le_bytes());
                     return Ok(());
                 }
+                IngestedType::Decimal128 => {
+                    let mut value = access
+                        .get_decimal128(idx)
+                        .map_err(|_| KeyParseError::TypeMismatch)?
+                        .ok_or(KeyParseError::TypeMismatch)?;
+                    if let Some(scale) = col.scale {
+                        if scale > 0 {
+                            if let Some(divisor) = 10i128.checked_pow(scale as u32) {
+                                value /= divisor;
+                            }
+                        }
+                    }
+                    let value = i64::try_from(value).map_err(|_| KeyParseError::TooLarge)?;
+                    // Negative values are cast to u64 (two's complement)
+                    out.extend_from_slice(&(value as u64).to_le_bytes());
+                    return Ok(());
+                }
                 IngestedType::String | IngestedType::Bytes => {
                     let array = access
                         .array(idx)
@@ -7650,9 +7666,7 @@ fn key_from_access_into_buf(
                 }
                 _ => return Err(KeyParseError::TypeMismatch),
             };
-            if value < 0 {
-                return Err(KeyParseError::Negative);
-            }
+            // Negative values are cast to u64 (two's complement)
             out.extend_from_slice(&(value as u64).to_le_bytes());
             Ok(())
         }
@@ -7675,7 +7689,7 @@ fn key_from_access_into_buf(
                         .map_err(|_| KeyParseError::TypeMismatch)?;
                     write_bytes(bytes)?;
                 }
-                IngestedType::String => {
+                IngestedType::String | IngestedType::Decimal256 => {
                     access
                         .with_string(idx, |text| {
                             write_bytes(text.as_bytes()).map_err(|_| anyhow!("key parse failed"))?;
@@ -7688,9 +7702,6 @@ fn key_from_access_into_buf(
                         .get_int64(idx)
                         .map_err(|_| KeyParseError::TypeMismatch)?
                         .ok_or(KeyParseError::TypeMismatch)?;
-                    if value < 0 {
-                        return Err(KeyParseError::Negative);
-                    }
                     let start = out.len();
                     let len = write_display_to_vec(out, value);
                     if len > MAX_VAR_KEY_LEN {
@@ -7703,9 +7714,6 @@ fn key_from_access_into_buf(
                         .get_int32(idx)
                         .map_err(|_| KeyParseError::TypeMismatch)?
                         .ok_or(KeyParseError::TypeMismatch)?;
-                    if value < 0 {
-                        return Err(KeyParseError::Negative);
-                    }
                     let start = out.len();
                     let len = write_display_to_vec(out, value);
                     if len > MAX_VAR_KEY_LEN {
@@ -8797,11 +8805,7 @@ fn fast_key_from_array(
                 .downcast_ref::<arrow_array::Int64Array>()
                 .ok_or(KeyParseError::TypeMismatch)?;
             let v = arr.value(row);
-            if v < 0 {
-                Err(KeyParseError::Negative)
-            } else {
-                Ok(Key::Int(v as u64))
-            }
+            Ok(Key::Int(v as u64))
         }
         EdgeKeyFastKind::Int32 => {
             let arr = array
@@ -8809,11 +8813,7 @@ fn fast_key_from_array(
                 .downcast_ref::<arrow_array::Int32Array>()
                 .ok_or(KeyParseError::TypeMismatch)?;
             let v = arr.value(row);
-            if v < 0 {
-                Err(KeyParseError::Negative)
-            } else {
-                Ok(Key::Int(v as u64))
-            }
+            Ok(Key::Int(v as u64))
         }
         EdgeKeyFastKind::Int16 => {
             let arr = array
@@ -8821,11 +8821,7 @@ fn fast_key_from_array(
                 .downcast_ref::<arrow_array::Int16Array>()
                 .ok_or(KeyParseError::TypeMismatch)?;
             let v = arr.value(row);
-            if v < 0 {
-                Err(KeyParseError::Negative)
-            } else {
-                Ok(Key::Int(v as u64))
-            }
+            Ok(Key::Int(v as u64))
         }
         EdgeKeyFastKind::Int8 => {
             let arr = array
@@ -8833,11 +8829,7 @@ fn fast_key_from_array(
                 .downcast_ref::<arrow_array::Int8Array>()
                 .ok_or(KeyParseError::TypeMismatch)?;
             let v = arr.value(row);
-            if v < 0 {
-                Err(KeyParseError::Negative)
-            } else {
-                Ok(Key::Int(v as u64))
-            }
+            Ok(Key::Int(v as u64))
         }
         EdgeKeyFastKind::UInt64 => {
             let arr = array

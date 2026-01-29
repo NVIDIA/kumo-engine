@@ -1320,11 +1320,8 @@ impl<'p> RowAccess<'p> {
                     .downcast_ref::<arrow_array::Decimal128Array>()
                     .ok_or_else(|| anyhow!("decimal128 cast"))?;
                 let value = arr.value(self.row);
-                if *scale == 0 {
-                    return Ok(Some(with_stack_str(value, trimmed, f)?));
-                }
-                let float_value = decimal_i128_to_f64(value, i32::from(*scale));
-                return Ok(Some(with_stack_str(float_value, trimmed, f)?));
+                let text = format_decimal_i128(value, i32::from(*scale));
+                return Ok(Some(with_stack_str(text, trimmed, f)?));
             }
             DataType::Decimal256(_, scale) => {
                 let arr = array
@@ -1332,12 +1329,8 @@ impl<'p> RowAccess<'p> {
                     .downcast_ref::<arrow_array::Decimal256Array>()
                     .ok_or_else(|| anyhow!("decimal256 cast"))?;
                 let value = arr.value(self.row);
-                if *scale == 0 {
-                    return Ok(Some(with_stack_str(value, trimmed, f)?));
-                }
-                let float_value = decimal_i256_to_f64(value, i32::from(*scale))
-                    .ok_or_else(|| anyhow!("decimal256 overflow"))?;
-                return Ok(Some(with_stack_str(float_value, trimmed, f)?));
+                let text = format_decimal_i256(value, i32::from(*scale));
+                return Ok(Some(with_stack_str(text, trimmed, f)?));
             }
             _ => return Err(anyhow!("string type mismatch")),
         };
@@ -6882,6 +6875,45 @@ fn pow10_i128(exp: u32) -> i128 {
 fn format_decimal_i128(value: i128, scale: i32) -> String {
     let negative = value.is_negative();
     let mut digits = value.unsigned_abs().to_string();
+    if scale <= 0 {
+        let zeros = (-scale) as usize;
+        if zeros > 0 {
+            digits.push_str(&"0".repeat(zeros));
+        }
+        return if negative {
+            format!("-{}", digits)
+        } else {
+            digits
+        };
+    }
+    let scale = scale as usize;
+    if digits.len() <= scale {
+        let pad = scale - digits.len();
+        let mut out = String::with_capacity(scale + 2);
+        if negative {
+            out.push('-');
+        }
+        out.push_str("0.");
+        out.push_str(&"0".repeat(pad));
+        out.push_str(&digits);
+        return out;
+    }
+    let split = digits.len() - scale;
+    let mut out = String::with_capacity(digits.len() + 1);
+    if negative {
+        out.push('-');
+    }
+    out.push_str(&digits[..split]);
+    out.push('.');
+    out.push_str(&digits[split..]);
+    out
+}
+
+fn format_decimal_i256(value: arrow_buffer::i256, scale: i32) -> String {
+    let out = BigInt::from_signed_bytes_le(&value.to_le_bytes());
+    let negative = out.sign() == num_bigint::Sign::Minus;
+    let mut digits = out.abs().to_string();
+
     if scale <= 0 {
         let zeros = (-scale) as usize;
         if zeros > 0 {
