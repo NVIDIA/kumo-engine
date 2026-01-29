@@ -303,7 +303,9 @@ pub fn infer_source_metadata(root: &RootSource, options: InferOptions) -> Result
     unify_relationship_types(&mut table_specs, &relationships, &mut warnings.notes);
     drop_join_table_primary_keys(&mut table_specs, &relationships);
     prune_relationships_without_primary_key(&table_specs, &mut relationships);
-    infer_primary_key_relationships(&table_specs, &mut relationships);
+    if options.graph_config.is_none() {
+        infer_primary_key_relationships(&table_specs, &mut relationships);
+    }
     infer_edge_tables(&mut table_specs, &relationships);
     prune_relationships_for_edge_tables(&table_specs, &mut relationships);
     let edge_sort_keys = infer_edge_sort_keys(&table_specs, &relationships);
