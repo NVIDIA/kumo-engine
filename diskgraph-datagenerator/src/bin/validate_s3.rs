@@ -317,6 +317,34 @@ async fn validate_job(
     })
 }
 
+fn calculate_expected_node_count(table_name: &str, s3_count: u64, stats: &IngestStats) -> u64 {
+    let mut dropped = 0;
+
+    // 1. Parse Failures (from key_failures_by_context)
+    // Context format: "pkey:{table}.{column}"
+    for (context, failures) in &stats.key_failures_by_context {
+        if context.starts_with(&format!("pkey:{}.", table_name)) {
+            dropped += failures.parse_failures;
+        }
+    }
+
+    // 2. Duplicates (from pk_duplicate_counts)
+    dropped += get_table_duplicates(table_name, stats);
+
+    s3_count.saturating_sub(dropped)
+}
+
+fn get_table_duplicates(table_name: &str, stats: &IngestStats) -> u64 {
+    let mut count = 0;
+    // Key format: "{table}:shard-{shard_id}"
+    for (shard_key, c) in &stats.pk_duplicate_counts {
+        if shard_key.starts_with(&format!("{}:", table_name)) {
+            count += c;
+        }
+    }
+    count
+}
+
 async fn verify_s3_stats(data_dir: &Path, customer: &str, job_id: &str, stats: &IngestStats) -> Result<Vec<String>> {
     let mut messages = Vec::new();
     let bucket = if customer.eq_ignore_ascii_case("doordash") {
@@ -388,10 +416,13 @@ async fn verify_s3_stats(data_dir: &Path, customer: &str, job_id: &str, stats: &
 
         if let Some(s3_rows) = s3_rows {
             if let Some(&ingest_rows) = stats.node_counts.get(&table_name) {
-                 if s3_rows == ingest_rows {
+                 let expected_rows = calculate_expected_node_count(&table_name, s3_rows, stats);
+                 if ingest_rows == s3_rows {
                      messages.push(format!("PASS: {} (S3: {}, Ingest: {})", table_name, s3_rows, ingest_rows));
+                 } else if ingest_rows == expected_rows {
+                     messages.push(format!("PASS: {} (S3: {}, Ingest: {}, Adjusted: {})", table_name, s3_rows, ingest_rows, expected_rows));
                  } else {
-                     messages.push(format!("FAIL: {} (S3: {}, Ingest: {}, Diff: {:.2}%)", table_name, s3_rows, ingest_rows, diff_pct(s3_rows, ingest_rows) * 100.0));
+                     messages.push(format!("FAIL: {} (S3: {}, Ingest: {}, Expected: {}, Diff: {:.2}%)", table_name, s3_rows, ingest_rows, expected_rows, diff_pct(s3_rows, ingest_rows) * 100.0));
                  }
             } else {
                  messages.push(format!("INFO: {} (S3 rows: {}, not in node_counts - likely edge table)", table_name, s3_rows));
