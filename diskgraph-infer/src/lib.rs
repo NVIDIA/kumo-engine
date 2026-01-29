@@ -241,6 +241,9 @@ pub fn infer_source_metadata(root: &RootSource, options: InferOptions) -> Result
                     if let Some(dtype_str) = col_dtypes.get(&col.name) {
                         if let Some(ingested_type) = map_kumo_dtype(dtype_str) {
                             col.ingested_dtype = ingested_type;
+                            if !matches!(col.ingested_dtype, IngestedType::String | IngestedType::Bytes) {
+                                col.fixed_len = None;
+                            }
                         }
                     }
                 }
@@ -5069,11 +5072,15 @@ fn map_kumo_dtype(dtype: &str) -> Option<IngestedType> {
         "int32" => Some(IngestedType::Int32),
         "int16" => Some(IngestedType::Int16),
         "byte" => Some(IngestedType::UInt8),
-        "float" | "float32" | "float64" => Some(IngestedType::Float32),
+        "float" | "float32" => Some(IngestedType::Float32),
+        "float64" => Some(IngestedType::Float64),
         "string" => Some(IngestedType::String),
         "date" => Some(IngestedType::Date),
         "time" => Some(IngestedType::Timestamp),
-        "floatlist" => Some(IngestedType::Float16Array),
+        "timedelta" => Some(IngestedType::Int64),
+        "floatlist" => Some(IngestedType::Float32Array),
+        "intlist" => Some(IngestedType::String), // Fallback
+        "stringlist" => Some(IngestedType::String), // Fallback
         "binary" => Some(IngestedType::Bytes),
         _ => None,
     }
