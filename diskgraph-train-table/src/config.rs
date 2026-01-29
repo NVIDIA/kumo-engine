@@ -76,6 +76,7 @@ pub struct QueryOptions {
     pub allow_empty_target: bool,
     #[serde(default)]
     pub temporal_sampling: TemporalSampling,
+    pub entity_time_column: Option<String>,
 }
 
 impl Default for QueryOptions {
@@ -88,6 +89,7 @@ impl Default for QueryOptions {
             drop_earliest_timeframe: default_drop_earliest_timeframe(),
             allow_empty_target: false,
             temporal_sampling: TemporalSampling::Random,
+            entity_time_column: None,
         }
     }
 }

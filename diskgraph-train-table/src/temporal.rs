@@ -9,6 +9,7 @@ use diskgraph_index::builder::compute_relation_layouts;
 use diskgraph_index::graph::GraphIndexReader;
 use diskgraph_index::layout::RelationSegment;
 use indicatif::{ProgressBar, ProgressStyle};
+use diskgraph_rowpack::{IngestedType, RowPackDecodeScratch, RowPackDecoder, ValueRef};
 
 use crate::ast::{AggFunc, AggTarget, AggregationExpr, PredicateExpr, PredictExpr, Query, TimeUnit};
 use crate::config::{QueryOptions, TemporalSampling};
@@ -109,6 +110,19 @@ fn execute_temporal_with_reader(
         .ok_or_else(|| anyhow!("missing window"))?;
     let target_window_secs = window_seconds(target_window);
 
+    let mut agg_plans = Vec::new();
+    for agg in &aggs {
+        agg_plans.push(build_agg_plan(agg, &query.for_each.table, &graph, &relation_map)?);
+    }
+
+    let Some((global_start, global_end)) = compute_global_time_range(&entity_table, &agg_plans)? else {
+        return Ok(Vec::new());
+    };
+
+    let entity_decoder = entity_table.node_data_decoder();
+    let entity_time_idx = resolve_entity_time_index(entity_decoder, options)?;
+    let mut entity_scratch = RowPackDecodeScratch::default();
+
     let mut rows = Vec::new();
     let node_count = entity_table.node_count();
     let end = end.unwrap_or(node_count).min(node_count);
@@ -125,57 +139,40 @@ fn execute_temporal_with_reader(
         let view = entity_table.edges_for_node(node_id)?;
         let segments = view.relation_segments()?;
 
-        let mut per_agg_ranges = Vec::new();
-        let mut target_range = None;
-        let mut agg_plans = Vec::new();
-        for (idx, agg) in aggs.iter().enumerate() {
-            let plan = build_agg_plan(agg, &query.for_each.table, &graph, &relation_map)?;
-            let rel_info = &plan.rel;
-            let segment = segments
-                .get(rel_info.index)
-                .ok_or_else(|| anyhow!("missing segment for relation {}", rel_info.name))?;
-            let (min_ts, max_ts) = scan_edge_range(segment, &rel_info.meta)?;
-            let Some(min_ts) = min_ts else { continue };
-            let Some(max_ts) = max_ts else { continue };
-            let window = agg.window.as_ref().ok_or_else(|| anyhow!("missing window"))?;
-            let (start, end) = window_offsets_seconds(window);
-            let range_start = min_ts.saturating_sub(end);
-            let range_end = max_ts.saturating_sub(start);
-            per_agg_ranges.push((range_start, range_end));
-            if idx == target_agg_index {
-                target_range = Some((range_start, range_end));
+        let mut sample_start = global_start;
+        if let Some(idx) = entity_time_idx {
+            let decoder = entity_decoder.ok_or_else(|| {
+                anyhow!(
+                    "entity time column requires node data for table {}",
+                    entity_table.node_type()
+                )
+            })?;
+            let data = view
+                .node_data()?
+                .ok_or_else(|| anyhow!("missing node data for entity table {}", entity_table.node_type()))?;
+            let ts = decode_entity_timestamp(decoder, data, idx, &mut entity_scratch)?;
+            let Some(ts) = ts else { continue };
+            if ts > sample_start {
+                sample_start = ts;
             }
-            agg_plans.push(plan);
         }
-
-        let Some((target_start, target_end)) = target_range else { continue };
-        if target_end <= target_start {
-            continue;
-        }
-
-        let (global_start, global_end) = per_agg_ranges
-            .iter()
-            .fold((target_start, target_end), |acc, r| (acc.0.min(r.0), acc.1.max(r.1)));
-        if global_end <= global_start {
-            continue;
-        }
-
-        let range_len = (target_end - target_start).max(0) as f64;
-        let sample_denom = (target_window_secs as f64 * 1.5).max(1.0);
-        let samples = (range_len / sample_denom).floor() as usize;
-        if samples == 0 {
+        let sample_end = global_end;
+        if sample_end <= sample_start {
             continue;
         }
 
         match options.temporal_sampling {
             TemporalSampling::Random => {
+                let range_len = (sample_end - sample_start).max(0) as f64;
+                let sample_denom = (target_window_secs as f64 * 1.5).max(1.0);
+                let samples = (range_len / sample_denom).floor().max(1.0) as usize;
                 let seed = (node_id as u64)
                     .wrapping_mul(6364136223846793005)
                     .wrapping_add(1442695040888963407);
                 let mut rng = XorShift64 { state: seed };
                 for _ in 0..samples {
                     let ts =
-                        global_start + (rng.next_f64() * (global_end - global_start) as f64) as i64;
+                        sample_start + (rng.next_f64() * (sample_end - sample_start) as f64) as i64;
                         evaluate_samples(
                             node_id,
                             ts,
@@ -190,9 +187,8 @@ fn execute_temporal_with_reader(
                 }
             }
             TemporalSampling::Timeframe => {
-                let mut ts = target_start;
-                while ts < target_end {
-                    if ts >= global_start && ts <= global_end {
+                let mut ts = sample_start;
+                while ts < sample_end {
                         evaluate_samples(
                             node_id,
                             ts,
@@ -204,7 +200,6 @@ fn execute_temporal_with_reader(
                             query.assuming.as_ref(),
                             &mut rows,
                         )?;
-                    }
                     ts = ts.saturating_add(target_window_secs);
                 }
             }
@@ -227,6 +222,88 @@ fn execute_temporal_with_reader(
         }
     }
     Ok(rows)
+}
+
+fn compute_global_time_range(
+    entity_table: &std::sync::Arc<diskgraph_index::graph::TableReader>,
+    agg_plans: &[AggPlan],
+) -> Result<Option<(i64, i64)>> {
+    let mut min_ts: Option<i64> = None;
+    let mut max_ts: Option<i64> = None;
+    let node_count = entity_table.node_count();
+    for node_id in 0..node_count {
+        let view = entity_table.edges_for_node(node_id)?;
+        let segments = view.relation_segments()?;
+        for plan in agg_plans {
+            let segment = segments
+                .get(plan.rel.index)
+                .ok_or_else(|| anyhow!("missing segment for relation {}", plan.rel.name))?;
+            let (seg_min, seg_max) = scan_edge_range(segment, &plan.rel.meta)?;
+            if let Some(ts) = seg_min {
+                min_ts = Some(min_ts.map_or(ts, |v| v.min(ts)));
+            }
+            if let Some(ts) = seg_max {
+                max_ts = Some(max_ts.map_or(ts, |v| v.max(ts)));
+            }
+        }
+    }
+    Ok(match (min_ts, max_ts) {
+        (Some(min), Some(max)) => Some((min, max)),
+        _ => None,
+    })
+}
+
+fn resolve_entity_time_index(
+    decoder: Option<&RowPackDecoder>,
+    options: &QueryOptions,
+) -> Result<Option<usize>> {
+    if let Some(name) = options.entity_time_column.as_deref() {
+        let Some(decoder) = decoder else {
+            return Err(anyhow!("entity time column requires node data"));
+        };
+        let idx = decoder
+            .context()
+            .columns
+            .iter()
+            .position(|col| col.name == name)
+            .ok_or_else(|| anyhow!("missing entity time column {name}"))?;
+        return Ok(Some(idx));
+    }
+    let Some(decoder) = decoder else { return Ok(None); };
+    Ok(find_timestamp_index(decoder.context()))
+}
+
+fn find_timestamp_index(ctx: &diskgraph_rowpack::RowPackContext) -> Option<usize> {
+    for (idx, col) in ctx.columns.iter().enumerate() {
+        if matches!(col.logical_type, IngestedType::Timestamp | IngestedType::Date) {
+            return Some(idx);
+        }
+    }
+    for name in ["timestamp", "time", "ts"] {
+        if let Some(idx) = ctx.columns.iter().position(|col| col.name == name) {
+            return Some(idx);
+        }
+    }
+    None
+}
+
+fn decode_entity_timestamp(
+    decoder: &RowPackDecoder,
+    row: &[u8],
+    idx: usize,
+    scratch: &mut RowPackDecodeScratch,
+) -> Result<Option<i64>> {
+    let value = decoder.decode_column_value(row, idx, scratch)?;
+    Ok(match value {
+        ValueRef::Timestamp { secs, .. } => Some(secs),
+        ValueRef::Date(days) => Some(days as i64 * 86_400),
+        ValueRef::Int64(v) => Some(v),
+        ValueRef::Int32(v) => Some(v as i64),
+        ValueRef::UInt64(v) => Some(v as i64),
+        ValueRef::UInt32(v) => Some(v as i64),
+        ValueRef::Null => None,
+        other => return Err(anyhow!("unsupported entity time type: {other:?}")),
+    })
 }
 
 fn evaluate_samples(

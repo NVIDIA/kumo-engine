@@ -333,6 +333,86 @@ fn temporal_predict_comparison_e2e() {
 }
 
 #[test]
+fn temporal_sampling_global_range_e2e() {
+    let dir = tempdir().unwrap();
+    let index_root = dir.path().join("index");
+    fs::create_dir_all(&index_root).unwrap();
+
+    let metadata = build_metadata_count();
+    fs::write(
+        index_root.join("index_metadata.json"),
+        serde_json::to_vec_pretty(&metadata).unwrap(),
+    )
+    .unwrap();
+
+    write_edge_shard(
+        &index_root,
+        "users",
+        0,
+        &metadata,
+        vec![vec![(1u64, 50i64), (2u64, 150i64)], vec![]],
+    );
+    write_empty_shard(&index_root, "articles", 0, 2);
+
+    let query = parse_query("PREDICT COUNT(transactions.*, 0, 10, seconds) = 0 FOR EACH users.user_id")
+        .unwrap();
+    let options = QueryOptions {
+        temporal_sampling: TemporalSampling::Timeframe,
+        ..Default::default()
+    };
+    let rows = execute_temporal(&query, &index_root, &options).unwrap();
+    assert!(!rows.is_empty());
+
+    let min_ts = rows.iter().map(|r| r.timestamp).min().unwrap();
+    let max_ts = rows.iter().map(|r| r.timestamp).max().unwrap();
+    assert_eq!(min_ts, 50);
+    assert!(max_ts <= 150);
+}
+
+#[test]
+fn temporal_sampling_entity_time_column_e2e() {
+    let dir = tempdir().unwrap();
+    let index_root = dir.path().join("index");
+    fs::create_dir_all(&index_root).unwrap();
+
+    let metadata = build_metadata_count_with_user_time();
+    fs::write(
+        index_root.join("index_metadata.json"),
+        serde_json::to_vec_pretty(&metadata).unwrap(),
+    )
+    .unwrap();
+
+    write_empty_shard(&index_root, "articles", 0, 2);
+
+    let user_ctx = build_users_time_ctx();
+    write_rowpack_ctx(&index_root.join("nodes/users/node_data.ctx"), &user_ctx);
+    write_edge_shard_with_node_data(
+        &index_root,
+        "users",
+        0,
+        &metadata,
+        vec![vec![(1u64, 50i64), (2u64, 150i64)]],
+        &user_ctx,
+        vec![vec![ValueRef::Timestamp { secs: 120, nanos: 0 }]],
+    );
+
+    let query = parse_query("PREDICT COUNT(transactions.*, 0, 10, seconds) = 0 FOR EACH users.user_id")
+        .unwrap();
+    let options = QueryOptions {
+        temporal_sampling: TemporalSampling::Timeframe,
+        entity_time_column: Some("created_at".to_string()),
+        ..Default::default()
+    };
+    let rows = execute_temporal(&query, &index_root, &options).unwrap();
+    assert!(!rows.is_empty());
+
+    let min_ts = rows.iter().map(|r| r.timestamp).min().unwrap();
+    let max_ts = rows.iter().map(|r| r.timestamp).max().unwrap();
+    assert!(min_ts >= 120);
+    assert!(max_ts <= 150);
+}
+
+#[test]
 fn temporal_where_after_for_each_e2e() {
     let dir = tempdir().unwrap();
     let index_root = dir.path().join("index");
@@ -754,6 +834,62 @@ fn build_metadata_count() -> DatasetMetadata {
     }
 }
 
+fn build_metadata_count_with_user_time() -> DatasetMetadata {
+    DatasetMetadata {
+        dataset_name: "temporal_test_user_time".to_string(),
+        node_types: vec![
+            NodeTypeMetadata {
+                name: "users".to_string(),
+                max_id: 0,
+                has_node_data: true,
+                node_data_compression: Some(diskgraph_core::metadata::NodeDataCompression {
+                    codec: "rowpack".to_string(),
+                    context_path: "nodes/users/node_data.ctx".to_string(),
+                }),
+                primary_key_map: None,
+                shards: vec![NodeShardMetadata {
+                    min_id: 0,
+                    max_id: 0,
+                    node_data_paths: None,
+                }],
+            },
+            NodeTypeMetadata {
+                name: "articles".to_string(),
+                max_id: 2,
+                has_node_data: false,
+                node_data_compression: None,
+                primary_key_map: None,
+                shards: vec![NodeShardMetadata {
+                    min_id: 0,
+                    max_id: 2,
+                    node_data_paths: None,
+                }],
+            },
+        ],
+        edge_relations: vec![EdgeRelationMetadata {
+            name: "transactions".to_string(),
+            src_type: "users".to_string(),
+            dst_type: "articles".to_string(),
+            shards: vec![],
+            dest_sort_key_bits: Some(16),
+            dest_sort_key: Some(EdgeSortKeyMetadata {
+                width_bits: 16,
+                timestamp: Some(EdgeSortKeyTimestampMetadata {
+                    table: "transactions".to_string(),
+                    column: "timestamp".to_string(),
+                    encoding: EdgeSortKeyTimestampEncoding {
+                        kind: EdgeSortKeyTimestampKind::Int16,
+                        anchor: 0,
+                        step: 1,
+                    },
+                }),
+                weight: None,
+            }),
+            format: diskgraph_core::metadata::EdgeStorageFormat::Binary,
+        }],
+    }
+}
+
 fn build_metadata_sum() -> DatasetMetadata {
     DatasetMetadata {
         dataset_name: "temporal_sum_test".to_string(),
@@ -845,6 +981,50 @@ fn write_edge_shard(
     write_offsets_file(&dir.join("offsets.bin"), offsets, edge_count);
 }
 
+fn write_edge_shard_with_node_data(
+    root: &Path,
+    table: &str,
+    shard_idx: usize,
+    metadata: &DatasetMetadata,
+    edges_per_node: Vec<Vec<(u64, i64)>>,
+    ctx: &RowPackContext,
+    rows: Vec<Vec<ValueRef<'_>>>,
+) {
+    let dir = root.join("nodes").join(table).join(format!("shard-{:05}", shard_idx));
+    fs::create_dir_all(&dir).unwrap();
+    let rels = metadata.edge_relations.clone();
+    let layouts = compute_relation_layouts(&rels, &metadata.node_types).unwrap();
+    let layout = &layouts[0];
+    let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
+    let mut scratch = RowPackScratch::new(encoder.context());
+
+    let mut offsets = Vec::new();
+    offsets.push(0u64);
+    let mut edge_bytes = Vec::new();
+    let mut edge_count = 0u64;
+
+    for (node_edges, row) in edges_per_node.into_iter().zip(rows.into_iter()) {
+        let count = node_edges.len() as u32;
+        edge_bytes.extend_from_slice(&encode_varint(count));
+        let mut encoded = Vec::new();
+        encoder.encode_row_into(&row, &mut encoded, &mut scratch).unwrap();
+        let len = encoded.len() as u16;
+        edge_bytes.extend_from_slice(&len.to_le_bytes());
+        for (dst, ts) in node_edges {
+            let sort_key = encode_timestamp(ts, EdgeSortKeyTimestampKind::Int16, 0, 1);
+            let entry = encode_edge_entry(dst, sort_key, layout);
+            edge_bytes.extend_from_slice(&entry);
+            edge_count += 1;
+        }
+        edge_bytes.extend_from_slice(&encoded);
+        offsets.push(edge_bytes.len() as u64);
+    }
+
+    let edges_path = dir.join("edges.bin");
+    fs::write(&edges_path, &edge_bytes).unwrap();
+    write_offsets_file(&dir.join("offsets.bin"), offsets, edge_count);
+}
+
 fn write_empty_shard(root: &Path, table: &str, shard_idx: usize, nodes: u64) {
     let dir = root.join("nodes").join(table).join(format!("shard-{:05}", shard_idx));
     fs::create_dir_all(&dir).unwrap();
@@ -876,6 +1056,18 @@ fn build_transactions_ctx() -> RowPackContext {
             },
         ],
         estimated_row_bytes: 24,
+    }
+}
+
+fn build_users_time_ctx() -> RowPackContext {
+    RowPackContext {
+        version: 3,
+        columns: vec![ColumnContext {
+            name: "created_at".to_string(),
+            logical_type: IngestedType::Timestamp,
+            encoding: ColumnEncoding::Timestamp,
+        }],
+        estimated_row_bytes: 16,
     }
 }
 
