@@ -1,5 +1,5 @@
 use super::{key_from_access_into_buf, BitWriter, OutputSink};
-use crate::source_metadata::{ColumnSpec, IngestedType};
+use crate::graph_config::{ColumnSpec, IngestedType};
 use diskgraph_rowpack::{RowAccess, RowAccessStats, RowAccessHints};
 use arrow_array::{Decimal128Array, Int64Array, ArrayRef, Decimal256Array};
 use std::sync::Arc;
@@ -134,11 +134,8 @@ fn test_bitwriter_packing() -> anyhow::Result<()> {
     Ok(())
 }
 
-use crate::source_metadata::TimestampUnit;
-use crate::source_metadata::TableSpec;
-use crate::source_metadata::TableFormat;
-use crate::source_metadata::TimestampEncodingSpec;
-use crate::source_metadata::TimestampEncodingKind;
+use crate::graph_config::{TableFormat, TableSpec, TimestampUnit};
+use crate::{TimestampEncodingKind, TimestampEncodingSpec};
 use crate::errors::{KeyParseResult, KeyParseError};
 use chrono::NaiveDate;
 use arrow_array::{BinaryArray, StringArray};
@@ -220,9 +217,12 @@ fn parse_uuid_bytes(bytes: &[u8]) -> KeyParseResult<[u8; 16]> {
             }],
             primary_key: None,
             create_time: None,
+            end_time: None,
             weight: None,
             edge_table: None,
             rowpack: None,
+            source: None,
+            fkeys: Vec::new(),
         }
     }
 
@@ -315,9 +315,12 @@ fn parse_uuid_bytes(bytes: &[u8]) -> KeyParseResult<[u8; 16]> {
             }],
             primary_key: None,
             create_time: None,
+            end_time: None,
             weight: None,
             edge_table: None,
             rowpack: None,
+            source: None,
+            fkeys: Vec::new(),
         };
         let arr = StringArray::from(vec!["2020-01-02T03:04:05Z"]);
         let cols: Vec<ArrayRef> = vec![Arc::new(arr)];
@@ -346,9 +349,12 @@ fn parse_uuid_bytes(bytes: &[u8]) -> KeyParseResult<[u8; 16]> {
             }],
             primary_key: None,
             create_time: None,
+            end_time: None,
             weight: None,
             edge_table: None,
             rowpack: None,
+            source: None,
+            fkeys: Vec::new(),
         };
         let arr = Int64Array::from(vec![1_500_000_i64]);
         let cols: Vec<ArrayRef> = vec![Arc::new(arr)];
@@ -393,9 +399,12 @@ fn parse_uuid_bytes(bytes: &[u8]) -> KeyParseResult<[u8; 16]> {
             }],
             primary_key: None,
             create_time: None,
+            end_time: None,
             weight: None,
             edge_table: None,
             rowpack: None,
+            source: None,
+            fkeys: Vec::new(),
         };
         let arr = StringArray::from(vec!["2024-02-03"]);
         let cols: Vec<ArrayRef> = vec![Arc::new(arr)];
@@ -431,9 +440,12 @@ fn parse_uuid_bytes(bytes: &[u8]) -> KeyParseResult<[u8; 16]> {
             }],
             primary_key: None,
             create_time: None,
+            end_time: None,
             weight: None,
             edge_table: None,
             rowpack: None,
+            source: None,
+            fkeys: Vec::new(),
         };
         let arr = Int64Array::from(vec![42_i64]);
         let cols: Vec<ArrayRef> = vec![Arc::new(arr)];
@@ -464,9 +476,12 @@ fn parse_uuid_bytes(bytes: &[u8]) -> KeyParseResult<[u8; 16]> {
             }],
             primary_key: None,
             create_time: None,
+            end_time: None,
             weight: None,
             edge_table: None,
             rowpack: None,
+            source: None,
+            fkeys: Vec::new(),
         };
         let arr = BinaryArray::from(vec![b"123".as_slice()]);
         let cols: Vec<ArrayRef> = vec![Arc::new(arr)];

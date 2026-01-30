@@ -7,10 +7,7 @@ use diskgraph_fs::{
     CloudTransferConfig, GcsConfig, S3Config,
 };
 use diskgraph_infer::{infer_source_metadata, parse_root_source, InferOptions};
-use diskgraph_ingest::source_metadata::{
-    relationship_name, EdgeTableSortKeysSpec, EdgeTableSpec, EdgeSortKeysSpec, RelationshipSpec,
-    SortKeySpec, TableSpec, TimestampEncodingKind, WeightEncodingKind,
-};
+use diskgraph_ingest::graph_config::{EdgeTableSpec, TableSpec};
 use object_store::path::Path as ObjectPath;
 use url::Url;
 
@@ -62,8 +59,8 @@ fn main() -> Result<()> {
     println!("Tables:");
     for table in &result.metadata.tables {
         let format = match table.format {
-            diskgraph_ingest::source_metadata::TableFormat::Csv => "csv",
-            diskgraph_ingest::source_metadata::TableFormat::Parquet => "parquet",
+            diskgraph_ingest::graph_config::TableFormat::Csv => "csv",
+            diskgraph_ingest::graph_config::TableFormat::Parquet => "parquet",
         };
         let pk = table.primary_key.as_deref().unwrap_or("none");
         let create_time = table.create_time.as_deref().unwrap_or("none");
@@ -76,12 +73,23 @@ fn main() -> Result<()> {
             create_time
         );
     }
-    if !result.metadata.relationships.is_empty() {
-        println!("Relationships:");
-        print_relationships(
-            &result.metadata.relationships,
-            result.metadata.edge_sort_keys.as_ref(),
-        );
+    // Print fkeys embedded in tables
+    let tables_with_fkeys: Vec<_> = result
+        .metadata
+        .tables
+        .iter()
+        .filter(|table| !table.fkeys.is_empty())
+        .collect();
+    if !tables_with_fkeys.is_empty() {
+        println!("Foreign Keys:");
+        for table in tables_with_fkeys {
+            for fkey in &table.fkeys {
+                println!(
+                    "  {}.{} -> {}",
+                    table.name, fkey.src_column, fkey.dst_table
+                );
+            }
+        }
     }
     let edge_tables: Vec<_> = result
         .metadata
@@ -91,10 +99,7 @@ fn main() -> Result<()> {
         .collect();
     if !edge_tables.is_empty() {
         println!("Edge table relationships:");
-        print_edge_table_relationships(
-            &edge_tables,
-            result.metadata.edge_sort_keys.as_ref(),
-        );
+        print_edge_table_relationships(&edge_tables);
     }
     if !result.warnings.ignored_files.is_empty() {
         println!("Ignored files (schema mismatch):");
@@ -298,101 +303,20 @@ fn join_prefix(prefix: &str, name: &str) -> String {
     }
 }
 
-fn print_relationships(rels: &[RelationshipSpec], keys: Option<&EdgeSortKeysSpec>) {
-    for rel in rels {
-        let name = rel.name.as_deref().unwrap_or("foreignkey");
-        println!(
-            "  {}: {}.{} -> {}.{}",
-            name, rel.src_table, rel.src_column, rel.dst_table, rel.dst_column
-        );
-        if let Some(keys) = keys {
-            if let Some(spec) = keys.relationships.get(&relationship_name(rel)) {
-                print_directional_keys("forward", spec.forward.as_ref());
-                print_directional_keys("reverse", spec.reverse.as_ref());
-            }
-        }
-    }
-}
-
-fn print_edge_table_relationships(
-    edge_tables: &[(&TableSpec, &EdgeTableSpec)],
-    keys: Option<&EdgeSortKeysSpec>,
-) {
+fn print_edge_table_relationships(edge_tables: &[(&TableSpec, &EdgeTableSpec)]) {
     for (table, edge) in edge_tables {
         println!(
-            "  {}: {} -> {}.{}; {} -> {}.{}",
+            "  {}: {} -> {}; {} -> {}",
             table.name,
-            edge.src_fk.column,
+            edge.src_fk.edge_column,
             edge.src_fk.ref_table,
-            edge.src_fk.ref_column,
-            edge.dst_fk.column,
-            edge.dst_fk.ref_table,
-            edge.dst_fk.ref_column
+            edge.dst_fk.edge_column,
+            edge.dst_fk.ref_table
         );
-        if let Some(keys) = keys {
-            if let Some(spec) = keys.edge_tables.get(&table.name) {
-                print_edge_table_keys(spec);
-            }
-        }
     }
 }
 
-fn print_edge_table_keys(spec: &EdgeTableSortKeysSpec) {
-    print_directional_keys("src_to_dst", spec.src_to_dst.as_ref());
-    print_directional_keys("dst_to_src", spec.dst_to_src.as_ref());
-}
-
-fn print_directional_keys(label: &str, spec: Option<&SortKeySpec>) {
-    let Some(spec) = spec else {
-        return;
-    };
-    let desc = format_sort_key_spec(spec);
-    if desc.is_empty() {
-        return;
-    }
-    println!("    {}: {}", label, desc);
-}
-
-fn format_sort_key_spec(spec: &SortKeySpec) -> String {
-    let mut parts = Vec::new();
-    if let Some(ts) = &spec.timestamp {
-        parts.push(format!(
-            "ts={}.{} ({})",
-            ts.table,
-            ts.column,
-            format_timestamp_kind(&ts.encoding.kind)
-        ));
-    }
-    if let Some(weight) = &spec.weight {
-        parts.push(format!(
-            "weight={}.{} ({})",
-            weight.table,
-            weight.expr,
-            format_weight_kind(&weight.encoding.dtype)
-        ));
-    }
-    parts.join(", ")
-}
-
-fn format_timestamp_kind(kind: &TimestampEncodingKind) -> &'static str {
-    match kind {
-        TimestampEncodingKind::Int8 => "int8",
-        TimestampEncodingKind::Int16 => "int16",
-        TimestampEncodingKind::Int32 => "int32",
-    }
-}
-
-fn format_weight_kind(kind: &WeightEncodingKind) -> &'static str {
-    match kind {
-        WeightEncodingKind::Byte => "byte",
-        WeightEncodingKind::UInt16 => "uint16",
-        WeightEncodingKind::UInt32 => "uint32",
-        WeightEncodingKind::Float16 => "float16",
-        WeightEncodingKind::Float32 => "float32",
-    }
-}
-
-fn fmt_column(col: &Option<diskgraph_ingest::source_metadata::ColumnSpec>) -> String {
+fn fmt_column(col: &Option<diskgraph_ingest::graph_config::ColumnSpec>) -> String {
     match col {
         Some(spec) => format!("{}:{:?}", spec.name, spec.ingested_dtype),
         None => "<missing>".to_string(),

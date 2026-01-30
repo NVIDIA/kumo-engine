@@ -45,8 +45,8 @@ Notes:
   "create_time": "created_at",
   "weight": "weight",
   "edge_table": {
-    "src_fk": { "column": "src_id", "ref_table": "Users", "ref_column": "id" },
-    "dst_fk": { "column": "dst_id", "ref_table": "Orders", "ref_column": "id" }
+    "src_fk": { "edge_column": "src_id", "ref_table": "Users" },
+    "dst_fk": { "edge_column": "dst_id", "ref_table": "Orders" }
   },
   "rowpack": { /* RowPackConfig */ }
 }

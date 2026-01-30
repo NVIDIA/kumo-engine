@@ -33,9 +33,8 @@ fn test_unify_types() {
 
 use crate::*;
 use arrow_schema::{Field, DataType, Schema};
-use std::collections::HashMap;
 use std::sync::Arc;
-use diskgraph_ingest::source_metadata::{TableSpec, TableFormat, ColumnSpec, RelationshipSpec, TimestampEncodingKind, WeightEncodingKind, relationship_name};
+use diskgraph_ingest::graph_config::{ColumnSpec, TableFormat, TableSpec};
 
     fn table(name: &str, cols: &[(&str, IngestedType)]) -> TableSpec {
         TableSpec {
@@ -57,9 +56,12 @@ use diskgraph_ingest::source_metadata::{TableSpec, TableFormat, ColumnSpec, Rela
                 .collect(),
             primary_key: None,
             create_time: None,
+            end_time: None,
             weight: None,
             edge_table: None,
             rowpack: None,
+            source: None,
+            fkeys: Vec::new(),
         }
     }
 
@@ -136,9 +138,12 @@ use diskgraph_ingest::source_metadata::{TableSpec, TableFormat, ColumnSpec, Rela
             ],
             primary_key: None,
             create_time: None,
+            end_time: None,
             weight: None,
             edge_table: None,
             rowpack: None,
+            source: None,
+            fkeys: Vec::new(),
         };
         infer_primary_keys(std::slice::from_mut(&mut t));
         assert_eq!(t.primary_key.as_deref(), Some("customer_id"));
@@ -422,9 +427,9 @@ use diskgraph_ingest::source_metadata::{TableSpec, TableFormat, ColumnSpec, Rela
             .find(|t| t.name == "user_item_edges")
             .unwrap();
         let edge_spec = edge.edge_table.as_ref().unwrap();
-        assert_eq!(edge_spec.src_fk.column, "user_id");
+        assert_eq!(edge_spec.src_fk.edge_column, "user_id");
         assert_eq!(edge_spec.src_fk.ref_table, "users");
-        assert_eq!(edge_spec.dst_fk.column, "item_id");
+        assert_eq!(edge_spec.dst_fk.edge_column, "item_id");
         assert_eq!(edge_spec.dst_fk.ref_table, "items");
         assert!(
             !rels.iter().any(|rel| rel.src_table == "user_item_edges"),
@@ -432,122 +437,7 @@ use diskgraph_ingest::source_metadata::{TableSpec, TableFormat, ColumnSpec, Rela
         );
     }
 
-    #[test]
-    fn infer_relationship_sort_keys_use_create_time() {
-        let mut tables = vec![
-            table(
-                "users",
-                &[
-                    ("user_id", IngestedType::Int64),
-                    ("created_at", IngestedType::Timestamp),
-                    ("weight", IngestedType::Float32),
-                ],
-            ),
-            table(
-                "events",
-                &[
-                    ("event_id", IngestedType::Int64),
-                    ("user_id", IngestedType::Int64),
-                    ("created_at", IngestedType::Timestamp),
-                ],
-            ),
-        ];
-        infer_primary_keys(&mut tables);
-        infer_create_time(&mut tables);
-        let mut rels = Vec::new();
-        let mut notes = Vec::new();
-        infer_foreign_keys(&tables, &mut rels, &mut notes, None);
-        drop_join_table_primary_keys(&mut tables, &rels);
-        prune_relationships_without_primary_key(&tables, &mut rels);
-        infer_primary_key_relationships(&tables, &mut rels);
-        infer_edge_tables(&mut tables, &rels);
-        prune_relationships_for_edge_tables(&tables, &mut rels);
-
-        let specs = infer_edge_sort_keys(&tables, &rels).expect("edge sort keys");
-        let rel = rels
-            .iter()
-            .find(|rel| rel.src_table == "events" && rel.dst_table == "users")
-            .expect("relationship");
-        let rel_spec = specs
-            .relationships
-            .get(&relationship_name(rel))
-            .expect("relationship sort key");
-        let forward = rel_spec.forward.as_ref().expect("forward sort key");
-        let forward_ts = forward.timestamp.as_ref().expect("forward timestamp");
-        assert_eq!(forward_ts.table, "users");
-        assert_eq!(forward_ts.column, "created_at");
-        assert_eq!(forward_ts.encoding.kind, TimestampEncodingKind::Int16);
-        assert_eq!(forward_ts.encoding.step, 86_400);
-        let forward_weight = forward.weight.as_ref().expect("forward weight");
-        assert_eq!(forward_weight.table, "users");
-        assert_eq!(forward_weight.expr, "weight");
-        assert_eq!(forward_weight.encoding.dtype, WeightEncodingKind::Float16);
-
-        let reverse = rel_spec.reverse.as_ref().expect("reverse sort key");
-        let reverse_ts = reverse.timestamp.as_ref().expect("reverse timestamp");
-        assert_eq!(reverse_ts.table, "events");
-        assert_eq!(reverse_ts.column, "created_at");
-        assert!(reverse.weight.is_none());
-    }
-
-    #[test]
-    fn infer_edge_table_sort_keys_prefer_edge_table_create_time() {
-        let mut tables = vec![
-            table(
-                "users",
-                &[
-                    ("user_id", IngestedType::Int64),
-                    ("created_at", IngestedType::Timestamp),
-                ],
-            ),
-            table(
-                "items",
-                &[
-                    ("item_id", IngestedType::Int64),
-                    ("created_at", IngestedType::Timestamp),
-                ],
-            ),
-            table(
-                "user_item_edges",
-                &[
-                    ("user_id", IngestedType::Int64),
-                    ("item_id", IngestedType::Int64),
-                    ("created_at", IngestedType::Timestamp),
-                    ("weight", IngestedType::Float32),
-                ],
-            ),
-        ];
-        infer_primary_keys(&mut tables);
-        infer_create_time(&mut tables);
-        let mut rels = Vec::new();
-        let mut notes = Vec::new();
-        infer_foreign_keys(&tables, &mut rels, &mut notes, None);
-        drop_join_table_primary_keys(&mut tables, &rels);
-        prune_relationships_without_primary_key(&tables, &mut rels);
-        infer_primary_key_relationships(&tables, &mut rels);
-        infer_edge_tables(&mut tables, &rels);
-        prune_relationships_for_edge_tables(&tables, &mut rels);
-
-        let specs = infer_edge_sort_keys(&tables, &rels).expect("edge sort keys");
-        let edge_spec = specs
-            .edge_tables
-            .get("user_item_edges")
-            .expect("edge table sort key");
-        let src_to_dst = edge_spec
-            .src_to_dst
-            .as_ref()
-            .expect("src_to_dst sort key");
-        let src_ts = src_to_dst.timestamp.as_ref().expect("src_to_dst timestamp");
-        assert_eq!(src_ts.table, "user_item_edges");
-        assert_eq!(src_ts.column, "created_at");
-        let dst_to_src = edge_spec
-            .dst_to_src
-            .as_ref()
-            .expect("dst_to_src sort key");
-        let dst_ts = dst_to_src.timestamp.as_ref().expect("dst_to_src timestamp");
-        assert_eq!(dst_ts.table, "user_item_edges");
-        assert_eq!(dst_ts.column, "created_at");
-    }
+    // Tests for edge sort keys removed - infer_edge_sort_keys function removed
 
     #[test]
     fn infer_fk_relationship() {
@@ -568,9 +458,12 @@ use diskgraph_ingest::source_metadata::{TableSpec, TableFormat, ColumnSpec, Rela
                 }],
                 primary_key: Some("user_id".to_string()),
                 create_time: None,
+                end_time: None,
                 weight: None,
                 edge_table: None,
                 rowpack: None,
+                source: None,
+                fkeys: Vec::new(),
             },
             TableSpec {
                 name: "orders".to_string(),
@@ -588,9 +481,12 @@ use diskgraph_ingest::source_metadata::{TableSpec, TableFormat, ColumnSpec, Rela
                 }],
                 primary_key: None,
                 create_time: None,
+                end_time: None,
                 weight: None,
                 edge_table: None,
                 rowpack: None,
+                source: None,
+                fkeys: Vec::new(),
             },
         ];
         let mut rels = Vec::new();
@@ -620,9 +516,12 @@ use diskgraph_ingest::source_metadata::{TableSpec, TableFormat, ColumnSpec, Rela
                 }],
                 primary_key: Some("device_id".to_string()),
                 create_time: None,
+                end_time: None,
                 weight: None,
                 edge_table: None,
                 rowpack: None,
+                source: None,
+                fkeys: Vec::new(),
             },
             TableSpec {
                 name: "sessions".to_string(),
@@ -640,9 +539,12 @@ use diskgraph_ingest::source_metadata::{TableSpec, TableFormat, ColumnSpec, Rela
                 }],
                 primary_key: None,
                 create_time: None,
+                end_time: None,
                 weight: None,
                 edge_table: None,
                 rowpack: None,
+                source: None,
+                fkeys: Vec::new(),
             },
         ];
         let mut rels = Vec::new();
@@ -689,9 +591,12 @@ use diskgraph_ingest::source_metadata::{TableSpec, TableFormat, ColumnSpec, Rela
                 }],
                 primary_key: Some("itemid".to_string()),
                 create_time: None,
+                end_time: None,
                 weight: None,
                 edge_table: None,
                 rowpack: None,
+                source: None,
+                fkeys: Vec::new(),
             },
             TableSpec {
                 name: "d_lab".to_string(),
@@ -709,9 +614,12 @@ use diskgraph_ingest::source_metadata::{TableSpec, TableFormat, ColumnSpec, Rela
                 }],
                 primary_key: Some("itemid".to_string()),
                 create_time: None,
+                end_time: None,
                 weight: None,
                 edge_table: None,
                 rowpack: None,
+                source: None,
+                fkeys: Vec::new(),
             },
             TableSpec {
                 name: "labevents".to_string(),
@@ -729,9 +637,12 @@ use diskgraph_ingest::source_metadata::{TableSpec, TableFormat, ColumnSpec, Rela
                 }],
                 primary_key: None,
                 create_time: None,
+                end_time: None,
                 weight: None,
                 edge_table: None,
                 rowpack: None,
+                source: None,
+                fkeys: Vec::new(),
             },
         ];
         let mut rels = Vec::new();
@@ -772,9 +683,12 @@ use diskgraph_ingest::source_metadata::{TableSpec, TableFormat, ColumnSpec, Rela
             ],
             primary_key: Some("poe_id".to_string()),
             create_time: None,
+            end_time: None,
             weight: None,
             edge_table: None,
             rowpack: None,
+            source: None,
+            fkeys: Vec::new(),
         }];
         let mut rels = Vec::new();
         let mut notes = Vec::new();
@@ -859,9 +773,12 @@ use diskgraph_ingest::source_metadata::{TableSpec, TableFormat, ColumnSpec, Rela
                 }],
                 primary_key: Some("code".to_string()),
                 create_time: None,
+                end_time: None,
                 weight: None,
                 edge_table: None,
                 rowpack: None,
+                source: None,
+                fkeys: Vec::new(),
             },
             TableSpec {
                 name: "hcpcs".to_string(),
@@ -879,9 +796,12 @@ use diskgraph_ingest::source_metadata::{TableSpec, TableFormat, ColumnSpec, Rela
                 }],
                 primary_key: None,
                 create_time: None,
+                end_time: None,
                 weight: None,
                 edge_table: None,
                 rowpack: None,
+                source: None,
+                fkeys: Vec::new(),
             },
         ];
         let mut rels = Vec::new();
@@ -911,9 +831,12 @@ use diskgraph_ingest::source_metadata::{TableSpec, TableFormat, ColumnSpec, Rela
                 }],
                 primary_key: Some("code".to_string()),
                 create_time: None,
+                end_time: None,
                 weight: None,
                 edge_table: None,
                 rowpack: None,
+                source: None,
+                fkeys: Vec::new(),
             },
             TableSpec {
                 name: "d_icd_diag".to_string(),
@@ -931,9 +854,12 @@ use diskgraph_ingest::source_metadata::{TableSpec, TableFormat, ColumnSpec, Rela
                 }],
                 primary_key: None,
                 create_time: None,
+                end_time: None,
                 weight: None,
                 edge_table: None,
                 rowpack: None,
+                source: None,
+                fkeys: Vec::new(),
             },
         ];
         let mut rels = Vec::new();
@@ -976,9 +902,12 @@ use diskgraph_ingest::source_metadata::{TableSpec, TableFormat, ColumnSpec, Rela
                 }],
                 primary_key: Some("poe_id".to_string()),
                 create_time: None,
+                end_time: None,
                 weight: None,
                 edge_table: None,
                 rowpack: None,
+                source: None,
+                fkeys: Vec::new(),
             },
             TableSpec {
                 name: "poe_detail".to_string(),
@@ -996,9 +925,12 @@ use diskgraph_ingest::source_metadata::{TableSpec, TableFormat, ColumnSpec, Rela
                 }],
                 primary_key: Some("poe_id".to_string()),
                 create_time: None,
+                end_time: None,
                 weight: None,
                 edge_table: None,
                 rowpack: None,
+                source: None,
+                fkeys: Vec::new(),
             },
             TableSpec {
                 name: "emar".to_string(),
@@ -1016,9 +948,12 @@ use diskgraph_ingest::source_metadata::{TableSpec, TableFormat, ColumnSpec, Rela
                 }],
                 primary_key: None,
                 create_time: None,
+                end_time: None,
                 weight: None,
                 edge_table: None,
                 rowpack: None,
+                source: None,
+                fkeys: Vec::new(),
             },
         ];
         let mut rels = Vec::new();
@@ -1047,9 +982,12 @@ use diskgraph_ingest::source_metadata::{TableSpec, TableFormat, ColumnSpec, Rela
                 }],
                 primary_key: Some("hadm_id".to_string()),
                 create_time: None,
+                end_time: None,
                 weight: None,
                 edge_table: None,
                 rowpack: None,
+                source: None,
+                fkeys: Vec::new(),
             },
             TableSpec {
                 name: "services".to_string(),
@@ -1067,9 +1005,12 @@ use diskgraph_ingest::source_metadata::{TableSpec, TableFormat, ColumnSpec, Rela
                 }],
                 primary_key: None,
                 create_time: None,
+                end_time: None,
                 weight: None,
                 edge_table: None,
                 rowpack: None,
+                source: None,
+                fkeys: Vec::new(),
             },
         ];
         let mut rels = Vec::new();
@@ -1098,9 +1039,12 @@ use diskgraph_ingest::source_metadata::{TableSpec, TableFormat, ColumnSpec, Rela
                 }],
                 primary_key: Some("itemid".to_string()),
                 create_time: None,
+                end_time: None,
                 weight: None,
                 edge_table: None,
                 rowpack: None,
+                source: None,
+                fkeys: Vec::new(),
             },
             TableSpec {
                 name: "d_lab".to_string(),
@@ -1118,9 +1062,12 @@ use diskgraph_ingest::source_metadata::{TableSpec, TableFormat, ColumnSpec, Rela
                 }],
                 primary_key: Some("itemid".to_string()),
                 create_time: None,
+                end_time: None,
                 weight: None,
                 edge_table: None,
                 rowpack: None,
+                source: None,
+                fkeys: Vec::new(),
             },
             TableSpec {
                 name: "labevents".to_string(),
@@ -1138,9 +1085,12 @@ use diskgraph_ingest::source_metadata::{TableSpec, TableFormat, ColumnSpec, Rela
                 }],
                 primary_key: None,
                 create_time: None,
+                end_time: None,
                 weight: None,
                 edge_table: None,
                 rowpack: None,
+                source: None,
+                fkeys: Vec::new(),
             },
         ];
         let mut rels = Vec::new();
@@ -1169,9 +1119,12 @@ use diskgraph_ingest::source_metadata::{TableSpec, TableFormat, ColumnSpec, Rela
                 }],
                 primary_key: Some("user_id".to_string()),
                 create_time: None,
+                end_time: None,
                 weight: None,
                 edge_table: None,
                 rowpack: None,
+                source: None,
+                fkeys: Vec::new(),
             },
             TableSpec {
                 name: "user_profile".to_string(),
@@ -1189,9 +1142,12 @@ use diskgraph_ingest::source_metadata::{TableSpec, TableFormat, ColumnSpec, Rela
                 }],
                 primary_key: Some("user_id".to_string()),
                 create_time: None,
+                end_time: None,
                 weight: None,
                 edge_table: None,
                 rowpack: None,
+                source: None,
+                fkeys: Vec::new(),
             },
         ];
         let mut rels = Vec::new();
@@ -1221,9 +1177,12 @@ use diskgraph_ingest::source_metadata::{TableSpec, TableFormat, ColumnSpec, Rela
                 }],
                 primary_key: Some("id".to_string()),
                 create_time: None,
+                end_time: None,
                 weight: None,
                 edge_table: None,
                 rowpack: None,
+                source: None,
+                fkeys: Vec::new(),
             },
             TableSpec {
                 name: "beta".to_string(),
@@ -1241,9 +1200,12 @@ use diskgraph_ingest::source_metadata::{TableSpec, TableFormat, ColumnSpec, Rela
                 }],
                 primary_key: Some("id".to_string()),
                 create_time: None,
+                end_time: None,
                 weight: None,
                 edge_table: None,
                 rowpack: None,
+                source: None,
+                fkeys: Vec::new(),
             },
         ];
         let mut rels = Vec::new();

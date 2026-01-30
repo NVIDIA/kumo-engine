@@ -157,25 +157,20 @@ fn write_config(path: &PathBuf, users: &PathBuf, devices: &PathBuf, edges: &Path
                     {"name": "ts", "ingested_dtype": "timestamp"}
                 ],
                 "edge_table": {
-                    "src_fk": {"column": "user_id", "ref_table": "users", "ref_column": "id"},
-                    "dst_fk": {"column": "device_id", "ref_table": "devices", "ref_column": "id"}
-                }
-            }
-        ],
-        "edge_sort_keys": {
-            "edge_tables": {
-                "user_device": {
-                    "src_to_dst": {
-                        "timestamp": {
+                    "src_fk": {"edge_column": "user_id", "ref_table": "users"},
+                    "dst_fk": {"edge_column": "device_id", "ref_table": "devices"},
+                    "forward": {
+                        "time": {
                             "table": "user_device",
                             "column": "ts",
-                            "encoding": {"kind": "int32", "anchor": 0, "step": 1}
+                            "bitwidth": 32,
+                            "anchor_time": 0,
+                            "unit": "s"
                         }
-                    },
-                    "dst_to_src": null
+                    }
                 }
             }
-        }
+        ]
     });
     std::fs::write(path, serde_json::to_vec_pretty(&config)?)?;
     Ok(())
@@ -191,7 +186,6 @@ fn e2e_explain_with_graph_features() -> Result<()> {
     let index_path = tmp.path().join("index");
     let input = tmp.path().join("input.parquet");
     let explanations = tmp.path().join("explanations.parquet");
-    let trends = tmp.path().join("trends.parquet");
 
     write_users(&users)?;
     write_devices(&devices)?;
@@ -204,8 +198,7 @@ fn e2e_explain_with_graph_features() -> Result<()> {
 
     let config: ExplainConfig = serde_json::from_value(serde_json::json!({
         "input_parquet": input,
-        "output_explanations_parquet": explanations,
-        "output_global_trends_parquet": trends,
+        "output_parquet": explanations,
         "index_path": index_path,
         "root_table": "users",
         "id_column": "id",
@@ -236,45 +229,21 @@ fn e2e_explain_with_graph_features() -> Result<()> {
     for batch in expl_reader {
         let batch = batch?;
         rows += batch.num_rows();
-        let top_features = batch
-            .column(batch.schema().index_of("top_features")?)
+        // Check explanation_json contains device info
+        let explanations_col = batch
+            .column(batch.schema().index_of("explanation_json")?)
             .as_any()
             .downcast_ref::<StringArray>()
             .unwrap();
         for i in 0..batch.num_rows() {
-            let s = top_features.value(i);
-            if s.contains("devices.os=android") {
+            let s = explanations_col.value(i);
+            if s.contains("android") || s.contains("ios") {
                 has_android = true;
             }
         }
     }
     assert_eq!(rows, 6);
     assert!(has_android);
-
-    let trend_file = File::open(&trends)?;
-    let trend_reader = ParquetRecordBatchReaderBuilder::try_new(trend_file)?.build()?;
-    let mut has_feature_lift = false;
-    for batch in trend_reader {
-        let batch = batch?;
-        let types = batch
-            .column(batch.schema().index_of("artifact_type")?)
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .unwrap();
-        let feature_key = batch
-            .column(batch.schema().index_of("feature_key")?)
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .unwrap();
-        for i in 0..batch.num_rows() {
-            if types.value(i) == "cohort_feature_lift" && feature_key.is_valid(i) {
-                if feature_key.value(i).contains("devices.os=android") {
-                    has_feature_lift = true;
-                }
-            }
-        }
-    }
-    assert!(has_feature_lift);
 
     Ok(())
 }

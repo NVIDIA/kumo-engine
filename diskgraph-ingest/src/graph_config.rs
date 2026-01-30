@@ -1,7 +1,6 @@
 use anyhow::{anyhow, Result};
 use diskgraph_core::metadata::EdgeStorageFormat;
 use diskgraph_rowpack::RowPackConfig;
-use fasteval::{Evaler, Parser, Slab};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
@@ -14,13 +13,9 @@ fn source_dtype_is_decimal(dtype: Option<&str>) -> bool {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SourceMetadata {
+pub struct GraphConfig {
     pub dataset_name: String,
     pub tables: Vec<TableSpec>,
-    #[serde(default)]
-    pub relationships: Vec<RelationshipSpec>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub edge_sort_keys: Option<EdgeSortKeysSpec>,
     #[serde(default)]
     pub rowpack: Option<RowPackConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -32,19 +27,30 @@ pub struct SourceMetadata {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TableSpec {
     pub name: String,
+    /// Table format (csv or parquet) - used with `paths` field.
     pub format: TableFormat,
+    /// File paths - used with `format` field. Prefer using `source` instead.
     pub paths: Vec<String>,
     pub columns: Vec<ColumnSpec>,
     #[serde(default)]
     pub primary_key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub create_time: Option<String>,
+    /// End time column (for temporal graphs with validity windows).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_time: Option<String>,
     #[serde(default)]
     pub weight: Option<String>,
     #[serde(default)]
     pub edge_table: Option<EdgeTableSpec>,
     #[serde(default)]
     pub rowpack: Option<RowPackConfig>,
+    /// Data source configuration (new - preferred over format+paths).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<DataSource>,
+    /// Foreign key relationships (new - edges embedded in table).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fkeys: Vec<FKeySpec>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -111,113 +117,133 @@ pub enum TableFormat {
     Parquet,
 }
 
+/// Data source configuration - abstracts where table data comes from.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum DataSource {
+    /// Parquet files (local or cloud storage).
+    Parquet {
+        /// List of file paths (local, s3://, gs://, az://).
+        paths: Vec<String>,
+    },
+    /// Snowflake data warehouse.
+    Snowflake {
+        /// Connection identifier referencing a connection config.
+        connection_id: String,
+        /// Table or view name in Snowflake.
+        table_or_view: String,
+    },
+    /// Databricks.
+    Databricks {
+        /// Connection identifier.
+        connection_id: String,
+        /// Catalog name.
+        catalog: String,
+        /// Schema name.
+        schema: String,
+        /// Table name.
+        table: String,
+    },
+    /// Google BigQuery.
+    BigQuery {
+        /// Connection identifier referencing a connection config.
+        connection_id: String,
+        /// GCP project ID.
+        project: String,
+        /// BigQuery dataset name.
+        dataset: String,
+        /// Table name.
+        table: String,
+    },
+}
+
+/// Time-based sort key specification.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TimeSpec {
+    /// The table containing the timestamp column.
+    pub table: String,
+    /// The timestamp column name.
+    pub column: String,
+    /// Bit width for encoding: 8, 16, or 32. Null for auto-detection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bitwidth: Option<u8>,
+    /// Anchor time in epoch seconds. Null for auto-detection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchor_time: Option<i64>,
+    /// Time unit: "s", "ms", "day", "hour", etc.
+    pub unit: String,
+}
+
+/// Weight-based sort key specification.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WeightSpec {
+    /// The table containing columns referenced in the expression.
+    pub table: String,
+    /// Weight expression - column name or math expression.
+    pub expr: String,
+    /// Encoding dtype: "byte", "uint16", "uint32", "float16", "float32"
+    pub dtype: String,
+}
+
+/// Direction-specific configuration for edge traversal.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct DirectionSpec {
+    /// Time-based sort key for this direction.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub time: Option<TimeSpec>,
+    /// Weight-based sort key for this direction.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weight: Option<WeightSpec>,
+}
+
+/// Foreign key specification defining a 1:N relationship.
+/// Defines an edge from this table to another table's primary key.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct FKeySpec {
+    /// Column on this table that references the destination table.
+    pub src_column: String,
+    /// Destination table name. Must have a primary key.
+    pub dst_table: String,
+    /// Forward direction config (src -> dst).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forward: Option<DirectionSpec>,
+    /// Reverse direction config (dst -> src).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reverse: Option<DirectionSpec>,
+}
+
+/// Endpoint specification for an edge table.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct EdgeEndpoint {
+    /// Column in the edge table.
+    pub column: String,
+    /// Referenced node table name. Must have a primary key.
+    pub table: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EdgeTableSpec {
+    /// Source foreign key.
     pub src_fk: ForeignKeySpec,
+    /// Destination foreign key.
     pub dst_fk: ForeignKeySpec,
+    /// Forward direction config (src -> dst).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forward: Option<DirectionSpec>,
+    /// Reverse direction config (dst -> src).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reverse: Option<DirectionSpec>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Foreign key reference in an edge table.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ForeignKeySpec {
-    pub column: String,
+    /// Column in the edge table containing the foreign key value.
+    pub edge_column: String,
+    /// Referenced node table (must have a primary key - joins on PK).
     pub ref_table: String,
-    pub ref_column: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RelationshipSpec {
-    #[serde(default)]
-    pub name: Option<String>,
-    pub src_table: String,
-    pub src_column: String,
-    pub dst_table: String,
-    pub dst_column: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct EdgeSortKeysSpec {
-    #[serde(default)]
-    pub relationships: HashMap<String, RelationshipSortKeysSpec>,
-    #[serde(default)]
-    pub edge_tables: HashMap<String, EdgeTableSortKeysSpec>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct RelationshipSortKeysSpec {
-    #[serde(default)]
-    pub forward: Option<SortKeySpec>,
-    #[serde(default)]
-    pub reverse: Option<SortKeySpec>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct EdgeTableSortKeysSpec {
-    #[serde(default)]
-    pub src_to_dst: Option<SortKeySpec>,
-    #[serde(default)]
-    pub dst_to_src: Option<SortKeySpec>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct SortKeySpec {
-    #[serde(default)]
-    pub timestamp: Option<SortKeyTimestampSpec>,
-    #[serde(default)]
-    pub weight: Option<SortKeyWeightSpec>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SortKeyTimestampSpec {
-    pub table: String,
-    pub column: String,
-    pub encoding: TimestampEncodingSpec,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TimestampEncodingSpec {
-    pub kind: TimestampEncodingKind,
-    pub anchor: i64,
-    pub step: i64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum TimestampEncodingKind {
-    Int8,
-    Int16,
-    Int32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SortKeyWeightSpec {
-    pub table: String,
-    pub expr: String,
-    pub encoding: WeightEncodingSpec,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WeightEncodingSpec {
-    pub dtype: WeightEncodingKind,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum WeightEncodingKind {
-    Byte,
-    UInt16,
-    UInt32,
-    Float16,
-    Float32,
-}
-
-pub fn relationship_name(rel: &RelationshipSpec) -> String {
-    rel.name.clone().unwrap_or_else(|| {
-        format!(
-            "{}_{}_to_{}_{}",
-            rel.src_table, rel.src_column, rel.dst_table, rel.dst_column
-        )
-    })
-}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum CloudSource {
@@ -263,7 +289,7 @@ fn parse_cloud_source(path: &str) -> Result<Option<CloudSource>> {
     Ok(None)
 }
 
-impl SourceMetadata {
+impl GraphConfig {
     pub fn validate(&self) -> Result<()> {
         let mut errors = Vec::new();
         if self.dataset_name.trim().is_empty() {
@@ -284,7 +310,6 @@ impl SourceMetadata {
         }
         let mut table_names = HashSet::new();
         let mut table_map: HashMap<&str, &TableSpec> = HashMap::new();
-        let mut rel_keys = HashSet::new();
         let mut cloud_source: Option<CloudSource> = None;
         let mut has_local_paths = false;
         for table in &self.tables {
@@ -479,10 +504,10 @@ impl SourceMetadata {
             }
             if let Some(edge) = &table.edge_table {
                 for fk in [&edge.src_fk, &edge.dst_fk] {
-                    if !col_names.contains(fk.column.as_str()) {
+                    if !col_names.contains(fk.edge_column.as_str()) {
                         errors.push(format!(
                             "table {} edge fk column {} not found",
-                            table.name, fk.column
+                            table.name, fk.edge_column
                         ));
                     }
                 }
@@ -490,90 +515,11 @@ impl SourceMetadata {
             table_map.insert(table.name.as_str(), table);
         }
 
-        for rel in &self.relationships {
-            let src = match table_map.get(rel.src_table.as_str()) {
-                Some(table) => *table,
-                None => {
-                    errors.push(format!("relationship src table {} not found", rel.src_table));
-                    continue;
-                }
-            };
-            let dst = match table_map.get(rel.dst_table.as_str()) {
-                Some(table) => *table,
-                None => {
-                    errors.push(format!("relationship dst table {} not found", rel.dst_table));
-                    continue;
-                }
-            };
-            let src_col = src
-                .columns
-                .iter()
-                .find(|c| c.name == rel.src_column);
-            let dst_col = dst
-                .columns
-                .iter()
-                .find(|c| c.name == rel.dst_column);
-            if src_col.is_none() {
-                errors.push(format!(
-                    "relationship src column {} not found in {}",
-                    rel.src_column, rel.src_table
-                ));
-            }
-            if dst_col.is_none() {
-                errors.push(format!(
-                    "relationship dst column {} not found in {}",
-                    rel.dst_column, rel.dst_table
-                ));
-            }
-            if let (Some(src_col), Some(dst_col)) = (src_col, dst_col) {
-                let src_is_pk = src.primary_key.as_deref() == Some(&src_col.name);
-                let dst_is_pk = dst.primary_key.as_deref() == Some(&dst_col.name);
-                if !src_is_pk && !dst_is_pk {
-                    errors.push(format!(
-                        "relationship {} -> {} must reference at least one primary key",
-                        rel.src_table, rel.dst_table
-                    ));
-                }
-                if let Err(msg) = compatible_key_columns(src_col, dst_col) {
-                    errors.push(format!(
-                        "relationship {}.{} and {}.{} {}",
-                        rel.src_table,
-                        rel.src_column,
-                        rel.dst_table,
-                        rel.dst_column,
-                        msg
-                    ));
-                }
-                let key = format!(
-                    "{}:{}->{}:{}",
-                    rel.src_table, rel.src_column, rel.dst_table, rel.dst_column
-                );
-                if !rel_keys.insert(key.clone()) {
-                    errors.push(format!(
-                        "relationship {}.{} -> {}.{} is duplicated",
-                        rel.src_table, rel.src_column, rel.dst_table, rel.dst_column
-                    ));
-                }
-                if src_is_pk && dst_is_pk {
-                    let reverse = format!(
-                        "{}:{}->{}:{}",
-                        rel.dst_table, rel.dst_column, rel.src_table, rel.src_column
-                    );
-                    if rel_keys.contains(&reverse) {
-                        errors.push(format!(
-                            "relationship {}.{} -> {}.{} has reverse already declared",
-                            rel.src_table, rel.src_column, rel.dst_table, rel.dst_column
-                        ));
-                    }
-                }
-            }
-        }
-
         for table in &self.tables {
             if let Some(edge) = &table.edge_table {
                 for fk in [&edge.src_fk, &edge.dst_fk] {
                     let ref_table = match table_map.get(fk.ref_table.as_str()) {
-                        Some(table) => *table,
+                        Some(t) => *t,
                         None => {
                             errors.push(format!(
                                 "edge table {} references missing table {}",
@@ -582,98 +528,30 @@ impl SourceMetadata {
                             continue;
                         }
                     };
-                    if ref_table.primary_key.as_deref() != Some(fk.ref_column.as_str()) {
-                        errors.push(format!(
-                            "edge table {} fk {} must reference primary key {}.{}",
-                            table.name, fk.column, fk.ref_table, fk.ref_column
-                        ));
-                        continue;
-                    }
-                    if let Some(fk_col) = table.columns.iter().find(|c| c.name == fk.column) {
-                        if let Some(pk_col) = ref_table.columns.iter().find(|c| c.name == fk.ref_column) {
+                    let pk_name = match &ref_table.primary_key {
+                        Some(pk) => pk.as_str(),
+                        None => {
+                            errors.push(format!(
+                                "edge table {} references {} which has no primary key",
+                                table.name, fk.ref_table
+                            ));
+                            continue;
+                        }
+                    };
+                    if let Some(fk_col) = table.columns.iter().find(|c| c.name == fk.edge_column) {
+                        if let Some(pk_col) = ref_table.columns.iter().find(|c| c.name == pk_name) {
                             if let Err(msg) = compatible_key_columns(fk_col, pk_col) {
                                 errors.push(format!(
                                     "edge table {} fk {} and {}.{} {}",
                                     table.name,
-                                    fk.column,
+                                    fk.edge_column,
                                     fk.ref_table,
-                                    fk.ref_column,
+                                    pk_name,
                                     msg
                                 ));
                             }
                         }
                     }
-                }
-            }
-        }
-
-        if let Some(sort_keys) = &self.edge_sort_keys {
-            for (rel_name, cfg) in &sort_keys.relationships {
-                let rel = match self.relationships.iter().find(|r| relationship_name(r) == *rel_name) {
-                    Some(rel) => rel,
-                    None => {
-                        errors.push(format!("sort key relationship {} not found", rel_name));
-                        continue;
-                    }
-                };
-                if let Some(spec) = &cfg.forward {
-                    validate_sort_key_spec(
-                        spec,
-                        rel_name,
-                        &rel.dst_table,
-                        None,
-                        &table_map,
-                        &mut errors,
-                    );
-                }
-                if let Some(spec) = &cfg.reverse {
-                    validate_sort_key_spec(
-                        spec,
-                        rel_name,
-                        &rel.src_table,
-                        None,
-                        &table_map,
-                        &mut errors,
-                    );
-                }
-            }
-            for (table_name, cfg) in &sort_keys.edge_tables {
-                let edge_table = match table_map.get(table_name.as_str()) {
-                    Some(table) => *table,
-                    None => {
-                        errors.push(format!("sort key edge table {} not found", table_name));
-                        continue;
-                    }
-                };
-                let edge = match &edge_table.edge_table {
-                    Some(edge) => edge,
-                    None => {
-                        errors.push(format!(
-                            "sort key edge table {} missing edge_table spec",
-                            table_name
-                        ));
-                        continue;
-                    }
-                };
-                if let Some(spec) = &cfg.src_to_dst {
-                    validate_sort_key_spec(
-                        spec,
-                        table_name,
-                        &edge.dst_fk.ref_table,
-                        Some(table_name.as_str()),
-                        &table_map,
-                        &mut errors,
-                    );
-                }
-                if let Some(spec) = &cfg.dst_to_src {
-                    validate_sort_key_spec(
-                        spec,
-                        table_name,
-                        &edge.src_fk.ref_table,
-                        Some(table_name.as_str()),
-                        &table_map,
-                        &mut errors,
-                    );
                 }
             }
         }
@@ -696,189 +574,6 @@ fn compatible_key_columns(a: &ColumnSpec, b: &ColumnSpec) -> Result<(), String> 
         (a_type, b_type) if is_numeric(b_type) && matches!(a_type, String | Bytes) => Ok(()),
         _ => Err("have incompatible types".to_string()),
     }
-}
-
-fn column_spec<'a>(table: &'a TableSpec, name: &str) -> Result<&'a ColumnSpec> {
-    table
-        .columns
-        .iter()
-        .find(|c| c.name == name)
-        .ok_or_else(|| anyhow!("column {} not found in {}", name, table.name))
-}
-
-fn validate_sort_key_spec(
-    spec: &SortKeySpec,
-    rel_name: &str,
-    dst_table: &str,
-    edge_table: Option<&str>,
-    table_map: &HashMap<&str, &TableSpec>,
-    errors: &mut Vec<String>,
-) {
-    if spec.timestamp.is_none() && spec.weight.is_none() {
-        errors.push(format!(
-            "sort key {} requires at least one of timestamp or weight",
-            rel_name
-        ));
-        return;
-    }
-    let mut width_bits = 0u16;
-    if let Some(ts) = &spec.timestamp {
-        let table = match table_map.get(ts.table.as_str()) {
-            Some(table) => *table,
-            None => {
-                errors.push(format!(
-                    "sort key {} timestamp table {} not found",
-                    rel_name, ts.table
-                ));
-                return;
-            }
-        };
-        if !matches!(edge_table, Some(name) if name == ts.table) && ts.table != dst_table {
-            errors.push(format!(
-                "sort key {} timestamp table {} invalid for destination {}",
-                rel_name, ts.table, dst_table
-            ));
-        }
-        match column_spec(table, &ts.column) {
-            Ok(col) => {
-                if !matches!(col.ingested_dtype, IngestedType::Date | IngestedType::Timestamp) {
-                    errors.push(format!(
-                        "sort key {} timestamp column {} must be date/timestamp",
-                        rel_name, ts.column
-                    ));
-                }
-            }
-            Err(_) => {
-                errors.push(format!(
-                    "sort key {} timestamp column {} not found in {}",
-                    rel_name, ts.column, ts.table
-                ));
-            }
-        }
-        if ts.encoding.step <= 0 {
-            errors.push(format!(
-                "sort key {} timestamp step must be > 0",
-                rel_name
-            ));
-        }
-        width_bits += match ts.encoding.kind {
-            TimestampEncodingKind::Int8 => 8,
-            TimestampEncodingKind::Int16 => 16,
-            TimestampEncodingKind::Int32 => 32,
-        };
-    }
-    if let Some(weight) = &spec.weight {
-        let table = match table_map.get(weight.table.as_str()) {
-            Some(table) => *table,
-            None => {
-                errors.push(format!(
-                    "sort key {} weight table {} not found",
-                    rel_name, weight.table
-                ));
-                return;
-            }
-        };
-        if !matches!(edge_table, Some(name) if name == weight.table) && weight.table != dst_table {
-            errors.push(format!(
-                "sort key {} weight table {} invalid for destination {}",
-                rel_name, weight.table, dst_table
-            ));
-        }
-        if let Err(err) = validate_weight_expr(&weight.expr, table) {
-            errors.push(format!(
-                "sort key {} weight expr invalid: {}",
-                rel_name, err
-            ));
-        }
-        width_bits += match weight.encoding.dtype {
-            WeightEncodingKind::Byte => 8,
-            WeightEncodingKind::UInt16 => 16,
-            WeightEncodingKind::UInt32 => 32,
-            WeightEncodingKind::Float16 => 16,
-            WeightEncodingKind::Float32 => 32,
-        };
-    }
-    if width_bits > 64 {
-        errors.push(format!(
-            "sort key {} width {} exceeds 64 bits",
-            rel_name, width_bits
-        ));
-    } else if width_bits > 0 && width_bits % 8 != 0 {
-        errors.push(format!(
-            "sort key {} width {} must be multiple of 8",
-            rel_name, width_bits
-        ));
-    }
-}
-
-fn validate_weight_expr(expr: &str, table: &TableSpec) -> Result<()> {
-    let (rewritten, var_map) = rewrite_weight_expr(expr)?;
-    let parser = Parser::new();
-    let mut slab = Slab::new();
-    let expr_i = parser
-        .parse(&rewritten, &mut slab.ps)
-        .map_err(|e| anyhow!("parse error: {e}"))?;
-    let expr_ref = expr_i.from(&slab.ps);
-    let vars = expr_ref.var_names(&slab);
-    if vars.is_empty() {
-        return Err(anyhow!("expression has no column references"));
-    }
-    for var in vars {
-        let column = var_map.get(&var).cloned().unwrap_or_else(|| var.clone());
-        let col = column_spec(table, &column)?;
-        if !is_numeric(&col.ingested_dtype) {
-            return Err(anyhow!("column {} is not numeric", column));
-        }
-    }
-    Ok(())
-}
-
-fn rewrite_weight_expr(expr: &str) -> Result<(String, HashMap<String, String>)> {
-    let mut out = String::new();
-    let mut map: HashMap<String, String> = HashMap::new();
-    let mut chars = expr.chars().peekable();
-    let mut idx = 0usize;
-    while let Some(ch) = chars.next() {
-        if ch == '`' {
-            let mut name = String::new();
-            let mut escaped = false;
-            while let Some(c) = chars.next() {
-                if escaped {
-                    match c {
-                        'n' => name.push('\n'),
-                        'r' => name.push('\r'),
-                        't' => name.push('\t'),
-                        '\\' => name.push('\\'),
-                        '`' => name.push('`'),
-                        other => name.push(other),
-                    }
-                    escaped = false;
-                    continue;
-                }
-                if c == '\\' {
-                    escaped = true;
-                    continue;
-                }
-                if c == '`' {
-                    break;
-                }
-                name.push(c);
-            }
-            if escaped {
-                return Err(anyhow!("unterminated escape in `{}`", expr));
-            }
-            if name.is_empty() {
-                return Err(anyhow!("empty backtick identifier"));
-            }
-            let var = format!("__c{idx}");
-            idx += 1;
-            out.push_str(&var);
-            map.insert(var, name);
-        } else {
-            out.push(ch);
-        }
-    }
-    Ok((out, map))
 }
 
 fn is_signed_int(t: &IngestedType) -> bool {

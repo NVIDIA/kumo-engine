@@ -1,11 +1,11 @@
 use serde::Serialize;
 use std::collections::HashMap;
-use crate::source_metadata::SourceMetadata;
+use crate::graph_config::GraphConfig;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct IngestReport {
     pub stats: IngestStats,
-    pub source: SourceMetadata,
+    pub source: GraphConfig,
 }
 
 #[derive(Clone, Debug, Serialize)]

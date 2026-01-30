@@ -235,6 +235,19 @@ fn ingest_csv_with_edges_and_rowpack() -> Result<()> {
                 "columns": [
                     {"name": "id", "ingested_dtype": "int64"},
                     {"name": "user_id", "ingested_dtype": "int64"}
+                ],
+                "fkeys": [
+                    {
+                        "src_column": "user_id",
+                        "dst_table": "User",
+                        "forward": {
+                            "weight": {
+                                "table": "User",
+                                "expr": "weight",
+                                "dtype": "float32"
+                            }
+                        }
+                    }
                 ]
             },
             {
@@ -253,8 +266,22 @@ fn ingest_csv_with_edges_and_rowpack() -> Result<()> {
                 "format": "csv",
                 "paths": [input_root.join("order_items.csv").to_string_lossy()],
                 "edge_table": {
-                    "src_fk": {"column": "order_id", "ref_table": "Order", "ref_column": "id"},
-                    "dst_fk": {"column": "product_id", "ref_table": "Product", "ref_column": "id"}
+                    "src_fk": {"edge_column": "order_id", "ref_table": "Order"},
+                    "dst_fk": {"edge_column": "product_id", "ref_table": "Product"},
+                    "forward": {
+                        "weight": {
+                            "table": "OrderItem",
+                            "expr": "weight",
+                            "dtype": "float32"
+                        }
+                    },
+                    "reverse": {
+                        "weight": {
+                            "table": "OrderItem",
+                            "expr": "weight",
+                            "dtype": "float32"
+                        }
+                    }
                 },
                 "weight": "weight",
                 "columns": [
@@ -263,47 +290,7 @@ fn ingest_csv_with_edges_and_rowpack() -> Result<()> {
                     {"name": "weight", "ingested_dtype": "int32"}
                 ]
             }
-        ],
-        "relationships": [
-            {
-                "name": "order_user",
-                "src_table": "Order",
-                "src_column": "user_id",
-                "dst_table": "User",
-                "dst_column": "id"
-            }
-        ],
-        "edge_sort_keys": {
-            "relationships": {
-                "order_user": {
-                    "forward": {
-                        "weight": {
-                            "table": "User",
-                            "expr": "weight",
-                            "encoding": {"dtype": "float32"}
-                        }
-                    }
-                }
-            },
-            "edge_tables": {
-                "OrderItem": {
-                    "src_to_dst": {
-                        "weight": {
-                            "table": "OrderItem",
-                            "expr": "weight",
-                            "encoding": {"dtype": "float32"}
-                        }
-                    },
-                    "dst_to_src": {
-                        "weight": {
-                            "table": "OrderItem",
-                            "expr": "weight",
-                            "encoding": {"dtype": "float32"}
-                        }
-                    }
-                }
-            }
-        }
+        ]
     });
     let source_path = dir.path().join("diskgraph_config.json");
     fs::write(&source_path, serde_json::to_vec_pretty(&source)?)?;
@@ -342,12 +329,12 @@ fn ingest_csv_with_edges_and_rowpack() -> Result<()> {
     let order_user = disk_metadata
         .edge_relations
         .iter()
-        .find(|r| r.name == "order_user")
+        .find(|r| r.name == "Order_user_id_to_User_id")
         .unwrap();
     let order_user_rev = disk_metadata
         .edge_relations
         .iter()
-        .find(|r| r.name == "order_user_reverse")
+        .find(|r| r.name == "Order_user_id_to_User_id_reverse")
         .unwrap();
     assert_eq!(order_user.dest_sort_key_bits, Some(32));
     assert_eq!(order_user_rev.dest_sort_key_bits, None);
@@ -367,8 +354,8 @@ fn ingest_csv_with_edges_and_rowpack() -> Result<()> {
 
     let order_table = reader.table("Order").unwrap();
     let user_table = reader.table("User").unwrap();
-    let order_user_rows = sum_relation_edges(&order_table, "order_user")?;
-    let order_user_rev_rows = sum_relation_edges(&user_table, "order_user_reverse")?;
+    let order_user_rows = sum_relation_edges(&order_table, "Order_user_id_to_User_id")?;
+    let order_user_rev_rows = sum_relation_edges(&user_table, "Order_user_id_to_User_id_reverse")?;
     assert_eq!(order_user_rows, 2);
     assert_eq!(order_user_rev_rows, 2);
 
@@ -477,6 +464,12 @@ fn ingest_csv_multi_file_table_with_two_shards() -> Result<()> {
                 "columns": [
                     {"name": "id", "ingested_dtype": "int64"},
                     {"name": "user_id", "ingested_dtype": "int64"}
+                ],
+                "fkeys": [
+                    {
+                        "src_column": "user_id",
+                        "dst_table": "User"
+                    }
                 ]
             },
             {
@@ -487,22 +480,13 @@ fn ingest_csv_multi_file_table_with_two_shards() -> Result<()> {
                     input_root.join("order_links_part2.csv").to_string_lossy()
                 ],
                 "edge_table": {
-                    "src_fk": {"column": "user_id", "ref_table": "User", "ref_column": "id"},
-                    "dst_fk": {"column": "order_id", "ref_table": "Order", "ref_column": "id"}
+                    "src_fk": {"edge_column": "user_id", "ref_table": "User"},
+                    "dst_fk": {"edge_column": "order_id", "ref_table": "Order"}
                 },
                 "columns": [
                     {"name": "user_id", "ingested_dtype": "int64"},
                     {"name": "order_id", "ingested_dtype": "int64"}
                 ]
-            }
-        ],
-        "relationships": [
-            {
-                "name": "order_user",
-                "src_table": "Order",
-                "src_column": "user_id",
-                "dst_table": "User",
-                "dst_column": "id"
             }
         ]
     });
@@ -620,16 +604,15 @@ fn ingest_parquet_with_sorted_mapping() -> Result<()> {
                 "format": "parquet",
                 "paths": [edge_path.to_string_lossy()],
                 "edge_table": {
-                    "src_fk": {"column": "src_id", "ref_table": "Sku", "ref_column": "id"},
-                    "dst_fk": {"column": "dst_id", "ref_table": "Sku", "ref_column": "id"}
+                    "src_fk": {"edge_column": "src_id", "ref_table": "Sku"},
+                    "dst_fk": {"edge_column": "dst_id", "ref_table": "Sku"}
                 },
                 "columns": [
                     {"name": "src_id", "ingested_dtype": "string", "fixed_len": 8},
                     {"name": "dst_id", "ingested_dtype": "string", "fixed_len": 8}
                 ]
             }
-        ],
-        "relationships": []
+        ]
     });
     let source_path = dir.path().join("diskgraph_config.json");
     fs::write(&source_path, serde_json::to_vec_pretty(&source)?)?;
@@ -771,16 +754,15 @@ fn ingest_parquet_with_int_pk_lookup() -> Result<()> {
                 "format": "parquet",
                 "paths": [edge_path.to_string_lossy()],
                 "edge_table": {
-                    "src_fk": {"column": "src_id", "ref_table": "Item", "ref_column": "id"},
-                    "dst_fk": {"column": "dst_id", "ref_table": "Item", "ref_column": "id"}
+                    "src_fk": {"edge_column": "src_id", "ref_table": "Item"},
+                    "dst_fk": {"edge_column": "dst_id", "ref_table": "Item"}
                 },
                 "columns": [
                     {"name": "src_id", "ingested_dtype": "int64"},
                     {"name": "dst_id", "ingested_dtype": "int64"}
                 ]
             }
-        ],
-        "relationships": []
+        ]
     });
     let source_path = dir.path().join("diskgraph_config.json");
     fs::write(&source_path, serde_json::to_vec_pretty(&source)?)?;
@@ -880,16 +862,15 @@ fn ingest_csv_with_bytes_pk_mapping() -> Result<()> {
                 "format": "parquet",
                 "paths": [edge_path.to_string_lossy()],
                 "edge_table": {
-                    "src_fk": {"column": "src_id", "ref_table": "Asset", "ref_column": "id"},
-                    "dst_fk": {"column": "dst_id", "ref_table": "Asset", "ref_column": "id"}
+                    "src_fk": {"edge_column": "src_id", "ref_table": "Asset"},
+                    "dst_fk": {"edge_column": "dst_id", "ref_table": "Asset"}
                 },
                 "columns": [
                     {"name": "src_id", "ingested_dtype": "bytes", "fixed_len": 4},
                     {"name": "dst_id", "ingested_dtype": "bytes", "fixed_len": 4}
                 ]
             }
-        ],
-        "relationships": []
+        ]
     });
     let source_path = dir.path().join("diskgraph_config.json");
     fs::write(&source_path, serde_json::to_vec_pretty(&source)?)?;
@@ -959,8 +940,7 @@ fn ingest_pk_map_header_has_expected_format() -> Result<()> {
                     {"name": "name", "ingested_dtype": "string"}
                 ]
             }
-        ],
-        "relationships": []
+        ]
     });
     let source_path = dir.path().join("diskgraph_config.json");
     fs::write(&source_path, serde_json::to_vec_pretty(&source)?)?;
@@ -1030,16 +1010,13 @@ fn ingest_missing_fkeys_do_not_create_edges() -> Result<()> {
                 "columns": [
                     {"name": "id", "ingested_dtype": "int64"},
                     {"name": "asset_id", "ingested_dtype": "int64"}
+                ],
+                "fkeys": [
+                    {
+                        "src_column": "asset_id",
+                        "dst_table": "Asset"
+                    }
                 ]
-            }
-        ],
-        "relationships": [
-            {
-                "name": "event_asset",
-                "src_table": "Event",
-                "src_column": "asset_id",
-                "dst_table": "Asset",
-                "dst_column": "id"
             }
         ]
     });
@@ -1058,8 +1035,8 @@ fn ingest_missing_fkeys_do_not_create_edges() -> Result<()> {
     let reader = GraphIndexReader::open(&index_metadata, &output_root)?;
     let event_table = reader.table("Event").ok_or_else(|| anyhow!("missing Event"))?;
     let asset_table = reader.table("Asset").ok_or_else(|| anyhow!("missing Asset"))?;
-    let forward_rows = sum_relation_edges(&event_table, "event_asset")?;
-    let reverse_rows = sum_relation_edges(&asset_table, "event_asset_reverse")?;
+    let forward_rows = sum_relation_edges(&event_table, "Event_asset_id_to_Asset_id")?;
+    let reverse_rows = sum_relation_edges(&asset_table, "Event_asset_id_to_Asset_id_reverse")?;
     assert_eq!(forward_rows, 1);
     assert_eq!(reverse_rows, 1);
 
@@ -1106,6 +1083,21 @@ fn ingest_relationship_uses_dest_timestamp_sort_key() -> Result<()> {
                 "columns": [
                     {"name": "id", "ingested_dtype": "int64"},
                     {"name": "session_id", "ingested_dtype": "int64"}
+                ],
+                "fkeys": [
+                    {
+                        "src_column": "session_id",
+                        "dst_table": "Session",
+                        "forward": {
+                            "time": {
+                                "table": "Session",
+                                "column": "created_at",
+                                "bitwidth": 32,
+                                "anchor_time": 0,
+                                "unit": "s"
+                            }
+                        }
+                    }
                 ]
             },
             {
@@ -1119,33 +1111,7 @@ fn ingest_relationship_uses_dest_timestamp_sort_key() -> Result<()> {
                     {"name": "created_at", "ingested_dtype": "timestamp"}
                 ]
             }
-        ],
-        "relationships": [
-            {
-                "name": "event_session",
-                "src_table": "Event",
-                "src_column": "session_id",
-                "dst_table": "Session",
-                "dst_column": "id"
-            }
-        ],
-        "edge_sort_keys": {
-            "relationships": {
-                "event_session": {
-                    "forward": {
-                        "timestamp": {
-                            "table": "Session",
-                            "column": "created_at",
-                            "encoding": {
-                                "kind": "int32",
-                                "anchor": 0,
-                                "step": 1
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        ]
     });
     let source_path = dir.path().join("diskgraph_config.json");
     fs::write(&source_path, serde_json::to_vec_pretty(&source)?)?;
@@ -1164,20 +1130,20 @@ fn ingest_relationship_uses_dest_timestamp_sort_key() -> Result<()> {
     let forward = metadata
         .edge_relations
         .iter()
-        .find(|r| r.name == "event_session")
+        .find(|r| r.name == "Event_session_id_to_Session_id")
         .unwrap();
     let reverse = metadata
         .edge_relations
         .iter()
-        .find(|r| r.name == "event_session_reverse")
+        .find(|r| r.name == "Event_session_id_to_Session_id_reverse")
         .unwrap();
     assert_eq!(forward.dest_sort_key_bits, Some(32));
     assert_eq!(reverse.dest_sort_key_bits, None);
     let reader = GraphIndexReader::open(&output_root.join("index_metadata.json"), &output_root)?;
     let event_table = reader.table("Event").unwrap();
     let session_table = reader.table("Session").unwrap();
-    let forward_rows = sum_relation_edges(&event_table, "event_session")?;
-    let reverse_rows = sum_relation_edges(&session_table, "event_session_reverse")?;
+    let forward_rows = sum_relation_edges(&event_table, "Event_session_id_to_Session_id")?;
+    let reverse_rows = sum_relation_edges(&session_table, "Event_session_id_to_Session_id_reverse")?;
     assert_eq!(forward_rows, 2);
     assert_eq!(reverse_rows, 2);
 
@@ -1243,6 +1209,12 @@ fn ingest_invalid_fields_records_failures_and_builds() -> Result<()> {
                     {"name": "id", "ingested_dtype": "int64"},
                     {"name": "user_id", "ingested_dtype": "int64"},
                     {"name": "created_at", "ingested_dtype": "timestamp"}
+                ],
+                "fkeys": [
+                    {
+                        "src_column": "user_id",
+                        "dst_table": "User"
+                    }
                 ]
             },
             {
@@ -1250,22 +1222,13 @@ fn ingest_invalid_fields_records_failures_and_builds() -> Result<()> {
                 "format": "csv",
                 "paths": [input_root.join("user_visit_edges.csv").to_string_lossy()],
                 "edge_table": {
-                    "src_fk": {"column": "src_user_id", "ref_table": "User", "ref_column": "id"},
-                    "dst_fk": {"column": "dst_visit_id", "ref_table": "Visit", "ref_column": "id"}
+                    "src_fk": {"edge_column": "src_user_id", "ref_table": "User"},
+                    "dst_fk": {"edge_column": "dst_visit_id", "ref_table": "Visit"}
                 },
                 "columns": [
                     {"name": "src_user_id", "ingested_dtype": "int64"},
                     {"name": "dst_visit_id", "ingested_dtype": "int64"}
                 ]
-            }
-        ],
-        "relationships": [
-            {
-                "name": "visit_user",
-                "src_table": "Visit",
-                "src_column": "user_id",
-                "dst_table": "User",
-                "dst_column": "id"
             }
         ]
     });
@@ -1365,8 +1328,36 @@ fn ingest_edge_table_mixed_sort_keys() -> Result<()> {
                 "format": "csv",
                 "paths": [input_root.join("clicks.csv").to_string_lossy()],
                 "edge_table": {
-                    "src_fk": {"column": "user_id", "ref_table": "User", "ref_column": "id"},
-                    "dst_fk": {"column": "item_id", "ref_table": "Item", "ref_column": "id"}
+                    "src_fk": {"edge_column": "user_id", "ref_table": "User"},
+                    "dst_fk": {"edge_column": "item_id", "ref_table": "Item"},
+                    "forward": {
+                        "time": {
+                            "table": "Click",
+                            "column": "ts",
+                            "bitwidth": 32,
+                            "anchor_time": 0,
+                            "unit": "s"
+                        },
+                        "weight": {
+                            "table": "Item",
+                            "expr": "rank",
+                            "dtype": "float32"
+                        }
+                    },
+                    "reverse": {
+                        "time": {
+                            "table": "Click",
+                            "column": "ts",
+                            "bitwidth": 16,
+                            "anchor_time": 0,
+                            "unit": "s"
+                        },
+                        "weight": {
+                            "table": "User",
+                            "expr": "user_weight",
+                            "dtype": "float32"
+                        }
+                    }
                 },
                 "columns": [
                     {"name": "user_id", "ingested_dtype": "int64"},
@@ -1375,37 +1366,7 @@ fn ingest_edge_table_mixed_sort_keys() -> Result<()> {
                     {"name": "edge_weight", "ingested_dtype": "float32"}
                 ]
             }
-        ],
-        "edge_sort_keys": {
-            "edge_tables": {
-                "Click": {
-                    "src_to_dst": {
-                        "timestamp": {
-                            "table": "Click",
-                            "column": "ts",
-                            "encoding": {"kind": "int32", "anchor": 0, "step": 1}
-                        },
-                        "weight": {
-                            "table": "Item",
-                            "expr": "rank",
-                            "encoding": {"dtype": "float32"}
-                        }
-                    },
-                    "dst_to_src": {
-                        "timestamp": {
-                            "table": "Click",
-                            "column": "ts",
-                            "encoding": {"kind": "int16", "anchor": 0, "step": 1}
-                        },
-                        "weight": {
-                            "table": "User",
-                            "expr": "user_weight",
-                            "encoding": {"dtype": "float32"}
-                        }
-                    }
-                }
-            }
-        }
+        ]
     });
     let source_path = dir.path().join("diskgraph_config.json");
     fs::write(&source_path, serde_json::to_vec_pretty(&source)?)?;
@@ -1574,6 +1535,12 @@ fn ingest_parquet_with_uuid_ip_types() -> Result<()> {
                     {"name": "token_id", "ingested_dtype": "uuid256"},
                     {"name": "user_id", "ingested_dtype": "uuid"},
                     {"name": "label", "ingested_dtype": "string"}
+                ],
+                "fkeys": [
+                    {
+                        "src_column": "user_id",
+                        "dst_table": "User"
+                    }
                 ]
             },
             {
@@ -1584,6 +1551,12 @@ fn ingest_parquet_with_uuid_ip_types() -> Result<()> {
                 "columns": [
                     {"name": "event_id", "ingested_dtype": "uuid"},
                     {"name": "token_id", "ingested_dtype": "uuid256"}
+                ],
+                "fkeys": [
+                    {
+                        "src_column": "token_id",
+                        "dst_table": "DeviceToken"
+                    }
                 ]
             },
             {
@@ -1601,29 +1574,13 @@ fn ingest_parquet_with_uuid_ip_types() -> Result<()> {
                 "format": "parquet",
                 "paths": [input_root.join("user_ip_edges.parquet").to_string_lossy()],
                 "edge_table": {
-                    "src_fk": {"column": "user_id", "ref_table": "User", "ref_column": "user_id"},
-                    "dst_fk": {"column": "ip_id", "ref_table": "IpAddress", "ref_column": "ip_id"}
+                    "src_fk": {"edge_column": "user_id", "ref_table": "User"},
+                    "dst_fk": {"edge_column": "ip_id", "ref_table": "IpAddress"}
                 },
                 "columns": [
                     {"name": "user_id", "ingested_dtype": "uuid"},
                     {"name": "ip_id", "ingested_dtype": "ip"}
                 ]
-            }
-        ],
-        "relationships": [
-            {
-                "name": "token_user",
-                "src_table": "DeviceToken",
-                "src_column": "user_id",
-                "dst_table": "User",
-                "dst_column": "user_id"
-            },
-            {
-                "name": "event_token",
-                "src_table": "TokenEvent",
-                "src_column": "token_id",
-                "dst_table": "DeviceToken",
-                "dst_column": "token_id"
             }
         ]
     });
@@ -1755,16 +1712,15 @@ fn ingest_parquet_with_utf8_string_pk_lookup() -> Result<()> {
                 "format": "parquet",
                 "paths": [edge_path.to_string_lossy()],
                 "edge_table": {
-                    "src_fk": {"column": "src_id", "ref_table": "Word", "ref_column": "id"},
-                    "dst_fk": {"column": "dst_id", "ref_table": "Word", "ref_column": "id"}
+                    "src_fk": {"edge_column": "src_id", "ref_table": "Word"},
+                    "dst_fk": {"edge_column": "dst_id", "ref_table": "Word"}
                 },
                 "columns": [
                     {"name": "src_id", "ingested_dtype": "string"},
                     {"name": "dst_id", "ingested_dtype": "string"}
                 ]
             }
-        ],
-        "relationships": []
+        ]
     });
     let source_path = dir.path().join("diskgraph_config.json");
     fs::write(&source_path, serde_json::to_vec_pretty(&source)?)?;
@@ -1838,23 +1794,15 @@ fn ingest_parquet_to_index_reader_e2e() -> Result<()> {
                 "columns": [
                     {"name": "id", "ingested_dtype": "int64"},
                     {"name": "user_id", "ingested_dtype": "int64"}
+                ],
+                "fkeys": [
+                    {
+                        "src_column": "user_id",
+                        "dst_table": "User"
+                    }
                 ]
             }
-        ],
-        "relationships": [
-            {
-                "name": "order_user",
-                "src_table": "Order",
-                "src_column": "user_id",
-                "dst_table": "User",
-                "dst_column": "id"
-            }
-        ],
-        "relationships_reverse": [],
-        "edge_sort_keys": {
-            "relationships": {},
-            "edge_tables": {}
-        }
+        ]
     });
     let source_path = input_root.join("diskgraph_config.json");
     fs::write(&source_path, serde_json::to_vec_pretty(&metadata)?)?;
@@ -1870,7 +1818,7 @@ fn ingest_parquet_to_index_reader_e2e() -> Result<()> {
     let index_metadata = output_root.join("index_metadata.json");
     let reader = GraphIndexReader::open(&index_metadata, &output_root)?;
     let order_table = reader.table("Order").ok_or_else(|| anyhow!("missing Order"))?;
-    let total_edges = sum_relation_edges(&order_table, "order_user")?;
+    let total_edges = sum_relation_edges(&order_table, "Order_user_id_to_User_id")?;
     assert_eq!(total_edges, 3);
     Ok(())
 }
@@ -1903,6 +1851,19 @@ fn ingest_weight_expr_with_backticks() -> Result<()> {
                 "columns": [
                     {"name": "id", "ingested_dtype": "int64"},
                     {"name": "dst_id", "ingested_dtype": "int64"}
+                ],
+                "fkeys": [
+                    {
+                        "src_column": "dst_id",
+                        "dst_table": "Dst",
+                        "forward": {
+                            "weight": {
+                                "table": "Dst",
+                                "expr": "`weight-kg`",
+                                "dtype": "float32"
+                            }
+                        }
+                    }
                 ]
             },
             {
@@ -1915,29 +1876,7 @@ fn ingest_weight_expr_with_backticks() -> Result<()> {
                     {"name": "weight-kg", "ingested_dtype": "float32"}
                 ]
             }
-        ],
-        "relationships": [
-            {
-                "name": "src_dst",
-                "src_table": "Src",
-                "src_column": "dst_id",
-                "dst_table": "Dst",
-                "dst_column": "id"
-            }
-        ],
-        "edge_sort_keys": {
-            "relationships": {
-                "src_dst": {
-                    "forward": {
-                        "weight": {
-                            "table": "Dst",
-                            "expr": "`weight-kg`",
-                            "encoding": {"dtype": "float32"}
-                        }
-                    }
-                }
-            }
-        }
+        ]
     });
     let source_path = dir.path().join("diskgraph_config.json");
     fs::write(&source_path, serde_json::to_vec_pretty(&source)?)?;
@@ -1956,7 +1895,7 @@ fn ingest_weight_expr_with_backticks() -> Result<()> {
     let forward = metadata
         .edge_relations
         .iter()
-        .find(|r| r.name == "src_dst")
+        .find(|r| r.name == "Src_dst_id_to_Dst_id")
         .unwrap();
     assert_eq!(forward.dest_sort_key_bits, Some(32));
 
@@ -1991,6 +1930,19 @@ fn ingest_weight_expr_with_log_and_abs() -> Result<()> {
                 "columns": [
                     {"name": "id", "ingested_dtype": "int64"},
                     {"name": "dst_id", "ingested_dtype": "int64"}
+                ],
+                "fkeys": [
+                    {
+                        "src_column": "dst_id",
+                        "dst_table": "Dst",
+                        "forward": {
+                            "weight": {
+                                "table": "Dst",
+                                "expr": "log(abs(`weight-kg`) + 1) + abs(offset)",
+                                "dtype": "float32"
+                            }
+                        }
+                    }
                 ]
             },
             {
@@ -2004,29 +1956,7 @@ fn ingest_weight_expr_with_log_and_abs() -> Result<()> {
                     {"name": "offset", "ingested_dtype": "float32"}
                 ]
             }
-        ],
-        "relationships": [
-            {
-                "name": "src_dst",
-                "src_table": "Src",
-                "src_column": "dst_id",
-                "dst_table": "Dst",
-                "dst_column": "id"
-            }
-        ],
-        "edge_sort_keys": {
-            "relationships": {
-                "src_dst": {
-                    "forward": {
-                        "weight": {
-                            "table": "Dst",
-                            "expr": "log(abs(`weight-kg`) + 1) + abs(offset)",
-                            "encoding": {"dtype": "float32"}
-                        }
-                    }
-                }
-            }
-        }
+        ]
     });
     let source_path = dir.path().join("diskgraph_config.json");
     fs::write(&source_path, serde_json::to_vec_pretty(&source)?)?;
@@ -2045,13 +1975,13 @@ fn ingest_weight_expr_with_log_and_abs() -> Result<()> {
     let forward = metadata
         .edge_relations
         .iter()
-        .find(|r| r.name == "src_dst")
+        .find(|r| r.name == "Src_dst_id_to_Dst_id")
         .unwrap();
     assert_eq!(forward.dest_sort_key_bits, Some(32));
 
     let reader = GraphIndexReader::open(&output_root.join("index_metadata.json"), &output_root)?;
     let src_table = reader.table("Src").unwrap();
-    let sort_keys = extract_relation_sort_keys(&src_table, "src_dst", 0)?;
+    let sort_keys = extract_relation_sort_keys(&src_table, "Src_dst_id_to_Dst_id", 0)?;
     let expected = (f64::log10(3.5_f64 + 1.0) + 2.0) as f32;
     let expected_bits = ordered_f32_bits(expected) as u64;
     assert_eq!(sort_keys, vec![expected_bits]);
@@ -2103,16 +2033,13 @@ fn ingest_missing_dst_key_records_lookup() -> Result<()> {
                 "columns": [
                     {"name": "id", "ingested_dtype": "int64"},
                     {"name": "user_id", "ingested_dtype": "int64"}
+                ],
+                "fkeys": [
+                    {
+                        "src_column": "user_id",
+                        "dst_table": "User"
+                    }
                 ]
-            }
-        ],
-        "relationships": [
-            {
-                "name": "visit_user",
-                "src_table": "Visit",
-                "src_column": "user_id",
-                "dst_table": "User",
-                "dst_column": "id"
             }
         ]
     });
@@ -2128,13 +2055,13 @@ fn ingest_missing_dst_key_records_lookup() -> Result<()> {
 
     let reader = GraphIndexReader::open(&output_root.join("index_metadata.json"), &output_root)?;
     let visit_table = reader.table("Visit").unwrap();
-    let forward_rows = sum_relation_edges(&visit_table, "visit_user")?;
+    let forward_rows = sum_relation_edges(&visit_table, "Visit_user_id_to_User_id")?;
     assert_eq!(forward_rows, 2);
 
     assert!(stats.key_lookup_failures >= 1);
     let lookup = stats
         .key_failures_by_context
-        .get("dst_lookup:visit_user")
+        .get("dst_lookup:Visit_user_id_to_User_id")
         .map(|c| c.lookup_failures)
         .unwrap_or(0);
     assert!(lookup > 0);
