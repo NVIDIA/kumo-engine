@@ -1,8 +1,40 @@
-use crate::{ProgressCallback, ProgressEvent, ProgressKind, ProgressPhase};
+use diskgraph_index::graph::{GraphBuildProgress, GraphBuildStage, GraphProgressSink};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::io::IsTerminal;
 use std::sync::{Arc, Mutex};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ProgressPhase {
+    Context,
+    Encode,
+    PkMap,
+    EdgesPassA,
+    EdgesPassB,
+    EdgesPassC,
+    Index,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProgressKind {
+    Start,
+    Advance,
+    Finish,
+}
+
+#[derive(Clone, Debug)]
+pub struct ProgressEvent {
+    pub phase: ProgressPhase,
+    pub table: String,
+    pub shard: Option<usize>,
+    pub kind: ProgressKind,
+    pub delta: u64,
+    pub total: Option<u64>,
+    pub status: Option<String>,
+}
+
+pub type ProgressCallback = std::sync::Arc<dyn Fn(ProgressEvent) + Send + Sync>;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct ProgressKey {
@@ -14,6 +46,174 @@ struct ProgressKey {
 struct ProgressState {
     mp: MultiProgress,
     bars: HashMap<ProgressKey, ProgressBar>,
+}
+
+pub struct IndexProgressAdapter {
+    cb: ProgressCallback,
+    state: Mutex<IndexProgressTracker>,
+}
+
+struct IndexProgressTracker {
+    shard_states: HashMap<(String, Option<usize>), IndexProgressState>,
+    table_states: HashMap<String, TableProgressState>,
+}
+
+#[derive(Clone, Copy)]
+struct IndexProgressState {
+    current: u64,
+}
+
+#[derive(Clone, Copy)]
+struct TableProgressState {
+    current: u64,
+    total: Option<u64>,
+    remaining_shards: Option<usize>,
+    started: bool,
+    finished: bool,
+}
+
+#[derive(Clone, Copy)]
+pub struct TableIndexTotals {
+    pub total_nodes: u64,
+    pub total_shards: usize,
+}
+
+impl IndexProgressAdapter {
+    pub fn new(
+        cb: ProgressCallback,
+        table_totals: HashMap<String, TableIndexTotals>,
+    ) -> Self {
+        let mut table_states = HashMap::new();
+        for (table, totals) in table_totals {
+            table_states.insert(
+                table,
+                TableProgressState {
+                    current: 0,
+                    total: Some(totals.total_nodes),
+                    remaining_shards: Some(totals.total_shards),
+                    started: false,
+                    finished: false,
+                },
+            );
+        }
+        Self {
+            cb,
+            state: Mutex::new(IndexProgressTracker {
+                shard_states: HashMap::new(),
+                table_states,
+            }),
+        }
+    }
+
+    fn shard_key(shard: &str) -> (String, Option<usize>) {
+        if let Some((table, rest)) = shard.split_once("/shard-") {
+            if let Ok(idx) = rest.parse::<usize>() {
+                return (table.to_string(), Some(idx));
+            }
+        }
+        (shard.to_string(), None)
+    }
+}
+
+impl GraphProgressSink for IndexProgressAdapter {
+    fn report(&self, update: GraphBuildProgress) {
+        let (table, shard) = match &update.stage {
+            GraphBuildStage::BuildShard { shard }
+            | GraphBuildStage::Complete { shard } => Self::shard_key(shard.as_ref()),
+        };
+        let key = (table.clone(), shard);
+        let mut state = self.state.lock().unwrap();
+        match update.stage {
+            GraphBuildStage::BuildShard { .. } => {
+                let delta = match state.shard_states.entry(key) {
+                    Entry::Vacant(v) => {
+                        v.insert(IndexProgressState {
+                            current: update.current,
+                        });
+                        update.current
+                    }
+                    Entry::Occupied(mut o) => {
+                        let prev = o.get().current;
+                        if update.current > prev {
+                            let delta = update.current.saturating_sub(prev);
+                            o.insert(IndexProgressState {
+                                current: update.current,
+                            });
+                            delta
+                        } else {
+                            0
+                        }
+                    }
+                };
+                let table_state = state.table_states.entry(table.clone()).or_insert(
+                    TableProgressState {
+                        current: 0,
+                        total: None,
+                        remaining_shards: None,
+                        started: false,
+                        finished: false,
+                    },
+                );
+                if !table_state.started && !table_state.finished {
+                    table_state.started = true;
+                    (self.cb)(ProgressEvent {
+                        phase: ProgressPhase::Index,
+                        table: table.clone(),
+                        shard: None,
+                        kind: ProgressKind::Start,
+                        delta: 0,
+                        total: table_state.total,
+                        status: None,
+                    });
+                }
+                if delta > 0 {
+                    table_state.current = table_state.current.saturating_add(delta);
+                    (self.cb)(ProgressEvent {
+                        phase: ProgressPhase::Index,
+                        table,
+                        shard: None,
+                        kind: ProgressKind::Advance,
+                        delta,
+                        total: table_state.total,
+                        status: None,
+                    });
+                }
+            }
+            GraphBuildStage::Complete { .. } => {
+                state.shard_states.remove(&key);
+                let table_state = state.table_states.entry(table.clone()).or_insert(
+                    TableProgressState {
+                        current: 0,
+                        total: None,
+                        remaining_shards: None,
+                        started: false,
+                        finished: false,
+                    },
+                );
+                if let Some(remaining) = table_state.remaining_shards.as_mut() {
+                    if *remaining > 0 {
+                        *remaining = remaining.saturating_sub(1);
+                    }
+                }
+                let should_finish = match table_state.remaining_shards {
+                    Some(remaining) => remaining == 0,
+                    None => true,
+                };
+                if should_finish && !table_state.finished {
+                    table_state.finished = true;
+                    (self.cb)(ProgressEvent {
+                        phase: ProgressPhase::Index,
+                        table,
+                        shard: None,
+                        kind: ProgressKind::Finish,
+                        delta: 0,
+                        total: table_state.total.or(Some(table_state.current)),
+                        status: None,
+                    });
+                }
+            }
+        }
+    }
 }
 
 pub fn build_progress() -> Option<ProgressCallback> {

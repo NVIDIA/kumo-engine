@@ -3,14 +3,32 @@
 mod mapping;
 pub mod source_metadata;
 pub mod progress;
+pub mod config;
+pub mod errors;
+pub mod stats;
+pub mod scratch;
+pub mod consts;
 #[cfg(test)]
 mod tests_unit;
 
+pub use crate::config::IngestOptions;
+use crate::consts::*;
+pub use crate::errors::{KeyParseError, KeyParseResult};
 use crate::mapping::{
     write_pk_data_entry, write_pk_data_header, Key, KeyType, PkDataAdvice, PkHashShard,
-    PkHashStore, PkPtrHash, PkPtrHashOutput,
+    PkHashStore, PkPtrHash,
 };
-use crate::progress::{format_bytes, format_duration};
+pub use crate::progress::{
+    format_bytes, format_duration, IndexProgressAdapter, ProgressCallback, ProgressEvent,
+    ProgressKind, ProgressPhase, TableIndexTotals,
+};
+pub use crate::scratch::{
+    estimate_pk_map_bytes, estimate_varbytes_avg_len_multi, new_pk_map, reserve_map,
+    EdgeMapScratch, PkMapHashMap, PkMapHasher, PkMapScratch,
+};
+pub use crate::stats::{
+    IngestReport, IngestStats, KeyFailureCounts, KeyFailureState, PerfStats,
+};
 use crate::source_metadata::{
     relationship_name, ColumnSpec, IngestedType, SortKeySpec, TableFormat, TableSpec,
     TimestampEncodingKind, TimestampEncodingSpec, WeightEncodingKind, WeightEncodingSpec,
@@ -35,7 +53,7 @@ use diskgraph_rowpack::{
 };
 use diskgraph_index::builder::{EdgeBufferPool as IndexEdgeBufferPool, MemoryBudget};
 use diskgraph_index::graph::{
-    GraphBuildProgress, GraphBuildStage, GraphDataSource, GraphIndexBuilder, GraphProgressSink,
+    GraphDataSource, GraphIndexBuilder, GraphProgressSink,
 };
 use lz4_flex::frame::{FrameDecoder, FrameEncoder};
 use ptr_hash::PtrHashScratch;
@@ -47,18 +65,17 @@ use object_store::{path::Path as ObjectPath, ObjectStore, ObjectStoreExt, WriteM
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use pprof::protos::Message;
 use pprof::ProfilerGuard;
-use serde::Serialize;
 use serde_json::Value as JsonValue;
 use gxhash::GxHasher;
 use epserde::prelude::Serialize as EpSerialize;
 use ptr_hash::DefaultPtrHash;
 use std::fs;
 use std::io::{self, BufWriter, Cursor, Read, Write};
-use std::hash::{BuildHasherDefault, Hash, Hasher};
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 #[cfg(target_os = "linux")]
 use std::os::unix::io::AsRawFd;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
@@ -71,487 +88,10 @@ use uuid_simd::{parse_hyphenated, parse_simple, AsOut};
 
 pub use source_metadata::SourceMetadata;
 
-const NODE_BATCH_SIZE: usize = 100_000;
-const MAX_KEY_SAMPLE_LEN: usize = 64;
-const TEMP_DIR_NAME: &str = "_tmp";
-const TEMP_META_MAGIC: [u8; 4] = *b"DGTP";
-const TEMP_META_VERSION: u8 = 2;
-const SAMPLE_ROW_LIMIT: usize = 100_000;
-const MAX_NODE_DATA_LEN: usize = 64 * 1024 * 1024;
-const PROGRESS_ROW_BATCH: u64 = 1_000_000;
-const MAX_VAR_KEY_LEN: usize = u16::MAX as usize;
-const GXHASH_SHARD_SEED: u64 = 0x6a09e667f3bcc909;
-const PK_MAP_MEM_BUDGET_FRAC: f64 = 0.9;
-const PK_MAP_LOAD_FACTOR_NUM: u64 = 8;
-const PK_MAP_LOAD_FACTOR_DEN: u64 = 7;
-const PK_MAP_MPHF_FACTOR_NUM: u64 = 125;
-const PK_MAP_MPHF_FACTOR_DEN: u64 = 100;
-const PK_MAP_ESTIMATE_PAD_PCT: u64 = 25;
-const INVALID_LOCAL_ID: u32 = u32::MAX;
 
-#[derive(Default)]
-struct EdgeMapScratch {
-    key_buf: Vec<u8>,
-    fkey_bitmap: Option<Mmap>,
-}
 
-type PkMapHasher = BuildHasherDefault<GxHasher>;
-type PkMapHashMap<K, V> = std::collections::HashMap<K, V, PkMapHasher>;
-
-fn new_pk_map<K, V>() -> PkMapHashMap<K, V> {
-    std::collections::HashMap::with_hasher(Default::default())
-}
-
-struct PkMapScratch {
-    seen_u64: PkMapHashMap<u64, u32>,
-    seen_uuid: PkMapHashMap<[u8; 16], u32>,
-    seen_uuid256: PkMapHashMap<[u8; 32], u32>,
-    seen_ip: PkMapHashMap<[u8; 16], u32>,
-    seen_bytes: PkMapHashMap<Vec<u8>, u32>,
-    entries: Vec<(u64, u32)>,
-    ptrhash: PtrHashScratch<PkPtrHashOutput>,
-}
-
-impl PkMapScratch {
-    fn new() -> Self {
-        Self {
-            seen_u64: new_pk_map(),
-            seen_uuid: new_pk_map(),
-            seen_uuid256: new_pk_map(),
-            seen_ip: new_pk_map(),
-            seen_bytes: new_pk_map(),
-            entries: Vec::new(),
-            ptrhash: PtrHashScratch::new(),
-        }
-    }
-
-    fn clear_others_for(&mut self, key_type: KeyType) {
-        match key_type {
-            KeyType::Int64 => {
-                self.seen_bytes.clear();
-                self.seen_bytes.shrink_to_fit();
-                self.seen_uuid.clear();
-                self.seen_uuid.shrink_to_fit();
-                self.seen_uuid256.clear();
-                self.seen_uuid256.shrink_to_fit();
-                self.seen_ip.clear();
-                self.seen_ip.shrink_to_fit();
-            }
-            KeyType::VarBytes => {
-                self.seen_u64.clear();
-                self.seen_u64.shrink_to_fit();
-                self.seen_uuid.clear();
-                self.seen_uuid.shrink_to_fit();
-                self.seen_uuid256.clear();
-                self.seen_uuid256.shrink_to_fit();
-                self.seen_ip.clear();
-                self.seen_ip.shrink_to_fit();
-            }
-            KeyType::Uuid => {
-                self.seen_u64.clear();
-                self.seen_u64.shrink_to_fit();
-                self.seen_bytes.clear();
-                self.seen_bytes.shrink_to_fit();
-                self.seen_uuid256.clear();
-                self.seen_uuid256.shrink_to_fit();
-                self.seen_ip.clear();
-                self.seen_ip.shrink_to_fit();
-            }
-            KeyType::Uuid256 => {
-                self.seen_u64.clear();
-                self.seen_u64.shrink_to_fit();
-                self.seen_bytes.clear();
-                self.seen_bytes.shrink_to_fit();
-                self.seen_uuid.clear();
-                self.seen_uuid.shrink_to_fit();
-                self.seen_ip.clear();
-                self.seen_ip.shrink_to_fit();
-            }
-            KeyType::Ip => {
-                self.seen_u64.clear();
-                self.seen_u64.shrink_to_fit();
-                self.seen_bytes.clear();
-                self.seen_bytes.shrink_to_fit();
-                self.seen_uuid.clear();
-                self.seen_uuid.shrink_to_fit();
-                self.seen_uuid256.clear();
-                self.seen_uuid256.shrink_to_fit();
-            }
-        }
-    }
-}
-
-impl Default for PkMapScratch {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-fn reserve_map<K: std::cmp::Eq + std::hash::Hash, V, S: std::hash::BuildHasher>(
-    map: &mut std::collections::HashMap<K, V, S>,
-    target: usize,
-) {
-    let cap = map.capacity();
-    if cap < target {
-        map.reserve(target - cap);
-    }
-}
-
-fn estimate_pk_map_bytes(row_count: u64, key_type: KeyType, avg_var_bytes: u64) -> u64 {
-    if row_count == 0 {
-        return 0;
-    }
-    let capacity = row_count
-        .saturating_mul(PK_MAP_LOAD_FACTOR_NUM)
-        .saturating_add(PK_MAP_LOAD_FACTOR_DEN - 1)
-        / PK_MAP_LOAD_FACTOR_DEN;
-    let entry_size = match key_type {
-        KeyType::Int64 => std::mem::size_of::<(u64, u32)>(),
-        KeyType::VarBytes => std::mem::size_of::<(Vec<u8>, u32)>(),
-        KeyType::Uuid => std::mem::size_of::<([u8; 16], u32)>(),
-        KeyType::Uuid256 => std::mem::size_of::<([u8; 32], u32)>(),
-        KeyType::Ip => std::mem::size_of::<([u8; 16], u32)>(),
-    } as u64;
-    let ctrl_bytes = capacity;
-    let map_bytes = capacity
-        .saturating_mul(entry_size)
-        .saturating_add(ctrl_bytes);
-    let key_bytes = if matches!(key_type, KeyType::VarBytes) {
-        row_count.saturating_mul(avg_var_bytes)
-    } else {
-        0
-    };
-    let slots = row_count
-        .saturating_mul(PK_MAP_MPHF_FACTOR_NUM)
-        .saturating_add(PK_MAP_MPHF_FACTOR_DEN - 1)
-        / PK_MAP_MPHF_FACTOR_DEN;
-    let entries_bytes = slots.saturating_mul(std::mem::size_of::<(u64, u32)>() as u64);
-    let base = map_bytes
-        .saturating_add(key_bytes)
-        .saturating_add(entries_bytes);
-    base.saturating_mul(100 + PK_MAP_ESTIMATE_PAD_PCT) / 100
-}
-
-fn estimate_varbytes_avg_len_multi(row_count: u64, max_row_len: u32, paths: &[PathBuf]) -> u64 {
-    if row_count == 0 {
-        return 0;
-    }
-    let max_row_len = max_row_len as u64;
-    let mut total_bytes = 0u64;
-    for path in paths {
-        if let Ok(meta) = fs::metadata(path) {
-            total_bytes = total_bytes.saturating_add(meta.len());
-        }
-    }
-    if total_bytes == 0 {
-        return max_row_len;
-    }
-    let avg_row = total_bytes / row_count;
-    let mut avg_key = avg_row.saturating_sub(4);
-    if avg_key == 0 {
-        avg_key = max_row_len;
-    }
-    if max_row_len > 0 {
-        avg_key = avg_key.min(max_row_len);
-    }
-    avg_key
-}
-
-#[derive(Clone, Copy, Debug)]
-enum KeyParseError {
-    TypeMismatch,
-    UnsupportedType,
-    LengthMismatch,
-    Empty,
-    TooLarge,
-    NotInteger,
-    NotBase10,
-    NotUtf8,
-    InvalidUuid,
-    InvalidUuid256,
-    InvalidIp,
-}
-
-type KeyParseResult<T> = std::result::Result<T, KeyParseError>;
 
 const DEFAULT_INDEX_MEM_BUDGET_FRAC: f64 = 0.7;
-
-#[derive(Clone, Debug, Serialize)]
-pub struct IngestReport {
-    pub stats: IngestStats,
-    pub source: SourceMetadata,
-}
-
-#[derive(Clone)]
-pub struct IngestOptions {
-    pub profile_dir: Option<PathBuf>,
-    pub progress: Option<ProgressCallback>,
-    pub parallel: bool,
-    pub index_mem_budget_bytes: Option<u64>,
-}
-
-impl Default for IngestOptions {
-    fn default() -> Self {
-        Self {
-            profile_dir: None,
-            progress: None,
-            parallel: true,
-            index_mem_budget_bytes: None,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum ProgressPhase {
-    Context,
-    Encode,
-    PkMap,
-    EdgesPassA,
-    EdgesPassB,
-    EdgesPassC,
-    Index,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ProgressKind {
-    Start,
-    Advance,
-    Finish,
-}
-
-#[derive(Clone, Debug)]
-pub struct ProgressEvent {
-    pub phase: ProgressPhase,
-    pub table: String,
-    pub shard: Option<usize>,
-    pub kind: ProgressKind,
-    pub delta: u64,
-    pub total: Option<u64>,
-    pub status: Option<String>,
-}
-
-pub type ProgressCallback = std::sync::Arc<dyn Fn(ProgressEvent) + Send + Sync>;
-
-struct IndexProgressAdapter {
-    cb: ProgressCallback,
-    state: Mutex<IndexProgressTracker>,
-}
-
-struct IndexProgressTracker {
-    shard_states: HashMap<(String, Option<usize>), IndexProgressState>,
-    table_states: HashMap<String, TableProgressState>,
-}
-
-#[derive(Clone, Copy)]
-struct IndexProgressState {
-    current: u64,
-}
-
-#[derive(Clone, Copy)]
-struct TableProgressState {
-    current: u64,
-    total: Option<u64>,
-    remaining_shards: Option<usize>,
-    started: bool,
-    finished: bool,
-}
-
-#[derive(Clone, Copy)]
-struct TableIndexTotals {
-    total_nodes: u64,
-    total_shards: usize,
-}
-
-impl IndexProgressAdapter {
-    fn new(
-        cb: ProgressCallback,
-        table_totals: HashMap<String, TableIndexTotals>,
-    ) -> Self {
-        let mut table_states = HashMap::new();
-        for (table, totals) in table_totals {
-            table_states.insert(
-                table,
-                TableProgressState {
-                    current: 0,
-                    total: Some(totals.total_nodes),
-                    remaining_shards: Some(totals.total_shards),
-                    started: false,
-                    finished: false,
-                },
-            );
-        }
-        Self {
-            cb,
-            state: Mutex::new(IndexProgressTracker {
-                shard_states: HashMap::new(),
-                table_states,
-            }),
-        }
-    }
-
-    fn shard_key(shard: &str) -> (String, Option<usize>) {
-        if let Some((table, rest)) = shard.split_once("/shard-") {
-            if let Ok(idx) = rest.parse::<usize>() {
-                return (table.to_string(), Some(idx));
-            }
-        }
-        (shard.to_string(), None)
-    }
-}
-
-impl GraphProgressSink for IndexProgressAdapter {
-    fn report(&self, update: GraphBuildProgress) {
-        let (table, shard) = match &update.stage {
-            GraphBuildStage::BuildShard { shard }
-            | GraphBuildStage::Complete { shard } => Self::shard_key(shard.as_ref()),
-        };
-        let key = (table.clone(), shard);
-        let mut state = self.state.lock().unwrap();
-        match update.stage {
-            GraphBuildStage::BuildShard { .. } => {
-                let delta = match state.shard_states.entry(key) {
-                    Entry::Vacant(v) => {
-                        v.insert(IndexProgressState {
-                            current: update.current,
-                        });
-                        update.current
-                    }
-                    Entry::Occupied(mut o) => {
-                        let prev = o.get().current;
-                        if update.current > prev {
-                            let delta = update.current.saturating_sub(prev);
-                            o.insert(IndexProgressState {
-                                current: update.current,
-                            });
-                            delta
-                        } else {
-                            0
-                        }
-                    }
-                };
-                let table_state = state.table_states.entry(table.clone()).or_insert(
-                    TableProgressState {
-                        current: 0,
-                        total: None,
-                        remaining_shards: None,
-                        started: false,
-                        finished: false,
-                    },
-                );
-                if !table_state.started && !table_state.finished {
-                    table_state.started = true;
-                    (self.cb)(ProgressEvent {
-                        phase: ProgressPhase::Index,
-                        table: table.clone(),
-                        shard: None,
-                        kind: ProgressKind::Start,
-                        delta: 0,
-                        total: table_state.total,
-                        status: None,
-                    });
-                }
-                if delta > 0 {
-                    table_state.current = table_state.current.saturating_add(delta);
-                    (self.cb)(ProgressEvent {
-                        phase: ProgressPhase::Index,
-                        table,
-                        shard: None,
-                        kind: ProgressKind::Advance,
-                        delta,
-                        total: table_state.total,
-                        status: None,
-                    });
-                }
-            }
-            GraphBuildStage::Complete { .. } => {
-                state.shard_states.remove(&key);
-                let table_state = state.table_states.entry(table.clone()).or_insert(
-                    TableProgressState {
-                        current: 0,
-                        total: None,
-                        remaining_shards: None,
-                        started: false,
-                        finished: false,
-                    },
-                );
-                if let Some(remaining) = table_state.remaining_shards.as_mut() {
-                    if *remaining > 0 {
-                        *remaining = remaining.saturating_sub(1);
-                    }
-                }
-                let should_finish = match table_state.remaining_shards {
-                    Some(remaining) => remaining == 0,
-                    None => true,
-                };
-                if should_finish && !table_state.finished {
-                    table_state.finished = true;
-                    (self.cb)(ProgressEvent {
-                        phase: ProgressPhase::Index,
-                        table,
-                        shard: None,
-                        kind: ProgressKind::Finish,
-                        delta: 0,
-                        total: table_state.total.or(Some(table_state.current)),
-                        status: None,
-                    });
-                }
-            }
-        }
-    }
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct IngestStats {
-    pub output: String,
-    pub node_tables: usize,
-    pub edge_relations: usize,
-    pub total_nodes: u64,
-    pub total_edges: u64,
-    pub node_counts: HashMap<String, u64>,
-    pub edge_counts: HashMap<String, u64>,
-    pub key_parse_failures: u64,
-    pub key_lookup_failures: u64,
-    pub key_failure_samples: Vec<String>,
-    pub key_failures_by_context: HashMap<String, KeyFailureCounts>,
-    pub pk_duplicate_counts: HashMap<String, u64>,
-    pub pk_duplicate_total: u64,
-    pub pk_duplicate_samples: HashMap<String, Vec<String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub trimmed_strings: Option<u64>,
-    pub perf: PerfStats,
-}
-
-#[derive(Clone, Debug, Default, Serialize)]
-pub struct KeyFailureCounts {
-    pub parse_failures: u64,
-    pub lookup_failures: u64,
-}
-
-#[derive(Default)]
-struct KeyFailureState {
-    parse_failures: u64,
-    lookup_failures: u64,
-    samples: Vec<String>,
-    by_context: HashMap<String, KeyFailureCounts>,
-}
-
-#[derive(Clone, Debug, Default, Serialize)]
-pub struct PerfStats {
-    pub wall_time_ms: u64,
-    pub context_wall_ms: u64,
-    pub encode_wall_ms: u64,
-    pub pk_map_wall_ms: u64,
-    pub edges_map_wall_ms: u64,
-    pub index_wall_ms: u64,
-    pub finalize_wall_ms: u64,
-    pub bytes_read: u64,
-    pub bytes_written: u64,
-    pub temp_edges_src_bytes: u64,
-    pub temp_fkeys_bytes: u64,
-    pub temp_edges_map_bytes: u64,
-    pub temp_node_data_bytes: u64,
-    pub temp_bytes_total: u64,
-}
 
 pub fn ingest(
     source_metadata_path: &Path,
@@ -1328,7 +868,7 @@ fn access_value_to_f64(
     }
 }
 
-fn encode_timestamp_value(
+pub(crate) fn encode_timestamp_value(
     value: Option<i64>,
     encoding: &TimestampEncodingSpec,
 ) -> u64 {
@@ -1351,7 +891,7 @@ fn encode_timestamp_value(
     }
 }
 
-fn ordered_signed_to_u64(value: i64, bits: u8) -> u64 {
+pub(crate) fn ordered_signed_to_u64(value: i64, bits: u8) -> u64 {
     let mask = 1u64 << (bits - 1);
     let raw = match bits {
         8 => (value as i8 as u8) as u64,
@@ -8013,17 +7553,9 @@ fn parse_base10_bytes(bytes: &[u8]) -> KeyParseResult<u64> {
     Ok(value)
 }
 
-#[cfg(test)]
-fn parse_uuid_bytes(bytes: &[u8]) -> KeyParseResult<[u8; 16]> {
-    if bytes.len() != 16 {
-        return Err(KeyParseError::InvalidUuid);
-    }
-    let mut out = [0u8; 16];
-    out.copy_from_slice(bytes);
-    Ok(out)
-}
 
-fn parse_uuid_string(bytes: &[u8]) -> KeyParseResult<[u8; 16]> {
+
+pub(crate) fn parse_uuid_string(bytes: &[u8]) -> KeyParseResult<[u8; 16]> {
     let mut out = [0u8; 16];
     if bytes.len() == 32 {
         parse_simple(bytes, out.as_out()).map_err(|_| KeyParseError::InvalidUuid)?;
@@ -8036,7 +7568,7 @@ fn parse_uuid_string(bytes: &[u8]) -> KeyParseResult<[u8; 16]> {
     Err(KeyParseError::InvalidUuid)
 }
 
-fn parse_uuid256_string(bytes: &[u8]) -> KeyParseResult<[u8; 32]> {
+pub(crate) fn parse_uuid256_string(bytes: &[u8]) -> KeyParseResult<[u8; 32]> {
     if bytes.len() != 64 {
         return Err(KeyParseError::InvalidUuid256);
     }
@@ -8050,13 +7582,13 @@ fn parse_uuid256_string(bytes: &[u8]) -> KeyParseResult<[u8; 32]> {
     Ok(out)
 }
 
-fn parse_ip_string(bytes: &[u8]) -> KeyParseResult<[u8; 16]> {
+pub(crate) fn parse_ip_string(bytes: &[u8]) -> KeyParseResult<[u8; 16]> {
     let s = std::str::from_utf8(bytes).map_err(|_| KeyParseError::NotUtf8)?;
     let ip: std::net::IpAddr = s.parse().map_err(|_| KeyParseError::InvalidIp)?;
     Ok(ip_to_ipv6_bytes(ip))
 }
 
-fn parse_ip_bytes(bytes: &[u8]) -> KeyParseResult<[u8; 16]> {
+pub(crate) fn parse_ip_bytes(bytes: &[u8]) -> KeyParseResult<[u8; 16]> {
     match bytes.len() {
         4 => {
             let ip = std::net::IpAddr::V4(std::net::Ipv4Addr::new(
@@ -8267,339 +7799,6 @@ fn record_key_lookup_failure(
 }
 
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::source_metadata::TimestampUnit;
-    use chrono::NaiveDate;
-    use arrow_array::{BinaryArray, Int64Array, StringArray};
-
-    #[test]
-    fn parse_uuid_string_formats() {
-        let raw = "00112233445566778899aabbccddeeff";
-        let dashed = "00112233-4455-6677-8899-aabbccddeeff";
-        let expected = [
-            0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb,
-            0xcc, 0xdd, 0xee, 0xff,
-        ];
-        assert_eq!(parse_uuid_string(raw.as_bytes()).unwrap(), expected);
-        assert_eq!(parse_uuid_string(dashed.as_bytes()).unwrap(), expected);
-    }
-
-    #[test]
-    fn parse_uuid256_string_formats() {
-        let raw = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
-        let expected: [u8; 32] = [
-            0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb,
-            0xcc, 0xdd, 0xee, 0xff, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
-            0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff,
-        ];
-        assert_eq!(parse_uuid256_string(raw.as_bytes()).unwrap(), expected);
-    }
-
-    #[test]
-    fn parse_ip_string_formats() {
-        let v4 = "192.168.1.2";
-        let v6 = "2001:db8::1";
-        let v4_expected = [
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 192, 168, 1, 2,
-        ];
-        let v6_expected = [
-            0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
-        ];
-        assert_eq!(parse_ip_string(v4.as_bytes()).unwrap(), v4_expected);
-        assert_eq!(parse_ip_string(v6.as_bytes()).unwrap(), v6_expected);
-    }
-
-    #[test]
-    fn parse_uuid_bytes_requires_len_16() {
-        assert!(parse_uuid_bytes(&[0u8; 15]).is_err());
-        assert!(parse_uuid_bytes(&[0u8; 17]).is_err());
-        assert!(parse_uuid_bytes(&[0u8; 16]).is_ok());
-    }
-
-    fn single_col_table(ingested: IngestedType) -> TableSpec {
-        TableSpec {
-            name: "sample".to_string(),
-            format: TableFormat::Parquet,
-            paths: vec![],
-            columns: vec![ColumnSpec {
-                name: "id".to_string(),
-                ingested_dtype: ingested,
-                source_dtype: None,
-                fixed_len: None,
-                timestamp_format: None,
-                timestamp_unit: None,
-                precision: None,
-                scale: None,
-            }],
-            primary_key: None,
-            create_time: None,
-            weight: None,
-            edge_table: None,
-            rowpack: None,
-        }
-    }
-
-    fn with_access(
-        table: &TableSpec,
-        cols: Vec<ArrayRef>,
-        f: impl FnOnce(&mut RowAccess<'_>),
-    ) {
-        let trimmed = std::sync::Arc::new(AtomicU64::new(0));
-        let hints = build_row_access_hints(table);
-        let stats = RowAccessStats::new(Some(trimmed.as_ref()));
-        let mut access = RowAccess::new(hints, stats);
-        access.set_cols(&cols);
-        access.set_row(0);
-        f(&mut access);
-    }
-
-    fn days_from_secs(secs: i64) -> i32 {
-        secs.div_euclid(86_400) as i32
-    }
-
-    #[test]
-    fn access_uuid_from_uuid_string_source() {
-        let table = single_col_table(IngestedType::Uuid);
-        let text = "00112233445566778899aabbccddeeff";
-        let cols: Vec<ArrayRef> = vec![Arc::new(StringArray::from(vec![text]))];
-        let expected = parse_uuid_string(text.as_bytes()).unwrap();
-        with_access(&table, cols, |access| {
-            let uuid = access.get_uuid(0).unwrap().unwrap();
-            assert_eq!(uuid, expected);
-        });
-    }
-
-    #[test]
-    fn access_uuid_from_string_to_uuid() {
-        let table = single_col_table(IngestedType::Uuid);
-        let text = "00112233445566778899aabbccddeeff";
-        let cols: Vec<ArrayRef> = vec![Arc::new(StringArray::from(vec![text]))];
-        let expected = parse_uuid_string(text.as_bytes()).unwrap();
-        with_access(&table, cols, |access| {
-            let uuid = access.get_uuid(0).unwrap().unwrap();
-            assert_eq!(uuid, expected);
-        });
-    }
-
-    #[test]
-    fn access_uuid256_from_string_to_uuid256() {
-        let table = single_col_table(IngestedType::Uuid256);
-        let text = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
-        let cols: Vec<ArrayRef> = vec![Arc::new(StringArray::from(vec![text]))];
-        let expected = parse_uuid256_string(text.as_bytes()).unwrap();
-        with_access(&table, cols, |access| {
-            let uuid = access.get_uuid256(0).unwrap().unwrap();
-            assert_eq!(uuid, expected);
-        });
-    }
-
-    #[test]
-    fn access_ip_from_ip_string_source() {
-        let table = single_col_table(IngestedType::Ip);
-        let text = "192.168.1.2";
-        let cols: Vec<ArrayRef> = vec![Arc::new(StringArray::from(vec![text]))];
-        let expected = parse_ip_string(text.as_bytes()).unwrap();
-        with_access(&table, cols, |access| {
-            let ip = access.get_ip(0).unwrap().unwrap();
-            assert_eq!(ip, expected);
-        });
-    }
-
-    #[test]
-    fn convert_string_timestamp_to_rowpack_timestamp() {
-        let table = TableSpec {
-            name: "events".to_string(),
-            format: TableFormat::Parquet,
-            paths: vec![],
-            columns: vec![ColumnSpec {
-                name: "created_at".to_string(),
-                ingested_dtype: IngestedType::Timestamp,
-                source_dtype: None,
-                fixed_len: None,
-                timestamp_format: None,
-                timestamp_unit: None,
-                precision: None,
-                scale: None,
-            }],
-            primary_key: None,
-            create_time: None,
-            weight: None,
-            edge_table: None,
-            rowpack: None,
-        };
-        let arr = StringArray::from(vec!["2020-01-02T03:04:05Z"]);
-        let cols: Vec<ArrayRef> = vec![Arc::new(arr)];
-        with_access(&table, cols, |access| {
-            let (secs, nanos) = access.get_timestamp(0).unwrap().unwrap();
-            assert_eq!(nanos, 0);
-            assert_eq!(secs, 1_577_934_245);
-        });
-    }
-
-    #[test]
-    fn convert_int_timestamp_with_unit() {
-        let table = TableSpec {
-            name: "events".to_string(),
-            format: TableFormat::Parquet,
-            paths: vec![],
-            columns: vec![ColumnSpec {
-                name: "created_at".to_string(),
-                ingested_dtype: IngestedType::Timestamp,
-                source_dtype: None,
-                fixed_len: None,
-                timestamp_format: None,
-                timestamp_unit: Some(TimestampUnit::Millis),
-                precision: None,
-                scale: None,
-            }],
-            primary_key: None,
-            create_time: None,
-            weight: None,
-            edge_table: None,
-            rowpack: None,
-        };
-        let arr = Int64Array::from(vec![1_500_000_i64]);
-        let cols: Vec<ArrayRef> = vec![Arc::new(arr)];
-        with_access(&table, cols, |access| {
-            let (secs, nanos) = access.get_timestamp(0).unwrap().unwrap();
-            assert_eq!(secs, 1500);
-            assert_eq!(nanos, 0);
-        });
-    }
-
-    #[test]
-    fn encode_timestamp_int8() {
-        let encoding = TimestampEncodingSpec {
-            kind: TimestampEncodingKind::Int8,
-            anchor: 0,
-            step: 1,
-        };
-        let encoded = encode_timestamp_value(Some(10), &encoding);
-        assert_eq!(encoded, ordered_signed_to_u64(10, 8));
-        let encoded_neg = encode_timestamp_value(Some(-1), &encoding);
-        assert_eq!(encoded_neg, ordered_signed_to_u64(-1, 8));
-        let encoded_clamp = encode_timestamp_value(Some(1000), &encoding);
-        assert_eq!(encoded_clamp, ordered_signed_to_u64(i8::MAX as i64, 8));
-    }
-
-    #[test]
-    fn convert_string_date_to_rowpack_date() {
-        let table = TableSpec {
-            name: "events".to_string(),
-            format: TableFormat::Parquet,
-            paths: vec![],
-            columns: vec![ColumnSpec {
-                name: "created_date".to_string(),
-                ingested_dtype: IngestedType::Date,
-                source_dtype: None,
-                fixed_len: None,
-                timestamp_format: Some("%Y-%m-%d".to_string()),
-                timestamp_unit: None,
-                precision: None,
-                scale: None,
-            }],
-            primary_key: None,
-            create_time: None,
-            weight: None,
-            edge_table: None,
-            rowpack: None,
-        };
-        let arr = StringArray::from(vec!["2024-02-03"]);
-        let cols: Vec<ArrayRef> = vec![Arc::new(arr)];
-        with_access(&table, cols, |access| {
-            let days = access.get_date(0).unwrap().unwrap();
-            let expected = days_from_secs(
-                NaiveDate::from_ymd_opt(2024, 2, 3)
-                    .unwrap()
-                    .and_hms_opt(0, 0, 0)
-                    .unwrap()
-                    .and_utc()
-                    .timestamp(),
-            );
-            assert_eq!(days, expected);
-        });
-    }
-
-    #[test]
-    fn convert_numeric_to_string_for_rowpack() {
-        let table = TableSpec {
-            name: "events".to_string(),
-            format: TableFormat::Parquet,
-            paths: vec![],
-            columns: vec![ColumnSpec {
-                name: "id".to_string(),
-                ingested_dtype: IngestedType::String,
-                source_dtype: None,
-                fixed_len: None,
-                timestamp_format: None,
-                timestamp_unit: None,
-                precision: None,
-                scale: None,
-            }],
-            primary_key: None,
-            create_time: None,
-            weight: None,
-            edge_table: None,
-            rowpack: None,
-        };
-        let arr = Int64Array::from(vec![42_i64]);
-        let cols: Vec<ArrayRef> = vec![Arc::new(arr)];
-        with_access(&table, cols, |access| {
-            let value = access
-                .with_string(0, |v| Ok(v.to_string()))
-                .unwrap()
-                .unwrap();
-            assert_eq!(value, "42");
-        });
-    }
-
-    #[test]
-    fn convert_bytes_to_int_for_rowpack() {
-        let table = TableSpec {
-            name: "events".to_string(),
-            format: TableFormat::Parquet,
-            paths: vec![],
-            columns: vec![ColumnSpec {
-                name: "id".to_string(),
-                ingested_dtype: IngestedType::Int32,
-                source_dtype: None,
-                fixed_len: None,
-                timestamp_format: None,
-                timestamp_unit: None,
-                precision: None,
-                scale: None,
-            }],
-            primary_key: None,
-            create_time: None,
-            weight: None,
-            edge_table: None,
-            rowpack: None,
-        };
-        let arr = BinaryArray::from(vec![b"123".as_slice()]);
-        let cols: Vec<ArrayRef> = vec![Arc::new(arr)];
-        with_access(&table, cols, |access| {
-            let value = access.get_int32(0).unwrap().unwrap();
-            assert_eq!(value, 123);
-        });
-    }
-
-    #[test]
-    fn pk_map_estimate_scales_with_rows() {
-        let small = estimate_pk_map_bytes(1_000, KeyType::Int64, 0);
-        let large = estimate_pk_map_bytes(2_000, KeyType::Int64, 0);
-        assert!(large > small);
-    }
-
-    #[test]
-    fn pk_map_estimate_varbytes_respects_avg_len() {
-        let small = estimate_pk_map_bytes(10_000, KeyType::VarBytes, 8);
-        let large = estimate_pk_map_bytes(10_000, KeyType::VarBytes, 64);
-        assert!(large > small);
-    }
-
-}
 
 fn table_schema(table: &TableSpec) -> Result<Schema> {
     let mut fields = Vec::with_capacity(table.columns.len());
@@ -8616,7 +7815,7 @@ fn rowpack_config_for_table(
     RowPackConfig::merge(source_cfg, table.rowpack.as_ref())
 }
 
-fn build_row_access_hints(table: &TableSpec) -> Vec<RowAccessHints> {
+pub(crate) fn build_row_access_hints(table: &TableSpec) -> Vec<RowAccessHints> {
     table
         .columns
         .iter()
