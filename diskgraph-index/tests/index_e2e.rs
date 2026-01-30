@@ -1769,6 +1769,131 @@ fn builder_errors_on_node_data_row_count_mismatch() {
         "expected node data row count error, got {msg}"
     );
 }
+
+#[test]
+fn deduplicates_edges_by_destination() {
+    // Test that duplicate (src, dst) edges are deduplicated, keeping highest sort_key.
+    let dir = tempdir().unwrap();
+    let edge_path = dir.path().join("edges.bin");
+
+    // Node 0 has duplicate edges to dst 100 (should keep sort_key=9)
+    // Node 0 also has unique edge to dst 200
+    // Node 1 has duplicate edges to dst 300 (no sort key)
+    write_edges(
+        &edge_path,
+        &[
+            // Node 0: dst=100 appears 3 times with different sort keys
+            EdgeRow { src: 0, dst: 100, dest_sort_key: Some(5) },
+            EdgeRow { src: 0, dst: 100, dest_sort_key: Some(9) }, // highest, should be kept
+            EdgeRow { src: 0, dst: 100, dest_sort_key: Some(2) },
+            // Node 0: dst=200 appears once
+            EdgeRow { src: 0, dst: 200, dest_sort_key: Some(3) },
+            // Node 1: dst=300 appears twice (no sort key)
+            EdgeRow { src: 1, dst: 300, dest_sort_key: Some(1) },
+            EdgeRow { src: 1, dst: 300, dest_sort_key: Some(7) },
+        ],
+        true,
+    )
+    .unwrap();
+
+    let node_meta = node_meta("User", 1000);
+    let relation = relation_meta("Follows", "User", "User", Some(8));
+    let output_dir = dir.path().join("out");
+    let builder = ShardBuilder::new(ShardBuildParams {
+        output_dir: Arc::new(output_dir.clone()),
+        node_meta: Arc::new(node_meta.clone()),
+        node_types: Arc::new(vec![node_meta.clone()]),
+        relation_metas: Arc::new(vec![relation.clone()]),
+        shard_index: 0,
+        node_data_paths: None,
+        node_data_max_len: 0,
+        mem_budget: None,
+        edge_buffer_pool: None,
+    });
+    let built = builder
+        .build(&[EdgeShardInput {
+            relation: "Follows".into(),
+            source_shard_index: 0,
+            paths: vec![edge_path],
+        }])
+        .unwrap();
+
+    // Verify deduplication happened
+    assert_eq!(built.build_stats.deduplicated_edges, 3, "should remove 3 duplicate edges");
+
+    // Verify correct edges remain
+    let reader = ShardReader::open(&output_dir, built.layouts.clone(), false).unwrap();
+
+    // Node 0: should have 2 edges (dst=100 with sort_key=9, dst=200 with sort_key=3)
+    // Sorted by sort_key desc: [(100, 9), (200, 3)]
+    let node0_edges = decode_relation(&reader, 0, 0);
+    assert_eq!(node0_edges.len(), 2, "node 0 should have 2 unique edges");
+    assert_eq!(node0_edges, vec![(100, Some(9)), (200, Some(3))]);
+
+    // Node 1: should have 1 edge (dst=300 with sort_key=7, the highest)
+    let node1_edges = decode_relation(&reader, 1, 0);
+    assert_eq!(node1_edges.len(), 1, "node 1 should have 1 unique edge");
+    assert_eq!(node1_edges, vec![(300, Some(7))]);
+}
+
+#[test]
+fn keeps_edges_to_different_destinations() {
+    // Test that edges a->b and a->c are NOT deduplicated (different destinations).
+    // Only a->b, a->b should be deduplicated to a single a->b.
+    let dir = tempdir().unwrap();
+    let edge_path = dir.path().join("edges.bin");
+
+    // Node 0 has edges to 3 different destinations - all should be kept
+    // Node 0 also has a duplicate edge to dst=100 - should be deduped
+    write_edges(
+        &edge_path,
+        &[
+            EdgeRow { src: 0, dst: 100, dest_sort_key: None },
+            EdgeRow { src: 0, dst: 200, dest_sort_key: None }, // different dst, keep
+            EdgeRow { src: 0, dst: 300, dest_sort_key: None }, // different dst, keep
+            EdgeRow { src: 0, dst: 100, dest_sort_key: None }, // same dst as first, dedup
+        ],
+        false,
+    )
+    .unwrap();
+
+    let node_meta = node_meta("User", 1000);
+    let relation = relation_meta("Follows", "User", "User", None);
+    let output_dir = dir.path().join("out");
+    let builder = ShardBuilder::new(ShardBuildParams {
+        output_dir: Arc::new(output_dir.clone()),
+        node_meta: Arc::new(node_meta.clone()),
+        node_types: Arc::new(vec![node_meta.clone()]),
+        relation_metas: Arc::new(vec![relation.clone()]),
+        shard_index: 0,
+        node_data_paths: None,
+        node_data_max_len: 0,
+        mem_budget: None,
+        edge_buffer_pool: None,
+    });
+    let built = builder
+        .build(&[EdgeShardInput {
+            relation: "Follows".into(),
+            source_shard_index: 0,
+            paths: vec![edge_path],
+        }])
+        .unwrap();
+
+    // Only 1 edge should be deduplicated (the duplicate a->100)
+    assert_eq!(built.build_stats.deduplicated_edges, 1, "should remove only 1 duplicate edge");
+
+    // Verify all 3 unique destinations are present
+    let reader = ShardReader::open(&output_dir, built.layouts.clone(), false).unwrap();
+    let node0_edges = decode_relation(&reader, 0, 0);
+    assert_eq!(node0_edges.len(), 3, "node 0 should have 3 edges to different destinations");
+
+    // Extract just destinations (no sort key in this test)
+    let destinations: Vec<u64> = node0_edges.iter().map(|(dst, _)| *dst).collect();
+    assert!(destinations.contains(&100), "should have edge to 100");
+    assert!(destinations.contains(&200), "should have edge to 200");
+    assert!(destinations.contains(&300), "should have edge to 300");
+}
+
 fn varint_len_u64(v: u64) -> usize {
     if v <= 63 {
         1

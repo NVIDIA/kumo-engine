@@ -511,3 +511,51 @@ fn parse_uuid_bytes(bytes: &[u8]) -> KeyParseResult<[u8; 16]> {
         let large = estimate_pk_map_bytes(10_000, KeyType::VarBytes, 64);
         assert!(large > small);
     }
+
+    #[test]
+    fn shard_assignment_consistent_for_same_pk() {
+        // Verifies that same PK bytes always produce the same shard, enabling per-shard deduplication.
+        use crate::shard_for_key;
+        use std::collections::HashMap;
+
+        let num_shards = 100;
+        let num_unique_pks = 100_000;
+        let num_rows = 500_000; // 5x rows to PKs guarantees duplicates
+
+        // Simple xorshift PRNG for deterministic test
+        let mut state: u64 = 12345;
+        let mut next_rand = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+
+        let mut pk_to_shard: HashMap<String, usize> = HashMap::new();
+        let mut inconsistencies = 0;
+
+        for _ in 0..num_rows {
+            let pk_num = next_rand() % num_unique_pks;
+            let pk = format!("PK_{:07}", pk_num);
+            let shard = shard_for_key(pk.as_bytes(), num_shards);
+
+            if let Some(&prev_shard) = pk_to_shard.get(&pk) {
+                if prev_shard != shard {
+                    inconsistencies += 1;
+                }
+            } else {
+                pk_to_shard.insert(pk, shard);
+            }
+        }
+
+        assert_eq!(inconsistencies, 0, "Same PK must always map to same shard");
+        assert!(pk_to_shard.len() > 1, "Test should have multiple unique PKs");
+
+        // Verify shards are reasonably distributed (not all in one shard)
+        let mut shard_counts = vec![0usize; num_shards];
+        for &shard in pk_to_shard.values() {
+            shard_counts[shard] += 1;
+        }
+        let non_empty_shards = shard_counts.iter().filter(|&&c| c > 0).count();
+        assert!(non_empty_shards > num_shards / 2, "PKs should distribute across shards");
+    }
