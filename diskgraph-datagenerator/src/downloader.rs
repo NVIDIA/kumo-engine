@@ -18,6 +18,8 @@ pub struct DownloadOptions {
     pub out_root: PathBuf,
     pub dry_run: bool,
     pub clean: bool,
+    /// Override bucket (defaults based on customer if None)
+    pub bucket: Option<String>,
 }
 
 impl Default for DownloadOptions {
@@ -26,6 +28,7 @@ impl Default for DownloadOptions {
             out_root: PathBuf::from("/mnt/localssd/datasets"),
             dry_run: false,
             clean: true,
+            bucket: None,
         }
     }
 }
@@ -44,7 +47,7 @@ pub async fn download_job(job_spec: &str, options: DownloadOptions) -> Result<Pa
         return Ok(out_dir);
     }
 
-    let bucket = bucket_for_customer(&customer_name);
+    let bucket = options.bucket.as_deref().unwrap_or_else(|| bucket_for_customer(&customer_name));
     let customer_path = customer_for_paths(&customer_name);
     let s3 = build_s3_client_async(S3Config {
         bucket: bucket.to_string(),
