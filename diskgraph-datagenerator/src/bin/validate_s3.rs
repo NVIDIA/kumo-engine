@@ -5,7 +5,7 @@ use diskgraph_infer::{infer_source_metadata, parse_root_source, InferOptions};
 use diskgraph_ingest::{ingest_with_stats, Dest, IngestOptions, IngestStats};
 use diskgraph_ingest::progress::{build_progress, format_count};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -367,6 +367,34 @@ async fn verify_s3_stats(data_dir: &Path, customer: &str, job_id: &str, stats: &
         customer
     };
 
+    // Download materialized_task_persist_paths.json manifest for efficient edge lookups
+    let manifest_key = format!("{}/prod/jobs/{}/jobs/materialized_task_persist_paths.json", customer_path, job_id);
+    let manifest_s3_path = format!("s3://{}/{}", bucket, manifest_key);
+    let manifest: Option<HashMap<String, String>> = {
+        let output = Command::new("aws")
+            .arg("s3")
+            .arg("cp")
+            .arg(&manifest_s3_path)
+            .arg("-")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .output()
+            .await;
+
+        if let Ok(out) = output {
+            if out.status.success() {
+                let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_default();
+                json.get("edge_names_with_paths")
+                    .and_then(|v| v.as_object())
+                    .map(|obj| {
+                        obj.iter()
+                            .map(|(k, v)| (k.clone(), v.as_str().unwrap_or_default().to_string()))
+                            .collect()
+                    })
+            } else { None }
+        } else { None }
+    };
+
     let mut table_infos: std::collections::HashMap<String, TableMetadata> = std::collections::HashMap::new();
 
     // 1. Verify Node Counts (Table Stats)
@@ -607,10 +635,19 @@ async fn verify_s3_stats(data_dir: &Path, customer: &str, job_id: &str, stats: &
 
                              if let Some((matched_key, _val)) = matched_s3_entry {
                                  matched_s3_keys.insert(matched_key.clone());
+
+                                 let manifest_edge_key = format!(
+                                     "{}.{}__{}__{}.{}",
+                                     src_meta.data_source, src_table,
+                                     src_key,
+                                     dst_meta.data_source, dst_table
+                                 );
+
                                  // Compare against materialized edge count (correctly deduplicated)
                                  // instead of edge_stats count (inflated when dst has duplicate PKs)
                                  if let Some(mat_count) = get_materialized_edge_count(
-                                     bucket, customer_path, &src_meta.data_version, &dst_meta.data_version
+                                     bucket, customer_path, &src_meta.data_version, &dst_meta.data_version,
+                                     manifest.as_ref(), Some(&manifest_edge_key)
                                  ).await {
                                      if mat_count == ingest_count {
                                          messages.push(format!("PASS: Edge {} (Materialized: {}, Ingest: {})", relation_name, mat_count, ingest_count));
@@ -719,48 +756,66 @@ async fn get_materialized_edge_count(
     customer_path: &str,
     src_version: &str,
     dst_version: &str,
+    manifest: Option<&HashMap<String, String>>,
+    manifest_key: Option<&str>,
 ) -> Option<u64> {
-    let materialize_base = format!(
-        "s3://{}/{}/prod/data-persist-dir/materialize/edges/",
-        bucket, customer_path
-    );
-    let version_pattern = format!("{}_{}", src_version, dst_version);
+    let mut attrs_s3_path = None;
 
-    // List materialized edges and grep for the version pattern
-    let output = Command::new("aws")
-        .arg("s3")
-        .arg("ls")
-        .arg("--recursive")
-        .arg(&materialize_base)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output()
-        .await
-        .ok()?;
-
-    if !output.status.success() {
-        return None;
+    // Try manifest first (efficient)
+    if let (Some(m), Some(key)) = (manifest, manifest_key) {
+        if let Some(path) = m.get(key) {
+            let base = path.trim_end_matches('/').replace("s3a://", "s3://");
+            attrs_s3_path = Some(format!("{}/attributes.json", base));
+        }
     }
 
-    let listing = String::from_utf8_lossy(&output.stdout);
+    // Fallback to recursive listing (inefficient)
+    if attrs_s3_path.is_none() {
+        let materialize_base = format!(
+            "s3://{}/{}/prod/data-persist-dir/materialize/edges/",
+            bucket, customer_path
+        );
+        let version_pattern = format!("{}_{}", src_version, dst_version);
 
-    // Find attributes.json path matching the version pattern
-    for line in listing.lines() {
-        if !line.contains("attributes.json") || !line.contains(&version_pattern) {
-            continue;
-        }
-        let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() < 4 {
-            continue;
-        }
-        let path = parts[3];
+        // List materialized edges and grep for the version pattern
+        let output = Command::new("aws")
+            .arg("s3")
+            .arg("ls")
+            .arg("--recursive")
+            .arg(&materialize_base)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .output()
+            .await
+            .ok()?;
 
+        if !output.status.success() {
+            return None;
+        }
+
+        let listing = String::from_utf8_lossy(&output.stdout);
+
+        // Find attributes.json path matching the version pattern
+        for line in listing.lines() {
+            if !line.contains("attributes.json") || !line.contains(&version_pattern) {
+                continue;
+            }
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() < 4 {
+                continue;
+            }
+            let path = parts[3];
+            attrs_s3_path = Some(format!("{}{}", materialize_base, path));
+            break;
+        }
+    }
+
+    if let Some(s3_path) = attrs_s3_path {
         // Fetch attributes.json
-        let attrs_s3_path = format!("{}{}", materialize_base, path);
         let output = Command::new("aws")
             .arg("s3")
             .arg("cp")
-            .arg(&attrs_s3_path)
+            .arg(&s3_path)
             .arg("-")
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
