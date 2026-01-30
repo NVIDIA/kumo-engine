@@ -1,4 +1,5 @@
 use crate::*;
+use crate::parser::*;
 use num_bigint::BigInt;
 use std::sync::Arc;
 use arrow_array::{Int32Array, Float64Array, Float32Array, ArrayRef};
