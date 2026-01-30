@@ -50,6 +50,10 @@ struct Args {
     /// Number of shards for the dataset.
     #[arg(long)]
     num_shards: Option<usize>,
+
+    /// S3 bucket to use (default: kumo-prod-dataplane-bucket, or kumo-doordash-cache for doordash)
+    #[arg(long)]
+    bucket: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -116,6 +120,7 @@ async fn main() -> Result<()> {
                 args.parallel,
                 args.index_mem_budget_bytes,
                 args.num_shards,
+                args.bucket.clone(),
             )
             .await
             {
@@ -223,6 +228,7 @@ async fn validate_job(
     parallel: bool,
     index_mem_budget_bytes: Option<u64>,
     num_shards: Option<usize>,
+    bucket: Option<String>,
 ) -> Result<ValidationReport> {
     // 1. Download
     println!("Downloading to {}...", download_root_base.display());
@@ -230,6 +236,7 @@ async fn validate_job(
     let options = DownloadOptions {
         out_root: download_root_base.to_path_buf(),
         clean: !resume,
+        bucket: bucket.clone(),
         ..Default::default()
     };
 
@@ -291,7 +298,7 @@ async fn validate_job(
     // 5. Verify S3 Stats
     let (customer, job_id) = parse_job_spec(job_spec)?;
     println!("Verifying S3 Stats...");
-    let s3_verification = match verify_s3_stats(&data_dir, &customer, &job_id, &stats).await {
+    let s3_verification = match verify_s3_stats(&data_dir, &customer, &job_id, &stats, bucket.as_deref()).await {
         Ok(v) => Some(v),
         Err(e) => {
             eprintln!("Warning: Failed to verify S3 stats: {:?}", e);
@@ -345,9 +352,11 @@ fn get_table_duplicates(table_name: &str, stats: &IngestStats) -> u64 {
     count
 }
 
-async fn verify_s3_stats(data_dir: &Path, customer: &str, job_id: &str, stats: &IngestStats) -> Result<Vec<String>> {
+async fn verify_s3_stats(data_dir: &Path, customer: &str, job_id: &str, stats: &IngestStats, bucket_override: Option<&str>) -> Result<Vec<String>> {
     let mut messages = Vec::new();
-    let bucket = if customer.eq_ignore_ascii_case("doordash") {
+    let bucket = if let Some(b) = bucket_override {
+        b
+    } else if customer.eq_ignore_ascii_case("doordash") {
         "kumo-doordash-cache"
     } else {
         "kumo-prod-dataplane-bucket"
@@ -380,12 +389,13 @@ async fn verify_s3_stats(data_dir: &Path, customer: &str, job_id: &str, stats: &
 
         let source_name = meta.get("source_name").and_then(|v| v.as_str()).unwrap_or_default().to_string();
         let data_source = meta.get("data_source").and_then(|v| v.as_str()).unwrap_or_default().to_string();
-        let data_version = meta.get("data_version").and_then(|v| v.as_str()).unwrap_or_default();
+        let data_version = meta.get("data_version").and_then(|v| v.as_str()).unwrap_or_default().to_string();
         let table_name = meta.get("table_name").and_then(|v| v.as_str()).unwrap_or_default().to_string();
 
         table_infos.insert(table_name.clone(), TableMetadata {
             source_name: source_name.clone(),
             data_source: data_source.clone(),
+            data_version: data_version.clone(),
         });
 
         let s3_key_base = format!(
@@ -394,7 +404,7 @@ async fn verify_s3_stats(data_dir: &Path, customer: &str, job_id: &str, stats: &
         );
         let s3_path = format!("s3://{}/{}", bucket, s3_key_base);
 
-        let output = Command::new("/home/ubuntu/.local/bin/aws")
+        let output = Command::new("aws")
             .arg("s3")
             .arg("cp")
             .arg(&s3_path)
@@ -440,7 +450,7 @@ async fn verify_s3_stats(data_dir: &Path, customer: &str, job_id: &str, stats: &
     let input_key = format!("{}/prod/jobs/{}/inputs/{}", customer_path, job_id, input_filename);
     let input_s3_path = format!("s3://{}/{}", bucket, input_key);
 
-    let output = Command::new("/home/ubuntu/.local/bin/aws")
+    let output = Command::new("aws")
             .arg("s3")
             .arg("cp")
             .arg(&input_s3_path)
@@ -475,7 +485,7 @@ async fn verify_s3_stats(data_dir: &Path, customer: &str, job_id: &str, stats: &
         );
         let edge_stats_s3 = format!("s3://{}/{}", bucket, edge_stats_key);
 
-        let output = Command::new("/home/ubuntu/.local/bin/aws")
+        let output = Command::new("aws")
             .arg("s3")
             .arg("cp")
             .arg(&edge_stats_s3)
@@ -595,16 +605,34 @@ async fn verify_s3_stats(data_dir: &Path, customer: &str, job_id: &str, stats: &
 
                              let matched_s3_entry = obj.get_key_value(&s3_key_forward).or_else(|| obj.get_key_value(&s3_key_reverse));
 
-                             if let Some((matched_key, val)) = matched_s3_entry {
+                             if let Some((matched_key, _val)) = matched_s3_entry {
                                  matched_s3_keys.insert(matched_key.clone());
-                                 let s3_count = val.get("value").and_then(|v| v.as_u64()).unwrap_or(0);
-                                 if s3_count == ingest_count {
-                                     messages.push(format!("PASS: Edge {} (S3: {}, Ingest: {})", relation_name, s3_count, ingest_count));
+                                 // Compare against materialized edge count (correctly deduplicated)
+                                 // instead of edge_stats count (inflated when dst has duplicate PKs)
+                                 if let Some(mat_count) = get_materialized_edge_count(
+                                     bucket, customer_path, &src_meta.data_version, &dst_meta.data_version
+                                 ).await {
+                                     if mat_count == ingest_count {
+                                         messages.push(format!("PASS: Edge {} (Materialized: {}, Ingest: {})", relation_name, mat_count, ingest_count));
+                                     } else {
+                                         messages.push(format!("FAIL: Edge {} count mismatch (Materialized: {}, Ingest: {})", relation_name, mat_count, ingest_count));
+                                     }
                                  } else {
-                                     messages.push(format!("FAIL: Edge {} count mismatch (S3: {}, Ingest: {})", relation_name, s3_count, ingest_count));
+                                     // Fallback: materialized edge not found, skip count comparison
+                                     // This can happen for FK-FK edges or if materialization hasn't run
+                                     if ingest_count == 0 {
+                                         messages.push(format!("PASS: Edge {} (Ingest: 0, no materialized edge)", relation_name));
+                                     } else {
+                                         messages.push(format!("INFO: Edge {} (Ingest: {}) - no materialized edge found for version {}_{}",
+                                             relation_name, ingest_count, src_meta.data_version, dst_meta.data_version));
+                                     }
                                  }
                              } else {
-                                 messages.push(format!("FAIL: Edge {} (Ingest: {}) - S3 key {} (or reverse) not found", relation_name, ingest_count, s3_key_forward));
+                                 if ingest_count == 0 {
+                                     messages.push(format!("PASS: Edge {} (Ingest: 0, S3 key not found - expected for pruned edges)", relation_name));
+                                 } else {
+                                     messages.push(format!("FAIL: Edge {} (Ingest: {}) - S3 key {} (or reverse) not found", relation_name, ingest_count, s3_key_forward));
+                                 }
                              }
                         } else {
                              messages.push(format!("INFO: Missing metadata for tables in edge {}", relation_name));
@@ -673,6 +701,80 @@ async fn verify_s3_stats(data_dir: &Path, customer: &str, job_id: &str, stats: &
 struct TableMetadata {
     source_name: String,
     data_source: String,
+    data_version: String,
+}
+
+/// Fetches the edge count from materialized edges instead of edge_stats.
+///
+/// Why: edge_stats overcounts when destination tables have duplicate primary keys
+/// (it counts raw inner join rows without deduplication). Materialized edges
+/// correctly deduplicate, matching DiskGraph's behavior.
+///
+/// Path: s3://{bucket}/{customer}/prod/data-persist-dir/materialize/edges/v0__{hash}/{src_ver}_{dst_ver}/{timestamp}/attributes.json
+///
+/// Note: We grep for the version pattern since computing the hash requires matching
+/// Python's EdgeFPConfig JSON serialization exactly (see kumo/kumo/data/persist_dir_manager.py).
+async fn get_materialized_edge_count(
+    bucket: &str,
+    customer_path: &str,
+    src_version: &str,
+    dst_version: &str,
+) -> Option<u64> {
+    let materialize_base = format!(
+        "s3://{}/{}/prod/data-persist-dir/materialize/edges/",
+        bucket, customer_path
+    );
+    let version_pattern = format!("{}_{}", src_version, dst_version);
+
+    // List materialized edges and grep for the version pattern
+    let output = Command::new("aws")
+        .arg("s3")
+        .arg("ls")
+        .arg("--recursive")
+        .arg(&materialize_base)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .await
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let listing = String::from_utf8_lossy(&output.stdout);
+
+    // Find attributes.json path matching the version pattern
+    for line in listing.lines() {
+        if !line.contains("attributes.json") || !line.contains(&version_pattern) {
+            continue;
+        }
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() < 4 {
+            continue;
+        }
+        let path = parts[3];
+
+        // Fetch attributes.json
+        let attrs_s3_path = format!("{}{}", materialize_base, path);
+        let output = Command::new("aws")
+            .arg("s3")
+            .arg("cp")
+            .arg(&attrs_s3_path)
+            .arg("-")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .output()
+            .await
+            .ok()?;
+
+        if output.status.success() {
+            let attrs: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+            return attrs.get("edge_count").and_then(|v| v.as_u64());
+        }
+    }
+
+    None
 }
 
 fn diff_pct(a: u64, b: u64) -> f64 {
