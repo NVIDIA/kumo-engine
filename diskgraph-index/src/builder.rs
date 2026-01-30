@@ -795,6 +795,24 @@ impl ShardBuilder {
             }
             let mut truncated_node = false;
             edge_stream.drain_for_node(node_id, &mut buckets)?;
+            // Deduplicate edges by destination within each relation.
+            // Same (src, dst) pairs can occur when source data has duplicate rows.
+            // If sort_key present, sort by it first so we keep the highest sort_key per dst.
+            for bucket in buckets.iter_mut() {
+                if bucket.len() > 1 {
+                    let before = bucket.len();
+                    // Sort by sort_key descending if present (for temporal ordering)
+                    if bucket.first().map(|e| e.dest_sort_key.is_some()).unwrap_or(false) {
+                        bucket.sort_by(|a, b| b.dest_sort_key.cmp(&a.dest_sort_key));
+                    }
+                    // Dedup using HashSet - retains first occurrence (highest sort_key) per dst
+                    let mut seen = std::collections::HashSet::with_capacity(bucket.len());
+                    bucket.retain(|e| seen.insert(e.dst));
+                    let removed = before.saturating_sub(bucket.len());
+                    build_stats.deduplicated_edges =
+                        build_stats.deduplicated_edges.saturating_add(removed as u64);
+                }
+            }
             // Compute lengths first to avoid borrowing conflicts, then apply truncation.
             let mut any_truncated = false;
             let mut total_edges: usize = 0;
@@ -948,6 +966,8 @@ pub struct BuildStats {
     pub capped_edge_lists: u64,
     /// Number of nodes whose payload exceeded MAX_NODE_DATA_LEN and was dropped.
     pub node_data_trimmed: u64,
+    /// Number of duplicate edges removed (same src, dst pair within a relation).
+    pub deduplicated_edges: u64,
 }
 
 #[derive(Serialize)]
