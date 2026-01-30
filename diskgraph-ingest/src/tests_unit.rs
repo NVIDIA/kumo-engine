@@ -134,11 +134,8 @@ fn test_bitwriter_packing() -> anyhow::Result<()> {
     Ok(())
 }
 
-use crate::graph_config::TimestampUnit;
-use crate::graph_config::TableSpec;
-use crate::graph_config::TableFormat;
-use crate::graph_config::TimestampEncodingSpec;
-use crate::graph_config::TimestampEncodingKind;
+use crate::graph_config::{TableFormat, TableSpec, TimestampUnit};
+use crate::{TimestampEncodingKind, TimestampEncodingSpec};
 use crate::errors::{KeyParseResult, KeyParseError};
 use chrono::NaiveDate;
 use arrow_array::{BinaryArray, StringArray};

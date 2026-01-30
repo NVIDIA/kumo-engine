@@ -1,7 +1,6 @@
 use diskgraph_ingest::graph_config::{
     ColumnSpec, DataSource, DirectionSpec, EdgeEndpoint, EdgeTableSpec, FKeySpec,
-    ForeignKeySpec, IngestedType, RelationshipSpec, SourceMetadata, TableFormat, TableSpec,
-    TimeSpec, WeightSpec,
+    ForeignKeySpec, IngestedType, GraphConfig, TableFormat, TableSpec, TimeSpec, WeightSpec,
 };
 
 fn base_table(name: &str) -> TableSpec {
@@ -42,19 +41,17 @@ fn base_table(name: &str) -> TableSpec {
     }
 }
 
-fn base_metadata() -> SourceMetadata {
-    SourceMetadata {
+fn base_metadata() -> GraphConfig {
+    GraphConfig {
         dataset_name: "test".into(),
         tables: vec![base_table("User"), base_table("Device")],
-        relationships: Vec::new(),
-        edge_sort_keys: None,
         rowpack: None,
         num_shards: None,
         edge_format: None,
     }
 }
 
-fn assert_err_contains(meta: SourceMetadata, needle: &str) {
+fn assert_err_contains(meta: GraphConfig, needle: &str) {
     let err = meta.validate().unwrap_err();
     let msg = err.to_string();
     assert!(
@@ -67,11 +64,9 @@ fn assert_err_contains(meta: SourceMetadata, needle: &str) {
 
 #[test]
 fn validate_minimal_metadata() {
-    let meta = SourceMetadata {
+    let meta = GraphConfig {
         dataset_name: "test".into(),
         tables: vec![base_table("User")],
-        relationships: Vec::new(),
-        edge_sort_keys: None,
         rowpack: None,
         num_shards: None,
         edge_format: None,
@@ -81,7 +76,7 @@ fn validate_minimal_metadata() {
 
 #[test]
 fn validate_missing_pk_column() {
-    let meta = SourceMetadata {
+    let meta = GraphConfig {
         dataset_name: "test".into(),
         tables: vec![TableSpec {
             name: "User".into(),
@@ -106,8 +101,6 @@ fn validate_missing_pk_column() {
             source: None,
             fkeys: Vec::new(),
         }],
-        relationships: Vec::new(),
-        edge_sort_keys: None,
         rowpack: None,
         num_shards: None,
         edge_format: None,
@@ -445,328 +438,7 @@ fn validate_edge_fk_not_pk() {
     assert_err_contains(meta, "edge table Edge fk dst_id must reference primary key Device.id");
 }
 
-#[test]
-fn validate_relationship_missing_table() {
-    let mut meta = base_metadata();
-    meta.relationships.push(RelationshipSpec {
-        name: Some("bad".into()),
-        src_table: "Missing".into(),
-        src_column: "id".into(),
-        dst_table: "User".into(),
-        dst_column: "id".into(),
-    });
-    assert_err_contains(meta, "relationship src table Missing not found");
-}
-
-#[test]
-fn validate_relationship_missing_column() {
-    let mut meta = base_metadata();
-    meta.relationships.push(RelationshipSpec {
-        name: Some("bad".into()),
-        src_table: "User".into(),
-        src_column: "missing".into(),
-        dst_table: "Device".into(),
-        dst_column: "id".into(),
-    });
-    assert_err_contains(meta, "relationship src column missing not found in User");
-}
-
-#[test]
-fn validate_relationship_no_pk() {
-    let mut meta = base_metadata();
-    meta.tables[0].primary_key = None;
-    meta.tables[1].primary_key = None;
-    meta.relationships.push(RelationshipSpec {
-        name: Some("bad".into()),
-        src_table: "User".into(),
-        src_column: "id".into(),
-        dst_table: "Device".into(),
-        dst_column: "id".into(),
-    });
-    assert_err_contains(meta, "must reference at least one primary key");
-}
-
-#[test]
-fn validate_relationship_incompatible_types() {
-    let mut meta = base_metadata();
-    meta.tables[1].columns[0].ingested_dtype = IngestedType::Bool;
-    meta.relationships.push(RelationshipSpec {
-        name: Some("bad".into()),
-        src_table: "User".into(),
-        src_column: "id".into(),
-        dst_table: "Device".into(),
-        dst_column: "id".into(),
-    });
-    assert_err_contains(meta, "have incompatible types");
-}
-
-#[test]
-fn validate_relationship_signed_unsigned_ok() {
-    let mut meta = base_metadata();
-    meta.tables[0].columns[0].ingested_dtype = IngestedType::Int32;
-    meta.tables[1].columns[0].ingested_dtype = IngestedType::UInt64;
-    meta.relationships.push(RelationshipSpec {
-        name: Some("mixed".into()),
-        src_table: "User".into(),
-        src_column: "id".into(),
-        dst_table: "Device".into(),
-        dst_column: "id".into(),
-    });
-    assert!(meta.validate().is_ok());
-}
-
-#[test]
-fn validate_relationship_string_bytes_ok() {
-    let mut meta = base_metadata();
-    meta.tables[0].columns[0].name = "pk".into();
-    meta.tables[0].columns[0].ingested_dtype = IngestedType::String;
-    meta.tables[0].columns[0].fixed_len = Some(8);
-    meta.tables[0].primary_key = Some("pk".into());
-    meta.tables[1].columns[0].name = "fk".into();
-    meta.tables[1].columns[0].ingested_dtype = IngestedType::Bytes;
-    meta.tables[1].columns[0].fixed_len = Some(8);
-    meta.tables[1].primary_key = None;
-    meta.relationships.push(RelationshipSpec {
-        name: Some("str_bytes".into()),
-        src_table: "Device".into(),
-        src_column: "fk".into(),
-        dst_table: "User".into(),
-        dst_column: "pk".into(),
-    });
-    assert!(meta.validate().is_ok());
-}
-
-#[test]
-fn validate_relationship_float_string_ok() {
-    let mut meta = base_metadata();
-    meta.tables[0].columns[0].ingested_dtype = IngestedType::Float64;
-    meta.tables[1].columns[0].ingested_dtype = IngestedType::String;
-    meta.tables[1].columns[0].fixed_len = None;
-    meta.relationships.push(RelationshipSpec {
-        name: Some("float_string".into()),
-        src_table: "Device".into(),
-        src_column: "id".into(),
-        dst_table: "User".into(),
-        dst_column: "id".into(),
-    });
-    assert!(meta.validate().is_ok());
-}
-
-#[test]
-fn validate_relationship_decimal_int_ok() {
-    let mut meta = base_metadata();
-    meta.tables[0].columns[0].ingested_dtype = IngestedType::Decimal128;
-    meta.tables[0].columns[0].precision = Some(10);
-    meta.tables[0].columns[0].scale = Some(2);
-    meta.tables[1].columns[0].ingested_dtype = IngestedType::Int32;
-    meta.relationships.push(RelationshipSpec {
-        name: Some("decimal_int".into()),
-        src_table: "Device".into(),
-        src_column: "id".into(),
-        dst_table: "User".into(),
-        dst_column: "id".into(),
-    });
-    assert!(meta.validate().is_ok());
-}
-
-#[test]
-fn validate_relationship_uuid_ok() {
-    let mut meta = base_metadata();
-    meta.tables[0].columns[0].name = "pk".into();
-    meta.tables[0].columns[0].ingested_dtype = IngestedType::Uuid;
-    meta.tables[0].primary_key = Some("pk".into());
-    meta.tables[1].columns[0].name = "fk".into();
-    meta.tables[1].columns[0].ingested_dtype = IngestedType::Uuid;
-    meta.tables[1].primary_key = None;
-    meta.relationships.push(RelationshipSpec {
-        name: Some("uuid_ok".into()),
-        src_table: "Device".into(),
-        src_column: "fk".into(),
-        dst_table: "User".into(),
-        dst_column: "pk".into(),
-    });
-    assert!(meta.validate().is_ok());
-}
-
-#[test]
-fn validate_relationship_uuid_mismatch() {
-    let mut meta = base_metadata();
-    meta.tables[0].columns[0].name = "pk".into();
-    meta.tables[0].columns[0].ingested_dtype = IngestedType::Uuid;
-    meta.tables[0].primary_key = Some("pk".into());
-    meta.tables[1].columns[0].name = "fk".into();
-    meta.tables[1].columns[0].ingested_dtype = IngestedType::Uuid256;
-    meta.tables[1].columns[0].fixed_len = None;
-    meta.tables[1].primary_key = None;
-    meta.relationships.push(RelationshipSpec {
-        name: Some("uuid_bad".into()),
-        src_table: "Device".into(),
-        src_column: "fk".into(),
-        dst_table: "User".into(),
-        dst_column: "pk".into(),
-    });
-    assert_err_contains(meta, "incompatible types");
-}
-
-#[test]
-fn validate_relationship_uuid_bytes_mismatch() {
-    let mut meta = base_metadata();
-    meta.tables[0].columns[0].name = "pk".into();
-    meta.tables[0].columns[0].ingested_dtype = IngestedType::Uuid;
-    meta.tables[0].primary_key = Some("pk".into());
-    meta.tables[1].columns[0].name = "fk".into();
-    meta.tables[1].columns[0].ingested_dtype = IngestedType::Bytes;
-    meta.tables[1].columns[0].fixed_len = None;
-    meta.tables[1].primary_key = None;
-    meta.relationships.push(RelationshipSpec {
-        name: Some("fixed_var".into()),
-        src_table: "Device".into(),
-        src_column: "fk".into(),
-        dst_table: "User".into(),
-        dst_column: "pk".into(),
-    });
-    assert_err_contains(meta, "incompatible types");
-}
-
-#[test]
-fn validate_relationship_ip_numeric_mismatch() {
-    let mut meta = base_metadata();
-    meta.tables[0].columns[0].name = "pk".into();
-    meta.tables[0].columns[0].ingested_dtype = IngestedType::Ip;
-    meta.tables[0].primary_key = Some("pk".into());
-    meta.tables[1].columns[0].ingested_dtype = IngestedType::Int64;
-    meta.relationships.push(RelationshipSpec {
-        name: Some("fixed_int".into()),
-        src_table: "Device".into(),
-        src_column: "id".into(),
-        dst_table: "User".into(),
-        dst_column: "pk".into(),
-    });
-    assert_err_contains(meta, "incompatible types");
-}
-
-#[test]
-fn validate_relationship_var_bytes_string_ok() {
-    let mut meta = base_metadata();
-    meta.tables[0].columns[0].name = "pk".into();
-    meta.tables[0].columns[0].ingested_dtype = IngestedType::Bytes;
-    meta.tables[0].columns[0].fixed_len = None;
-    meta.tables[0].primary_key = Some("pk".into());
-    meta.tables[1].columns[0].name = "fk".into();
-    meta.tables[1].columns[0].ingested_dtype = IngestedType::String;
-    meta.tables[1].columns[0].fixed_len = None;
-    meta.tables[1].primary_key = None;
-    meta.relationships.push(RelationshipSpec {
-        name: Some("var_bytes_string".into()),
-        src_table: "Device".into(),
-        src_column: "fk".into(),
-        dst_table: "User".into(),
-        dst_column: "pk".into(),
-    });
-    assert!(meta.validate().is_ok());
-}
-
-#[test]
-fn validate_relationship_var_bytes_int_ok() {
-    let mut meta = base_metadata();
-    meta.tables[0].columns[0].name = "pk".into();
-    meta.tables[0].columns[0].ingested_dtype = IngestedType::Bytes;
-    meta.tables[0].columns[0].fixed_len = None;
-    meta.tables[0].primary_key = Some("pk".into());
-    meta.tables[1].columns[0].ingested_dtype = IngestedType::Int64;
-    meta.relationships.push(RelationshipSpec {
-        name: Some("var_bytes_int".into()),
-        src_table: "Device".into(),
-        src_column: "id".into(),
-        dst_table: "User".into(),
-        dst_column: "pk".into(),
-    });
-    assert!(meta.validate().is_ok());
-}
-
-#[test]
-fn validate_relationship_int_string_ok() {
-    let mut meta = base_metadata();
-    meta.tables[1].columns.push(ColumnSpec {
-        name: "fk".into(),
-        ingested_dtype: IngestedType::String,
-        source_dtype: None,
-        timestamp_format: None,
-        timestamp_unit: None,
-        fixed_len: None,
-        precision: None,
-        scale: None,
-    });
-    meta.tables[1].primary_key = None;
-    meta.relationships.push(RelationshipSpec {
-        name: Some("int_string".into()),
-        src_table: "Device".into(),
-        src_column: "fk".into(),
-        dst_table: "User".into(),
-        dst_column: "id".into(),
-    });
-    assert!(meta.validate().is_ok());
-}
-
-#[test]
-fn validate_relationship_string_int_ok() {
-    let mut meta = base_metadata();
-    meta.tables[0].columns[0].name = "pk".into();
-    meta.tables[0].columns[0].ingested_dtype = IngestedType::String;
-    meta.tables[0].columns[0].fixed_len = None;
-    meta.tables[0].primary_key = Some("pk".into());
-    meta.tables[1].columns[0].ingested_dtype = IngestedType::Int64;
-    meta.relationships.push(RelationshipSpec {
-        name: Some("string_int".into()),
-        src_table: "Device".into(),
-        src_column: "id".into(),
-        dst_table: "User".into(),
-        dst_column: "pk".into(),
-    });
-    assert!(meta.validate().is_ok());
-}
-
-#[test]
-fn validate_relationship_int_bytes_ok() {
-    let mut meta = base_metadata();
-    meta.tables[1].columns.push(ColumnSpec {
-        name: "fk".into(),
-        ingested_dtype: IngestedType::Bytes,
-        source_dtype: None,
-        timestamp_format: None,
-        timestamp_unit: None,
-        fixed_len: None,
-        precision: None,
-        scale: None,
-    });
-    meta.tables[1].primary_key = None;
-    meta.relationships.push(RelationshipSpec {
-        name: Some("int_bytes".into()),
-        src_table: "Device".into(),
-        src_column: "fk".into(),
-        dst_table: "User".into(),
-        dst_column: "id".into(),
-    });
-    assert!(meta.validate().is_ok());
-}
-
-#[test]
-fn validate_relationship_bytes_int_ok() {
-    let mut meta = base_metadata();
-    meta.tables[0].columns[0].name = "pk".into();
-    meta.tables[0].columns[0].ingested_dtype = IngestedType::Bytes;
-    meta.tables[0].columns[0].fixed_len = None;
-    meta.tables[0].primary_key = Some("pk".into());
-    meta.tables[1].columns[0].ingested_dtype = IngestedType::Int64;
-    meta.relationships.push(RelationshipSpec {
-        name: Some("bytes_int".into()),
-        src_table: "Device".into(),
-        src_column: "id".into(),
-        dst_table: "User".into(),
-        dst_column: "pk".into(),
-    });
-    assert!(meta.validate().is_ok());
-}
+// Relationship validation tests removed - relationships field no longer exists in GraphConfig
 
 #[test]
 fn validate_edge_fk_int_string_ok() {
@@ -876,42 +548,6 @@ fn validate_edge_fk_string_int_ok() {
     assert!(meta.validate().is_ok());
 }
 
-#[test]
-fn validate_relationship_string_float_ok() {
-    let mut meta = base_metadata();
-    meta.tables[0].columns[0].name = "pk".into();
-    meta.tables[0].columns[0].ingested_dtype = IngestedType::String;
-    meta.tables[0].columns[0].fixed_len = None;
-    meta.tables[0].primary_key = Some("pk".into());
-    meta.tables[1].columns[0].ingested_dtype = IngestedType::Float64;
-    meta.relationships.push(RelationshipSpec {
-        name: Some("string_float".into()),
-        src_table: "Device".into(),
-        src_column: "id".into(),
-        dst_table: "User".into(),
-        dst_column: "pk".into(),
-    });
-    assert!(meta.validate().is_ok());
-}
-
-#[test]
-fn validate_relationship_int_decimal_ok() {
-    let mut meta = base_metadata();
-    meta.tables[0].columns[0].name = "pk".into();
-    meta.tables[0].columns[0].ingested_dtype = IngestedType::Int64;
-    meta.tables[0].primary_key = Some("pk".into());
-    meta.tables[1].columns[0].ingested_dtype = IngestedType::Decimal128;
-    meta.tables[1].columns[0].precision = Some(10);
-    meta.tables[1].columns[0].scale = Some(2);
-    meta.relationships.push(RelationshipSpec {
-        name: Some("int_decimal".into()),
-        src_table: "Device".into(),
-        src_column: "id".into(),
-        dst_table: "User".into(),
-        dst_column: "pk".into(),
-    });
-    assert!(meta.validate().is_ok());
-}
 #[test]
 fn validate_edge_fk_string_bytes_ok() {
     let mut meta = base_metadata();
@@ -1127,26 +763,6 @@ fn validate_edge_fk_uuid_mismatch() {
 }
 
 #[test]
-fn validate_relationship_duplicate_reverse_pk_pk() {
-    let mut meta = base_metadata();
-    meta.relationships.push(RelationshipSpec {
-        name: Some("a".into()),
-        src_table: "User".into(),
-        src_column: "id".into(),
-        dst_table: "Device".into(),
-        dst_column: "id".into(),
-    });
-    meta.relationships.push(RelationshipSpec {
-        name: Some("b".into()),
-        src_table: "Device".into(),
-        src_column: "id".into(),
-        dst_table: "User".into(),
-        dst_column: "id".into(),
-    });
-    assert_err_contains(meta, "has reverse already declared");
-}
-
-#[test]
 fn validate_empty_table_name() {
     let mut meta = base_metadata();
     meta.tables[0].name = "  ".into();
@@ -1158,26 +774,6 @@ fn validate_empty_column_name() {
     let mut meta = base_metadata();
     meta.tables[0].columns[0].name = " ".into();
     assert_err_contains(meta, "table User has empty column name");
-}
-
-#[test]
-fn validate_duplicate_relationship_same_direction() {
-    let mut meta = base_metadata();
-    meta.relationships.push(RelationshipSpec {
-        name: Some("a".into()),
-        src_table: "User".into(),
-        src_column: "id".into(),
-        dst_table: "Device".into(),
-        dst_column: "id".into(),
-    });
-    meta.relationships.push(RelationshipSpec {
-        name: Some("b".into()),
-        src_table: "User".into(),
-        src_column: "id".into(),
-        dst_table: "Device".into(),
-        dst_column: "id".into(),
-    });
-    assert_err_contains(meta, "is duplicated");
 }
 
 // ============================================================================
@@ -1216,13 +812,11 @@ mod new_schema_types {
         let source = DataSource::Snowflake {
             connection_id: "conn1".into(),
             table_or_view: "my_table".into(),
-            query: Some("SELECT * FROM my_table WHERE x > 0".into()),
         };
         let json = serde_json::to_string(&source).unwrap();
         assert!(json.contains(r#""type":"snowflake""#));
         assert!(json.contains(r#""connection_id":"conn1""#));
         assert!(json.contains(r#""table_or_view":"my_table""#));
-        assert!(json.contains(r#""query""#));
     }
 
     #[test]
@@ -1233,23 +827,9 @@ mod new_schema_types {
             DataSource::Snowflake {
                 connection_id,
                 table_or_view,
-                query,
             } => {
                 assert_eq!(connection_id, "conn1");
                 assert_eq!(table_or_view, "users");
-                assert!(query.is_none());
-            }
-            _ => panic!("expected Snowflake variant"),
-        }
-    }
-
-    #[test]
-    fn datasource_snowflake_with_query() {
-        let json = r#"{"type":"snowflake","connection_id":"c","table_or_view":"t","query":"SELECT 1"}"#;
-        let source: DataSource = serde_json::from_str(json).unwrap();
-        match source {
-            DataSource::Snowflake { query, .. } => {
-                assert_eq!(query, Some("SELECT 1".into()));
             }
             _ => panic!("expected Snowflake variant"),
         }
@@ -1262,15 +842,12 @@ mod new_schema_types {
             catalog: "main".into(),
             schema: "default".into(),
             table: "events".into(),
-            query: None,
         };
         let json = serde_json::to_string(&source).unwrap();
         assert!(json.contains(r#""type":"databricks""#));
         assert!(json.contains(r#""catalog":"main""#));
         assert!(json.contains(r#""schema":"default""#));
         assert!(json.contains(r#""table":"events""#));
-        // query should be omitted when None
-        assert!(!json.contains(r#""query""#));
     }
 
     #[test]
@@ -1283,27 +860,49 @@ mod new_schema_types {
                 catalog,
                 schema,
                 table,
-                query,
             } => {
                 assert_eq!(connection_id, "db");
                 assert_eq!(catalog, "cat");
                 assert_eq!(schema, "sch");
                 assert_eq!(table, "tbl");
-                assert!(query.is_none());
             }
             _ => panic!("expected Databricks variant"),
         }
     }
 
     #[test]
-    fn datasource_databricks_with_query() {
-        let json = r#"{"type":"databricks","connection_id":"db","catalog":"c","schema":"s","table":"t","query":"SELECT *"}"#;
+    fn datasource_bigquery_serialize() {
+        let source = DataSource::BigQuery {
+            connection_id: "bq_conn".into(),
+            project: "my-project".into(),
+            dataset: "my_dataset".into(),
+            table: "my_table".into(),
+        };
+        let json = serde_json::to_string(&source).unwrap();
+        assert!(json.contains(r#""type":"big_query""#));
+        assert!(json.contains(r#""connection_id":"bq_conn""#));
+        assert!(json.contains(r#""project":"my-project""#));
+        assert!(json.contains(r#""dataset":"my_dataset""#));
+        assert!(json.contains(r#""table":"my_table""#));
+    }
+
+    #[test]
+    fn datasource_bigquery_deserialize() {
+        let json = r#"{"type":"big_query","connection_id":"bq","project":"proj","dataset":"ds","table":"tbl"}"#;
         let source: DataSource = serde_json::from_str(json).unwrap();
         match source {
-            DataSource::Databricks { query, .. } => {
-                assert_eq!(query, Some("SELECT *".into()));
+            DataSource::BigQuery {
+                connection_id,
+                project,
+                dataset,
+                table,
+            } => {
+                assert_eq!(connection_id, "bq");
+                assert_eq!(project, "proj");
+                assert_eq!(dataset, "ds");
+                assert_eq!(table, "tbl");
             }
-            _ => panic!("expected Databricks variant"),
+            _ => panic!("expected BigQuery variant"),
         }
     }
 
@@ -1691,7 +1290,6 @@ mod new_schema_types {
         let original = DataSource::Snowflake {
             connection_id: "conn".into(),
             table_or_view: "tbl".into(),
-            query: Some("SELECT * FROM tbl".into()),
         };
         let json = serde_json::to_string(&original).unwrap();
         let parsed: DataSource = serde_json::from_str(&json).unwrap();
@@ -1705,7 +1303,19 @@ mod new_schema_types {
             catalog: "cat".into(),
             schema: "sch".into(),
             table: "tbl".into(),
-            query: None,
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let parsed: DataSource = serde_json::from_str(&json).unwrap();
+        assert_eq!(original, parsed);
+    }
+
+    #[test]
+    fn datasource_roundtrip_bigquery() {
+        let original = DataSource::BigQuery {
+            connection_id: "conn".into(),
+            project: "proj".into(),
+            dataset: "ds".into(),
+            table: "tbl".into(),
         };
         let json = serde_json::to_string(&original).unwrap();
         let parsed: DataSource = serde_json::from_str(&json).unwrap();

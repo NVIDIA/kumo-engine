@@ -4,7 +4,7 @@ use anyhow::Result;
 use clap::{Parser, ValueEnum};
 use diskgraph_ingest::{
     build_transfer_for_cloud_path, ingest_with_stats, ingest_with_stats_from_source,
-    object_path_from_cloud_url, Dest, IngestOptions, SourceMetadata,
+    object_path_from_cloud_url, Dest, IngestOptions, GraphConfig,
 };
 use diskgraph_ingest::progress::{build_progress, format_bytes, format_duration};
 use std::fs;
@@ -104,7 +104,7 @@ fn main() -> Result<()> {
     let (_metadata, stats) = if is_cloud_url(&source_str) {
         let config_url = ensure_config_url(&source_str);
         let metadata_bytes = download_cloud_config_bytes(&config_url)?;
-        let source: SourceMetadata = serde_json::from_slice(&metadata_bytes)?;
+        let source: GraphConfig = serde_json::from_slice(&metadata_bytes)?;
         ingest_with_stats_from_source(source, None, &args.output, dest, options)?
     } else {
         ingest_with_stats(&source_path, &args.output, dest, options)?

@@ -32,8 +32,7 @@ pub use crate::stats::{
     IngestReport, IngestStats, KeyFailureCounts, KeyFailureState, PerfStats,
 };
 use crate::graph_config::{
-    relationship_name, ColumnSpec, IngestedType, SortKeySpec, TableFormat, TableSpec,
-    TimestampEncodingKind, TimestampEncodingSpec, WeightEncodingKind, WeightEncodingSpec,
+    ColumnSpec, DirectionSpec, IngestedType, TableFormat, TableSpec, TimeSpec, WeightSpec,
 };
 use anyhow::{anyhow, Context, Result};
 use arrow_array::{Array, ArrayRef};
@@ -87,7 +86,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use uuid_simd::{parse_hyphenated, parse_simple, AsOut};
 
-pub use graph_config::SourceMetadata;
+pub use graph_config::GraphConfig;
 
 
 
@@ -112,7 +111,7 @@ pub fn ingest_with_stats(
 ) -> Result<(DatasetMetadata, IngestStats)> {
     let metadata_bytes = fs::read(graph_config_path)
         .with_context(|| format!("read {}", graph_config_path.display()))?;
-    let source: SourceMetadata = serde_json::from_slice(&metadata_bytes)?;
+    let source: GraphConfig = serde_json::from_slice(&metadata_bytes)?;
     let base_dir = graph_config_path
         .parent()
         .ok_or_else(|| anyhow!("missing parent for {}", graph_config_path.display()))?;
@@ -120,7 +119,7 @@ pub fn ingest_with_stats(
 }
 
 pub fn ingest_with_stats_from_source(
-    mut source: SourceMetadata,
+    mut source: GraphConfig,
     base_dir: Option<&Path>,
     output: &str,
     dest: Dest,
@@ -264,7 +263,7 @@ pub fn ingest_with_stats_from_source(
 #[derive(Clone)]
 
 struct IngestContext {
-    source: SourceMetadata,
+    source: GraphConfig,
     target: std::sync::Arc<OutputTarget>,
     profile_dir: Option<PathBuf>,
     parallel: bool,
@@ -575,6 +574,83 @@ struct RelationshipRuntime {
     dst_table: String,
 }
 
+// Internal runtime types for encoding specs (moved from graph_config.rs)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TimestampEncodingKind {
+    Int8,
+    Int16,
+    Int32,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct TimestampEncodingSpec {
+    pub(crate) kind: TimestampEncodingKind,
+    pub(crate) anchor: i64,
+    pub(crate) step: i64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WeightEncodingKind {
+    Byte,
+    UInt16,
+    UInt32,
+    Float16,
+    Float32,
+}
+
+#[derive(Clone, Debug)]
+struct WeightEncodingSpec {
+    dtype: WeightEncodingKind,
+}
+
+/// Convert TimeSpec from config to internal encoding spec.
+fn time_spec_to_encoding(spec: &TimeSpec) -> TimestampEncodingSpec {
+    let kind = match spec.bitwidth {
+        Some(8) => TimestampEncodingKind::Int8,
+        Some(16) => TimestampEncodingKind::Int16,
+        Some(32) | None => TimestampEncodingKind::Int32, // default to 32-bit
+        Some(other) => {
+            eprintln!("warning: unsupported timestamp bitwidth {other}, using 32-bit");
+            TimestampEncodingKind::Int32
+        }
+    };
+    let step = match spec.unit.as_str() {
+        "s" | "second" | "seconds" => 1,
+        "ms" | "milli" | "millis" | "millisecond" | "milliseconds" => 1,
+        "us" | "micro" | "micros" | "microsecond" | "microseconds" => 1,
+        "ns" | "nano" | "nanos" | "nanosecond" | "nanoseconds" => 1,
+        "minute" | "minutes" | "min" => 60,
+        "hour" | "hours" | "h" => 3600,
+        "day" | "days" | "d" => 86400,
+        "week" | "weeks" | "w" => 604800,
+        other => {
+            eprintln!("warning: unsupported timestamp unit '{other}', using seconds");
+            1
+        }
+    };
+    TimestampEncodingSpec {
+        kind,
+        anchor: spec.anchor_time.unwrap_or(0),
+        step,
+    }
+}
+
+/// Convert WeightSpec from config to internal encoding spec.
+fn weight_spec_to_encoding(spec: &WeightSpec) -> WeightEncodingSpec {
+    let dtype = match spec.dtype.as_str() {
+        "byte" | "u8" | "uint8" => WeightEncodingKind::Byte,
+        "uint16" | "u16" => WeightEncodingKind::UInt16,
+        "uint32" | "u32" => WeightEncodingKind::UInt32,
+        "float16" | "f16" => WeightEncodingKind::Float16,
+        "float32" | "f32" => WeightEncodingKind::Float32,
+        other => {
+            eprintln!("warning: unsupported weight dtype '{other}', using float32");
+            WeightEncodingKind::Float32
+        }
+    };
+    WeightEncodingSpec { dtype }
+}
+
 #[derive(Clone)]
 struct RelationSortKeyConfig {
     timestamp: Option<SortKeyTimestampConfig>,
@@ -666,22 +742,24 @@ fn weight_width_bits(kind: &WeightEncodingKind) -> u8 {
     }
 }
 
-fn build_relation_sort_key_config(spec: &SortKeySpec) -> Option<RelationSortKeyConfig> {
+fn build_relation_sort_key_config(spec: &DirectionSpec) -> Option<RelationSortKeyConfig> {
     let mut width_bits: u16 = 0;
-    let timestamp = spec.timestamp.as_ref().map(|ts| {
-        width_bits += timestamp_width_bits(&ts.encoding.kind) as u16;
+    let timestamp = spec.time.as_ref().map(|ts| {
+        let encoding = time_spec_to_encoding(ts);
+        width_bits += timestamp_width_bits(&encoding.kind) as u16;
         SortKeyTimestampConfig {
             table: ts.table.clone(),
             column: ts.column.clone(),
-            encoding: ts.encoding.clone(),
+            encoding,
         }
     });
     let weight = spec.weight.as_ref().map(|w| {
-        width_bits += weight_width_bits(&w.encoding.dtype) as u16;
+        let encoding = weight_spec_to_encoding(w);
+        width_bits += weight_width_bits(&encoding.dtype) as u16;
         SortKeyWeightConfig {
             table: w.table.clone(),
             expr: w.expr.clone(),
-            encoding: w.encoding.clone(),
+            encoding,
         }
     });
     if width_bits == 0 {
@@ -1093,7 +1171,7 @@ impl IngestContext {
         }
     }
     fn new(
-        source: SourceMetadata,
+        source: GraphConfig,
         target: std::sync::Arc<OutputTarget>,
         options: IngestOptions,
         output: &str,
@@ -1106,54 +1184,77 @@ impl IngestContext {
         let num_shards = source.num_shards.unwrap_or(1).max(1);
         let mut relation_defs = Vec::new();
         let mut relationships = Vec::new();
-        let sort_keys = source.edge_sort_keys.clone().unwrap_or_default();
-        for rel in &source.relationships {
-            let base = relationship_name(rel);
-            let rel_sort = sort_keys.relationships.get(&base);
-            let dst_sort = rel_sort
-                .and_then(|cfg| cfg.forward.as_ref())
-                .and_then(build_relation_sort_key_config);
-            let src_sort = rel_sort
-                .and_then(|cfg| cfg.reverse.as_ref())
-                .and_then(build_relation_sort_key_config);
-            relation_defs.push(RelationDef {
-                name: base.clone(),
-                src_table: rel.src_table.clone(),
-                dst_table: rel.dst_table.clone(),
-                sort_key: dst_sort,
-            });
-            relation_defs.push(RelationDef {
-                name: format!("{base}_reverse"),
-                src_table: rel.dst_table.clone(),
-                dst_table: rel.src_table.clone(),
-                sort_key: src_sort,
-            });
-            relationships.push(RelationshipRuntime {
-                name_forward: base.clone(),
-                name_reverse: format!("{base}_reverse"),
-                src_table: rel.src_table.clone(),
-                src_column: rel.src_column.clone(),
-                dst_table: rel.dst_table.clone(),
-            });
-        }
+
+        // Build table name -> primary key map for looking up dst_column
+        let table_pk_map: HashMap<&str, &str> = source
+            .tables
+            .iter()
+            .filter_map(|t| t.primary_key.as_deref().map(|pk| (t.name.as_str(), pk)))
+            .collect();
+
+        // Build relationships from fkeys embedded in tables
         for table in &source.tables {
+            for fkey in &table.fkeys {
+                // Get the destination table's primary key
+                let dst_pk = table_pk_map.get(fkey.dst_table.as_str()).copied().unwrap_or("id");
+
+                // Build relationship name: {src_table}_{src_column}_to_{dst_table}_{dst_pk}
+                let base = format!(
+                    "{}_{}_to_{}_{}",
+                    table.name, fkey.src_column, fkey.dst_table, dst_pk
+                );
+
+                // Build sort key configs from DirectionSpec
+                let dst_sort = fkey
+                    .forward
+                    .as_ref()
+                    .and_then(build_relation_sort_key_config);
+                let src_sort = fkey
+                    .reverse
+                    .as_ref()
+                    .and_then(build_relation_sort_key_config);
+
+                relation_defs.push(RelationDef {
+                    name: base.clone(),
+                    src_table: table.name.clone(),
+                    dst_table: fkey.dst_table.clone(),
+                    sort_key: dst_sort,
+                });
+                relation_defs.push(RelationDef {
+                    name: format!("{base}_reverse"),
+                    src_table: fkey.dst_table.clone(),
+                    dst_table: table.name.clone(),
+                    sort_key: src_sort,
+                });
+                relationships.push(RelationshipRuntime {
+                    name_forward: base.clone(),
+                    name_reverse: format!("{base}_reverse"),
+                    src_table: table.name.clone(),
+                    src_column: fkey.src_column.clone(),
+                    dst_table: fkey.dst_table.clone(),
+                });
+            }
+
+            // Handle edge tables
             if let Some(edge) = &table.edge_table {
                 let base = format!("edge_{}", table.name);
-                let edge_sort = sort_keys.edge_tables.get(&table.name);
+                // Use forward/reverse from EdgeTableSpec directly
                 let src_rel = RelationDef {
                     name: format!("{base}_src_to_dst"),
                     src_table: edge.src_fk.ref_table.clone(),
                     dst_table: edge.dst_fk.ref_table.clone(),
-                    sort_key: edge_sort
-                        .and_then(|cfg| cfg.src_to_dst.as_ref())
+                    sort_key: edge
+                        .forward
+                        .as_ref()
                         .and_then(build_relation_sort_key_config),
                 };
                 let dst_rel = RelationDef {
                     name: format!("{base}_dst_to_src"),
                     src_table: edge.dst_fk.ref_table.clone(),
                     dst_table: edge.src_fk.ref_table.clone(),
-                    sort_key: edge_sort
-                        .and_then(|cfg| cfg.dst_to_src.as_ref())
+                    sort_key: edge
+                        .reverse
+                        .as_ref()
                         .and_then(build_relation_sort_key_config),
                 };
                 relation_defs.push(src_rel);
@@ -6895,7 +6996,7 @@ fn column_spec<'a>(table: &'a TableSpec, name: &str) -> Result<&'a ColumnSpec> {
         .ok_or_else(|| anyhow!("column {} not found in {}", name, table.name))
 }
 
-fn table_by_name<'a>(source: &'a SourceMetadata, name: &str) -> Result<&'a TableSpec> {
+fn table_by_name<'a>(source: &'a GraphConfig, name: &str) -> Result<&'a TableSpec> {
     source
         .tables
         .iter()
@@ -6903,7 +7004,7 @@ fn table_by_name<'a>(source: &'a SourceMetadata, name: &str) -> Result<&'a Table
         .ok_or_else(|| anyhow!("table {} not found", name))
 }
 
-fn sum_input_bytes(source: &SourceMetadata) -> u64 {
+fn sum_input_bytes(source: &GraphConfig) -> u64 {
     let mut total = 0u64;
     for table in &source.tables {
         for path in &table.paths {

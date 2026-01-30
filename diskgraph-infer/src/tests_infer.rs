@@ -33,9 +33,8 @@ fn test_unify_types() {
 
 use crate::*;
 use arrow_schema::{Field, DataType, Schema};
-use std::collections::HashMap;
 use std::sync::Arc;
-use diskgraph_ingest::graph_config::{TableSpec, TableFormat, ColumnSpec, RelationshipSpec, TimestampEncodingKind, WeightEncodingKind, relationship_name};
+use diskgraph_ingest::graph_config::{ColumnSpec, TableFormat, TableSpec};
 
     fn table(name: &str, cols: &[(&str, IngestedType)]) -> TableSpec {
         TableSpec {
@@ -438,122 +437,7 @@ use diskgraph_ingest::graph_config::{TableSpec, TableFormat, ColumnSpec, Relatio
         );
     }
 
-    #[test]
-    fn infer_relationship_sort_keys_use_create_time() {
-        let mut tables = vec![
-            table(
-                "users",
-                &[
-                    ("user_id", IngestedType::Int64),
-                    ("created_at", IngestedType::Timestamp),
-                    ("weight", IngestedType::Float32),
-                ],
-            ),
-            table(
-                "events",
-                &[
-                    ("event_id", IngestedType::Int64),
-                    ("user_id", IngestedType::Int64),
-                    ("created_at", IngestedType::Timestamp),
-                ],
-            ),
-        ];
-        infer_primary_keys(&mut tables);
-        infer_create_time(&mut tables);
-        let mut rels = Vec::new();
-        let mut notes = Vec::new();
-        infer_foreign_keys(&tables, &mut rels, &mut notes, None);
-        drop_join_table_primary_keys(&mut tables, &rels);
-        prune_relationships_without_primary_key(&tables, &mut rels);
-        infer_primary_key_relationships(&tables, &mut rels);
-        infer_edge_tables(&mut tables, &rels);
-        prune_relationships_for_edge_tables(&tables, &mut rels);
-
-        let specs = infer_edge_sort_keys(&tables, &rels).expect("edge sort keys");
-        let rel = rels
-            .iter()
-            .find(|rel| rel.src_table == "events" && rel.dst_table == "users")
-            .expect("relationship");
-        let rel_spec = specs
-            .relationships
-            .get(&relationship_name(rel))
-            .expect("relationship sort key");
-        let forward = rel_spec.forward.as_ref().expect("forward sort key");
-        let forward_ts = forward.timestamp.as_ref().expect("forward timestamp");
-        assert_eq!(forward_ts.table, "users");
-        assert_eq!(forward_ts.column, "created_at");
-        assert_eq!(forward_ts.encoding.kind, TimestampEncodingKind::Int16);
-        assert_eq!(forward_ts.encoding.step, 86_400);
-        let forward_weight = forward.weight.as_ref().expect("forward weight");
-        assert_eq!(forward_weight.table, "users");
-        assert_eq!(forward_weight.expr, "weight");
-        assert_eq!(forward_weight.encoding.dtype, WeightEncodingKind::Float16);
-
-        let reverse = rel_spec.reverse.as_ref().expect("reverse sort key");
-        let reverse_ts = reverse.timestamp.as_ref().expect("reverse timestamp");
-        assert_eq!(reverse_ts.table, "events");
-        assert_eq!(reverse_ts.column, "created_at");
-        assert!(reverse.weight.is_none());
-    }
-
-    #[test]
-    fn infer_edge_table_sort_keys_prefer_edge_table_create_time() {
-        let mut tables = vec![
-            table(
-                "users",
-                &[
-                    ("user_id", IngestedType::Int64),
-                    ("created_at", IngestedType::Timestamp),
-                ],
-            ),
-            table(
-                "items",
-                &[
-                    ("item_id", IngestedType::Int64),
-                    ("created_at", IngestedType::Timestamp),
-                ],
-            ),
-            table(
-                "user_item_edges",
-                &[
-                    ("user_id", IngestedType::Int64),
-                    ("item_id", IngestedType::Int64),
-                    ("created_at", IngestedType::Timestamp),
-                    ("weight", IngestedType::Float32),
-                ],
-            ),
-        ];
-        infer_primary_keys(&mut tables);
-        infer_create_time(&mut tables);
-        let mut rels = Vec::new();
-        let mut notes = Vec::new();
-        infer_foreign_keys(&tables, &mut rels, &mut notes, None);
-        drop_join_table_primary_keys(&mut tables, &rels);
-        prune_relationships_without_primary_key(&tables, &mut rels);
-        infer_primary_key_relationships(&tables, &mut rels);
-        infer_edge_tables(&mut tables, &rels);
-        prune_relationships_for_edge_tables(&tables, &mut rels);
-
-        let specs = infer_edge_sort_keys(&tables, &rels).expect("edge sort keys");
-        let edge_spec = specs
-            .edge_tables
-            .get("user_item_edges")
-            .expect("edge table sort key");
-        let src_to_dst = edge_spec
-            .src_to_dst
-            .as_ref()
-            .expect("src_to_dst sort key");
-        let src_ts = src_to_dst.timestamp.as_ref().expect("src_to_dst timestamp");
-        assert_eq!(src_ts.table, "user_item_edges");
-        assert_eq!(src_ts.column, "created_at");
-        let dst_to_src = edge_spec
-            .dst_to_src
-            .as_ref()
-            .expect("dst_to_src sort key");
-        let dst_ts = dst_to_src.timestamp.as_ref().expect("dst_to_src timestamp");
-        assert_eq!(dst_ts.table, "user_item_edges");
-        assert_eq!(dst_ts.column, "created_at");
-    }
+    // Tests for edge sort keys removed - infer_edge_sort_keys function removed
 
     #[test]
     fn infer_fk_relationship() {

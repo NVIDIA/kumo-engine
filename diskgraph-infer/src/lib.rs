@@ -4,17 +4,14 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
-use chrono::{NaiveDate, NaiveDateTime, Utc};
+use chrono::{NaiveDate, NaiveDateTime};
 use diskgraph_fs::{
     build_adls_client, build_gcs_client, build_s3_client, AdlsConfig, CloudTransfer,
     CloudTransferConfig, GcsConfig, S3Config,
 };
 use diskgraph_ingest::graph_config::{
-    relationship_name, ColumnSpec, EdgeSortKeysSpec, EdgeTableSortKeysSpec, EdgeTableSpec,
-    ForeignKeySpec, IngestedType, RelationshipSortKeysSpec, RelationshipSpec, SortKeySpec,
-    SortKeyTimestampSpec, SortKeyWeightSpec, SourceMetadata, TableFormat, TableSpec,
-    TimestampEncodingKind, TimestampEncodingSpec, TimestampUnit, WeightEncodingKind,
-    WeightEncodingSpec,
+    ColumnSpec, EdgeTableSpec, FKeySpec, ForeignKeySpec, IngestedType, GraphConfig, TableFormat,
+    TableSpec, TimestampUnit,
 };
 use arrow_array::{
     Array, Int16Array, Int32Array, Int64Array, Int8Array, LargeStringArray, RecordBatch,
@@ -35,34 +32,82 @@ const DEFAULT_SAMPLE_ROWS: usize = 2_000;
 const DEFAULT_CSV_SAMPLE_BYTES: u64 = 256 * 1024;
 const DEFAULT_CSV_SAMPLE_ROWS: usize = 2_000;
 
+// Internal type for inference - relationships are converted to fkeys at the end
+#[derive(Clone, Debug)]
+struct RelationshipSpec {
+    #[allow(dead_code)]
+    name: Option<String>,
+    src_table: String,
+    src_column: String,
+    dst_table: String,
+    dst_column: String,
+}
+
+/// Convert inferred relationships to fkeys embedded in tables
+fn convert_relationships_to_fkeys(
+    table_specs: &mut [TableSpec],
+    relationships: &[RelationshipSpec],
+) {
+    // Group relationships by src_table
+    let mut by_table: HashMap<&str, Vec<&RelationshipSpec>> = HashMap::new();
+    for rel in relationships {
+        by_table
+            .entry(rel.src_table.as_str())
+            .or_default()
+            .push(rel);
+    }
+
+    // Add fkeys to each table
+    for table in table_specs {
+        if let Some(rels) = by_table.get(table.name.as_str()) {
+            for rel in rels {
+                // Check if fkey already exists
+                let exists = table.fkeys.iter().any(|fk| {
+                    fk.src_column == rel.src_column && fk.dst_table == rel.dst_table
+                });
+                if !exists {
+                    table.fkeys.push(FKeySpec {
+                        src_column: rel.src_column.clone(),
+                        dst_table: rel.dst_table.clone(),
+                        forward: None,
+                        reverse: None,
+                    });
+                }
+            }
+        }
+    }
+}
+
+/// Input graph configuration provided by the caller to guide inference.
+/// This is different from the output GraphConfig (from diskgraph-ingest).
 #[derive(Clone, Debug, Deserialize)]
-pub struct GraphConfig {
-    pub tables: Vec<GraphTable>,
+pub struct InputGraphConfig {
+    pub tables: Vec<InputGraphTable>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
-pub struct GraphTable {
+pub struct InputGraphTable {
     pub table_name: String,
     pub data_source: String,
-    pub cols: Vec<GraphCol>,
-    pub fkeys: Vec<GraphFKey>,
-    pub pkey: Option<GraphPKey>,
+    pub cols: Vec<InputGraphCol>,
+    pub fkeys: Vec<InputGraphFKey>,
+    pub pkey: Option<InputGraphPKey>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
-pub struct GraphPKey {
+pub struct InputGraphPKey {
     pub name: String,
     pub dtype: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
-pub struct GraphCol {
+pub struct InputGraphCol {
     pub name: String,
     pub dtype: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
-pub struct GraphFKey {
+pub struct InputGraphFKey {
     pub name: String,
     pub dst_table: String,
     pub dst_key: String,
@@ -75,7 +120,7 @@ pub struct InferOptions {
     pub csv_sample_bytes: u64,
     pub csv_sample_rows: usize,
     pub validate_dir_schemas: bool,
-    pub graph_config: Option<GraphConfig>,
+    pub graph_config: Option<InputGraphConfig>,
 }
 
 impl Default for InferOptions {
@@ -99,7 +144,7 @@ pub struct InferWarnings {
 
 #[derive(Clone, Debug)]
 pub struct InferenceResult {
-    pub metadata: SourceMetadata,
+    pub metadata: GraphConfig,
     pub warnings: InferWarnings,
 }
 
@@ -202,7 +247,7 @@ pub fn infer_source_metadata(root: &RootSource, options: InferOptions) -> Result
     };
 
     if let Some(config) = &options.graph_config {
-        let config_tables: HashMap<String, &GraphTable> = config
+        let config_tables: HashMap<String, &InputGraphTable> = config
             .tables
             .iter()
             .map(|t| (t.table_name.clone(), t))
@@ -273,7 +318,7 @@ pub fn infer_source_metadata(root: &RootSource, options: InferOptions) -> Result
         .collect();
 
     if let Some(config) = &options.graph_config {
-        let config_tables: HashMap<String, &GraphTable> = config
+        let config_tables: HashMap<String, &InputGraphTable> = config
             .tables
             .iter()
             .map(|t| (t.table_name.clone(), t))
@@ -311,15 +356,15 @@ pub fn infer_source_metadata(root: &RootSource, options: InferOptions) -> Result
     }
     infer_edge_tables(&mut table_specs, &relationships);
     prune_relationships_for_edge_tables(&table_specs, &mut relationships);
-    let edge_sort_keys = infer_edge_sort_keys(&table_specs, &relationships);
+
+    // Convert relationships to fkeys embedded in tables
+    convert_relationships_to_fkeys(&mut table_specs, &relationships);
 
     let total_bytes: u64 = tables.iter().map(|table| table.total_bytes).sum();
     let num_shards = estimate_num_shards(total_bytes);
-    let metadata = SourceMetadata {
+    let metadata = GraphConfig {
         dataset_name: root_dataset_name(root),
         tables: table_specs,
-        relationships,
-        edge_sort_keys,
         rowpack: None,
         num_shards: Some(num_shards),
         edge_format: None,
@@ -428,7 +473,7 @@ fn read_system_memory_bytes() -> Option<u64> {
     }
 }
 
-fn build_table_config_map(config: &Option<GraphConfig>) -> HashMap<String, HashSet<String>> {
+fn build_table_config_map(config: &Option<InputGraphConfig>) -> HashMap<String, HashSet<String>> {
     let mut map = HashMap::new();
     if let Some(cfg) = config {
         for table in &cfg.tables {
@@ -1975,10 +2020,10 @@ fn infer_foreign_keys_with_config(
     tables: &[TableSpec],
     rels: &mut Vec<RelationshipSpec>,
     notes: &mut Vec<String>,
-    config: &GraphConfig,
+    config: &InputGraphConfig,
     data_sources: &HashSet<String>,
 ) {
-    let config_tables: HashMap<String, &GraphTable> = config
+    let config_tables: HashMap<String, &InputGraphTable> = config
         .tables
         .iter()
         .map(|t| (t.table_name.clone(), t))
@@ -2452,206 +2497,6 @@ pub(crate) fn prune_relationships_for_edge_tables(tables: &[TableSpec], rels: &m
         !edge_tables.contains(rel.src_table.as_str())
             && !edge_tables.contains(rel.dst_table.as_str())
     });
-}
-
-pub(crate) fn infer_edge_sort_keys(
-    tables: &[TableSpec],
-    rels: &[RelationshipSpec],
-) -> Option<EdgeSortKeysSpec> {
-    let mut table_map = HashMap::new();
-    for table in tables {
-        table_map.insert(table.name.as_str(), table);
-    }
-    let ts_encoding = TimestampEncodingSpec {
-        kind: TimestampEncodingKind::Int16,
-        anchor: utc_midnight_seconds(),
-        step: 86_400,
-    };
-    let mut rel_specs = HashMap::new();
-    for rel in rels {
-        let Some(dst_table) = table_map.get(rel.dst_table.as_str()) else {
-            continue;
-        };
-        let Some(src_table) = table_map.get(rel.src_table.as_str()) else {
-            continue;
-        };
-        let forward = build_relation_sort_key(dst_table, &ts_encoding);
-        let reverse = build_relation_sort_key(src_table, &ts_encoding);
-        if forward.is_some() || reverse.is_some() {
-            rel_specs.insert(
-                relationship_name(rel),
-                RelationshipSortKeysSpec { forward, reverse },
-            );
-        }
-    }
-    let mut edge_specs = HashMap::new();
-    for table in tables {
-        let Some(edge_table) = &table.edge_table else {
-            continue;
-        };
-        let src_table = table_map.get(edge_table.src_fk.ref_table.as_str());
-        let dst_table = table_map.get(edge_table.dst_fk.ref_table.as_str());
-        let src_to_dst = dst_table.and_then(|dst| build_edge_table_sort_key(table, dst, &ts_encoding));
-        let dst_to_src = src_table.and_then(|src| build_edge_table_sort_key(table, src, &ts_encoding));
-        if src_to_dst.is_some() || dst_to_src.is_some() {
-            edge_specs.insert(
-                table.name.clone(),
-                EdgeTableSortKeysSpec {
-                    src_to_dst,
-                    dst_to_src,
-                },
-            );
-        }
-    }
-    if rel_specs.is_empty() && edge_specs.is_empty() {
-        None
-    } else {
-        Some(EdgeSortKeysSpec {
-            relationships: rel_specs,
-            edge_tables: edge_specs,
-        })
-    }
-}
-
-fn build_relation_sort_key(
-    table: &TableSpec,
-    ts_encoding: &TimestampEncodingSpec,
-) -> Option<SortKeySpec> {
-    let mut spec = SortKeySpec::default();
-    if let Some(ts) = table.create_time.as_ref() {
-        spec.timestamp = Some(SortKeyTimestampSpec {
-            table: table.name.clone(),
-            column: ts.clone(),
-            encoding: ts_encoding.clone(),
-        });
-    }
-    if let Some(weight) = find_weight_column(table) {
-        spec.weight = Some(SortKeyWeightSpec {
-            table: table.name.clone(),
-            expr: weight_expr_for_column(&weight.name),
-            encoding: weight_encoding_for_column(weight),
-        });
-    }
-    if spec.timestamp.is_some() || spec.weight.is_some() {
-        Some(spec)
-    } else {
-        None
-    }
-}
-
-fn build_edge_table_sort_key(
-    edge_table: &TableSpec,
-    dest_table: &TableSpec,
-    ts_encoding: &TimestampEncodingSpec,
-) -> Option<SortKeySpec> {
-    let mut spec = SortKeySpec::default();
-    if let Some(ts) = edge_table.create_time.as_ref() {
-        spec.timestamp = Some(SortKeyTimestampSpec {
-            table: edge_table.name.clone(),
-            column: ts.clone(),
-            encoding: ts_encoding.clone(),
-        });
-    } else if let Some(ts) = dest_table.create_time.as_ref() {
-        spec.timestamp = Some(SortKeyTimestampSpec {
-            table: dest_table.name.clone(),
-            column: ts.clone(),
-            encoding: ts_encoding.clone(),
-        });
-    }
-    if let Some(weight) = find_edge_table_weight_column(edge_table) {
-        spec.weight = Some(SortKeyWeightSpec {
-            table: edge_table.name.clone(),
-            expr: weight_expr_for_column(&weight.name),
-            encoding: weight_encoding_for_column(weight),
-        });
-    } else if let Some(weight) = find_weight_column(dest_table) {
-        spec.weight = Some(SortKeyWeightSpec {
-            table: dest_table.name.clone(),
-            expr: weight_expr_for_column(&weight.name),
-            encoding: weight_encoding_for_column(weight),
-        });
-    }
-    if spec.timestamp.is_some() || spec.weight.is_some() {
-        Some(spec)
-    } else {
-        None
-    }
-}
-
-fn find_weight_column(table: &TableSpec) -> Option<&ColumnSpec> {
-    table.columns.iter().find(|col| is_weight_like(col))
-}
-
-fn find_edge_table_weight_column(table: &TableSpec) -> Option<&ColumnSpec> {
-    if let Some(col) = find_weight_column(table) {
-        return Some(col);
-    }
-    let edge_spec = table.edge_table.as_ref()?;
-    let mut candidates: Vec<&ColumnSpec> = table
-        .columns
-        .iter()
-        .filter(|col| is_numeric_weight_dtype(col))
-        .filter(|col| col.name != edge_spec.src_fk.column && col.name != edge_spec.dst_fk.column)
-        .filter(|col| table.create_time.as_deref() != Some(col.name.as_str()))
-        .collect();
-    if candidates.len() == 1 {
-        candidates.pop()
-    } else {
-        None
-    }
-}
-
-fn weight_encoding_for_column(col: &ColumnSpec) -> WeightEncodingSpec {
-    let dtype = match col.ingested_dtype {
-        IngestedType::Float32 | IngestedType::Float64 => WeightEncodingKind::Float16,
-        IngestedType::Int8
-        | IngestedType::Int16
-        | IngestedType::Int32
-        | IngestedType::Int64
-        | IngestedType::UInt8
-        | IngestedType::UInt16
-        | IngestedType::UInt32
-        | IngestedType::UInt64 => WeightEncodingKind::UInt16,
-        _ => WeightEncodingKind::Float16,
-    };
-    WeightEncodingSpec { dtype }
-}
-
-fn weight_expr_for_column(name: &str) -> String {
-    if is_simple_identifier(name) {
-        name.to_string()
-    } else {
-        let mut out = String::with_capacity(name.len() + 2);
-        out.push('`');
-        for ch in name.chars() {
-            if ch == '`' || ch == '\\' {
-                out.push('\\');
-            }
-            out.push(ch);
-        }
-        out.push('`');
-        out
-    }
-}
-
-fn is_simple_identifier(name: &str) -> bool {
-    let mut chars = name.chars();
-    let Some(first) = chars.next() else {
-        return false;
-    };
-    if !(first.is_ascii_alphabetic() || first == '_') {
-        return false;
-    }
-    chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
-}
-
-fn utc_midnight_seconds() -> i64 {
-    let today = Utc::now().date_naive();
-    today
-        .and_hms_opt(0, 0, 0)
-        .expect("valid midnight")
-        .and_utc()
-        .timestamp()
 }
 
 fn is_weight_like(col: &ColumnSpec) -> bool {

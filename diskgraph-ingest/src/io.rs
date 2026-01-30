@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::runtime::Runtime;
-use crate::graph_config::SourceMetadata;
+use crate::graph_config::GraphConfig;
 
 #[derive(Clone, Copy, Debug)]
 pub enum Dest {
@@ -60,7 +60,7 @@ fn parse_az_url(raw: &str) -> Result<(String, String, String)> {
     Ok((account, container, key))
 }
 
-pub fn build_input_transfer(source: &SourceMetadata) -> Result<Option<CloudTransfer>> {
+pub fn build_input_transfer(source: &GraphConfig) -> Result<Option<CloudTransfer>> {
     for table in &source.tables {
         for path in &table.paths {
             if is_cloud_path(path) {
@@ -137,7 +137,7 @@ pub fn download_cloud_bytes(transfer: &CloudTransfer, path: &str) -> Result<Pool
     transfer.submit_download_bytes(object_path)?.wait()
 }
 
-pub fn resolve_local_paths(source: &mut SourceMetadata, base_dir: &Path) {
+pub fn resolve_local_paths(source: &mut GraphConfig, base_dir: &Path) {
     for table in &mut source.tables {
         for path in &mut table.paths {
             if is_cloud_path(path) {
