@@ -2468,14 +2468,12 @@ pub(crate) fn infer_edge_tables(tables: &mut [TableSpec], rels: &[RelationshipSp
         let dst_rel = ordered[1];
         table.edge_table = Some(EdgeTableSpec {
             src_fk: ForeignKeySpec {
-                column: src_rel.src_column.clone(),
+                edge_column: src_rel.src_column.clone(),
                 ref_table: src_rel.dst_table.clone(),
-                ref_column: src_rel.dst_column.clone(),
             },
             dst_fk: ForeignKeySpec {
-                column: dst_rel.src_column.clone(),
+                edge_column: dst_rel.src_column.clone(),
                 ref_table: dst_rel.dst_table.clone(),
-                ref_column: dst_rel.dst_column.clone(),
             },
             forward: None,
             reverse: None,

@@ -2370,12 +2370,12 @@ impl IngestContext {
             .edge_table
             .as_ref()
             .ok_or_else(|| anyhow!("missing edge table spec for {}", table.name))?;
-        let src_fk_idx = column_index(table, &edge.src_fk.column)?;
-        let dst_fk_idx = column_index(table, &edge.dst_fk.column)?;
-        let src_fk_col = column_spec(table, &edge.src_fk.column)?;
-        let dst_fk_col = column_spec(table, &edge.dst_fk.column)?;
-        let src_context = format!("edge_fk:{}.{}", table.name, edge.src_fk.column);
-        let dst_context = format!("edge_fk:{}.{}", table.name, edge.dst_fk.column);
+        let src_fk_idx = column_index(table, &edge.src_fk.edge_column)?;
+        let dst_fk_idx = column_index(table, &edge.dst_fk.edge_column)?;
+        let src_fk_col = column_spec(table, &edge.src_fk.edge_column)?;
+        let dst_fk_col = column_spec(table, &edge.dst_fk.edge_column)?;
+        let src_context = format!("edge_fk:{}.{}", table.name, edge.src_fk.edge_column);
+        let dst_context = format!("edge_fk:{}.{}", table.name, edge.dst_fk.edge_column);
         let schema = table_schema(table)?;
         let rel_name = std::sync::Arc::<str>::from(format!("edge_{}_src_to_dst", table.name));
         let buffer_limit = edge_batch_buffer_limit(num_shards);
@@ -2916,7 +2916,7 @@ impl IngestContext {
                         for table in source.tables.iter().filter(|t| t.edge_table.is_some()) {
                             let edge = table.edge_table.as_ref().unwrap();
                             if edge.src_fk.ref_table == table_name {
-                                let src_col = column_spec(table, &edge.src_fk.column)?;
+                                let src_col = column_spec(table, &edge.src_fk.edge_column)?;
                                 edge_inputs.push((
                                     root.join(temp_edge_key_path(&table.name, EdgeKeyKind::Src, shard)),
                                     root.join(temp_edge_key_meta_path(&table.name, EdgeKeyKind::Src, shard)),
@@ -2924,7 +2924,7 @@ impl IngestContext {
                                 ));
                             }
                             if edge.dst_fk.ref_table == table_name {
-                                let dst_col = column_spec(table, &edge.dst_fk.column)?;
+                                let dst_col = column_spec(table, &edge.dst_fk.edge_column)?;
                                 edge_inputs.push((
                                     root.join(temp_edge_key_path(&table.name, EdgeKeyKind::Dst, shard)),
                                     root.join(temp_edge_key_meta_path(&table.name, EdgeKeyKind::Dst, shard)),

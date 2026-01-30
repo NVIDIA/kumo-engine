@@ -306,14 +306,12 @@ fn join_prefix(prefix: &str, name: &str) -> String {
 fn print_edge_table_relationships(edge_tables: &[(&TableSpec, &EdgeTableSpec)]) {
     for (table, edge) in edge_tables {
         println!(
-            "  {}: {} -> {}.{}; {} -> {}.{}",
+            "  {}: {} -> {}; {} -> {}",
             table.name,
-            edge.src_fk.column,
+            edge.src_fk.edge_column,
             edge.src_fk.ref_table,
-            edge.src_fk.ref_column,
-            edge.dst_fk.column,
-            edge.dst_fk.ref_table,
-            edge.dst_fk.ref_column
+            edge.dst_fk.edge_column,
+            edge.dst_fk.ref_table
         );
     }
 }

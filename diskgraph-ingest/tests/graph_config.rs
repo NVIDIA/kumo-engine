@@ -310,14 +310,12 @@ fn validate_edge_fk_missing_column() {
         weight: None,
         edge_table: Some(EdgeTableSpec {
             src_fk: ForeignKeySpec {
-                column: "src_id".into(),
+                edge_column: "src_id".into(),
                 ref_table: "User".into(),
-                ref_column: "id".into(),
             },
             dst_fk: ForeignKeySpec {
-                column: "dst_id".into(),
+                edge_column: "dst_id".into(),
                 ref_table: "Device".into(),
-                ref_column: "id".into(),
             },
             forward: None,
             reverse: None,
@@ -364,14 +362,12 @@ fn validate_edge_fk_missing_table() {
         weight: None,
         edge_table: Some(EdgeTableSpec {
             src_fk: ForeignKeySpec {
-                column: "src_id".into(),
+                edge_column: "src_id".into(),
                 ref_table: "Missing".into(),
-                ref_column: "id".into(),
             },
             dst_fk: ForeignKeySpec {
-                column: "dst_id".into(),
+                edge_column: "dst_id".into(),
                 ref_table: "Device".into(),
-                ref_column: "id".into(),
             },
             forward: None,
             reverse: None,
@@ -384,9 +380,9 @@ fn validate_edge_fk_missing_table() {
 }
 
 #[test]
-fn validate_edge_fk_not_pk() {
+fn validate_edge_fk_ref_table_no_pk() {
     let mut meta = base_metadata();
-    meta.tables[1].primary_key = Some("name".into());
+    meta.tables[1].primary_key = None; // Device has no PK
     meta.tables.push(TableSpec {
         name: "Edge".into(),
         format: TableFormat::Parquet,
@@ -419,14 +415,12 @@ fn validate_edge_fk_not_pk() {
         weight: None,
         edge_table: Some(EdgeTableSpec {
             src_fk: ForeignKeySpec {
-                column: "src_id".into(),
+                edge_column: "src_id".into(),
                 ref_table: "User".into(),
-                ref_column: "id".into(),
             },
             dst_fk: ForeignKeySpec {
-                column: "dst_id".into(),
+                edge_column: "dst_id".into(),
                 ref_table: "Device".into(),
-                ref_column: "id".into(),
             },
             forward: None,
             reverse: None,
@@ -435,7 +429,7 @@ fn validate_edge_fk_not_pk() {
         source: None,
         fkeys: Vec::new(),
     });
-    assert_err_contains(meta, "edge table Edge fk dst_id must reference primary key Device.id");
+    assert_err_contains(meta, "references Device which has no primary key");
 }
 
 // Relationship validation tests removed - relationships field no longer exists in GraphConfig
@@ -475,14 +469,12 @@ fn validate_edge_fk_int_string_ok() {
         weight: None,
         edge_table: Some(EdgeTableSpec {
             src_fk: ForeignKeySpec {
-                column: "src_id".into(),
+                edge_column: "src_id".into(),
                 ref_table: "User".into(),
-                ref_column: "id".into(),
             },
             dst_fk: ForeignKeySpec {
-                column: "dst_id".into(),
+                edge_column: "dst_id".into(),
                 ref_table: "Device".into(),
-                ref_column: "id".into(),
             },
             forward: None,
             reverse: None,
@@ -529,14 +521,12 @@ fn validate_edge_fk_string_int_ok() {
         weight: None,
         edge_table: Some(EdgeTableSpec {
             src_fk: ForeignKeySpec {
-                column: "src_id".into(),
+                edge_column: "src_id".into(),
                 ref_table: "User".into(),
-                ref_column: "id".into(),
             },
             dst_fk: ForeignKeySpec {
-                column: "dst_id".into(),
+                edge_column: "dst_id".into(),
                 ref_table: "Device".into(),
-                ref_column: "id".into(),
             },
             forward: None,
             reverse: None,
@@ -591,14 +581,12 @@ fn validate_edge_fk_string_bytes_ok() {
         weight: None,
         edge_table: Some(EdgeTableSpec {
             src_fk: ForeignKeySpec {
-                column: "src_id".into(),
+                edge_column: "src_id".into(),
                 ref_table: "Device".into(),
-                ref_column: "pk".into(),
             },
             dst_fk: ForeignKeySpec {
-                column: "dst_id".into(),
+                edge_column: "dst_id".into(),
                 ref_table: "User".into(),
-                ref_column: "pk".into(),
             },
             forward: None,
             reverse: None,
@@ -653,14 +641,12 @@ fn validate_edge_fk_string_bytes_len_mismatch() {
         weight: None,
         edge_table: Some(EdgeTableSpec {
             src_fk: ForeignKeySpec {
-                column: "src_id".into(),
+                edge_column: "src_id".into(),
                 ref_table: "Device".into(),
-                ref_column: "pk".into(),
             },
             dst_fk: ForeignKeySpec {
-                column: "dst_id".into(),
+                edge_column: "dst_id".into(),
                 ref_table: "User".into(),
-                ref_column: "pk".into(),
             },
             forward: None,
             reverse: None,
@@ -698,14 +684,12 @@ fn validate_edge_fk_uuid_ok() {
         weight: None,
         edge_table: Some(EdgeTableSpec {
             src_fk: ForeignKeySpec {
-                column: "src_id".into(),
+                edge_column: "src_id".into(),
                 ref_table: "User".into(),
-                ref_column: "pk".into(),
             },
             dst_fk: ForeignKeySpec {
-                column: "src_id".into(),
+                edge_column: "src_id".into(),
                 ref_table: "User".into(),
-                ref_column: "pk".into(),
             },
             forward: None,
             reverse: None,
@@ -743,14 +727,12 @@ fn validate_edge_fk_uuid_mismatch() {
         weight: None,
         edge_table: Some(EdgeTableSpec {
             src_fk: ForeignKeySpec {
-                column: "src_id".into(),
+                edge_column: "src_id".into(),
                 ref_table: "User".into(),
-                ref_column: "pk".into(),
             },
             dst_fk: ForeignKeySpec {
-                column: "src_id".into(),
+                edge_column: "src_id".into(),
                 ref_table: "User".into(),
-                ref_column: "pk".into(),
             },
             forward: None,
             reverse: None,
@@ -1234,14 +1216,12 @@ mod new_schema_types {
     fn edgetablespec_with_directions() {
         let spec = EdgeTableSpec {
             src_fk: ForeignKeySpec {
-                column: "user_id".into(),
+                edge_column: "user_id".into(),
                 ref_table: "users".into(),
-                ref_column: "id".into(),
             },
             dst_fk: ForeignKeySpec {
-                column: "item_id".into(),
+                edge_column: "item_id".into(),
                 ref_table: "items".into(),
-                ref_column: "id".into(),
             },
             forward: Some(DirectionSpec {
                 time: Some(TimeSpec {

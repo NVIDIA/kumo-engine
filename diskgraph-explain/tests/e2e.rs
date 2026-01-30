@@ -157,8 +157,8 @@ fn write_config(path: &PathBuf, users: &PathBuf, devices: &PathBuf, edges: &Path
                     {"name": "ts", "ingested_dtype": "timestamp"}
                 ],
                 "edge_table": {
-                    "src_fk": {"column": "user_id", "ref_table": "users", "ref_column": "id"},
-                    "dst_fk": {"column": "device_id", "ref_table": "devices", "ref_column": "id"},
+                    "src_fk": {"edge_column": "user_id", "ref_table": "users"},
+                    "dst_fk": {"edge_column": "device_id", "ref_table": "devices"},
                     "forward": {
                         "time": {
                             "table": "user_device",

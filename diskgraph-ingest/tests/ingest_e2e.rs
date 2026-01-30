@@ -266,8 +266,8 @@ fn ingest_csv_with_edges_and_rowpack() -> Result<()> {
                 "format": "csv",
                 "paths": [input_root.join("order_items.csv").to_string_lossy()],
                 "edge_table": {
-                    "src_fk": {"column": "order_id", "ref_table": "Order", "ref_column": "id"},
-                    "dst_fk": {"column": "product_id", "ref_table": "Product", "ref_column": "id"},
+                    "src_fk": {"edge_column": "order_id", "ref_table": "Order"},
+                    "dst_fk": {"edge_column": "product_id", "ref_table": "Product"},
                     "forward": {
                         "weight": {
                             "table": "OrderItem",
@@ -480,8 +480,8 @@ fn ingest_csv_multi_file_table_with_two_shards() -> Result<()> {
                     input_root.join("order_links_part2.csv").to_string_lossy()
                 ],
                 "edge_table": {
-                    "src_fk": {"column": "user_id", "ref_table": "User", "ref_column": "id"},
-                    "dst_fk": {"column": "order_id", "ref_table": "Order", "ref_column": "id"}
+                    "src_fk": {"edge_column": "user_id", "ref_table": "User"},
+                    "dst_fk": {"edge_column": "order_id", "ref_table": "Order"}
                 },
                 "columns": [
                     {"name": "user_id", "ingested_dtype": "int64"},
@@ -604,8 +604,8 @@ fn ingest_parquet_with_sorted_mapping() -> Result<()> {
                 "format": "parquet",
                 "paths": [edge_path.to_string_lossy()],
                 "edge_table": {
-                    "src_fk": {"column": "src_id", "ref_table": "Sku", "ref_column": "id"},
-                    "dst_fk": {"column": "dst_id", "ref_table": "Sku", "ref_column": "id"}
+                    "src_fk": {"edge_column": "src_id", "ref_table": "Sku"},
+                    "dst_fk": {"edge_column": "dst_id", "ref_table": "Sku"}
                 },
                 "columns": [
                     {"name": "src_id", "ingested_dtype": "string", "fixed_len": 8},
@@ -754,8 +754,8 @@ fn ingest_parquet_with_int_pk_lookup() -> Result<()> {
                 "format": "parquet",
                 "paths": [edge_path.to_string_lossy()],
                 "edge_table": {
-                    "src_fk": {"column": "src_id", "ref_table": "Item", "ref_column": "id"},
-                    "dst_fk": {"column": "dst_id", "ref_table": "Item", "ref_column": "id"}
+                    "src_fk": {"edge_column": "src_id", "ref_table": "Item"},
+                    "dst_fk": {"edge_column": "dst_id", "ref_table": "Item"}
                 },
                 "columns": [
                     {"name": "src_id", "ingested_dtype": "int64"},
@@ -862,8 +862,8 @@ fn ingest_csv_with_bytes_pk_mapping() -> Result<()> {
                 "format": "parquet",
                 "paths": [edge_path.to_string_lossy()],
                 "edge_table": {
-                    "src_fk": {"column": "src_id", "ref_table": "Asset", "ref_column": "id"},
-                    "dst_fk": {"column": "dst_id", "ref_table": "Asset", "ref_column": "id"}
+                    "src_fk": {"edge_column": "src_id", "ref_table": "Asset"},
+                    "dst_fk": {"edge_column": "dst_id", "ref_table": "Asset"}
                 },
                 "columns": [
                     {"name": "src_id", "ingested_dtype": "bytes", "fixed_len": 4},
@@ -1222,8 +1222,8 @@ fn ingest_invalid_fields_records_failures_and_builds() -> Result<()> {
                 "format": "csv",
                 "paths": [input_root.join("user_visit_edges.csv").to_string_lossy()],
                 "edge_table": {
-                    "src_fk": {"column": "src_user_id", "ref_table": "User", "ref_column": "id"},
-                    "dst_fk": {"column": "dst_visit_id", "ref_table": "Visit", "ref_column": "id"}
+                    "src_fk": {"edge_column": "src_user_id", "ref_table": "User"},
+                    "dst_fk": {"edge_column": "dst_visit_id", "ref_table": "Visit"}
                 },
                 "columns": [
                     {"name": "src_user_id", "ingested_dtype": "int64"},
@@ -1328,8 +1328,8 @@ fn ingest_edge_table_mixed_sort_keys() -> Result<()> {
                 "format": "csv",
                 "paths": [input_root.join("clicks.csv").to_string_lossy()],
                 "edge_table": {
-                    "src_fk": {"column": "user_id", "ref_table": "User", "ref_column": "id"},
-                    "dst_fk": {"column": "item_id", "ref_table": "Item", "ref_column": "id"},
+                    "src_fk": {"edge_column": "user_id", "ref_table": "User"},
+                    "dst_fk": {"edge_column": "item_id", "ref_table": "Item"},
                     "forward": {
                         "time": {
                             "table": "Click",
@@ -1574,8 +1574,8 @@ fn ingest_parquet_with_uuid_ip_types() -> Result<()> {
                 "format": "parquet",
                 "paths": [input_root.join("user_ip_edges.parquet").to_string_lossy()],
                 "edge_table": {
-                    "src_fk": {"column": "user_id", "ref_table": "User", "ref_column": "user_id"},
-                    "dst_fk": {"column": "ip_id", "ref_table": "IpAddress", "ref_column": "ip_id"}
+                    "src_fk": {"edge_column": "user_id", "ref_table": "User"},
+                    "dst_fk": {"edge_column": "ip_id", "ref_table": "IpAddress"}
                 },
                 "columns": [
                     {"name": "user_id", "ingested_dtype": "uuid"},
@@ -1712,8 +1712,8 @@ fn ingest_parquet_with_utf8_string_pk_lookup() -> Result<()> {
                 "format": "parquet",
                 "paths": [edge_path.to_string_lossy()],
                 "edge_table": {
-                    "src_fk": {"column": "src_id", "ref_table": "Word", "ref_column": "id"},
-                    "dst_fk": {"column": "dst_id", "ref_table": "Word", "ref_column": "id"}
+                    "src_fk": {"edge_column": "src_id", "ref_table": "Word"},
+                    "dst_fk": {"edge_column": "dst_id", "ref_table": "Word"}
                 },
                 "columns": [
                     {"name": "src_id", "ingested_dtype": "string"},

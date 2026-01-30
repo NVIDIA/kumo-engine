@@ -235,12 +235,13 @@ pub struct EdgeTableSpec {
     pub reverse: Option<DirectionSpec>,
 }
 
-/// Foreign key specification (old format - for backward compatibility).
+/// Foreign key reference in an edge table.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ForeignKeySpec {
-    pub column: String,
+    /// Column in the edge table containing the foreign key value.
+    pub edge_column: String,
+    /// Referenced node table (must have a primary key - joins on PK).
     pub ref_table: String,
-    pub ref_column: String,
 }
 
 
@@ -503,10 +504,10 @@ impl GraphConfig {
             }
             if let Some(edge) = &table.edge_table {
                 for fk in [&edge.src_fk, &edge.dst_fk] {
-                    if !col_names.contains(fk.column.as_str()) {
+                    if !col_names.contains(fk.edge_column.as_str()) {
                         errors.push(format!(
                             "table {} edge fk column {} not found",
-                            table.name, fk.column
+                            table.name, fk.edge_column
                         ));
                     }
                 }
@@ -518,7 +519,7 @@ impl GraphConfig {
             if let Some(edge) = &table.edge_table {
                 for fk in [&edge.src_fk, &edge.dst_fk] {
                     let ref_table = match table_map.get(fk.ref_table.as_str()) {
-                        Some(table) => *table,
+                        Some(t) => *t,
                         None => {
                             errors.push(format!(
                                 "edge table {} references missing table {}",
@@ -527,22 +528,25 @@ impl GraphConfig {
                             continue;
                         }
                     };
-                    if ref_table.primary_key.as_deref() != Some(fk.ref_column.as_str()) {
-                        errors.push(format!(
-                            "edge table {} fk {} must reference primary key {}.{}",
-                            table.name, fk.column, fk.ref_table, fk.ref_column
-                        ));
-                        continue;
-                    }
-                    if let Some(fk_col) = table.columns.iter().find(|c| c.name == fk.column) {
-                        if let Some(pk_col) = ref_table.columns.iter().find(|c| c.name == fk.ref_column) {
+                    let pk_name = match &ref_table.primary_key {
+                        Some(pk) => pk.as_str(),
+                        None => {
+                            errors.push(format!(
+                                "edge table {} references {} which has no primary key",
+                                table.name, fk.ref_table
+                            ));
+                            continue;
+                        }
+                    };
+                    if let Some(fk_col) = table.columns.iter().find(|c| c.name == fk.edge_column) {
+                        if let Some(pk_col) = ref_table.columns.iter().find(|c| c.name == pk_name) {
                             if let Err(msg) = compatible_key_columns(fk_col, pk_col) {
                                 errors.push(format!(
                                     "edge table {} fk {} and {}.{} {}",
                                     table.name,
-                                    fk.column,
+                                    fk.edge_column,
                                     fk.ref_table,
-                                    fk.ref_column,
+                                    pk_name,
                                     msg
                                 ));
                             }

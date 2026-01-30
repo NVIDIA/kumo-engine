@@ -427,9 +427,9 @@ use diskgraph_ingest::graph_config::{ColumnSpec, TableFormat, TableSpec};
             .find(|t| t.name == "user_item_edges")
             .unwrap();
         let edge_spec = edge.edge_table.as_ref().unwrap();
-        assert_eq!(edge_spec.src_fk.column, "user_id");
+        assert_eq!(edge_spec.src_fk.edge_column, "user_id");
         assert_eq!(edge_spec.src_fk.ref_table, "users");
-        assert_eq!(edge_spec.dst_fk.column, "item_id");
+        assert_eq!(edge_spec.dst_fk.edge_column, "item_id");
         assert_eq!(edge_spec.dst_fk.ref_table, "items");
         assert!(
             !rels.iter().any(|rel| rel.src_table == "user_item_edges"),
