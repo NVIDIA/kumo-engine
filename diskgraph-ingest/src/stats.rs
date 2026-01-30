@@ -1,6 +1,6 @@
 use serde::Serialize;
 use std::collections::HashMap;
-use crate::source_metadata::SourceMetadata;
+use crate::graph_config::SourceMetadata;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct IngestReport {

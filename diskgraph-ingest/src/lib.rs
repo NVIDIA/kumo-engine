@@ -1,7 +1,7 @@
 //! Diskgraph ingest: convert raw CSV/Parquet sources into index-ready artifacts.
 
 mod mapping;
-pub mod source_metadata;
+pub mod graph_config;
 pub mod progress;
 pub mod config;
 pub mod errors;
@@ -31,7 +31,7 @@ pub use crate::scratch::{
 pub use crate::stats::{
     IngestReport, IngestStats, KeyFailureCounts, KeyFailureState, PerfStats,
 };
-use crate::source_metadata::{
+use crate::graph_config::{
     relationship_name, ColumnSpec, IngestedType, SortKeySpec, TableFormat, TableSpec,
     TimestampEncodingKind, TimestampEncodingSpec, WeightEncodingKind, WeightEncodingSpec,
 };
@@ -87,7 +87,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use uuid_simd::{parse_hyphenated, parse_simple, AsOut};
 
-pub use source_metadata::SourceMetadata;
+pub use graph_config::SourceMetadata;
 
 
 
@@ -95,27 +95,27 @@ pub use source_metadata::SourceMetadata;
 const DEFAULT_INDEX_MEM_BUDGET_FRAC: f64 = 0.7;
 
 pub fn ingest(
-    source_metadata_path: &Path,
+    graph_config_path: &Path,
     output: &str,
     dest: Dest,
     options: IngestOptions,
 ) -> Result<DatasetMetadata> {
-    let (metadata, _) = ingest_with_stats(source_metadata_path, output, dest, options)?;
+    let (metadata, _) = ingest_with_stats(graph_config_path, output, dest, options)?;
     Ok(metadata)
 }
 
 pub fn ingest_with_stats(
-    source_metadata_path: &Path,
+    graph_config_path: &Path,
     output: &str,
     dest: Dest,
     options: IngestOptions,
 ) -> Result<(DatasetMetadata, IngestStats)> {
-    let metadata_bytes = fs::read(source_metadata_path)
-        .with_context(|| format!("read {}", source_metadata_path.display()))?;
+    let metadata_bytes = fs::read(graph_config_path)
+        .with_context(|| format!("read {}", graph_config_path.display()))?;
     let source: SourceMetadata = serde_json::from_slice(&metadata_bytes)?;
-    let base_dir = source_metadata_path
+    let base_dir = graph_config_path
         .parent()
-        .ok_or_else(|| anyhow!("missing parent for {}", source_metadata_path.display()))?;
+        .ok_or_else(|| anyhow!("missing parent for {}", graph_config_path.display()))?;
     ingest_with_stats_from_source(source, Some(base_dir), output, dest, options)
 }
 
@@ -7823,13 +7823,13 @@ pub(crate) fn build_row_access_hints(table: &TableSpec) -> Vec<RowAccessHints> {
 }
 
 fn to_arrow_time_unit(
-    unit: Option<&crate::source_metadata::TimestampUnit>,
+    unit: Option<&crate::graph_config::TimestampUnit>,
 ) -> Option<arrow_schema::TimeUnit> {
     match unit? {
-        crate::source_metadata::TimestampUnit::Seconds => Some(arrow_schema::TimeUnit::Second),
-        crate::source_metadata::TimestampUnit::Millis => Some(arrow_schema::TimeUnit::Millisecond),
-        crate::source_metadata::TimestampUnit::Micros => Some(arrow_schema::TimeUnit::Microsecond),
-        crate::source_metadata::TimestampUnit::Nanos => Some(arrow_schema::TimeUnit::Nanosecond),
+        crate::graph_config::TimestampUnit::Seconds => Some(arrow_schema::TimeUnit::Second),
+        crate::graph_config::TimestampUnit::Millis => Some(arrow_schema::TimeUnit::Millisecond),
+        crate::graph_config::TimestampUnit::Micros => Some(arrow_schema::TimeUnit::Microsecond),
+        crate::graph_config::TimestampUnit::Nanos => Some(arrow_schema::TimeUnit::Nanosecond),
     }
 }
 

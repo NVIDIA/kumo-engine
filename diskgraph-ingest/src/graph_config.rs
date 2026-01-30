@@ -32,19 +32,30 @@ pub struct SourceMetadata {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TableSpec {
     pub name: String,
+    /// Table format (csv or parquet) - used with `paths` field.
     pub format: TableFormat,
+    /// File paths - used with `format` field. Prefer using `source` instead.
     pub paths: Vec<String>,
     pub columns: Vec<ColumnSpec>,
     #[serde(default)]
     pub primary_key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub create_time: Option<String>,
+    /// End time column (for temporal graphs with validity windows).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_time: Option<String>,
     #[serde(default)]
     pub weight: Option<String>,
     #[serde(default)]
     pub edge_table: Option<EdgeTableSpec>,
     #[serde(default)]
     pub rowpack: Option<RowPackConfig>,
+    /// Data source configuration (new - preferred over format+paths).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<DataSource>,
+    /// Foreign key relationships (new - edges embedded in table).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fkeys: Vec<FKeySpec>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -111,13 +122,121 @@ pub enum TableFormat {
     Parquet,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EdgeTableSpec {
-    pub src_fk: ForeignKeySpec,
-    pub dst_fk: ForeignKeySpec,
+/// Data source configuration - abstracts where table data comes from.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum DataSource {
+    /// Parquet files (local or cloud storage).
+    Parquet {
+        /// List of file paths (local, s3://, gs://, az://).
+        paths: Vec<String>,
+    },
+    /// Snowflake data warehouse.
+    Snowflake {
+        /// Connection identifier referencing a connection config.
+        connection_id: String,
+        /// Table or view name in Snowflake.
+        table_or_view: String,
+        /// Optional SQL query override.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        query: Option<String>,
+    },
+    /// Databricks.
+    Databricks {
+        /// Connection identifier.
+        connection_id: String,
+        /// Catalog name.
+        catalog: String,
+        /// Schema name.
+        schema: String,
+        /// Table name.
+        table: String,
+        /// Optional SQL query override.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        query: Option<String>,
+    },
+}
+
+/// Time-based sort key specification.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TimeSpec {
+    /// The table containing the timestamp column.
+    pub table: String,
+    /// The timestamp column name.
+    pub column: String,
+    /// Bit width for encoding: 8, 16, or 32. Null for auto-detection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bitwidth: Option<u8>,
+    /// Anchor time in epoch seconds. Null for auto-detection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchor_time: Option<i64>,
+    /// Time unit: "s", "ms", "day", "hour", etc.
+    pub unit: String,
+}
+
+/// Weight-based sort key specification.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WeightSpec {
+    /// The table containing columns referenced in the expression.
+    pub table: String,
+    /// Weight expression - column name or math expression.
+    pub expr: String,
+    /// Encoding dtype: "byte", "uint16", "uint32", "float16", "float32"
+    pub dtype: String,
+}
+
+/// Direction-specific configuration for edge traversal.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct DirectionSpec {
+    /// Time-based sort key for this direction.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub time: Option<TimeSpec>,
+    /// Weight-based sort key for this direction.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weight: Option<WeightSpec>,
+}
+
+/// Foreign key specification defining a 1:N relationship.
+/// Defines an edge from this table to another table's primary key.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct FKeySpec {
+    /// Column on this table that references the destination table.
+    pub src_column: String,
+    /// Destination table name. Must have a primary key.
+    pub dst_table: String,
+    /// Forward direction config (src -> dst).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forward: Option<DirectionSpec>,
+    /// Reverse direction config (dst -> src).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reverse: Option<DirectionSpec>,
+}
+
+/// Endpoint specification for an edge table.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct EdgeEndpoint {
+    /// Column in the edge table.
+    pub column: String,
+    /// Referenced node table name. Must have a primary key.
+    pub table: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EdgeTableSpec {
+    /// Source foreign key.
+    pub src_fk: ForeignKeySpec,
+    /// Destination foreign key.
+    pub dst_fk: ForeignKeySpec,
+    /// Forward direction config (src -> dst).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forward: Option<DirectionSpec>,
+    /// Reverse direction config (dst -> src).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reverse: Option<DirectionSpec>,
+}
+
+/// Foreign key specification (old format - for backward compatibility).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ForeignKeySpec {
     pub column: String,
     pub ref_table: String,

@@ -7,7 +7,7 @@ use diskgraph_fs::{
     CloudTransferConfig, GcsConfig, S3Config,
 };
 use diskgraph_infer::{infer_source_metadata, parse_root_source, InferOptions};
-use diskgraph_ingest::source_metadata::{
+use diskgraph_ingest::graph_config::{
     relationship_name, EdgeTableSortKeysSpec, EdgeTableSpec, EdgeSortKeysSpec, RelationshipSpec,
     SortKeySpec, TableSpec, TimestampEncodingKind, WeightEncodingKind,
 };
@@ -62,8 +62,8 @@ fn main() -> Result<()> {
     println!("Tables:");
     for table in &result.metadata.tables {
         let format = match table.format {
-            diskgraph_ingest::source_metadata::TableFormat::Csv => "csv",
-            diskgraph_ingest::source_metadata::TableFormat::Parquet => "parquet",
+            diskgraph_ingest::graph_config::TableFormat::Csv => "csv",
+            diskgraph_ingest::graph_config::TableFormat::Parquet => "parquet",
         };
         let pk = table.primary_key.as_deref().unwrap_or("none");
         let create_time = table.create_time.as_deref().unwrap_or("none");
@@ -392,7 +392,7 @@ fn format_weight_kind(kind: &WeightEncodingKind) -> &'static str {
     }
 }
 
-fn fmt_column(col: &Option<diskgraph_ingest::source_metadata::ColumnSpec>) -> String {
+fn fmt_column(col: &Option<diskgraph_ingest::graph_config::ColumnSpec>) -> String {
     match col {
         Some(spec) => format!("{}:{:?}", spec.name, spec.ingested_dtype),
         None => "<missing>".to_string(),

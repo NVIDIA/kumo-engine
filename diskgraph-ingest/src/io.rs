@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::runtime::Runtime;
-use crate::source_metadata::SourceMetadata;
+use crate::graph_config::SourceMetadata;
 
 #[derive(Clone, Copy, Debug)]
 pub enum Dest {

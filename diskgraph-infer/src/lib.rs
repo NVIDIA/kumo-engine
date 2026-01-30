@@ -9,7 +9,7 @@ use diskgraph_fs::{
     build_adls_client, build_gcs_client, build_s3_client, AdlsConfig, CloudTransfer,
     CloudTransferConfig, GcsConfig, S3Config,
 };
-use diskgraph_ingest::source_metadata::{
+use diskgraph_ingest::graph_config::{
     relationship_name, ColumnSpec, EdgeSortKeysSpec, EdgeTableSortKeysSpec, EdgeTableSpec,
     ForeignKeySpec, IngestedType, RelationshipSortKeysSpec, RelationshipSpec, SortKeySpec,
     SortKeyTimestampSpec, SortKeyWeightSpec, SourceMetadata, TableFormat, TableSpec,
@@ -263,9 +263,12 @@ pub fn infer_source_metadata(root: &RootSource, options: InferOptions) -> Result
             columns: table.columns.clone(),
             primary_key: None,
             create_time: None,
+            end_time: None,
             weight: None,
             edge_table: None,
             rowpack: None,
+            source: None,
+            fkeys: Vec::new(),
         })
         .collect();
 
@@ -2429,6 +2432,8 @@ pub(crate) fn infer_edge_tables(tables: &mut [TableSpec], rels: &[RelationshipSp
                 ref_table: dst_rel.dst_table.clone(),
                 ref_column: dst_rel.dst_column.clone(),
             },
+            forward: None,
+            reverse: None,
         });
     }
 }
