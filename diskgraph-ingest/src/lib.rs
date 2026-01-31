@@ -325,6 +325,7 @@ struct IngestContext {
     relationships: Vec<RelationshipRuntime>,
     edge_counts: HashMap<String, u64>,
     pk_duplicate_counts: HashMap<String, u64>,
+    pk_duplicate_drops: HashMap<String, u64>,
     pk_duplicate_samples: HashMap<String, Vec<String>>,
     key_parse_failures: u64,
     key_lookup_failures: u64,
@@ -1326,6 +1327,7 @@ impl IngestContext {
             relationships,
             edge_counts: HashMap::new(),
             pk_duplicate_counts: HashMap::new(),
+            pk_duplicate_drops: HashMap::new(),
             pk_duplicate_samples: HashMap::new(),
             key_parse_failures: 0,
             key_lookup_failures: 0,
@@ -3024,6 +3026,18 @@ impl IngestContext {
                         } else {
                             None
                         };
+                        let mut fkey_bitmaps: Vec<memmap2::MmapMut> = Vec::new();
+                        for rel in relationships.iter().filter(|r| r.src_table == table_name) {
+                            let path = root.join(temp_fkey_bitmap_path(&table_name, &rel.name_forward, shard));
+                            if path.exists() {
+                                let file = std::fs::OpenOptions::new()
+                                    .read(true)
+                                    .write(true)
+                                    .open(&path)?;
+                                fkey_bitmaps.push(unsafe { memmap2::MmapMut::map_mut(&file)? });
+                            }
+                        }
+
                         let mut duplicate_count = 0u64;
                         let mut duplicate_samples_local: Vec<Key> = Vec::new();
                         let mut row_id = 0u64;
@@ -3053,6 +3067,13 @@ impl IngestContext {
                                                     Entry::Occupied(_) => {
                                                         duplicate_count =
                                                             duplicate_count.saturating_add(1);
+                                                        for bitmap in fkey_bitmaps.iter_mut() {
+                                                            let byte_idx = (row_id / 8) as usize;
+                                                            if byte_idx < bitmap.len() {
+                                                                let bit = (row_id % 8) as u8;
+                                                                bitmap[byte_idx] &= !(1u8 << bit);
+                                                            }
+                                                        }
                                                         if duplicate_samples_local.len() < 10 {
                                                             duplicate_samples_local.push(Key::Int(v));
                                                         }
@@ -3148,6 +3169,13 @@ impl IngestContext {
                                                 Entry::Occupied(entry) => {
                                                     duplicate_count =
                                                         duplicate_count.saturating_add(1);
+                                                    for bitmap in fkey_bitmaps.iter_mut() {
+                                                        let byte_idx = (row_id / 8) as usize;
+                                                        if byte_idx < bitmap.len() {
+                                                            let bit = (row_id % 8) as u8;
+                                                            bitmap[byte_idx] &= !(1u8 << bit);
+                                                        }
+                                                    }
                                                     if duplicate_samples_local.len() < 10 {
                                                         let sample = entry.key().clone();
                                                         duplicate_samples_local.push(Key::Bytes(sample));
@@ -3237,6 +3265,13 @@ impl IngestContext {
                                                     Entry::Occupied(_) => {
                                                         duplicate_count =
                                                             duplicate_count.saturating_add(1);
+                                                        for bitmap in fkey_bitmaps.iter_mut() {
+                                                            let byte_idx = (row_id / 8) as usize;
+                                                            if byte_idx < bitmap.len() {
+                                                                let bit = (row_id % 8) as u8;
+                                                                bitmap[byte_idx] &= !(1u8 << bit);
+                                                            }
+                                                        }
                                                         if duplicate_samples_local.len() < 10 {
                                                             duplicate_samples_local
                                                                 .push(Key::Uuid(uuid));
@@ -3327,6 +3362,13 @@ impl IngestContext {
                                                     Entry::Occupied(_) => {
                                                         duplicate_count =
                                                             duplicate_count.saturating_add(1);
+                                                        for bitmap in fkey_bitmaps.iter_mut() {
+                                                            let byte_idx = (row_id / 8) as usize;
+                                                            if byte_idx < bitmap.len() {
+                                                                let bit = (row_id % 8) as u8;
+                                                                bitmap[byte_idx] &= !(1u8 << bit);
+                                                            }
+                                                        }
                                                         if duplicate_samples_local.len() < 10 {
                                                             duplicate_samples_local
                                                                 .push(Key::Uuid256(uuid));
@@ -3417,6 +3459,13 @@ impl IngestContext {
                                                     Entry::Occupied(_) => {
                                                         duplicate_count =
                                                             duplicate_count.saturating_add(1);
+                                                        for bitmap in fkey_bitmaps.iter_mut() {
+                                                            let byte_idx = (row_id / 8) as usize;
+                                                            if byte_idx < bitmap.len() {
+                                                                let bit = (row_id % 8) as u8;
+                                                                bitmap[byte_idx] &= !(1u8 << bit);
+                                                            }
+                                                        }
                                                         if duplicate_samples_local.len() < 10 {
                                                             duplicate_samples_local
                                                                 .push(Key::Ip(ip));
@@ -3855,6 +3904,7 @@ impl IngestContext {
                 relation: String,
                 key_failures: KeyFailureState,
                 edge_counts: HashMap<String, u64>,
+                pk_duplicate_drops: u64,
             }
             if let Some(total_mem) = total_memory_bytes() {
                 println!(
@@ -4014,6 +4064,7 @@ impl IngestContext {
                             let mut local_count = 0u64;
                             let mut forward_count = 0u64;
                             let mut reverse_count = 0u64;
+                            let mut pk_duplicate_drops = 0u64;
                             let fkey_path = root.join(temp_fkey_path(
                                 &rel.src_table,
                                 &rel.name_forward,
@@ -4060,6 +4111,7 @@ impl IngestContext {
                                     }
                                     let bit = (src_local % 8) as u8;
                                     if (fkey_bitmap[byte_idx] >> bit) & 1u8 == 0u8 {
+                                        pk_duplicate_drops = pk_duplicate_drops.saturating_add(1);
                                         return Ok(());
                                     }
                                     let mut data = row;
@@ -4151,6 +4203,7 @@ impl IngestContext {
                             result
                                 .edge_counts
                                 .insert(rel.name_reverse.clone(), reverse_count);
+                            result.pk_duplicate_drops = pk_duplicate_drops;
                             tx.send(Ok(result))
                                 .map_err(|e| anyhow!("edges_map output error: {e}"))?;
                             Ok(())
@@ -4440,6 +4493,13 @@ impl IngestContext {
                 for (rel, count) in result.edge_counts {
                     let entry = self.edge_counts.entry(rel).or_insert(0);
                     *entry = entry.saturating_add(count);
+                }
+                if result.pk_duplicate_drops > 0 {
+                    let entry = self
+                        .pk_duplicate_drops
+                        .entry(result.relation.clone())
+                        .or_insert(0);
+                    *entry = entry.saturating_add(result.pk_duplicate_drops);
                 }
                 let entry = done.entry(result.relation.clone()).or_insert(0u64);
                 *entry = entry.saturating_add(1);
@@ -4766,6 +4826,7 @@ impl IngestContext {
             key_failure_samples: self.key_failure_samples.clone(),
             key_failures_by_context: self.key_failures_by_context.clone(),
             pk_duplicate_counts: self.pk_duplicate_counts.clone(),
+            pk_duplicate_drops: self.pk_duplicate_drops.clone(),
             pk_duplicate_total,
             pk_duplicate_samples: self.pk_duplicate_samples.clone(),
             trimmed_strings: if trimmed_strings > 0 {

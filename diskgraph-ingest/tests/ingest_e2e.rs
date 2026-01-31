@@ -2078,3 +2078,85 @@ fn ingest_missing_dst_key_records_lookup() -> Result<()> {
 
     Ok(())
 }
+
+#[test]
+fn ingest_drops_edges_from_duplicate_source_pks_embedded_fkey() -> Result<()> {
+    let dir = tempdir()?;
+    let input_root = dir.path().join("in");
+    let output_root = dir.path().join("out");
+    fs::create_dir_all(&input_root)?;
+
+    write_csv(
+        &input_root.join("users.csv"),
+        &["id", "friend_id"],
+        &[
+            vec!["1".into(), "10".into()],
+            vec!["1".into(), "20".into()],
+            vec!["2".into(), "30".into()],
+        ],
+    )?;
+
+    write_csv(
+        &input_root.join("targets.csv"),
+        &["id"],
+        &[
+            vec!["10".into()],
+            vec!["20".into()],
+            vec!["30".into()],
+        ],
+    )?;
+
+    let source = serde_json::json!({
+        "dataset_name": "dup_test",
+        "tables": [
+            {
+                "name": "User",
+                "format": "csv",
+                "paths": [input_root.join("users.csv").to_string_lossy()],
+                "primary_key": "id",
+                "columns": [
+                    {"name": "id", "ingested_dtype": "int64"},
+                    {"name": "friend_id", "ingested_dtype": "int64"}
+                ],
+                "fkeys": [
+                    {
+                        "src_column": "friend_id",
+                        "dst_table": "Target",
+                    }
+                ]
+            },
+            {
+                "name": "Target",
+                "format": "csv",
+                "paths": [input_root.join("targets.csv").to_string_lossy()],
+                "primary_key": "id",
+                "columns": [
+                    {"name": "id", "ingested_dtype": "int64"}
+                ]
+            }
+        ]
+    });
+    let source_path = dir.path().join("config.json");
+    fs::write(&source_path, serde_json::to_vec_pretty(&source)?)?;
+
+    let dest = Dest::Local;
+    let (_, stats) = ingest_with_stats(
+        &source_path,
+        output_root.to_str().unwrap(),
+        dest,
+        IngestOptions::default(),
+    )?;
+
+    let dup_key = "User:shard-00000";
+    let user_dup_count = stats.pk_duplicate_counts.get(dup_key).copied().unwrap_or(0);
+    assert_eq!(user_dup_count, 1, "Should detect 1 duplicate User row");
+
+    let rel_name = "User_friend_id_to_Target_id";
+    let dropped = stats.pk_duplicate_drops.get(rel_name).copied().unwrap_or(0);
+    assert_eq!(dropped, 1, "Should drop 1 edge from duplicate User row");
+
+    let total_edges = stats.edge_counts.get(rel_name).copied().unwrap_or(0);
+    assert_eq!(total_edges, 2, "Should have 2 valid edges");
+    
+    Ok(())
+}

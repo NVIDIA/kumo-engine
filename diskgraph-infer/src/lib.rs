@@ -335,7 +335,8 @@ pub fn infer_source_metadata(root: &RootSource, options: InferOptions) -> Result
     }
 
     let mut relationships = Vec::new();
-    infer_primary_keys(&mut table_specs);
+    // Pass config to infer_primary_keys to respect explicit nulls
+    infer_primary_keys(&mut table_specs, options.graph_config.as_ref());
     infer_create_time(&mut table_specs);
 
     if let Some(config) = &options.graph_config {
@@ -1910,9 +1911,19 @@ fn fraction_to_nanos(value: u32, digits: usize) -> u32 {
     }
 }
 
-pub(crate) fn infer_primary_keys(tables: &mut [TableSpec]) {
+pub(crate) fn infer_primary_keys(tables: &mut [TableSpec], config: Option<&InputGraphConfig>) {
     let fallback_freq = tables.len().max(1) as i32;
     let mut freq = HashMap::new();
+
+    // Build map of tables where PK is explicitly disabled (null in config)
+    let disabled_pks: HashSet<String> = if let Some(cfg) = config {
+        cfg.tables.iter()
+            .filter(|t| t.pkey.is_none())
+            .map(|t| t.table_name.clone())
+            .collect()
+    } else {
+        HashSet::new()
+    };
     for table in tables.iter() {
         for col in &table.columns {
             if !is_pk_dtype(&col.ingested_dtype) {
@@ -1927,6 +1938,9 @@ pub(crate) fn infer_primary_keys(tables: &mut [TableSpec]) {
 
     for table in tables.iter_mut() {
         if table.primary_key.is_some() {
+            continue;
+        }
+        if disabled_pks.contains(&table.name) {
             continue;
         }
         if should_prefer_generic_id(table) {

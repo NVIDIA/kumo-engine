@@ -22,6 +22,7 @@ pub struct IngestStats {
     pub key_failure_samples: Vec<String>,
     pub key_failures_by_context: HashMap<String, KeyFailureCounts>,
     pub pk_duplicate_counts: HashMap<String, u64>,
+    pub pk_duplicate_drops: HashMap<String, u64>,
     pub pk_duplicate_total: u64,
     pub pk_duplicate_samples: HashMap<String, Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
