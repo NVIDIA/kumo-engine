@@ -112,5 +112,54 @@ awk '
 ' "$OUT_FILE"
 
 echo
+echo "Top frame summary (frames #0-2, best-effort):"
+awk '
+  /^Thread / { in_thread=1; next }
+  in_thread && /^#([0-2]) / {
+    frame="unknown"
+    line=$0
+    if (sub(/^.* in /, "", line)) {
+      split(line, parts, " ")
+      if (length(parts[1]) > 0) {
+        frame=parts[1]
+      }
+    }
+    count[frame]++
+  }
+  in_thread && /^#3 / { in_thread=0 }
+  END {
+    for (f in count) {
+      printf("  %-40s %d\n", f, count[f])
+    }
+  }
+' "$OUT_FILE" | sort -k2,2nr -k1,1
+
+echo
+echo "Likely blocked threads (frames #0-2, best-effort):"
+awk '
+  /^Thread / { in_thread=1; next }
+  in_thread && /^#([0-2]) / {
+    frame="unknown"
+    line=$0
+    if (sub(/^.* in /, "", line)) {
+      split(line, parts, " ")
+      if (length(parts[1]) > 0) {
+        frame=parts[1]
+      }
+    }
+    if (frame ~ /(futex|epoll_wait|poll|select|pthread_cond_wait|nanosleep|clock_nanosleep|read|write|open|stat|fsync|pread|pwrite|lseek|__lll_lock_wait|pthread_mutex_lock|sem_wait|accept|connect)/) {
+      print "  " frame
+      blocked[frame]++
+    }
+  }
+  in_thread && /^#3 / { in_thread=0 }
+  END {
+    if (length(blocked) == 0) {
+      print "  (no obvious blocking syscalls in frames #0-2)"
+    }
+  }
+' "$OUT_FILE"
+
+echo
 echo "If you need richer symbols in release, rebuild with:"
 echo "  RUSTFLAGS=\"-C debuginfo=1\" cargo build --release"

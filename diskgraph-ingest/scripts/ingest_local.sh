@@ -41,6 +41,10 @@ for arg in "$@"; do
 done
 set -- "${POSITIONAL[@]}"
 
+if [[ "${PROFILE_ENABLED}" == "true" && "${DEBUGINFO_ENABLED}" == "false" ]]; then
+  DEBUGINFO_ENABLED="true"
+fi
+
 SOURCE="${SOURCE:-${1:-}}"
 OUTPUT="${OUTPUT:-${2:-}}"
 
@@ -68,7 +72,7 @@ fi
 env_args=()
 if [[ "${DEBUGINFO_ENABLED}" == "true" ]]; then
   env_args+=(CARGO_PROFILE_RELEASE_DEBUG=1)
-  env_args+=(RUSTFLAGS="${RUSTFLAGS:-} -C debuginfo=1 -C force-frame-pointers=yes")
+  env_args+=(RUSTFLAGS="${RUSTFLAGS:-} -C debuginfo=1 -C force-frame-pointers=yes -C target-cpu=native")
 fi
 base_env=(PATH="${PATH}" HOME="${HOME}" USER="${USER}")
 
@@ -76,7 +80,7 @@ USE_CARGO_RUN="true"
 if [[ "${MEM_PROFILE_ENABLED}" == "true" ]]; then
   if [[ "${DEBUGINFO_ENABLED}" == "false" ]]; then
     env_args+=(CARGO_PROFILE_RELEASE_DEBUG=1)
-    env_args+=(RUSTFLAGS="${RUSTFLAGS:-} -C debuginfo=1 -C force-frame-pointers=yes")
+    env_args+=(RUSTFLAGS="${RUSTFLAGS:-} -C debuginfo=1 -C force-frame-pointers=yes -C target-cpu=native")
   fi
   env -i "${base_env[@]}" \
     MALLOC_CONF= _RJEM_MALLOC_CONF= _rjem_MALLOC_CONF= \
