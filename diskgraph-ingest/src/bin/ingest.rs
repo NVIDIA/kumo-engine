@@ -7,6 +7,9 @@ use diskgraph_ingest::{
     object_path_from_cloud_url, Dest, IngestOptions, GraphConfig,
 };
 use diskgraph_ingest::progress::{build_progress, format_bytes, format_duration};
+use diskgraph_ingest::stats_publish::{
+    default_run_id, fetch_perf_baseline, publish_stats, PublishConfig, PublishOutcome,
+};
 use std::fs;
 
 #[cfg(all(feature = "mem-profile", target_os = "linux"))]
@@ -37,6 +40,18 @@ struct Args {
     /// Max bytes of index-build edge sort memory allowed across workers.
     #[arg(long, value_name = "BYTES")]
     index_mem_budget_bytes: Option<u64>,
+    /// Stats destination root (s3://, gs://, az://, or local path).
+    #[arg(long, value_name = "URL")]
+    stats_dest: Option<String>,
+    /// Dataset name for stats publishing (defaults from source).
+    #[arg(long, value_name = "NAME")]
+    stats_dataset: Option<String>,
+    /// Run id for stats publishing (defaults to timestamp-host-pid).
+    #[arg(long, value_name = "ID")]
+    stats_run_id: Option<String>,
+    /// Fail the ingest if stats publishing fails.
+    #[arg(long, default_value_t = false)]
+    stats_required: bool,
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
@@ -110,6 +125,16 @@ fn main() -> Result<()> {
         ingest_with_stats(&source_path, &args.output, dest, options)?
     };
     drop(mem_watchdog);
+    let publish_outcome = match maybe_publish_stats(&args, &stats, &source_str, dest) {
+        Ok(outcome) => outcome,
+        Err(err) => {
+            if args.stats_required {
+                return Err(err);
+            }
+            tracing::warn!("stats publish failed: {err}");
+            None
+        }
+    };
     println!("Output: {}", stats.output);
     println!(
         "Node tables: {} ({} nodes)",
@@ -202,8 +227,42 @@ fn main() -> Result<()> {
     } else {
         0.0
     };
+    let baseline = publish_outcome
+        .as_ref()
+        .and_then(|outcome| {
+            fetch_perf_baseline(
+                &outcome.stats_root,
+                &outcome.summary.dataset,
+                outcome.summary.instance_type.as_deref(),
+                &outcome.summary.source_path,
+                &outcome.summary.run_id,
+                30,
+            )
+            .ok()
+            .flatten()
+        });
     println!("Performance:");
-    println!("  Wall time: {}", format_duration(stats.perf.wall_time_ms));
+    if let (Some(baseline), Some(outcome)) = (baseline.as_ref(), publish_outcome.as_ref()) {
+        let instance = outcome
+            .summary
+            .instance_type
+            .as_deref()
+            .unwrap_or("unknown");
+        let git = baseline
+            .git_sha
+            .as_ref()
+            .map(|s| s.chars().take(8).collect::<String>())
+            .unwrap_or_else(|| "nogit".to_string());
+        println!(
+            "  Baseline: min of last 30 runs for {} on {} (git {})",
+            outcome.summary.dataset, instance, git
+        );
+    }
+    println!(
+        "  Wall time: {}{}",
+        format_duration(stats.perf.wall_time_ms),
+        format_delta(stats.perf.wall_time_ms, baseline.as_ref().map(|b| b.wall_time_ms))
+    );
     println!(
         "  Bytes read: {}",
         format_bytes(stats.perf.bytes_read)
@@ -243,66 +302,160 @@ fn main() -> Result<()> {
     }
     println!("  Stage timings (wall):");
     println!(
-        "    context: {}",
-        format_duration(stats.perf.context_wall_ms)
+        "    context: {}{}",
+        format_duration(stats.perf.context_wall_ms),
+        format_delta(
+            stats.perf.context_wall_ms,
+            baseline.as_ref().map(|b| b.context_wall_ms)
+        )
     );
     println!(
-        "    encode: {}",
-        format_duration(stats.perf.encode_wall_ms)
+        "    encode: {}{}",
+        format_duration(stats.perf.encode_wall_ms),
+        format_delta(
+            stats.perf.encode_wall_ms,
+            baseline.as_ref().map(|b| b.encode_wall_ms)
+        )
     );
     println!(
-        "    pk_map: {}",
-        format_duration(stats.perf.pk_map_wall_ms)
+        "    pk_map: {}{}",
+        format_duration(stats.perf.pk_map_wall_ms),
+        format_delta(
+            stats.perf.pk_map_wall_ms,
+            baseline.as_ref().map(|b| b.pk_map_wall_ms)
+        )
     );
     println!(
-        "    edges_map: {}",
-        format_duration(stats.perf.edges_map_wall_ms)
+        "    edges_map: {}{}",
+        format_duration(stats.perf.edges_map_wall_ms),
+        format_delta(
+            stats.perf.edges_map_wall_ms,
+            baseline.as_ref().map(|b| b.edges_map_wall_ms)
+        )
     );
     println!(
-        "    index: {}",
-        format_duration(stats.perf.index_wall_ms)
+        "    index: {}{}",
+        format_duration(stats.perf.index_wall_ms),
+        format_delta(
+            stats.perf.index_wall_ms,
+            baseline.as_ref().map(|b| b.index_wall_ms)
+        )
     );
     println!(
-        "    finalize: {}",
-        format_duration(stats.perf.finalize_wall_ms)
+        "    finalize: {}{}",
+        format_duration(stats.perf.finalize_wall_ms),
+        format_delta(
+            stats.perf.finalize_wall_ms,
+            baseline.as_ref().map(|b| b.finalize_wall_ms)
+        )
     );
-    if let Some(profile_dir) = args.profile.as_ref() {
-        let mut profiles = Vec::new();
-        for name in ["context", "encode", "pk_map", "edges_map", "index"] {
-            let svg = profile_dir.join(format!("{name}-profile.svg"));
-            let pb = profile_dir.join(format!("{name}-profile.pb"));
-            if svg.exists() {
-                profiles.push(svg);
-            }
-            if pb.exists() {
-                profiles.push(pb);
-            }
-        }
-        if !profiles.is_empty() {
-            println!("Profiles:");
-            for path in &profiles {
-                println!("  {}", path.display());
-            }
-            let mut pb_paths = Vec::new();
-            for name in ["context", "encode", "pk_map", "edges_map", "index"] {
-                let pb = profile_dir.join(format!("{name}-profile.pb"));
-                if pb.exists() {
-                    pb_paths.push(pb);
-                }
-            }
-            if !pb_paths.is_empty() {
-                println!("Go pprof:");
-                for path in pb_paths {
-                    println!("  go tool pprof {}", path.display());
-                }
-            }
-        }
-    }
     println!(
         "Next: {}",
         explore_command_hint(&args.dest, &stats.output)
     );
     Ok(())
+}
+
+fn maybe_publish_stats(
+    args: &Args,
+    stats: &diskgraph_ingest::IngestStats,
+    source_str: &str,
+    dest: Dest,
+) -> Result<Option<PublishOutcome>> {
+    let dataset = args
+        .stats_dataset
+        .clone()
+        .or_else(|| std::env::var("DISKGRAPH_STATS_DATASET").ok())
+        .unwrap_or_else(|| dataset_from_source(&args.source, source_str));
+    let run_id = args.stats_run_id.clone()
+        .or_else(|| std::env::var("DISKGRAPH_STATS_RUN_ID").ok())
+        .unwrap_or_else(|| default_run_id(&run_id_user(), &run_id_git_prefix()));
+    let stats_dest = args.stats_dest.clone();
+    let config = PublishConfig {
+        source: source_str.to_string(),
+        output: args.output.clone(),
+        dataset,
+        run_id,
+        stats_dest,
+        stats_required: args.stats_required,
+        profile_dir: args.profile.clone().or_else(|| {
+            if args.mem_profile {
+                Some(PathBuf::from("."))
+            } else {
+                None
+            }
+        }),
+        dest,
+    };
+    let outcome = publish_stats(stats, config)?;
+    Ok(outcome)
+}
+
+fn run_id_user() -> String {
+    std::env::var("USER")
+        .or_else(|_| std::env::var("USERNAME"))
+        .unwrap_or_else(|_| "unknown".to_string())
+}
+
+fn run_id_git_prefix() -> String {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .output();
+    let sha = match output {
+        Ok(output) if output.status.success() => String::from_utf8_lossy(&output.stdout).trim().to_string(),
+        _ => "nogit".to_string(),
+    };
+    sha.chars().take(8).collect()
+}
+
+fn format_delta(current_ms: u64, baseline_ms: Option<u64>) -> String {
+    let Some(baseline_ms) = baseline_ms else {
+        return String::new();
+    };
+    if baseline_ms == 0 {
+        return String::new();
+    }
+    let delta_ms = current_ms.saturating_sub(baseline_ms);
+    let pct = (delta_ms as f64 / baseline_ms as f64) * 100.0;
+    let (color, reset) = if pct <= 5.0 {
+        ("\x1b[32m", "\x1b[0m")
+    } else if pct <= 15.0 {
+        ("\x1b[33m", "\x1b[0m")
+    } else {
+        ("\x1b[31m", "\x1b[0m")
+    };
+    format!(
+        "  {color}+{} (+{pct:.1}%){reset}",
+        format_duration(delta_ms),
+        reset = reset
+    )
+}
+
+fn dataset_from_source(source: &PathBuf, source_str: &str) -> String {
+    if is_cloud_url(source_str) {
+        let trimmed = source_str.trim_end_matches('/');
+        return trimmed
+            .rsplit('/')
+            .next()
+            .unwrap_or(trimmed)
+            .to_string();
+    }
+    if source.is_dir() {
+        return source.file_name().and_then(|n| n.to_str()).unwrap_or("dataset").to_string();
+    }
+    if source.ends_with("diskgraph_config.json") {
+        if let Some(parent) = source.parent() {
+            if let Some(name) = parent.file_name().and_then(|n| n.to_str()) {
+                return name.to_string();
+            }
+        }
+    }
+    source
+        .parent()
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str())
+        .unwrap_or("dataset")
+        .to_string()
 }
 
 #[cfg(feature = "mem-profile")]

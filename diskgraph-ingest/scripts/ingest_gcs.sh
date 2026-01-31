@@ -5,12 +5,11 @@ set -euo pipefail
 #
 # Quick usage:
 #   ./diskgraph-ingest/scripts/ingest_gcs.sh gs://bucket/prefix
-#   ./diskgraph-ingest/scripts/ingest_gcs.sh -p gs://bucket/prefix
 #   ./diskgraph-ingest/scripts/ingest_gcs.sh -d gs://bucket/prefix
 #   ./diskgraph-ingest/scripts/ingest_gcs.sh -m gs://bucket/prefix
 #
 # Flags:
-#   -p  Enable pprof profiling output.
+#   -P  Disable pprof profiling output (default: enabled).
 #   -d  Build with debuginfo + frame pointers for stack dumps.
 #   -m  Enable jemalloc heap dump watchdog.
 
@@ -19,15 +18,15 @@ if ! ulimit -n "${ULIMIT_NOFILE}" 2>/dev/null; then
   echo "warning: failed to raise ulimit -n to ${ULIMIT_NOFILE}; current limit may be too low" >&2
 fi
 
-PROFILE_ENABLED="false"
+PROFILE_ENABLED="true"
 DEBUGINFO_ENABLED="false"
 MEM_PROFILE_ENABLED="false"
 PARALLEL_ENABLED="${PARALLEL_ENABLED:-true}"
 POSITIONAL=()
 for arg in "$@"; do
   case "${arg}" in
-    -p)
-      PROFILE_ENABLED="true"
+    -P)
+      PROFILE_ENABLED="false"
       ;;
     -d)
       DEBUGINFO_ENABLED="true"
@@ -46,7 +45,7 @@ SOURCE="${SOURCE:-${1:-}}"
 OUTPUT="${OUTPUT:-${2:-}}"
 
 if [[ -z "${SOURCE}" ]]; then
-  echo "Usage: SOURCE=gs://bucket/prefix [OUTPUT=path] $0 [-p] [-d] [-m]" >&2
+  echo "Usage: SOURCE=gs://bucket/prefix [OUTPUT=path] $0 [-P] [-d] [-m]" >&2
   exit 1
 fi
 
@@ -107,3 +106,4 @@ if [[ "${PARALLEL_ENABLED}" == "true" ]]; then
   args+=(--parallel)
 fi
 env ${env_args[@]+"${env_args[@]}"} "${args[@]}"
+echo "Next: ./diskgraph-ingest/scripts/perf_explorer.sh \"${INPUT_NAME}\""

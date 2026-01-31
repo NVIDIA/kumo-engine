@@ -6,6 +6,7 @@ pub mod progress;
 pub mod config;
 pub mod errors;
 pub mod stats;
+pub mod stats_publish;
 pub mod scratch;
 pub mod consts;
 pub mod io;
@@ -8503,5 +8504,4 @@ fn format_decimal_from_bigint(value: &num_bigint::BigInt, scale: i32) -> String 
     out.push_str(&digits[split..]);
     out
 }
-
 

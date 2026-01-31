@@ -21,7 +21,7 @@ pub enum Dest {
     Adls,
 }
 
-fn parse_s3_url(raw: &str) -> Result<(String, String)> {
+pub fn parse_s3_url(raw: &str) -> Result<(String, String)> {
     let url = url::Url::parse(raw).map_err(|e| anyhow!("invalid s3 url {raw}: {e}"))?;
     let bucket = url
         .host_str()
@@ -31,7 +31,7 @@ fn parse_s3_url(raw: &str) -> Result<(String, String)> {
     Ok((bucket, key))
 }
 
-fn parse_gs_url(raw: &str) -> Result<(String, String)> {
+pub fn parse_gs_url(raw: &str) -> Result<(String, String)> {
     let url = url::Url::parse(raw).map_err(|e| anyhow!("invalid gs url {raw}: {e}"))?;
     let bucket = url
         .host_str()
@@ -41,7 +41,7 @@ fn parse_gs_url(raw: &str) -> Result<(String, String)> {
     Ok((bucket, key))
 }
 
-fn parse_az_url(raw: &str) -> Result<(String, String, String)> {
+pub fn parse_az_url(raw: &str) -> Result<(String, String, String)> {
     let url = url::Url::parse(raw).map_err(|e| anyhow!("invalid az url {raw}: {e}"))?;
     let account = url
         .host_str()
@@ -78,7 +78,7 @@ pub fn build_transfer_for_cloud_path(path: &str) -> Result<CloudTransfer> {
     Ok(CloudTransfer::new(store, CloudTransferConfig::from_env()))
 }
 
-fn build_store_for_cloud_path(path: &str) -> Result<Arc<dyn ObjectStore>> {
+pub fn build_store_for_cloud_path(path: &str) -> Result<Arc<dyn ObjectStore>> {
     if path.starts_with("s3://") {
         let (bucket, _key) = parse_s3_url(path)?;
         let s3 = build_s3_client(S3Config {

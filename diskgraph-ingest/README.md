@@ -241,6 +241,18 @@ Flags:
 Helper script:
 - `scripts/ingest_local.sh`
 
+## Profile tooling
+
+Profiles are emitted when `--profile` is enabled (default in the helper scripts) and uploaded to the stats bucket. Use the perf explorer to browse runs and inspect top hotspots per profile:
+
+```bash
+./diskgraph-ingest/scripts/perf_explorer.sh hnm
+```
+
+Inside the perf explorer, press `p` to download the `.pb` profiles for the selected run and show the top 10 entries via `go tool pprof -top -nodecount=10`.
+
+Stats root can be overridden with `DISKGRAPH_STATS_DEST` (e.g., `s3://kumo-unit-test/diskgraph-profiles`).
+
 ## Rowpack configuration
 
 Rowpack settings are optional and can appear at:

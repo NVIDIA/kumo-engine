@@ -1,0 +1,951 @@
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::sync::Arc;
+use std::time::Duration;
+
+use anyhow::{anyhow, Context, Result};
+use clap::Parser;
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
+use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
+use crossterm::ExecutableCommand;
+use ratatui::backend::CrosstermBackend;
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState, Wrap, List, ListItem, ListState};
+use ratatui::Terminal;
+use serde::Deserialize;
+use tokio::runtime::Runtime;
+use futures::{pin_mut, StreamExt};
+ 
+use object_store::{GetResult, ObjectStoreExt};
+
+use diskgraph_ingest::io::{build_store_for_cloud_path, parse_az_url, parse_gs_url, parse_s3_url};
+
+#[derive(Parser, Debug)]
+#[command(author, version, about = "Interactive ingest performance explorer.")]
+struct Args {
+    /// Stats destination root (s3://, gs://, az://).
+    #[arg(long, value_name = "URL")]
+    stats_dest: Option<String>,
+    /// Dataset name (required).
+    #[arg(long, value_name = "NAME")]
+    dataset: String,
+    /// Max runs to load per dataset.
+    #[arg(long, default_value_t = 200)]
+    max_runs: usize,
+    #[arg(long, default_value_t = 30)]
+    top_profiles: usize,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[allow(dead_code)]
+struct RunSummary {
+    run_id: String,
+    dataset: String,
+    source_path: String,
+    output_path: String,
+    finished_at: String,
+    user: String,
+    git_sha: Option<String>,
+    git_branch: Option<String>,
+    git_dirty: Option<bool>,
+    cloud: Option<String>,
+    instance_type: Option<String>,
+    cpu_logical: Option<u64>,
+    cpu_physical: Option<u64>,
+    memory_bytes_total: Option<u64>,
+    disk_bytes_total: Option<u64>,
+    disk_bytes_available: Option<u64>,
+    wall_time_ms: u64,
+    bytes_read: u64,
+    bytes_written: u64,
+    total_bytes: u64,
+    throughput_bytes_per_sec: u64,
+    stage_timings_ms: StageTimings,
+    normalized: NormalizedMetrics,
+    profiles_present: bool,
+    build_stats_present: bool,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct StageTimings {
+    context: u64,
+    encode: u64,
+    pk_map: u64,
+    edges_map: u64,
+    index: u64,
+    finalize: u64,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[allow(dead_code)]
+struct NormalizedMetrics {
+    throughput_bytes_per_sec_per_cpu: Option<f64>,
+    wall_time_ms_per_cpu: Option<f64>,
+}
+
+#[derive(Clone, Debug)]
+struct InstanceEntry {
+    name: String,
+    latest: Option<RunSummary>,
+}
+
+#[derive(Clone, Debug)]
+struct RegressionInfo;
+
+#[derive(Clone, Debug)]
+struct RunEntry {
+    summary: RunSummary,
+    regression: RegressionInfo,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Mode {
+    Normal,
+    Help,
+    ProfileView,
+}
+
+struct AppState {
+    instances: Vec<InstanceEntry>,
+    instance_state: ListState,
+    runs: Vec<RunEntry>,
+    run_state: TableState,
+    mode: Mode,
+    status: String,
+    baseline: Option<RunSummary>,
+    profile_tabs: Vec<ProfileTab>,
+    profile_tab_index: usize,
+}
+
+struct ProfileTab {
+    name: String,
+    lines: Vec<String>,
+}
+
+struct StatsStore {
+    store: Arc<dyn object_store::ObjectStore>,
+    prefix: String,
+    rt: Runtime,
+}
+
+fn main() -> Result<()> {
+    let args = Args::parse();
+    let stats_root = resolve_stats_root(&args)?;
+    let store = StatsStore::open(&stats_root)?;
+
+    let instances = store.list_instances(&args.dataset)?;
+    let mut app = AppState {
+        instances,
+        instance_state: ListState::default(),
+        runs: Vec::new(),
+        run_state: TableState::default(),
+        mode: Mode::Normal,
+        status: String::new(),
+        baseline: None,
+        profile_tabs: Vec::new(),
+        profile_tab_index: 0,
+    };
+    if !app.instances.is_empty() {
+        app.instance_state.select(Some(0));
+    }
+    load_runs_for_selected(&store, &mut app, &args)?;
+
+    enable_raw_mode()?;
+    let mut stdout = std::io::stdout();
+    stdout.execute(EnterAlternateScreen)?;
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend)?;
+
+    let mut running = true;
+    while running {
+        terminal.draw(|frame| draw(frame, &mut app, &args.dataset))?;
+
+        if event::poll(Duration::from_millis(200))? {
+            if let Event::Key(key) = event::read()? {
+                running = handle_key(key, &store, &args, &mut app)?;
+            }
+        }
+    }
+
+    disable_raw_mode()?;
+    terminal.backend_mut().execute(LeaveAlternateScreen)?;
+    terminal.show_cursor()?;
+    Ok(())
+}
+
+fn resolve_stats_root(args: &Args) -> Result<String> {
+    if let Some(dest) = args.stats_dest.as_ref() {
+        return Ok(dest.clone());
+    }
+    if let Ok(dest) = std::env::var("DISKGRAPH_STATS_DEST") {
+        if !dest.trim().is_empty() {
+            return Ok(dest);
+        }
+    }
+    if let Some(root) = stats_root_from_imds() {
+        return Ok(root);
+    }
+    if std::env::var("AWS_REGION").is_ok() || std::env::var("AWS_DEFAULT_REGION").is_ok() {
+        return Ok("s3://kumo-unit-test/diskgraph-profiles".to_string());
+    }
+    if std::env::var("GOOGLE_CLOUD_PROJECT").is_ok()
+        || std::env::var("GOOGLE_APPLICATION_CREDENTIALS").is_ok()
+    {
+        return Ok("gs://kumo-unit-test/diskgraph-profiles".to_string());
+    }
+    if std::env::var("AZURE_TENANT_ID").is_ok() || std::env::var("AZURE_STORAGE_ACCOUNT").is_ok()
+    {
+        let account = std::env::var("AZURE_STORAGE_ACCOUNT")
+            .or_else(|_| std::env::var("AZURE_ACCOUNT"))
+            .unwrap_or_else(|_| "account".to_string());
+        let container = std::env::var("AZURE_STORAGE_CONTAINER")
+            .or_else(|_| std::env::var("AZURE_CONTAINER"))
+            .unwrap_or_else(|_| "container".to_string());
+        return Ok(format!("az://{account}/{container}/diskgraph-profiles"));
+    }
+    Err(anyhow!("stats root not specified; set DISKGRAPH_STATS_DEST"))
+}
+
+fn stats_root_from_imds() -> Option<String> {
+    if fetch_aws_instance_type().is_some() {
+        return Some("s3://kumo-unit-test/diskgraph-profiles".to_string());
+    }
+    if fetch_gcp_instance_type().is_some() {
+        return Some("gs://kumo-unit-test/diskgraph-profiles".to_string());
+    }
+    if fetch_azure_instance_type().is_some() {
+        let account = std::env::var("AZURE_STORAGE_ACCOUNT")
+            .or_else(|_| std::env::var("AZURE_ACCOUNT"))
+            .unwrap_or_else(|_| "account".to_string());
+        let container = std::env::var("AZURE_STORAGE_CONTAINER")
+            .or_else(|_| std::env::var("AZURE_CONTAINER"))
+            .unwrap_or_else(|_| "container".to_string());
+        return Some(format!("az://{account}/{container}/diskgraph-profiles"));
+    }
+    None
+}
+
+fn fetch_aws_instance_type() -> Option<String> {
+    let token = ureq::put("http://169.254.169.254/latest/api/token")
+        .timeout(Duration::from_millis(800))
+        .set("X-aws-ec2-metadata-token-ttl-seconds", "300")
+        .call()
+        .ok()?
+        .into_string()
+        .ok()?;
+    let resp = ureq::get("http://169.254.169.254/latest/meta-data/instance-type")
+        .timeout(Duration::from_millis(800))
+        .set("X-aws-ec2-metadata-token", &token)
+        .call()
+        .ok()?;
+    resp.into_string().ok().map(|s| s.trim().to_string())
+}
+
+fn fetch_gcp_instance_type() -> Option<String> {
+    let resp = ureq::get("http://metadata.google.internal/computeMetadata/v1/instance/machine-type")
+        .timeout(Duration::from_millis(800))
+        .set("Metadata-Flavor", "Google")
+        .call()
+        .ok()?;
+    let raw = resp.into_string().ok()?;
+    Some(
+        raw.trim()
+            .rsplit('/')
+            .next()
+            .unwrap_or(raw.trim())
+            .to_string(),
+    )
+}
+
+fn fetch_azure_instance_type() -> Option<String> {
+    let resp = ureq::get("http://169.254.169.254/metadata/instance/compute/vmSize?api-version=2021-02-01")
+        .timeout(Duration::from_millis(800))
+        .set("Metadata", "true")
+        .call()
+        .ok()?;
+    resp.into_string().ok().map(|s| s.trim().to_string())
+}
+
+impl StatsStore {
+    fn open(root: &str) -> Result<Self> {
+        if !(root.starts_with("s3://") || root.starts_with("gs://") || root.starts_with("az://")) {
+            return Err(anyhow!("stats root must be s3://, gs://, or az://"));
+        }
+        let store = build_store_for_cloud_path(root)?;
+        let prefix = cloud_prefix(root)?;
+        Ok(StatsStore {
+            store,
+            prefix,
+            rt: Runtime::new()?,
+        })
+    }
+
+    fn list_instances(&self, dataset: &str) -> Result<Vec<InstanceEntry>> {
+        let prefix = object_path(&join_prefix(&self.prefix, dataset));
+        let result = self
+            .rt
+            .block_on(self.store.list_with_delimiter(Some(&prefix)))
+            .context("list instances")?;
+        let mut instances = Vec::new();
+        for common in result.common_prefixes {
+            if let Some(name) = common.filename() {
+                let name = name.to_string();
+                instances.push(InstanceEntry { name, latest: None });
+            }
+        }
+        instances.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(instances)
+    }
+
+    fn list_runs_for_instance(
+        &self,
+        dataset: &str,
+        instance_dir: &str,
+        max_runs: usize,
+    ) -> Result<Vec<RunSummary>> {
+        let runs_prefix = join_prefix(&self.prefix, &format!("{dataset}/{instance_dir}"));
+        let run_prefix = object_path(&runs_prefix);
+        let run_result = self
+            .rt
+            .block_on(self.store.list_with_delimiter(Some(&run_prefix)))
+            .context("list runs")?;
+        let mut runs = Vec::new();
+        for run_path in run_result.common_prefixes {
+            let run_id = match run_path.filename() {
+                Some(name) => name.to_string(),
+                None => continue,
+            };
+            if let Ok(summary) = self.fetch_run_summary(dataset, instance_dir, &run_id) {
+                runs.push(summary);
+            }
+        }
+        runs.sort_by(|a, b| b.finished_at.cmp(&a.finished_at));
+        if runs.len() > max_runs {
+            runs.truncate(max_runs);
+        }
+        Ok(runs)
+    }
+
+    fn fetch_run_summary(&self, dataset: &str, instance_dir: &str, run_id: &str) -> Result<RunSummary> {
+        let path = join_prefix(
+            &self.prefix,
+            &format!("{dataset}/{instance_dir}/{run_id}/run_summary.json"),
+        );
+        let obj = object_path(&path);
+        let bytes = self.rt.block_on(async {
+            let get: GetResult = self.store.get(&obj).await?;
+            let data = get.bytes().await?;
+            Ok::<_, object_store::Error>(data.to_vec())
+        })?;
+        Ok(serde_json::from_slice(&bytes)?)
+    }
+
+    fn list_profiles(
+        &self,
+        dataset: &str,
+        run_id: &str,
+        instance_type: Option<&str>,
+        source_path: &str,
+    ) -> Result<Vec<String>> {
+        let instance_dir = instance_dir_name(instance_type, source_path);
+        let profiles_prefix = join_prefix(
+            &self.prefix,
+            &format!("{dataset}/{instance_dir}/{run_id}/profiles"),
+        );
+        let prefix = object_path(&profiles_prefix);
+        let mut names = Vec::new();
+        let stream = self.store.list(Some(&prefix));
+        let results = self.rt.block_on(async {
+            pin_mut!(stream);
+            let mut collected = Vec::new();
+            while let Some(item) = stream.next().await {
+                collected.push(item?);
+            }
+            Ok::<_, object_store::Error>(collected)
+        })?;
+        for meta in results {
+            if let Some(name) = meta.location.filename() {
+                names.push(name.to_string());
+            }
+        }
+        names.sort();
+        Ok(names)
+    }
+
+    fn download_profile(
+        &self,
+        dataset: &str,
+        run_id: &str,
+        instance_type: Option<&str>,
+        source_path: &str,
+        name: &str,
+        dest: &Path,
+    ) -> Result<()> {
+        let instance_dir = instance_dir_name(instance_type, source_path);
+        let path = join_prefix(
+            &self.prefix,
+            &format!("{dataset}/{instance_dir}/{run_id}/profiles/{name}"),
+        );
+        let obj = object_path(&path);
+        let bytes = self.rt.block_on(async {
+            let get: GetResult = self.store.get(&obj).await?;
+            let data = get.bytes().await?;
+            Ok::<_, object_store::Error>(data.to_vec())
+        })?;
+        std::fs::create_dir_all(dest.parent().unwrap_or(dest))?;
+        std::fs::write(dest, bytes)?;
+        Ok(())
+    }
+}
+
+fn handle_key(key: KeyEvent, store: &StatsStore, args: &Args, app: &mut AppState) -> Result<bool> {
+    if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        return Ok(false);
+    }
+    match app.mode {
+        Mode::Normal => handle_key_normal(key, store, args, app),
+        Mode::Help => {
+            app.mode = Mode::Normal;
+            Ok(true)
+        }
+        Mode::ProfileView => {
+            match key.code {
+                KeyCode::Left | KeyCode::Char('h') => {
+                    if app.profile_tab_index > 0 {
+                        app.profile_tab_index -= 1;
+                    }
+                }
+                KeyCode::Right | KeyCode::Char('l') => {
+                    if app.profile_tab_index + 1 < app.profile_tabs.len() {
+                        app.profile_tab_index += 1;
+                    }
+                }
+                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Enter => {
+                    app.mode = Mode::Normal;
+                }
+                _ => {}
+            }
+            Ok(true)
+        }
+    }
+}
+
+fn handle_key_normal(key: KeyEvent, store: &StatsStore, args: &Args, app: &mut AppState) -> Result<bool> {
+    match key.code {
+        KeyCode::Char('q') => return Ok(false),
+        KeyCode::Char('p') => {
+            show_profile_top(store, app, args.top_profiles)?;
+            return Ok(true);
+        }
+        KeyCode::Char('j') | KeyCode::Down => {
+            if let Some(sel) = app.run_state.selected() {
+                let next = (sel + 1).min(app.runs.len().saturating_sub(1));
+                app.run_state.select(Some(next));
+            }
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            if let Some(sel) = app.run_state.selected() {
+                let next = sel.saturating_sub(1);
+                app.run_state.select(Some(next));
+            }
+        }
+        KeyCode::Char('h') | KeyCode::Left => {
+            move_instance_selection(-1, store, app, args)?;
+        }
+        KeyCode::Char('l') | KeyCode::Right => {
+            move_instance_selection(1, store, app, args)?;
+        }
+        KeyCode::Char('?') => {
+            app.mode = Mode::Help;
+        }
+        _ => {}
+    }
+    Ok(true)
+}
+
+fn move_instance_selection(delta: isize, store: &StatsStore, app: &mut AppState, args: &Args) -> Result<()> {
+    if app.instances.is_empty() {
+        return Ok(());
+    }
+    let current = app.instance_state.selected().unwrap_or(0) as isize;
+    let next = (current + delta).clamp(0, (app.instances.len() - 1) as isize) as usize;
+    app.instance_state.select(Some(next));
+    load_runs_for_selected(store, app, args)?;
+    Ok(())
+}
+
+fn load_runs_for_selected(store: &StatsStore, app: &mut AppState, args: &Args) -> Result<()> {
+    let instance = match app.instance_state.selected() {
+        Some(idx) => app.instances.get(idx).map(|d| d.name.clone()),
+        None => None,
+    };
+    let Some(instance) = instance else {
+        return Ok(());
+    };
+    let runs = store.list_runs_for_instance(&args.dataset, &instance, args.max_runs)?;
+    app.runs = runs
+        .into_iter()
+        .map(|summary| RunEntry {
+            summary,
+            regression: RegressionInfo,
+        })
+        .collect();
+    app.run_state.select(if app.runs.is_empty() { None } else { Some(0) });
+    if let Some(idx) = app.instance_state.selected() {
+        if let Some(entry) = app.instances.get_mut(idx) {
+            entry.latest = app.runs.first().map(|r| r.summary.clone());
+        }
+    }
+    app.baseline = fastest_run(&app.runs).map(|r| r.summary.clone());
+    recalc_regressions(app);
+    Ok(())
+}
+
+fn recalc_regressions(app: &mut AppState) {
+    let Some(baseline) = app.baseline.clone() else {
+        return;
+    };
+    for entry in &mut app.runs {
+        entry.regression = compare_run(&entry.summary, &baseline);
+    }
+}
+
+fn compare_run(_current: &RunSummary, _baseline: &RunSummary) -> RegressionInfo {
+    RegressionInfo
+}
+
+fn show_profile_top(store: &StatsStore, app: &mut AppState, top_profiles: usize) -> Result<()> {
+    let run = selected_run(app)?;
+    let profiles = store.list_profiles(
+        &run.dataset,
+        &run.run_id,
+        run.instance_type.as_deref(),
+        &run.source_path,
+    )?;
+    let pb_profiles: Vec<String> = profiles
+        .into_iter()
+        .filter(|name| name.ends_with(".pb"))
+        .take(top_profiles)
+        .collect();
+    if pb_profiles.is_empty() {
+        app.status = "no .pb profiles found".to_string();
+        return Ok(());
+    }
+    let mut tabs = Vec::new();
+    for name in pb_profiles {
+        let cache_dir = profile_cache_dir(&run.dataset, &run.run_id)?;
+        let path = cache_dir.join(&name);
+        store.download_profile(
+            &run.dataset,
+            &run.run_id,
+            run.instance_type.as_deref(),
+            &run.source_path,
+            &name,
+            &path,
+        )?;
+        let mut lines = Vec::new();
+        lines.push(format!("== {} ==", name));
+        let output = Command::new("go")
+            .args([
+                "tool",
+                "pprof",
+                "-top",
+                "-nodecount=10",
+                path.to_string_lossy().as_ref(),
+            ])
+            .output();
+        match output {
+            Ok(output) if output.status.success() => {
+                let text = String::from_utf8_lossy(&output.stdout);
+                for line in text.lines() {
+                    lines.push(line.to_string());
+                }
+            }
+            _ => {
+                lines.push(format!("pprof failed for {}", name));
+            }
+        }
+        tabs.push(ProfileTab { name, lines });
+    }
+    app.profile_tabs = tabs;
+    app.profile_tab_index = 0;
+    app.mode = Mode::ProfileView;
+    Ok(())
+}
+
+fn selected_run(app: &AppState) -> Result<&RunSummary> {
+    let idx = app.run_state.selected().ok_or_else(|| anyhow!("no run selected"))?;
+    let run = app.runs.get(idx).ok_or_else(|| anyhow!("no run selected"))?;
+    Ok(&run.summary)
+}
+
+
+fn profile_cache_dir(dataset: &str, run_id: &str) -> Result<PathBuf> {
+    let base = dirs::cache_dir().ok_or_else(|| anyhow!("cache dir not available"))?;
+    Ok(base.join("diskgraph-profiles").join(dataset).join(run_id).join("profiles"))
+}
+
+fn draw(frame: &mut ratatui::Frame, app: &mut AppState, dataset: &str) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(0), Constraint::Length(1)].as_ref())
+        .split(frame.size());
+    let body = chunks[1];
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(20), Constraint::Percentage(45), Constraint::Percentage(35)])
+        .split(body);
+
+    draw_header(frame, chunks[0], app, dataset);
+    draw_instances(frame, columns[0], app);
+    draw_runs(frame, columns[1], app);
+    draw_details(frame, columns[2], app);
+    draw_footer(frame, chunks[2], app);
+
+    if app.mode == Mode::Help {
+        draw_help(frame);
+    }
+    if app.mode == Mode::ProfileView {
+        draw_profile_view(frame, app);
+    }
+}
+
+fn draw_header(frame: &mut ratatui::Frame, area: Rect, app: &AppState, dataset: &str) {
+    let text = Line::from(vec![
+        Span::styled(
+            format!("Diskgraph Ingest Perf Explorer — {}", dataset),
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("   "),
+        Span::styled(app.status.clone(), Style::default().fg(Color::Yellow)),
+    ]);
+    let widget = Paragraph::new(text).wrap(Wrap { trim: true });
+    frame.render_widget(widget, area);
+}
+
+fn draw_footer(frame: &mut ratatui::Frame, area: Rect, app: &AppState) {
+    let hint = match app.mode {
+        Mode::Normal => "j/k: run  h/l: instance  p: top profiles  ?: help  q: quit",
+        Mode::Help => "press any key to return",
+        Mode::ProfileView => "h/l: tabs  esc/q: back",
+    };
+    let widget = Paragraph::new(Line::from(vec![
+        Span::styled(hint, Style::default().fg(Color::Gray)),
+    ]));
+    frame.render_widget(widget, area);
+}
+
+fn draw_instances(frame: &mut ratatui::Frame, area: Rect, app: &mut AppState) {
+    let items: Vec<ListItem> = app
+        .instances
+        .iter()
+        .map(|d| {
+            let label = if let Some(latest) = d.latest.as_ref() {
+                format!("{}  {}", d.name, format_bytes(latest.throughput_bytes_per_sec))
+            } else {
+                d.name.clone()
+            };
+            ListItem::new(label)
+        })
+        .collect();
+    let list = List::new(items)
+        .block(Block::default().borders(Borders::ALL).title("Instances"))
+        .highlight_style(Style::default().bg(Color::Blue).fg(Color::White));
+    frame.render_stateful_widget(list, area, &mut app.instance_state);
+}
+
+fn draw_runs(frame: &mut ratatui::Frame, area: Rect, app: &mut AppState) {
+    let header_style = Style::default().fg(Color::White).add_modifier(Modifier::BOLD);
+    let rows = app.runs.iter().map(|entry| {
+        let run = &entry.summary;
+        let (wall_text, wall_style) = colorize_cell(
+            format_duration_cell(run.wall_time_ms),
+            run.wall_time_ms,
+            app.baseline.as_ref().map(|b| b.wall_time_ms),
+        );
+        let (context_text, context_style) = colorize_cell(
+            format_duration_cell(run.stage_timings_ms.context),
+            run.stage_timings_ms.context,
+            app.baseline.as_ref().map(|b| b.stage_timings_ms.context),
+        );
+        let (encode_text, encode_style) = colorize_cell(
+            format_duration_cell(run.stage_timings_ms.encode),
+            run.stage_timings_ms.encode,
+            app.baseline.as_ref().map(|b| b.stage_timings_ms.encode),
+        );
+        let (pk_map_text, pk_map_style) = colorize_cell(
+            format_duration_cell(run.stage_timings_ms.pk_map),
+            run.stage_timings_ms.pk_map,
+            app.baseline.as_ref().map(|b| b.stage_timings_ms.pk_map),
+        );
+        let (edges_map_text, edges_map_style) = colorize_cell(
+            format_duration_cell(run.stage_timings_ms.edges_map),
+            run.stage_timings_ms.edges_map,
+            app.baseline.as_ref().map(|b| b.stage_timings_ms.edges_map),
+        );
+        let (index_text, index_style) = colorize_cell(
+            format_duration_cell(run.stage_timings_ms.index),
+            run.stage_timings_ms.index,
+            app.baseline.as_ref().map(|b| b.stage_timings_ms.index),
+        );
+        let (finalize_text, finalize_style) = colorize_cell(
+            format_duration_cell(run.stage_timings_ms.finalize),
+            run.stage_timings_ms.finalize,
+            app.baseline.as_ref().map(|b| b.stage_timings_ms.finalize),
+        );
+        Row::new(vec![
+            Cell::from(shorten(&date_only(&run.finished_at), 10)),
+            Cell::from(run.git_sha.clone().unwrap_or_else(|| "-".to_string()).chars().take(8).collect::<String>()),
+            Cell::from(wall_text).style(wall_style),
+            Cell::from(context_text).style(context_style),
+            Cell::from(encode_text).style(encode_style),
+            Cell::from(pk_map_text).style(pk_map_style),
+            Cell::from(edges_map_text).style(edges_map_style),
+            Cell::from(index_text).style(index_style),
+            Cell::from(finalize_text).style(finalize_style),
+        ])
+    });
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Length(12),
+            Constraint::Length(8),
+            Constraint::Length(7),
+            Constraint::Length(7),
+            Constraint::Length(7),
+            Constraint::Length(7),
+            Constraint::Length(7),
+            Constraint::Length(7),
+            Constraint::Length(7),
+        ],
+    )
+    .header(
+        Row::new(vec![
+            "date",
+            "git",
+            "wall",
+            "context",
+            "encode",
+            "pk_map",
+            "edges_map",
+            "index",
+            "finalize",
+        ])
+        .style(header_style),
+    )
+    .block(Block::default().borders(Borders::ALL).title("Runs"))
+    .highlight_style(Style::default().bg(Color::DarkGray));
+    frame.render_stateful_widget(table, area, &mut app.run_state);
+}
+
+fn draw_details(frame: &mut ratatui::Frame, area: Rect, app: &mut AppState) {
+    let run = app.run_state.selected().and_then(|idx| app.runs.get(idx));
+    let lines = if let Some(run) = run {
+        let r = &run.summary;
+        vec![
+            Line::from(vec![Span::styled("Details", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))]),
+            Line::from(format!("dataset: {}", r.dataset)),
+            Line::from(format!("run: {}", r.run_id)),
+            Line::from(format!("user: {}", r.user)),
+            Line::from(format!("git: {} {}", r.git_branch.clone().unwrap_or_default(), r.git_sha.clone().unwrap_or_default())),
+            Line::from(format!("instance: {}", r.instance_type.clone().unwrap_or_else(|| "n/a".to_string()))),
+            Line::from(format!(
+                "cpu: {} logical, {} physical",
+                r.cpu_logical.map(|v| v.to_string()).unwrap_or_else(|| "-".to_string()),
+                r.cpu_physical.map(|v| v.to_string()).unwrap_or_else(|| "-".to_string())
+            )),
+            Line::from(format!("mem: {}", format_bytes_opt(r.memory_bytes_total))),
+            Line::from(format!("disk: {}", format_bytes_opt(r.disk_bytes_total))),
+            Line::from(format!("throughput: {}/s", format_bytes(r.throughput_bytes_per_sec))),
+            Line::from(format!("wall: {} ms", r.wall_time_ms)),
+            Line::from("stages (ms):"),
+            Line::from(format!(
+                "  context {}  encode {}  pk_map {}",
+                r.stage_timings_ms.context, r.stage_timings_ms.encode, r.stage_timings_ms.pk_map
+            )),
+            Line::from(format!(
+                "  edges_map {}  index {}  finalize {}",
+                r.stage_timings_ms.edges_map, r.stage_timings_ms.index, r.stage_timings_ms.finalize
+            )),
+            Line::from(format!("profiles: {}", if r.profiles_present { "yes" } else { "no" })),
+        ]
+    } else {
+        vec![Line::from("No run selected")]
+    };
+    let widget = Paragraph::new(lines)
+        .block(Block::default().borders(Borders::ALL).title("Details"))
+        .wrap(Wrap { trim: false });
+    frame.render_widget(widget, area);
+}
+
+fn draw_help(frame: &mut ratatui::Frame) {
+    let area = centered_rect(70, 60, frame.size());
+    let text = vec![
+        Line::from("Hotkeys:"),
+        Line::from("  j/k: move runs"),
+        Line::from("  h/l: switch instance"),
+        Line::from("  p: top10 profiles"),
+        Line::from("  ?: help"),
+        Line::from("  q: quit"),
+        Line::from("  profile view: h/l tabs, esc to exit"),
+    ];
+    let widget = Paragraph::new(text)
+        .block(Block::default().borders(Borders::ALL).title("Help"))
+        .wrap(Wrap { trim: true });
+    frame.render_widget(widget, area);
+}
+
+fn draw_profile_view(frame: &mut ratatui::Frame, app: &AppState) {
+    let area = centered_rect(90, 80, frame.size());
+    frame.render_widget(Clear, area);
+    let mut header = Vec::new();
+    for (idx, tab) in app.profile_tabs.iter().enumerate() {
+        let style = if idx == app.profile_tab_index {
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::Gray)
+        };
+        header.push(Span::styled(format!(" {} ", tab.name), style));
+    }
+    let mut text: Vec<Line> = Vec::new();
+    if !header.is_empty() {
+        text.push(Line::from(header));
+        text.push(Line::from(""));
+    }
+    if let Some(tab) = app.profile_tabs.get(app.profile_tab_index) {
+        text.extend(tab.lines.iter().map(|l| Line::from(l.as_str())));
+    }
+    let widget = Paragraph::new(text)
+        .block(Block::default().borders(Borders::ALL).title("Profile Top 10"))
+        .wrap(Wrap { trim: false });
+    frame.render_widget(widget, area);
+}
+
+fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
+    let popup_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(
+            [
+                Constraint::Percentage((100 - percent_y) / 2),
+                Constraint::Percentage(percent_y),
+                Constraint::Percentage((100 - percent_y) / 2),
+            ]
+            .as_ref(),
+        )
+        .split(r);
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints(
+            [
+                Constraint::Percentage((100 - percent_x) / 2),
+                Constraint::Percentage(percent_x),
+                Constraint::Percentage((100 - percent_x) / 2),
+            ]
+            .as_ref(),
+        )
+        .split(popup_layout[1])[1]
+}
+
+fn colorize_cell(text: String, current_ms: u64, baseline_ms: Option<u64>) -> (String, Style) {
+    let Some(baseline_ms) = baseline_ms else {
+        return (text, Style::default().fg(Color::Gray));
+    };
+    if baseline_ms == 0 {
+        return (text, Style::default().fg(Color::Gray));
+    }
+    let pct = ((current_ms as f64 - baseline_ms as f64) / baseline_ms as f64) * 100.0;
+    let color = if pct <= 5.0 {
+        Color::Green
+    } else if pct <= 20.0 {
+        Color::Yellow
+    } else {
+        Color::Red
+    };
+    (text, Style::default().fg(color).add_modifier(Modifier::BOLD))
+}
+
+fn format_bytes(bytes: u64) -> String {
+    let units = ["B", "KB", "MB", "GB", "TB"];
+    let mut value = bytes as f64;
+    let mut idx = 0;
+    while value >= 1024.0 && idx < units.len() - 1 {
+        value /= 1024.0;
+        idx += 1;
+    }
+    format!("{value:.1}{}", units[idx])
+}
+
+fn format_bytes_opt(bytes: Option<u64>) -> String {
+    bytes.map(format_bytes).unwrap_or_else(|| "-".to_string())
+}
+
+fn format_duration_cell(ms: u64) -> String {
+    let secs = ms as f64 / 1000.0;
+    format!("{secs:.1}s")
+}
+
+fn date_only(ts: &str) -> String {
+    ts.split('T').next().unwrap_or(ts).to_string()
+}
+
+fn fastest_run(runs: &[RunEntry]) -> Option<&RunEntry> {
+    runs.iter().min_by_key(|r| r.summary.wall_time_ms)
+}
+fn shorten(text: &str, max: usize) -> String {
+    if text.len() <= max {
+        text.to_string()
+    } else {
+        format!("{}…", &text[..max.saturating_sub(1)])
+    }
+}
+
+fn cloud_prefix(path: &str) -> Result<String> {
+    if path.starts_with("s3://") {
+        let (_bucket, prefix) = parse_s3_url(path)?;
+        Ok(prefix)
+    } else if path.starts_with("gs://") {
+        let (_bucket, prefix) = parse_gs_url(path)?;
+        Ok(prefix)
+    } else if path.starts_with("az://") {
+        let (_account, _container, prefix) = parse_az_url(path)?;
+        Ok(prefix)
+    } else {
+        Err(anyhow!("unsupported cloud path {path}"))
+    }
+}
+
+fn join_prefix(prefix: &str, suffix: &str) -> String {
+    if prefix.is_empty() {
+        suffix.trim_start_matches('/').to_string()
+    } else {
+        format!("{}/{}", prefix.trim_end_matches('/'), suffix.trim_start_matches('/'))
+    }
+}
+
+fn object_path(prefix: &str) -> object_store::path::Path {
+    object_store::path::Path::from(prefix)
+}
+
+fn instance_dir_name(instance_type: Option<&str>, source_path: &str) -> String {
+    let raw = instance_type.unwrap_or("unknown");
+    let suffix = if source_path.starts_with("s3://")
+        || source_path.starts_with("gs://")
+        || source_path.starts_with("az://")
+    {
+        "remote"
+    } else {
+        "local"
+    };
+    let mut name: String = raw
+        .chars()
+        .map(|ch| match ch {
+            '/' | '\\' | ' ' | ':' => '_',
+            _ => ch,
+        })
+        .collect();
+    name.push('-');
+    name.push_str(suffix);
+    name
+}

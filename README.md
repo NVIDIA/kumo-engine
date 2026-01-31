@@ -50,6 +50,12 @@ By default the output goes to `/mnt/localssd/diskgraph-index/hnm`.
 ./diskgraph-index/scripts/explore_local.sh /mnt/localssd/diskgraph-index/hnm
 ```
 
+Optional: open the ingest performance explorer (stats bucket):
+
+```bash
+./diskgraph-ingest/scripts/perf_explorer.sh hnm
+```
+
 ### 6) Run predictive queries (train table TUI)
 
 ```bash
