@@ -27,6 +27,8 @@ pub struct IngestStats {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trimmed_strings: Option<u64>,
     pub perf: PerfStats,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub num_shards: Option<usize>,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -59,4 +61,18 @@ pub struct PerfStats {
     pub temp_edges_map_bytes: u64,
     pub temp_node_data_bytes: u64,
     pub temp_bytes_total: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peak_rss_anon_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peak_context_rss_anon_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peak_encode_rss_anon_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peak_pk_map_rss_anon_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peak_edges_map_rss_anon_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peak_index_rss_anon_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peak_finalize_rss_anon_bytes: Option<u64>,
 }

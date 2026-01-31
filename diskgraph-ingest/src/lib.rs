@@ -14,6 +14,7 @@ pub mod io;
 mod tests_unit;
 
 pub use crate::config::IngestOptions;
+use crate::config::PeakMemStats;
 pub use crate::io::Dest;
 use crate::consts::*;
 pub use crate::errors::{KeyParseError, KeyParseResult};
@@ -149,6 +150,7 @@ pub fn ingest_with_stats_from_source(
     if let Some(profile_dir) = &profile_dir {
         fs::create_dir_all(profile_dir)?;
     }
+    ctx.set_peak_stage(Some(0));
     let context_start = std::time::Instant::now();
     if let Some(profile_dir) = &profile_dir {
         profile_phase(profile_dir, "context", || ctx.build_node_contexts())?;
@@ -160,6 +162,7 @@ pub fn ingest_with_stats_from_source(
         "context stage complete elapsed={}",
         format_duration(context_wall.as_millis() as u64)
     );
+    ctx.set_peak_stage(Some(1));
     let encode_start = std::time::Instant::now();
     if let Some(profile_dir) = &profile_dir {
         profile_phase(profile_dir, "encode", || ctx.build_temp_shards())?;
@@ -171,6 +174,7 @@ pub fn ingest_with_stats_from_source(
         "encode stage complete elapsed={}",
         format_duration(encode_wall.as_millis() as u64)
     );
+    ctx.set_peak_stage(Some(2));
     let pk_map_start = std::time::Instant::now();
     if let Some(profile_dir) = &profile_dir {
         profile_phase(profile_dir, "pk_map", || ctx.build_sharded_pk_maps())?;
@@ -183,6 +187,7 @@ pub fn ingest_with_stats_from_source(
         format_duration(pk_map_wall.as_millis() as u64)
     );
     let edge_ctx = ctx.edge_build_context()?;
+    ctx.set_peak_stage(Some(3));
     let edges_map_start = std::time::Instant::now();
     if let Some(profile_dir) = &profile_dir {
         profile_phase(profile_dir, "edges_map", || ctx.build_edges_mapped(&edge_ctx))?;
@@ -195,7 +200,8 @@ pub fn ingest_with_stats_from_source(
         format_duration(edges_map_wall.as_millis() as u64)
     );
     drop(edge_ctx);
-        let index_start = std::time::Instant::now();
+    ctx.set_peak_stage(Some(4));
+    let index_start = std::time::Instant::now();
     let index_metadata = ctx.build_index_metadata()?;
     if let Some(profile_dir) = &profile_dir {
         profile_phase(profile_dir, "index", || ctx.build_index(index_metadata.clone()))?;
@@ -207,6 +213,7 @@ pub fn ingest_with_stats_from_source(
         "index stage complete elapsed={}",
         format_duration(index_wall.as_millis() as u64)
     );
+    ctx.set_peak_stage(Some(5));
     let finalize_start = std::time::Instant::now();
     let index_metadata = ctx.finalize_metadata(index_metadata)?;
     if let OutputTarget::Local { root } = &*ctx.target {
@@ -221,6 +228,7 @@ pub fn ingest_with_stats_from_source(
     }
     ctx.cleanup_temp()?;
     let finalize_wall = finalize_start.elapsed();
+    ctx.set_peak_stage(None);
     eprintln!(
         "finalize stage complete elapsed={}",
         format_duration(finalize_wall.as_millis() as u64)
@@ -250,8 +258,45 @@ pub fn ingest_with_stats_from_source(
             .saturating_add(ctx.temp_fkeys_bytes)
             .saturating_add(ctx.temp_edges_map_bytes)
             .saturating_add(ctx.temp_node_data_bytes),
+        peak_rss_anon_bytes: ctx
+            .peak_mem_stats
+            .as_ref()
+            .map(|v| v.overall_max())
+            .filter(|v| *v > 0),
+        peak_context_rss_anon_bytes: ctx
+            .peak_mem_stats
+            .as_ref()
+            .map(|v| v.stage_max(0))
+            .filter(|v| *v > 0),
+        peak_encode_rss_anon_bytes: ctx
+            .peak_mem_stats
+            .as_ref()
+            .map(|v| v.stage_max(1))
+            .filter(|v| *v > 0),
+        peak_pk_map_rss_anon_bytes: ctx
+            .peak_mem_stats
+            .as_ref()
+            .map(|v| v.stage_max(2))
+            .filter(|v| *v > 0),
+        peak_edges_map_rss_anon_bytes: ctx
+            .peak_mem_stats
+            .as_ref()
+            .map(|v| v.stage_max(3))
+            .filter(|v| *v > 0),
+        peak_index_rss_anon_bytes: ctx
+            .peak_mem_stats
+            .as_ref()
+            .map(|v| v.stage_max(4))
+            .filter(|v| *v > 0),
+        peak_finalize_rss_anon_bytes: ctx
+            .peak_mem_stats
+            .as_ref()
+            .map(|v| v.stage_max(5))
+            .filter(|v| *v > 0),
     };
     let stats = ctx.build_stats(&index_metadata, perf);
+    let mut stats = stats;
+    stats.num_shards = Some(ctx.num_shards);
     let report = IngestReport {
         stats: stats.clone(),
         source: ctx.source.clone(),
@@ -292,6 +337,7 @@ struct IngestContext {
     temp_fkeys_bytes: u64,
     temp_edges_map_bytes: u64,
     temp_node_data_bytes: u64,
+    peak_mem_stats: Option<std::sync::Arc<PeakMemStats>>,
 }
 
 struct EdgeBuildContext {
@@ -1292,7 +1338,14 @@ impl IngestContext {
             temp_fkeys_bytes: 0,
             temp_edges_map_bytes: 0,
             temp_node_data_bytes: 0,
+            peak_mem_stats: options.peak_mem_stats,
         })
+    }
+
+    fn set_peak_stage(&self, idx: Option<usize>) {
+        if let Some(stats) = &self.peak_mem_stats {
+            stats.set_stage(idx);
+        }
     }
 
     fn build_node_contexts(&mut self) -> Result<()> {
@@ -4712,6 +4765,7 @@ impl IngestContext {
                 None
             },
             perf,
+            num_shards: Some(self.num_shards),
         }
     }
 
@@ -8504,4 +8558,3 @@ fn format_decimal_from_bigint(value: &num_bigint::BigInt, scale: i32) -> String 
     out.push_str(&digits[split..]);
     out
 }
-

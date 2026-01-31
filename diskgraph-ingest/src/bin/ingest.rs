@@ -1,4 +1,8 @@
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::thread;
+use std::time::Duration;
 
 use anyhow::Result;
 use clap::{Parser, ValueEnum};
@@ -10,6 +14,7 @@ use diskgraph_ingest::progress::{build_progress, format_bytes, format_duration};
 use diskgraph_ingest::stats_publish::{
     default_run_id, fetch_perf_baseline, publish_stats, PublishConfig, PublishOutcome,
 };
+use diskgraph_ingest::config::{PeakMemStats, PEAK_MEM_STAGE_COUNT};
 use std::fs;
 
 #[cfg(all(feature = "mem-profile", target_os = "linux"))]
@@ -104,11 +109,13 @@ fn main() -> Result<()> {
     } else {
         None
     };
+    let peak_tracker = PeakMemTracker::start();
     let options = IngestOptions {
         profile_dir: args.profile.clone(),
         progress: build_progress(),
         parallel: args.parallel,
         index_mem_budget_bytes: args.index_mem_budget_bytes,
+        peak_mem_stats: peak_tracker.as_ref().map(|t| Arc::clone(&t.stats)),
     };
     let dest = match args.dest {
         DestArg::Local => Dest::Local,
@@ -124,6 +131,7 @@ fn main() -> Result<()> {
     } else {
         ingest_with_stats(&source_path, &args.output, dest, options)?
     };
+    drop(peak_tracker);
     drop(mem_watchdog);
     let publish_outcome = match maybe_publish_stats(&args, &stats, &source_str, dest) {
         Ok(outcome) => outcome,
@@ -406,6 +414,76 @@ fn run_id_git_prefix() -> String {
         _ => "nogit".to_string(),
     };
     sha.chars().take(8).collect()
+}
+
+struct PeakMemTracker {
+    stop: Arc<AtomicBool>,
+    stats: Arc<PeakMemStats>,
+    handle: Option<thread::JoinHandle<()>>,
+}
+
+impl PeakMemTracker {
+    fn start() -> Option<Self> {
+        if !cfg!(target_os = "linux") {
+            return None;
+        }
+        let stop = Arc::new(AtomicBool::new(false));
+        let stats = Arc::new(PeakMemStats::new());
+        let thread_stop = Arc::clone(&stop);
+        let thread_stats = Arc::clone(&stats);
+        let handle = thread::spawn(move || peak_mem_loop(thread_stop, thread_stats));
+        Some(Self {
+            stop,
+            stats,
+            handle: Some(handle),
+        })
+    }
+}
+
+impl Drop for PeakMemTracker {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+fn peak_mem_loop(stop: Arc<AtomicBool>, stats: Arc<PeakMemStats>) {
+    let interval = Duration::from_millis(500);
+    while !stop.load(Ordering::Relaxed) {
+        if let Some(bytes) = rss_anon_bytes() {
+            stats.update_overall(bytes);
+            let stage = stats.stage_index();
+            if stage < PEAK_MEM_STAGE_COUNT {
+                stats.update_stage(stage, bytes);
+            }
+        }
+        thread::sleep(interval);
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn rss_anon_bytes() -> Option<u64> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    for line in status.lines() {
+        if let Some(value) = line.strip_prefix("RssAnon:") {
+            return parse_kb_line(value);
+        }
+    }
+    None
+}
+
+#[cfg(not(target_os = "linux"))]
+fn rss_anon_bytes() -> Option<u64> {
+    None
+}
+
+#[cfg(target_os = "linux")]
+fn parse_kb_line(value: &str) -> Option<u64> {
+    let mut iter = value.split_whitespace();
+    let num = iter.next()?.parse::<u64>().ok()?;
+    Some(num.saturating_mul(1024))
 }
 
 fn format_delta(current_ms: u64, baseline_ms: Option<u64>) -> String {

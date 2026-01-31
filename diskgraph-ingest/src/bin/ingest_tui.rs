@@ -64,6 +64,14 @@ struct RunSummary {
     throughput_bytes_per_sec: u64,
     stage_timings_ms: StageTimings,
     normalized: NormalizedMetrics,
+    peak_rss_anon_bytes: Option<u64>,
+    peak_context_rss_anon_bytes: Option<u64>,
+    peak_encode_rss_anon_bytes: Option<u64>,
+    peak_pk_map_rss_anon_bytes: Option<u64>,
+    peak_edges_map_rss_anon_bytes: Option<u64>,
+    peak_index_rss_anon_bytes: Option<u64>,
+    peak_finalize_rss_anon_bytes: Option<u64>,
+    num_shards: Option<usize>,
     profiles_present: bool,
     build_stats_present: bool,
 }
@@ -695,6 +703,14 @@ fn draw_runs(frame: &mut ratatui::Frame, area: Rect, app: &mut AppState) {
             run.stage_timings_ms.finalize,
             app.baseline.as_ref().map(|b| b.stage_timings_ms.finalize),
         );
+        let (peak_text, peak_style) = match run.peak_rss_anon_bytes {
+            Some(bytes) => colorize_cell(
+                format_bytes(bytes),
+                bytes,
+                app.baseline.as_ref().and_then(|b| b.peak_rss_anon_bytes),
+            ),
+            None => ("-".to_string(), Style::default().fg(Color::Gray)),
+        };
         Row::new(vec![
             Cell::from(shorten(&date_only(&run.finished_at), 10)),
             Cell::from(run.git_sha.clone().unwrap_or_else(|| "-".to_string()).chars().take(8).collect::<String>()),
@@ -705,6 +721,7 @@ fn draw_runs(frame: &mut ratatui::Frame, area: Rect, app: &mut AppState) {
             Cell::from(edges_map_text).style(edges_map_style),
             Cell::from(index_text).style(index_style),
             Cell::from(finalize_text).style(finalize_style),
+            Cell::from(peak_text).style(peak_style),
         ])
     });
     let table = Table::new(
@@ -719,6 +736,7 @@ fn draw_runs(frame: &mut ratatui::Frame, area: Rect, app: &mut AppState) {
             Constraint::Length(7),
             Constraint::Length(7),
             Constraint::Length(7),
+            Constraint::Length(8),
         ],
     )
     .header(
@@ -732,6 +750,7 @@ fn draw_runs(frame: &mut ratatui::Frame, area: Rect, app: &mut AppState) {
             "edges_map",
             "index",
             "finalize",
+            "mem",
         ])
         .style(header_style),
     )
@@ -744,35 +763,116 @@ fn draw_details(frame: &mut ratatui::Frame, area: Rect, app: &mut AppState) {
     let run = app.run_state.selected().and_then(|idx| app.runs.get(idx));
     let lines = if let Some(run) = run {
         let r = &run.summary;
+        let label_style = Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD);
+        let value_style = Style::default().fg(Color::White);
+        let stage_style = Style::default().fg(Color::LightBlue).add_modifier(Modifier::BOLD);
+        let peak_style = Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD);
         vec![
             Line::from(vec![Span::styled("Details", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))]),
-            Line::from(format!("dataset: {}", r.dataset)),
-            Line::from(format!("run: {}", r.run_id)),
-            Line::from(format!("user: {}", r.user)),
-            Line::from(format!("git: {} {}", r.git_branch.clone().unwrap_or_default(), r.git_sha.clone().unwrap_or_default())),
-            Line::from(format!("instance: {}", r.instance_type.clone().unwrap_or_else(|| "n/a".to_string()))),
-            Line::from(format!(
-                "cpu: {} logical, {} physical",
-                r.cpu_logical.map(|v| v.to_string()).unwrap_or_else(|| "-".to_string()),
-                r.cpu_physical.map(|v| v.to_string()).unwrap_or_else(|| "-".to_string())
-            )),
-            Line::from(format!("mem: {}", format_bytes_opt(r.memory_bytes_total))),
-            Line::from(format!("disk: {}", format_bytes_opt(r.disk_bytes_total))),
-            Line::from(format!("throughput: {}/s", format_bytes(r.throughput_bytes_per_sec))),
-            Line::from(format!("wall: {} ms", r.wall_time_ms)),
-            Line::from("stages (ms):"),
-            Line::from(format!(
-                "  context {}  encode {}  pk_map {}",
-                r.stage_timings_ms.context, r.stage_timings_ms.encode, r.stage_timings_ms.pk_map
-            )),
-            Line::from(format!(
-                "  edges_map {}  index {}  finalize {}",
-                r.stage_timings_ms.edges_map, r.stage_timings_ms.index, r.stage_timings_ms.finalize
-            )),
-            Line::from(format!("profiles: {}", if r.profiles_present { "yes" } else { "no" })),
+            Line::from(vec![
+                Span::styled("dataset: ", label_style),
+                Span::styled(r.dataset.clone(), value_style),
+            ]),
+            Line::from(vec![
+                Span::styled("run: ", label_style),
+                Span::styled(r.run_id.clone(), value_style),
+            ]),
+            Line::from(vec![
+                Span::styled("user: ", label_style),
+                Span::styled(r.user.clone(), value_style),
+            ]),
+            Line::from(vec![
+                Span::styled("git: ", label_style),
+                Span::styled(format!(
+                    "{} {}",
+                    r.git_branch.clone().unwrap_or_else(|| "-".to_string()),
+                    r.git_sha.clone().unwrap_or_else(|| "-".to_string())
+                ), value_style),
+            ]),
+            Line::from(vec![
+                Span::styled("instance: ", label_style),
+                Span::styled(r.instance_type.clone().unwrap_or_else(|| "n/a".to_string()), value_style),
+            ]),
+            Line::from(vec![
+                Span::styled("cpu: ", label_style),
+                Span::styled(format!(
+                    "{} logical, {} physical",
+                    r.cpu_logical.map(|v| v.to_string()).unwrap_or_else(|| "-".to_string()),
+                    r.cpu_physical.map(|v| v.to_string()).unwrap_or_else(|| "-".to_string())
+                ), value_style),
+            ]),
+            Line::from(vec![
+                Span::styled("shards: ", label_style),
+                Span::styled(r.num_shards.map(|v| v.to_string()).unwrap_or_else(|| "-".to_string()), value_style),
+            ]),
+            Line::from(vec![
+                Span::styled("mem: ", label_style),
+                Span::styled(format_bytes_opt(r.memory_bytes_total), value_style),
+            ]),
+            Line::from(vec![
+                Span::styled("disk: ", label_style),
+                Span::styled(format_bytes_opt(r.disk_bytes_total), value_style),
+            ]),
+            Line::from(vec![
+                Span::styled("throughput: ", label_style),
+                Span::styled(format!("{}/s", format_bytes(r.throughput_bytes_per_sec)), value_style),
+            ]),
+            Line::from(vec![
+                Span::styled("wall: ", label_style),
+                Span::styled(format!("{} ms", r.wall_time_ms), value_style),
+            ]),
+            Line::from(vec![Span::styled("stages (ms):", stage_style)]),
+            Line::from(vec![
+                Span::styled("  context ", stage_style),
+                Span::styled(r.stage_timings_ms.context.to_string(), value_style),
+                Span::styled("  encode ", stage_style),
+                Span::styled(r.stage_timings_ms.encode.to_string(), value_style),
+                Span::styled("  pk_map ", stage_style),
+                Span::styled(r.stage_timings_ms.pk_map.to_string(), value_style),
+            ]),
+            Line::from(vec![
+                Span::styled("  edges_map ", stage_style),
+                Span::styled(r.stage_timings_ms.edges_map.to_string(), value_style),
+                Span::styled("  index ", stage_style),
+                Span::styled(r.stage_timings_ms.index.to_string(), value_style),
+                Span::styled("  finalize ", stage_style),
+                Span::styled(r.stage_timings_ms.finalize.to_string(), value_style),
+            ]),
+            Line::from(vec![Span::styled("peak mem (rss anon):", peak_style)]),
+            Line::from(vec![
+                Span::styled("  overall ", peak_style),
+                Span::styled(
+                    format!(
+                        "{}{}",
+                        format_bytes_opt(r.peak_rss_anon_bytes),
+                        mem_pct_of_total(r.peak_rss_anon_bytes, r.memory_bytes_total)
+                    ),
+                    value_style
+                ),
+            ]),
+            Line::from(vec![
+                Span::styled("  context ", peak_style),
+                Span::styled(format_bytes_opt(r.peak_context_rss_anon_bytes), value_style),
+                Span::styled("  encode ", peak_style),
+                Span::styled(format_bytes_opt(r.peak_encode_rss_anon_bytes), value_style),
+                Span::styled("  pk_map ", peak_style),
+                Span::styled(format_bytes_opt(r.peak_pk_map_rss_anon_bytes), value_style),
+            ]),
+            Line::from(vec![
+                Span::styled("  edges_map ", peak_style),
+                Span::styled(format_bytes_opt(r.peak_edges_map_rss_anon_bytes), value_style),
+                Span::styled("  index ", peak_style),
+                Span::styled(format_bytes_opt(r.peak_index_rss_anon_bytes), value_style),
+                Span::styled("  finalize ", peak_style),
+                Span::styled(format_bytes_opt(r.peak_finalize_rss_anon_bytes), value_style),
+            ]),
+            Line::from(vec![
+                Span::styled("profiles: ", label_style),
+                Span::styled(if r.profiles_present { "yes".to_string() } else { "no".to_string() }, value_style),
+            ]),
         ]
     } else {
-        vec![Line::from("No run selected")]
+        vec![Line::from(Span::styled("No run selected", Style::default().fg(Color::DarkGray)))]
     };
     let widget = Paragraph::new(lines)
         .block(Block::default().borders(Borders::ALL).title("Details"))
@@ -888,6 +988,16 @@ fn format_duration_cell(ms: u64) -> String {
 
 fn date_only(ts: &str) -> String {
     ts.split('T').next().unwrap_or(ts).to_string()
+}
+
+fn mem_pct_of_total(peak: Option<u64>, total: Option<u64>) -> String {
+    match (peak, total) {
+        (Some(peak), Some(total)) if total > 0 => {
+            let pct = (peak as f64 / total as f64) * 100.0;
+            format!(" ({pct:.1}%)")
+        }
+        _ => String::new(),
+    }
 }
 
 fn fastest_run(runs: &[RunEntry]) -> Option<&RunEntry> {
