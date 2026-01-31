@@ -5,11 +5,14 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use clap::Parser;
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyModifiers,
+    MouseButton, MouseEvent, MouseEventKind,
+};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::ExecutableCommand;
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Constraint, Direction, Layout, Rect, Position};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState, Wrap, List, ListItem, ListState};
@@ -125,6 +128,8 @@ struct AppState {
     baseline: Option<RunSummary>,
     profile_tabs: Vec<ProfileTab>,
     profile_tab_index: usize,
+    instance_rect: Rect,
+    runs_rect: Rect,
 }
 
 struct ProfileTab {
@@ -154,6 +159,8 @@ fn main() -> Result<()> {
         baseline: None,
         profile_tabs: Vec::new(),
         profile_tab_index: 0,
+        instance_rect: Rect::default(),
+        runs_rect: Rect::default(),
     };
     if !app.instances.is_empty() {
         app.instance_state.select(Some(0));
@@ -163,6 +170,7 @@ fn main() -> Result<()> {
     enable_raw_mode()?;
     let mut stdout = std::io::stdout();
     stdout.execute(EnterAlternateScreen)?;
+    stdout.execute(EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -171,13 +179,20 @@ fn main() -> Result<()> {
         terminal.draw(|frame| draw(frame, &mut app, &args.dataset))?;
 
         if event::poll(Duration::from_millis(200))? {
-            if let Event::Key(key) = event::read()? {
-                running = handle_key(key, &store, &args, &mut app)?;
+            match event::read()? {
+                Event::Key(key) => {
+                    running = handle_key(key, &store, &args, &mut app)?;
+                }
+                Event::Mouse(mouse) => {
+                    handle_mouse(mouse, &store, &args, &mut app)?;
+                }
+                _ => {}
             }
         }
     }
 
     disable_raw_mode()?;
+    terminal.backend_mut().execute(DisableMouseCapture)?;
     terminal.backend_mut().execute(LeaveAlternateScreen)?;
     terminal.show_cursor()?;
     Ok(())
@@ -440,6 +455,56 @@ fn handle_key(key: KeyEvent, store: &StatsStore, args: &Args, app: &mut AppState
     }
 }
 
+fn handle_mouse(
+    mouse: MouseEvent,
+    store: &StatsStore,
+    args: &Args,
+    app: &mut AppState,
+) -> Result<()> {
+    if mouse.kind != MouseEventKind::Down(MouseButton::Left) {
+        return Ok(());
+    }
+    if app.mode != Mode::Normal {
+        return Ok(());
+    }
+    let y = mouse.row;
+    let pos = Position {
+        x: mouse.column,
+        y: mouse.row,
+    };
+    if app.instance_rect.contains(pos) {
+        if let Some(idx) = row_index_from_click(app.instance_rect, y, app.instances.len()) {
+            app.instance_state.select(Some(idx));
+            load_runs_for_selected(store, app, args)?;
+        }
+        return Ok(());
+    }
+    if app.runs_rect.contains(pos) {
+        if let Some(idx) = row_index_from_click(app.runs_rect, y, app.runs.len()) {
+            app.run_state.select(Some(idx));
+        }
+    }
+    Ok(())
+}
+
+fn row_index_from_click(rect: Rect, y: u16, len: usize) -> Option<usize> {
+    if len == 0 {
+        return None;
+    }
+    let header_rows = 2u16;
+    let top = rect.y.saturating_add(header_rows);
+    let bottom = rect.y.saturating_add(rect.height.saturating_sub(1));
+    if y < top || y >= bottom {
+        return None;
+    }
+    let row = (y - top) as usize;
+    if row < len {
+        Some(row)
+    } else {
+        None
+    }
+}
+
 fn handle_key_normal(key: KeyEvent, store: &StatsStore, args: &Args, app: &mut AppState) -> Result<bool> {
     match key.code {
         KeyCode::Char('q') => return Ok(false),
@@ -607,6 +672,8 @@ fn draw(frame: &mut ratatui::Frame, app: &mut AppState, dataset: &str) {
         .split(body);
 
     draw_header(frame, chunks[0], app, dataset);
+    app.instance_rect = columns[0];
+    app.runs_rect = columns[1];
     draw_instances(frame, columns[0], app);
     draw_runs(frame, columns[1], app);
     draw_details(frame, columns[2], app);
@@ -729,13 +796,13 @@ fn draw_runs(frame: &mut ratatui::Frame, area: Rect, app: &mut AppState) {
         [
             Constraint::Length(12),
             Constraint::Length(8),
-            Constraint::Length(7),
-            Constraint::Length(7),
-            Constraint::Length(7),
-            Constraint::Length(7),
-            Constraint::Length(7),
-            Constraint::Length(7),
-            Constraint::Length(7),
+            Constraint::Length(6),
+            Constraint::Length(6),
+            Constraint::Length(6),
+            Constraint::Length(6),
+            Constraint::Length(6),
+            Constraint::Length(6),
+            Constraint::Length(6),
             Constraint::Length(8),
         ],
     )
