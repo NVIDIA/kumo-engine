@@ -4,6 +4,7 @@ use base64::Engine;
 use chrono::{DateTime, Utc};
 use gxhash::{HashMap, HashMapExt};
 use half::f16;
+use half::slice::HalfFloatSliceExt;
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
 use num_traits::Signed;
@@ -1697,6 +1698,7 @@ pub struct RowPackScratch {
     data: Vec<u8>,
     bpe_tokens: Vec<u32>,
     lz4_buf: Vec<u8>,
+    f16_buf: Vec<f16>,
 }
 
 impl RowPackScratch {
@@ -1714,6 +1716,7 @@ impl RowPackScratch {
             data: Vec::with_capacity(ctx.estimated_row_bytes as usize),
             bpe_tokens: Vec::new(),
             lz4_buf: Vec::new(),
+            f16_buf: Vec::new(),
         }
     }
 
@@ -1742,6 +1745,7 @@ impl RowPackScratch {
         self.data.clear();
         self.bpe_tokens.clear();
         self.lz4_buf.clear();
+        self.f16_buf.clear();
     }
 }
 
@@ -2176,11 +2180,13 @@ impl RowPackEncoder {
                         None => 0u8,
                         Some(view) => {
                             if let ColumnEncoding::FloatArray { storage } = &col.encoding {
+                                let f16_buf = &mut scratch.f16_buf;
                                 encode_float_list_with_tag(
                                     &mut scratch.data,
                                     col.logical_type,
                                     *storage,
                                     view,
+                                    f16_buf,
                                 )?
                             } else {
                                 return Err(anyhow!("rowpack float32 array encoding mismatch"));
@@ -2193,11 +2199,13 @@ impl RowPackEncoder {
                         None => 0u8,
                         Some(view) => {
                             if let ColumnEncoding::FloatArray { storage } = &col.encoding {
+                                let f16_buf = &mut scratch.f16_buf;
                                 encode_float_list_with_tag(
                                     &mut scratch.data,
                                     col.logical_type,
                                     *storage,
                                     view,
+                                    f16_buf,
                                 )?
                             } else {
                                 return Err(anyhow!("rowpack float16 array encoding mismatch"));
@@ -2210,11 +2218,13 @@ impl RowPackEncoder {
                         None => 0u8,
                         Some(view) => {
                             if let ColumnEncoding::FloatArray { storage } = &col.encoding {
+                                let f16_buf = &mut scratch.f16_buf;
                                 encode_float_list_with_tag(
                                     &mut scratch.data,
                                     col.logical_type,
                                     *storage,
                                     view,
+                                    f16_buf,
                                 )?
                             } else {
                                 return Err(anyhow!("rowpack float64 array encoding mismatch"));
@@ -2239,6 +2249,7 @@ impl RowPackEncoder {
         tags: &mut Vec<u8>,
         bools: &mut Vec<u8>,
         data: &mut Vec<u8>,
+        f16_buf: &mut Vec<f16>,
         key_bufs: &[Vec<u8>],
     ) -> Result<RowPackRowLens> {
         debug_assert_eq!(key_bufs.len(), self.ctx.columns.len());
@@ -2559,6 +2570,7 @@ impl RowPackEncoder {
                                     col.logical_type,
                                     *storage,
                                     view,
+                                    f16_buf,
                                 )?
                             } else {
                                 return Err(anyhow!("rowpack float32 array encoding mismatch"));
@@ -2576,6 +2588,7 @@ impl RowPackEncoder {
                                     col.logical_type,
                                     *storage,
                                     view,
+                                    f16_buf,
                                 )?
                             } else {
                                 return Err(anyhow!("rowpack float16 array encoding mismatch"));
@@ -2593,6 +2606,7 @@ impl RowPackEncoder {
                                     col.logical_type,
                                     *storage,
                                     view,
+                                    f16_buf,
                                 )?
                             } else {
                                 return Err(anyhow!("rowpack float64 array encoding mismatch"));
@@ -3005,6 +3019,7 @@ fn encode_float_list_with_tag(
     logical: IngestedType,
     storage: FloatStorage,
     view: FloatListView,
+    f16_buf: &mut Vec<f16>,
 ) -> Result<u8> {
     let _ = logical;
     let len = view.end.saturating_sub(view.start);
@@ -3083,9 +3098,9 @@ fn encode_float_list_with_tag(
             match storage {
                 FloatStorage::F16 => {
                     if values_arr.null_count() == 0 {
-                        for v in slice {
-                            out.extend_from_slice(&f16::from_f32(*v).to_bits().to_le_bytes());
-                        }
+                        f16_buf.resize(slice.len(), f16::from_bits(0));
+                        f16_buf.as_mut_slice().convert_from_f32_slice(slice);
+                        extend_f16_slice_le(out, f16_buf);
                     } else {
                         for idx in view.start..view.end {
                             if values_arr.is_null(idx) {
@@ -3137,9 +3152,9 @@ fn encode_float_list_with_tag(
             match storage {
                 FloatStorage::F16 => {
                     if values_arr.null_count() == 0 {
-                        for v in slice {
-                            out.extend_from_slice(&f16::from_f32(*v as f32).to_bits().to_le_bytes());
-                        }
+                        f16_buf.resize(slice.len(), f16::from_bits(0));
+                        f16_buf.as_mut_slice().convert_from_f64_slice(slice);
+                        extend_f16_slice_le(out, f16_buf);
                     } else {
                         for idx in view.start..view.end {
                             if values_arr.is_null(idx) {

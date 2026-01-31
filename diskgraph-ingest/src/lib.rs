@@ -1980,6 +1980,7 @@ impl IngestContext {
         let node_context = diskgraph_rowpack::RowPackContext::from_bytes(&ctx_bytes)?;
         let node_encoder = Some(RowPackEncoder::new(node_context)?);
         let mut key_bufs: Vec<Vec<u8>> = vec![Vec::new(); table.columns.len()];
+        let mut f16_buf: Vec<f16> = Vec::new();
         let mut node_data_dropped = 0u64;
         let has_pkey = pk_col.is_some() && pk_idx.is_some();
         let rel_names = std::sync::Arc::new(rel_names);
@@ -2050,6 +2051,7 @@ impl IngestContext {
                                     &mut row_id,
                                     pk_col,
                                     &mut key_bufs,
+                                    &mut f16_buf,
                                     &mut node_data_dropped,
                                     num_shards,
                                     key_failures,
@@ -2089,6 +2091,7 @@ impl IngestContext {
                                     &mut row_id,
                                     pk_col,
                                     &mut key_bufs,
+                                    &mut f16_buf,
                                     &mut node_data_dropped,
                                     num_shards,
                                     key_failures,
@@ -2128,6 +2131,7 @@ impl IngestContext {
                                 &mut row_id,
                                 pk_col,
                                 &mut key_bufs,
+                                &mut f16_buf,
                                 &mut node_data_dropped,
                                 num_shards,
                                 key_failures,
@@ -2172,6 +2176,7 @@ impl IngestContext {
                                     &mut row_id,
                                     pk_col,
                                     &mut key_bufs,
+                                    &mut f16_buf,
                                     &mut node_data_dropped,
                                     num_shards,
                                     key_failures,
@@ -2212,6 +2217,7 @@ impl IngestContext {
                                     &mut row_id,
                                     pk_col,
                                     &mut key_bufs,
+                                    &mut f16_buf,
                                     &mut node_data_dropped,
                                     num_shards,
                                     key_failures,
@@ -2252,6 +2258,7 @@ impl IngestContext {
                                 &mut row_id,
                                 pk_col,
                                 &mut key_bufs,
+                                &mut f16_buf,
                                 &mut node_data_dropped,
                                 num_shards,
                                 key_failures,
@@ -2295,6 +2302,7 @@ impl IngestContext {
         row_id: &mut u64,
         pk_col: Option<&ColumnSpec>,
         key_bufs: &mut Vec<Vec<u8>>,
+        f16_buf: &mut Vec<f16>,
         node_data_dropped: &mut u64,
         num_shards: usize,
         key_failures: &mut KeyFailureState,
@@ -2363,6 +2371,7 @@ impl IngestContext {
                 sink.tags,
                 sink.bools,
                 sink.data,
+                f16_buf,
                 key_bufs,
             )?;
             let row_len = lens
