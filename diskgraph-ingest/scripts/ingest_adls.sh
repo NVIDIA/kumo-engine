@@ -41,10 +41,6 @@ for arg in "$@"; do
 done
 set -- "${POSITIONAL[@]}"
 
-if [[ "${PROFILE_ENABLED}" == "true" && "${DEBUGINFO_ENABLED}" == "false" ]]; then
-  DEBUGINFO_ENABLED="true"
-fi
-
 SOURCE="${SOURCE:-${1:-}}"
 OUTPUT="${OUTPUT:-${2:-}}"
 

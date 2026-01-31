@@ -43,6 +43,7 @@ if ! command -v gdb >/dev/null 2>&1; then
 fi
 
 OUT_FILE="$(mktemp -t rust-stacks.XXXXXX.txt)"
+chmod 0644 "$OUT_FILE"
 
 gdb -p "$PID" -batch -ex "thread apply all bt" >"$OUT_FILE" 2>&1 || true
 
