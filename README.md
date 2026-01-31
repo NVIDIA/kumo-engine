@@ -22,7 +22,7 @@ sudo ./scripts/localssd-raid0-xfs-tui.sh
 
 If you want to use a different base directory, set `DISKGRAPH_DATA_ROOT=/path/to/data` and keep the rest of the paths the same.
 
-Use the H&M download helper (defaults to `/mnt/localssd/datasets/hnm`):
+Use the H&M download helper (defaults to `/mnt/localssd/datasets/hnm100`):
 
 ```bash
 ./diskgraph-datagenerator/scripts/hnm100_download.sh
@@ -31,35 +31,35 @@ Use the H&M download helper (defaults to `/mnt/localssd/datasets/hnm`):
 ### 3) Infer `diskgraph_config.json`
 
 ```bash
-./diskgraph-infer/scripts/infer_config.sh /mnt/localssd/datasets/hnm
+./diskgraph-infer/scripts/infer_config.sh /mnt/localssd/datasets/hnm100
 ```
 
-This writes `/mnt/localssd/datasets/hnm/diskgraph_config.json`.
+This writes `/mnt/localssd/datasets/hnm100/diskgraph_config.json`.
 
 ### 4) Ingest to a DiskGraph index
 
 ```bash
-./diskgraph-ingest/scripts/ingest_local.sh /mnt/localssd/datasets/hnm
+./diskgraph-ingest/scripts/ingest_local.sh /mnt/localssd/datasets/hnm100
 ```
 
-By default the output goes to `/mnt/localssd/diskgraph-index/hnm`.
+By default the output goes to `/mnt/localssd/diskgraph-index/hnm100`.
 
 ### 5) Explore (and optionally benchmark)
 
 ```bash
-./diskgraph-index/scripts/explore_local.sh /mnt/localssd/diskgraph-index/hnm
+./diskgraph-index/scripts/explore_local.sh /mnt/localssd/diskgraph-index/hnm100
 ```
 
 Optional: open the ingest performance explorer (stats bucket):
 
 ```bash
-./diskgraph-ingest/scripts/perf_explorer.sh hnm
+./diskgraph-ingest/scripts/perf_explorer.sh hnm100
 ```
 
 ### 6) Run predictive queries (train table TUI)
 
 ```bash
-./diskgraph-train-table/scripts/ttui.sh /mnt/localssd/diskgraph-index/hnm
+./diskgraph-train-table/scripts/ttui.sh /mnt/localssd/diskgraph-index/hnm100
 ```
 
 Inside the explorer:

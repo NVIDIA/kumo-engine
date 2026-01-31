@@ -9,7 +9,7 @@ else
   DEFAULT_ROOT="/tmp"
 fi
 
-DATASET_ROOT="${1:-${DEFAULT_ROOT%/}/datasets/hnm}"
+DATASET_ROOT="${1:-${DEFAULT_ROOT%/}/datasets/hnm100}"
 INDEX_ROOT="${2:-${DEFAULT_ROOT%/}/diskgraph-index/hnm}"
 OUTPUT_PARQUET="${3:-${DEFAULT_ROOT%/}/train-tables/hnm_temporal.parquet}"
 CONFIG_PATH="${DATASET_ROOT%/}/train_table_job.json"
