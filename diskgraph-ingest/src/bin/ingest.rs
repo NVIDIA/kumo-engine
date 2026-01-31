@@ -143,34 +143,36 @@ fn main() -> Result<()> {
             None
         }
     };
-    println!("Output: {}", stats.output);
+    println!("{} {}", color("Output:", Color::CyanBold), stats.output);
     println!(
-        "Node tables: {} ({} nodes)",
+        "{} {} ({} nodes)",
+        color("Node tables:", Color::CyanBold),
         stats.node_tables, stats.total_nodes
     );
     println!(
-        "Edge relations: {} ({} edges)",
+        "{} {} ({} edges)",
+        color("Edge relations:", Color::CyanBold),
         stats.edge_relations, stats.total_edges
     );
     if !stats.node_counts.is_empty() {
-        println!("Nodes per table:");
+        println!("{}", color("Nodes per table:", Color::CyanBold));
         let mut entries: Vec<_> = stats.node_counts.iter().collect();
         entries.sort_by(|a, b| a.0.cmp(b.0));
         for (name, count) in entries {
-            println!("  {}: {}", name, count);
+            println!("  {}: {}", color(name, Color::Blue), count);
         }
     }
     if !stats.edge_counts.is_empty() {
-        println!("Edges per relation:");
+        println!("{}", color("Edges per relation:", Color::CyanBold));
         let mut entries: Vec<_> = stats.edge_counts.iter().collect();
         entries.sort_by(|a, b| a.0.cmp(b.0));
         for (name, count) in entries {
-            println!("  {}: {}", name, count);
+            println!("  {}: {}", color(name, Color::Blue), count);
         }
     }
     if stats.pk_duplicate_total > 0 {
-        println!("Duplicate primary keys:");
-        println!("  Total skipped: {}", stats.pk_duplicate_total);
+        println!("{}", color("Duplicate primary keys:", Color::YellowBold));
+        println!("  {} {}", color("Total skipped:", Color::Yellow), stats.pk_duplicate_total);
         let mut totals: std::collections::HashMap<&str, u64> = std::collections::HashMap::new();
         for (name, count) in &stats.pk_duplicate_counts {
             let table = name.split(':').next().unwrap_or(name.as_str());
@@ -192,20 +194,28 @@ fn main() -> Result<()> {
         let mut entries: Vec<_> = totals.into_iter().collect();
         entries.sort_by(|a, b| a.0.cmp(b.0));
         for (name, count) in entries {
-            println!("  {}: {}", name, count);
+            println!("  {}: {}", color(name, Color::Yellow), count);
             if let Some(samples) = samples_by_table.get(name) {
                 if !samples.is_empty() {
-                    println!("    Samples: {}", samples.join(", "));
+                    println!("    {} {}", color("Samples:", Color::Yellow), samples.join(", "));
                 }
             }
         }
     }
     if stats.key_parse_failures > 0 || stats.key_lookup_failures > 0 {
-        println!("Key matching failures:");
-        println!("  Parse failures: {}", stats.key_parse_failures);
-        println!("  Lookup misses: {}", stats.key_lookup_failures);
+        println!("{}", color("Key matching failures:", Color::YellowBold));
+        println!(
+            "  {} {}",
+            color("Parse failures:", Color::Yellow),
+            stats.key_parse_failures
+        );
+        println!(
+            "  {} {}",
+            color("Lookup misses:", Color::Yellow),
+            stats.key_lookup_failures
+        );
         if !stats.key_failures_by_context.is_empty() {
-            println!("  By context:");
+            println!("  {}", color("By context:", Color::Yellow));
             let mut entries: Vec<_> = stats.key_failures_by_context.iter().collect();
             entries.sort_by(|a, b| a.0.cmp(b.0));
             for (name, counts) in entries {
@@ -214,19 +224,25 @@ fn main() -> Result<()> {
                 }
                 println!(
                     "    {}: parse {}, lookup {}",
-                    name, counts.parse_failures, counts.lookup_failures
+                    color(name, Color::Yellow),
+                    counts.parse_failures,
+                    counts.lookup_failures
                 );
             }
         }
         if !stats.key_failure_samples.is_empty() {
-            println!("  Examples:");
+            println!("  {}", color("Examples:", Color::Yellow));
             for sample in &stats.key_failure_samples {
                 println!("    {}", sample);
             }
         }
     }
     if let Some(trimmed) = stats.trimmed_strings {
-        println!("Trimmed strings (>32KB): {}", trimmed);
+        println!(
+            "{} {}",
+            color("Trimmed strings (>32KB):", Color::YellowBold),
+            trimmed
+        );
     }
     let total_bytes = stats.perf.bytes_read.saturating_add(stats.perf.bytes_written);
     let wall_secs = (stats.perf.wall_time_ms as f64) / 1000.0;
@@ -249,7 +265,7 @@ fn main() -> Result<()> {
             .ok()
             .flatten()
         });
-    println!("Performance:");
+    println!("{}", color("Performance:", Color::GreenBold));
     if let (Some(baseline), Some(outcome)) = (baseline.as_ref(), publish_outcome.as_ref()) {
         let instance = outcome
             .summary
@@ -262,55 +278,78 @@ fn main() -> Result<()> {
             .map(|s| s.chars().take(8).collect::<String>())
             .unwrap_or_else(|| "nogit".to_string());
         println!(
-            "  Baseline: min of last 30 runs for {} on {} (git {})",
-            outcome.summary.dataset, instance, git
+            "  {} min of last 30 runs for {} on {} (git {})",
+            color("Baseline:", Color::Green),
+            outcome.summary.dataset,
+            instance,
+            git
         );
     }
     println!(
-        "  Wall time: {}{}",
+        "  {} {}{}",
+        color("Wall time:", Color::Green),
         format_duration(stats.perf.wall_time_ms),
         format_delta(stats.perf.wall_time_ms, baseline.as_ref().map(|b| b.wall_time_ms))
     );
     println!(
-        "  Bytes read: {}",
+        "  {} {}",
+        color("Bytes read:", Color::Green),
         format_bytes(stats.perf.bytes_read)
     );
     println!(
-        "  Bytes written: {}",
+        "  {} {}",
+        color("Bytes written:", Color::Green),
         format_bytes(stats.perf.bytes_written)
     );
-    println!("  Total bytes: {}", format_bytes(total_bytes));
-    println!("  Throughput: {}/s", format_bytes(bytes_per_sec as u64));
+    println!(
+        "  {} {}",
+        color("Total bytes:", Color::Green),
+        format_bytes(total_bytes)
+    );
+    println!(
+        "  {} {}/s",
+        color("Throughput:", Color::Green),
+        format_bytes(bytes_per_sec as u64)
+    );
     if stats.perf.temp_bytes_total > 0 {
-        println!("  Temp bytes (edges): {}", format_bytes(stats.perf.temp_bytes_total));
+        println!(
+            "  {} {}",
+            color("Temp bytes (edges):", Color::Green),
+            format_bytes(stats.perf.temp_bytes_total)
+        );
         if stats.perf.temp_fkeys_bytes > 0 {
             println!(
-                "    fkeys: {}",
+                "    {} {}",
+                color("fkeys:", Color::Green),
                 format_bytes(stats.perf.temp_fkeys_bytes)
             );
         }
         if stats.perf.temp_edges_src_bytes > 0 {
             println!(
-                "    edges_src: {}",
+                "    {} {}",
+                color("edges_src:", Color::Green),
                 format_bytes(stats.perf.temp_edges_src_bytes)
             );
         }
         if stats.perf.temp_edges_map_bytes > 0 {
             println!(
-                "    edges_map: {}",
+                "    {} {}",
+                color("edges_map:", Color::Green),
                 format_bytes(stats.perf.temp_edges_map_bytes)
             );
         }
     }
     if stats.perf.temp_node_data_bytes > 0 {
         println!(
-            "  Temp bytes (nodes): {}",
+            "  {} {}",
+            color("Temp bytes (nodes):", Color::Green),
             format_bytes(stats.perf.temp_node_data_bytes)
         );
     }
-    println!("  Stage timings (wall):");
+    println!("  {}", color("Stage timings (wall):", Color::Green));
     println!(
-        "    context: {}{}",
+        "    {} {}{}",
+        color("context:", Color::Green),
         format_duration(stats.perf.context_wall_ms),
         format_delta(
             stats.perf.context_wall_ms,
@@ -318,7 +357,8 @@ fn main() -> Result<()> {
         )
     );
     println!(
-        "    encode: {}{}",
+        "    {} {}{}",
+        color("encode:", Color::Green),
         format_duration(stats.perf.encode_wall_ms),
         format_delta(
             stats.perf.encode_wall_ms,
@@ -326,7 +366,8 @@ fn main() -> Result<()> {
         )
     );
     println!(
-        "    pk_map: {}{}",
+        "    {} {}{}",
+        color("pk_map:", Color::Green),
         format_duration(stats.perf.pk_map_wall_ms),
         format_delta(
             stats.perf.pk_map_wall_ms,
@@ -334,7 +375,8 @@ fn main() -> Result<()> {
         )
     );
     println!(
-        "    edges_map: {}{}",
+        "    {} {}{}",
+        color("edges_map:", Color::Green),
         format_duration(stats.perf.edges_map_wall_ms),
         format_delta(
             stats.perf.edges_map_wall_ms,
@@ -342,7 +384,8 @@ fn main() -> Result<()> {
         )
     );
     println!(
-        "    index: {}{}",
+        "    {} {}{}",
+        color("index:", Color::Green),
         format_duration(stats.perf.index_wall_ms),
         format_delta(
             stats.perf.index_wall_ms,
@@ -350,7 +393,8 @@ fn main() -> Result<()> {
         )
     );
     println!(
-        "    finalize: {}{}",
+        "    {} {}{}",
+        color("finalize:", Color::Green),
         format_duration(stats.perf.finalize_wall_ms),
         format_delta(
             stats.perf.finalize_wall_ms,
@@ -358,7 +402,8 @@ fn main() -> Result<()> {
         )
     );
     println!(
-        "Next: {}",
+        "{} {}",
+        color("Next:", Color::CyanBold),
         explore_command_hint(&args.dest, &stats.output)
     );
     Ok(())
@@ -514,6 +559,27 @@ fn format_delta(current_ms: u64, baseline_ms: Option<u64>) -> String {
         format_duration(abs_ms),
         reset = reset
     )
+}
+
+enum Color {
+    CyanBold,
+    Green,
+    GreenBold,
+    Yellow,
+    YellowBold,
+    Blue,
+}
+
+fn color(text: &str, color: Color) -> String {
+    let (code, reset) = match color {
+        Color::CyanBold => ("\x1b[36;1m", "\x1b[0m"),
+        Color::Green => ("\x1b[32m", "\x1b[0m"),
+        Color::GreenBold => ("\x1b[32;1m", "\x1b[0m"),
+        Color::Yellow => ("\x1b[33m", "\x1b[0m"),
+        Color::YellowBold => ("\x1b[33;1m", "\x1b[0m"),
+        Color::Blue => ("\x1b[34m", "\x1b[0m"),
+    };
+    format!("{code}{text}{reset}")
 }
 
 fn dataset_from_source(source: &PathBuf, source_str: &str) -> String {
