@@ -11,13 +11,13 @@ Generate a train table parquet from an ingested Diskgraph index and a predictive
 ## Query TUI
 
 ```
-./diskgraph-train-table/scripts/ttui.sh /path/to/index
+./diskgraph-train-table/scripts/train_table.sh /path/to/index
 ```
 
 Non-interactive mode:
 
 ```
-./diskgraph-train-table/scripts/ttui.sh /path/to/index -- -C "PREDICT ..."
+./diskgraph-train-table/scripts/train_table.sh /path/to/index -- -C "PREDICT ..."
 ```
 
 ## E2E example (H&M)

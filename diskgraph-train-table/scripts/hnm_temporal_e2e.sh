@@ -91,7 +91,7 @@ run_query() {
   local idx="$1"
   local query="$2"
   echo "running query ${idx}: ${query}"
-  ./diskgraph-train-table/scripts/ttui.sh "${INDEX_ROOT}" -- -C "${query}"
+  ./diskgraph-train-table/scripts/train_table.sh "${INDEX_ROOT}" -- -C "${query}"
 }
 
 if [[ "${QUERY_FILTER}" == "all" ]]; then

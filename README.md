@@ -59,7 +59,7 @@ Optional: open the ingest performance explorer (stats bucket):
 ### 6) Run predictive queries (train table TUI)
 
 ```bash
-./diskgraph-train-table/scripts/ttui.sh /mnt/localssd/diskgraph-index/hnm100
+./diskgraph-train-table/scripts/train_table.sh /mnt/localssd/diskgraph-index/hnm100
 ```
 
 Inside the explorer:

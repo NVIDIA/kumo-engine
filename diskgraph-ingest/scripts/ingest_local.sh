@@ -112,4 +112,4 @@ fi
 env ${env_args[@]+"${env_args[@]}"} "${args[@]}"
 
 echo -e "\033[36;1mNext:\033[0m ./diskgraph-ingest/scripts/perf_explorer.sh \"${INPUT_NAME}\""
-echo -e "\033[36;1mNext:\033[0m ./diskgraph-train-table/scripts/ttui.sh ${OUTPUT}"
+echo -e "\033[36;1mNext:\033[0m ./diskgraph-train-table/scripts/train_table.sh ${OUTPUT}"
