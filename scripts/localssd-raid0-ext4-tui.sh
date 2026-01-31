@@ -179,6 +179,7 @@ main() {
   local mountpoint="${DISKGRAPH_DATA_ROOT:-/mnt/localssd}"
   local stripe_cache="4096"
   local block_k="4"
+  local mount_perms="${DISKGRAPH_MOUNT_PERMS:-1777}"
 
   local target
   if [[ "${#selected[@]}" -eq 1 ]]; then
@@ -234,7 +235,7 @@ main() {
     echo "Check: dmesg | tail -n 20" >&2
     exit 1
   fi
-  chmod 0777 "$mountpoint"
+  chmod "$mount_perms" "$mountpoint"
 
   echo "Done."
   echo "  Target: $target"
@@ -250,6 +251,7 @@ main() {
   fi
   echo "  Mount opts: ${mount_opts}"
   echo "  Mount: $mountpoint"
+  echo "  Mount perms: ${mount_perms}"
 }
 
 main "$@"

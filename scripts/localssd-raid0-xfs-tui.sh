@@ -181,6 +181,7 @@ main() {
   local log_size="1g"
   local logbufs="8"
   local logbsize="256k"
+  local mount_perms="${DISKGRAPH_MOUNT_PERMS:-1777}"
 
   local target
   if [[ "${#selected[@]}" -eq 1 ]]; then
@@ -222,7 +223,7 @@ main() {
   mkdir -p "$mountpoint"
 
   mount -o noatime,nodiratime,allocsize=1m,logbufs=${logbufs},logbsize=${logbsize} "$target" "$mountpoint"
-  chmod 0777 "$mountpoint"
+  chmod "$mount_perms" "$mountpoint"
 
   echo "Done."
   echo "  Target: $target"
@@ -236,6 +237,7 @@ main() {
   echo "  Log buf size: ${logbsize}"
   echo "  Mount opts: noatime,nodiratime,allocsize=1m,logbufs=${logbufs},logbsize=${logbsize}"
   echo "  Mount: $mountpoint"
+  echo "  Mount perms: ${mount_perms}"
 }
 
 main "$@"
