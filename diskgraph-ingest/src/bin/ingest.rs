@@ -493,18 +493,25 @@ fn format_delta(current_ms: u64, baseline_ms: Option<u64>) -> String {
     if baseline_ms == 0 {
         return String::new();
     }
-    let delta_ms = current_ms.saturating_sub(baseline_ms);
+    let delta_ms = current_ms as i64 - baseline_ms as i64;
     let pct = (delta_ms as f64 / baseline_ms as f64) * 100.0;
-    let (color, reset) = if pct <= 5.0 {
+    let (color, reset) = if pct <= 0.0 {
+        ("\x1b[32m", "\x1b[0m")
+    } else if pct <= 5.0 {
         ("\x1b[32m", "\x1b[0m")
     } else if pct <= 15.0 {
         ("\x1b[33m", "\x1b[0m")
     } else {
         ("\x1b[31m", "\x1b[0m")
     };
+    let (sign, abs_ms, pct_label) = if delta_ms < 0 {
+        ("-", delta_ms.abs() as u64, format!("{pct:.1}%"))
+    } else {
+        ("+", delta_ms as u64, format!("+{pct:.1}%"))
+    };
     format!(
-        "  {color}+{} (+{pct:.1}%){reset}",
-        format_duration(delta_ms),
+        "  {color}{sign}{} ({pct_label}){reset}",
+        format_duration(abs_ms),
         reset = reset
     )
 }
