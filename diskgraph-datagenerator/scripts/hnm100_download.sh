@@ -8,7 +8,7 @@ elif [[ -d /mnt/localssd && -w /mnt/localssd ]]; then
 else
   DEFAULT_ROOT="/tmp"
 fi
-DEST_ROOT="${1:-${DEFAULT_ROOT%/}/datasets/hnm}"
+DEST_ROOT="${1:-${DEFAULT_ROOT%/}/datasets/hnm100}"
 TXN_SUBDIR="${2:-transactions}"
 DUP_COUNT="${3:-100}"
 
