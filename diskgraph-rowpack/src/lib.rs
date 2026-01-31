@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Result};
+use arrow_array::Array;
 use base64::Engine;
 use chrono::{DateTime, Utc};
 use gxhash::{HashMap, HashMapExt};
@@ -19,6 +20,7 @@ pub mod parser;
 pub mod access;
 
 pub use crate::access::{RowAccess, RowAccessHints};
+use crate::access::{FloatListValues, FloatListView};
 
 pub(crate) const ROWPACK_VERSION: u8 = 3;
 pub(crate) const MAX_INPUT_STRING_BYTES: usize = 64 * 1024 * 1024;
@@ -2170,54 +2172,54 @@ impl RowPackEncoder {
                     }
                 },
                 IngestedType::Float32Array => {
-                    match access.with_float32_array(idx, |values| {
-                        if let ColumnEncoding::FloatArray { storage } = &col.encoding {
-                            encode_float_array_f32_with_tag(
-                                &mut scratch.data,
-                                col.logical_type,
-                                *storage,
-                                values,
-                            )
-                        } else {
-                            Err(anyhow!("rowpack float32 array encoding mismatch"))
-                        }
-                    })? {
+                    match access.float_list_view(idx)? {
                         None => 0u8,
-                        Some(tag) => tag,
+                        Some(view) => {
+                            if let ColumnEncoding::FloatArray { storage } = &col.encoding {
+                                encode_float_list_with_tag(
+                                    &mut scratch.data,
+                                    col.logical_type,
+                                    *storage,
+                                    view,
+                                )?
+                            } else {
+                                return Err(anyhow!("rowpack float32 array encoding mismatch"));
+                            }
+                        }
                     }
                 }
                 IngestedType::Float16Array => {
-                    match access.with_float32_array(idx, |values| {
-                        if let ColumnEncoding::FloatArray { storage } = &col.encoding {
-                            encode_float_array_f32_with_tag(
-                                &mut scratch.data,
-                                col.logical_type,
-                                *storage,
-                                values,
-                            )
-                        } else {
-                            Err(anyhow!("rowpack float16 array encoding mismatch"))
-                        }
-                    })? {
+                    match access.float_list_view(idx)? {
                         None => 0u8,
-                        Some(tag) => tag,
+                        Some(view) => {
+                            if let ColumnEncoding::FloatArray { storage } = &col.encoding {
+                                encode_float_list_with_tag(
+                                    &mut scratch.data,
+                                    col.logical_type,
+                                    *storage,
+                                    view,
+                                )?
+                            } else {
+                                return Err(anyhow!("rowpack float16 array encoding mismatch"));
+                            }
+                        }
                     }
                 }
                 IngestedType::Float64Array => {
-                    match access.with_float64_array(idx, |values| {
-                        if let ColumnEncoding::FloatArray { storage } = &col.encoding {
-                            encode_float_array_f64_with_tag(
-                                &mut scratch.data,
-                                col.logical_type,
-                                *storage,
-                                values,
-                            )
-                        } else {
-                            Err(anyhow!("rowpack float64 array encoding mismatch"))
-                        }
-                    })? {
+                    match access.float_list_view(idx)? {
                         None => 0u8,
-                        Some(tag) => tag,
+                        Some(view) => {
+                            if let ColumnEncoding::FloatArray { storage } = &col.encoding {
+                                encode_float_list_with_tag(
+                                    &mut scratch.data,
+                                    col.logical_type,
+                                    *storage,
+                                    view,
+                                )?
+                            } else {
+                                return Err(anyhow!("rowpack float64 array encoding mismatch"));
+                            }
+                        }
                     }
                 }
             };
@@ -2548,54 +2550,54 @@ impl RowPackEncoder {
                     }
                 },
                 IngestedType::Float32Array => {
-                    match access.with_float32_array(idx, |values| {
-                        if let ColumnEncoding::FloatArray { storage } = &col.encoding {
-                            encode_float_array_f32_with_tag(
-                                data,
-                                col.logical_type,
-                                *storage,
-                                values,
-                            )
-                        } else {
-                            Err(anyhow!("rowpack float32 array encoding mismatch"))
-                        }
-                    })? {
+                    match access.float_list_view(idx)? {
                         None => 0u8,
-                        Some(tag) => tag,
+                        Some(view) => {
+                            if let ColumnEncoding::FloatArray { storage } = &col.encoding {
+                                encode_float_list_with_tag(
+                                    data,
+                                    col.logical_type,
+                                    *storage,
+                                    view,
+                                )?
+                            } else {
+                                return Err(anyhow!("rowpack float32 array encoding mismatch"));
+                            }
+                        }
                     }
                 }
                 IngestedType::Float16Array => {
-                    match access.with_float32_array(idx, |values| {
-                        if let ColumnEncoding::FloatArray { storage } = &col.encoding {
-                            encode_float_array_f32_with_tag(
-                                data,
-                                col.logical_type,
-                                *storage,
-                                values,
-                            )
-                        } else {
-                            Err(anyhow!("rowpack float16 array encoding mismatch"))
-                        }
-                    })? {
+                    match access.float_list_view(idx)? {
                         None => 0u8,
-                        Some(tag) => tag,
+                        Some(view) => {
+                            if let ColumnEncoding::FloatArray { storage } = &col.encoding {
+                                encode_float_list_with_tag(
+                                    data,
+                                    col.logical_type,
+                                    *storage,
+                                    view,
+                                )?
+                            } else {
+                                return Err(anyhow!("rowpack float16 array encoding mismatch"));
+                            }
+                        }
                     }
                 }
                 IngestedType::Float64Array => {
-                    match access.with_float64_array(idx, |values| {
-                        if let ColumnEncoding::FloatArray { storage } = &col.encoding {
-                            encode_float_array_f64_with_tag(
-                                data,
-                                col.logical_type,
-                                *storage,
-                                values,
-                            )
-                        } else {
-                            Err(anyhow!("rowpack float64 array encoding mismatch"))
-                        }
-                    })? {
+                    match access.float_list_view(idx)? {
                         None => 0u8,
-                        Some(tag) => tag,
+                        Some(view) => {
+                            if let ColumnEncoding::FloatArray { storage } = &col.encoding {
+                                encode_float_list_with_tag(
+                                    data,
+                                    col.logical_type,
+                                    *storage,
+                                    view,
+                                )?
+                            } else {
+                                return Err(anyhow!("rowpack float64 array encoding mismatch"));
+                            }
+                        }
                     }
                 }
             };
@@ -2882,11 +2884,11 @@ fn encode_value_with_tag<'a>(
             Err(anyhow!("rowpack string encoding mismatch"))
         }
         (ColumnEncoding::FloatArray { storage }, ValueRef::Float32Array(values)) => {
-            let tag = encode_float_array_f32_with_tag(out, col.logical_type, *storage, *values)?;
+            let tag = encode_float_slice_f32_with_tag(out, col.logical_type, *storage, *values)?;
             Ok(tag)
         }
         (ColumnEncoding::FloatArray { storage }, ValueRef::Float64Array(values)) => {
-            let tag = encode_float_array_f64_with_tag(out, col.logical_type, *storage, *values)?;
+            let tag = encode_float_slice_f64_with_tag(out, col.logical_type, *storage, *values)?;
             Ok(tag)
         }
         _ => Err(anyhow!("rowpack value type mismatch")),
@@ -2953,30 +2955,299 @@ fn encode_decimal_i256_with_tag(
     }
 }
 
-fn encode_float_array_f32_with_tag(
+#[inline]
+fn extend_f16_slice_le(out: &mut Vec<u8>, slice: &[f16]) {
+    if cfg!(target_endian = "little") {
+        let len = slice.len() * std::mem::size_of::<f16>();
+        let ptr = slice.as_ptr() as *const u8;
+        // SAFETY: f16 is Copy; we only read the underlying bytes.
+        let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
+        out.extend_from_slice(bytes);
+    } else {
+        for v in slice {
+            out.extend_from_slice(&v.to_bits().to_le_bytes());
+        }
+    }
+}
+
+#[inline]
+fn extend_f32_slice_le(out: &mut Vec<u8>, slice: &[f32]) {
+    if cfg!(target_endian = "little") {
+        let len = slice.len() * std::mem::size_of::<f32>();
+        let ptr = slice.as_ptr() as *const u8;
+        // SAFETY: f32 is Copy; we only read the underlying bytes.
+        let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
+        out.extend_from_slice(bytes);
+    } else {
+        for v in slice {
+            out.extend_from_slice(&v.to_le_bytes());
+        }
+    }
+}
+
+#[inline]
+fn extend_f64_slice_le(out: &mut Vec<u8>, slice: &[f64]) {
+    if cfg!(target_endian = "little") {
+        let len = slice.len() * std::mem::size_of::<f64>();
+        let ptr = slice.as_ptr() as *const u8;
+        // SAFETY: f64 is Copy; we only read the underlying bytes.
+        let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
+        out.extend_from_slice(bytes);
+    } else {
+        for v in slice {
+            out.extend_from_slice(&v.to_le_bytes());
+        }
+    }
+}
+
+fn encode_float_list_with_tag(
+    out: &mut Vec<u8>,
+    logical: IngestedType,
+    storage: FloatStorage,
+    view: FloatListView,
+) -> Result<u8> {
+    let _ = logical;
+    let len = view.end.saturating_sub(view.start);
+    let bytes_per = match storage {
+        FloatStorage::F16 => 2,
+        FloatStorage::F32 => 4,
+        FloatStorage::F64 => 8,
+    };
+    out.reserve(varint_bytes_u64(len as u64) + len * bytes_per);
+    write_varint(len as u64, out);
+    match view.values {
+        FloatListValues::F16(values) => {
+            let values_arr = values
+                .as_any()
+                .downcast_ref::<arrow_array::Float16Array>()
+                .ok_or_else(|| anyhow!("float16 list cast"))?;
+            let slice = &values_arr.values()[view.start..view.end];
+            match storage {
+                FloatStorage::F16 => {
+                    if values_arr.null_count() == 0 {
+                        extend_f16_slice_le(out, slice);
+                    } else {
+                        for idx in view.start..view.end {
+                            if values_arr.is_null(idx) {
+                                out.extend_from_slice(&0u16.to_le_bytes());
+                            } else {
+                                out.extend_from_slice(
+                                    &values_arr.value(idx).to_bits().to_le_bytes(),
+                                );
+                            }
+                        }
+                    }
+                }
+                FloatStorage::F32 => {
+                    if values_arr.null_count() == 0 {
+                        for v in slice {
+                            out.extend_from_slice(&f16::to_f32(*v).to_le_bytes());
+                        }
+                    } else {
+                        for idx in view.start..view.end {
+                            if values_arr.is_null(idx) {
+                                out.extend_from_slice(&0f32.to_le_bytes());
+                            } else {
+                                out.extend_from_slice(
+                                    &f16::to_f32(values_arr.value(idx)).to_le_bytes(),
+                                );
+                            }
+                        }
+                    }
+                }
+                FloatStorage::F64 => {
+                    if values_arr.null_count() == 0 {
+                        for v in slice {
+                            out.extend_from_slice(&(f16::to_f32(*v) as f64).to_le_bytes());
+                        }
+                    } else {
+                        for idx in view.start..view.end {
+                            if values_arr.is_null(idx) {
+                                out.extend_from_slice(&0f64.to_le_bytes());
+                            } else {
+                                out.extend_from_slice(
+                                    &(f16::to_f32(values_arr.value(idx)) as f64).to_le_bytes(),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        FloatListValues::F32(values) => {
+            let values_arr = values
+                .as_any()
+                .downcast_ref::<arrow_array::Float32Array>()
+                .ok_or_else(|| anyhow!("float32 list cast"))?;
+            let slice = &values_arr.values()[view.start..view.end];
+            match storage {
+                FloatStorage::F16 => {
+                    if values_arr.null_count() == 0 {
+                        for v in slice {
+                            out.extend_from_slice(&f16::from_f32(*v).to_bits().to_le_bytes());
+                        }
+                    } else {
+                        for idx in view.start..view.end {
+                            if values_arr.is_null(idx) {
+                                out.extend_from_slice(&0u16.to_le_bytes());
+                            } else {
+                                out.extend_from_slice(
+                                    &f16::from_f32(values_arr.value(idx)).to_bits().to_le_bytes(),
+                                );
+                            }
+                        }
+                    }
+                }
+                FloatStorage::F32 => {
+                    if values_arr.null_count() == 0 {
+                        extend_f32_slice_le(out, slice);
+                    } else {
+                        for idx in view.start..view.end {
+                            if values_arr.is_null(idx) {
+                                out.extend_from_slice(&0f32.to_le_bytes());
+                            } else {
+                                out.extend_from_slice(&values_arr.value(idx).to_le_bytes());
+                            }
+                        }
+                    }
+                }
+                FloatStorage::F64 => {
+                    if values_arr.null_count() == 0 {
+                        for v in slice {
+                            out.extend_from_slice(&(*v as f64).to_le_bytes());
+                        }
+                    } else {
+                        for idx in view.start..view.end {
+                            if values_arr.is_null(idx) {
+                                out.extend_from_slice(&0f64.to_le_bytes());
+                            } else {
+                                out.extend_from_slice(&(values_arr.value(idx) as f64).to_le_bytes());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        FloatListValues::F64(values) => {
+            let values_arr = values
+                .as_any()
+                .downcast_ref::<arrow_array::Float64Array>()
+                .ok_or_else(|| anyhow!("float64 list cast"))?;
+            let slice = &values_arr.values()[view.start..view.end];
+            match storage {
+                FloatStorage::F16 => {
+                    if values_arr.null_count() == 0 {
+                        for v in slice {
+                            out.extend_from_slice(&f16::from_f32(*v as f32).to_bits().to_le_bytes());
+                        }
+                    } else {
+                        for idx in view.start..view.end {
+                            if values_arr.is_null(idx) {
+                                out.extend_from_slice(&0u16.to_le_bytes());
+                            } else {
+                                out.extend_from_slice(
+                                    &f16::from_f32(values_arr.value(idx) as f32)
+                                        .to_bits()
+                                        .to_le_bytes(),
+                                );
+                            }
+                        }
+                    }
+                }
+                FloatStorage::F32 => {
+                    if values_arr.null_count() == 0 {
+                        for v in slice {
+                            out.extend_from_slice(&(*v as f32).to_le_bytes());
+                        }
+                    } else {
+                        for idx in view.start..view.end {
+                            if values_arr.is_null(idx) {
+                                out.extend_from_slice(&0f32.to_le_bytes());
+                            } else {
+                                out.extend_from_slice(&(values_arr.value(idx) as f32).to_le_bytes());
+                            }
+                        }
+                    }
+                }
+                FloatStorage::F64 => {
+                    if values_arr.null_count() == 0 {
+                        extend_f64_slice_le(out, slice);
+                    } else {
+                        for idx in view.start..view.end {
+                            if values_arr.is_null(idx) {
+                                out.extend_from_slice(&0f64.to_le_bytes());
+                            } else {
+                                out.extend_from_slice(&values_arr.value(idx).to_le_bytes());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(1)
+}
+
+fn encode_float_slice_f32_with_tag(
     out: &mut Vec<u8>,
     logical: IngestedType,
     storage: FloatStorage,
     values: &[f32],
 ) -> Result<u8> {
     let _ = logical;
+    let bytes_per = match storage {
+        FloatStorage::F16 => 2,
+        FloatStorage::F32 => 4,
+        FloatStorage::F64 => 8,
+    };
+    out.reserve(varint_bytes_u64(values.len() as u64) + values.len() * bytes_per);
     write_varint(values.len() as u64, out);
-    for v in values {
-        encode_float(out, storage, *v as f64)?;
+    match storage {
+        FloatStorage::F16 => {
+            for v in values {
+                out.extend_from_slice(&f16::from_f32(*v).to_bits().to_le_bytes());
+            }
+        }
+        FloatStorage::F32 => {
+            extend_f32_slice_le(out, values);
+        }
+        FloatStorage::F64 => {
+            for v in values {
+                out.extend_from_slice(&(*v as f64).to_le_bytes());
+            }
+        }
     }
     Ok(1)
 }
 
-fn encode_float_array_f64_with_tag(
+fn encode_float_slice_f64_with_tag(
     out: &mut Vec<u8>,
     logical: IngestedType,
     storage: FloatStorage,
     values: &[f64],
 ) -> Result<u8> {
     let _ = logical;
+    let bytes_per = match storage {
+        FloatStorage::F16 => 2,
+        FloatStorage::F32 => 4,
+        FloatStorage::F64 => 8,
+    };
+    out.reserve(varint_bytes_u64(values.len() as u64) + values.len() * bytes_per);
     write_varint(values.len() as u64, out);
-    for v in values {
-        encode_float(out, storage, *v)?;
+    match storage {
+        FloatStorage::F16 => {
+            for v in values {
+                out.extend_from_slice(&f16::from_f32(*v as f32).to_bits().to_le_bytes());
+            }
+        }
+        FloatStorage::F32 => {
+            for v in values {
+                out.extend_from_slice(&(*v as f32).to_le_bytes());
+            }
+        }
+        FloatStorage::F64 => {
+            extend_f64_slice_le(out, values);
+        }
     }
     Ok(1)
 }
@@ -4625,4 +4896,3 @@ fn push_utf8_lossy(out: &mut String, bytes: &[u8]) {
         out.push_str(&String::from_utf8_lossy(bytes));
     }
 }
-

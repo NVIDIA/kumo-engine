@@ -24,6 +24,18 @@ pub struct RowAccess<'p> {
     fast_parsers: Vec<Option<TimestampFormatParser>>,
 }
 
+pub enum FloatListValues {
+    F16(ArrayRef),
+    F32(ArrayRef),
+    F64(ArrayRef),
+}
+
+pub struct FloatListView {
+    pub start: usize,
+    pub end: usize,
+    pub values: FloatListValues,
+}
+
 impl<'p> RowAccess<'p> {
     pub fn new(
         hints: Vec<RowAccessHints>,
@@ -1801,6 +1813,39 @@ impl<'p> RowAccess<'p> {
             }
             _ => Err(anyhow!("float32 array type mismatch")),
         }
+    }
+
+    pub fn float_list_view(&mut self, idx: usize) -> Result<Option<FloatListView>> {
+        let array = self.array(idx)?.clone();
+        if array.is_null(self.row) {
+            return Ok(None);
+        }
+        let (start, end, values) = if let Some(list) =
+            array.as_any().downcast_ref::<arrow_array::ListArray>()
+        {
+            let offsets = list.value_offsets();
+            (
+                offsets[self.row] as usize,
+                offsets[self.row + 1] as usize,
+                list.values(),
+            )
+        } else if let Some(list) = array.as_any().downcast_ref::<arrow_array::LargeListArray>() {
+            let offsets = list.value_offsets();
+            (
+                offsets[self.row] as usize,
+                offsets[self.row + 1] as usize,
+                list.values(),
+            )
+        } else {
+            return Err(anyhow!("list cast"));
+        };
+        let values = match values.data_type() {
+            DataType::Float16 => FloatListValues::F16(values.clone()),
+            DataType::Float32 => FloatListValues::F32(values.clone()),
+            DataType::Float64 => FloatListValues::F64(values.clone()),
+            _ => return Err(anyhow!("float array type mismatch")),
+        };
+        Ok(Some(FloatListView { start, end, values }))
     }
 
     pub fn with_float64_array<T>(
