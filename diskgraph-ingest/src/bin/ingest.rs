@@ -241,7 +241,9 @@ fn main() -> Result<()> {
         if !stats.key_failure_samples.is_empty() {
             println!("  {}", color("Examples:", Color::YellowBold));
             for sample in &stats.key_failure_samples {
-                println!("    {}", sample);
+                let (label_part, value_part) = split_example(sample);
+                print!("    {}", color(label_part, Color::YellowBold));
+                println!("{}", value_part);
             }
         }
     }
@@ -584,6 +586,16 @@ fn color(text: &str, color: Color) -> String {
         Color::Blue => ("\x1b[34m", "\x1b[0m"),
     };
     format!("{code}{text}{reset}")
+}
+
+fn split_example(sample: &str) -> (&str, &str) {
+    if let Some((_label, value)) = sample.rsplit_once(": ") {
+        let label_end = sample.len().saturating_sub(value.len());
+        let (label_part, value_part) = sample.split_at(label_end);
+        (label_part, value_part)
+    } else {
+        (sample, "")
+    }
 }
 
 fn dataset_from_source(source: &PathBuf, source_str: &str) -> String {

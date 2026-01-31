@@ -106,4 +106,4 @@ if [[ "${PARALLEL_ENABLED}" == "true" ]]; then
   args+=(--parallel)
 fi
 env ${env_args[@]+"${env_args[@]}"} "${args[@]}"
-echo "Next: ./diskgraph-ingest/scripts/perf_explorer.sh \"${INPUT_NAME}\""
+echo -e "\033[36;1mNext:\033[0m ./diskgraph-ingest/scripts/perf_explorer.sh \"${INPUT_NAME}\""
