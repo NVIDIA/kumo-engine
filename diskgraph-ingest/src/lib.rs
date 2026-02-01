@@ -2026,6 +2026,78 @@ impl IngestContext {
             return Err(anyhow!("input path not found {}", path));
         }
         let mut row_id = 0u64;
+
+        macro_rules! process_node_batch {
+            ($batch:expr) => {
+                let has_null_timestamps = if let Some((idx, _)) = &create_time_info {
+                    access.array(*idx).map_or(true, |a| a.null_count() > 0)
+                } else {
+                    false
+                };
+
+                if has_null_timestamps {
+                    for row in 0..$batch.num_rows() {
+                        access.set_row(row);
+                        if let Some((idx, _dtype)) = &create_time_info {
+                            let is_null = access.array(*idx).map(|a| a.is_null(row)).unwrap_or(true);
+                            if is_null {
+                                node_data_dropped += 1;
+                                let sample = pk_idx.and_then(|i| sample_from_access(&access, i));
+                                record_key_parse_failure_sample(
+                                    &mut key_failures.parse_failures,
+                                    &mut key_failures.samples,
+                                    &mut key_failures.by_context,
+                                    &format!("node_data_dropped:{}", table.name),
+                                    sample,
+                                );
+                                continue;
+                            }
+                        }
+                        total_rows += 1;
+                        Self::write_node_row_from_access(
+                            table,
+                            pk_idx,
+                            &rel_specs,
+                            &mut access,
+                            &node_encoder,
+                            &mut batcher,
+                            &mut dest_fkey_batcher,
+                            &mut sort_key_batchers,
+                            &mut row_id,
+                            pk_col,
+                            &mut key_bufs,
+                            &mut f16_buf,
+                            &mut node_data_dropped,
+                            num_shards,
+                            key_failures,
+                        )?;
+                    }
+                } else {
+                    for row in 0..$batch.num_rows() {
+                        access.set_row(row);
+                        total_rows += 1;
+                        Self::write_node_row_from_access(
+                            table,
+                            pk_idx,
+                            &rel_specs,
+                            &mut access,
+                            &node_encoder,
+                            &mut batcher,
+                            &mut dest_fkey_batcher,
+                            &mut sort_key_batchers,
+                            &mut row_id,
+                            pk_col,
+                            &mut key_bufs,
+                            &mut f16_buf,
+                            &mut node_data_dropped,
+                            num_shards,
+                            key_failures,
+                        )?;
+                    }
+                }
+            };
+        }
+
         match table.format {
             TableFormat::Parquet => {
                 if let Some(transfer) = &input_transfer {
@@ -2045,42 +2117,7 @@ impl IngestContext {
                                 cols.push(batch.column(idx).clone());
                             }
                             access.set_cols(&cols);
-                            for row in 0..batch.num_rows() {
-                                access.set_row(row);
-                                if let Some((idx, _dtype)) = &create_time_info {
-                                    let is_null = access.array(*idx).map(|a| a.is_null(row)).unwrap_or(true);
-                                    if is_null {
-                                        node_data_dropped += 1;
-                                        let sample = pk_idx.and_then(|i| sample_from_access(&access, i));
-                                        record_key_parse_failure_sample(
-                                            &mut key_failures.parse_failures,
-                                            &mut key_failures.samples,
-                                            &mut key_failures.by_context,
-                                            &format!("node_data_dropped:{}", table.name),
-                                            sample,
-                                        );
-                                        continue;
-                                    }
-                                }
-                                total_rows += 1;
-                                Self::write_node_row_from_access(
-                                    table,
-                                    pk_idx,
-                                    &rel_specs,
-                                    &mut access,
-                                    &node_encoder,
-                                    &mut batcher,
-                                    &mut dest_fkey_batcher,
-                                    &mut sort_key_batchers,
-                                    &mut row_id,
-                                    pk_col,
-                                    &mut key_bufs,
-                                    &mut f16_buf,
-                                    &mut node_data_dropped,
-                                    num_shards,
-                                    key_failures,
-                                )?;
-                            }
+                            process_node_batch!(batch);
                         }
                         drop(pooled);
                     } else {
@@ -2100,42 +2137,7 @@ impl IngestContext {
                                 cols.push(batch.column(idx).clone());
                             }
                             access.set_cols(&cols);
-                            for row in 0..batch.num_rows() {
-                                access.set_row(row);
-                                if let Some((idx, _dtype)) = &create_time_info {
-                                    let is_null = access.array(*idx).map(|a| a.is_null(row)).unwrap_or(true);
-                                    if is_null {
-                                        node_data_dropped += 1;
-                                        let sample = pk_idx.and_then(|i| sample_from_access(&access, i));
-                                        record_key_parse_failure_sample(
-                                            &mut key_failures.parse_failures,
-                                            &mut key_failures.samples,
-                                            &mut key_failures.by_context,
-                                            &format!("node_data_dropped:{}", table.name),
-                                            sample,
-                                        );
-                                        continue;
-                                    }
-                                }
-                                total_rows += 1;
-                                Self::write_node_row_from_access(
-                                    table,
-                                    pk_idx,
-                                    &rel_specs,
-                                    &mut access,
-                                    &node_encoder,
-                                    &mut batcher,
-                                    &mut dest_fkey_batcher,
-                                    &mut sort_key_batchers,
-                                    &mut row_id,
-                                    pk_col,
-                                    &mut key_bufs,
-                                    &mut f16_buf,
-                                    &mut node_data_dropped,
-                                    num_shards,
-                                    key_failures,
-                                )?;
-                            }
+                            process_node_batch!(batch);
                         }
                     }
                 } else {
@@ -2155,42 +2157,7 @@ impl IngestContext {
                             cols.push(batch.column(idx).clone());
                         }
                         access.set_cols(&cols);
-                        for row in 0..batch.num_rows() {
-                            access.set_row(row);
-                            if let Some((idx, _dtype)) = &create_time_info {
-                                    let is_null = access.array(*idx).map(|a| a.is_null(row)).unwrap_or(true);
-                                    if is_null {
-                                        node_data_dropped += 1;
-                                        let sample = pk_idx.and_then(|i| sample_from_access(&access, i));
-                                        record_key_parse_failure_sample(
-                                            &mut key_failures.parse_failures,
-                                            &mut key_failures.samples,
-                                            &mut key_failures.by_context,
-                                            &format!("node_data_dropped:{}", table.name),
-                                            sample,
-                                        );
-                                        continue;
-                                    }
-                                }
-                                total_rows += 1;
-                            Self::write_node_row_from_access(
-                                table,
-                                pk_idx,
-                                &rel_specs,
-                                &mut access,
-                                &node_encoder,
-                                &mut batcher,
-                                &mut dest_fkey_batcher,
-                                &mut sort_key_batchers,
-                                &mut row_id,
-                                pk_col,
-                                &mut key_bufs,
-                                &mut f16_buf,
-                                &mut node_data_dropped,
-                                num_shards,
-                                key_failures,
-                            )?;
-                        }
+                        process_node_batch!(batch);
                     }
                 }
             }
@@ -2215,34 +2182,93 @@ impl IngestContext {
                                 cols.push(batch.column(idx).clone());
                             }
                             access.set_cols(&cols);
-                            for row in 0..batch.num_rows() {
-                                access.set_row(row);
-                                if let Some((idx, _dtype)) = &create_time_info {
-                                    let is_null = access.array(*idx).map(|a| a.is_null(row)).unwrap_or(true);
-                                    if is_null {
-                                        node_data_dropped += 1;
-                                        continue;
+                            let has_null_timestamps = if let Some((idx, _)) = &create_time_info {
+                                access.array(*idx).map_or(true, |a| a.null_count() > 0)
+                            } else {
+                                false
+                            };
+
+                            if has_null_timestamps {
+                                let has_null_timestamps = if let Some((idx, _)) = &create_time_info {
+                                    access.array(*idx).map_or(true, |a| a.null_count() > 0)
+                                } else {
+                                    false
+                                };
+
+                                if has_null_timestamps {
+                                    for row in 0..batch.num_rows() {
+                                        access.set_row(row);
+                                        if let Some((idx, _dtype)) = &create_time_info {
+                                            let is_null = access.array(*idx).map(|a| a.is_null(row)).unwrap_or(true);
+                                            if is_null {
+                                                node_data_dropped += 1;
+                                                continue;
+                                            }
+                                        }
+                                        total_rows += 1;
+                                        Self::write_node_row_from_access(
+                                            table,
+                                            pk_idx,
+                                            &rel_specs,
+                                            &mut access,
+                                            &node_encoder,
+                                            &mut batcher,
+                                            &mut dest_fkey_batcher,
+                                            &mut sort_key_batchers,
+                                            &mut row_id,
+                                            pk_col,
+                                            &mut key_bufs,
+                                            &mut f16_buf,
+                                            &mut node_data_dropped,
+                                            num_shards,
+                                            key_failures,
+                                        )?;
+                                    }
+                                } else {
+                                    for row in 0..batch.num_rows() {
+                                        access.set_row(row);
+                                        total_rows += 1;
+                                        Self::write_node_row_from_access(
+                                            table,
+                                            pk_idx,
+                                            &rel_specs,
+                                            &mut access,
+                                            &node_encoder,
+                                            &mut batcher,
+                                            &mut dest_fkey_batcher,
+                                            &mut sort_key_batchers,
+                                            &mut row_id,
+                                            pk_col,
+                                            &mut key_bufs,
+                                            &mut f16_buf,
+                                            &mut node_data_dropped,
+                                            num_shards,
+                                            key_failures,
+                                        )?;
                                     }
                                 }
-                                total_rows += 1;
-                                access.set_row(row);
-                                Self::write_node_row_from_access(
-                                    table,
-                                    pk_idx,
-                                    &rel_specs,
-                                    &mut access,
-                                    &node_encoder,
-                                    &mut batcher,
-                                    &mut dest_fkey_batcher,
-                                    &mut sort_key_batchers,
-                                    &mut row_id,
-                                    pk_col,
-                                    &mut key_bufs,
-                                    &mut f16_buf,
-                                    &mut node_data_dropped,
-                                    num_shards,
-                                    key_failures,
-                                )?;
+                            } else {
+                                for row in 0..batch.num_rows() {
+                                    access.set_row(row);
+                                    total_rows += 1;
+                                    Self::write_node_row_from_access(
+                                        table,
+                                        pk_idx,
+                                        &rel_specs,
+                                        &mut access,
+                                        &node_encoder,
+                                        &mut batcher,
+                                        &mut dest_fkey_batcher,
+                                        &mut sort_key_batchers,
+                                        &mut row_id,
+                                        pk_col,
+                                        &mut key_bufs,
+                                        &mut f16_buf,
+                                        &mut node_data_dropped,
+                                        num_shards,
+                                        key_failures,
+                                    )?;
+                                }
                             }
                         }
                         drop(pooled);
@@ -2264,34 +2290,7 @@ impl IngestContext {
                                 cols.push(batch.column(idx).clone());
                             }
                             access.set_cols(&cols);
-                            for row in 0..batch.num_rows() {
-                                access.set_row(row);
-                                if let Some((idx, _dtype)) = &create_time_info {
-                                    let is_null = access.array(*idx).map(|a| a.is_null(row)).unwrap_or(true);
-                                    if is_null {
-                                        node_data_dropped += 1;
-                                        continue;
-                                    }
-                                }
-                                total_rows += 1;
-                                Self::write_node_row_from_access(
-                                    table,
-                                    pk_idx,
-                                    &rel_specs,
-                                    &mut access,
-                                    &node_encoder,
-                                    &mut batcher,
-                                    &mut dest_fkey_batcher,
-                                    &mut sort_key_batchers,
-                                    &mut row_id,
-                                    pk_col,
-                                    &mut key_bufs,
-                                    &mut f16_buf,
-                                    &mut node_data_dropped,
-                                    num_shards,
-                                    key_failures,
-                                )?;
-                            }
+                            process_node_batch!(batch);
                         }
                     }
                 } else {
@@ -2312,42 +2311,7 @@ impl IngestContext {
                             cols.push(batch.column(idx).clone());
                         }
                         access.set_cols(&cols);
-                        for row in 0..batch.num_rows() {
-                            access.set_row(row);
-                            if let Some((idx, _dtype)) = &create_time_info {
-                                    let is_null = access.array(*idx).map(|a| a.is_null(row)).unwrap_or(true);
-                                    if is_null {
-                                        node_data_dropped += 1;
-                                        let sample = pk_idx.and_then(|i| sample_from_access(&access, i));
-                                        record_key_parse_failure_sample(
-                                            &mut key_failures.parse_failures,
-                                            &mut key_failures.samples,
-                                            &mut key_failures.by_context,
-                                            &format!("node_data_dropped:{}", table.name),
-                                            sample,
-                                        );
-                                        continue;
-                                    }
-                                }
-                                total_rows += 1;
-                            Self::write_node_row_from_access(
-                                table,
-                                pk_idx,
-                                &rel_specs,
-                                &mut access,
-                                &node_encoder,
-                                &mut batcher,
-                                &mut dest_fkey_batcher,
-                                &mut sort_key_batchers,
-                                &mut row_id,
-                                pk_col,
-                                &mut key_bufs,
-                                &mut f16_buf,
-                                &mut node_data_dropped,
-                                num_shards,
-                                key_failures,
-                            )?;
-                        }
+                        process_node_batch!(batch);
                     }
                 }
             }
@@ -2565,6 +2529,84 @@ impl IngestContext {
         let row_access_hints = build_row_access_hints(table);
         let stats = RowAccessStats::new(Some(trimmed_strings.as_ref()));
         let mut access = RowAccess::new(row_access_hints, stats);
+
+        macro_rules! process_edge_batch {
+            ($batch:expr, $cols:expr, $src_fast:expr, $dst_fast:expr, $src_key_buf:expr, $dst_key_buf:expr, $forward_row:expr) => {
+                let has_null_timestamps = if let Some((idx, _)) = &create_time_info {
+                    access.array(*idx).map_or(true, |a| a.null_count() > 0)
+                } else {
+                    false
+                };
+
+                if has_null_timestamps {
+                    for row in 0..$batch.num_rows() {
+                        access.set_row(row);
+                        if let Some((idx, _dtype)) = &create_time_info {
+                            let is_null = access.array(*idx).map(|a| a.is_null(row)).unwrap_or(true);
+                            if is_null {
+                                node_data_dropped += 1;
+                                let sample = sample_from_access(&access, src_fk_idx);
+                                record_key_parse_failure_sample(
+                                    &mut key_failures.parse_failures,
+                                    &mut key_failures.samples,
+                                    &mut key_failures.by_context,
+                                    &format!("node_data_dropped:{}", table.name),
+                                    sample,
+                                );
+                                continue;
+                            }
+                        }
+                        Self::write_edge_row_from_access(
+                            src_fk_idx,
+                            dst_fk_idx,
+                            src_fk_col,
+                            dst_fk_col,
+                            &src_context,
+                            &dst_context,
+                            $cols,
+                            row,
+                            $src_fast,
+                            $dst_fast,
+                            &mut access,
+                            $src_key_buf,
+                            $dst_key_buf,
+                            $forward_row,
+                            &mut batcher,
+                            &mut edge_key_batcher,
+                            &mut sort_key_batchers,
+                            num_shards,
+                            key_failures,
+                        )?;
+                    }
+                } else {
+                    for row in 0..$batch.num_rows() {
+                        access.set_row(row);
+                        Self::write_edge_row_from_access(
+                            src_fk_idx,
+                            dst_fk_idx,
+                            src_fk_col,
+                            dst_fk_col,
+                            &src_context,
+                            &dst_context,
+                            $cols,
+                            row,
+                            $src_fast,
+                            $dst_fast,
+                            &mut access,
+                            $src_key_buf,
+                            $dst_key_buf,
+                            $forward_row,
+                            &mut batcher,
+                            &mut edge_key_batcher,
+                            &mut sort_key_batchers,
+                            num_shards,
+                            key_failures,
+                        )?;
+                    }
+                }
+            };
+        }
+
         match table.format {
             TableFormat::Parquet => {
                 if let Some(transfer) = &input_transfer {
@@ -2589,45 +2631,15 @@ impl IngestContext {
                             let mut src_key_buf = Vec::new();
                             let mut dst_key_buf = Vec::new();
                             let mut forward_row = Vec::new();
-                            for row in 0..batch.num_rows() {
-                                access.set_row(row);
-                                if let Some((idx, _dtype)) = &create_time_info {
-                                    let is_null = access.array(*idx).map(|a| a.is_null(row)).unwrap_or(true);
-                                    if is_null {
-                                        node_data_dropped += 1;
-                                        let sample = sample_from_access(&access, src_fk_idx);
-                                        record_key_parse_failure_sample(
-                                            &mut key_failures.parse_failures,
-                                            &mut key_failures.samples,
-                                            &mut key_failures.by_context,
-                                            &format!("node_data_dropped:{}", table.name),
-                                            sample,
-                                        );
-                                        continue;
-                                    }
-                                }
-                                Self::write_edge_row_from_access(
-                                    src_fk_idx,
-                                    dst_fk_idx,
-                                    src_fk_col,
-                                    dst_fk_col,
-                                    &src_context,
-                                    &dst_context,
-                                    &cols,
-                                    row,
-                                    src_fast,
-                                    dst_fast,
-                                    &mut access,
-                                    &mut src_key_buf,
-                                    &mut dst_key_buf,
-                                    &mut forward_row,
-                                    &mut batcher,
-                                    &mut edge_key_batcher,
-                                    &mut sort_key_batchers,
-                                    num_shards,
-                                    key_failures,
-                                )?;
-                            }
+                            process_edge_batch!(
+                                batch,
+                                &cols,
+                                src_fast,
+                                dst_fast,
+                                &mut src_key_buf,
+                                &mut dst_key_buf,
+                                &mut forward_row
+                            );
                         }
                         drop(pooled);
                     } else {
@@ -2652,45 +2664,15 @@ impl IngestContext {
                             let mut src_key_buf = Vec::new();
                             let mut dst_key_buf = Vec::new();
                             let mut forward_row = Vec::new();
-                            for row in 0..batch.num_rows() {
-                                access.set_row(row);
-                                if let Some((idx, _dtype)) = &create_time_info {
-                                    let is_null = access.array(*idx).map(|a| a.is_null(row)).unwrap_or(true);
-                                    if is_null {
-                                        node_data_dropped += 1;
-                                        let sample = sample_from_access(&access, src_fk_idx);
-                                        record_key_parse_failure_sample(
-                                            &mut key_failures.parse_failures,
-                                            &mut key_failures.samples,
-                                            &mut key_failures.by_context,
-                                            &format!("node_data_dropped:{}", table.name),
-                                            sample,
-                                        );
-                                        continue;
-                                    }
-                                }
-                                Self::write_edge_row_from_access(
-                                    src_fk_idx,
-                                    dst_fk_idx,
-                                    src_fk_col,
-                                    dst_fk_col,
-                                    &src_context,
-                                    &dst_context,
-                                    &cols,
-                                    row,
-                                    src_fast,
-                                    dst_fast,
-                                    &mut access,
-                                    &mut src_key_buf,
-                                    &mut dst_key_buf,
-                                    &mut forward_row,
-                                    &mut batcher,
-                                    &mut edge_key_batcher,
-                                    &mut sort_key_batchers,
-                                    num_shards,
-                                    key_failures,
-                                )?;
-                            }
+                            process_edge_batch!(
+                                batch,
+                                &cols,
+                                src_fast,
+                                dst_fast,
+                                &mut src_key_buf,
+                                &mut dst_key_buf,
+                                &mut forward_row
+                            );
                         }
                     }
                 } else {
@@ -2715,45 +2697,15 @@ impl IngestContext {
                             let mut src_key_buf = Vec::new();
                             let mut dst_key_buf = Vec::new();
                             let mut forward_row = Vec::new();
-                            for row in 0..batch.num_rows() {
-                                access.set_row(row);
-                                if let Some((idx, _dtype)) = &create_time_info {
-                                    let is_null = access.array(*idx).map(|a| a.is_null(row)).unwrap_or(true);
-                                    if is_null {
-                                        node_data_dropped += 1;
-                                        let sample = sample_from_access(&access, src_fk_idx);
-                                        record_key_parse_failure_sample(
-                                            &mut key_failures.parse_failures,
-                                            &mut key_failures.samples,
-                                            &mut key_failures.by_context,
-                                            &format!("node_data_dropped:{}", table.name),
-                                            sample,
-                                        );
-                                        continue;
-                                    }
-                                }
-                                Self::write_edge_row_from_access(
-                                    src_fk_idx,
-                                    dst_fk_idx,
-                                    src_fk_col,
-                                    dst_fk_col,
-                                    &src_context,
-                                    &dst_context,
-                                    &cols,
-                                    row,
-                                    src_fast,
-                                    dst_fast,
-                                    &mut access,
-                                    &mut src_key_buf,
-                                    &mut dst_key_buf,
-                                    &mut forward_row,
-                                    &mut batcher,
-                                    &mut edge_key_batcher,
-                                    &mut sort_key_batchers,
-                                    num_shards,
-                                    key_failures,
-                                )?;
-                            }
+                            process_edge_batch!(
+                                batch,
+                                &cols,
+                                src_fast,
+                                dst_fast,
+                                &mut src_key_buf,
+                                &mut dst_key_buf,
+                                &mut forward_row
+                            );
                         }
                     }
             },
@@ -2782,45 +2734,15 @@ impl IngestContext {
                             let mut src_key_buf = Vec::new();
                             let mut dst_key_buf = Vec::new();
                             let mut forward_row = Vec::new();
-                            for row in 0..batch.num_rows() {
-                                access.set_row(row);
-                                if let Some((idx, _dtype)) = &create_time_info {
-                                    let is_null = access.array(*idx).map(|a| a.is_null(row)).unwrap_or(true);
-                                    if is_null {
-                                        node_data_dropped += 1;
-                                        let sample = sample_from_access(&access, src_fk_idx);
-                                        record_key_parse_failure_sample(
-                                            &mut key_failures.parse_failures,
-                                            &mut key_failures.samples,
-                                            &mut key_failures.by_context,
-                                            &format!("node_data_dropped:{}", table.name),
-                                            sample,
-                                        );
-                                        continue;
-                                    }
-                                }
-                                Self::write_edge_row_from_access(
-                                    src_fk_idx,
-                                    dst_fk_idx,
-                                    src_fk_col,
-                                    dst_fk_col,
-                                    &src_context,
-                                    &dst_context,
-                                    &cols,
-                                    row,
-                                    src_fast,
-                                    dst_fast,
-                                    &mut access,
-                                    &mut src_key_buf,
-                                    &mut dst_key_buf,
-                                    &mut forward_row,
-                                    &mut batcher,
-                                    &mut edge_key_batcher,
-                                    &mut sort_key_batchers,
-                                    num_shards,
-                                    key_failures,
-                                )?;
-                            }
+                            process_edge_batch!(
+                                batch,
+                                &cols,
+                                src_fast,
+                                dst_fast,
+                                &mut src_key_buf,
+                                &mut dst_key_buf,
+                                &mut forward_row
+                            );
                         }
                         drop(pooled);
                     } else {
@@ -2844,45 +2766,15 @@ impl IngestContext {
                             let mut src_key_buf = Vec::new();
                             let mut dst_key_buf = Vec::new();
                             let mut forward_row = Vec::new();
-                            for row in 0..batch.num_rows() {
-                                access.set_row(row);
-                                if let Some((idx, _dtype)) = &create_time_info {
-                                    let is_null = access.array(*idx).map(|a| a.is_null(row)).unwrap_or(true);
-                                    if is_null {
-                                        node_data_dropped += 1;
-                                        let sample = sample_from_access(&access, src_fk_idx);
-                                        record_key_parse_failure_sample(
-                                            &mut key_failures.parse_failures,
-                                            &mut key_failures.samples,
-                                            &mut key_failures.by_context,
-                                            &format!("node_data_dropped:{}", table.name),
-                                            sample,
-                                        );
-                                        continue;
-                                    }
-                                }
-                                Self::write_edge_row_from_access(
-                                    src_fk_idx,
-                                    dst_fk_idx,
-                                    src_fk_col,
-                                    dst_fk_col,
-                                    &src_context,
-                                    &dst_context,
-                                    &cols,
-                                    row,
-                                    src_fast,
-                                    dst_fast,
-                                    &mut access,
-                                    &mut src_key_buf,
-                                    &mut dst_key_buf,
-                                    &mut forward_row,
-                                    &mut batcher,
-                                    &mut edge_key_batcher,
-                                    &mut sort_key_batchers,
-                                    num_shards,
-                                    key_failures,
-                                )?;
-                            }
+                            process_edge_batch!(
+                                batch,
+                                &cols,
+                                src_fast,
+                                dst_fast,
+                                &mut src_key_buf,
+                                &mut dst_key_buf,
+                                &mut forward_row
+                            );
                         }
                     }
                 } else {
@@ -2906,45 +2798,15 @@ impl IngestContext {
                         let mut src_key_buf = Vec::new();
                         let mut dst_key_buf = Vec::new();
                         let mut forward_row = Vec::new();
-                        for row in 0..batch.num_rows() {
-                            access.set_row(row);
-                            if let Some((idx, _dtype)) = &create_time_info {
-                                    let is_null = access.array(*idx).map(|a| a.is_null(row)).unwrap_or(true);
-                                    if is_null {
-                                        node_data_dropped += 1;
-                                        let sample = sample_from_access(&access, src_fk_idx);
-                                        record_key_parse_failure_sample(
-                                            &mut key_failures.parse_failures,
-                                            &mut key_failures.samples,
-                                            &mut key_failures.by_context,
-                                            &format!("node_data_dropped:{}", table.name),
-                                            sample,
-                                        );
-                                        continue;
-                                    }
-                                }
-                            Self::write_edge_row_from_access(
-                                src_fk_idx,
-                                dst_fk_idx,
-                                src_fk_col,
-                                dst_fk_col,
-                                &src_context,
-                                &dst_context,
-                                &cols,
-                                row,
-                                src_fast,
-                                dst_fast,
-                                &mut access,
-                                &mut src_key_buf,
-                                &mut dst_key_buf,
-                                &mut forward_row,
-                                &mut batcher,
-                                &mut edge_key_batcher,
-                                &mut sort_key_batchers,
-                                num_shards,
-                                key_failures,
-                            )?;
-                        }
+                        process_edge_batch!(
+                            batch,
+                            &cols,
+                            src_fast,
+                            dst_fast,
+                            &mut src_key_buf,
+                            &mut dst_key_buf,
+                            &mut forward_row
+                        );
                     }
                 }
             }
