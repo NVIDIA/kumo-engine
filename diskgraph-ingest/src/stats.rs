@@ -25,6 +25,7 @@ pub struct IngestStats {
     pub pk_duplicate_drops: HashMap<String, u64>,
     pub pk_duplicate_total: u64,
     pub pk_duplicate_samples: HashMap<String, Vec<String>>,
+    pub dropped_rows_counts: HashMap<String, u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trimmed_strings: Option<u64>,
     pub perf: PerfStats,

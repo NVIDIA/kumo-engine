@@ -338,6 +338,11 @@ fn calculate_expected_node_count(table_name: &str, s3_count: u64, stats: &Ingest
     // 2. Duplicates (from pk_duplicate_counts)
     dropped += get_table_duplicates(table_name, stats);
 
+    // 3. Null timestamps or oversized rows (from dropped_rows_counts)
+    if let Some(&c) = stats.dropped_rows_counts.get(table_name) {
+        dropped += c;
+    }
+
     s3_count.saturating_sub(dropped)
 }
 

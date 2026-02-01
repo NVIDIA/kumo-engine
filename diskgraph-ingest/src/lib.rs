@@ -327,6 +327,7 @@ struct IngestContext {
     pk_duplicate_counts: HashMap<String, u64>,
     pk_duplicate_drops: HashMap<String, u64>,
     pk_duplicate_samples: HashMap<String, Vec<String>>,
+    dropped_rows_counts: HashMap<String, u64>,
     key_parse_failures: u64,
     key_lookup_failures: u64,
     key_failure_samples: Vec<String>,
@@ -1329,6 +1330,7 @@ impl IngestContext {
             pk_duplicate_counts: HashMap::new(),
             pk_duplicate_drops: HashMap::new(),
             pk_duplicate_samples: HashMap::new(),
+            dropped_rows_counts: HashMap::new(),
             key_parse_failures: 0,
             key_lookup_failures: 0,
             key_failure_samples: Vec::new(),
@@ -1673,7 +1675,7 @@ impl IngestContext {
                     run: Box::new(move |_scratch| {
                         let mut key_failures = KeyFailureState::default();
                         if table.edge_table.is_some() {
-                            Self::build_temp_edge_file(
+                            let node_data_dropped = Self::build_temp_edge_file(
                                 &table,
                                 file_idx,
                                 num_shards,
@@ -1692,7 +1694,7 @@ impl IngestContext {
                             tx.send(Ok(EncodeResult {
                                 table: table.name.clone(),
                                 total_rows: 0,
-                                node_data_dropped: 0,
+                                node_data_dropped,
                                 key_failures,
                             }))
                             .map_err(|e| anyhow!("encode output error: {e}"))?;
@@ -1741,8 +1743,7 @@ impl IngestContext {
                 table_rows.insert(result.table.clone(), result.total_rows);
             }
             if result.node_data_dropped > 0 {
-                let key = format!("node_data_dropped:{}", result.table);
-                let entry = self.pk_duplicate_counts.entry(key).or_insert(0);
+                let entry = self.dropped_rows_counts.entry(result.table.clone()).or_insert(0);
                 *entry = entry.saturating_add(result.node_data_dropped);
             }
             self.merge_key_failures(result.key_failures);
@@ -2011,6 +2012,12 @@ impl IngestContext {
             std::sync::Arc::clone(sort_key_senders),
         )?;
 
+        let create_time_info = table.create_time.as_ref().and_then(|ct| {
+            let idx = column_index(table, ct).ok()?;
+            let spec = column_spec(table, ct).ok()?;
+            Some((idx, spec.ingested_dtype.clone()))
+        });
+
         let path = table
             .paths
             .get(file_idx)
@@ -2039,8 +2046,23 @@ impl IngestContext {
                             }
                             access.set_cols(&cols);
                             for row in 0..batch.num_rows() {
-                                total_rows += 1;
                                 access.set_row(row);
+                                if let Some((idx, _dtype)) = &create_time_info {
+                                    let is_null = access.array(*idx).map(|a| a.is_null(row)).unwrap_or(true);
+                                    if is_null {
+                                        node_data_dropped += 1;
+                                        let sample = pk_idx.and_then(|i| sample_from_access(&access, i));
+                                        record_key_parse_failure_sample(
+                                            &mut key_failures.parse_failures,
+                                            &mut key_failures.samples,
+                                            &mut key_failures.by_context,
+                                            &format!("node_data_dropped:{}", table.name),
+                                            sample,
+                                        );
+                                        continue;
+                                    }
+                                }
+                                total_rows += 1;
                                 Self::write_node_row_from_access(
                                     table,
                                     pk_idx,
@@ -2079,8 +2101,23 @@ impl IngestContext {
                             }
                             access.set_cols(&cols);
                             for row in 0..batch.num_rows() {
-                                total_rows += 1;
                                 access.set_row(row);
+                                if let Some((idx, _dtype)) = &create_time_info {
+                                    let is_null = access.array(*idx).map(|a| a.is_null(row)).unwrap_or(true);
+                                    if is_null {
+                                        node_data_dropped += 1;
+                                        let sample = pk_idx.and_then(|i| sample_from_access(&access, i));
+                                        record_key_parse_failure_sample(
+                                            &mut key_failures.parse_failures,
+                                            &mut key_failures.samples,
+                                            &mut key_failures.by_context,
+                                            &format!("node_data_dropped:{}", table.name),
+                                            sample,
+                                        );
+                                        continue;
+                                    }
+                                }
+                                total_rows += 1;
                                 Self::write_node_row_from_access(
                                     table,
                                     pk_idx,
@@ -2119,8 +2156,23 @@ impl IngestContext {
                         }
                         access.set_cols(&cols);
                         for row in 0..batch.num_rows() {
-                            total_rows += 1;
                             access.set_row(row);
+                            if let Some((idx, _dtype)) = &create_time_info {
+                                    let is_null = access.array(*idx).map(|a| a.is_null(row)).unwrap_or(true);
+                                    if is_null {
+                                        node_data_dropped += 1;
+                                        let sample = pk_idx.and_then(|i| sample_from_access(&access, i));
+                                        record_key_parse_failure_sample(
+                                            &mut key_failures.parse_failures,
+                                            &mut key_failures.samples,
+                                            &mut key_failures.by_context,
+                                            &format!("node_data_dropped:{}", table.name),
+                                            sample,
+                                        );
+                                        continue;
+                                    }
+                                }
+                                total_rows += 1;
                             Self::write_node_row_from_access(
                                 table,
                                 pk_idx,
@@ -2164,6 +2216,14 @@ impl IngestContext {
                             }
                             access.set_cols(&cols);
                             for row in 0..batch.num_rows() {
+                                access.set_row(row);
+                                if let Some((idx, _dtype)) = &create_time_info {
+                                    let is_null = access.array(*idx).map(|a| a.is_null(row)).unwrap_or(true);
+                                    if is_null {
+                                        node_data_dropped += 1;
+                                        continue;
+                                    }
+                                }
                                 total_rows += 1;
                                 access.set_row(row);
                                 Self::write_node_row_from_access(
@@ -2205,8 +2265,15 @@ impl IngestContext {
                             }
                             access.set_cols(&cols);
                             for row in 0..batch.num_rows() {
-                                total_rows += 1;
                                 access.set_row(row);
+                                if let Some((idx, _dtype)) = &create_time_info {
+                                    let is_null = access.array(*idx).map(|a| a.is_null(row)).unwrap_or(true);
+                                    if is_null {
+                                        node_data_dropped += 1;
+                                        continue;
+                                    }
+                                }
+                                total_rows += 1;
                                 Self::write_node_row_from_access(
                                     table,
                                     pk_idx,
@@ -2246,8 +2313,23 @@ impl IngestContext {
                         }
                         access.set_cols(&cols);
                         for row in 0..batch.num_rows() {
-                            total_rows += 1;
                             access.set_row(row);
+                            if let Some((idx, _dtype)) = &create_time_info {
+                                    let is_null = access.array(*idx).map(|a| a.is_null(row)).unwrap_or(true);
+                                    if is_null {
+                                        node_data_dropped += 1;
+                                        let sample = pk_idx.and_then(|i| sample_from_access(&access, i));
+                                        record_key_parse_failure_sample(
+                                            &mut key_failures.parse_failures,
+                                            &mut key_failures.samples,
+                                            &mut key_failures.by_context,
+                                            &format!("node_data_dropped:{}", table.name),
+                                            sample,
+                                        );
+                                        continue;
+                                    }
+                                }
+                                total_rows += 1;
                             Self::write_node_row_from_access(
                                 table,
                                 pk_idx,
@@ -2430,7 +2512,7 @@ impl IngestContext {
         dest_key_errors: &std::sync::Arc<std::sync::Mutex<Option<String>>>,
         sort_key_senders: &std::sync::Arc<Vec<std::sync::mpsc::SyncSender<SortKeyWriteMessage>>>,
         relation_defs: &[RelationDef],
-    ) -> Result<()> {
+    ) -> Result<u64> {
         let edge = table
             .edge_table
             .as_ref()
@@ -2465,6 +2547,13 @@ impl IngestContext {
             buffer_limit,
             std::sync::Arc::clone(sort_key_senders),
         )?;
+
+        let mut node_data_dropped = 0u64;
+        let create_time_info = table.create_time.as_ref().and_then(|ct| {
+            let idx = column_index(table, ct).ok()?;
+            let spec = column_spec(table, ct).ok()?;
+            Some((idx, spec.ingested_dtype.clone()))
+        });
 
         let path = table
             .paths
@@ -2502,6 +2591,21 @@ impl IngestContext {
                             let mut forward_row = Vec::new();
                             for row in 0..batch.num_rows() {
                                 access.set_row(row);
+                                if let Some((idx, _dtype)) = &create_time_info {
+                                    let is_null = access.array(*idx).map(|a| a.is_null(row)).unwrap_or(true);
+                                    if is_null {
+                                        node_data_dropped += 1;
+                                        let sample = sample_from_access(&access, src_fk_idx);
+                                        record_key_parse_failure_sample(
+                                            &mut key_failures.parse_failures,
+                                            &mut key_failures.samples,
+                                            &mut key_failures.by_context,
+                                            &format!("node_data_dropped:{}", table.name),
+                                            sample,
+                                        );
+                                        continue;
+                                    }
+                                }
                                 Self::write_edge_row_from_access(
                                     src_fk_idx,
                                     dst_fk_idx,
@@ -2550,6 +2654,21 @@ impl IngestContext {
                             let mut forward_row = Vec::new();
                             for row in 0..batch.num_rows() {
                                 access.set_row(row);
+                                if let Some((idx, _dtype)) = &create_time_info {
+                                    let is_null = access.array(*idx).map(|a| a.is_null(row)).unwrap_or(true);
+                                    if is_null {
+                                        node_data_dropped += 1;
+                                        let sample = sample_from_access(&access, src_fk_idx);
+                                        record_key_parse_failure_sample(
+                                            &mut key_failures.parse_failures,
+                                            &mut key_failures.samples,
+                                            &mut key_failures.by_context,
+                                            &format!("node_data_dropped:{}", table.name),
+                                            sample,
+                                        );
+                                        continue;
+                                    }
+                                }
                                 Self::write_edge_row_from_access(
                                     src_fk_idx,
                                     dst_fk_idx,
@@ -2593,36 +2712,51 @@ impl IngestContext {
                         access.set_cols(&cols);
                         let src_fast = edge_fast_path_for_array(src_fk_col, &cols[src_fk_idx]);
                         let dst_fast = edge_fast_path_for_array(dst_fk_col, &cols[dst_fk_idx]);
-                        let mut src_key_buf = Vec::new();
-                        let mut dst_key_buf = Vec::new();
-                        let mut forward_row = Vec::new();
-                        for row in 0..batch.num_rows() {
-                            access.set_row(row);
-                            Self::write_edge_row_from_access(
-                                src_fk_idx,
-                                dst_fk_idx,
-                                src_fk_col,
-                                dst_fk_col,
-                                &src_context,
-                                &dst_context,
-                                &cols,
-                                row,
-                                src_fast,
-                                dst_fast,
-                                &mut access,
-                                &mut src_key_buf,
-                                &mut dst_key_buf,
-                                &mut forward_row,
-                                &mut batcher,
-                                &mut edge_key_batcher,
-                                &mut sort_key_batchers,
-                                num_shards,
-                                key_failures,
-                            )?;
+                            let mut src_key_buf = Vec::new();
+                            let mut dst_key_buf = Vec::new();
+                            let mut forward_row = Vec::new();
+                            for row in 0..batch.num_rows() {
+                                access.set_row(row);
+                                if let Some((idx, _dtype)) = &create_time_info {
+                                    let is_null = access.array(*idx).map(|a| a.is_null(row)).unwrap_or(true);
+                                    if is_null {
+                                        node_data_dropped += 1;
+                                        let sample = sample_from_access(&access, src_fk_idx);
+                                        record_key_parse_failure_sample(
+                                            &mut key_failures.parse_failures,
+                                            &mut key_failures.samples,
+                                            &mut key_failures.by_context,
+                                            &format!("node_data_dropped:{}", table.name),
+                                            sample,
+                                        );
+                                        continue;
+                                    }
+                                }
+                                Self::write_edge_row_from_access(
+                                    src_fk_idx,
+                                    dst_fk_idx,
+                                    src_fk_col,
+                                    dst_fk_col,
+                                    &src_context,
+                                    &dst_context,
+                                    &cols,
+                                    row,
+                                    src_fast,
+                                    dst_fast,
+                                    &mut access,
+                                    &mut src_key_buf,
+                                    &mut dst_key_buf,
+                                    &mut forward_row,
+                                    &mut batcher,
+                                    &mut edge_key_batcher,
+                                    &mut sort_key_batchers,
+                                    num_shards,
+                                    key_failures,
+                                )?;
+                            }
                         }
                     }
-                }
-            }
+            },
             TableFormat::Csv => {
                 let builder = arrow_csv::ReaderBuilder::new(Arc::new(schema.clone()))
                     .with_header(true);
@@ -2650,6 +2784,21 @@ impl IngestContext {
                             let mut forward_row = Vec::new();
                             for row in 0..batch.num_rows() {
                                 access.set_row(row);
+                                if let Some((idx, _dtype)) = &create_time_info {
+                                    let is_null = access.array(*idx).map(|a| a.is_null(row)).unwrap_or(true);
+                                    if is_null {
+                                        node_data_dropped += 1;
+                                        let sample = sample_from_access(&access, src_fk_idx);
+                                        record_key_parse_failure_sample(
+                                            &mut key_failures.parse_failures,
+                                            &mut key_failures.samples,
+                                            &mut key_failures.by_context,
+                                            &format!("node_data_dropped:{}", table.name),
+                                            sample,
+                                        );
+                                        continue;
+                                    }
+                                }
                                 Self::write_edge_row_from_access(
                                     src_fk_idx,
                                     dst_fk_idx,
@@ -2697,6 +2846,21 @@ impl IngestContext {
                             let mut forward_row = Vec::new();
                             for row in 0..batch.num_rows() {
                                 access.set_row(row);
+                                if let Some((idx, _dtype)) = &create_time_info {
+                                    let is_null = access.array(*idx).map(|a| a.is_null(row)).unwrap_or(true);
+                                    if is_null {
+                                        node_data_dropped += 1;
+                                        let sample = sample_from_access(&access, src_fk_idx);
+                                        record_key_parse_failure_sample(
+                                            &mut key_failures.parse_failures,
+                                            &mut key_failures.samples,
+                                            &mut key_failures.by_context,
+                                            &format!("node_data_dropped:{}", table.name),
+                                            sample,
+                                        );
+                                        continue;
+                                    }
+                                }
                                 Self::write_edge_row_from_access(
                                     src_fk_idx,
                                     dst_fk_idx,
@@ -2744,6 +2908,21 @@ impl IngestContext {
                         let mut forward_row = Vec::new();
                         for row in 0..batch.num_rows() {
                             access.set_row(row);
+                            if let Some((idx, _dtype)) = &create_time_info {
+                                    let is_null = access.array(*idx).map(|a| a.is_null(row)).unwrap_or(true);
+                                    if is_null {
+                                        node_data_dropped += 1;
+                                        let sample = sample_from_access(&access, src_fk_idx);
+                                        record_key_parse_failure_sample(
+                                            &mut key_failures.parse_failures,
+                                            &mut key_failures.samples,
+                                            &mut key_failures.by_context,
+                                            &format!("node_data_dropped:{}", table.name),
+                                            sample,
+                                        );
+                                        continue;
+                                    }
+                                }
                             Self::write_edge_row_from_access(
                                 src_fk_idx,
                                 dst_fk_idx,
@@ -2786,7 +2965,7 @@ impl IngestContext {
                 status: None,
 });
         }
-        Ok(())
+        Ok(node_data_dropped)
     }
 
 
@@ -3617,7 +3796,11 @@ impl IngestContext {
             });
         }
         if let Ok(counts) = std::sync::Arc::try_unwrap(duplicate_counts) {
-            self.pk_duplicate_counts = counts.into_inner().unwrap();
+            let pk_counts = counts.into_inner().unwrap();
+            for (k, v) in pk_counts {
+                let entry = self.pk_duplicate_counts.entry(k).or_insert(0);
+                *entry = entry.saturating_add(v);
+            }
         }
         if let Ok(samples) = std::sync::Arc::try_unwrap(duplicate_samples) {
             self.pk_duplicate_samples = samples.into_inner().unwrap();
@@ -4540,8 +4723,7 @@ impl IngestContext {
             self.cleanup_edge_stage("edge_keys")?;
             return Ok(());
         }
-
-}
+    }
 
     fn ensure_edge_map_shards(&self, edge_ctx: &EdgeBuildContext) -> Result<()> {
         if !matches!(&*self.target, OutputTarget::Local { .. }) {
@@ -4829,6 +5011,7 @@ impl IngestContext {
             pk_duplicate_drops: self.pk_duplicate_drops.clone(),
             pk_duplicate_total,
             pk_duplicate_samples: self.pk_duplicate_samples.clone(),
+            dropped_rows_counts: self.dropped_rows_counts.clone(),
             trimmed_strings: if trimmed_strings > 0 {
                 Some(trimmed_strings)
             } else {

@@ -2157,6 +2157,104 @@ fn ingest_drops_edges_from_duplicate_source_pks_embedded_fkey() -> Result<()> {
 
     let total_edges = stats.edge_counts.get(rel_name).copied().unwrap_or(0);
     assert_eq!(total_edges, 2, "Should have 2 valid edges");
-    
+
+    Ok(())
+}
+
+#[test]
+fn ingest_parquet_drops_rows_with_null_create_time() -> Result<()> {
+    let dir = tempdir()?;
+    let input_root = dir.path().join("input");
+    let output_root = dir.path().join("output");
+
+    // Node Table
+    let node_path = input_root.join("nodes.parquet");
+    let node_schema = Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("created_at", DataType::Timestamp(arrow_schema::TimeUnit::Second, None), true), // Nullable
+    ]);
+    let node_ids = Arc::new(Int64Array::from(vec![1, 2])) as ArrayRef;
+    let node_ts = Arc::new(TimestampSecondArray::from(vec![Some(100), None])) as ArrayRef;
+    write_parquet(&node_path, node_schema, vec![node_ids, node_ts])?;
+
+    // Edge Table
+    let edge_path = input_root.join("edges.parquet");
+    let edge_schema = Schema::new(vec![
+        Field::new("src", DataType::Int64, false),
+        Field::new("dst", DataType::Int64, false),
+        Field::new("created_at", DataType::Timestamp(arrow_schema::TimeUnit::Second, None), true), // Nullable
+    ]);
+    let edge_src = Arc::new(Int64Array::from(vec![1, 1])) as ArrayRef;
+    let edge_dst = Arc::new(Int64Array::from(vec![1, 2])) as ArrayRef;
+    let edge_ts = Arc::new(TimestampSecondArray::from(vec![Some(100), None])) as ArrayRef;
+    write_parquet(&edge_path, edge_schema, vec![edge_src, edge_dst, edge_ts])?;
+
+    let source = serde_json::json!({
+        "dataset_name": "dropped_rows_e2e",
+        "tables": [
+            {
+                "name": "Node",
+                "format": "parquet",
+                "paths": [node_path.to_string_lossy()],
+                "primary_key": "id",
+                "create_time": "created_at",
+                "columns": [
+                    {"name": "id", "ingested_dtype": "int64"},
+                    {"name": "created_at", "ingested_dtype": "timestamp"}
+                ]
+            },
+            {
+                "name": "Edge",
+                "format": "parquet",
+                "paths": [edge_path.to_string_lossy()],
+                "create_time": "created_at",
+                "edge_table": {
+                    "src_fk": {"edge_column": "src", "ref_table": "Node"},
+                    "dst_fk": {"edge_column": "dst", "ref_table": "Node"}
+                },
+                "columns": [
+                    {"name": "src", "ingested_dtype": "int64"},
+                    {"name": "dst", "ingested_dtype": "int64"},
+                    {"name": "created_at", "ingested_dtype": "timestamp"}
+                ]
+            }
+        ]
+    });
+    let source_path = dir.path().join("config.json");
+    fs::write(&source_path, serde_json::to_vec_pretty(&source)?)?;
+
+    let (_metadata, stats) = ingest_with_stats(
+        &source_path,
+        output_root.to_str().unwrap(),
+        Dest::Local,
+        IngestOptions::default(),
+    )?;
+
+    // Check Node Drops
+    let node_dropped = stats.dropped_rows_counts.get("Node").copied().unwrap_or(0);
+    assert_eq!(node_dropped, 1, "Expected 1 dropped node row");
+
+    // Check Edge Drops
+    let edge_dropped = stats.dropped_rows_counts.get("Edge").copied().unwrap_or(0);
+    assert_eq!(edge_dropped, 1, "Expected 1 dropped edge row");
+
+    // Check Samples
+    let node_sample_key = "node_data_dropped:Node";
+    let edge_sample_key = "node_data_dropped:Edge";
+
+    // Note: key_failures_by_context stores counts
+    let node_failures = stats.key_failures_by_context.get(node_sample_key).map(|c| c.parse_failures).unwrap_or(0);
+    let edge_failures = stats.key_failures_by_context.get(edge_sample_key).map(|c| c.parse_failures).unwrap_or(0);
+
+    assert_eq!(node_failures, 1, "Expected 1 recorded failure for Node");
+    assert_eq!(edge_failures, 1, "Expected 1 recorded failure for Edge");
+
+    // Check that we have samples
+    let has_node_sample = stats.key_failure_samples.iter().any(|s| s.contains(node_sample_key));
+    let has_edge_sample = stats.key_failure_samples.iter().any(|s| s.contains(edge_sample_key));
+
+    assert!(has_node_sample, "Expected sample for dropped node");
+    assert!(has_edge_sample, "Expected sample for dropped edge");
+
     Ok(())
 }

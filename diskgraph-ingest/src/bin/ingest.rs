@@ -210,6 +210,14 @@ fn main() -> Result<()> {
             }
         }
     }
+    if !stats.dropped_rows_counts.is_empty() {
+        println!("{}", color("Dropped rows:", Color::YellowBold));
+        let mut entries: Vec<_> = stats.dropped_rows_counts.iter().collect();
+        entries.sort_by(|a, b| a.0.cmp(b.0));
+        for (name, count) in entries {
+            println!("  {}: {}", color(name, Color::YellowBold), count);
+        }
+    }
     if stats.key_parse_failures > 0 || stats.key_lookup_failures > 0 {
         println!("{}", color("Key matching failures:", Color::YellowBold));
         println!(
