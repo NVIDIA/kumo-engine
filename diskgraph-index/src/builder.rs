@@ -304,7 +304,7 @@ impl MemoryBudgetGuard {
     }
 }
 
-struct BudgetReservation {
+pub(crate) struct BudgetReservation {
     budget: Arc<MemoryBudget>,
     bytes: u64,
 }
@@ -413,7 +413,11 @@ impl EdgeBufferPool {
         }
     }
 
-    pub fn acquire_pair(self: &Arc<Self>, min_capacity: usize) -> Result<(EdgeBufferLease, EdgeBufferLease)> {
+    pub(crate) fn acquire_pair(
+        self: &Arc<Self>,
+        min_capacity: usize,
+        reserved: Option<&mut BudgetReservation>,
+    ) -> Result<(EdgeBufferLease, EdgeBufferLease)> {
         let mut buffers = self.buffers.lock().unwrap();
         let take_best = |buffers: &mut Vec<PooledEdgeBuffer>, min_capacity: usize| -> Option<PooledEdgeBuffer> {
             let mut best_idx = None;
@@ -455,7 +459,16 @@ impl EdgeBufferPool {
         let needed = required_total.saturating_sub(existing_reserved);
 
         let mut new_reservation = if needed > 0 {
-            if let Some(budget) = &self.budget {
+            if let Some(res) = reserved {
+                if res.bytes >= needed {
+                    Some(res.split(needed))
+                } else {
+                    return Err(IndexBuildError::NotImplemented(
+                        "insufficient pre-reserved budget for edge buffers",
+                    )
+                    .into());
+                }
+            } else if let Some(budget) = &self.budget {
                 Some(self.acquire_with_eviction(budget, needed)?)
             } else {
                 None
@@ -1375,9 +1388,10 @@ impl EdgeSubStream {
         relation_id: u16,
         dest_sort_key_bits: Option<u8>,
         pool: &Arc<EdgeBufferPool>,
+        reserved: Option<&mut BudgetReservation>,
     ) -> Result<Self> {
         let (sort_width, mut buffer, mut tmp) =
-            read_edge_parts(&input.paths, dest_sort_key_bits, pool)?;
+            read_edge_parts(&input.paths, dest_sort_key_bits, pool, reserved)?;
         radix_sort_edge_records(buffer.as_mut(), &mut tmp)?;
         if sort_width > 0 {
             sort_edge_ranges_by_sort_key(buffer.as_mut());
@@ -1477,10 +1491,11 @@ fn read_edge_parts(
     paths: &[PathBuf],
     dest_sort_key_bits: Option<u8>,
     pool: &Arc<EdgeBufferPool>,
+    reserved: Option<&mut BudgetReservation>,
 ) -> Result<(u8, EdgeBufferLease, EdgeBufferLease)> {
     if paths.is_empty() {
         let sort_width = if dest_sort_key_bits.is_some() { 1 } else { 0 };
-        let (mut buffer, tmp) = pool.acquire_pair(0)?;
+        let (mut buffer, tmp) = pool.acquire_pair(0, reserved)?;
         buffer.clear();
         return Ok((sort_width, buffer, tmp));
     }
@@ -1553,7 +1568,7 @@ fn read_edge_parts(
         });
     }
     let reserve = usize::try_from(total_records).unwrap_or(usize::MAX);
-    let (mut buffer, tmp) = pool.acquire_pair(reserve)?;
+    let (mut buffer, tmp) = pool.acquire_pair(reserve, reserved)?;
     buffer.clear();
     buffer.ensure_capacity(reserve)?;
     let mut buf = [0u8; 24];
@@ -1819,6 +1834,21 @@ impl MergedEdgeStream {
         relation_metas: &[EdgeRelationMetadata],
         pool: &Arc<EdgeBufferPool>,
     ) -> Result<Self> {
+        let total_edge_bytes = estimate_edge_record_bytes(inputs)?;
+        let total_reservation_bytes = total_edge_bytes.saturating_mul(2);
+        let mut reservation = if total_reservation_bytes > 0 {
+            if let Some(budget) = &pool.budget {
+                Some(BudgetReservation::new(
+                    Arc::clone(budget),
+                    total_reservation_bytes,
+                )?)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         let mut rel_lookup = std::collections::HashMap::new();
         for (idx, meta) in relation_metas.iter().enumerate() {
             rel_lookup.insert(meta.name.clone(), (idx as u16, meta.dest_sort_key_bits));
@@ -1829,7 +1859,7 @@ impl MergedEdgeStream {
             let (relation_id, sort_bits) = rel_lookup
                 .get(&input.relation)
                 .ok_or(IndexBuildError::UnknownRelation)?;
-            let stream = EdgeSubStream::try_new(input, *relation_id, *sort_bits, pool)?;
+            let stream = EdgeSubStream::try_new(input, *relation_id, *sort_bits, pool, reservation.as_mut())?;
             streams.push(stream);
             head_srcs.push(streams.last_mut().unwrap().peek_src()?);
         }
@@ -1898,7 +1928,7 @@ mod tests {
         let budget = Arc::new(MemoryBudget::new(1024 * 1024));
         let pool = Arc::new(EdgeBufferPool::new(Some(Arc::clone(&budget))));
         {
-            let (_lease_a, _lease_b) = pool.acquire_pair(128).unwrap();
+            let (_lease_a, _lease_b) = pool.acquire_pair(128, None).unwrap();
         }
         let snap_after = budget.snapshot();
         assert!(snap_after.in_use > 0);
@@ -1936,5 +1966,34 @@ mod tests {
         let snap_after = budget.snapshot();
         assert!(snap_after.in_use > 0);
         let _large = pool.acquire(large_cap).unwrap();
+    }
+
+    #[test]
+    fn edge_buffer_pool_uses_reservation_without_touching_global_budget() {
+        let record_bytes = std::mem::size_of::<EdgeRecord>() as u64;
+        let capacity = 10;
+        let total_needed = record_bytes * (capacity as u64) * 2;
+
+        let budget = Arc::new(MemoryBudget::new(total_needed * 2));
+        let pool = Arc::new(EdgeBufferPool::new(Some(Arc::clone(&budget))));
+
+        // Acquire reservation upfront (simulating MergedEdgeStream behavior)
+        let mut reservation = BudgetReservation::new(Arc::clone(&budget), total_needed).unwrap();
+
+        let initial_in_use = budget.snapshot().in_use;
+        assert_eq!(initial_in_use, total_needed);
+
+        // Acquire pair using the reservation
+        let (lease_a, lease_b) = pool.acquire_pair(capacity, Some(&mut reservation)).unwrap();
+
+        // Global budget should not have increased; we just moved the reservation ownership
+        assert_eq!(budget.snapshot().in_use, initial_in_use);
+
+        // The local reservation handle should be empty/reduced
+        assert_eq!(reservation.bytes, 0);
+
+        // Leases should be usable
+        assert!(lease_a.buf.capacity() >= capacity);
+        assert!(lease_b.buf.capacity() >= capacity);
     }
 }
