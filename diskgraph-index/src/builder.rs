@@ -258,6 +258,9 @@ impl MemoryBudget {
         if bytes > self.total {
             return None;
         }
+        if self.waiters.load(Ordering::Relaxed) > 0 {
+            return None;
+        }
         let mut available = self.available.lock().unwrap();
         if *available < bytes {
             return None;
@@ -268,6 +271,20 @@ impl MemoryBudget {
             budget: Arc::clone(self),
             bytes,
         })
+    }
+
+    pub fn force_acquire(self: &Arc<Self>, bytes: u64) -> MemoryBudgetGuard {
+        let mut available = self.available.lock().unwrap();
+        // We take bytes from available, saturating at 0.
+        // This effectively allows "overdraft" of the budget.
+        // The in_use counter will reflect the full amount.
+        // When released, available will be restored (capped at total).
+        *available = available.saturating_sub(bytes);
+        self.in_use.fetch_add(bytes, Ordering::Relaxed);
+        MemoryBudgetGuard {
+            budget: Arc::clone(self),
+            bytes,
+        }
     }
 
     fn release(&self, bytes: u64) {
@@ -381,7 +398,7 @@ impl EdgeBufferPool {
         }
     }
 
-    fn acquire_with_eviction(&self, budget: &Arc<MemoryBudget>, bytes: u64) -> Result<BudgetReservation> {
+    fn acquire_with_eviction(&self, budget: &Arc<MemoryBudget>, bytes: u64, force: bool) -> Result<BudgetReservation> {
 
         loop {
             if let Some(guard) = budget.try_acquire(bytes) {
@@ -408,6 +425,14 @@ impl EdgeBufferPool {
             if let Some(entry) = evicted {
                 drop(entry);
                 continue;
+            }
+
+            if force {
+                let guard = budget.force_acquire(bytes);
+                return Ok(BudgetReservation {
+                    budget: Arc::clone(budget),
+                    bytes: guard.into_bytes(),
+                });
             }
 
             let guard = budget.acquire(bytes)?;
@@ -476,7 +501,7 @@ impl EdgeBufferPool {
                     
                     // We must use the same budget instance
                     if let Some(budget) = &self.budget {
-                        let extra = self.acquire_with_eviction(budget, deficit)?;
+                        let extra = self.acquire_with_eviction(budget, deficit, true)?;
                         combined.merge(extra);
                         Some(combined)
                     } else {
@@ -485,7 +510,7 @@ impl EdgeBufferPool {
                     }
                 }
             } else if let Some(budget) = &self.budget {
-                Some(self.acquire_with_eviction(budget, needed)?)
+                Some(self.acquire_with_eviction(budget, needed, false)?)
             } else {
                 None
             }
@@ -551,7 +576,7 @@ impl EdgeBufferPool {
         drop(buffers);
         let reservation = if let Some(budget) = &self.budget {
             let bytes = edge_record_bytes(min_capacity);
-            Some(self.acquire_with_eviction(budget, bytes)?)
+            Some(self.acquire_with_eviction(budget, bytes, false)?)
         } else {
             None
         };
@@ -569,7 +594,7 @@ impl EdgeBufferPool {
 
     pub(crate) fn reserve(&self, bytes: u64) -> Result<BudgetReservation> {
         if let Some(budget) = &self.budget {
-            self.acquire_with_eviction(budget, bytes)
+            self.acquire_with_eviction(budget, bytes, false)
         } else {
             // Without a global budget, we return a reservation with no backing budget reference.
             // This is effectively a no-op reservation.
