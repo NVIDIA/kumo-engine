@@ -338,6 +338,11 @@ impl BudgetReservation {
         self.bytes = self.bytes.saturating_add(guard.into_bytes());
         Ok(())
     }
+
+    fn merge(&mut self, mut other: BudgetReservation) {
+        self.bytes = self.bytes.saturating_add(other.bytes);
+        other.bytes = 0; // Prevent release on drop
+    }
 }
 
 impl Drop for BudgetReservation {
@@ -463,10 +468,21 @@ impl EdgeBufferPool {
                 if res.bytes >= needed {
                     Some(res.split(needed))
                 } else {
-                    return Err(IndexBuildError::NotImplemented(
-                        "insufficient pre-reserved budget for edge buffers",
-                    )
-                    .into());
+                    // The reservation is slightly insufficient (likely due to vector capacity rounding).
+                    // We take everything from the reservation and acquire the deficit from the pool/budget.
+                    let available = res.bytes;
+                    let mut combined = res.split(available);
+                    let deficit = needed - available;
+                    
+                    // We must use the same budget instance
+                    if let Some(budget) = &self.budget {
+                        let extra = self.acquire_with_eviction(budget, deficit)?;
+                        combined.merge(extra);
+                        Some(combined)
+                    } else {
+                        // No global budget, so we don't need to cover the deficit.
+                        Some(combined)
+                    }
                 }
             } else if let Some(budget) = &self.budget {
                 Some(self.acquire_with_eviction(budget, needed)?)
@@ -481,7 +497,7 @@ impl EdgeBufferPool {
             if entry.reservation.is_none() {
                 if let Some(reservation) = new_reservation.as_mut() {
                     let need = edge_record_bytes(entry.buf.capacity());
-                    if reservation.bytes < need {
+                    if self.budget.is_some() && reservation.bytes < need {
                         return Err(IndexBuildError::NotImplemented(
                             "memory budget too small for edge buffers",
                         )
@@ -549,6 +565,19 @@ impl EdgeBufferPool {
     fn release(&self, buf: Vec<EdgeRecord>, reservation: Option<BudgetReservation>) {
         let mut buffers = self.buffers.lock().unwrap();
         buffers.push(PooledEdgeBuffer { buf, reservation });
+    }
+
+    pub(crate) fn reserve(&self, bytes: u64) -> Result<BudgetReservation> {
+        if let Some(budget) = &self.budget {
+            self.acquire_with_eviction(budget, bytes)
+        } else {
+            // Without a global budget, we return a reservation with no backing budget reference.
+            // This is effectively a no-op reservation.
+            Ok(BudgetReservation {
+                budget: Arc::new(MemoryBudget::new(0)), // Dummy budget
+                bytes: 0,
+            })
+        }
     }
 }
 
@@ -1837,14 +1866,7 @@ impl MergedEdgeStream {
         let total_edge_bytes = estimate_edge_record_bytes(inputs)?;
         let total_reservation_bytes = total_edge_bytes.saturating_mul(2);
         let mut reservation = if total_reservation_bytes > 0 {
-            if let Some(budget) = &pool.budget {
-                Some(BudgetReservation::new(
-                    Arc::clone(budget),
-                    total_reservation_bytes,
-                )?)
-            } else {
-                None
-            }
+            Some(pool.reserve(total_reservation_bytes)?)
         } else {
             None
         };
