@@ -248,7 +248,7 @@ async fn validate_job(
 
     // Check for graph config
     let graph_config_path = data_dir.join("config.json");
-    let graph_config = if graph_config_path.exists() {
+    let graph_config: Option<serde_json::Value> = if graph_config_path.exists() {
         println!("Found graph config at {}", graph_config_path.display());
         let bytes = fs::read(&graph_config_path)?;
         Some(serde_json::from_slice(&bytes)?)
@@ -258,7 +258,9 @@ async fn validate_job(
 
     let source_root = parse_root_source(data_dir.to_str().unwrap())?;
     let mut infer_opts = InferOptions::default();
-    infer_opts.graph_config = graph_config;
+    if let Some(cfg) = &graph_config {
+        infer_opts.graph_config = Some(serde_json::from_value(cfg.clone())?);
+    }
 
     let mut infer_res = infer_source_metadata(&source_root, infer_opts)?;
 
@@ -298,7 +300,7 @@ async fn validate_job(
     // 5. Verify S3 Stats
     let (customer, job_id) = parse_job_spec(job_spec)?;
     println!("Verifying S3 Stats...");
-    let s3_verification = match verify_s3_stats(&data_dir, &customer, &job_id, &stats, bucket.as_deref()).await {
+    let s3_verification = match verify_s3_stats(&data_dir, &customer, &job_id, &stats, bucket.as_deref(), graph_config.as_ref()).await {
         Ok(v) => Some(v),
         Err(e) => {
             eprintln!("Warning: Failed to verify S3 stats: {:?}", e);
@@ -324,7 +326,7 @@ async fn validate_job(
     })
 }
 
-fn calculate_expected_node_count(table_name: &str, s3_count: u64, stats: &IngestStats) -> u64 {
+fn calculate_expected_node_count(table_name: &str, s3_count: u64, stats: &IngestStats, drop_duplicates_map: &HashMap<String, bool>) -> u64 {
     let mut dropped = 0;
 
     // 1. Parse Failures (from key_failures_by_context)
@@ -335,8 +337,11 @@ fn calculate_expected_node_count(table_name: &str, s3_count: u64, stats: &Ingest
         }
     }
 
-    // 2. Duplicates (from pk_duplicate_counts)
-    dropped += get_table_duplicates(table_name, stats);
+    // 2. Duplicates (from pk_duplicate_counts) - ONLY if drop_duplicates is true (default)
+    let should_drop_duplicates = *drop_duplicates_map.get(table_name).unwrap_or(&true);
+    if should_drop_duplicates {
+        dropped += get_table_duplicates(table_name, stats);
+    }
 
     // 3. Null timestamps or oversized rows (from dropped_rows_counts)
     if let Some(&c) = stats.dropped_rows_counts.get(table_name) {
@@ -357,8 +362,30 @@ fn get_table_duplicates(table_name: &str, stats: &IngestStats) -> u64 {
     count
 }
 
-async fn verify_s3_stats(data_dir: &Path, customer: &str, job_id: &str, stats: &IngestStats, bucket_override: Option<&str>) -> Result<Vec<String>> {
+async fn verify_s3_stats(
+    data_dir: &Path,
+    customer: &str,
+    job_id: &str,
+    stats: &IngestStats,
+    bucket_override: Option<&str>,
+    kumo_config: Option<&serde_json::Value>,
+) -> Result<Vec<String>> {
     let mut messages = Vec::new();
+    let mut drop_duplicates_map = HashMap::new();
+    if let Some(cfg) = kumo_config {
+        if let Some(tables) = cfg.get("tables").and_then(|t| t.as_array()) {
+            for table in tables {
+                if let Some(name) = table.get("table_name").and_then(|n| n.as_str()) {
+                    let drop = table.get("pkey")
+                        .and_then(|pk| pk.get("drop_duplicates"))
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(true);
+                    drop_duplicates_map.insert(name.to_string(), drop);
+                }
+            }
+        }
+    }
+
     let bucket = if let Some(b) = bucket_override {
         b
     } else if customer.eq_ignore_ascii_case("doordash") {
@@ -459,7 +486,7 @@ async fn verify_s3_stats(data_dir: &Path, customer: &str, job_id: &str, stats: &
 
         if let Some(s3_rows) = s3_rows {
             if let Some(&ingest_rows) = stats.node_counts.get(&table_name) {
-                 let expected_rows = calculate_expected_node_count(&table_name, s3_rows, stats);
+                 let expected_rows = calculate_expected_node_count(&table_name, s3_rows, stats, &drop_duplicates_map);
                  if ingest_rows == s3_rows {
                      messages.push(format!("PASS: {} (S3: {}, Ingest: {})", table_name, s3_rows, ingest_rows));
                  } else if ingest_rows == expected_rows {
