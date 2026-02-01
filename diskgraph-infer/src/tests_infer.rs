@@ -83,28 +83,28 @@ use diskgraph_ingest::graph_config::{ColumnSpec, TableFormat, TableSpec};
     #[test]
     fn infer_pk_id() {
         let mut t = table("users", &[("id", IngestedType::Int64)]);
-        infer_primary_keys(std::slice::from_mut(&mut t));
+        infer_primary_keys(std::slice::from_mut(&mut t), None);
         assert_eq!(t.primary_key.as_deref(), Some("id"));
     }
 
     #[test]
     fn infer_pk_table_id() {
         let mut t = table("orders", &[("order_id", IngestedType::Int64)]);
-        infer_primary_keys(std::slice::from_mut(&mut t));
+        infer_primary_keys(std::slice::from_mut(&mut t), None);
         assert_eq!(t.primary_key.as_deref(), Some("order_id"));
     }
 
     #[test]
     fn infer_pk_last_token_only_when_single_id() {
         let mut t = table("kaggle_hm_articles", &[("article_id", IngestedType::Int64)]);
-        infer_primary_keys(std::slice::from_mut(&mut t));
+        infer_primary_keys(std::slice::from_mut(&mut t), None);
         assert_eq!(t.primary_key.as_deref(), Some("article_id"));
     }
 
     #[test]
     fn infer_pk_uuid() {
         let mut t = table("sessions", &[("uuid", IngestedType::String)]);
-        infer_primary_keys(std::slice::from_mut(&mut t));
+        infer_primary_keys(std::slice::from_mut(&mut t), None);
         assert_eq!(t.primary_key.as_deref(), Some("uuid"));
     }
 
@@ -145,7 +145,7 @@ use diskgraph_ingest::graph_config::{ColumnSpec, TableFormat, TableSpec};
             source: None,
             fkeys: Vec::new(),
         };
-        infer_primary_keys(std::slice::from_mut(&mut t));
+        infer_primary_keys(std::slice::from_mut(&mut t), None);
         assert_eq!(t.primary_key.as_deref(), Some("customer_id"));
     }
 
@@ -155,7 +155,7 @@ use diskgraph_ingest::graph_config::{ColumnSpec, TableFormat, TableSpec};
             "user_interest",
             &[("user_id", IngestedType::Int64), ("interest_id", IngestedType::Int64)],
         );
-        infer_primary_keys(std::slice::from_mut(&mut t));
+        infer_primary_keys(std::slice::from_mut(&mut t), None);
         assert_eq!(t.primary_key, None);
     }
 
@@ -179,7 +179,7 @@ use diskgraph_ingest::graph_config::{ColumnSpec, TableFormat, TableSpec};
                 ],
             ),
         ];
-        infer_primary_keys(&mut tables);
+        infer_primary_keys(&mut tables, None);
         let ads = tables.iter().find(|t| t.name == "AdsInfo").unwrap();
         let users = tables.iter().find(|t| t.name == "UserInfo").unwrap();
         assert_eq!(ads.primary_key.as_deref(), Some("AdID"));
@@ -221,7 +221,7 @@ use diskgraph_ingest::graph_config::{ColumnSpec, TableFormat, TableSpec};
                 ],
             ),
         ];
-        infer_primary_keys(&mut tables);
+        infer_primary_keys(&mut tables, None);
         infer_create_time(&mut tables);
         let mut rels = Vec::new();
         let mut notes = Vec::new();
@@ -276,7 +276,7 @@ use diskgraph_ingest::graph_config::{ColumnSpec, TableFormat, TableSpec};
                 ],
             ),
         ];
-        infer_primary_keys(&mut tables);
+        infer_primary_keys(&mut tables, None);
         let mut rels = Vec::new();
         let mut notes = Vec::new();
         infer_foreign_keys(&tables, &mut rels, &mut notes, None);
@@ -317,7 +317,7 @@ use diskgraph_ingest::graph_config::{ColumnSpec, TableFormat, TableSpec};
                 ],
             ),
         ];
-        infer_primary_keys(&mut tables);
+        infer_primary_keys(&mut tables, None);
         infer_create_time(&mut tables);
         let mut rels = Vec::new();
         let mut notes = Vec::new();
@@ -360,7 +360,7 @@ use diskgraph_ingest::graph_config::{ColumnSpec, TableFormat, TableSpec};
                 ],
             ),
         ];
-        infer_primary_keys(&mut tables);
+        infer_primary_keys(&mut tables, None);
         infer_create_time(&mut tables);
         let mut rels = Vec::new();
         let mut notes = Vec::new();
@@ -411,7 +411,7 @@ use diskgraph_ingest::graph_config::{ColumnSpec, TableFormat, TableSpec};
                 ],
             ),
         ];
-        infer_primary_keys(&mut tables);
+        infer_primary_keys(&mut tables, None);
         infer_create_time(&mut tables);
         let mut rels = Vec::new();
         let mut notes = Vec::new();
@@ -568,7 +568,7 @@ use diskgraph_ingest::graph_config::{ColumnSpec, TableFormat, TableSpec};
         let pats = table("pats", &[("subject_id", IngestedType::Int64)]);
         let encounters = table("encounters", &[("subject_id", IngestedType::Int64)]);
         let mut tables = vec![admits, pats, encounters];
-        infer_primary_keys(&mut tables);
+        infer_primary_keys(&mut tables, None);
         assert_eq!(tables[0].primary_key.as_deref(), Some("hadm_id"));
     }
 
@@ -708,7 +708,7 @@ use diskgraph_ingest::graph_config::{ColumnSpec, TableFormat, TableSpec};
                 ("icd_version", IngestedType::Int16),
             ],
         );
-        infer_primary_keys(std::slice::from_mut(&mut t));
+        infer_primary_keys(std::slice::from_mut(&mut t), None);
         assert_eq!(t.primary_key, None);
     }
 
@@ -722,7 +722,7 @@ use diskgraph_ingest::graph_config::{ColumnSpec, TableFormat, TableSpec};
                 ("stay_id", IngestedType::Int64),
             ],
         );
-        infer_primary_keys(std::slice::from_mut(&mut t));
+        infer_primary_keys(std::slice::from_mut(&mut t), None);
         assert_eq!(t.primary_key.as_deref(), Some("stay_id"));
     }
 
@@ -736,7 +736,7 @@ use diskgraph_ingest::graph_config::{ColumnSpec, TableFormat, TableSpec};
                 ("hcpcs_cd", IngestedType::String),
             ],
         );
-        infer_primary_keys(std::slice::from_mut(&mut t));
+        infer_primary_keys(std::slice::from_mut(&mut t), None);
         assert_eq!(t.primary_key.as_deref(), Some("hcpcs_cd"));
     }
 
@@ -750,7 +750,7 @@ use diskgraph_ingest::graph_config::{ColumnSpec, TableFormat, TableSpec};
                 ("date", IngestedType::Date),
             ],
         );
-        infer_primary_keys(std::slice::from_mut(&mut t));
+        infer_primary_keys(std::slice::from_mut(&mut t), None);
         assert_eq!(t.primary_key, None);
     }
 
@@ -879,7 +879,7 @@ use diskgraph_ingest::graph_config::{ColumnSpec, TableFormat, TableSpec};
                 ("dischtime", IngestedType::Timestamp),
             ],
         );
-        infer_primary_keys(std::slice::from_mut(&mut t));
+        infer_primary_keys(std::slice::from_mut(&mut t), None);
         assert_eq!(t.primary_key.as_deref(), Some("hadm_id"));
     }
 
