@@ -243,15 +243,6 @@ pub struct FKeySpec {
     pub reverse: Option<DirectionSpec>,
 }
 
-/// Endpoint specification for an edge table.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct EdgeEndpoint {
-    /// Column in the edge table.
-    pub column: String,
-    /// Referenced node table name. Must have a primary key.
-    pub table: String,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EdgeTableSpec {
     /// Source foreign key.

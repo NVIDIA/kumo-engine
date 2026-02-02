@@ -1,5 +1,5 @@
 use diskgraph_ingest::graph_config::{
-    ColumnSpec, DataSource, DirectionSpec, EdgeEndpoint, EdgeTableSpec, FKeySpec,
+    ColumnSpec, DataSource, DirectionSpec, EdgeTableSpec, FKeySpec,
     ForeignKeySpec, IngestedType, GraphConfig, TableSpec, TimeSpec, WeightSpec,
 };
 
@@ -738,7 +738,7 @@ fn validate_empty_column_name() {
 
 // ============================================================================
 // Tests for new schema types: DataSource, TimeSpec, WeightSpec, DirectionSpec,
-// FKeySpec, EdgeEndpoint
+// FKeySpec
 // ============================================================================
 
 mod new_schema_types {
@@ -1089,26 +1089,6 @@ mod new_schema_types {
         assert!(spec.reverse.is_none());
     }
 
-    // EdgeEndpoint tests
-    #[test]
-    fn edge_endpoint_serialize() {
-        let endpoint = EdgeEndpoint {
-            column: "user_id".into(),
-            table: "users".into(),
-        };
-        let json = serde_json::to_string(&endpoint).unwrap();
-        assert!(json.contains(r#""column":"user_id""#));
-        assert!(json.contains(r#""table":"users""#));
-    }
-
-    #[test]
-    fn edge_endpoint_deserialize() {
-        let json = r#"{"column":"item_id","table":"items"}"#;
-        let endpoint: EdgeEndpoint = serde_json::from_str(json).unwrap();
-        assert_eq!(endpoint.column, "item_id");
-        assert_eq!(endpoint.table, "items");
-    }
-
     // TableSpec with new fields tests
     #[test]
     fn tablespec_with_source_field() {
@@ -1334,14 +1314,4 @@ mod new_schema_types {
         assert_eq!(original, parsed);
     }
 
-    #[test]
-    fn edge_endpoint_roundtrip() {
-        let original = EdgeEndpoint {
-            column: "col".into(),
-            table: "tbl".into(),
-        };
-        let json = serde_json::to_string(&original).unwrap();
-        let parsed: EdgeEndpoint = serde_json::from_str(&json).unwrap();
-        assert_eq!(original, parsed);
-    }
 }
