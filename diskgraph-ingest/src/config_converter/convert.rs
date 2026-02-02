@@ -7,7 +7,7 @@ use thiserror::Error;
 
 use crate::graph_config::{
     ColumnSpec, DataSource, DirectionSpec, EdgeTableSpec, FKeySpec, ForeignKeySpec, GraphConfig,
-    IngestedType, TableFormat, TableSpec, TimeSpec,
+    IngestedType, TableSpec, TimeSpec,
 };
 
 use super::mapping::{is_numeric_dtype, map_kumo_dtype, map_timestamp_unit};
@@ -103,8 +103,6 @@ fn convert_table(kumo_table: &KumoTable, options: &ConvertOptions) -> Result<Tab
 
     Ok(TableSpec {
         name: kumo_table.table_name.clone(),
-        format: TableFormat::Parquet,
-        paths: paths.clone(), // For backward compatibility with existing ingestion code
         columns,
         primary_key,
         create_time,
@@ -112,7 +110,7 @@ fn convert_table(kumo_table: &KumoTable, options: &ConvertOptions) -> Result<Tab
         weight: None,
         edge_table,
         rowpack: None,
-        source: Some(DataSource::Parquet { paths }),
+        source: DataSource::Parquet { paths },
         fkeys,
     })
 }

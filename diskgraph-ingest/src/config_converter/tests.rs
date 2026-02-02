@@ -344,7 +344,7 @@ fn test_convert_path_building() {
 
     let table = &result.tables[0];
     // Check source instead of paths
-    let source = table.source.as_ref().expect("source should be set");
+    let source = &table.source;
     match source {
         crate::graph_config::DataSource::Parquet { paths } => {
             assert_eq!(paths.len(), 1);
@@ -565,7 +565,7 @@ fn test_convert_source_name_defaults_to_table_name() {
 
     let table = &result.tables[0];
     // Source path should use table_name as source_name
-    let source = table.source.as_ref().expect("source should be set");
+    let source = &table.source;
     match source {
         crate::graph_config::DataSource::Parquet { paths } => {
             assert!(paths[0].contains("fpv3.postgres.my_table/"));

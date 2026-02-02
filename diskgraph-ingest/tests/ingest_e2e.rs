@@ -217,8 +217,7 @@ fn ingest_csv_with_edges_and_rowpack() -> Result<()> {
         "tables": [
             {
                 "name": "User",
-                "format": "csv",
-                "paths": [input_root.join("users.csv").to_string_lossy()],
+                "source": {"type": "csv", "paths": [input_root.join("users.csv").to_string_lossy()]},
                 "primary_key": "id",
                 "weight": "weight",
                 "columns": [
@@ -229,8 +228,7 @@ fn ingest_csv_with_edges_and_rowpack() -> Result<()> {
             },
             {
                 "name": "Order",
-                "format": "csv",
-                "paths": [input_root.join("orders.csv").to_string_lossy()],
+                "source": {"type": "csv", "paths": [input_root.join("orders.csv").to_string_lossy()]},
                 "primary_key": "id",
                 "columns": [
                     {"name": "id", "ingested_dtype": "int64"},
@@ -252,8 +250,7 @@ fn ingest_csv_with_edges_and_rowpack() -> Result<()> {
             },
             {
                 "name": "Product",
-                "format": "csv",
-                "paths": [input_root.join("products.csv").to_string_lossy()],
+                "source": {"type": "csv", "paths": [input_root.join("products.csv").to_string_lossy()]},
                 "primary_key": "id",
                 "weight": "weight",
                 "columns": [
@@ -263,8 +260,7 @@ fn ingest_csv_with_edges_and_rowpack() -> Result<()> {
             },
             {
                 "name": "OrderItem",
-                "format": "csv",
-                "paths": [input_root.join("order_items.csv").to_string_lossy()],
+                "source": {"type": "csv", "paths": [input_root.join("order_items.csv").to_string_lossy()]},
                 "edge_table": {
                     "src_fk": {"edge_column": "order_id", "ref_table": "Order"},
                     "dst_fk": {"edge_column": "product_id", "ref_table": "Product"},
@@ -443,11 +439,10 @@ fn ingest_csv_multi_file_table_with_two_shards() -> Result<()> {
         "tables": [
             {
                 "name": "User",
-                "format": "csv",
-                "paths": [
+                "source": {"type": "csv", "paths": [
                     input_root.join("users_part1.csv").to_string_lossy(),
                     input_root.join("users_part2.csv").to_string_lossy()
-                ],
+                ]},
                 "primary_key": "id",
                 "columns": [
                     {"name": "id", "ingested_dtype": "int64"},
@@ -456,11 +451,10 @@ fn ingest_csv_multi_file_table_with_two_shards() -> Result<()> {
             },
             {
                 "name": "Order",
-                "format": "csv",
-                "paths": [
+                "source": {"type": "csv", "paths": [
                     input_root.join("orders_part1.csv").to_string_lossy(),
                     input_root.join("orders_part2.csv").to_string_lossy()
-                ],
+                ]},
                 "primary_key": "id",
                 "columns": [
                     {"name": "id", "ingested_dtype": "int64"},
@@ -475,11 +469,10 @@ fn ingest_csv_multi_file_table_with_two_shards() -> Result<()> {
             },
             {
                 "name": "OrderLink",
-                "format": "csv",
-                "paths": [
+                "source": {"type": "csv", "paths": [
                     input_root.join("order_links_part1.csv").to_string_lossy(),
                     input_root.join("order_links_part2.csv").to_string_lossy()
-                ],
+                ]},
                 "edge_table": {
                     "src_fk": {"edge_column": "user_id", "ref_table": "User"},
                     "dst_fk": {"edge_column": "order_id", "ref_table": "Order"}
@@ -592,8 +585,7 @@ fn ingest_parquet_with_sorted_mapping() -> Result<()> {
         "tables": [
             {
                 "name": "Sku",
-                "format": "parquet",
-                "paths": [table_path.to_string_lossy()],
+                "source": {"type": "parquet", "paths": [table_path.to_string_lossy()]},
                 "primary_key": "id",
                 "weight": "weight",
                 "columns": [
@@ -603,8 +595,7 @@ fn ingest_parquet_with_sorted_mapping() -> Result<()> {
             },
             {
                 "name": "SkuEdge",
-                "format": "parquet",
-                "paths": [edge_path.to_string_lossy()],
+                "source": {"type": "parquet", "paths": [edge_path.to_string_lossy()]},
                 "edge_table": {
                     "src_fk": {"edge_column": "src_id", "ref_table": "Sku"},
                     "dst_fk": {"edge_column": "dst_id", "ref_table": "Sku"}
@@ -744,8 +735,7 @@ fn ingest_parquet_with_int_pk_lookup() -> Result<()> {
         "tables": [
             {
                 "name": "Item",
-                "format": "parquet",
-                "paths": [table_path.to_string_lossy()],
+                "source": {"type": "parquet", "paths": [table_path.to_string_lossy()]},
                 "primary_key": "id",
                 "columns": [
                     {"name": "id", "ingested_dtype": "int64"},
@@ -754,8 +744,7 @@ fn ingest_parquet_with_int_pk_lookup() -> Result<()> {
             },
             {
                 "name": "ItemEdge",
-                "format": "parquet",
-                "paths": [edge_path.to_string_lossy()],
+                "source": {"type": "parquet", "paths": [edge_path.to_string_lossy()]},
                 "edge_table": {
                     "src_fk": {"edge_column": "src_id", "ref_table": "Item"},
                     "dst_fk": {"edge_column": "dst_id", "ref_table": "Item"}
@@ -853,8 +842,7 @@ fn ingest_csv_with_bytes_pk_mapping() -> Result<()> {
         "tables": [
             {
                 "name": "Asset",
-                "format": "parquet",
-                "paths": [table_path.to_string_lossy()],
+                "source": {"type": "parquet", "paths": [table_path.to_string_lossy()]},
                 "primary_key": "id",
                 "columns": [
                     {"name": "id", "ingested_dtype": "bytes", "fixed_len": 4},
@@ -863,8 +851,7 @@ fn ingest_csv_with_bytes_pk_mapping() -> Result<()> {
             },
             {
                 "name": "AssetEdge",
-                "format": "parquet",
-                "paths": [edge_path.to_string_lossy()],
+                "source": {"type": "parquet", "paths": [edge_path.to_string_lossy()]},
                 "edge_table": {
                     "src_fk": {"edge_column": "src_id", "ref_table": "Asset"},
                     "dst_fk": {"edge_column": "dst_id", "ref_table": "Asset"}
@@ -937,8 +924,7 @@ fn ingest_pk_map_header_has_expected_format() -> Result<()> {
         "tables": [
             {
                 "name": "Asset",
-                "format": "parquet",
-                "paths": [table_path.to_string_lossy()],
+                "source": {"type": "parquet", "paths": [table_path.to_string_lossy()]},
                 "primary_key": "id",
                 "columns": [
                     {"name": "id", "ingested_dtype": "bytes", "fixed_len": 4},
@@ -1000,8 +986,7 @@ fn ingest_missing_fkeys_do_not_create_edges() -> Result<()> {
         "tables": [
             {
                 "name": "Asset",
-                "format": "csv",
-                "paths": [input_root.join("assets.csv").to_string_lossy()],
+                "source": {"type": "csv", "paths": [input_root.join("assets.csv").to_string_lossy()]},
                 "primary_key": "id",
                 "columns": [
                     {"name": "id", "ingested_dtype": "int64"},
@@ -1010,8 +995,7 @@ fn ingest_missing_fkeys_do_not_create_edges() -> Result<()> {
             },
             {
                 "name": "Event",
-                "format": "csv",
-                "paths": [input_root.join("events.csv").to_string_lossy()],
+                "source": {"type": "csv", "paths": [input_root.join("events.csv").to_string_lossy()]},
                 "primary_key": "id",
                 "columns": [
                     {"name": "id", "ingested_dtype": "int64"},
@@ -1083,8 +1067,7 @@ fn ingest_relationship_uses_dest_timestamp_sort_key() -> Result<()> {
         "tables": [
             {
                 "name": "Event",
-                "format": "parquet",
-                "paths": [event_path.to_string_lossy()],
+                "source": {"type": "parquet", "paths": [event_path.to_string_lossy()]},
                 "primary_key": "id",
                 "columns": [
                     {"name": "id", "ingested_dtype": "int64"},
@@ -1108,8 +1091,7 @@ fn ingest_relationship_uses_dest_timestamp_sort_key() -> Result<()> {
             },
             {
                 "name": "Session",
-                "format": "parquet",
-                "paths": [session_path.to_string_lossy()],
+                "source": {"type": "parquet", "paths": [session_path.to_string_lossy()]},
                 "primary_key": "id",
                 "create_time": "created_at",
                 "columns": [
@@ -1196,8 +1178,7 @@ fn ingest_invalid_fields_records_failures_and_builds() -> Result<()> {
         "tables": [
             {
                 "name": "User",
-                "format": "csv",
-                "paths": [input_root.join("users.csv").to_string_lossy()],
+                "source": {"type": "csv", "paths": [input_root.join("users.csv").to_string_lossy()]},
                 "primary_key": "id",
                 "create_time": "created_at",
                 "columns": [
@@ -1208,8 +1189,7 @@ fn ingest_invalid_fields_records_failures_and_builds() -> Result<()> {
             },
             {
                 "name": "Visit",
-                "format": "csv",
-                "paths": [input_root.join("visits.csv").to_string_lossy()],
+                "source": {"type": "csv", "paths": [input_root.join("visits.csv").to_string_lossy()]},
                 "primary_key": "id",
                 "create_time": "created_at",
                 "columns": [
@@ -1226,8 +1206,7 @@ fn ingest_invalid_fields_records_failures_and_builds() -> Result<()> {
             },
             {
                 "name": "UserVisitEdge",
-                "format": "csv",
-                "paths": [input_root.join("user_visit_edges.csv").to_string_lossy()],
+                "source": {"type": "csv", "paths": [input_root.join("user_visit_edges.csv").to_string_lossy()]},
                 "edge_table": {
                     "src_fk": {"edge_column": "src_user_id", "ref_table": "User"},
                     "dst_fk": {"edge_column": "dst_visit_id", "ref_table": "Visit"}
@@ -1311,8 +1290,7 @@ fn ingest_edge_table_mixed_sort_keys() -> Result<()> {
         "tables": [
             {
                 "name": "User",
-                "format": "csv",
-                "paths": [input_root.join("users.csv").to_string_lossy()],
+                "source": {"type": "csv", "paths": [input_root.join("users.csv").to_string_lossy()]},
                 "primary_key": "id",
                 "columns": [
                     {"name": "id", "ingested_dtype": "int64"},
@@ -1321,8 +1299,7 @@ fn ingest_edge_table_mixed_sort_keys() -> Result<()> {
             },
             {
                 "name": "Item",
-                "format": "csv",
-                "paths": [input_root.join("items.csv").to_string_lossy()],
+                "source": {"type": "csv", "paths": [input_root.join("items.csv").to_string_lossy()]},
                 "primary_key": "id",
                 "columns": [
                     {"name": "id", "ingested_dtype": "int64"},
@@ -1332,8 +1309,7 @@ fn ingest_edge_table_mixed_sort_keys() -> Result<()> {
             },
             {
                 "name": "Click",
-                "format": "csv",
-                "paths": [input_root.join("clicks.csv").to_string_lossy()],
+                "source": {"type": "csv", "paths": [input_root.join("clicks.csv").to_string_lossy()]},
                 "edge_table": {
                     "src_fk": {"edge_column": "user_id", "ref_table": "User"},
                     "dst_fk": {"edge_column": "item_id", "ref_table": "Item"},
@@ -1526,8 +1502,7 @@ fn ingest_parquet_with_uuid_ip_types() -> Result<()> {
         "tables": [
             {
                 "name": "User",
-                "format": "parquet",
-                "paths": [input_root.join("users.parquet").to_string_lossy()],
+                "source": {"type": "parquet", "paths": [input_root.join("users.parquet").to_string_lossy()]},
                 "primary_key": "user_id",
                 "columns": [
                     {"name": "user_id", "ingested_dtype": "uuid"},
@@ -1536,8 +1511,7 @@ fn ingest_parquet_with_uuid_ip_types() -> Result<()> {
             },
             {
                 "name": "DeviceToken",
-                "format": "parquet",
-                "paths": [input_root.join("device_tokens.parquet").to_string_lossy()],
+                "source": {"type": "parquet", "paths": [input_root.join("device_tokens.parquet").to_string_lossy()]},
                 "primary_key": "token_id",
                 "columns": [
                     {"name": "token_id", "ingested_dtype": "uuid256"},
@@ -1553,8 +1527,7 @@ fn ingest_parquet_with_uuid_ip_types() -> Result<()> {
             },
             {
                 "name": "TokenEvent",
-                "format": "parquet",
-                "paths": [input_root.join("token_events.parquet").to_string_lossy()],
+                "source": {"type": "parquet", "paths": [input_root.join("token_events.parquet").to_string_lossy()]},
                 "primary_key": "event_id",
                 "columns": [
                     {"name": "event_id", "ingested_dtype": "uuid"},
@@ -1569,8 +1542,7 @@ fn ingest_parquet_with_uuid_ip_types() -> Result<()> {
             },
             {
                 "name": "IpAddress",
-                "format": "parquet",
-                "paths": [input_root.join("ip_addresses.parquet").to_string_lossy()],
+                "source": {"type": "parquet", "paths": [input_root.join("ip_addresses.parquet").to_string_lossy()]},
                 "primary_key": "ip_id",
                 "columns": [
                     {"name": "ip_id", "ingested_dtype": "ip"},
@@ -1579,8 +1551,7 @@ fn ingest_parquet_with_uuid_ip_types() -> Result<()> {
             },
             {
                 "name": "UserIpEdge",
-                "format": "parquet",
-                "paths": [input_root.join("user_ip_edges.parquet").to_string_lossy()],
+                "source": {"type": "parquet", "paths": [input_root.join("user_ip_edges.parquet").to_string_lossy()]},
                 "edge_table": {
                     "src_fk": {"edge_column": "user_id", "ref_table": "User"},
                     "dst_fk": {"edge_column": "ip_id", "ref_table": "IpAddress"}
@@ -1707,8 +1678,7 @@ fn ingest_parquet_with_utf8_string_pk_lookup() -> Result<()> {
         "tables": [
             {
                 "name": "Word",
-                "format": "parquet",
-                "paths": [table_path.to_string_lossy()],
+                "source": {"type": "parquet", "paths": [table_path.to_string_lossy()]},
                 "primary_key": "id",
                 "columns": [
                     {"name": "id", "ingested_dtype": "string"},
@@ -1717,8 +1687,7 @@ fn ingest_parquet_with_utf8_string_pk_lookup() -> Result<()> {
             },
             {
                 "name": "WordEdge",
-                "format": "parquet",
-                "paths": [edge_path.to_string_lossy()],
+                "source": {"type": "parquet", "paths": [edge_path.to_string_lossy()]},
                 "edge_table": {
                     "src_fk": {"edge_column": "src_id", "ref_table": "Word"},
                     "dst_fk": {"edge_column": "dst_id", "ref_table": "Word"}
@@ -1786,8 +1755,7 @@ fn ingest_parquet_to_index_reader_e2e() -> Result<()> {
         "tables": [
             {
                 "name": "User",
-                "format": "parquet",
-                "paths": [input_root.join("users.parquet").to_string_lossy()],
+                "source": {"type": "parquet", "paths": [input_root.join("users.parquet").to_string_lossy()]},
                 "primary_key": "id",
                 "columns": [
                     {"name": "id", "ingested_dtype": "int64"},
@@ -1796,8 +1764,7 @@ fn ingest_parquet_to_index_reader_e2e() -> Result<()> {
             },
             {
                 "name": "Order",
-                "format": "parquet",
-                "paths": [input_root.join("orders.parquet").to_string_lossy()],
+                "source": {"type": "parquet", "paths": [input_root.join("orders.parquet").to_string_lossy()]},
                 "primary_key": "id",
                 "columns": [
                     {"name": "id", "ingested_dtype": "int64"},
@@ -1853,8 +1820,7 @@ fn ingest_weight_expr_with_backticks() -> Result<()> {
         "tables": [
             {
                 "name": "Src",
-                "format": "csv",
-                "paths": [input_root.join("src.csv").to_string_lossy()],
+                "source": {"type": "csv", "paths": [input_root.join("src.csv").to_string_lossy()]},
                 "primary_key": "id",
                 "columns": [
                     {"name": "id", "ingested_dtype": "int64"},
@@ -1876,8 +1842,7 @@ fn ingest_weight_expr_with_backticks() -> Result<()> {
             },
             {
                 "name": "Dst",
-                "format": "csv",
-                "paths": [input_root.join("dst.csv").to_string_lossy()],
+                "source": {"type": "csv", "paths": [input_root.join("dst.csv").to_string_lossy()]},
                 "primary_key": "id",
                 "columns": [
                     {"name": "id", "ingested_dtype": "int64"},
@@ -1933,8 +1898,7 @@ fn ingest_weight_expr_with_log_and_abs() -> Result<()> {
         "tables": [
             {
                 "name": "Src",
-                "format": "csv",
-                "paths": [input_root.join("src.csv").to_string_lossy()],
+                "source": {"type": "csv", "paths": [input_root.join("src.csv").to_string_lossy()]},
                 "primary_key": "id",
                 "columns": [
                     {"name": "id", "ingested_dtype": "int64"},
@@ -1956,8 +1920,7 @@ fn ingest_weight_expr_with_log_and_abs() -> Result<()> {
             },
             {
                 "name": "Dst",
-                "format": "csv",
-                "paths": [input_root.join("dst.csv").to_string_lossy()],
+                "source": {"type": "csv", "paths": [input_root.join("dst.csv").to_string_lossy()]},
                 "primary_key": "id",
                 "columns": [
                     {"name": "id", "ingested_dtype": "int64"},
@@ -2028,8 +1991,7 @@ fn ingest_missing_dst_key_records_lookup() -> Result<()> {
         "tables": [
             {
                 "name": "User",
-                "format": "csv",
-                "paths": [input_root.join("users.csv").to_string_lossy()],
+                "source": {"type": "csv", "paths": [input_root.join("users.csv").to_string_lossy()]},
                 "primary_key": "id",
                 "columns": [
                     {"name": "id", "ingested_dtype": "int64"}
@@ -2037,8 +1999,7 @@ fn ingest_missing_dst_key_records_lookup() -> Result<()> {
             },
             {
                 "name": "Visit",
-                "format": "csv",
-                "paths": [input_root.join("visits.csv").to_string_lossy()],
+                "source": {"type": "csv", "paths": [input_root.join("visits.csv").to_string_lossy()]},
                 "primary_key": "id",
                 "columns": [
                     {"name": "id", "ingested_dtype": "int64"},
@@ -2111,8 +2072,7 @@ fn ingest_drops_edges_from_duplicate_source_pks_embedded_fkey() -> Result<()> {
         "tables": [
             {
                 "name": "User",
-                "format": "csv",
-                "paths": [input_root.join("users.csv").to_string_lossy()],
+                "source": {"type": "csv", "paths": [input_root.join("users.csv").to_string_lossy()]},
                 "primary_key": "id",
                 "columns": [
                     {"name": "id", "ingested_dtype": "int64"},
@@ -2127,8 +2087,7 @@ fn ingest_drops_edges_from_duplicate_source_pks_embedded_fkey() -> Result<()> {
             },
             {
                 "name": "Target",
-                "format": "csv",
-                "paths": [input_root.join("targets.csv").to_string_lossy()],
+                "source": {"type": "csv", "paths": [input_root.join("targets.csv").to_string_lossy()]},
                 "primary_key": "id",
                 "columns": [
                     {"name": "id", "ingested_dtype": "int64"}
@@ -2194,8 +2153,7 @@ fn ingest_parquet_drops_rows_with_null_create_time() -> Result<()> {
         "tables": [
             {
                 "name": "Node",
-                "format": "parquet",
-                "paths": [node_path.to_string_lossy()],
+                "source": {"type": "parquet", "paths": [node_path.to_string_lossy()]},
                 "primary_key": "id",
                 "create_time": "created_at",
                 "columns": [
@@ -2205,8 +2163,7 @@ fn ingest_parquet_drops_rows_with_null_create_time() -> Result<()> {
             },
             {
                 "name": "Edge",
-                "format": "parquet",
-                "paths": [edge_path.to_string_lossy()],
+                "source": {"type": "parquet", "paths": [edge_path.to_string_lossy()]},
                 "create_time": "created_at",
                 "edge_table": {
                     "src_fk": {"edge_column": "src", "ref_table": "Node"},

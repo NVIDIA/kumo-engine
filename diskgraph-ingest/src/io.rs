@@ -62,7 +62,7 @@ pub fn parse_az_url(raw: &str) -> Result<(String, String, String)> {
 
 pub fn build_input_transfer(source: &GraphConfig) -> Result<Option<CloudTransfer>> {
     for table in &source.tables {
-        for path in &table.paths {
+        for path in table.get_paths() {
             if is_cloud_path(path) {
                 let store = build_store_for_cloud_path(path)?;
                 let transfer = CloudTransfer::new(store, CloudTransferConfig::from_env());
@@ -139,7 +139,7 @@ pub fn download_cloud_bytes(transfer: &CloudTransfer, path: &str) -> Result<Pool
 
 pub fn resolve_local_paths(source: &mut GraphConfig, base_dir: &Path) {
     for table in &mut source.tables {
-        for path in &mut table.paths {
+        for path in table.get_paths_mut() {
             if is_cloud_path(path) {
                 continue;
             }

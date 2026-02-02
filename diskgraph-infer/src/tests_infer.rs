@@ -34,13 +34,11 @@ fn test_unify_types() {
 use crate::*;
 use arrow_schema::{Field, DataType, Schema};
 use std::sync::Arc;
-use diskgraph_ingest::graph_config::{ColumnSpec, TableFormat, TableSpec};
+use diskgraph_ingest::graph_config::{ColumnSpec, DataSource, TableSpec};
 
     fn table(name: &str, cols: &[(&str, IngestedType)]) -> TableSpec {
         TableSpec {
             name: name.to_string(),
-            format: TableFormat::Csv,
-            paths: vec![],
             columns: cols
                 .iter()
                 .map(|(n, t)| ColumnSpec {
@@ -60,7 +58,7 @@ use diskgraph_ingest::graph_config::{ColumnSpec, TableFormat, TableSpec};
             weight: None,
             edge_table: None,
             rowpack: None,
-            source: None,
+            source: DataSource::Parquet { paths: vec![] },
             fkeys: Vec::new(),
         }
     }
@@ -112,8 +110,6 @@ use diskgraph_ingest::graph_config::{ColumnSpec, TableFormat, TableSpec};
     fn infer_pk_prefers_customer_id_over_postal_code() {
         let mut t = TableSpec {
             name: "kaggle_hm_customers".to_string(),
-            format: TableFormat::Parquet,
-            paths: vec!["/tmp/customers.parquet".to_string()],
             columns: vec![
                 ColumnSpec {
                     name: "customer_id".to_string(),
@@ -142,7 +138,7 @@ use diskgraph_ingest::graph_config::{ColumnSpec, TableFormat, TableSpec};
             weight: None,
             edge_table: None,
             rowpack: None,
-            source: None,
+            source: DataSource::Parquet { paths: vec!["/tmp/customers.parquet".to_string()] },
             fkeys: Vec::new(),
         };
         infer_primary_keys(std::slice::from_mut(&mut t), None);
@@ -444,8 +440,6 @@ use diskgraph_ingest::graph_config::{ColumnSpec, TableFormat, TableSpec};
         let tables = vec![
             TableSpec {
                 name: "users".to_string(),
-                format: TableFormat::Csv,
-                paths: vec![],
                 columns: vec![ColumnSpec {
                     name: "user_id".to_string(),
                     ingested_dtype: IngestedType::Int64,
@@ -462,13 +456,11 @@ use diskgraph_ingest::graph_config::{ColumnSpec, TableFormat, TableSpec};
                 weight: None,
                 edge_table: None,
                 rowpack: None,
-                source: None,
+                source: DataSource::Parquet { paths: vec![] },
                 fkeys: Vec::new(),
             },
             TableSpec {
                 name: "orders".to_string(),
-                format: TableFormat::Csv,
-                paths: vec![],
                 columns: vec![ColumnSpec {
                     name: "user_id".to_string(),
                     ingested_dtype: IngestedType::Int64,
@@ -485,7 +477,7 @@ use diskgraph_ingest::graph_config::{ColumnSpec, TableFormat, TableSpec};
                 weight: None,
                 edge_table: None,
                 rowpack: None,
-                source: None,
+                source: DataSource::Parquet { paths: vec![] },
                 fkeys: Vec::new(),
             },
         ];
@@ -502,8 +494,6 @@ use diskgraph_ingest::graph_config::{ColumnSpec, TableFormat, TableSpec};
         let tables = vec![
             TableSpec {
                 name: "devices".to_string(),
-                format: TableFormat::Csv,
-                paths: vec![],
                 columns: vec![ColumnSpec {
                     name: "device_id".to_string(),
                     ingested_dtype: IngestedType::Uuid,
@@ -520,13 +510,11 @@ use diskgraph_ingest::graph_config::{ColumnSpec, TableFormat, TableSpec};
                 weight: None,
                 edge_table: None,
                 rowpack: None,
-                source: None,
+                source: DataSource::Parquet { paths: vec![] },
                 fkeys: Vec::new(),
             },
             TableSpec {
                 name: "sessions".to_string(),
-                format: TableFormat::Csv,
-                paths: vec![],
                 columns: vec![ColumnSpec {
                     name: "device_id".to_string(),
                     ingested_dtype: IngestedType::Bytes,
@@ -543,7 +531,7 @@ use diskgraph_ingest::graph_config::{ColumnSpec, TableFormat, TableSpec};
                 weight: None,
                 edge_table: None,
                 rowpack: None,
-                source: None,
+                source: DataSource::Parquet { paths: vec![] },
                 fkeys: Vec::new(),
             },
         ];
@@ -577,8 +565,6 @@ use diskgraph_ingest::graph_config::{ColumnSpec, TableFormat, TableSpec};
         let tables = vec![
             TableSpec {
                 name: "d_items".to_string(),
-                format: TableFormat::Csv,
-                paths: vec![],
                 columns: vec![ColumnSpec {
                     name: "itemid".to_string(),
                     ingested_dtype: IngestedType::Int64,
@@ -595,13 +581,11 @@ use diskgraph_ingest::graph_config::{ColumnSpec, TableFormat, TableSpec};
                 weight: None,
                 edge_table: None,
                 rowpack: None,
-                source: None,
+                source: DataSource::Parquet { paths: vec![] },
                 fkeys: Vec::new(),
             },
             TableSpec {
                 name: "d_lab".to_string(),
-                format: TableFormat::Csv,
-                paths: vec![],
                 columns: vec![ColumnSpec {
                     name: "itemid".to_string(),
                     ingested_dtype: IngestedType::Int64,
@@ -618,13 +602,11 @@ use diskgraph_ingest::graph_config::{ColumnSpec, TableFormat, TableSpec};
                 weight: None,
                 edge_table: None,
                 rowpack: None,
-                source: None,
+                source: DataSource::Parquet { paths: vec![] },
                 fkeys: Vec::new(),
             },
             TableSpec {
                 name: "labevents".to_string(),
-                format: TableFormat::Csv,
-                paths: vec![],
                 columns: vec![ColumnSpec {
                     name: "itemid".to_string(),
                     ingested_dtype: IngestedType::Int64,
@@ -641,7 +623,7 @@ use diskgraph_ingest::graph_config::{ColumnSpec, TableFormat, TableSpec};
                 weight: None,
                 edge_table: None,
                 rowpack: None,
-                source: None,
+                source: DataSource::Parquet { paths: vec![] },
                 fkeys: Vec::new(),
             },
         ];
@@ -657,8 +639,6 @@ use diskgraph_ingest::graph_config::{ColumnSpec, TableFormat, TableSpec};
     fn infer_fk_self_reference_suffix() {
         let tables = vec![TableSpec {
             name: "poe".to_string(),
-            format: TableFormat::Csv,
-            paths: vec![],
             columns: vec![
                 ColumnSpec {
                     name: "poe_id".to_string(),
@@ -687,7 +667,7 @@ use diskgraph_ingest::graph_config::{ColumnSpec, TableFormat, TableSpec};
             weight: None,
             edge_table: None,
             rowpack: None,
-            source: None,
+            source: DataSource::Parquet { paths: vec![] },
             fkeys: Vec::new(),
         }];
         let mut rels = Vec::new();
@@ -759,8 +739,6 @@ use diskgraph_ingest::graph_config::{ColumnSpec, TableFormat, TableSpec};
         let tables = vec![
             TableSpec {
                 name: "d_hcpcs".to_string(),
-                format: TableFormat::Csv,
-                paths: vec![],
                 columns: vec![ColumnSpec {
                     name: "code".to_string(),
                     ingested_dtype: IngestedType::String,
@@ -777,13 +755,11 @@ use diskgraph_ingest::graph_config::{ColumnSpec, TableFormat, TableSpec};
                 weight: None,
                 edge_table: None,
                 rowpack: None,
-                source: None,
+                source: DataSource::Parquet { paths: vec![] },
                 fkeys: Vec::new(),
             },
             TableSpec {
                 name: "hcpcs".to_string(),
-                format: TableFormat::Csv,
-                paths: vec![],
                 columns: vec![ColumnSpec {
                     name: "hcpcs_cd".to_string(),
                     ingested_dtype: IngestedType::String,
@@ -800,7 +776,7 @@ use diskgraph_ingest::graph_config::{ColumnSpec, TableFormat, TableSpec};
                 weight: None,
                 edge_table: None,
                 rowpack: None,
-                source: None,
+                source: DataSource::Parquet { paths: vec![] },
                 fkeys: Vec::new(),
             },
         ];
@@ -817,8 +793,6 @@ use diskgraph_ingest::graph_config::{ColumnSpec, TableFormat, TableSpec};
         let tables = vec![
             TableSpec {
                 name: "d_hcpcs".to_string(),
-                format: TableFormat::Csv,
-                paths: vec![],
                 columns: vec![ColumnSpec {
                     name: "code".to_string(),
                     ingested_dtype: IngestedType::String,
@@ -835,13 +809,11 @@ use diskgraph_ingest::graph_config::{ColumnSpec, TableFormat, TableSpec};
                 weight: None,
                 edge_table: None,
                 rowpack: None,
-                source: None,
+                source: DataSource::Parquet { paths: vec![] },
                 fkeys: Vec::new(),
             },
             TableSpec {
                 name: "d_icd_diag".to_string(),
-                format: TableFormat::Csv,
-                paths: vec![],
                 columns: vec![ColumnSpec {
                     name: "icd_code".to_string(),
                     ingested_dtype: IngestedType::String,
@@ -858,7 +830,7 @@ use diskgraph_ingest::graph_config::{ColumnSpec, TableFormat, TableSpec};
                 weight: None,
                 edge_table: None,
                 rowpack: None,
-                source: None,
+                source: DataSource::Parquet { paths: vec![] },
                 fkeys: Vec::new(),
             },
         ];
@@ -888,8 +860,6 @@ use diskgraph_ingest::graph_config::{ColumnSpec, TableFormat, TableSpec};
         let tables = vec![
             TableSpec {
                 name: "poe".to_string(),
-                format: TableFormat::Csv,
-                paths: vec![],
                 columns: vec![ColumnSpec {
                     name: "poe_id".to_string(),
                     ingested_dtype: IngestedType::String,
@@ -906,13 +876,11 @@ use diskgraph_ingest::graph_config::{ColumnSpec, TableFormat, TableSpec};
                 weight: None,
                 edge_table: None,
                 rowpack: None,
-                source: None,
+                source: DataSource::Parquet { paths: vec![] },
                 fkeys: Vec::new(),
             },
             TableSpec {
                 name: "poe_detail".to_string(),
-                format: TableFormat::Csv,
-                paths: vec![],
                 columns: vec![ColumnSpec {
                     name: "poe_id".to_string(),
                     ingested_dtype: IngestedType::String,
@@ -929,13 +897,11 @@ use diskgraph_ingest::graph_config::{ColumnSpec, TableFormat, TableSpec};
                 weight: None,
                 edge_table: None,
                 rowpack: None,
-                source: None,
+                source: DataSource::Parquet { paths: vec![] },
                 fkeys: Vec::new(),
             },
             TableSpec {
                 name: "emar".to_string(),
-                format: TableFormat::Csv,
-                paths: vec![],
                 columns: vec![ColumnSpec {
                     name: "poe_id".to_string(),
                     ingested_dtype: IngestedType::String,
@@ -952,7 +918,7 @@ use diskgraph_ingest::graph_config::{ColumnSpec, TableFormat, TableSpec};
                 weight: None,
                 edge_table: None,
                 rowpack: None,
-                source: None,
+                source: DataSource::Parquet { paths: vec![] },
                 fkeys: Vec::new(),
             },
         ];
@@ -968,8 +934,6 @@ use diskgraph_ingest::graph_config::{ColumnSpec, TableFormat, TableSpec};
         let tables = vec![
             TableSpec {
                 name: "admits".to_string(),
-                format: TableFormat::Csv,
-                paths: vec![],
                 columns: vec![ColumnSpec {
                     name: "hadm_id".to_string(),
                     ingested_dtype: IngestedType::Int64,
@@ -986,13 +950,11 @@ use diskgraph_ingest::graph_config::{ColumnSpec, TableFormat, TableSpec};
                 weight: None,
                 edge_table: None,
                 rowpack: None,
-                source: None,
+                source: DataSource::Parquet { paths: vec![] },
                 fkeys: Vec::new(),
             },
             TableSpec {
                 name: "services".to_string(),
-                format: TableFormat::Csv,
-                paths: vec![],
                 columns: vec![ColumnSpec {
                     name: "hadm_id".to_string(),
                     ingested_dtype: IngestedType::Int64,
@@ -1009,7 +971,7 @@ use diskgraph_ingest::graph_config::{ColumnSpec, TableFormat, TableSpec};
                 weight: None,
                 edge_table: None,
                 rowpack: None,
-                source: None,
+                source: DataSource::Parquet { paths: vec![] },
                 fkeys: Vec::new(),
             },
         ];
@@ -1025,8 +987,6 @@ use diskgraph_ingest::graph_config::{ColumnSpec, TableFormat, TableSpec};
         let tables = vec![
             TableSpec {
                 name: "d_items".to_string(),
-                format: TableFormat::Csv,
-                paths: vec![],
                 columns: vec![ColumnSpec {
                     name: "itemid".to_string(),
                     ingested_dtype: IngestedType::Int64,
@@ -1043,13 +1003,11 @@ use diskgraph_ingest::graph_config::{ColumnSpec, TableFormat, TableSpec};
                 weight: None,
                 edge_table: None,
                 rowpack: None,
-                source: None,
+                source: DataSource::Parquet { paths: vec![] },
                 fkeys: Vec::new(),
             },
             TableSpec {
                 name: "d_lab".to_string(),
-                format: TableFormat::Csv,
-                paths: vec![],
                 columns: vec![ColumnSpec {
                     name: "itemid".to_string(),
                     ingested_dtype: IngestedType::Int64,
@@ -1066,13 +1024,11 @@ use diskgraph_ingest::graph_config::{ColumnSpec, TableFormat, TableSpec};
                 weight: None,
                 edge_table: None,
                 rowpack: None,
-                source: None,
+                source: DataSource::Parquet { paths: vec![] },
                 fkeys: Vec::new(),
             },
             TableSpec {
                 name: "labevents".to_string(),
-                format: TableFormat::Csv,
-                paths: vec![],
                 columns: vec![ColumnSpec {
                     name: "itemid".to_string(),
                     ingested_dtype: IngestedType::Int64,
@@ -1089,7 +1045,7 @@ use diskgraph_ingest::graph_config::{ColumnSpec, TableFormat, TableSpec};
                 weight: None,
                 edge_table: None,
                 rowpack: None,
-                source: None,
+                source: DataSource::Parquet { paths: vec![] },
                 fkeys: Vec::new(),
             },
         ];
@@ -1105,8 +1061,6 @@ use diskgraph_ingest::graph_config::{ColumnSpec, TableFormat, TableSpec};
         let tables = vec![
             TableSpec {
                 name: "user".to_string(),
-                format: TableFormat::Csv,
-                paths: vec![],
                 columns: vec![ColumnSpec {
                     name: "user_id".to_string(),
                     ingested_dtype: IngestedType::Int64,
@@ -1123,13 +1077,11 @@ use diskgraph_ingest::graph_config::{ColumnSpec, TableFormat, TableSpec};
                 weight: None,
                 edge_table: None,
                 rowpack: None,
-                source: None,
+                source: DataSource::Parquet { paths: vec![] },
                 fkeys: Vec::new(),
             },
             TableSpec {
                 name: "user_profile".to_string(),
-                format: TableFormat::Csv,
-                paths: vec![],
                 columns: vec![ColumnSpec {
                     name: "user_id".to_string(),
                     ingested_dtype: IngestedType::Int64,
@@ -1146,7 +1098,7 @@ use diskgraph_ingest::graph_config::{ColumnSpec, TableFormat, TableSpec};
                 weight: None,
                 edge_table: None,
                 rowpack: None,
-                source: None,
+                source: DataSource::Parquet { paths: vec![] },
                 fkeys: Vec::new(),
             },
         ];
@@ -1163,8 +1115,6 @@ use diskgraph_ingest::graph_config::{ColumnSpec, TableFormat, TableSpec};
         let tables = vec![
             TableSpec {
                 name: "alpha".to_string(),
-                format: TableFormat::Csv,
-                paths: vec![],
                 columns: vec![ColumnSpec {
                     name: "id".to_string(),
                     ingested_dtype: IngestedType::Int64,
@@ -1181,13 +1131,11 @@ use diskgraph_ingest::graph_config::{ColumnSpec, TableFormat, TableSpec};
                 weight: None,
                 edge_table: None,
                 rowpack: None,
-                source: None,
+                source: DataSource::Parquet { paths: vec![] },
                 fkeys: Vec::new(),
             },
             TableSpec {
                 name: "beta".to_string(),
-                format: TableFormat::Csv,
-                paths: vec![],
                 columns: vec![ColumnSpec {
                     name: "id".to_string(),
                     ingested_dtype: IngestedType::Int64,
@@ -1204,7 +1152,7 @@ use diskgraph_ingest::graph_config::{ColumnSpec, TableFormat, TableSpec};
                 weight: None,
                 edge_table: None,
                 rowpack: None,
-                source: None,
+                source: DataSource::Parquet { paths: vec![] },
                 fkeys: Vec::new(),
             },
         ];

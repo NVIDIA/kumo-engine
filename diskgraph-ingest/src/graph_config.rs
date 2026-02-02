@@ -27,12 +27,6 @@ pub struct GraphConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TableSpec {
     pub name: String,
-    /// Table format (csv or parquet) - used with `paths` field. Deprecated: use `source` instead.
-    #[serde(default, skip_serializing_if = "skip_default_format")]
-    pub format: TableFormat,
-    /// File paths - used with `format` field. Deprecated: use `source` instead.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub paths: Vec<String>,
     pub columns: Vec<ColumnSpec>,
     #[serde(default)]
     pub primary_key: Option<String>,
@@ -47,12 +41,41 @@ pub struct TableSpec {
     pub edge_table: Option<EdgeTableSpec>,
     #[serde(default)]
     pub rowpack: Option<RowPackConfig>,
-    /// Data source configuration (new - preferred over format+paths).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source: Option<DataSource>,
-    /// Foreign key relationships (new - edges embedded in table).
+    /// Data source configuration.
+    pub source: DataSource,
+    /// Foreign key relationships (edges embedded in table).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fkeys: Vec<FKeySpec>,
+}
+
+impl TableSpec {
+    /// Get file paths for this table (only valid for file-based sources).
+    pub fn get_paths(&self) -> &[String] {
+        match &self.source {
+            DataSource::Parquet { paths } => paths.as_slice(),
+            DataSource::Csv { paths } => paths.as_slice(),
+            _ => &[],
+        }
+    }
+
+    /// Get mutable file paths for this table (only valid for file-based sources).
+    /// Panics if source is not a file-based source.
+    pub fn get_paths_mut(&mut self) -> &mut Vec<String> {
+        match &mut self.source {
+            DataSource::Parquet { paths } => paths,
+            DataSource::Csv { paths } => paths,
+            _ => panic!("get_paths_mut called on non-file source"),
+        }
+    }
+
+    /// Get the table format based on the source type.
+    pub fn format(&self) -> TableFormat {
+        match &self.source {
+            DataSource::Parquet { .. } => TableFormat::Parquet,
+            DataSource::Csv { .. } => TableFormat::Csv,
+            _ => TableFormat::Parquet, // Default for non-file sources
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -120,16 +143,17 @@ pub enum TableFormat {
     Parquet,
 }
 
-fn skip_default_format(format: &TableFormat) -> bool {
-    *format == TableFormat::Parquet
-}
-
 /// Data source configuration - abstracts where table data comes from.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum DataSource {
     /// Parquet files (local or cloud storage).
     Parquet {
+        /// List of file paths (local, s3://, gs://, az://).
+        paths: Vec<String>,
+    },
+    /// CSV files (local or cloud storage).
+    Csv {
         /// List of file paths (local, s3://, gs://, az://).
         paths: Vec<String>,
     },
@@ -327,14 +351,14 @@ impl GraphConfig {
             if !table_names.insert(table.name.as_str()) {
                 errors.push(format!("duplicate table name {}", table.name));
             }
-            if table.paths.is_empty() {
+            if table.get_paths().is_empty() {
                 errors.push(format!("table {} has no paths", table.name));
             }
             if table.columns.is_empty() {
                 errors.push(format!("table {} has no columns", table.name));
             }
             let mut col_names = HashSet::new();
-            for path in &table.paths {
+            for path in table.get_paths() {
                 match parse_cloud_source(path) {
                     Ok(Some(source)) => {
                         if has_local_paths {

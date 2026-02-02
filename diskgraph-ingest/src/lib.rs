@@ -1380,7 +1380,7 @@ impl IngestContext {
                             shard: None,
                             kind: ProgressKind::Start,
                             delta: 0,
-                            total: Some(table.paths.len() as u64),
+                            total: Some(table.get_paths().len() as u64),
                             status: None,
 });
                     }
@@ -1395,10 +1395,10 @@ impl IngestContext {
                     let mut access = RowAccess::new(row_access_hints, stats);
                     let mut reached_limit = false;
                     let mut processed_paths = 0u64;
-                    if table.paths.is_empty() {
+                    if table.get_paths().is_empty() {
                         return Err(anyhow!("no input files for table {}", table.name));
                     }
-                    'file_loop: for path in &table.paths {
+                    'file_loop: for path in table.get_paths() {
                         if !is_cloud_path(path) && !Path::new(path).exists() {
                             return Err(anyhow!("input path not found {}", path));
                         }
@@ -1411,7 +1411,7 @@ impl IngestContext {
                         } else {
                             None
                         };
-                        match table.format {
+                        match table.format() {
                             TableFormat::Parquet => {
                                 if let Some(pooled) = pooled {
                                     let bytes = pooled.bytes();
@@ -1551,7 +1551,7 @@ impl IngestContext {
                                 shard: None,
                                 kind: ProgressKind::Advance,
                                 delta: 1,
-                                total: Some(table.paths.len() as u64),
+                                total: Some(table.get_paths().len() as u64),
                                 status: None,
 });
                         }
@@ -1640,7 +1640,7 @@ impl IngestContext {
                     shard: None,
                     kind: ProgressKind::Start,
                     delta: 0,
-                    total: Some(table.paths.len() as u64),
+                    total: Some(table.get_paths().len() as u64),
                     status: None,
 });
             }
@@ -1654,7 +1654,7 @@ impl IngestContext {
             let progress = progress.clone();
             let root = root.clone();
             let relation_defs = std::sync::Arc::clone(&relation_defs);
-            let file_count = table.paths.len();
+            let file_count = table.get_paths().len();
             for file_idx in 0..file_count {
                 let table = table.clone();
                 let relationships = relationships.clone();
@@ -1752,7 +1752,7 @@ impl IngestContext {
                 let expected = tables
                     .iter()
                     .find(|t| t.name == result.table)
-                    .map(|t| t.paths.len() as u64)
+                    .map(|t| t.get_paths().len() as u64)
                     .unwrap_or(0);
                 cb(ProgressEvent {
                     phase: ProgressPhase::Encode,
@@ -2020,7 +2020,7 @@ impl IngestContext {
         });
 
         let path = table
-            .paths
+            .get_paths()
             .get(file_idx)
             .ok_or_else(|| anyhow!("missing input file {}", file_idx))?;
         if !is_cloud_path(path) && !Path::new(path).exists() {
@@ -2099,7 +2099,7 @@ impl IngestContext {
             };
         }
 
-        match table.format {
+        match table.format() {
             TableFormat::Parquet => {
                 if let Some(transfer) = &input_transfer {
                     if is_cloud_path(path) {
@@ -2329,7 +2329,7 @@ impl IngestContext {
                 shard: None,
                 kind: ProgressKind::Advance,
                 delta: 1,
-                total: Some(table.paths.len() as u64),
+                total: Some(table.get_paths().len() as u64),
                 status: None,
 });
         }
@@ -2521,7 +2521,7 @@ impl IngestContext {
         });
 
         let path = table
-            .paths
+            .get_paths()
             .get(file_idx)
             .ok_or_else(|| anyhow!("missing input file {}", file_idx))?;
         if !is_cloud_path(path) && !Path::new(path).exists() {
@@ -2608,7 +2608,7 @@ impl IngestContext {
             };
         }
 
-        match table.format {
+        match table.format() {
             TableFormat::Parquet => {
                 if let Some(transfer) = &input_transfer {
                     if is_cloud_path(path) {
@@ -2824,7 +2824,7 @@ impl IngestContext {
                 shard: None,
                 kind: ProgressKind::Advance,
                 delta: 1,
-                total: Some(table.paths.len() as u64),
+                total: Some(table.get_paths().len() as u64),
                 status: None,
 });
         }
@@ -7178,7 +7178,7 @@ fn table_by_name<'a>(source: &'a GraphConfig, name: &str) -> Result<&'a TableSpe
 fn sum_input_bytes(source: &GraphConfig) -> u64 {
     let mut total = 0u64;
     for table in &source.tables {
-        for path in &table.paths {
+        for path in table.get_paths() {
             if is_cloud_path(path) {
                 continue;
             }

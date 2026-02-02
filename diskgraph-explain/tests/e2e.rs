@@ -129,8 +129,7 @@ fn write_config(path: &PathBuf, users: &PathBuf, devices: &PathBuf, edges: &Path
         "tables": [
             {
                 "name": "users",
-                "format": "parquet",
-                "paths": [users],
+                "source": {"type": "parquet", "paths": [users]},
                 "columns": [
                     {"name": "id", "ingested_dtype": "string"},
                     {"name": "country", "ingested_dtype": "string"}
@@ -139,8 +138,7 @@ fn write_config(path: &PathBuf, users: &PathBuf, devices: &PathBuf, edges: &Path
             },
             {
                 "name": "devices",
-                "format": "parquet",
-                "paths": [devices],
+                "source": {"type": "parquet", "paths": [devices]},
                 "columns": [
                     {"name": "id", "ingested_dtype": "string"},
                     {"name": "os", "ingested_dtype": "string"}
@@ -149,8 +147,7 @@ fn write_config(path: &PathBuf, users: &PathBuf, devices: &PathBuf, edges: &Path
             },
             {
                 "name": "user_device",
-                "format": "parquet",
-                "paths": [edges],
+                "source": {"type": "parquet", "paths": [edges]},
                 "columns": [
                     {"name": "user_id", "ingested_dtype": "string"},
                     {"name": "device_id", "ingested_dtype": "string"},
