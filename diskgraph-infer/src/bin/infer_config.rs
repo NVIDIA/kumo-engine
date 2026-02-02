@@ -58,17 +58,12 @@ fn main() -> Result<()> {
     write_output(&output_target, payload)?;
     println!("Tables:");
     for table in &result.metadata.tables {
-        let format = match table.format {
-            diskgraph_ingest::graph_config::TableFormat::Csv => "csv",
-            diskgraph_ingest::graph_config::TableFormat::Parquet => "parquet",
-        };
         let pk = table.primary_key.as_deref().unwrap_or("none");
         let create_time = table.create_time.as_deref().unwrap_or("none");
         println!(
-            "  {} (format={}, files={}, primary_key={}, create_time={})",
+            "  {} (files={}, primary_key={}, create_time={})",
             table.name,
-            format,
-            table.paths.len(),
+            table.get_paths().len(),
             pk,
             create_time
         );

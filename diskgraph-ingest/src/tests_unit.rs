@@ -1,5 +1,5 @@
 use super::{key_from_access_into_buf, BitWriter, OutputSink};
-use crate::graph_config::{ColumnSpec, IngestedType};
+use crate::graph_config::{ColumnSpec, DataSource, IngestedType};
 use diskgraph_rowpack::{RowAccess, RowAccessStats, RowAccessHints};
 use arrow_array::{Decimal128Array, Int64Array, ArrayRef, Decimal256Array};
 use std::sync::Arc;
@@ -203,8 +203,6 @@ fn parse_uuid_bytes(bytes: &[u8]) -> KeyParseResult<[u8; 16]> {
     fn single_col_table(ingested: IngestedType) -> TableSpec {
         TableSpec {
             name: "sample".to_string(),
-            format: TableFormat::Parquet,
-            paths: vec![],
             columns: vec![ColumnSpec {
                 name: "id".to_string(),
                 ingested_dtype: ingested,
@@ -221,7 +219,7 @@ fn parse_uuid_bytes(bytes: &[u8]) -> KeyParseResult<[u8; 16]> {
             weight: None,
             edge_table: None,
             rowpack: None,
-            source: None,
+            source: DataSource::Parquet { paths: vec![] },
             fkeys: Vec::new(),
         }
     }
@@ -301,8 +299,6 @@ fn parse_uuid_bytes(bytes: &[u8]) -> KeyParseResult<[u8; 16]> {
     fn convert_string_timestamp_to_rowpack_timestamp() {
         let table = TableSpec {
             name: "events".to_string(),
-            format: TableFormat::Parquet,
-            paths: vec![],
             columns: vec![ColumnSpec {
                 name: "created_at".to_string(),
                 ingested_dtype: IngestedType::Timestamp,
@@ -319,7 +315,7 @@ fn parse_uuid_bytes(bytes: &[u8]) -> KeyParseResult<[u8; 16]> {
             weight: None,
             edge_table: None,
             rowpack: None,
-            source: None,
+            source: DataSource::Parquet { paths: vec![] },
             fkeys: Vec::new(),
         };
         let arr = StringArray::from(vec!["2020-01-02T03:04:05Z"]);
@@ -335,8 +331,6 @@ fn parse_uuid_bytes(bytes: &[u8]) -> KeyParseResult<[u8; 16]> {
     fn convert_int_timestamp_with_unit() {
         let table = TableSpec {
             name: "events".to_string(),
-            format: TableFormat::Parquet,
-            paths: vec![],
             columns: vec![ColumnSpec {
                 name: "created_at".to_string(),
                 ingested_dtype: IngestedType::Timestamp,
@@ -353,7 +347,7 @@ fn parse_uuid_bytes(bytes: &[u8]) -> KeyParseResult<[u8; 16]> {
             weight: None,
             edge_table: None,
             rowpack: None,
-            source: None,
+            source: DataSource::Parquet { paths: vec![] },
             fkeys: Vec::new(),
         };
         let arr = Int64Array::from(vec![1_500_000_i64]);
@@ -385,8 +379,6 @@ fn parse_uuid_bytes(bytes: &[u8]) -> KeyParseResult<[u8; 16]> {
     fn convert_string_date_to_rowpack_date() {
         let table = TableSpec {
             name: "events".to_string(),
-            format: TableFormat::Parquet,
-            paths: vec![],
             columns: vec![ColumnSpec {
                 name: "created_date".to_string(),
                 ingested_dtype: IngestedType::Date,
@@ -403,7 +395,7 @@ fn parse_uuid_bytes(bytes: &[u8]) -> KeyParseResult<[u8; 16]> {
             weight: None,
             edge_table: None,
             rowpack: None,
-            source: None,
+            source: DataSource::Parquet { paths: vec![] },
             fkeys: Vec::new(),
         };
         let arr = StringArray::from(vec!["2024-02-03"]);
@@ -426,8 +418,6 @@ fn parse_uuid_bytes(bytes: &[u8]) -> KeyParseResult<[u8; 16]> {
     fn convert_numeric_to_string_for_rowpack() {
         let table = TableSpec {
             name: "events".to_string(),
-            format: TableFormat::Parquet,
-            paths: vec![],
             columns: vec![ColumnSpec {
                 name: "id".to_string(),
                 ingested_dtype: IngestedType::String,
@@ -444,7 +434,7 @@ fn parse_uuid_bytes(bytes: &[u8]) -> KeyParseResult<[u8; 16]> {
             weight: None,
             edge_table: None,
             rowpack: None,
-            source: None,
+            source: DataSource::Parquet { paths: vec![] },
             fkeys: Vec::new(),
         };
         let arr = Int64Array::from(vec![42_i64]);
@@ -462,8 +452,6 @@ fn parse_uuid_bytes(bytes: &[u8]) -> KeyParseResult<[u8; 16]> {
     fn convert_bytes_to_int_for_rowpack() {
         let table = TableSpec {
             name: "events".to_string(),
-            format: TableFormat::Parquet,
-            paths: vec![],
             columns: vec![ColumnSpec {
                 name: "id".to_string(),
                 ingested_dtype: IngestedType::Int32,
@@ -480,7 +468,7 @@ fn parse_uuid_bytes(bytes: &[u8]) -> KeyParseResult<[u8; 16]> {
             weight: None,
             edge_table: None,
             rowpack: None,
-            source: None,
+            source: DataSource::Parquet { paths: vec![] },
             fkeys: Vec::new(),
         };
         let arr = BinaryArray::from(vec![b"123".as_slice()]);

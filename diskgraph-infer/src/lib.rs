@@ -10,8 +10,8 @@ use diskgraph_fs::{
     CloudTransferConfig, GcsConfig, S3Config,
 };
 use diskgraph_ingest::graph_config::{
-    ColumnSpec, EdgeTableSpec, FKeySpec, ForeignKeySpec, IngestedType, GraphConfig, TableFormat,
-    TableSpec, TimestampUnit,
+    ColumnSpec, DataSource, EdgeTableSpec, FKeySpec, ForeignKeySpec, IngestedType, GraphConfig,
+    TableFormat, TableSpec, TimestampUnit,
 };
 use diskgraph_ingest::config_converter::map_kumo_dtype;
 use arrow_array::{
@@ -304,8 +304,6 @@ pub fn infer_source_metadata(root: &RootSource, options: InferOptions) -> Result
         .iter()
         .map(|table| TableSpec {
             name: table.name.clone(),
-            format: table.format.clone(),
-            paths: table.paths.clone(),
             columns: table.columns.clone(),
             primary_key: None,
             create_time: None,
@@ -313,7 +311,7 @@ pub fn infer_source_metadata(root: &RootSource, options: InferOptions) -> Result
             weight: None,
             edge_table: None,
             rowpack: None,
-            source: None,
+            source: DataSource::Parquet { paths: table.paths.clone() },
             fkeys: Vec::new(),
         })
         .collect();

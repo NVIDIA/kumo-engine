@@ -1,7 +1,8 @@
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use clap::Parser;
 use diskgraph_datagenerator::downloader::{download_job, parse_job_spec, DownloadOptions};
 use diskgraph_infer::{infer_source_metadata, parse_root_source, InferOptions};
+use diskgraph_ingest::config_converter::{convert_kumo_to_diskgraph, ConvertOptions, KumoGraphConfig};
 use diskgraph_ingest::{ingest_with_stats, Dest, IngestOptions, IngestStats};
 use diskgraph_ingest::progress::{build_progress, format_count};
 use serde::{Deserialize, Serialize};
@@ -54,6 +55,11 @@ struct Args {
     /// S3 bucket to use (default: kumo-prod-dataplane-bucket, or kumo-doordash-cache for doordash)
     #[arg(long)]
     bucket: Option<String>,
+
+    /// Use the config converter instead of infer to generate DiskGraph config.
+    /// This reads the Kumo graph config (config.json) and converts it directly.
+    #[arg(long, default_value_t = false)]
+    use_config_converter: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -121,6 +127,7 @@ async fn main() -> Result<()> {
                 args.index_mem_budget_bytes,
                 args.num_shards,
                 args.bucket.clone(),
+                args.use_config_converter,
             )
             .await
             {
@@ -229,6 +236,7 @@ async fn validate_job(
     index_mem_budget_bytes: Option<u64>,
     num_shards: Option<usize>,
     bucket: Option<String>,
+    use_config_converter: bool,
 ) -> Result<ValidationReport> {
     // 1. Download
     println!("Downloading to {}...", download_root_base.display());
@@ -243,9 +251,6 @@ async fn validate_job(
     let data_dir = download_job(job_spec, options).await?;
     println!("Found data at: {}", data_dir.display());
 
-    // 2. Infer
-    println!("Inferring metadata...");
-
     // Check for graph config
     let graph_config_path = data_dir.join("config.json");
     let graph_config: Option<serde_json::Value> = if graph_config_path.exists() {
@@ -256,24 +261,116 @@ async fn validate_job(
         None
     };
 
-    let source_root = parse_root_source(data_dir.to_str().unwrap())?;
-    let mut infer_opts = InferOptions::default();
-    if let Some(cfg) = &graph_config {
-        infer_opts.graph_config = Some(serde_json::from_value(cfg.clone())?);
-    }
-
-    let mut infer_res = infer_source_metadata(&source_root, infer_opts)?;
-
-    if let Some(shards) = num_shards {
-        println!("Overriding num_shards to {}", shards);
-        infer_res.metadata.num_shards = Some(shards);
-    }
-
+    // 2. Generate DiskGraph config (via converter or infer)
     let metadata_path = data_dir.join("diskgraph_config.json");
-    fs::write(&metadata_path, serde_json::to_vec_pretty(&infer_res.metadata)?)?;
+
+    if use_config_converter {
+        println!("Using Kumo config converter...");
+
+        // Require config.json when --use-config-converter is set
+        let kumo_config_value = graph_config.as_ref()
+            .ok_or_else(|| anyhow!(
+                "--use-config-converter requires config.json, but it was not found on S3. \
+                This job may not have a Kumo graph config, try without --use-config-converter to use infer instead."
+            ))?;
+
+        // Parse as KumoGraphConfig
+        let kumo_config: KumoGraphConfig = serde_json::from_value(kumo_config_value.clone())
+            .context("parse config.json as KumoGraphConfig")?;
+
+        // Build data_persist_dir from bucket/customer
+        let (customer, _) = parse_job_spec(job_spec)?;
+        let effective_bucket = bucket.as_deref().unwrap_or_else(|| {
+            if customer.eq_ignore_ascii_case("doordash") {
+                "kumo-doordash-cache"
+            } else {
+                "kumo-prod-dataplane-bucket"
+            }
+        });
+        let customer_path = if customer.eq_ignore_ascii_case("doordash") {
+            "kumo"
+        } else {
+            &customer
+        };
+        let data_persist_dir = format!(
+            "s3://{}/{}/prod/data-persist-dir",
+            effective_bucket, customer_path
+        );
+
+        // Determine dataset name
+        let dataset_name = kumo_config.name.clone()
+            .unwrap_or_else(|| format!("{}_{}", customer, parse_job_spec(job_spec).map(|(_, j)| j).unwrap_or_default()));
+
+        let convert_options = ConvertOptions {
+            data_persist_dir,
+            dataset_name,
+        };
+
+        // Convert Kumo config to DiskGraph config
+        let mut diskgraph_config = convert_kumo_to_diskgraph(&kumo_config, &convert_options)
+            .map_err(|e| anyhow!("config conversion failed: {}", e))?;
+
+        // Replace S3 paths with local paths
+        // Downloaded data is at: data_dir/{table_name}/
+        // We need to list actual parquet files (ingest doesn't support directory paths)
+        for table in &mut diskgraph_config.tables {
+            let table_dir = data_dir.join(&table.name);
+            let mut parquet_files: Vec<String> = Vec::new();
+
+            if table_dir.is_dir() {
+                for entry in fs::read_dir(&table_dir)? {
+                    let entry = entry?;
+                    let path = entry.path();
+                    if path.extension().map(|e| e == "parquet").unwrap_or(false) {
+                        parquet_files.push(path.to_string_lossy().to_string());
+                    }
+                }
+            }
+
+            if parquet_files.is_empty() {
+                return Err(anyhow!("No parquet files found for table {} in {}", table.name, table_dir.display()));
+            }
+
+            parquet_files.sort(); // Consistent ordering
+            *table.get_paths_mut() = parquet_files;
+        }
+
+        // Apply num_shards override
+        if let Some(shards) = num_shards {
+            println!("Overriding num_shards to {}", shards);
+            diskgraph_config.num_shards = Some(shards);
+        }
+
+        fs::write(&metadata_path, serde_json::to_vec_pretty(&diskgraph_config)?)?;
+        println!("Wrote converted config to {}", metadata_path.display());
+    } else {
+        println!("Inferring metadata...");
+
+        let source_root = parse_root_source(data_dir.to_str().unwrap())?;
+        let mut infer_opts = InferOptions::default();
+        if let Some(cfg) = &graph_config {
+            infer_opts.graph_config = Some(serde_json::from_value(cfg.clone())?);
+        }
+
+        let mut infer_res = infer_source_metadata(&source_root, infer_opts)?;
+
+        if let Some(shards) = num_shards {
+            println!("Overriding num_shards to {}", shards);
+            infer_res.metadata.num_shards = Some(shards);
+        }
+
+        fs::write(&metadata_path, serde_json::to_vec_pretty(&infer_res.metadata)?)?;
+    }
 
     // 3. Ingest
-    let index_name = format!("{}_index", infer_res.metadata.dataset_name);
+    // Read back the config to get dataset_name
+    let config_bytes = fs::read(&metadata_path)?;
+    let config_json: serde_json::Value = serde_json::from_slice(&config_bytes)?;
+    let dataset_name = config_json
+        .get("dataset_name")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow!("missing dataset_name in config"))?;
+    let index_name = format!("{}_index", dataset_name);
     let output_path = output_root_base.join(&index_name);
     if output_path.exists() {
         println!("Index already exists at {}, clearing...", output_path.display());

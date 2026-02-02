@@ -71,23 +71,34 @@ struct SourceMetadataReport {
 #[derive(Debug, Deserialize, Clone)]
 struct TableSpecReport {
     name: String,
-    #[serde(default)]
-    format: Option<TableFormatReport>,
-    #[serde(default)]
-    paths: Vec<String>,
     columns: Vec<ColumnSpecReport>,
     #[serde(default)]
     primary_key: Option<String>,
     #[serde(default)]
     edge_table: Option<EdgeTableSpecReport>,
+    #[serde(default)]
+    source: Option<DataSourceReport>,
+}
+
+impl TableSpecReport {
+    fn get_paths(&self) -> Vec<String> {
+        match &self.source {
+            Some(DataSourceReport::Parquet { paths }) => paths.clone(),
+            Some(DataSourceReport::Csv { paths }) => paths.clone(),
+            _ => Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Clone)]
-#[serde(rename_all = "snake_case")]
-enum TableFormatReport {
-    Csv,
-    Parquet,
+#[serde(tag = "type", rename_all = "snake_case")]
+enum DataSourceReport {
+    Parquet { paths: Vec<String> },
+    Csv { paths: Vec<String> },
+    #[serde(other)]
+    Other,
 }
+
 
 #[derive(Debug, Deserialize, Clone)]
 struct ColumnSpecReport {
@@ -1065,13 +1076,14 @@ fn print_ingest_report(report: &IngestReport, root: &Path) {
         let mut total = 0u64;
         let mut has_total = true;
         for table in &report.source.tables {
-            let size = sum_table_paths(root, &table.paths);
+            let paths = table.get_paths();
+            let size = sum_table_paths(root, &paths);
             if let Some(bytes) = size {
                 total = total.saturating_add(bytes);
             } else {
                 has_total = false;
             }
-            table_sizes.push((table.name.as_str(), size, table.format.as_ref()));
+            table_sizes.push((table.name.as_str(), size));
         }
         println!(
             "  {} {}",
@@ -1082,16 +1094,10 @@ fn print_ingest_report(report: &IngestReport, root: &Path) {
                 warn("partial")
             }
         );
-        for (table_name, size, format) in table_sizes {
-            let format_label = match format {
-                Some(TableFormatReport::Csv) => "csv",
-                Some(TableFormatReport::Parquet) => "parquet",
-                None => "unknown",
-            };
+        for (table_name, size) in table_sizes {
             println!(
-                "    {} {} {} {}",
+                "    {} {} {}",
                 name(table_name),
-                dim(format_label),
                 label("size"),
                 match size {
                     Some(bytes) => ok(&format_bytes(bytes)),
@@ -1912,14 +1918,7 @@ fn print_info(reader: &GraphIndexReader, table_name: &str, root: &Path) {
             .tables
             .iter()
             .find(|t| t.name == table.node_type())
-            .map(|t| TableSpecReport {
-                name: t.name.clone(),
-                format: t.format.clone(),
-                paths: t.paths.clone(),
-                columns: t.columns.clone(),
-                primary_key: t.primary_key.clone(),
-                edge_table: t.edge_table.clone(),
-            });
+            .cloned();
         let incoming: Vec<_> = reader
             .metadata()
             .edge_relations

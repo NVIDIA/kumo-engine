@@ -1,13 +1,11 @@
 use diskgraph_ingest::graph_config::{
     ColumnSpec, DataSource, DirectionSpec, EdgeEndpoint, EdgeTableSpec, FKeySpec,
-    ForeignKeySpec, IngestedType, GraphConfig, TableFormat, TableSpec, TimeSpec, WeightSpec,
+    ForeignKeySpec, IngestedType, GraphConfig, TableSpec, TimeSpec, WeightSpec,
 };
 
 fn base_table(name: &str) -> TableSpec {
     TableSpec {
         name: name.into(),
-        format: TableFormat::Parquet,
-        paths: vec!["/tmp/table.parquet".into()],
         columns: vec![
             ColumnSpec {
                 name: "id".into(),
@@ -36,7 +34,7 @@ fn base_table(name: &str) -> TableSpec {
         weight: None,
         edge_table: None,
         rowpack: None,
-        source: None,
+        source: DataSource::Parquet { paths: vec!["/tmp/table.parquet".into()] },
         fkeys: Vec::new(),
     }
 }
@@ -80,8 +78,6 @@ fn validate_missing_pk_column() {
         dataset_name: "test".into(),
         tables: vec![TableSpec {
             name: "User".into(),
-            format: TableFormat::Parquet,
-            paths: vec!["/tmp/user.parquet".into()],
             columns: vec![ColumnSpec {
                 name: "name".into(),
                 ingested_dtype: IngestedType::String,
@@ -98,7 +94,7 @@ fn validate_missing_pk_column() {
             weight: None,
             edge_table: None,
             rowpack: None,
-            source: None,
+            source: DataSource::Parquet { paths: vec!["/tmp/user.parquet".into()] },
             fkeys: Vec::new(),
         }],
         rowpack: None,
@@ -125,7 +121,7 @@ fn validate_duplicate_table_names() {
 #[test]
 fn validate_table_no_paths() {
     let mut meta = base_metadata();
-    meta.tables[0].paths.clear();
+    meta.tables[0].get_paths_mut().clear();
     assert_err_contains(meta, "table User has no paths");
 }
 
@@ -292,8 +288,6 @@ fn validate_edge_fk_missing_column() {
     let mut meta = base_metadata();
     meta.tables.push(TableSpec {
         name: "Edge".into(),
-        format: TableFormat::Parquet,
-        paths: vec!["/tmp/edge.parquet".into()],
         columns: vec![ColumnSpec {
             name: "src_id".into(),
             ingested_dtype: IngestedType::Int64,
@@ -321,7 +315,7 @@ fn validate_edge_fk_missing_column() {
             reverse: None,
         }),
         rowpack: None,
-        source: None,
+        source: DataSource::Parquet { paths: vec!["/tmp/edge.parquet".into()] },
         fkeys: Vec::new(),
     });
     assert_err_contains(meta, "edge fk column dst_id not found");
@@ -332,8 +326,6 @@ fn validate_edge_fk_missing_table() {
     let mut meta = base_metadata();
     meta.tables.push(TableSpec {
         name: "Edge".into(),
-        format: TableFormat::Parquet,
-        paths: vec!["/tmp/edge.parquet".into()],
         columns: vec![
             ColumnSpec {
                 name: "src_id".into(),
@@ -373,7 +365,7 @@ fn validate_edge_fk_missing_table() {
             reverse: None,
         }),
         rowpack: None,
-        source: None,
+        source: DataSource::Parquet { paths: vec!["/tmp/edge.parquet".into()] },
         fkeys: Vec::new(),
     });
     assert_err_contains(meta, "edge table Edge references missing table Missing");
@@ -385,8 +377,6 @@ fn validate_edge_fk_ref_table_no_pk() {
     meta.tables[1].primary_key = None; // Device has no PK
     meta.tables.push(TableSpec {
         name: "Edge".into(),
-        format: TableFormat::Parquet,
-        paths: vec!["/tmp/edge.parquet".into()],
         columns: vec![
             ColumnSpec {
                 name: "src_id".into(),
@@ -426,7 +416,7 @@ fn validate_edge_fk_ref_table_no_pk() {
             reverse: None,
         }),
         rowpack: None,
-        source: None,
+        source: DataSource::Parquet { paths: vec!["/tmp/edge.parquet".into()] },
         fkeys: Vec::new(),
     });
     assert_err_contains(meta, "references Device which has no primary key");
@@ -439,8 +429,6 @@ fn validate_edge_fk_int_string_ok() {
     let mut meta = base_metadata();
     meta.tables.push(TableSpec {
         name: "Edge".into(),
-        format: TableFormat::Parquet,
-        paths: vec!["/tmp/edge.parquet".into()],
         columns: vec![
             ColumnSpec {
                 name: "src_id".into(),
@@ -480,7 +468,7 @@ fn validate_edge_fk_int_string_ok() {
             reverse: None,
         }),
         rowpack: None,
-        source: None,
+        source: DataSource::Parquet { paths: vec!["/tmp/edge.parquet".into()] },
         fkeys: Vec::new(),
     });
     assert!(meta.validate().is_ok());
@@ -491,8 +479,6 @@ fn validate_edge_fk_string_int_ok() {
     let mut meta = base_metadata();
     meta.tables.push(TableSpec {
         name: "Edge".into(),
-        format: TableFormat::Parquet,
-        paths: vec!["/tmp/edge.parquet".into()],
         columns: vec![
             ColumnSpec {
                 name: "src_id".into(),
@@ -532,7 +518,7 @@ fn validate_edge_fk_string_int_ok() {
             reverse: None,
         }),
         rowpack: None,
-        source: None,
+        source: DataSource::Parquet { paths: vec!["/tmp/edge.parquet".into()] },
         fkeys: Vec::new(),
     });
     assert!(meta.validate().is_ok());
@@ -551,8 +537,6 @@ fn validate_edge_fk_string_bytes_ok() {
     meta.tables[1].primary_key = Some("pk".into());
     meta.tables.push(TableSpec {
         name: "Edge".into(),
-        format: TableFormat::Parquet,
-        paths: vec!["/tmp/edge.parquet".into()],
         columns: vec![
             ColumnSpec {
                 name: "src_id".into(),
@@ -592,7 +576,7 @@ fn validate_edge_fk_string_bytes_ok() {
             reverse: None,
         }),
         rowpack: None,
-        source: None,
+        source: DataSource::Parquet { paths: vec!["/tmp/edge.parquet".into()] },
         fkeys: Vec::new(),
     });
     assert!(meta.validate().is_ok());
@@ -611,8 +595,6 @@ fn validate_edge_fk_string_bytes_len_mismatch() {
     meta.tables[1].primary_key = Some("pk".into());
     meta.tables.push(TableSpec {
         name: "Edge".into(),
-        format: TableFormat::Parquet,
-        paths: vec!["/tmp/edge.parquet".into()],
         columns: vec![
             ColumnSpec {
                 name: "src_id".into(),
@@ -652,7 +634,7 @@ fn validate_edge_fk_string_bytes_len_mismatch() {
             reverse: None,
         }),
         rowpack: None,
-        source: None,
+        source: DataSource::Parquet { paths: vec!["/tmp/edge.parquet".into()] },
         fkeys: Vec::new(),
     });
     assert!(meta.validate().is_ok());
@@ -666,8 +648,6 @@ fn validate_edge_fk_uuid_ok() {
     meta.tables[0].primary_key = Some("pk".into());
     meta.tables.push(TableSpec {
         name: "Edge".into(),
-        format: TableFormat::Parquet,
-        paths: vec!["/tmp/edge.parquet".into()],
         columns: vec![ColumnSpec {
             name: "src_id".into(),
             ingested_dtype: IngestedType::Uuid,
@@ -695,7 +675,7 @@ fn validate_edge_fk_uuid_ok() {
             reverse: None,
         }),
         rowpack: None,
-        source: None,
+        source: DataSource::Parquet { paths: vec!["/tmp/edge.parquet".into()] },
         fkeys: Vec::new(),
     });
     assert!(meta.validate().is_ok());
@@ -709,8 +689,6 @@ fn validate_edge_fk_uuid_mismatch() {
     meta.tables[0].primary_key = Some("pk".into());
     meta.tables.push(TableSpec {
         name: "Edge".into(),
-        format: TableFormat::Parquet,
-        paths: vec!["/tmp/edge.parquet".into()],
         columns: vec![ColumnSpec {
             name: "src_id".into(),
             ingested_dtype: IngestedType::Bytes,
@@ -738,7 +716,7 @@ fn validate_edge_fk_uuid_mismatch() {
             reverse: None,
         }),
         rowpack: None,
-        source: None,
+        source: DataSource::Parquet { paths: vec!["/tmp/edge.parquet".into()] },
         fkeys: Vec::new(),
     });
     assert_err_contains(meta, "incompatible types");
@@ -770,7 +748,7 @@ mod new_schema_types {
     #[test]
     fn datasource_parquet_serialize() {
         let source = DataSource::Parquet {
-            paths: vec!["s3://bucket/data/".into(), "/local/path/".into()],
+            paths: vec!["s3://bucket/data/".into()],
         };
         let json = serde_json::to_string(&source).unwrap();
         assert!(json.contains(r#""type":"parquet""#));
@@ -1136,8 +1114,6 @@ mod new_schema_types {
     fn tablespec_with_source_field() {
         let table = TableSpec {
             name: "events".into(),
-            format: TableFormat::Parquet,
-            paths: vec![],
             columns: vec![],
             primary_key: None,
             create_time: None,
@@ -1145,9 +1121,9 @@ mod new_schema_types {
             weight: None,
             edge_table: None,
             rowpack: None,
-            source: Some(DataSource::Parquet {
+            source: DataSource::Parquet {
                 paths: vec!["s3://bucket/events/".into()],
-            }),
+            },
             fkeys: Vec::new(),
         };
         let json = serde_json::to_string(&table).unwrap();
@@ -1159,8 +1135,6 @@ mod new_schema_types {
     fn tablespec_with_fkeys() {
         let table = TableSpec {
             name: "transactions".into(),
-            format: TableFormat::Parquet,
-            paths: vec!["/data/txn.parquet".into()],
             columns: vec![ColumnSpec {
                 name: "user_id".into(),
                 ingested_dtype: IngestedType::Int64,
@@ -1177,7 +1151,7 @@ mod new_schema_types {
             weight: None,
             edge_table: None,
             rowpack: None,
-            source: None,
+            source: DataSource::Parquet { paths: vec!["s3://bucket/data/".into(), "/local/path/".into()] },
             fkeys: vec![FKeySpec {
                 src_column: "user_id".into(),
                 dst_table: "users".into(),
@@ -1194,8 +1168,6 @@ mod new_schema_types {
     fn tablespec_with_end_time() {
         let table = TableSpec {
             name: "subscriptions".into(),
-            format: TableFormat::Parquet,
-            paths: vec!["/data/subs.parquet".into()],
             columns: vec![],
             primary_key: None,
             create_time: Some("start_date".into()),
@@ -1203,7 +1175,7 @@ mod new_schema_types {
             weight: None,
             edge_table: None,
             rowpack: None,
-            source: None,
+            source: DataSource::Parquet { paths: vec!["/data/subs.parquet".into()] },
             fkeys: Vec::new(),
         };
         let json = serde_json::to_string(&table).unwrap();
