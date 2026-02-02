@@ -35,7 +35,7 @@ fn advise_willneed(file: &File) {
 #[cfg(not(target_os = "linux"))]
 fn advise_willneed(_file: &File) {}
 
-fn count_len(count: usize) -> u64 {
+pub(crate) fn count_len(count: usize) -> u64 {
     if count <= 63 {
         1
     } else if count <= 0x3FFF {
@@ -56,7 +56,7 @@ fn max_delta_for_bytes(delta_bytes: u8) -> u64 {
     }
 }
 
-fn write_len_le(out: &mut Vec<u8>, len: u32, len_bytes: u8) -> Result<()> {
+pub(crate) fn write_len_le(out: &mut Vec<u8>, len: u32, len_bytes: u8) -> Result<()> {
     match len_bytes {
         2 => {
             let len_u16 = u16::try_from(len)
@@ -323,11 +323,11 @@ impl MemoryBudgetGuard {
 
 pub(crate) struct BudgetReservation {
     budget: Arc<MemoryBudget>,
-    bytes: u64,
+    pub(crate) bytes: u64,
 }
 
 impl BudgetReservation {
-    fn new(budget: Arc<MemoryBudget>, bytes: u64) -> Result<Self> {
+    pub(crate) fn new(budget: Arc<MemoryBudget>, bytes: u64) -> Result<Self> {
         if bytes == 0 {
             return Ok(Self { budget, bytes: 0 });
         }
@@ -608,7 +608,7 @@ impl EdgeBufferPool {
 
 pub struct EdgeBufferLease {
     pool: Arc<EdgeBufferPool>,
-    buf: Vec<EdgeRecord>,
+    pub(crate) buf: Vec<EdgeRecord>,
     reservation: Option<BudgetReservation>,
 }
 
@@ -635,7 +635,7 @@ impl EdgeBufferLease {
         Ok(())
     }
 
-    fn set_len_uninit(&mut self, len: usize) -> Result<()> {
+    pub(crate) fn set_len_uninit(&mut self, len: usize) -> Result<()> {
         self.ensure_capacity(len)?;
         // SAFETY: used only by radix_sort_edge_records, which writes every slot by index
         // before any read; no element is observed uninitialized.
@@ -1071,7 +1071,7 @@ fn bits_for_id(max_id: u64) -> u8 {
 
 /// Delta-encode offsets in fixed-size chunks. Each chunk is stored as:
 /// [u16 count][u64 base][(count-1) * delta_bytes].
-fn delta_encode_offsets_into(
+pub(crate) fn delta_encode_offsets_into(
     offsets: &[u64],
     out: &mut Vec<u8>,
     delta_bytes: u8,
@@ -1422,7 +1422,7 @@ enum EdgeSubStream {
 }
 
 #[derive(Clone, Copy)]
-struct EdgeRecord {
+pub(crate) struct EdgeRecord {
     src_id: u64,
     dst_id: u64,
     sort_key: u64,
@@ -1949,98 +1949,3 @@ impl MergedEdgeStream {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn edge_buffer_pool_reuses_budget() {
-        let budget = Arc::new(MemoryBudget::new(1024 * 1024));
-        let pool = Arc::new(EdgeBufferPool::new(Some(Arc::clone(&budget))));
-        {
-            let mut lease = pool.acquire(128).unwrap();
-            lease.set_len_uninit(128).unwrap();
-        }
-        let snap_after = budget.snapshot();
-        assert!(snap_after.in_use > 0);
-        {
-            let _lease = pool.acquire(64).unwrap();
-            let snap_reuse = budget.snapshot();
-            assert_eq!(snap_after.in_use, snap_reuse.in_use);
-        }
-    }
-
-    #[test]
-    fn edge_buffer_pool_pair_reuses_budget() {
-        let budget = Arc::new(MemoryBudget::new(1024 * 1024));
-        let pool = Arc::new(EdgeBufferPool::new(Some(Arc::clone(&budget))));
-        {
-            let (_lease_a, _lease_b) = pool.acquire_pair(128, None).unwrap();
-        }
-        let snap_after = budget.snapshot();
-        assert!(snap_after.in_use > 0);
-        {
-            let _lease = pool.acquire(64).unwrap();
-            let snap_reuse = budget.snapshot();
-            assert_eq!(snap_after.in_use, snap_reuse.in_use);
-        }
-    }
-
-    #[test]
-    fn edge_buffer_pool_releases_budget_on_pool_drop() {
-        let budget = Arc::new(MemoryBudget::new(1024 * 1024));
-        {
-            let pool = Arc::new(EdgeBufferPool::new(Some(Arc::clone(&budget))));
-            let mut lease = pool.acquire(1024).unwrap();
-            lease.set_len_uninit(1024).unwrap();
-        }
-        let snap_after = budget.snapshot();
-        assert_eq!(snap_after.in_use, 0);
-    }
-
-    #[test]
-    fn edge_buffer_pool_evicts_smaller_buffers_for_large_request() {
-        let record_bytes = std::mem::size_of::<EdgeRecord>() as u64;
-        let small_cap = 64usize;
-        let large_cap = 1024usize;
-        let budget_bytes = (large_cap as u64) * record_bytes;
-        let budget = Arc::new(MemoryBudget::new(budget_bytes));
-        let pool = Arc::new(EdgeBufferPool::new(Some(Arc::clone(&budget))));
-        {
-            let _a = pool.acquire(small_cap).unwrap();
-            let _b = pool.acquire(small_cap).unwrap();
-        }
-        let snap_after = budget.snapshot();
-        assert!(snap_after.in_use > 0);
-        let _large = pool.acquire(large_cap).unwrap();
-    }
-
-    #[test]
-    fn edge_buffer_pool_uses_reservation_without_touching_global_budget() {
-        let record_bytes = std::mem::size_of::<EdgeRecord>() as u64;
-        let capacity = 10;
-        let total_needed = record_bytes * (capacity as u64) * 2;
-
-        let budget = Arc::new(MemoryBudget::new(total_needed * 2));
-        let pool = Arc::new(EdgeBufferPool::new(Some(Arc::clone(&budget))));
-
-        // Acquire reservation upfront (simulating MergedEdgeStream behavior)
-        let mut reservation = BudgetReservation::new(Arc::clone(&budget), total_needed).unwrap();
-
-        let initial_in_use = budget.snapshot().in_use;
-        assert_eq!(initial_in_use, total_needed);
-
-        // Acquire pair using the reservation
-        let (lease_a, lease_b) = pool.acquire_pair(capacity, Some(&mut reservation)).unwrap();
-
-        // Global budget should not have increased; we just moved the reservation ownership
-        assert_eq!(budget.snapshot().in_use, initial_in_use);
-
-        // The local reservation handle should be empty/reduced
-        assert_eq!(reservation.bytes, 0);
-
-        // Leases should be usable
-        assert!(lease_a.buf.capacity() >= capacity);
-        assert!(lease_b.buf.capacity() >= capacity);
-    }
-}
