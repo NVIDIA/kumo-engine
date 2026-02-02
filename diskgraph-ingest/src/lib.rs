@@ -2,6 +2,7 @@
 
 mod mapping;
 pub mod graph_config;
+pub mod config_converter;
 pub mod progress;
 pub mod config;
 pub mod errors;
