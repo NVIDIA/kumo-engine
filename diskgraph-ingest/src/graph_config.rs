@@ -27,9 +27,11 @@ pub struct GraphConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TableSpec {
     pub name: String,
-    /// Table format (csv or parquet) - used with `paths` field.
+    /// Table format (csv or parquet) - used with `paths` field. Deprecated: use `source` instead.
+    #[serde(default, skip_serializing_if = "skip_default_format")]
     pub format: TableFormat,
-    /// File paths - used with `format` field. Prefer using `source` instead.
+    /// File paths - used with `format` field. Deprecated: use `source` instead.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub paths: Vec<String>,
     pub columns: Vec<ColumnSpec>,
     #[serde(default)]
@@ -110,11 +112,16 @@ pub enum TimestampUnit {
     Nanos,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum TableFormat {
     Csv,
+    #[default]
     Parquet,
+}
+
+fn skip_default_format(format: &TableFormat) -> bool {
+    *format == TableFormat::Parquet
 }
 
 /// Data source configuration - abstracts where table data comes from.

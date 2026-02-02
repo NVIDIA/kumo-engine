@@ -13,6 +13,7 @@ use diskgraph_ingest::graph_config::{
     ColumnSpec, EdgeTableSpec, FKeySpec, ForeignKeySpec, IngestedType, GraphConfig, TableFormat,
     TableSpec, TimestampUnit,
 };
+use diskgraph_ingest::config_converter::map_kumo_dtype;
 use arrow_array::{
     Array, Int16Array, Int32Array, Int64Array, Int8Array, LargeStringArray, RecordBatch,
     StringArray, UInt16Array, UInt32Array, UInt64Array, UInt8Array,
@@ -3380,23 +3381,4 @@ fn unify_types(a: &IngestedType, b: &IngestedType) -> Option<IngestedType> {
     }
 }
 
-fn map_kumo_dtype(dtype: &str) -> Option<IngestedType> {
-    match dtype {
-        "bool" => Some(IngestedType::Bool),
-        "int" | "int64" => Some(IngestedType::Int64),
-        "int32" => Some(IngestedType::Int32),
-        "int16" => Some(IngestedType::Int16),
-        "byte" => Some(IngestedType::UInt8),
-        "float" | "float32" => Some(IngestedType::Float32),
-        "float64" => Some(IngestedType::Float64),
-        "string" => Some(IngestedType::String),
-        "date" => Some(IngestedType::Date),
-        "time" => Some(IngestedType::Timestamp),
-        "timedelta" => Some(IngestedType::Int64),
-        "floatlist" => Some(IngestedType::Float32Array),
-        "intlist" => Some(IngestedType::String), // Fallback
-        "stringlist" => Some(IngestedType::String), // Fallback
-        "binary" => Some(IngestedType::Bytes),
-        _ => None,
-    }
-}
+// map_kumo_dtype is now imported from diskgraph_ingest::config_converter
