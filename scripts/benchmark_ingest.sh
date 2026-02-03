@@ -1,4 +1,27 @@
 #!/usr/bin/env bash
+# Benchmark ingest runner
+#
+# What it does:
+# - Iterates a pre-defined, ordered list of diskgraph_config.json files (CONFIGS below).
+# - Before each run:
+#   - Pulls the latest code from origin/main (fast-forward only).
+#   - Ensures the /mnt/localssd XFS volume exists; if not, it runs the
+#     local SSD setup script in non-interactive mode to create/mount it.
+#   - Resets the XFS filesystem to clear prior outputs.
+# - Runs diskgraph-ingest (S3 input) for the config and logs output.
+# - Records results and minimal state for resume after interruption.
+#
+# How to use:
+# - Edit CONFIGS below to include the configs you want, in order.
+# - Run: ./scripts/benchmark_ingest.sh
+# - Designed to be left running continuously; it resumes from the last
+#   completed index in benchmark/benchmark_state.txt if restarted.
+#
+# Notes:
+# - Config list is embedded in this script. When you add new configs,
+#   commit this script update and the script will pick up the new list
+#   after the next git pull.
+# - All logs, results, and state live under ./benchmark/ (git-ignored).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
