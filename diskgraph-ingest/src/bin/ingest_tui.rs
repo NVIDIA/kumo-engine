@@ -911,17 +911,17 @@ fn draw_instances(frame: &mut ratatui::Frame, area: Rect, app: &mut AppState) {
         .instances
         .iter()
         .map(|d| {
-            let label = if let Some(latest) = d.latest.as_ref() {
-                format!("{}  {}", d.name, format_bytes(latest.throughput_bytes_per_sec))
-            } else {
-                d.name.clone()
-            };
-            ListItem::new(label)
+            ListItem::new(d.name.clone())
         })
         .collect();
     let list = List::new(items)
         .block(Block::default().borders(Borders::ALL).title("Instances"))
-        .highlight_style(Style::default().bg(Color::Blue).fg(Color::Indexed(15)));
+        .highlight_style(
+            Style::default()
+                .bg(Color::Blue)
+                .fg(Color::Indexed(0))
+                .add_modifier(Modifier::BOLD),
+        );
     frame.render_stateful_widget(list, area, &mut app.instance_state);
 }
 
@@ -933,7 +933,12 @@ fn draw_datasets(frame: &mut ratatui::Frame, area: Rect, app: &mut AppState) {
         .collect();
     let list = List::new(items)
         .block(Block::default().borders(Borders::ALL).title("Datasets"))
-        .highlight_style(Style::default().bg(Color::Blue).fg(Color::Indexed(15)));
+        .highlight_style(
+            Style::default()
+                .bg(Color::Blue)
+                .fg(Color::Indexed(0))
+                .add_modifier(Modifier::BOLD),
+        );
     frame.render_stateful_widget(list, area, &mut app.dataset_state);
 }
 
