@@ -2,7 +2,7 @@
 # Benchmark ingest runner
 #
 # What it does:
-# - Iterates a pre-defined, ordered list of diskgraph_config.json files (CONFIGS below).
+# - Iterates a pre-defined, ordered list of diskgraph_config.json files (config_list.txt).
 # - Before each run:
 #   - Pulls the latest code from origin/main (fast-forward only).
 #   - Ensures the /mnt/localssd XFS volume exists; if not, it runs the
@@ -12,26 +12,23 @@
 # - Records results and minimal state for resume after interruption.
 #
 # How to use:
-# - Edit CONFIGS below to include the configs you want, in order.
+# - Edit benchmark_configs/config_list.txt to include the configs you want, in order.
 # - Run: ./scripts/benchmark_ingest.sh
 # - Designed to be left running continuously; it resumes from the last
 #   completed index in benchmark/benchmark_state.txt if restarted.
 #
 # Notes:
-# - Config list is embedded in this script. When you add new configs,
-#   commit this script update and the script will pick up the new list
-#   after the next git pull.
+# - Config list is read from benchmark_configs/config_list.txt. When you add new configs,
+#   commit that file update and the script will pick up the new list after the next git pull.
 # - All logs, results, and state live under ./benchmark/ (git-ignored).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 
-# Pre-defined list of config JSONs (edit this list in-order).
-CONFIGS=(
-  "${SCRIPT_DIR}/benchmark_configs/alt_detection_10pct.json"
-  "${SCRIPT_DIR}/benchmark_configs/mimic.json"
-)
+# Pre-defined list of config JSONs (edit config_list.txt in-order).
+CONFIG_LIST_FILE="${SCRIPT_DIR}/benchmark_configs/config_list.txt"
+CONFIGS=()
 
 GIT_BRANCH="main"
 MOUNTPOINT="/mnt/localssd"
@@ -84,11 +81,22 @@ ensure_clean_git() {
   fi
 }
 
+load_configs() {
+  CONFIGS=()
+  if [[ -f "${CONFIG_LIST_FILE}" ]]; then
+    while IFS= read -r line; do
+      [[ -z "${line}" || "${line}" =~ ^[[:space:]]*# ]] && continue
+      CONFIGS+=("${REPO_ROOT}/${line#./}")
+    done < "${CONFIG_LIST_FILE}"
+  fi
+}
+
 update_repo() {
   log "Updating repo (branch: ${GIT_BRANCH})..."
   ensure_clean_git
   git fetch --prune origin "${GIT_BRANCH}"
   git merge --ff-only "origin/${GIT_BRANCH}"
+  load_configs
 }
 
 current_git_rev() {
@@ -137,6 +145,7 @@ main() {
   require_cmd date
 
   mkdir -p "${LOG_DIR}"
+  load_configs
   if [[ ! -f "${RESULTS_FILE}" ]]; then
     printf "timestamp_utc\tindex\tconfig\tstatus\tgit_rev\tlog_file\n" > "${RESULTS_FILE}"
   fi
