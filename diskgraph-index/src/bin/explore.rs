@@ -277,9 +277,8 @@ struct EdgeTableSpecReport {
 
 #[derive(Debug, Deserialize, Clone)]
 struct ForeignKeySpecReport {
-    column: String,
+    edge_column: String,
     ref_table: String,
-    ref_column: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1191,9 +1190,9 @@ fn print_source_schema(source: &SourceMetadataReport) {
             println!(
                 "    {} {} {} {}",
                 label("Edge table:"),
-                highlight(&format_fk(&table, &edge.src_fk)),
+                highlight(&format_fk(table, Some(source), &edge.src_fk)),
                 dim("->"),
-                highlight(&format_fk(&table, &edge.dst_fk))
+                highlight(&format_fk(table, Some(source), &edge.dst_fk))
             );
         }
     }
@@ -1233,20 +1232,22 @@ fn print_source_schema(source: &SourceMetadataReport) {
     if !edge_tables.is_empty() {
         println!("  {}", label("Edge table relationships:"));
         for (table, edge) in edge_tables {
-            let src_col = table.columns.iter().find(|c| c.name == edge.src_fk.column);
-            let dst_col = table.columns.iter().find(|c| c.name == edge.dst_fk.column);
+            let src_col = table.columns.iter().find(|c| c.name == edge.src_fk.edge_column);
+            let dst_col = table.columns.iter().find(|c| c.name == edge.dst_fk.edge_column);
             let src_desc = src_col.map(format_column).unwrap_or_else(|| "unknown".to_string());
             let dst_desc = dst_col.map(format_column).unwrap_or_else(|| "unknown".to_string());
+            let src_ref_name = ref_table_pk(source, &edge.src_fk.ref_table);
+            let dst_ref_name = ref_table_pk(source, &edge.dst_fk.ref_table);
             let src_ref_col = source
                 .tables
                 .iter()
                 .find(|t| t.name == edge.src_fk.ref_table)
-                .and_then(|t| t.columns.iter().find(|c| c.name == edge.src_fk.ref_column));
+                .and_then(|t| t.columns.iter().find(|c| c.name == src_ref_name.as_str()));
             let dst_ref_col = source
                 .tables
                 .iter()
                 .find(|t| t.name == edge.dst_fk.ref_table)
-                .and_then(|t| t.columns.iter().find(|c| c.name == edge.dst_fk.ref_column));
+                .and_then(|t| t.columns.iter().find(|c| c.name == dst_ref_name.as_str()));
             let src_ref_desc =
                 src_ref_col.map(format_column).unwrap_or_else(|| "unknown".to_string());
             let dst_ref_desc =
@@ -1255,18 +1256,18 @@ fn print_source_schema(source: &SourceMetadataReport) {
                 "    {}: {} {} ({}) {} {}.{} ({}); {} {} ({}) {} {}.{} ({})",
                 name(&table.name),
                 label("src"),
-                name(&edge.src_fk.column),
+                name(&edge.src_fk.edge_column),
                 highlight(&src_desc),
                 dim("->"),
                 name(&edge.src_fk.ref_table),
-                name(&edge.src_fk.ref_column),
+                name(&src_ref_name),
                 highlight(&src_ref_desc),
                 label("dst"),
-                name(&edge.dst_fk.column),
+                name(&edge.dst_fk.edge_column),
                 highlight(&dst_desc),
                 dim("->"),
                 name(&edge.dst_fk.ref_table),
-                name(&edge.dst_fk.ref_column),
+                name(&dst_ref_name),
                 highlight(&dst_ref_desc)
             );
         }
@@ -1325,18 +1326,38 @@ fn print_source_schema(source: &SourceMetadataReport) {
     }
 }
 
-fn format_fk(table: &TableSpecReport, fk: &ForeignKeySpecReport) -> String {
-    let col = table.columns.iter().find(|c| c.name == fk.column);
+fn format_fk(
+    table: &TableSpecReport,
+    source: Option<&SourceMetadataReport>,
+    fk: &ForeignKeySpecReport,
+) -> String {
+    let col = table.columns.iter().find(|c| c.name == fk.edge_column);
+    let ref_column = ref_table_pk_from_source(source, &fk.ref_table);
     match col {
         Some(col) => format!(
             "{} ({} -> {}.{})",
-            fk.column,
+            fk.edge_column,
             format_column(col),
             fk.ref_table,
-            fk.ref_column
+            ref_column
         ),
-        None => format!("{} -> {}.{}", fk.column, fk.ref_table, fk.ref_column),
+        None => format!("{} -> {}.{}", fk.edge_column, fk.ref_table, ref_column),
     }
+}
+
+fn ref_table_pk(source: &SourceMetadataReport, table_name: &str) -> String {
+    source
+        .tables
+        .iter()
+        .find(|t| t.name == table_name)
+        .and_then(|t| t.primary_key.clone())
+        .unwrap_or_else(|| "primary_key".to_string())
+}
+
+fn ref_table_pk_from_source(source: Option<&SourceMetadataReport>, table_name: &str) -> String {
+    source
+        .map(|source| ref_table_pk(source, table_name))
+        .unwrap_or_else(|| "primary_key".to_string())
 }
 
 fn format_column(col: &ColumnSpecReport) -> String {
@@ -1912,13 +1933,15 @@ fn print_info(reader: &GraphIndexReader, table_name: &str, root: &Path) {
     }
 
     let mut source_schema: Option<TableSpecReport> = None;
+    let mut source_report: Option<SourceMetadataReport> = None;
     if let Ok(Some(report)) = read_ingest_report(root) {
-        source_schema = report
-            .source
+        let IngestReport { stats, source } = report;
+        source_schema = source
             .tables
             .iter()
             .find(|t| t.name == table.node_type())
             .cloned();
+        source_report = Some(source);
         let incoming: Vec<_> = reader
             .metadata()
             .edge_relations
@@ -1933,11 +1956,11 @@ fn print_info(reader: &GraphIndexReader, table_name: &str, root: &Path) {
             .collect();
         if !incoming.is_empty() {
             println!("  {}", label("Incoming edge stats:"));
-            print_edge_stats(&report.stats, &incoming);
+            print_edge_stats(&stats, &incoming);
         }
         if !outgoing.is_empty() {
             println!("  {}", label("Outgoing edge stats:"));
-            print_edge_stats(&report.stats, &outgoing);
+            print_edge_stats(&stats, &outgoing);
         }
 
     }
@@ -1994,9 +2017,9 @@ fn print_info(reader: &GraphIndexReader, table_name: &str, root: &Path) {
             println!(
                 "    {} {} {} {}",
                 label("Edge table:"),
-                highlight(&format_fk(table_spec, &edge.src_fk)),
+                highlight(&format_fk(table_spec, source_report.as_ref(), &edge.src_fk)),
                 dim("->"),
-                highlight(&format_fk(table_spec, &edge.dst_fk))
+                highlight(&format_fk(table_spec, source_report.as_ref(), &edge.dst_fk))
             );
         }
         println!("    {}", label("Columns:"));
