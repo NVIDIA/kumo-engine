@@ -146,15 +146,15 @@ main() {
 
   local failures=0
   local total="${#CONFIGS[@]}"
-  local i
-  for i in "${!CONFIGS[@]}"; do
-    if (( i <= last_completed )); then
+  local idx
+  for idx in "${!CONFIGS[@]}"; do
+    if (( idx <= last_completed )); then
       continue
     fi
-    local config="${CONFIGS[$i]}"
+    local config="${CONFIGS[$idx]}"
     if [[ ! -f "${config}" ]]; then
       log "Config missing: ${config}"
-      printf "%s\t%s\t%s\t%s\t%s\t%s\n" "$(timestamp_utc)" "${i}" "${config}" "missing" "$(current_git_rev)" "-" >> "${RESULTS_FILE}"
+      printf "%s\t%s\t%s\t%s\t%s\t%s\n" "$(timestamp_utc)" "${idx}" "${config}" "missing" "$(current_git_rev)" "-" >> "${RESULTS_FILE}"
       failures=$((failures + 1))
       continue
     fi
@@ -166,14 +166,14 @@ main() {
     reset_xfs_mount
 
     local log_file="${LOG_DIR}/$(basename "${config}").${git_rev}.$(date -u +%Y%m%dT%H%M%SZ).log"
-    log "Running ingest (${i}/${total}): ${config}"
+    log "Running ingest (${idx}/${total}): ${config}"
     if run_ingest "${config}" "${log_file}"; then
       log "Success: ${config}"
-      printf "%s\t%s\t%s\t%s\t%s\t%s\n" "$(timestamp_utc)" "${i}" "${config}" "ok" "${git_rev}" "${log_file}" >> "${RESULTS_FILE}"
-      save_state_index "${i}"
+      printf "%s\t%s\t%s\t%s\t%s\t%s\n" "$(timestamp_utc)" "${idx}" "${config}" "ok" "${git_rev}" "${log_file}" >> "${RESULTS_FILE}"
+      save_state_index "${idx}"
     else
       log "Failure: ${config} (see ${log_file})"
-      printf "%s\t%s\t%s\t%s\t%s\t%s\n" "$(timestamp_utc)" "${i}" "${config}" "fail" "${git_rev}" "${log_file}" >> "${RESULTS_FILE}"
+      printf "%s\t%s\t%s\t%s\t%s\t%s\n" "$(timestamp_utc)" "${idx}" "${config}" "fail" "${git_rev}" "${log_file}" >> "${RESULTS_FILE}"
       failures=$((failures + 1))
     fi
   done
