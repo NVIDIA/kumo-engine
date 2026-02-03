@@ -328,6 +328,8 @@ struct IngestContext {
     edge_counts: HashMap<String, u64>,
     pk_duplicate_counts: HashMap<String, u64>,
     pk_duplicate_drops: HashMap<String, u64>,
+    pk_null_timestamp_drops: HashMap<String, u64>,
+    edge_null_timestamp_drops: HashMap<String, u64>,
     pk_duplicate_samples: HashMap<String, Vec<String>>,
     dropped_rows_counts: HashMap<String, u64>,
     key_parse_failures: u64,
@@ -1331,6 +1333,8 @@ impl IngestContext {
             edge_counts: HashMap::new(),
             pk_duplicate_counts: HashMap::new(),
             pk_duplicate_drops: HashMap::new(),
+            pk_null_timestamp_drops: HashMap::new(),
+            edge_null_timestamp_drops: HashMap::new(),
             pk_duplicate_samples: HashMap::new(),
             dropped_rows_counts: HashMap::new(),
             key_parse_failures: 0,
@@ -2031,71 +2035,31 @@ impl IngestContext {
 
         macro_rules! process_node_batch {
             ($batch:expr) => {
-                let has_null_timestamps = if let Some((idx, _)) = &create_time_info {
-                    access.array(*idx).map_or(true, |a| a.null_count() > 0)
-                } else {
-                    false
-                };
+                let timestamp_idx = create_time_info.as_ref().map(|(idx, _)| *idx);
+                let validity_array = timestamp_idx.map(|idx| access.array(idx).unwrap().clone());
 
-                if has_null_timestamps {
-                    for row in 0..$batch.num_rows() {
-                        access.set_row(row);
-                        if let Some((idx, _dtype)) = &create_time_info {
-                            let is_null = access.array(*idx).map(|a| a.is_null(row)).unwrap_or(true);
-                            if is_null {
-                                node_data_dropped += 1;
-                                let sample = pk_idx.and_then(|i| sample_from_access(&access, i));
-                                record_key_parse_failure_sample(
-                                    &mut key_failures.parse_failures,
-                                    &mut key_failures.samples,
-                                    &mut key_failures.by_context,
-                                    &format!("node_data_dropped:{}", table.name),
-                                    sample,
-                                );
-                                continue;
-                            }
-                        }
-                        total_rows += 1;
-                        Self::write_node_row_from_access(
-                            table,
-                            pk_idx,
-                            &rel_specs,
-                            &mut access,
-                            &node_encoder,
-                            &mut batcher,
-                            &mut dest_fkey_batcher,
-                            &mut sort_key_batchers,
-                            &mut row_id,
-                            pk_col,
-                            &mut key_bufs,
-                            &mut f16_buf,
-                            &mut node_data_dropped,
-                            num_shards,
-                            key_failures,
-                        )?;
-                    }
-                } else {
-                    for row in 0..$batch.num_rows() {
-                        access.set_row(row);
-                        total_rows += 1;
-                        Self::write_node_row_from_access(
-                            table,
-                            pk_idx,
-                            &rel_specs,
-                            &mut access,
-                            &node_encoder,
-                            &mut batcher,
-                            &mut dest_fkey_batcher,
-                            &mut sort_key_batchers,
-                            &mut row_id,
-                            pk_col,
-                            &mut key_bufs,
-                            &mut f16_buf,
-                            &mut node_data_dropped,
-                            num_shards,
-                            key_failures,
-                        )?;
-                    }
+                for row in 0..$batch.num_rows() {
+                    access.set_row(row);
+                    total_rows += 1;
+                    let timestamp_valid = validity_array.as_ref().map(|a| a.is_valid(row)).unwrap_or(true);
+                    Self::write_node_row_from_access(
+                        table,
+                        pk_idx,
+                        &rel_specs,
+                        &mut access,
+                        &node_encoder,
+                        &mut batcher,
+                        &mut dest_fkey_batcher,
+                        &mut sort_key_batchers,
+                        &mut row_id,
+                        pk_col,
+                        &mut key_bufs,
+                        &mut f16_buf,
+                        &mut node_data_dropped,
+                        num_shards,
+                        key_failures,
+                        timestamp_valid,
+                    )?;
                 }
             };
         }
@@ -2184,94 +2148,7 @@ impl IngestContext {
                                 cols.push(batch.column(idx).clone());
                             }
                             access.set_cols(&cols);
-                            let has_null_timestamps = if let Some((idx, _)) = &create_time_info {
-                                access.array(*idx).map_or(true, |a| a.null_count() > 0)
-                            } else {
-                                false
-                            };
-
-                            if has_null_timestamps {
-                                let has_null_timestamps = if let Some((idx, _)) = &create_time_info {
-                                    access.array(*idx).map_or(true, |a| a.null_count() > 0)
-                                } else {
-                                    false
-                                };
-
-                                if has_null_timestamps {
-                                    for row in 0..batch.num_rows() {
-                                        access.set_row(row);
-                                        if let Some((idx, _dtype)) = &create_time_info {
-                                            let is_null = access.array(*idx).map(|a| a.is_null(row)).unwrap_or(true);
-                                            if is_null {
-                                                node_data_dropped += 1;
-                                                continue;
-                                            }
-                                        }
-                                        total_rows += 1;
-                                        Self::write_node_row_from_access(
-                                            table,
-                                            pk_idx,
-                                            &rel_specs,
-                                            &mut access,
-                                            &node_encoder,
-                                            &mut batcher,
-                                            &mut dest_fkey_batcher,
-                                            &mut sort_key_batchers,
-                                            &mut row_id,
-                                            pk_col,
-                                            &mut key_bufs,
-                                            &mut f16_buf,
-                                            &mut node_data_dropped,
-                                            num_shards,
-                                            key_failures,
-                                        )?;
-                                    }
-                                } else {
-                                    for row in 0..batch.num_rows() {
-                                        access.set_row(row);
-                                        total_rows += 1;
-                                        Self::write_node_row_from_access(
-                                            table,
-                                            pk_idx,
-                                            &rel_specs,
-                                            &mut access,
-                                            &node_encoder,
-                                            &mut batcher,
-                                            &mut dest_fkey_batcher,
-                                            &mut sort_key_batchers,
-                                            &mut row_id,
-                                            pk_col,
-                                            &mut key_bufs,
-                                            &mut f16_buf,
-                                            &mut node_data_dropped,
-                                            num_shards,
-                                            key_failures,
-                                        )?;
-                                    }
-                                }
-                            } else {
-                                for row in 0..batch.num_rows() {
-                                    access.set_row(row);
-                                    total_rows += 1;
-                                    Self::write_node_row_from_access(
-                                        table,
-                                        pk_idx,
-                                        &rel_specs,
-                                        &mut access,
-                                        &node_encoder,
-                                        &mut batcher,
-                                        &mut dest_fkey_batcher,
-                                        &mut sort_key_batchers,
-                                        &mut row_id,
-                                        pk_col,
-                                        &mut key_bufs,
-                                        &mut f16_buf,
-                                        &mut node_data_dropped,
-                                        num_shards,
-                                        key_failures,
-                                    )?;
-                                }
-                            }
+                            process_node_batch!(batch);
                         }
                         drop(pooled);
                     } else {
@@ -2356,6 +2233,7 @@ impl IngestContext {
         node_data_dropped: &mut u64,
         num_shards: usize,
         key_failures: &mut KeyFailureState,
+        timestamp_valid: bool,
     ) -> Result<()> {
         for buf in key_bufs.iter_mut() {
             buf.clear();
@@ -2442,7 +2320,7 @@ impl IngestContext {
             let buf = key_bufs
                 .get(pk_idx.unwrap())
                 .ok_or_else(|| anyhow!("missing pkey buffer"))?;
-            batcher.push_pkey(shard, buf)?;
+            batcher.push_pkey(shard, buf, timestamp_valid)?;
         }
         for sort_key in sort_key_batchers.iter_mut() {
             sort_key.push_row(shard, access)?;
@@ -2514,7 +2392,6 @@ impl IngestContext {
             std::sync::Arc::clone(sort_key_senders),
         )?;
 
-        let mut node_data_dropped = 0u64;
         let create_time_info = table.create_time.as_ref().and_then(|ct| {
             let idx = column_index(table, ct).ok()?;
             let spec = column_spec(table, ct).ok()?;
@@ -2534,77 +2411,34 @@ impl IngestContext {
 
         macro_rules! process_edge_batch {
             ($batch:expr, $cols:expr, $src_fast:expr, $dst_fast:expr, $src_key_buf:expr, $dst_key_buf:expr, $forward_row:expr) => {
-                let has_null_timestamps = if let Some((idx, _)) = &create_time_info {
-                    access.array(*idx).map_or(true, |a| a.null_count() > 0)
-                } else {
-                    false
-                };
+                let timestamp_idx = create_time_info.as_ref().map(|(idx, _)| *idx);
+                let validity_array = timestamp_idx.map(|idx| access.array(idx).unwrap().clone());
 
-                if has_null_timestamps {
-                    for row in 0..$batch.num_rows() {
-                        access.set_row(row);
-                        if let Some((idx, _dtype)) = &create_time_info {
-                            let is_null = access.array(*idx).map(|a| a.is_null(row)).unwrap_or(true);
-                            if is_null {
-                                node_data_dropped += 1;
-                                let sample = sample_from_access(&access, src_fk_idx);
-                                record_key_parse_failure_sample(
-                                    &mut key_failures.parse_failures,
-                                    &mut key_failures.samples,
-                                    &mut key_failures.by_context,
-                                    &format!("node_data_dropped:{}", table.name),
-                                    sample,
-                                );
-                                continue;
-                            }
-                        }
-                        Self::write_edge_row_from_access(
-                            src_fk_idx,
-                            dst_fk_idx,
-                            src_fk_col,
-                            dst_fk_col,
-                            &src_context,
-                            &dst_context,
-                            $cols,
-                            row,
-                            $src_fast,
-                            $dst_fast,
-                            &mut access,
-                            $src_key_buf,
-                            $dst_key_buf,
-                            $forward_row,
-                            &mut batcher,
-                            &mut edge_key_batcher,
-                            &mut sort_key_batchers,
-                            num_shards,
-                            key_failures,
-                        )?;
-                    }
-                } else {
-                    for row in 0..$batch.num_rows() {
-                        access.set_row(row);
-                        Self::write_edge_row_from_access(
-                            src_fk_idx,
-                            dst_fk_idx,
-                            src_fk_col,
-                            dst_fk_col,
-                            &src_context,
-                            &dst_context,
-                            $cols,
-                            row,
-                            $src_fast,
-                            $dst_fast,
-                            &mut access,
-                            $src_key_buf,
-                            $dst_key_buf,
-                            $forward_row,
-                            &mut batcher,
-                            &mut edge_key_batcher,
-                            &mut sort_key_batchers,
-                            num_shards,
-                            key_failures,
-                        )?;
-                    }
+                for row in 0..$batch.num_rows() {
+                    access.set_row(row);
+                    let timestamp_valid = validity_array.as_ref().map(|a| a.is_valid(row)).unwrap_or(true);
+                    Self::write_edge_row_from_access(
+                        src_fk_idx,
+                        dst_fk_idx,
+                        src_fk_col,
+                        dst_fk_col,
+                        &src_context,
+                        &dst_context,
+                        $cols,
+                        row,
+                        $src_fast,
+                        $dst_fast,
+                        &mut access,
+                        $src_key_buf,
+                        $dst_key_buf,
+                        $forward_row,
+                        &mut batcher,
+                        &mut edge_key_batcher,
+                        &mut sort_key_batchers,
+                        num_shards,
+                        key_failures,
+                        timestamp_valid,
+                    )?;
                 }
             };
         }
@@ -2829,7 +2663,7 @@ impl IngestContext {
                 status: None,
 });
         }
-        Ok(node_data_dropped)
+        Ok(0)
     }
 
 
@@ -2853,6 +2687,7 @@ impl IngestContext {
         sort_key_batchers: &mut [SortKeyComponentBatcher],
         num_shards: usize,
         key_failures: &mut KeyFailureState,
+        timestamp_valid: bool,
     ) -> Result<()> {
         src_key_buf.clear();
         dst_key_buf.clear();
@@ -2938,7 +2773,7 @@ impl IngestContext {
         forward_row.reserve(src_key_buf.len().saturating_add(dst_key_buf.len()).saturating_add(4));
         append_key_bytes_with_len_prefix(forward_row, src_key_buf, src_col)?;
         append_key_bytes_with_len_prefix(forward_row, dst_key_buf, dst_col)?;
-        batcher.push(forward_shard, forward_row)?;
+        batcher.push(forward_shard, forward_row, timestamp_valid)?;
         edge_key_batcher.push_src(forward_shard, src_key_buf)?;
         edge_key_batcher.push_dst(dst_shard, dst_key_buf)?;
         for batcher in sort_key_batchers.iter_mut() {
@@ -3082,6 +2917,7 @@ impl IngestContext {
                         }
 
                         let mut duplicate_count = 0u64;
+                        let mut null_timestamp_drops = 0u64;
                         let mut duplicate_samples_local: Vec<Key> = Vec::new();
                         let mut row_id = 0u64;
                         let (hash_rel, data_rel) =
@@ -3100,25 +2936,41 @@ impl IngestContext {
                                         read_temp_rows(&data_path, |row| {
                                             let mut data = row;
                                             let key = read_key_from_buf(&mut data, &pk_col)?;
+                                            let timestamp_valid = if !data.is_empty() {
+                                                data[0] != 0
+                                            } else {
+                                                true
+                                            };
                                             if let Key::Int(v) = key {
-                                                let local_id = u32::try_from(row_id)
-                                                    .map_err(|_| anyhow!("pk local id overflow"))?;
-                                                match seen.entry(v) {
-                                                    Entry::Vacant(entry) => {
-                                                        entry.insert(local_id);
-                                                    }
-                                                    Entry::Occupied(_) => {
-                                                        duplicate_count =
-                                                            duplicate_count.saturating_add(1);
-                                                        for bitmap in fkey_bitmaps.iter_mut() {
-                                                            let byte_idx = (row_id / 8) as usize;
-                                                            if byte_idx < bitmap.len() {
-                                                                let bit = (row_id % 8) as u8;
-                                                                bitmap[byte_idx] &= !(1u8 << bit);
-                                                            }
+                                                if !timestamp_valid {
+                                                    null_timestamp_drops = null_timestamp_drops.saturating_add(1);
+                                                    for bitmap in fkey_bitmaps.iter_mut() {
+                                                        let byte_idx = (row_id / 8) as usize;
+                                                        if byte_idx < bitmap.len() {
+                                                            let bit = (row_id % 8) as u8;
+                                                            bitmap[byte_idx] &= !(1u8 << bit);
                                                         }
-                                                        if duplicate_samples_local.len() < 10 {
-                                                            duplicate_samples_local.push(Key::Int(v));
+                                                    }
+                                                } else {
+                                                    let local_id = u32::try_from(row_id)
+                                                        .map_err(|_| anyhow!("pk local id overflow"))?;
+                                                    match seen.entry(v) {
+                                                        Entry::Vacant(entry) => {
+                                                            entry.insert(local_id);
+                                                        }
+                                                        Entry::Occupied(_) => {
+                                                            duplicate_count =
+                                                                duplicate_count.saturating_add(1);
+                                                            for bitmap in fkey_bitmaps.iter_mut() {
+                                                                let byte_idx = (row_id / 8) as usize;
+                                                                if byte_idx < bitmap.len() {
+                                                                    let bit = (row_id % 8) as u8;
+                                                                    bitmap[byte_idx] &= !(1u8 << bit);
+                                                                }
+                                                            }
+                                                            if duplicate_samples_local.len() < 10 {
+                                                                duplicate_samples_local.push(Key::Int(v));
+                                                            }
                                                         }
                                                     }
                                                 }
@@ -3196,6 +3048,11 @@ impl IngestContext {
                                         read_temp_rows(&data_path, |row| {
                                             let mut data = row;
                                             let key = read_key_from_buf(&mut data, &pk_col)?;
+                                            let timestamp_valid = if !data.is_empty() {
+                                                data[0] != 0
+                                            } else {
+                                                true
+                                            };
                                             let bytes = match key {
                                                 Key::Bytes(bytes) => bytes,
                                                 _ => {
@@ -3203,25 +3060,33 @@ impl IngestContext {
                                                     return Ok(());
                                                 }
                                             };
-                                            let local_id = u32::try_from(row_id)
-                                                .map_err(|_| anyhow!("pk local id overflow"))?;
-                                            match seen.entry(bytes) {
-                                                Entry::Vacant(entry) => {
-                                                    entry.insert(local_id);
-                                                }
-                                                Entry::Occupied(entry) => {
-                                                    duplicate_count =
-                                                        duplicate_count.saturating_add(1);
-                                                    for bitmap in fkey_bitmaps.iter_mut() {
-                                                        let byte_idx = (row_id / 8) as usize;
-                                                        if byte_idx < bitmap.len() {
-                                                            let bit = (row_id % 8) as u8;
-                                                            bitmap[byte_idx] &= !(1u8 << bit);
-                                                        }
+                                            if !timestamp_valid {
+                                                null_timestamp_drops = null_timestamp_drops.saturating_add(1);
+                                                for bitmap in fkey_bitmaps.iter_mut() {
+                                                    let byte_idx = (row_id / 8) as usize;
+                                                    if byte_idx < bitmap.len() {
+                                                        let bit = (row_id % 8) as u8;
+                                                        bitmap[byte_idx] &= !(1u8 << bit);
                                                     }
-                                                    if duplicate_samples_local.len() < 10 {
-                                                        let sample = entry.key().clone();
-                                                        duplicate_samples_local.push(Key::Bytes(sample));
+                                                }
+                                            } else {
+                                                let local_id = u32::try_from(row_id)
+                                                    .map_err(|_| anyhow!("pk local id overflow"))?;
+                                                match seen.entry(bytes) {
+                                                    Entry::Vacant(entry) => {
+                                                        entry.insert(local_id);
+                                                    }
+                                                    Entry::Occupied(_) => {
+                                                        duplicate_count =
+                                                            duplicate_count.saturating_add(1);
+                                                        for bitmap in fkey_bitmaps.iter_mut() {
+                                                            let byte_idx = (row_id / 8) as usize;
+                                                            if byte_idx < bitmap.len() {
+                                                                let bit = (row_id % 8) as u8;
+                                                                bitmap[byte_idx] &= !(1u8 << bit);
+                                                            }
+                                                        }
+                                                        // Note: We don't sample VarBytes duplicates for now as they are large
                                                     }
                                                 }
                                             }
@@ -3298,26 +3163,41 @@ impl IngestContext {
                                         read_temp_rows(&data_path, |row| {
                                             let mut data = row;
                                             let key = read_key_from_buf(&mut data, &pk_col)?;
+                                            let timestamp_valid = if !data.is_empty() {
+                                                data[0] != 0
+                                            } else {
+                                                true
+                                            };
                                             if let Key::Uuid(uuid) = key {
-                                                let local_id = u32::try_from(row_id)
-                                                    .map_err(|_| anyhow!("pk local id overflow"))?;
-                                                match seen.entry(uuid) {
-                                                    Entry::Vacant(entry) => {
-                                                        entry.insert(local_id);
-                                                    }
-                                                    Entry::Occupied(_) => {
-                                                        duplicate_count =
-                                                            duplicate_count.saturating_add(1);
-                                                        for bitmap in fkey_bitmaps.iter_mut() {
-                                                            let byte_idx = (row_id / 8) as usize;
-                                                            if byte_idx < bitmap.len() {
-                                                                let bit = (row_id % 8) as u8;
-                                                                bitmap[byte_idx] &= !(1u8 << bit);
-                                                            }
+                                                if !timestamp_valid {
+                                                    for bitmap in fkey_bitmaps.iter_mut() {
+                                                        let byte_idx = (row_id / 8) as usize;
+                                                        if byte_idx < bitmap.len() {
+                                                            let bit = (row_id % 8) as u8;
+                                                            bitmap[byte_idx] &= !(1u8 << bit);
                                                         }
-                                                        if duplicate_samples_local.len() < 10 {
-                                                            duplicate_samples_local
-                                                                .push(Key::Uuid(uuid));
+                                                    }
+                                                } else {
+                                                    let local_id = u32::try_from(row_id)
+                                                        .map_err(|_| anyhow!("pk local id overflow"))?;
+                                                    match seen.entry(uuid) {
+                                                        Entry::Vacant(entry) => {
+                                                            entry.insert(local_id);
+                                                        }
+                                                        Entry::Occupied(_) => {
+                                                            duplicate_count =
+                                                                duplicate_count.saturating_add(1);
+                                                            for bitmap in fkey_bitmaps.iter_mut() {
+                                                                let byte_idx = (row_id / 8) as usize;
+                                                                if byte_idx < bitmap.len() {
+                                                                    let bit = (row_id % 8) as u8;
+                                                                    bitmap[byte_idx] &= !(1u8 << bit);
+                                                                }
+                                                            }
+                                                            if duplicate_samples_local.len() < 10 {
+                                                                duplicate_samples_local
+                                                                    .push(Key::Uuid(uuid));
+                                                            }
                                                         }
                                                     }
                                                 }
@@ -3395,26 +3275,41 @@ impl IngestContext {
                                         read_temp_rows(&data_path, |row| {
                                             let mut data = row;
                                             let key = read_key_from_buf(&mut data, &pk_col)?;
+                                            let timestamp_valid = if !data.is_empty() {
+                                                data[0] != 0
+                                            } else {
+                                                true
+                                            };
                                             if let Key::Uuid256(uuid) = key {
-                                                let local_id = u32::try_from(row_id)
-                                                    .map_err(|_| anyhow!("pk local id overflow"))?;
-                                                match seen.entry(uuid) {
-                                                    Entry::Vacant(entry) => {
-                                                        entry.insert(local_id);
-                                                    }
-                                                    Entry::Occupied(_) => {
-                                                        duplicate_count =
-                                                            duplicate_count.saturating_add(1);
-                                                        for bitmap in fkey_bitmaps.iter_mut() {
-                                                            let byte_idx = (row_id / 8) as usize;
-                                                            if byte_idx < bitmap.len() {
-                                                                let bit = (row_id % 8) as u8;
-                                                                bitmap[byte_idx] &= !(1u8 << bit);
-                                                            }
+                                                if !timestamp_valid {
+                                                    for bitmap in fkey_bitmaps.iter_mut() {
+                                                        let byte_idx = (row_id / 8) as usize;
+                                                        if byte_idx < bitmap.len() {
+                                                            let bit = (row_id % 8) as u8;
+                                                            bitmap[byte_idx] &= !(1u8 << bit);
                                                         }
-                                                        if duplicate_samples_local.len() < 10 {
-                                                            duplicate_samples_local
-                                                                .push(Key::Uuid256(uuid));
+                                                    }
+                                                } else {
+                                                    let local_id = u32::try_from(row_id)
+                                                        .map_err(|_| anyhow!("pk local id overflow"))?;
+                                                    match seen.entry(uuid) {
+                                                        Entry::Vacant(entry) => {
+                                                            entry.insert(local_id);
+                                                        }
+                                                        Entry::Occupied(_) => {
+                                                            duplicate_count =
+                                                                duplicate_count.saturating_add(1);
+                                                            for bitmap in fkey_bitmaps.iter_mut() {
+                                                                let byte_idx = (row_id / 8) as usize;
+                                                                if byte_idx < bitmap.len() {
+                                                                    let bit = (row_id % 8) as u8;
+                                                                    bitmap[byte_idx] &= !(1u8 << bit);
+                                                                }
+                                                            }
+                                                            if duplicate_samples_local.len() < 10 {
+                                                                duplicate_samples_local
+                                                                    .push(Key::Uuid256(uuid));
+                                                            }
                                                         }
                                                     }
                                                 }
@@ -3492,26 +3387,41 @@ impl IngestContext {
                                         read_temp_rows(&data_path, |row| {
                                             let mut data = row;
                                             let key = read_key_from_buf(&mut data, &pk_col)?;
+                                            let timestamp_valid = if !data.is_empty() {
+                                                data[0] != 0
+                                            } else {
+                                                true
+                                            };
                                             if let Key::Ip(ip) = key {
-                                                let local_id = u32::try_from(row_id)
-                                                    .map_err(|_| anyhow!("pk local id overflow"))?;
-                                                match seen.entry(ip) {
-                                                    Entry::Vacant(entry) => {
-                                                        entry.insert(local_id);
-                                                    }
-                                                    Entry::Occupied(_) => {
-                                                        duplicate_count =
-                                                            duplicate_count.saturating_add(1);
-                                                        for bitmap in fkey_bitmaps.iter_mut() {
-                                                            let byte_idx = (row_id / 8) as usize;
-                                                            if byte_idx < bitmap.len() {
-                                                                let bit = (row_id % 8) as u8;
-                                                                bitmap[byte_idx] &= !(1u8 << bit);
-                                                            }
+                                                if !timestamp_valid {
+                                                    for bitmap in fkey_bitmaps.iter_mut() {
+                                                        let byte_idx = (row_id / 8) as usize;
+                                                        if byte_idx < bitmap.len() {
+                                                            let bit = (row_id % 8) as u8;
+                                                            bitmap[byte_idx] &= !(1u8 << bit);
                                                         }
-                                                        if duplicate_samples_local.len() < 10 {
-                                                            duplicate_samples_local
-                                                                .push(Key::Ip(ip));
+                                                    }
+                                                } else {
+                                                    let local_id = u32::try_from(row_id)
+                                                        .map_err(|_| anyhow!("pk local id overflow"))?;
+                                                    match seen.entry(ip) {
+                                                        Entry::Vacant(entry) => {
+                                                            entry.insert(local_id);
+                                                        }
+                                                        Entry::Occupied(_) => {
+                                                            duplicate_count =
+                                                                duplicate_count.saturating_add(1);
+                                                            for bitmap in fkey_bitmaps.iter_mut() {
+                                                                let byte_idx = (row_id / 8) as usize;
+                                                                if byte_idx < bitmap.len() {
+                                                                    let bit = (row_id % 8) as u8;
+                                                                    bitmap[byte_idx] &= !(1u8 << bit);
+                                                                }
+                                                            }
+                                                            if duplicate_samples_local.len() < 10 {
+                                                                duplicate_samples_local
+                                                                    .push(Key::Ip(ip));
+                                                            }
                                                         }
                                                     }
                                                 }
@@ -3952,6 +3862,7 @@ impl IngestContext {
                 key_failures: KeyFailureState,
                 edge_counts: HashMap<String, u64>,
                 pk_duplicate_drops: u64,
+                null_timestamp_drops: u64,
             }
             if let Some(total_mem) = total_memory_bytes() {
                 println!(
@@ -4393,6 +4304,7 @@ impl IngestContext {
                             let mut pending = 0u64;
                             let mut forward_count = 0u64;
                             let mut reverse_count = 0u64;
+                            let mut null_timestamp_drops = 0u64;
                             let forward_path = root.join(temp_edge_path(&forward_name, shard));
                             let mut row_idx = 0u64;
                             {
@@ -4420,6 +4332,16 @@ impl IngestContext {
                                     .map_err(|_| anyhow!("src key parse"))?;
                                 let dst_key = read_key_from_buf_len_prefixed(&mut data, &dst_pk_col)
                                     .map_err(|_| anyhow!("dst key parse"))?;
+                                let timestamp_valid = if !data.is_empty() {
+                                    data[0] != 0
+                                } else {
+                                    true
+                                };
+                                if !timestamp_valid {
+                                    null_timestamp_drops = null_timestamp_drops.saturating_add(1);
+                                    row_idx = row_idx.saturating_add(1);
+                                    return Ok(());
+                                }
                                 let src_shard =
                                     shard_for_key_from_key(&src_key, key_buf, num_shards)?;
                                 let dst_shard =
@@ -4547,6 +4469,13 @@ impl IngestContext {
                         .entry(result.relation.clone())
                         .or_insert(0);
                     *entry = entry.saturating_add(result.pk_duplicate_drops);
+                }
+                if result.null_timestamp_drops > 0 {
+                    let entry = self
+                        .edge_null_timestamp_drops
+                        .entry(result.relation.clone())
+                        .or_insert(0);
+                    *entry = entry.saturating_add(result.null_timestamp_drops);
                 }
                 let entry = done.entry(result.relation.clone()).or_insert(0u64);
                 *entry = entry.saturating_add(1);
@@ -4873,6 +4802,8 @@ impl IngestContext {
             key_failures_by_context: self.key_failures_by_context.clone(),
             pk_duplicate_counts: self.pk_duplicate_counts.clone(),
             pk_duplicate_drops: self.pk_duplicate_drops.clone(),
+            pk_null_timestamp_drops: self.pk_null_timestamp_drops.clone(),
+            edge_null_timestamp_drops: self.edge_null_timestamp_drops.clone(),
             pk_duplicate_total,
             pk_duplicate_samples: self.pk_duplicate_samples.clone(),
             dropped_rows_counts: self.dropped_rows_counts.clone(),
@@ -6160,15 +6091,18 @@ impl NodeBatcher {
         )
     }
 
-    fn push_pkey(&mut self, shard: usize, row: &[u8]) -> Result<()> {
+    fn push_pkey(&mut self, shard: usize, row: &[u8], timestamp_valid: bool) -> Result<()> {
         let buffer = self
             .buffers
             .get_mut(shard)
             .ok_or_else(|| anyhow!("pkey buffer shard {} out of bounds", shard))?;
         if let Some(pkey) = buffer.pkey.as_mut() {
-            append_temp_row(pkey, row)?;
+            let total_len = (row.len() + 1) as u32;
+            pkey.extend_from_slice(&total_len.to_le_bytes());
+            pkey.extend_from_slice(row);
+            pkey.push(if timestamp_valid { 1 } else { 0 });
             buffer.pkey_rows = buffer.pkey_rows.saturating_add(1);
-            buffer.bytes = buffer.bytes.saturating_add(4 + row.len());
+            buffer.bytes = buffer.bytes.saturating_add(4 + row.len() + 1);
         }
         Ok(())
     }
@@ -6870,12 +6804,15 @@ impl EdgeSrcBatcher {
         }
     }
 
-    fn push(&mut self, shard: usize, row: &[u8]) -> Result<()> {
+    fn push(&mut self, shard: usize, row: &[u8], timestamp_valid: bool) -> Result<()> {
         let buffer = self
             .buffers
             .get_mut(shard)
             .ok_or_else(|| anyhow!("edge src buffer shard {} out of bounds", shard))?;
-        append_temp_row(&mut buffer.data, row)?;
+        let total_len = (row.len() + 1) as u32;
+        buffer.data.extend_from_slice(&total_len.to_le_bytes());
+        buffer.data.extend_from_slice(row);
+        buffer.data.push(if timestamp_valid { 1 } else { 0 });
         buffer.row_count = buffer.row_count.saturating_add(1);
         if buffer.data.len() >= self.buffer_limit {
             self.flush_shard(shard)?;

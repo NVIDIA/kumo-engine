@@ -23,6 +23,8 @@ pub struct IngestStats {
     pub key_failures_by_context: HashMap<String, KeyFailureCounts>,
     pub pk_duplicate_counts: HashMap<String, u64>,
     pub pk_duplicate_drops: HashMap<String, u64>,
+    pub pk_null_timestamp_drops: HashMap<String, u64>,
+    pub edge_null_timestamp_drops: HashMap<String, u64>,
     pub pk_duplicate_total: u64,
     pub pk_duplicate_samples: HashMap<String, Vec<String>>,
     pub dropped_rows_counts: HashMap<String, u64>,
