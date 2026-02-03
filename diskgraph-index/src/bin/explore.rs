@@ -23,7 +23,7 @@ use std::fs;
 use std::io::{self, Write, IsTerminal};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use half::f16;
 
 const HEX_CHARS: &[u8; 16] = b"0123456789abcdef";
@@ -2251,6 +2251,7 @@ fn run_benchmark_tables(
     );
     let start_time = std::time::Instant::now();
     let end_time = start_time + duration;
+    let stop_flag = Arc::new(AtomicBool::new(false));
     let mut ops_counters = Vec::with_capacity(threads);
     for _ in 0..threads {
         ops_counters.push(Arc::new(AtomicU64::new(0)));
@@ -2267,6 +2268,7 @@ fn run_benchmark_tables(
         let table_count = table_count;
         let ops_counter = ops_counters[idx].clone();
         let round_robin = round_robin;
+        let stop_flag = Arc::clone(&stop_flag);
         handles.push(std::thread::spawn(move || {
             let mut state = (idx as u64 + 1) * 0x9E37_79B9_7F4A_7C15;
             let mut ops = 0u64;
@@ -2279,7 +2281,7 @@ fn run_benchmark_tables(
             let mut total_node_data = 0u64;
             let mut checksum = 0u64;
             let mut hist = vec![0u64; BUCKETS_US.len() + 1];
-            while std::time::Instant::now() < end_time {
+            while std::time::Instant::now() < end_time && !stop_flag.load(Ordering::Relaxed) {
                 // LCG for speed; take high bits for distribution.
                 state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
                 let table_idx = if round_robin {
@@ -2366,43 +2368,60 @@ fn run_benchmark_tables(
     }
 
     if io::stdout().is_terminal() {
+        enter_benchmark_screen()?;
+        let stdin_guard = if io::stdin().is_terminal() {
+            Some(enter_stdin_raw_mode()?)
+        } else {
+            None
+        };
         let mut samples = Vec::new();
         let mut scale_max = 1u64;
         let mut last_bucket_time = start_time;
         let mut last_ops = 0u64;
-        while std::time::Instant::now() < end_time {
-            let now = std::time::Instant::now();
-            let elapsed = now.duration_since(start_time);
+        let benchmark_result = (|| -> Result<()> {
+            while std::time::Instant::now() < end_time && !stop_flag.load(Ordering::Relaxed) {
+                let now = std::time::Instant::now();
+                let elapsed = now.duration_since(start_time);
+                let total_ops: u64 = ops_counters
+                    .iter()
+                    .map(|c| c.load(Ordering::Relaxed))
+                    .sum();
+                if now.duration_since(last_bucket_time) >= std::time::Duration::from_secs(1) {
+                    let bucket_secs = now.duration_since(last_bucket_time).as_secs_f64().max(0.001);
+                    let delta = total_ops.saturating_sub(last_ops);
+                    let throughput = (delta as f64 / bucket_secs).round() as u64;
+                    samples.push(throughput);
+                    last_ops = total_ops;
+                    last_bucket_time = now;
+                }
+                render_benchmark_display(elapsed, duration, total_ops, &samples, &mut scale_max)?;
+                if let Some(guard) = stdin_guard.as_ref() {
+                    if poll_escape(guard.fd)? {
+                        stop_flag.store(true, Ordering::Relaxed);
+                        break;
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
             let total_ops: u64 = ops_counters
                 .iter()
                 .map(|c| c.load(Ordering::Relaxed))
                 .sum();
-            if now.duration_since(last_bucket_time) >= std::time::Duration::from_secs(1) {
-                let bucket_secs = now.duration_since(last_bucket_time).as_secs_f64().max(0.001);
-                let delta = total_ops.saturating_sub(last_ops);
-                let throughput = (delta as f64 / bucket_secs).round() as u64;
-                samples.push(throughput);
-                last_ops = total_ops;
-                last_bucket_time = now;
-            }
-            render_benchmark_display(elapsed, duration, total_ops, &samples, &mut scale_max)?;
-            std::thread::sleep(std::time::Duration::from_millis(200));
-        }
-        let total_ops: u64 = ops_counters
-            .iter()
-            .map(|c| c.load(Ordering::Relaxed))
-            .sum();
-        let bucket_secs = std::time::Instant::now()
-            .duration_since(last_bucket_time)
-            .as_secs_f64()
-            .max(0.001);
-        let delta = total_ops.saturating_sub(last_ops);
-        let throughput = (delta as f64 / bucket_secs).round() as u64;
-        samples.push(throughput);
-        render_benchmark_display(duration, duration, total_ops, &samples, &mut scale_max)?;
-        clear_benchmark_display()?;
+            let bucket_secs = std::time::Instant::now()
+                .duration_since(last_bucket_time)
+                .as_secs_f64()
+                .max(0.001);
+            let delta = total_ops.saturating_sub(last_ops);
+            let throughput = (delta as f64 / bucket_secs).round() as u64;
+            samples.push(throughput);
+            render_benchmark_display(duration, duration, total_ops, &samples, &mut scale_max)?;
+            clear_benchmark_display()?;
+            Ok(())
+        })();
+        leave_benchmark_screen()?;
+        benchmark_result?;
     } else {
-        while std::time::Instant::now() < end_time {
+        while std::time::Instant::now() < end_time && !stop_flag.load(Ordering::Relaxed) {
             std::thread::sleep(std::time::Duration::from_millis(200));
         }
     }
@@ -2657,6 +2676,78 @@ fn render_benchmark_display(
 fn clear_benchmark_display() -> Result<()> {
     let mut stdout = io::stdout();
     stdout.write_all(b"\x1b[2J\x1b[H")?;
+    stdout.flush()?;
+    Ok(())
+}
+
+struct StdinGuard {
+    fd: i32,
+    termios: libc::termios,
+    flags: i32,
+}
+
+impl Drop for StdinGuard {
+    fn drop(&mut self) {
+        unsafe {
+            libc::tcsetattr(self.fd, libc::TCSANOW, &self.termios);
+            libc::fcntl(self.fd, libc::F_SETFL, self.flags);
+        }
+    }
+}
+
+fn enter_stdin_raw_mode() -> Result<StdinGuard> {
+    let fd = libc::STDIN_FILENO;
+    unsafe {
+        let mut termios: libc::termios = std::mem::zeroed();
+        if libc::tcgetattr(fd, &mut termios) != 0 {
+            return Err(anyhow!("failed to read terminal settings"));
+        }
+        let mut raw = termios;
+        raw.c_lflag &= !(libc::ICANON | libc::ECHO);
+        raw.c_cc[libc::VMIN] = 0;
+        raw.c_cc[libc::VTIME] = 0;
+        if libc::tcsetattr(fd, libc::TCSANOW, &raw) != 0 {
+            return Err(anyhow!("failed to set terminal raw mode"));
+        }
+        let flags = libc::fcntl(fd, libc::F_GETFL);
+        if flags < 0 {
+            libc::tcsetattr(fd, libc::TCSANOW, &termios);
+            return Err(anyhow!("failed to read stdin flags"));
+        }
+        if libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) != 0 {
+            libc::tcsetattr(fd, libc::TCSANOW, &termios);
+            return Err(anyhow!("failed to set stdin nonblocking"));
+        }
+        Ok(StdinGuard { fd, termios, flags })
+    }
+}
+
+fn poll_escape(fd: i32) -> Result<bool> {
+    let mut buf = [0u8; 16];
+    let read = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut _, buf.len()) };
+    if read < 0 {
+        let err = io::Error::last_os_error();
+        if err.kind() == io::ErrorKind::WouldBlock {
+            return Ok(false);
+        }
+        return Err(anyhow!("stdin read failed: {}", err));
+    }
+    if read == 0 {
+        return Ok(false);
+    }
+    Ok(buf[..read as usize].iter().any(|b| *b == 0x1b))
+}
+
+fn enter_benchmark_screen() -> Result<()> {
+    let mut stdout = io::stdout();
+    stdout.write_all(b"\x1b[?1049h\x1b[H")?;
+    stdout.flush()?;
+    Ok(())
+}
+
+fn leave_benchmark_screen() -> Result<()> {
+    let mut stdout = io::stdout();
+    stdout.write_all(b"\x1b[?1049l")?;
     stdout.flush()?;
     Ok(())
 }
