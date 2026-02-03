@@ -525,6 +525,14 @@ fn handle_key(key: KeyEvent, store: &StatsStore, args: &Args, app: &mut AppState
                         app.profile_tab_index += 1;
                     }
                 }
+                KeyCode::Char('j') | KeyCode::Down => {
+                    move_run_selection(1, app);
+                    show_profile_top(store, app, args.top_profiles)?;
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    move_run_selection(-1, app);
+                    show_profile_top(store, app, args.top_profiles)?;
+                }
                 KeyCode::Esc | KeyCode::Char('q') | KeyCode::Enter => {
                     app.mode = Mode::Normal;
                 }
@@ -804,18 +812,24 @@ fn show_profile_top(store: &StatsStore, app: &mut AppState, top_profiles: usize)
         app.status = "no .pb profiles found".to_string();
         return Ok(());
     }
+    let current_tab = app
+        .profile_tabs
+        .get(app.profile_tab_index)
+        .map(|tab| tab.name.clone());
     let mut tabs = Vec::new();
     for name in pb_profiles {
         let cache_dir = profile_cache_dir(&run.dataset, &run.run_id)?;
         let path = cache_dir.join(&name);
-        store.download_profile(
-            &run.dataset,
-            &run.run_id,
-            run.instance_type.as_deref(),
-            &run.source_path,
-            &name,
-            &path,
-        )?;
+        if !path.exists() {
+            store.download_profile(
+                &run.dataset,
+                &run.run_id,
+                run.instance_type.as_deref(),
+                &run.source_path,
+                &name,
+                &path,
+            )?;
+        }
         let mut lines = Vec::new();
         lines.push(format!("== {} ==", name));
         let output = Command::new("go")
@@ -841,7 +855,15 @@ fn show_profile_top(store: &StatsStore, app: &mut AppState, top_profiles: usize)
         tabs.push(ProfileTab { name, lines });
     }
     app.profile_tabs = tabs;
-    app.profile_tab_index = 0;
+    if let Some(name) = current_tab {
+        if let Some(idx) = app.profile_tabs.iter().position(|tab| tab.name == name) {
+            app.profile_tab_index = idx;
+        } else {
+            app.profile_tab_index = 0;
+        }
+    } else {
+        app.profile_tab_index = 0;
+    }
     app.mode = Mode::ProfileView;
     Ok(())
 }
@@ -910,7 +932,7 @@ fn draw_footer(frame: &mut ratatui::Frame, area: Rect, app: &AppState) {
     let hint = match app.mode {
         Mode::Normal => "j/k: run  ↑/↓: dataset  h/l: instance  p: top profiles  ?: help  q: quit",
         Mode::Help => "press any key to return",
-        Mode::ProfileView => "h/l: tabs  esc/q: back",
+        Mode::ProfileView => "h/l: tabs  j/k: runs  esc/q: back",
     };
     let widget = Paragraph::new(Line::from(vec![
         Span::styled(hint, Style::default().fg(Color::Gray)),
@@ -1180,7 +1202,7 @@ fn draw_help(frame: &mut ratatui::Frame) {
         Line::from("  p: top10 profiles"),
         Line::from("  ?: help"),
         Line::from("  q: quit"),
-        Line::from("  profile view: h/l tabs, esc to exit"),
+        Line::from("  profile view: h/l tabs, j/k runs, esc to exit"),
     ];
     let widget = Paragraph::new(text)
         .block(Block::default().borders(Borders::ALL).title("Help"))
