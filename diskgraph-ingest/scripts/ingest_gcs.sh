@@ -57,7 +57,11 @@ if [[ -z "${OUTPUT}" ]]; then
   else
     DEFAULT_OUT_ROOT="/tmp/diskgraph-index"
   fi
-  INPUT_NAME="$(basename "$(dirname "${SOURCE}")")"
+  SOURCE_TRIM="${SOURCE%/}"
+  INPUT_NAME="$(basename "${SOURCE_TRIM}")"
+  if [[ "${INPUT_NAME}" == "diskgraph_config.json" ]]; then
+    INPUT_NAME="$(basename "$(dirname "${SOURCE_TRIM}")")"
+  fi
   OUTPUT="${OUT_ROOT:-${DEFAULT_OUT_ROOT}}/${INPUT_NAME}"
 fi
 
