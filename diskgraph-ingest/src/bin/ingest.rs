@@ -620,6 +620,11 @@ fn dataset_from_source(source: &PathBuf, source_str: &str) -> String {
     }
     if let Some(name) = source.file_name().and_then(|n| n.to_str()) {
         if name != "diskgraph_config.json" {
+            if let Some(stripped) = name.strip_suffix(".json") {
+                if !stripped.is_empty() {
+                    return stripped.to_string();
+                }
+            }
             return name.to_string();
         }
     }
