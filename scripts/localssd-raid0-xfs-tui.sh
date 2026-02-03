@@ -11,6 +11,7 @@
 #
 # Usage:
 #   sudo scripts/localssd-raid0-xfs-tui.sh
+#   sudo scripts/localssd-raid0-xfs-tui.sh -y
 #
 # Notes:
 # - All selected disks are wiped.
@@ -21,6 +22,15 @@ set -euo pipefail
 if [[ "${EUID}" -ne 0 ]]; then
   exec sudo -- "$0" "$@"
 fi
+
+ASSUME_YES="false"
+for arg in "$@"; do
+  case "$arg" in
+    -y|--yes)
+      ASSUME_YES="true"
+      ;;
+  esac
+done
 
 require_cmd() {
   command -v "$1" >/dev/null 2>&1 || {
@@ -126,6 +136,10 @@ choose_disks() {
     disk_info "$d" >/dev/tty
   done
   echo >/dev/tty
+  if [[ "${ASSUME_YES}" == "true" ]]; then
+    printf "%s\n" "${disks[@]}"
+    return 0
+  fi
   printf "Use all listed disks for the volume? [Y/n] " >/dev/tty
   read -r ans </dev/tty
   case "${ans:-Y}" in
@@ -160,7 +174,11 @@ main() {
       disk_info "$d"
     done
     local ans
-    read -r -p "Reset (unmount + wipe) these disks? This is destructive. [y/N] " ans
+    if [[ "${ASSUME_YES}" == "true" ]]; then
+      ans="y"
+    else
+      read -r -p "Reset (unmount + wipe) these disks? This is destructive. [y/N] " ans
+    fi
     case "${ans:-N}" in
       y|Y)
         for d in "${in_use[@]}"; do

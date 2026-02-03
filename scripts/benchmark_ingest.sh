@@ -81,8 +81,8 @@ reset_xfs_mount() {
   source="$(findmnt -n -o SOURCE -- "${MOUNTPOINT}" || true)"
   fstype="$(findmnt -n -o FSTYPE -- "${MOUNTPOINT}" || true)"
   if [[ -z "${source}" || -z "${fstype}" ]]; then
-    log "Mountpoint ${MOUNTPOINT} is not mounted; invoking localssd-raid0-xfs-tui.sh..."
-    sudo "${REPO_ROOT}/scripts/localssd-raid0-xfs-tui.sh"
+    log "Mountpoint ${MOUNTPOINT} is not mounted; invoking localssd-raid0-xfs-tui.sh -y..."
+    sudo "${REPO_ROOT}/scripts/localssd-raid0-xfs-tui.sh" -y
     source="$(findmnt -n -o SOURCE -- "${MOUNTPOINT}" || true)"
     fstype="$(findmnt -n -o FSTYPE -- "${MOUNTPOINT}" || true)"
     if [[ -z "${source}" || -z "${fstype}" ]]; then
