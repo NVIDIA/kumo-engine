@@ -1436,19 +1436,27 @@ fn apply_auto_refresh(store: &StatsStore, app: &mut AppState, args: &Args) -> Re
         return Ok(false);
     }
     app.last_refresh_at = Instant::now();
-    refresh_datasets(store, app)?;
-    refresh_instances(store, app)?;
-    refresh_runs_for_selected(store, app, args)?;
-    Ok(true)
+    let mut changed = false;
+    if refresh_datasets(store, app)? {
+        changed = true;
+    }
+    if refresh_instances(store, app)? {
+        changed = true;
+    }
+    if refresh_runs_for_selected(store, app, args)? {
+        changed = true;
+    }
+    Ok(changed)
 }
 
-fn refresh_datasets(store: &StatsStore, app: &mut AppState) -> Result<()> {
+fn refresh_datasets(store: &StatsStore, app: &mut AppState) -> Result<bool> {
     let selected = app
         .dataset_state
         .selected()
         .and_then(|idx| app.datasets.get(idx))
         .cloned();
     let datasets = store.list_datasets()?;
+    let changed = app.datasets != datasets;
     app.datasets = datasets;
     if let Some(name) = selected {
         app.dataset_state
@@ -1458,17 +1466,17 @@ fn refresh_datasets(store: &StatsStore, app: &mut AppState) -> Result<()> {
         app.dataset_state.select(Some(0));
     }
     app.loaded_dataset_index = app.dataset_state.selected();
-    Ok(())
+    Ok(changed)
 }
 
-fn refresh_instances(store: &StatsStore, app: &mut AppState) -> Result<()> {
+fn refresh_instances(store: &StatsStore, app: &mut AppState) -> Result<bool> {
     let dataset = match selected_dataset(app) {
         Some(name) => name,
         None => {
             app.instances.clear();
             app.instance_state.select(None);
             *app.instance_state.offset_mut() = 0;
-            return Ok(());
+            return Ok(true);
         }
     };
     let selected = app
@@ -1476,7 +1484,14 @@ fn refresh_instances(store: &StatsStore, app: &mut AppState) -> Result<()> {
         .selected()
         .and_then(|idx| app.instances.get(idx))
         .map(|entry| entry.name.clone());
-    app.instances = store.list_instances(dataset)?;
+    let instances = store.list_instances(dataset)?;
+    let changed = app.instances.len() != instances.len()
+        || app
+            .instances
+            .iter()
+            .zip(instances.iter())
+            .any(|(a, b)| a.name != b.name);
+    app.instances = instances;
     if let Some(name) = selected {
         app.instance_state
             .select(app.instances.iter().position(|d| d.name == name));
@@ -1485,27 +1500,29 @@ fn refresh_instances(store: &StatsStore, app: &mut AppState) -> Result<()> {
         app.instance_state.select(Some(0));
     }
     app.loaded_instance_index = app.instance_state.selected();
-    Ok(())
+    Ok(changed)
 }
 
-fn refresh_runs_for_selected(store: &StatsStore, app: &mut AppState, args: &Args) -> Result<()> {
+fn refresh_runs_for_selected(store: &StatsStore, app: &mut AppState, args: &Args) -> Result<bool> {
     let dataset = match selected_dataset(app) {
         Some(name) => name,
-        None => return Ok(()),
+        None => return Ok(false),
     };
     let instance = match app.instance_state.selected() {
         Some(idx) => app.instances.get(idx).map(|d| d.name.clone()),
         None => None,
     };
     let Some(instance) = instance else {
-        return Ok(());
+        return Ok(false);
     };
     let selected_run_id = app
         .run_state
         .selected()
         .and_then(|idx| app.runs.get(idx))
         .map(|entry| entry.summary.run_id.clone());
+    let existing_ids: Vec<String> = app.runs.iter().map(|e| e.summary.run_id.clone()).collect();
     let runs = store.list_runs_for_instance(dataset, &instance, args.max_runs)?;
+    let new_ids: Vec<String> = runs.iter().map(|r| r.run_id.clone()).collect();
     app.runs = runs
         .into_iter()
         .map(|summary| RunEntry {
@@ -1535,7 +1552,7 @@ fn refresh_runs_for_selected(store: &StatsStore, app: &mut AppState, args: &Args
     }
     app.baseline = fastest_run(&app.runs).map(|r| r.summary.clone());
     recalc_regressions(app);
-    Ok(())
+    Ok(existing_ids != new_ids)
 }
 fn shorten(text: &str, max: usize) -> String {
     if text.len() <= max {
