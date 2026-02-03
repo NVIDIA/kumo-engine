@@ -29,7 +29,7 @@ REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 
 # Pre-defined list of config JSONs (edit this list in-order).
 CONFIGS=(
-  #"${SCRIPT_DIR}/benchmark_configs/alt_detection_5pct.json"
+  "${SCRIPT_DIR}/benchmark_configs/alt_detection_10pct.json"
   "${SCRIPT_DIR}/benchmark_configs/mimic.json"
 )
 
