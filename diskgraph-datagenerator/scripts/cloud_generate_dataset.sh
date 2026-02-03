@@ -14,15 +14,15 @@ BUCKET_NAME="${DISKGRAPH_CLOUD_BUCKET:-kumo-unit-test}"
 PREFIX_BASE="${DISKGRAPH_CLOUD_PREFIX:-diskgraph-datagenerator}"
 
 detect_target() {
-  if [[ -n "${AWS_ACCESS_KEY_ID:-}" || -n "${AWS_PROFILE:-}" || -n "${S3_REGION:-}" || -n "${S3_ENDPOINT:-}" ]]; then
-    echo "s3://${BUCKET_NAME}/${PREFIX_BASE}"
-    return 0
-  fi
-  if [[ -n "${GOOGLE_APPLICATION_CREDENTIALS:-}" || -n "${GOOGLE_CLOUD_PROJECT:-}" || -n "${GCP_PROJECT:-}" ]]; then
+  if is_gcp_vm; then
     echo "gs://${BUCKET_NAME}/${PREFIX_BASE}"
     return 0
   fi
-  if [[ -n "${AZURE_STORAGE_ACCOUNT:-}" || -n "${AZURE_ACCOUNT_NAME:-}" || -n "${AZURE_ACCESS_KEY:-}" || -n "${AZURE_SAS_KEY:-}" || -n "${AZURE_TENANT_ID:-}" ]]; then
+  if is_aws_vm; then
+    echo "s3://${BUCKET_NAME}/${PREFIX_BASE}"
+    return 0
+  fi
+  if is_azure_vm; then
     local account="${AZURE_STORAGE_ACCOUNT:-${AZURE_ACCOUNT_NAME:-}}"
     local container="${DISKGRAPH_CLOUD_CONTAINER:-${BUCKET_NAME}}"
     if [[ -z "${account}" ]]; then
@@ -32,15 +32,15 @@ detect_target() {
     echo "az://${account}/${container}/${PREFIX_BASE}"
     return 0
   fi
-  if is_aws_vm; then
+  if [[ -n "${AWS_ACCESS_KEY_ID:-}" || -n "${AWS_PROFILE:-}" || -n "${S3_REGION:-}" || -n "${S3_ENDPOINT:-}" ]]; then
     echo "s3://${BUCKET_NAME}/${PREFIX_BASE}"
     return 0
   fi
-  if is_gcp_vm; then
+  if [[ -n "${GOOGLE_APPLICATION_CREDENTIALS:-}" || -n "${GOOGLE_CLOUD_PROJECT:-}" || -n "${GCP_PROJECT:-}" ]]; then
     echo "gs://${BUCKET_NAME}/${PREFIX_BASE}"
     return 0
   fi
-  if is_azure_vm; then
+  if [[ -n "${AZURE_STORAGE_ACCOUNT:-}" || -n "${AZURE_ACCOUNT_NAME:-}" || -n "${AZURE_ACCESS_KEY:-}" || -n "${AZURE_SAS_KEY:-}" || -n "${AZURE_TENANT_ID:-}" ]]; then
     local account="${AZURE_STORAGE_ACCOUNT:-${AZURE_ACCOUNT_NAME:-}}"
     local container="${DISKGRAPH_CLOUD_CONTAINER:-${BUCKET_NAME}}"
     if [[ -z "${account}" ]]; then
