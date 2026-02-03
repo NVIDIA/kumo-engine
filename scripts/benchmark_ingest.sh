@@ -140,49 +140,63 @@ main() {
     printf "timestamp_utc\tindex\tconfig\tstatus\tgit_rev\tlog_file\n" > "${RESULTS_FILE}"
   fi
 
-  local last_completed
-  last_completed="$(load_state_index)"
-  log "Last completed index: ${last_completed}"
-
-  local failures=0
-  local total="${#CONFIGS[@]}"
-  local idx
-  for idx in "${!CONFIGS[@]}"; do
-    if (( idx <= last_completed )); then
-      continue
-    fi
-    local config="${CONFIGS[$idx]}"
-    if [[ ! -f "${config}" ]]; then
-      log "Config missing: ${config}"
-      printf "%s\t%s\t%s\t%s\t%s\t%s\n" "$(timestamp_utc)" "${idx}" "${config}" "missing" "$(current_git_rev)" "-" >> "${RESULTS_FILE}"
-      failures=$((failures + 1))
-      continue
-    fi
-
-    update_repo
-    local git_rev
-    git_rev="$(current_git_rev)"
-
-    reset_xfs_mount
-
-    local log_file="${LOG_DIR}/$(basename "${config}").${git_rev}.$(date -u +%Y%m%dT%H%M%SZ).log"
-    log "Running ingest (${idx}/${total}): ${config}"
-    if run_ingest "${config}" "${log_file}"; then
-      log "Success: ${config}"
-      printf "%s\t%s\t%s\t%s\t%s\t%s\n" "$(timestamp_utc)" "${idx}" "${config}" "ok" "${git_rev}" "${log_file}" >> "${RESULTS_FILE}"
-      save_state_index "${idx}"
-    else
-      log "Failure: ${config} (see ${log_file})"
-      printf "%s\t%s\t%s\t%s\t%s\t%s\n" "$(timestamp_utc)" "${idx}" "${config}" "fail" "${git_rev}" "${log_file}" >> "${RESULTS_FILE}"
-      failures=$((failures + 1))
-    fi
-  done
-
-  if (( failures > 0 )); then
-    log "Completed with ${failures} failure(s)."
+  if (( ${#CONFIGS[@]} == 0 )); then
+    echo "No configs listed in CONFIGS; nothing to run." >&2
     exit 1
   fi
-  log "All benchmark ingests completed successfully."
+
+  local total="${#CONFIGS[@]}"
+  while true; do
+    local last_completed
+    last_completed="$(load_state_index)"
+    log "Last completed index: ${last_completed}"
+
+    local failures=0
+    local max_index=$((total - 1))
+    if (( last_completed >= max_index )); then
+      log "All configs completed; restarting from index 0."
+      save_state_index "-1"
+      last_completed="-1"
+    fi
+
+    local idx
+    for idx in "${!CONFIGS[@]}"; do
+      if (( idx <= last_completed )); then
+        continue
+      fi
+      local config="${CONFIGS[$idx]}"
+      if [[ ! -f "${config}" ]]; then
+        log "Config missing: ${config}"
+        printf "%s\t%s\t%s\t%s\t%s\t%s\n" "$(timestamp_utc)" "${idx}" "${config}" "missing" "$(current_git_rev)" "-" >> "${RESULTS_FILE}"
+        failures=$((failures + 1))
+        continue
+      fi
+
+      update_repo
+      local git_rev
+      git_rev="$(current_git_rev)"
+
+      reset_xfs_mount
+
+      local log_file="${LOG_DIR}/$(basename "${config}").${git_rev}.$(date -u +%Y%m%dT%H%M%SZ).log"
+      log "Running ingest (${idx}/${total}): ${config}"
+      if run_ingest "${config}" "${log_file}"; then
+        log "Success: ${config}"
+        printf "%s\t%s\t%s\t%s\t%s\t%s\n" "$(timestamp_utc)" "${idx}" "${config}" "ok" "${git_rev}" "${log_file}" >> "${RESULTS_FILE}"
+        save_state_index "${idx}"
+      else
+        log "Failure: ${config} (see ${log_file})"
+        printf "%s\t%s\t%s\t%s\t%s\t%s\n" "$(timestamp_utc)" "${idx}" "${config}" "fail" "${git_rev}" "${log_file}" >> "${RESULTS_FILE}"
+        failures=$((failures + 1))
+      fi
+    done
+
+    if (( failures > 0 )); then
+      log "Completed with ${failures} failure(s)."
+    else
+      log "All benchmark ingests completed successfully."
+    fi
+  done
 }
 
 main "$@"
