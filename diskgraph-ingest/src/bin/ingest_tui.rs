@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Context, Result};
 use clap::Parser;
@@ -20,6 +20,7 @@ use ratatui::Terminal;
 use serde::Deserialize;
 use tokio::runtime::Runtime;
 use futures::{pin_mut, StreamExt};
+use futures::stream;
  
 use object_store::{GetResult, ObjectStoreExt};
 
@@ -130,6 +131,12 @@ struct AppState {
     baseline: Option<RunSummary>,
     profile_tabs: Vec<ProfileTab>,
     profile_tab_index: usize,
+    loaded_dataset_index: Option<usize>,
+    pending_dataset_index: Option<usize>,
+    pending_dataset_at: Option<Instant>,
+    loaded_instance_index: Option<usize>,
+    pending_instance_index: Option<usize>,
+    pending_instance_at: Option<Instant>,
     dataset_rect: Rect,
     instance_rect: Rect,
     runs_rect: Rect,
@@ -169,6 +176,12 @@ fn main() -> Result<()> {
         baseline: None,
         profile_tabs: Vec::new(),
         profile_tab_index: 0,
+        loaded_dataset_index: None,
+        pending_dataset_index: None,
+        pending_dataset_at: None,
+        loaded_instance_index: None,
+        pending_instance_index: None,
+        pending_instance_at: None,
         dataset_rect: Rect::default(),
         instance_rect: Rect::default(),
         runs_rect: Rect::default(),
@@ -184,6 +197,8 @@ fn main() -> Result<()> {
         app.instance_state.select(Some(0));
     }
     load_runs_for_selected(&store, &mut app, &args)?;
+    app.loaded_dataset_index = app.dataset_state.selected();
+    app.loaded_instance_index = app.instance_state.selected();
 
     enable_raw_mode()?;
     let mut stdout = std::io::stdout();
@@ -207,6 +222,8 @@ fn main() -> Result<()> {
                 _ => {}
             }
         }
+        apply_debounced_dataset_change(&store, &mut app, &args)?;
+        apply_debounced_instance_change(&store, &mut app, &args)?;
     }
 
     disable_raw_mode()?;
@@ -364,20 +381,31 @@ impl StatsStore {
     ) -> Result<Vec<RunSummary>> {
         let runs_prefix = join_prefix(&self.prefix, &format!("{dataset}/{instance_dir}"));
         let run_prefix = object_path(&runs_prefix);
-        let run_result = self
-            .rt
-            .block_on(self.store.list_with_delimiter(Some(&run_prefix)))
-            .context("list runs")?;
-        let mut runs = Vec::new();
-        for run_path in run_result.common_prefixes {
-            let run_id = match run_path.filename() {
-                Some(name) => name.to_string(),
-                None => continue,
-            };
-            if let Ok(summary) = self.fetch_run_summary(dataset, instance_dir, &run_id) {
-                runs.push(summary);
+        let mut runs = self.rt.block_on(async {
+            let run_result = self
+                .store
+                .list_with_delimiter(Some(&run_prefix))
+                .await
+                .context("list runs")?;
+            let run_ids: Vec<String> = run_result
+                .common_prefixes
+                .into_iter()
+                .filter_map(|run_path| run_path.filename().map(|name| name.to_string()))
+                .collect();
+            let mut summaries = Vec::new();
+            let stream = stream::iter(run_ids.into_iter().map(|run_id| async move {
+                self.fetch_run_summary_async(dataset, instance_dir, &run_id)
+                    .await
+            }))
+            .buffer_unordered(16);
+            pin_mut!(stream);
+            while let Some(result) = stream.next().await {
+                if let Ok(summary) = result {
+                    summaries.push(summary);
+                }
             }
-        }
+            Ok::<_, anyhow::Error>(summaries)
+        })?;
         runs.sort_by(|a, b| b.finished_at.cmp(&a.finished_at));
         if runs.len() > max_runs {
             runs.truncate(max_runs);
@@ -385,17 +413,20 @@ impl StatsStore {
         Ok(runs)
     }
 
-    fn fetch_run_summary(&self, dataset: &str, instance_dir: &str, run_id: &str) -> Result<RunSummary> {
+    async fn fetch_run_summary_async(
+        &self,
+        dataset: &str,
+        instance_dir: &str,
+        run_id: &str,
+    ) -> Result<RunSummary> {
         let path = join_prefix(
             &self.prefix,
             &format!("{dataset}/{instance_dir}/{run_id}/run_summary.json"),
         );
         let obj = object_path(&path);
-        let bytes = self.rt.block_on(async {
-            let get: GetResult = self.store.get(&obj).await?;
-            let data = get.bytes().await?;
-            Ok::<_, object_store::Error>(data.to_vec())
-        })?;
+        let get: GetResult = self.store.get(&obj).await?;
+        let data = get.bytes().await?;
+        let bytes = data.to_vec();
         Ok(serde_json::from_slice(&bytes)?)
     }
 
@@ -530,7 +561,7 @@ fn handle_mouse(
             app.dataset_state.offset(),
         ) {
             app.dataset_state.select(Some(idx));
-            reload_for_dataset(store, app, args)?;
+            schedule_dataset_reload(app);
         }
         return Ok(());
     }
@@ -542,7 +573,7 @@ fn handle_mouse(
             app.instance_state.offset(),
         ) {
             app.instance_state.select(Some(idx));
-            load_runs_for_selected(store, app, args)?;
+            schedule_instance_reload(app);
         }
         return Ok(());
     }
@@ -620,7 +651,7 @@ fn handle_key_normal(key: KeyEvent, store: &StatsStore, args: &Args, app: &mut A
     Ok(true)
 }
 
-fn move_instance_selection(delta: isize, store: &StatsStore, app: &mut AppState, args: &Args) -> Result<()> {
+fn move_instance_selection(delta: isize, _store: &StatsStore, app: &mut AppState, _args: &Args) -> Result<()> {
     if app.instances.is_empty() {
         return Ok(());
     }
@@ -630,11 +661,11 @@ fn move_instance_selection(delta: isize, store: &StatsStore, app: &mut AppState,
         .unwrap_or(if delta >= 0 { 0 } else { app.instances.len().saturating_sub(1) }) as isize;
     let next = (current + delta).clamp(0, (app.instances.len() - 1) as isize) as usize;
     app.instance_state.select(Some(next));
-    load_runs_for_selected(store, app, args)?;
+    schedule_instance_reload(app);
     Ok(())
 }
 
-fn move_dataset_selection(delta: isize, store: &StatsStore, app: &mut AppState, args: &Args) -> Result<()> {
+fn move_dataset_selection(delta: isize, _store: &StatsStore, app: &mut AppState, _args: &Args) -> Result<()> {
     if app.datasets.is_empty() {
         return Ok(());
     }
@@ -647,7 +678,7 @@ fn move_dataset_selection(delta: isize, store: &StatsStore, app: &mut AppState, 
         return Ok(());
     }
     app.dataset_state.select(Some(next));
-    reload_for_dataset(store, app, args)?;
+    schedule_dataset_reload(app);
     Ok(())
 }
 
@@ -680,6 +711,10 @@ fn reload_for_dataset(store: &StatsStore, app: &mut AppState, args: &Args) -> Re
     app.instance_state.select(if app.instances.is_empty() { None } else { Some(0) });
     *app.instance_state.offset_mut() = 0;
     load_runs_for_selected(store, app, args)?;
+    app.loaded_dataset_index = app.dataset_state.selected();
+    app.loaded_instance_index = app.instance_state.selected();
+    app.pending_instance_at = None;
+    app.pending_instance_index = None;
     Ok(())
 }
 
@@ -713,6 +748,7 @@ fn load_runs_for_selected(store: &StatsStore, app: &mut AppState, args: &Args) -
         .collect();
     app.run_state.select(if app.runs.is_empty() { None } else { Some(0) });
     *app.run_state.offset_mut() = 0;
+    app.loaded_instance_index = app.instance_state.selected();
     if let Some(idx) = app.instance_state.selected() {
         if let Some(entry) = app.instances.get_mut(idx) {
             entry.latest = app.runs.first().map(|r| r.summary.clone());
@@ -1314,6 +1350,62 @@ fn selected_dataset(app: &AppState) -> Option<&str> {
         .selected()
         .and_then(|idx| app.datasets.get(idx))
         .map(|s| s.as_str())
+}
+
+fn schedule_dataset_reload(app: &mut AppState) {
+    app.pending_dataset_index = app.dataset_state.selected();
+    app.pending_dataset_at = Some(Instant::now());
+}
+
+fn schedule_instance_reload(app: &mut AppState) {
+    app.pending_instance_index = app.instance_state.selected();
+    app.pending_instance_at = Some(Instant::now());
+}
+
+fn apply_debounced_dataset_change(
+    store: &StatsStore,
+    app: &mut AppState,
+    args: &Args,
+) -> Result<()> {
+    let Some(pending_at) = app.pending_dataset_at else {
+        return Ok(());
+    };
+    let pending_idx = app.pending_dataset_index;
+    if pending_idx == app.loaded_dataset_index {
+        app.pending_dataset_at = None;
+        app.pending_dataset_index = None;
+        return Ok(());
+    }
+    if pending_at.elapsed() < Duration::from_millis(200) {
+        return Ok(());
+    }
+    app.pending_dataset_at = None;
+    app.pending_dataset_index = None;
+    reload_for_dataset(store, app, args)?;
+    Ok(())
+}
+
+fn apply_debounced_instance_change(
+    store: &StatsStore,
+    app: &mut AppState,
+    args: &Args,
+) -> Result<()> {
+    let Some(pending_at) = app.pending_instance_at else {
+        return Ok(());
+    };
+    let pending_idx = app.pending_instance_index;
+    if pending_idx == app.loaded_instance_index {
+        app.pending_instance_at = None;
+        app.pending_instance_index = None;
+        return Ok(());
+    }
+    if pending_at.elapsed() < Duration::from_millis(150) {
+        return Ok(());
+    }
+    app.pending_instance_at = None;
+    app.pending_instance_index = None;
+    load_runs_for_selected(store, app, args)?;
+    Ok(())
 }
 fn shorten(text: &str, max: usize) -> String {
     if text.len() <= max {
