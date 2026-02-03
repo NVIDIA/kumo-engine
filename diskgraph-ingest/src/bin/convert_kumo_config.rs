@@ -1,8 +1,8 @@
 //! CLI tool to convert Kumo GraphConfig to DiskGraph GraphConfig.
 //!
 //! Usage:
-//!   kumo_to_diskgraph --customer allstate --job trainingjob-abc123 --region ue1
-//!   kumo_to_diskgraph --customer allstate --job trainingjob-abc123 --region uw2 --output config.json
+//!   convert-kumo-config --customer allstate --job trainingjob-abc123 --region ue1
+//!   convert-kumo-config --customer allstate --job trainingjob-abc123 --region uw2 --output config.json
 
 use std::fs;
 use std::io::{self, Write};
@@ -32,7 +32,7 @@ impl Region {
 }
 
 #[derive(Parser, Debug)]
-#[command(name = "kumo-to-diskgraph")]
+#[command(name = "convert-kumo-config")]
 #[command(about = "Convert Kumo GraphConfig to DiskGraph GraphConfig")]
 struct Args {
     /// Customer name (e.g., allstate, blend360)
