@@ -618,6 +618,11 @@ fn dataset_from_source(source: &PathBuf, source_str: &str) -> String {
     if source.is_dir() {
         return source.file_name().and_then(|n| n.to_str()).unwrap_or("dataset").to_string();
     }
+    if let Some(name) = source.file_name().and_then(|n| n.to_str()) {
+        if name != "diskgraph_config.json" {
+            return name.to_string();
+        }
+    }
     if source.ends_with("diskgraph_config.json") {
         if let Some(parent) = source.parent() {
             if let Some(name) = parent.file_name().and_then(|n| n.to_str()) {
