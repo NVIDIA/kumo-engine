@@ -12,7 +12,8 @@ use crate::io::{
     build_store_for_cloud_path, is_cloud_path, parse_az_url, parse_gs_url, parse_s3_url, Dest,
     OutputTarget,
 };
-use crate::stats::IngestStats;
+use crate::stats::{IngestReport, IngestStats};
+use crate::graph_config::GraphConfig;
 use object_store::{GetResult, ObjectStoreExt};
 
 #[derive(Clone, Debug)]
@@ -107,7 +108,15 @@ pub fn publish_stats(stats: &IngestStats, config: PublishConfig) -> Result<Optio
 
     let profiles_present = profile_files(&config.profile_dir).map(|files| !files.is_empty()).unwrap_or(false);
 
-    let summary = build_run_summary(stats, &config, profiles_present, build_stats.is_some())?;
+    let data_source_path = data_source_path_from_report(&ingest_stats)
+        .unwrap_or_else(|| config.source.clone());
+    let summary = build_run_summary(
+        stats,
+        &config,
+        &data_source_path,
+        profiles_present,
+        build_stats.is_some(),
+    )?;
     let instance_dir = instance_dir_name(summary.instance_type.as_deref(), &summary.source_path);
     let run_prefix = format!("{}/{}/{}", config.dataset, instance_dir, config.run_id);
 
@@ -382,6 +391,7 @@ fn read_output_file(output: &str, name: &str) -> Result<Vec<u8>> {
 fn build_run_summary(
     stats: &IngestStats,
     config: &PublishConfig,
+    data_source_path: &str,
     profiles_present: bool,
     build_stats_present: bool,
 ) -> Result<RunSummary> {
@@ -395,7 +405,7 @@ fn build_run_summary(
 
     let machine = machine_stats(&config.output);
     let git = git_info();
-    let (cloud, instance_type) = instance_info(&config.source, config.dest)?;
+    let (cloud, instance_type) = instance_info(data_source_path, config.dest)?;
 
     let (norm_throughput, norm_wall) = if let Some(cpu) = machine.cpu_logical {
         if cpu > 0 {
@@ -413,7 +423,7 @@ fn build_run_summary(
     Ok(RunSummary {
         run_id: config.run_id.clone(),
         dataset: config.dataset.clone(),
-        source_path: config.source.clone(),
+        source_path: data_source_path.to_string(),
         output_path: config.output.clone(),
         finished_at: Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
         user: current_user(),
@@ -456,6 +466,27 @@ fn build_run_summary(
         profiles_present,
         build_stats_present,
     })
+}
+
+fn data_source_path_from_report(ingest_stats: &Option<Vec<u8>>) -> Option<String> {
+    let bytes = ingest_stats.as_ref()?;
+    let report: IngestReport = serde_json::from_slice(bytes).ok()?;
+    data_source_path_from_config(&report.source)
+}
+
+fn data_source_path_from_config(source: &GraphConfig) -> Option<String> {
+    let mut first_local: Option<String> = None;
+    for table in &source.tables {
+        for path in table.get_paths() {
+            if is_cloud_path(path) {
+                return Some(path.clone());
+            }
+            if first_local.is_none() {
+                first_local = Some(path.clone());
+            }
+        }
+    }
+    first_local
 }
 
 fn current_user() -> String {

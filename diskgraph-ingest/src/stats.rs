@@ -1,14 +1,14 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use crate::graph_config::GraphConfig;
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct IngestReport {
     pub stats: IngestStats,
     pub source: GraphConfig,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct IngestStats {
     pub output: String,
     pub node_tables: usize,
@@ -33,7 +33,7 @@ pub struct IngestStats {
     pub num_shards: Option<usize>,
 }
 
-#[derive(Clone, Debug, Default, Serialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct KeyFailureCounts {
     pub parse_failures: u64,
     pub lookup_failures: u64,
@@ -47,7 +47,7 @@ pub struct KeyFailureState {
     pub by_context: HashMap<String, KeyFailureCounts>,
 }
 
-#[derive(Clone, Debug, Default, Serialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct PerfStats {
     pub wall_time_ms: u64,
     pub context_wall_ms: u64,
