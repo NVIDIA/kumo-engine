@@ -17,11 +17,11 @@ METADATA_DEST=""
 USE_AWS="false"
 if [[ -z "${METADATA_DEST}" ]]; then
   if command -v curl >/dev/null 2>&1; then
-    if curl -s --connect-timeout 0.2 -m 0.5 \
+    if curl -fs --connect-timeout 0.2 -m 0.5 \
       -H "Metadata-Flavor: Google" \
       "http://metadata.google.internal/computeMetadata/v1/instance/id" >/dev/null 2>&1; then
       METADATA_DEST="gs://kumo-unit-test/diskgraph-profiles"
-    elif curl -s --connect-timeout 0.2 -m 0.5 \
+    elif curl -fs --connect-timeout 0.2 -m 0.5 \
       -H "Metadata-Flavor: Google" \
       "http://169.254.169.254/computeMetadata/v1/instance/id" >/dev/null 2>&1; then
       METADATA_DEST="gs://kumo-unit-test/diskgraph-profiles"
