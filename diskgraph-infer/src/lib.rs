@@ -959,8 +959,8 @@ fn infer_parquet_schema_remote(
     options: &InferOptions,
     allowed_cols: Option<&HashSet<String>>,
 ) -> Result<Vec<ColumnSpec>> {
-    let buffer = transfer.submit_download(path.clone())?.wait()?;
-    let bytes = Bytes::from(buffer.into_inner());
+    let pooled = transfer.submit_download_bytes(path.clone())?.wait()?;
+    let bytes = pooled.bytes();
     let builder = ParquetRecordBatchReaderBuilder::try_new(bytes)?;
     let schema = builder.schema();
     let mut columns = infer_parquet_schema_from_arrow(schema.as_ref(), allowed_cols)?;
@@ -971,6 +971,7 @@ fn infer_parquet_schema_remote(
         let mut reader = builder.with_batch_size(1024).build()?;
         apply_parquet_string_samples(&mut columns, &mut reader, options.sample_rows)?;
     }
+    drop(pooled);
     Ok(columns)
 }
 
