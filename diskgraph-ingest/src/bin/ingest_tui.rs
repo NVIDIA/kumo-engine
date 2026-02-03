@@ -31,9 +31,9 @@ struct Args {
     /// Stats destination root (s3://, gs://, az://).
     #[arg(long, value_name = "URL")]
     stats_dest: Option<String>,
-    /// Dataset name (required).
+    /// Dataset name (optional; defaults to first available).
     #[arg(long, value_name = "NAME")]
-    dataset: String,
+    dataset: Option<String>,
     /// Max runs to load per dataset.
     #[arg(long, default_value_t = 200)]
     max_runs: usize,
@@ -119,6 +119,8 @@ enum Mode {
 }
 
 struct AppState {
+    datasets: Vec<String>,
+    dataset_state: ListState,
     instances: Vec<InstanceEntry>,
     instance_state: ListState,
     runs: Vec<RunEntry>,
@@ -128,6 +130,7 @@ struct AppState {
     baseline: Option<RunSummary>,
     profile_tabs: Vec<ProfileTab>,
     profile_tab_index: usize,
+    dataset_rect: Rect,
     instance_rect: Rect,
     runs_rect: Rect,
 }
@@ -148,8 +151,15 @@ fn main() -> Result<()> {
     let stats_root = resolve_stats_root(&args)?;
     let store = StatsStore::open(&stats_root)?;
 
-    let instances = store.list_instances(&args.dataset)?;
+    let datasets = store.list_datasets()?;
+    let selected_dataset = select_initial_dataset(&datasets, args.dataset.as_deref());
+    let instances = match selected_dataset.as_deref() {
+        Some(dataset) => store.list_instances(dataset)?,
+        None => Vec::new(),
+    };
     let mut app = AppState {
+        datasets,
+        dataset_state: ListState::default(),
         instances,
         instance_state: ListState::default(),
         runs: Vec::new(),
@@ -159,9 +169,17 @@ fn main() -> Result<()> {
         baseline: None,
         profile_tabs: Vec::new(),
         profile_tab_index: 0,
+        dataset_rect: Rect::default(),
         instance_rect: Rect::default(),
         runs_rect: Rect::default(),
     };
+    if let Some(dataset) = selected_dataset.as_deref() {
+        if let Some(idx) = app.datasets.iter().position(|d| d == dataset) {
+            app.dataset_state.select(Some(idx));
+        }
+    } else {
+        app.dataset_state.select(None);
+    }
     if !app.instances.is_empty() {
         app.instance_state.select(Some(0));
     }
@@ -176,7 +194,7 @@ fn main() -> Result<()> {
 
     let mut running = true;
     while running {
-        terminal.draw(|frame| draw(frame, &mut app, &args.dataset))?;
+        terminal.draw(|frame| draw(frame, &mut app))?;
 
         if event::poll(Duration::from_millis(200))? {
             match event::read()? {
@@ -320,6 +338,22 @@ impl StatsStore {
         }
         instances.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(instances)
+    }
+
+    fn list_datasets(&self) -> Result<Vec<String>> {
+        let prefix = object_path(&self.prefix);
+        let result = self
+            .rt
+            .block_on(self.store.list_with_delimiter(Some(&prefix)))
+            .context("list datasets")?;
+        let mut datasets = Vec::new();
+        for common in result.common_prefixes {
+            if let Some(name) = common.filename() {
+                datasets.push(name.to_string());
+            }
+        }
+        datasets.sort();
+        Ok(datasets)
     }
 
     fn list_runs_for_instance(
@@ -472,8 +506,15 @@ fn handle_mouse(
         x: mouse.column,
         y: mouse.row,
     };
+    if app.dataset_rect.contains(pos) {
+        if let Some(idx) = list_index_from_click(app.dataset_rect, y, app.datasets.len()) {
+            app.dataset_state.select(Some(idx));
+            reload_for_dataset(store, app, args)?;
+        }
+        return Ok(());
+    }
     if app.instance_rect.contains(pos) {
-        if let Some(idx) = row_index_from_click(app.instance_rect, y, app.instances.len()) {
+        if let Some(idx) = list_index_from_click(app.instance_rect, y, app.instances.len()) {
             app.instance_state.select(Some(idx));
             load_runs_for_selected(store, app, args)?;
         }
@@ -505,6 +546,23 @@ fn row_index_from_click(rect: Rect, y: u16, len: usize) -> Option<usize> {
     }
 }
 
+fn list_index_from_click(rect: Rect, y: u16, len: usize) -> Option<usize> {
+    if len == 0 {
+        return None;
+    }
+    let header_rows = 1u16;
+    let top = rect.y.saturating_add(header_rows);
+    let bottom = rect.y.saturating_add(rect.height.saturating_sub(1));
+    if y < top || y >= bottom {
+        return None;
+    }
+    let row = (y - top) as usize;
+    if row < len {
+        Some(row)
+    } else {
+        None
+    }
+}
 fn handle_key_normal(key: KeyEvent, store: &StatsStore, args: &Args, app: &mut AppState) -> Result<bool> {
     match key.code {
         KeyCode::Char('q') => return Ok(false),
@@ -512,17 +570,23 @@ fn handle_key_normal(key: KeyEvent, store: &StatsStore, args: &Args, app: &mut A
             show_profile_top(store, app, args.top_profiles)?;
             return Ok(true);
         }
-        KeyCode::Char('j') | KeyCode::Down => {
+        KeyCode::Char('j') => {
             if let Some(sel) = app.run_state.selected() {
                 let next = (sel + 1).min(app.runs.len().saturating_sub(1));
                 app.run_state.select(Some(next));
             }
         }
-        KeyCode::Char('k') | KeyCode::Up => {
+        KeyCode::Char('k') => {
             if let Some(sel) = app.run_state.selected() {
                 let next = sel.saturating_sub(1);
                 app.run_state.select(Some(next));
             }
+        }
+        KeyCode::Down => {
+            move_dataset_selection(1, store, app, args)?;
+        }
+        KeyCode::Up => {
+            move_dataset_selection(-1, store, app, args)?;
         }
         KeyCode::Char('h') | KeyCode::Left => {
             move_instance_selection(-1, store, app, args)?;
@@ -549,15 +613,56 @@ fn move_instance_selection(delta: isize, store: &StatsStore, app: &mut AppState,
     Ok(())
 }
 
+fn move_dataset_selection(delta: isize, store: &StatsStore, app: &mut AppState, args: &Args) -> Result<()> {
+    if app.datasets.is_empty() {
+        return Ok(());
+    }
+    let current = app.dataset_state.selected().unwrap_or(0) as isize;
+    let next = (current + delta).clamp(0, (app.datasets.len() - 1) as isize) as usize;
+    if app.dataset_state.selected() == Some(next) {
+        return Ok(());
+    }
+    app.dataset_state.select(Some(next));
+    reload_for_dataset(store, app, args)?;
+    Ok(())
+}
+
+fn reload_for_dataset(store: &StatsStore, app: &mut AppState, args: &Args) -> Result<()> {
+    let dataset = match selected_dataset(app) {
+        Some(name) => name.to_string(),
+        None => {
+            app.instances.clear();
+            app.runs.clear();
+            app.instance_state.select(None);
+            app.run_state.select(None);
+            return Ok(());
+        }
+    };
+    app.instances = store.list_instances(&dataset)?;
+    app.instance_state.select(if app.instances.is_empty() { None } else { Some(0) });
+    load_runs_for_selected(store, app, args)?;
+    Ok(())
+}
+
 fn load_runs_for_selected(store: &StatsStore, app: &mut AppState, args: &Args) -> Result<()> {
+    let dataset = match selected_dataset(app) {
+        Some(name) => name,
+        None => {
+            app.runs.clear();
+            app.run_state.select(None);
+            return Ok(());
+        }
+    };
     let instance = match app.instance_state.selected() {
         Some(idx) => app.instances.get(idx).map(|d| d.name.clone()),
         None => None,
     };
     let Some(instance) = instance else {
+        app.runs.clear();
+        app.run_state.select(None);
         return Ok(());
     };
-    let runs = store.list_runs_for_instance(&args.dataset, &instance, args.max_runs)?;
+    let runs = store.list_runs_for_instance(dataset, &instance, args.max_runs)?;
     app.runs = runs
         .into_iter()
         .map(|summary| RunEntry {
@@ -660,7 +765,7 @@ fn profile_cache_dir(dataset: &str, run_id: &str) -> Result<PathBuf> {
     Ok(base.join("diskgraph-profiles").join(dataset).join(run_id).join("profiles"))
 }
 
-fn draw(frame: &mut ratatui::Frame, app: &mut AppState, dataset: &str) {
+fn draw(frame: &mut ratatui::Frame, app: &mut AppState) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(1), Constraint::Min(0), Constraint::Length(1)].as_ref())
@@ -670,11 +775,17 @@ fn draw(frame: &mut ratatui::Frame, app: &mut AppState, dataset: &str) {
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(20), Constraint::Percentage(45), Constraint::Percentage(35)])
         .split(body);
+    let left_stack = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(80), Constraint::Percentage(20)].as_ref())
+        .split(columns[0]);
 
-    draw_header(frame, chunks[0], app, dataset);
-    app.instance_rect = columns[0];
+    draw_header(frame, chunks[0], app);
+    app.dataset_rect = left_stack[0];
+    app.instance_rect = left_stack[1];
     app.runs_rect = columns[1];
-    draw_instances(frame, columns[0], app);
+    draw_datasets(frame, left_stack[0], app);
+    draw_instances(frame, left_stack[1], app);
     draw_runs(frame, columns[1], app);
     draw_details(frame, columns[2], app);
     draw_footer(frame, chunks[2], app);
@@ -687,7 +798,8 @@ fn draw(frame: &mut ratatui::Frame, app: &mut AppState, dataset: &str) {
     }
 }
 
-fn draw_header(frame: &mut ratatui::Frame, area: Rect, app: &AppState, dataset: &str) {
+fn draw_header(frame: &mut ratatui::Frame, area: Rect, app: &AppState) {
+    let dataset = selected_dataset(app).unwrap_or("-");
     let text = Line::from(vec![
         Span::styled(
             format!("Diskgraph Ingest Perf Explorer — {}", dataset),
@@ -702,7 +814,7 @@ fn draw_header(frame: &mut ratatui::Frame, area: Rect, app: &AppState, dataset: 
 
 fn draw_footer(frame: &mut ratatui::Frame, area: Rect, app: &AppState) {
     let hint = match app.mode {
-        Mode::Normal => "j/k: run  h/l: instance  p: top profiles  ?: help  q: quit",
+        Mode::Normal => "j/k: run  ↑/↓: dataset  h/l: instance  p: top profiles  ?: help  q: quit",
         Mode::Help => "press any key to return",
         Mode::ProfileView => "h/l: tabs  esc/q: back",
     };
@@ -729,6 +841,18 @@ fn draw_instances(frame: &mut ratatui::Frame, area: Rect, app: &mut AppState) {
         .block(Block::default().borders(Borders::ALL).title("Instances"))
         .highlight_style(Style::default().bg(Color::Blue).fg(Color::White));
     frame.render_stateful_widget(list, area, &mut app.instance_state);
+}
+
+fn draw_datasets(frame: &mut ratatui::Frame, area: Rect, app: &mut AppState) {
+    let items: Vec<ListItem> = app
+        .datasets
+        .iter()
+        .map(|name| ListItem::new(name.clone()))
+        .collect();
+    let list = List::new(items)
+        .block(Block::default().borders(Borders::ALL).title("Datasets"))
+        .highlight_style(Style::default().bg(Color::Blue).fg(Color::White));
+    frame.render_stateful_widget(list, area, &mut app.dataset_state);
 }
 
 fn draw_runs(frame: &mut ratatui::Frame, area: Rect, app: &mut AppState) {
@@ -952,6 +1076,7 @@ fn draw_help(frame: &mut ratatui::Frame) {
     let text = vec![
         Line::from("Hotkeys:"),
         Line::from("  j/k: move runs"),
+        Line::from("  ↑/↓: switch dataset"),
         Line::from("  h/l: switch instance"),
         Line::from("  p: top10 profiles"),
         Line::from("  ?: help"),
@@ -1069,6 +1194,22 @@ fn mem_pct_of_total(peak: Option<u64>, total: Option<u64>) -> String {
 
 fn fastest_run(runs: &[RunEntry]) -> Option<&RunEntry> {
     runs.iter().min_by_key(|r| r.summary.wall_time_ms)
+}
+
+fn select_initial_dataset(datasets: &[String], requested: Option<&str>) -> Option<String> {
+    if let Some(name) = requested {
+        if datasets.iter().any(|d| d == name) {
+            return Some(name.to_string());
+        }
+    }
+    datasets.first().cloned()
+}
+
+fn selected_dataset(app: &AppState) -> Option<&str> {
+    app.dataset_state
+        .selected()
+        .and_then(|idx| app.datasets.get(idx))
+        .map(|s| s.as_str())
 }
 fn shorten(text: &str, max: usize) -> String {
     if text.len() <= max {
