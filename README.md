@@ -48,11 +48,6 @@ By default the output goes to `/mnt/localssd/diskgraph-index/hnm100`.
 
 ```bash
 ./diskgraph-index/scripts/explore_local.sh /mnt/localssd/diskgraph-index/hnm100
-```
-
-Optional: open the ingest performance explorer (stats bucket):
-
-```bash
 ./diskgraph-ingest/scripts/perf_explorer.sh hnm100
 ```
 
@@ -73,6 +68,15 @@ benchmark 8 30s
 ```
 
 `benchmark` is optional but handy to sanity-check performance.
+
+### Benchmark ingest runs (S3-driven)
+
+We have a server running 24/7 for ingest benchmarks. To add a dataset to the benchmark rotation, update the `CONFIGS` array in `scripts/benchmark_ingest.sh`.
+
+```bash
+./scripts/benchmark_ingest.sh
+./diskgraph-ingest/scripts/perf_explorer.sh
+```
 
 ## Generate a synthetic dataset
 

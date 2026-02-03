@@ -495,58 +495,68 @@ fn handle_mouse(
     args: &Args,
     app: &mut AppState,
 ) -> Result<()> {
-    if mouse.kind != MouseEventKind::Down(MouseButton::Left) {
-        return Ok(());
-    }
     if app.mode != Mode::Normal {
         return Ok(());
     }
-    let y = mouse.row;
     let pos = Position {
         x: mouse.column,
         y: mouse.row,
     };
+    if matches!(mouse.kind, MouseEventKind::ScrollDown | MouseEventKind::ScrollUp) {
+        let delta = if mouse.kind == MouseEventKind::ScrollDown { 1 } else { -1 };
+        if app.dataset_rect.contains(pos) {
+            move_dataset_selection(delta, store, app, args)?;
+            return Ok(());
+        }
+        if app.instance_rect.contains(pos) {
+            move_instance_selection(delta, store, app, args)?;
+            return Ok(());
+        }
+        if app.runs_rect.contains(pos) {
+            move_run_selection(delta, app);
+            return Ok(());
+        }
+        return Ok(());
+    }
+    if mouse.kind != MouseEventKind::Down(MouseButton::Left) {
+        return Ok(());
+    }
+    let y = mouse.row;
     if app.dataset_rect.contains(pos) {
-        if let Some(idx) = list_index_from_click(app.dataset_rect, y, app.datasets.len()) {
+        if let Some(idx) = list_index_from_click(
+            app.dataset_rect,
+            y,
+            app.datasets.len(),
+            app.dataset_state.offset(),
+        ) {
             app.dataset_state.select(Some(idx));
             reload_for_dataset(store, app, args)?;
         }
         return Ok(());
     }
     if app.instance_rect.contains(pos) {
-        if let Some(idx) = list_index_from_click(app.instance_rect, y, app.instances.len()) {
+        if let Some(idx) = list_index_from_click(
+            app.instance_rect,
+            y,
+            app.instances.len(),
+            app.instance_state.offset(),
+        ) {
             app.instance_state.select(Some(idx));
             load_runs_for_selected(store, app, args)?;
         }
         return Ok(());
     }
     if app.runs_rect.contains(pos) {
-        if let Some(idx) = row_index_from_click(app.runs_rect, y, app.runs.len()) {
+        if let Some(idx) =
+            table_index_from_click(app.runs_rect, y, app.runs.len(), app.run_state.offset())
+        {
             app.run_state.select(Some(idx));
         }
     }
     Ok(())
 }
 
-fn row_index_from_click(rect: Rect, y: u16, len: usize) -> Option<usize> {
-    if len == 0 {
-        return None;
-    }
-    let header_rows = 2u16;
-    let top = rect.y.saturating_add(header_rows);
-    let bottom = rect.y.saturating_add(rect.height.saturating_sub(1));
-    if y < top || y >= bottom {
-        return None;
-    }
-    let row = (y - top) as usize;
-    if row < len {
-        Some(row)
-    } else {
-        None
-    }
-}
-
-fn list_index_from_click(rect: Rect, y: u16, len: usize) -> Option<usize> {
+fn list_index_from_click(rect: Rect, y: u16, len: usize, offset: usize) -> Option<usize> {
     if len == 0 {
         return None;
     }
@@ -556,7 +566,25 @@ fn list_index_from_click(rect: Rect, y: u16, len: usize) -> Option<usize> {
     if y < top || y >= bottom {
         return None;
     }
-    let row = (y - top) as usize;
+    let row = (y - top) as usize + offset;
+    if row < len {
+        Some(row)
+    } else {
+        None
+    }
+}
+
+fn table_index_from_click(rect: Rect, y: u16, len: usize, offset: usize) -> Option<usize> {
+    if len == 0 {
+        return None;
+    }
+    let header_rows = 2u16;
+    let top = rect.y.saturating_add(header_rows);
+    let bottom = rect.y.saturating_add(rect.height.saturating_sub(1));
+    if y < top || y >= bottom {
+        return None;
+    }
+    let row = (y - top) as usize + offset;
     if row < len {
         Some(row)
     } else {
@@ -570,18 +598,8 @@ fn handle_key_normal(key: KeyEvent, store: &StatsStore, args: &Args, app: &mut A
             show_profile_top(store, app, args.top_profiles)?;
             return Ok(true);
         }
-        KeyCode::Char('j') => {
-            if let Some(sel) = app.run_state.selected() {
-                let next = (sel + 1).min(app.runs.len().saturating_sub(1));
-                app.run_state.select(Some(next));
-            }
-        }
-        KeyCode::Char('k') => {
-            if let Some(sel) = app.run_state.selected() {
-                let next = sel.saturating_sub(1);
-                app.run_state.select(Some(next));
-            }
-        }
+        KeyCode::Char('j') => move_run_selection(1, app),
+        KeyCode::Char('k') => move_run_selection(-1, app),
         KeyCode::Down => {
             move_dataset_selection(1, store, app, args)?;
         }
@@ -606,7 +624,10 @@ fn move_instance_selection(delta: isize, store: &StatsStore, app: &mut AppState,
     if app.instances.is_empty() {
         return Ok(());
     }
-    let current = app.instance_state.selected().unwrap_or(0) as isize;
+    let current = app
+        .instance_state
+        .selected()
+        .unwrap_or(if delta >= 0 { 0 } else { app.instances.len().saturating_sub(1) }) as isize;
     let next = (current + delta).clamp(0, (app.instances.len() - 1) as isize) as usize;
     app.instance_state.select(Some(next));
     load_runs_for_selected(store, app, args)?;
@@ -617,7 +638,10 @@ fn move_dataset_selection(delta: isize, store: &StatsStore, app: &mut AppState, 
     if app.datasets.is_empty() {
         return Ok(());
     }
-    let current = app.dataset_state.selected().unwrap_or(0) as isize;
+    let current = app
+        .dataset_state
+        .selected()
+        .unwrap_or(if delta >= 0 { 0 } else { app.datasets.len().saturating_sub(1) }) as isize;
     let next = (current + delta).clamp(0, (app.datasets.len() - 1) as isize) as usize;
     if app.dataset_state.selected() == Some(next) {
         return Ok(());
@@ -625,6 +649,18 @@ fn move_dataset_selection(delta: isize, store: &StatsStore, app: &mut AppState, 
     app.dataset_state.select(Some(next));
     reload_for_dataset(store, app, args)?;
     Ok(())
+}
+
+fn move_run_selection(delta: isize, app: &mut AppState) {
+    if app.runs.is_empty() {
+        return;
+    }
+    let current = app
+        .run_state
+        .selected()
+        .unwrap_or(if delta >= 0 { 0 } else { app.runs.len().saturating_sub(1) }) as isize;
+    let next = (current + delta).clamp(0, (app.runs.len() - 1) as isize) as usize;
+    app.run_state.select(Some(next));
 }
 
 fn reload_for_dataset(store: &StatsStore, app: &mut AppState, args: &Args) -> Result<()> {
@@ -635,11 +671,14 @@ fn reload_for_dataset(store: &StatsStore, app: &mut AppState, args: &Args) -> Re
             app.runs.clear();
             app.instance_state.select(None);
             app.run_state.select(None);
+            *app.instance_state.offset_mut() = 0;
+            *app.run_state.offset_mut() = 0;
             return Ok(());
         }
     };
     app.instances = store.list_instances(&dataset)?;
     app.instance_state.select(if app.instances.is_empty() { None } else { Some(0) });
+    *app.instance_state.offset_mut() = 0;
     load_runs_for_selected(store, app, args)?;
     Ok(())
 }
@@ -650,6 +689,7 @@ fn load_runs_for_selected(store: &StatsStore, app: &mut AppState, args: &Args) -
         None => {
             app.runs.clear();
             app.run_state.select(None);
+            *app.run_state.offset_mut() = 0;
             return Ok(());
         }
     };
@@ -660,6 +700,7 @@ fn load_runs_for_selected(store: &StatsStore, app: &mut AppState, args: &Args) -
     let Some(instance) = instance else {
         app.runs.clear();
         app.run_state.select(None);
+        *app.run_state.offset_mut() = 0;
         return Ok(());
     };
     let runs = store.list_runs_for_instance(dataset, &instance, args.max_runs)?;
@@ -671,6 +712,7 @@ fn load_runs_for_selected(store: &StatsStore, app: &mut AppState, args: &Args) -
         })
         .collect();
     app.run_state.select(if app.runs.is_empty() { None } else { Some(0) });
+    *app.run_state.offset_mut() = 0;
     if let Some(idx) = app.instance_state.selected() {
         if let Some(entry) = app.instances.get_mut(idx) {
             entry.latest = app.runs.first().map(|r| r.summary.clone());
@@ -784,6 +826,7 @@ fn draw(frame: &mut ratatui::Frame, app: &mut AppState) {
     app.dataset_rect = left_stack[0];
     app.instance_rect = left_stack[1];
     app.runs_rect = columns[1];
+    sync_scroll_offsets(app);
     draw_datasets(frame, left_stack[0], app);
     draw_instances(frame, left_stack[1], app);
     draw_runs(frame, columns[1], app);
@@ -839,7 +882,7 @@ fn draw_instances(frame: &mut ratatui::Frame, area: Rect, app: &mut AppState) {
         .collect();
     let list = List::new(items)
         .block(Block::default().borders(Borders::ALL).title("Instances"))
-        .highlight_style(Style::default().bg(Color::Blue).fg(Color::White));
+        .highlight_style(Style::default().bg(Color::Blue).fg(Color::Indexed(15)));
     frame.render_stateful_widget(list, area, &mut app.instance_state);
 }
 
@@ -851,7 +894,7 @@ fn draw_datasets(frame: &mut ratatui::Frame, area: Rect, app: &mut AppState) {
         .collect();
     let list = List::new(items)
         .block(Block::default().borders(Borders::ALL).title("Datasets"))
-        .highlight_style(Style::default().bg(Color::Blue).fg(Color::White));
+        .highlight_style(Style::default().bg(Color::Blue).fg(Color::Indexed(15)));
     frame.render_stateful_widget(list, area, &mut app.dataset_state);
 }
 
@@ -1194,6 +1237,67 @@ fn mem_pct_of_total(peak: Option<u64>, total: Option<u64>) -> String {
 
 fn fastest_run(runs: &[RunEntry]) -> Option<&RunEntry> {
     runs.iter().min_by_key(|r| r.summary.wall_time_ms)
+}
+
+fn sync_scroll_offsets(app: &mut AppState) {
+    let dataset_rows = list_view_height(app.dataset_rect);
+    sync_list_offset(&mut app.dataset_state, app.datasets.len(), dataset_rows);
+    let instance_rows = list_view_height(app.instance_rect);
+    sync_list_offset(&mut app.instance_state, app.instances.len(), instance_rows);
+    let run_rows = table_view_height(app.runs_rect);
+    sync_table_offset(&mut app.run_state, app.runs.len(), run_rows);
+}
+
+fn sync_list_offset(state: &mut ListState, len: usize, visible: usize) {
+    if len == 0 || visible == 0 {
+        *state.offset_mut() = 0;
+        return;
+    }
+    let Some(selected) = state.selected() else {
+        *state.offset_mut() = 0;
+        return;
+    };
+    let max_offset = len.saturating_sub(visible);
+    let mut offset = state.offset();
+    if selected < offset {
+        offset = selected;
+    } else if selected >= offset.saturating_add(visible) {
+        offset = selected + 1 - visible;
+    }
+    if offset > max_offset {
+        offset = max_offset;
+    }
+    *state.offset_mut() = offset;
+}
+
+fn sync_table_offset(state: &mut TableState, len: usize, visible: usize) {
+    if len == 0 || visible == 0 {
+        *state.offset_mut() = 0;
+        return;
+    }
+    let Some(selected) = state.selected() else {
+        *state.offset_mut() = 0;
+        return;
+    };
+    let max_offset = len.saturating_sub(visible);
+    let mut offset = state.offset();
+    if selected < offset {
+        offset = selected;
+    } else if selected >= offset.saturating_add(visible) {
+        offset = selected + 1 - visible;
+    }
+    if offset > max_offset {
+        offset = max_offset;
+    }
+    *state.offset_mut() = offset;
+}
+
+fn list_view_height(area: Rect) -> usize {
+    area.height.saturating_sub(2) as usize
+}
+
+fn table_view_height(area: Rect) -> usize {
+    area.height.saturating_sub(3) as usize
 }
 
 fn select_initial_dataset(datasets: &[String], requested: Option<&str>) -> Option<String> {
