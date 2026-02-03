@@ -12,3 +12,4 @@ heap-*.txt
 data
 temp_data
 diskgraph_output
+benchmark/
