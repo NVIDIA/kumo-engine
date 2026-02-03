@@ -105,7 +105,7 @@ reset_xfs_mount() {
 run_ingest() {
   local config="$1"
   local log_file="$2"
-  "${REPO_ROOT}/diskgraph-ingest/scripts/ingest_s3.sh" "${config}" >"${log_file}" 2>&1
+  "${REPO_ROOT}/diskgraph-ingest/scripts/ingest_s3.sh" "${config}" 2>&1 | tee "${log_file}"
 }
 
 main() {
