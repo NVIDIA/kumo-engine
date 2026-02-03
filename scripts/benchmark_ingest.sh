@@ -31,6 +31,8 @@ CONFIG_LIST_FILE="${SCRIPT_DIR}/benchmark_configs/config_list.txt"
 CONFIGS=()
 
 GIT_BRANCH="main"
+GIT_FETCH_TIMEOUT_SECS="${GIT_FETCH_TIMEOUT_SECS:-120}"
+GIT_SSH_KEY="${GIT_SSH_KEY:-${HOME}/.ssh/id_ed25519}"
 MOUNTPOINT="/mnt/localssd"
 BENCHMARK_ROOT="${REPO_ROOT}/benchmark"
 STATE_FILE="${BENCHMARK_ROOT}/benchmark_state.txt"
@@ -94,8 +96,19 @@ load_configs() {
 update_repo() {
   log "Updating repo (branch: ${GIT_BRANCH})..."
   ensure_clean_git
-  git fetch --prune origin "${GIT_BRANCH}"
-  git merge --ff-only "origin/${GIT_BRANCH}"
+  if [[ -z "${GIT_SSH_COMMAND:-}" ]]; then
+    export GIT_SSH_COMMAND="ssh -i ${GIT_SSH_KEY} -o IdentitiesOnly=yes -o IdentityAgent=none"
+  fi
+  if ! GIT_TERMINAL_PROMPT=0 timeout "${GIT_FETCH_TIMEOUT_SECS}" \
+    git fetch --prune origin "${GIT_BRANCH}"; then
+    log "Git fetch failed or timed out after ${GIT_FETCH_TIMEOUT_SECS}s."
+    return 1
+  fi
+  if ! GIT_TERMINAL_PROMPT=0 timeout "${GIT_FETCH_TIMEOUT_SECS}" \
+    git merge --ff-only "origin/${GIT_BRANCH}"; then
+    log "Git merge failed or timed out after ${GIT_FETCH_TIMEOUT_SECS}s."
+    return 1
+  fi
   load_configs
 }
 
@@ -182,7 +195,9 @@ main() {
         continue
       fi
 
-      update_repo
+      if ! update_repo; then
+        log "Proceeding without updating repo (using current checkout)."
+      fi
       local git_rev
       git_rev="$(current_git_rev)"
 
