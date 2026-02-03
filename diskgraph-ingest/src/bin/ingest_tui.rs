@@ -137,6 +137,7 @@ struct AppState {
     loaded_instance_index: Option<usize>,
     pending_instance_index: Option<usize>,
     pending_instance_at: Option<Instant>,
+    last_refresh_at: Instant,
     dataset_rect: Rect,
     instance_rect: Rect,
     runs_rect: Rect,
@@ -182,6 +183,7 @@ fn main() -> Result<()> {
         loaded_instance_index: None,
         pending_instance_index: None,
         pending_instance_at: None,
+        last_refresh_at: Instant::now(),
         dataset_rect: Rect::default(),
         instance_rect: Rect::default(),
         runs_rect: Rect::default(),
@@ -224,6 +226,7 @@ fn main() -> Result<()> {
         }
         apply_debounced_dataset_change(&store, &mut app, &args)?;
         apply_debounced_instance_change(&store, &mut app, &args)?;
+        apply_auto_refresh(&store, &mut app, &args)?;
     }
 
     disable_raw_mode()?;
@@ -1405,6 +1408,116 @@ fn apply_debounced_instance_change(
     app.pending_instance_at = None;
     app.pending_instance_index = None;
     load_runs_for_selected(store, app, args)?;
+    Ok(())
+}
+
+fn apply_auto_refresh(store: &StatsStore, app: &mut AppState, args: &Args) -> Result<()> {
+    if app.pending_dataset_at.is_some() || app.pending_instance_at.is_some() {
+        return Ok(());
+    }
+    if app.last_refresh_at.elapsed() < Duration::from_secs(60) {
+        return Ok(());
+    }
+    app.last_refresh_at = Instant::now();
+    refresh_datasets(store, app)?;
+    refresh_instances(store, app)?;
+    refresh_runs_for_selected(store, app, args)?;
+    Ok(())
+}
+
+fn refresh_datasets(store: &StatsStore, app: &mut AppState) -> Result<()> {
+    let selected = app
+        .dataset_state
+        .selected()
+        .and_then(|idx| app.datasets.get(idx))
+        .cloned();
+    let datasets = store.list_datasets()?;
+    app.datasets = datasets;
+    if let Some(name) = selected {
+        app.dataset_state
+            .select(app.datasets.iter().position(|d| d == &name));
+    }
+    if app.dataset_state.selected().is_none() && !app.datasets.is_empty() {
+        app.dataset_state.select(Some(0));
+    }
+    app.loaded_dataset_index = app.dataset_state.selected();
+    Ok(())
+}
+
+fn refresh_instances(store: &StatsStore, app: &mut AppState) -> Result<()> {
+    let dataset = match selected_dataset(app) {
+        Some(name) => name,
+        None => {
+            app.instances.clear();
+            app.instance_state.select(None);
+            *app.instance_state.offset_mut() = 0;
+            return Ok(());
+        }
+    };
+    let selected = app
+        .instance_state
+        .selected()
+        .and_then(|idx| app.instances.get(idx))
+        .map(|entry| entry.name.clone());
+    app.instances = store.list_instances(dataset)?;
+    if let Some(name) = selected {
+        app.instance_state
+            .select(app.instances.iter().position(|d| d.name == name));
+    }
+    if app.instance_state.selected().is_none() && !app.instances.is_empty() {
+        app.instance_state.select(Some(0));
+    }
+    app.loaded_instance_index = app.instance_state.selected();
+    Ok(())
+}
+
+fn refresh_runs_for_selected(store: &StatsStore, app: &mut AppState, args: &Args) -> Result<()> {
+    let dataset = match selected_dataset(app) {
+        Some(name) => name,
+        None => return Ok(()),
+    };
+    let instance = match app.instance_state.selected() {
+        Some(idx) => app.instances.get(idx).map(|d| d.name.clone()),
+        None => None,
+    };
+    let Some(instance) = instance else {
+        return Ok(());
+    };
+    let selected_run_id = app
+        .run_state
+        .selected()
+        .and_then(|idx| app.runs.get(idx))
+        .map(|entry| entry.summary.run_id.clone());
+    let runs = store.list_runs_for_instance(dataset, &instance, args.max_runs)?;
+    app.runs = runs
+        .into_iter()
+        .map(|summary| RunEntry {
+            summary,
+            regression: RegressionInfo,
+        })
+        .collect();
+    let next_selected = if let Some(run_id) = selected_run_id {
+        app.runs
+            .iter()
+            .position(|entry| entry.summary.run_id == run_id)
+    } else {
+        None
+    };
+    let next_selected = next_selected.or_else(|| {
+        if app.runs.is_empty() {
+            None
+        } else {
+            Some(0)
+        }
+    });
+    app.run_state.select(next_selected);
+    if let Some(idx) = app.instance_state.selected() {
+        if let Some(entry) = app.instances.get_mut(idx) {
+            entry.latest = app.runs.first().map(|r| r.summary.clone());
+        }
+    }
+    app.baseline = fastest_run(&app.runs).map(|r| r.summary.clone());
+    recalc_regressions(app);
     Ok(())
 }
 fn shorten(text: &str, max: usize) -> String {
