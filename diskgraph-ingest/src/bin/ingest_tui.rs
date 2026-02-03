@@ -1274,7 +1274,12 @@ fn format_bytes_opt(bytes: Option<u64>) -> String {
 
 fn format_duration_cell(ms: u64) -> String {
     let secs = ms as f64 / 1000.0;
-    format!("{secs:.1}s")
+    if secs >= 300.0 {
+        let mins = secs / 60.0;
+        format!("{mins:.1}m")
+    } else {
+        format!("{secs:.1}s")
+    }
 }
 
 fn date_only(ts: &str) -> String {
