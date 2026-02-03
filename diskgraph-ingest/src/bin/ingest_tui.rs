@@ -210,23 +210,35 @@ fn main() -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     let mut running = true;
+    let mut dirty = true;
     while running {
-        terminal.draw(|frame| draw(frame, &mut app))?;
+        if dirty {
+            terminal.draw(|frame| draw(frame, &mut app))?;
+            dirty = false;
+        }
 
         if event::poll(Duration::from_millis(200))? {
             match event::read()? {
                 Event::Key(key) => {
                     running = handle_key(key, &store, &args, &mut app)?;
+                    dirty = true;
                 }
                 Event::Mouse(mouse) => {
                     handle_mouse(mouse, &store, &args, &mut app)?;
+                    dirty = true;
                 }
                 _ => {}
             }
         }
-        apply_debounced_dataset_change(&store, &mut app, &args)?;
-        apply_debounced_instance_change(&store, &mut app, &args)?;
-        apply_auto_refresh(&store, &mut app, &args)?;
+        if apply_debounced_dataset_change(&store, &mut app, &args)? {
+            dirty = true;
+        }
+        if apply_debounced_instance_change(&store, &mut app, &args)? {
+            dirty = true;
+        }
+        if apply_auto_refresh(&store, &mut app, &args)? {
+            dirty = true;
+        }
     }
 
     disable_raw_mode()?;
@@ -1374,60 +1386,60 @@ fn apply_debounced_dataset_change(
     store: &StatsStore,
     app: &mut AppState,
     args: &Args,
-) -> Result<()> {
+) -> Result<bool> {
     let Some(pending_at) = app.pending_dataset_at else {
-        return Ok(());
+        return Ok(false);
     };
     let pending_idx = app.pending_dataset_index;
     if pending_idx == app.loaded_dataset_index {
         app.pending_dataset_at = None;
         app.pending_dataset_index = None;
-        return Ok(());
+        return Ok(false);
     }
     if pending_at.elapsed() < Duration::from_millis(200) {
-        return Ok(());
+        return Ok(false);
     }
     app.pending_dataset_at = None;
     app.pending_dataset_index = None;
     reload_for_dataset(store, app, args)?;
-    Ok(())
+    Ok(true)
 }
 
 fn apply_debounced_instance_change(
     store: &StatsStore,
     app: &mut AppState,
     args: &Args,
-) -> Result<()> {
+) -> Result<bool> {
     let Some(pending_at) = app.pending_instance_at else {
-        return Ok(());
+        return Ok(false);
     };
     let pending_idx = app.pending_instance_index;
     if pending_idx == app.loaded_instance_index {
         app.pending_instance_at = None;
         app.pending_instance_index = None;
-        return Ok(());
+        return Ok(false);
     }
     if pending_at.elapsed() < Duration::from_millis(150) {
-        return Ok(());
+        return Ok(false);
     }
     app.pending_instance_at = None;
     app.pending_instance_index = None;
     load_runs_for_selected(store, app, args)?;
-    Ok(())
+    Ok(true)
 }
 
-fn apply_auto_refresh(store: &StatsStore, app: &mut AppState, args: &Args) -> Result<()> {
+fn apply_auto_refresh(store: &StatsStore, app: &mut AppState, args: &Args) -> Result<bool> {
     if app.pending_dataset_at.is_some() || app.pending_instance_at.is_some() {
-        return Ok(());
+        return Ok(false);
     }
     if app.last_refresh_at.elapsed() < Duration::from_secs(60) {
-        return Ok(());
+        return Ok(false);
     }
     app.last_refresh_at = Instant::now();
     refresh_datasets(store, app)?;
     refresh_instances(store, app)?;
     refresh_runs_for_selected(store, app, args)?;
-    Ok(())
+    Ok(true)
 }
 
 fn refresh_datasets(store: &StatsStore, app: &mut AppState) -> Result<()> {
