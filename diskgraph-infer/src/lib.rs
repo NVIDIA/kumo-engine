@@ -14,6 +14,7 @@ use diskgraph_ingest::graph_config::{
     TableFormat, TableSpec, TimestampUnit,
 };
 use diskgraph_ingest::config_converter::map_kumo_dtype;
+use diskgraph_ingest::utils::is_edge_table_compatible;
 use arrow_array::{
     Array, Int16Array, Int32Array, Int64Array, Int8Array, LargeStringArray, RecordBatch,
     StringArray, UInt16Array, UInt32Array, UInt64Array, UInt8Array,
@@ -33,43 +34,41 @@ const DEFAULT_SAMPLE_ROWS: usize = 2_000;
 const DEFAULT_CSV_SAMPLE_BYTES: u64 = 256 * 1024;
 const DEFAULT_CSV_SAMPLE_ROWS: usize = 2_000;
 
-// Internal type for inference - relationships are converted to fkeys at the end
+// Internal type for FK inference - converted to FKeySpec at the end.
+// dst_column is always the destination table's primary key, so we look it up when needed.
 #[derive(Clone, Debug)]
-struct RelationshipSpec {
-    #[allow(dead_code)]
-    name: Option<String>,
+struct InferredFKey {
     src_table: String,
     src_column: String,
     dst_table: String,
-    dst_column: String,
 }
 
-/// Convert inferred relationships to fkeys embedded in tables
-fn convert_relationships_to_fkeys(
+/// Convert inferred FKeys to FKeySpec embedded in tables
+fn convert_inferred_fkeys_to_fkeyspecs(
     table_specs: &mut [TableSpec],
-    relationships: &[RelationshipSpec],
+    inferred_fkeys: &[InferredFKey],
 ) {
-    // Group relationships by src_table
-    let mut by_table: HashMap<&str, Vec<&RelationshipSpec>> = HashMap::new();
-    for rel in relationships {
+    // Group by src_table
+    let mut by_table: HashMap<&str, Vec<&InferredFKey>> = HashMap::new();
+    for fk in inferred_fkeys {
         by_table
-            .entry(rel.src_table.as_str())
+            .entry(fk.src_table.as_str())
             .or_default()
-            .push(rel);
+            .push(fk);
     }
 
     // Add fkeys to each table
     for table in table_specs {
-        if let Some(rels) = by_table.get(table.name.as_str()) {
-            for rel in rels {
+        if let Some(fks) = by_table.get(table.name.as_str()) {
+            for fk in fks {
                 // Check if fkey already exists
-                let exists = table.fkeys.iter().any(|fk| {
-                    fk.src_column == rel.src_column && fk.dst_table == rel.dst_table
+                let exists = table.fkeys.iter().any(|existing| {
+                    existing.src_column == fk.src_column && existing.dst_table == fk.dst_table
                 });
                 if !exists {
                     table.fkeys.push(FKeySpec {
-                        src_column: rel.src_column.clone(),
-                        dst_table: rel.dst_table.clone(),
+                        src_column: fk.src_column.clone(),
+                        dst_table: fk.dst_table.clone(),
                         forward: None,
                         reverse: None,
                     });
@@ -333,7 +332,7 @@ pub fn infer_source_metadata(root: &RootSource, options: InferOptions) -> Result
         }
     }
 
-    let mut relationships = Vec::new();
+    let mut inferred_fkeys = Vec::new();
     // Pass config to infer_primary_keys to respect explicit nulls
     infer_primary_keys(&mut table_specs, options.graph_config.as_ref());
     infer_create_time(&mut table_specs);
@@ -344,21 +343,21 @@ pub fn infer_source_metadata(root: &RootSource, options: InferOptions) -> Result
             .iter()
             .map(|t| t.data_source.clone())
             .collect();
-        infer_foreign_keys_with_config(&mut table_specs, &mut relationships, &mut warnings.notes, config, &data_sources);
+        infer_foreign_keys_with_config(&mut table_specs, &mut inferred_fkeys, &mut warnings.notes, config, &data_sources);
     } else {
-        infer_foreign_keys(&table_specs, &mut relationships, &mut warnings.notes, None);
+        infer_foreign_keys(&table_specs, &mut inferred_fkeys, &mut warnings.notes, None);
     }
-    unify_relationship_types(&mut table_specs, &relationships, &mut warnings.notes);
-    drop_join_table_primary_keys(&mut table_specs, &relationships);
-    prune_relationships_without_primary_key(&table_specs, &mut relationships);
+    unify_fkey_column_types(&mut table_specs, &inferred_fkeys, &mut warnings.notes);
+    drop_join_table_primary_keys(&mut table_specs, &inferred_fkeys);
+    prune_fkeys_without_primary_key(&table_specs, &mut inferred_fkeys);
     if options.graph_config.is_none() {
-        infer_primary_key_relationships(&table_specs, &mut relationships);
+        infer_primary_key_relationships(&table_specs, &mut inferred_fkeys);
     }
-    infer_edge_tables(&mut table_specs, &relationships);
-    prune_relationships_for_edge_tables(&table_specs, &mut relationships);
+    infer_edge_tables(&mut table_specs, &inferred_fkeys);
+    prune_fkeys_for_edge_tables(&table_specs, &mut inferred_fkeys);
 
-    // Convert relationships to fkeys embedded in tables
-    convert_relationships_to_fkeys(&mut table_specs, &relationships);
+    // Convert inferred FKeys to FKeySpec embedded in tables
+    convert_inferred_fkeys_to_fkeyspecs(&mut table_specs, &inferred_fkeys);
 
     let total_bytes: u64 = tables.iter().map(|table| table.total_bytes).sum();
     let num_shards = estimate_num_shards(total_bytes);
@@ -2032,7 +2031,7 @@ pub(crate) fn infer_primary_keys(tables: &mut [TableSpec], config: Option<&Input
 
 fn infer_foreign_keys_with_config(
     tables: &[TableSpec],
-    rels: &mut Vec<RelationshipSpec>,
+    inferred_fkeys: &mut Vec<InferredFKey>,
     notes: &mut Vec<String>,
     config: &InputGraphConfig,
     data_sources: &HashSet<String>,
@@ -2044,6 +2043,12 @@ fn infer_foreign_keys_with_config(
         .collect();
 
     let discovered_tables: HashSet<String> = tables.iter().map(|t| t.name.clone()).collect();
+
+    // Build a map of table name -> primary key for validation
+    let pk_map: HashMap<&str, &str> = tables
+        .iter()
+        .filter_map(|t| t.primary_key.as_ref().map(|pk| (t.name.as_str(), pk.as_str())))
+        .collect();
 
     for table in tables {
         if let Some(cfg) = config_tables.get(&table.name) {
@@ -2078,17 +2083,28 @@ fn infer_foreign_keys_with_config(
                     }
                 }
 
+                // Verify dst_key matches the destination table's primary key
+                if let Some(&dst_pk) = pk_map.get(dst_table.as_str()) {
+                    if dst_pk != fk.dst_key {
+                        let msg = format!(
+                            "Config fkey {}.{} -> {}.{} skipped: dst_key {} doesn't match primary key {}",
+                            table.name, fk.name, dst_table, fk.dst_key, fk.dst_key, dst_pk
+                        );
+                        eprintln!("WARN: {}", msg);
+                        notes.push(msg);
+                        continue;
+                    }
+                }
+
                 eprintln!(
-                    "INFO: Adding config fkey {} from {} to {}.{}",
-                    fk.name, table.name, dst_table, fk.dst_key
+                    "INFO: Adding config fkey {} from {} to {}",
+                    fk.name, table.name, dst_table
                 );
 
-                rels.push(RelationshipSpec {
-                    name: None,
+                inferred_fkeys.push(InferredFKey {
                     src_table: table.name.clone(),
                     src_column: fk.name.clone(),
                     dst_table,
-                    dst_column: fk.dst_key.clone(),
                 });
             }
         }
@@ -2097,7 +2113,7 @@ fn infer_foreign_keys_with_config(
 
 pub(crate) fn infer_foreign_keys(
     tables: &[TableSpec],
-    rels: &mut Vec<RelationshipSpec>,
+    inferred_fkeys: &mut Vec<InferredFKey>,
     notes: &mut Vec<String>,
     _config: Option<&GraphConfig>,
 ) {
@@ -2161,22 +2177,19 @@ pub(crate) fn infer_foreign_keys(
                 } else {
                     dest_tables.clone()
                 };
-                if let Some(best) =
+                if let Some((dst_table, _dst_pk)) =
                     choose_best_fk_dest(table, col, &candidates, &table_tokens, notes)
                 {
-                    if !relationship_already_declared(
-                        rels,
+                    if !fkey_already_declared(
+                        inferred_fkeys,
                         &table.name,
                         &col.name,
-                        &best.0,
-                        &best.1,
+                        &dst_table,
                     ) {
-                        rels.push(RelationshipSpec {
-                            name: None,
+                        inferred_fkeys.push(InferredFKey {
                             src_table: table.name.clone(),
                             src_column: col.name.clone(),
-                            dst_table: best.0,
-                            dst_column: best.1,
+                            dst_table,
                         });
                     }
                     continue;
@@ -2184,22 +2197,19 @@ pub(crate) fn infer_foreign_keys(
             }
             if !is_key_like {
                 if let Some(dest_tables) = name_alias_map.get(&col_name) {
-                    if let Some(best) =
+                    if let Some((dst_table, _dst_pk)) =
                         choose_best_fk_dest(table, col, dest_tables, &table_tokens, notes)
                     {
-                        if !relationship_already_declared(
-                            rels,
+                        if !fkey_already_declared(
+                            inferred_fkeys,
                             &table.name,
                             &col.name,
-                            &best.0,
-                            &best.1,
+                            &dst_table,
                         ) {
-                            rels.push(RelationshipSpec {
-                                name: None,
+                            inferred_fkeys.push(InferredFKey {
                                 src_table: table.name.clone(),
                                 src_column: col.name.clone(),
-                                dst_table: best.0,
-                                dst_column: best.1,
+                                dst_table,
                             });
                         }
                     }
@@ -2289,21 +2299,18 @@ pub(crate) fn infer_foreign_keys(
                     ));
                 }
             }
-            if let Some((dest_table, dest_pk, _)) = best {
+            if let Some((dst_table, _dst_pk, _)) = best {
                 if !tie {
-                    if !relationship_already_declared(
-                        rels,
+                    if !fkey_already_declared(
+                        inferred_fkeys,
                         &table.name,
                         &col.name,
-                        &dest_table,
-                        &dest_pk,
+                        &dst_table,
                     ) {
-                        rels.push(RelationshipSpec {
-                            name: None,
+                        inferred_fkeys.push(InferredFKey {
                             src_table: table.name.clone(),
                             src_column: col.name.clone(),
-                            dst_table: dest_table,
-                            dst_column: dest_pk,
+                            dst_table,
                         });
                     }
                 }
@@ -2312,7 +2319,7 @@ pub(crate) fn infer_foreign_keys(
     }
 }
 
-pub(crate) fn infer_primary_key_relationships(tables: &[TableSpec], rels: &mut Vec<RelationshipSpec>) {
+pub(crate) fn infer_primary_key_relationships(tables: &[TableSpec], inferred_fkeys: &mut Vec<InferredFKey>) {
     let mut pk_map: HashMap<String, Vec<&TableSpec>> = HashMap::new();
     for table in tables {
         if let Some(pk) = &table.primary_key {
@@ -2334,7 +2341,8 @@ pub(crate) fn infer_primary_key_relationships(tables: &[TableSpec], rels: &mut V
             for j in (i + 1)..tables_with_pk.len() {
                 let a = tables_with_pk[i];
                 let b = tables_with_pk[j];
-                if relationship_exists(rels, &a.name, &a.primary_key, &b.name, &b.primary_key) {
+                // Check if this pk-pk relationship already exists
+                if pk_relationship_exists(inferred_fkeys, &a.name, &b.name) {
                     continue;
                 }
                 let a_pk = a.primary_key.as_ref().unwrap();
@@ -2358,25 +2366,24 @@ pub(crate) fn infer_primary_key_relationships(tables: &[TableSpec], rels: &mut V
                 if !(table_overlap || base_overlap) {
                     continue;
                 }
+                // For pk-pk relationships, src_column is the source table's PK
                 let (src, dst) = if a.name <= b.name { (a, b) } else { (b, a) };
-                rels.push(RelationshipSpec {
-                    name: None,
+                inferred_fkeys.push(InferredFKey {
                     src_table: src.name.clone(),
                     src_column: src.primary_key.clone().unwrap(),
                     dst_table: dst.name.clone(),
-                    dst_column: dst.primary_key.clone().unwrap(),
                 });
             }
         }
     }
 }
 
-pub(crate) fn drop_join_table_primary_keys(tables: &mut [TableSpec], rels: &[RelationshipSpec]) {
+pub(crate) fn drop_join_table_primary_keys(tables: &mut [TableSpec], inferred_fkeys: &[InferredFKey]) {
     let mut fk_counts: HashMap<&str, usize> = HashMap::new();
     let mut fk_cols: HashSet<(&str, &str)> = HashSet::new();
-    for rel in rels {
-        *fk_counts.entry(rel.src_table.as_str()).or_default() += 1;
-        fk_cols.insert((rel.src_table.as_str(), rel.src_column.as_str()));
+    for fk in inferred_fkeys {
+        *fk_counts.entry(fk.src_table.as_str()).or_default() += 1;
+        fk_cols.insert((fk.src_table.as_str(), fk.src_column.as_str()));
     }
     for table in tables {
         let Some(pk) = table.primary_key.as_deref() else {
@@ -2392,102 +2399,73 @@ pub(crate) fn drop_join_table_primary_keys(tables: &mut [TableSpec], rels: &[Rel
     }
 }
 
-pub(crate) fn prune_relationships_without_primary_key(tables: &[TableSpec], rels: &mut Vec<RelationshipSpec>) {
-    let mut pk_map: HashMap<&str, &str> = HashMap::new();
-    for table in tables {
-        if let Some(pk) = table.primary_key.as_deref() {
-            pk_map.insert(table.name.as_str(), pk);
-        }
-    }
-    rels.retain(|rel| {
-        let src_pk = pk_map.get(rel.src_table.as_str());
-        let dst_pk = pk_map.get(rel.dst_table.as_str());
-        let src_ok = src_pk.map_or(false, |pk| *pk == rel.src_column);
-        let dst_ok = dst_pk.map_or(false, |pk| *pk == rel.dst_column);
-        src_ok || dst_ok
+/// Prune FKeys where neither end points to a primary key.
+/// For standard FKs: src_column is not a PK, but dst_table must have a PK.
+/// For PK-PK relationships: src_column is src_table's PK.
+pub(crate) fn prune_fkeys_without_primary_key(tables: &[TableSpec], inferred_fkeys: &mut Vec<InferredFKey>) {
+    let pk_map: HashMap<&str, &str> = tables
+        .iter()
+        .filter_map(|t| t.primary_key.as_ref().map(|pk| (t.name.as_str(), pk.as_str())))
+        .collect();
+
+    inferred_fkeys.retain(|fk| {
+        // Keep if src_column is src_table's PK (pk-pk relationship)
+        let src_is_pk = pk_map.get(fk.src_table.as_str())
+            .map_or(false, |pk| *pk == fk.src_column);
+        // Keep if dst_table has a PK (standard FK relationship)
+        let dst_has_pk = pk_map.contains_key(fk.dst_table.as_str());
+        src_is_pk || dst_has_pk
     });
 }
 
-pub(crate) fn infer_edge_tables(tables: &mut [TableSpec], rels: &[RelationshipSpec]) {
-    let mut rels_by_table: HashMap<&str, Vec<&RelationshipSpec>> = HashMap::new();
-    for rel in rels {
-        rels_by_table
-            .entry(rel.src_table.as_str())
+pub(crate) fn infer_edge_tables(tables: &mut [TableSpec], inferred_fkeys: &[InferredFKey]) {
+    let mut fkeys_by_table: HashMap<&str, Vec<&InferredFKey>> = HashMap::new();
+    for fk in inferred_fkeys {
+        fkeys_by_table
+            .entry(fk.src_table.as_str())
             .or_default()
-            .push(rel);
+            .push(fk);
     }
     for table in tables {
         if table.edge_table.is_some() {
             continue;
         }
-        let Some(table_rels) = rels_by_table.get(table.name.as_str()) else {
+        let Some(table_fks) = fkeys_by_table.get(table.name.as_str()) else {
             continue;
         };
-        let mut rels_by_col: HashMap<&str, &RelationshipSpec> = HashMap::new();
-        for rel in table_rels {
-            rels_by_col.entry(rel.src_column.as_str()).or_insert(*rel);
+        let mut fks_by_col: HashMap<&str, &InferredFKey> = HashMap::new();
+        for fk in table_fks {
+            fks_by_col.entry(fk.src_column.as_str()).or_insert(*fk);
         }
-        if rels_by_col.len() != 2 {
+        if fks_by_col.len() != 2 {
             continue;
         }
 
-        let mut seen_time = false;
-        let mut seen_weight = false;
-        let mut allowed = true;
-        for col in &table.columns {
-            if rels_by_col.contains_key(col.name.as_str()) {
-                continue;
-            }
-            if table.create_time.as_deref() == Some(col.name.as_str()) {
-                if seen_time {
-                    allowed = false;
-                    break;
-                }
-                seen_time = true;
-                continue;
-            }
-            if is_weight_like(col) {
-                if seen_weight {
-                    allowed = false;
-                    break;
-                }
-                seen_weight = true;
-                continue;
-            }
-            if is_numeric_weight_dtype(col) {
-                if seen_weight {
-                    allowed = false;
-                    break;
-                }
-                seen_weight = true;
-                continue;
-            }
-            allowed = false;
-            break;
-        }
-        if !allowed {
+        // Use shared edge table compatibility check
+        let fkey_col_names: HashSet<&str> = fks_by_col.keys().copied().collect();
+        if !is_edge_table_compatible(&table.columns, &fkey_col_names, table.create_time.as_deref()) {
             continue;
         }
 
-        let mut ordered: Vec<&RelationshipSpec> = Vec::new();
+        let mut ordered: Vec<&InferredFKey> = Vec::new();
         for col in &table.columns {
-            if let Some(rel) = rels_by_col.get(col.name.as_str()) {
-                ordered.push(*rel);
+            if let Some(fk) = fks_by_col.get(col.name.as_str()) {
+                ordered.push(*fk);
             }
         }
         if ordered.len() != 2 {
-            ordered = rels_by_col.values().copied().collect();
+            ordered = fks_by_col.values().copied().collect();
         }
-        let src_rel = ordered[0];
-        let dst_rel = ordered[1];
+        let src_fk = ordered[0];
+        let dst_fk = ordered[1];
         table.edge_table = Some(EdgeTableSpec {
             src_fk: ForeignKeySpec {
-                edge_column: src_rel.src_column.clone(),
-                ref_table: src_rel.dst_table.clone(),
+                edge_column: src_fk.src_column.clone(),
+                ref_table: src_fk.dst_table.clone(),
             },
             dst_fk: ForeignKeySpec {
-                edge_column: dst_rel.src_column.clone(),
-                ref_table: dst_rel.dst_table.clone(),
+                edge_column: dst_fk.src_column.clone(),
+                ref_table: dst_fk.dst_table.clone(),
             },
             forward: None,
             reverse: None,
@@ -2495,82 +2473,43 @@ pub(crate) fn infer_edge_tables(tables: &mut [TableSpec], rels: &[RelationshipSp
     }
 }
 
-pub(crate) fn prune_relationships_for_edge_tables(tables: &[TableSpec], rels: &mut Vec<RelationshipSpec>) {
-    let mut edge_tables = HashSet::new();
-    for table in tables {
-        if table.edge_table.is_some() {
-            edge_tables.insert(table.name.as_str());
-        }
-    }
+pub(crate) fn prune_fkeys_for_edge_tables(tables: &[TableSpec], inferred_fkeys: &mut Vec<InferredFKey>) {
+    let edge_tables: HashSet<&str> = tables
+        .iter()
+        .filter(|t| t.edge_table.is_some())
+        .map(|t| t.name.as_str())
+        .collect();
+
     if edge_tables.is_empty() {
         return;
     }
-    rels.retain(|rel| {
-        !edge_tables.contains(rel.src_table.as_str())
-            && !edge_tables.contains(rel.dst_table.as_str())
+    inferred_fkeys.retain(|fk| {
+        !edge_tables.contains(fk.src_table.as_str())
+            && !edge_tables.contains(fk.dst_table.as_str())
     });
 }
 
-fn is_weight_like(col: &ColumnSpec) -> bool {
-    let name = col.name.to_lowercase();
-    if !is_numeric_weight_dtype(col) {
-        return false;
-    }
-    matches!(name.as_str(), "weight" | "score" | "strength" | "prob" | "probability")
-}
-
-fn is_numeric_weight_dtype(col: &ColumnSpec) -> bool {
-    matches!(
-        col.ingested_dtype,
-        IngestedType::Int8
-            | IngestedType::Int16
-            | IngestedType::Int32
-            | IngestedType::Int64
-            | IngestedType::UInt8
-            | IngestedType::UInt16
-            | IngestedType::UInt32
-            | IngestedType::UInt64
-            | IngestedType::Float32
-            | IngestedType::Float64
-    )
-}
-
-fn relationship_exists(
-    rels: &[RelationshipSpec],
-    src_table: &str,
-    src_col: &Option<String>,
-    dst_table: &str,
-    dst_col: &Option<String>,
+/// Check if a pk-pk relationship already exists between two tables (in either direction).
+fn pk_relationship_exists(
+    inferred_fkeys: &[InferredFKey],
+    table_a: &str,
+    table_b: &str,
 ) -> bool {
-    let (Some(src_col), Some(dst_col)) = (src_col, dst_col) else {
-        return false;
-    };
-    rels.iter().any(|rel| {
-        (rel.src_table == src_table && rel.src_column == *src_col && rel.dst_table == dst_table
-            && rel.dst_column == *dst_col)
-            || (rel.src_table == dst_table
-                && rel.src_column == *dst_col
-                && rel.dst_table == src_table
-                && rel.dst_column == *src_col)
+    inferred_fkeys.iter().any(|fk| {
+        (fk.src_table == table_a && fk.dst_table == table_b)
+            || (fk.src_table == table_b && fk.dst_table == table_a)
     })
 }
 
-fn relationship_already_declared(
-    rels: &[RelationshipSpec],
+/// Check if a foreign key is already declared (same src_table, src_column, dst_table).
+fn fkey_already_declared(
+    inferred_fkeys: &[InferredFKey],
     src_table: &str,
     src_col: &str,
     dst_table: &str,
-    dst_col: &str,
 ) -> bool {
-    rels.iter().any(|rel| {
-        (rel.src_table == src_table
-            && rel.src_column == src_col
-            && rel.dst_table == dst_table
-            && rel.dst_column == dst_col)
-            || (rel.src_table == dst_table
-                && rel.src_column == dst_col
-                && rel.dst_table == src_table
-                && rel.dst_column == src_col)
+    inferred_fkeys.iter().any(|fk| {
+        fk.src_table == src_table && fk.src_column == src_col && fk.dst_table == dst_table
     })
 }
 
@@ -3293,9 +3232,10 @@ fn singularize(name: &str) -> String {
     name.to_string()
 }
 
-fn unify_relationship_types(
+/// Unify column types across FKs so that src_column and dst primary key have compatible types.
+fn unify_fkey_column_types(
     tables: &mut [TableSpec],
-    relationships: &[RelationshipSpec],
+    inferred_fkeys: &[InferredFKey],
     notes: &mut Vec<String>,
 ) {
     let table_map: HashMap<String, usize> = tables
@@ -3306,25 +3246,31 @@ fn unify_relationship_types(
 
     let mut updates: Vec<(usize, String, IngestedType)> = Vec::new();
 
-    for rel in relationships {
-        let src_idx = match table_map.get(&rel.src_table) {
+    for fk in inferred_fkeys {
+        let src_idx = match table_map.get(&fk.src_table) {
             Some(&i) => i,
             None => continue,
         };
-        let dst_idx = match table_map.get(&rel.dst_table) {
+        let dst_idx = match table_map.get(&fk.dst_table) {
             Some(&i) => i,
+            None => continue,
+        };
+
+        // Get destination table's primary key (dst_column is always the PK)
+        let dst_pk = match &tables[dst_idx].primary_key {
+            Some(pk) => pk.clone(),
             None => continue,
         };
 
         let src_dtype = tables[src_idx]
             .columns
             .iter()
-            .find(|c| c.name == rel.src_column)
+            .find(|c| c.name == fk.src_column)
             .map(|c| c.ingested_dtype.clone());
         let dst_dtype = tables[dst_idx]
             .columns
             .iter()
-            .find(|c| c.name == rel.dst_column)
+            .find(|c| c.name == dst_pk)
             .map(|c| c.ingested_dtype.clone());
 
         if let (Some(src), Some(dst)) = (src_dtype, dst_dtype) {
@@ -3333,16 +3279,16 @@ fn unify_relationship_types(
                     if unified != src {
                         notes.push(format!(
                             "Downgrading column {}.{} from {:?} to {:?} to match {}.{}",
-                            rel.src_table, rel.src_column, src, unified, rel.dst_table, rel.dst_column
+                            fk.src_table, fk.src_column, src, unified, fk.dst_table, dst_pk
                         ));
-                        updates.push((src_idx, rel.src_column.clone(), unified.clone()));
+                        updates.push((src_idx, fk.src_column.clone(), unified.clone()));
                     }
                     if unified != dst {
                         notes.push(format!(
                             "Downgrading column {}.{} from {:?} to {:?} to match {}.{}",
-                            rel.dst_table, rel.dst_column, dst, unified, rel.src_table, rel.src_column
+                            fk.dst_table, dst_pk, dst, unified, fk.src_table, fk.src_column
                         ));
-                        updates.push((dst_idx, rel.dst_column.clone(), unified.clone()));
+                        updates.push((dst_idx, dst_pk.clone(), unified.clone()));
                     }
                 }
             }

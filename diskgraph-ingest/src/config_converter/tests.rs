@@ -884,36 +884,36 @@ fn test_convert_multi_table_graph() {
 }
 
 #[test]
-fn test_is_numeric_dtype() {
+fn test_is_numeric_weight_dtype() {
     use crate::graph_config::IngestedType;
-    use super::mapping::is_numeric_dtype;
+    use crate::utils::is_numeric_weight_dtype;
 
     // Numeric types - all signed integers
-    assert!(is_numeric_dtype(&IngestedType::Int8));
-    assert!(is_numeric_dtype(&IngestedType::Int16));
-    assert!(is_numeric_dtype(&IngestedType::Int32));
-    assert!(is_numeric_dtype(&IngestedType::Int64));
+    assert!(is_numeric_weight_dtype(&IngestedType::Int8));
+    assert!(is_numeric_weight_dtype(&IngestedType::Int16));
+    assert!(is_numeric_weight_dtype(&IngestedType::Int32));
+    assert!(is_numeric_weight_dtype(&IngestedType::Int64));
 
     // Numeric types - all unsigned integers
-    assert!(is_numeric_dtype(&IngestedType::UInt8));
-    assert!(is_numeric_dtype(&IngestedType::UInt16));
-    assert!(is_numeric_dtype(&IngestedType::UInt32));
-    assert!(is_numeric_dtype(&IngestedType::UInt64));
+    assert!(is_numeric_weight_dtype(&IngestedType::UInt8));
+    assert!(is_numeric_weight_dtype(&IngestedType::UInt16));
+    assert!(is_numeric_weight_dtype(&IngestedType::UInt32));
+    assert!(is_numeric_weight_dtype(&IngestedType::UInt64));
 
     // Numeric types - floats
-    assert!(is_numeric_dtype(&IngestedType::Float32));
-    assert!(is_numeric_dtype(&IngestedType::Float64));
+    assert!(is_numeric_weight_dtype(&IngestedType::Float32));
+    assert!(is_numeric_weight_dtype(&IngestedType::Float64));
 
     // Numeric types - decimals
-    assert!(is_numeric_dtype(&IngestedType::Decimal128));
-    assert!(is_numeric_dtype(&IngestedType::Decimal256));
+    assert!(is_numeric_weight_dtype(&IngestedType::Decimal128));
+    assert!(is_numeric_weight_dtype(&IngestedType::Decimal256));
 
     // Non-numeric types
-    assert!(!is_numeric_dtype(&IngestedType::String));
-    assert!(!is_numeric_dtype(&IngestedType::Bool));
-    assert!(!is_numeric_dtype(&IngestedType::Date));
-    assert!(!is_numeric_dtype(&IngestedType::Timestamp));
-    assert!(!is_numeric_dtype(&IngestedType::Bytes));
+    assert!(!is_numeric_weight_dtype(&IngestedType::String));
+    assert!(!is_numeric_weight_dtype(&IngestedType::Bool));
+    assert!(!is_numeric_weight_dtype(&IngestedType::Date));
+    assert!(!is_numeric_weight_dtype(&IngestedType::Timestamp));
+    assert!(!is_numeric_weight_dtype(&IngestedType::Bytes));
 }
 
 // =============================================================================

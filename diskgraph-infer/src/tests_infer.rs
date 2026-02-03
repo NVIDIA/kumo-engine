@@ -63,19 +63,28 @@ use diskgraph_ingest::graph_config::{ColumnSpec, DataSource, TableSpec};
         }
     }
 
-    fn rel_exists(
-        rels: &[RelationshipSpec],
+    fn fkey_exists(
+        fkeys: &[InferredFKey],
         src_table: &str,
         src_col: &str,
         dst_table: &str,
-        dst_col: &str,
     ) -> bool {
-        rels.iter().any(|rel| {
-            rel.src_table == src_table
-                && rel.src_column == src_col
-                && rel.dst_table == dst_table
-                && rel.dst_column == dst_col
+        fkeys.iter().any(|fk| {
+            fk.src_table == src_table
+                && fk.src_column == src_col
+                && fk.dst_table == dst_table
         })
+    }
+
+    // Backwards-compatible wrapper for tests that pass dst_col (which is now always the PK)
+    fn rel_exists(
+        fkeys: &[InferredFKey],
+        src_table: &str,
+        src_col: &str,
+        dst_table: &str,
+        _dst_col: &str,  // Ignored - now always the primary key of dst_table
+    ) -> bool {
+        fkey_exists(fkeys, src_table, src_col, dst_table)
     }
 
     #[test]
@@ -219,11 +228,11 @@ use diskgraph_ingest::graph_config::{ColumnSpec, DataSource, TableSpec};
         ];
         infer_primary_keys(&mut tables, None);
         infer_create_time(&mut tables);
-        let mut rels = Vec::new();
+        let mut inferred_fkeys = Vec::new();
         let mut notes = Vec::new();
-        infer_foreign_keys(&tables, &mut rels, &mut notes, None);
-        drop_join_table_primary_keys(&mut tables, &rels);
-        infer_primary_key_relationships(&tables, &mut rels);
+        infer_foreign_keys(&tables, &mut inferred_fkeys, &mut notes, None);
+        drop_join_table_primary_keys(&mut tables, &inferred_fkeys);
+        infer_primary_key_relationships(&tables, &mut inferred_fkeys);
 
         let attendees = tables
             .iter()
@@ -231,28 +240,28 @@ use diskgraph_ingest::graph_config::{ColumnSpec, DataSource, TableSpec};
             .unwrap();
         assert_eq!(attendees.primary_key, None);
         assert!(rel_exists(
-            &rels,
+            &inferred_fkeys,
             "event_attendees",
             "event",
             "events",
             "event_id"
         ));
         assert!(rel_exists(
-            &rels,
+            &inferred_fkeys,
             "event_attendees",
             "user_id",
             "users",
             "user_id"
         ));
         assert!(rel_exists(
-            &rels,
+            &inferred_fkeys,
             "event_interest",
             "event",
             "events",
             "event_id"
         ));
         assert!(rel_exists(
-            &rels,
+            &inferred_fkeys,
             "event_interest",
             "user",
             "users",
@@ -273,14 +282,14 @@ use diskgraph_ingest::graph_config::{ColumnSpec, DataSource, TableSpec};
             ),
         ];
         infer_primary_keys(&mut tables, None);
-        let mut rels = Vec::new();
+        let mut inferred_fkeys = Vec::new();
         let mut notes = Vec::new();
-        infer_foreign_keys(&tables, &mut rels, &mut notes, None);
+        infer_foreign_keys(&tables, &mut inferred_fkeys, &mut notes, None);
 
         let customer = tables.iter().find(|t| t.name == "customer").unwrap();
         assert_eq!(customer.primary_key.as_deref(), Some("CUSTOMER"));
         assert!(rel_exists(
-            &rels,
+            &inferred_fkeys,
             "customer",
             "ADDRESSID",
             "address",
@@ -315,21 +324,21 @@ use diskgraph_ingest::graph_config::{ColumnSpec, DataSource, TableSpec};
         ];
         infer_primary_keys(&mut tables, None);
         infer_create_time(&mut tables);
-        let mut rels = Vec::new();
+        let mut inferred_fkeys = Vec::new();
         let mut notes = Vec::new();
-        infer_foreign_keys(&tables, &mut rels, &mut notes, None);
-        drop_join_table_primary_keys(&mut tables, &rels);
-        infer_primary_key_relationships(&tables, &mut rels);
+        infer_foreign_keys(&tables, &mut inferred_fkeys, &mut notes, None);
+        drop_join_table_primary_keys(&mut tables, &inferred_fkeys);
+        infer_primary_key_relationships(&tables, &mut inferred_fkeys);
 
         assert!(rel_exists(
-            &rels,
+            &inferred_fkeys,
             "postLinks",
             "RelatedPostId",
             "posts",
             "Id"
         ));
         assert!(!rel_exists(
-            &rels,
+            &inferred_fkeys,
             "postHistory",
             "PostHistoryTypeId",
             "postHistory",
@@ -358,11 +367,11 @@ use diskgraph_ingest::graph_config::{ColumnSpec, DataSource, TableSpec};
         ];
         infer_primary_keys(&mut tables, None);
         infer_create_time(&mut tables);
-        let mut rels = Vec::new();
+        let mut inferred_fkeys = Vec::new();
         let mut notes = Vec::new();
-        infer_foreign_keys(&tables, &mut rels, &mut notes, None);
-        drop_join_table_primary_keys(&mut tables, &rels);
-        infer_primary_key_relationships(&tables, &mut rels);
+        infer_foreign_keys(&tables, &mut inferred_fkeys, &mut notes, None);
+        drop_join_table_primary_keys(&mut tables, &inferred_fkeys);
+        infer_primary_key_relationships(&tables, &mut inferred_fkeys);
 
         let join = tables
             .iter()
@@ -370,21 +379,21 @@ use diskgraph_ingest::graph_config::{ColumnSpec, DataSource, TableSpec};
             .unwrap();
         assert_eq!(join.primary_key, None);
         assert!(rel_exists(
-            &rels,
+            &inferred_fkeys,
             "conditions_studies",
             "condition_id",
             "conditions",
             "condition_id"
         ));
         assert!(rel_exists(
-            &rels,
+            &inferred_fkeys,
             "conditions_studies",
             "nct_id",
             "studies",
             "nct_id"
         ));
         assert!(!rel_exists(
-            &rels,
+            &inferred_fkeys,
             "conditions_studies",
             "id",
             "designs",
@@ -409,14 +418,14 @@ use diskgraph_ingest::graph_config::{ColumnSpec, DataSource, TableSpec};
         ];
         infer_primary_keys(&mut tables, None);
         infer_create_time(&mut tables);
-        let mut rels = Vec::new();
+        let mut inferred_fkeys = Vec::new();
         let mut notes = Vec::new();
-        infer_foreign_keys(&tables, &mut rels, &mut notes, None);
-        drop_join_table_primary_keys(&mut tables, &rels);
-        prune_relationships_without_primary_key(&tables, &mut rels);
-        infer_primary_key_relationships(&tables, &mut rels);
-        infer_edge_tables(&mut tables, &rels);
-        prune_relationships_for_edge_tables(&tables, &mut rels);
+        infer_foreign_keys(&tables, &mut inferred_fkeys, &mut notes, None);
+        drop_join_table_primary_keys(&mut tables, &inferred_fkeys);
+        prune_fkeys_without_primary_key(&tables, &mut inferred_fkeys);
+        infer_primary_key_relationships(&tables, &mut inferred_fkeys);
+        infer_edge_tables(&mut tables, &inferred_fkeys);
+        prune_fkeys_for_edge_tables(&tables, &mut inferred_fkeys);
 
         let edge = tables
             .iter()
@@ -428,7 +437,7 @@ use diskgraph_ingest::graph_config::{ColumnSpec, DataSource, TableSpec};
         assert_eq!(edge_spec.dst_fk.edge_column, "item_id");
         assert_eq!(edge_spec.dst_fk.ref_table, "items");
         assert!(
-            !rels.iter().any(|rel| rel.src_table == "user_item_edges"),
+            !inferred_fkeys.iter().any(|fk| fk.src_table == "user_item_edges"),
             "edge table relationships should be pruned"
         );
     }
@@ -481,12 +490,12 @@ use diskgraph_ingest::graph_config::{ColumnSpec, DataSource, TableSpec};
                 fkeys: Vec::new(),
             },
         ];
-        let mut rels = Vec::new();
+        let mut inferred_fkeys = Vec::new();
         let mut notes = Vec::new();
-        infer_foreign_keys(&tables, &mut rels, &mut notes, None);
-        assert_eq!(rels.len(), 1);
-        assert_eq!(rels[0].src_table, "orders");
-        assert_eq!(rels[0].dst_table, "users");
+        infer_foreign_keys(&tables, &mut inferred_fkeys, &mut notes, None);
+        assert_eq!(inferred_fkeys.len(), 1);
+        assert_eq!(inferred_fkeys[0].src_table, "orders");
+        assert_eq!(inferred_fkeys[0].dst_table, "users");
     }
 
     #[test]
@@ -535,10 +544,10 @@ use diskgraph_ingest::graph_config::{ColumnSpec, DataSource, TableSpec};
                 fkeys: Vec::new(),
             },
         ];
-        let mut rels = Vec::new();
+        let mut inferred_fkeys = Vec::new();
         let mut notes = Vec::new();
-        infer_foreign_keys(&tables, &mut rels, &mut notes, None);
-        assert!(rels.is_empty());
+        infer_foreign_keys(&tables, &mut inferred_fkeys, &mut notes, None);
+        assert!(inferred_fkeys.is_empty());
         assert!(!notes.is_empty());
     }
 
@@ -627,12 +636,12 @@ use diskgraph_ingest::graph_config::{ColumnSpec, DataSource, TableSpec};
                 fkeys: Vec::new(),
             },
         ];
-        let mut rels = Vec::new();
+        let mut inferred_fkeys = Vec::new();
         let mut notes = Vec::new();
-        infer_foreign_keys(&tables, &mut rels, &mut notes, None);
-        assert_eq!(rels.len(), 1);
-        assert_eq!(rels[0].src_table, "labevents");
-        assert_eq!(rels[0].dst_table, "d_lab");
+        infer_foreign_keys(&tables, &mut inferred_fkeys, &mut notes, None);
+        assert_eq!(inferred_fkeys.len(), 1);
+        assert_eq!(inferred_fkeys[0].src_table, "labevents");
+        assert_eq!(inferred_fkeys[0].dst_table, "d_lab");
     }
 
     #[test]
@@ -670,13 +679,13 @@ use diskgraph_ingest::graph_config::{ColumnSpec, DataSource, TableSpec};
             source: DataSource::Parquet { paths: vec![] },
             fkeys: Vec::new(),
         }];
-        let mut rels = Vec::new();
+        let mut inferred_fkeys = Vec::new();
         let mut notes = Vec::new();
-        infer_foreign_keys(&tables, &mut rels, &mut notes, None);
-        assert_eq!(rels.len(), 1);
-        assert_eq!(rels[0].src_table, "poe");
-        assert_eq!(rels[0].dst_table, "poe");
-        assert_eq!(rels[0].src_column, "discontinue_of_poe_id");
+        infer_foreign_keys(&tables, &mut inferred_fkeys, &mut notes, None);
+        assert_eq!(inferred_fkeys.len(), 1);
+        assert_eq!(inferred_fkeys[0].src_table, "poe");
+        assert_eq!(inferred_fkeys[0].dst_table, "poe");
+        assert_eq!(inferred_fkeys[0].src_column, "discontinue_of_poe_id");
     }
 
     #[test]
@@ -780,12 +789,12 @@ use diskgraph_ingest::graph_config::{ColumnSpec, DataSource, TableSpec};
                 fkeys: Vec::new(),
             },
         ];
-        let mut rels = Vec::new();
+        let mut inferred_fkeys = Vec::new();
         let mut notes = Vec::new();
-        infer_foreign_keys(&tables, &mut rels, &mut notes, None);
-        assert_eq!(rels.len(), 1);
-        assert_eq!(rels[0].src_table, "hcpcs");
-        assert_eq!(rels[0].dst_table, "d_hcpcs");
+        infer_foreign_keys(&tables, &mut inferred_fkeys, &mut notes, None);
+        assert_eq!(inferred_fkeys.len(), 1);
+        assert_eq!(inferred_fkeys[0].src_table, "hcpcs");
+        assert_eq!(inferred_fkeys[0].dst_table, "d_hcpcs");
     }
 
     #[test]
@@ -834,10 +843,10 @@ use diskgraph_ingest::graph_config::{ColumnSpec, DataSource, TableSpec};
                 fkeys: Vec::new(),
             },
         ];
-        let mut rels = Vec::new();
+        let mut inferred_fkeys = Vec::new();
         let mut notes = Vec::new();
-        infer_foreign_keys(&tables, &mut rels, &mut notes, None);
-        assert!(rels.is_empty());
+        infer_foreign_keys(&tables, &mut inferred_fkeys, &mut notes, None);
+        assert!(inferred_fkeys.is_empty());
     }
 
     #[test]
@@ -922,11 +931,11 @@ use diskgraph_ingest::graph_config::{ColumnSpec, DataSource, TableSpec};
                 fkeys: Vec::new(),
             },
         ];
-        let mut rels = Vec::new();
+        let mut inferred_fkeys = Vec::new();
         let mut notes = Vec::new();
-        infer_foreign_keys(&tables, &mut rels, &mut notes, None);
-        assert_eq!(rels.len(), 1);
-        assert_eq!(rels[0].dst_table, "poe");
+        infer_foreign_keys(&tables, &mut inferred_fkeys, &mut notes, None);
+        assert_eq!(inferred_fkeys.len(), 1);
+        assert_eq!(inferred_fkeys[0].dst_table, "poe");
     }
 
     #[test]
@@ -975,11 +984,11 @@ use diskgraph_ingest::graph_config::{ColumnSpec, DataSource, TableSpec};
                 fkeys: Vec::new(),
             },
         ];
-        let mut rels = Vec::new();
+        let mut inferred_fkeys = Vec::new();
         let mut notes = Vec::new();
-        infer_foreign_keys(&tables, &mut rels, &mut notes, None);
-        assert_eq!(rels.len(), 1);
-        assert_eq!(rels[0].dst_table, "admits");
+        infer_foreign_keys(&tables, &mut inferred_fkeys, &mut notes, None);
+        assert_eq!(inferred_fkeys.len(), 1);
+        assert_eq!(inferred_fkeys[0].dst_table, "admits");
     }
 
     #[test]
@@ -1049,11 +1058,11 @@ use diskgraph_ingest::graph_config::{ColumnSpec, DataSource, TableSpec};
                 fkeys: Vec::new(),
             },
         ];
-        let mut rels = Vec::new();
+        let mut inferred_fkeys = Vec::new();
         let mut notes = Vec::new();
-        infer_foreign_keys(&tables, &mut rels, &mut notes, None);
-        assert_eq!(rels.len(), 1);
-        assert_eq!(rels[0].dst_table, "d_lab");
+        infer_foreign_keys(&tables, &mut inferred_fkeys, &mut notes, None);
+        assert_eq!(inferred_fkeys.len(), 1);
+        assert_eq!(inferred_fkeys[0].dst_table, "d_lab");
     }
 
     #[test]
@@ -1102,12 +1111,12 @@ use diskgraph_ingest::graph_config::{ColumnSpec, DataSource, TableSpec};
                 fkeys: Vec::new(),
             },
         ];
-        let mut rels = Vec::new();
+        let mut inferred_fkeys = Vec::new();
         let mut notes = Vec::new();
-        infer_foreign_keys(&tables, &mut rels, &mut notes, None);
-        infer_primary_key_relationships(&tables, &mut rels);
-        assert_eq!(rels.len(), 1);
-        assert!(rels[0].src_table == "user" || rels[0].src_table == "user_profile");
+        infer_foreign_keys(&tables, &mut inferred_fkeys, &mut notes, None);
+        infer_primary_key_relationships(&tables, &mut inferred_fkeys);
+        assert_eq!(inferred_fkeys.len(), 1);
+        assert!(inferred_fkeys[0].src_table == "user" || inferred_fkeys[0].src_table == "user_profile");
     }
 
     #[test]
@@ -1156,11 +1165,11 @@ use diskgraph_ingest::graph_config::{ColumnSpec, DataSource, TableSpec};
                 fkeys: Vec::new(),
             },
         ];
-        let mut rels = Vec::new();
+        let mut inferred_fkeys = Vec::new();
         let mut notes = Vec::new();
-        infer_foreign_keys(&tables, &mut rels, &mut notes, None);
-        infer_primary_key_relationships(&tables, &mut rels);
-        assert!(rels.is_empty());
+        infer_foreign_keys(&tables, &mut inferred_fkeys, &mut notes, None);
+        infer_primary_key_relationships(&tables, &mut inferred_fkeys);
+        assert!(inferred_fkeys.is_empty());
     }
 
     #[test]

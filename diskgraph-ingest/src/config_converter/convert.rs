@@ -9,8 +9,9 @@ use crate::graph_config::{
     ColumnSpec, DataSource, DirectionSpec, EdgeTableSpec, FKeySpec, ForeignKeySpec, GraphConfig,
     IngestedType, TableSpec, TimeSpec,
 };
+use crate::utils::is_edge_table_compatible;
 
-use super::mapping::{is_numeric_dtype, map_kumo_dtype, map_timestamp_unit};
+use super::mapping::{map_kumo_dtype, map_timestamp_unit};
 use super::types::{KumoForeignKey, KumoGraphConfig, KumoTable};
 
 /// Options for the conversion.
@@ -280,40 +281,8 @@ fn should_be_edge_table(
     // Build set of fkey column names
     let fkey_cols: HashSet<&str> = fkeys.iter().map(|f| f.name.as_str()).collect();
 
-    // Check that all other columns are either create_time or weight-like
-    for col in columns {
-        // Skip fkey columns
-        if fkey_cols.contains(col.name.as_str()) {
-            continue;
-        }
-
-        // Skip create_time column
-        if create_time == Some(col.name.as_str()) {
-            continue;
-        }
-
-        // Check if it's weight-like (numeric type, optionally with weight-like name)
-        if is_weight_like(col) {
-            continue;
-        }
-
-        // Found an extra column that's not fkey, create_time, or weight-like
-        return false;
-    }
-
-    true
-}
-
-/// Check if a column is weight-like (numeric type).
-fn is_weight_like(col: &ColumnSpec) -> bool {
-    // Check if numeric type
-    if !is_numeric_dtype(&col.ingested_dtype) {
-        return false;
-    }
-
-    // Any numeric column is allowed as weight
-    // Could be stricter by checking name: "weight", "score", "strength", "prob", "probability"
-    true
+    // Use shared edge table compatibility check
+    is_edge_table_compatible(columns, &fkey_cols, create_time)
 }
 
 /// Strip namespace prefix from a table name.

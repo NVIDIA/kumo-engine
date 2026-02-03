@@ -59,22 +59,3 @@ pub fn map_timestamp_unit(unit: &str) -> Option<TimestampUnit> {
         _ => None,
     }
 }
-
-/// Check if an IngestedType is numeric (for weight column detection).
-pub fn is_numeric_dtype(dtype: &IngestedType) -> bool {
-    matches!(
-        dtype,
-        IngestedType::Int8
-            | IngestedType::Int16
-            | IngestedType::Int32
-            | IngestedType::Int64
-            | IngestedType::UInt8
-            | IngestedType::UInt16
-            | IngestedType::UInt32
-            | IngestedType::UInt64
-            | IngestedType::Float32
-            | IngestedType::Float64
-            | IngestedType::Decimal128
-            | IngestedType::Decimal256
-    )
-}
