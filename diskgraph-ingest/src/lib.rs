@@ -2934,13 +2934,14 @@ impl IngestContext {
                                     {
                                         let seen = &mut pkmap.seen_u64;
                                         read_temp_rows(&data_path, |row| {
-                                            let mut data = row;
-                                            let key = read_key_from_buf(&mut data, &pk_col)?;
-                                            let timestamp_valid = if !data.is_empty() {
-                                                data[0] != 0
+                                            let timestamp_valid = if let Some(last) = row.last() {
+                                                *last != 0
                                             } else {
                                                 true
                                             };
+                                            let key_len = row.len().saturating_sub(1);
+                                            let mut data = &row[..key_len];
+                                            let key = read_key_from_buf(&mut data, &pk_col)?;
                                             if let Key::Int(v) = key {
                                                 if !timestamp_valid {
                                                     null_timestamp_drops = null_timestamp_drops.saturating_add(1);
@@ -3046,13 +3047,14 @@ impl IngestContext {
                                     {
                                         let seen = &mut pkmap.seen_bytes;
                                         read_temp_rows(&data_path, |row| {
-                                            let mut data = row;
-                                            let key = read_key_from_buf(&mut data, &pk_col)?;
-                                            let timestamp_valid = if !data.is_empty() {
-                                                data[0] != 0
+                                            let timestamp_valid = if let Some(last) = row.last() {
+                                                *last != 0
                                             } else {
                                                 true
                                             };
+                                            let key_len = row.len().saturating_sub(1);
+                                            let mut data = &row[..key_len];
+                                            let key = read_key_from_buf(&mut data, &pk_col)?;
                                             let bytes = match key {
                                                 Key::Bytes(bytes) => bytes,
                                                 _ => {
@@ -3161,13 +3163,14 @@ impl IngestContext {
                                     {
                                         let seen = &mut pkmap.seen_uuid;
                                         read_temp_rows(&data_path, |row| {
-                                            let mut data = row;
-                                            let key = read_key_from_buf(&mut data, &pk_col)?;
-                                            let timestamp_valid = if !data.is_empty() {
-                                                data[0] != 0
+                                            let timestamp_valid = if let Some(last) = row.last() {
+                                                *last != 0
                                             } else {
                                                 true
                                             };
+                                            let key_len = row.len().saturating_sub(1);
+                                            let mut data = &row[..key_len];
+                                            let key = read_key_from_buf(&mut data, &pk_col)?;
                                             if let Key::Uuid(uuid) = key {
                                                 if !timestamp_valid {
                                                     for bitmap in fkey_bitmaps.iter_mut() {
@@ -3273,13 +3276,14 @@ impl IngestContext {
                                     {
                                         let seen = &mut pkmap.seen_uuid256;
                                         read_temp_rows(&data_path, |row| {
-                                            let mut data = row;
-                                            let key = read_key_from_buf(&mut data, &pk_col)?;
-                                            let timestamp_valid = if !data.is_empty() {
-                                                data[0] != 0
+                                            let timestamp_valid = if let Some(last) = row.last() {
+                                                *last != 0
                                             } else {
                                                 true
                                             };
+                                            let key_len = row.len().saturating_sub(1);
+                                            let mut data = &row[..key_len];
+                                            let key = read_key_from_buf(&mut data, &pk_col)?;
                                             if let Key::Uuid256(uuid) = key {
                                                 if !timestamp_valid {
                                                     for bitmap in fkey_bitmaps.iter_mut() {
@@ -3385,13 +3389,14 @@ impl IngestContext {
                                     {
                                         let seen = &mut pkmap.seen_ip;
                                         read_temp_rows(&data_path, |row| {
-                                            let mut data = row;
-                                            let key = read_key_from_buf(&mut data, &pk_col)?;
-                                            let timestamp_valid = if !data.is_empty() {
-                                                data[0] != 0
+                                            let timestamp_valid = if let Some(last) = row.last() {
+                                                *last != 0
                                             } else {
                                                 true
                                             };
+                                            let key_len = row.len().saturating_sub(1);
+                                            let mut data = &row[..key_len];
+                                            let key = read_key_from_buf(&mut data, &pk_col)?;
                                             if let Key::Ip(ip) = key {
                                                 if !timestamp_valid {
                                                     for bitmap in fkey_bitmaps.iter_mut() {
