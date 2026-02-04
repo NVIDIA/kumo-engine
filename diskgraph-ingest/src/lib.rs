@@ -2037,6 +2037,8 @@ impl IngestContext {
             ($batch:expr) => {
                 let timestamp_idx = create_time_info.as_ref().map(|(idx, _)| *idx);
                 let validity_array = timestamp_idx.map(|idx| access.array(idx).unwrap().clone());
+                let pk_array = pk_idx.and_then(|idx| access.array(idx).ok());
+                let precomputed_shards = precompute_shards(pk_array, pk_col, num_shards);
 
                 for row in 0..$batch.num_rows() {
                     access.set_row(row);
@@ -2045,6 +2047,7 @@ impl IngestContext {
                     if !timestamp_valid && pk_idx.is_none() {
                         node_data_dropped += 1;
                     }
+                    let shard_override = precomputed_shards.as_ref().and_then(|s| s[row]);
                     Self::write_node_row_from_access(
                         table,
                         pk_idx,
@@ -2062,6 +2065,7 @@ impl IngestContext {
                         num_shards,
                         key_failures,
                         timestamp_valid,
+                        shard_override,
                     )?;
                 }
             };
@@ -2237,6 +2241,7 @@ impl IngestContext {
         num_shards: usize,
         key_failures: &mut KeyFailureState,
         timestamp_valid: bool,
+        shard_override: Option<usize>,
     ) -> Result<()> {
         for buf in key_bufs.iter_mut() {
             buf.clear();
@@ -2247,7 +2252,10 @@ impl IngestContext {
                 .get_mut(idx)
                 .ok_or_else(|| anyhow!("missing key buffer"))?;
             match key_from_access_into_buf(access, idx, pk_col, buf) {
-                Ok(_) => {}
+                Ok(_) => {
+                    has_pkey = true;
+                    shard_override.unwrap_or_else(|| shard_for_key(buf, num_shards))
+                }
                 Err(_) => {
                     let context = format!("pkey:{}.{}", table.name, pk_col.name);
                     record_key_parse_failure_sample(
@@ -2259,9 +2267,7 @@ impl IngestContext {
                     );
                     return Ok(());
                 }
-            };
-            has_pkey = true;
-            shard_for_key(buf, num_shards)
+            }
         } else {
             (*row_id as usize) % num_shards
         };
@@ -8184,6 +8190,79 @@ fn rowpack_columns(table: &TableSpec) -> Result<Vec<diskgraph_rowpack::RowPackCo
         });
     }
     Ok(columns)
+}
+
+fn precompute_shards(
+    pk_array: Option<&ArrayRef>,
+    pk_col: Option<&ColumnSpec>,
+    num_shards: usize,
+) -> Option<Vec<Option<usize>>> {
+    if num_shards <= 1 {
+        return None;
+    }
+    let array = pk_array?;
+    let pk_col = pk_col?;
+
+    match (array.data_type(), &pk_col.ingested_dtype) {
+        (DataType::Int64, IngestedType::Int64) => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::Int64Array>()
+                .unwrap();
+            let mut shards = Vec::with_capacity(arr.len());
+            for i in 0..arr.len() {
+                if arr.is_null(i) {
+                    shards.push(None);
+                } else {
+                    let val = arr.value(i) as u64;
+                    let mut hasher = GxHasher::with_seed(GXHASH_SHARD_SEED as i64);
+                    hasher.write(&val.to_le_bytes());
+                    let shard = (hasher.finish() as usize) % num_shards;
+                    shards.push(Some(shard));
+                }
+            }
+            Some(shards)
+        }
+        (DataType::FixedSizeBinary(16), IngestedType::Uuid | IngestedType::Ip) => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::FixedSizeBinaryArray>()
+                .unwrap();
+            let mut shards = Vec::with_capacity(arr.len());
+            for i in 0..arr.len() {
+                if arr.is_null(i) {
+                    shards.push(None);
+                } else {
+                    let val = arr.value(i);
+                    let mut hasher = GxHasher::with_seed(GXHASH_SHARD_SEED as i64);
+                    hasher.write(val);
+                    let shard = (hasher.finish() as usize) % num_shards;
+                    shards.push(Some(shard));
+                }
+            }
+            Some(shards)
+        }
+        (DataType::FixedSizeBinary(32), IngestedType::Uuid256) => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::FixedSizeBinaryArray>()
+                .unwrap();
+            let mut shards = Vec::with_capacity(arr.len());
+            for i in 0..arr.len() {
+                if arr.is_null(i) {
+                    shards.push(None);
+                } else {
+                    let val = arr.value(i);
+                    let mut hasher = GxHasher::with_seed(GXHASH_SHARD_SEED as i64);
+                    hasher.write(val);
+                    let shard = (hasher.finish() as usize) % num_shards;
+                    shards.push(Some(shard));
+                }
+            }
+            Some(shards)
+        }
+        _ => None,
+    }
 }
 
 fn shard_for_key(bytes: &[u8], num_shards: usize) -> usize {

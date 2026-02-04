@@ -50,8 +50,10 @@ fn test_int64_pk_extraction() -> Result<()> {
         "tables": [
             {
                 "name": "WithTS",
-                "format": "parquet",
-                "paths": [path_ts.to_string_lossy()],
+                "source": {
+                    "type": "parquet",
+                    "paths": [path_ts.to_string_lossy()]
+                },
                 "primary_key": "id",
                 "create_time": "ts",
                 "columns": [
@@ -61,8 +63,10 @@ fn test_int64_pk_extraction() -> Result<()> {
             },
             {
                 "name": "NoTS",
-                "format": "parquet",
-                "paths": [path_nots.to_string_lossy()],
+                "source": {
+                    "type": "parquet",
+                    "paths": [path_nots.to_string_lossy()]
+                },
                 "primary_key": "id",
                 "columns": [
                     {"name": "id", "ingested_dtype": "int64"}
@@ -134,8 +138,10 @@ fn test_varbytes_pk_extraction() -> Result<()> {
         "tables": [
             {
                 "name": "StrTable",
-                "format": "parquet",
-                "paths": [path_str.to_string_lossy()],
+                "source": {
+                    "type": "parquet",
+                    "paths": [path_str.to_string_lossy()]
+                },
                 "primary_key": "id",
                 "create_time": "ts",
                 "columns": [
@@ -145,8 +151,10 @@ fn test_varbytes_pk_extraction() -> Result<()> {
             },
             {
                 "name": "BinTable",
-                "format": "parquet",
-                "paths": [path_bin.to_string_lossy()],
+                "source": {
+                    "type": "parquet",
+                    "paths": [path_bin.to_string_lossy()]
+                },
                 "primary_key": "id",
                 "create_time": "ts",
                 "columns": [
@@ -227,8 +235,10 @@ fn test_uuid_pk_extraction() -> Result<()> {
         "tables": [
             {
                 "name": "UuidTable",
-                "format": "parquet",
-                "paths": [path_uuid.to_string_lossy()],
+                "source": {
+                    "type": "parquet",
+                    "paths": [path_uuid.to_string_lossy()]
+                },
                 "primary_key": "id",
                 "create_time": "ts",
                 "columns": [
@@ -238,8 +248,10 @@ fn test_uuid_pk_extraction() -> Result<()> {
             },
             {
                 "name": "Uuid256Table",
-                "format": "parquet",
-                "paths": [path_uuid256.to_string_lossy()],
+                "source": {
+                    "type": "parquet",
+                    "paths": [path_uuid256.to_string_lossy()]
+                },
                 "primary_key": "id",
                 "create_time": "ts",
                 "columns": [

@@ -57,8 +57,10 @@ fn test_null_timestamp_metrics_and_filtering() -> Result<()> {
         "tables": [
             {
                 "name": "TableWithPK",
-                "format": "parquet",
-                "paths": [path_pk.to_string_lossy()],
+                "source": {
+                    "type": "parquet",
+                    "paths": [path_pk.to_string_lossy()]
+                },
                 "primary_key": "id",
                 "create_time": "ts",
                 "columns": [
@@ -68,8 +70,10 @@ fn test_null_timestamp_metrics_and_filtering() -> Result<()> {
             },
             {
                 "name": "TableNoPK",
-                "format": "parquet",
-                "paths": [path_nopk.to_string_lossy()],
+                "source": {
+                    "type": "parquet",
+                    "paths": [path_nopk.to_string_lossy()]
+                },
                 // No primary_key
                 "create_time": "ts",
                 "columns": [

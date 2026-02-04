@@ -544,3 +544,81 @@ fn parse_uuid_bytes(bytes: &[u8]) -> KeyParseResult<[u8; 16]> {
         let non_empty_shards = shard_counts.iter().filter(|&&c| c > 0).count();
         assert!(non_empty_shards > num_shards / 2, "PKs should distribute across shards");
     }
+
+    #[test]
+    fn test_precompute_shards_consistency() {
+        use crate::{precompute_shards, shard_for_key};
+        use arrow_array::{RecordBatch, Int64Array, FixedSizeBinaryArray};
+        use arrow_schema::{DataType, Field, Schema};
+        use crate::graph_config::{ColumnSpec, IngestedType};
+        use std::sync::Arc;
+
+        let num_shards = 10;
+        
+        // 1. Test Int64
+        {
+            let values = vec![Some(1), Some(-1), None, Some(123456789)];
+            let array = Int64Array::from(values.clone());
+            let schema = Arc::new(Schema::new(vec![Field::new("pk", DataType::Int64, true)]));
+            let batch = RecordBatch::try_new(schema, vec![Arc::new(array)]).unwrap();
+            let pk_col = ColumnSpec {
+                name: "pk".to_string(),
+                source_dtype: None,
+                ingested_dtype: IngestedType::Int64,
+                fixed_len: None,
+                timestamp_format: None,
+                timestamp_unit: None,
+                precision: None,
+                scale: None,
+            };
+            
+            let precomputed = precompute_shards(Some(batch.column(0)), Some(&pk_col), num_shards).unwrap();
+            for (i, val) in values.iter().enumerate() {
+                match val {
+                    Some(v) => {
+                        let expected_shard = shard_for_key(&(*v as u64).to_le_bytes(), num_shards);
+                        assert_eq!(precomputed[i], Some(expected_shard));
+                    }
+                    None => {
+                        assert_eq!(precomputed[i], None);
+                    }
+                }
+            }
+        }
+
+        // 2. Test FixedSizeBinary(16)
+        {
+            let mut values = vec![None];
+            let b1 = [1u8; 16];
+            let b2 = [2u8; 16];
+            values.push(Some(&b1[..]));
+            values.push(Some(&b2[..]));
+            
+            let array = FixedSizeBinaryArray::try_from_sparse_iter_with_size(values.clone().into_iter(), 16).unwrap();
+            let schema = Arc::new(Schema::new(vec![Field::new("pk", DataType::FixedSizeBinary(16), true)]));
+            let batch = RecordBatch::try_new(schema, vec![Arc::new(array)]).unwrap();
+            let pk_col = ColumnSpec {
+                name: "pk".to_string(),
+                source_dtype: None,
+                ingested_dtype: IngestedType::Uuid,
+                fixed_len: None,
+                timestamp_format: None,
+                timestamp_unit: None,
+                precision: None,
+                scale: None,
+            };
+            
+            let precomputed = precompute_shards(Some(batch.column(0)), Some(&pk_col), num_shards).unwrap();
+            for (i, val) in values.iter().enumerate() {
+                match val {
+                    Some(v) => {
+                        let expected_shard = shard_for_key(v, num_shards);
+                        assert_eq!(precomputed[i], Some(expected_shard));
+                    }
+                    None => {
+                        assert_eq!(precomputed[i], None);
+                    }
+                }
+            }
+        }
+    }

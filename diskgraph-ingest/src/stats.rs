@@ -41,7 +41,7 @@ pub struct KeyFailureCounts {
     pub lookup_failures: u64,
 }
 
-#[derive(Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct KeyFailureState {
     pub parse_failures: u64,
     pub lookup_failures: u64,
@@ -49,7 +49,6 @@ pub struct KeyFailureState {
     pub by_context: HashMap<String, KeyFailureCounts>,
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 impl KeyFailureState {
     pub fn merge(&mut self, other: KeyFailureState) {
         self.parse_failures = self.parse_failures.saturating_add(other.parse_failures);
@@ -68,7 +67,7 @@ impl KeyFailureState {
     }
 }
 
-#[derive(Clone, Debug, Default, Serialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct PerfStats {
     pub wall_time_ms: u64,
     pub context_wall_ms: u64,
