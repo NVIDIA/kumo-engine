@@ -2042,6 +2042,9 @@ impl IngestContext {
                     access.set_row(row);
                     total_rows += 1;
                     let timestamp_valid = validity_array.as_ref().map(|a| a.is_valid(row)).unwrap_or(true);
+                    if !timestamp_valid && pk_idx.is_none() {
+                        node_data_dropped += 1;
+                    }
                     Self::write_node_row_from_access(
                         table,
                         pk_idx,
@@ -2330,7 +2333,7 @@ impl IngestContext {
                 if buf.is_empty() {
                     batcher.push_fkey_empty(shard, *rel_pos)?;
                 } else {
-                    batcher.push_fkey(shard, *rel_pos, buf)?;
+                    batcher.push_fkey(shard, *rel_pos, buf, timestamp_valid)?;
                     let dst_shard = shard_for_key(buf, num_shards);
                     dest_fkey_batcher.push(dst_shard, *rel_pos, buf)?;
                 }
@@ -2790,6 +2793,8 @@ impl IngestContext {
         });
         let duplicate_counts = std::sync::Arc::new(std::sync::Mutex::new(HashMap::new()));
         let duplicate_samples = std::sync::Arc::new(std::sync::Mutex::new(HashMap::new()));
+        let pk_null_ts_counts = std::sync::Arc::new(std::sync::Mutex::new(HashMap::new()));
+        let key_failures = std::sync::Arc::new(std::sync::Mutex::new(KeyFailureState::default()));
         let relationships = self.relationships.clone();
         let source = self.source.clone();
         let mut tasks = Vec::new();
@@ -2827,6 +2832,8 @@ impl IngestContext {
                 let pk_hash_paths = std::sync::Arc::clone(&pk_hash_paths);
                 let duplicate_counts = std::sync::Arc::clone(&duplicate_counts);
                 let duplicate_samples = std::sync::Arc::clone(&duplicate_samples);
+                let pk_null_ts_counts = std::sync::Arc::clone(&pk_null_ts_counts);
+                let key_failures_shared = std::sync::Arc::clone(&key_failures);
                 let root = root.clone();
                 let pk_map_budget = pk_map_budget.clone();
                 let relationships = relationships.clone();
@@ -2918,6 +2925,7 @@ impl IngestContext {
 
                         let mut duplicate_count = 0u64;
                         let mut null_timestamp_drops = 0u64;
+                        let mut local_key_failures = KeyFailureState::default();
                         let mut duplicate_samples_local: Vec<Key> = Vec::new();
                         let mut row_id = 0u64;
                         let (hash_rel, data_rel) =
@@ -2945,6 +2953,14 @@ impl IngestContext {
                                             if let Key::Int(v) = key {
                                                 if !timestamp_valid {
                                                     null_timestamp_drops = null_timestamp_drops.saturating_add(1);
+                                                    let context = format!("node_data_dropped:{}", table_name);
+                                                    record_key_parse_failure_sample(
+                                                        &mut local_key_failures.parse_failures,
+                                                        &mut local_key_failures.samples,
+                                                        &mut local_key_failures.by_context,
+                                                        &context,
+                                                        Some(v.to_string()),
+                                                    );
                                                     for bitmap in fkey_bitmaps.iter_mut() {
                                                         let byte_idx = (row_id / 8) as usize;
                                                         if byte_idx < bitmap.len() {
@@ -3055,15 +3071,16 @@ impl IngestContext {
                                             let key_len = row.len().saturating_sub(1);
                                             let mut data = &row[..key_len];
                                             let key = read_key_from_buf(&mut data, &pk_col)?;
-                                            let bytes = match key {
-                                                Key::Bytes(bytes) => bytes,
-                                                _ => {
-                                                    row_id += 1;
-                                                    return Ok(());
-                                                }
-                                            };
                                             if !timestamp_valid {
                                                 null_timestamp_drops = null_timestamp_drops.saturating_add(1);
+                                                let context = format!("node_data_dropped:{}", table_name);
+                                                record_key_parse_failure_sample(
+                                                    &mut local_key_failures.parse_failures,
+                                                    &mut local_key_failures.samples,
+                                                    &mut local_key_failures.by_context,
+                                                    &context,
+                                                    sample_key(&key),
+                                                );
                                                 for bitmap in fkey_bitmaps.iter_mut() {
                                                     let byte_idx = (row_id / 8) as usize;
                                                     if byte_idx < bitmap.len() {
@@ -3072,6 +3089,13 @@ impl IngestContext {
                                                     }
                                                 }
                                             } else {
+                                                let bytes = match key {
+                                                    Key::Bytes(bytes) => bytes,
+                                                    _ => {
+                                                        row_id += 1;
+                                                        return Ok(());
+                                                    }
+                                                };
                                                 let local_id = u32::try_from(row_id)
                                                     .map_err(|_| anyhow!("pk local id overflow"))?;
                                                 match seen.entry(bytes) {
@@ -3173,6 +3197,15 @@ impl IngestContext {
                                             let key = read_key_from_buf(&mut data, &pk_col)?;
                                             if let Key::Uuid(uuid) = key {
                                                 if !timestamp_valid {
+                                                    null_timestamp_drops = null_timestamp_drops.saturating_add(1);
+                                                    let context = format!("node_data_dropped:{}", table_name);
+                                                    record_key_parse_failure_sample(
+                                                        &mut local_key_failures.parse_failures,
+                                                        &mut local_key_failures.samples,
+                                                        &mut local_key_failures.by_context,
+                                                        &context,
+                                                        sample_key(&key),
+                                                    );
                                                     for bitmap in fkey_bitmaps.iter_mut() {
                                                         let byte_idx = (row_id / 8) as usize;
                                                         if byte_idx < bitmap.len() {
@@ -3286,6 +3319,15 @@ impl IngestContext {
                                             let key = read_key_from_buf(&mut data, &pk_col)?;
                                             if let Key::Uuid256(uuid) = key {
                                                 if !timestamp_valid {
+                                                    null_timestamp_drops = null_timestamp_drops.saturating_add(1);
+                                                    let context = format!("node_data_dropped:{}", table_name);
+                                                    record_key_parse_failure_sample(
+                                                        &mut local_key_failures.parse_failures,
+                                                        &mut local_key_failures.samples,
+                                                        &mut local_key_failures.by_context,
+                                                        &context,
+                                                        sample_key(&key),
+                                                    );
                                                     for bitmap in fkey_bitmaps.iter_mut() {
                                                         let byte_idx = (row_id / 8) as usize;
                                                         if byte_idx < bitmap.len() {
@@ -3399,6 +3441,15 @@ impl IngestContext {
                                             let key = read_key_from_buf(&mut data, &pk_col)?;
                                             if let Key::Ip(ip) = key {
                                                 if !timestamp_valid {
+                                                    null_timestamp_drops = null_timestamp_drops.saturating_add(1);
+                                                    let context = format!("node_data_dropped:{}", table_name);
+                                                    record_key_parse_failure_sample(
+                                                        &mut local_key_failures.parse_failures,
+                                                        &mut local_key_failures.samples,
+                                                        &mut local_key_failures.by_context,
+                                                        &context,
+                                                        sample_key(&key),
+                                                    );
                                                     for bitmap in fkey_bitmaps.iter_mut() {
                                                         let byte_idx = (row_id / 8) as usize;
                                                         if byte_idx < bitmap.len() {
@@ -3507,6 +3558,14 @@ impl IngestContext {
                                 duplicate_samples.lock().unwrap().insert(key, samples);
                             }
                         }
+                        if null_timestamp_drops > 0 {
+                            pk_null_ts_counts
+                                .lock()
+                                .unwrap()
+                                .insert(format!("{}:shard-{:05}", table_name, shard), null_timestamp_drops);
+                        }
+                        key_failures_shared.lock().unwrap().merge(local_key_failures);
+
                         let dup_meta = format!(
                             "nodes/{}/pk_hash-{:05}.meta.json",
                             table_name.to_lowercase(),
@@ -3583,6 +3642,16 @@ impl IngestContext {
         }
         if let Ok(samples) = std::sync::Arc::try_unwrap(duplicate_samples) {
             self.pk_duplicate_samples = samples.into_inner().unwrap();
+        }
+        if let Ok(counts) = std::sync::Arc::try_unwrap(pk_null_ts_counts) {
+            let pk_counts = counts.into_inner().unwrap();
+            for (k, v) in pk_counts {
+                let entry = self.pk_null_timestamp_drops.entry(k).or_insert(0);
+                *entry = entry.saturating_add(v);
+            }
+        }
+        if let Ok(failures) = std::sync::Arc::try_unwrap(key_failures) {
+            self.merge_key_failures(failures.into_inner().unwrap());
         }
         Ok(())
     }
@@ -4238,6 +4307,7 @@ impl IngestContext {
                     let reverse_name = reverse_name.clone();
                     let src_pk_col = src_pk_col.clone();
                     let dst_pk_col = dst_pk_col.clone();
+                    let table_name = table.name.clone();
                     tasks.push(WorkItem {
                         bucket: None,
                         run: Box::new(move |scratch: &mut EdgeMapScratch| {
@@ -4344,6 +4414,14 @@ impl IngestContext {
                                 };
                                 if !timestamp_valid {
                                     null_timestamp_drops = null_timestamp_drops.saturating_add(1);
+                                    let context = format!("node_data_dropped:{}", table_name);
+                                    record_key_parse_failure_sample(
+                                        &mut result.key_failures.parse_failures,
+                                        &mut result.key_failures.samples,
+                                        &mut result.key_failures.by_context,
+                                        &context,
+                                        sample_key(&src_key),
+                                    );
                                     row_idx = row_idx.saturating_add(1);
                                     return Ok(());
                                 }
@@ -4447,6 +4525,7 @@ impl IngestContext {
                             }
                             result.edge_counts.insert(forward_name, forward_count);
                             result.edge_counts.insert(reverse_name, reverse_count);
+                            result.null_timestamp_drops = null_timestamp_drops;
                             tx.send(Ok(result))
                                 .map_err(|e| anyhow!("edges_map output error: {e}"))?;
                             Ok(())
@@ -4793,6 +4872,22 @@ impl IngestContext {
         let total_edges = self.edge_counts.values().sum();
         let pk_duplicate_total: u64 = self.pk_duplicate_counts.values().sum();
         let trimmed_strings = self.trimmed_strings.load(Ordering::Relaxed);
+
+        let mut dropped_rows_counts = self.dropped_rows_counts.clone();
+        for (key, count) in &self.pk_null_timestamp_drops {
+            if let Some((table, _)) = key.split_once(":shard-") {
+                let entry = dropped_rows_counts.entry(table.to_string()).or_insert(0);
+                *entry = entry.saturating_add(*count);
+            }
+        }
+        for (rel, count) in &self.edge_null_timestamp_drops {
+            if rel.starts_with("edge_") && rel.ends_with("_src_to_dst") {
+                let table = &rel[5..rel.len() - 11];
+                let entry = dropped_rows_counts.entry(table.to_string()).or_insert(0);
+                *entry = entry.saturating_add(*count);
+            }
+        }
+
         IngestStats {
             output: self.output.clone(),
             node_tables: metadata.node_types.len(),
@@ -4811,7 +4906,7 @@ impl IngestContext {
             edge_null_timestamp_drops: self.edge_null_timestamp_drops.clone(),
             pk_duplicate_total,
             pk_duplicate_samples: self.pk_duplicate_samples.clone(),
-            dropped_rows_counts: self.dropped_rows_counts.clone(),
+            dropped_rows_counts,
             trimmed_strings: if trimmed_strings > 0 {
                 Some(trimmed_strings)
             } else {
@@ -6112,7 +6207,7 @@ impl NodeBatcher {
         Ok(())
     }
 
-    fn push_fkey(&mut self, shard: usize, rel_idx: usize, row: &[u8]) -> Result<()> {
+    fn push_fkey(&mut self, shard: usize, rel_idx: usize, row: &[u8], timestamp_valid: bool) -> Result<()> {
         let buffer = self
             .buffers
             .get_mut(shard)
@@ -6124,7 +6219,7 @@ impl NodeBatcher {
                 *count = count.saturating_add(1);
             }
             if let Some(bits) = buffer.fkey_bits.get_mut(rel_idx) {
-                let added = append_fkey_bit(bits, row_idx, true);
+                let added = append_fkey_bit(bits, row_idx, timestamp_valid);
                 buffer.bytes = buffer.bytes.saturating_add(added);
             }
             buffer.bytes = buffer.bytes.saturating_add(4 + row.len());

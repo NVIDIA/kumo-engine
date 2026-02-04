@@ -50,6 +50,25 @@ pub struct KeyFailureState {
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+impl KeyFailureState {
+    pub fn merge(&mut self, other: KeyFailureState) {
+        self.parse_failures = self.parse_failures.saturating_add(other.parse_failures);
+        self.lookup_failures = self.lookup_failures.saturating_add(other.lookup_failures);
+        for (context, counts) in other.by_context {
+            let entry = self.by_context.entry(context).or_default();
+            entry.parse_failures = entry.parse_failures.saturating_add(counts.parse_failures);
+            entry.lookup_failures = entry.lookup_failures.saturating_add(counts.lookup_failures);
+        }
+        for sample in other.samples {
+            if self.samples.len() >= 10 {
+                break;
+            }
+            self.samples.push(sample);
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
 pub struct PerfStats {
     pub wall_time_ms: u64,
     pub context_wall_ms: u64,
