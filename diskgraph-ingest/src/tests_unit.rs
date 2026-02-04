@@ -17,25 +17,25 @@ fn test_negative_int64_key() {
         precision: None,
         scale: None,
     };
-    
+
     let val: i64 = -1;
     let array = Int64Array::from(vec![val]);
     let arrays: Vec<ArrayRef> = vec![Arc::new(array)];
-    
+
     let stats = RowAccessStats::default();
     let hints = vec![RowAccessHints {
             timestamp_format: None,
             timestamp_unit: None,
             decimal_scale: None,
     }];
-    
+
     let mut access = RowAccess::new(hints, stats);
     access.set_cols(&arrays);
     access.set_row(0);
-    
+
     let mut key_buf = Vec::new();
     key_from_access_into_buf(&mut access, 0, &col, &mut key_buf).unwrap();
-    
+
     let expected = (val as u64).to_le_bytes();
     assert_eq!(key_buf, expected);
 }
@@ -52,26 +52,26 @@ fn test_negative_decimal128_key() {
         precision: Some(38),
         scale: Some(0),
     };
-    
+
     let val: i128 = -1;
     let array = Decimal128Array::from_iter_values([val])
         .with_precision_and_scale(38, 0).unwrap();
     let arrays: Vec<ArrayRef> = vec![Arc::new(array)];
-    
+
     let stats = RowAccessStats::default();
     let hints = vec![RowAccessHints {
             timestamp_format: None,
             timestamp_unit: None,
             decimal_scale: Some(0),
     }];
-    
+
     let mut access = RowAccess::new(hints, stats);
     access.set_cols(&arrays);
     access.set_row(0);
-    
+
     let mut key_buf = Vec::new();
     key_from_access_into_buf(&mut access, 0, &col, &mut key_buf).unwrap();
-    
+
     let expected = (val as i64 as u64).to_le_bytes();
     assert_eq!(key_buf, expected);
 }
@@ -88,26 +88,26 @@ fn test_decimal256_key_as_string() {
         precision: Some(76),
         scale: Some(0),
     };
-    
+
     let val = arrow_buffer::i256::from_i128(12345);
     let array = Decimal256Array::from_iter_values([val])
         .with_precision_and_scale(76, 0).unwrap();
     let arrays: Vec<ArrayRef> = vec![Arc::new(array)];
-    
+
     let stats = RowAccessStats::default();
     let hints = vec![RowAccessHints {
             timestamp_format: None,
             timestamp_unit: None,
             decimal_scale: Some(0),
     }];
-    
+
     let mut access = RowAccess::new(hints, stats);
     access.set_cols(&arrays);
     access.set_row(0);
-    
+
     let mut key_buf = Vec::new();
     key_from_access_into_buf(&mut access, 0, &col, &mut key_buf).unwrap();
-    
+
     let expected = b"12345".to_vec();
     assert_eq!(key_buf, expected);
 }
@@ -116,7 +116,7 @@ fn test_decimal256_key_as_string() {
 fn test_bitwriter_packing() -> anyhow::Result<()> {
     let tmp = tempfile::NamedTempFile::new()?;
     let path = tmp.path().to_path_buf();
-    
+
     let file = std::fs::File::create(&path)?;
     let sink = OutputSink::Local(file);
     let writer = BufWriter::new(sink);
@@ -124,12 +124,12 @@ fn test_bitwriter_packing() -> anyhow::Result<()> {
 
     bw.append_bits(&[0x0F], 4)?;
     bw.append_bits(&[0x0A], 4)?; 
-    
+
     bw.finish()?;
 
     let mut content = Vec::new();
     std::fs::File::open(&path)?.read_to_end(&mut content)?;
-    
+
     assert_eq!(content, vec![0xAF]);
     Ok(())
 }
@@ -554,7 +554,7 @@ fn parse_uuid_bytes(bytes: &[u8]) -> KeyParseResult<[u8; 16]> {
         use std::sync::Arc;
 
         let num_shards = 10;
-        
+
         // 1. Test Int64
         {
             let values = vec![Some(1), Some(-1), None, Some(123456789)];
@@ -571,16 +571,16 @@ fn parse_uuid_bytes(bytes: &[u8]) -> KeyParseResult<[u8; 16]> {
                 precision: None,
                 scale: None,
             };
-            
+
             let precomputed = precompute_shards(Some(batch.column(0)), Some(&pk_col), num_shards).unwrap();
             for (i, val) in values.iter().enumerate() {
                 match val {
                     Some(v) => {
                         let expected_shard = shard_for_key(&(*v as u64).to_le_bytes(), num_shards);
-                        assert_eq!(precomputed[i], Some(expected_shard));
+                        assert_eq!(precomputed.shards[i], Some(expected_shard));
                     }
                     None => {
-                        assert_eq!(precomputed[i], None);
+                        assert_eq!(precomputed.shards[i], None);
                     }
                 }
             }
@@ -593,7 +593,7 @@ fn parse_uuid_bytes(bytes: &[u8]) -> KeyParseResult<[u8; 16]> {
             let b2 = [2u8; 16];
             values.push(Some(&b1[..]));
             values.push(Some(&b2[..]));
-            
+
             let array = FixedSizeBinaryArray::try_from_sparse_iter_with_size(values.clone().into_iter(), 16).unwrap();
             let schema = Arc::new(Schema::new(vec![Field::new("pk", DataType::FixedSizeBinary(16), true)]));
             let batch = RecordBatch::try_new(schema, vec![Arc::new(array)]).unwrap();
@@ -607,18 +607,180 @@ fn parse_uuid_bytes(bytes: &[u8]) -> KeyParseResult<[u8; 16]> {
                 precision: None,
                 scale: None,
             };
-            
+
             let precomputed = precompute_shards(Some(batch.column(0)), Some(&pk_col), num_shards).unwrap();
+
             for (i, val) in values.iter().enumerate() {
                 match val {
                     Some(v) => {
                         let expected_shard = shard_for_key(v, num_shards);
-                        assert_eq!(precomputed[i], Some(expected_shard));
+                        assert_eq!(precomputed.shards[i], Some(expected_shard));
                     }
                     None => {
-                        assert_eq!(precomputed[i], None);
+                        assert_eq!(precomputed.shards[i], None);
                     }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn test_precompute_shards_casting() {
+        use crate::{precompute_shards, shard_for_key};
+        use crate::mapping::Key;
+        use arrow_array::{RecordBatch, Int64Array, StringArray};
+        use arrow_schema::{DataType, Field, Schema};
+        use crate::graph_config::{ColumnSpec, IngestedType};
+        use std::sync::Arc;
+
+        let num_shards = 10;
+
+        // 1. Test Int64 -> Int32 Casting
+        {
+            let values = vec![Some(1), Some(-1), None, Some(100)];
+            let array = Int64Array::from(values.clone());
+            let schema = Arc::new(Schema::new(vec![Field::new("pk", DataType::Int64, true)]));
+            let batch = RecordBatch::try_new(schema, vec![Arc::new(array)]).unwrap();
+            let pk_col = ColumnSpec {
+                name: "pk".to_string(),
+                source_dtype: None,
+                ingested_dtype: IngestedType::Int32,
+                fixed_len: None,
+                timestamp_format: None,
+                timestamp_unit: None,
+                precision: None,
+                scale: None,
+            };
+
+            let precomputed = precompute_shards(Some(batch.column(0)), Some(&pk_col), num_shards).unwrap();
+            assert!(precomputed.keys.is_some());
+            let keys = precomputed.keys.unwrap();
+
+            for (i, val) in values.iter().enumerate() {
+                match val {
+                    Some(v) => {
+                        let casted = *v as i32 as u64;
+                        let expected_shard = shard_for_key(&casted.to_le_bytes(), num_shards);
+                        assert_eq!(precomputed.shards[i], Some(expected_shard));
+                        assert_eq!(keys[i], Some(Key::Int(casted)));
+                    }
+                    None => {
+                        assert_eq!(precomputed.shards[i], None);
+                        assert_eq!(keys[i], None);
+                    }
+                }
+            }
+        }
+
+        // 2. Test Utf8 -> Uuid Parsing
+        {
+            let uuid1 = "00112233-4455-6677-8899-aabbccddeeff";
+            let uuid2 = "00112233445566778899aabbccddeeff";
+            let values = vec![Some(uuid1), Some(uuid2), None];
+            let array = StringArray::from(values.clone());
+            let schema = Arc::new(Schema::new(vec![Field::new("pk", DataType::Utf8, true)]));
+            let batch = RecordBatch::try_new(schema, vec![Arc::new(array)]).unwrap();
+            let pk_col = ColumnSpec {
+                name: "pk".to_string(),
+                source_dtype: None,
+                ingested_dtype: IngestedType::Uuid,
+                fixed_len: None,
+                timestamp_format: None,
+                timestamp_unit: None,
+                precision: None,
+                scale: None,
+            };
+
+            let precomputed = precompute_shards(Some(batch.column(0)), Some(&pk_col), num_shards).unwrap();
+            assert!(precomputed.keys.is_some());
+            let keys = precomputed.keys.unwrap();
+
+            use crate::parse_uuid_string;
+            for (i, val) in values.iter().enumerate() {
+                match val {
+                    Some(v) => {
+                        let parsed = parse_uuid_string(v.as_bytes()).unwrap();
+                        let expected_shard = shard_for_key(&parsed, num_shards);
+                        assert_eq!(precomputed.shards[i], Some(expected_shard));
+                        assert_eq!(keys[i], Some(Key::Uuid(parsed)));
+                    }
+                    None => {
+                        assert_eq!(precomputed.shards[i], None);
+                        assert_eq!(keys[i], None);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_extract_batch_keys_resilience() {
+        use crate::{extract_batch_keys, EdgeKeyFastKind};
+        use crate::mapping::Key;
+        use arrow_array::{Array, StringArray, ArrayRef};
+        use std::sync::Arc;
+
+        // Test String -> Int64 with some invalid rows
+        let values = vec![Some("123"), Some("not-a-number"), Some("456"), None];
+        let array = Arc::new(StringArray::from(values)) as ArrayRef;
+
+        let extracted = extract_batch_keys(&array, EdgeKeyFastKind::StringToInt64).unwrap();
+
+        assert_eq!(extracted.len(), 4);
+        assert_eq!(extracted[0], Some(Key::Int(123)));
+        assert_eq!(extracted[1], None); // "not-a-number" -> None
+        assert_eq!(extracted[2], Some(Key::Int(456)));
+        assert_eq!(extracted[3], None); // NULL -> None
+    }
+
+    #[test]
+    fn test_extract_batch_keys_edge_cases() {
+        use crate::{extract_batch_keys, EdgeKeyFastKind};
+        use crate::mapping::Key;
+        use arrow_array::{StringArray, Int64Array, BinaryArray, ArrayRef};
+        use std::sync::Arc;
+        use crate::parse_uuid_string;
+
+        // 1. String -> UUID (Edge Case)
+        {
+            let uuid_str = "00112233-4455-6677-8899-aabbccddeeff";
+            let expected_uuid = parse_uuid_string(uuid_str.as_bytes()).unwrap();
+            let values = vec![Some(uuid_str), None, Some("invalid-uuid")];
+            let array = Arc::new(StringArray::from(values)) as ArrayRef;
+
+            let extracted = extract_batch_keys(&array, EdgeKeyFastKind::StringUuid).unwrap();
+
+            assert_eq!(extracted.len(), 3);
+            assert_eq!(extracted[0], Some(Key::Uuid(expected_uuid)));
+            assert_eq!(extracted[1], None);
+            assert_eq!(extracted[2], None); // Resilience check
+        }
+
+        // 2. Int64 -> Int32 Casting
+        {
+            let val = 12345_i64;
+            let val_large = i32::MAX as i64 + 1; // Wraps when cast to i32
+            let values = vec![Some(val), None, Some(val_large)];
+            let array = Arc::new(Int64Array::from(values)) as ArrayRef;
+
+            let extracted = extract_batch_keys(&array, EdgeKeyFastKind::Int64ToInt32).unwrap();
+
+            assert_eq!(extracted.len(), 3);
+            assert_eq!(extracted[0], Some(Key::Int(val as i32 as u64)));
+            assert_eq!(extracted[1], None);
+            assert_eq!(extracted[2], Some(Key::Int(val_large as i32 as u64)));
+        }
+
+        // 3. Bytes -> Bytes (Var)
+        {
+            let val = b"hello";
+            let values = vec![Some(val.as_slice()), None];
+            let array = Arc::new(BinaryArray::from(values)) as ArrayRef;
+
+            let extracted = extract_batch_keys(&array, EdgeKeyFastKind::BytesVar).unwrap();
+
+            assert_eq!(extracted.len(), 2);
+            assert_eq!(extracted[0], Some(Key::Bytes(val.to_vec())));
+            assert_eq!(extracted[1], None);
         }
     }

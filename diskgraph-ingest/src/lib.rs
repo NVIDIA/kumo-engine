@@ -2038,7 +2038,7 @@ impl IngestContext {
                 let timestamp_idx = create_time_info.as_ref().map(|(idx, _)| *idx);
                 let validity_array = timestamp_idx.map(|idx| access.array(idx).unwrap().clone());
                 let pk_array = pk_idx.and_then(|idx| access.array(idx).ok());
-                let precomputed_shards = precompute_shards(pk_array, pk_col, num_shards);
+                let precomputed = precompute_shards(pk_array, pk_col, num_shards);
 
                 for row in 0..$batch.num_rows() {
                     access.set_row(row);
@@ -2047,7 +2047,12 @@ impl IngestContext {
                     if !timestamp_valid && pk_idx.is_none() {
                         node_data_dropped += 1;
                     }
-                    let shard_override = precomputed_shards.as_ref().and_then(|s| s[row]);
+                    let shard_override = precomputed.as_ref().and_then(|p| p.shards[row]);
+                    let pk_pre = precomputed
+                        .as_ref()
+                        .and_then(|p| p.keys.as_ref())
+                        .and_then(|k| k[row].as_ref());
+
                     Self::write_node_row_from_access(
                         table,
                         pk_idx,
@@ -2059,6 +2064,7 @@ impl IngestContext {
                         &mut sort_key_batchers,
                         &mut row_id,
                         pk_col,
+                        pk_pre,
                         &mut key_bufs,
                         &mut f16_buf,
                         &mut node_data_dropped,
@@ -2235,6 +2241,7 @@ impl IngestContext {
         sort_key_batchers: &mut [SortKeyComponentBatcher],
         row_id: &mut u64,
         pk_col: Option<&ColumnSpec>,
+        pk_pre: Option<&Key>,
         key_bufs: &mut Vec<Vec<u8>>,
         f16_buf: &mut Vec<f16>,
         node_data_dropped: &mut u64,
@@ -2251,7 +2258,13 @@ impl IngestContext {
             let buf = key_bufs
                 .get_mut(idx)
                 .ok_or_else(|| anyhow!("missing key buffer"))?;
-            match key_from_access_into_buf(access, idx, pk_col, buf) {
+            let res = if let Some(key) = pk_pre {
+                write_key_to_buf(buf, key).map_err(|_| KeyParseError::TypeMismatch)
+            } else {
+                key_from_access_into_buf(access, idx, pk_col, buf)
+            };
+
+            match res {
                 Ok(_) => {
                     has_pkey = true;
                     shard_override.unwrap_or_else(|| shard_for_key(buf, num_shards))
@@ -8169,74 +8182,104 @@ fn rowpack_columns(table: &TableSpec) -> Result<Vec<diskgraph_rowpack::RowPackCo
     Ok(columns)
 }
 
+struct PrecomputedKeys {
+    shards: Vec<Option<usize>>,
+    keys: Option<Vec<Option<Key>>>,
+}
+
 fn precompute_shards(
     pk_array: Option<&ArrayRef>,
     pk_col: Option<&ColumnSpec>,
     num_shards: usize,
-) -> Option<Vec<Option<usize>>> {
+) -> Option<PrecomputedKeys> {
     if num_shards <= 1 {
         return None;
     }
     let array = pk_array?;
     let pk_col = pk_col?;
+    let len = array.len();
 
     match (array.data_type(), &pk_col.ingested_dtype) {
         (DataType::Int64, IngestedType::Int64) => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<arrow_array::Int64Array>()
-                .unwrap();
-            let mut shards = Vec::with_capacity(arr.len());
-            for i in 0..arr.len() {
+            let arr = array.as_any().downcast_ref::<arrow_array::Int64Array>().unwrap();
+            let mut shards = Vec::with_capacity(len);
+            for i in 0..len {
                 if arr.is_null(i) {
                     shards.push(None);
                 } else {
                     let val = arr.value(i) as u64;
                     let mut hasher = GxHasher::with_seed(GXHASH_SHARD_SEED as i64);
                     hasher.write(&val.to_le_bytes());
-                    let shard = (hasher.finish() as usize) % num_shards;
-                    shards.push(Some(shard));
+                    shards.push(Some((hasher.finish() as usize) % num_shards));
                 }
             }
-            Some(shards)
+            Some(PrecomputedKeys { shards, keys: None })
+        }
+        (DataType::Int64, IngestedType::Int32) => {
+            let arr = array.as_any().downcast_ref::<arrow_array::Int64Array>().unwrap();
+            let mut shards = Vec::with_capacity(len);
+            let mut keys = Vec::with_capacity(len);
+            for i in 0..len {
+                if arr.is_null(i) {
+                    shards.push(None);
+                    keys.push(None);
+                } else {
+                    let val = arr.value(i) as i32 as u64;
+                    let mut hasher = GxHasher::with_seed(GXHASH_SHARD_SEED as i64);
+                    hasher.write(&val.to_le_bytes());
+                    shards.push(Some((hasher.finish() as usize) % num_shards));
+                    keys.push(Some(Key::Int(val)));
+                }
+            }
+            Some(PrecomputedKeys { shards, keys: Some(keys) })
+        }
+        (DataType::Utf8 | DataType::LargeUtf8, IngestedType::Uuid) => {
+            let mut shards = Vec::with_capacity(len);
+            let mut keys = Vec::with_capacity(len);
+            for i in 0..len {
+                if array.is_null(i) {
+                    shards.push(None);
+                    keys.push(None);
+                } else {
+                    let text = read_utf8(array, i).ok()?;
+                    let uuid = parse_uuid_string(text.as_bytes()).ok()?;
+                    let mut hasher = GxHasher::with_seed(GXHASH_SHARD_SEED as i64);
+                    hasher.write(&uuid);
+                    shards.push(Some((hasher.finish() as usize) % num_shards));
+                    keys.push(Some(Key::Uuid(uuid)));
+                }
+            }
+            Some(PrecomputedKeys { shards, keys: Some(keys) })
         }
         (DataType::FixedSizeBinary(16), IngestedType::Uuid | IngestedType::Ip) => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<arrow_array::FixedSizeBinaryArray>()
-                .unwrap();
-            let mut shards = Vec::with_capacity(arr.len());
-            for i in 0..arr.len() {
+            let arr = array.as_any().downcast_ref::<arrow_array::FixedSizeBinaryArray>().unwrap();
+            let mut shards = Vec::with_capacity(len);
+            for i in 0..len {
                 if arr.is_null(i) {
                     shards.push(None);
                 } else {
                     let val = arr.value(i);
                     let mut hasher = GxHasher::with_seed(GXHASH_SHARD_SEED as i64);
                     hasher.write(val);
-                    let shard = (hasher.finish() as usize) % num_shards;
-                    shards.push(Some(shard));
+                    shards.push(Some((hasher.finish() as usize) % num_shards));
                 }
             }
-            Some(shards)
+            Some(PrecomputedKeys { shards, keys: None })
         }
         (DataType::FixedSizeBinary(32), IngestedType::Uuid256) => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<arrow_array::FixedSizeBinaryArray>()
-                .unwrap();
-            let mut shards = Vec::with_capacity(arr.len());
-            for i in 0..arr.len() {
+            let arr = array.as_any().downcast_ref::<arrow_array::FixedSizeBinaryArray>().unwrap();
+            let mut shards = Vec::with_capacity(len);
+            for i in 0..len {
                 if arr.is_null(i) {
                     shards.push(None);
                 } else {
                     let val = arr.value(i);
                     let mut hasher = GxHasher::with_seed(GXHASH_SHARD_SEED as i64);
                     hasher.write(val);
-                    let shard = (hasher.finish() as usize) % num_shards;
-                    shards.push(Some(shard));
+                    shards.push(Some((hasher.finish() as usize) % num_shards));
                 }
             }
-            Some(shards)
+            Some(PrecomputedKeys { shards, keys: None })
         }
         _ => None,
     }
@@ -8393,9 +8436,15 @@ fn extract_batch_keys(
             for i in 0..len {
                 if array.is_null(i) { out.push(None); }
                 else {
-                    let text = fast_string_value(array, i)?;
-                    let v = parse_base10_bytes(text.as_bytes())?;
-                    out.push(Some(Key::Int(v)));
+                    let res = (|| -> Result<u64> {
+                        let text = fast_string_value(array, i)?;
+                        let v = parse_base10_bytes(text.as_bytes())?;
+                        Ok(v)
+                    })();
+                    match res {
+                        Ok(v) => out.push(Some(Key::Int(v))),
+                        Err(_) => out.push(None),
+                    }
                 }
             }
         }
@@ -8403,9 +8452,15 @@ fn extract_batch_keys(
             for i in 0..len {
                 if array.is_null(i) { out.push(None); }
                 else {
-                    let data = fast_string_value(array, i)?.as_bytes();
-                    if data.len() > MAX_VAR_KEY_LEN { return Err(anyhow!("key too large")); }
-                    out.push(Some(Key::Bytes(data.to_vec())));
+                    let res = (|| -> Result<Vec<u8>> {
+                        let data = fast_string_value(array, i)?.as_bytes();
+                        if data.len() > MAX_VAR_KEY_LEN { return Err(anyhow!("key too large")); }
+                        Ok(data.to_vec())
+                    })();
+                    match res {
+                        Ok(v) => out.push(Some(Key::Bytes(v))),
+                        Err(_) => out.push(None),
+                    }
                 }
             }
         }
@@ -8413,9 +8468,15 @@ fn extract_batch_keys(
             for i in 0..len {
                 if array.is_null(i) { out.push(None); }
                 else {
-                    let data = fast_bytes_value(array, i)?;
-                    if data.len() > MAX_VAR_KEY_LEN { return Err(anyhow!("key too large")); }
-                    out.push(Some(Key::Bytes(data.to_vec())));
+                    let res = (|| -> Result<Vec<u8>> {
+                        let data = fast_bytes_value(array, i)?;
+                        if data.len() > MAX_VAR_KEY_LEN { return Err(anyhow!("key too large")); }
+                        Ok(data.to_vec())
+                    })();
+                    match res {
+                        Ok(v) => out.push(Some(Key::Bytes(v))),
+                        Err(_) => out.push(None),
+                    }
                 }
             }
         }
@@ -8423,9 +8484,15 @@ fn extract_batch_keys(
             for i in 0..len {
                 if array.is_null(i) { out.push(None); }
                 else {
-                    let text = fast_string_value(array, i)?;
-                    let uuid = parse_uuid_string(text.as_bytes())?;
-                    out.push(Some(Key::Uuid(uuid)));
+                    let res = (|| -> Result<[u8; 16]> {
+                        let text = fast_string_value(array, i)?;
+                        let uuid = parse_uuid_string(text.as_bytes())?;
+                        Ok(uuid)
+                    })();
+                    match res {
+                        Ok(v) => out.push(Some(Key::Uuid(v))),
+                        Err(_) => out.push(None),
+                    }
                 }
             }
         }
@@ -8433,11 +8500,17 @@ fn extract_batch_keys(
             for i in 0..len {
                 if array.is_null(i) { out.push(None); }
                 else {
-                    let data = fast_bytes_value(array, i)?;
-                    if data.len() != 16 { return Err(anyhow!("length mismatch")); }
-                    let mut buf = [0u8; 16];
-                    buf.copy_from_slice(data);
-                    out.push(Some(Key::Uuid(buf)));
+                    let res = (|| -> Result<[u8; 16]> {
+                        let data = fast_bytes_value(array, i)?;
+                        if data.len() != 16 { return Err(anyhow!("length mismatch")); }
+                        let mut buf = [0u8; 16];
+                        buf.copy_from_slice(data);
+                        Ok(buf)
+                    })();
+                    match res {
+                        Ok(v) => out.push(Some(Key::Uuid(v))),
+                        Err(_) => out.push(None),
+                    }
                 }
             }
         }
@@ -8445,9 +8518,15 @@ fn extract_batch_keys(
             for i in 0..len {
                 if array.is_null(i) { out.push(None); }
                 else {
-                    let text = fast_string_value(array, i)?;
-                    let uuid = parse_uuid256_string(text.as_bytes())?;
-                    out.push(Some(Key::Uuid256(uuid)));
+                    let res = (|| -> Result<[u8; 32]> {
+                        let text = fast_string_value(array, i)?;
+                        let uuid = parse_uuid256_string(text.as_bytes())?;
+                        Ok(uuid)
+                    })();
+                    match res {
+                        Ok(v) => out.push(Some(Key::Uuid256(v))),
+                        Err(_) => out.push(None),
+                    }
                 }
             }
         }
@@ -8455,11 +8534,17 @@ fn extract_batch_keys(
             for i in 0..len {
                 if array.is_null(i) { out.push(None); }
                 else {
-                    let data = fast_bytes_value(array, i)?;
-                    if data.len() != 32 { return Err(anyhow!("length mismatch")); }
-                    let mut buf = [0u8; 32];
-                    buf.copy_from_slice(data);
-                    out.push(Some(Key::Uuid256(buf)));
+                    let res = (|| -> Result<[u8; 32]> {
+                        let data = fast_bytes_value(array, i)?;
+                        if data.len() != 32 { return Err(anyhow!("length mismatch")); }
+                        let mut buf = [0u8; 32];
+                        buf.copy_from_slice(data);
+                        Ok(buf)
+                    })();
+                    match res {
+                        Ok(v) => out.push(Some(Key::Uuid256(v))),
+                        Err(_) => out.push(None),
+                    }
                 }
             }
         }
@@ -8467,9 +8552,15 @@ fn extract_batch_keys(
             for i in 0..len {
                 if array.is_null(i) { out.push(None); }
                 else {
-                    let text = fast_string_value(array, i)?;
-                    let ip = parse_ip_string(text.as_bytes())?;
-                    out.push(Some(Key::Ip(ip)));
+                    let res = (|| -> Result<[u8; 16]> {
+                        let text = fast_string_value(array, i)?;
+                        let ip = parse_ip_string(text.as_bytes())?;
+                        Ok(ip)
+                    })();
+                    match res {
+                        Ok(v) => out.push(Some(Key::Ip(v))),
+                        Err(_) => out.push(None),
+                    }
                 }
             }
         }
@@ -8477,9 +8568,15 @@ fn extract_batch_keys(
             for i in 0..len {
                 if array.is_null(i) { out.push(None); }
                 else {
-                    let data = fast_bytes_value(array, i)?;
-                    let ip = parse_ip_bytes(data)?;
-                    out.push(Some(Key::Ip(ip)));
+                    let res = (|| -> Result<[u8; 16]> {
+                        let data = fast_bytes_value(array, i)?;
+                        let ip = parse_ip_bytes(data)?;
+                        Ok(ip)
+                    })();
+                    match res {
+                        Ok(v) => out.push(Some(Key::Ip(v))),
+                        Err(_) => out.push(None),
+                    }
                 }
             }
         }
