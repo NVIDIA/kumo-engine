@@ -134,7 +134,7 @@ fn test_bitwriter_packing() -> anyhow::Result<()> {
     Ok(())
 }
 
-use crate::graph_config::{TableFormat, TableSpec, TimestampUnit};
+use crate::graph_config::{TableSpec, TimestampUnit};
 use crate::{TimestampEncodingKind, TimestampEncodingSpec};
 use crate::errors::{KeyParseResult, KeyParseError};
 use chrono::NaiveDate;
@@ -717,7 +717,7 @@ fn parse_uuid_bytes(bytes: &[u8]) -> KeyParseResult<[u8; 16]> {
     fn test_extract_batch_keys_resilience() {
         use crate::{extract_batch_keys, EdgeKeyFastKind};
         use crate::mapping::Key;
-        use arrow_array::{Array, StringArray, ArrayRef};
+        use arrow_array::{StringArray, ArrayRef};
         use std::sync::Arc;
 
         // Test String -> Int64 with some invalid rows

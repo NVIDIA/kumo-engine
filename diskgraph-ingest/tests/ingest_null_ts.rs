@@ -119,7 +119,7 @@ fn test_null_timestamp_metrics_and_filtering() -> Result<()> {
     // TableNoPK has 3 rows: 1 (valid), 2 (null ts), 3 (valid).
     // So node 1 should have 2 incoming edges (from rows 1 and 3).
     let table = reader.table("TableWithPK").unwrap();
-    let node_id = table.node_id_from_pk(&diskgraph_index::pkmap::Key::Int(1))?.unwrap();
+    let _node_id = table.node_id_from_pk(&diskgraph_index::pkmap::Key::Int(1))?.unwrap();
 
     // Check edge counts from stats
     let mut edge_count = 0;

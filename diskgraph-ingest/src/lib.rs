@@ -2040,6 +2040,26 @@ impl IngestContext {
                 let pk_array = pk_idx.and_then(|idx| access.array(idx).ok());
                 let precomputed = precompute_shards(pk_array, pk_col, num_shards);
 
+                let mut fkeys_pre = Vec::with_capacity(rel_specs.len());
+                for (_, idx, _) in &rel_specs {
+                    let col_spec = &table.columns[*idx];
+                    let array = access.array(*idx).unwrap();
+                    let kind = edge_fast_path_for_array(col_spec, array);
+                    let should_optimize = match kind {
+                        Some(EdgeKeyFastKind::Int64ToInt32)
+                        | Some(EdgeKeyFastKind::StringToInt64)
+                        | Some(EdgeKeyFastKind::StringUuid)
+                        | Some(EdgeKeyFastKind::StringUuid256)
+                        | Some(EdgeKeyFastKind::StringIp) => true,
+                        _ => false,
+                    };
+                    if should_optimize {
+                        fkeys_pre.push(extract_batch_keys(array, kind.unwrap()).ok());
+                    } else {
+                        fkeys_pre.push(None);
+                    }
+                }
+
                 for row in 0..$batch.num_rows() {
                     access.set_row(row);
                     total_rows += 1;
@@ -2057,6 +2077,8 @@ impl IngestContext {
                         table,
                         pk_idx,
                         &rel_specs,
+                        &fkeys_pre,
+                        row,
                         &mut access,
                         &node_encoder,
                         &mut batcher,
@@ -2234,6 +2256,8 @@ impl IngestContext {
         table: &TableSpec,
         pk_idx: Option<usize>,
         rel_specs: &[(std::sync::Arc<str>, usize, usize)],
+        fkeys_pre: &[Option<Vec<Option<Key>>>],
+        row: usize,
         access: &mut RowAccess<'_>,
         node_encoder: &Option<RowPackEncoder>,
         batcher: &mut NodeBatcher,
@@ -2284,7 +2308,7 @@ impl IngestContext {
         } else {
             (*row_id as usize) % num_shards
         };
-        for (_rel_name, rel_idx, _rel_pos) in rel_specs {
+        for (i, (_rel_name, rel_idx, _rel_pos)) in rel_specs.iter().enumerate() {
             let col = table
                 .columns
                 .get(*rel_idx)
@@ -2292,7 +2316,20 @@ impl IngestContext {
             let buf = key_bufs
                 .get_mut(*rel_idx)
                 .ok_or_else(|| anyhow!("missing key buffer"))?;
-            if key_from_access_into_buf(access, *rel_idx, col, buf).is_err() {
+
+            let res = if let Some(keys) = fkeys_pre.get(i).and_then(|k| k.as_ref()) {
+                if let Some(Some(key)) = keys.get(row) {
+                    write_key_to_buf(buf, key).map_err(|_| KeyParseError::TypeMismatch)
+                } else {
+                    // Fallback to RowAccess for None values to ensure correct error reporting
+                    // (extract_batch_keys uses None for both nulls and parse errors).
+                    key_from_access_into_buf(access, *rel_idx, col, buf)
+                }
+            } else {
+                key_from_access_into_buf(access, *rel_idx, col, buf)
+            };
+
+            if res.is_err() {
                 let context = format!("fkey:{}.{}", table.name, col.name);
                 record_key_parse_failure_sample(
                     &mut key_failures.parse_failures,
