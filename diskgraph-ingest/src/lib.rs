@@ -2423,9 +2423,19 @@ impl IngestContext {
                 let timestamp_idx = create_time_info.as_ref().map(|(idx, _)| *idx);
                 let validity_array = timestamp_idx.map(|idx| access.array(idx).unwrap().clone());
 
+                let src_keys_pre = $src_fast
+                    .map(|kind| extract_batch_keys(&$cols[src_fk_idx], kind))
+                    .transpose()?;
+                let dst_keys_pre = $dst_fast
+                    .map(|kind| extract_batch_keys(&$cols[dst_fk_idx], kind))
+                    .transpose()?;
+
                 for row in 0..$batch.num_rows() {
                     access.set_row(row);
                     let timestamp_valid = validity_array.as_ref().map(|a| a.is_valid(row)).unwrap_or(true);
+                    let src_key_pre = src_keys_pre.as_ref().and_then(|v| v[row].as_ref());
+                    let dst_key_pre = dst_keys_pre.as_ref().and_then(|v| v[row].as_ref());
+
                     Self::write_edge_row_from_access(
                         src_fk_idx,
                         dst_fk_idx,
@@ -2435,8 +2445,8 @@ impl IngestContext {
                         &dst_context,
                         $cols,
                         row,
-                        $src_fast,
-                        $dst_fast,
+                        src_key_pre,
+                        dst_key_pre,
                         &mut access,
                         $src_key_buf,
                         $dst_key_buf,
@@ -2683,10 +2693,10 @@ impl IngestContext {
         dst_col: &ColumnSpec,
         src_context: &str,
         dst_context: &str,
-        cols: &[ArrayRef],
-        row: usize,
-        src_fast: Option<EdgeKeyFastKind>,
-        dst_fast: Option<EdgeKeyFastKind>,
+        _cols: &[ArrayRef],
+        _row: usize,
+        src_key_pre: Option<&Key>,
+        dst_key_pre: Option<&Key>,
         access: &mut RowAccess<'_>,
         src_key_buf: &mut Vec<u8>,
         dst_key_buf: &mut Vec<u8>,
@@ -2700,81 +2710,48 @@ impl IngestContext {
     ) -> Result<()> {
         src_key_buf.clear();
         dst_key_buf.clear();
-        match src_fast {
-            Some(kind) => match fast_key_from_array(cols, row, src_idx, kind) {
-                Ok(key) => {
-                    if write_key_to_buf(src_key_buf, &key).is_err() {
-                        record_key_parse_failure_sample(
-                            &mut key_failures.parse_failures,
-                            &mut key_failures.samples,
-                            &mut key_failures.by_context,
-                            src_context,
-                            sample_from_access(access, src_idx),
-                        );
-                        return Ok(());
-                    }
-                }
-                Err(_) => {
-                    record_key_parse_failure_sample(
-                        &mut key_failures.parse_failures,
-                        &mut key_failures.samples,
-                        &mut key_failures.by_context,
-                        src_context,
-                        sample_from_access(access, src_idx),
-                    );
-                    return Ok(());
-                }
-            },
-            None => {
-                if key_from_access_into_buf(access, src_idx, src_col, src_key_buf).is_err() {
-                    record_key_parse_failure_sample(
-                        &mut key_failures.parse_failures,
-                        &mut key_failures.samples,
-                        &mut key_failures.by_context,
-                        src_context,
-                        sample_from_access(access, src_idx),
-                    );
-                    return Ok(());
-                }
+        if let Some(key) = src_key_pre {
+            if write_key_to_buf(src_key_buf, key).is_err() {
+                record_key_parse_failure_sample(
+                    &mut key_failures.parse_failures,
+                    &mut key_failures.samples,
+                    &mut key_failures.by_context,
+                    src_context,
+                    sample_from_access(access, src_idx),
+                );
+                return Ok(());
             }
+        } else if key_from_access_into_buf(access, src_idx, src_col, src_key_buf).is_err() {
+            record_key_parse_failure_sample(
+                &mut key_failures.parse_failures,
+                &mut key_failures.samples,
+                &mut key_failures.by_context,
+                src_context,
+                sample_from_access(access, src_idx),
+            );
+            return Ok(());
         }
-        match dst_fast {
-            Some(kind) => match fast_key_from_array(cols, row, dst_idx, kind) {
-                Ok(key) => {
-                    if write_key_to_buf(dst_key_buf, &key).is_err() {
-                        record_key_parse_failure_sample(
-                            &mut key_failures.parse_failures,
-                            &mut key_failures.samples,
-                            &mut key_failures.by_context,
-                            dst_context,
-                            sample_from_access(access, dst_idx),
-                        );
-                        return Ok(());
-                    }
-                }
-                Err(_) => {
-                    record_key_parse_failure_sample(
-                        &mut key_failures.parse_failures,
-                        &mut key_failures.samples,
-                        &mut key_failures.by_context,
-                        dst_context,
-                        sample_from_access(access, dst_idx),
-                    );
-                    return Ok(());
-                }
-            },
-            None => {
-                if key_from_access_into_buf(access, dst_idx, dst_col, dst_key_buf).is_err() {
-                    record_key_parse_failure_sample(
-                        &mut key_failures.parse_failures,
-                        &mut key_failures.samples,
-                        &mut key_failures.by_context,
-                        dst_context,
-                        sample_from_access(access, dst_idx),
-                    );
-                    return Ok(());
-                }
+
+        if let Some(key) = dst_key_pre {
+            if write_key_to_buf(dst_key_buf, key).is_err() {
+                record_key_parse_failure_sample(
+                    &mut key_failures.parse_failures,
+                    &mut key_failures.samples,
+                    &mut key_failures.by_context,
+                    dst_context,
+                    sample_from_access(access, dst_idx),
+                );
+                return Ok(());
             }
+        } else if key_from_access_into_buf(access, dst_idx, dst_col, dst_key_buf).is_err() {
+            record_key_parse_failure_sample(
+                &mut key_failures.parse_failures,
+                &mut key_failures.samples,
+                &mut key_failures.by_context,
+                dst_context,
+                sample_from_access(access, dst_idx),
+            );
+            return Ok(());
         }
         let forward_shard = shard_for_key(src_key_buf, num_shards);
         let dst_shard = shard_for_key(dst_key_buf, num_shards);
@@ -8284,6 +8261,8 @@ enum EdgeKeyFastKind {
     UInt32,
     UInt16,
     UInt8,
+    Int64ToInt32,
+    StringToInt64,
     StringVar,
     BytesVar,
     StringUuid,
@@ -8304,6 +8283,10 @@ fn edge_fast_path_for_array(col: &ColumnSpec, array: &ArrayRef) -> Option<EdgeKe
         (DataType::UInt32, IngestedType::UInt32) => Some(EdgeKeyFastKind::UInt32),
         (DataType::UInt16, IngestedType::UInt16) => Some(EdgeKeyFastKind::UInt16),
         (DataType::UInt8, IngestedType::UInt8) => Some(EdgeKeyFastKind::UInt8),
+        (DataType::Int64, IngestedType::Int32) => Some(EdgeKeyFastKind::Int64ToInt32),
+        (DataType::Utf8 | DataType::LargeUtf8, IngestedType::Int64) => {
+            Some(EdgeKeyFastKind::StringToInt64)
+        }
         (DataType::Utf8 | DataType::LargeUtf8, IngestedType::String) => {
             Some(EdgeKeyFastKind::StringVar)
         }
@@ -8334,6 +8317,174 @@ fn edge_fast_path_for_array(col: &ColumnSpec, array: &ArrayRef) -> Option<EdgeKe
         ) => Some(EdgeKeyFastKind::BytesIp),
         _ => None,
     }
+}
+
+fn extract_batch_keys(
+    array: &ArrayRef,
+    kind: EdgeKeyFastKind,
+) -> Result<Vec<Option<Key>>> {
+    let len = array.len();
+    let mut out = Vec::with_capacity(len);
+    match kind {
+        EdgeKeyFastKind::Int64 => {
+            let arr = array.as_any().downcast_ref::<arrow_array::Int64Array>().unwrap();
+            for i in 0..len {
+                if arr.is_null(i) { out.push(None); }
+                else { out.push(Some(Key::Int(arr.value(i) as u64))); }
+            }
+        }
+        EdgeKeyFastKind::Int32 => {
+            let arr = array.as_any().downcast_ref::<arrow_array::Int32Array>().unwrap();
+            for i in 0..len {
+                if arr.is_null(i) { out.push(None); }
+                else { out.push(Some(Key::Int(arr.value(i) as u64))); }
+            }
+        }
+        EdgeKeyFastKind::Int16 => {
+            let arr = array.as_any().downcast_ref::<arrow_array::Int16Array>().unwrap();
+            for i in 0..len {
+                if arr.is_null(i) { out.push(None); }
+                else { out.push(Some(Key::Int(arr.value(i) as u64))); }
+            }
+        }
+        EdgeKeyFastKind::Int8 => {
+            let arr = array.as_any().downcast_ref::<arrow_array::Int8Array>().unwrap();
+            for i in 0..len {
+                if arr.is_null(i) { out.push(None); }
+                else { out.push(Some(Key::Int(arr.value(i) as u64))); }
+            }
+        }
+        EdgeKeyFastKind::UInt64 => {
+            let arr = array.as_any().downcast_ref::<arrow_array::UInt64Array>().unwrap();
+            for i in 0..len {
+                if arr.is_null(i) { out.push(None); }
+                else { out.push(Some(Key::Int(arr.value(i)))); }
+            }
+        }
+        EdgeKeyFastKind::UInt32 => {
+            let arr = array.as_any().downcast_ref::<arrow_array::UInt32Array>().unwrap();
+            for i in 0..len {
+                if arr.is_null(i) { out.push(None); }
+                else { out.push(Some(Key::Int(arr.value(i) as u64))); }
+            }
+        }
+        EdgeKeyFastKind::UInt16 => {
+            let arr = array.as_any().downcast_ref::<arrow_array::UInt16Array>().unwrap();
+            for i in 0..len {
+                if arr.is_null(i) { out.push(None); }
+                else { out.push(Some(Key::Int(arr.value(i) as u64))); }
+            }
+        }
+        EdgeKeyFastKind::UInt8 => {
+            let arr = array.as_any().downcast_ref::<arrow_array::UInt8Array>().unwrap();
+            for i in 0..len {
+                if arr.is_null(i) { out.push(None); }
+                else { out.push(Some(Key::Int(arr.value(i) as u64))); }
+            }
+        }
+        EdgeKeyFastKind::Int64ToInt32 => {
+            let arr = array.as_any().downcast_ref::<arrow_array::Int64Array>().unwrap();
+            for i in 0..len {
+                if arr.is_null(i) { out.push(None); }
+                else { out.push(Some(Key::Int(arr.value(i) as i32 as u64))); }
+            }
+        }
+        EdgeKeyFastKind::StringToInt64 => {
+            for i in 0..len {
+                if array.is_null(i) { out.push(None); }
+                else {
+                    let text = fast_string_value(array, i)?;
+                    let v = parse_base10_bytes(text.as_bytes())?;
+                    out.push(Some(Key::Int(v)));
+                }
+            }
+        }
+        EdgeKeyFastKind::StringVar => {
+            for i in 0..len {
+                if array.is_null(i) { out.push(None); }
+                else {
+                    let data = fast_string_value(array, i)?.as_bytes();
+                    if data.len() > MAX_VAR_KEY_LEN { return Err(anyhow!("key too large")); }
+                    out.push(Some(Key::Bytes(data.to_vec())));
+                }
+            }
+        }
+        EdgeKeyFastKind::BytesVar => {
+            for i in 0..len {
+                if array.is_null(i) { out.push(None); }
+                else {
+                    let data = fast_bytes_value(array, i)?;
+                    if data.len() > MAX_VAR_KEY_LEN { return Err(anyhow!("key too large")); }
+                    out.push(Some(Key::Bytes(data.to_vec())));
+                }
+            }
+        }
+        EdgeKeyFastKind::StringUuid => {
+            for i in 0..len {
+                if array.is_null(i) { out.push(None); }
+                else {
+                    let text = fast_string_value(array, i)?;
+                    let uuid = parse_uuid_string(text.as_bytes())?;
+                    out.push(Some(Key::Uuid(uuid)));
+                }
+            }
+        }
+        EdgeKeyFastKind::BytesUuid => {
+            for i in 0..len {
+                if array.is_null(i) { out.push(None); }
+                else {
+                    let data = fast_bytes_value(array, i)?;
+                    if data.len() != 16 { return Err(anyhow!("length mismatch")); }
+                    let mut buf = [0u8; 16];
+                    buf.copy_from_slice(data);
+                    out.push(Some(Key::Uuid(buf)));
+                }
+            }
+        }
+        EdgeKeyFastKind::StringUuid256 => {
+            for i in 0..len {
+                if array.is_null(i) { out.push(None); }
+                else {
+                    let text = fast_string_value(array, i)?;
+                    let uuid = parse_uuid256_string(text.as_bytes())?;
+                    out.push(Some(Key::Uuid256(uuid)));
+                }
+            }
+        }
+        EdgeKeyFastKind::BytesUuid256 => {
+            for i in 0..len {
+                if array.is_null(i) { out.push(None); }
+                else {
+                    let data = fast_bytes_value(array, i)?;
+                    if data.len() != 32 { return Err(anyhow!("length mismatch")); }
+                    let mut buf = [0u8; 32];
+                    buf.copy_from_slice(data);
+                    out.push(Some(Key::Uuid256(buf)));
+                }
+            }
+        }
+        EdgeKeyFastKind::StringIp => {
+            for i in 0..len {
+                if array.is_null(i) { out.push(None); }
+                else {
+                    let text = fast_string_value(array, i)?;
+                    let ip = parse_ip_string(text.as_bytes())?;
+                    out.push(Some(Key::Ip(ip)));
+                }
+            }
+        }
+        EdgeKeyFastKind::BytesIp => {
+            for i in 0..len {
+                if array.is_null(i) { out.push(None); }
+                else {
+                    let data = fast_bytes_value(array, i)?;
+                    let ip = parse_ip_bytes(data)?;
+                    out.push(Some(Key::Ip(ip)));
+                }
+            }
+        }
+    }
+    Ok(out)
 }
 
 fn fast_string_value<'a>(
@@ -8373,134 +8524,9 @@ fn fast_bytes_value<'a>(
     }
 }
 
-fn fast_key_from_array(
-    cols: &[ArrayRef],
-    row: usize,
-    col_idx: usize,
-    kind: EdgeKeyFastKind,
-) -> KeyParseResult<Key> {
-    let array = cols.get(col_idx).ok_or(KeyParseError::TypeMismatch)?;
-    if array.is_null(row) {
-        return Err(KeyParseError::TypeMismatch);
-    }
-    match kind {
-        EdgeKeyFastKind::Int64 => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<arrow_array::Int64Array>()
-                .ok_or(KeyParseError::TypeMismatch)?;
-            let v = arr.value(row);
-            Ok(Key::Int(v as u64))
-        }
-        EdgeKeyFastKind::Int32 => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<arrow_array::Int32Array>()
-                .ok_or(KeyParseError::TypeMismatch)?;
-            let v = arr.value(row);
-            Ok(Key::Int(v as u64))
-        }
-        EdgeKeyFastKind::Int16 => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<arrow_array::Int16Array>()
-                .ok_or(KeyParseError::TypeMismatch)?;
-            let v = arr.value(row);
-            Ok(Key::Int(v as u64))
-        }
-        EdgeKeyFastKind::Int8 => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<arrow_array::Int8Array>()
-                .ok_or(KeyParseError::TypeMismatch)?;
-            let v = arr.value(row);
-            Ok(Key::Int(v as u64))
-        }
-        EdgeKeyFastKind::UInt64 => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<arrow_array::UInt64Array>()
-                .ok_or(KeyParseError::TypeMismatch)?;
-            Ok(Key::Int(arr.value(row)))
-        }
-        EdgeKeyFastKind::UInt32 => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<arrow_array::UInt32Array>()
-                .ok_or(KeyParseError::TypeMismatch)?;
-            Ok(Key::Int(arr.value(row) as u64))
-        }
-        EdgeKeyFastKind::UInt16 => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<arrow_array::UInt16Array>()
-                .ok_or(KeyParseError::TypeMismatch)?;
-            Ok(Key::Int(arr.value(row) as u64))
-        }
-        EdgeKeyFastKind::UInt8 => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<arrow_array::UInt8Array>()
-                .ok_or(KeyParseError::TypeMismatch)?;
-            Ok(Key::Int(arr.value(row) as u64))
-        }
-        EdgeKeyFastKind::StringUuid => {
-            let text = fast_string_value(array, row)?;
-            let uuid = parse_uuid_string(text.as_bytes())?;
-            Ok(Key::Uuid(uuid))
-        }
-        EdgeKeyFastKind::BytesUuid => {
-            let data = fast_bytes_value(array, row)?;
-            if data.len() != 16 {
-                return Err(KeyParseError::LengthMismatch);
-            }
-            let mut buf = [0u8; 16];
-            buf.copy_from_slice(data);
-            Ok(Key::Uuid(buf))
-        }
-        EdgeKeyFastKind::StringVar => {
-            let data = fast_string_value(array, row)?.as_bytes();
-            if data.len() > MAX_VAR_KEY_LEN {
-                return Err(KeyParseError::TooLarge);
-            }
-            Ok(Key::Bytes(data.to_vec()))
-        }
-        EdgeKeyFastKind::BytesVar => {
-            let data = fast_bytes_value(array, row)?;
-            if data.len() > MAX_VAR_KEY_LEN {
-                return Err(KeyParseError::TooLarge);
-            }
-            Ok(Key::Bytes(data.to_vec()))
-        }
-        EdgeKeyFastKind::StringUuid256 => {
-            let text = fast_string_value(array, row)?;
-            let uuid = parse_uuid256_string(text.as_bytes())?;
-            Ok(Key::Uuid256(uuid))
-        }
-        EdgeKeyFastKind::BytesUuid256 => {
-            let data = fast_bytes_value(array, row)?;
-            if data.len() != 32 {
-                return Err(KeyParseError::LengthMismatch);
-            }
-            let mut buf = [0u8; 32];
-            buf.copy_from_slice(data);
-            Ok(Key::Uuid256(buf))
-        }
-        EdgeKeyFastKind::StringIp => {
-            let text = fast_string_value(array, row)?;
-            let ip = parse_ip_string(text.as_bytes())?;
-            Ok(Key::Ip(ip))
-        }
-        EdgeKeyFastKind::BytesIp => {
-            let data = fast_bytes_value(array, row)?;
-            let ip = parse_ip_bytes(data)?;
-            Ok(Key::Ip(ip))
-        }
-    }
-}
+fn read_utf8<'a>(
 
-
-fn read_utf8<'a>(array: &'a ArrayRef, row: usize) -> Result<&'a str> {
+array: &'a ArrayRef, row: usize) -> Result<&'a str> {
     match array.data_type() {
         DataType::Utf8 => {
             let arr = array
