@@ -17,6 +17,8 @@ use uuid_simd::{format_simple, AsOut, AsciiCase};
 mod tests_casting;
 #[cfg(test)]
 mod tests_unit;
+#[cfg(test)]
+mod tests_type_matrix;
 pub mod parser;
 pub mod access;
 
