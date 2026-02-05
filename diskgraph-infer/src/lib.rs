@@ -13,6 +13,7 @@ use diskgraph_ingest::graph_config::{
     ColumnSpec, DataSource, EdgeTableSpec, FKeySpec, ForeignKeySpec, IngestedType, GraphConfig,
     TableFormat, TableSpec, TimestampUnit,
 };
+use diskgraph_ingest::coercion::CoercionMode;
 use diskgraph_ingest::config_converter::map_kumo_dtype;
 use diskgraph_ingest::utils::is_edge_table_compatible;
 use arrow_array::{
@@ -367,6 +368,7 @@ pub fn infer_source_metadata(root: &RootSource, options: InferOptions) -> Result
         rowpack: None,
         num_shards: Some(num_shards),
         edge_format: None,
+        coercion_mode: CoercionMode::default(),
     };
     metadata.validate()?;
 

@@ -9,7 +9,8 @@ mod convert;
 
 pub use types::*;
 pub use mapping::{map_kumo_dtype, map_timestamp_unit};
-pub use convert::{convert_kumo_to_diskgraph, ConvertOptions, ConvertError};
+pub use convert::{convert_kumo_to_diskgraph, ConvertOptions};
+pub use crate::errors::ConvertError;
 
 #[cfg(test)]
 mod tests;

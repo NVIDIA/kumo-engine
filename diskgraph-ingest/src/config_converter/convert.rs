@@ -3,8 +3,8 @@
 use std::collections::HashSet;
 
 use anyhow::Result;
-use thiserror::Error;
 
+use crate::errors::ConvertError;
 use crate::graph_config::{
     ColumnSpec, DataSource, DirectionSpec, EdgeTableSpec, FKeySpec, ForeignKeySpec, GraphConfig,
     IngestedType, TableSpec, TimeSpec,
@@ -22,23 +22,6 @@ pub struct ConvertOptions {
     pub data_persist_dir: String,
     /// Dataset name for the output GraphConfig.
     pub dataset_name: String,
-}
-
-/// Errors that can occur during conversion.
-#[derive(Debug, Error)]
-pub enum ConvertError {
-    #[error("table {table} is missing required field: {field}")]
-    MissingField { table: String, field: String },
-
-    #[error("table {table} column {column} has unknown dtype: {dtype}")]
-    UnknownDtype {
-        table: String,
-        column: String,
-        dtype: String,
-    },
-
-    #[error("table {table} has no columns")]
-    NoColumns { table: String },
 }
 
 /// Convert a Kumo GraphConfig to a DiskGraph GraphConfig.
@@ -59,6 +42,7 @@ pub fn convert_kumo_to_diskgraph(
         rowpack: None,
         num_shards: None,
         edge_format: None,
+        coercion_mode: Default::default(),
     })
 }
 
