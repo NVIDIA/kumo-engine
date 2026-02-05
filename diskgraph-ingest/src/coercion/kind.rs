@@ -57,10 +57,20 @@ pub fn coercion_kind(fk: IngestedType, pk: IngestedType) -> CoercionKind {
         (Float32, Float64) => Safe,
 
         // ===================================================================
-        // Safe: Integer/Float to larger float (may lose precision but not magnitude)
+        // Safe: Small integers to float (fit within mantissa precision)
+        // Float32 has 23-bit mantissa: Int8, Int16, UInt8, UInt16 fit
+        // Float64 has 52-bit mantissa: Int8-Int32, UInt8-UInt32 fit
         // ===================================================================
-        (Int8 | Int16 | Int32 | UInt8 | UInt16 | UInt32, Float32 | Float64) => Safe,
-        (Int64 | UInt64, Float64) => Safe,
+        (Int8 | Int16 | UInt8 | UInt16, Float32 | Float64) => Safe,
+        (Int32 | UInt32, Float64) => Safe,
+
+        // ===================================================================
+        // Lossy: Large integers to float (exceed mantissa precision)
+        // Int32/UInt32 > 2^24 loses precision in Float32
+        // Int64/UInt64 > 2^53 loses precision in Float64
+        // ===================================================================
+        (Int32 | UInt32, Float32) => Lossy,
+        (Int64 | UInt64, Float64) => Lossy,
 
         // ===================================================================
         // Safe: Anything to String (formatting always succeeds)
@@ -87,10 +97,14 @@ pub fn coercion_kind(fk: IngestedType, pk: IngestedType) -> CoercionKind {
         (UInt8 | UInt16 | UInt32 | UInt64, Decimal128) => Safe,
 
         // ===================================================================
-        // Safe: Temporal conversions
+        // Safe: Date to Timestamp (no information loss)
         // ===================================================================
         (Date, Timestamp) => Safe,
-        (Timestamp, Date) => Safe, // Truncates time but doesn't fail
+
+        // ===================================================================
+        // Lossy: Timestamp to Date (truncates time component)
+        // ===================================================================
+        (Timestamp, Date) => Lossy,
 
         // ===================================================================
         // Safe: Identifier to bytes

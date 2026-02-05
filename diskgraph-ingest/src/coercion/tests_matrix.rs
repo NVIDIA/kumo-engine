@@ -60,9 +60,13 @@ fn expected_coercion(fk: &IngestedType, pk: &IngestedType) -> CoercionKind {
         // ===== Float widening (Safe) =====
         (Float32, Float64) => Safe,
 
-        // ===== Integer/Float to larger float (Safe) =====
-        (Int8 | Int16 | Int32 | UInt8 | UInt16 | UInt32, Float32 | Float64) => Safe,
-        (Int64 | UInt64, Float64) => Safe,
+        // ===== Small integers to float (Safe - fit within mantissa) =====
+        (Int8 | Int16 | UInt8 | UInt16, Float32 | Float64) => Safe,
+        (Int32 | UInt32, Float64) => Safe,
+
+        // ===== Large integers to float (Lossy - exceed mantissa precision) =====
+        (Int32 | UInt32, Float32) => Lossy,
+        (Int64 | UInt64, Float64) => Lossy,
 
         // ===== Anything to String (Safe) =====
         (Int8 | Int16 | Int32 | Int64, String) => Safe,
@@ -82,9 +86,9 @@ fn expected_coercion(fk: &IngestedType, pk: &IngestedType) -> CoercionKind {
         (Int8 | Int16 | Int32 | Int64, Decimal128) => Safe,
         (UInt8 | UInt16 | UInt32 | UInt64, Decimal128) => Safe,
 
-        // ===== Temporal conversions (Safe) =====
+        // ===== Temporal conversions =====
         (Date, Timestamp) => Safe,
-        (Timestamp, Date) => Safe,
+        (Timestamp, Date) => Lossy, // Truncates time component
 
         // ===== Identifier to bytes (Safe) =====
         (Uuid | Uuid256 | Ip, Bytes) => Safe,

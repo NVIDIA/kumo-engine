@@ -138,7 +138,11 @@ fn lossy_reason(fk: &IngestedType, pk: &IngestedType) -> String {
         (UInt64, UInt8 | UInt16 | UInt32) | (UInt32, UInt8 | UInt16) | (UInt16, UInt8) => {
             "unsigned integer narrowing may overflow".into()
         }
+        (Int32 | UInt32, Float32) => "int32/uint32 exceeds float32 mantissa precision (23 bits)".into(),
+        (Int64 | UInt64, Float64) => "int64/uint64 exceeds float64 mantissa precision (52 bits)".into(),
         (Float64, Float32) => "float64 to float32 loses precision".into(),
+        (Timestamp, Date) => "timestamp to date truncates time component".into(),
+        (Decimal128, Float32 | Float64) => "decimal128 exceeds float mantissa precision".into(),
         (Decimal256, Decimal128) => "decimal256 to decimal128 may overflow".into(),
         (Decimal256, _) => "decimal256 to smaller type may overflow".into(),
         _ => "conversion may lose data".into(),
