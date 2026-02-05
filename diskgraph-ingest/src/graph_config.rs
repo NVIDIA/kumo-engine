@@ -4,7 +4,7 @@ use diskgraph_rowpack::RowPackConfig;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
-use crate::coercion::{coercion_kind, CoercionKind, CoercionMode};
+use crate::coercion::{coercion_kind, validate_fk_pk, CoercionKind, CoercionMode};
 
 fn source_dtype_is_decimal(dtype: Option<&str>) -> bool {
     let Some(dtype) = dtype else {
@@ -748,7 +748,8 @@ impl GraphConfig {
 /// Determine if FK type should be resolved to PK type.
 /// Returns Some(pk_type) if coercion is Safe or Conditional and types differ.
 /// Returns None if types are the same or coercion is not allowed.
-fn resolve_fk_type_to_pk(
+#[cfg_attr(test, allow(dead_code))]
+pub(crate) fn resolve_fk_type_to_pk(
     fk_type: &IngestedType,
     pk_type: &IngestedType,
     mode: CoercionMode,
@@ -782,6 +783,7 @@ pub struct FkPkCheckResult {
 }
 
 /// Check FK-PK type compatibility using the coercion system.
+/// Delegates to `coercion::validate_fk_pk` to avoid duplicating coercion logic.
 fn check_fk_pk_types(
     fk_col: &ColumnSpec,
     pk_col: &ColumnSpec,
@@ -789,64 +791,19 @@ fn check_fk_pk_types(
     pk_table: &str,
     mode: CoercionMode,
 ) -> FkPkCheckResult {
-    let fk_type = &fk_col.ingested_dtype;
-    let pk_type = &pk_col.ingested_dtype;
-    let kind = coercion_kind(fk_type.clone(), pk_type.clone());
-
-    match (mode, kind) {
-        // Same type: always OK
-        (_, CoercionKind::Same) => FkPkCheckResult {
-            allowed: true,
-            warning: None,
-            error: None,
-        },
-
-        // Strict mode: any difference is error
-        (CoercionMode::Strict, _) => FkPkCheckResult {
-            allowed: false,
-            warning: None,
-            error: Some(format!(
-                "type mismatch in strict mode: {}.{} ({:?}) vs {}.{} ({:?})",
-                fk_table, fk_col.name, fk_type, pk_table, pk_col.name, pk_type
-            )),
-        },
-
-        // Lossless mode: safe is OK
-        (CoercionMode::Lossless, CoercionKind::Safe) => FkPkCheckResult {
-            allowed: true,
-            warning: None,
-            error: None,
-        },
-
-        // Lossless mode: conditional is OK with warning
-        (CoercionMode::Lossless, CoercionKind::Conditional) => FkPkCheckResult {
-            allowed: true,
-            warning: Some(format!(
-                "conditional coercion: {}.{} ({:?}) to {}.{} ({:?}) - invalid values will skip edge creation",
-                fk_table, fk_col.name, fk_type, pk_table, pk_col.name, pk_type
-            )),
-            error: None,
-        },
-
-        // Lossy: always error
-        (_, CoercionKind::Lossy) => FkPkCheckResult {
-            allowed: false,
-            warning: None,
-            error: Some(format!(
-                "lossy coercion not allowed: {}.{} ({:?}) to {}.{} ({:?})",
-                fk_table, fk_col.name, fk_type, pk_table, pk_col.name, pk_type
-            )),
-        },
-
-        // Incompatible: always error
-        (_, CoercionKind::Incompatible) => FkPkCheckResult {
-            allowed: false,
-            warning: None,
-            error: Some(format!(
-                "incompatible types: {}.{} ({:?}) to {}.{} ({:?})",
-                fk_table, fk_col.name, fk_type, pk_table, pk_col.name, pk_type
-            )),
-        },
+    let result = validate_fk_pk(
+        fk_col.ingested_dtype.clone(),
+        pk_col.ingested_dtype.clone(),
+        fk_table,
+        &fk_col.name,
+        pk_table,
+        &pk_col.name,
+        mode,
+    );
+    FkPkCheckResult {
+        allowed: result.allowed,
+        warning: result.warning.map(|w| w.to_string()),
+        error: result.error.map(|e| e.to_string()),
     }
 }
 
@@ -979,5 +936,110 @@ mod tests {
         assert_eq!(resolved_user_id.ingested_dtype, IngestedType::Int64);
         // String → Uuid (to match products.id)
         assert_eq!(resolved_product_id.ingested_dtype, IngestedType::Uuid);
+    }
+
+    #[test]
+    fn test_resolve_fk_types_int32_to_int64_safe() {
+        // Int32→Int64 is Safe, but Int64→Int32 is Lossy (asymmetric)
+        // This test catches FK/PK argument swap bugs in resolve_fk_type_to_pk
+        let customers = make_table(
+            "customers",
+            vec![make_column("id", IngestedType::Int64)],
+            Some("id"),
+        );
+        let mut orders = make_table(
+            "orders",
+            vec![
+                make_column("id", IngestedType::Int64),
+                make_column("customer_id", IngestedType::Int32),
+            ],
+            Some("id"),
+        );
+        orders.fkeys.push(FKeySpec {
+            src_column: "customer_id".to_string(),
+            dst_table: "customers".to_string(),
+            forward: None,
+            reverse: None,
+        });
+
+        let config = GraphConfig {
+            dataset_name: "test".to_string(),
+            tables: vec![customers, orders],
+            rowpack: None,
+            num_shards: None,
+            edge_format: None,
+            coercion_mode: CoercionMode::Lossless,
+        };
+
+        let resolved = config.resolve_fk_types();
+        let resolved_orders = resolved.tables.iter().find(|t| t.name == "orders").unwrap();
+        let resolved_col = resolved_orders.columns.iter().find(|c| c.name == "customer_id").unwrap();
+
+        // Int32 FK should be resolved to Int64 to match PK
+        assert_eq!(resolved_col.ingested_dtype, IngestedType::Int64);
+    }
+
+    #[test]
+    fn test_resolve_fk_types_strict_mode_no_resolution() {
+        // In Strict mode, even Safe coercions should NOT resolve FK types
+        // Types must match exactly in Strict mode
+        let customers = make_table(
+            "customers",
+            vec![make_column("id", IngestedType::Int64)],
+            Some("id"),
+        );
+        let mut orders = make_table(
+            "orders",
+            vec![
+                make_column("id", IngestedType::Int64),
+                make_column("customer_id", IngestedType::Int32),
+            ],
+            Some("id"),
+        );
+        orders.fkeys.push(FKeySpec {
+            src_column: "customer_id".to_string(),
+            dst_table: "customers".to_string(),
+            forward: None,
+            reverse: None,
+        });
+
+        let config = GraphConfig {
+            dataset_name: "test".to_string(),
+            tables: vec![customers, orders],
+            rowpack: None,
+            num_shards: None,
+            edge_format: None,
+            coercion_mode: CoercionMode::Strict,
+        };
+
+        let resolved = config.resolve_fk_types();
+        let resolved_orders = resolved.tables.iter().find(|t| t.name == "orders").unwrap();
+        let resolved_col = resolved_orders.columns.iter().find(|c| c.name == "customer_id").unwrap();
+
+        // In Strict mode, FK should NOT be resolved - stays Int32
+        assert_eq!(resolved_col.ingested_dtype, IngestedType::Int32);
+    }
+
+    #[test]
+    fn test_resolve_fk_type_to_pk_lossy_returns_none() {
+        // Lossy coercions should never resolve, even if called directly
+        // (In practice, validate() rejects Lossy before resolve is called)
+        use super::resolve_fk_type_to_pk;
+
+        // Float64→Int64 is Lossy
+        let result = resolve_fk_type_to_pk(
+            &IngestedType::Float64,
+            &IngestedType::Int64,
+            CoercionMode::Lossless,
+        );
+        assert!(result.is_none(), "Lossy coercion Float64→Int64 should not resolve");
+
+        // Int64→Int32 is Lossy
+        let result = resolve_fk_type_to_pk(
+            &IngestedType::Int64,
+            &IngestedType::Int32,
+            CoercionMode::Lossless,
+        );
+        assert!(result.is_none(), "Lossy coercion Int64→Int32 should not resolve");
     }
 }
