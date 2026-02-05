@@ -46,6 +46,7 @@ fn base_metadata() -> GraphConfig {
         rowpack: None,
         num_shards: None,
         edge_format: None,
+        coercion_mode: Default::default(),
     }
 }
 
@@ -68,6 +69,7 @@ fn validate_minimal_metadata() {
         rowpack: None,
         num_shards: None,
         edge_format: None,
+        coercion_mode: Default::default(),
     };
     assert!(meta.validate().is_ok());
 }
@@ -100,6 +102,7 @@ fn validate_missing_pk_column() {
         rowpack: None,
         num_shards: None,
         edge_format: None,
+        coercion_mode: Default::default(),
     };
     assert!(meta.validate().is_err());
 }

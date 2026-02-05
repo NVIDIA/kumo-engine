@@ -12,6 +12,7 @@ pub mod stats_publish;
 pub mod scratch;
 pub mod consts;
 pub mod io;
+pub mod coercion;
 #[cfg(test)]
 mod tests_unit;
 
@@ -19,7 +20,7 @@ pub use crate::config::IngestOptions;
 use crate::config::PeakMemStats;
 pub use crate::io::Dest;
 use crate::consts::*;
-pub use crate::errors::{KeyParseError, KeyParseResult};
+pub use crate::errors::{CoercionError, CoercionWarning, ConvertError, KeyParseError, KeyParseResult};
 use crate::mapping::{
     write_pk_data_entry, write_pk_data_header, Key, KeyType, PkDataAdvice, PkHashShard,
     PkHashStore, PkPtrHash,
@@ -135,6 +136,10 @@ pub fn ingest_with_stats_from_source(
     }
     source.validate()?;
 
+    // Resolve FK column types to match their referenced PK types.
+    // This enables FK→PK joins across different source types (e.g., String FK → Int64 PK).
+    let source = source.resolve_fk_types();
+
     let target = std::sync::Arc::new(OutputTarget::parse(output, dest)?);
     if !matches!(&*target, OutputTarget::Local { .. }) {
         return Err(anyhow!("index build requires local output"));
@@ -146,6 +151,9 @@ pub fn ingest_with_stats_from_source(
             fs::create_dir_all(root)?;
         }
     }
+
+    // Save the resolved config (with FK types updated to match PKs)
+    target.write_bytes("config_resolved.json", serde_json::to_vec_pretty(&source)?)?;
 
     let mut ctx = IngestContext::new(source, target, options, output)?;
     let profile_dir = ctx.profile_dir.clone();

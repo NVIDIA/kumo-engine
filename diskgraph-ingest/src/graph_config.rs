@@ -4,6 +4,8 @@ use diskgraph_rowpack::RowPackConfig;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
+use crate::coercion::{coercion_kind, CoercionKind, CoercionMode};
+
 fn source_dtype_is_decimal(dtype: Option<&str>) -> bool {
     let Some(dtype) = dtype else {
         return false;
@@ -22,6 +24,14 @@ pub struct GraphConfig {
     pub num_shards: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub edge_format: Option<EdgeStorageFormat>,
+    /// Coercion mode for FK-PK type compatibility.
+    /// Default is Lossless (allows safe and conditional coercions).
+    #[serde(default, skip_serializing_if = "is_default_coercion_mode")]
+    pub coercion_mode: CoercionMode,
+}
+
+fn is_default_coercion_mode(mode: &CoercionMode) -> bool {
+    *mode == CoercionMode::default()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -537,6 +547,57 @@ impl GraphConfig {
             table_map.insert(table.name.as_str(), table);
         }
 
+        let mut warnings = Vec::new();
+
+        // Validate embedded fkeys on regular tables
+        for table in &self.tables {
+            for fkey in &table.fkeys {
+                let ref_table = match table_map.get(fkey.dst_table.as_str()) {
+                    Some(t) => *t,
+                    None => {
+                        errors.push(format!(
+                            "table {} fkey {} references missing table {}",
+                            table.name, fkey.src_column, fkey.dst_table
+                        ));
+                        continue;
+                    }
+                };
+                let pk_name = match &ref_table.primary_key {
+                    Some(pk) => pk.as_str(),
+                    None => {
+                        errors.push(format!(
+                            "table {} fkey {} references {} which has no primary key",
+                            table.name, fkey.src_column, fkey.dst_table
+                        ));
+                        continue;
+                    }
+                };
+                if let Some(fk_col) = table.columns.iter().find(|c| c.name == fkey.src_column) {
+                    if let Some(pk_col) = ref_table.columns.iter().find(|c| c.name == pk_name) {
+                        let result = check_fk_pk_types(
+                            fk_col,
+                            pk_col,
+                            &table.name,
+                            &fkey.dst_table,
+                            self.coercion_mode,
+                        );
+                        if let Some(err) = result.error {
+                            errors.push(err.to_string());
+                        }
+                        if let Some(warn) = result.warning {
+                            warnings.push(warn);
+                        }
+                    }
+                } else {
+                    errors.push(format!(
+                        "table {} fkey column {} not found",
+                        table.name, fkey.src_column
+                    ));
+                }
+            }
+        }
+
+        // Validate edge tables
         for table in &self.tables {
             if let Some(edge) = &table.edge_table {
                 for fk in [&edge.src_fk, &edge.dst_fk] {
@@ -562,20 +623,28 @@ impl GraphConfig {
                     };
                     if let Some(fk_col) = table.columns.iter().find(|c| c.name == fk.edge_column) {
                         if let Some(pk_col) = ref_table.columns.iter().find(|c| c.name == pk_name) {
-                            if let Err(msg) = compatible_key_columns(fk_col, pk_col) {
-                                errors.push(format!(
-                                    "edge table {} fk {} and {}.{} {}",
-                                    table.name,
-                                    fk.edge_column,
-                                    fk.ref_table,
-                                    pk_name,
-                                    msg
-                                ));
+                            let result = check_fk_pk_types(
+                                fk_col,
+                                pk_col,
+                                &table.name,
+                                &fk.ref_table,
+                                self.coercion_mode,
+                            );
+                            if let Some(err) = result.error {
+                                errors.push(err.to_string());
+                            }
+                            if let Some(warn) = result.warning {
+                                warnings.push(warn);
                             }
                         }
                     }
                 }
             }
+        }
+
+        // Print warnings to stderr
+        for warn in &warnings {
+            eprintln!("[WARN] {warn}");
         }
 
         if errors.is_empty() {
@@ -584,48 +653,331 @@ impl GraphConfig {
             Err(anyhow!(errors.join("\n")))
         }
     }
-}
 
-fn compatible_key_columns(a: &ColumnSpec, b: &ColumnSpec) -> Result<(), String> {
-    use IngestedType::*;
-    match (&a.ingested_dtype, &b.ingested_dtype) {
-        (String, String) | (Bytes, Bytes) | (String, Bytes) | (Bytes, String) => Ok(()),
-        (Uuid, Uuid) | (Uuid256, Uuid256) | (Ip, Ip) => Ok(()),
-        (a_type, b_type) if is_numeric(a_type) && is_numeric(b_type) => Ok(()),
-        (a_type, b_type) if is_numeric(a_type) && matches!(b_type, String | Bytes) => Ok(()),
-        (a_type, b_type) if is_numeric(b_type) && matches!(a_type, String | Bytes) => Ok(()),
-        _ => Err("have incompatible types".to_string()),
+    /// Resolve FK column types to match their referenced PK types.
+    ///
+    /// For FK→PK relationships where coercion is Safe or Conditional,
+    /// this updates the FK column's `ingested_dtype` to match the PK type.
+    /// This allows Arrow→IngestedType conversion to handle the casting,
+    /// ensuring FK and PK produce the same KeyType for hash lookup.
+    ///
+    /// Returns a new GraphConfig with resolved types.
+    /// Should be called after `validate()` succeeds.
+    pub fn resolve_fk_types(&self) -> GraphConfig {
+        let mut resolved = self.clone();
+
+        // Build table lookup for PK column access
+        let table_map: HashMap<&str, &TableSpec> = self
+            .tables
+            .iter()
+            .map(|t| (t.name.as_str(), t))
+            .collect();
+
+        // Track which columns need type updates: (table_name, column_name) -> new_type
+        let mut type_updates: HashMap<(String, String), IngestedType> = HashMap::new();
+
+        // Process embedded fkeys on regular tables
+        for table in &self.tables {
+            for fkey in &table.fkeys {
+                if let Some(ref_table) = table_map.get(fkey.dst_table.as_str()) {
+                    if let Some(pk_name) = &ref_table.primary_key {
+                        if let Some(fk_col) = table.columns.iter().find(|c| c.name == fkey.src_column) {
+                            if let Some(pk_col) = ref_table.columns.iter().find(|c| c.name == *pk_name) {
+                                if let Some(new_type) = resolve_fk_type_to_pk(
+                                    &fk_col.ingested_dtype,
+                                    &pk_col.ingested_dtype,
+                                    self.coercion_mode,
+                                ) {
+                                    type_updates.insert(
+                                        (table.name.clone(), fkey.src_column.clone()),
+                                        new_type,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Process edge tables
+        for table in &self.tables {
+            if let Some(edge) = &table.edge_table {
+                for fk in [&edge.src_fk, &edge.dst_fk] {
+                    if let Some(ref_table) = table_map.get(fk.ref_table.as_str()) {
+                        if let Some(pk_name) = &ref_table.primary_key {
+                            if let Some(fk_col) = table.columns.iter().find(|c| c.name == fk.edge_column) {
+                                if let Some(pk_col) = ref_table.columns.iter().find(|c| c.name == *pk_name) {
+                                    if let Some(new_type) = resolve_fk_type_to_pk(
+                                        &fk_col.ingested_dtype,
+                                        &pk_col.ingested_dtype,
+                                        self.coercion_mode,
+                                    ) {
+                                        type_updates.insert(
+                                            (table.name.clone(), fk.edge_column.clone()),
+                                            new_type,
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Apply type updates to resolved config
+        for table in &mut resolved.tables {
+            for col in &mut table.columns {
+                if let Some(new_type) = type_updates.get(&(table.name.clone(), col.name.clone())) {
+                    if col.ingested_dtype != *new_type {
+                        eprintln!(
+                            "[INFO] FK type resolution: {}.{} {:?} → {:?} (to match PK)",
+                            table.name, col.name, col.ingested_dtype, new_type
+                        );
+                        col.ingested_dtype = new_type.clone();
+                    }
+                }
+            }
+        }
+
+        resolved
     }
 }
 
-fn is_signed_int(t: &IngestedType) -> bool {
-    matches!(
-        t,
-        IngestedType::Int8
-            | IngestedType::Int16
-            | IngestedType::Int32
-            | IngestedType::Int64
-    )
+/// Determine if FK type should be resolved to PK type.
+/// Returns Some(pk_type) if coercion is Safe or Conditional and types differ.
+/// Returns None if types are the same or coercion is not allowed.
+fn resolve_fk_type_to_pk(
+    fk_type: &IngestedType,
+    pk_type: &IngestedType,
+    mode: CoercionMode,
+) -> Option<IngestedType> {
+    if fk_type == pk_type {
+        return None; // Same type, no resolution needed
+    }
+
+    let kind = coercion_kind(fk_type.clone(), pk_type.clone());
+
+    match (mode, kind) {
+        // Safe coercion: resolve FK to PK type
+        (CoercionMode::Lossless, CoercionKind::Safe) => Some(pk_type.clone()),
+
+        // Conditional coercion: resolve FK to PK type (parsing will happen at runtime)
+        (CoercionMode::Lossless, CoercionKind::Conditional) => Some(pk_type.clone()),
+
+        // Strict mode, Lossy, or Incompatible: don't resolve (validate() will catch errors)
+        _ => None,
+    }
 }
 
-fn is_unsigned_int(t: &IngestedType) -> bool {
-    matches!(
-        t,
-        IngestedType::UInt8
-            | IngestedType::UInt16
-            | IngestedType::UInt32
-            | IngestedType::UInt64
-    )
+/// Result of FK-PK type compatibility check.
+pub struct FkPkCheckResult {
+    /// Whether the types are compatible (allows ingestion to proceed).
+    pub allowed: bool,
+    /// Warning message for conditional coercions.
+    pub warning: Option<String>,
+    /// Error message for incompatible/lossy coercions.
+    pub error: Option<String>,
 }
 
-fn is_numeric(t: &IngestedType) -> bool {
-    is_signed_int(t)
-        || is_unsigned_int(t)
-        || matches!(
-            t,
-            IngestedType::Float32
-                | IngestedType::Float64
-                | IngestedType::Decimal128
-                | IngestedType::Decimal256
-        )
+/// Check FK-PK type compatibility using the coercion system.
+fn check_fk_pk_types(
+    fk_col: &ColumnSpec,
+    pk_col: &ColumnSpec,
+    fk_table: &str,
+    pk_table: &str,
+    mode: CoercionMode,
+) -> FkPkCheckResult {
+    let fk_type = &fk_col.ingested_dtype;
+    let pk_type = &pk_col.ingested_dtype;
+    let kind = coercion_kind(fk_type.clone(), pk_type.clone());
+
+    match (mode, kind) {
+        // Same type: always OK
+        (_, CoercionKind::Same) => FkPkCheckResult {
+            allowed: true,
+            warning: None,
+            error: None,
+        },
+
+        // Strict mode: any difference is error
+        (CoercionMode::Strict, _) => FkPkCheckResult {
+            allowed: false,
+            warning: None,
+            error: Some(format!(
+                "type mismatch in strict mode: {}.{} ({:?}) vs {}.{} ({:?})",
+                fk_table, fk_col.name, fk_type, pk_table, pk_col.name, pk_type
+            )),
+        },
+
+        // Lossless mode: safe is OK
+        (CoercionMode::Lossless, CoercionKind::Safe) => FkPkCheckResult {
+            allowed: true,
+            warning: None,
+            error: None,
+        },
+
+        // Lossless mode: conditional is OK with warning
+        (CoercionMode::Lossless, CoercionKind::Conditional) => FkPkCheckResult {
+            allowed: true,
+            warning: Some(format!(
+                "conditional coercion: {}.{} ({:?}) to {}.{} ({:?}) - invalid values will skip edge creation",
+                fk_table, fk_col.name, fk_type, pk_table, pk_col.name, pk_type
+            )),
+            error: None,
+        },
+
+        // Lossy: always error
+        (_, CoercionKind::Lossy) => FkPkCheckResult {
+            allowed: false,
+            warning: None,
+            error: Some(format!(
+                "lossy coercion not allowed: {}.{} ({:?}) to {}.{} ({:?})",
+                fk_table, fk_col.name, fk_type, pk_table, pk_col.name, pk_type
+            )),
+        },
+
+        // Incompatible: always error
+        (_, CoercionKind::Incompatible) => FkPkCheckResult {
+            allowed: false,
+            warning: None,
+            error: Some(format!(
+                "incompatible types: {}.{} ({:?}) to {}.{} ({:?})",
+                fk_table, fk_col.name, fk_type, pk_table, pk_col.name, pk_type
+            )),
+        },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_column(name: &str, dtype: IngestedType) -> ColumnSpec {
+        ColumnSpec {
+            name: name.to_string(),
+            source_dtype: None,
+            ingested_dtype: dtype,
+            fixed_len: None,
+            timestamp_format: None,
+            timestamp_unit: None,
+            precision: None,
+            scale: None,
+        }
+    }
+
+    fn make_table(name: &str, columns: Vec<ColumnSpec>, primary_key: Option<&str>) -> TableSpec {
+        TableSpec {
+            name: name.to_string(),
+            columns,
+            primary_key: primary_key.map(String::from),
+            create_time: None,
+            end_time: None,
+            weight: None,
+            edge_table: None,
+            rowpack: None,
+            source: DataSource::Parquet { paths: vec!["test.parquet".to_string()] },
+            fkeys: vec![],
+        }
+    }
+
+    // Note: Coercion kind tests (Same, Safe, Conditional, Lossy, Incompatible) are in
+    // coercion/tests_matrix.rs (Matrix 4). These tests only verify config transformation.
+
+    #[test]
+    fn test_resolve_fk_types_embedded_fkey() {
+        // orders.customer_id (String) → customers.id (Int64)
+        let customers = make_table(
+            "customers",
+            vec![make_column("id", IngestedType::Int64)],
+            Some("id"),
+        );
+        let mut orders = make_table(
+            "orders",
+            vec![
+                make_column("id", IngestedType::Int64),
+                make_column("customer_id", IngestedType::String),
+            ],
+            Some("id"),
+        );
+        orders.fkeys.push(FKeySpec {
+            src_column: "customer_id".to_string(),
+            dst_table: "customers".to_string(),
+            forward: None,
+            reverse: None,
+        });
+
+        let config = GraphConfig {
+            dataset_name: "test".to_string(),
+            tables: vec![customers, orders],
+            rowpack: None,
+            num_shards: None,
+            edge_format: None,
+            coercion_mode: CoercionMode::Lossless,
+        };
+
+        let resolved = config.resolve_fk_types();
+
+        let resolved_orders = resolved.tables.iter().find(|t| t.name == "orders").unwrap();
+        let resolved_customer_id = resolved_orders.columns.iter().find(|c| c.name == "customer_id").unwrap();
+
+        // String FK resolved to Int64 to match PK
+        assert_eq!(resolved_customer_id.ingested_dtype, IngestedType::Int64);
+    }
+
+    #[test]
+    fn test_resolve_fk_types_edge_table() {
+        // Edge table with two FKs to different PK types
+        let users = make_table(
+            "users",
+            vec![make_column("id", IngestedType::Int64)],
+            Some("id"),
+        );
+        let products = make_table(
+            "products",
+            vec![make_column("id", IngestedType::Uuid)],
+            Some("id"),
+        );
+        let mut reviews = make_table(
+            "reviews",
+            vec![
+                make_column("user_id", IngestedType::String),
+                make_column("product_id", IngestedType::String),
+            ],
+            None,
+        );
+        reviews.edge_table = Some(EdgeTableSpec {
+            src_fk: ForeignKeySpec {
+                edge_column: "user_id".to_string(),
+                ref_table: "users".to_string(),
+            },
+            dst_fk: ForeignKeySpec {
+                edge_column: "product_id".to_string(),
+                ref_table: "products".to_string(),
+            },
+            forward: None,
+            reverse: None,
+        });
+
+        let config = GraphConfig {
+            dataset_name: "test".to_string(),
+            tables: vec![users, products, reviews],
+            rowpack: None,
+            num_shards: None,
+            edge_format: None,
+            coercion_mode: CoercionMode::Lossless,
+        };
+
+        let resolved = config.resolve_fk_types();
+
+        let resolved_reviews = resolved.tables.iter().find(|t| t.name == "reviews").unwrap();
+        let resolved_user_id = resolved_reviews.columns.iter().find(|c| c.name == "user_id").unwrap();
+        let resolved_product_id = resolved_reviews.columns.iter().find(|c| c.name == "product_id").unwrap();
+
+        // String → Int64 (to match users.id)
+        assert_eq!(resolved_user_id.ingested_dtype, IngestedType::Int64);
+        // String → Uuid (to match products.id)
+        assert_eq!(resolved_product_id.ingested_dtype, IngestedType::Uuid);
+    }
 }

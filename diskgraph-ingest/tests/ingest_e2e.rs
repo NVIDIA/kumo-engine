@@ -2215,3 +2215,418 @@ fn ingest_parquet_drops_rows_with_null_create_time() -> Result<()> {
 
     Ok(())
 }
+
+// =============================================================================
+// FK Type Resolution E2E Tests
+// =============================================================================
+
+/// Test that String FK correctly resolves to Int64 PK type and edges are created.
+///
+/// Scenario:
+/// - customers table: id (Int64 PK) with values [1, 2, 3]
+/// - orders table: customer_id (String FK) with values ["1", "2", "3"]
+///
+/// Expected:
+/// - config_resolved.json should have customer_id as int64
+/// - All 4 edges should be created (String "1" joins with Int64 1)
+#[test]
+fn ingest_string_fk_to_int64_pk_resolution() -> Result<()> {
+    let dir = tempdir()?;
+    let input_root = dir.path().join("input");
+    let output_root = dir.path().join("output");
+
+    // Create customers.csv with Int64 PK
+    write_csv(
+        &input_root.join("customers.csv"),
+        &["id", "name"],
+        &[
+            vec!["1".into(), "Alice".into()],
+            vec!["2".into(), "Bob".into()],
+            vec!["3".into(), "Charlie".into()],
+        ],
+    )?;
+
+    // Create orders.csv with String FK (will be resolved to Int64)
+    write_csv(
+        &input_root.join("orders.csv"),
+        &["id", "customer_id", "amount"],
+        &[
+            vec!["100".into(), "1".into(), "50.0".into()],  // Links to Alice
+            vec!["101".into(), "2".into(), "75.0".into()],  // Links to Bob
+            vec!["102".into(), "3".into(), "100.0".into()], // Links to Charlie
+            vec!["103".into(), "1".into(), "25.0".into()],  // Another order for Alice
+        ],
+    )?;
+
+    // Config: customer_id is declared as String, but PK is Int64
+    let source = serde_json::json!({
+        "dataset_name": "fk_resolution_test",
+        "tables": [
+            {
+                "name": "Customer",
+                "source": {"type": "csv", "paths": [input_root.join("customers.csv").to_string_lossy()]},
+                "primary_key": "id",
+                "columns": [
+                    {"name": "id", "ingested_dtype": "int64"},
+                    {"name": "name", "ingested_dtype": "string"}
+                ]
+            },
+            {
+                "name": "Order",
+                "source": {"type": "csv", "paths": [input_root.join("orders.csv").to_string_lossy()]},
+                "primary_key": "id",
+                "columns": [
+                    {"name": "id", "ingested_dtype": "int64"},
+                    {"name": "customer_id", "ingested_dtype": "string"},
+                    {"name": "amount", "ingested_dtype": "float32"}
+                ],
+                "fkeys": [
+                    {
+                        "src_column": "customer_id",
+                        "dst_table": "Customer"
+                    }
+                ]
+            }
+        ]
+    });
+
+    let source_path = dir.path().join("config.json");
+    fs::write(&source_path, serde_json::to_vec_pretty(&source)?)?;
+
+    // Run ingest
+    let (metadata, stats) = ingest_with_stats(
+        &source_path,
+        output_root.to_str().unwrap(),
+        Dest::Local,
+        IngestOptions::default(),
+    )?;
+
+    // Verify config_resolved.json was created
+    let resolved_config_path = output_root.join("config_resolved.json");
+    assert!(resolved_config_path.exists(), "config_resolved.json should exist");
+
+    // Verify FK type was resolved to Int64
+    let resolved_config: serde_json::Value =
+        serde_json::from_slice(&fs::read(&resolved_config_path)?)?;
+    let order_table = resolved_config["tables"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "Order")
+        .expect("Order table should exist");
+    let customer_id_col = order_table["columns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == "customer_id")
+        .expect("customer_id column should exist");
+
+    assert_eq!(
+        customer_id_col["ingested_dtype"], "int64",
+        "customer_id should be resolved to int64 (was string)"
+    );
+
+    // Verify metadata has correct table counts
+    assert_eq!(metadata.node_types.len(), 2);
+
+    // Verify edge counts
+    let rel_name = "Order_customer_id_to_Customer_id";
+    let edge_count = stats.edge_counts.get(rel_name).copied().unwrap_or(0);
+    assert_eq!(edge_count, 4, "Should have 4 edges (one per order)");
+
+    // Open index and verify edges
+    let reader = GraphIndexReader::open(&output_root.join("index_metadata.json"), &output_root)?;
+
+    let order_table_reader = reader.table("Order").unwrap();
+    let customer_table = reader.table("Customer").unwrap();
+
+    // Verify forward edges from Order → Customer
+    let forward_edges = sum_relation_edges(&order_table_reader, rel_name)?;
+    assert_eq!(forward_edges, 4, "Should have 4 forward edges");
+
+    // Verify reverse edges from Customer → Order
+    let reverse_rel_name = "Order_customer_id_to_Customer_id_reverse";
+    let reverse_edges = sum_relation_edges(&customer_table, reverse_rel_name)?;
+    assert_eq!(reverse_edges, 4, "Should have 4 reverse edges");
+
+    // Verify Alice (customer 1) has 2 orders
+    let alice_node_id = customer_table
+        .node_id_from_pk(&Key::Int(1))?
+        .expect("Alice should exist");
+    let alice_view = customer_table.edges_for_node(alice_node_id)?;
+    let alice_segments = alice_view.relation_segments()?;
+    let rev_rel_idx = customer_table
+        .relations()
+        .iter()
+        .position(|r| r.name == reverse_rel_name)
+        .expect("reverse relation should exist");
+    assert_eq!(
+        alice_segments[rev_rel_idx].count, 2,
+        "Alice should have 2 orders"
+    );
+
+    Ok(())
+}
+
+/// Test that Safe coercion (Int32 FK → Int64 PK) works and resolves the type.
+#[test]
+fn ingest_int32_fk_to_int64_pk_safe_coercion() -> Result<()> {
+    let dir = tempdir()?;
+    let input_root = dir.path().join("input");
+    let output_root = dir.path().join("output");
+
+    write_csv(
+        &input_root.join("parents.csv"),
+        &["id"],
+        &[vec!["1".into()], vec!["2".into()]],
+    )?;
+
+    write_csv(
+        &input_root.join("children.csv"),
+        &["id", "parent_id"],
+        &[
+            vec!["100".into(), "1".into()],
+            vec!["101".into(), "2".into()],
+        ],
+    )?;
+
+    let source = serde_json::json!({
+        "dataset_name": "safe_coercion_test",
+        "tables": [
+            {
+                "name": "Parent",
+                "source": {"type": "csv", "paths": [input_root.join("parents.csv").to_string_lossy()]},
+                "primary_key": "id",
+                "columns": [
+                    {"name": "id", "ingested_dtype": "int64"}
+                ]
+            },
+            {
+                "name": "Child",
+                "source": {"type": "csv", "paths": [input_root.join("children.csv").to_string_lossy()]},
+                "primary_key": "id",
+                "columns": [
+                    {"name": "id", "ingested_dtype": "int64"},
+                    {"name": "parent_id", "ingested_dtype": "int32"}
+                ],
+                "fkeys": [
+                    {
+                        "src_column": "parent_id",
+                        "dst_table": "Parent"
+                    }
+                ]
+            }
+        ]
+    });
+
+    let source_path = dir.path().join("config.json");
+    fs::write(&source_path, serde_json::to_vec_pretty(&source)?)?;
+
+    let (_, stats) = ingest_with_stats(
+        &source_path,
+        output_root.to_str().unwrap(),
+        Dest::Local,
+        IngestOptions::default(),
+    )?;
+
+    // Verify FK type was resolved to Int64 (Safe coercion promotes to PK type)
+    let resolved_config: serde_json::Value =
+        serde_json::from_slice(&fs::read(output_root.join("config_resolved.json"))?)?;
+    let child_table = resolved_config["tables"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "Child")
+        .unwrap();
+    let parent_id_col = child_table["columns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == "parent_id")
+        .unwrap();
+
+    assert_eq!(
+        parent_id_col["ingested_dtype"], "int64",
+        "parent_id should be resolved to int64"
+    );
+
+    // Verify edges created
+    let rel_name = "Child_parent_id_to_Parent_id";
+    let edge_count = stats.edge_counts.get(rel_name).copied().unwrap_or(0);
+    assert_eq!(edge_count, 2, "Should have 2 edges");
+
+    Ok(())
+}
+
+/// Test edge table FK resolution - both src_fk and dst_fk are resolved independently.
+///
+/// Scenario:
+/// - users table: id (Int64 PK)
+/// - products table: id (Int64 PK)
+/// - reviews edge table: user_id (String) → users, product_id (String) → products
+///
+/// Expected:
+/// - Both user_id and product_id should be resolved to int64
+/// - Edges should be created correctly
+#[test]
+fn ingest_edge_table_fk_resolution() -> Result<()> {
+    let dir = tempdir()?;
+    let input_root = dir.path().join("input");
+    let output_root = dir.path().join("output");
+
+    // Create users.csv with Int64 PK
+    write_csv(
+        &input_root.join("users.csv"),
+        &["id", "name"],
+        &[
+            vec!["1".into(), "Alice".into()],
+            vec!["2".into(), "Bob".into()],
+        ],
+    )?;
+
+    // Create products.csv with Int64 PK
+    write_csv(
+        &input_root.join("products.csv"),
+        &["id", "name"],
+        &[
+            vec!["100".into(), "Widget".into()],
+            vec!["101".into(), "Gadget".into()],
+        ],
+    )?;
+
+    // Create reviews.csv - edge table with String FKs
+    write_csv(
+        &input_root.join("reviews.csv"),
+        &["user_id", "product_id", "rating"],
+        &[
+            vec!["1".into(), "100".into(), "5".into()],  // Alice reviews Widget
+            vec!["1".into(), "101".into(), "4".into()],  // Alice reviews Gadget
+            vec!["2".into(), "100".into(), "3".into()],  // Bob reviews Widget
+        ],
+    )?;
+
+    // Config: edge_table with String FKs pointing to Int64 PKs
+    let source = serde_json::json!({
+        "dataset_name": "edge_table_fk_test",
+        "tables": [
+            {
+                "name": "User",
+                "source": {"type": "csv", "paths": [input_root.join("users.csv").to_string_lossy()]},
+                "primary_key": "id",
+                "columns": [
+                    {"name": "id", "ingested_dtype": "int64"},
+                    {"name": "name", "ingested_dtype": "string"}
+                ]
+            },
+            {
+                "name": "Product",
+                "source": {"type": "csv", "paths": [input_root.join("products.csv").to_string_lossy()]},
+                "primary_key": "id",
+                "columns": [
+                    {"name": "id", "ingested_dtype": "int64"},
+                    {"name": "name", "ingested_dtype": "string"}
+                ]
+            },
+            {
+                "name": "Review",
+                "source": {"type": "csv", "paths": [input_root.join("reviews.csv").to_string_lossy()]},
+                "columns": [
+                    {"name": "user_id", "ingested_dtype": "string"},
+                    {"name": "product_id", "ingested_dtype": "string"},
+                    {"name": "rating", "ingested_dtype": "int32"}
+                ],
+                "edge_table": {
+                    "src_fk": {"edge_column": "user_id", "ref_table": "User"},
+                    "dst_fk": {"edge_column": "product_id", "ref_table": "Product"}
+                }
+            }
+        ]
+    });
+
+    let source_path = dir.path().join("config.json");
+    fs::write(&source_path, serde_json::to_vec_pretty(&source)?)?;
+
+    // Run ingest
+    let (metadata, stats) = ingest_with_stats(
+        &source_path,
+        output_root.to_str().unwrap(),
+        Dest::Local,
+        IngestOptions::default(),
+    )?;
+
+    // Verify config_resolved.json has both FKs resolved to int64
+    let resolved_config: serde_json::Value =
+        serde_json::from_slice(&fs::read(output_root.join("config_resolved.json"))?)?;
+    let review_table = resolved_config["tables"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "Review")
+        .expect("Review table should exist");
+
+    let user_id_col = review_table["columns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == "user_id")
+        .expect("user_id column should exist");
+    let product_id_col = review_table["columns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == "product_id")
+        .expect("product_id column should exist");
+
+    assert_eq!(
+        user_id_col["ingested_dtype"], "int64",
+        "user_id should be resolved to int64 (was string)"
+    );
+    assert_eq!(
+        product_id_col["ingested_dtype"], "int64",
+        "product_id should be resolved to int64 (was string)"
+    );
+
+    // Verify metadata
+    assert_eq!(metadata.node_types.len(), 2, "Should have User and Product node types");
+
+    // Verify edge counts
+    let forward_rel = "edge_Review_src_to_dst";
+    let reverse_rel = "edge_Review_dst_to_src";
+
+    let forward_count = stats.edge_counts.get(forward_rel).copied().unwrap_or(0);
+    let reverse_count = stats.edge_counts.get(reverse_rel).copied().unwrap_or(0);
+
+    assert_eq!(forward_count, 3, "Should have 3 forward edges (User → Product)");
+    assert_eq!(reverse_count, 3, "Should have 3 reverse edges (Product → User)");
+
+    // Open index and verify edges
+    let reader = GraphIndexReader::open(&output_root.join("index_metadata.json"), &output_root)?;
+
+    let user_table = reader.table("User").unwrap();
+    let product_table = reader.table("Product").unwrap();
+
+    // Verify Alice (user 1) exists and total forward edges
+    let _alice_node_id = user_table
+        .node_id_from_pk(&Key::Int(1))?
+        .expect("Alice should exist");
+    let total_user_edges = sum_relation_edges(&user_table, forward_rel)?;
+    assert_eq!(total_user_edges, 3, "Should have 3 total forward edges from users");
+
+    // Verify Widget (product 100) has 2 reviews (edges from 2 users)
+    let widget_node_id = product_table
+        .node_id_from_pk(&Key::Int(100))?
+        .expect("Widget should exist");
+    let widget_view = product_table.edges_for_node(widget_node_id)?;
+    let widget_segments = widget_view.relation_segments()?;
+    let rev_rel_idx = product_table
+        .relations()
+        .iter()
+        .position(|r| r.name == reverse_rel)
+        .expect("reverse relation should exist");
+    assert_eq!(
+        widget_segments[rev_rel_idx].count, 2,
+        "Widget should have 2 reviews"
+    );
+
+    Ok(())
+}
