@@ -263,4 +263,103 @@ mod tests {
             Some(CoercionError::IncompatibleTypes { .. })
         ));
     }
+
+    #[test]
+    fn test_lossy_error_message_float_to_int() {
+        let result = validate_fk_pk(
+            IngestedType::Float64,
+            IngestedType::Int64,
+            "orders",
+            "amount",
+            "products",
+            "id",
+            CoercionMode::Lossless,
+        );
+        let error = result.error.unwrap();
+        let msg = error.to_string();
+        assert!(
+            msg.contains("truncates decimal"),
+            "Float→Int error should mention decimal truncation, got: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn test_lossy_error_message_int_narrowing() {
+        let result = validate_fk_pk(
+            IngestedType::Int64,
+            IngestedType::Int32,
+            "orders",
+            "big_id",
+            "products",
+            "id",
+            CoercionMode::Lossless,
+        );
+        let error = result.error.unwrap();
+        let msg = error.to_string();
+        assert!(
+            msg.contains("overflow"),
+            "Int narrowing error should mention overflow, got: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn test_lossy_error_message_timestamp_to_date() {
+        let result = validate_fk_pk(
+            IngestedType::Timestamp,
+            IngestedType::Date,
+            "events",
+            "event_time",
+            "calendar",
+            "day",
+            CoercionMode::Lossless,
+        );
+        let error = result.error.unwrap();
+        let msg = error.to_string();
+        assert!(
+            msg.contains("truncates time"),
+            "Timestamp→Date error should mention time truncation, got: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn test_lossy_error_message_int_to_float_precision() {
+        let result = validate_fk_pk(
+            IngestedType::Int64,
+            IngestedType::Float64,
+            "orders",
+            "big_id",
+            "products",
+            "id",
+            CoercionMode::Lossless,
+        );
+        let error = result.error.unwrap();
+        let msg = error.to_string();
+        assert!(
+            msg.contains("mantissa") || msg.contains("precision"),
+            "Int64→Float64 error should mention mantissa/precision loss, got: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn test_conditional_warning_message_content() {
+        let result = validate_fk_pk(
+            IngestedType::String,
+            IngestedType::Int64,
+            "orders",
+            "customer_id",
+            "customers",
+            "id",
+            CoercionMode::Lossless,
+        );
+        let warning = result.warning.unwrap();
+        let msg = warning.to_string();
+        // Warning should mention the table/column names and types
+        assert!(msg.contains("orders"), "Warning should mention FK table");
+        assert!(msg.contains("customer_id"), "Warning should mention FK column");
+        assert!(msg.contains("customers"), "Warning should mention PK table");
+    }
 }
