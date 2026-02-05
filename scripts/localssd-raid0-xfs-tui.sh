@@ -39,6 +39,21 @@ require_cmd() {
   }
 }
 
+tty_out() {
+  if [[ -w /dev/tty ]]; then
+    echo "/dev/tty"
+  else
+    echo "/dev/stdout"
+  fi
+}
+
+require_tty_for_prompt() {
+  if [[ "${ASSUME_YES}" != "true" && ! -r /dev/tty ]]; then
+    echo "No TTY available for interactive prompt. Re-run with -y." >&2
+    exit 1
+  fi
+}
+
 require_cmd lsblk
 require_cmd findmnt
 require_cmd mdadm
@@ -131,15 +146,18 @@ reset_disk() {
 choose_disks() {
   local disks=("$@")
   local ans
-  echo "Eligible NVMe disks:" >/dev/tty
+  local out
+  out="$(tty_out)"
+  echo "Eligible NVMe disks:" >"$out"
   for d in "${disks[@]}"; do
-    disk_info "$d" >/dev/tty
+    disk_info "$d" >"$out"
   done
-  echo >/dev/tty
+  echo >"$out"
   if [[ "${ASSUME_YES}" == "true" ]]; then
     printf "%s\n" "${disks[@]}"
     return 0
   fi
+  require_tty_for_prompt
   printf "Use all listed disks for the volume? [Y/n] " >/dev/tty
   read -r ans </dev/tty
   case "${ans:-Y}" in
@@ -177,6 +195,7 @@ main() {
     if [[ "${ASSUME_YES}" == "true" ]]; then
       ans="y"
     else
+      require_tty_for_prompt
       read -r -p "Reset (unmount + wipe) these disks? This is destructive. [y/N] " ans
     fi
     case "${ans:-N}" in
