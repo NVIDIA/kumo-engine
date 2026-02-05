@@ -12,19 +12,22 @@
 # - Records results and minimal state for resume after interruption.
 #
 # How to use:
-# - Edit benchmark_configs/config_list.txt to include the configs you want, in order.
-# - Run: ./scripts/benchmark_ingest.sh
+# - Edit scripts/benchmarks/benchmark_configs/config_list.txt to include the configs you want, in order.
+# - Run: ./scripts/benchmarks/benchmark_ingest.sh
 # - Designed to be left running continuously; it resumes from the last
 #   completed index in benchmark/benchmark_state.txt if restarted.
 #
 # Notes:
-# - Config list is read from benchmark_configs/config_list.txt. When you add new configs,
+# - Config list is read from scripts/benchmarks/benchmark_configs/config_list.txt. When you add new configs,
 #   commit that file update and the script will pick up the new list after the next git pull.
 # - All logs, results, and state live under ./benchmark/ (git-ignored).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+REPO_ROOT="$(git -C "${SCRIPT_DIR}" rev-parse --show-toplevel 2>/dev/null || true)"
+if [[ -z "${REPO_ROOT}" ]]; then
+  REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
+fi
 
 # Pre-defined list of config JSONs (edit config_list.txt in-order).
 CONFIG_LIST_FILE="${SCRIPT_DIR}/benchmark_configs/config_list.txt"

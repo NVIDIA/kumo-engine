@@ -71,10 +71,14 @@ benchmark 8 30s
 
 ### Benchmark ingest runs (S3-driven)
 
-We have a server running 24/7 for ingest benchmarks. To add a dataset to the benchmark rotation, update `scripts/benchmark_configs/config_list.txt`.
+We have a server running 24/7 for ingest benchmarks. To add a dataset to the benchmark rotation, update `scripts/benchmarks/benchmark_configs/config_list.txt`.
 
 ```bash
-./scripts/benchmark_ingest.sh
+./scripts/benchmarks/benchmark_ingest_systemd.sh install
+./scripts/benchmarks/benchmark_ingest_systemd.sh status
+./scripts/benchmarks/benchmark_ingest_tail.sh
+./scripts/benchmarks/benchmark_ingest_systemd.sh stop
+./scripts/benchmarks/benchmark_ingest.sh
 ./diskgraph-ingest/scripts/perf_explorer.sh
 ```
 

@@ -1,0 +1,16 @@
+[Unit]
+Description=DiskGraph benchmark ingest loop
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=__REPO_ROOT__
+ExecStart=/usr/bin/env bash -lc ./scripts/benchmarks/benchmark_ingest.sh
+Restart=always
+RestartSec=5
+KillMode=control-group
+Environment=BENCHMARK_ALLOW_DIRTY=0
+
+[Install]
+WantedBy=default.target

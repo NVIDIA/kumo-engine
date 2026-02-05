@@ -1,2 +1,0 @@
-scripts/benchmark_configs/alt_detection_10pct.json
-scripts/benchmark_configs/mimic.json
