@@ -11,7 +11,7 @@ Restart=always
 RestartSec=5
 KillMode=control-group
 Environment=BENCHMARK_ALLOW_DIRTY=0
-Environment=PATH=%h/.cargo/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PATH=%h/.cargo/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
 
 [Install]
 WantedBy=default.target
