@@ -368,6 +368,27 @@ impl<'p> RowAccess<'p> {
                     .ok_or_else(|| anyhow!("decimal256 overflow"))
                     .map(Some)
             }
+            DataType::Float64 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Float64Array>()
+                    .ok_or_else(|| anyhow!("float64 cast"))?;
+                Ok(Some(arr.value(self.row) as i32))
+            }
+            DataType::Float32 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Float32Array>()
+                    .ok_or_else(|| anyhow!("float32 cast"))?;
+                Ok(Some(arr.value(self.row) as i32))
+            }
+            DataType::Boolean => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::BooleanArray>()
+                    .ok_or_else(|| anyhow!("bool cast"))?;
+                Ok(Some(if arr.value(self.row) { 1 } else { 0 }))
+            }
             _ => Err(anyhow!("int32 type mismatch")),
         }
     }
@@ -477,6 +498,48 @@ impl<'p> RowAccess<'p> {
                     .ok_or_else(|| anyhow!("fixed binary cast"))?;
                 parse_u64(std::str::from_utf8(arr.value(self.row))?)
                     .ok_or_else(|| anyhow!("uint64 parse failed"))
+                    .map(Some)
+            }
+            DataType::Float64 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Float64Array>()
+                    .ok_or_else(|| anyhow!("float64 cast"))?;
+                Ok(Some(arr.value(self.row) as u64))
+            }
+            DataType::Float32 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Float32Array>()
+                    .ok_or_else(|| anyhow!("float32 cast"))?;
+                Ok(Some(arr.value(self.row) as u64))
+            }
+            DataType::Boolean => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::BooleanArray>()
+                    .ok_or_else(|| anyhow!("bool cast"))?;
+                Ok(Some(if arr.value(self.row) { 1 } else { 0 }))
+            }
+            DataType::Decimal128(_, scale) => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Decimal128Array>()
+                    .ok_or_else(|| anyhow!("decimal128 cast"))?;
+                let value = arr.value(self.row);
+                let scaled = apply_decimal_scale_i128(value, i32::from(*scale));
+                Ok(Some(scaled as u64))
+            }
+            DataType::Decimal256(_, scale) => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Decimal256Array>()
+                    .ok_or_else(|| anyhow!("decimal256 cast"))?;
+                let value = arr.value(self.row);
+                let scaled = apply_decimal_scale_i256(value, i32::from(*scale));
+                scaled
+                    .to_u64()
+                    .ok_or_else(|| anyhow!("decimal256 overflow"))
                     .map(Some)
             }
             _ => Err(anyhow!("uint64 type mismatch")),
@@ -590,6 +653,48 @@ impl<'p> RowAccess<'p> {
                     .ok_or_else(|| anyhow!("uint32 parse failed"))
                     .map(Some)
             }
+            DataType::Float64 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Float64Array>()
+                    .ok_or_else(|| anyhow!("float64 cast"))?;
+                Ok(Some(arr.value(self.row) as u32))
+            }
+            DataType::Float32 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Float32Array>()
+                    .ok_or_else(|| anyhow!("float32 cast"))?;
+                Ok(Some(arr.value(self.row) as u32))
+            }
+            DataType::Boolean => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::BooleanArray>()
+                    .ok_or_else(|| anyhow!("bool cast"))?;
+                Ok(Some(if arr.value(self.row) { 1 } else { 0 }))
+            }
+            DataType::Decimal128(_, scale) => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Decimal128Array>()
+                    .ok_or_else(|| anyhow!("decimal128 cast"))?;
+                let value = arr.value(self.row);
+                let scaled = apply_decimal_scale_i128(value, i32::from(*scale));
+                Ok(Some(scaled as u32))
+            }
+            DataType::Decimal256(_, scale) => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Decimal256Array>()
+                    .ok_or_else(|| anyhow!("decimal256 cast"))?;
+                let value = arr.value(self.row);
+                let scaled = apply_decimal_scale_i256(value, i32::from(*scale));
+                scaled
+                    .to_u32()
+                    .ok_or_else(|| anyhow!("decimal256 overflow"))
+                    .map(Some)
+            }
             _ => Err(anyhow!("uint32 type mismatch")),
         }
     }
@@ -640,6 +745,34 @@ impl<'p> RowAccess<'p> {
                     .as_any()
                     .downcast_ref::<arrow_array::UInt32Array>()
                     .ok_or_else(|| anyhow!("uint32 cast"))?;
+                Ok(Some(arr.value(self.row) as f64))
+            }
+            DataType::Int16 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Int16Array>()
+                    .ok_or_else(|| anyhow!("int16 cast"))?;
+                Ok(Some(arr.value(self.row) as f64))
+            }
+            DataType::Int8 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Int8Array>()
+                    .ok_or_else(|| anyhow!("int8 cast"))?;
+                Ok(Some(arr.value(self.row) as f64))
+            }
+            DataType::UInt16 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::UInt16Array>()
+                    .ok_or_else(|| anyhow!("uint16 cast"))?;
+                Ok(Some(arr.value(self.row) as f64))
+            }
+            DataType::UInt8 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::UInt8Array>()
+                    .ok_or_else(|| anyhow!("uint8 cast"))?;
                 Ok(Some(arr.value(self.row) as f64))
             }
             DataType::Utf8
@@ -762,6 +895,41 @@ impl<'p> RowAccess<'p> {
                     .downcast_ref::<arrow_array::UInt32Array>()
                     .ok_or_else(|| anyhow!("uint32 cast"))?;
                 Ok(Some(arr.value(self.row) as f32))
+            }
+            DataType::Int16 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Int16Array>()
+                    .ok_or_else(|| anyhow!("int16 cast"))?;
+                Ok(Some(arr.value(self.row) as f32))
+            }
+            DataType::Int8 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Int8Array>()
+                    .ok_or_else(|| anyhow!("int8 cast"))?;
+                Ok(Some(arr.value(self.row) as f32))
+            }
+            DataType::UInt16 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::UInt16Array>()
+                    .ok_or_else(|| anyhow!("uint16 cast"))?;
+                Ok(Some(arr.value(self.row) as f32))
+            }
+            DataType::UInt8 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::UInt8Array>()
+                    .ok_or_else(|| anyhow!("uint8 cast"))?;
+                Ok(Some(arr.value(self.row) as f32))
+            }
+            DataType::Boolean => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::BooleanArray>()
+                    .ok_or_else(|| anyhow!("bool cast"))?;
+                Ok(Some(if arr.value(self.row) { 1.0 } else { 0.0 }))
             }
             DataType::Utf8
             | DataType::LargeUtf8
@@ -1484,6 +1652,10 @@ impl<'p> RowAccess<'p> {
                 let (secs, _) = timestamp_from_int(value, unit);
                 Ok(Some(days_from_secs(secs)))
             }
+            DataType::Timestamp(_, _) => {
+                let (secs, _) = timestamp_parts_from_array(array, self.row)?;
+                Ok(Some(days_from_secs(secs)))
+            }
             _ => Err(anyhow!("date type mismatch")),
         }
     }
@@ -1606,6 +1778,16 @@ impl<'p> RowAccess<'p> {
                     _ => return Err(anyhow!("timestamp type mismatch")),
                 };
                 Ok(Some(timestamp_from_int(value, unit)))
+            }
+            DataType::Date32 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Date32Array>()
+                    .ok_or_else(|| anyhow!("date cast"))?;
+                let days = arr.value(self.row);
+                // Convert days since epoch to seconds since epoch
+                let secs = days as i64 * 86400;
+                Ok(Some((secs, 0)))
             }
             _ => Err(anyhow!("timestamp type mismatch")),
         }
