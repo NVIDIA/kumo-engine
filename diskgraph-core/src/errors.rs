@@ -21,4 +21,6 @@ pub enum DiskgraphError {
     InsufficientDiskSpace { required: u64, available: u64 },
     #[error("not implemented: {0}")]
     NotImplemented(&'static str),
+    #[error("error: {0}")]
+    Generic(String),
 }
