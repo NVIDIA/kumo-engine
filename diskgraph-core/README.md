@@ -18,6 +18,8 @@ Shared data types and service contracts for the DiskGraph pipeline. This crate d
 - **Storage Contracts** (`storage.rs`)
   - `GraphStorage` trait: The unified interface for sampling and feature retrieval, returning Arrow `RecordBatch` streams.
   - `StorageConfig`: Basic path and capacity configuration for storage backends.
+  - `LocalGraphStorage` skeleton that tracks datasets but leaves layout/compression to downstream crates.
+  - `storage::compression` defines a `CompressionCodec` interface and a placeholder implementation.
 - **Dataset Lifecycle** (`dataset.rs`)
   - `DatasetId`, `DatasetState`, `DatasetHandle`, `DatasetReservation`.
   - `DatasetRegistry` trait for managing loaded graphs.
