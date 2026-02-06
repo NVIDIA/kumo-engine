@@ -9,6 +9,7 @@
 
 pub mod dataset;
 pub mod errors;
+pub mod features;
 pub mod metadata;
 pub mod sampling;
 pub mod storage;

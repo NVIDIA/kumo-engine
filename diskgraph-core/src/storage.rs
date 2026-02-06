@@ -1,12 +1,14 @@
 use crate::dataset::{DatasetHandle, DatasetId, DatasetReservation, DatasetState};
 use crate::errors::{DiskgraphError, Result};
 use crate::metadata::DatasetMetadata;
-use crate::sampling::{SampledNeighborhood, SamplingRequest};
+use crate::sampling::BatchSamplingRequest;
+use crate::features::BatchFeatureRequest;
 use async_trait::async_trait;
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use arrow_array::RecordBatch;
 
 pub mod compression;
 
@@ -48,7 +50,10 @@ pub trait GraphStorage: Send + Sync {
     async fn unload(&self, id: DatasetId) -> Result<()>;
 
     /// Perform a sampling request against the on-disk structure.
-    async fn sample(&self, request: SamplingRequest) -> Result<SampledNeighborhood>;
+    async fn sample(&self, request: BatchSamplingRequest) -> Result<RecordBatch>;
+
+    /// Retrieve node features for a batch of IDs.
+    async fn get_features(&self, request: BatchFeatureRequest) -> Result<RecordBatch>;
 }
 
 /// Skeleton storage engine that manages reservations and tracks dataset state.
@@ -118,7 +123,7 @@ impl GraphStorage for LocalGraphStorage {
         Ok(())
     }
 
-    async fn sample(&self, request: SamplingRequest) -> Result<SampledNeighborhood> {
+    async fn sample(&self, request: BatchSamplingRequest) -> Result<RecordBatch> {
         let guard = self.datasets.read();
         let handle = guard
             .get(&request.dataset_id)
@@ -129,17 +134,22 @@ impl GraphStorage for LocalGraphStorage {
                 request.dataset_id
             )));
         }
-        // The real sampler will load adjacency lists from disk, apply the
-        // configured weighting scheme, and return a sampled tree. Here we build
-        // an empty but well-typed response to keep the API wiring compiling.
-        Ok(SampledNeighborhood {
-            request: crate::sampling::SamplingRequestHeader {
-                dataset_id: request.dataset_id,
-                root_id: request.root_id,
-                plan_root_type: request.plan.root_type.clone(),
-            },
-            nodes: Vec::new(),
-            edges: Vec::new(),
-        })
+        // Placeholder return empty batch
+        Ok(RecordBatch::new_empty(Arc::new(arrow_schema::Schema::empty())))
+    }
+
+    async fn get_features(&self, request: BatchFeatureRequest) -> Result<RecordBatch> {
+        let guard = self.datasets.read();
+        let handle = guard
+            .get(&request.dataset_id)
+            .ok_or_else(|| DiskgraphError::DatasetNotFound(request.dataset_id.to_string()))?;
+        if !handle.is_queryable() {
+            return Err(DiskgraphError::DatasetBusy(format!(
+                "dataset {} is not active",
+                request.dataset_id
+            )));
+        }
+        // Placeholder return empty batch
+        Ok(RecordBatch::new_empty(Arc::new(arrow_schema::Schema::empty())))
     }
 }

@@ -1,35 +1,82 @@
 use crate::dataset::DatasetId;
-use crate::errors::{DiskgraphError, Result};
-use crate::storage::GraphStorage;
-use async_trait::async_trait;
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use std::collections::HashMap;
 
-/// How to interpret dest_sort_key when present on a relation.
+/// Configuration flags for the sampling process.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SamplingFlags {
+    /// If true, allows selecting the same neighbor multiple times to satisfy fanout.
+    /// Default: false
+    pub replace: bool,
+    /// If true, follows edge direction. If false, treats graph as undirected.
+    /// Default: true
+    pub directed: bool,
+    /// If true, ensures nodes sampled at hop K are treated as distinct seeds for hop K+1.
+    /// Required for correct temporal sampling.
+    /// Default: true
+    pub disjoint: bool,
+    /// If true, output includes edge identifiers (required for edge feature fetching).
+    /// Default: false
+    pub return_edge_id: bool,
+    /// If true, enables dynamic fanout compensation (Metapath-aware/Adaptive).
+    /// Default: false
+    pub adaptive: bool,
+}
+
+/// A request to sample a neighborhood subgraph starting from a batch of seeds.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchSamplingRequest {
+    /// Target dataset identifier.
+    pub dataset_id: DatasetId,
+    /// Batch of seed node IDs to start the random walk.
+    pub seed_nodes: Vec<u64>,
+    /// Optional batch of timestamps (1:1 with seed_nodes).
+    /// If present, acts as the anchor time for temporal filtering.
+    pub seed_timestamps: Option<Vec<i64>>,
+    /// The recursive sampling strategy.
+    pub plan: SamplingPlan,
+    /// Global behavioral modifiers.
+    pub flags: SamplingFlags,
+}
+
+/// The definition of a sampling traversal, organized by layers (hops).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SamplingPlan {
+    /// Ordered list of layers. Index 0 corresponds to the traversal from Seed -> Hop 1.
+    pub layers: Vec<LayerSpec>,
+}
+
+/// Configuration for a single hop in the traversal.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LayerSpec {
+    /// Fanout configuration per edge type (e.g., "User__Click__Item").
+    pub fanouts: HashMap<String, FanoutSpec>,
+}
+
+/// Fanout and selection strategy for a specific edge type at a specific layer.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FanoutSpec {
+    /// Maximum number of neighbors to sample.
+    pub fanout: u32,
+    /// Strategy for selecting neighbors from the candidate list.
+    pub mode: SamplingMode,
+}
+
+/// Strategy for selecting neighbors.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum DestSortKeyMode {
-    /// Choose up to N most recent edges where dest_sort_key <= anchor_time.
+pub enum SamplingMode {
+    /// Random uniform selection.
+    Uniform,
+    /// Deterministic selection of the most recent edges.
     TemporalMostRecent,
-    /// Weighted sampling with recency bias. The plan supplies a weighting
-    /// function to convert (anchor_time - dest_sort_key) into weights.
+    /// Probabilistic selection based on edge weight.
+    Weighted { weighting: Weighting },
+    /// Probabilistic selection based on time-decayed weight.
     TemporalWeighted { weighting: Weighting },
-    /// Weighted sampling without any temporal filter; dest_sort_key is treated
-    /// purely as a weight or score.
-    WeightedOnly { weighting: Weighting },
 }
 
-/// Policy used when a plan references dest_sort_key but the relation lacks it.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AbsentKeyPolicy {
-    RejectPlan,
-    UniformWithoutWeights,
-}
-
-/// Configurable weighting functions. Only the configuration is stored here; the
-/// actual math is implemented by the sampler runtime.
+/// Configurable weighting functions.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Weighting {
@@ -37,104 +84,65 @@ pub enum Weighting {
     ExponentialDecay { lambda: f64 },
     /// w = max(0, 1 - delta_seconds / half_life_seconds)
     LinearDecay { half_life_seconds: u64 },
-    /// Placeholder for arbitrary caller-provided expression. The runtime is
-    /// expected to implement a resolver that can interpret this identifier.
+    /// Placeholder for arbitrary caller-provided expression.
     CustomExpression { id: String },
 }
 
-/// A single hop in the metapath tree.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HopPlan {
-    pub relation: String,
-    pub fanout: u32,
-    pub dest_sort_key_mode: Option<DestSortKeyMode>,
-    pub absent_key_policy: AbsentKeyPolicy,
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dataset::DatasetId;
+    use serde_json::json;
 
-/// Top-level sampling plan rooted at an input node.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SamplingPlan {
-    pub root_type: String,
-    pub hops: Vec<HopPlan>,
-    /// If true, edge identifiers will be included in the response when present.
-    pub include_edge_ids: bool,
-}
+    #[test]
+    fn test_sampling_request_serialization() {
+        let plan = SamplingPlan {
+            layers: vec![
+                LayerSpec {
+                    fanouts: [
+                        ("user__click__item".to_string(), FanoutSpec {
+                            fanout: 10,
+                            mode: SamplingMode::TemporalMostRecent,
+                        }),
+                    ].into(),
+                },
+                LayerSpec {
+                    fanouts: [
+                        ("item__click__user".to_string(), FanoutSpec {
+                            fanout: 5,
+                            mode: SamplingMode::Weighted {
+                                weighting: Weighting::LinearDecay { half_life_seconds: 3600 }
+                            },
+                        }),
+                    ].into(),
+                },
+            ],
+        };
 
-/// Request issued by HTTP or Python bindings to sample a neighborhood.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SamplingRequest {
-    pub dataset_id: DatasetId,
-    pub root_id: u64,
-    pub anchor_time: Option<DateTime<Utc>>,
-    pub plan: SamplingPlan,
-}
+        let request = BatchSamplingRequest {
+            dataset_id: DatasetId::nil(),
+            seed_nodes: vec![1, 2, 3],
+            seed_timestamps: Some(vec![100, 200, 300]),
+            plan,
+            flags: SamplingFlags {
+                replace: false,
+                directed: true,
+                disjoint: true,
+                return_edge_id: false,
+                adaptive: false,
+            },
+        };
 
-/// Minimal header used in responses to trace a sampled neighborhood back to its
-/// originating request without echoing the full plan.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SamplingRequestHeader {
-    pub dataset_id: DatasetId,
-    pub root_id: u64,
-    pub plan_root_type: String,
-}
-
-/// A sampled node reference in the output tree.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SampledNodeRef {
-    pub node_type: String,
-    pub node_id: u64,
-    /// Hop depth where this node was sampled.
-    pub hop: usize,
-}
-
-/// A sampled edge connecting two node refs.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SampledEdge {
-    pub src: SampledNodeRef,
-    pub dst: SampledNodeRef,
-    pub dest_sort_key: Option<u64>,
-    pub edge_id: Option<u64>,
-}
-
-/// The output neighborhood structure. Implementations are free to embed
-/// additional annotations for downstream ML consumers.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SampledNeighborhood {
-    pub request: SamplingRequestHeader,
-    pub nodes: Vec<SampledNodeRef>,
-    pub edges: Vec<SampledEdge>,
-}
-
-/// Trait implemented by sampling engines. Implementations must obey the
-/// semantics documented on DestSortKeyMode and AbsentKeyPolicy.
-#[async_trait]
-pub trait Sampler: Send + Sync {
-    async fn sample(&self, request: SamplingRequest) -> Result<SampledNeighborhood>;
-}
-
-/// A thin sampler that delegates storage access to a GraphStorage and leaves
-/// the actual sampling math to the storage layer. This keeps the HTTP layer
-/// decoupled from the storage backend selection.
-pub struct RoutingSampler {
-    storage: Arc<dyn GraphStorage>,
-}
-
-impl RoutingSampler {
-    pub fn new(storage: Arc<dyn GraphStorage>) -> Self {
-        Self { storage }
-    }
-}
-
-#[async_trait]
-impl Sampler for RoutingSampler {
-    async fn sample(&self, request: SamplingRequest) -> Result<SampledNeighborhood> {
-        // The storage implementation is expected to respect the sampling plan.
-        // At this layer we only perform shallow validation.
-        if request.plan.hops.is_empty() {
-            return Err(DiskgraphError::InvalidMetadata(
-                "sampling plan has no hops".into(),
-            ));
-        }
-        self.storage.sample(request).await
+        let json = serde_json::to_value(&request).unwrap();
+        
+        // check top level fields
+        assert_eq!(json["seed_nodes"], json!([1, 2, 3]));
+        
+        // check enum serialization (snake_case)
+        let layer0 = &json["plan"]["layers"][0]["fanouts"]["user__click__item"];
+        assert_eq!(layer0["mode"], "temporal_most_recent");
+        
+        let layer1 = &json["plan"]["layers"][1]["fanouts"]["item__click__user"];
+        assert_eq!(layer1["mode"]["weighted"]["weighting"]["linear_decay"]["half_life_seconds"], 3600);
     }
 }
