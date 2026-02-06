@@ -302,7 +302,23 @@ The Python wrapper (`KumoDiskgraphSampler`) enforces Kumo-specific defaults to e
 *   **Time**: $O(N \cdot d_{avg})$ where $N$ is batch size. Weighted sampling forces linear scan.
 *   **Memory**: Proportional to output batch size. Strictly out-of-core.
 
-## 8. Implementation Plan
+## 8. Concurrency & Resource Management
+
+The system is designed to handle high concurrency (thousands of simultaneous sampling requests) efficiently.
+
+### 8.1. Shared Immutable State
+*   **Memory Maps**: The `ShardReader` instances holding `mmap` handles to `edges.bin` and `offsets.bin` are wrapped in `Arc` and shared across all requests.
+*   **Lock-Free Read**: Accessing the graph structure is read-only and lock-free (relying on OS-level page cache), ensuring zero contention between threads accessing the same shards.
+
+### 8.2. Threading Model
+*   **I/O Bound**: While `mmap` access is fast, page faults can block the execution thread. Running sampling loops directly on the `tokio` async runtime poses a risk of starving the event loop.
+*   **Solution**: The `diskgraph-sampler` will execute the core sampling loop (which performs the `mmap` reads, filtering, and re-indexing) inside `tokio::task::spawn_blocking` or a dedicated `rayon` thread pool. The async gateway handles only the lightweight request parsing and response streaming.
+
+### 8.3. Memory & Backpressure
+*   **Streaming Backpressure**: The Arrow Flight stream provides natural backpressure. If a client is slow to consume data, the server's TCP buffers fill, causing the `sampler`'s write operation to yield. This prevents the server from generating unbounded amounts of data in memory.
+*   **Per-Request Isolation**: Each request maintains its own isolated `LocalIndexMap` and buffers. These are dropped immediately upon request completion, preventing memory leaks.
+
+## 9. Implementation Plan
 
 1.  **Refactor Core**: Update `diskgraph-core` with new Request/Flags structs.
 2.  **Gateway Setup**: Create `diskgraph-gateway` crate with Flight server.
