@@ -987,6 +987,14 @@ pub(crate) fn infer_parquet_schema_from_arrow(
                 continue;
             }
         }
+        if *field.data_type() == DataType::Null {
+            return Err(anyhow!(
+                "column '{}' has Null data type (entire column is null). \
+                 This typically happens when Pandas writes a shard where the column \
+                 is entirely empty. Ensure all shards have properly typed columns.",
+                field.name()
+            ));
+        }
         let (fixed_len, precision, scale) = arrow_type_metadata(field.data_type())?;
         let mut ingested_dtype = match field.data_type() {
             DataType::Float64 => IngestedType::Float32,

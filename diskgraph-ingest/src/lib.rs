@@ -1514,6 +1514,7 @@ impl IngestContext {
                                 if let Some(pooled) = pooled {
                                     let bytes = pooled.bytes();
                                     let builder = ParquetRecordBatchReaderBuilder::try_new(bytes)?;
+                                    validate_parquet_column_types(builder.schema(), &table.columns, path)?;
                                     let reader =
                                         builder.with_batch_size(NODE_BATCH_SIZE).build()?;
                                     for batch in reader {
@@ -1546,6 +1547,7 @@ impl IngestContext {
                                         .with_context(|| format!("open {}", path))?;
                                     advise_file_willneed(&file);
                                     let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
+                                    validate_parquet_column_types(builder.schema(), &table.columns, path)?;
                                     let reader =
                                         builder.with_batch_size(NODE_BATCH_SIZE).build()?;
                                     for batch in reader {
@@ -2211,6 +2213,7 @@ impl IngestContext {
                         let pooled = download_cloud_bytes(transfer, path)?;
                         let bytes = pooled.bytes();
                         let builder = ParquetRecordBatchReaderBuilder::try_new(bytes)?;
+                        validate_parquet_column_types(builder.schema(), &table.columns, path)?;
                         let reader = builder.with_batch_size(NODE_BATCH_SIZE).build()?;
                         for batch in reader {
                             let batch = batch?;
@@ -2231,6 +2234,7 @@ impl IngestContext {
                             .with_context(|| format!("open {}", path))?;
                         advise_file_willneed(&file);
                         let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
+                        validate_parquet_column_types(builder.schema(), &table.columns, path)?;
                         let reader = builder.with_batch_size(NODE_BATCH_SIZE).build()?;
                         for batch in reader {
                             let batch = batch?;
@@ -2251,6 +2255,7 @@ impl IngestContext {
                         .with_context(|| format!("open {}", path))?;
                     advise_file_willneed(&file);
                     let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
+                    validate_parquet_column_types(builder.schema(), &table.columns, path)?;
                     let reader = builder.with_batch_size(NODE_BATCH_SIZE).build()?;
                     for batch in reader {
                         let batch = batch?;
@@ -2636,6 +2641,7 @@ impl IngestContext {
                         let pooled = download_cloud_bytes(transfer, path)?;
                         let bytes = pooled.bytes();
                         let builder = ParquetRecordBatchReaderBuilder::try_new(bytes)?;
+                        validate_parquet_column_types(builder.schema(), &table.columns, path)?;
                         let reader = builder.with_batch_size(NODE_BATCH_SIZE).build()?;
                         for batch in reader {
                             let batch = batch?;
@@ -2669,6 +2675,7 @@ impl IngestContext {
                             .with_context(|| format!("open {}", path))?;
                         advise_file_willneed(&file);
                         let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
+                        validate_parquet_column_types(builder.schema(), &table.columns, path)?;
                         let reader = builder.with_batch_size(NODE_BATCH_SIZE).build()?;
                         for batch in reader {
                             let batch = batch?;
@@ -2702,6 +2709,7 @@ impl IngestContext {
                         .with_context(|| format!("open {}", path))?;
                     advise_file_willneed(&file);
                     let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
+                    validate_parquet_column_types(builder.schema(), &table.columns, path)?;
                     let reader = builder.with_batch_size(NODE_BATCH_SIZE).build()?;
                     for batch in reader {
                         let batch = batch?;
@@ -8478,6 +8486,27 @@ fn rowpack_columns(table: &TableSpec) -> Result<Vec<diskgraph_rowpack::RowPackCo
         });
     }
     Ok(columns)
+}
+
+fn validate_parquet_column_types(
+    schema: &Schema,
+    columns: &[ColumnSpec],
+    file_path: &str,
+) -> Result<()> {
+    for col in columns {
+        if let Ok(idx) = schema.index_of(&col.name) {
+            if *schema.field(idx).data_type() == DataType::Null {
+                anyhow::bail!(
+                    "column '{}' in '{}' has Null data type (entire column is null). \
+                     This typically happens when Pandas writes a shard where the column \
+                     is entirely empty. Ensure all shards have properly typed columns.",
+                    col.name,
+                    file_path,
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 struct PrecomputedKeys {

@@ -12,7 +12,7 @@ use std::sync::Arc;
 use tempfile::tempdir;
 
 use arrow_array::{
-    ArrayRef, BinaryArray, FixedSizeBinaryArray, Float32Array, Int32Array, Int64Array,
+    ArrayRef, BinaryArray, FixedSizeBinaryArray, Float32Array, Int32Array, Int64Array, NullArray,
     RecordBatch, StringArray, TimestampSecondArray,
 };
 use arrow_schema::{DataType, Field, Schema};
@@ -3190,6 +3190,68 @@ fn ingest_parquet_string_ip_fk_to_string_pk() -> Result<()> {
     let reverse = sum_relation_edges(&pk_table, "FkNodes_fk_col_to_PkNodes_pk_col_reverse")?;
     assert_eq!(forward, 10, "10 forward edges");
     assert_eq!(reverse, 10, "10 reverse edges");
+
+    Ok(())
+}
+
+/// Parquet column with DataType::Null is rejected with a clear error.
+#[test]
+fn ingest_parquet_null_column_type_rejected() -> Result<()> {
+    let dir = tempdir()?;
+    let data_dir = dir.path().join("data");
+    fs::create_dir_all(&data_dir)?;
+
+    // Write a parquet file where one column has DataType::Null (simulates Pandas
+    // writing a shard where the column is entirely None).
+    let schema = Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("value", DataType::Null, true),
+    ]);
+    let id_array: ArrayRef = Arc::new(Int64Array::from(vec![1, 2, 3]));
+    let null_array: ArrayRef = Arc::new(NullArray::new(3));
+    write_parquet(
+        &data_dir.join("nodes.parquet"),
+        schema,
+        vec![id_array, null_array],
+    )?;
+
+    let config = serde_json::json!({
+        "dataset_name": "null_test",
+        "tables": [{
+            "name": "Nodes",
+            "columns": [
+                {"name": "id", "ingested_dtype": "int64"},
+                {"name": "value", "ingested_dtype": "int64"}
+            ],
+            "primary_key": "id",
+            "source": {
+                "type": "parquet",
+                "paths": ["data/nodes.parquet"]
+            }
+        }],
+        "relationships": []
+    });
+    let config_path = dir.path().join("config.json");
+    fs::write(&config_path, serde_json::to_string_pretty(&config)?)?;
+
+    let output_root = dir.path().join("output");
+    let result = ingest(
+        &config_path,
+        output_root.to_str().unwrap(),
+        Dest::Local,
+        IngestOptions::default(),
+    );
+
+    assert!(result.is_err(), "ingest should fail for Null-typed column");
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("Null data type"),
+        "error should mention Null data type, got: {err_msg}"
+    );
+    assert!(
+        err_msg.contains("value"),
+        "error should mention the column name, got: {err_msg}"
+    );
 
     Ok(())
 }
