@@ -59,3 +59,10 @@ let request = BatchSamplingRequest {
     },
 };
 ```
+
+## Legacy Notes (Ingestion & Metadata)
+
+- `DatasetMetadata` mirrors the `index_metadata.json` produced by ingest. The field names and shapes are kept stable so the service can read them directly.
+- `estimate_ondisk_bytes()` intentionally overestimates on-disk usage to keep admission control safe.
+- `LocalGraphStorage` stubs (like ingest/reserve) are placeholders for now; the primary implementation path is via the new sampling/feature traits.
+- `PlaceholderCompressionCodec` returns `NotImplemented` so callers can differentiate missing algorithms from runtime failures.
