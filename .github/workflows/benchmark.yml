@@ -21,9 +21,6 @@ jobs:
   benchmark:
     runs-on: [self-hosted, Linux, ARM64]
     timeout-minutes: 180
-    if: >
-      github.event_name == 'workflow_dispatch' ||
-      contains(github.event.head_commit.message, '[ec2-benchmark]')
 
     steps:
       - uses: actions/checkout@v4
