@@ -12,4 +12,5 @@ pub mod errors;
 pub mod features;
 pub mod metadata;
 pub mod sampling;
+pub mod simulation_test;
 pub mod storage;
