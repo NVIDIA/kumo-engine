@@ -9,6 +9,8 @@ Shared data types and service contracts for the DiskGraph pipeline. This crate d
   - `SamplingPlan` & `LayerSpec`: Multi-hop heterogeneous fanout definitions.
   - `SamplingFlags`: Configuration for replacement, disjointness, and adaptive sampling.
   - `SamplingMode`: Logic for Uniform, Temporal, and Weighted neighbor selection.
+  - `AbsentKeyPolicy`: Policy for handling relations missing weight or time keys.
+  - `Weighting`: Definitions for temporal decay and custom scoring expressions.
 - **Feature Fetching API** (`features.rs`)
   - `BatchFeatureRequest`: Request structure for retrieving node attributes.
 - **Index Metadata** (`metadata.rs`)

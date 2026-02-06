@@ -60,6 +60,18 @@ pub struct FanoutSpec {
     pub fanout: u32,
     /// Strategy for selecting neighbors from the candidate list.
     pub mode: SamplingMode,
+    /// Policy used when the mode requires a key (weight/time) that is absent for a relation.
+    pub absent_key_policy: AbsentKeyPolicy,
+}
+
+/// Policy used when a plan references keys (time/weight) but the relation lacks them.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AbsentKeyPolicy {
+    /// Fail the request if the required keys are missing.
+    RejectPlan,
+    /// Fallback to uniform random sampling if keys are missing.
+    UniformFallback,
 }
 
 /// Strategy for selecting neighbors.
@@ -103,6 +115,7 @@ mod tests {
                         ("user__click__item".to_string(), FanoutSpec {
                             fanout: 10,
                             mode: SamplingMode::TemporalMostRecent,
+                            absent_key_policy: AbsentKeyPolicy::RejectPlan,
                         }),
                     ].into(),
                 },
@@ -113,6 +126,7 @@ mod tests {
                             mode: SamplingMode::Weighted {
                                 weighting: Weighting::LinearDecay { half_life_seconds: 3600 }
                             },
+                            absent_key_policy: AbsentKeyPolicy::UniformFallback,
                         }),
                     ].into(),
                 },
