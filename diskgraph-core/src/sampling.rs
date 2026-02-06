@@ -148,16 +148,51 @@ mod tests {
         };
 
         let json = serde_json::to_value(&request).unwrap();
-        
+
         // check top level fields
         assert_eq!(json["seed_nodes"]["User"], json!([1, 2, 3]));
         assert_eq!(json["seed_timestamps"]["User"], json!([100, 200, 300]));
-        
+
         // check enum serialization (snake_case)
         let layer0 = &json["plan"]["layers"][0]["fanouts"]["user__click__item"];
         assert_eq!(layer0["mode"], "temporal_most_recent");
-        
+
         let layer1 = &json["plan"]["layers"][1]["fanouts"]["item__click__user"];
         assert_eq!(layer1["mode"]["weighted"]["weighting"]["linear_decay"]["half_life_seconds"], 3600);
+    }
+
+    #[test]
+    fn test_sampling_request_bincode() {
+        let request = BatchSamplingRequest {
+            dataset_id: DatasetId::nil(),
+            seed_nodes: [("User".to_string(), vec![1, 2, 3])].into(),
+            seed_timestamps: None,
+            plan: SamplingPlan {
+                layers: vec![
+                    LayerSpec {
+                        fanouts: [
+                            ("user__click__item".to_string(), FanoutSpec {
+                                fanout: 10,
+                                mode: SamplingMode::TemporalMostRecent,
+                                absent_key_policy: AbsentKeyPolicy::RejectPlan,
+                            }),
+                        ].into(),
+                    },
+                ],
+            },
+            flags: SamplingFlags {
+                replace: false,
+                directed: true,
+                disjoint: true,
+                return_edge_id: false,
+                adaptive: false,
+            },
+        };
+
+        let encoded = bincode::serialize(&request).unwrap();
+        let decoded: BatchSamplingRequest = bincode::deserialize(&encoded).unwrap();
+        
+        assert_eq!(decoded.seed_nodes["User"], vec![1, 2, 3]);
+        assert_eq!(decoded.plan.layers.len(), 1);
     }
 }
