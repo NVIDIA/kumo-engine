@@ -2401,9 +2401,9 @@ pub(crate) fn drop_join_table_primary_keys(tables: &mut [TableSpec], inferred_fk
     }
 }
 
-/// Prune FKeys where neither end points to a primary key.
-/// For standard FKs: src_column is not a PK, but dst_table must have a PK.
-/// For PK-PK relationships: src_column is src_table's PK.
+/// Prune FKeys where the destination table lacks a primary key.
+/// Standard FKs always require a destination PK; PK-PK relationships already
+/// imply a destination PK because they are inferred only when both tables have one.
 pub(crate) fn prune_fkeys_without_primary_key(tables: &[TableSpec], inferred_fkeys: &mut Vec<InferredFKey>) {
     let pk_map: HashMap<&str, &str> = tables
         .iter()
@@ -2411,12 +2411,9 @@ pub(crate) fn prune_fkeys_without_primary_key(tables: &[TableSpec], inferred_fke
         .collect();
 
     inferred_fkeys.retain(|fk| {
-        // Keep if src_column is src_table's PK (pk-pk relationship)
-        let src_is_pk = pk_map.get(fk.src_table.as_str())
-            .map_or(false, |pk| *pk == fk.src_column);
-        // Keep if dst_table has a PK (standard FK relationship)
+        // Keep only if dst_table has a PK (required for a valid FK).
         let dst_has_pk = pk_map.contains_key(fk.dst_table.as_str());
-        src_is_pk || dst_has_pk
+        dst_has_pk
     });
 }
 

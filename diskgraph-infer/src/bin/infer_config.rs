@@ -68,6 +68,19 @@ fn main() -> Result<()> {
             create_time
         );
     }
+    let tables_without_pk: Vec<_> = result
+        .metadata
+        .tables
+        .iter()
+        .filter(|table| table.primary_key.is_none())
+        .map(|table| table.name.as_str())
+        .collect();
+    if !tables_without_pk.is_empty() {
+        println!("Tables without primary key:");
+        for name in tables_without_pk {
+            println!("  {}", name);
+        }
+    }
     // Print fkeys embedded in tables
     let tables_with_fkeys: Vec<_> = result
         .metadata
