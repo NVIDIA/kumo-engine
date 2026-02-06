@@ -17,9 +17,12 @@ Shared data types and service contracts for the DiskGraph pipeline. This crate d
   - `estimate_ondisk_bytes()` heuristic used for admission control.
 - **Storage Contracts** (`storage.rs`)
   - `GraphStorage` trait: The unified interface for sampling and feature retrieval, returning Arrow `RecordBatch` streams.
+  - `StorageConfig`: Basic path and capacity configuration for storage backends.
 - **Dataset Lifecycle** (`dataset.rs`)
   - `DatasetId`, `DatasetState`, `DatasetHandle`, `DatasetReservation`.
   - `DatasetRegistry` trait for managing loaded graphs.
+- **Errors** (`errors.rs`)
+  - `DiskgraphError` shared across the service and CLI layers.
 
 ## Design Principles
 
