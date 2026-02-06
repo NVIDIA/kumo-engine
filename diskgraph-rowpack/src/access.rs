@@ -1202,9 +1202,17 @@ impl<'p> RowAccess<'p> {
                         }
                         return Ok(Some(f(&s)?));
                     }
+                    BinaryStringHint::Ip if bytes.len() == 4 => {
+                        let v4 = std::net::Ipv4Addr::new(bytes[0], bytes[1], bytes[2], bytes[3]);
+                        let s = v4.to_string();
+                        return Ok(Some(f(&s)?));
+                    }
                     BinaryStringHint::Ip if bytes.len() == 16 => {
-                        let addr = std::net::IpAddr::from(<[u8; 16]>::try_from(bytes).unwrap());
-                        let s = addr.to_string();
+                        let v6 = std::net::Ipv6Addr::from(<[u8; 16]>::try_from(bytes).unwrap());
+                        let s = match v6.to_ipv4_mapped() {
+                            Some(v4) => v4.to_string(),
+                            None => v6.to_string(),
+                        };
                         return Ok(Some(f(&s)?));
                     }
                     _ => std::str::from_utf8(bytes)?,

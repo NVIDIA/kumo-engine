@@ -12,8 +12,8 @@ use std::sync::Arc;
 use tempfile::tempdir;
 
 use arrow_array::{
-    ArrayRef, BinaryArray, Float32Array, Int32Array, Int64Array, RecordBatch, StringArray,
-    TimestampSecondArray,
+    ArrayRef, BinaryArray, FixedSizeBinaryArray, Float32Array, Int32Array, Int64Array,
+    RecordBatch, StringArray, TimestampSecondArray,
 };
 use arrow_schema::{DataType, Field, Schema};
 
@@ -3103,9 +3103,9 @@ fn ingest_parquet_string_fk_to_uuid_pk() -> Result<()> {
     Ok(())
 }
 
-/// IP FK → String PK (IP→String coercion, BinaryStringHint)
+/// String-encoded IP FK → String PK (Utf8 arrow data with ingested_dtype "ip", fast path string pass-through)
 #[test]
-fn ingest_parquet_ip_fk_to_string_pk() -> Result<()> {
+fn ingest_parquet_string_ip_fk_to_string_pk() -> Result<()> {
     let dir = tempdir()?;
     let input_root = dir.path().join("input");
     let output_root = dir.path().join("output");
@@ -3147,6 +3147,110 @@ fn ingest_parquet_ip_fk_to_string_pk() -> Result<()> {
 
     let source = serde_json::json!({
         "dataset_name": "ip_fk_to_string_pk",
+        "tables": [
+            {
+                "name": "PkNodes",
+                "source": {"type": "parquet", "paths": [input_root.join("pk_nodes.parquet").to_string_lossy()]},
+                "primary_key": "pk_col",
+                "columns": [
+                    {"name": "pk_col", "ingested_dtype": "string"},
+                    {"name": "attr", "ingested_dtype": "int32"}
+                ]
+            },
+            {
+                "name": "FkNodes",
+                "source": {"type": "parquet", "paths": [input_root.join("fk_nodes.parquet").to_string_lossy()]},
+                "primary_key": "id",
+                "columns": [
+                    {"name": "id", "ingested_dtype": "int64"},
+                    {"name": "fk_col", "ingested_dtype": "ip"},
+                    {"name": "attr", "ingested_dtype": "int32"}
+                ],
+                "fkeys": [{"src_column": "fk_col", "dst_table": "PkNodes"}]
+            }
+        ]
+    });
+    let source_path = dir.path().join("config.json");
+    fs::write(&source_path, serde_json::to_vec_pretty(&source)?)?;
+
+    let (_metadata, stats) = ingest_with_stats(
+        &source_path,
+        output_root.to_str().unwrap(),
+        Dest::Local,
+        IngestOptions::default(),
+    )?;
+
+    assert_eq!(stats.key_parse_failures, 0, "no parse failures");
+    assert_eq!(stats.key_lookup_failures, 0, "no lookup failures");
+
+    let reader = GraphIndexReader::open(&output_root.join("index_metadata.json"), &output_root)?;
+    let fk_table = reader.table("FkNodes").unwrap();
+    let pk_table = reader.table("PkNodes").unwrap();
+    let forward = sum_relation_edges(&fk_table, "FkNodes_fk_col_to_PkNodes_pk_col")?;
+    let reverse = sum_relation_edges(&pk_table, "FkNodes_fk_col_to_PkNodes_pk_col_reverse")?;
+    assert_eq!(forward, 10, "10 forward edges");
+    assert_eq!(reverse, 10, "10 reverse edges");
+
+    Ok(())
+}
+
+/// Binary IP FK → String PK (FixedSizeBinary(4) arrow data, BinaryStringHint::Ip formats back to IPv4 string)
+#[test]
+fn ingest_parquet_binary_ip_fk_to_string_pk() -> Result<()> {
+    let dir = tempdir()?;
+    let input_root = dir.path().join("input");
+    let output_root = dir.path().join("output");
+
+    let pk_ips = vec![
+        "192.168.1.1",
+        "192.168.1.2",
+        "192.168.1.3",
+        "192.168.1.4",
+        "192.168.1.5",
+    ];
+
+    // 4-byte IPv4 binary representations, each PK referenced 2x
+    let ip_bytes: Vec<[u8; 4]> = vec![
+        [192, 168, 1, 1],
+        [192, 168, 1, 2],
+        [192, 168, 1, 3],
+        [192, 168, 1, 4],
+        [192, 168, 1, 5],
+        [192, 168, 1, 1],
+        [192, 168, 1, 2],
+        [192, 168, 1, 3],
+        [192, 168, 1, 4],
+        [192, 168, 1, 5],
+    ];
+    let fk_binary_values: Vec<&[u8]> = ip_bytes.iter().map(|b| b.as_ref()).collect();
+
+    write_parquet(
+        &input_root.join("pk_nodes.parquet"),
+        Schema::new(vec![
+            Field::new("pk_col", DataType::Utf8, false),
+            Field::new("attr", DataType::Int32, false),
+        ]),
+        vec![
+            Arc::new(StringArray::from(pk_ips)) as ArrayRef,
+            Arc::new(Int32Array::from(vec![1, 2, 3, 4, 5])) as ArrayRef,
+        ],
+    )?;
+    write_parquet(
+        &input_root.join("fk_nodes.parquet"),
+        Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("fk_col", DataType::FixedSizeBinary(4), false),
+            Field::new("attr", DataType::Int32, false),
+        ]),
+        vec![
+            Arc::new(Int64Array::from((100..110).collect::<Vec<i64>>())) as ArrayRef,
+            Arc::new(FixedSizeBinaryArray::try_from_iter(fk_binary_values.into_iter())?) as ArrayRef,
+            Arc::new(Int32Array::from((0..10).collect::<Vec<i32>>())) as ArrayRef,
+        ],
+    )?;
+
+    let source = serde_json::json!({
+        "dataset_name": "binary_ip_fk_to_string_pk",
         "tables": [
             {
                 "name": "PkNodes",

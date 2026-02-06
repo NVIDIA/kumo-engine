@@ -7895,7 +7895,7 @@ fn write_key_to_buf(buf: &mut Vec<u8>, key: &Key) -> Result<()> {
 fn append_key_bytes_with_len_prefix(
     row: &mut Vec<u8>,
     key_bytes: &[u8],
-    col: &ColumnSpec,
+    _col: &ColumnSpec,
     target_type: &IngestedType,
 ) -> Result<()> {
     match key_type_for_dtype(target_type)? {
