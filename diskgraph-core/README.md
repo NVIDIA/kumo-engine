@@ -31,6 +31,39 @@ Shared data types and service contracts for the DiskGraph pipeline. This crate d
 4.  **Protocol Agnostic**: Definitions are pure Rust structs with `serde` traits, suitable for binary serialization (e.g., `bincode`) in Arrow Flight `cmd` fields.
 5.  **Type-Local Re-indexing**: The sampler is expected to perform Global-to-Local ID mapping per node type, ensuring the client receives tensors ready for GNN adjacency matrices.
 
+## Example (constructing a Batch Request)
+
+```rust
+use diskgraph_core::sampling::{BatchSamplingRequest, SamplingPlan, LayerSpec, FanoutSpec, SamplingMode, SamplingFlags, AbsentKeyPolicy};
+use uuid::Uuid;
+
+let request = BatchSamplingRequest {
+    dataset_id: Uuid::new_v4(),
+    seed_nodes: [("User".to_string(), vec![1, 2, 3])].into(),
+    seed_timestamps: None,
+    plan: SamplingPlan {
+        layers: vec![
+            LayerSpec {
+                fanouts: [
+                    ("User__Click__Item".to_string(), FanoutSpec {
+                        fanout: 10,
+                        mode: SamplingMode::TemporalMostRecent,
+                        absent_key_policy: AbsentKeyPolicy::RejectPlan,
+                    }),
+                ].into(),
+            },
+        ],
+    },
+    flags: SamplingFlags {
+        replace: false,
+        directed: true,
+        disjoint: true,
+        return_edge_id: false,
+        adaptive: false,
+    },
+};
+```
+
 ## Legacy Notes (Ingestion & Metadata)
 
 - `DatasetMetadata` mirrors the `index_metadata.json` produced by ingest. The field names and shapes are kept stable so the service can read them directly.

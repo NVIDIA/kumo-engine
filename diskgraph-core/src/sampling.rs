@@ -28,11 +28,11 @@ pub struct SamplingFlags {
 pub struct BatchSamplingRequest {
     /// Target dataset identifier.
     pub dataset_id: DatasetId,
-    /// Batch of seed node IDs to start the random walk.
-    pub seed_nodes: Vec<u64>,
-    /// Optional batch of timestamps (1:1 with seed_nodes).
+    /// Batch of seed node IDs to start the random walk, grouped by node type.
+    pub seed_nodes: HashMap<String, Vec<u64>>,
+    /// Optional batch of timestamps (1:1 with seed_nodes), grouped by node type.
     /// If present, acts as the anchor time for temporal filtering.
-    pub seed_timestamps: Option<Vec<i64>>,
+    pub seed_timestamps: Option<HashMap<String, Vec<i64>>>,
     /// The recursive sampling strategy.
     pub plan: SamplingPlan,
     /// Global behavioral modifiers.
@@ -135,8 +135,8 @@ mod tests {
 
         let request = BatchSamplingRequest {
             dataset_id: DatasetId::nil(),
-            seed_nodes: vec![1, 2, 3],
-            seed_timestamps: Some(vec![100, 200, 300]),
+            seed_nodes: [("User".to_string(), vec![1, 2, 3])].into(),
+            seed_timestamps: Some([("User".to_string(), vec![100, 200, 300])].into()),
             plan,
             flags: SamplingFlags {
                 replace: false,
@@ -150,7 +150,8 @@ mod tests {
         let json = serde_json::to_value(&request).unwrap();
         
         // check top level fields
-        assert_eq!(json["seed_nodes"], json!([1, 2, 3]));
+        assert_eq!(json["seed_nodes"]["User"], json!([1, 2, 3]));
+        assert_eq!(json["seed_timestamps"]["User"], json!([100, 200, 300]));
         
         // check enum serialization (snake_case)
         let layer0 = &json["plan"]["layers"][0]["fanouts"]["user__click__item"];
