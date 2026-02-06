@@ -12,7 +12,7 @@ use std::sync::Arc;
 use tempfile::tempdir;
 
 use arrow_array::{
-    ArrayRef, BinaryArray, Float32Array, Int64Array, RecordBatch, StringArray,
+    ArrayRef, BinaryArray, Float32Array, Int32Array, Int64Array, RecordBatch, StringArray,
     TimestampSecondArray,
 };
 use arrow_schema::{DataType, Field, Schema};
@@ -174,50 +174,66 @@ fn encode_ts_i32(value: i64, anchor: i64, step: i64) -> u64 {
 }
 
 #[test]
-fn ingest_csv_with_edges_and_rowpack() -> Result<()> {
+fn ingest_parquet_with_edges_and_rowpack() -> Result<()> {
     let dir = tempdir()?;
     let input_root = dir.path().join("input");
     let output_root = dir.path().join("output");
 
-    write_csv(
-        &input_root.join("users.csv"),
-        &["id", "name", "weight"],
-        &[
-            vec!["0".into(), "user0001".into(), "10.0".into()],
-            vec!["1".into(), "user0002".into(), "20.0".into()],
+    write_parquet(
+        &input_root.join("users.parquet"),
+        Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("name", DataType::Utf8, false),
+            Field::new("weight", DataType::Float32, false),
+        ]),
+        vec![
+            Arc::new(Int64Array::from(vec![0, 1])) as ArrayRef,
+            Arc::new(StringArray::from(vec!["user0001", "user0002"])) as ArrayRef,
+            Arc::new(Float32Array::from(vec![10.0_f32, 20.0_f32])) as ArrayRef,
         ],
     )?;
-    write_csv(
-        &input_root.join("orders.csv"),
-        &["id", "user_id"],
-        &[
-            vec!["0".into(), "1".into()],
-            vec!["1".into(), "0".into()],
+    write_parquet(
+        &input_root.join("orders.parquet"),
+        Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("user_id", DataType::Int64, false),
+        ]),
+        vec![
+            Arc::new(Int64Array::from(vec![0, 1])) as ArrayRef,
+            Arc::new(Int64Array::from(vec![1, 0])) as ArrayRef,
         ],
     )?;
-    write_csv(
-        &input_root.join("products.csv"),
-        &["id", "weight"],
-        &[
-            vec!["0".into(), "5.0".into()],
-            vec!["1".into(), "7.0".into()],
+    write_parquet(
+        &input_root.join("products.parquet"),
+        Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("weight", DataType::Float32, false),
+        ]),
+        vec![
+            Arc::new(Int64Array::from(vec![0, 1])) as ArrayRef,
+            Arc::new(Float32Array::from(vec![5.0_f32, 7.0_f32])) as ArrayRef,
         ],
     )?;
-    write_csv(
-        &input_root.join("order_items.csv"),
-        &["order_id", "product_id", "weight"],
-        &[
-            vec!["0".into(), "1".into(), "3".into()],
-            vec!["1".into(), "0".into(), "2".into()],
+    write_parquet(
+        &input_root.join("order_items.parquet"),
+        Schema::new(vec![
+            Field::new("order_id", DataType::Int64, false),
+            Field::new("product_id", DataType::Int64, false),
+            Field::new("weight", DataType::Int32, false),
+        ]),
+        vec![
+            Arc::new(Int64Array::from(vec![0, 1])) as ArrayRef,
+            Arc::new(Int64Array::from(vec![1, 0])) as ArrayRef,
+            Arc::new(Int32Array::from(vec![3, 2])) as ArrayRef,
         ],
     )?;
 
     let source = serde_json::json!({
-        "dataset_name": "csv_test",
+        "dataset_name": "parquet_test",
         "tables": [
             {
                 "name": "User",
-                "source": {"type": "csv", "paths": [input_root.join("users.csv").to_string_lossy()]},
+                "source": {"type": "parquet", "paths": [input_root.join("users.parquet").to_string_lossy()]},
                 "primary_key": "id",
                 "weight": "weight",
                 "columns": [
@@ -228,7 +244,7 @@ fn ingest_csv_with_edges_and_rowpack() -> Result<()> {
             },
             {
                 "name": "Order",
-                "source": {"type": "csv", "paths": [input_root.join("orders.csv").to_string_lossy()]},
+                "source": {"type": "parquet", "paths": [input_root.join("orders.parquet").to_string_lossy()]},
                 "primary_key": "id",
                 "columns": [
                     {"name": "id", "ingested_dtype": "int64"},
@@ -250,7 +266,7 @@ fn ingest_csv_with_edges_and_rowpack() -> Result<()> {
             },
             {
                 "name": "Product",
-                "source": {"type": "csv", "paths": [input_root.join("products.csv").to_string_lossy()]},
+                "source": {"type": "parquet", "paths": [input_root.join("products.parquet").to_string_lossy()]},
                 "primary_key": "id",
                 "weight": "weight",
                 "columns": [
@@ -260,7 +276,7 @@ fn ingest_csv_with_edges_and_rowpack() -> Result<()> {
             },
             {
                 "name": "OrderItem",
-                "source": {"type": "csv", "paths": [input_root.join("order_items.csv").to_string_lossy()]},
+                "source": {"type": "parquet", "paths": [input_root.join("order_items.parquet").to_string_lossy()]},
                 "edge_table": {
                     "src_fk": {"edge_column": "order_id", "ref_table": "Order"},
                     "dst_fk": {"edge_column": "product_id", "ref_table": "Product"},
@@ -366,82 +382,113 @@ fn ingest_csv_with_edges_and_rowpack() -> Result<()> {
 }
 
 #[test]
-fn ingest_csv_multi_file_table_with_two_shards() -> Result<()> {
+fn ingest_parquet_multi_file_table_with_two_shards() -> Result<()> {
     let dir = tempdir()?;
     let input_root = dir.path().join("input");
     let output_root = dir.path().join("output");
 
-    let mut user_rows_1 = Vec::new();
-    let mut user_rows_2 = Vec::new();
-    for id in 0..10 {
-        user_rows_1.push(vec![id.to_string(), format!("user{:04}", id)]);
-    }
-    for id in 10..20 {
-        user_rows_2.push(vec![id.to_string(), format!("user{:04}", id)]);
-    }
-    let mut order_rows_1 = Vec::new();
-    let mut order_rows_2 = Vec::new();
-    for id in 0..10 {
-        let user_id = (id + 1) % 20;
-        order_rows_1.push(vec![id.to_string(), user_id.to_string()]);
-    }
-    for id in 10..20 {
-        let user_id = (id + 3) % 20;
-        order_rows_2.push(vec![id.to_string(), user_id.to_string()]);
-    }
+    let user_ids_1: Vec<i64> = (0..10).collect();
+    let user_names_1: Vec<String> = (0..10).map(|id| format!("user{:04}", id)).collect();
+    let user_ids_2: Vec<i64> = (10..20).collect();
+    let user_names_2: Vec<String> = (10..20).map(|id| format!("user{:04}", id)).collect();
+
+    let order_ids_1: Vec<i64> = (0..10).collect();
+    let order_user_ids_1: Vec<i64> = (0..10).map(|id| (id + 1) % 20).collect();
+    let order_ids_2: Vec<i64> = (10..20).collect();
+    let order_user_ids_2: Vec<i64> = (10..20).map(|id| (id + 3) % 20).collect();
+
     let mut edge_rows_1 = Vec::new();
     let mut edge_rows_2 = Vec::new();
-    for id in 0..10 {
+    let mut edge_user_ids_1 = Vec::new();
+    let mut edge_order_ids_1 = Vec::new();
+    let mut edge_user_ids_2 = Vec::new();
+    let mut edge_order_ids_2 = Vec::new();
+    for id in 0i64..10 {
         let user_id = (id * 2) % 20;
         let order_id = (id + 5) % 20;
         edge_rows_1.push(vec![user_id.to_string(), order_id.to_string()]);
+        edge_user_ids_1.push(user_id);
+        edge_order_ids_1.push(order_id);
     }
-    for id in 10..20 {
+    for id in 10i64..20 {
         let user_id = (id * 3) % 20;
         let order_id = (id + 7) % 20;
         edge_rows_2.push(vec![user_id.to_string(), order_id.to_string()]);
+        edge_user_ids_2.push(user_id);
+        edge_order_ids_2.push(order_id);
     }
 
-    write_csv(
-        &input_root.join("users_part1.csv"),
-        &["id", "name"],
-        &user_rows_1,
+    let user_schema = Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("name", DataType::Utf8, false),
+    ]);
+    let order_schema = Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("user_id", DataType::Int64, false),
+    ]);
+    let edge_schema = Schema::new(vec![
+        Field::new("user_id", DataType::Int64, false),
+        Field::new("order_id", DataType::Int64, false),
+    ]);
+
+    write_parquet(
+        &input_root.join("users_part1.parquet"),
+        user_schema.clone(),
+        vec![
+            Arc::new(Int64Array::from(user_ids_1)) as ArrayRef,
+            Arc::new(StringArray::from(user_names_1)) as ArrayRef,
+        ],
     )?;
-    write_csv(
-        &input_root.join("users_part2.csv"),
-        &["id", "name"],
-        &user_rows_2,
+    write_parquet(
+        &input_root.join("users_part2.parquet"),
+        user_schema,
+        vec![
+            Arc::new(Int64Array::from(user_ids_2)) as ArrayRef,
+            Arc::new(StringArray::from(user_names_2)) as ArrayRef,
+        ],
     )?;
-    write_csv(
-        &input_root.join("orders_part1.csv"),
-        &["id", "user_id"],
-        &order_rows_1,
+    write_parquet(
+        &input_root.join("orders_part1.parquet"),
+        order_schema.clone(),
+        vec![
+            Arc::new(Int64Array::from(order_ids_1)) as ArrayRef,
+            Arc::new(Int64Array::from(order_user_ids_1)) as ArrayRef,
+        ],
     )?;
-    write_csv(
-        &input_root.join("orders_part2.csv"),
-        &["id", "user_id"],
-        &order_rows_2,
+    write_parquet(
+        &input_root.join("orders_part2.parquet"),
+        order_schema,
+        vec![
+            Arc::new(Int64Array::from(order_ids_2)) as ArrayRef,
+            Arc::new(Int64Array::from(order_user_ids_2)) as ArrayRef,
+        ],
     )?;
-    write_csv(
-        &input_root.join("order_links_part1.csv"),
-        &["user_id", "order_id"],
-        &edge_rows_1,
+    write_parquet(
+        &input_root.join("order_links_part1.parquet"),
+        edge_schema.clone(),
+        vec![
+            Arc::new(Int64Array::from(edge_user_ids_1)) as ArrayRef,
+            Arc::new(Int64Array::from(edge_order_ids_1)) as ArrayRef,
+        ],
     )?;
-    write_csv(
-        &input_root.join("order_links_part2.csv"),
-        &["user_id", "order_id"],
-        &edge_rows_2,
+    write_parquet(
+        &input_root.join("order_links_part2.parquet"),
+        edge_schema,
+        vec![
+            Arc::new(Int64Array::from(edge_user_ids_2)) as ArrayRef,
+            Arc::new(Int64Array::from(edge_order_ids_2)) as ArrayRef,
+        ],
     )?;
 
     let source = serde_json::json!({
-        "dataset_name": "csv_shards_multi_file",
+        "dataset_name": "parquet_shards_multi_file",
         "num_shards": 2,
         "tables": [
             {
                 "name": "User",
-                "source": {"type": "csv", "paths": [
-                    input_root.join("users_part1.csv").to_string_lossy(),
-                    input_root.join("users_part2.csv").to_string_lossy()
+                "source": {"type": "parquet", "paths": [
+                    input_root.join("users_part1.parquet").to_string_lossy(),
+                    input_root.join("users_part2.parquet").to_string_lossy()
                 ]},
                 "primary_key": "id",
                 "columns": [
@@ -451,9 +498,9 @@ fn ingest_csv_multi_file_table_with_two_shards() -> Result<()> {
             },
             {
                 "name": "Order",
-                "source": {"type": "csv", "paths": [
-                    input_root.join("orders_part1.csv").to_string_lossy(),
-                    input_root.join("orders_part2.csv").to_string_lossy()
+                "source": {"type": "parquet", "paths": [
+                    input_root.join("orders_part1.parquet").to_string_lossy(),
+                    input_root.join("orders_part2.parquet").to_string_lossy()
                 ]},
                 "primary_key": "id",
                 "columns": [
@@ -469,9 +516,9 @@ fn ingest_csv_multi_file_table_with_two_shards() -> Result<()> {
             },
             {
                 "name": "OrderLink",
-                "source": {"type": "csv", "paths": [
-                    input_root.join("order_links_part1.csv").to_string_lossy(),
-                    input_root.join("order_links_part2.csv").to_string_lossy()
+                "source": {"type": "parquet", "paths": [
+                    input_root.join("order_links_part1.parquet").to_string_lossy(),
+                    input_root.join("order_links_part2.parquet").to_string_lossy()
                 ]},
                 "edge_table": {
                     "src_fk": {"edge_column": "user_id", "ref_table": "User"},
@@ -964,20 +1011,26 @@ fn ingest_missing_fkeys_do_not_create_edges() -> Result<()> {
     let input_root = dir.path().join("input");
     let output_root = dir.path().join("output");
 
-    write_csv(
-        &input_root.join("assets.csv"),
-        &["id", "name"],
-        &[
-            vec!["0".into(), "asset-a".into()],
-            vec!["1".into(), "asset-b".into()],
+    write_parquet(
+        &input_root.join("assets.parquet"),
+        Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("name", DataType::Utf8, false),
+        ]),
+        vec![
+            Arc::new(Int64Array::from(vec![0, 1])) as ArrayRef,
+            Arc::new(StringArray::from(vec!["asset-a", "asset-b"])) as ArrayRef,
         ],
     )?;
-    write_csv(
-        &input_root.join("events.csv"),
-        &["id", "asset_id"],
-        &[
-            vec!["0".into(), "0".into()],
-            vec!["1".into(), "999".into()],
+    write_parquet(
+        &input_root.join("events.parquet"),
+        Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("asset_id", DataType::Int64, false),
+        ]),
+        vec![
+            Arc::new(Int64Array::from(vec![0, 1])) as ArrayRef,
+            Arc::new(Int64Array::from(vec![0, 999])) as ArrayRef,
         ],
     )?;
 
@@ -986,7 +1039,7 @@ fn ingest_missing_fkeys_do_not_create_edges() -> Result<()> {
         "tables": [
             {
                 "name": "Asset",
-                "source": {"type": "csv", "paths": [input_root.join("assets.csv").to_string_lossy()]},
+                "source": {"type": "parquet", "paths": [input_root.join("assets.parquet").to_string_lossy()]},
                 "primary_key": "id",
                 "columns": [
                     {"name": "id", "ingested_dtype": "int64"},
@@ -995,7 +1048,7 @@ fn ingest_missing_fkeys_do_not_create_edges() -> Result<()> {
             },
             {
                 "name": "Event",
-                "source": {"type": "csv", "paths": [input_root.join("events.csv").to_string_lossy()]},
+                "source": {"type": "parquet", "paths": [input_root.join("events.parquet").to_string_lossy()]},
                 "primary_key": "id",
                 "columns": [
                     {"name": "id", "ingested_dtype": "int64"},
@@ -1259,29 +1312,43 @@ fn ingest_edge_table_mixed_sort_keys() -> Result<()> {
     let input_root = dir.path().join("input");
     let output_root = dir.path().join("output");
 
-    write_csv(
-        &input_root.join("users.csv"),
-        &["id", "user_weight"],
-        &[
-            vec!["0".into(), "0.25".into()],
-            vec!["1".into(), "0.75".into()],
+    write_parquet(
+        &input_root.join("users.parquet"),
+        Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("user_weight", DataType::Float32, false),
+        ]),
+        vec![
+            Arc::new(Int64Array::from(vec![0, 1])) as ArrayRef,
+            Arc::new(Float32Array::from(vec![0.25_f32, 0.75_f32])) as ArrayRef,
         ],
     )?;
-    write_csv(
-        &input_root.join("items.csv"),
-        &["id", "rank", "created_at"],
-        &[
-            vec!["0".into(), "1.5".into(), "1000".into()],
-            vec!["1".into(), "2.5".into(), "2000".into()],
+    write_parquet(
+        &input_root.join("items.parquet"),
+        Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("rank", DataType::Float32, false),
+            Field::new("created_at", DataType::Timestamp(arrow_schema::TimeUnit::Second, None), false),
+        ]),
+        vec![
+            Arc::new(Int64Array::from(vec![0, 1])) as ArrayRef,
+            Arc::new(Float32Array::from(vec![1.5_f32, 2.5_f32])) as ArrayRef,
+            Arc::new(TimestampSecondArray::from(vec![1000, 2000])) as ArrayRef,
         ],
     )?;
-    write_csv(
-        &input_root.join("clicks.csv"),
-        &["user_id", "item_id", "ts", "edge_weight"],
-        &[
-            vec!["0".into(), "0".into(), "10".into(), "0.5".into()],
-            vec!["0".into(), "1".into(), "20".into(), "1.5".into()],
-            vec!["1".into(), "0".into(), "30".into(), "2.5".into()],
+    write_parquet(
+        &input_root.join("clicks.parquet"),
+        Schema::new(vec![
+            Field::new("user_id", DataType::Int64, false),
+            Field::new("item_id", DataType::Int64, false),
+            Field::new("ts", DataType::Timestamp(arrow_schema::TimeUnit::Second, None), false),
+            Field::new("edge_weight", DataType::Float32, false),
+        ]),
+        vec![
+            Arc::new(Int64Array::from(vec![0, 0, 1])) as ArrayRef,
+            Arc::new(Int64Array::from(vec![0, 1, 0])) as ArrayRef,
+            Arc::new(TimestampSecondArray::from(vec![10, 20, 30])) as ArrayRef,
+            Arc::new(Float32Array::from(vec![0.5_f32, 1.5_f32, 2.5_f32])) as ArrayRef,
         ],
     )?;
 
@@ -1290,7 +1357,7 @@ fn ingest_edge_table_mixed_sort_keys() -> Result<()> {
         "tables": [
             {
                 "name": "User",
-                "source": {"type": "csv", "paths": [input_root.join("users.csv").to_string_lossy()]},
+                "source": {"type": "parquet", "paths": [input_root.join("users.parquet").to_string_lossy()]},
                 "primary_key": "id",
                 "columns": [
                     {"name": "id", "ingested_dtype": "int64"},
@@ -1299,7 +1366,7 @@ fn ingest_edge_table_mixed_sort_keys() -> Result<()> {
             },
             {
                 "name": "Item",
-                "source": {"type": "csv", "paths": [input_root.join("items.csv").to_string_lossy()]},
+                "source": {"type": "parquet", "paths": [input_root.join("items.parquet").to_string_lossy()]},
                 "primary_key": "id",
                 "columns": [
                     {"name": "id", "ingested_dtype": "int64"},
@@ -1309,7 +1376,7 @@ fn ingest_edge_table_mixed_sort_keys() -> Result<()> {
             },
             {
                 "name": "Click",
-                "source": {"type": "csv", "paths": [input_root.join("clicks.csv").to_string_lossy()]},
+                "source": {"type": "parquet", "paths": [input_root.join("clicks.parquet").to_string_lossy()]},
                 "edge_table": {
                     "src_fk": {"edge_column": "user_id", "ref_table": "User"},
                     "dst_fk": {"edge_column": "item_id", "ref_table": "Item"},
@@ -1804,15 +1871,27 @@ fn ingest_weight_expr_with_backticks() -> Result<()> {
     let input_root = dir.path().join("input");
     let output_root = dir.path().join("output");
 
-    write_csv(
-        &input_root.join("src.csv"),
-        &["id", "dst_id"],
-        &[vec!["0".into(), "0".into()]],
+    write_parquet(
+        &input_root.join("src.parquet"),
+        Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("dst_id", DataType::Int64, false),
+        ]),
+        vec![
+            Arc::new(Int64Array::from(vec![0])) as ArrayRef,
+            Arc::new(Int64Array::from(vec![0])) as ArrayRef,
+        ],
     )?;
-    write_csv(
-        &input_root.join("dst.csv"),
-        &["id", "weight-kg"],
-        &[vec!["0".into(), "3.5".into()]],
+    write_parquet(
+        &input_root.join("dst.parquet"),
+        Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("weight-kg", DataType::Float32, false),
+        ]),
+        vec![
+            Arc::new(Int64Array::from(vec![0])) as ArrayRef,
+            Arc::new(Float32Array::from(vec![3.5_f32])) as ArrayRef,
+        ],
     )?;
 
     let source = serde_json::json!({
@@ -1820,7 +1899,7 @@ fn ingest_weight_expr_with_backticks() -> Result<()> {
         "tables": [
             {
                 "name": "Src",
-                "source": {"type": "csv", "paths": [input_root.join("src.csv").to_string_lossy()]},
+                "source": {"type": "parquet", "paths": [input_root.join("src.parquet").to_string_lossy()]},
                 "primary_key": "id",
                 "columns": [
                     {"name": "id", "ingested_dtype": "int64"},
@@ -1842,7 +1921,7 @@ fn ingest_weight_expr_with_backticks() -> Result<()> {
             },
             {
                 "name": "Dst",
-                "source": {"type": "csv", "paths": [input_root.join("dst.csv").to_string_lossy()]},
+                "source": {"type": "parquet", "paths": [input_root.join("dst.parquet").to_string_lossy()]},
                 "primary_key": "id",
                 "columns": [
                     {"name": "id", "ingested_dtype": "int64"},
@@ -1882,15 +1961,29 @@ fn ingest_weight_expr_with_log_and_abs() -> Result<()> {
     let input_root = dir.path().join("input");
     let output_root = dir.path().join("output");
 
-    write_csv(
-        &input_root.join("src.csv"),
-        &["id", "dst_id"],
-        &[vec!["0".into(), "0".into()]],
+    write_parquet(
+        &input_root.join("src.parquet"),
+        Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("dst_id", DataType::Int64, false),
+        ]),
+        vec![
+            Arc::new(Int64Array::from(vec![0])) as ArrayRef,
+            Arc::new(Int64Array::from(vec![0])) as ArrayRef,
+        ],
     )?;
-    write_csv(
-        &input_root.join("dst.csv"),
-        &["id", "weight-kg", "offset"],
-        &[vec!["0".into(), "-3.5".into(), "-2.0".into()]],
+    write_parquet(
+        &input_root.join("dst.parquet"),
+        Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("weight-kg", DataType::Float32, false),
+            Field::new("offset", DataType::Float32, false),
+        ]),
+        vec![
+            Arc::new(Int64Array::from(vec![0])) as ArrayRef,
+            Arc::new(Float32Array::from(vec![-3.5_f32])) as ArrayRef,
+            Arc::new(Float32Array::from(vec![-2.0_f32])) as ArrayRef,
+        ],
     )?;
 
     let source = serde_json::json!({
@@ -1898,7 +1991,7 @@ fn ingest_weight_expr_with_log_and_abs() -> Result<()> {
         "tables": [
             {
                 "name": "Src",
-                "source": {"type": "csv", "paths": [input_root.join("src.csv").to_string_lossy()]},
+                "source": {"type": "parquet", "paths": [input_root.join("src.parquet").to_string_lossy()]},
                 "primary_key": "id",
                 "columns": [
                     {"name": "id", "ingested_dtype": "int64"},
@@ -1920,7 +2013,7 @@ fn ingest_weight_expr_with_log_and_abs() -> Result<()> {
             },
             {
                 "name": "Dst",
-                "source": {"type": "csv", "paths": [input_root.join("dst.csv").to_string_lossy()]},
+                "source": {"type": "parquet", "paths": [input_root.join("dst.parquet").to_string_lossy()]},
                 "primary_key": "id",
                 "columns": [
                     {"name": "id", "ingested_dtype": "int64"},
@@ -1968,21 +2061,20 @@ fn ingest_missing_dst_key_records_lookup() -> Result<()> {
     let input_root = dir.path().join("input");
     let output_root = dir.path().join("output");
 
-    write_csv(
-        &input_root.join("users.csv"),
-        &["id"],
-        &[
-            vec!["1".into()],
-            vec!["2".into()],
-        ],
+    write_parquet(
+        &input_root.join("users.parquet"),
+        Schema::new(vec![Field::new("id", DataType::Int64, false)]),
+        vec![Arc::new(Int64Array::from(vec![1, 2])) as ArrayRef],
     )?;
-    write_csv(
-        &input_root.join("visits.csv"),
-        &["id", "user_id"],
-        &[
-            vec!["10".into(), "1".into()],
-            vec!["11".into(), "2".into()],
-            vec!["12".into(), "999".into()],
+    write_parquet(
+        &input_root.join("visits.parquet"),
+        Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("user_id", DataType::Int64, false),
+        ]),
+        vec![
+            Arc::new(Int64Array::from(vec![10, 11, 12])) as ArrayRef,
+            Arc::new(Int64Array::from(vec![1, 2, 999])) as ArrayRef,
         ],
     )?;
 
@@ -1991,7 +2083,7 @@ fn ingest_missing_dst_key_records_lookup() -> Result<()> {
         "tables": [
             {
                 "name": "User",
-                "source": {"type": "csv", "paths": [input_root.join("users.csv").to_string_lossy()]},
+                "source": {"type": "parquet", "paths": [input_root.join("users.parquet").to_string_lossy()]},
                 "primary_key": "id",
                 "columns": [
                     {"name": "id", "ingested_dtype": "int64"}
@@ -1999,7 +2091,7 @@ fn ingest_missing_dst_key_records_lookup() -> Result<()> {
             },
             {
                 "name": "Visit",
-                "source": {"type": "csv", "paths": [input_root.join("visits.csv").to_string_lossy()]},
+                "source": {"type": "parquet", "paths": [input_root.join("visits.parquet").to_string_lossy()]},
                 "primary_key": "id",
                 "columns": [
                     {"name": "id", "ingested_dtype": "int64"},
@@ -2045,26 +2137,22 @@ fn ingest_drops_edges_from_duplicate_source_pks_embedded_fkey() -> Result<()> {
     let dir = tempdir()?;
     let input_root = dir.path().join("in");
     let output_root = dir.path().join("out");
-    fs::create_dir_all(&input_root)?;
 
-    write_csv(
-        &input_root.join("users.csv"),
-        &["id", "friend_id"],
-        &[
-            vec!["1".into(), "10".into()],
-            vec!["1".into(), "20".into()],
-            vec!["2".into(), "30".into()],
+    write_parquet(
+        &input_root.join("users.parquet"),
+        Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("friend_id", DataType::Int64, false),
+        ]),
+        vec![
+            Arc::new(Int64Array::from(vec![1, 1, 2])) as ArrayRef,
+            Arc::new(Int64Array::from(vec![10, 20, 30])) as ArrayRef,
         ],
     )?;
-
-    write_csv(
-        &input_root.join("targets.csv"),
-        &["id"],
-        &[
-            vec!["10".into()],
-            vec!["20".into()],
-            vec!["30".into()],
-        ],
+    write_parquet(
+        &input_root.join("targets.parquet"),
+        Schema::new(vec![Field::new("id", DataType::Int64, false)]),
+        vec![Arc::new(Int64Array::from(vec![10, 20, 30])) as ArrayRef],
     )?;
 
     let source = serde_json::json!({
@@ -2072,7 +2160,7 @@ fn ingest_drops_edges_from_duplicate_source_pks_embedded_fkey() -> Result<()> {
         "tables": [
             {
                 "name": "User",
-                "source": {"type": "csv", "paths": [input_root.join("users.csv").to_string_lossy()]},
+                "source": {"type": "parquet", "paths": [input_root.join("users.parquet").to_string_lossy()]},
                 "primary_key": "id",
                 "columns": [
                     {"name": "id", "ingested_dtype": "int64"},
@@ -2081,13 +2169,13 @@ fn ingest_drops_edges_from_duplicate_source_pks_embedded_fkey() -> Result<()> {
                 "fkeys": [
                     {
                         "src_column": "friend_id",
-                        "dst_table": "Target",
+                        "dst_table": "Target"
                     }
                 ]
             },
             {
                 "name": "Target",
-                "source": {"type": "csv", "paths": [input_root.join("targets.csv").to_string_lossy()]},
+                "source": {"type": "parquet", "paths": [input_root.join("targets.parquet").to_string_lossy()]},
                 "primary_key": "id",
                 "columns": [
                     {"name": "id", "ingested_dtype": "int64"}
@@ -2227,7 +2315,6 @@ fn ingest_parquet_drops_rows_with_null_create_time() -> Result<()> {
 /// - orders table: customer_id (String FK) with values ["1", "2", "3"]
 ///
 /// Expected:
-/// - config_resolved.json should have customer_id as int64
 /// - All 4 edges should be created (String "1" joins with Int64 1)
 #[test]
 fn ingest_string_fk_to_int64_pk_resolution() -> Result<()> {
@@ -2235,36 +2322,39 @@ fn ingest_string_fk_to_int64_pk_resolution() -> Result<()> {
     let input_root = dir.path().join("input");
     let output_root = dir.path().join("output");
 
-    // Create customers.csv with Int64 PK
-    write_csv(
-        &input_root.join("customers.csv"),
-        &["id", "name"],
-        &[
-            vec!["1".into(), "Alice".into()],
-            vec!["2".into(), "Bob".into()],
-            vec!["3".into(), "Charlie".into()],
+    write_parquet(
+        &input_root.join("customers.parquet"),
+        Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("name", DataType::Utf8, false),
+        ]),
+        vec![
+            Arc::new(Int64Array::from(vec![1, 2, 3])) as ArrayRef,
+            Arc::new(StringArray::from(vec!["Alice", "Bob", "Charlie"])) as ArrayRef,
         ],
     )?;
 
-    // Create orders.csv with String FK (will be resolved to Int64)
-    write_csv(
-        &input_root.join("orders.csv"),
-        &["id", "customer_id", "amount"],
-        &[
-            vec!["100".into(), "1".into(), "50.0".into()],  // Links to Alice
-            vec!["101".into(), "2".into(), "75.0".into()],  // Links to Bob
-            vec!["102".into(), "3".into(), "100.0".into()], // Links to Charlie
-            vec!["103".into(), "1".into(), "25.0".into()],  // Another order for Alice
+    // Orders: customer_id is String FK pointing to Int64 PK
+    write_parquet(
+        &input_root.join("orders.parquet"),
+        Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("customer_id", DataType::Utf8, false),
+            Field::new("amount", DataType::Float32, false),
+        ]),
+        vec![
+            Arc::new(Int64Array::from(vec![100, 101, 102, 103])) as ArrayRef,
+            Arc::new(StringArray::from(vec!["1", "2", "3", "1"])) as ArrayRef,
+            Arc::new(Float32Array::from(vec![50.0_f32, 75.0_f32, 100.0_f32, 25.0_f32])) as ArrayRef,
         ],
     )?;
 
-    // Config: customer_id is declared as String, but PK is Int64
     let source = serde_json::json!({
         "dataset_name": "fk_resolution_test",
         "tables": [
             {
                 "name": "Customer",
-                "source": {"type": "csv", "paths": [input_root.join("customers.csv").to_string_lossy()]},
+                "source": {"type": "parquet", "paths": [input_root.join("customers.parquet").to_string_lossy()]},
                 "primary_key": "id",
                 "columns": [
                     {"name": "id", "ingested_dtype": "int64"},
@@ -2273,7 +2363,7 @@ fn ingest_string_fk_to_int64_pk_resolution() -> Result<()> {
             },
             {
                 "name": "Order",
-                "source": {"type": "csv", "paths": [input_root.join("orders.csv").to_string_lossy()]},
+                "source": {"type": "parquet", "paths": [input_root.join("orders.parquet").to_string_lossy()]},
                 "primary_key": "id",
                 "columns": [
                     {"name": "id", "ingested_dtype": "int64"},
@@ -2300,31 +2390,6 @@ fn ingest_string_fk_to_int64_pk_resolution() -> Result<()> {
         Dest::Local,
         IngestOptions::default(),
     )?;
-
-    // Verify config_resolved.json was created
-    let resolved_config_path = output_root.join("config_resolved.json");
-    assert!(resolved_config_path.exists(), "config_resolved.json should exist");
-
-    // Verify FK type was resolved to Int64
-    let resolved_config: serde_json::Value =
-        serde_json::from_slice(&fs::read(&resolved_config_path)?)?;
-    let order_table = resolved_config["tables"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|t| t["name"] == "Order")
-        .expect("Order table should exist");
-    let customer_id_col = order_table["columns"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|c| c["name"] == "customer_id")
-        .expect("customer_id column should exist");
-
-    assert_eq!(
-        customer_id_col["ingested_dtype"], "int64",
-        "customer_id should be resolved to int64 (was string)"
-    );
 
     // Verify metadata has correct table counts
     assert_eq!(metadata.node_types.len(), 2);
@@ -2375,18 +2440,20 @@ fn ingest_int32_fk_to_int64_pk_safe_coercion() -> Result<()> {
     let input_root = dir.path().join("input");
     let output_root = dir.path().join("output");
 
-    write_csv(
-        &input_root.join("parents.csv"),
-        &["id"],
-        &[vec!["1".into()], vec!["2".into()]],
+    write_parquet(
+        &input_root.join("parents.parquet"),
+        Schema::new(vec![Field::new("id", DataType::Int64, false)]),
+        vec![Arc::new(Int64Array::from(vec![1, 2])) as ArrayRef],
     )?;
-
-    write_csv(
-        &input_root.join("children.csv"),
-        &["id", "parent_id"],
-        &[
-            vec!["100".into(), "1".into()],
-            vec!["101".into(), "2".into()],
+    write_parquet(
+        &input_root.join("children.parquet"),
+        Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("parent_id", DataType::Int32, false),
+        ]),
+        vec![
+            Arc::new(Int64Array::from(vec![100, 101])) as ArrayRef,
+            Arc::new(Int32Array::from(vec![1, 2])) as ArrayRef,
         ],
     )?;
 
@@ -2395,7 +2462,7 @@ fn ingest_int32_fk_to_int64_pk_safe_coercion() -> Result<()> {
         "tables": [
             {
                 "name": "Parent",
-                "source": {"type": "csv", "paths": [input_root.join("parents.csv").to_string_lossy()]},
+                "source": {"type": "parquet", "paths": [input_root.join("parents.parquet").to_string_lossy()]},
                 "primary_key": "id",
                 "columns": [
                     {"name": "id", "ingested_dtype": "int64"}
@@ -2403,7 +2470,7 @@ fn ingest_int32_fk_to_int64_pk_safe_coercion() -> Result<()> {
             },
             {
                 "name": "Child",
-                "source": {"type": "csv", "paths": [input_root.join("children.csv").to_string_lossy()]},
+                "source": {"type": "parquet", "paths": [input_root.join("children.parquet").to_string_lossy()]},
                 "primary_key": "id",
                 "columns": [
                     {"name": "id", "ingested_dtype": "int64"},
@@ -2429,26 +2496,9 @@ fn ingest_int32_fk_to_int64_pk_safe_coercion() -> Result<()> {
         IngestOptions::default(),
     )?;
 
-    // Verify FK type was resolved to Int64 (Safe coercion promotes to PK type)
-    let resolved_config: serde_json::Value =
-        serde_json::from_slice(&fs::read(output_root.join("config_resolved.json"))?)?;
-    let child_table = resolved_config["tables"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|t| t["name"] == "Child")
-        .unwrap();
-    let parent_id_col = child_table["columns"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|c| c["name"] == "parent_id")
-        .unwrap();
-
-    assert_eq!(
-        parent_id_col["ingested_dtype"], "int64",
-        "parent_id should be resolved to int64"
-    );
+    // NOTE: config_resolved.json is no longer written. FK type resolution
+    // happens internally via fk_edge_targets without modifying the user config.
+    // The key verification is that edges are created correctly.
 
     // Verify edges created
     let rel_name = "Child_parent_id_to_Parent_id";
@@ -2474,44 +2524,49 @@ fn ingest_edge_table_fk_resolution() -> Result<()> {
     let input_root = dir.path().join("input");
     let output_root = dir.path().join("output");
 
-    // Create users.csv with Int64 PK
-    write_csv(
-        &input_root.join("users.csv"),
-        &["id", "name"],
-        &[
-            vec!["1".into(), "Alice".into()],
-            vec!["2".into(), "Bob".into()],
+    write_parquet(
+        &input_root.join("users.parquet"),
+        Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("name", DataType::Utf8, false),
+        ]),
+        vec![
+            Arc::new(Int64Array::from(vec![1, 2])) as ArrayRef,
+            Arc::new(StringArray::from(vec!["Alice", "Bob"])) as ArrayRef,
+        ],
+    )?;
+    write_parquet(
+        &input_root.join("products.parquet"),
+        Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("name", DataType::Utf8, false),
+        ]),
+        vec![
+            Arc::new(Int64Array::from(vec![100, 101])) as ArrayRef,
+            Arc::new(StringArray::from(vec!["Widget", "Gadget"])) as ArrayRef,
+        ],
+    )?;
+    // Edge table with String FKs pointing to Int64 PKs
+    write_parquet(
+        &input_root.join("reviews.parquet"),
+        Schema::new(vec![
+            Field::new("user_id", DataType::Utf8, false),
+            Field::new("product_id", DataType::Utf8, false),
+            Field::new("rating", DataType::Int32, false),
+        ]),
+        vec![
+            Arc::new(StringArray::from(vec!["1", "1", "2"])) as ArrayRef,
+            Arc::new(StringArray::from(vec!["100", "101", "100"])) as ArrayRef,
+            Arc::new(Int32Array::from(vec![5, 4, 3])) as ArrayRef,
         ],
     )?;
 
-    // Create products.csv with Int64 PK
-    write_csv(
-        &input_root.join("products.csv"),
-        &["id", "name"],
-        &[
-            vec!["100".into(), "Widget".into()],
-            vec!["101".into(), "Gadget".into()],
-        ],
-    )?;
-
-    // Create reviews.csv - edge table with String FKs
-    write_csv(
-        &input_root.join("reviews.csv"),
-        &["user_id", "product_id", "rating"],
-        &[
-            vec!["1".into(), "100".into(), "5".into()],  // Alice reviews Widget
-            vec!["1".into(), "101".into(), "4".into()],  // Alice reviews Gadget
-            vec!["2".into(), "100".into(), "3".into()],  // Bob reviews Widget
-        ],
-    )?;
-
-    // Config: edge_table with String FKs pointing to Int64 PKs
     let source = serde_json::json!({
         "dataset_name": "edge_table_fk_test",
         "tables": [
             {
                 "name": "User",
-                "source": {"type": "csv", "paths": [input_root.join("users.csv").to_string_lossy()]},
+                "source": {"type": "parquet", "paths": [input_root.join("users.parquet").to_string_lossy()]},
                 "primary_key": "id",
                 "columns": [
                     {"name": "id", "ingested_dtype": "int64"},
@@ -2520,7 +2575,7 @@ fn ingest_edge_table_fk_resolution() -> Result<()> {
             },
             {
                 "name": "Product",
-                "source": {"type": "csv", "paths": [input_root.join("products.csv").to_string_lossy()]},
+                "source": {"type": "parquet", "paths": [input_root.join("products.parquet").to_string_lossy()]},
                 "primary_key": "id",
                 "columns": [
                     {"name": "id", "ingested_dtype": "int64"},
@@ -2529,7 +2584,7 @@ fn ingest_edge_table_fk_resolution() -> Result<()> {
             },
             {
                 "name": "Review",
-                "source": {"type": "csv", "paths": [input_root.join("reviews.csv").to_string_lossy()]},
+                "source": {"type": "parquet", "paths": [input_root.join("reviews.parquet").to_string_lossy()]},
                 "columns": [
                     {"name": "user_id", "ingested_dtype": "string"},
                     {"name": "product_id", "ingested_dtype": "string"},
@@ -2553,38 +2608,6 @@ fn ingest_edge_table_fk_resolution() -> Result<()> {
         Dest::Local,
         IngestOptions::default(),
     )?;
-
-    // Verify config_resolved.json has both FKs resolved to int64
-    let resolved_config: serde_json::Value =
-        serde_json::from_slice(&fs::read(output_root.join("config_resolved.json"))?)?;
-    let review_table = resolved_config["tables"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|t| t["name"] == "Review")
-        .expect("Review table should exist");
-
-    let user_id_col = review_table["columns"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|c| c["name"] == "user_id")
-        .expect("user_id column should exist");
-    let product_id_col = review_table["columns"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|c| c["name"] == "product_id")
-        .expect("product_id column should exist");
-
-    assert_eq!(
-        user_id_col["ingested_dtype"], "int64",
-        "user_id should be resolved to int64 (was string)"
-    );
-    assert_eq!(
-        product_id_col["ingested_dtype"], "int64",
-        "product_id should be resolved to int64 (was string)"
-    );
 
     // Verify metadata
     assert_eq!(metadata.node_types.len(), 2, "Should have User and Product node types");
@@ -2627,6 +2650,546 @@ fn ingest_edge_table_fk_resolution() -> Result<()> {
         widget_segments[rev_rel_idx].count, 2,
         "Widget should have 2 reviews"
     );
+
+    Ok(())
+}
+
+// =============================================================================
+// Benchmark Scenario Tests — one per FK→PK type combination
+// =============================================================================
+
+/// UUID FK → UUID PK (same type, fast path)
+#[test]
+fn ingest_parquet_uuid_fk_to_uuid_pk() -> Result<()> {
+    let dir = tempdir()?;
+    let input_root = dir.path().join("input");
+    let output_root = dir.path().join("output");
+
+    let pk_uuids = vec![
+        "00112233445566778899aabbccddeef0",
+        "00112233445566778899aabbccddeef1",
+        "00112233445566778899aabbccddeef2",
+        "00112233445566778899aabbccddeef3",
+        "00112233445566778899aabbccddeef4",
+    ];
+    // 10 FK rows, each PK referenced 2x
+    let fk_uuids: Vec<&str> = pk_uuids.iter().copied().chain(pk_uuids.iter().copied()).collect();
+
+    write_parquet(
+        &input_root.join("pk_nodes.parquet"),
+        Schema::new(vec![
+            Field::new("pk_col", DataType::Utf8, false),
+            Field::new("attr", DataType::Int32, false),
+        ]),
+        vec![
+            Arc::new(StringArray::from(pk_uuids.clone())) as ArrayRef,
+            Arc::new(Int32Array::from(vec![1, 2, 3, 4, 5])) as ArrayRef,
+        ],
+    )?;
+    write_parquet(
+        &input_root.join("fk_nodes.parquet"),
+        Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("fk_col", DataType::Utf8, false),
+            Field::new("attr", DataType::Int32, false),
+        ]),
+        vec![
+            Arc::new(Int64Array::from((0..10).collect::<Vec<i64>>())) as ArrayRef,
+            Arc::new(StringArray::from(fk_uuids)) as ArrayRef,
+            Arc::new(Int32Array::from((0..10).collect::<Vec<i32>>())) as ArrayRef,
+        ],
+    )?;
+
+    let source = serde_json::json!({
+        "dataset_name": "uuid_fk_to_uuid_pk",
+        "tables": [
+            {
+                "name": "PkNodes",
+                "source": {"type": "parquet", "paths": [input_root.join("pk_nodes.parquet").to_string_lossy()]},
+                "primary_key": "pk_col",
+                "columns": [
+                    {"name": "pk_col", "ingested_dtype": "uuid"},
+                    {"name": "attr", "ingested_dtype": "int32"}
+                ]
+            },
+            {
+                "name": "FkNodes",
+                "source": {"type": "parquet", "paths": [input_root.join("fk_nodes.parquet").to_string_lossy()]},
+                "primary_key": "id",
+                "columns": [
+                    {"name": "id", "ingested_dtype": "int64"},
+                    {"name": "fk_col", "ingested_dtype": "uuid"},
+                    {"name": "attr", "ingested_dtype": "int32"}
+                ],
+                "fkeys": [{"src_column": "fk_col", "dst_table": "PkNodes"}]
+            }
+        ]
+    });
+    let source_path = dir.path().join("config.json");
+    fs::write(&source_path, serde_json::to_vec_pretty(&source)?)?;
+
+    let (_metadata, stats) = ingest_with_stats(
+        &source_path,
+        output_root.to_str().unwrap(),
+        Dest::Local,
+        IngestOptions::default(),
+    )?;
+
+    assert_eq!(stats.key_parse_failures, 0, "no parse failures");
+    assert_eq!(stats.key_lookup_failures, 0, "no lookup failures");
+
+    let reader = GraphIndexReader::open(&output_root.join("index_metadata.json"), &output_root)?;
+    let fk_table = reader.table("FkNodes").unwrap();
+    let pk_table = reader.table("PkNodes").unwrap();
+    let forward = sum_relation_edges(&fk_table, "FkNodes_fk_col_to_PkNodes_pk_col")?;
+    let reverse = sum_relation_edges(&pk_table, "FkNodes_fk_col_to_PkNodes_pk_col_reverse")?;
+    assert_eq!(forward, 10, "10 forward edges");
+    assert_eq!(reverse, 10, "10 reverse edges");
+
+    Ok(())
+}
+
+/// Int64 FK → Int64 PK (same type, fast path)
+#[test]
+fn ingest_parquet_int64_fk_to_int64_pk() -> Result<()> {
+    let dir = tempdir()?;
+    let input_root = dir.path().join("input");
+    let output_root = dir.path().join("output");
+
+    let pk_ids: Vec<i64> = (1..=5).collect();
+    // 10 FK rows, each PK referenced 2x
+    let fk_ids: Vec<i64> = pk_ids.iter().copied().chain(pk_ids.iter().copied()).collect();
+
+    write_parquet(
+        &input_root.join("pk_nodes.parquet"),
+        Schema::new(vec![
+            Field::new("pk_col", DataType::Int64, false),
+            Field::new("attr", DataType::Int32, false),
+        ]),
+        vec![
+            Arc::new(Int64Array::from(pk_ids)) as ArrayRef,
+            Arc::new(Int32Array::from(vec![1, 2, 3, 4, 5])) as ArrayRef,
+        ],
+    )?;
+    write_parquet(
+        &input_root.join("fk_nodes.parquet"),
+        Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("fk_col", DataType::Int64, false),
+            Field::new("attr", DataType::Int32, false),
+        ]),
+        vec![
+            Arc::new(Int64Array::from((100..110).collect::<Vec<i64>>())) as ArrayRef,
+            Arc::new(Int64Array::from(fk_ids)) as ArrayRef,
+            Arc::new(Int32Array::from((0..10).collect::<Vec<i32>>())) as ArrayRef,
+        ],
+    )?;
+
+    let source = serde_json::json!({
+        "dataset_name": "int64_fk_to_int64_pk",
+        "tables": [
+            {
+                "name": "PkNodes",
+                "source": {"type": "parquet", "paths": [input_root.join("pk_nodes.parquet").to_string_lossy()]},
+                "primary_key": "pk_col",
+                "columns": [
+                    {"name": "pk_col", "ingested_dtype": "int64"},
+                    {"name": "attr", "ingested_dtype": "int32"}
+                ]
+            },
+            {
+                "name": "FkNodes",
+                "source": {"type": "parquet", "paths": [input_root.join("fk_nodes.parquet").to_string_lossy()]},
+                "primary_key": "id",
+                "columns": [
+                    {"name": "id", "ingested_dtype": "int64"},
+                    {"name": "fk_col", "ingested_dtype": "int64"},
+                    {"name": "attr", "ingested_dtype": "int32"}
+                ],
+                "fkeys": [{"src_column": "fk_col", "dst_table": "PkNodes"}]
+            }
+        ]
+    });
+    let source_path = dir.path().join("config.json");
+    fs::write(&source_path, serde_json::to_vec_pretty(&source)?)?;
+
+    let (_metadata, stats) = ingest_with_stats(
+        &source_path,
+        output_root.to_str().unwrap(),
+        Dest::Local,
+        IngestOptions::default(),
+    )?;
+
+    assert_eq!(stats.key_parse_failures, 0, "no parse failures");
+    assert_eq!(stats.key_lookup_failures, 0, "no lookup failures");
+
+    let reader = GraphIndexReader::open(&output_root.join("index_metadata.json"), &output_root)?;
+    let fk_table = reader.table("FkNodes").unwrap();
+    let pk_table = reader.table("PkNodes").unwrap();
+    let forward = sum_relation_edges(&fk_table, "FkNodes_fk_col_to_PkNodes_pk_col")?;
+    let reverse = sum_relation_edges(&pk_table, "FkNodes_fk_col_to_PkNodes_pk_col_reverse")?;
+    assert_eq!(forward, 10, "10 forward edges");
+    assert_eq!(reverse, 10, "10 reverse edges");
+
+    Ok(())
+}
+
+/// Int32 FK → Int64 PK (safe coercion)
+#[test]
+fn ingest_parquet_int32_fk_to_int64_pk() -> Result<()> {
+    let dir = tempdir()?;
+    let input_root = dir.path().join("input");
+    let output_root = dir.path().join("output");
+
+    let pk_ids: Vec<i64> = (1..=5).collect();
+    let fk_ids: Vec<i32> = pk_ids
+        .iter()
+        .copied()
+        .chain(pk_ids.iter().copied())
+        .map(|v| v as i32)
+        .collect();
+
+    write_parquet(
+        &input_root.join("pk_nodes.parquet"),
+        Schema::new(vec![
+            Field::new("pk_col", DataType::Int64, false),
+            Field::new("attr", DataType::Int32, false),
+        ]),
+        vec![
+            Arc::new(Int64Array::from(pk_ids)) as ArrayRef,
+            Arc::new(Int32Array::from(vec![1, 2, 3, 4, 5])) as ArrayRef,
+        ],
+    )?;
+    write_parquet(
+        &input_root.join("fk_nodes.parquet"),
+        Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("fk_col", DataType::Int32, false),
+            Field::new("attr", DataType::Int32, false),
+        ]),
+        vec![
+            Arc::new(Int64Array::from((100..110).collect::<Vec<i64>>())) as ArrayRef,
+            Arc::new(Int32Array::from(fk_ids)) as ArrayRef,
+            Arc::new(Int32Array::from((0..10).collect::<Vec<i32>>())) as ArrayRef,
+        ],
+    )?;
+
+    let source = serde_json::json!({
+        "dataset_name": "int32_fk_to_int64_pk",
+        "tables": [
+            {
+                "name": "PkNodes",
+                "source": {"type": "parquet", "paths": [input_root.join("pk_nodes.parquet").to_string_lossy()]},
+                "primary_key": "pk_col",
+                "columns": [
+                    {"name": "pk_col", "ingested_dtype": "int64"},
+                    {"name": "attr", "ingested_dtype": "int32"}
+                ]
+            },
+            {
+                "name": "FkNodes",
+                "source": {"type": "parquet", "paths": [input_root.join("fk_nodes.parquet").to_string_lossy()]},
+                "primary_key": "id",
+                "columns": [
+                    {"name": "id", "ingested_dtype": "int64"},
+                    {"name": "fk_col", "ingested_dtype": "int32"},
+                    {"name": "attr", "ingested_dtype": "int32"}
+                ],
+                "fkeys": [{"src_column": "fk_col", "dst_table": "PkNodes"}]
+            }
+        ]
+    });
+    let source_path = dir.path().join("config.json");
+    fs::write(&source_path, serde_json::to_vec_pretty(&source)?)?;
+
+    let (_metadata, stats) = ingest_with_stats(
+        &source_path,
+        output_root.to_str().unwrap(),
+        Dest::Local,
+        IngestOptions::default(),
+    )?;
+
+    assert_eq!(stats.key_parse_failures, 0, "no parse failures");
+    assert_eq!(stats.key_lookup_failures, 0, "no lookup failures");
+
+    let reader = GraphIndexReader::open(&output_root.join("index_metadata.json"), &output_root)?;
+    let fk_table = reader.table("FkNodes").unwrap();
+    let pk_table = reader.table("PkNodes").unwrap();
+    let forward = sum_relation_edges(&fk_table, "FkNodes_fk_col_to_PkNodes_pk_col")?;
+    let reverse = sum_relation_edges(&pk_table, "FkNodes_fk_col_to_PkNodes_pk_col_reverse")?;
+    assert_eq!(forward, 10, "10 forward edges");
+    assert_eq!(reverse, 10, "10 reverse edges");
+
+    Ok(())
+}
+
+/// String FK → Int64 PK (parse coercion)
+#[test]
+fn ingest_parquet_string_fk_to_int64_pk() -> Result<()> {
+    let dir = tempdir()?;
+    let input_root = dir.path().join("input");
+    let output_root = dir.path().join("output");
+
+    let pk_ids: Vec<i64> = (1..=5).collect();
+    let fk_strs: Vec<String> = pk_ids
+        .iter()
+        .copied()
+        .chain(pk_ids.iter().copied())
+        .map(|v| v.to_string())
+        .collect();
+
+    write_parquet(
+        &input_root.join("pk_nodes.parquet"),
+        Schema::new(vec![
+            Field::new("pk_col", DataType::Int64, false),
+            Field::new("attr", DataType::Int32, false),
+        ]),
+        vec![
+            Arc::new(Int64Array::from(pk_ids)) as ArrayRef,
+            Arc::new(Int32Array::from(vec![1, 2, 3, 4, 5])) as ArrayRef,
+        ],
+    )?;
+    write_parquet(
+        &input_root.join("fk_nodes.parquet"),
+        Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("fk_col", DataType::Utf8, false),
+            Field::new("attr", DataType::Int32, false),
+        ]),
+        vec![
+            Arc::new(Int64Array::from((100..110).collect::<Vec<i64>>())) as ArrayRef,
+            Arc::new(StringArray::from(fk_strs)) as ArrayRef,
+            Arc::new(Int32Array::from((0..10).collect::<Vec<i32>>())) as ArrayRef,
+        ],
+    )?;
+
+    let source = serde_json::json!({
+        "dataset_name": "string_fk_to_int64_pk",
+        "tables": [
+            {
+                "name": "PkNodes",
+                "source": {"type": "parquet", "paths": [input_root.join("pk_nodes.parquet").to_string_lossy()]},
+                "primary_key": "pk_col",
+                "columns": [
+                    {"name": "pk_col", "ingested_dtype": "int64"},
+                    {"name": "attr", "ingested_dtype": "int32"}
+                ]
+            },
+            {
+                "name": "FkNodes",
+                "source": {"type": "parquet", "paths": [input_root.join("fk_nodes.parquet").to_string_lossy()]},
+                "primary_key": "id",
+                "columns": [
+                    {"name": "id", "ingested_dtype": "int64"},
+                    {"name": "fk_col", "ingested_dtype": "string"},
+                    {"name": "attr", "ingested_dtype": "int32"}
+                ],
+                "fkeys": [{"src_column": "fk_col", "dst_table": "PkNodes"}]
+            }
+        ]
+    });
+    let source_path = dir.path().join("config.json");
+    fs::write(&source_path, serde_json::to_vec_pretty(&source)?)?;
+
+    let (_metadata, stats) = ingest_with_stats(
+        &source_path,
+        output_root.to_str().unwrap(),
+        Dest::Local,
+        IngestOptions::default(),
+    )?;
+
+    assert_eq!(stats.key_parse_failures, 0, "no parse failures");
+    assert_eq!(stats.key_lookup_failures, 0, "no lookup failures");
+
+    let reader = GraphIndexReader::open(&output_root.join("index_metadata.json"), &output_root)?;
+    let fk_table = reader.table("FkNodes").unwrap();
+    let pk_table = reader.table("PkNodes").unwrap();
+    let forward = sum_relation_edges(&fk_table, "FkNodes_fk_col_to_PkNodes_pk_col")?;
+    let reverse = sum_relation_edges(&pk_table, "FkNodes_fk_col_to_PkNodes_pk_col_reverse")?;
+    assert_eq!(forward, 10, "10 forward edges");
+    assert_eq!(reverse, 10, "10 reverse edges");
+
+    Ok(())
+}
+
+/// String FK → UUID PK (String→UUID coercion)
+#[test]
+fn ingest_parquet_string_fk_to_uuid_pk() -> Result<()> {
+    let dir = tempdir()?;
+    let input_root = dir.path().join("input");
+    let output_root = dir.path().join("output");
+
+    let pk_uuids = vec![
+        "00112233445566778899aabbccddeef0",
+        "00112233445566778899aabbccddeef1",
+        "00112233445566778899aabbccddeef2",
+        "00112233445566778899aabbccddeef3",
+        "00112233445566778899aabbccddeef4",
+    ];
+    // 10 FK rows as plain strings, each PK referenced 2x
+    let fk_strs: Vec<&str> = pk_uuids.iter().copied().chain(pk_uuids.iter().copied()).collect();
+
+    write_parquet(
+        &input_root.join("pk_nodes.parquet"),
+        Schema::new(vec![
+            Field::new("pk_col", DataType::Utf8, false),
+            Field::new("attr", DataType::Int32, false),
+        ]),
+        vec![
+            Arc::new(StringArray::from(pk_uuids)) as ArrayRef,
+            Arc::new(Int32Array::from(vec![1, 2, 3, 4, 5])) as ArrayRef,
+        ],
+    )?;
+    write_parquet(
+        &input_root.join("fk_nodes.parquet"),
+        Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("fk_col", DataType::Utf8, false),
+            Field::new("attr", DataType::Int32, false),
+        ]),
+        vec![
+            Arc::new(Int64Array::from((100..110).collect::<Vec<i64>>())) as ArrayRef,
+            Arc::new(StringArray::from(fk_strs)) as ArrayRef,
+            Arc::new(Int32Array::from((0..10).collect::<Vec<i32>>())) as ArrayRef,
+        ],
+    )?;
+
+    let source = serde_json::json!({
+        "dataset_name": "string_fk_to_uuid_pk",
+        "tables": [
+            {
+                "name": "PkNodes",
+                "source": {"type": "parquet", "paths": [input_root.join("pk_nodes.parquet").to_string_lossy()]},
+                "primary_key": "pk_col",
+                "columns": [
+                    {"name": "pk_col", "ingested_dtype": "uuid"},
+                    {"name": "attr", "ingested_dtype": "int32"}
+                ]
+            },
+            {
+                "name": "FkNodes",
+                "source": {"type": "parquet", "paths": [input_root.join("fk_nodes.parquet").to_string_lossy()]},
+                "primary_key": "id",
+                "columns": [
+                    {"name": "id", "ingested_dtype": "int64"},
+                    {"name": "fk_col", "ingested_dtype": "string"},
+                    {"name": "attr", "ingested_dtype": "int32"}
+                ],
+                "fkeys": [{"src_column": "fk_col", "dst_table": "PkNodes"}]
+            }
+        ]
+    });
+    let source_path = dir.path().join("config.json");
+    fs::write(&source_path, serde_json::to_vec_pretty(&source)?)?;
+
+    let (_metadata, stats) = ingest_with_stats(
+        &source_path,
+        output_root.to_str().unwrap(),
+        Dest::Local,
+        IngestOptions::default(),
+    )?;
+
+    assert_eq!(stats.key_parse_failures, 0, "no parse failures");
+    assert_eq!(stats.key_lookup_failures, 0, "no lookup failures");
+
+    let reader = GraphIndexReader::open(&output_root.join("index_metadata.json"), &output_root)?;
+    let fk_table = reader.table("FkNodes").unwrap();
+    let pk_table = reader.table("PkNodes").unwrap();
+    let forward = sum_relation_edges(&fk_table, "FkNodes_fk_col_to_PkNodes_pk_col")?;
+    let reverse = sum_relation_edges(&pk_table, "FkNodes_fk_col_to_PkNodes_pk_col_reverse")?;
+    assert_eq!(forward, 10, "10 forward edges");
+    assert_eq!(reverse, 10, "10 reverse edges");
+
+    Ok(())
+}
+
+/// IP FK → String PK (IP→String coercion, BinaryStringHint)
+#[test]
+fn ingest_parquet_ip_fk_to_string_pk() -> Result<()> {
+    let dir = tempdir()?;
+    let input_root = dir.path().join("input");
+    let output_root = dir.path().join("output");
+
+    let pk_ips = vec![
+        "192.168.1.1",
+        "192.168.1.2",
+        "192.168.1.3",
+        "192.168.1.4",
+        "192.168.1.5",
+    ];
+    // 10 FK rows, each PK referenced 2x
+    let fk_ips: Vec<&str> = pk_ips.iter().copied().chain(pk_ips.iter().copied()).collect();
+
+    write_parquet(
+        &input_root.join("pk_nodes.parquet"),
+        Schema::new(vec![
+            Field::new("pk_col", DataType::Utf8, false),
+            Field::new("attr", DataType::Int32, false),
+        ]),
+        vec![
+            Arc::new(StringArray::from(pk_ips)) as ArrayRef,
+            Arc::new(Int32Array::from(vec![1, 2, 3, 4, 5])) as ArrayRef,
+        ],
+    )?;
+    write_parquet(
+        &input_root.join("fk_nodes.parquet"),
+        Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("fk_col", DataType::Utf8, false),
+            Field::new("attr", DataType::Int32, false),
+        ]),
+        vec![
+            Arc::new(Int64Array::from((100..110).collect::<Vec<i64>>())) as ArrayRef,
+            Arc::new(StringArray::from(fk_ips)) as ArrayRef,
+            Arc::new(Int32Array::from((0..10).collect::<Vec<i32>>())) as ArrayRef,
+        ],
+    )?;
+
+    let source = serde_json::json!({
+        "dataset_name": "ip_fk_to_string_pk",
+        "tables": [
+            {
+                "name": "PkNodes",
+                "source": {"type": "parquet", "paths": [input_root.join("pk_nodes.parquet").to_string_lossy()]},
+                "primary_key": "pk_col",
+                "columns": [
+                    {"name": "pk_col", "ingested_dtype": "string"},
+                    {"name": "attr", "ingested_dtype": "int32"}
+                ]
+            },
+            {
+                "name": "FkNodes",
+                "source": {"type": "parquet", "paths": [input_root.join("fk_nodes.parquet").to_string_lossy()]},
+                "primary_key": "id",
+                "columns": [
+                    {"name": "id", "ingested_dtype": "int64"},
+                    {"name": "fk_col", "ingested_dtype": "ip"},
+                    {"name": "attr", "ingested_dtype": "int32"}
+                ],
+                "fkeys": [{"src_column": "fk_col", "dst_table": "PkNodes"}]
+            }
+        ]
+    });
+    let source_path = dir.path().join("config.json");
+    fs::write(&source_path, serde_json::to_vec_pretty(&source)?)?;
+
+    let (_metadata, stats) = ingest_with_stats(
+        &source_path,
+        output_root.to_str().unwrap(),
+        Dest::Local,
+        IngestOptions::default(),
+    )?;
+
+    assert_eq!(stats.key_parse_failures, 0, "no parse failures");
+    assert_eq!(stats.key_lookup_failures, 0, "no lookup failures");
+
+    let reader = GraphIndexReader::open(&output_root.join("index_metadata.json"), &output_root)?;
+    let fk_table = reader.table("FkNodes").unwrap();
+    let pk_table = reader.table("PkNodes").unwrap();
+    let forward = sum_relation_edges(&fk_table, "FkNodes_fk_col_to_PkNodes_pk_col")?;
+    let reverse = sum_relation_edges(&pk_table, "FkNodes_fk_col_to_PkNodes_pk_col_reverse")?;
+    assert_eq!(forward, 10, "10 forward edges");
+    assert_eq!(reverse, 10, "10 reverse edges");
 
     Ok(())
 }

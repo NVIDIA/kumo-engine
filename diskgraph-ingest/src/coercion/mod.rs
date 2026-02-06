@@ -41,6 +41,6 @@ mod validate;
 #[cfg(test)]
 mod tests_matrix;
 
-pub use kind::{coercion_kind, CoercionKind};
+pub use kind::{coercion_kind, CoercionKind, CoercionParams};
 pub use mode::CoercionMode;
 pub use validate::{validate_fk_pk, ValidationResult};

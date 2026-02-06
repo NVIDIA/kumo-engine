@@ -22,7 +22,7 @@ mod tests_type_matrix;
 pub mod parser;
 pub mod access;
 
-pub use crate::access::{RowAccess, RowAccessHints};
+pub use crate::access::{BinaryStringHint, RowAccess, RowAccessHints};
 use crate::access::{FloatListValues, FloatListView};
 
 pub(crate) const ROWPACK_VERSION: u8 = 3;

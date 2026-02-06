@@ -1,6 +1,6 @@
 use super::{key_from_access_into_buf, BitWriter, OutputSink};
 use crate::graph_config::{ColumnSpec, DataSource, IngestedType};
-use diskgraph_rowpack::{RowAccess, RowAccessStats, RowAccessHints};
+use diskgraph_rowpack::{BinaryStringHint, RowAccess, RowAccessStats, RowAccessHints};
 use arrow_array::{Decimal128Array, Int64Array, ArrayRef, Decimal256Array};
 use std::sync::Arc;
 use std::io::{Read, BufWriter};
@@ -27,6 +27,7 @@ fn test_negative_int64_key() {
             timestamp_format: None,
             timestamp_unit: None,
             decimal_scale: None,
+            binary_string_hint: BinaryStringHint::Utf8,
     }];
 
     let mut access = RowAccess::new(hints, stats);
@@ -34,7 +35,7 @@ fn test_negative_int64_key() {
     access.set_row(0);
 
     let mut key_buf = Vec::new();
-    key_from_access_into_buf(&mut access, 0, &col, &mut key_buf).unwrap();
+    key_from_access_into_buf(&mut access, 0, &col, &col.ingested_dtype, &mut key_buf).unwrap();
 
     let expected = (val as u64).to_le_bytes();
     assert_eq!(key_buf, expected);
@@ -63,6 +64,7 @@ fn test_negative_decimal128_key() {
             timestamp_format: None,
             timestamp_unit: None,
             decimal_scale: Some(0),
+            binary_string_hint: BinaryStringHint::Utf8,
     }];
 
     let mut access = RowAccess::new(hints, stats);
@@ -70,7 +72,7 @@ fn test_negative_decimal128_key() {
     access.set_row(0);
 
     let mut key_buf = Vec::new();
-    key_from_access_into_buf(&mut access, 0, &col, &mut key_buf).unwrap();
+    key_from_access_into_buf(&mut access, 0, &col, &col.ingested_dtype, &mut key_buf).unwrap();
 
     let expected = (val as i64 as u64).to_le_bytes();
     assert_eq!(key_buf, expected);
@@ -99,6 +101,7 @@ fn test_decimal256_key_as_string() {
             timestamp_format: None,
             timestamp_unit: None,
             decimal_scale: Some(0),
+            binary_string_hint: BinaryStringHint::Utf8,
     }];
 
     let mut access = RowAccess::new(hints, stats);
@@ -106,7 +109,7 @@ fn test_decimal256_key_as_string() {
     access.set_row(0);
 
     let mut key_buf = Vec::new();
-    key_from_access_into_buf(&mut access, 0, &col, &mut key_buf).unwrap();
+    key_from_access_into_buf(&mut access, 0, &col, &col.ingested_dtype, &mut key_buf).unwrap();
 
     let expected = b"12345".to_vec();
     assert_eq!(key_buf, expected);

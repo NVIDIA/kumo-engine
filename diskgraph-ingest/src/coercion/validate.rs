@@ -3,7 +3,7 @@
 //! This module validates FK-PK type pairs at config time, before any data is read.
 //! It catches incompatible types early and provides clear error messages.
 
-use super::{coercion_kind, CoercionKind, CoercionMode};
+use super::{coercion_kind, CoercionKind, CoercionMode, CoercionParams};
 use crate::errors::{CoercionError, CoercionWarning};
 use crate::graph_config::IngestedType;
 
@@ -34,6 +34,7 @@ pub struct ValidationResult {
 /// * `pk_table` - Name of the PK table (for error messages)
 /// * `pk_column` - Name of the PK column (for error messages)
 /// * `mode` - The coercion mode to use
+/// * `pk_scale` - Optional scale for PK if it's a Decimal type
 ///
 /// # Returns
 /// A `ValidationResult` with allowed status and any warnings/errors.
@@ -45,8 +46,10 @@ pub fn validate_fk_pk(
     pk_table: &str,
     pk_column: &str,
     mode: CoercionMode,
+    pk_scale: Option<i32>,
 ) -> ValidationResult {
-    let kind = coercion_kind(fk_type.clone(), pk_type.clone());
+    let params = CoercionParams { pk_scale };
+    let kind = coercion_kind(fk_type.clone(), pk_type.clone(), params);
 
     let (allowed, warning, error) = match (mode, kind) {
         // Same type: always OK
@@ -163,6 +166,7 @@ mod tests {
             "customers",
             "id",
             CoercionMode::Strict,
+            None,
         );
         assert!(result.allowed);
         assert!(result.warning.is_none());
@@ -180,6 +184,7 @@ mod tests {
             "customers",
             "id",
             CoercionMode::Lossless,
+            None,
         );
         assert!(result.allowed);
         assert!(result.warning.is_none());
@@ -197,6 +202,7 @@ mod tests {
             "customers",
             "id",
             CoercionMode::Strict,
+            None,
         );
         assert!(!result.allowed);
         assert!(result.warning.is_none());
@@ -217,6 +223,7 @@ mod tests {
             "customers",
             "id",
             CoercionMode::Lossless,
+            None,
         );
         assert!(result.allowed);
         assert!(result.warning.is_some());
@@ -234,6 +241,7 @@ mod tests {
             "products",
             "id",
             CoercionMode::Lossless,
+            None,
         );
         assert!(!result.allowed);
         assert!(result.warning.is_none());
@@ -254,6 +262,7 @@ mod tests {
             "items",
             "id",
             CoercionMode::Lossless,
+            None,
         );
         assert!(!result.allowed);
         assert!(result.warning.is_none());
@@ -274,6 +283,7 @@ mod tests {
             "products",
             "id",
             CoercionMode::Lossless,
+            None,
         );
         let error = result.error.unwrap();
         let msg = error.to_string();
@@ -294,6 +304,7 @@ mod tests {
             "products",
             "id",
             CoercionMode::Lossless,
+            None,
         );
         let error = result.error.unwrap();
         let msg = error.to_string();
@@ -314,6 +325,7 @@ mod tests {
             "calendar",
             "day",
             CoercionMode::Lossless,
+            None,
         );
         let error = result.error.unwrap();
         let msg = error.to_string();
@@ -334,6 +346,7 @@ mod tests {
             "products",
             "id",
             CoercionMode::Lossless,
+            None,
         );
         let error = result.error.unwrap();
         let msg = error.to_string();
@@ -354,6 +367,7 @@ mod tests {
             "customers",
             "id",
             CoercionMode::Lossless,
+            None,
         );
         let warning = result.warning.unwrap();
         let msg = warning.to_string();
@@ -361,5 +375,39 @@ mod tests {
         assert!(msg.contains("orders"), "Warning should mention FK table");
         assert!(msg.contains("customer_id"), "Warning should mention FK column");
         assert!(msg.contains("customers"), "Warning should mention PK table");
+    }
+
+    #[test]
+    fn test_int64_to_decimal128_with_safe_scale() {
+        // Int64 → Decimal128 with scale=10 is Safe (10 ≤ 19)
+        let result = validate_fk_pk(
+            IngestedType::Int64,
+            IngestedType::Decimal128,
+            "orders",
+            "amount",
+            "prices",
+            "id",
+            CoercionMode::Lossless,
+            Some(10),
+        );
+        assert!(result.allowed);
+        assert_eq!(result.kind, CoercionKind::Safe);
+    }
+
+    #[test]
+    fn test_int64_to_decimal128_with_unsafe_scale() {
+        // Int64 → Decimal128 with scale=25 is Lossy (25 > 19)
+        let result = validate_fk_pk(
+            IngestedType::Int64,
+            IngestedType::Decimal128,
+            "orders",
+            "amount",
+            "prices",
+            "id",
+            CoercionMode::Lossless,
+            Some(25),
+        );
+        assert!(!result.allowed);
+        assert_eq!(result.kind, CoercionKind::Lossy);
     }
 }

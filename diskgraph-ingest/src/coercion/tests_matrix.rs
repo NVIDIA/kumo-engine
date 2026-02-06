@@ -3,10 +3,13 @@
 //! This module contains the complete test matrix for all IngestedType × IngestedType
 //! combinations (529 tests total).
 //!
-//! Each cell tests that `coercion_kind(fk_type, pk_type)` returns the expected result.
+//! Each cell tests that `coercion_kind(fk_type, pk_type, params)` returns the expected result.
+//! For scale-dependent coercions (Int → Decimal128), we test with scale=0 (default).
 
-use super::{coercion_kind, CoercionKind};
+use super::{coercion_kind, CoercionKind, CoercionParams};
 use crate::graph_config::IngestedType;
+
+const NO_SCALE: CoercionParams = CoercionParams { pk_scale: None };
 
 /// All 23 IngestedType variants.
 fn all_types() -> [IngestedType; 23] {
@@ -81,10 +84,18 @@ fn expected_coercion(fk: &IngestedType, pk: &IngestedType) -> CoercionKind {
         // ===== String to Bytes (Safe) =====
         (String, Bytes) => Safe,
 
-        // ===== Decimal conversions (Safe) =====
+        // ===== Decimal conversions =====
         (Decimal128, Decimal256) => Safe,
+        // Int → Decimal128: Safe with scale=0 (default in tests)
         (Int8 | Int16 | Int32 | Int64, Decimal128) => Safe,
         (UInt8 | UInt16 | UInt32 | UInt64, Decimal128) => Safe,
+        // Int → Decimal256: Always Safe
+        (Int8 | Int16 | Int32 | Int64 | UInt8 | UInt16 | UInt32 | UInt64, Decimal256) => Safe,
+        // Float → Decimal: Lossy for Decimal128, Safe for Float32→Decimal256
+        (Float32, Decimal128) => Lossy,
+        (Float64, Decimal128) => Lossy,
+        (Float32, Decimal256) => Safe,
+        (Float64, Decimal256) => Lossy,
 
         // ===== Temporal conversions =====
         (Date, Timestamp) => Safe,
@@ -110,9 +121,9 @@ fn expected_coercion(fk: &IngestedType, pk: &IngestedType) -> CoercionKind {
         (Bytes, Bool) => Incompatible,
         (Bytes, Uuid | Uuid256 | Ip) => Incompatible,
 
-        // ===== Signed/Unsigned boundary (Conditional) =====
-        (Int8 | Int16 | Int32 | Int64, UInt8 | UInt16 | UInt32 | UInt64) => Conditional,
-        (UInt64, Int64) => Conditional,
+        // ===== Signed/Unsigned boundary (Lossy) =====
+        (Int8 | Int16 | Int32 | Int64, UInt8 | UInt16 | UInt32 | UInt64) => Lossy,
+        (UInt64, Int64) => Lossy,
 
         // ===== Float to integer (Lossy) =====
         (Float32 | Float64, Int8 | Int16 | Int32 | Int64) => Lossy,
@@ -178,6 +189,7 @@ fn expected_coercion(fk: &IngestedType, pk: &IngestedType) -> CoercionKind {
 }
 
 /// Test the entire 23×23 matrix.
+/// Uses NO_SCALE (scale=None) for all tests. Scale-dependent tests are separate.
 #[test]
 fn test_full_coercion_matrix() {
     let types = all_types();
@@ -186,7 +198,7 @@ fn test_full_coercion_matrix() {
     for fk in &types {
         for pk in &types {
             let expected = expected_coercion(fk, pk);
-            let actual = coercion_kind(fk.clone(), pk.clone());
+            let actual = coercion_kind(fk.clone(), pk.clone(), NO_SCALE);
 
             if actual != expected {
                 failures.push(format!(
@@ -214,7 +226,7 @@ fn test_matrix_coverage() {
 
     for fk in &types {
         for pk in &types {
-            let _ = coercion_kind(fk.clone(), pk.clone());
+            let _ = coercion_kind(fk.clone(), pk.clone(), NO_SCALE);
             count += 1;
         }
     }
@@ -231,7 +243,7 @@ fn test_same_types_return_same() {
     let types = all_types();
     for t in &types {
         assert_eq!(
-            coercion_kind(t.clone(), t.clone()),
+            coercion_kind(t.clone(), t.clone(), NO_SCALE),
             CoercionKind::Same,
             "{:?} → {:?}",
             t,
@@ -266,7 +278,7 @@ fn test_integer_widening_safe() {
 
     for (fk, pk) in cases {
         assert_eq!(
-            coercion_kind(fk.clone(), pk.clone()),
+            coercion_kind(fk.clone(), pk.clone(), NO_SCALE),
             CoercionKind::Safe,
             "{:?} → {:?} should be Safe",
             fk,
@@ -295,7 +307,7 @@ fn test_integer_narrowing_lossy() {
 
     for (fk, pk) in cases {
         assert_eq!(
-            coercion_kind(fk.clone(), pk.clone()),
+            coercion_kind(fk.clone(), pk.clone(), NO_SCALE),
             CoercionKind::Lossy,
             "{:?} → {:?} should be Lossy",
             fk,
@@ -314,7 +326,7 @@ fn test_string_to_typed_conditional() {
 
     for pk in targets {
         assert_eq!(
-            coercion_kind(String, pk.clone()),
+            coercion_kind(String, pk.clone(), NO_SCALE),
             CoercionKind::Conditional,
             "String → {:?} should be Conditional",
             pk
@@ -331,7 +343,7 @@ fn test_float_to_int_lossy() {
     for fk in floats {
         for pk in &ints {
             assert_eq!(
-                coercion_kind(fk.clone(), pk.clone()),
+                coercion_kind(fk.clone(), pk.clone(), NO_SCALE),
                 CoercionKind::Lossy,
                 "{:?} → {:?} should be Lossy",
                 fk,
@@ -354,7 +366,7 @@ fn test_bool_mostly_incompatible() {
         };
 
         assert_eq!(
-            coercion_kind(Bool, pk.clone()),
+            coercion_kind(Bool, pk.clone(), NO_SCALE),
             expected,
             "Bool → {:?} expected {:?}",
             pk,
@@ -379,7 +391,7 @@ fn test_array_types_incompatible() {
 
             // Array as FK
             assert_eq!(
-                coercion_kind(arr.clone(), other.clone()),
+                coercion_kind(arr.clone(), other.clone(), NO_SCALE),
                 expected,
                 "{:?} → {:?}",
                 arr,
@@ -389,7 +401,7 @@ fn test_array_types_incompatible() {
             // Array as PK (except same)
             if arr != other {
                 assert_eq!(
-                    coercion_kind(other.clone(), arr.clone()),
+                    coercion_kind(other.clone(), arr.clone(), NO_SCALE),
                     CoercionKind::Incompatible,
                     "{:?} → {:?}",
                     other,
@@ -416,7 +428,7 @@ fn test_to_string_safe_except_arrays() {
         };
 
         assert_eq!(
-            coercion_kind(fk.clone(), String),
+            coercion_kind(fk.clone(), String, NO_SCALE),
             expected,
             "{:?} → String",
             fk

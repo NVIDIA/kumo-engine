@@ -56,7 +56,7 @@ pub use crate::io::{
     build_transfer_for_cloud_path, object_path_from_cloud_url,
 };
 use diskgraph_rowpack::{
-    IngestedType as RowpackType, RowAccess, RowAccessHints, RowAccessStats, RowPackConfig,
+    BinaryStringHint, IngestedType as RowpackType, RowAccess, RowAccessHints, RowAccessStats, RowPackConfig,
     RowPackContextBuilder, RowPackEncoder, RowPackRowLens,
 };
 use diskgraph_index::builder::{EdgeBufferPool as IndexEdgeBufferPool, MemoryBudget};
@@ -93,8 +93,23 @@ use uuid_simd::{parse_hyphenated, parse_simple, AsOut};
 
 pub use graph_config::GraphConfig;
 
-
-
+/// Target type information for FK columns during edge key extraction.
+///
+/// This is separate from `ingested_dtype` (used for rowpack storage).
+/// Every FK column gets an FkEdgeTarget entry, even when FK and PK have the same type.
+/// This enables the edge building code to extract keys correctly without modifying
+/// the storage type.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FkEdgeTarget {
+    /// FK column's original type (same as ColumnSpec.ingested_dtype).
+    pub ingested_type: IngestedType,
+    /// PK column's type (determines Key variant for edge lookup).
+    pub target_type: IngestedType,
+    /// PK's decimal scale (for Decimal128/256 key extraction).
+    pub scale: Option<i32>,
+    /// PK's decimal precision (for Decimal128/256).
+    pub precision: Option<u32>,
+}
 
 const DEFAULT_INDEX_MEM_BUDGET_FRAC: f64 = 0.7;
 
@@ -136,9 +151,9 @@ pub fn ingest_with_stats_from_source(
     }
     source.validate()?;
 
-    // Resolve FK column types to match their referenced PK types.
-    // This enables FK→PK joins across different source types (e.g., String FK → Int64 PK).
-    let source = source.resolve_fk_types();
+    // NOTE: We no longer call resolve_fk_types() here.
+    // FK columns keep their original ingested_dtype for rowpack storage.
+    // FkEdgeTarget (built in IngestContext::new) handles edge key extraction.
 
     let target = std::sync::Arc::new(OutputTarget::parse(output, dest)?);
     if !matches!(&*target, OutputTarget::Local { .. }) {
@@ -151,9 +166,6 @@ pub fn ingest_with_stats_from_source(
             fs::create_dir_all(root)?;
         }
     }
-
-    // Save the resolved config (with FK types updated to match PKs)
-    target.write_bytes("config_resolved.json", serde_json::to_vec_pretty(&source)?)?;
 
     let mut ctx = IngestContext::new(source, target, options, output)?;
     let profile_dir = ctx.profile_dir.clone();
@@ -333,6 +345,9 @@ struct IngestContext {
     pk_hash_paths: HashMap<String, Vec<PkHashPaths>>,
     relation_defs: Vec<RelationDef>,
     relationships: Vec<RelationshipRuntime>,
+    /// FK column target types for edge key extraction.
+    /// Key format: "table_name.column_name" -> FkEdgeTarget
+    fk_edge_targets: HashMap<String, FkEdgeTarget>,
     edge_counts: HashMap<String, u64>,
     pk_duplicate_counts: HashMap<String, u64>,
     pk_duplicate_drops: HashMap<String, u64>,
@@ -1253,6 +1268,75 @@ impl IngestContext {
             .filter_map(|t| t.primary_key.as_deref().map(|pk| (t.name.as_str(), pk)))
             .collect();
 
+        // Build table name -> TableSpec map for column lookups
+        let table_map: HashMap<&str, &TableSpec> = source
+            .tables
+            .iter()
+            .map(|t| (t.name.as_str(), t))
+            .collect();
+
+        // Build FK edge targets for all FK columns
+        // Key: "table_name.column_name" -> FkEdgeTarget
+        let mut fk_edge_targets: HashMap<String, FkEdgeTarget> = HashMap::new();
+
+        // Process embedded fkeys
+        for table in &source.tables {
+            for fkey in &table.fkeys {
+                let fk_col = table.columns.iter().find(|c| c.name == fkey.src_column);
+                let ref_table = table_map.get(fkey.dst_table.as_str());
+                if let (Some(fk_col), Some(ref_table)) = (fk_col, ref_table) {
+                    let pk_name = table_pk_map.get(fkey.dst_table.as_str()).copied().unwrap_or("id");
+                    let pk_col = ref_table.columns.iter().find(|c| c.name == pk_name);
+                    if let Some(pk_col) = pk_col {
+                        let key = format!("{}.{}", table.name, fkey.src_column);
+                        fk_edge_targets.insert(key, FkEdgeTarget {
+                            ingested_type: fk_col.ingested_dtype.clone(),
+                            target_type: pk_col.ingested_dtype.clone(),
+                            scale: pk_col.scale,
+                            precision: pk_col.precision,
+                        });
+                    }
+                }
+            }
+
+            // Process edge tables
+            if let Some(edge) = &table.edge_table {
+                // src_fk column
+                let fk_col = table.columns.iter().find(|c| c.name == edge.src_fk.edge_column);
+                let ref_table = table_map.get(edge.src_fk.ref_table.as_str());
+                if let (Some(fk_col), Some(ref_table)) = (fk_col, ref_table) {
+                    let pk_name = table_pk_map.get(edge.src_fk.ref_table.as_str()).copied().unwrap_or("id");
+                    let pk_col = ref_table.columns.iter().find(|c| c.name == pk_name);
+                    if let Some(pk_col) = pk_col {
+                        let key = format!("{}.{}", table.name, edge.src_fk.edge_column);
+                        fk_edge_targets.insert(key, FkEdgeTarget {
+                            ingested_type: fk_col.ingested_dtype.clone(),
+                            target_type: pk_col.ingested_dtype.clone(),
+                            scale: pk_col.scale,
+                            precision: pk_col.precision,
+                        });
+                    }
+                }
+
+                // dst_fk column
+                let fk_col = table.columns.iter().find(|c| c.name == edge.dst_fk.edge_column);
+                let ref_table = table_map.get(edge.dst_fk.ref_table.as_str());
+                if let (Some(fk_col), Some(ref_table)) = (fk_col, ref_table) {
+                    let pk_name = table_pk_map.get(edge.dst_fk.ref_table.as_str()).copied().unwrap_or("id");
+                    let pk_col = ref_table.columns.iter().find(|c| c.name == pk_name);
+                    if let Some(pk_col) = pk_col {
+                        let key = format!("{}.{}", table.name, edge.dst_fk.edge_column);
+                        fk_edge_targets.insert(key, FkEdgeTarget {
+                            ingested_type: fk_col.ingested_dtype.clone(),
+                            target_type: pk_col.ingested_dtype.clone(),
+                            scale: pk_col.scale,
+                            precision: pk_col.precision,
+                        });
+                    }
+                }
+            }
+        }
+
         // Build relationships from fkeys embedded in tables
         for table in &source.tables {
             for fkey in &table.fkeys {
@@ -1338,6 +1422,7 @@ impl IngestContext {
             pk_hash_paths: HashMap::new(),
             relation_defs,
             relationships,
+            fk_edge_targets,
             edge_counts: HashMap::new(),
             pk_duplicate_counts: HashMap::new(),
             pk_duplicate_drops: HashMap::new(),
@@ -1629,6 +1714,7 @@ impl IngestContext {
         let mut tasks = Vec::new();
         let relationships = self.relationships.clone();
         let relation_defs = std::sync::Arc::new(self.relation_defs.clone());
+        let fk_edge_targets = std::sync::Arc::new(self.fk_edge_targets.clone());
         let num_shards = self.num_shards;
         let target = std::sync::Arc::clone(&self.target);
         let node_pool = NodeWritePool::new(std::sync::Arc::clone(&target), edge_writer_workers());
@@ -1667,6 +1753,7 @@ impl IngestContext {
             let progress = progress.clone();
             let root = root.clone();
             let relation_defs = std::sync::Arc::clone(&relation_defs);
+            let fk_edge_targets = std::sync::Arc::clone(&fk_edge_targets);
             let file_count = table.get_paths().len();
             for file_idx in 0..file_count {
                 let table = table.clone();
@@ -1681,6 +1768,7 @@ impl IngestContext {
                 let progress = progress.clone();
                 let root = root.clone();
                 let relation_defs = std::sync::Arc::clone(&relation_defs);
+                let fk_edge_targets = std::sync::Arc::clone(&fk_edge_targets);
                 let input_transfer = input_transfer.clone();
                 let tx = tx.clone();
                 let edge_errors = std::sync::Arc::clone(&edge_errors);
@@ -1704,6 +1792,7 @@ impl IngestContext {
                                 &dest_key_errors,
                                 &sort_key_senders,
                                 relation_defs.as_ref(),
+                                &fk_edge_targets,
                             )?;
                             tx.send(Ok(EncodeResult {
                                 table: table.name.clone(),
@@ -1730,6 +1819,7 @@ impl IngestContext {
                             &dest_key_senders,
                             &dest_key_errors,
                             &sort_key_senders,
+                            &fk_edge_targets,
                         )?;
                         tx.send(Ok(EncodeResult {
                             table: table.name.clone(),
@@ -1967,6 +2057,7 @@ impl IngestContext {
         dest_key_senders: &std::sync::Arc<Vec<std::sync::mpsc::SyncSender<DestKeyWriteMessage>>>,
         dest_key_errors: &std::sync::Arc<std::sync::Mutex<Option<String>>>,
         sort_key_senders: &std::sync::Arc<Vec<std::sync::mpsc::SyncSender<SortKeyWriteMessage>>>,
+        fk_edge_targets: &HashMap<String, FkEdgeTarget>,
     ) -> Result<TempNodeFileResult> {
         let pk_col = table.primary_key.as_ref().and_then(|pk| column_spec(table, pk).ok());
         let pk_idx = table
@@ -1985,7 +2076,13 @@ impl IngestContext {
             let rel_name = std::sync::Arc::<str>::from(rel.name_forward.clone());
             let rel_pos = rel_names.len();
             rel_names.push(rel_name.clone());
-            rel_specs.push((rel_name, idx, rel_pos));
+            // Pre-resolve target type from fk_edge_targets (avoids per-row HashMap lookup)
+            let fk_key = format!("{}.{}", table.name, rel.src_column);
+            let target_type = fk_edge_targets
+                .get(&fk_key)
+                .map(|t| t.target_type.clone())
+                .unwrap_or_else(|| table.columns[idx].ingested_dtype.clone());
+            rel_specs.push((rel_name, idx, rel_pos, rel.src_column.clone(), target_type));
         }
         let mut total_rows = 0u64;
         let row_access_hints = build_row_access_hints(table);
@@ -2049,10 +2146,9 @@ impl IngestContext {
                 let precomputed = precompute_shards(pk_array, pk_col, num_shards);
 
                 let mut fkeys_pre = Vec::with_capacity(rel_specs.len());
-                for (_, idx, _) in &rel_specs {
-                    let col_spec = &table.columns[*idx];
+                for (_, idx, _, _, target_type) in &rel_specs {
                     let array = access.array(*idx).unwrap();
-                    let kind = edge_fast_path_for_array(col_spec, array);
+                    let kind = edge_fast_path_for_array(array, target_type);
                     let should_optimize = match kind {
                         Some(EdgeKeyFastKind::Int64ToInt32)
                         | Some(EdgeKeyFastKind::StringToInt64)
@@ -2062,7 +2158,8 @@ impl IngestContext {
                         _ => false,
                     };
                     if should_optimize {
-                        fkeys_pre.push(extract_batch_keys(array, kind.unwrap()).ok());
+                        let keys_result = extract_batch_keys(array, kind.unwrap());
+                        fkeys_pre.push(keys_result.ok());
                     } else {
                         fkeys_pre.push(None);
                     }
@@ -2263,7 +2360,7 @@ impl IngestContext {
     fn write_node_row_from_access(
         table: &TableSpec,
         pk_idx: Option<usize>,
-        rel_specs: &[(std::sync::Arc<str>, usize, usize)],
+        rel_specs: &[(std::sync::Arc<str>, usize, usize, String, IngestedType)],
         fkeys_pre: &[Option<Vec<Option<Key>>>],
         row: usize,
         access: &mut RowAccess<'_>,
@@ -2293,7 +2390,7 @@ impl IngestContext {
             let res = if let Some(key) = pk_pre {
                 write_key_to_buf(buf, key).map_err(|_| KeyParseError::TypeMismatch)
             } else {
-                key_from_access_into_buf(access, idx, pk_col, buf)
+                key_from_access_into_buf(access, idx, pk_col, &pk_col.ingested_dtype, buf)
             };
 
             match res {
@@ -2316,7 +2413,7 @@ impl IngestContext {
         } else {
             (*row_id as usize) % num_shards
         };
-        for (i, (_rel_name, rel_idx, _rel_pos)) in rel_specs.iter().enumerate() {
+        for (i, (_rel_name, rel_idx, _rel_pos, _fk_col_name, target_type)) in rel_specs.iter().enumerate() {
             let col = table
                 .columns
                 .get(*rel_idx)
@@ -2331,10 +2428,10 @@ impl IngestContext {
                 } else {
                     // Fallback to RowAccess for None values to ensure correct error reporting
                     // (extract_batch_keys uses None for both nulls and parse errors).
-                    key_from_access_into_buf(access, *rel_idx, col, buf)
+                    key_from_access_into_buf(access, *rel_idx, col, target_type, buf)
                 }
             } else {
-                key_from_access_into_buf(access, *rel_idx, col, buf)
+                key_from_access_into_buf(access, *rel_idx, col, target_type, buf)
             };
 
             if res.is_err() {
@@ -2392,7 +2489,7 @@ impl IngestContext {
         for sort_key in sort_key_batchers.iter_mut() {
             sort_key.push_row(shard, access)?;
         }
-        for (_rel_name, rel_idx, rel_pos) in rel_specs {
+        for (_rel_name, rel_idx, rel_pos, _fk_col_name, _) in rel_specs {
             if let Some(buf) = key_bufs.get(*rel_idx) {
                 if buf.is_empty() {
                     batcher.push_fkey_empty(shard, *rel_pos)?;
@@ -2423,6 +2520,7 @@ impl IngestContext {
         dest_key_errors: &std::sync::Arc<std::sync::Mutex<Option<String>>>,
         sort_key_senders: &std::sync::Arc<Vec<std::sync::mpsc::SyncSender<SortKeyWriteMessage>>>,
         relation_defs: &[RelationDef],
+        fk_edge_targets: &HashMap<String, FkEdgeTarget>,
     ) -> Result<u64> {
         let edge = table
             .edge_table
@@ -2432,6 +2530,15 @@ impl IngestContext {
         let dst_fk_idx = column_index(table, &edge.dst_fk.edge_column)?;
         let src_fk_col = column_spec(table, &edge.src_fk.edge_column)?;
         let dst_fk_col = column_spec(table, &edge.dst_fk.edge_column)?;
+        // Pre-resolve target types for src and dst FK columns
+        let src_target_type = fk_edge_targets
+            .get(&format!("{}.{}", table.name, edge.src_fk.edge_column))
+            .map(|t| &t.target_type)
+            .unwrap_or(&src_fk_col.ingested_dtype);
+        let dst_target_type = fk_edge_targets
+            .get(&format!("{}.{}", table.name, edge.dst_fk.edge_column))
+            .map(|t| &t.target_type)
+            .unwrap_or(&dst_fk_col.ingested_dtype);
         let src_context = format!("edge_fk:{}.{}", table.name, edge.src_fk.edge_column);
         let dst_context = format!("edge_fk:{}.{}", table.name, edge.dst_fk.edge_column);
         let schema = table_schema(table)?;
@@ -2499,6 +2606,8 @@ impl IngestContext {
                         dst_fk_idx,
                         src_fk_col,
                         dst_fk_col,
+                        src_target_type,
+                        dst_target_type,
                         &src_context,
                         &dst_context,
                         $cols,
@@ -2539,8 +2648,8 @@ impl IngestContext {
                                 cols.push(batch.column(idx).clone());
                             }
                             access.set_cols(&cols);
-                            let src_fast = edge_fast_path_for_array(src_fk_col, &cols[src_fk_idx]);
-                            let dst_fast = edge_fast_path_for_array(dst_fk_col, &cols[dst_fk_idx]);
+                            let src_fast = edge_fast_path_for_array(&cols[src_fk_idx], src_target_type);
+                            let dst_fast = edge_fast_path_for_array(&cols[dst_fk_idx], dst_target_type);
                             let mut src_key_buf = Vec::new();
                             let mut dst_key_buf = Vec::new();
                             let mut forward_row = Vec::new();
@@ -2572,8 +2681,8 @@ impl IngestContext {
                                 cols.push(batch.column(idx).clone());
                             }
                             access.set_cols(&cols);
-                            let src_fast = edge_fast_path_for_array(src_fk_col, &cols[src_fk_idx]);
-                            let dst_fast = edge_fast_path_for_array(dst_fk_col, &cols[dst_fk_idx]);
+                            let src_fast = edge_fast_path_for_array(&cols[src_fk_idx], src_target_type);
+                            let dst_fast = edge_fast_path_for_array(&cols[dst_fk_idx], dst_target_type);
                             let mut src_key_buf = Vec::new();
                             let mut dst_key_buf = Vec::new();
                             let mut forward_row = Vec::new();
@@ -2605,8 +2714,8 @@ impl IngestContext {
                             cols.push(batch.column(idx).clone());
                         }
                         access.set_cols(&cols);
-                        let src_fast = edge_fast_path_for_array(src_fk_col, &cols[src_fk_idx]);
-                        let dst_fast = edge_fast_path_for_array(dst_fk_col, &cols[dst_fk_idx]);
+                        let src_fast = edge_fast_path_for_array(&cols[src_fk_idx], src_target_type);
+                        let dst_fast = edge_fast_path_for_array(&cols[dst_fk_idx], dst_target_type);
                             let mut src_key_buf = Vec::new();
                             let mut dst_key_buf = Vec::new();
                             let mut forward_row = Vec::new();
@@ -2642,8 +2751,8 @@ impl IngestContext {
                                 cols.push(batch.column(idx).clone());
                             }
                             access.set_cols(&cols);
-                            let src_fast = edge_fast_path_for_array(src_fk_col, &cols[src_fk_idx]);
-                            let dst_fast = edge_fast_path_for_array(dst_fk_col, &cols[dst_fk_idx]);
+                            let src_fast = edge_fast_path_for_array(&cols[src_fk_idx], src_target_type);
+                            let dst_fast = edge_fast_path_for_array(&cols[dst_fk_idx], dst_target_type);
                             let mut src_key_buf = Vec::new();
                             let mut dst_key_buf = Vec::new();
                             let mut forward_row = Vec::new();
@@ -2674,8 +2783,8 @@ impl IngestContext {
                                 cols.push(batch.column(idx).clone());
                             }
                             access.set_cols(&cols);
-                            let src_fast = edge_fast_path_for_array(src_fk_col, &cols[src_fk_idx]);
-                            let dst_fast = edge_fast_path_for_array(dst_fk_col, &cols[dst_fk_idx]);
+                            let src_fast = edge_fast_path_for_array(&cols[src_fk_idx], src_target_type);
+                            let dst_fast = edge_fast_path_for_array(&cols[dst_fk_idx], dst_target_type);
                             let mut src_key_buf = Vec::new();
                             let mut dst_key_buf = Vec::new();
                             let mut forward_row = Vec::new();
@@ -2706,8 +2815,8 @@ impl IngestContext {
                             cols.push(batch.column(idx).clone());
                         }
                         access.set_cols(&cols);
-                        let src_fast = edge_fast_path_for_array(src_fk_col, &cols[src_fk_idx]);
-                        let dst_fast = edge_fast_path_for_array(dst_fk_col, &cols[dst_fk_idx]);
+                        let src_fast = edge_fast_path_for_array(&cols[src_fk_idx], src_target_type);
+                        let dst_fast = edge_fast_path_for_array(&cols[dst_fk_idx], dst_target_type);
                         let mut src_key_buf = Vec::new();
                         let mut dst_key_buf = Vec::new();
                         let mut forward_row = Vec::new();
@@ -2749,6 +2858,8 @@ impl IngestContext {
         dst_idx: usize,
         src_col: &ColumnSpec,
         dst_col: &ColumnSpec,
+        src_target_type: &IngestedType,
+        dst_target_type: &IngestedType,
         src_context: &str,
         dst_context: &str,
         _cols: &[ArrayRef],
@@ -2779,7 +2890,7 @@ impl IngestContext {
                 );
                 return Ok(());
             }
-        } else if key_from_access_into_buf(access, src_idx, src_col, src_key_buf).is_err() {
+        } else if key_from_access_into_buf(access, src_idx, src_col, src_target_type, src_key_buf).is_err() {
             record_key_parse_failure_sample(
                 &mut key_failures.parse_failures,
                 &mut key_failures.samples,
@@ -2801,7 +2912,7 @@ impl IngestContext {
                 );
                 return Ok(());
             }
-        } else if key_from_access_into_buf(access, dst_idx, dst_col, dst_key_buf).is_err() {
+        } else if key_from_access_into_buf(access, dst_idx, dst_col, dst_target_type, dst_key_buf).is_err() {
             record_key_parse_failure_sample(
                 &mut key_failures.parse_failures,
                 &mut key_failures.samples,
@@ -2815,8 +2926,8 @@ impl IngestContext {
         let dst_shard = shard_for_key(dst_key_buf, num_shards);
         forward_row.clear();
         forward_row.reserve(src_key_buf.len().saturating_add(dst_key_buf.len()).saturating_add(4));
-        append_key_bytes_with_len_prefix(forward_row, src_key_buf, src_col)?;
-        append_key_bytes_with_len_prefix(forward_row, dst_key_buf, dst_col)?;
+        append_key_bytes_with_len_prefix(forward_row, src_key_buf, src_col, src_target_type)?;
+        append_key_bytes_with_len_prefix(forward_row, dst_key_buf, dst_col, dst_target_type)?;
         batcher.push(forward_shard, forward_row, timestamp_valid)?;
         edge_key_batcher.push_src(forward_shard, src_key_buf)?;
         edge_key_batcher.push_dst(dst_shard, dst_key_buf)?;
@@ -2838,6 +2949,7 @@ impl IngestContext {
         let key_failures = std::sync::Arc::new(std::sync::Mutex::new(KeyFailureState::default()));
         let relationships = self.relationships.clone();
         let source = self.source.clone();
+        let fk_edge_targets = self.fk_edge_targets.clone();
         let mut tasks = Vec::new();
         let mut pk_hash_handles: HashMap<
             String,
@@ -2879,6 +2991,7 @@ impl IngestContext {
                 let pk_map_budget = pk_map_budget.clone();
                 let relationships = relationships.clone();
                 let source = source.clone();
+                let fk_edge_targets = fk_edge_targets.clone();
                 tasks.push(WorkItem {
                     bucket: None,
                     run: Box::new(move |scratch: &mut PkMapScratch| {
@@ -2893,33 +3006,51 @@ impl IngestContext {
                         let reserve_rows_usize =
                             usize::try_from(reserve_rows).unwrap_or(usize::MAX);
                         let data_path = root.join(temp_pkey_path(&table_name, shard));
-                        let mut fkey_inputs: Vec<(PathBuf, PathBuf, ColumnSpec)> = Vec::new();
-                        let mut edge_inputs: Vec<(PathBuf, PathBuf, ColumnSpec)> = Vec::new();
+                        // Store (path, meta_path, target_type) - use target type for reading FK temp files
+                        let mut fkey_inputs: Vec<(PathBuf, PathBuf, IngestedType)> = Vec::new();
+                        let mut edge_inputs: Vec<(PathBuf, PathBuf, IngestedType)> = Vec::new();
                         for rel in relationships.iter().filter(|rel| rel.dst_table == table_name) {
-                            let src_table = table_by_name(&source, &rel.src_table)?;
-                            let src_col = column_spec(src_table, &rel.src_column)?;
+                            // Look up the target type from fk_edge_targets (FK keys were written using target type)
+                            let fk_key = format!("{}.{}", rel.src_table, rel.src_column);
+                            let target_type = fk_edge_targets
+                                .get(&fk_key)
+                                .map(|t| t.target_type.clone())
+                                .unwrap_or_else(|| {
+                                    // Fallback to PK column type (this table's PK)
+                                    pk_col.ingested_dtype.clone()
+                                });
                             fkey_inputs.push((
                                 root.join(temp_fkey_dst_path(&rel.src_table, &rel.name_forward, shard)),
                                 root.join(temp_fkey_dst_meta_path(&rel.src_table, &rel.name_forward, shard)),
-                                src_col.clone(),
+                                target_type,
                             ));
                         }
                         for table in source.tables.iter().filter(|t| t.edge_table.is_some()) {
                             let edge = table.edge_table.as_ref().unwrap();
                             if edge.src_fk.ref_table == table_name {
-                                let src_col = column_spec(table, &edge.src_fk.edge_column)?;
+                                // Look up target type for edge table src FK
+                                let fk_key = format!("{}.{}", table.name, edge.src_fk.edge_column);
+                                let target_type = fk_edge_targets
+                                    .get(&fk_key)
+                                    .map(|t| t.target_type.clone())
+                                    .unwrap_or_else(|| pk_col.ingested_dtype.clone());
                                 edge_inputs.push((
                                     root.join(temp_edge_key_path(&table.name, EdgeKeyKind::Src, shard)),
                                     root.join(temp_edge_key_meta_path(&table.name, EdgeKeyKind::Src, shard)),
-                                    src_col.clone(),
+                                    target_type,
                                 ));
                             }
                             if edge.dst_fk.ref_table == table_name {
-                                let dst_col = column_spec(table, &edge.dst_fk.edge_column)?;
+                                // Look up target type for edge table dst FK
+                                let fk_key = format!("{}.{}", table.name, edge.dst_fk.edge_column);
+                                let target_type = fk_edge_targets
+                                    .get(&fk_key)
+                                    .map(|t| t.target_type.clone())
+                                    .unwrap_or_else(|| pk_col.ingested_dtype.clone());
                                 edge_inputs.push((
                                     root.join(temp_edge_key_path(&table.name, EdgeKeyKind::Dst, shard)),
                                     root.join(temp_edge_key_meta_path(&table.name, EdgeKeyKind::Dst, shard)),
-                                    dst_col.clone(),
+                                    target_type,
                                 ));
                             }
                         }
@@ -3036,12 +3167,12 @@ impl IngestContext {
                                             row_id += 1;
                                             Ok(())
                                         })?;
-                                        for (path, _meta_path, col) in
+                                        for (path, _meta_path, target_type) in
                                             fkey_inputs.iter().chain(edge_inputs.iter())
                                         {
                                             read_temp_rows(path, |row| {
                                                 let mut data = row;
-                                                let key = read_key_from_buf(&mut data, col)?;
+                                                let key = read_key_from_buf_for_type(&mut data, target_type)?;
                                                 if let Key::Int(v) = key {
                                                     seen.entry(v).or_insert(INVALID_LOCAL_ID);
                                                 }
@@ -3160,12 +3291,12 @@ impl IngestContext {
                                             row_id += 1;
                                             Ok(())
                                         })?;
-                                        for (path, _meta_path, col) in
+                                        for (path, _meta_path, target_type) in
                                             fkey_inputs.iter().chain(edge_inputs.iter())
                                         {
                                             read_temp_rows(path, |row| {
                                                 let mut data = row;
-                                                let key = read_key_from_buf(&mut data, col)?;
+                                                let key = read_key_from_buf_for_type(&mut data, target_type)?;
                                                 if let Key::Bytes(bytes) = key {
                                                     seen.entry(bytes).or_insert(INVALID_LOCAL_ID);
                                                 }
@@ -3282,12 +3413,12 @@ impl IngestContext {
                                             row_id += 1;
                                             Ok(())
                                         })?;
-                                        for (path, _meta_path, col) in
+                                        for (path, _meta_path, target_type) in
                                             fkey_inputs.iter().chain(edge_inputs.iter())
                                         {
                                             read_temp_rows(path, |row| {
                                                 let mut data = row;
-                                                let key = read_key_from_buf(&mut data, col)?;
+                                                let key = read_key_from_buf_for_type(&mut data, target_type)?;
                                                 if let Key::Uuid(uuid) = key {
                                                     seen.entry(uuid).or_insert(INVALID_LOCAL_ID);
                                                 }
@@ -3404,12 +3535,12 @@ impl IngestContext {
                                             row_id += 1;
                                             Ok(())
                                         })?;
-                                        for (path, _meta_path, col) in
+                                        for (path, _meta_path, target_type) in
                                             fkey_inputs.iter().chain(edge_inputs.iter())
                                         {
                                             read_temp_rows(path, |row| {
                                                 let mut data = row;
-                                                let key = read_key_from_buf(&mut data, col)?;
+                                                let key = read_key_from_buf_for_type(&mut data, target_type)?;
                                                 if let Key::Uuid256(uuid) = key {
                                                     seen.entry(uuid).or_insert(INVALID_LOCAL_ID);
                                                 }
@@ -3526,12 +3657,12 @@ impl IngestContext {
                                             row_id += 1;
                                             Ok(())
                                         })?;
-                                        for (path, _meta_path, col) in
+                                        for (path, _meta_path, target_type) in
                                             fkey_inputs.iter().chain(edge_inputs.iter())
                                         {
                                             read_temp_rows(path, |row| {
                                                 let mut data = row;
-                                                let key = read_key_from_buf(&mut data, col)?;
+                                                let key = read_key_from_buf_for_type(&mut data, target_type)?;
                                                 if let Key::Ip(ip) = key {
                                                     seen.entry(ip).or_insert(INVALID_LOCAL_ID);
                                                 }
@@ -4030,6 +4161,12 @@ impl IngestContext {
                 let tx = tx.clone();
                 let src_table = table_by_name(&source, &rel.src_table)?;
                 let src_fk_col = column_spec(src_table, &rel.src_column)?;
+                // Look up target_type for this FK (keys were written using target_type in encode)
+                let fk_key = format!("{}.{}", rel.src_table, rel.src_column);
+                let fk_target_type = self.fk_edge_targets
+                    .get(&fk_key)
+                    .map(|t| t.target_type.clone())
+                    .unwrap_or_else(|| src_fk_col.ingested_dtype.clone());
                 let mut total_rows = 0u64;
                 for shard in 0..num_shards {
                     let fkey_meta = root.join(temp_fkey_meta_path(
@@ -4065,7 +4202,7 @@ impl IngestContext {
                     let writer_senders = std::sync::Arc::clone(&writer_senders);
                     let buffer_pool = std::sync::Arc::clone(&buffer_pool);
                     let tx = tx.clone();
-                    let src_fk_col = src_fk_col.clone();
+                    let fk_target_type = fk_target_type.clone();
                     tasks.push(WorkItem {
                         bucket: None,
                         run: Box::new(move |scratch: &mut EdgeMapScratch| {
@@ -4188,7 +4325,7 @@ impl IngestContext {
                                         return Ok(());
                                     }
                                     let mut data = row;
-                                    let dst_key = match read_key_from_buf(&mut data, &src_fk_col) {
+                                    let dst_key = match read_key_from_buf_for_type(&mut data, &fk_target_type) {
                                         Ok(key) => key,
                                         Err(_) => {
                                             record_key_parse_failure(
@@ -4444,10 +4581,8 @@ impl IngestContext {
                                     pending = 0;
                                 }
                                 let mut data = row;
-                                let src_key = read_key_from_buf_len_prefixed(&mut data, &src_pk_col)
-                                    .map_err(|_| anyhow!("src key parse"))?;
-                                let dst_key = read_key_from_buf_len_prefixed(&mut data, &dst_pk_col)
-                                    .map_err(|_| anyhow!("dst key parse"))?;
+                                let src_key = read_key_from_buf_len_prefixed(&mut data, &src_pk_col)?;
+                                let dst_key = read_key_from_buf_len_prefixed(&mut data, &dst_pk_col)?;
                                 let timestamp_valid = if !data.is_empty() {
                                     data[0] != 0
                                 } else {
@@ -7457,8 +7592,8 @@ fn run_tasks<S: Default + Send + 'static>(
 }
 
 
-fn key_type_for_column(col: &ColumnSpec) -> Result<KeyType> {
-    match col.ingested_dtype {
+fn key_type_for_dtype(dtype: &IngestedType) -> Result<KeyType> {
+    match dtype {
         IngestedType::Int64
         | IngestedType::Int32
         | IngestedType::Int16
@@ -7466,8 +7601,8 @@ fn key_type_for_column(col: &ColumnSpec) -> Result<KeyType> {
         | IngestedType::UInt64
         | IngestedType::UInt32
         | IngestedType::UInt16
-        | IngestedType::UInt8 => Ok(KeyType::Int64),
-        IngestedType::Float32
+        | IngestedType::UInt8
+        | IngestedType::Float32
         | IngestedType::Float64
         | IngestedType::Decimal128 => Ok(KeyType::Int64),
         IngestedType::Decimal256 => Ok(KeyType::VarBytes),
@@ -7475,8 +7610,12 @@ fn key_type_for_column(col: &ColumnSpec) -> Result<KeyType> {
         IngestedType::Uuid => Ok(KeyType::Uuid),
         IngestedType::Uuid256 => Ok(KeyType::Uuid256),
         IngestedType::Ip => Ok(KeyType::Ip),
-        _ => Err(anyhow!("unsupported primary key type")),
+        _ => Err(anyhow!("unsupported key type: {:?}", dtype)),
     }
+}
+
+fn key_type_for_column(col: &ColumnSpec) -> Result<KeyType> {
+    key_type_for_dtype(&col.ingested_dtype)
 }
 
 fn column_index(table: &TableSpec, name: &str) -> Result<usize> {
@@ -7487,17 +7626,21 @@ fn column_index(table: &TableSpec, name: &str) -> Result<usize> {
         .ok_or_else(|| anyhow!("missing column {}", name))
 }
 
+/// Coerce Uuid/Uuid256/Ip source data to VarBytes (String or Bytes target).
+/// Separated from the hot path to avoid icache pollution.
+#[cold]
 fn key_from_access_into_buf(
     access: &mut RowAccess<'_>,
     idx: usize,
     col: &ColumnSpec,
+    target_type: &IngestedType,
     out: &mut Vec<u8>,
 ) -> KeyParseResult<()> {
-    let key_type = key_type_for_column(col).map_err(|_| KeyParseError::UnsupportedType)?;
+    let key_type = key_type_for_dtype(target_type).map_err(|_| KeyParseError::UnsupportedType)?;
     out.clear();
     match key_type {
         KeyType::Int64 => {
-            let value = match col.ingested_dtype {
+            let value = match *target_type {
                 IngestedType::Int64 => access
                     .get_int64(idx)
                     .map_err(|_| KeyParseError::TypeMismatch)?
@@ -7568,7 +7711,7 @@ fn key_from_access_into_buf(
                 }
                 Ok(())
             };
-            match col.ingested_dtype {
+            match *target_type {
                 IngestedType::Bytes => {
                     let array = access
                         .array(idx)
@@ -7639,7 +7782,7 @@ fn key_from_access_into_buf(
         }
         KeyType::Uuid => {
             let mut buf = [0u8; 16];
-            let uuid = match col.ingested_dtype {
+            let uuid = match *target_type {
                 IngestedType::Uuid => {
                     let value = access
                         .get_uuid(idx)
@@ -7671,7 +7814,7 @@ fn key_from_access_into_buf(
         }
         KeyType::Uuid256 => {
             let mut buf = [0u8; 32];
-            let uuid = match col.ingested_dtype {
+            let uuid = match *target_type {
                 IngestedType::Uuid256 => {
                     let value = access
                         .get_uuid256(idx)
@@ -7702,7 +7845,7 @@ fn key_from_access_into_buf(
             Ok(())
         }
         KeyType::Ip => {
-            let ip = match col.ingested_dtype {
+            let ip = match *target_type {
                 IngestedType::Ip => {
                     let value = access
                         .get_ip(idx)
@@ -7753,8 +7896,9 @@ fn append_key_bytes_with_len_prefix(
     row: &mut Vec<u8>,
     key_bytes: &[u8],
     col: &ColumnSpec,
+    target_type: &IngestedType,
 ) -> Result<()> {
-    match key_type_for_column(col)? {
+    match key_type_for_dtype(target_type)? {
         KeyType::VarBytes => {
             let len = u16::try_from(key_bytes.len())
                 .map_err(|_| anyhow!("temp key too large"))?;
@@ -7770,6 +7914,76 @@ fn append_key_bytes_with_len_prefix(
 
 fn read_key_from_buf(data: &mut &[u8], col: &ColumnSpec) -> Result<Key> {
     let key_type = key_type_for_column(col)?;
+    match key_type {
+        KeyType::Int64 => {
+            if data.len() < 8 {
+                return Err(anyhow!("temp key truncated"));
+            }
+            let mut buf = [0u8; 8];
+            buf.copy_from_slice(&data[..8]);
+            *data = &data[8..];
+            Ok(Key::Int(u64::from_le_bytes(buf)))
+        }
+        KeyType::Uuid => {
+            if data.len() < 16 {
+                return Err(anyhow!("temp key truncated"));
+            }
+            let mut buf = [0u8; 16];
+            buf.copy_from_slice(&data[..16]);
+            *data = &data[16..];
+            Ok(Key::Uuid(buf))
+        }
+        KeyType::Uuid256 => {
+            if data.len() < 32 {
+                return Err(anyhow!("temp key truncated"));
+            }
+            let mut buf = [0u8; 32];
+            buf.copy_from_slice(&data[..32]);
+            *data = &data[32..];
+            Ok(Key::Uuid256(buf))
+        }
+        KeyType::Ip => {
+            if data.len() < 16 {
+                return Err(anyhow!("temp key truncated"));
+            }
+            let mut buf = [0u8; 16];
+            buf.copy_from_slice(&data[..16]);
+            *data = &data[16..];
+            Ok(Key::Ip(buf))
+        }
+        KeyType::VarBytes => {
+            if data.len() > MAX_VAR_KEY_LEN {
+                return Err(anyhow!("temp key too large"));
+            }
+            let bytes = data.to_vec();
+            *data = &[];
+            Ok(Key::Bytes(bytes))
+        }
+    }
+}
+
+/// Read a key from buffer using the target type directly.
+/// Used in edges_map when FK keys were written using target_type (from FK→PK coercion).
+fn read_key_from_buf_for_type(data: &mut &[u8], target_type: &IngestedType) -> Result<Key> {
+    let key_type = match target_type {
+        IngestedType::Int64
+        | IngestedType::Int32
+        | IngestedType::Int16
+        | IngestedType::Int8
+        | IngestedType::UInt64
+        | IngestedType::UInt32
+        | IngestedType::UInt16
+        | IngestedType::UInt8
+        | IngestedType::Float32
+        | IngestedType::Float64
+        | IngestedType::Decimal128 => KeyType::Int64,
+        IngestedType::Decimal256 => KeyType::VarBytes,
+        IngestedType::String | IngestedType::Bytes => KeyType::VarBytes,
+        IngestedType::Uuid => KeyType::Uuid,
+        IngestedType::Uuid256 => KeyType::Uuid256,
+        IngestedType::Ip => KeyType::Ip,
+        _ => return Err(anyhow!("unsupported key type for target: {:?}", target_type)),
+    };
     match key_type {
         KeyType::Int64 => {
             if data.len() < 8 {
@@ -7879,14 +8093,28 @@ fn parse_base10_bytes(bytes: &[u8]) -> KeyParseResult<u64> {
     if bytes.is_empty() {
         return Err(KeyParseError::Empty);
     }
-    if bytes.len() > 20 {
+    if bytes.len() > 21 {
+        // +1 for potential sign
         return Err(KeyParseError::TooLarge);
     }
     if bytes.contains(&b'.') {
         return Err(KeyParseError::NotInteger);
     }
+
+    // Handle negative sign
+    let (negative, digits) = if bytes.first() == Some(&b'-') {
+        (true, &bytes[1..])
+    } else {
+        (false, bytes)
+    };
+
+    if digits.is_empty() {
+        // Just "-" is invalid
+        return Err(KeyParseError::Empty);
+    }
+
     let mut value: u64 = 0;
-    for &b in bytes {
+    for &b in digits {
         if !b.is_ascii_digit() {
             return Err(KeyParseError::NotBase10);
         }
@@ -7896,7 +8124,26 @@ fn parse_base10_bytes(bytes: &[u8]) -> KeyParseResult<u64> {
             .and_then(|v| v.checked_add(digit))
             .ok_or(KeyParseError::TooLarge)?;
     }
-    Ok(value)
+
+    if negative {
+        // Convert to two's complement representation
+        // This matches how negative i64 values are stored as u64 in PK keys
+        // For example: -1 becomes 0xFFFFFFFFFFFFFFFF, -123 becomes (-123i64) as u64
+        if value > (i64::MAX as u64) + 1 {
+            // Magnitude too large for i64 (can't represent values < i64::MIN)
+            return Err(KeyParseError::TooLarge);
+        }
+        // Negate using two's complement: -(value as i64) then cast back to u64
+        // Special case: value == (i64::MAX as u64) + 1 means i64::MIN
+        let signed = if value == (i64::MAX as u64) + 1 {
+            i64::MIN
+        } else {
+            -(value as i64)
+        };
+        Ok(signed as u64)
+    } else {
+        Ok(value)
+    }
 }
 
 
@@ -8169,6 +8416,12 @@ pub(crate) fn build_row_access_hints(table: &TableSpec) -> Vec<RowAccessHints> {
             timestamp_format: col.timestamp_format.clone(),
             timestamp_unit: to_arrow_time_unit(col.timestamp_unit.as_ref()),
             decimal_scale: col.scale,
+            binary_string_hint: match col.ingested_dtype {
+                IngestedType::Uuid => BinaryStringHint::Uuid,
+                IngestedType::Uuid256 => BinaryStringHint::Uuid256,
+                IngestedType::Ip => BinaryStringHint::Ip,
+                _ => BinaryStringHint::Utf8,
+            },
         })
         .collect()
 }
@@ -8361,8 +8614,8 @@ enum EdgeKeyFastKind {
     BytesIp,
 }
 
-fn edge_fast_path_for_array(col: &ColumnSpec, array: &ArrayRef) -> Option<EdgeKeyFastKind> {
-    match (array.data_type(), &col.ingested_dtype) {
+fn edge_fast_path_for_array(array: &ArrayRef, target_type: &IngestedType) -> Option<EdgeKeyFastKind> {
+    match (array.data_type(), target_type) {
         (DataType::Int64, IngestedType::Int64) => Some(EdgeKeyFastKind::Int64),
         (DataType::Int32, IngestedType::Int32) => Some(EdgeKeyFastKind::Int32),
         (DataType::Int16, IngestedType::Int16) => Some(EdgeKeyFastKind::Int16),

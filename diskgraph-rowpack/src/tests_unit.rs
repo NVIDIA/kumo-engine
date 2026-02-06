@@ -92,6 +92,7 @@ use serde_json::Value as JsonValue;
             timestamp_format: None,
             timestamp_unit: None,
             decimal_scale: None,
+            ..Default::default()
         }];
         let mut access = RowAccess::new(hints, RowAccessStats::new(None));
         access.set_cols(&cols);
@@ -112,6 +113,7 @@ use serde_json::Value as JsonValue;
             timestamp_format: None,
             timestamp_unit: None,
             decimal_scale: None,
+            ..Default::default()
         }];
         let mut access = RowAccess::new(hints, RowAccessStats::new(None));
         access.set_cols(&cols);
@@ -133,6 +135,7 @@ use serde_json::Value as JsonValue;
             timestamp_format: None,
             timestamp_unit: None,
             decimal_scale: None,
+            ..Default::default()
         }];
         let mut access = RowAccess::new(hints, RowAccessStats::new(None));
         access.set_cols(&cols);
@@ -1017,6 +1020,7 @@ use serde_json::Value as JsonValue;
             timestamp_format: None,
             timestamp_unit: None,
             decimal_scale: Some(2),
+            ..Default::default()
         }];
         let stats = RowAccessStats::new(None);
         let mut access = RowAccess::new(hints, stats);
@@ -1036,6 +1040,7 @@ use serde_json::Value as JsonValue;
             timestamp_format: None,
             timestamp_unit: None,
             decimal_scale: Some(2),
+            ..Default::default()
         }];
         let stats = RowAccessStats::new(None);
         let mut access = RowAccess::new(hints, stats);
@@ -1138,6 +1143,7 @@ use serde_json::Value as JsonValue;
             timestamp_format: None,
             timestamp_unit: None,
             decimal_scale: None,
+            ..Default::default()
         }];
         let stats = RowAccessStats::default();
         let mut access = RowAccess::new(hints, stats);
@@ -1157,6 +1163,7 @@ use serde_json::Value as JsonValue;
             timestamp_format: None,
             timestamp_unit: None,
             decimal_scale: None,
+            ..Default::default()
         }];
         let stats = RowAccessStats::default();
         let mut access = RowAccess::new(hints, stats);
@@ -1175,6 +1182,7 @@ use serde_json::Value as JsonValue;
             timestamp_format: None,
             timestamp_unit: None,
             decimal_scale: None,
+            ..Default::default()
         }];
         let stats = RowAccessStats::default();
         let mut access = RowAccess::new(hints, stats);

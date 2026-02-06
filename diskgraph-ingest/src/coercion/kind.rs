@@ -4,6 +4,7 @@
 //! that determines what kind of coercion is needed between two IngestedTypes.
 //!
 //! The 23×23 matrix is the single source of truth for FK-PK type compatibility.
+//! Some coercions (Int/Float → Decimal) are scale-dependent.
 
 use crate::graph_config::IngestedType;
 
@@ -22,6 +23,51 @@ pub enum CoercionKind {
     Incompatible,
 }
 
+/// Parameters for scale-dependent coercion decisions.
+///
+/// Some coercions (Int/Float → Decimal) depend on the target's scale/precision.
+/// Pass this struct to `coercion_kind` when the PK is a Decimal type.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CoercionParams {
+    /// PK's decimal scale (number of digits after decimal point).
+    /// Required for Int → Decimal128 coercion to check overflow.
+    pub pk_scale: Option<i32>,
+}
+
+impl CoercionParams {
+    /// Create params with the given scale.
+    pub fn with_scale(scale: i32) -> Self {
+        Self { pk_scale: Some(scale) }
+    }
+}
+
+/// Maximum safe scale for Int → Decimal128 conversions.
+/// If scale > max, the conversion may overflow and is Lossy.
+///
+/// Decimal128 max ≈ 10^38. For safe conversion: max_value × 10^scale < 10^38
+///
+/// | Type   | Max Abs Value | Digits | Max Scale | Reasoning                |
+/// |--------|---------------|--------|-----------|--------------------------|
+/// | Int8   | 128           | 3      | 35        | 10^3 × 10^35 < 10^38     |
+/// | UInt8  | 255           | 3      | 35        | 10^3 × 10^35 < 10^38     |
+/// | Int16  | 32768         | 5      | 33        | 10^5 × 10^33 < 10^38     |
+/// | UInt16 | 65535         | 5      | 33        | 10^5 × 10^33 < 10^38     |
+/// | Int32  | 2.1×10^9      | 10     | 28        | 10^10 × 10^28 < 10^38    |
+/// | UInt32 | 4.3×10^9      | 10     | 28        | 10^10 × 10^28 < 10^38    |
+/// | Int64  | 9.2×10^18     | 19     | 19        | 10^19 × 10^19 < 10^38    |
+/// | UInt64 | 1.8×10^19     | 20     | 18        | 10^20 × 10^18 < 10^38    |
+fn max_safe_scale_for_decimal128(fk: &IngestedType) -> Option<i32> {
+    use IngestedType::*;
+    match fk {
+        Int8 | UInt8 => Some(35),    // max 128/255 → 3 digits
+        Int16 | UInt16 => Some(33),  // max 32768/65535 → 5 digits
+        Int32 | UInt32 => Some(28),  // max ~2×10^9/4×10^9 → 10 digits
+        Int64 => Some(19),           // max ~9×10^18 → 19 digits
+        UInt64 => Some(18),          // max ~1.8×10^19 → 20 digits
+        _ => None,
+    }
+}
+
 /// Look up the coercion kind for an FK→PK type pair.
 ///
 /// This is the single source of truth for the 23×23 coercion matrix.
@@ -29,10 +75,23 @@ pub enum CoercionKind {
 /// # Arguments
 /// * `fk` - The foreign key's IngestedType
 /// * `pk` - The primary key's IngestedType
+/// * `params` - Optional parameters for scale-dependent coercions
 ///
 /// # Returns
 /// The kind of coercion needed (or error category)
-pub fn coercion_kind(fk: IngestedType, pk: IngestedType) -> CoercionKind {
+///
+/// # Scale-dependent coercions
+///
+/// Int → Decimal128 is Safe only if scale ≤ max_safe_scale:
+/// - Int8/UInt8: scale ≤ 36
+/// - Int16/UInt16: scale ≤ 33
+/// - Int32/UInt32: scale ≤ 28
+/// - Int64: scale ≤ 19
+/// - UInt64: scale ≤ 18
+///
+/// If scale exceeds the limit, the coercion is Lossy (may overflow).
+/// If params.pk_scale is None for Int → Decimal128, we assume Safe (scale=0).
+pub fn coercion_kind(fk: IngestedType, pk: IngestedType, params: CoercionParams) -> CoercionKind {
     use CoercionKind::*;
     use IngestedType::*;
 
@@ -40,7 +99,8 @@ pub fn coercion_kind(fk: IngestedType, pk: IngestedType) -> CoercionKind {
         return Same;
     }
 
-    match (fk, pk) {
+    // Match on references to avoid moving fk/pk (needed for scale check later)
+    match (&fk, &pk) {
         // ===================================================================
         // Safe: Integer widening (lossless)
         // ===================================================================
@@ -81,6 +141,8 @@ pub fn coercion_kind(fk: IngestedType, pk: IngestedType) -> CoercionKind {
         (Decimal128 | Decimal256, String) => Safe,
         (Bool, String) => Safe,
         (Date | Timestamp, String) => Safe,
+        // NOTE: Ip → String always outputs IPv6 format (e.g., "::ffff:192.168.1.1" for IPv4).
+        // IPv4 addresses are stored internally as IPv4-mapped IPv6 and formatted accordingly.
         (Uuid | Uuid256 | Ip, String) => Safe,
         (Bytes, String) => Safe, // UTF-8 decode attempt
 
@@ -90,11 +152,43 @@ pub fn coercion_kind(fk: IngestedType, pk: IngestedType) -> CoercionKind {
         (String, Bytes) => Safe,
 
         // ===================================================================
-        // Safe: Decimal conversions
+        // Decimal conversions
+        //
+        // NOTE: `params.pk_scale` is ONLY used for Int → Decimal128 to check
+        // for overflow (value × 10^scale must fit in Decimal128).
+        //
+        // For Float → Decimal, scale is IGNORED because the coercion kind is
+        // determined by RANGE constraints (Float max vs Decimal max), not scale.
         // ===================================================================
         (Decimal128, Decimal256) => Safe,
-        (Int8 | Int16 | Int32 | Int64, Decimal128) => Safe,
-        (UInt8 | UInt16 | UInt32 | UInt64, Decimal128) => Safe,
+
+        // Int → Decimal128: Safe if scale ≤ max_safe_scale, else Lossy (overflow)
+        (Int8 | Int16 | Int32 | Int64 | UInt8 | UInt16 | UInt32 | UInt64, Decimal128) => {
+            if let Some(max_scale) = max_safe_scale_for_decimal128(&fk) {
+                let scale = params.pk_scale.unwrap_or(0);
+                if scale <= max_scale {
+                    Safe
+                } else {
+                    Lossy
+                }
+            } else {
+                Incompatible // Should not happen for Int types
+            }
+        }
+
+        // Int → Decimal256: Always Safe (Decimal256 has 76 digits, plenty of room)
+        (Int8 | Int16 | Int32 | Int64 | UInt8 | UInt16 | UInt32 | UInt64, Decimal256) => Safe,
+
+        // Float → Decimal: Determined by RANGE, not scale.
+        // Float32 max (~10^38) slightly > Decimal128 max → Lossy
+        // Float64 max (~10^308) >> Decimal128 max → Lossy
+        (Float32 | Float64, Decimal128) => Lossy,
+
+        // Float32 → Decimal256: Safe (Float32 max ~10^38 < Decimal256 max ~10^76)
+        (Float32, Decimal256) => Safe,
+
+        // Float64 → Decimal256: Lossy (Float64 max ~10^308 >> Decimal256 max ~10^76)
+        (Float64, Decimal256) => Lossy,
 
         // ===================================================================
         // Safe: Date to Timestamp (no information loss)
@@ -136,10 +230,10 @@ pub fn coercion_kind(fk: IngestedType, pk: IngestedType) -> CoercionKind {
         (Bytes, Uuid | Uuid256 | Ip) => Incompatible,
 
         // ===================================================================
-        // Conditional: Signed/Unsigned boundary (negative values fail)
+        // Lossy: Signed/Unsigned boundary (overflow/wrap is silent corruption)
         // ===================================================================
-        (Int8 | Int16 | Int32 | Int64, UInt8 | UInt16 | UInt32 | UInt64) => Conditional,
-        (UInt64, Int64) => Conditional, // > i64::MAX fails
+        (Int8 | Int16 | Int32 | Int64, UInt8 | UInt16 | UInt32 | UInt64) => Lossy,
+        (UInt64, Int64) => Lossy, // > i64::MAX wraps silently
 
         // ===================================================================
         // Lossy: Float to integer (truncates decimal portion)
@@ -230,12 +324,14 @@ pub fn coercion_kind(fk: IngestedType, pk: IngestedType) -> CoercionKind {
 mod tests {
     use super::*;
 
+    const NO_SCALE: CoercionParams = CoercionParams { pk_scale: None };
+
     #[test]
     fn test_same_types() {
         let all_types = all_ingested_types();
         for t in all_types {
             assert_eq!(
-                coercion_kind(t.clone(), t.clone()),
+                coercion_kind(t.clone(), t.clone(), NO_SCALE),
                 CoercionKind::Same,
                 "{:?} → {:?} should be Same",
                 t,
@@ -247,15 +343,15 @@ mod tests {
     #[test]
     fn test_int_widening_is_safe() {
         assert_eq!(
-            coercion_kind(IngestedType::Int32, IngestedType::Int64),
+            coercion_kind(IngestedType::Int32, IngestedType::Int64, NO_SCALE),
             CoercionKind::Safe
         );
         assert_eq!(
-            coercion_kind(IngestedType::Int16, IngestedType::Int32),
+            coercion_kind(IngestedType::Int16, IngestedType::Int32, NO_SCALE),
             CoercionKind::Safe
         );
         assert_eq!(
-            coercion_kind(IngestedType::Int8, IngestedType::Int64),
+            coercion_kind(IngestedType::Int8, IngestedType::Int64, NO_SCALE),
             CoercionKind::Safe
         );
     }
@@ -263,7 +359,7 @@ mod tests {
     #[test]
     fn test_string_to_int_is_conditional() {
         assert_eq!(
-            coercion_kind(IngestedType::String, IngestedType::Int64),
+            coercion_kind(IngestedType::String, IngestedType::Int64, NO_SCALE),
             CoercionKind::Conditional
         );
     }
@@ -271,7 +367,7 @@ mod tests {
     #[test]
     fn test_float_to_int_is_lossy() {
         assert_eq!(
-            coercion_kind(IngestedType::Float64, IngestedType::Int64),
+            coercion_kind(IngestedType::Float64, IngestedType::Int64, NO_SCALE),
             CoercionKind::Lossy
         );
     }
@@ -279,7 +375,7 @@ mod tests {
     #[test]
     fn test_bool_to_uuid_is_incompatible() {
         assert_eq!(
-            coercion_kind(IngestedType::Bool, IngestedType::Uuid),
+            coercion_kind(IngestedType::Bool, IngestedType::Uuid, NO_SCALE),
             CoercionKind::Incompatible
         );
     }
@@ -289,7 +385,7 @@ mod tests {
         let all_types = all_ingested_types();
         for t in all_types {
             if t != IngestedType::String {
-                let kind = coercion_kind(t.clone(), IngestedType::String);
+                let kind = coercion_kind(t.clone(), IngestedType::String, NO_SCALE);
                 // Most types to String should be Safe, except arrays which are Incompatible
                 match t {
                     IngestedType::Float32Array
@@ -303,6 +399,114 @@ mod tests {
                 }
             }
         }
+    }
+
+    // =========================================================================
+    // Scale-dependent Decimal coercion tests
+    // =========================================================================
+
+    #[test]
+    fn test_int64_to_decimal128_scale_dependent() {
+        use IngestedType::*;
+        // Int64 max safe scale = 19
+        assert_eq!(
+            coercion_kind(Int64, Decimal128, CoercionParams::with_scale(0)),
+            CoercionKind::Safe
+        );
+        assert_eq!(
+            coercion_kind(Int64, Decimal128, CoercionParams::with_scale(19)),
+            CoercionKind::Safe
+        );
+        assert_eq!(
+            coercion_kind(Int64, Decimal128, CoercionParams::with_scale(20)),
+            CoercionKind::Lossy
+        );
+        assert_eq!(
+            coercion_kind(Int64, Decimal128, CoercionParams::with_scale(38)),
+            CoercionKind::Lossy
+        );
+    }
+
+    #[test]
+    fn test_int8_to_decimal128_scale_dependent() {
+        use IngestedType::*;
+        // Int8 max safe scale = 35
+        assert_eq!(
+            coercion_kind(Int8, Decimal128, CoercionParams::with_scale(0)),
+            CoercionKind::Safe
+        );
+        assert_eq!(
+            coercion_kind(Int8, Decimal128, CoercionParams::with_scale(35)),
+            CoercionKind::Safe
+        );
+        assert_eq!(
+            coercion_kind(Int8, Decimal128, CoercionParams::with_scale(36)),
+            CoercionKind::Lossy
+        );
+    }
+
+    #[test]
+    fn test_uint64_to_decimal128_scale_dependent() {
+        use IngestedType::*;
+        // UInt64 max safe scale = 18
+        assert_eq!(
+            coercion_kind(UInt64, Decimal128, CoercionParams::with_scale(0)),
+            CoercionKind::Safe
+        );
+        assert_eq!(
+            coercion_kind(UInt64, Decimal128, CoercionParams::with_scale(18)),
+            CoercionKind::Safe
+        );
+        assert_eq!(
+            coercion_kind(UInt64, Decimal128, CoercionParams::with_scale(19)),
+            CoercionKind::Lossy
+        );
+    }
+
+    #[test]
+    fn test_int_to_decimal256_always_safe() {
+        use IngestedType::*;
+        // Int → Decimal256 is always Safe (plenty of room)
+        for int_type in [Int8, Int16, Int32, Int64, UInt8, UInt16, UInt32, UInt64] {
+            assert_eq!(
+                coercion_kind(int_type.clone(), Decimal256, NO_SCALE),
+                CoercionKind::Safe,
+                "{:?} → Decimal256 should be Safe",
+                int_type
+            );
+            // Even with high scale
+            assert_eq!(
+                coercion_kind(int_type.clone(), Decimal256, CoercionParams::with_scale(50)),
+                CoercionKind::Safe,
+                "{:?} → Decimal256 with scale=50 should be Safe",
+                int_type
+            );
+        }
+    }
+
+    #[test]
+    fn test_float_to_decimal_coercions() {
+        use IngestedType::*;
+        // Float32 → Decimal128: Lossy (range exceeds)
+        assert_eq!(
+            coercion_kind(Float32, Decimal128, NO_SCALE),
+            CoercionKind::Lossy
+        );
+        // Float64 → Decimal128: Lossy (range exceeds)
+        assert_eq!(
+            coercion_kind(Float64, Decimal128, NO_SCALE),
+            CoercionKind::Lossy
+        );
+        // Float32 → Decimal256: Safe (range fits, precision fits)
+        assert_eq!(
+            coercion_kind(Float32, Decimal256, NO_SCALE),
+            CoercionKind::Safe
+        );
+        // Float64 → Decimal256: Lossy (range exceeds)
+        assert_eq!(
+            coercion_kind(Float64, Decimal256, NO_SCALE),
+            CoercionKind::Lossy
+        );
     }
 
     fn all_ingested_types() -> Vec<IngestedType> {

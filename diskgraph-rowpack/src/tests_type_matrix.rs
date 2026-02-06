@@ -82,6 +82,7 @@ fn default_hints() -> RowAccessHints {
         timestamp_format: None,
         timestamp_unit: None,
         decimal_scale: None,
+        ..Default::default()
     }
 }
 
@@ -90,6 +91,7 @@ fn hints_with_scale(scale: i32) -> RowAccessHints {
         timestamp_format: None,
         timestamp_unit: None,
         decimal_scale: Some(scale),
+        ..Default::default()
     }
 }
 
@@ -325,25 +327,25 @@ fn expected_result(arrow_name: &str, target: IngestedTarget) -> ExpectedResult {
     match (arrow_name, target) {
         // =====================================================================
         // Integer Arrow types (Int8, Int16, Int32, Int64, UInt8-64)
-        // Can convert to: all numerics, bool, string, date, timestamp
-        // Cannot convert to: bytes, uuid, uuid256, ip, decimal128/256
+        // Can convert to: all numerics, bool, string, date, timestamp, decimal128, decimal256
+        // Cannot convert to: bytes, uuid, uuid256, ip
         // =====================================================================
         ("Int8" | "Int16" | "Int32" | "Int64" | "UInt8" | "UInt16" | "UInt32" | "UInt64",
-         Int64 | Int32 | UInt64 | UInt32 | Float64 | Float32 | Bool | String | Date | Timestamp) => Success,
+         Int64 | Int32 | UInt64 | UInt32 | Float64 | Float32 | Bool | String | Date | Timestamp | Decimal128 | Decimal256) => Success,
 
         ("Int8" | "Int16" | "Int32" | "Int64" | "UInt8" | "UInt16" | "UInt32" | "UInt64",
-         Bytes | Uuid | Uuid256 | Ip | Decimal128 | Decimal256) => Error,
+         Bytes | Uuid | Uuid256 | Ip) => Error,
 
         // =====================================================================
         // Float Arrow types (Float32, Float64)
-        // Can convert to: all numerics, bool, string
-        // Cannot convert to: bytes, uuid, uuid256, ip, date, timestamp, decimal128/256
+        // Can convert to: all numerics, bool, string, decimal128, decimal256
+        // Cannot convert to: bytes, uuid, uuid256, ip, date, timestamp
         // =====================================================================
         ("Float32" | "Float64",
-         Int64 | Int32 | UInt64 | UInt32 | Float64 | Float32 | Bool | String) => Success,
+         Int64 | Int32 | UInt64 | UInt32 | Float64 | Float32 | Bool | String | Decimal128 | Decimal256) => Success,
 
         ("Float32" | "Float64",
-         Bytes | Uuid | Uuid256 | Ip | Date | Timestamp | Decimal128 | Decimal256) => Error,
+         Bytes | Uuid | Uuid256 | Ip | Date | Timestamp) => Error,
 
         // =====================================================================
         // Boolean Arrow type

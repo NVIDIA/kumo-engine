@@ -4,7 +4,7 @@ use diskgraph_rowpack::RowPackConfig;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
-use crate::coercion::{coercion_kind, validate_fk_pk, CoercionKind, CoercionMode};
+use crate::coercion::{coercion_kind, validate_fk_pk, CoercionKind, CoercionMode, CoercionParams};
 
 fn source_dtype_is_decimal(dtype: Option<&str>) -> bool {
     let Some(dtype) = dtype else {
@@ -687,6 +687,7 @@ impl GraphConfig {
                                     &fk_col.ingested_dtype,
                                     &pk_col.ingested_dtype,
                                     self.coercion_mode,
+                                    pk_col.scale,
                                 ) {
                                     type_updates.insert(
                                         (table.name.clone(), fkey.src_column.clone()),
@@ -712,6 +713,7 @@ impl GraphConfig {
                                         &fk_col.ingested_dtype,
                                         &pk_col.ingested_dtype,
                                         self.coercion_mode,
+                                        pk_col.scale,
                                     ) {
                                         type_updates.insert(
                                             (table.name.clone(), fk.edge_column.clone()),
@@ -753,12 +755,14 @@ pub(crate) fn resolve_fk_type_to_pk(
     fk_type: &IngestedType,
     pk_type: &IngestedType,
     mode: CoercionMode,
+    pk_scale: Option<i32>,
 ) -> Option<IngestedType> {
     if fk_type == pk_type {
         return None; // Same type, no resolution needed
     }
 
-    let kind = coercion_kind(fk_type.clone(), pk_type.clone());
+    let params = CoercionParams { pk_scale };
+    let kind = coercion_kind(fk_type.clone(), pk_type.clone(), params);
 
     match (mode, kind) {
         // Safe coercion: resolve FK to PK type
@@ -799,6 +803,7 @@ fn check_fk_pk_types(
         pk_table,
         &pk_col.name,
         mode,
+        pk_col.scale,
     );
     FkPkCheckResult {
         allowed: result.allowed,
@@ -1031,6 +1036,7 @@ mod tests {
             &IngestedType::Float64,
             &IngestedType::Int64,
             CoercionMode::Lossless,
+            None,
         );
         assert!(result.is_none(), "Lossy coercion Float64→Int64 should not resolve");
 
@@ -1039,6 +1045,7 @@ mod tests {
             &IngestedType::Int64,
             &IngestedType::Int32,
             CoercionMode::Lossless,
+            None,
         );
         assert!(result.is_none(), "Lossy coercion Int64→Int32 should not resolve");
     }
