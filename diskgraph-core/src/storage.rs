@@ -33,37 +33,38 @@ impl StorageConfig {
     }
 }
 
-/// Contract for graph topology management and neighbor sampling.
+/// Contract implemented by storage backends (local disk, remote cache, etc.).
 #[async_trait]
-pub trait GraphStore: Send + Sync {
-    /// Reserve disk space for a dataset.
+pub trait GraphStorage: Send + Sync {
+    /// Reserve disk space for a dataset. Implementations must enforce the
+    /// max_disk_fraction guard and fail fast if the reservation would exceed
+    /// the limit. This is called prior to ingestion.
     async fn reserve(&self, metadata: &DatasetMetadata) -> Result<DatasetReservation>;
 
-    /// Persist the ingested graph to disk and return an updated handle.
+    /// Persist the ingested graph to disk and return an updated handle. The
+    /// caller is responsible for loading Parquet shards; storage handles layout
+    /// and compression.
     async fn ingest(&self, handle: DatasetHandle) -> Result<DatasetHandle>;
 
     /// Unload a dataset and free any disk space and caches tied to it.
     async fn unload(&self, id: DatasetId) -> Result<()>;
 
-    /// Perform a sampling request against the graph topology.
+    /// Perform a sampling request against the on-disk structure.
     async fn sample(&self, request: BatchSamplingRequest) -> Result<RecordBatch>;
-}
 
-/// Contract for retrieving node features.
-#[async_trait]
-pub trait FeatureStore: Send + Sync {
     /// Retrieve node features for a batch of IDs.
     async fn get_features(&self, request: BatchFeatureRequest) -> Result<RecordBatch>;
 }
 
-/// Skeleton implementation that combines graph and feature storage.
-/// In production, this manages memory-mapped shards for both components.
-pub struct LocalGraphEngine {
+/// Skeleton storage engine that manages reservations and tracks dataset state.
+/// The compression and on-disk representation are intentionally left
+/// unimplemented; this struct wires together the control plane.
+pub struct LocalGraphStorage {
     pub config: StorageConfig,
     datasets: RwLock<HashMap<DatasetId, DatasetHandle>>,
 }
 
-impl LocalGraphEngine {
+impl LocalGraphStorage {
     pub fn new(config: StorageConfig) -> Arc<Self> {
         Arc::new(Self {
             config,
@@ -72,16 +73,19 @@ impl LocalGraphEngine {
     }
 
     fn current_disk_usage_bytes(&self) -> Result<u64> {
+        // Placeholder: actual implementation should walk self.config.data_path
+        // and sum directory sizes using fallocate/stat to reflect sparse files.
         Ok(0)
     }
 
     fn total_capacity_bytes(&self) -> Result<u64> {
+        // Placeholder: on Unix, use statvfs; on Windows, GetDiskFreeSpaceEx.
         Ok(u64::MAX)
     }
 }
 
 #[async_trait]
-impl GraphStore for LocalGraphEngine {
+impl GraphStorage for LocalGraphStorage {
     async fn reserve(&self, metadata: &DatasetMetadata) -> Result<DatasetReservation> {
         let estimate = metadata.estimate_ondisk_bytes()?;
         let used = self.current_disk_usage_bytes()?;
@@ -101,6 +105,9 @@ impl GraphStore for LocalGraphEngine {
     }
 
     async fn ingest(&self, mut handle: DatasetHandle) -> Result<DatasetHandle> {
+        // The ingestion pipeline writes to disk and swaps the dataset into an
+        // active state. Here we only update bookkeeping so that the HTTP layer
+        // can return useful status until the full implementation is added.
         handle.state = DatasetState::LoadedActive;
         let mut guard = self.datasets.write();
         guard.insert(handle.id, handle.clone());
@@ -112,6 +119,7 @@ impl GraphStore for LocalGraphEngine {
         guard
             .remove(&id)
             .ok_or_else(|| DiskgraphError::DatasetNotFound(id.to_string()))?;
+        // TODO: remove on-disk files under config.data_path once layout exists.
         Ok(())
     }
 
@@ -126,12 +134,10 @@ impl GraphStore for LocalGraphEngine {
                 request.dataset_id
             )));
         }
+        // Placeholder return empty batch
         Ok(RecordBatch::new_empty(Arc::new(arrow_schema::Schema::empty())))
     }
-}
 
-#[async_trait]
-impl FeatureStore for LocalGraphEngine {
     async fn get_features(&self, request: BatchFeatureRequest) -> Result<RecordBatch> {
         let guard = self.datasets.read();
         let handle = guard
@@ -143,6 +149,7 @@ impl FeatureStore for LocalGraphEngine {
                 request.dataset_id
             )));
         }
+        // Placeholder return empty batch
         Ok(RecordBatch::new_empty(Arc::new(arrow_schema::Schema::empty())))
     }
 }
