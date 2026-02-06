@@ -1,0 +1,29 @@
+name: EC2 Benchmark
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ec2-benchmark
+  cancel-in-progress: false
+
+jobs:
+  benchmark:
+    runs-on: [self-hosted, Linux, ARM64]
+    timeout-minutes: 180
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      contains(github.event.head_commit.message, '[ec2-benchmark]')
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build release
+        run: cargo build --release
+
+      - name: Run benchmark
+        run: |
+          ./diskgraph-ingest/scripts/ingest_s3.sh \
+            s3://kumo-unit-test/diskgraph-datagenerator/alt_detection_10pct
