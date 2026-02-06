@@ -9,6 +9,14 @@ concurrency:
   group: ec2-benchmark
   cancel-in-progress: false
 
+
+env:
+  BENCHMARK_SOURCE: s3://kumo-unit-test/diskgraph-datagenerator/alt_detection_10pct
+  STATS_FILE: /mnt/localssd/diskgraph-index/alt_detection_10pct/ingest_stats.json
+  BASELINE_FILE: /mnt/localssd/benchmark_baseline/ingest_stats.json
+  WARN_THRESHOLD: 12
+  FAIL_THRESHOLD: 20
+  
 jobs:
   benchmark:
     runs-on: [self-hosted, Linux, ARM64]
@@ -24,6 +32,78 @@ jobs:
         run: cargo build --release
 
       - name: Run benchmark
+        id: benchmark
         run: |
-          ./diskgraph-ingest/scripts/ingest_s3.sh \
-            s3://kumo-unit-test/diskgraph-datagenerator/alt_detection_10pct
+          ./diskgraph-ingest/scripts/ingest_s3.sh "$BENCHMARK_SOURCE"
+
+      - name: Check for regression
+        if: always() && steps.benchmark.outcome == 'success'
+        run: |
+          if [ ! -f "$BASELINE_FILE" ]; then
+            echo "No baseline found — saving current run as baseline."
+            mkdir -p "$(dirname "$BASELINE_FILE")"
+            cp "$STATS_FILE" "$BASELINE_FILE"
+            exit 0
+          fi
+
+          python3 - <<'PYEOF'
+          import json, os, sys
+
+          stats = os.environ["STATS_FILE"]
+          baseline = os.environ["BASELINE_FILE"]
+          warn_threshold = int(os.environ["WARN_THRESHOLD"])
+          fail_threshold = int(os.environ["FAIL_THRESHOLD"])
+
+          with open(stats) as f:
+              current = json.load(f)["stats"]["perf"]
+          with open(baseline) as f:
+              base = json.load(f)["stats"]["perf"]
+
+          metrics = ["encode_wall_ms", "pk_map_wall_ms", "edges_map_wall_ms", "index_wall_ms"]
+          warned = False
+          failed = False
+
+          for m in metrics:
+              if m not in current or m not in base:
+                  continue
+              cur = current[m]
+              bas = base[m]
+              if bas == 0:
+                  continue
+              delta_pct = ((cur - bas) / bas) * 100
+              status = "OK"
+              if delta_pct > fail_threshold:
+                  status = "FAIL"
+                  failed = True
+                  print(f"::error::Benchmark failure: {m} is {delta_pct:+.1f}% vs baseline ({cur}ms vs {bas}ms)")
+              elif delta_pct > warn_threshold:
+                  status = "WARN"
+                  warned = True
+                  print(f"::warning::Benchmark regression: {m} is {delta_pct:+.1f}% vs baseline ({cur}ms vs {bas}ms)")
+              print(f"  {m}: {bas}ms -> {cur}ms ({delta_pct:+.1f}%) {status}")
+
+          # Total wall time
+          cur_total = sum(current.get(m, 0) for m in metrics)
+          bas_total = sum(base.get(m, 0) for m in metrics)
+          if bas_total > 0:
+              total_delta = ((cur_total - bas_total) / bas_total) * 100
+              print(f"  TOTAL: {bas_total}ms -> {cur_total}ms ({total_delta:+.1f}%)")
+              if total_delta > fail_threshold:
+                  failed = True
+                  print(f"::error::Overall benchmark failure: {total_delta:+.1f}% vs baseline")
+              elif total_delta > warn_threshold:
+                  warned = True
+                  print(f"::warning::Overall benchmark regression: {total_delta:+.1f}% vs baseline")
+
+          if failed:
+              print("::error::Performance regression >{fail_threshold}% — benchmark failed.")
+              sys.exit(1)
+          elif warned:
+              print(f"::warning::Performance regression >{warn_threshold}% detected. Review recommended.")
+          PYEOF
+
+      - name: Save baseline
+        if: success()
+        run: |
+          mkdir -p "$(dirname "$BASELINE_FILE")"
+          cp "$STATS_FILE" "$BASELINE_FILE"
