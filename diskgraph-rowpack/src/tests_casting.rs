@@ -192,7 +192,7 @@ mod clone_approach_verification {
         let arrays: Vec<ArrayRef> = vec![Arc::new(StringArray::from(
             vec!["c0993ca4-2804-4256-a3b7-ba9b3ab76fce"]
         ))];
-        let mut access = make_access(&arrays);
+        let access = make_access(&arrays);
 
         let result = access.get_uuid(0);
         assert!(result.is_ok(), "get_uuid on UUID string should succeed");
@@ -206,7 +206,7 @@ mod clone_approach_verification {
         let arrays: Vec<ArrayRef> = vec![Arc::new(StringArray::from(
             vec!["c0993ca428044256a3b7ba9b3ab76fce"]
         ))];
-        let mut access = make_access(&arrays);
+        let access = make_access(&arrays);
 
         let result = access.get_uuid(0);
         match &result {

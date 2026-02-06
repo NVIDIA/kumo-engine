@@ -27,7 +27,7 @@ mod tests {
             let mut local_index_maps: HashMap<String, HashMap<u64, i64>> = HashMap::new();
             let mut next_local_ids: HashMap<String, i64> = HashMap::new();
 
-            let mut assign_local = |node_type: &str, global_id: u64, maps: &mut HashMap<String, HashMap<u64, i64>>, next_ids: &mut HashMap<String, i64>| -> i64 {
+            let assign_local = |node_type: &str, global_id: u64, maps: &mut HashMap<String, HashMap<u64, i64>>, next_ids: &mut HashMap<String, i64>| -> i64 {
                 let map = maps.entry(node_type.to_string()).or_default();
                 if let Some(&local) = map.get(&global_id) {
                     local
