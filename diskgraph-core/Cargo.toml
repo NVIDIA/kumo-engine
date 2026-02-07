@@ -9,6 +9,7 @@ async-trait = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true }
 futures = { workspace = true }
+half = { workspace = true }
 http = { workspace = true }
 parking_lot = { workspace = true }
 serde = { workspace = true }
