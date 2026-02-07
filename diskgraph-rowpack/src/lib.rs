@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Result};
-use arrow_array::Array;
+use arrow_array::{Array, RecordBatch};
 use base64::Engine;
 use chrono::{DateTime, Utc};
 use gxhash::{HashMap, HashMapExt};
@@ -19,6 +19,10 @@ mod tests_casting;
 mod tests_unit;
 #[cfg(test)]
 mod tests_type_matrix;
+#[cfg(test)]
+mod tests_arrow;
+#[cfg(test)]
+mod tests_arrow_matrix;
 pub mod parser;
 pub mod access;
 
@@ -3631,12 +3635,26 @@ pub struct RowPackDecoder {
     dict_values: Vec<Option<Vec<Vec<u8>>>>,
 }
 
-#[derive(Default)]
 pub struct RowPackDecodeScratch {
-    string: String,
-    bytes: Vec<u8>,
-    float32: Vec<f32>,
-    float64: Vec<f64>,
+    pub string: String,
+    pub bytes: Vec<u8>,
+    pub float32: Vec<f32>,
+    pub float64: Vec<f64>,
+    pub tags: Vec<u8>,
+    pub bools: Vec<bool>,
+}
+
+impl Default for RowPackDecodeScratch {
+    fn default() -> Self {
+        Self {
+            string: String::with_capacity(1024),
+            bytes: Vec::with_capacity(1024),
+            float32: Vec::with_capacity(1024),
+            float64: Vec::with_capacity(1024),
+            tags: Vec::with_capacity(64),
+            bools: Vec::with_capacity(64),
+        }
+    }
 }
 
 impl RowPackDecoder {
@@ -3797,7 +3815,123 @@ impl RowPackDecoder {
         }
         Err(anyhow!("rowpack column index out of range"))
     }
+
+    pub fn decode_row_to_builders(
+        &self,
+        row: &[u8],
+        builders: &mut [Box<dyn arrow_array::builder::ArrayBuilder>],
+        requested_mask: &[bool],
+        scratch: &mut RowPackDecodeScratch,
+    ) -> Result<()> {
+        use arrow_array::builder::BooleanBuilder;
+        let mut reader = BitReader::new(row);
+        let col_count = self.ctx.columns.len();
+
+        // 1. Tags
+        scratch.tags.clear();
+        for _ in 0..col_count {
+            scratch.tags.push(reader.read_bits(2)?);
+        }
+        reader.align_to_byte();
+
+        // 2. Bools
+        scratch.bools.clear();
+        for (idx, col) in self.ctx.columns.iter().enumerate() {
+            if matches!(col.encoding, ColumnEncoding::Bool) && scratch.tags[idx] != 0 {
+                scratch.bools.push(reader.read_bits(1)? != 0);
+            }
+        }
+        reader.align_to_byte();
+
+        // 3. Values
+        let mut data = &row[row.len() - reader.remaining_bytes()..];
+        let mut bool_cursor = 0;
+        let mut builder_cursor = 0;
+
+        for (idx, col) in self.ctx.columns.iter().enumerate() {
+            let tag = scratch.tags[idx];
+            let requested = requested_mask[idx];
+
+            if tag == 0 {
+                if requested {
+                    append_null(builders[builder_cursor].as_mut());
+                    builder_cursor += 1;
+                }
+                continue;
+            }
+
+            if matches!(col.encoding, ColumnEncoding::Bool) {
+                let val = scratch.bools[bool_cursor];
+                bool_cursor += 1;
+                if requested {
+                    let b = builders[builder_cursor].as_any_mut().downcast_mut::<BooleanBuilder>().unwrap();
+                    b.append_value(val);
+                    builder_cursor += 1;
+                }
+                continue;
+            }
+
+            if requested {
+                decode_and_append_to_builder(
+                    builders[builder_cursor].as_mut(),
+                    col,
+                    tag,
+                    &mut data,
+                    self.dict_values[idx].as_ref(),
+                    scratch,
+                )?;
+                builder_cursor += 1;
+            } else {
+                decode_value_skip(col, tag, &mut data, self.dict_values[idx].as_ref())?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn decode_batch_to_arrow(
+        &self,
+        rows: &[&[u8]],
+        col_indices: &[usize],
+    ) -> Result<arrow_array::RecordBatch> {
+        use arrow_array::builder::*;
+        use arrow_schema::{Field, Schema};
+        use std::sync::Arc;
+
+        let mut builders = Vec::with_capacity(col_indices.len());
+        let mut fields = Vec::with_capacity(col_indices.len());
+
+        for &col_idx in col_indices {
+            if col_idx >= self.ctx.columns.len() {
+                return Err(anyhow!("column index out of bounds"));
+            }
+            let col = &self.ctx.columns[col_idx];
+            let (field, builder) = make_arrow_builder(&col.name, col.logical_type, rows.len())?;
+            fields.push(field);
+            builders.push(builder);
+        }
+
+        let mut requested_mask = vec![false; self.ctx.columns.len()];
+        for &idx in col_indices {
+            requested_mask[idx] = true;
+        }
+
+        let mut scratch = RowPackDecodeScratch::default();
+
+        for row in rows {
+            self.decode_row_to_builders(row, &mut builders, &requested_mask, &mut scratch)?;
+        }
+
+        let arrays: Vec<Arc<dyn arrow_array::Array>> = builders.into_iter().map(|mut b| b.finish()).collect();
+        let schema = Schema::new(fields);
+        RecordBatch::try_new(Arc::new(schema), arrays).map_err(|e: arrow_schema::ArrowError| anyhow!(e))
+    }
 }
+
+
+
+
+
+
 
 fn decode_value_msgpack(
     out: &mut Vec<u8>,
@@ -4912,4 +5046,217 @@ fn push_utf8_lossy(out: &mut String, bytes: &[u8]) {
     } else {
         out.push_str(&String::from_utf8_lossy(bytes));
     }
+}
+
+fn append_null(builder: &mut dyn arrow_array::builder::ArrayBuilder) {
+    use arrow_array::builder::*;
+    if let Some(b) = builder.as_any_mut().downcast_mut::<BooleanBuilder>() { b.append_null(); return; }
+    if let Some(b) = builder.as_any_mut().downcast_mut::<Int8Builder>() { b.append_null(); return; }
+    if let Some(b) = builder.as_any_mut().downcast_mut::<Int16Builder>() { b.append_null(); return; }
+    if let Some(b) = builder.as_any_mut().downcast_mut::<Int32Builder>() { b.append_null(); return; }
+    if let Some(b) = builder.as_any_mut().downcast_mut::<Int64Builder>() { b.append_null(); return; }
+    if let Some(b) = builder.as_any_mut().downcast_mut::<UInt8Builder>() { b.append_null(); return; }
+    if let Some(b) = builder.as_any_mut().downcast_mut::<UInt16Builder>() { b.append_null(); return; }
+    if let Some(b) = builder.as_any_mut().downcast_mut::<UInt32Builder>() { b.append_null(); return; }
+    if let Some(b) = builder.as_any_mut().downcast_mut::<UInt64Builder>() { b.append_null(); return; }
+    if let Some(b) = builder.as_any_mut().downcast_mut::<Float32Builder>() { b.append_null(); return; }
+    if let Some(b) = builder.as_any_mut().downcast_mut::<Float64Builder>() { b.append_null(); return; }
+    if let Some(b) = builder.as_any_mut().downcast_mut::<StringBuilder>() { b.append_null(); return; }
+    if let Some(b) = builder.as_any_mut().downcast_mut::<BinaryBuilder>() { b.append_null(); return; }
+    if let Some(b) = builder.as_any_mut().downcast_mut::<TimestampMicrosecondBuilder>() { b.append_null(); return; }
+    if let Some(b) = builder.as_any_mut().downcast_mut::<Date32Builder>() { b.append_null(); return; }
+    if let Some(b) = builder.as_any_mut().downcast_mut::<ListBuilder<Float32Builder>>() { b.append_null(); return; }
+    if let Some(b) = builder.as_any_mut().downcast_mut::<ListBuilder<Float64Builder>>() { b.append_null(); return; }
+}
+
+fn make_arrow_builder(name: &str, dtype: IngestedType, capacity: usize) -> Result<(arrow_schema::Field, Box<dyn arrow_array::builder::ArrayBuilder>)> {
+    use arrow_schema::{DataType, TimeUnit};
+    use arrow_array::builder::*;
+
+    let (arrow_type, builder): (DataType, Box<dyn ArrayBuilder>) = match dtype {
+        IngestedType::Bool => (DataType::Boolean, Box::new(BooleanBuilder::with_capacity(capacity))),
+        IngestedType::Int8 => (DataType::Int8, Box::new(Int8Builder::with_capacity(capacity))),
+        IngestedType::Int16 => (DataType::Int16, Box::new(Int16Builder::with_capacity(capacity))),
+        IngestedType::Int32 => (DataType::Int32, Box::new(Int32Builder::with_capacity(capacity))),
+        IngestedType::Int64 => (DataType::Int64, Box::new(Int64Builder::with_capacity(capacity))),
+        IngestedType::UInt8 => (DataType::UInt8, Box::new(UInt8Builder::with_capacity(capacity))),
+        IngestedType::UInt16 => (DataType::UInt16, Box::new(UInt16Builder::with_capacity(capacity))),
+        IngestedType::UInt32 => (DataType::UInt32, Box::new(UInt32Builder::with_capacity(capacity))),
+        IngestedType::UInt64 => (DataType::UInt64, Box::new(UInt64Builder::with_capacity(capacity))),
+        IngestedType::Float32 => (DataType::Float32, Box::new(Float32Builder::with_capacity(capacity))),
+        IngestedType::Float64 => (DataType::Float64, Box::new(Float64Builder::with_capacity(capacity))),
+        IngestedType::String | IngestedType::Uuid | IngestedType::Uuid256 | IngestedType::Ip | IngestedType::Decimal128 | IngestedType::Decimal256 => {
+            (DataType::Utf8, Box::new(StringBuilder::with_capacity(capacity, capacity * 32)))
+        }
+        IngestedType::Bytes => (DataType::Binary, Box::new(BinaryBuilder::with_capacity(capacity, capacity * 32))),
+        IngestedType::Timestamp => (DataType::Timestamp(TimeUnit::Microsecond, None), Box::new(TimestampMicrosecondBuilder::with_capacity(capacity))),
+        IngestedType::Date => (DataType::Date32, Box::new(Date32Builder::with_capacity(capacity))),
+        IngestedType::Float32Array | IngestedType::Float16Array => {
+             let values_builder = Float32Builder::with_capacity(capacity * 32);
+             (DataType::new_list(DataType::Float32, true), Box::new(ListBuilder::new(values_builder)))
+        }
+        IngestedType::Float64Array => {
+             let values_builder = Float64Builder::with_capacity(capacity * 32);
+             (DataType::new_list(DataType::Float64, true), Box::new(ListBuilder::new(values_builder)))
+        }
+    };
+
+    Ok((arrow_schema::Field::new(name, arrow_type, true), builder))
+}
+
+fn decode_and_append_to_builder(
+    builder: &mut dyn arrow_array::builder::ArrayBuilder,
+    col: &ColumnContext,
+    tag: u8,
+    data: &mut &[u8],
+    dict: Option<&Vec<Vec<u8>>>,
+    scratch: &mut RowPackDecodeScratch,
+) -> Result<()> {
+    use arrow_array::builder::*;
+
+    // Helper to get typed builder. We trust the builder matches the column type because we created it that way.
+    // However, we should be careful.
+
+    match &col.encoding {
+        ColumnEncoding::Int { signed, varint, bits } => {
+            if *signed {
+                let v = decode_int(data, *varint, *bits)?;
+                match col.logical_type {
+                    IngestedType::Int64 => builder.as_any_mut().downcast_mut::<Int64Builder>().unwrap().append_value(v),
+                    IngestedType::Int32 => builder.as_any_mut().downcast_mut::<Int32Builder>().unwrap().append_value(v as i32),
+                    IngestedType::Int16 => builder.as_any_mut().downcast_mut::<Int16Builder>().unwrap().append_value(v as i16),
+                    IngestedType::Int8 => builder.as_any_mut().downcast_mut::<Int8Builder>().unwrap().append_value(v as i8),
+                    _ => return Err(anyhow!("rowpack int type mismatch")),
+                }
+            } else {
+                let v = decode_uint(data, *varint, *bits)?;
+                match col.logical_type {
+                    IngestedType::UInt64 => builder.as_any_mut().downcast_mut::<UInt64Builder>().unwrap().append_value(v),
+                    IngestedType::UInt32 => builder.as_any_mut().downcast_mut::<UInt32Builder>().unwrap().append_value(v as u32),
+                    IngestedType::UInt16 => builder.as_any_mut().downcast_mut::<UInt16Builder>().unwrap().append_value(v as u16),
+                    IngestedType::UInt8 => builder.as_any_mut().downcast_mut::<UInt8Builder>().unwrap().append_value(v as u8),
+                    _ => return Err(anyhow!("rowpack uint type mismatch")),
+                }
+            }
+        }
+        ColumnEncoding::Float { storage } => {
+            let v = decode_float(data, *storage)?;
+            match col.logical_type {
+                IngestedType::Float32 => builder.as_any_mut().downcast_mut::<Float32Builder>().unwrap().append_value(v as f32),
+                IngestedType::Float64 => builder.as_any_mut().downcast_mut::<Float64Builder>().unwrap().append_value(v),
+                _ => return Err(anyhow!("rowpack float type mismatch")),
+            }
+        }
+        ColumnEncoding::Bytes { fixed_len } => {
+            let bytes = if tag == 2 {
+                decode_bytes(data, None)?
+            } else {
+                decode_bytes(data, *fixed_len)?
+            };
+            builder.as_any_mut().downcast_mut::<BinaryBuilder>().unwrap().append_value(bytes);
+        }
+        ColumnEncoding::Uuid => {
+            let bytes = decode_fixed_bytes::<16>(data)?;
+            let mut buf = [0u8; 36];
+            let s = uuid_simd::format_hyphenated(&bytes, uuid_simd::AsOut::as_out(&mut buf), uuid_simd::AsciiCase::Lower);
+            let s = std::str::from_utf8(s).unwrap();
+            builder.as_any_mut().downcast_mut::<StringBuilder>().unwrap().append_value(s);
+        }
+        ColumnEncoding::Uuid256 => {
+            let bytes = decode_fixed_bytes::<32>(data)?;
+            let mut buf = [0u8; 64];
+            let bytes_ptr = bytes.as_ptr();
+            let hi = unsafe { &*(bytes_ptr as *const [u8; 16]) };
+            let lo = unsafe { &*(bytes_ptr.add(16) as *const [u8; 16]) };
+            let out_ptr = buf.as_mut_ptr();
+            let hi_out = unsafe { &mut *(out_ptr as *mut [u8; 32]) };
+            let lo_out = unsafe { &mut *(out_ptr.add(32) as *mut [u8; 32]) };
+            let _ = uuid_simd::format_simple(hi, uuid_simd::AsOut::as_out(hi_out), uuid_simd::AsciiCase::Lower);
+            let _ = uuid_simd::format_simple(lo, uuid_simd::AsOut::as_out(lo_out), uuid_simd::AsciiCase::Lower);
+            let s = std::str::from_utf8(&buf).unwrap();
+            builder.as_any_mut().downcast_mut::<StringBuilder>().unwrap().append_value(s);
+        }
+        ColumnEncoding::Ip => {
+            let bytes = decode_fixed_bytes::<16>(data)?;
+            let s = format_ip(bytes);
+            builder.as_any_mut().downcast_mut::<StringBuilder>().unwrap().append_value(s);
+        }
+        ColumnEncoding::Date { varint, bits } => {
+            let v = decode_int(data, *varint, *bits)?;
+            builder.as_any_mut().downcast_mut::<Date32Builder>().unwrap().append_value(v as i32);
+        }
+        ColumnEncoding::Timestamp => {
+            let secs = zigzag_decode(read_varint(data)?);
+            let nanos = read_varint(data)? as u32;
+            let micros = secs.saturating_mul(1_000_000).saturating_add(nanos as i64 / 1000);
+            builder.as_any_mut().downcast_mut::<TimestampMicrosecondBuilder>().unwrap().append_value(micros);
+        }
+        ColumnEncoding::Decimal { scale, bytes, storage, .. } => {
+            let text = if tag == 2 || matches!(storage, DecimalStorage::Raw) {
+                let raw = decode_decimal_bytes(data, *bytes as usize)?;
+                format_decimal_from_le(raw, *scale)
+            } else {
+                match storage {
+                    DecimalStorage::Varint => {
+                        let v = zigzag_decode_i128(read_varint_u128(data)?);
+                        if *scale == 0 && v >= i64::MIN as i128 && v <= i64::MAX as i128 {
+                            (v as i64).to_string()
+                        } else {
+                            format_decimal_i128(v, *scale)
+                        }
+                    }
+                    DecimalStorage::Raw => unreachable!(),
+                }
+            };
+            builder.as_any_mut().downcast_mut::<StringBuilder>().unwrap().append_value(text);
+        }
+        ColumnEncoding::String { encoding } => {
+            // We use scratch string to decode, then append to builder.
+            // This is safe because builder copies the string immediately.
+            scratch.string.clear();
+            if tag == 2 {
+                decode_string_fallback_into(data, &mut scratch.string)?;
+            } else {
+                decode_string_into(data, encoding, dict, scratch)?;
+            }
+            builder.as_any_mut().downcast_mut::<StringBuilder>().unwrap().append_value(&scratch.string);
+        }
+        ColumnEncoding::FloatArray { storage } => {
+            let len = read_varint(data)? as usize;
+            let elem_bytes = match storage {
+                FloatStorage::F16 => 2,
+                FloatStorage::F32 => 4,
+                FloatStorage::F64 => 8,
+            };
+            let max_len = data.len() / elem_bytes;
+            if len > MAX_ARRAY_LEN || len > max_len {
+                return Err(anyhow!("rowpack array length overflow"));
+            }
+            match col.logical_type {
+                IngestedType::Float16Array | IngestedType::Float32Array => {
+                    scratch.float32.clear();
+                    for _ in 0..len {
+                        let v = decode_float(data, *storage)?;
+                        scratch.float32.push(v as f32);
+                    }
+                    let b = builder.as_any_mut().downcast_mut::<ListBuilder<Float32Builder>>().unwrap();
+                    b.values().append_slice(&scratch.float32);
+                    b.append(true);
+                }
+                IngestedType::Float64Array => {
+                    scratch.float64.clear();
+                    for _ in 0..len {
+                        let v = decode_float(data, *storage)?;
+                        scratch.float64.push(v);
+                    }
+                    let b = builder.as_any_mut().downcast_mut::<ListBuilder<Float64Builder>>().unwrap();
+                    b.values().append_slice(&scratch.float64);
+                    b.append(true);
+                }
+                _ => return Err(anyhow!("rowpack invalid array type")),
+            }
+        }
+        ColumnEncoding::Bool => return Err(anyhow!("rowpack bool unexpected")),
+    }
+    Ok(())
 }
