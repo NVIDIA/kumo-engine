@@ -55,12 +55,23 @@ impl TypeState {
     }
 }
 
+/// Metadata recorded for every sampled edge.
+#[derive(Debug, Clone, Copy)]
+pub struct EdgeRecord {
+    pub src_local_id: u32,
+    pub dst_local_id: u32,
+    pub rel_id: u16,
+}
+
 /// The main context for a single sampling request.
 /// Pooled to avoid allocation churn.
 pub struct SamplingState {
     /// Registry of state per node type.
     pub type_states: GxHashMap<String, TypeState>,
-
+    
+    /// Sampled edges across all relations.
+    pub edges: Vec<EdgeRecord>,
+    
     // Scratch buffers for EdgeUnpacker (u64 fast path)
     pub dst_scratch: Vec<u64>,
     pub key_scratch: Vec<u64>,
@@ -70,6 +81,7 @@ impl SamplingState {
     fn new() -> Self {
         Self {
             type_states: GxHashMap::default(),
+            edges: Vec::with_capacity(4096),
             dst_scratch: Vec::with_capacity(1024),
             key_scratch: Vec::with_capacity(1024),
         }
@@ -80,10 +92,10 @@ impl SamplingState {
         for state in self.type_states.values_mut() {
             state.reset();
         }
+        self.edges.clear();
         self.dst_scratch.clear();
         self.key_scratch.clear();
     }
-
     /// Access or create the state for a specific node type.
     pub fn get_type_state_mut(&mut self, node_type: &str) -> &mut TypeState {
         self.type_states

@@ -210,7 +210,7 @@ impl Sampler {
                         // TODO: Temporal filtering (if seed_timestamps present)
                         // if packed_key > packed_anchor { ... }
 
-                        self.record_edge(src_item, dst_id, dst_type, state);
+                        self.record_edge(src_item, dst_id, dst_type, rel_idx as u16, state);
                         n += 1;
                         if n >= fanout as usize { break; }
                     }
@@ -236,7 +236,7 @@ impl Sampler {
                 }
 
                 for dst_id in selected {
-                    self.record_edge(src_item, dst_id, dst_type, state);
+                    self.record_edge(src_item, dst_id, dst_type, rel_idx as u16, state);
                 }
             }
             _ => return Err(anyhow!("Sampling mode {:?} not supported in initial scope", mode)),
@@ -250,12 +250,13 @@ impl Sampler {
         src: &FrontierItem,
         dst_global_id: u64,
         dst_type: &str,
+        rel_id: u16,
         state: &mut SamplingState,
     ) {
         let dst_type_state = state.get_type_state_mut(dst_type);
         let key = LookupKey { seed_index: src.seed_index, global_id: dst_global_id };
 
-        let _dst_local_id = if let Some(&id) = dst_type_state.index_map.get(&key) {
+        let dst_local_id = if let Some(&id) = dst_type_state.index_map.get(&key) {
             id
         } else {
             let id = dst_type_state.nodes.len() as u32;
@@ -274,7 +275,11 @@ impl Sampler {
             id
         };
 
-        // Emit edge record (src_local_id, dst_local_id)
-        // TODO: Buffered emission to Arrow Flight stream
+        // Record the edge
+        state.edges.push(crate::state::EdgeRecord {
+            src_local_id: src.local_id,
+            dst_local_id,
+            rel_id,
+        });
     }
 }
