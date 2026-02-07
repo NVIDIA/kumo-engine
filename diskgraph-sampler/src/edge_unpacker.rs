@@ -40,11 +40,11 @@ impl<'a> EdgeUnpacker<'a> {
         if self.entry_bytes <= 8 {
             while n < count && unsafe { self.ptr.add(self.entry_bytes) <= self.end } {
                 let raw = unsafe { read_u64_partial(self.ptr, self.entry_bytes) };
-                
+
                 unsafe {
                     *dst_out.get_unchecked_mut(n) = raw & self.dst_mask;
                     *key_out.get_unchecked_mut(n) = (raw >> self.dst_bits) & self.sort_key_mask;
-                    
+
                     self.ptr = self.ptr.add(self.entry_bytes);
                 }
                 n += 1;
@@ -53,11 +53,11 @@ impl<'a> EdgeUnpacker<'a> {
             // Fallback for > 64 bit entries (rare)
             while n < count && unsafe { self.ptr.add(self.entry_bytes) <= self.end } {
                 let raw = unsafe { read_u128_partial(self.ptr, self.entry_bytes) };
-                
+
                 unsafe {
                     *dst_out.get_unchecked_mut(n) = (raw & self.dst_mask as u128) as u64;
                     *key_out.get_unchecked_mut(n) = ((raw >> self.dst_bits) & self.sort_key_mask as u128) as u64;
-                    
+
                     self.ptr = self.ptr.add(self.entry_bytes);
                 }
                 n += 1;
@@ -65,7 +65,7 @@ impl<'a> EdgeUnpacker<'a> {
         }
         n
     }
-    
+
     /// Skip N items (advancing pointer)
     #[inline]
     pub fn advance(&mut self, n: usize) {
@@ -136,7 +136,7 @@ mod tests {
         assert_eq!(n, 1);
         assert_eq!(dsts[0], 3);
         assert_eq!(keys[0], 1);
-        
+
         // End
         let n = unpacker.unpack_batch(&mut dsts, &mut keys);
         assert_eq!(n, 0);
@@ -186,21 +186,21 @@ mod tests {
         // 0, 1, 2, 3, 4
         let data = vec![0, 1, 2, 3, 4];
         let mut unpacker = EdgeUnpacker::new(&data, &layout);
-        
+
         // Skip 2 (points to 2)
         unpacker.advance(2);
-        
+
         let mut dsts = [0u64; 1];
         let mut keys = [0u64; 1]; // keys will be 0
-        
+
         // Read 1 (should be 2)
         let n = unpacker.unpack_batch(&mut dsts, &mut keys);
         assert_eq!(n, 1);
         assert_eq!(dsts[0], 2);
-        
+
         // Skip 1 (points to 4)
         unpacker.advance(1);
-        
+
         // Read 1 (should be 4)
         let n = unpacker.unpack_batch(&mut dsts, &mut keys);
         assert_eq!(n, 1);
@@ -218,12 +218,12 @@ mod tests {
             entry_bytes: 2, // requires 2 bytes per entry
         };
         // Only 3 bytes provided -> 1 full entry, 1 partial (should be ignored)
-        let data = vec![1, 0, 2]; 
-        
+        let data = vec![1, 0, 2];
+
         let mut unpacker = EdgeUnpacker::new(&data, &layout);
         let mut dsts = [0u64; 2];
         let mut keys = [0u64; 2];
-        
+
         let n = unpacker.unpack_batch(&mut dsts, &mut keys);
         assert_eq!(n, 1); // Only 1 full entry unpacked
         assert_eq!(dsts[0], 1); // 1 | 0<<8 = 1

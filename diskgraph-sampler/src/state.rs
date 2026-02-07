@@ -31,10 +31,10 @@ pub struct FrontierItem {
 pub struct TypeState {
     /// Maps (Seed, Global) -> LocalID
     pub index_map: GxHashMap<LookupKey, u32>,
-    
+
     /// Ordered list of nodes discovered (Index = LocalID)
     pub nodes: Vec<NodeRecord>,
-    
+
     /// Nodes to be processed in the next hop for this type
     pub next_frontier: Vec<FrontierItem>,
 }
@@ -60,7 +60,7 @@ impl TypeState {
 pub struct SamplingState {
     /// Registry of state per node type.
     pub type_states: GxHashMap<String, TypeState>,
-    
+
     // Scratch buffers for EdgeUnpacker (u64 fast path)
     pub dst_scratch: Vec<u64>,
     pub key_scratch: Vec<u64>,
@@ -161,12 +161,12 @@ mod tests {
         {
             let mut state = pool.acquire();
             let ts = state.get_type_state_mut("user");
-            
+
             // Push some data to grow capacity
             ts.nodes.reserve(1000);
             ts.nodes.push(NodeRecord { global_id: 1, seed_index: 0, local_id: 0 });
             ts.index_map.insert(LookupKey { seed_index: 0, global_id: 1 }, 0);
-            
+
             assert!(ts.nodes.capacity() >= 1000);
             assert_eq!(ts.nodes.len(), 1);
             assert_eq!(ts.index_map.len(), 1);
@@ -183,7 +183,7 @@ mod tests {
 
             // Should retain capacity (Zero Allocation check)
             assert!(ts.nodes.capacity() >= 1000);
-            
+
             // "user" entry should still exist in type_states (map not cleared, values reset)
             assert!(state.type_states.contains_key("user"));
         }
@@ -193,15 +193,15 @@ mod tests {
     fn test_pool_concurrency() {
         let pool = StatePool::new();
         let mut guards = Vec::new();
-        
+
         // Acquire 10 states
         for _ in 0..10 {
             guards.push(pool.acquire());
         }
-        
+
         // Drop them all
         drop(guards);
-        
+
         // Acquire 1 (should reuse one of the 10)
         let _s = pool.acquire();
         let inner = pool.pool.lock();

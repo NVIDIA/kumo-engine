@@ -33,7 +33,7 @@ impl Sampler {
         if request.seed_nodes.len() > 1 {
             return Err(anyhow!("multiple seed node types not supported in initial scope"));
         }
-        
+
         let _seed_ts = request.seed_timestamps.as_ref()
             .and_then(|m| m.get(seed_type));
 
@@ -43,12 +43,12 @@ impl Sampler {
         for (i, &global_id) in seed_ids.iter().enumerate() {
             let seed_index = i as u32;
             let key = LookupKey { seed_index, global_id };
-            
+
             // Assign Local ID
             let local_id = seed_state.nodes.len() as u32;
             seed_state.index_map.insert(key, local_id);
             seed_state.nodes.push(NodeRecord { global_id, seed_index, local_id });
-            
+
             // Add to frontier for Layer 0
             seed_state.next_frontier.push(FrontierItem { global_id, seed_index, local_id });
         }
@@ -68,7 +68,7 @@ impl Sampler {
         state: &mut SamplingState,
     ) -> Result<()> {
         let layer_spec = &request.plan.layers[layer_idx];
-        
+
         // We need to move the items from 'next_frontier' to 'active_frontier'
         // Since we have multiple node types, we must handle each.
         // For simplicity in this scope, we'll collect all current frontiers.
@@ -135,10 +135,10 @@ impl Sampler {
             let reader = &shard_readers[shard_idx];
 
             for item in items {
-                // TODO: Optimization - Batch index lookup if possible, 
+                // TODO: Optimization - Batch index lookup if possible,
                 // but currently we use edges_for_node (simple path).
                 let edges_view = reader.edges_for_node(item.global_id)?;
-                
+
                 self.sample_from_view(
                     edges_view,
                     item,
@@ -160,30 +160,30 @@ impl Sampler {
         view: EdgeListView<'_>,
         src_item: &FrontierItem,
         dst_type: &str,
-        relation_name: &str,
+        _relation_name: &str,
         fanout: u32,
         mode: &SamplingMode,
-        request: &BatchSamplingRequest,
+        _request: &BatchSamplingRequest,
         state: &mut SamplingState,
     ) -> Result<()> {
         // Resolve relation index within the shard
-        let rel_idx = view.layouts.iter().position(|l| {
+        let rel_idx = view.layouts.iter().position(|_l| {
              // In diskgraph, relation names in layouts are usually indices or IDs.
              // We need a mapping from 'relation_name' string to ID.
              // For now, assume relation_name matches or use a lookup.
              // TODO: Fix relation resolution logic.
-             true 
+             true
         }).unwrap_or(0);
 
         // Parse raw bytes into segments
         let segments = view.relation_segments().map_err(|e| anyhow!(e))?;
-        
+
         let segment = segments.get(rel_idx)
             .ok_or_else(|| anyhow!("relation index {} out of bounds", rel_idx))?;
-            
+
         let edge_count = segment.count as usize;
         if edge_count == 0 { return Ok(()); }
-        
+
         let mut unpacker = EdgeUnpacker::new(segment.data, &segment.layout);
 
         // let mut rng = rand::thread_rng();
@@ -194,19 +194,19 @@ impl Sampler {
                 // Edges are physically sorted by time on disk.
                 let mut n = 0;
                 let batch_size = (fanout as usize).min(128); // Process in chunks
-                
+
                 while n < fanout as usize {
                     let take = (fanout as usize - n).min(batch_size);
                     state.dst_scratch.resize(take, 0);
                     state.key_scratch.resize(take, 0);
-                    
+
                     let unpacked = unpacker.unpack_batch(&mut state.dst_scratch, &mut state.key_scratch);
                     if unpacked == 0 { break; }
 
                     for i in 0..unpacked {
                         let dst_id = state.dst_scratch[i];
                         // let packed_key = state.key_scratch[i];
-                        
+
                         // TODO: Temporal filtering (if seed_timestamps present)
                         // if packed_key > packed_anchor { ... }
 
@@ -221,20 +221,20 @@ impl Sampler {
                 // Uniform: Reservoir sampling or simple random selection.
                 // For simplicity: Reservoir sampling over the whole list.
                 // TODO: Optimize with skip-distance if edge_count is large.
-                let mut n = 0;
+                let _n = 0;
                 let mut selected = Vec::with_capacity(fanout as usize);
-                
+
                 // Scalar loop for now, optimize with unpack_batch later
                 // Actually, let's just take the first N for the skeleton.
                 let take = (fanout as usize).min(edge_count);
                 state.dst_scratch.resize(take, 0);
                 state.key_scratch.resize(take, 0);
                 let unpacked = unpacker.unpack_batch(&mut state.dst_scratch, &mut state.key_scratch);
-                
+
                 for i in 0..unpacked {
                     selected.push(state.dst_scratch[i]);
                 }
-                
+
                 for dst_id in selected {
                     self.record_edge(src_item, dst_id, dst_type, state);
                 }
