@@ -3894,7 +3894,7 @@ impl RowPackDecoder {
         col_indices: &[usize],
     ) -> Result<arrow_array::RecordBatch> {
         use arrow_array::builder::*;
-        use arrow_schema::{Field, Schema};
+        use arrow_schema::Schema;
         use std::sync::Arc;
 
         let mut builders = Vec::with_capacity(col_indices.len());

@@ -1,7 +1,7 @@
 use anyhow::Result;
 use diskgraph_core::sampling::*;
 use diskgraph_sampler::sampler::Sampler;
-use diskgraph_sampler::state::{StatePool, SamplingState};
+use diskgraph_sampler::state::StatePool;
 use diskgraph_index::reader::ShardReader;
 use diskgraph_index::layout::RelationLayout;
 use std::collections::HashMap;
