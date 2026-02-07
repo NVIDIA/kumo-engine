@@ -70,6 +70,8 @@ struct AppStats {
     validation_failures: u64,
 }
 
+use diskgraph_sampler::sampler::ShardHandle;
+
 fn load_graph(path: &PathBuf) -> Result<(Sampler, DatasetMetadata)> {
     let index_path = path.join("index_metadata.json");
     if !index_path.exists() {
@@ -83,22 +85,37 @@ fn load_graph(path: &PathBuf) -> Result<(Sampler, DatasetMetadata)> {
         &metadata.node_types,
     )?);
     
+    let mut relation_info = HashMap::new();
+    for (idx, rel) in metadata.edge_relations.iter().enumerate() {
+        relation_info.insert(idx, (rel.name.clone(), rel.dst_type.clone()));
+    }
+    
     let mut readers = HashMap::new();
     
     for node_type in &metadata.node_types {
-        let mut type_readers = Vec::new();
-        for (shard_idx, _) in node_type.shards.iter().enumerate() {
+        let mut type_shards = Vec::new();
+        // Shards are in output_root/nodes/<node_type>/shard-NNNNN/
+        for (shard_idx, shard_meta) in node_type.shards.iter().enumerate() {
             let shard_dir_name = format!("shard-{:05}", shard_idx);
-            let shard_path = path.join(&shard_dir_name);
-            let shard_path = if shard_path.exists() { shard_path } else { path.clone() };
+            let shard_path = path.join("nodes").join(&node_type.name).join(&shard_dir_name);
+            
+            let shard_path = if shard_path.exists() {
+                shard_path
+            } else {
+                path.clone()
+            };
             
             let reader = ShardReader::open(&shard_path, layouts.clone(), node_type.has_node_data)?;
-            type_readers.push(Arc::new(reader));
+            type_shards.push(ShardHandle {
+                reader: Arc::new(reader),
+                min_id: shard_meta.min_id,
+                max_id: shard_meta.max_id,
+            });
         }
-        readers.insert(node_type.name.clone(), type_readers);
+        readers.insert(node_type.name.clone(), type_shards);
     }
     
-    Ok((Sampler::new(readers), metadata))
+    Ok((Sampler::new(readers, relation_info), metadata))
 }
 
 fn main() -> Result<()> {
@@ -307,13 +324,13 @@ fn make_plan(args: &Args, meta: &DatasetMetadata, seed_type: &str) -> SamplingPl
         .map(|r| r.name.as_str())
         .collect();
         
-    let _rel_name = candidates.first().unwrap_or(&"Unknown");
+    let rel_name = candidates.first().unwrap_or(&"Unknown");
     
     let mut layers = Vec::new();
     for _ in 0..args.hops {
         layers.push(LayerSpec {
             fanouts: [(
-                format!("{}__{}__{}", seed_type, "rel", seed_type), // Simplified: assume self-loop for test
+                rel_name.to_string(),
                 FanoutSpec {
                     fanout: args.fanout,
                     mode: SamplingMode::TemporalMostRecent,
