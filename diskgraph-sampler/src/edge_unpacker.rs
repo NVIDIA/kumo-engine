@@ -4,7 +4,6 @@ use diskgraph_index::layout::RelationLayout;
 pub struct EdgeUnpacker<'a> {
     ptr: *const u8,
     end: *const u8,
-    _layout: &'a RelationLayout,
     entry_bytes: usize,
     dst_mask: u64,
     dst_bits: u8,
@@ -14,13 +13,12 @@ pub struct EdgeUnpacker<'a> {
 }
 
 impl<'a> EdgeUnpacker<'a> {
-    pub fn new(data: &'a [u8], layout: &'a RelationLayout) -> Self {
+    pub fn new(data: &'a [u8], layout: &RelationLayout) -> Self {
         let entry_bytes = layout.entry_bytes;
         // Safety: We only access within `data` range.
         Self {
             ptr: data.as_ptr(),
             end: unsafe { data.as_ptr().add(data.len()) },
-            _layout: layout,
             entry_bytes,
             dst_mask: layout.dst_mask,
             dst_bits: layout.dst_bits,
