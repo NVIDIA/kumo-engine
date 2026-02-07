@@ -13,4 +13,10 @@ anyhow = { workspace = true }
 half = { workspace = true }
 serde = { workspace = true }
 rand = "0.8"
-log = { workspace = true }
+log = "0.4"
+gxhash = "3.5"
+smallvec = "1.11"
+parking_lot = { workspace = true }
+byteorder = "1.4"
+tempfile = "3.8"
+bincode = "1.3"
