@@ -51,6 +51,8 @@ pub struct SamplingPlan {
 pub struct LayerSpec {
     /// Fanout configuration per edge type (e.g., "User__Click__Item").
     pub fanouts: HashMap<String, FanoutSpec>,
+    /// Default fanout used if an edge type is not present in the fanouts map.
+    pub default_fanout: Option<FanoutSpec>,
 }
 
 /// Fanout and selection strategy for a specific edge type at a specific layer.
@@ -118,6 +120,7 @@ mod tests {
                             absent_key_policy: AbsentKeyPolicy::RejectPlan,
                         }),
                     ].into(),
+                    default_fanout: None,
                 },
                 LayerSpec {
                     fanouts: [
@@ -129,6 +132,7 @@ mod tests {
                             absent_key_policy: AbsentKeyPolicy::UniformFallback,
                         }),
                     ].into(),
+                    default_fanout: None,
                 },
             ],
         };
@@ -177,6 +181,7 @@ mod tests {
                                 absent_key_policy: AbsentKeyPolicy::RejectPlan,
                             }),
                         ].into(),
+                        default_fanout: None,
                     },
                 ],
             },

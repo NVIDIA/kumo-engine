@@ -95,6 +95,7 @@ mod tests {
                                 absent_key_policy: AbsentKeyPolicy::RejectPlan,
                             }),
                         ].into(),
+                        default_fanout: None,
                     }
                 ],
             },
