@@ -1,0 +1,16 @@
+[package]
+name = "diskgraph-sampler"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+diskgraph-core = { path = "../diskgraph-core" }
+diskgraph-index = { path = "../diskgraph-index" }
+diskgraph-rowpack = { path = "../diskgraph-rowpack" }
+arrow-array = { workspace = true }
+arrow-schema = { workspace = true }
+anyhow = { workspace = true }
+half = { workspace = true }
+serde = { workspace = true }
+rand = "0.8"
+log = { workspace = true }
