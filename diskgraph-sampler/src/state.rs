@@ -1,7 +1,6 @@
 use parking_lot::Mutex;
 use std::sync::Arc;
 use gxhash::{HashMap as GxHashMap, HashMapExt};
-use std::collections::HashMap;
 
 /// Aggregated statistics for the sampling request.
 #[derive(Debug, Clone, Default)]
@@ -55,7 +54,7 @@ impl SamplingStats {
             self.edges_per_type[i].fill(0);
         }
     }
-    
+
     pub fn record_node(&mut self, hop: usize, type_id: usize) {
         if self.nodes_per_type.len() <= type_id {
             self.nodes_per_type.resize(type_id + 1, Vec::new());
@@ -118,10 +117,27 @@ impl TypeState {
         }
     }
 
-    fn reset(&mut self) {
-        self.index_map.clear();
+    /// Resets the state, releasing memory if capacity exceeds the threshold.
+    /// Threshold is number of items.
+    pub fn adaptive_reset(&mut self, threshold: usize) {
         self.nodes.clear();
+        if self.nodes.capacity() > threshold {
+            self.nodes.shrink_to(threshold);
+        }
+
         self.next_frontier.clear();
+        if self.next_frontier.capacity() > threshold {
+            self.next_frontier.shrink_to(threshold);
+        }
+
+        self.index_map.clear();
+        if self.index_map.capacity() > threshold {
+            self.index_map.shrink_to(threshold);
+        }
+    }
+
+    fn reset(&mut self) {
+        self.adaptive_reset(usize::MAX);
     }
 }
 
@@ -138,17 +154,19 @@ pub struct EdgeRecord {
 pub struct SamplingState {
     /// Registry of state per node type ID.
     pub type_states: GxHashMap<usize, TypeState>,
-    
+
     // Scratch buffers for EdgeUnpacker (u64 fast path)
     pub dst_scratch: Vec<u64>,
     pub key_scratch: Vec<u64>,
-    
+
     // Scratch buffer for Reservoir Sampling
     pub reservoir_scratch: Vec<u64>,
 
     /// Statistics for the current run.
     pub stats: SamplingStats,
 }
+
+const RESET_THRESHOLD: usize = 1 << 18; // ~262k items
 
 impl SamplingState {
     fn new() -> Self {
@@ -164,7 +182,7 @@ impl SamplingState {
     fn reset(&mut self) {
         // Recurse into type states
         for state in self.type_states.values_mut() {
-            state.reset();
+            state.adaptive_reset(RESET_THRESHOLD);
         }
         self.dst_scratch.clear();
         self.key_scratch.clear();

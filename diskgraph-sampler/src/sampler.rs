@@ -12,7 +12,7 @@ pub struct CompiledLayerSpec {
     pub default_fanout: Option<FanoutSpec>,
 }
 use diskgraph_index::reader::ShardReader;
-use diskgraph_index::layout::{EdgeListView, RelationSegment};
+use diskgraph_index::layout::RelationSegment;
 use diskgraph_core::sortkey::SortKeyDecoder;
 use crate::edge_unpacker::EdgeUnpacker;
 use crate::state::{SamplingState, LookupKey, NodeRecord};
@@ -85,7 +85,7 @@ impl Sampler {
 
     fn compile_plan(&self, plan: &diskgraph_core::sampling::SamplingPlan) -> Result<CompiledSamplingPlan> {
         let mut layers = Vec::with_capacity(plan.layers.len());
-        
+
         for layer in &plan.layers {
             let mut fanouts = HashMap::new();
             for (name, spec) in &layer.fanouts {
@@ -102,7 +102,7 @@ impl Sampler {
                 default_fanout: layer.default_fanout.clone(),
             });
         }
-        
+
         Ok(CompiledSamplingPlan { layers })
     }
 
@@ -117,7 +117,7 @@ impl Sampler {
         // 1. Initial Validation & Initialization
         let (seed_type, seed_ids) = request.seed_nodes.iter().next()
             .ok_or_else(|| SamplerError::InvalidRequest("request has no seed nodes".to_string()))?;
-        
+
         let seed_type_id = *self.node_type_to_id.get(seed_type)
             .ok_or_else(|| SamplerError::InvalidRequest(format!("unknown seed type: {}", seed_type)))?;
 
@@ -130,7 +130,7 @@ impl Sampler {
         if request.seed_nodes.len() > 1 {
             return Err(SamplerError::InvalidRequest("multiple seed node types not supported in initial scope".to_string()));
         }
-        
+
         let seed_ts_vec = request.seed_timestamps.as_ref()
             .and_then(|m| m.get(seed_type));
 
@@ -140,14 +140,14 @@ impl Sampler {
         for (i, &global_id) in seed_ids.iter().enumerate() {
             let seed_index = i as u32;
             let key = LookupKey { seed_index, global_id };
-            
+
             let _anchor_ts = seed_ts_vec.and_then(|v| v.get(i).copied());
 
             // Assign Local ID
             if !seed_state.index_map.contains_key(&key) {
                 let local_id = seed_state.nodes.len() as u32;
                 seed_state.index_map.insert(key, local_id);
-                
+
                 // Cache Node (Hop 0)
                 seed_state.nodes.push(NodeRecord { global_id, seed_index, local_id });
                 state.stats.record_node(0, seed_type_id);
@@ -227,7 +227,7 @@ impl Sampler {
                         let local_idx = node.global_id - shard.min_id;
                         let edges_view = shard.reader.edges_for_node(local_idx)
                             .map_err(|e| SamplerError::DataCorruption(e.to_string()))?;
-                        
+
                         // Parse segments once per unique node
                         current_segments = match edges_view.relation_segments() {
                             Ok(s) => s,
@@ -235,11 +235,11 @@ impl Sampler {
                         };
                         last_id = Some(node.global_id);
                     }
-                    
+
                     // 6. Iterate Relations present in this node's edge list
                     for segment in &current_segments {
                         let rel_id = segment.layout.relation_id as usize;
-                        
+
                         // Check if this relation is in the Sampling Plan, or use default
                         let fanout_spec = layer_spec.fanouts.get(&rel_id)
                             .or(layer_spec.default_fanout.as_ref());
@@ -284,8 +284,8 @@ impl Sampler {
         output: &mut impl OutputHandler,
     ) -> Result<()> {
         let edge_count = segment.count as usize;
-        if edge_count == 0 { 
-            return Ok(()); 
+        if edge_count == 0 {
+            return Ok(());
         }
 
         let mut unpacker = EdgeUnpacker::new(segment.data, &segment.layout);
@@ -335,7 +335,7 @@ impl Sampler {
                 // Optimized Uniform Sampling for known N (edge_count)
                 // O(fanout) instead of O(edge_count)
                 let k = fanout as usize;
-                
+
                 if k >= edge_count {
                     // Take all
                     loop {
@@ -354,7 +354,7 @@ impl Sampler {
                     // But sorting a random sample is easiest.
                     let mut rng = rand::thread_rng();
                     use rand::seq::index::sample;
-                    
+
                     // rand::seq::index::sample is efficient (floyd's for small k/n, etc)
                     let indices = sample(&mut rng, edge_count, k);
                     let mut sorted_indices = indices.into_vec();
@@ -366,7 +366,7 @@ impl Sampler {
                         if to_skip > 0 {
                             unpacker.advance(to_skip);
                         }
-                        
+
                         // Unpack 1
                         state.dst_scratch.resize(1, 0);
                         state.key_scratch.resize(1, 0);
@@ -374,7 +374,7 @@ impl Sampler {
                         if n > 0 {
                             self.record_edge(layer_idx, src_item, state.dst_scratch[0], dst_type_id, rel_id as u16, state, output)?;
                         }
-                        
+
                         current_pos = target_idx + 1;
                     }
                 }
@@ -403,7 +403,7 @@ impl Sampler {
         } else {
             let id = dst_type_state.nodes.len() as u32;
             dst_type_state.index_map.insert(key, id);
-            
+
             // Cache Node (Hop K)
             dst_type_state.nodes.push(NodeRecord {
                 global_id: dst_global_id,
@@ -423,9 +423,9 @@ impl Sampler {
 
         // Emit Edge Event
         output.handle_edge(layer_idx, rel_id, src.local_id, dst_local_id)?;
-        
+
         state.stats.record_edge(layer_idx, rel_id as usize);
-        
+
         Ok(())
     }
 }
