@@ -265,7 +265,7 @@ mod tests {
         // 1. Acquire and Modify
         {
             let mut state = pool.acquire();
-            let ts = state.get_type_state_mut("user");
+            let ts = state.get_type_state_mut(0);
 
             // Push some data to grow capacity
             ts.nodes.reserve(1000);
@@ -280,7 +280,7 @@ mod tests {
         // 2. Re-Acquire
         {
             let mut state = pool.acquire();
-            let ts = state.get_type_state_mut("user");
+            let ts = state.get_type_state_mut(0);
 
             // Should be logically empty
             assert_eq!(ts.nodes.len(), 0);
@@ -289,8 +289,8 @@ mod tests {
             // Should retain capacity (Zero Allocation check)
             assert!(ts.nodes.capacity() >= 1000);
 
-            // "user" entry should still exist in type_states (map not cleared, values reset)
-            assert!(state.type_states.contains_key("user"));
+            // 0 entry should still exist in type_states (map not cleared, values reset)
+            assert!(state.type_states.contains_key(&0));
         }
     }
 
