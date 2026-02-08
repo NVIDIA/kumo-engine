@@ -11,6 +11,7 @@ members = [
     "diskgraph-explain",
     "diskgraph-train-table",
     "diskgraph-sampler",
+    "diskgraph-gateway",
 ]
 resolver = "2"
 

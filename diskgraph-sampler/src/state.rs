@@ -2,8 +2,10 @@ use parking_lot::Mutex;
 use std::sync::Arc;
 use gxhash::{HashMap as GxHashMap, HashMapExt};
 
+use serde::Serialize;
+
 /// Aggregated statistics for the sampling request.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct SamplingStats {
     /// Total nodes sampled per type ID, indexed by hop: TypeID -> [Hop0Count, Hop1Count, ...]
     pub nodes_per_type: Vec<Vec<u64>>,
