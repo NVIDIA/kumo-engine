@@ -25,6 +25,7 @@ use diskgraph_core::sampling::*;
 use diskgraph_index::reader::ShardReader;
 use diskgraph_sampler::sampler::Sampler;
 use diskgraph_sampler::state::StatePool;
+use diskgraph_sampler::output::InMemoryOutput;
 use diskgraph_core::metadata::DatasetMetadata;
 use std::fs;
 
@@ -80,19 +81,32 @@ fn load_graph(path: &PathBuf) -> Result<(Sampler, DatasetMetadata)> {
     let metadata_bytes = fs::read(&index_path)?;
     let metadata: DatasetMetadata = serde_json::from_slice(&metadata_bytes)?;
     
-    let layouts = Arc::new(diskgraph_index::builder::compute_relation_layouts(
+    let all_layouts = diskgraph_index::builder::compute_relation_layouts(
         &metadata.edge_relations,
         &metadata.node_types,
-    )?);
+    )?;
     
     let mut relation_info = HashMap::new();
+    let mut decoders = HashMap::new();
     for (idx, rel) in metadata.edge_relations.iter().enumerate() {
         relation_info.insert(idx, (rel.name.clone(), rel.dst_type.clone()));
+        if let Some(sort_key_meta) = &rel.dest_sort_key {
+            decoders.insert(idx, diskgraph_core::sortkey::SortKeyDecoder::new(sort_key_meta));
+        }
     }
     
     let mut readers = HashMap::new();
     
     for node_type in &metadata.node_types {
+        let mut type_layouts = Vec::new();
+        for layout in &all_layouts {
+            let rel_meta = &metadata.edge_relations[layout.relation_id as usize];
+            if rel_meta.src_type == node_type.name {
+                type_layouts.push(layout.clone());
+            }
+        }
+        let type_layouts = Arc::new(type_layouts);
+
         let mut type_shards = Vec::new();
         // Shards are in output_root/nodes/<node_type>/shard-NNNNN/
         for (shard_idx, shard_meta) in node_type.shards.iter().enumerate() {
@@ -105,7 +119,7 @@ fn load_graph(path: &PathBuf) -> Result<(Sampler, DatasetMetadata)> {
                 path.clone()
             };
             
-            let reader = ShardReader::open(&shard_path, layouts.clone(), node_type.has_node_data)?;
+            let reader = ShardReader::open(&shard_path, type_layouts.clone(), node_type.has_node_data)?;
             type_shards.push(ShardHandle {
                 reader: Arc::new(reader),
                 min_id: shard_meta.min_id,
@@ -115,7 +129,7 @@ fn load_graph(path: &PathBuf) -> Result<(Sampler, DatasetMetadata)> {
         readers.insert(node_type.name.clone(), type_shards);
     }
     
-    Ok((Sampler::new(readers, relation_info), metadata))
+    Ok((Sampler::new(readers, relation_info, decoders), metadata))
 }
 
 fn main() -> Result<()> {
@@ -207,23 +221,26 @@ async fn run_app<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, args:
 
                 let start = Instant::now();
                 let mut state = pool.acquire();
-                match sampler.sample(&request, &mut state) {
+                let mut output = InMemoryOutput::new();
+                
+                match sampler.sample(&request, &mut state, &mut output) {
                     Ok(_) => {
                         let duration = start.elapsed().as_micros() as u64;
-                        let nodes_count: usize = state.type_states.values().map(|ts| ts.nodes.len()).sum();
-                        let edges_count = state.edges.len();
+                        let nodes_count = state.stats.total_nodes;
+                        let edges_count = state.stats.total_edges;
                         
                         let mut v_failures = 0;
                         if do_validate {
-                            if let Err(_e) = validate_sample(&state) {
+                            // Validation needs to inspect output now
+                            if let Err(_e) = validate_sample(&output, &state) {
                                 v_failures = 1;
                             }
                         }
 
                         let mut s = stats.lock().unwrap();
                         s.requests_completed += 1;
-                        s.nodes_sampled += nodes_count as u64;
-                        s.edges_sampled += edges_count as u64;
+                        s.nodes_sampled += nodes_count;
+                        s.edges_sampled += edges_count;
                         s.validation_failures += v_failures;
                         s.latency_hist.record(duration).ok();
                     }
@@ -301,19 +318,16 @@ async fn run_app<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, args:
     })
 }
 
-fn validate_sample(state: &diskgraph_sampler::state::SamplingState) -> Result<()> {
+fn validate_sample(output: &diskgraph_sampler::output::InMemoryOutput, state: &diskgraph_sampler::state::SamplingState) -> Result<()> {
     // Basic structural validation
-    for edge in &state.edges {
-        // We don't easily know which type state corresponds to src/dst local ID without rel metadata
-        // but we can check if they are within bounds of ANY type state or if we assume a single type.
-        
-        // A better check: verify that total nodes in all type states covers all referenced IDs.
-        // (Simplified for this TUI)
-        let total_nodes: usize = state.type_states.values().map(|ts| ts.nodes.len()).sum();
-        if edge.src_local_id as usize >= total_nodes && total_nodes > 0 {
+    for (_hop, _rel, src_local, dst_local) in &output.edges {
+        // Check if src/dst local IDs are within range of total nodes
+        if *src_local as u64 >= state.stats.total_nodes {
              return Err(anyhow!("src_local_id out of range"));
         }
-        // ... more checks could go here ...
+        if *dst_local as u64 >= state.stats.total_nodes {
+             return Err(anyhow!("dst_local_id out of range"));
+        }
     }
     Ok(())
 }
@@ -337,6 +351,7 @@ fn make_plan(args: &Args, meta: &DatasetMetadata, seed_type: &str) -> SamplingPl
                     absent_key_policy: diskgraph_core::sampling::AbsentKeyPolicy::UniformFallback,
                 }
             )].into_iter().collect(),
+            default_fanout: None,
         });
     }
     SamplingPlan { layers }

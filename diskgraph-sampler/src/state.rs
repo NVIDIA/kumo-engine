@@ -1,6 +1,85 @@
 use parking_lot::Mutex;
 use std::sync::Arc;
 use gxhash::{HashMap as GxHashMap, HashMapExt};
+use std::collections::HashMap;
+
+/// Aggregated statistics for the sampling request.
+#[derive(Debug, Clone, Default)]
+pub struct SamplingStats {
+    /// Total nodes sampled per type ID, indexed by hop: TypeID -> [Hop0Count, Hop1Count, ...]
+    pub nodes_per_type: Vec<Vec<u64>>,
+    /// Total edges sampled per relation ID, indexed by hop: RelID -> [Hop0Count, Hop1Count, ...]
+    pub edges_per_type: Vec<Vec<u64>>,
+    /// Total unique nodes sampled.
+    pub total_nodes: u64,
+    /// Total edges sampled.
+    pub total_edges: u64,
+}
+
+impl SamplingStats {
+    pub fn new() -> Self {
+        Self {
+            nodes_per_type: Vec::new(),
+            edges_per_type: Vec::new(),
+            total_nodes: 0,
+            total_edges: 0,
+        }
+    }
+
+    pub fn reset(&mut self) {
+        for v in &mut self.nodes_per_type {
+            v.clear();
+        }
+        for v in &mut self.edges_per_type {
+            v.clear();
+        }
+        self.total_nodes = 0;
+        self.total_edges = 0;
+    }
+
+    pub fn resize(&mut self, num_types: usize, num_rels: usize, num_hops: usize) {
+        if self.nodes_per_type.len() < num_types {
+            self.nodes_per_type.resize(num_types, Vec::new());
+        }
+        for i in 0..num_types {
+            self.nodes_per_type[i].resize(num_hops + 1, 0);
+            // Ensure values are zero (since we reused vectors from pool)
+            self.nodes_per_type[i].fill(0);
+        }
+
+        if self.edges_per_type.len() < num_rels {
+            self.edges_per_type.resize(num_rels, Vec::new());
+        }
+        for i in 0..num_rels {
+            self.edges_per_type[i].resize(num_hops + 1, 0);
+            self.edges_per_type[i].fill(0);
+        }
+    }
+    
+    pub fn record_node(&mut self, hop: usize, type_id: usize) {
+        if self.nodes_per_type.len() <= type_id {
+            self.nodes_per_type.resize(type_id + 1, Vec::new());
+        }
+        let counts = &mut self.nodes_per_type[type_id];
+        if counts.len() <= hop {
+            counts.resize(hop + 1, 0);
+        }
+        counts[hop] += 1;
+        self.total_nodes += 1;
+    }
+
+    pub fn record_edge(&mut self, hop: usize, rel_id: usize) {
+        if self.edges_per_type.len() <= rel_id {
+            self.edges_per_type.resize(rel_id + 1, Vec::new());
+        }
+        let counts = &mut self.edges_per_type[rel_id];
+        if counts.len() <= hop {
+            counts.resize(hop + 1, 0);
+        }
+        counts[hop] += 1;
+        self.total_edges += 1;
+    }
+}
 
 /// Unique identifier for a node instance in the traversal.
 /// If disjoint=false, seed_index is always 0.
@@ -18,15 +97,6 @@ pub struct NodeRecord {
     pub local_id: u32,
 }
 
-/// An item in the active frontier for the next hop.
-#[derive(Debug, Clone, Copy)]
-pub struct FrontierItem {
-    pub global_id: u64,
-    pub seed_index: u32,
-    pub local_id: u32,
-    // We might add timestamp here if needed for temporal propagation
-}
-
 /// State specific to a single Node Type (table).
 pub struct TypeState {
     /// Maps (Seed, Global) -> LocalID
@@ -36,11 +106,11 @@ pub struct TypeState {
     pub nodes: Vec<NodeRecord>,
 
     /// Nodes to be processed in the next hop for this type
-    pub next_frontier: Vec<FrontierItem>,
+    pub next_frontier: Vec<NodeRecord>,
 }
 
 impl TypeState {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             index_map: GxHashMap::with_capacity(1024),
             nodes: Vec::with_capacity(1024),
@@ -66,24 +136,28 @@ pub struct EdgeRecord {
 /// The main context for a single sampling request.
 /// Pooled to avoid allocation churn.
 pub struct SamplingState {
-    /// Registry of state per node type.
-    pub type_states: GxHashMap<String, TypeState>,
-    
-    /// Sampled edges across all relations.
-    pub edges: Vec<EdgeRecord>,
+    /// Registry of state per node type ID.
+    pub type_states: GxHashMap<usize, TypeState>,
     
     // Scratch buffers for EdgeUnpacker (u64 fast path)
     pub dst_scratch: Vec<u64>,
     pub key_scratch: Vec<u64>,
+    
+    // Scratch buffer for Reservoir Sampling
+    pub reservoir_scratch: Vec<u64>,
+
+    /// Statistics for the current run.
+    pub stats: SamplingStats,
 }
 
 impl SamplingState {
     fn new() -> Self {
         Self {
             type_states: GxHashMap::default(),
-            edges: Vec::with_capacity(4096),
             dst_scratch: Vec::with_capacity(1024),
             key_scratch: Vec::with_capacity(1024),
+            reservoir_scratch: Vec::with_capacity(128),
+            stats: SamplingStats::new(),
         }
     }
 
@@ -92,14 +166,15 @@ impl SamplingState {
         for state in self.type_states.values_mut() {
             state.reset();
         }
-        self.edges.clear();
         self.dst_scratch.clear();
         self.key_scratch.clear();
+        self.reservoir_scratch.clear();
+        self.stats.reset();
     }
     /// Access or create the state for a specific node type.
-    pub fn get_type_state_mut(&mut self, node_type: &str) -> &mut TypeState {
+    pub fn get_type_state_mut(&mut self, node_type_id: usize) -> &mut TypeState {
         self.type_states
-            .entry(node_type.to_string())
+            .entry(node_type_id)
             .or_insert_with(TypeState::new)
     }
 }

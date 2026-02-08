@@ -2,6 +2,7 @@ use anyhow::{anyhow, Result};
 use diskgraph_core::sampling::*;
 use diskgraph_sampler::sampler::Sampler;
 use diskgraph_sampler::state::StatePool;
+use diskgraph_sampler::output::InMemoryOutput;
 use diskgraph_index::reader::ShardReader;
 use diskgraph_core::metadata::DatasetMetadata;
 use std::collections::HashMap;
@@ -59,7 +60,8 @@ fn main() -> Result<()> {
         relation_info.insert(idx, (rel.name.clone(), rel.dst_type.clone()));
     }
     
-    let sampler = Sampler::new(readers, relation_info);
+    let decoders = HashMap::new();
+    let sampler = Sampler::new(readers, relation_info, decoders);
     let pool = StatePool::new();
 
     // 2. Define Request
@@ -81,6 +83,7 @@ fn main() -> Result<()> {
                         absent_key_policy: AbsentKeyPolicy::UniformFallback,
                     })
                 ].into(),
+                default_fanout: None,
             },
             LayerSpec {
                 fanouts: [
@@ -90,6 +93,7 @@ fn main() -> Result<()> {
                         absent_key_policy: AbsentKeyPolicy::UniformFallback,
                     })
                 ].into(),
+                default_fanout: None,
             },
         ]
     };
@@ -108,14 +112,20 @@ fn main() -> Result<()> {
     println!("Starting sampling (Batch=100, Hops=2)...");
     let start = Instant::now();
     let mut pooled_state = pool.acquire();
-    sampler.sample(&request, &mut pooled_state)?;
+    let mut output = InMemoryOutput::new();
+    
+    sampler.sample(&request, &mut pooled_state, &mut output)?;
+    
     let duration = start.elapsed();
     
     println!("Done in {:?}", duration);
-    for (name, ts) in &pooled_state.type_states {
+    for (id, ts) in &pooled_state.type_states {
+        let name = sampler.id_to_node_type.get(*id).map(|s| s.as_str()).unwrap_or("unknown");
         println!("Type {}: {} nodes", name, ts.nodes.len());
     }
-    println!("Total Edges: {}", pooled_state.edges.len());
+    println!("Total Unique Nodes: {}", pooled_state.stats.total_nodes);
+    println!("Total Edges: {}", pooled_state.stats.total_edges);
+    println!("Output Edges: {}", output.edges.len());
 
     Ok(())
 }
