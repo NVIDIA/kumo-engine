@@ -10,6 +10,7 @@ diskgraph-rowpack = { path = "../diskgraph-rowpack" }
 arrow-array = { workspace = true }
 arrow-schema = { workspace = true }
 anyhow = { workspace = true }
+thiserror = { workspace = true }
 half = { workspace = true }
 serde = { workspace = true }
 rand = "0.8"

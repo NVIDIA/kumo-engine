@@ -1,5 +1,5 @@
-use anyhow::{anyhow, Result};
 use diskgraph_core::sampling::{BatchSamplingRequest, SamplingMode, FanoutSpec};
+use crate::errors::{Result, SamplerError};
 
 /// A sampling plan where relation names have been resolved to IDs.
 pub struct CompiledSamplingPlan {
@@ -116,10 +116,10 @@ impl Sampler {
     ) -> Result<()> {
         // 1. Initial Validation & Initialization
         let (seed_type, seed_ids) = request.seed_nodes.iter().next()
-            .ok_or_else(|| anyhow!("request has no seed nodes"))?;
+            .ok_or_else(|| SamplerError::InvalidRequest("request has no seed nodes".to_string()))?;
         
         let seed_type_id = *self.node_type_to_id.get(seed_type)
-            .ok_or_else(|| anyhow!("unknown seed type: {}", seed_type))?;
+            .ok_or_else(|| SamplerError::InvalidRequest(format!("unknown seed type: {}", seed_type)))?;
 
         // Pre-allocate stats
         let num_types = self.readers.len();
@@ -128,7 +128,7 @@ impl Sampler {
         state.stats.resize(num_types, num_rels, num_hops);
 
         if request.seed_nodes.len() > 1 {
-            return Err(anyhow!("multiple seed node types not supported in initial scope"));
+            return Err(SamplerError::InvalidRequest("multiple seed node types not supported in initial scope".to_string()));
         }
         
         let seed_ts_vec = request.seed_timestamps.as_ref()
@@ -225,7 +225,8 @@ impl Sampler {
                     // Only open view if node id changed
                     if last_id != Some(node.global_id) {
                         let local_idx = node.global_id - shard.min_id;
-                        let edges_view = shard.reader.edges_for_node(local_idx)?;
+                        let edges_view = shard.reader.edges_for_node(local_idx)
+                            .map_err(|e| SamplerError::DataCorruption(e.to_string()))?;
                         
                         // Parse segments once per unique node
                         current_segments = match edges_view.relation_segments() {
@@ -378,7 +379,7 @@ impl Sampler {
                     }
                 }
             }
-            _ => return Err(anyhow!("Sampling mode {:?} not supported in initial scope", mode)),
+            _ => return Err(SamplerError::InvalidRequest(format!("Sampling mode {:?} not supported in initial scope", mode))),
         }
 
         Ok(())

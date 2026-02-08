@@ -1,6 +1,7 @@
-use anyhow::Result;
+
 
 use crate::state::SamplingState;
+use crate::errors::{Result, SamplerError};
 
 /// Trait for handling the output stream of the sampler.
 pub trait OutputHandler {
