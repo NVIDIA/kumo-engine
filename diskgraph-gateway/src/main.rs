@@ -21,10 +21,16 @@ struct Args {
     #[arg(short, long)]
     data: PathBuf,
 
-    /// Port to listen on
+    /// Port to listen on (TCP)
     #[arg(short, long, default_value_t = 50051)]
     port: u16,
+
+    /// Path to Unix Domain Socket (UDS) to listen on. If provided, port is ignored.
+    #[arg(short, long)]
+    uds_path: Option<PathBuf>,
 }
+
+// ... (load_graph logic continues below)
 
 fn load_graph(path: &PathBuf) -> Result<Sampler> {
     let index_path = path.join("index_metadata.json");
@@ -33,14 +39,14 @@ fn load_graph(path: &PathBuf) -> Result<Sampler> {
     }
     let metadata_bytes = fs::read(&index_path)?;
     let metadata: DatasetMetadata = serde_json::from_slice(&metadata_bytes)?;
-    
+
     println!("Loading graph metadata for {} node types...", metadata.node_types.len());
 
     let all_layouts = diskgraph_index::builder::compute_relation_layouts(
         &metadata.edge_relations,
         &metadata.node_types,
     )?;
-    
+
     let mut relation_info = HashMap::new();
     let mut decoders = HashMap::new();
     for (idx, rel) in metadata.edge_relations.iter().enumerate() {
@@ -49,9 +55,9 @@ fn load_graph(path: &PathBuf) -> Result<Sampler> {
             decoders.insert(idx, diskgraph_core::sortkey::SortKeyDecoder::new(sort_key_meta));
         }
     }
-    
+
     let mut readers = HashMap::new();
-    
+
     for node_type in &metadata.node_types {
         let mut type_layouts = Vec::new();
         for layout in &all_layouts {
@@ -66,7 +72,7 @@ fn load_graph(path: &PathBuf) -> Result<Sampler> {
         for (shard_idx, shard_meta) in node_type.shards.iter().enumerate() {
             let shard_dir_name = format!("shard-{:05}", shard_idx);
             let shard_path = path.join("nodes").join(&node_type.name).join(&shard_dir_name);
-            
+
             // Only open if shard exists
             if shard_path.exists() {
                 let reader = ShardReader::open(&shard_path, type_layouts.clone(), node_type.has_node_data)?;
@@ -81,7 +87,7 @@ fn load_graph(path: &PathBuf) -> Result<Sampler> {
              readers.insert(node_type.name.clone(), type_shards);
         }
     }
-    
+
     println!("Graph loaded. Ready to sample.");
     Ok(Sampler::new(readers, relation_info, decoders))
 }
@@ -94,15 +100,25 @@ async fn main() -> Result<()> {
     let sampler = Arc::new(load_graph(&args.data)?);
     let pool = StatePool::new();
 
-    let addr = format!("0.0.0.0:{}", args.port).parse()?;
     let service = SamplerGateway::new(sampler, pool);
+    let server = Server::builder().add_service(arrow_flight::flight_service_server::FlightServiceServer::new(service));
 
-    println!("Listening on {}", addr);
+    if let Some(path) = args.uds_path {
+        // Clean up existing socket file if any
+        if path.exists() {
+            std::fs::remove_file(&path)?;
+        }
 
-    Server::builder()
-        .add_service(FlightServiceServer::new(service))
-        .serve(addr)
-        .await?;
+        let listener = tokio::net::UnixListener::bind(&path)?;
+        let stream = tokio_stream::wrappers::UnixListenerStream::new(listener);
+
+        println!("Listening on UDS: {:?}", path);
+        server.serve_with_incoming(stream).await?;
+    } else {
+        let addr = format!("0.0.0.0:{}", args.port).parse()?;
+        println!("Listening on TCP: {}", addr);
+        server.serve(addr).await?;
+    }
 
     Ok(())
 }

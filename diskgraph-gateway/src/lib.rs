@@ -79,7 +79,7 @@ impl FlightService for SamplerGateway {
         request: Request<Ticket>,
     ) -> Result<Response<Self::DoGetStream>, Status> {
         let ticket = request.into_inner();
-        
+
         // Deserialize request from ticket
         let sampling_req: BatchSamplingRequest = bincode::deserialize(&ticket.ticket)
             .or_else(|_| serde_json::from_slice(&ticket.ticket))
@@ -95,7 +95,7 @@ impl FlightService for SamplerGateway {
         tokio::task::spawn_blocking(move || {
             let mut state = pool.acquire();
             let mut output = ArrowFlightOutput::new(tx.clone());
-            
+
             // Explicitly send schema as the first message
             let options = IpcWriteOptions::default();
             let schema_flight_data = arrow_flight::SchemaAsIpc::new(&output.schema(), &options).into();

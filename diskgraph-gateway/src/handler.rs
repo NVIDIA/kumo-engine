@@ -71,7 +71,7 @@ impl ArrowFlightOutput {
         }
 
         let len = buffer_contents.len();
-        
+
         let row_type = Int8Array::from(vec![0; len]);
         let id_a = UInt64Array::from(buffer_contents.src.iter().map(|&x| x as u64).collect::<Vec<_>>());
         let id_b = UInt64Array::from(buffer_contents.dst.iter().map(|&x| x as u64).collect::<Vec<_>>());
@@ -90,7 +90,7 @@ impl ArrowFlightOutput {
         ).map_err(|e| SamplerError::Internal(e.to_string()))?;
 
         self.send_batch(batch)?;
-        
+
         // We could reuse the buffer capacity by swapping back, but for simplicity we just let it drop.
         // Or better: put it back.
         if let Some(buffer) = self.edge_buffers.get_mut(&rel_id) {
@@ -105,7 +105,7 @@ impl ArrowFlightOutput {
             Field::new("row_type", DataType::Int8, false),
             Field::new("id_a", DataType::UInt64, false),
             Field::new("id_b", DataType::UInt64, false),
-            Field::new("meta_type", DataType::UInt64, false), 
+            Field::new("meta_type", DataType::UInt64, false),
             Field::new("meta_val", DataType::UInt64, true),
         ]))
     }
@@ -115,7 +115,7 @@ impl ArrowFlightOutput {
         let mut tracker = DictionaryTracker::new(false);
         let (_dictionaries, encoded_data) = generator.encoded_batch(&batch, &mut tracker, &self.options)
              .map_err(|e: arrow_schema::ArrowError| SamplerError::Internal(e.to_string()))?;
-        
+
         let flight_data: FlightData = encoded_data.into();
         self.sender.blocking_send(Ok(flight_data))
             .map_err(|_| SamplerError::Output("channel closed".into()))?;
@@ -147,7 +147,7 @@ impl OutputHandler for ArrowFlightOutput {
         } else {
              return Ok(());
         }
-        
+
         // Flush
         self.flush_edge_buffer(rel_id)?;
         Ok(())
@@ -166,7 +166,7 @@ impl OutputHandler for ArrowFlightOutput {
         // 3. Serialize Stats (Metadata)
         let stats_bytes = bincode::serialize(&state.stats)
             .map_err(|e| SamplerError::Internal(format!("failed to serialize stats: {}", e)))?;
-        
+
         let metadata_msg = FlightData {
             app_metadata: stats_bytes.into(),
             data_header: Default::default(),
