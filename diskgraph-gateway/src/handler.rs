@@ -100,7 +100,7 @@ impl ArrowFlightOutput {
         Ok(())
     }
 
-    fn schema(&self) -> Arc<Schema> {
+    pub fn schema(&self) -> Arc<Schema> {
         Arc::new(Schema::new(vec![
             Field::new("row_type", DataType::Int8, false),
             Field::new("id_a", DataType::UInt64, false),
@@ -110,7 +110,7 @@ impl ArrowFlightOutput {
         ]))
     }
 
-    fn send_batch(&self, batch: RecordBatch) -> Result<(), SamplerError> {
+    fn send_batch(&mut self, batch: RecordBatch) -> Result<(), SamplerError> {
         let generator = IpcDataGenerator::default();
         let mut tracker = DictionaryTracker::new(false);
         let (_dictionaries, encoded_data) = generator.encoded_batch(&batch, &mut tracker, &self.options)

@@ -9,6 +9,7 @@ use arrow_flight::{
     PutResult, Criteria,
 };
 
+use arrow_ipc::writer::IpcWriteOptions;
 use diskgraph_sampler::sampler::Sampler;
 use diskgraph_sampler::state::StatePool;
 use diskgraph_core::sampling::BatchSamplingRequest;
@@ -81,7 +82,8 @@ impl FlightService for SamplerGateway {
         
         // Deserialize request from ticket
         let sampling_req: BatchSamplingRequest = bincode::deserialize(&ticket.ticket)
-            .map_err(|e| Status::invalid_argument(format!("Failed to deserialize request: {}", e)))?;
+            .or_else(|_| serde_json::from_slice(&ticket.ticket))
+            .map_err(|e| Status::invalid_argument(format!("Failed to deserialize request (tried Bincode & JSON): {}", e)))?;
 
         let sampler = Arc::clone(&self.sampler);
         let pool = self.pool.clone();
@@ -94,6 +96,13 @@ impl FlightService for SamplerGateway {
             let mut state = pool.acquire();
             let mut output = ArrowFlightOutput::new(tx.clone());
             
+            // Explicitly send schema as the first message
+            let options = IpcWriteOptions::default();
+            let schema_flight_data = arrow_flight::SchemaAsIpc::new(&output.schema(), &options).into();
+            if let Err(_) = tx.blocking_send(Ok(schema_flight_data)) {
+                 return;
+            }
+
             if let Err(e) = sampler.sample(&sampling_req, &mut state, &mut output) {
                 // If sampling fails, try to send error status
                 // We ignore send error here (client might have disconnected)
