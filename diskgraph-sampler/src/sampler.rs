@@ -37,12 +37,12 @@ pub struct SchemaMapping {
 
 /// The core engine responsible for executing graph sampling requests.
 pub struct Sampler {
-    /// Shard readers mapped by Node Type ID.
+    /// Shard readers mapped by dense Node Type ID.
     pub readers: Vec<Vec<ShardHandle>>,
-    /// Map from Relation ID to DstTypeID.
+    /// Map from dense Relation ID to DstTypeID.
     pub relation_info: Vec<usize>,
     /// Sort key decoders for each relation.
-    pub decoders: HashMap<usize, SortKeyDecoder>,
+    pub decoders: Vec<Option<SortKeyDecoder>>,
     /// Map from node type name to dense ID.
     pub node_type_to_id: HashMap<String, usize>,
     /// Map from relation name to ID.
@@ -57,7 +57,7 @@ impl Sampler {
     pub fn new(
         readers_map: HashMap<String, Vec<ShardHandle>>,
         relation_info_map: HashMap<usize, (String, String)>,
-        decoders: HashMap<usize, SortKeyDecoder>,
+        decoders_map: HashMap<usize, SortKeyDecoder>,
     ) -> Self {
         let mut node_type_to_id = HashMap::new();
         let mut id_to_node_type = Vec::new();
@@ -83,17 +83,22 @@ impl Sampler {
         // Remap relation info to use Type IDs
         let mut rel_name_to_id = HashMap::new();
         let mut id_to_rel_name = Vec::new();
-        
+
         let max_rel_id = relation_info_map.keys().max().copied().unwrap_or(0);
         id_to_rel_name.resize(max_rel_id + 1, String::new());
         // Use usize::MAX as sentinel for invalid/unmapped relations
         let mut relation_info = vec![usize::MAX; max_rel_id + 1];
+        let mut decoders = vec![None; max_rel_id + 1];
 
         for (rel_id, (rel_name, dst_type)) in relation_info_map {
             if let Some(&dst_id) = node_type_to_id.get(&dst_type) {
                 rel_name_to_id.insert(rel_name.clone(), rel_id);
                 id_to_rel_name[rel_id] = rel_name.clone();
                 relation_info[rel_id] = dst_id;
+
+                if let Some(decoder) = decoders_map.get(&rel_id) {
+                    decoders[rel_id] = Some(decoder.clone());
+                }
             }
         }
 
@@ -314,7 +319,8 @@ impl Sampler {
         }
 
         let mut unpacker = EdgeUnpacker::new(segment.data, &segment.layout);
-        let decoder = self.decoders.get(&rel_id);
+        // Use vector lookup instead of hashmap
+        let decoder = self.decoders.get(rel_id).and_then(|d| d.as_ref());
 
         match mode {
             SamplingMode::TemporalMostRecent => {

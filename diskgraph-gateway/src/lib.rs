@@ -131,7 +131,7 @@ impl FlightService for SamplerGateway {
             let mapping = self.sampler.get_schema_mapping();
             let body = serde_json::to_vec(&mapping)
                 .map_err(|e| Status::internal(format!("Failed to serialize mapping: {}", e)))?;
-            
+
             let result = arrow_flight::Result { body: body.into() };
             let stream = futures::stream::iter(vec![Ok(result)]);
             return Ok(Response::new(Box::pin(stream)));

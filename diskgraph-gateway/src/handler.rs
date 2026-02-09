@@ -214,7 +214,7 @@ mod tests {
     #[tokio::test]
     async fn test_edge_buffering() {
         let (tx, mut rx) = mpsc::channel(10);
-        
+
         tokio::task::spawn_blocking(move || {
             let mut handler = ArrowFlightOutput::new(tx);
 
@@ -239,7 +239,7 @@ mod tests {
         let msg1 = rx.recv().await.unwrap().unwrap();
         let msg2 = rx.recv().await.unwrap().unwrap();
         let msg3 = rx.recv().await.unwrap().unwrap();
-        
+
         assert!(msg1.data_header.len() > 0);
         assert!(msg2.data_header.len() > 0);
         assert!(msg3.app_metadata.len() > 0);
@@ -248,7 +248,7 @@ mod tests {
     #[tokio::test]
     async fn test_node_flushing() {
         let (tx, mut rx) = mpsc::channel(10);
-        
+
         tokio::task::spawn_blocking(move || {
             let mut handler = ArrowFlightOutput::new(tx);
 
