@@ -27,9 +27,9 @@ pub struct ShardHandle {
     pub max_id: u64,
 }
 
-use serde::Serialize;
+use serde::{Serialize, Deserialize};
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct SchemaMapping {
     pub node_types: Vec<String>,
     pub edge_relations: Vec<String>,

@@ -153,3 +153,37 @@ async fn test_gateway_end_to_end_flow() {
     captured_nodes.sort();
     assert_eq!(captured_nodes, vec![0, 1, 2], "Node content mismatch");
 }
+
+#[tokio::test]
+async fn test_get_schema_mapping_action() {
+    let graph = TestGraph::new();
+    let sampler = Arc::new(graph.sampler);
+    let pool = StatePool::new();
+    let service = SamplerGateway::new(sampler, pool);
+
+    // 1. Verify list_actions
+    let response = service.list_actions(tonic::Request::new(arrow_flight::Empty {})).await.expect("list_actions failed");
+    let mut stream = response.into_inner();
+    let mut actions = Vec::new();
+    while let Some(res) = stream.next().await {
+        actions.push(res.expect("Action error"));
+    }
+    assert!(actions.iter().any(|a| a.r#type == "get_schema_mapping"));
+
+    // 2. Verify do_action("get_schema_mapping")
+    let action = arrow_flight::Action {
+        r#type: "get_schema_mapping".to_string(),
+        body: vec![].into(),
+    };
+    let response = service.do_action(tonic::Request::new(action)).await.expect("do_action failed");
+    let mut stream = response.into_inner();
+    let res = stream.next().await.expect("No result").expect("Action error");
+
+    let mapping: diskgraph_sampler::sampler::SchemaMapping = serde_json::from_slice(&res.body).expect("Failed to deserialize mapping");
+    
+    // TestGraph defines:
+    // node_types: ["users"]
+    // edge_relations: ["connects"] (at ID 0)
+    assert_eq!(mapping.node_types, vec!["users"]);
+    assert_eq!(mapping.edge_relations, vec!["connects"]);
+}
