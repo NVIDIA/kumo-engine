@@ -61,7 +61,7 @@ fn main() -> Result<()> {
     }
     
     let decoders = HashMap::new();
-    let sampler = Sampler::new(readers, relation_info, decoders);
+    let sampler = Sampler::new(readers, relation_info, decoders, HashMap::new());
     let pool = StatePool::new();
 
     // 2. Define Request

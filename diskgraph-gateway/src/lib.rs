@@ -12,7 +12,7 @@ use arrow_flight::{
 use arrow_ipc::writer::IpcWriteOptions;
 use diskgraph_sampler::sampler::Sampler;
 use diskgraph_sampler::state::StatePool;
-use diskgraph_core::sampling::BatchSamplingRequest;
+use diskgraph_core::sampling::{BatchSamplingRequest, BatchFeatureRequest};
 use tokio::sync::mpsc;
 
 mod handler;
@@ -31,6 +31,7 @@ impl SamplerGateway {
 
 #[tonic::async_trait]
 impl FlightService for SamplerGateway {
+    // ... (streams definitions same as before) ...
     type HandshakeStream = Pin<Box<dyn Stream<Item = Result<HandshakeResponse, Status>> + Send + 'static>>;
     type ListFlightsStream = Pin<Box<dyn Stream<Item = Result<FlightInfo, Status>> + Send + 'static>>;
     type DoGetStream = Pin<Box<dyn Stream<Item = Result<FlightData, Status>> + Send + 'static>>;
@@ -80,48 +81,23 @@ impl FlightService for SamplerGateway {
     ) -> Result<Response<Self::DoGetStream>, Status> {
         let ticket = request.into_inner();
 
-        // Deserialize request from ticket
-        let sampling_req: BatchSamplingRequest = bincode::deserialize(&ticket.ticket)
-            .or_else(|_| serde_json::from_slice(&ticket.ticket))
-            .map_err(|e| Status::invalid_argument(format!("Failed to deserialize request (tried Bincode & JSON): {}", e)))?;
+        // Attempt to deserialize as BatchSamplingRequest
+        if let Ok(req) = serde_json::from_slice::<BatchSamplingRequest>(&ticket.ticket) {
+            return self.handle_sampling(req).await;
+        } 
+        // Attempt to deserialize as BatchFeatureRequest
+        if let Ok(req) = serde_json::from_slice::<BatchFeatureRequest>(&ticket.ticket) {
+            return self.handle_features(req).await;
+        }
+        // Fallback Bincode (Legacy compat for Sampling)
+        if let Ok(req) = bincode::deserialize::<BatchSamplingRequest>(&ticket.ticket) {
+            return self.handle_sampling(req).await;
+        }
 
-        let sampler = Arc::clone(&self.sampler);
-        let pool = self.pool.clone();
-
-        // Channel for streaming results
-        let (tx, rx) = mpsc::channel(100);
-
-        // Spawn blocking sampling task
-        tokio::task::spawn_blocking(move || {
-            let mut state = pool.acquire();
-            let mut output = ArrowFlightOutput::new(tx.clone());
-
-            // Explicitly send schema as the first message
-            let options = IpcWriteOptions::default();
-            let schema_flight_data = arrow_flight::SchemaAsIpc::new(&output.schema(), &options).into();
-            if let Err(_) = tx.blocking_send(Ok(schema_flight_data)) {
-                 return;
-            }
-
-            if let Err(e) = sampler.sample(&sampling_req, &mut state, &mut output) {
-                // If sampling fails, try to send error status
-                // We ignore send error here (client might have disconnected)
-                let _ = tx.blocking_send(Err(Status::internal(e.to_string())));
-            }
-        });
-
-        // Convert receiver to stream
-        let output_stream = tokio_stream::wrappers::ReceiverStream::new(rx);
-        Ok(Response::new(Box::pin(output_stream)))
+        Err(Status::invalid_argument("Unknown request type in ticket"))
     }
 
-    async fn do_put(
-        &self,
-        _request: Request<tonic::Streaming<FlightData>>,
-    ) -> Result<Response<Self::DoPutStream>, Status> {
-        Err(Status::unimplemented("DoPut not implemented"))
-    }
-
+    // ... (Action handlers) ...
     async fn do_action(
         &self,
         request: Request<Action>,
@@ -131,7 +107,7 @@ impl FlightService for SamplerGateway {
             let mapping = self.sampler.get_schema_mapping();
             let body = serde_json::to_vec(&mapping)
                 .map_err(|e| Status::internal(format!("Failed to serialize mapping: {}", e)))?;
-
+            
             let result = arrow_flight::Result { body: body.into() };
             let stream = futures::stream::iter(vec![Ok(result)]);
             return Ok(Response::new(Box::pin(stream)));
@@ -153,10 +129,71 @@ impl FlightService for SamplerGateway {
         Ok(Response::new(Box::pin(stream)))
     }
 
+    async fn do_put(
+        &self,
+        _request: Request<tonic::Streaming<FlightData>>,
+    ) -> Result<Response<Self::DoPutStream>, Status> {
+        Err(Status::unimplemented("DoPut not implemented"))
+    }
+
     async fn do_exchange(
         &self,
         _request: Request<tonic::Streaming<FlightData>>,
     ) -> Result<Response<Self::DoExchangeStream>, Status> {
         Err(Status::unimplemented("DoExchange not implemented"))
+    }
+}
+
+impl SamplerGateway {
+    async fn handle_sampling(&self, req: BatchSamplingRequest) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
+        let sampler = Arc::clone(&self.sampler);
+        let pool = self.pool.clone();
+        let (tx, rx) = mpsc::channel(100);
+
+        tokio::task::spawn_blocking(move || {
+            let mut state = pool.acquire();
+            let mut output = ArrowFlightOutput::new(tx.clone());
+
+            let options = IpcWriteOptions::default();
+            let schema_flight_data = arrow_flight::SchemaAsIpc::new(&output.schema(), &options).into();
+            if let Err(_) = tx.blocking_send(Ok(schema_flight_data)) { return; }
+
+            if let Err(e) = sampler.sample(&req, &mut state, &mut output) {
+                let _ = tx.blocking_send(Err(Status::internal(e.to_string())));
+            }
+        });
+
+        let output_stream = tokio_stream::wrappers::ReceiverStream::new(rx);
+        Ok(Response::new(Box::pin(output_stream)))
+    }
+
+    async fn handle_features(&self, req: BatchFeatureRequest) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
+        let sampler = Arc::clone(&self.sampler);
+        
+        // Resolve Node Type ID
+        let node_type_id = *sampler.node_type_to_id.get(&req.node_type)
+            .ok_or_else(|| Status::invalid_argument(format!("Unknown node type: {}", req.node_type)))?;
+
+        let batch_result = tokio::task::spawn_blocking(move || {
+            sampler.fetch_features(node_type_id, &req.node_ids, &req.feature_names)
+        }).await.map_err(|e| Status::internal(e.to_string()))?;
+
+        let batch = batch_result.map_err(|e| Status::internal(e.to_string()))?;
+
+        // Stream the single batch
+        let options = IpcWriteOptions::default();
+        let generator = arrow_ipc::writer::IpcDataGenerator::default();
+        let mut tracker = arrow_ipc::writer::DictionaryTracker::new(false);
+
+        let schema_flight_data = arrow_flight::SchemaAsIpc::new(&batch.schema(), &options).into();
+        let (_, encoded_batch) = generator.encoded_batch(&batch, &mut tracker, &options)
+            .map_err(|e| Status::internal(e.to_string()))?;
+
+        let stream = futures::stream::iter(vec![
+            Ok(schema_flight_data),
+            Ok(encoded_batch.into()),
+        ]);
+
+        Ok(Response::new(Box::pin(stream)))
     }
 }

@@ -30,7 +30,9 @@ struct Args {
     uds_path: Option<PathBuf>,
 }
 
-// ... (load_graph logic continues below)
+use diskgraph_rowpack::{RowPackContext, RowPackDecoder};
+
+// ...
 
 fn load_graph(path: &PathBuf) -> Result<Sampler> {
     let index_path = path.join("index_metadata.json");
@@ -57,6 +59,25 @@ fn load_graph(path: &PathBuf) -> Result<Sampler> {
     }
 
     let mut readers = HashMap::new();
+    // Temporary storage for decoders map, to be sorted into vector later by Sampler::new logic?
+    // Wait, Sampler::new re-sorts the keys. So I can't pass a vector aligned with Sampler's internal ID.
+    // I should modify Sampler::new to accept a Map<String, Decoder> and let it align it.
+    
+    // BUT, I can't change Sampler::new easily because I just refactored it.
+    // Actually, Sampler::new iterates `readers_map` keys sorted.
+    // So if I pass a map of decoders keyed by node type name, I can align it inside `new`.
+    
+    // HOWEVER, I don't want to change `Sampler::new` signature again if possible.
+    // `Sampler` stores `node_decoders: Vec<Option<Arc<RowPackDecoder>>>`.
+    // It is indexed by dense Node Type ID.
+    
+    // I will modify `Sampler::new` to accept `node_decoders_map: HashMap<String, RowPackDecoder>`.
+    
+    // Since I can't modify `Sampler::new` in this `replace` block (it's in another file),
+    // I have to do it in two steps.
+    
+    // Step 1: Just collect the decoders here.
+    let mut node_decoders_map = HashMap::new();
 
     for node_type in &metadata.node_types {
         let mut type_layouts = Vec::new();
@@ -68,10 +89,21 @@ fn load_graph(path: &PathBuf) -> Result<Sampler> {
         }
         let type_layouts = Arc::new(type_layouts);
 
+        let type_dir = path.join("nodes").join(&node_type.name);
+        
+        // Load RowPack Context if exists
+        let ctx_path = type_dir.join("node_data.ctx");
+        if ctx_path.exists() {
+            let ctx_bytes = fs::read(&ctx_path)?;
+            let ctx = RowPackContext::from_bytes(&ctx_bytes).map_err(|e| anyhow!("Failed to load context for {}: {}", node_type.name, e))?;
+            let decoder = RowPackDecoder::new(ctx).map_err(|e| anyhow!("Failed to create decoder for {}: {}", node_type.name, e))?;
+            node_decoders_map.insert(node_type.name.clone(), decoder);
+        }
+
         let mut type_shards = Vec::new();
         for (shard_idx, shard_meta) in node_type.shards.iter().enumerate() {
             let shard_dir_name = format!("shard-{:05}", shard_idx);
-            let shard_path = path.join("nodes").join(&node_type.name).join(&shard_dir_name);
+            let shard_path = type_dir.join(&shard_dir_name);
 
             // Only open if shard exists
             if shard_path.exists() {
@@ -89,7 +121,8 @@ fn load_graph(path: &PathBuf) -> Result<Sampler> {
     }
 
     println!("Graph loaded. Ready to sample.");
-    Ok(Sampler::new(readers, relation_info, decoders))
+    // I need to update Sampler::new to take node_decoders_map!
+    Ok(Sampler::new(readers, relation_info, decoders, node_decoders_map))
 }
 
 #[tokio::main]

@@ -129,7 +129,7 @@ fn load_graph(path: &PathBuf) -> Result<(Sampler, DatasetMetadata)> {
         readers.insert(node_type.name.clone(), type_shards);
     }
     
-    Ok((Sampler::new(readers, relation_info, decoders), metadata))
+    Ok((Sampler::new(readers, relation_info, decoders, HashMap::new()), metadata))
 }
 
 fn main() -> Result<()> {

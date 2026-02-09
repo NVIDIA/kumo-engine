@@ -35,6 +35,8 @@ pub struct SchemaMapping {
     pub edge_relations: Vec<String>,
 }
 
+use diskgraph_rowpack::RowPackDecoder;
+
 /// The core engine responsible for executing graph sampling requests.
 pub struct Sampler {
     /// Shard readers mapped by dense Node Type ID.
@@ -43,6 +45,8 @@ pub struct Sampler {
     pub relation_info: Vec<usize>,
     /// Sort key decoders for each relation.
     pub decoders: Vec<Option<SortKeyDecoder>>,
+    /// Feature decoders for each node type (if available).
+    pub node_decoders: Vec<Option<Arc<RowPackDecoder>>>,
     /// Map from node type name to dense ID.
     pub node_type_to_id: HashMap<String, usize>,
     /// Map from relation name to ID.
@@ -58,10 +62,12 @@ impl Sampler {
         readers_map: HashMap<String, Vec<ShardHandle>>,
         relation_info_map: HashMap<usize, (String, String)>,
         decoders_map: HashMap<usize, SortKeyDecoder>,
+        node_decoders_map: HashMap<String, diskgraph_rowpack::RowPackDecoder>,
     ) -> Self {
         let mut node_type_to_id = HashMap::new();
         let mut id_to_node_type = Vec::new();
         let mut readers = Vec::new();
+        let mut node_decoders = Vec::new();
 
         // Sort keys to ensure deterministic ID assignment
         let mut sorted_types: Vec<_> = readers_map.keys().cloned().collect();
@@ -70,6 +76,13 @@ impl Sampler {
         for (idx, name) in sorted_types.iter().enumerate() {
             node_type_to_id.insert(name.clone(), idx);
             id_to_node_type.push(name.clone());
+            
+            // Populate decoders aligned with ID
+            if let Some(decoder) = node_decoders_map.get(name) {
+                node_decoders.push(Some(Arc::new(decoder.clone())));
+            } else {
+                node_decoders.push(None);
+            }
         }
 
         // Populate readers vector
@@ -102,7 +115,7 @@ impl Sampler {
             }
         }
 
-        Self { readers, relation_info, decoders, node_type_to_id, rel_name_to_id, id_to_node_type, id_to_rel_name }
+        Self { readers, relation_info, decoders, node_decoders, node_type_to_id, rel_name_to_id, id_to_node_type, id_to_rel_name }
     }
 
     pub fn get_schema_mapping(&self) -> SchemaMapping {
@@ -110,6 +123,82 @@ impl Sampler {
             node_types: self.id_to_node_type.clone(),
             edge_relations: self.id_to_rel_name.clone(),
         }
+    }
+
+    pub fn fetch_features(
+        &self,
+        node_type_id: usize,
+        node_ids: &[u64],
+        feature_names: &[String],
+    ) -> Result<arrow_array::RecordBatch> {
+        let decoder = self.node_decoders.get(node_type_id)
+            .and_then(|d| d.as_ref())
+            .ok_or_else(|| SamplerError::InvalidRequest(format!("no feature data for node type {}", node_type_id)))?;
+
+        // 1. Resolve Column Indices
+        let context = decoder.context();
+        let mut col_indices = Vec::new();
+        for name in feature_names {
+            let idx = context.columns.iter().position(|c| &c.name == name)
+                .ok_or_else(|| SamplerError::InvalidRequest(format!("unknown feature: {}", name)))?;
+            col_indices.push(idx);
+        }
+
+        // 2. Fetch Raw Rows
+        // We reuse the logic from process_layer to group by shard for efficiency?
+        // Or since node_ids might be random, we just binary search.
+        
+        let shards = self.readers.get(node_type_id)
+            .ok_or_else(|| SamplerError::InvalidRequest("invalid node type id".to_string()))?;
+
+        // Pre-allocate pointers to raw data. The data itself is in mmap, so safe to hold slice refs.
+        // We need to keep the EdgeListViews alive? No, EdgeListView borrows from ShardReader (Arc).
+        // BUT `node_data()` returns `&'a [u8]`.
+        // The lifetime 'a is tied to EdgeListView.
+        // EdgeListView is created in the loop.
+        // We need to extend the lifetime?
+        // ShardReader is Arc. Mmap is owned by ShardReader.
+        // If we hold Arc<ShardReader>, we can get a slice that lives as long as Arc?
+        // `edges_for_node` returns `EdgeListView<'a>` where 'a is lifetime of &self (ShardReader).
+        // So we need to hold the ShardReaders alive. They are in `self.readers`.
+        // So `&self` lifetime is sufficient.
+
+        let mut raw_rows: Vec<&[u8]> = Vec::with_capacity(node_ids.len());
+        
+        // Optimize: Sort node_ids to access shards sequentially? 
+        // Or just process them in order requested? 
+        // RowPackDecoder expects rows in order they appear in output batch.
+        // So we MUST process `node_ids` in the order provided.
+
+        for &global_id in node_ids {
+            // Find shard
+            let shard_idx = shards.binary_search_by(|s| {
+                if global_id < s.min_id {
+                    std::cmp::Ordering::Greater
+                } else if global_id > s.max_id {
+                    std::cmp::Ordering::Less
+                } else {
+                    std::cmp::Ordering::Equal
+                }
+            }).map_err(|_| SamplerError::DataCorruption(format!("node id {} not found in any shard", global_id)))?;
+
+            let shard = &shards[shard_idx];
+            let local_idx = global_id - shard.min_id;
+            let edges_view = shard.reader.edges_for_node(local_idx)
+                .map_err(|e| SamplerError::DataCorruption(e.to_string()))?;
+            
+            let data = edges_view.node_data()
+                .map_err(|e| SamplerError::DataCorruption(e.to_string()))?
+                .ok_or_else(|| SamplerError::DataCorruption(format!("node {} has no feature data", global_id)))?;
+            
+            raw_rows.push(data);
+        }
+
+        // 3. Decode
+        let batch = decoder.decode_batch_to_arrow(&raw_rows, &col_indices)
+            .map_err(|e| SamplerError::Internal(format!("decoding failed: {}", e)))?;
+
+        Ok(batch)
     }
 
     fn compile_plan(&self, plan: &diskgraph_core::sampling::SamplingPlan) -> Result<CompiledSamplingPlan> {

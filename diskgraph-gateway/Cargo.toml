@@ -7,6 +7,7 @@ edition = "2021"
 diskgraph-core = { path = "../diskgraph-core" }
 diskgraph-sampler = { path = "../diskgraph-sampler" }
 diskgraph-index = { path = "../diskgraph-index" }
+diskgraph-rowpack = { path = "../diskgraph-rowpack" }
 arrow-flight = "57.2.0"
 arrow-array = { workspace = true }
 arrow-schema = { workspace = true }

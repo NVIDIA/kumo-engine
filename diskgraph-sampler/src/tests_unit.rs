@@ -78,7 +78,7 @@ impl TestGraph {
         let mut relation_info = HashMap::new();
         relation_info.insert(0, ("Connects".to_string(), "User".to_string()));
 
-        let sampler = Sampler::new(readers, relation_info, HashMap::new());
+        let sampler = Sampler::new(readers, relation_info, HashMap::new(), HashMap::new());
         
         Self { _dir: dir, sampler }
     }
