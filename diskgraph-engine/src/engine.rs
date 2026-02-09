@@ -1,5 +1,9 @@
 use diskgraph_core::sampling::{BatchSamplingRequest, SamplingMode, FanoutSpec};
-use crate::errors::{Result, SamplerError};
+use crate::errors::{Result, EngineError};
+use std::path::Path;
+use std::fs;
+use diskgraph_core::metadata::DatasetMetadata;
+use diskgraph_rowpack::RowPackContext;
 
 /// A sampling plan where relation names have been resolved to IDs.
 pub struct CompiledSamplingPlan {
@@ -38,7 +42,7 @@ pub struct SchemaMapping {
 use diskgraph_rowpack::RowPackDecoder;
 
 /// The core engine responsible for executing graph sampling requests.
-pub struct Sampler {
+pub struct DiskGraphEngine {
     /// Shard readers mapped by dense Node Type ID.
     pub readers: Vec<Vec<ShardHandle>>,
     /// Map from dense Relation ID to DstTypeID.
@@ -57,7 +61,80 @@ pub struct Sampler {
     pub id_to_rel_name: Vec<String>,
 }
 
-impl Sampler {
+impl DiskGraphEngine {
+    pub fn load(path: &Path) -> Result<Self> {
+        let index_path = path.join("index_metadata.json");
+        if !index_path.exists() {
+            return Err(EngineError::Configuration(format!("Metadata not found at {:?}. Run ingestion first.", index_path)));
+        }
+        let metadata_bytes = fs::read(&index_path)?;
+        let metadata: DatasetMetadata = serde_json::from_slice(&metadata_bytes).map_err(|e| EngineError::Configuration(e.to_string()))?;
+
+        println!("Loading graph metadata for {} node types...", metadata.node_types.len());
+
+        let all_layouts = diskgraph_index::builder::compute_relation_layouts(
+            &metadata.edge_relations,
+            &metadata.node_types,
+        ).map_err(|e| EngineError::Configuration(e.to_string()))?;
+
+        let mut relation_info = HashMap::new();
+        let mut decoders = HashMap::new();
+        for (idx, rel) in metadata.edge_relations.iter().enumerate() {
+            relation_info.insert(idx, (rel.name.clone(), rel.dst_type.clone()));
+            if let Some(sort_key_meta) = &rel.dest_sort_key {
+                decoders.insert(idx, diskgraph_core::sortkey::SortKeyDecoder::new(sort_key_meta));
+            }
+        }
+
+        let mut readers = HashMap::new();
+        let mut node_decoders_map = HashMap::new();
+
+        for node_type in &metadata.node_types {
+            let mut type_layouts = Vec::new();
+            for layout in &all_layouts {
+                let rel_meta = &metadata.edge_relations[layout.relation_id as usize];
+                if rel_meta.src_type == node_type.name {
+                    type_layouts.push(layout.clone());
+                }
+            }
+            let type_layouts = Arc::new(type_layouts);
+
+            let type_dir = path.join("nodes").join(&node_type.name);
+
+            // Load RowPack Context if exists
+            let ctx_path = type_dir.join("node_data.ctx");
+            if ctx_path.exists() {
+                let ctx_bytes = fs::read(&ctx_path)?;
+                let ctx = RowPackContext::from_bytes(&ctx_bytes).map_err(|e| EngineError::Configuration(format!("Failed to load context for {}: {}", node_type.name, e)))?;
+                let decoder = RowPackDecoder::new(ctx).map_err(|e| EngineError::Configuration(format!("Failed to create decoder for {}: {}", node_type.name, e)))?;
+                node_decoders_map.insert(node_type.name.clone(), decoder);
+            }
+
+            let mut type_shards = Vec::new();
+            for (shard_idx, shard_meta) in node_type.shards.iter().enumerate() {
+                let shard_dir_name = format!("shard-{:05}", shard_idx);
+                let shard_path = type_dir.join(&shard_dir_name);
+
+                // Only open if shard exists
+                if shard_path.exists() {
+                    let reader = ShardReader::open(&shard_path, type_layouts.clone(), node_type.has_node_data)
+                        .map_err(|e| EngineError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+                    type_shards.push(ShardHandle {
+                        reader: Arc::new(reader),
+                        min_id: shard_meta.min_id,
+                        max_id: shard_meta.max_id,
+                    });
+                }
+            }
+            if !type_shards.is_empty() {
+                 readers.insert(node_type.name.clone(), type_shards);
+            }
+        }
+
+        println!("Graph loaded. Ready to sample.");
+        Ok(Self::new(readers, relation_info, decoders, node_decoders_map))
+    }
+
     pub fn new(
         readers_map: HashMap<String, Vec<ShardHandle>>,
         relation_info_map: HashMap<usize, (String, String)>,
@@ -76,7 +153,7 @@ impl Sampler {
         for (idx, name) in sorted_types.iter().enumerate() {
             node_type_to_id.insert(name.clone(), idx);
             id_to_node_type.push(name.clone());
-            
+
             // Populate decoders aligned with ID
             if let Some(decoder) = node_decoders_map.get(name) {
                 node_decoders.push(Some(Arc::new(decoder.clone())));
@@ -133,23 +210,23 @@ impl Sampler {
     ) -> Result<arrow_array::RecordBatch> {
         let decoder = self.node_decoders.get(node_type_id)
             .and_then(|d| d.as_ref())
-            .ok_or_else(|| SamplerError::InvalidRequest(format!("no feature data for node type {}", node_type_id)))?;
+            .ok_or_else(|| EngineError::InvalidRequest(format!("no feature data for node type {}", node_type_id)))?;
 
         // 1. Resolve Column Indices
         let context = decoder.context();
         let mut col_indices = Vec::new();
         for name in feature_names {
             let idx = context.columns.iter().position(|c| &c.name == name)
-                .ok_or_else(|| SamplerError::InvalidRequest(format!("unknown feature: {}", name)))?;
+                .ok_or_else(|| EngineError::InvalidRequest(format!("unknown feature: {}", name)))?;
             col_indices.push(idx);
         }
 
         // 2. Fetch Raw Rows
         // We reuse the logic from process_layer to group by shard for efficiency?
         // Or since node_ids might be random, we just binary search.
-        
+
         let shards = self.readers.get(node_type_id)
-            .ok_or_else(|| SamplerError::InvalidRequest("invalid node type id".to_string()))?;
+            .ok_or_else(|| EngineError::InvalidRequest("invalid node type id".to_string()))?;
 
         // Pre-allocate pointers to raw data. The data itself is in mmap, so safe to hold slice refs.
         // We need to keep the EdgeListViews alive? No, EdgeListView borrows from ShardReader (Arc).
@@ -164,9 +241,9 @@ impl Sampler {
         // So `&self` lifetime is sufficient.
 
         let mut raw_rows: Vec<&[u8]> = Vec::with_capacity(node_ids.len());
-        
-        // Optimize: Sort node_ids to access shards sequentially? 
-        // Or just process them in order requested? 
+
+        // Optimize: Sort node_ids to access shards sequentially?
+        // Or just process them in order requested?
         // RowPackDecoder expects rows in order they appear in output batch.
         // So we MUST process `node_ids` in the order provided.
 
@@ -180,23 +257,23 @@ impl Sampler {
                 } else {
                     std::cmp::Ordering::Equal
                 }
-            }).map_err(|_| SamplerError::DataCorruption(format!("node id {} not found in any shard", global_id)))?;
+            }).map_err(|_| EngineError::DataCorruption(format!("node id {} not found in any shard", global_id)))?;
 
             let shard = &shards[shard_idx];
             let local_idx = global_id - shard.min_id;
             let edges_view = shard.reader.edges_for_node(local_idx)
-                .map_err(|e| SamplerError::DataCorruption(e.to_string()))?;
-            
+                .map_err(|e| EngineError::DataCorruption(e.to_string()))?;
+
             let data = edges_view.node_data()
-                .map_err(|e| SamplerError::DataCorruption(e.to_string()))?
-                .ok_or_else(|| SamplerError::DataCorruption(format!("node {} has no feature data", global_id)))?;
-            
+                .map_err(|e| EngineError::DataCorruption(e.to_string()))?
+                .ok_or_else(|| EngineError::DataCorruption(format!("node {} has no feature data", global_id)))?;
+
             raw_rows.push(data);
         }
 
         // 3. Decode
         let batch = decoder.decode_batch_to_arrow(&raw_rows, &col_indices)
-            .map_err(|e| SamplerError::Internal(format!("decoding failed: {}", e)))?;
+            .map_err(|e| EngineError::Internal(format!("decoding failed: {}", e)))?;
 
         Ok(batch)
     }
@@ -234,10 +311,10 @@ impl Sampler {
     ) -> Result<()> {
         // 1. Initial Validation & Initialization
         let (seed_type, seed_ids) = request.seed_nodes.iter().next()
-            .ok_or_else(|| SamplerError::InvalidRequest("request has no seed nodes".to_string()))?;
+            .ok_or_else(|| EngineError::InvalidRequest("request has no seed nodes".to_string()))?;
 
         let seed_type_id = *self.node_type_to_id.get(seed_type)
-            .ok_or_else(|| SamplerError::InvalidRequest(format!("unknown seed type: {}", seed_type)))?;
+            .ok_or_else(|| EngineError::InvalidRequest(format!("unknown seed type: {}", seed_type)))?;
 
         // Pre-allocate stats
         let num_types = self.readers.len();
@@ -246,7 +323,7 @@ impl Sampler {
         state.stats.resize(num_types, num_rels, num_hops);
 
         if request.seed_nodes.len() > 1 {
-            return Err(SamplerError::InvalidRequest("multiple seed node types not supported in initial scope".to_string()));
+            return Err(EngineError::InvalidRequest("multiple seed node types not supported in initial scope".to_string()));
         }
 
         let seed_ts_vec = request.seed_timestamps.as_ref()
@@ -344,7 +421,7 @@ impl Sampler {
                     if last_id != Some(node.global_id) {
                         let local_idx = node.global_id - shard.min_id;
                         let edges_view = shard.reader.edges_for_node(local_idx)
-                            .map_err(|e| SamplerError::DataCorruption(e.to_string()))?;
+                            .map_err(|e| EngineError::DataCorruption(e.to_string()))?;
 
                         // Parse segments once per unique node
                         current_segments = match edges_view.relation_segments() {
@@ -499,7 +576,7 @@ impl Sampler {
                     }
                 }
             }
-            _ => return Err(SamplerError::InvalidRequest(format!("Sampling mode {:?} not supported in initial scope", mode))),
+            _ => return Err(EngineError::InvalidRequest(format!("Sampling mode {:?} not supported in initial scope", mode))),
         }
 
         Ok(())

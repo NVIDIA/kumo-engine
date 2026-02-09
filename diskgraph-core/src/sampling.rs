@@ -205,7 +205,7 @@ mod tests {
 
         let encoded = bincode::serialize(&request).unwrap();
         let decoded: BatchSamplingRequest = bincode::deserialize(&encoded).unwrap();
-        
+
         assert_eq!(decoded.seed_nodes["User"], vec![1, 2, 3]);
         assert_eq!(decoded.plan.layers.len(), 1);
     }

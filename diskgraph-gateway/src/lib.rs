@@ -10,8 +10,8 @@ use arrow_flight::{
 };
 
 use arrow_ipc::writer::IpcWriteOptions;
-use diskgraph_sampler::sampler::Sampler;
-use diskgraph_sampler::state::StatePool;
+use diskgraph_engine::engine::DiskGraphEngine;
+use diskgraph_engine::state::StatePool;
 use diskgraph_core::sampling::{BatchSamplingRequest, BatchFeatureRequest};
 use tokio::sync::mpsc;
 
@@ -19,12 +19,12 @@ mod handler;
 use handler::ArrowFlightOutput;
 
 pub struct SamplerGateway {
-    sampler: Arc<Sampler>,
+    sampler: Arc<DiskGraphEngine>,
     pool: StatePool,
 }
 
 impl SamplerGateway {
-    pub fn new(sampler: Arc<Sampler>, pool: StatePool) -> Self {
+    pub fn new(sampler: Arc<DiskGraphEngine>, pool: StatePool) -> Self {
         Self { sampler, pool }
     }
 }
@@ -84,7 +84,7 @@ impl FlightService for SamplerGateway {
         // Attempt to deserialize as BatchSamplingRequest
         if let Ok(req) = serde_json::from_slice::<BatchSamplingRequest>(&ticket.ticket) {
             return self.handle_sampling(req).await;
-        } 
+        }
         // Attempt to deserialize as BatchFeatureRequest
         if let Ok(req) = serde_json::from_slice::<BatchFeatureRequest>(&ticket.ticket) {
             return self.handle_features(req).await;
@@ -107,7 +107,7 @@ impl FlightService for SamplerGateway {
             let mapping = self.sampler.get_schema_mapping();
             let body = serde_json::to_vec(&mapping)
                 .map_err(|e| Status::internal(format!("Failed to serialize mapping: {}", e)))?;
-            
+
             let result = arrow_flight::Result { body: body.into() };
             let stream = futures::stream::iter(vec![Ok(result)]);
             return Ok(Response::new(Box::pin(stream)));
@@ -169,7 +169,7 @@ impl SamplerGateway {
 
     async fn handle_features(&self, req: BatchFeatureRequest) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
         let sampler = Arc::clone(&self.sampler);
-        
+
         // Resolve Node Type ID
         let node_type_id = *sampler.node_type_to_id.get(&req.node_type)
             .ok_or_else(|| Status::invalid_argument(format!("Unknown node type: {}", req.node_type)))?;

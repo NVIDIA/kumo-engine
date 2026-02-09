@@ -3630,6 +3630,7 @@ fn estimate_bpe_bytes(samples: &[Vec<u8>], dict: &[Vec<u8>]) -> u64 {
     total
 }
 
+#[derive(Clone)]
 pub struct RowPackDecoder {
     ctx: RowPackContext,
     dict_values: Vec<Option<Vec<Vec<u8>>>>,

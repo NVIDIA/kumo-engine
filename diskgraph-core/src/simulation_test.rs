@@ -116,7 +116,7 @@ mod tests {
         let id_as = batch.column(1).as_any().downcast_ref::<Int64Array>().unwrap();
         let id_bs = batch.column(2).as_any().downcast_ref::<Int64Array>().unwrap();
 
-        assert_eq!(id_bs.value(1), id_bs.value(2)); 
+        assert_eq!(id_bs.value(1), id_bs.value(2));
         assert_eq!(id_as.value(0), 0);
         assert_eq!(id_as.value(2), 1);
     }

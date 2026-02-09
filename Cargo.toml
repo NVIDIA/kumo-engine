@@ -10,7 +10,7 @@ members = [
     "diskgraph-ptrhash",
     "diskgraph-explain",
     "diskgraph-train-table",
-    "diskgraph-sampler",
+    "diskgraph-engine",
     "diskgraph-gateway",
 ]
 resolver = "2"

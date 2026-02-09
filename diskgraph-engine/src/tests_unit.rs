@@ -1,4 +1,4 @@
-use crate::sampler::{Sampler, ShardHandle};
+use crate::engine::{DiskGraphEngine, ShardHandle};
 use crate::state::SamplingState;
 use crate::output::OutputHandler;
 use diskgraph_core::sampling::*;
@@ -13,7 +13,7 @@ use tempfile::TempDir;
 
 struct TestGraph {
     _dir: TempDir,
-    sampler: Sampler,
+    sampler: DiskGraphEngine,
 }
 
 impl TestGraph {
@@ -34,16 +34,6 @@ impl TestGraph {
         // Create artifacts for 1 node with 2 edges
         // Node 0 -> [1, 2]
         // Edges: dst=1 (0x01), dst=2 (0x02)
-        let _edges_data = vec![
-            0x82, // Count=2 (tag=10, val=2) -> 0x82 is 10000010? No.
-                  // Varint encoding:
-                  // 0x02 is count 2 (tag=00, val=2).
-            0x02, 
-            0x01, 0x02 
-        ];
-        // Wait, varint decoding:
-        // tag=0 (00xxxxxx) -> 1 byte count.
-        
         let mut f = File::create(path.join(EDGES_FILENAME)).unwrap();
         // Node 0 edges: count=2 (0x02), data=[0x01, 0x02]
         f.write_all(&[0x02, 0x01, 0x02]).unwrap();
@@ -78,7 +68,7 @@ impl TestGraph {
         let mut relation_info = HashMap::new();
         relation_info.insert(0, ("Connects".to_string(), "User".to_string()));
 
-        let sampler = Sampler::new(readers, relation_info, HashMap::new(), HashMap::new());
+        let sampler = DiskGraphEngine::new(readers, relation_info, HashMap::new(), HashMap::new());
         
         Self { _dir: dir, sampler }
     }

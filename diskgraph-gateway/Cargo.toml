@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 diskgraph-core = { path = "../diskgraph-core" }
-diskgraph-sampler = { path = "../diskgraph-sampler" }
+diskgraph-engine = { path = "../diskgraph-engine" }
 diskgraph-index = { path = "../diskgraph-index" }
 diskgraph-rowpack = { path = "../diskgraph-rowpack" }
 arrow-flight = "57.2.0"

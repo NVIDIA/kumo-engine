@@ -23,9 +23,9 @@ use rand::Rng;
 use sysinfo::System;
 use diskgraph_core::sampling::*;
 use diskgraph_index::reader::ShardReader;
-use diskgraph_sampler::sampler::Sampler;
-use diskgraph_sampler::state::StatePool;
-use diskgraph_sampler::output::InMemoryOutput;
+use diskgraph_engine::engine::DiskGraphEngine;
+use diskgraph_engine::state::StatePool;
+use diskgraph_engine::output::InMemoryOutput;
 use diskgraph_core::metadata::DatasetMetadata;
 use std::fs;
 
@@ -71,65 +71,17 @@ struct AppStats {
     validation_failures: u64,
 }
 
-use diskgraph_sampler::sampler::ShardHandle;
-
-fn load_graph(path: &PathBuf) -> Result<(Sampler, DatasetMetadata)> {
+fn load_graph(path: &PathBuf) -> Result<(DiskGraphEngine, DatasetMetadata)> {
     let index_path = path.join("index_metadata.json");
     if !index_path.exists() {
         return Err(anyhow!("Metadata not found at {:?}. Run ingestion first.", index_path));
     }
     let metadata_bytes = fs::read(&index_path)?;
     let metadata: DatasetMetadata = serde_json::from_slice(&metadata_bytes)?;
-    
-    let all_layouts = diskgraph_index::builder::compute_relation_layouts(
-        &metadata.edge_relations,
-        &metadata.node_types,
-    )?;
-    
-    let mut relation_info = HashMap::new();
-    let mut decoders = HashMap::new();
-    for (idx, rel) in metadata.edge_relations.iter().enumerate() {
-        relation_info.insert(idx, (rel.name.clone(), rel.dst_type.clone()));
-        if let Some(sort_key_meta) = &rel.dest_sort_key {
-            decoders.insert(idx, diskgraph_core::sortkey::SortKeyDecoder::new(sort_key_meta));
-        }
-    }
-    
-    let mut readers = HashMap::new();
-    
-    for node_type in &metadata.node_types {
-        let mut type_layouts = Vec::new();
-        for layout in &all_layouts {
-            let rel_meta = &metadata.edge_relations[layout.relation_id as usize];
-            if rel_meta.src_type == node_type.name {
-                type_layouts.push(layout.clone());
-            }
-        }
-        let type_layouts = Arc::new(type_layouts);
 
-        let mut type_shards = Vec::new();
-        // Shards are in output_root/nodes/<node_type>/shard-NNNNN/
-        for (shard_idx, shard_meta) in node_type.shards.iter().enumerate() {
-            let shard_dir_name = format!("shard-{:05}", shard_idx);
-            let shard_path = path.join("nodes").join(&node_type.name).join(&shard_dir_name);
-            
-            let shard_path = if shard_path.exists() {
-                shard_path
-            } else {
-                path.clone()
-            };
-            
-            let reader = ShardReader::open(&shard_path, type_layouts.clone(), node_type.has_node_data)?;
-            type_shards.push(ShardHandle {
-                reader: Arc::new(reader),
-                min_id: shard_meta.min_id,
-                max_id: shard_meta.max_id,
-            });
-        }
-        readers.insert(node_type.name.clone(), type_shards);
-    }
-    
-    Ok((Sampler::new(readers, relation_info, decoders, HashMap::new()), metadata))
+    let engine = DiskGraphEngine::load(path)?;
+
+    Ok((engine, metadata))
 }
 
 fn main() -> Result<()> {
@@ -142,7 +94,7 @@ fn main() -> Result<()> {
             return Err(e);
         }
     };
-    
+
     enable_raw_mode()?;
     let mut stdout = std::io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
@@ -156,7 +108,7 @@ fn main() -> Result<()> {
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
-    
+
     if let Ok(r) = res {
         println!("\nBenchmark Finished.");
         println!("Total Requests: {}", r.requests_completed);
@@ -170,7 +122,7 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-async fn run_app<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, args: Args, sampler: Arc<Sampler>, metadata: DatasetMetadata) -> Result<AppStats> {
+async fn run_app<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, args: Args, sampler: Arc<DiskGraphEngine>, metadata: DatasetMetadata) -> Result<AppStats> {
     let running = Arc::new(AtomicBool::new(true));
     let stats = Arc::new(Mutex::new(AppStats {
         requests_completed: 0,
@@ -203,12 +155,12 @@ async fn run_app<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, args:
         let seed_type = seed_type.clone();
         let plan = plan_base.clone();
         let do_validate = args.validate;
-        
+
         handles.push(tokio::task::spawn_blocking(move || {
             let mut rng = rand::thread_rng();
             while running.load(Ordering::Relaxed) {
                 let seeds: Vec<u64> = (0..args.batch_size).map(|_| rng.gen_range(0..=max_seed_id)).collect();
-                
+
                 let request = BatchSamplingRequest {
                     dataset_id: diskgraph_core::dataset::DatasetId::nil(),
                     seed_nodes: [(seed_type.clone(), seeds)].into(),
@@ -222,13 +174,13 @@ async fn run_app<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, args:
                 let start = Instant::now();
                 let mut state = pool.acquire();
                 let mut output = InMemoryOutput::new();
-                
+
                 match sampler.sample(&request, &mut state, &mut output) {
                     Ok(_) => {
                         let duration = start.elapsed().as_micros() as u64;
                         let nodes_count = state.stats.total_nodes;
                         let edges_count = state.stats.total_edges;
-                        
+
                         let mut v_failures = 0;
                         if do_validate {
                             // Validation needs to inspect output now
@@ -286,7 +238,7 @@ async fn run_app<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, args:
                 ratatui::text::Line::from(format!("Validation Failures: {}", s.validation_failures)),
                 ratatui::text::Line::from(format!("Seed Type: {} | Max ID: {}", seed_type, max_seed_id)),
             ];
-            
+
             let p = Paragraph::new(text)
                 .block(Block::default().title("Sampler TUI - Real-time Performance & Correctness").borders(Borders::ALL));
             f.render_widget(p, chunks[0]);
@@ -301,11 +253,11 @@ async fn run_app<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, args:
             }
         }
     }
-    
+
     for h in handles {
         let _ = h.await;
     }
-    
+
     let final_stats = stats.lock().unwrap();
     Ok(AppStats {
         requests_completed: final_stats.requests_completed,
@@ -318,7 +270,7 @@ async fn run_app<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, args:
     })
 }
 
-fn validate_sample(output: &diskgraph_sampler::output::InMemoryOutput, state: &diskgraph_sampler::state::SamplingState) -> Result<()> {
+fn validate_sample(output: &diskgraph_engine::output::InMemoryOutput, state: &diskgraph_engine::state::SamplingState) -> Result<()> {
     // Basic structural validation
     for (_hop, _rel, src_local, dst_local) in &output.edges {
         // Check if src/dst local IDs are within range of total nodes
@@ -337,9 +289,9 @@ fn make_plan(args: &Args, meta: &DatasetMetadata, seed_type: &str) -> SamplingPl
         .filter(|r| r.name.starts_with(seed_type))
         .map(|r| r.name.as_str())
         .collect();
-        
+
     let rel_name = candidates.first().unwrap_or(&"Unknown");
-    
+
     let mut layers = Vec::new();
     for _ in 0..args.hops {
         layers.push(LayerSpec {

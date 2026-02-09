@@ -1,7 +1,7 @@
 use thiserror::Error;
 
 #[derive(Error, Debug)]
-pub enum SamplerError {
+pub enum EngineError {
     #[error("Invalid request: {0}")]
     InvalidRequest(String),
 
@@ -21,4 +21,4 @@ pub enum SamplerError {
     Internal(String),
 }
 
-pub type Result<T> = std::result::Result<T, SamplerError>;
+pub type Result<T> = std::result::Result<T, EngineError>;

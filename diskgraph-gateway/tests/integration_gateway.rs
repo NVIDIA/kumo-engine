@@ -1,6 +1,6 @@
 use diskgraph_gateway::SamplerGateway;
-use diskgraph_sampler::sampler::{Sampler, ShardHandle};
-use diskgraph_sampler::state::StatePool;
+use diskgraph_engine::engine::{DiskGraphEngine, ShardHandle};
+use diskgraph_engine::state::StatePool;
 use diskgraph_index::layout::{OffsetFileHeader, RelationLayout, EDGES_FILENAME, OFFSETS_FILENAME};
 use diskgraph_index::reader::ShardReader;
 use arrow_flight::{Ticket, flight_service_server::FlightService};
@@ -13,7 +13,7 @@ use tempfile::TempDir;
 
 struct TestGraph {
     _dir: TempDir,
-    sampler: Sampler,
+    sampler: DiskGraphEngine,
 }
 
 impl TestGraph {
@@ -36,23 +36,23 @@ impl TestGraph {
         // Count 2 encoded as 0x02
         let mut f = File::create(path.join(EDGES_FILENAME)).unwrap();
         f.write_all(&[0x02, 0x01, 0x02]).unwrap();
-        
+
         // 3. Write Offsets.bin
         let mut offsets = Vec::new();
-        let header = OffsetFileHeader::new(1, 2); 
+        let header = OffsetFileHeader::new(1, 2);
         let header_bytes = bincode::serialize(&header).unwrap();
         offsets.extend_from_slice(&header_bytes);
-        
+
         offsets.extend_from_slice(&2u16.to_le_bytes());
-        offsets.extend_from_slice(&0u64.to_le_bytes()); 
-        offsets.extend_from_slice(&3u16.to_le_bytes()); 
+        offsets.extend_from_slice(&0u64.to_le_bytes());
+        offsets.extend_from_slice(&3u16.to_le_bytes());
 
         let mut f = File::create(path.join(OFFSETS_FILENAME)).unwrap();
         f.write_all(&offsets).unwrap();
 
         // 4. Create Reader
         let reader = ShardReader::open(path, Arc::new(vec![layout]), false).unwrap();
-        
+
         let mut readers = HashMap::new();
         readers.insert("users".to_string(), vec![ShardHandle {
             reader: Arc::new(reader),
@@ -63,8 +63,8 @@ impl TestGraph {
         let mut relation_info = HashMap::new();
         relation_info.insert(0, ("connects".to_string(), "users".to_string()));
 
-        let sampler = Sampler::new(readers, relation_info, HashMap::new(), HashMap::new());
-        
+        let sampler = DiskGraphEngine::new(readers, relation_info, HashMap::new(), HashMap::new());
+
         Self { _dir: dir, sampler }
     }
 }
@@ -83,7 +83,7 @@ async fn test_gateway_end_to_end_flow() {
         "plan": {
             "layers": [
                 {
-                    "fanouts": {}, 
+                    "fanouts": {},
                     "default_fanout": { "fanout": 10, "mode": "uniform", "absent_key_policy": "uniform_fallback" }
                 }
             ]
@@ -108,9 +108,9 @@ async fn test_gateway_end_to_end_flow() {
         arrow_schema::Field::new("meta_type", arrow_schema::DataType::UInt64, false),
         arrow_schema::Field::new("meta_val", arrow_schema::DataType::UInt64, true),
     ]));
-    
+
     // 2. Data Collection
-    let mut stats: Option<diskgraph_sampler::state::SamplingStats> = None;
+    let mut stats: Option<diskgraph_engine::state::SamplingStats> = None;
     let mut captured_edges = Vec::new();
     let mut captured_nodes = Vec::new();
 
@@ -118,7 +118,7 @@ async fn test_gateway_end_to_end_flow() {
 
     while let Some(msg_result) = stream.next().await {
         let msg = msg_result.expect("Stream error");
-        
+
         if !msg.app_metadata.is_empty() {
             stats = Some(serde_json::from_slice(&msg.app_metadata).expect("Failed to deserialize stats"));
         } else if !msg.data_body.is_empty() {
@@ -179,8 +179,8 @@ async fn test_get_schema_mapping_action() {
     let mut stream = response.into_inner();
     let res = stream.next().await.expect("No result").expect("Action error");
 
-    let mapping: diskgraph_sampler::sampler::SchemaMapping = serde_json::from_slice(&res.body).expect("Failed to deserialize mapping");
-    
+    let mapping: diskgraph_engine::engine::SchemaMapping = serde_json::from_slice(&res.body).expect("Failed to deserialize mapping");
+
     // TestGraph defines:
     // node_types: ["users"]
     // edge_relations: ["connects"] (at ID 0)

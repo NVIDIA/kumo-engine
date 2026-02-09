@@ -1,6 +1,6 @@
-use diskgraph_sampler::output::OutputHandler;
-use diskgraph_sampler::state::SamplingState;
-use diskgraph_sampler::errors::SamplerError;
+use diskgraph_engine::output::OutputHandler;
+use diskgraph_engine::state::SamplingState;
+use diskgraph_engine::errors::EngineError;
 use arrow_array::{RecordBatch, UInt64Array, Int8Array, ArrayRef};
 use arrow_schema::{DataType, Field, Schema};
 use arrow_flight::FlightData;
@@ -60,7 +60,7 @@ impl ArrowFlightOutput {
         }
     }
 
-    fn flush_edge_buffer(&mut self, rel_id: u16) -> Result<(), SamplerError> {
+    fn flush_edge_buffer(&mut self, rel_id: u16) -> Result<(), EngineError> {
         let mut buffer_contents = EdgeBuffer::new();
         if let Some(buffer) = self.edge_buffers.get_mut(&rel_id) {
             if buffer.len() == 0 { return Ok(()); }
@@ -87,7 +87,7 @@ impl ArrowFlightOutput {
                 Arc::new(meta_type) as ArrayRef,
                 Arc::new(meta_val) as ArrayRef,
             ],
-        ).map_err(|e| SamplerError::Internal(e.to_string()))?;
+        ).map_err(|e| EngineError::Internal(e.to_string()))?;
 
         self.send_batch(batch)?;
 
@@ -110,15 +110,15 @@ impl ArrowFlightOutput {
         ]))
     }
 
-    fn send_batch(&mut self, batch: RecordBatch) -> Result<(), SamplerError> {
+    fn send_batch(&mut self, batch: RecordBatch) -> Result<(), EngineError> {
         let generator = IpcDataGenerator::default();
         let mut tracker = DictionaryTracker::new(false);
         let (_dictionaries, encoded_data) = generator.encoded_batch(&batch, &mut tracker, &self.options)
-             .map_err(|e: arrow_schema::ArrowError| SamplerError::Internal(e.to_string()))?;
+             .map_err(|e: arrow_schema::ArrowError| EngineError::Internal(e.to_string()))?;
 
         let flight_data: FlightData = encoded_data.into();
         self.sender.blocking_send(Ok(flight_data))
-            .map_err(|_| SamplerError::Output("channel closed".into()))?;
+            .map_err(|_| EngineError::Output("channel closed".into()))?;
         Ok(())
     }
 }
@@ -130,7 +130,7 @@ impl OutputHandler for ArrowFlightOutput {
         rel_id: u16,
         src_local_id: u32,
         dst_local_id: u32,
-    ) -> Result<(), SamplerError> {
+    ) -> Result<(), EngineError> {
         let buffer = self.edge_buffers.entry(rel_id).or_insert_with(EdgeBuffer::new);
         buffer.push(src_local_id, dst_local_id, hop as u32);
 
@@ -153,7 +153,7 @@ impl OutputHandler for ArrowFlightOutput {
         Ok(())
     }
 
-    fn finalize(&mut self, state: &SamplingState) -> Result<(), SamplerError> {
+    fn finalize(&mut self, state: &SamplingState) -> Result<(), EngineError> {
         // 1. Flush remaining edges
         let rel_ids: Vec<u16> = self.edge_buffers.keys().cloned().collect();
         for rel_id in rel_ids {
@@ -181,14 +181,14 @@ impl OutputHandler for ArrowFlightOutput {
                     Arc::new(meta_type) as ArrayRef,
                     Arc::new(meta_val) as ArrayRef,
                 ],
-            ).map_err(|e| SamplerError::Internal(e.to_string()))?;
+            ).map_err(|e| EngineError::Internal(e.to_string()))?;
 
             self.send_batch(batch)?;
         }
 
         // 3. Serialize Stats (Metadata)
         let stats_bytes = serde_json::to_vec(&state.stats)
-            .map_err(|e| SamplerError::Internal(format!("failed to serialize stats: {}", e)))?;
+            .map_err(|e| EngineError::Internal(format!("failed to serialize stats: {}", e)))?;
 
         let metadata_msg = FlightData {
             app_metadata: stats_bytes.into(),
@@ -198,7 +198,7 @@ impl OutputHandler for ArrowFlightOutput {
         };
 
         self.sender.blocking_send(Ok(metadata_msg))
-            .map_err(|_| SamplerError::Output("channel closed".into()))?;
+            .map_err(|_| EngineError::Output("channel closed".into()))?;
 
         Ok(())
     }
@@ -207,7 +207,7 @@ impl OutputHandler for ArrowFlightOutput {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use diskgraph_sampler::state::{SamplingState, SamplingStats, TypeState};
+    use diskgraph_engine::state::{SamplingState, SamplingStats, TypeState};
     use gxhash::HashMap as GxHashMap;
     use std::sync::Arc;
 
@@ -254,8 +254,8 @@ mod tests {
 
             let mut type_states = GxHashMap::default();
             let mut t0 = TypeState::new();
-            t0.nodes.push(diskgraph_sampler::state::NodeRecord { global_id: 100, local_id: 0, seed_index: 0 });
-            t0.nodes.push(diskgraph_sampler::state::NodeRecord { global_id: 101, local_id: 1, seed_index: 0 });
+            t0.nodes.push(diskgraph_engine::state::NodeRecord { global_id: 100, local_id: 0, seed_index: 0 });
+            t0.nodes.push(diskgraph_engine::state::NodeRecord { global_id: 101, local_id: 1, seed_index: 0 });
             type_states.insert(0, t0);
 
             let state = SamplingState {
