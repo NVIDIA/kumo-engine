@@ -187,7 +187,7 @@ impl OutputHandler for ArrowFlightOutput {
         }
 
         // 3. Serialize Stats (Metadata)
-        let stats_bytes = bincode::serialize(&state.stats)
+        let stats_bytes = serde_json::to_vec(&state.stats)
             .map_err(|e| SamplerError::Internal(format!("failed to serialize stats: {}", e)))?;
 
         let metadata_msg = FlightData {

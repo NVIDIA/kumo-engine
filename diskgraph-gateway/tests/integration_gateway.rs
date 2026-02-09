@@ -120,7 +120,7 @@ async fn test_gateway_end_to_end_flow() {
         let msg = msg_result.expect("Stream error");
         
         if !msg.app_metadata.is_empty() {
-            stats = Some(bincode::deserialize(&msg.app_metadata).expect("Failed to deserialize stats"));
+            stats = Some(serde_json::from_slice(&msg.app_metadata).expect("Failed to deserialize stats"));
         } else if !msg.data_body.is_empty() {
             let batch = arrow_flight::utils::flight_data_to_arrow_batch(
                 &msg,
