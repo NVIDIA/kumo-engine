@@ -155,13 +155,36 @@ impl OutputHandler for ArrowFlightOutput {
 
     fn finalize(&mut self, state: &SamplingState) -> Result<(), SamplerError> {
         // 1. Flush remaining edges
-        // We need to collect keys to avoid borrowing issues
         let rel_ids: Vec<u16> = self.edge_buffers.keys().cloned().collect();
         for rel_id in rel_ids {
             self.flush_edge_buffer(rel_id)?;
         }
 
-        // ... (Node serialization same as before) ...
+        // 2. Send Node Mappings (Global IDs)
+        // state.type_states maps type_id -> nodes[global_id]
+        for (type_id, type_state) in &state.type_states {
+            if type_state.nodes.is_empty() { continue; }
+
+            let len = type_state.nodes.len();
+            let row_type = Int8Array::from(vec![1; len]);
+            let id_a = UInt64Array::from(vec![0; len]); // Not used for nodes
+            let id_b = UInt64Array::from(type_state.nodes.iter().map(|n| n.global_id).collect::<Vec<_>>()); // Global ID
+            let meta_type = UInt64Array::from(vec![*type_id as u64; len]);
+            let meta_val = UInt64Array::from(vec![0; len]);
+
+            let batch = RecordBatch::try_new(
+                self.schema(),
+                vec![
+                    Arc::new(row_type) as ArrayRef,
+                    Arc::new(id_a) as ArrayRef,
+                    Arc::new(id_b) as ArrayRef,
+                    Arc::new(meta_type) as ArrayRef,
+                    Arc::new(meta_val) as ArrayRef,
+                ],
+            ).map_err(|e| SamplerError::Internal(e.to_string()))?;
+
+            self.send_batch(batch)?;
+        }
 
         // 3. Serialize Stats (Metadata)
         let stats_bytes = bincode::serialize(&state.stats)
@@ -180,3 +203,78 @@ impl OutputHandler for ArrowFlightOutput {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use diskgraph_sampler::state::{SamplingState, SamplingStats, TypeState};
+    use gxhash::HashMap as GxHashMap;
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn test_edge_buffering() {
+        let (tx, mut rx) = mpsc::channel(10);
+        
+        tokio::task::spawn_blocking(move || {
+            let mut handler = ArrowFlightOutput::new(tx);
+
+            handler.handle_edge(1, 1, 10, 20).unwrap();
+            handler.handle_edge(1, 1, 11, 21).unwrap();
+            handler.handle_edge(2, 2, 30, 40).unwrap();
+
+            assert_eq!(handler.edge_buffers.get(&1).unwrap().len(), 2);
+            assert_eq!(handler.edge_buffers.get(&2).unwrap().len(), 1);
+
+            let state = SamplingState {
+                type_states: GxHashMap::default(),
+                dst_scratch: Vec::new(),
+                key_scratch: Vec::new(),
+                reservoir_scratch: Vec::new(),
+                stats: SamplingStats::default(),
+            };
+            handler.finalize(&state).unwrap();
+        });
+
+        // Expect 2 edges batches + 1 stats msg
+        let msg1 = rx.recv().await.unwrap().unwrap();
+        let msg2 = rx.recv().await.unwrap().unwrap();
+        let msg3 = rx.recv().await.unwrap().unwrap();
+        
+        assert!(msg1.data_header.len() > 0);
+        assert!(msg2.data_header.len() > 0);
+        assert!(msg3.app_metadata.len() > 0);
+    }
+
+    #[tokio::test]
+    async fn test_node_flushing() {
+        let (tx, mut rx) = mpsc::channel(10);
+        
+        tokio::task::spawn_blocking(move || {
+            let mut handler = ArrowFlightOutput::new(tx);
+
+            let mut type_states = GxHashMap::default();
+            let mut t0 = TypeState::new();
+            t0.nodes.push(diskgraph_sampler::state::NodeRecord { global_id: 100, local_id: 0, seed_index: 0 });
+            t0.nodes.push(diskgraph_sampler::state::NodeRecord { global_id: 101, local_id: 1, seed_index: 0 });
+            type_states.insert(0, t0);
+
+            let state = SamplingState {
+                type_states,
+                dst_scratch: Vec::new(),
+                key_scratch: Vec::new(),
+                reservoir_scratch: Vec::new(),
+                stats: SamplingStats::default(),
+            };
+
+            handler.finalize(&state).unwrap();
+        });
+
+        // Expect: 1 node batch + 1 stats msg
+        let msg1 = rx.recv().await.unwrap().unwrap();
+        let msg2 = rx.recv().await.unwrap().unwrap();
+
+        assert!(msg1.data_header.len() > 0);
+        assert!(msg2.app_metadata.len() > 0);
+    }
+}
+
