@@ -124,16 +124,33 @@ impl FlightService for SamplerGateway {
 
     async fn do_action(
         &self,
-        _request: Request<Action>,
+        request: Request<Action>,
     ) -> Result<Response<Self::DoActionStream>, Status> {
-        Err(Status::unimplemented("DoAction not implemented"))
+        let action = request.into_inner();
+        if action.r#type == "get_schema_mapping" {
+            let mapping = self.sampler.get_schema_mapping();
+            let body = serde_json::to_vec(&mapping)
+                .map_err(|e| Status::internal(format!("Failed to serialize mapping: {}", e)))?;
+            
+            let result = arrow_flight::Result { body: body.into() };
+            let stream = futures::stream::iter(vec![Ok(result)]);
+            return Ok(Response::new(Box::pin(stream)));
+        }
+        Err(Status::invalid_argument("Unknown action type"))
     }
 
     async fn list_actions(
         &self,
         _request: Request<arrow_flight::Empty>,
     ) -> Result<Response<Self::ListActionsStream>, Status> {
-        Err(Status::unimplemented("ListActions not implemented"))
+        let actions = vec![
+            ActionType {
+                r#type: "get_schema_mapping".to_string(),
+                description: "Returns JSON object mapping internal IDs to names for node_types and edge_relations.".to_string(),
+            }
+        ];
+        let stream = futures::stream::iter(actions.into_iter().map(Ok));
+        Ok(Response::new(Box::pin(stream)))
     }
 
     async fn do_exchange(

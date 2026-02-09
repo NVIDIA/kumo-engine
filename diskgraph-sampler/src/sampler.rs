@@ -27,6 +27,14 @@ pub struct ShardHandle {
     pub max_id: u64,
 }
 
+use serde::Serialize;
+
+#[derive(Serialize)]
+pub struct SchemaMapping {
+    pub node_types: Vec<String>,
+    pub edge_relations: Vec<String>,
+}
+
 /// The core engine responsible for executing graph sampling requests.
 pub struct Sampler {
     /// Shard readers mapped by Node Type ID.
@@ -41,6 +49,8 @@ pub struct Sampler {
     pub rel_name_to_id: HashMap<String, usize>,
     /// Map from dense ID to node type name.
     pub id_to_node_type: Vec<String>,
+    /// Map from dense ID to relation name (reconstructed from relation_info).
+    pub id_to_rel_name: Vec<String>,
 }
 
 impl Sampler {
@@ -73,14 +83,27 @@ impl Sampler {
         // Remap relation info to use Type IDs
         let mut relation_info = HashMap::new();
         let mut rel_name_to_id = HashMap::new();
+        let mut id_to_rel_name = Vec::new();
+        
+        let max_rel_id = relation_info_map.keys().max().copied().unwrap_or(0);
+        id_to_rel_name.resize(max_rel_id + 1, String::new());
+
         for (rel_id, (rel_name, dst_type)) in relation_info_map {
             if let Some(&dst_id) = node_type_to_id.get(&dst_type) {
                 rel_name_to_id.insert(rel_name.clone(), rel_id);
+                id_to_rel_name[rel_id] = rel_name.clone();
                 relation_info.insert(rel_id, (rel_name, dst_id));
             }
         }
 
-        Self { readers, relation_info, decoders, node_type_to_id, rel_name_to_id, id_to_node_type }
+        Self { readers, relation_info, decoders, node_type_to_id, rel_name_to_id, id_to_node_type, id_to_rel_name }
+    }
+
+    pub fn get_schema_mapping(&self) -> SchemaMapping {
+        SchemaMapping {
+            node_types: self.id_to_node_type.clone(),
+            edge_relations: self.id_to_rel_name.clone(),
+        }
     }
 
     fn compile_plan(&self, plan: &diskgraph_core::sampling::SamplingPlan) -> Result<CompiledSamplingPlan> {
