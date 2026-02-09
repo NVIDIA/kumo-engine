@@ -39,8 +39,8 @@ pub struct SchemaMapping {
 pub struct Sampler {
     /// Shard readers mapped by Node Type ID.
     pub readers: Vec<Vec<ShardHandle>>,
-    /// Map from Relation ID to (Name, DstTypeID).
-    pub relation_info: HashMap<usize, (String, usize)>,
+    /// Map from Relation ID to DstTypeID.
+    pub relation_info: Vec<usize>,
     /// Sort key decoders for each relation.
     pub decoders: HashMap<usize, SortKeyDecoder>,
     /// Map from node type name to dense ID.
@@ -81,18 +81,19 @@ impl Sampler {
         }
 
         // Remap relation info to use Type IDs
-        let mut relation_info = HashMap::new();
         let mut rel_name_to_id = HashMap::new();
         let mut id_to_rel_name = Vec::new();
         
         let max_rel_id = relation_info_map.keys().max().copied().unwrap_or(0);
         id_to_rel_name.resize(max_rel_id + 1, String::new());
+        // Use usize::MAX as sentinel for invalid/unmapped relations
+        let mut relation_info = vec![usize::MAX; max_rel_id + 1];
 
         for (rel_id, (rel_name, dst_type)) in relation_info_map {
             if let Some(&dst_id) = node_type_to_id.get(&dst_type) {
                 rel_name_to_id.insert(rel_name.clone(), rel_id);
                 id_to_rel_name[rel_id] = rel_name.clone();
-                relation_info.insert(rel_id, (rel_name, dst_id));
+                relation_info[rel_id] = dst_id;
             }
         }
 
@@ -269,13 +270,14 @@ impl Sampler {
 
                         if let Some(fanout_spec) = fanout_spec {
                             // Resolve metadata (only needed for dst_type_id now)
-                            if let Some((_, dst_type_id)) = self.relation_info.get(&rel_id) {
+                            let dst_type_id = *self.relation_info.get(rel_id).unwrap_or(&usize::MAX);
+                            if dst_type_id != usize::MAX {
                                 // 7. Sample (from memory-mapped segment)
                                 self.sample_from_view(
                                     layer_idx,
                                     &segment,
                                     node,
-                                    *dst_type_id,
+                                    dst_type_id,
                                     rel_id,
                                     fanout_spec.fanout,
                                     &fanout_spec.mode,
