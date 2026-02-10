@@ -97,6 +97,30 @@ impl TestGraph {
     }
 }
 
+struct MockOutput {
+    edges: Vec<(usize, u16, u32, u32)>,
+    feature_batches: Vec<arrow_array::RecordBatch>,
+    schema: Option<arrow_schema::SchemaRef>,
+}
+impl OutputHandler for MockOutput {
+    fn handle_edge(&mut self, hop: usize, rel_id: u16, src: u32, dst: u32) -> crate::errors::Result<()> {
+        self.edges.push((hop, rel_id, src, dst));
+        Ok(())
+    }
+
+    fn handle_schema(&mut self, schema: arrow_schema::SchemaRef) -> crate::errors::Result<()> {
+        self.schema = Some(schema);
+        Ok(())
+    }
+
+    fn handle_feature_batch(&mut self, batch: arrow_array::RecordBatch) -> crate::errors::Result<()> {
+        self.feature_batches.push(batch);
+        Ok(())
+    }
+
+    fn finalize(&mut self, _state: &SamplingState) -> crate::errors::Result<()> { Ok(()) }
+}
+
 #[test]
 fn test_fetch_features() {
     let graph = TestGraph::new();
@@ -129,28 +153,40 @@ fn test_fetch_features() {
     assert_eq!(batch_all.num_columns(), 2);
 }
 
-struct MockOutput {
-    edges: Vec<(usize, u16, u32, u32)>,
-    feature_batches: Vec<arrow_array::RecordBatch>,
-    schema: Option<arrow_schema::SchemaRef>,
+#[test]
+fn test_fetch_features_missing_node() {
+    let graph = TestGraph::new();
+    let mut output = MockOutput { edges: vec![], feature_batches: vec![], schema: None };
+
+    // Fetch for non-existent node 999
+    let result = graph.sampler.fetch_features_for_type(
+        0,
+        &[999],
+        &["feat_0".to_string()],
+        &mut output
+    );
+
+    assert!(result.is_err());
+    let err = result.err().unwrap().to_string();
+    assert!(err.contains("not found in any shard"));
 }
-impl OutputHandler for MockOutput {
-    fn handle_edge(&mut self, hop: usize, rel_id: u16, src: u32, dst: u32) -> crate::errors::Result<()> {
-        self.edges.push((hop, rel_id, src, dst));
-        Ok(())
-    }
 
-    fn handle_schema(&mut self, schema: arrow_schema::SchemaRef) -> crate::errors::Result<()> {
-        self.schema = Some(schema);
-        Ok(())
-    }
+#[test]
+fn test_fetch_features_unknown_column() {
+    let graph = TestGraph::new();
+    let mut output = MockOutput { edges: vec![], feature_batches: vec![], schema: None };
 
-    fn handle_feature_batch(&mut self, batch: arrow_array::RecordBatch) -> crate::errors::Result<()> {
-        self.feature_batches.push(batch);
-        Ok(())
-    }
+    // Fetch unknown column
+    let result = graph.sampler.fetch_features_for_type(
+        0,
+        &[0],
+        &["unknown_col".to_string()],
+        &mut output
+    );
 
-    fn finalize(&mut self, _state: &SamplingState) -> crate::errors::Result<()> { Ok(()) }
+    assert!(result.is_err());
+    let err = result.err().unwrap().to_string();
+    assert!(err.contains("unknown feature"));
 }
 
 #[test]
@@ -184,4 +220,37 @@ fn test_basic_sampling() {
 
     assert_eq!(output.edges.len(), 2);
     // Node 0 (Local 0) -> 1 (Local 1) and 2 (Local 2)
+}
+
+#[test]
+fn test_sampling_empty_seeds() {
+    let graph = TestGraph::new();
+    let mut state = crate::state::StatePool::new().acquire();
+    let mut output = MockOutput { edges: vec![], feature_batches: vec![], schema: None };
+
+    let plan = SamplingPlan {
+        layers: vec![
+            LayerSpec {
+                fanouts: [("Connects".to_string(), FanoutSpec {
+                    fanout: 10,
+                    mode: SamplingMode::Uniform,
+                    absent_key_policy: AbsentKeyPolicy::UniformFallback,
+                })].into(),
+                default_fanout: None,
+            }
+        ]
+    };
+
+    let req = BatchSamplingRequest {
+        dataset_id: DatasetId::nil(),
+        seed_nodes: [("User".to_string(), vec![])].into(), // Empty seeds
+        seed_timestamps: None,
+        plan,
+        flags: SamplingFlags { replace: false, directed: true, disjoint: true, return_edge_id: false, adaptive: false },
+    };
+
+    graph.sampler.sample(&req, &mut state, &mut output).unwrap();
+
+    assert_eq!(output.edges.len(), 0);
+    assert_eq!(state.stats.total_nodes, 0);
 }
