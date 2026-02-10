@@ -6,15 +6,15 @@ use std::time::Duration;
 
 use anyhow::Result;
 use clap::{Parser, ValueEnum};
-use diskgraph_ingest::{
-    build_transfer_for_cloud_path, ingest_with_stats, ingest_with_stats_from_source,
-    object_path_from_cloud_url, Dest, IngestOptions, GraphConfig,
-};
+use diskgraph_ingest::config::{PeakMemStats, PEAK_MEM_STAGE_COUNT};
 use diskgraph_ingest::progress::{build_progress, format_bytes, format_duration};
 use diskgraph_ingest::stats_publish::{
     default_run_id, fetch_perf_baseline, publish_stats, PublishConfig, PublishOutcome,
 };
-use diskgraph_ingest::config::{PeakMemStats, PEAK_MEM_STAGE_COUNT};
+use diskgraph_ingest::{
+    build_transfer_for_cloud_path, ingest_with_stats, ingest_with_stats_from_source,
+    object_path_from_cloud_url, Dest, GraphConfig, IngestOptions,
+};
 use std::fs;
 
 #[cfg(all(feature = "mem-profile", target_os = "linux"))]
@@ -22,7 +22,11 @@ use std::fs;
 static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
 
 #[derive(Parser, Debug)]
-#[command(author, version, about = "Ingest raw CSV/Parquet into diskgraph index format.")]
+#[command(
+    author,
+    version,
+    about = "Ingest raw CSV/Parquet into diskgraph index format."
+)]
 struct Args {
     /// Path or URL to diskgraph_config.json, or a directory containing it.
     #[arg(long)]
@@ -79,10 +83,7 @@ fn main() -> Result<()> {
         args.source.clone()
     };
     if !is_cloud_url(&source_str) && !source_path.is_file() {
-        anyhow::bail!(
-            "diskgraph config not found at {}",
-            source_path.display()
-        );
+        anyhow::bail!("diskgraph config not found at {}", source_path.display());
     }
     if args.profile.is_some() && cfg!(debug_assertions) && cfg!(target_arch = "aarch64") {
         anyhow::bail!(
@@ -95,10 +96,7 @@ fn main() -> Result<()> {
     let mem_watchdog: Option<mem_watchdog::MemWatchdog> = if args.mem_profile {
         #[cfg(feature = "mem-profile")]
         {
-            let dir = args
-                .profile
-                .clone()
-                .unwrap_or_else(|| PathBuf::from("."));
+            let dir = args.profile.clone().unwrap_or_else(|| PathBuf::from("."));
             Some(mem_watchdog::start(dir))
         }
         #[cfg(not(feature = "mem-profile"))]
@@ -132,7 +130,7 @@ fn main() -> Result<()> {
         ingest_with_stats(&source_path, &args.output, dest, options)?
     };
     drop(peak_tracker);
-    drop(mem_watchdog);
+    let _ = mem_watchdog;
     let publish_outcome = match maybe_publish_stats(&args, &stats, &source_str, dest) {
         Ok(outcome) => outcome,
         Err(err) => {
@@ -147,12 +145,14 @@ fn main() -> Result<()> {
     println!(
         "{} {} ({} nodes)",
         color("Node tables:", Color::CyanBold),
-        stats.node_tables, stats.total_nodes
+        stats.node_tables,
+        stats.total_nodes
     );
     println!(
         "{} {} ({} edges)",
         color("Edge relations:", Color::CyanBold),
-        stats.edge_relations, stats.total_edges
+        stats.edge_relations,
+        stats.total_edges
     );
     if !stats.node_counts.is_empty() {
         println!("{}", color("Nodes per table:", Color::CyanBold));
@@ -262,27 +262,28 @@ fn main() -> Result<()> {
             trimmed
         );
     }
-    let total_bytes = stats.perf.bytes_read.saturating_add(stats.perf.bytes_written);
+    let total_bytes = stats
+        .perf
+        .bytes_read
+        .saturating_add(stats.perf.bytes_written);
     let wall_secs = (stats.perf.wall_time_ms as f64) / 1000.0;
     let bytes_per_sec = if wall_secs > 0.0 {
         (total_bytes as f64) / wall_secs
     } else {
         0.0
     };
-    let baseline = publish_outcome
-        .as_ref()
-        .and_then(|outcome| {
-            fetch_perf_baseline(
-                &outcome.stats_root,
-                &outcome.summary.dataset,
-                outcome.summary.instance_type.as_deref(),
-                &outcome.summary.source_path,
-                &outcome.summary.run_id,
-                30,
-            )
-            .ok()
-            .flatten()
-        });
+    let baseline = publish_outcome.as_ref().and_then(|outcome| {
+        fetch_perf_baseline(
+            &outcome.stats_root,
+            &outcome.summary.dataset,
+            outcome.summary.instance_type.as_deref(),
+            &outcome.summary.source_path,
+            &outcome.summary.run_id,
+            30,
+        )
+        .ok()
+        .flatten()
+    });
     println!("{}", color("Performance:", Color::GreenBold));
     if let (Some(baseline), Some(outcome)) = (baseline.as_ref(), publish_outcome.as_ref()) {
         let instance = outcome
@@ -307,7 +308,10 @@ fn main() -> Result<()> {
         "  {} {}{}",
         color("Wall time:", Color::GreenBold),
         format_duration(stats.perf.wall_time_ms),
-        format_delta(stats.perf.wall_time_ms, baseline.as_ref().map(|b| b.wall_time_ms))
+        format_delta(
+            stats.perf.wall_time_ms,
+            baseline.as_ref().map(|b| b.wall_time_ms)
+        )
     );
     println!(
         "  {} {}",
@@ -438,7 +442,9 @@ fn maybe_publish_stats(
         .clone()
         .or_else(|| std::env::var("DISKGRAPH_STATS_DATASET").ok())
         .unwrap_or_else(|| dataset_from_source(&args.source, source_str));
-    let run_id = args.stats_run_id.clone()
+    let run_id = args
+        .stats_run_id
+        .clone()
         .or_else(|| std::env::var("DISKGRAPH_STATS_RUN_ID").ok())
         .unwrap_or_else(|| default_run_id(&run_id_user(), &run_id_git_prefix()));
     let stats_dest = args.stats_dest.clone();
@@ -473,7 +479,9 @@ fn run_id_git_prefix() -> String {
         .args(["rev-parse", "HEAD"])
         .output();
     let sha = match output {
-        Ok(output) if output.status.success() => String::from_utf8_lossy(&output.stdout).trim().to_string(),
+        Ok(output) if output.status.success() => {
+            String::from_utf8_lossy(&output.stdout).trim().to_string()
+        }
         _ => "nogit".to_string(),
     };
     sha.chars().take(8).collect()
@@ -558,9 +566,7 @@ fn format_delta(current_ms: u64, baseline_ms: Option<u64>) -> String {
     }
     let delta_ms = current_ms as i64 - baseline_ms as i64;
     let pct = (delta_ms as f64 / baseline_ms as f64) * 100.0;
-    let (color, reset) = if pct <= 0.0 {
-        ("\x1b[32m", "\x1b[0m")
-    } else if pct <= 5.0 {
+    let (color, reset) = if pct <= 5.0 {
         ("\x1b[32m", "\x1b[0m")
     } else if pct <= 15.0 {
         ("\x1b[33m", "\x1b[0m")
@@ -568,7 +574,7 @@ fn format_delta(current_ms: u64, baseline_ms: Option<u64>) -> String {
         ("\x1b[31m", "\x1b[0m")
     };
     let (sign, abs_ms, pct_label) = if delta_ms < 0 {
-        ("-", delta_ms.abs() as u64, format!("{pct:.1}%"))
+        ("-", delta_ms.unsigned_abs(), format!("{pct:.1}%"))
     } else {
         ("+", delta_ms as u64, format!("+{pct:.1}%"))
     };
@@ -606,17 +612,17 @@ fn split_example(sample: &str) -> (&str, &str) {
     }
 }
 
-fn dataset_from_source(source: &PathBuf, source_str: &str) -> String {
+fn dataset_from_source(source: &std::path::Path, source_str: &str) -> String {
     if is_cloud_url(source_str) {
         let trimmed = source_str.trim_end_matches('/');
-        return trimmed
-            .rsplit('/')
-            .next()
-            .unwrap_or(trimmed)
-            .to_string();
+        return trimmed.rsplit('/').next().unwrap_or(trimmed).to_string();
     }
     if source.is_dir() {
-        return source.file_name().and_then(|n| n.to_str()).unwrap_or("dataset").to_string();
+        return source
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("dataset")
+            .to_string();
     }
     if let Some(name) = source.file_name().and_then(|n| n.to_str()) {
         if name != "diskgraph_config.json" {
@@ -754,7 +760,9 @@ mod mem_watchdog {
         let prof = unsafe { jemalloc_ctl::raw::read::<bool>(b"config.prof\0") }.unwrap_or(false);
         let opt_prof = unsafe { jemalloc_ctl::raw::read::<bool>(b"opt.prof\0") }.unwrap_or(false);
         tracing::warn!("jemalloc config.prof={}, opt.prof={}", prof, opt_prof);
-        let conf = unsafe { jemalloc_ctl::raw::read::<*const std::os::raw::c_char>(b"config.malloc_conf\0") };
+        let conf = unsafe {
+            jemalloc_ctl::raw::read::<*const std::os::raw::c_char>(b"config.malloc_conf\0")
+        };
         if let Ok(ptr) = conf {
             if ptr.is_null() {
                 tracing::warn!("jemalloc config.malloc_conf is null");

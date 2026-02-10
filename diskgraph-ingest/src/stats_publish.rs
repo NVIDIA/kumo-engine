@@ -5,15 +5,15 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use chrono::{SecondsFormat, Utc};
-use serde::Serialize;
 use futures::{stream, StreamExt};
+use serde::Serialize;
 
+use crate::graph_config::GraphConfig;
 use crate::io::{
     build_store_for_cloud_path, is_cloud_path, parse_az_url, parse_gs_url, parse_s3_url, Dest,
     OutputTarget,
 };
 use crate::stats::{IngestReport, IngestStats};
-use crate::graph_config::GraphConfig;
 use object_store::{GetResult, ObjectStoreExt};
 
 #[derive(Clone, Debug)]
@@ -106,10 +106,12 @@ pub fn publish_stats(stats: &IngestStats, config: PublishConfig) -> Result<Optio
     let ingest_stats = read_output_file(&config.output, "ingest_stats.json").ok();
     let build_stats = read_output_file(&config.output, "build_stats.json").ok();
 
-    let profiles_present = profile_files(&config.profile_dir).map(|files| !files.is_empty()).unwrap_or(false);
+    let profiles_present = profile_files(&config.profile_dir)
+        .map(|files| !files.is_empty())
+        .unwrap_or(false);
 
-    let data_source_path = data_source_path_from_report(&ingest_stats)
-        .unwrap_or_else(|| config.source.clone());
+    let data_source_path =
+        data_source_path_from_report(&ingest_stats).unwrap_or_else(|| config.source.clone());
     let summary = build_run_summary(
         stats,
         &config,
@@ -125,16 +127,10 @@ pub fn publish_stats(stats: &IngestStats, config: PublishConfig) -> Result<Optio
         serde_json::to_vec_pretty(&summary)?,
     )?;
     if let Some(bytes) = ingest_stats {
-        target.write_bytes(
-            &format!("{}/ingest_stats.json", run_prefix),
-            bytes,
-        )?;
+        target.write_bytes(&format!("{}/ingest_stats.json", run_prefix), bytes)?;
     }
     if let Some(bytes) = build_stats {
-        target.write_bytes(
-            &format!("{}/build_stats.json", run_prefix),
-            bytes,
-        )?;
+        target.write_bytes(&format!("{}/build_stats.json", run_prefix), bytes)?;
     }
     if let Some(files) = profile_files(&config.profile_dir) {
         for path in files {
@@ -142,12 +138,9 @@ pub fn publish_stats(stats: &IngestStats, config: PublishConfig) -> Result<Optio
                 .file_name()
                 .and_then(|n| n.to_str())
                 .ok_or_else(|| anyhow!("invalid profile filename {}", path.display()))?;
-            let bytes = std::fs::read(&path)
-                .with_context(|| format!("read profile {}", path.display()))?;
-            target.write_bytes(
-                &format!("{}/profiles/{}", run_prefix, name),
-                bytes,
-            )?;
+            let bytes =
+                std::fs::read(&path).with_context(|| format!("read profile {}", path.display()))?;
+            target.write_bytes(&format!("{}/profiles/{}", run_prefix, name), bytes)?;
         }
     }
     Ok(Some(PublishOutcome {
@@ -219,10 +212,7 @@ pub fn fetch_perf_baseline(
     let store = build_store_for_cloud_path(stats_root)?;
     let prefix = cloud_prefix(stats_root)?;
     let instance_dir = instance_dir_name(instance_type, source_path);
-    let runs_prefix = object_path_join(
-        &prefix,
-        &format!("{}/{}", dataset, instance_dir),
-    );
+    let runs_prefix = object_path_join(&prefix, &format!("{}/{}", dataset, instance_dir));
     let rt = tokio::runtime::Runtime::new()?;
     let mut stream = store.list(Some(&runs_prefix));
     let summaries = rt.block_on(async {
@@ -338,8 +328,7 @@ fn detect_cloud_kind(source: &str, dest: Dest) -> Result<Option<CloudKind>> {
     {
         return Ok(Some(CloudKind::Gcp));
     }
-    if std::env::var("AZURE_TENANT_ID").is_ok() || std::env::var("AZURE_STORAGE_ACCOUNT").is_ok()
-    {
+    if std::env::var("AZURE_TENANT_ID").is_ok() || std::env::var("AZURE_STORAGE_ACCOUNT").is_ok() {
         return Ok(Some(CloudKind::Adls));
     }
     Ok(None)
@@ -395,7 +384,10 @@ fn build_run_summary(
     profiles_present: bool,
     build_stats_present: bool,
 ) -> Result<RunSummary> {
-    let total_bytes = stats.perf.bytes_read.saturating_add(stats.perf.bytes_written);
+    let total_bytes = stats
+        .perf
+        .bytes_read
+        .saturating_add(stats.perf.bytes_written);
     let wall_secs = (stats.perf.wall_time_ms as f64) / 1000.0;
     let throughput_bytes_per_sec = if wall_secs > 0.0 {
         (total_bytes as f64 / wall_secs) as u64
@@ -529,10 +521,7 @@ fn git_info() -> GitInfo {
 }
 
 fn run_git(args: &[&str]) -> Result<String> {
-    let output = Command::new("git")
-        .args(args)
-        .output()
-        .context("run git")?;
+    let output = Command::new("git").args(args).output().context("run git")?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(anyhow!("git {} failed: {}", args.join(" "), stderr.trim()));
@@ -587,7 +576,10 @@ fn disk_stats_for_path(path: &Path) -> (Option<u64>, Option<u64>) {
             let score = mount.as_os_str().len();
             let total = disk.total_space();
             let avail = disk.available_space();
-            if best.map(|(best_score, _, _)| score > best_score).unwrap_or(true) {
+            if best
+                .map(|(best_score, _, _)| score > best_score)
+                .unwrap_or(true)
+            {
                 best = Some((score, total, avail));
             }
             let _ = stripped;
@@ -619,7 +611,8 @@ fn instance_info(source: &str, dest: Dest) -> Result<(Option<String>, Option<Str
 }
 
 fn fetch_any_instance_type() -> Option<(CloudKind, String)> {
-    fetch_instance_type(CloudKind::Aws).map(|t| (CloudKind::Aws, t))
+    fetch_instance_type(CloudKind::Aws)
+        .map(|t| (CloudKind::Aws, t))
         .or_else(|| fetch_instance_type(CloudKind::Gcp).map(|t| (CloudKind::Gcp, t)))
         .or_else(|| fetch_instance_type(CloudKind::Adls).map(|t| (CloudKind::Adls, t)))
 }
@@ -649,11 +642,12 @@ fn fetch_aws_instance_type() -> Option<String> {
 }
 
 fn fetch_gcp_instance_type() -> Option<String> {
-    let resp = ureq::get("http://metadata.google.internal/computeMetadata/v1/instance/machine-type")
-        .timeout(Duration::from_millis(800))
-        .set("Metadata-Flavor", "Google")
-        .call()
-        .ok()?;
+    let resp =
+        ureq::get("http://metadata.google.internal/computeMetadata/v1/instance/machine-type")
+            .timeout(Duration::from_millis(800))
+            .set("Metadata-Flavor", "Google")
+            .call()
+            .ok()?;
     let raw = resp.into_string().ok()?;
     Some(
         raw.trim()
@@ -665,11 +659,12 @@ fn fetch_gcp_instance_type() -> Option<String> {
 }
 
 fn fetch_azure_instance_type() -> Option<String> {
-    let resp = ureq::get("http://169.254.169.254/metadata/instance/compute/vmSize?api-version=2021-02-01")
-        .timeout(Duration::from_millis(800))
-        .set("Metadata", "true")
-        .call()
-        .ok()?;
+    let resp =
+        ureq::get("http://169.254.169.254/metadata/instance/compute/vmSize?api-version=2021-02-01")
+            .timeout(Duration::from_millis(800))
+            .set("Metadata", "true")
+            .call()
+            .ok()?;
     resp.into_string().ok().map(|s| s.trim().to_string())
 }
 

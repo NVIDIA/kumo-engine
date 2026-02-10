@@ -1,6 +1,4 @@
-use crate::metadata::{
-    EdgeSortKeyTimestampKind, EdgeSortKeyWeightKind, EdgeSortKeyMetadata,
-};
+use crate::metadata::{EdgeSortKeyMetadata, EdgeSortKeyTimestampKind, EdgeSortKeyWeightKind};
 use half::f16;
 
 type WeightDecoderFn = fn(u64) -> f32;
@@ -28,21 +26,31 @@ pub struct SortKeyDecoder {
 
 impl SortKeyDecoder {
     pub fn new(meta: &EdgeSortKeyMetadata) -> Self {
-        let timestamp_bits = meta.timestamp.as_ref().map(|ts| match ts.encoding.kind {
-            EdgeSortKeyTimestampKind::Int8 => 8,
-            EdgeSortKeyTimestampKind::Int16 => 16,
-            EdgeSortKeyTimestampKind::Int32 => 32,
-        }).unwrap_or(0);
+        let timestamp_bits = meta
+            .timestamp
+            .as_ref()
+            .map(|ts| match ts.encoding.kind {
+                EdgeSortKeyTimestampKind::Int8 => 8,
+                EdgeSortKeyTimestampKind::Int16 => 16,
+                EdgeSortKeyTimestampKind::Int32 => 32,
+            })
+            .unwrap_or(0);
 
-        let weight_bits = meta.weight.as_ref().map(|w| match w.encoding.dtype {
-            EdgeSortKeyWeightKind::Byte => 8,
-            EdgeSortKeyWeightKind::UInt16 => 16,
-            EdgeSortKeyWeightKind::UInt32 => 32,
-            EdgeSortKeyWeightKind::Float16 => 16,
-            EdgeSortKeyWeightKind::Float32 => 32,
-        }).unwrap_or(0);
+        let weight_bits = meta
+            .weight
+            .as_ref()
+            .map(|w| match w.encoding.dtype {
+                EdgeSortKeyWeightKind::Byte => 8,
+                EdgeSortKeyWeightKind::UInt16 => 16,
+                EdgeSortKeyWeightKind::UInt32 => 32,
+                EdgeSortKeyWeightKind::Float16 => 16,
+                EdgeSortKeyWeightKind::Float32 => 32,
+            })
+            .unwrap_or(0);
 
-        let (ts_anchor, ts_step) = meta.timestamp.as_ref()
+        let (ts_anchor, ts_step) = meta
+            .timestamp
+            .as_ref()
             .map(|ts| (ts.encoding.anchor, ts.encoding.step))
             .unwrap_or((0, 1));
 
@@ -107,7 +115,7 @@ impl SortKeyDecoder {
             // Ordered Signed Decoding:
             // 1. Flip the sign bit back (encoding was val ^ sign_bit)
             let toggled = ts_raw ^ self.ts_sign_toggle_mask;
-            
+
             // 2. Sign extend to 64-bit
             // (x << shift) as i64 >> shift
             let delta = (toggled << self.ts_extend_shift) as i64 >> self.ts_extend_shift;
@@ -117,7 +125,11 @@ impl SortKeyDecoder {
                 None
             } else {
                 // 4. Apply scale/offset
-                Some(delta.saturating_mul(self.ts_step).saturating_add(self.ts_anchor))
+                Some(
+                    delta
+                        .saturating_mul(self.ts_step)
+                        .saturating_add(self.ts_anchor),
+                )
             }
         } else {
             None
@@ -261,11 +273,11 @@ mod tests {
         let target_ts = -12345i64;
         let ts_enc = ordered_signed_to_u64(target_ts, 16);
         // packed is just ts_enc because no weight bits
-        
+
         let (ts, _) = decoder.decode(ts_enc);
         assert_eq!(ts, Some(target_ts));
     }
-    
+
     #[test]
     fn test_decoder_nat() {
         let meta = EdgeSortKeyMetadata {
@@ -282,7 +294,7 @@ mod tests {
             weight: None,
         };
         let decoder = SortKeyDecoder::new(&meta);
-        
+
         let nat_val = i16::MIN as i64; // -32768
         let enc = ordered_signed_to_u64(nat_val, 16);
         let (ts, _) = decoder.decode(enc);
@@ -303,11 +315,11 @@ mod tests {
             }),
         };
         let decoder = SortKeyDecoder::new(&meta);
-        
+
         let target_w = -10.5f32;
         let enc = ordered_f32_bits(target_w) as u64;
         let (ts, w) = decoder.decode(enc);
-        
+
         assert_eq!(ts, None);
         assert_eq!(w, Some(target_w));
     }
@@ -341,7 +353,7 @@ mod tests {
             }),
             weight: None,
         };
-        
+
         let decoder = SortKeyDecoder::new(&meta);
         let val = i32::MIN as i64 + 1; // Near min
         let enc = ordered_signed_to_u64(val, 32);
@@ -384,11 +396,15 @@ mod tests {
         let decoder_f16 = SortKeyDecoder::new(&meta_f16);
         let val_f16 = 1.5f32;
         let val_f16_half = f16::from_f32(val_f16);
-        
+
         // Manual Ordered Encoding for F16
         let bits = val_f16_half.to_bits();
-        let enc = if bits & 0x8000 != 0 { !bits } else { bits ^ 0x8000 };
-        
+        let enc = if bits & 0x8000 != 0 {
+            !bits
+        } else {
+            bits ^ 0x8000
+        };
+
         let (_, w) = decoder_f16.decode(enc as u64);
         assert_eq!(w, Some(val_f16));
     }
@@ -410,12 +426,12 @@ mod tests {
             weight: None,
         };
         let decoder = SortKeyDecoder::new(&meta);
-        
+
         // Delta = 1. Result = Anchor + 100 -> Overflow
         let enc = ordered_signed_to_u64(1, 32);
         let (ts, _) = decoder.decode(enc);
         assert_eq!(ts, Some(i64::MAX)); // Saturated
-        
+
         // Delta = -1. Result = Anchor - 100.
         let enc_neg = ordered_signed_to_u64(-1, 32);
         let (ts_neg, _) = decoder.decode(enc_neg);
@@ -445,23 +461,23 @@ mod tests {
             }),
         };
         let decoder = SortKeyDecoder::new(&meta);
-        
+
         // TS = -5 (encoded 8-bit), Weight = 255 (encoded 8-bit)
         let ts_delta = -5i64;
         let w_val = 255u64;
-        
+
         let ts_enc = ordered_signed_to_u64(ts_delta, 8); // 8 bits
         let w_enc = w_val; // 8 bits
-        
+
         // Pack: TS in upper 8, Weight in lower 8
-        // Total 16 bits used, but usually packed in u64 at bottom? 
+        // Total 16 bits used, but usually packed in u64 at bottom?
         // Logic: val >> weight_bits.
         // So TS is at bits [8..16].
-        
+
         let packed = (ts_enc << 8) | w_enc;
-        
+
         let (ts, w) = decoder.decode(packed);
-        
+
         assert_eq!(ts, Some(-5));
         assert_eq!(w, Some(255.0));
     }

@@ -1,10 +1,10 @@
-use std::fs;
-use std::io::Write;
-use std::path::Path;
 use diskgraph_core::metadata::{
     DatasetMetadata, EdgeRelationMetadata, EdgeShardMetadata, NodeShardMetadata, NodeTypeMetadata,
 };
 use diskgraph_index::graph::{GraphIndexBuilder, GraphIndexReader};
+use std::fs;
+use std::io::Write;
+use std::path::Path;
 use tempfile::tempdir;
 
 #[derive(Clone)]
@@ -33,19 +33,13 @@ fn graph_builder_and_reader_multi_table() {
 
     write_edges(
         &follows0,
-        &[
-            EdgeRow { src: 0, dst: 1 },
-            EdgeRow { src: 1, dst: 0 },
-        ],
+        &[EdgeRow { src: 0, dst: 1 }, EdgeRow { src: 1, dst: 0 }],
     )
     .unwrap();
     write_edges(&follows1, &[EdgeRow { src: 2, dst: 3 }]).unwrap();
     write_edges(
         &likes0,
-        &[
-            EdgeRow { src: 0, dst: 0 },
-            EdgeRow { src: 1, dst: 1 },
-        ],
+        &[EdgeRow { src: 0, dst: 0 }, EdgeRow { src: 1, dst: 1 }],
     )
     .unwrap();
     write_edges(&likes1, &[EdgeRow { src: 2, dst: 0 }]).unwrap();

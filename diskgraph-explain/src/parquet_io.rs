@@ -3,8 +3,7 @@
 use crate::config::{IdKind, TimestampKind};
 use anyhow::{anyhow, Result};
 use arrow_array::{
-    Array, ArrayRef, Float32Array, Float64Array, Int64Array, ListArray, RecordBatch,
-    StringArray,
+    Array, ArrayRef, Float32Array, Float64Array, Int64Array, ListArray, RecordBatch, StringArray,
 };
 use arrow_schema::Schema;
 use parquet::arrow::arrow_reader::{ParquetRecordBatchReader, ParquetRecordBatchReaderBuilder};

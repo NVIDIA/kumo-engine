@@ -47,7 +47,9 @@ pub fn execute_simple(query: &Query, reader: &IndexReader) -> Result<Vec<TrainRo
     };
 
     if entity_table != target_table {
-        return Err(anyhow!("cross-table aggregation not supported in simple executor"));
+        return Err(anyhow!(
+            "cross-table aggregation not supported in simple executor"
+        ));
     }
 
     let ctx = reader
@@ -63,9 +65,11 @@ pub fn execute_simple(query: &Query, reader: &IndexReader) -> Result<Vec<TrainRo
     let timestamp_idx = find_timestamp_index(ctx, &col_index);
 
     let target_idx = match &agg.target {
-        AggTarget::Column(col) => Some(*col_index
-            .get(&col.column)
-            .ok_or_else(|| anyhow!("missing target column {}", col.column))?),
+        AggTarget::Column(col) => Some(
+            *col_index
+                .get(&col.column)
+                .ok_or_else(|| anyhow!("missing target column {}", col.column))?,
+        ),
         AggTarget::Star(_) => None,
     };
 
@@ -97,7 +101,8 @@ pub fn execute_simple(query: &Query, reader: &IndexReader) -> Result<Vec<TrainRo
                         continue;
                     }
                 }
-                let Some(entity) = decode_value_opt(&decoder, &row, entity_idx, &mut scratch)? else {
+                let Some(entity) = decode_value_opt(&decoder, &row, entity_idx, &mut scratch)?
+                else {
                     continue;
                 };
                 let entity_key = entity.clone();
@@ -106,7 +111,8 @@ pub fn execute_simple(query: &Query, reader: &IndexReader) -> Result<Vec<TrainRo
                         continue;
                     }
                 }
-                let Some(value) = decode_numeric_opt(&decoder, &row, target_idx, &mut scratch)? else {
+                let Some(value) = decode_numeric_opt(&decoder, &row, target_idx, &mut scratch)?
+                else {
                     continue;
                 };
                 let entry = sums.entry(entity).or_insert((0.0, 0, value, value));
@@ -151,7 +157,8 @@ pub fn execute_simple(query: &Query, reader: &IndexReader) -> Result<Vec<TrainRo
                         continue;
                     }
                 }
-                let Some(entity) = decode_value_opt(&decoder, &row, entity_idx, &mut scratch)? else {
+                let Some(entity) = decode_value_opt(&decoder, &row, entity_idx, &mut scratch)?
+                else {
                     continue;
                 };
                 let entity_key = entity.clone();
@@ -161,7 +168,8 @@ pub fn execute_simple(query: &Query, reader: &IndexReader) -> Result<Vec<TrainRo
                     }
                 }
                 if let Some(target_idx) = target_idx {
-                    let Some(_value) = decode_value_opt(&decoder, &row, target_idx, &mut scratch)? else {
+                    let Some(_value) = decode_value_opt(&decoder, &row, target_idx, &mut scratch)?
+                    else {
                         continue;
                     };
                 }
@@ -192,7 +200,8 @@ pub fn execute_simple(query: &Query, reader: &IndexReader) -> Result<Vec<TrainRo
                         continue;
                     }
                 }
-                let Some(entity) = decode_value_opt(&decoder, &row, entity_idx, &mut scratch)? else {
+                let Some(entity) = decode_value_opt(&decoder, &row, entity_idx, &mut scratch)?
+                else {
                     continue;
                 };
                 let entity_key = entity.clone();
@@ -201,13 +210,11 @@ pub fn execute_simple(query: &Query, reader: &IndexReader) -> Result<Vec<TrainRo
                         continue;
                     }
                 }
-                let Some(target) = decode_value_opt(&decoder, &row, target_idx, &mut scratch)? else {
+                let Some(target) = decode_value_opt(&decoder, &row, target_idx, &mut scratch)?
+                else {
                     continue;
                 };
-                values
-                    .entry(entity)
-                    .or_insert_with(HashSet::new)
-                    .insert(target);
+                values.entry(entity).or_default().insert(target);
                 if let Some(ts_idx) = timestamp_idx {
                     if let Some(ts) = decode_timestamp(&decoder, &row, ts_idx, &mut scratch)? {
                         update_max_timestamp(&mut timestamps, &entity_key, ts);
@@ -251,7 +258,9 @@ fn execute_simple_comparison_agg(
         AggTarget::Star(tbl) => &tbl.table,
     };
     if entity_table != target_table {
-        return Err(anyhow!("cross-table aggregation not supported in simple executor"));
+        return Err(anyhow!(
+            "cross-table aggregation not supported in simple executor"
+        ));
     }
 
     let ctx = reader
@@ -266,9 +275,11 @@ fn execute_simple_comparison_agg(
         .ok_or_else(|| anyhow!("missing entity column {entity_col}"))?;
     let timestamp_idx = find_timestamp_index(ctx, &col_index);
     let target_idx = match &agg.target {
-        AggTarget::Column(col) => Some(*col_index
-            .get(&col.column)
-            .ok_or_else(|| anyhow!("missing target column {}", col.column))?),
+        AggTarget::Column(col) => Some(
+            *col_index
+                .get(&col.column)
+                .ok_or_else(|| anyhow!("missing target column {}", col.column))?,
+        ),
         AggTarget::Star(_) => None,
     };
 
@@ -312,7 +323,8 @@ fn execute_simple_comparison_agg(
         match agg.func {
             AggFunc::Count => {
                 if let Some(target_idx) = target_idx {
-                    let Some(_value) = decode_value_opt(&decoder, &row, target_idx, &mut scratch)? else {
+                    let Some(_value) = decode_value_opt(&decoder, &row, target_idx, &mut scratch)?
+                    else {
                         continue;
                     };
                 }
@@ -320,8 +332,10 @@ fn execute_simple_comparison_agg(
                 *entry += 1;
             }
             AggFunc::Sum | AggFunc::Avg | AggFunc::Min | AggFunc::Max => {
-                let target_idx = target_idx.ok_or_else(|| anyhow!("numeric agg requires column"))?;
-                let Some(value) = decode_numeric_opt(&decoder, &row, target_idx, &mut scratch)? else {
+                let target_idx =
+                    target_idx.ok_or_else(|| anyhow!("numeric agg requires column"))?;
+                let Some(value) = decode_numeric_opt(&decoder, &row, target_idx, &mut scratch)?
+                else {
                     continue;
                 };
                 let entry = sum_map.entry(entity).or_insert((0.0, 0, value, value));
@@ -334,7 +348,9 @@ fn execute_simple_comparison_agg(
                     entry.3 = value;
                 }
             }
-            AggFunc::ListDistinct => return Err(anyhow!("LIST_DISTINCT not supported in comparison")),
+            AggFunc::ListDistinct => {
+                return Err(anyhow!("LIST_DISTINCT not supported in comparison"))
+            }
         }
 
         if let Some(ts_idx) = timestamp_idx {
@@ -495,13 +511,11 @@ fn extract_comparison_agg(
         return Err(anyhow!("predict comparison must be a single comparison"));
     };
     match (left.as_ref(), right.as_ref()) {
-        (crate::ast::Expr::Agg(agg), crate::ast::Expr::Number(n)) => {
-            Ok(((**agg).clone(), *op, *n))
-        }
-        (crate::ast::Expr::Number(n), crate::ast::Expr::Agg(agg)) => {
-            Ok(((**agg).clone(), *op, *n))
-        }
-        _ => Err(anyhow!("predict comparison must compare aggregation to a number")),
+        (crate::ast::Expr::Agg(agg), crate::ast::Expr::Number(n)) => Ok(((**agg).clone(), *op, *n)),
+        (crate::ast::Expr::Number(n), crate::ast::Expr::Agg(agg)) => Ok(((**agg).clone(), *op, *n)),
+        _ => Err(anyhow!(
+            "predict comparison must compare aggregation to a number"
+        )),
     }
 }
 
@@ -520,12 +534,19 @@ fn expr_has_agg(expr: &crate::ast::Expr) -> bool {
     matches!(expr, crate::ast::Expr::Agg(_))
 }
 
-fn execute_simple_column(reader: &IndexReader, entity_table: &str, col: &crate::ast::ColumnRef, query: &Query) -> Result<Vec<TrainRow>> {
+fn execute_simple_column(
+    reader: &IndexReader,
+    entity_table: &str,
+    col: &crate::ast::ColumnRef,
+    query: &Query,
+) -> Result<Vec<TrainRow>> {
     if entity_table != col.table {
         return Err(anyhow!("predict column must come from entity table"));
     }
     if query.assuming.is_some() {
-        return Err(anyhow!("ASSUMING not supported for non-aggregation predict"));
+        return Err(anyhow!(
+            "ASSUMING not supported for non-aggregation predict"
+        ));
     }
     let ctx = reader
         .node_context(entity_table)
@@ -653,7 +674,10 @@ fn find_timestamp_index(
     col_index: &HashMap<String, usize>,
 ) -> Option<usize> {
     for (idx, col) in ctx.columns.iter().enumerate() {
-        if matches!(col.logical_type, IngestedType::Timestamp | IngestedType::Date) {
+        if matches!(
+            col.logical_type,
+            IngestedType::Timestamp | IngestedType::Date
+        ) {
             return Some(idx);
         }
     }
@@ -694,12 +718,8 @@ fn evaluate_assuming(
     match predicate {
         crate::ast::PredicateExpr::Comparison { left, op, right } => {
             let (agg_expr, literal) = match (left.as_ref(), right.as_ref()) {
-                (crate::ast::Expr::Agg(agg), crate::ast::Expr::Number(n)) => {
-                    (agg.as_ref(), *n as f64)
-                }
-                (crate::ast::Expr::Number(n), crate::ast::Expr::Agg(agg)) => {
-                    (agg.as_ref(), *n as f64)
-                }
+                (crate::ast::Expr::Agg(agg), crate::ast::Expr::Number(n)) => (agg.as_ref(), (*n)),
+                (crate::ast::Expr::Number(n), crate::ast::Expr::Agg(agg)) => (agg.as_ref(), (*n)),
                 _ => return Err(anyhow!("unsupported ASSUMING predicate")),
             };
 
@@ -708,17 +728,12 @@ fn evaluate_assuming(
                 AggTarget::Star(tbl) => &tbl.table,
             };
             if table != agg_table {
-                return Err(anyhow!("ASSUMING cross-table not supported in simple executor"));
+                return Err(anyhow!(
+                    "ASSUMING cross-table not supported in simple executor"
+                ));
             }
 
-            let map = compute_numeric_agg(
-                agg_expr,
-                reader,
-                table,
-                entity_idx,
-                decoder,
-                col_index,
-            )?;
+            let map = compute_numeric_agg(agg_expr, reader, table, entity_idx, decoder, col_index)?;
 
             for (entity, value) in map {
                 if compare_numeric(value, literal, *op) {
@@ -742,9 +757,11 @@ fn compute_numeric_agg(
     col_index: &HashMap<String, usize>,
 ) -> Result<HashMap<Value, f64>> {
     let target_idx = match &agg.target {
-        AggTarget::Column(col) => Some(*col_index
-            .get(&col.column)
-            .ok_or_else(|| anyhow!("missing target column {}", col.column))?),
+        AggTarget::Column(col) => Some(
+            *col_index
+                .get(&col.column)
+                .ok_or_else(|| anyhow!("missing target column {}", col.column))?,
+        ),
         AggTarget::Star(_) => None,
     };
 
@@ -765,7 +782,8 @@ fn compute_numeric_agg(
         match agg.func {
             AggFunc::Count => {
                 if let Some(target_idx) = target_idx {
-                    let Some(_value) = decode_value_opt(decoder, &row, target_idx, &mut scratch)? else {
+                    let Some(_value) = decode_value_opt(decoder, &row, target_idx, &mut scratch)?
+                    else {
                         continue;
                     };
                 }
@@ -773,8 +791,10 @@ fn compute_numeric_agg(
                 *entry += 1;
             }
             AggFunc::Sum | AggFunc::Avg | AggFunc::Min | AggFunc::Max => {
-                let target_idx = target_idx.ok_or_else(|| anyhow!("numeric agg requires column"))?;
-                let Some(value) = decode_numeric_opt(decoder, &row, target_idx, &mut scratch)? else {
+                let target_idx =
+                    target_idx.ok_or_else(|| anyhow!("numeric agg requires column"))?;
+                let Some(value) = decode_numeric_opt(decoder, &row, target_idx, &mut scratch)?
+                else {
                     continue;
                 };
                 let entry = sums.entry(entity).or_insert((0.0, 0, value, value));
@@ -924,10 +944,12 @@ fn compare_values(left: &SimpleValue, right: &SimpleValue, op: crate::ast::Compa
 mod tests {
     use super::*;
     use crate::parser::parse_query;
-    use diskgraph_core::metadata::{DatasetMetadata, NodeDataCompression, NodeShardMetadata, NodeTypeMetadata};
+    use diskgraph_core::metadata::{
+        DatasetMetadata, NodeDataCompression, NodeShardMetadata, NodeTypeMetadata,
+    };
     use diskgraph_rowpack::{
-        ColumnContext, ColumnEncoding, IngestedType, RowPackContext,
-        RowPackEncoder, RowPackScratch, ValueRef,
+        ColumnContext, ColumnEncoding, IngestedType, RowPackContext, RowPackEncoder,
+        RowPackScratch, ValueRef,
     };
     use std::io::Write;
 
@@ -1015,15 +1037,22 @@ mod tests {
             }],
             edge_relations: Vec::new(),
         };
-        std::fs::write(dir.join("index_metadata.json"), serde_json::to_vec_pretty(&metadata).unwrap())
-            .expect("write metadata");
+        std::fs::write(
+            dir.join("index_metadata.json"),
+            serde_json::to_vec_pretty(&metadata).unwrap(),
+        )
+        .expect("write metadata");
 
         let encoder = RowPackEncoder::new(ctx.clone()).expect("encoder");
         let mut scratch = RowPackScratch::new(encoder.context());
         let mut row1 = Vec::new();
         encoder
             .encode_row_into(
-                &[ValueRef::Int64(1), ValueRef::Int64(11), ValueRef::Float64(2.5)],
+                &[
+                    ValueRef::Int64(1),
+                    ValueRef::Int64(11),
+                    ValueRef::Float64(2.5),
+                ],
                 &mut row1,
                 &mut scratch,
             )
@@ -1031,7 +1060,11 @@ mod tests {
         let mut row2 = Vec::new();
         encoder
             .encode_row_into(
-                &[ValueRef::Int64(1), ValueRef::Int64(12), ValueRef::Float64(1.5)],
+                &[
+                    ValueRef::Int64(1),
+                    ValueRef::Int64(12),
+                    ValueRef::Float64(1.5),
+                ],
                 &mut row2,
                 &mut scratch,
             )
@@ -1041,7 +1074,9 @@ mod tests {
         write_node_data(&node_data_path, vec![row1, row2]);
 
         let reader = IndexReader::open(&dir).expect("reader");
-        let query = parse_query("PREDICT SUM(transactions.price) FOR EACH transactions.customer_id").expect("parse");
+        let query =
+            parse_query("PREDICT SUM(transactions.price) FOR EACH transactions.customer_id")
+                .expect("parse");
         let rows = execute_simple(&query, &reader).expect("execute");
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].entity, Value::Int(1));
@@ -1074,15 +1109,22 @@ mod tests {
             }],
             edge_relations: Vec::new(),
         };
-        std::fs::write(dir.join("index_metadata.json"), serde_json::to_vec_pretty(&metadata).unwrap())
-            .expect("write metadata");
+        std::fs::write(
+            dir.join("index_metadata.json"),
+            serde_json::to_vec_pretty(&metadata).unwrap(),
+        )
+        .expect("write metadata");
 
         let encoder = RowPackEncoder::new(ctx.clone()).expect("encoder");
         let mut scratch = RowPackScratch::new(encoder.context());
         let mut row1 = Vec::new();
         encoder
             .encode_row_into(
-                &[ValueRef::Int64(1), ValueRef::Int64(10), ValueRef::Float64(2.5)],
+                &[
+                    ValueRef::Int64(1),
+                    ValueRef::Int64(10),
+                    ValueRef::Float64(2.5),
+                ],
                 &mut row1,
                 &mut scratch,
             )
@@ -1090,7 +1132,11 @@ mod tests {
         let mut row2 = Vec::new();
         encoder
             .encode_row_into(
-                &[ValueRef::Int64(1), ValueRef::Int64(12), ValueRef::Float64(1.5)],
+                &[
+                    ValueRef::Int64(1),
+                    ValueRef::Int64(12),
+                    ValueRef::Float64(1.5),
+                ],
                 &mut row2,
                 &mut scratch,
             )
@@ -1101,18 +1147,21 @@ mod tests {
 
         let reader = IndexReader::open(&dir).expect("reader");
 
-        let avg_query = parse_query("PREDICT AVG(transactions.price) FOR EACH transactions.customer_id")
-            .expect("parse");
+        let avg_query =
+            parse_query("PREDICT AVG(transactions.price) FOR EACH transactions.customer_id")
+                .expect("parse");
         let avg_rows = execute_simple(&avg_query, &reader).expect("execute");
         assert_eq!(avg_rows[0].target, TargetValue::Number(2.0));
 
-        let min_query = parse_query("PREDICT MIN(transactions.price) FOR EACH transactions.customer_id")
-            .expect("parse");
+        let min_query =
+            parse_query("PREDICT MIN(transactions.price) FOR EACH transactions.customer_id")
+                .expect("parse");
         let min_rows = execute_simple(&min_query, &reader).expect("execute");
         assert_eq!(min_rows[0].target, TargetValue::Number(1.5));
 
-        let max_query = parse_query("PREDICT MAX(transactions.price) FOR EACH transactions.customer_id")
-            .expect("parse");
+        let max_query =
+            parse_query("PREDICT MAX(transactions.price) FOR EACH transactions.customer_id")
+                .expect("parse");
         let max_rows = execute_simple(&max_query, &reader).expect("execute");
         assert_eq!(max_rows[0].target, TargetValue::Number(2.5));
     }
@@ -1143,15 +1192,22 @@ mod tests {
             }],
             edge_relations: Vec::new(),
         };
-        std::fs::write(dir.join("index_metadata.json"), serde_json::to_vec_pretty(&metadata).unwrap())
-            .expect("write metadata");
+        std::fs::write(
+            dir.join("index_metadata.json"),
+            serde_json::to_vec_pretty(&metadata).unwrap(),
+        )
+        .expect("write metadata");
 
         let encoder = RowPackEncoder::new(ctx.clone()).expect("encoder");
         let mut scratch = RowPackScratch::new(encoder.context());
         let mut row1 = Vec::new();
         encoder
             .encode_row_into(
-                &[ValueRef::Int64(1), ValueRef::Int64(10), ValueRef::Float64(2.5)],
+                &[
+                    ValueRef::Int64(1),
+                    ValueRef::Int64(10),
+                    ValueRef::Float64(2.5),
+                ],
                 &mut row1,
                 &mut scratch,
             )
@@ -1159,7 +1215,11 @@ mod tests {
         let mut row2 = Vec::new();
         encoder
             .encode_row_into(
-                &[ValueRef::Int64(1), ValueRef::Int64(12), ValueRef::Float64(1.5)],
+                &[
+                    ValueRef::Int64(1),
+                    ValueRef::Int64(12),
+                    ValueRef::Float64(1.5),
+                ],
                 &mut row2,
                 &mut scratch,
             )
@@ -1203,15 +1263,22 @@ mod tests {
             }],
             edge_relations: Vec::new(),
         };
-        std::fs::write(dir.join("index_metadata.json"), serde_json::to_vec_pretty(&metadata).unwrap())
-            .expect("write metadata");
+        std::fs::write(
+            dir.join("index_metadata.json"),
+            serde_json::to_vec_pretty(&metadata).unwrap(),
+        )
+        .expect("write metadata");
 
         let encoder = RowPackEncoder::new(ctx.clone()).expect("encoder");
         let mut scratch = RowPackScratch::new(encoder.context());
         let mut row1 = Vec::new();
         encoder
             .encode_row_into(
-                &[ValueRef::Int64(1), ValueRef::Int64(10), ValueRef::Float64(2.5)],
+                &[
+                    ValueRef::Int64(1),
+                    ValueRef::Int64(10),
+                    ValueRef::Float64(2.5),
+                ],
                 &mut row1,
                 &mut scratch,
             )
@@ -1219,7 +1286,11 @@ mod tests {
         let mut row2 = Vec::new();
         encoder
             .encode_row_into(
-                &[ValueRef::Int64(1), ValueRef::Int64(11), ValueRef::Float64(1.5)],
+                &[
+                    ValueRef::Int64(1),
+                    ValueRef::Int64(11),
+                    ValueRef::Float64(1.5),
+                ],
                 &mut row2,
                 &mut scratch,
             )
@@ -1229,13 +1300,22 @@ mod tests {
         write_node_data(&node_data_path, vec![row1, row2]);
 
         let reader = IndexReader::open(&dir).expect("reader");
-        let query = parse_query("PREDICT LIST_DISTINCT(transactions.article_id) FOR EACH transactions.customer_id").expect("parse");
+        let query = parse_query(
+            "PREDICT LIST_DISTINCT(transactions.article_id) FOR EACH transactions.customer_id",
+        )
+        .expect("parse");
         let rows = execute_simple(&query, &reader).expect("execute");
         match &rows[0].target {
             TargetValue::List(values) => {
                 let mut ids: Vec<i64> = values
                     .iter()
-                    .filter_map(|v| if let Value::Int(id) = v { Some(*id) } else { None })
+                    .filter_map(|v| {
+                        if let Value::Int(id) = v {
+                            Some(*id)
+                        } else {
+                            None
+                        }
+                    })
                     .collect();
                 ids.sort();
                 assert_eq!(ids, vec![10, 11]);
@@ -1270,15 +1350,22 @@ mod tests {
             }],
             edge_relations: Vec::new(),
         };
-        std::fs::write(dir.join("index_metadata.json"), serde_json::to_vec_pretty(&metadata).unwrap())
-            .expect("write metadata");
+        std::fs::write(
+            dir.join("index_metadata.json"),
+            serde_json::to_vec_pretty(&metadata).unwrap(),
+        )
+        .expect("write metadata");
 
         let encoder = RowPackEncoder::new(ctx.clone()).expect("encoder");
         let mut scratch = RowPackScratch::new(encoder.context());
         let mut row1 = Vec::new();
         encoder
             .encode_row_into(
-                &[ValueRef::Int64(1), ValueRef::Int64(10), ValueRef::Float64(2.5)],
+                &[
+                    ValueRef::Int64(1),
+                    ValueRef::Int64(10),
+                    ValueRef::Float64(2.5),
+                ],
                 &mut row1,
                 &mut scratch,
             )
@@ -1286,7 +1373,11 @@ mod tests {
         let mut row2 = Vec::new();
         encoder
             .encode_row_into(
-                &[ValueRef::Int64(1), ValueRef::Int64(11), ValueRef::Float64(1.5)],
+                &[
+                    ValueRef::Int64(1),
+                    ValueRef::Int64(11),
+                    ValueRef::Float64(1.5),
+                ],
                 &mut row2,
                 &mut scratch,
             )
@@ -1331,8 +1422,11 @@ mod tests {
             }],
             edge_relations: Vec::new(),
         };
-        std::fs::write(dir.join("index_metadata.json"), serde_json::to_vec_pretty(&metadata).unwrap())
-            .expect("write metadata");
+        std::fs::write(
+            dir.join("index_metadata.json"),
+            serde_json::to_vec_pretty(&metadata).unwrap(),
+        )
+        .expect("write metadata");
 
         let encoder = RowPackEncoder::new(ctx.clone()).expect("encoder");
         let mut scratch = RowPackScratch::new(encoder.context());
@@ -1340,7 +1434,11 @@ mod tests {
         let mut row1 = Vec::new();
         encoder
             .encode_row_into(
-                &[ValueRef::Int64(1), ValueRef::Int64(10), ValueRef::Float64(2.5)],
+                &[
+                    ValueRef::Int64(1),
+                    ValueRef::Int64(10),
+                    ValueRef::Float64(2.5),
+                ],
                 &mut row1,
                 &mut scratch,
             )
@@ -1348,7 +1446,11 @@ mod tests {
         let mut row2 = Vec::new();
         encoder
             .encode_row_into(
-                &[ValueRef::Int64(1), ValueRef::Int64(11), ValueRef::Float64(1.5)],
+                &[
+                    ValueRef::Int64(1),
+                    ValueRef::Int64(11),
+                    ValueRef::Float64(1.5),
+                ],
                 &mut row2,
                 &mut scratch,
             )
@@ -1356,7 +1458,11 @@ mod tests {
         let mut row3 = Vec::new();
         encoder
             .encode_row_into(
-                &[ValueRef::Int64(2), ValueRef::Int64(12), ValueRef::Float64(3.0)],
+                &[
+                    ValueRef::Int64(2),
+                    ValueRef::Int64(12),
+                    ValueRef::Float64(3.0),
+                ],
                 &mut row3,
                 &mut scratch,
             )
@@ -1420,8 +1526,11 @@ mod tests {
             }],
             edge_relations: Vec::new(),
         };
-        std::fs::write(dir.join("index_metadata.json"), serde_json::to_vec_pretty(&metadata).unwrap())
-            .expect("write metadata");
+        std::fs::write(
+            dir.join("index_metadata.json"),
+            serde_json::to_vec_pretty(&metadata).unwrap(),
+        )
+        .expect("write metadata");
 
         let encoder = RowPackEncoder::new(ctx.clone()).expect("encoder");
         let mut scratch = RowPackScratch::new(encoder.context());
@@ -1446,7 +1555,8 @@ mod tests {
         write_node_data(&node_data_path, vec![row1, row2]);
 
         let reader = IndexReader::open(&dir).expect("reader");
-        let query = parse_query("PREDICT customers.active FOR EACH customers.customer_id").expect("parse");
+        let query =
+            parse_query("PREDICT customers.active FOR EACH customers.customer_id").expect("parse");
         let rows = execute_simple(&query, &reader).expect("execute");
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].entity, Value::Int(1));
@@ -1498,8 +1608,11 @@ mod tests {
             }],
             edge_relations: Vec::new(),
         };
-        std::fs::write(dir.join("index_metadata.json"), serde_json::to_vec_pretty(&metadata).unwrap())
-            .expect("write metadata");
+        std::fs::write(
+            dir.join("index_metadata.json"),
+            serde_json::to_vec_pretty(&metadata).unwrap(),
+        )
+        .expect("write metadata");
 
         let encoder = RowPackEncoder::new(ctx.clone()).expect("encoder");
         let mut scratch = RowPackScratch::new(encoder.context());
@@ -1524,7 +1637,8 @@ mod tests {
         write_node_data(&node_data_path, vec![row1, row2]);
 
         let reader = IndexReader::open(&dir).expect("reader");
-        let query = parse_query("PREDICT customers.active FOR EACH customers.customer_id").expect("parse");
+        let query =
+            parse_query("PREDICT customers.active FOR EACH customers.customer_id").expect("parse");
         let rows = execute_simple(&query, &reader).expect("execute");
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].entity, Value::Int(1));
@@ -1578,8 +1692,11 @@ mod tests {
             }],
             edge_relations: Vec::new(),
         };
-        std::fs::write(dir.join("index_metadata.json"), serde_json::to_vec_pretty(&metadata).unwrap())
-            .expect("write metadata");
+        std::fs::write(
+            dir.join("index_metadata.json"),
+            serde_json::to_vec_pretty(&metadata).unwrap(),
+        )
+        .expect("write metadata");
 
         let encoder = RowPackEncoder::new(ctx.clone()).expect("encoder");
         let mut scratch = RowPackScratch::new(encoder.context());
@@ -1604,7 +1721,8 @@ mod tests {
         write_node_data(&node_data_path, vec![row1, row2]);
 
         let reader = IndexReader::open(&dir).expect("reader");
-        let query = parse_query("PREDICT customers.score FOR EACH customers.customer_id").expect("parse");
+        let query =
+            parse_query("PREDICT customers.score FOR EACH customers.customer_id").expect("parse");
         let rows = execute_simple(&query, &reader).expect("execute");
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].target, TargetValue::Number(1.5));
@@ -1657,8 +1775,11 @@ mod tests {
             }],
             edge_relations: Vec::new(),
         };
-        std::fs::write(dir.join("index_metadata.json"), serde_json::to_vec_pretty(&metadata).unwrap())
-            .expect("write metadata");
+        std::fs::write(
+            dir.join("index_metadata.json"),
+            serde_json::to_vec_pretty(&metadata).unwrap(),
+        )
+        .expect("write metadata");
 
         let encoder = RowPackEncoder::new(ctx.clone()).expect("encoder");
         let mut scratch = RowPackScratch::new(encoder.context());
@@ -1683,7 +1804,8 @@ mod tests {
         write_node_data(&node_data_path, vec![row1, row2]);
 
         let reader = IndexReader::open(&dir).expect("reader");
-        let query = parse_query("PREDICT customers.active = 1 FOR EACH customers.customer_id").expect("parse");
+        let query = parse_query("PREDICT customers.active = 1 FOR EACH customers.customer_id")
+            .expect("parse");
         let rows = execute_simple(&query, &reader).expect("execute");
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].target, TargetValue::Scalar(Value::Bool(true)));
@@ -1737,8 +1859,11 @@ mod tests {
             }],
             edge_relations: Vec::new(),
         };
-        std::fs::write(dir.join("index_metadata.json"), serde_json::to_vec_pretty(&metadata).unwrap())
-            .expect("write metadata");
+        std::fs::write(
+            dir.join("index_metadata.json"),
+            serde_json::to_vec_pretty(&metadata).unwrap(),
+        )
+        .expect("write metadata");
 
         let encoder = RowPackEncoder::new(ctx.clone()).expect("encoder");
         let mut scratch = RowPackScratch::new(encoder.context());
@@ -1763,7 +1888,8 @@ mod tests {
         write_node_data(&node_data_path, vec![row1, row2]);
 
         let reader = IndexReader::open(&dir).expect("reader");
-        let query = parse_query("PREDICT customers.active = 1 FOR EACH customers.customer_id").expect("parse");
+        let query = parse_query("PREDICT customers.active = 1 FOR EACH customers.customer_id")
+            .expect("parse");
         let rows = execute_simple(&query, &reader).expect("execute");
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].entity, Value::Int(1));

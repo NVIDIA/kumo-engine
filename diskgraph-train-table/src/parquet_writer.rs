@@ -97,7 +97,7 @@ fn infer_target_type(rows: &[TrainTableRow]) -> Result<TargetType> {
 }
 
 fn infer_list_value_type(values: &[Value]) -> Option<ScalarType> {
-    for value in values {
+    if let Some(value) = values.iter().next() {
         return Some(match value {
             Value::Int(_) => ScalarType::Int64,
             Value::UInt(_) => ScalarType::UInt64,
@@ -129,10 +129,18 @@ fn build_columns(
     let mut fields = Vec::new();
 
     columns.push(build_entity_array(rows, entity_type)?);
-    fields.push(Field::new("entity", scalar_type_to_datatype(entity_type), false));
+    fields.push(Field::new(
+        "entity",
+        scalar_type_to_datatype(entity_type),
+        false,
+    ));
 
     columns.push(build_target_array(rows, target_type)?);
-    fields.push(Field::new("target", target_type_to_datatype(target_type), false));
+    fields.push(Field::new(
+        "target",
+        target_type_to_datatype(target_type),
+        false,
+    ));
 
     columns.push(build_timestamp_array(rows));
     fields.push(Field::new("timestamp", DataType::Int64, false));
@@ -294,11 +302,21 @@ fn build_scalar_target_array(rows: &[TrainTableRow], scalar_type: ScalarType) ->
 
 fn build_list_array(rows: &[TrainTableRow], scalar_type: ScalarType) -> Result<ArrayRef> {
     match scalar_type {
-        ScalarType::Int64 => build_list_with_builder(rows, ListBuilder::new(Int64Builder::new()), scalar_type),
-        ScalarType::UInt64 => build_list_with_builder(rows, ListBuilder::new(UInt64Builder::new()), scalar_type),
-        ScalarType::Bool => build_list_with_builder(rows, ListBuilder::new(BooleanBuilder::new()), scalar_type),
-        ScalarType::Utf8 => build_list_with_builder(rows, ListBuilder::new(StringBuilder::new()), scalar_type),
-        ScalarType::Binary => build_list_with_builder(rows, ListBuilder::new(BinaryBuilder::new()), scalar_type),
+        ScalarType::Int64 => {
+            build_list_with_builder(rows, ListBuilder::new(Int64Builder::new()), scalar_type)
+        }
+        ScalarType::UInt64 => {
+            build_list_with_builder(rows, ListBuilder::new(UInt64Builder::new()), scalar_type)
+        }
+        ScalarType::Bool => {
+            build_list_with_builder(rows, ListBuilder::new(BooleanBuilder::new()), scalar_type)
+        }
+        ScalarType::Utf8 => {
+            build_list_with_builder(rows, ListBuilder::new(StringBuilder::new()), scalar_type)
+        }
+        ScalarType::Binary => {
+            build_list_with_builder(rows, ListBuilder::new(BinaryBuilder::new()), scalar_type)
+        }
     }
 }
 
@@ -436,9 +454,11 @@ fn target_type_to_datatype(target_type: TargetType) -> DataType {
     match target_type {
         TargetType::Number => DataType::Float64,
         TargetType::Count => DataType::UInt64,
-        TargetType::List(scalar_type) => {
-            DataType::List(Arc::new(Field::new("item", scalar_type_to_datatype(scalar_type), true)))
-        }
+        TargetType::List(scalar_type) => DataType::List(Arc::new(Field::new(
+            "item",
+            scalar_type_to_datatype(scalar_type),
+            true,
+        ))),
         TargetType::Scalar(scalar_type) => scalar_type_to_datatype(scalar_type),
     }
 }

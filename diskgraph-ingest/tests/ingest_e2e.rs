@@ -1,8 +1,8 @@
 use anyhow::{anyhow, Result};
 use diskgraph_core::metadata::DatasetMetadata;
-use diskgraph_ingest::{ingest, ingest_with_stats, Dest, IngestOptions};
 use diskgraph_index::graph::GraphIndexReader;
 use diskgraph_index::pkmap::{shard_for_key, Key};
+use diskgraph_ingest::{ingest, ingest_with_stats, Dest, IngestOptions};
 use parquet::arrow::ArrowWriter;
 use parquet::file::properties::WriterProperties;
 use std::fs;
@@ -33,7 +33,9 @@ fn write_parquet(path: &Path, schema: Schema, columns: Vec<ArrayRef>) -> Result<
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let props = WriterProperties::builder().set_max_row_group_size(1024).build();
+    let props = WriterProperties::builder()
+        .set_max_row_group_size(1024)
+        .build();
     let file = fs::File::create(path)?;
     let mut writer = ArrowWriter::try_new(file, Arc::new(schema.clone()), Some(props))?;
     let batch = RecordBatch::try_new(Arc::new(schema), columns)?;
@@ -81,10 +83,7 @@ fn assert_pkey_missing(reader: &GraphIndexReader, table_name: &str, keys: &[&str
     Ok(())
 }
 
-fn sum_relation_edges(
-    table: &diskgraph_index::graph::TableReader,
-    rel_name: &str,
-) -> Result<u64> {
+fn sum_relation_edges(table: &diskgraph_index::graph::TableReader, rel_name: &str) -> Result<u64> {
     let rel_idx = table
         .relations()
         .iter()
@@ -582,7 +581,11 @@ fn ingest_parquet_multi_file_table_with_two_shards() -> Result<()> {
                 break;
             }
         }
-        assert!(found, "missing edge user_id={} order_id={}", user_id, order_id);
+        assert!(
+            found,
+            "missing edge user_id={} order_id={}",
+            user_id, order_id
+        );
         expected_edges += 1;
     }
     let total = sum_relation_edges(&user_table, "edge_OrderLink_src_to_dst")?;
@@ -603,12 +606,7 @@ fn ingest_parquet_with_sorted_mapping() -> Result<()> {
         Field::new("weight", DataType::Float32, false),
     ]);
     let ids = Arc::new(StringArray::from(vec![
-        "SKU00001",
-        "SKU00002",
-        "SKU00003",
-        "SKU00004",
-        "SKU00005",
-        "SKU00006",
+        "SKU00001", "SKU00002", "SKU00003", "SKU00004", "SKU00005", "SKU00006",
     ])) as ArrayRef;
     let weights = Arc::new(Float32Array::from(vec![
         1.0_f32, 2.0_f32, 3.0_f32, 4.0_f32, 5.0_f32, 6.0_f32,
@@ -662,9 +660,14 @@ fn ingest_parquet_with_sorted_mapping() -> Result<()> {
         progress: None,
         parallel: true,
         index_mem_budget_bytes: None,
-            peak_mem_stats: None,
+        peak_mem_stats: None,
     };
-    let metadata = ingest(&source_path, output_root.to_str().unwrap(), Dest::Local, options)?;
+    let metadata = ingest(
+        &source_path,
+        output_root.to_str().unwrap(),
+        Dest::Local,
+        options,
+    )?;
     assert_eq!(metadata.node_types.len(), 1);
     assert_eq!(metadata.edge_relations.len(), 2);
 
@@ -684,7 +687,9 @@ fn ingest_parquet_with_sorted_mapping() -> Result<()> {
     assert!(fs::metadata(hash_path)?.len() > 0);
 
     let reader = GraphIndexReader::open(&output_root.join("index_metadata.json"), &output_root)?;
-    let table = reader.table("Sku").ok_or_else(|| anyhow!("missing Sku table"))?;
+    let table = reader
+        .table("Sku")
+        .ok_or_else(|| anyhow!("missing Sku table"))?;
     let mut shard_seen = vec![false; table.shard_count()];
     let pk = table
         .primary_key_map()
@@ -693,12 +698,7 @@ fn ingest_parquet_with_sorted_mapping() -> Result<()> {
         .node_data_decoder()
         .ok_or_else(|| anyhow!("missing rowpack decoder"))?;
     for expected in [
-        "SKU00001",
-        "SKU00002",
-        "SKU00003",
-        "SKU00004",
-        "SKU00005",
-        "SKU00006",
+        "SKU00001", "SKU00002", "SKU00003", "SKU00004", "SKU00005", "SKU00006",
     ] {
         let key = table.parse_pk_key(expected)?;
         let node_id = table
@@ -741,7 +741,7 @@ fn ingest_parquet_with_int_pk_lookup() -> Result<()> {
     let table_path = input_root.join("items.parquet");
     let edge_path = input_root.join("item_edges.parquet");
     let mut ids: Vec<i64> = Vec::new();
-    let mut seen = vec![false; 2];
+    let mut seen = [false; 2];
     let mut cursor = 1_i64;
     while (!seen.iter().all(|v| *v) || ids.len() < 3) && ids.len() < 8 {
         let key = Key::Int(cursor as u64);
@@ -824,7 +824,9 @@ fn ingest_parquet_with_int_pk_lookup() -> Result<()> {
     let key_refs: Vec<&str> = keys.iter().map(|s| s.as_str()).collect();
     assert_pkey_lookups(&reader, "Item", &key_refs)?;
     assert_pkey_missing(&reader, "Item", &["9999"])?;
-    let table = reader.table("Item").ok_or_else(|| anyhow!("missing Item table"))?;
+    let table = reader
+        .table("Item")
+        .ok_or_else(|| anyhow!("missing Item table"))?;
     let total_edges = sum_relation_edges(&table, "edge_ItemEdge_src_to_dst")?;
     assert_eq!(total_edges, 2);
 
@@ -844,7 +846,7 @@ fn ingest_csv_with_bytes_pk_mapping() -> Result<()> {
         Field::new("name", DataType::Utf8, false),
     ]);
     let mut ids: Vec<[u8; 4]> = Vec::new();
-    let mut seen = vec![false; 2];
+    let mut seen = [false; 2];
     let mut cursor = 0u8;
     while (!seen.iter().all(|v| *v) || ids.len() < 3) && ids.len() < 16 {
         let key = [b'A', b'A', b'A', b'A' + cursor];
@@ -918,9 +920,14 @@ fn ingest_csv_with_bytes_pk_mapping() -> Result<()> {
         progress: None,
         parallel: true,
         index_mem_budget_bytes: None,
-            peak_mem_stats: None,
+        peak_mem_stats: None,
     };
-    let metadata = ingest(&source_path, output_root.to_str().unwrap(), Dest::Local, options)?;
+    let metadata = ingest(
+        &source_path,
+        output_root.to_str().unwrap(),
+        Dest::Local,
+        options,
+    )?;
     let asset = metadata
         .node_types
         .iter()
@@ -944,7 +951,9 @@ fn ingest_csv_with_bytes_pk_mapping() -> Result<()> {
     let key_refs: Vec<&str> = keys.iter().map(|s| s.as_str()).collect();
     assert_pkey_lookups(&reader, "Asset", &key_refs)?;
     assert_pkey_missing(&reader, "Asset", &["IJKL"])?;
-    let table = reader.table("Asset").ok_or_else(|| anyhow!("missing Asset table"))?;
+    let table = reader
+        .table("Asset")
+        .ok_or_else(|| anyhow!("missing Asset table"))?;
     let total_edges = sum_relation_edges(&table, "edge_AssetEdge_src_to_dst")?;
     assert_eq!(total_edges, 2);
 
@@ -988,9 +997,14 @@ fn ingest_pk_map_header_has_expected_format() -> Result<()> {
         progress: None,
         parallel: true,
         index_mem_budget_bytes: None,
-            peak_mem_stats: None,
+        peak_mem_stats: None,
     };
-    let _metadata = ingest(&source_path, output_root.to_str().unwrap(), Dest::Local, options)?;
+    let _metadata = ingest(
+        &source_path,
+        output_root.to_str().unwrap(),
+        Dest::Local,
+        options,
+    )?;
     let data_path = output_root.join("nodes/asset/pk_data-00000.bin");
     let bytes = fs::read(&data_path)?;
     assert!(bytes.starts_with(b"DGPKDAT\0"));
@@ -1000,7 +1014,7 @@ fn ingest_pk_map_header_has_expected_format() -> Result<()> {
     assert_eq!(key_type_tag, 2);
     let key_len = u32::from_le_bytes(bytes[13..17].try_into().unwrap());
     assert_eq!(key_len, 0);
-    assert!(bytes.len() > 0);
+    assert!(!bytes.is_empty());
 
     Ok(())
 }
@@ -1076,8 +1090,12 @@ fn ingest_missing_fkeys_do_not_create_edges() -> Result<()> {
 
     let index_metadata = output_root.join("index_metadata.json");
     let reader = GraphIndexReader::open(&index_metadata, &output_root)?;
-    let event_table = reader.table("Event").ok_or_else(|| anyhow!("missing Event"))?;
-    let asset_table = reader.table("Asset").ok_or_else(|| anyhow!("missing Asset"))?;
+    let event_table = reader
+        .table("Event")
+        .ok_or_else(|| anyhow!("missing Event"))?;
+    let asset_table = reader
+        .table("Asset")
+        .ok_or_else(|| anyhow!("missing Asset"))?;
     let forward_rows = sum_relation_edges(&event_table, "Event_asset_id_to_Asset_id")?;
     let reverse_rows = sum_relation_edges(&asset_table, "Event_asset_id_to_Asset_id_reverse")?;
     assert_eq!(forward_rows, 1);
@@ -1111,8 +1129,10 @@ fn ingest_relationship_uses_dest_timestamp_sort_key() -> Result<()> {
         ),
     ]);
     let session_ids = Arc::new(Int64Array::from(vec![0, 1])) as ArrayRef;
-    let session_ts = Arc::new(TimestampSecondArray::from(vec![1_700_000_000, 1_700_001_000]))
-        as ArrayRef;
+    let session_ts = Arc::new(TimestampSecondArray::from(vec![
+        1_700_000_000,
+        1_700_001_000,
+    ])) as ArrayRef;
     write_parquet(&session_path, session_schema, vec![session_ids, session_ts])?;
 
     let source = serde_json::json!({
@@ -1185,7 +1205,8 @@ fn ingest_relationship_uses_dest_timestamp_sort_key() -> Result<()> {
     let event_table = reader.table("Event").unwrap();
     let session_table = reader.table("Session").unwrap();
     let forward_rows = sum_relation_edges(&event_table, "Event_session_id_to_Session_id")?;
-    let reverse_rows = sum_relation_edges(&session_table, "Event_session_id_to_Session_id_reverse")?;
+    let reverse_rows =
+        sum_relation_edges(&session_table, "Event_session_id_to_Session_id_reverse")?;
     assert_eq!(forward_rows, 2);
     assert_eq!(reverse_rows, 2);
 
@@ -1328,7 +1349,11 @@ fn ingest_edge_table_mixed_sort_keys() -> Result<()> {
         Schema::new(vec![
             Field::new("id", DataType::Int64, false),
             Field::new("rank", DataType::Float32, false),
-            Field::new("created_at", DataType::Timestamp(arrow_schema::TimeUnit::Second, None), false),
+            Field::new(
+                "created_at",
+                DataType::Timestamp(arrow_schema::TimeUnit::Second, None),
+                false,
+            ),
         ]),
         vec![
             Arc::new(Int64Array::from(vec![0, 1])) as ArrayRef,
@@ -1341,7 +1366,11 @@ fn ingest_edge_table_mixed_sort_keys() -> Result<()> {
         Schema::new(vec![
             Field::new("user_id", DataType::Int64, false),
             Field::new("item_id", DataType::Int64, false),
-            Field::new("ts", DataType::Timestamp(arrow_schema::TimeUnit::Second, None), false),
+            Field::new(
+                "ts",
+                DataType::Timestamp(arrow_schema::TimeUnit::Second, None),
+                false,
+            ),
             Field::new("edge_weight", DataType::Float32, false),
         ]),
         vec![
@@ -1455,7 +1484,7 @@ fn ingest_edge_table_mixed_sort_keys() -> Result<()> {
         .ok_or_else(|| anyhow!("missing edge_Click_src_to_dst relation"))?;
     let segments = user_table.edges_for_node(0)?.relation_segments()?;
     let layout = &segments[rel_idx].layout;
-    let dst_bytes = ((layout.dst_bits as usize) + 7) / 8;
+    let dst_bytes = (layout.dst_bits as usize).div_ceil(8);
     assert!(
         layout.entry_bytes > dst_bytes,
         "expected edge payload bytes for edge_Click_src_to_dst"
@@ -1662,15 +1691,11 @@ fn ingest_parquet_with_uuid_ip_types() -> Result<()> {
             "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         ],
     )?;
-    assert_pkey_missing(
-        &reader,
-        "User",
-        &["ffffffffffffffffffffffffffffffff"],
-    )?;
+    assert_pkey_missing(&reader, "User", &["ffffffffffffffffffffffffffffffff"])?;
     assert_pkey_missing(
         &reader,
         "DeviceToken",
-        &[ "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff" ],
+        &["ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"],
     )?;
     assert_pkey_missing(&reader, "IpAddress", &["203.0.113.99"])?;
     let user_table = reader.table("User").unwrap();
@@ -1689,7 +1714,7 @@ fn ingest_parquet_with_utf8_string_pk_lookup() -> Result<()> {
     let table_path = input_root.join("words.parquet");
     let edge_path = input_root.join("word_edges.parquet");
     let mut ids: Vec<String> = Vec::new();
-    let mut seen = vec![false; 2];
+    let mut seen = [false; 2];
     let candidates = [
         "café-01",
         "niño-02",
@@ -1721,7 +1746,9 @@ fn ingest_parquet_with_utf8_string_pk_lookup() -> Result<()> {
         vec![
             Arc::new(StringArray::from(ids.clone())) as ArrayRef,
             Arc::new(StringArray::from(
-                ids.iter().map(|id| format!("{id}-name")).collect::<Vec<_>>(),
+                ids.iter()
+                    .map(|id| format!("{id}-name"))
+                    .collect::<Vec<_>>(),
             )) as ArrayRef,
         ],
     )?;
@@ -1732,10 +1759,16 @@ fn ingest_parquet_with_utf8_string_pk_lookup() -> Result<()> {
             Field::new("dst_id", DataType::Utf8, false),
         ]),
         vec![
-            Arc::new(StringArray::from(vec![ids[0].clone(), ids[1].clone(), ids[0].clone()]))
-                as ArrayRef,
-            Arc::new(StringArray::from(vec![ids[1].clone(), ids[0].clone(), "不存在".to_string()]))
-                as ArrayRef,
+            Arc::new(StringArray::from(vec![
+                ids[0].clone(),
+                ids[1].clone(),
+                ids[0].clone(),
+            ])) as ArrayRef,
+            Arc::new(StringArray::from(vec![
+                ids[1].clone(),
+                ids[0].clone(),
+                "不存在".to_string(),
+            ])) as ArrayRef,
         ],
     )?;
 
@@ -1780,7 +1813,9 @@ fn ingest_parquet_with_utf8_string_pk_lookup() -> Result<()> {
     let keys: Vec<&str> = ids.iter().map(|s| s.as_str()).collect();
     assert_pkey_lookups(&reader, "Word", &keys)?;
     assert_pkey_missing(&reader, "Word", &["不存在"])?;
-    let table = reader.table("Word").ok_or_else(|| anyhow!("missing Word table"))?;
+    let table = reader
+        .table("Word")
+        .ok_or_else(|| anyhow!("missing Word table"))?;
     let total_edges = sum_relation_edges(&table, "edge_WordEdge_src_to_dst")?;
     assert_eq!(total_edges, 2);
 
@@ -1859,7 +1894,9 @@ fn ingest_parquet_to_index_reader_e2e() -> Result<()> {
 
     let index_metadata = output_root.join("index_metadata.json");
     let reader = GraphIndexReader::open(&index_metadata, &output_root)?;
-    let order_table = reader.table("Order").ok_or_else(|| anyhow!("missing Order"))?;
+    let order_table = reader
+        .table("Order")
+        .ok_or_else(|| anyhow!("missing Order"))?;
     let total_edges = sum_relation_edges(&order_table, "Order_user_id_to_User_id")?;
     assert_eq!(total_edges, 3);
     Ok(())
@@ -2218,7 +2255,11 @@ fn ingest_parquet_drops_rows_with_null_create_time() -> Result<()> {
     let node_path = input_root.join("nodes.parquet");
     let node_schema = Schema::new(vec![
         Field::new("id", DataType::Int64, false),
-        Field::new("created_at", DataType::Timestamp(arrow_schema::TimeUnit::Second, None), true), // Nullable
+        Field::new(
+            "created_at",
+            DataType::Timestamp(arrow_schema::TimeUnit::Second, None),
+            true,
+        ), // Nullable
     ]);
     let node_ids = Arc::new(Int64Array::from(vec![1, 2])) as ArrayRef;
     let node_ts = Arc::new(TimestampSecondArray::from(vec![Some(100), None])) as ArrayRef;
@@ -2229,7 +2270,11 @@ fn ingest_parquet_drops_rows_with_null_create_time() -> Result<()> {
     let edge_schema = Schema::new(vec![
         Field::new("src", DataType::Int64, false),
         Field::new("dst", DataType::Int64, false),
-        Field::new("created_at", DataType::Timestamp(arrow_schema::TimeUnit::Second, None), true), // Nullable
+        Field::new(
+            "created_at",
+            DataType::Timestamp(arrow_schema::TimeUnit::Second, None),
+            true,
+        ), // Nullable
     ]);
     let edge_src = Arc::new(Int64Array::from(vec![1, 1])) as ArrayRef;
     let edge_dst = Arc::new(Int64Array::from(vec![1, 2])) as ArrayRef;
@@ -2288,15 +2333,29 @@ fn ingest_parquet_drops_rows_with_null_create_time() -> Result<()> {
     let edge_sample_key = "node_data_dropped:Edge";
 
     // Note: key_failures_by_context stores counts
-    let node_failures = stats.key_failures_by_context.get(node_sample_key).map(|c| c.parse_failures).unwrap_or(0);
-    let edge_failures = stats.key_failures_by_context.get(edge_sample_key).map(|c| c.parse_failures).unwrap_or(0);
+    let node_failures = stats
+        .key_failures_by_context
+        .get(node_sample_key)
+        .map(|c| c.parse_failures)
+        .unwrap_or(0);
+    let edge_failures = stats
+        .key_failures_by_context
+        .get(edge_sample_key)
+        .map(|c| c.parse_failures)
+        .unwrap_or(0);
 
     assert_eq!(node_failures, 1, "Expected 1 recorded failure for Node");
     assert_eq!(edge_failures, 1, "Expected 1 recorded failure for Edge");
 
     // Check that we have samples
-    let has_node_sample = stats.key_failure_samples.iter().any(|s| s.contains(node_sample_key));
-    let has_edge_sample = stats.key_failure_samples.iter().any(|s| s.contains(edge_sample_key));
+    let has_node_sample = stats
+        .key_failure_samples
+        .iter()
+        .any(|s| s.contains(node_sample_key));
+    let has_edge_sample = stats
+        .key_failure_samples
+        .iter()
+        .any(|s| s.contains(edge_sample_key));
 
     assert!(has_node_sample, "Expected sample for dropped node");
     assert!(has_edge_sample, "Expected sample for dropped edge");
@@ -2345,7 +2404,9 @@ fn ingest_string_fk_to_int64_pk_resolution() -> Result<()> {
         vec![
             Arc::new(Int64Array::from(vec![100, 101, 102, 103])) as ArrayRef,
             Arc::new(StringArray::from(vec!["1", "2", "3", "1"])) as ArrayRef,
-            Arc::new(Float32Array::from(vec![50.0_f32, 75.0_f32, 100.0_f32, 25.0_f32])) as ArrayRef,
+            Arc::new(Float32Array::from(vec![
+                50.0_f32, 75.0_f32, 100.0_f32, 25.0_f32,
+            ])) as ArrayRef,
         ],
     )?;
 
@@ -2610,7 +2671,11 @@ fn ingest_edge_table_fk_resolution() -> Result<()> {
     )?;
 
     // Verify metadata
-    assert_eq!(metadata.node_types.len(), 2, "Should have User and Product node types");
+    assert_eq!(
+        metadata.node_types.len(),
+        2,
+        "Should have User and Product node types"
+    );
 
     // Verify edge counts
     let forward_rel = "edge_Review_src_to_dst";
@@ -2619,8 +2684,14 @@ fn ingest_edge_table_fk_resolution() -> Result<()> {
     let forward_count = stats.edge_counts.get(forward_rel).copied().unwrap_or(0);
     let reverse_count = stats.edge_counts.get(reverse_rel).copied().unwrap_or(0);
 
-    assert_eq!(forward_count, 3, "Should have 3 forward edges (User → Product)");
-    assert_eq!(reverse_count, 3, "Should have 3 reverse edges (Product → User)");
+    assert_eq!(
+        forward_count, 3,
+        "Should have 3 forward edges (User → Product)"
+    );
+    assert_eq!(
+        reverse_count, 3,
+        "Should have 3 reverse edges (Product → User)"
+    );
 
     // Open index and verify edges
     let reader = GraphIndexReader::open(&output_root.join("index_metadata.json"), &output_root)?;
@@ -2633,7 +2704,10 @@ fn ingest_edge_table_fk_resolution() -> Result<()> {
         .node_id_from_pk(&Key::Int(1))?
         .expect("Alice should exist");
     let total_user_edges = sum_relation_edges(&user_table, forward_rel)?;
-    assert_eq!(total_user_edges, 3, "Should have 3 total forward edges from users");
+    assert_eq!(
+        total_user_edges, 3,
+        "Should have 3 total forward edges from users"
+    );
 
     // Verify Widget (product 100) has 2 reviews (edges from 2 users)
     let widget_node_id = product_table
@@ -2673,7 +2747,11 @@ fn ingest_parquet_uuid_fk_to_uuid_pk() -> Result<()> {
         "00112233445566778899aabbccddeef4",
     ];
     // 10 FK rows, each PK referenced 2x
-    let fk_uuids: Vec<&str> = pk_uuids.iter().copied().chain(pk_uuids.iter().copied()).collect();
+    let fk_uuids: Vec<&str> = pk_uuids
+        .iter()
+        .copied()
+        .chain(pk_uuids.iter().copied())
+        .collect();
 
     write_parquet(
         &input_root.join("pk_nodes.parquet"),
@@ -2758,7 +2836,11 @@ fn ingest_parquet_int64_fk_to_int64_pk() -> Result<()> {
 
     let pk_ids: Vec<i64> = (1..=5).collect();
     // 10 FK rows, each PK referenced 2x
-    let fk_ids: Vec<i64> = pk_ids.iter().copied().chain(pk_ids.iter().copied()).collect();
+    let fk_ids: Vec<i64> = pk_ids
+        .iter()
+        .copied()
+        .chain(pk_ids.iter().copied())
+        .collect();
 
     write_parquet(
         &input_root.join("pk_nodes.parquet"),
@@ -3027,7 +3109,11 @@ fn ingest_parquet_string_fk_to_uuid_pk() -> Result<()> {
         "00112233445566778899aabbccddeef4",
     ];
     // 10 FK rows as plain strings, each PK referenced 2x
-    let fk_strs: Vec<&str> = pk_uuids.iter().copied().chain(pk_uuids.iter().copied()).collect();
+    let fk_strs: Vec<&str> = pk_uuids
+        .iter()
+        .copied()
+        .chain(pk_uuids.iter().copied())
+        .collect();
 
     write_parquet(
         &input_root.join("pk_nodes.parquet"),
@@ -3118,7 +3204,11 @@ fn ingest_parquet_string_ip_fk_to_string_pk() -> Result<()> {
         "192.168.1.5",
     ];
     // 10 FK rows, each PK referenced 2x
-    let fk_ips: Vec<&str> = pk_ips.iter().copied().chain(pk_ips.iter().copied()).collect();
+    let fk_ips: Vec<&str> = pk_ips
+        .iter()
+        .copied()
+        .chain(pk_ips.iter().copied())
+        .collect();
 
     write_parquet(
         &input_root.join("pk_nodes.parquet"),
@@ -3306,7 +3396,9 @@ fn ingest_parquet_binary_ip_fk_to_string_pk() -> Result<()> {
         ]),
         vec![
             Arc::new(Int64Array::from((100..110).collect::<Vec<i64>>())) as ArrayRef,
-            Arc::new(FixedSizeBinaryArray::try_from_iter(fk_binary_values.into_iter())?) as ArrayRef,
+            Arc::new(FixedSizeBinaryArray::try_from_iter(
+                fk_binary_values.into_iter(),
+            )?) as ArrayRef,
             Arc::new(Int32Array::from((0..10).collect::<Vec<i32>>())) as ArrayRef,
         ],
     )?;

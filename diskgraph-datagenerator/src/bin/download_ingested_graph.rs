@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Result};
 use clap::Parser;
 use diskgraph_datagenerator::downloader::{download_job, DownloadOptions};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 const DEFAULT_OUT_ROOT: &str = "/mnt/localssd/datasets";
 
@@ -22,7 +22,7 @@ struct Args {
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = parse_args()?;
-    
+
     // Original logic: handle either one URL or (customer, job_id)
     let job_spec = match args.inputs.as_slice() {
         [url] if url.starts_with("http") => url.clone(),
@@ -35,7 +35,7 @@ async fn main() -> Result<()> {
     };
 
     download_job(&job_spec, args.options).await?;
-    
+
     Ok(())
 }
 
@@ -59,7 +59,7 @@ fn parse_args() -> Result<ResolvedArgs> {
 }
 
 fn resolve_out_root(out_root: PathBuf) -> PathBuf {
-    if out_root == PathBuf::from(DEFAULT_OUT_ROOT) {
+    if out_root == Path::new(DEFAULT_OUT_ROOT) {
         if let Ok(data_root) = std::env::var("DISKGRAPH_DATA_ROOT") {
             let data_root = data_root.trim();
             if !data_root.is_empty() {

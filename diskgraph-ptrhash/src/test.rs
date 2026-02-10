@@ -3,7 +3,8 @@ use super::*;
 struct KeyVec(Vec<u64>);
 
 impl KeySource<u64> for KeyVec {
-    type Iter<'a> = std::slice::Iter<'a, u64>
+    type Iter<'a>
+        = std::slice::Iter<'a, u64>
     where
         Self: 'a;
 

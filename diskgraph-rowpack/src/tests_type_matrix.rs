@@ -10,6 +10,8 @@
 //! - String → Int64? Parse the string
 //! - Invalid conversions (e.g., Int64 → Uuid) still error at runtime
 
+#![allow(clippy::approx_constant)]
+
 use super::{RowAccess, RowAccessHints, RowAccessStats};
 use arrow_array::*;
 use arrow_buffer::i256;
@@ -49,10 +51,25 @@ impl IngestedTarget {
     fn all() -> &'static [IngestedTarget] {
         use IngestedTarget::*;
         &[
-            Int64, Int32, UInt64, UInt32, Float64, Float32, Bool,
-            String, Bytes, Uuid, Uuid256, Ip, Date, Timestamp,
-            Decimal128, Decimal256,
-            Float32Array, Float64Array, Float16Array,
+            Int64,
+            Int32,
+            UInt64,
+            UInt32,
+            Float64,
+            Float32,
+            Bool,
+            String,
+            Bytes,
+            Uuid,
+            Uuid256,
+            Ip,
+            Date,
+            Timestamp,
+            Decimal128,
+            Decimal256,
+            Float32Array,
+            Float64Array,
+            Float16Array,
         ]
     }
 }
@@ -113,22 +130,39 @@ fn try_convert(access: &mut RowAccess, target: IngestedTarget) -> Result<(), Str
         IngestedTarget::Float64 => access.get_float64(0).map(|_| ()).map_err(|e| e.to_string()),
         IngestedTarget::Float32 => access.get_float32(0).map(|_| ()).map_err(|e| e.to_string()),
         IngestedTarget::Bool => access.get_bool(0).map(|_| ()).map_err(|e| e.to_string()),
-        IngestedTarget::String => access.with_string(0, |_| Ok(())).map(|_| ()).map_err(|e| e.to_string()),
-        IngestedTarget::Bytes => access.with_bytes(0, |_| Ok(())).map(|_| ()).map_err(|e| e.to_string()),
+        IngestedTarget::String => access
+            .with_string(0, |_| Ok(()))
+            .map(|_| ())
+            .map_err(|e| e.to_string()),
+        IngestedTarget::Bytes => access
+            .with_bytes(0, |_| Ok(()))
+            .map(|_| ())
+            .map_err(|e| e.to_string()),
         IngestedTarget::Uuid => access.get_uuid(0).map(|_| ()).map_err(|e| e.to_string()),
         IngestedTarget::Uuid256 => access.get_uuid256(0).map(|_| ()).map_err(|e| e.to_string()),
         IngestedTarget::Ip => access.get_ip(0).map(|_| ()).map_err(|e| e.to_string()),
         IngestedTarget::Date => access.get_date(0).map(|_| ()).map_err(|e| e.to_string()),
-        IngestedTarget::Timestamp => access.get_timestamp(0).map(|_| ()).map_err(|e| e.to_string()),
-        IngestedTarget::Decimal128 => access.get_decimal128(0).map(|_| ()).map_err(|e| e.to_string()),
-        IngestedTarget::Decimal256 => access.get_decimal256(0).map(|_| ()).map_err(|e| e.to_string()),
+        IngestedTarget::Timestamp => access
+            .get_timestamp(0)
+            .map(|_| ())
+            .map_err(|e| e.to_string()),
+        IngestedTarget::Decimal128 => access
+            .get_decimal128(0)
+            .map(|_| ())
+            .map_err(|e| e.to_string()),
+        IngestedTarget::Decimal256 => access
+            .get_decimal256(0)
+            .map(|_| ())
+            .map_err(|e| e.to_string()),
         // Array types use float_list_view which handles List<Float*>
-        IngestedTarget::Float32Array | IngestedTarget::Float16Array => {
-            access.with_float32_array(0, |_| Ok(())).map(|_| ()).map_err(|e| e.to_string())
-        }
-        IngestedTarget::Float64Array => {
-            access.with_float64_array(0, |_| Ok(())).map(|_| ()).map_err(|e| e.to_string())
-        }
+        IngestedTarget::Float32Array | IngestedTarget::Float16Array => access
+            .with_float32_array(0, |_| Ok(()))
+            .map(|_| ())
+            .map_err(|e| e.to_string()),
+        IngestedTarget::Float64Array => access
+            .with_float64_array(0, |_| Ok(()))
+            .map(|_| ())
+            .map_err(|e| e.to_string()),
     }
 }
 
@@ -265,7 +299,7 @@ fn all_arrow_test_data() -> Vec<ArrowTestData> {
             array: Arc::new(
                 Decimal128Array::from(vec![12345i128])
                     .with_precision_and_scale(10, 2)
-                    .unwrap()
+                    .unwrap(),
             ),
             hints: hints_with_scale(2),
         },
@@ -274,7 +308,7 @@ fn all_arrow_test_data() -> Vec<ArrowTestData> {
             array: Arc::new(
                 Decimal256Array::from(vec![i256::from(12345i64)])
                     .with_precision_and_scale(10, 2)
-                    .unwrap()
+                    .unwrap(),
             ),
             hints: hints_with_scale(2),
         },
@@ -330,41 +364,50 @@ fn expected_result(arrow_name: &str, target: IngestedTarget) -> ExpectedResult {
         // Can convert to: all numerics, bool, string, date, timestamp, decimal128, decimal256
         // Cannot convert to: bytes, uuid, uuid256, ip
         // =====================================================================
-        ("Int8" | "Int16" | "Int32" | "Int64" | "UInt8" | "UInt16" | "UInt32" | "UInt64",
-         Int64 | Int32 | UInt64 | UInt32 | Float64 | Float32 | Bool | String | Date | Timestamp | Decimal128 | Decimal256) => Success,
+        (
+            "Int8" | "Int16" | "Int32" | "Int64" | "UInt8" | "UInt16" | "UInt32" | "UInt64",
+            Int64 | Int32 | UInt64 | UInt32 | Float64 | Float32 | Bool | String | Date | Timestamp
+            | Decimal128 | Decimal256,
+        ) => Success,
 
-        ("Int8" | "Int16" | "Int32" | "Int64" | "UInt8" | "UInt16" | "UInt32" | "UInt64",
-         Bytes | Uuid | Uuid256 | Ip) => Error,
+        (
+            "Int8" | "Int16" | "Int32" | "Int64" | "UInt8" | "UInt16" | "UInt32" | "UInt64",
+            Bytes | Uuid | Uuid256 | Ip,
+        ) => Error,
 
         // =====================================================================
         // Float Arrow types (Float32, Float64)
         // Can convert to: all numerics, bool, string, decimal128, decimal256
         // Cannot convert to: bytes, uuid, uuid256, ip, date, timestamp
         // =====================================================================
-        ("Float32" | "Float64",
-         Int64 | Int32 | UInt64 | UInt32 | Float64 | Float32 | Bool | String | Decimal128 | Decimal256) => Success,
+        (
+            "Float32" | "Float64",
+            Int64 | Int32 | UInt64 | UInt32 | Float64 | Float32 | Bool | String | Decimal128
+            | Decimal256,
+        ) => Success,
 
-        ("Float32" | "Float64",
-         Bytes | Uuid | Uuid256 | Ip | Date | Timestamp) => Error,
+        ("Float32" | "Float64", Bytes | Uuid | Uuid256 | Ip | Date | Timestamp) => Error,
 
         // =====================================================================
         // Boolean Arrow type
         // Can convert to: all numerics, bool, string
         // Cannot convert to: bytes, uuid, uuid256, ip, date, timestamp, decimal128/256
         // =====================================================================
-        ("Boolean",
-         Int64 | Int32 | UInt64 | UInt32 | Float64 | Float32 | Bool | String) => Success,
+        ("Boolean", Int64 | Int32 | UInt64 | UInt32 | Float64 | Float32 | Bool | String) => Success,
 
-        ("Boolean",
-         Bytes | Uuid | Uuid256 | Ip | Date | Timestamp | Decimal128 | Decimal256) => Error,
+        ("Boolean", Bytes | Uuid | Uuid256 | Ip | Date | Timestamp | Decimal128 | Decimal256) => {
+            Error
+        }
 
         // =====================================================================
         // String Arrow types (Utf8, LargeUtf8)
         // Can convert to: all types (via parsing) - depends on content
         // For test purposes with "42" content: most succeed, uuid/uuid256/ip fail
         // =====================================================================
-        ("Utf8" | "LargeUtf8",
-         Int64 | Int32 | UInt64 | UInt32 | Float64 | Float32 | Bool | String | Bytes) => Success,
+        (
+            "Utf8" | "LargeUtf8",
+            Int64 | Int32 | UInt64 | UInt32 | Float64 | Float32 | Bool | String | Bytes,
+        ) => Success,
 
         // String "42" cannot be parsed as valid UUID, UUID256, or IP
         ("Utf8" | "LargeUtf8", Uuid | Uuid256 | Ip) => Error,
@@ -386,8 +429,11 @@ fn expected_result(arrow_name: &str, target: IngestedTarget) -> ExpectedResult {
         // Binary "hello" is wrong length for uuid (needs 16), uuid256 (needs 32), ip (needs 4 or 16)
         ("Binary" | "LargeBinary", Uuid | Uuid256 | Ip) => Error,
 
-        ("Binary" | "LargeBinary",
-         Int64 | Int32 | UInt64 | UInt32 | Float64 | Float32 | Bool | Date | Timestamp | Decimal128 | Decimal256) => Error,
+        (
+            "Binary" | "LargeBinary",
+            Int64 | Int32 | UInt64 | UInt32 | Float64 | Float32 | Bool | Date | Timestamp
+            | Decimal128 | Decimal256,
+        ) => Error,
 
         // =====================================================================
         // FixedSizeBinary(16) - UUID format
@@ -398,8 +444,11 @@ fn expected_result(arrow_name: &str, target: IngestedTarget) -> ExpectedResult {
 
         ("FixedSizeBinary16", Uuid256) => Error, // Wrong size
 
-        ("FixedSizeBinary16",
-         Int64 | Int32 | UInt64 | UInt32 | Float64 | Float32 | Bool | Date | Timestamp | Decimal128 | Decimal256) => Error,
+        (
+            "FixedSizeBinary16",
+            Int64 | Int32 | UInt64 | UInt32 | Float64 | Float32 | Bool | Date | Timestamp
+            | Decimal128 | Decimal256,
+        ) => Error,
 
         // =====================================================================
         // FixedSizeBinary(32) - UUID256 format
@@ -410,8 +459,11 @@ fn expected_result(arrow_name: &str, target: IngestedTarget) -> ExpectedResult {
 
         ("FixedSizeBinary32", Uuid | Ip) => Error, // Wrong size
 
-        ("FixedSizeBinary32",
-         Int64 | Int32 | UInt64 | UInt32 | Float64 | Float32 | Bool | Date | Timestamp | Decimal128 | Decimal256) => Error,
+        (
+            "FixedSizeBinary32",
+            Int64 | Int32 | UInt64 | UInt32 | Float64 | Float32 | Bool | Date | Timestamp
+            | Decimal128 | Decimal256,
+        ) => Error,
 
         // =====================================================================
         // Date32 Arrow type
@@ -420,41 +472,51 @@ fn expected_result(arrow_name: &str, target: IngestedTarget) -> ExpectedResult {
         // =====================================================================
         ("Date32", String | Date | Timestamp) => Success,
 
-        ("Date32",
-         Int64 | Int32 | UInt64 | UInt32 | Float64 | Float32 | Bool | Bytes | Uuid | Uuid256 | Ip | Decimal128 | Decimal256) => Error,
+        (
+            "Date32",
+            Int64 | Int32 | UInt64 | UInt32 | Float64 | Float32 | Bool | Bytes | Uuid | Uuid256
+            | Ip | Decimal128 | Decimal256,
+        ) => Error,
 
         // =====================================================================
         // Timestamp Arrow types
         // Can convert to: string, date, timestamp
         // Cannot convert to: numerics, bool, bytes, uuid, uuid256, ip, decimal
         // =====================================================================
-        ("TimestampSecond" | "TimestampMilli" | "TimestampMicro" | "TimestampNano",
-         String | Date | Timestamp) => Success,
+        (
+            "TimestampSecond" | "TimestampMilli" | "TimestampMicro" | "TimestampNano",
+            String | Date | Timestamp,
+        ) => Success,
 
-        ("TimestampSecond" | "TimestampMilli" | "TimestampMicro" | "TimestampNano",
-         Int64 | Int32 | UInt64 | UInt32 | Float64 | Float32 | Bool | Bytes | Uuid | Uuid256 | Ip | Decimal128 | Decimal256) => Error,
+        (
+            "TimestampSecond" | "TimestampMilli" | "TimestampMicro" | "TimestampNano",
+            Int64 | Int32 | UInt64 | UInt32 | Float64 | Float32 | Bool | Bytes | Uuid | Uuid256
+            | Ip | Decimal128 | Decimal256,
+        ) => Error,
 
         // =====================================================================
         // Decimal128 Arrow type
         // Can convert to: numerics (via float), string
         // Cannot convert to: bool, bytes, uuid, uuid256, ip, date, timestamp, decimal256
         // =====================================================================
-        ("Decimal128",
-         Int64 | Int32 | UInt64 | UInt32 | Float64 | Float32 | String | Decimal128) => Success,
+        (
+            "Decimal128",
+            Int64 | Int32 | UInt64 | UInt32 | Float64 | Float32 | String | Decimal128,
+        ) => Success,
 
-        ("Decimal128",
-         Bool | Bytes | Uuid | Uuid256 | Ip | Date | Timestamp | Decimal256) => Error,
+        ("Decimal128", Bool | Bytes | Uuid | Uuid256 | Ip | Date | Timestamp | Decimal256) => Error,
 
         // =====================================================================
         // Decimal256 Arrow type
         // Can convert to: numerics, string, decimal256
         // Cannot convert to: bool, bytes, uuid, uuid256, ip, date, timestamp, decimal128
         // =====================================================================
-        ("Decimal256",
-         Int64 | Int32 | UInt64 | UInt32 | Float64 | Float32 | String | Decimal256) => Success,
+        (
+            "Decimal256",
+            Int64 | Int32 | UInt64 | UInt32 | Float64 | Float32 | String | Decimal256,
+        ) => Success,
 
-        ("Decimal256",
-         Bool | Bytes | Uuid | Uuid256 | Ip | Date | Timestamp | Decimal128) => Error,
+        ("Decimal256", Bool | Bytes | Uuid | Uuid256 | Ip | Date | Timestamp | Decimal128) => Error,
 
         // =====================================================================
         // List<Float32> Arrow type (for Float32Array/Float16Array)
@@ -463,9 +525,11 @@ fn expected_result(arrow_name: &str, target: IngestedTarget) -> ExpectedResult {
         // =====================================================================
         ("ListFloat32", Float32Array | Float16Array) => Success,
 
-        ("ListFloat32",
-         Int64 | Int32 | UInt64 | UInt32 | Float64 | Float32 | Bool | String | Bytes |
-         Uuid | Uuid256 | Ip | Date | Timestamp | Decimal128 | Decimal256 | Float64Array) => Error,
+        (
+            "ListFloat32",
+            Int64 | Int32 | UInt64 | UInt32 | Float64 | Float32 | Bool | String | Bytes | Uuid
+            | Uuid256 | Ip | Date | Timestamp | Decimal128 | Decimal256 | Float64Array,
+        ) => Error,
 
         // =====================================================================
         // List<Float64> Arrow type (for Float64Array)
@@ -474,9 +538,11 @@ fn expected_result(arrow_name: &str, target: IngestedTarget) -> ExpectedResult {
         // =====================================================================
         ("ListFloat64", Float64Array | Float32Array | Float16Array) => Success,
 
-        ("ListFloat64",
-         Int64 | Int32 | UInt64 | UInt32 | Float64 | Float32 | Bool | String | Bytes |
-         Uuid | Uuid256 | Ip | Date | Timestamp | Decimal128 | Decimal256) => Error,
+        (
+            "ListFloat64",
+            Int64 | Int32 | UInt64 | UInt32 | Float64 | Float32 | Bool | String | Bytes | Uuid
+            | Uuid256 | Ip | Date | Timestamp | Decimal128 | Decimal256,
+        ) => Error,
 
         // =====================================================================
         // All non-List Arrow types → Array targets = Error
@@ -560,8 +626,14 @@ fn test_matrix_coverage() {
     let target_count = IngestedTarget::all().len();
     let total = arrow_count * target_count;
 
-    assert_eq!(arrow_count, 26, "Should have 26 Arrow types (24 base + 2 List types)");
-    assert_eq!(target_count, 19, "Should have 19 IngestedType targets (16 base + 3 array types)");
+    assert_eq!(
+        arrow_count, 26,
+        "Should have 26 Arrow types (24 base + 2 List types)"
+    );
+    assert_eq!(
+        target_count, 19,
+        "Should have 19 IngestedType targets (16 base + 3 array types)"
+    );
     assert_eq!(total, 494, "Should test 26×19 = 494 combinations");
 }
 
@@ -643,7 +715,10 @@ fn test_uuid_from_fixed_binary() {
     let (mut access, arrays) = make_access(&array, default_hints());
     access.set_cols(&arrays);
     access.set_row(0);
-    assert!(access.get_uuid256(0).is_ok(), "FixedSizeBinary(32) → Uuid256");
+    assert!(
+        access.get_uuid256(0).is_ok(),
+        "FixedSizeBinary(32) → Uuid256"
+    );
 }
 
 #[test]
@@ -676,25 +751,31 @@ fn test_decimal_conversions() {
     let array: ArrayRef = Arc::new(
         Decimal128Array::from(vec![12345i128])
             .with_precision_and_scale(10, 2)
-            .unwrap()
+            .unwrap(),
     );
     let (mut access, arrays) = make_access(&array, hints_with_scale(2));
     access.set_cols(&arrays);
     access.set_row(0);
     assert!(access.get_float64(0).is_ok(), "Decimal128 → Float64");
     assert!(access.get_int64(0).is_ok(), "Decimal128 → Int64");
-    assert!(access.with_string(0, |_| Ok(())).is_ok(), "Decimal128 → String");
+    assert!(
+        access.with_string(0, |_| Ok(())).is_ok(),
+        "Decimal128 → String"
+    );
 
     // Decimal256 → String
     let array: ArrayRef = Arc::new(
         Decimal256Array::from(vec![i256::from(12345i64)])
             .with_precision_and_scale(10, 2)
-            .unwrap()
+            .unwrap(),
     );
     let (mut access, arrays) = make_access(&array, hints_with_scale(2));
     access.set_cols(&arrays);
     access.set_row(0);
-    assert!(access.with_string(0, |_| Ok(())).is_ok(), "Decimal256 → String");
+    assert!(
+        access.with_string(0, |_| Ok(())).is_ok(),
+        "Decimal256 → String"
+    );
     assert!(access.get_decimal256(0).is_ok(), "Decimal256 → Decimal256");
 }
 
@@ -726,7 +807,11 @@ fn all_roundtrip_test_cases() -> Vec<RoundtripTestCase> {
         RoundtripTestCase {
             name: "Int8",
             logical_type: IngestedType::Int8,
-            encoding: ColumnEncoding::Int { signed: true, varint: false, bits: 8 },
+            encoding: ColumnEncoding::Int {
+                signed: true,
+                varint: false,
+                bits: 8,
+            },
             array: Arc::new(Int8Array::from(vec![-42i8])),
             hints: default_hints(),
             verify: |v| v["val"].as_i64() == Some(-42),
@@ -734,7 +819,11 @@ fn all_roundtrip_test_cases() -> Vec<RoundtripTestCase> {
         RoundtripTestCase {
             name: "Int8_max",
             logical_type: IngestedType::Int8,
-            encoding: ColumnEncoding::Int { signed: true, varint: false, bits: 8 },
+            encoding: ColumnEncoding::Int {
+                signed: true,
+                varint: false,
+                bits: 8,
+            },
             array: Arc::new(Int8Array::from(vec![127i8])),
             hints: default_hints(),
             verify: |v| v["val"].as_i64() == Some(127),
@@ -742,7 +831,11 @@ fn all_roundtrip_test_cases() -> Vec<RoundtripTestCase> {
         RoundtripTestCase {
             name: "Int8_min",
             logical_type: IngestedType::Int8,
-            encoding: ColumnEncoding::Int { signed: true, varint: false, bits: 8 },
+            encoding: ColumnEncoding::Int {
+                signed: true,
+                varint: false,
+                bits: 8,
+            },
             array: Arc::new(Int8Array::from(vec![-128i8])),
             hints: default_hints(),
             verify: |v| v["val"].as_i64() == Some(-128),
@@ -750,7 +843,11 @@ fn all_roundtrip_test_cases() -> Vec<RoundtripTestCase> {
         RoundtripTestCase {
             name: "Int8_varint",
             logical_type: IngestedType::Int8,
-            encoding: ColumnEncoding::Int { signed: true, varint: true, bits: 8 },
+            encoding: ColumnEncoding::Int {
+                signed: true,
+                varint: true,
+                bits: 8,
+            },
             array: Arc::new(Int8Array::from(vec![-42i8])),
             hints: default_hints(),
             verify: |v| v["val"].as_i64() == Some(-42),
@@ -758,7 +855,11 @@ fn all_roundtrip_test_cases() -> Vec<RoundtripTestCase> {
         RoundtripTestCase {
             name: "Int16",
             logical_type: IngestedType::Int16,
-            encoding: ColumnEncoding::Int { signed: true, varint: false, bits: 16 },
+            encoding: ColumnEncoding::Int {
+                signed: true,
+                varint: false,
+                bits: 16,
+            },
             array: Arc::new(Int16Array::from(vec![-1000i16])),
             hints: default_hints(),
             verify: |v| v["val"].as_i64() == Some(-1000),
@@ -766,7 +867,11 @@ fn all_roundtrip_test_cases() -> Vec<RoundtripTestCase> {
         RoundtripTestCase {
             name: "Int16_max",
             logical_type: IngestedType::Int16,
-            encoding: ColumnEncoding::Int { signed: true, varint: false, bits: 16 },
+            encoding: ColumnEncoding::Int {
+                signed: true,
+                varint: false,
+                bits: 16,
+            },
             array: Arc::new(Int16Array::from(vec![32767i16])),
             hints: default_hints(),
             verify: |v| v["val"].as_i64() == Some(32767),
@@ -774,7 +879,11 @@ fn all_roundtrip_test_cases() -> Vec<RoundtripTestCase> {
         RoundtripTestCase {
             name: "Int16_min",
             logical_type: IngestedType::Int16,
-            encoding: ColumnEncoding::Int { signed: true, varint: false, bits: 16 },
+            encoding: ColumnEncoding::Int {
+                signed: true,
+                varint: false,
+                bits: 16,
+            },
             array: Arc::new(Int16Array::from(vec![-32768i16])),
             hints: default_hints(),
             verify: |v| v["val"].as_i64() == Some(-32768),
@@ -782,7 +891,11 @@ fn all_roundtrip_test_cases() -> Vec<RoundtripTestCase> {
         RoundtripTestCase {
             name: "Int32",
             logical_type: IngestedType::Int32,
-            encoding: ColumnEncoding::Int { signed: true, varint: false, bits: 32 },
+            encoding: ColumnEncoding::Int {
+                signed: true,
+                varint: false,
+                bits: 32,
+            },
             array: Arc::new(Int32Array::from(vec![-100000i32])),
             hints: default_hints(),
             verify: |v| v["val"].as_i64() == Some(-100000),
@@ -790,7 +903,11 @@ fn all_roundtrip_test_cases() -> Vec<RoundtripTestCase> {
         RoundtripTestCase {
             name: "Int64",
             logical_type: IngestedType::Int64,
-            encoding: ColumnEncoding::Int { signed: true, varint: false, bits: 64 },
+            encoding: ColumnEncoding::Int {
+                signed: true,
+                varint: false,
+                bits: 64,
+            },
             array: Arc::new(Int64Array::from(vec![-1000000000i64])),
             hints: default_hints(),
             verify: |v| v["val"].as_i64() == Some(-1000000000),
@@ -799,7 +916,11 @@ fn all_roundtrip_test_cases() -> Vec<RoundtripTestCase> {
         RoundtripTestCase {
             name: "UInt8",
             logical_type: IngestedType::UInt8,
-            encoding: ColumnEncoding::Int { signed: false, varint: false, bits: 8 },
+            encoding: ColumnEncoding::Int {
+                signed: false,
+                varint: false,
+                bits: 8,
+            },
             array: Arc::new(UInt8Array::from(vec![200u8])),
             hints: default_hints(),
             verify: |v| v["val"].as_u64() == Some(200),
@@ -807,7 +928,11 @@ fn all_roundtrip_test_cases() -> Vec<RoundtripTestCase> {
         RoundtripTestCase {
             name: "UInt8_max",
             logical_type: IngestedType::UInt8,
-            encoding: ColumnEncoding::Int { signed: false, varint: false, bits: 8 },
+            encoding: ColumnEncoding::Int {
+                signed: false,
+                varint: false,
+                bits: 8,
+            },
             array: Arc::new(UInt8Array::from(vec![255u8])),
             hints: default_hints(),
             verify: |v| v["val"].as_u64() == Some(255),
@@ -815,7 +940,11 @@ fn all_roundtrip_test_cases() -> Vec<RoundtripTestCase> {
         RoundtripTestCase {
             name: "UInt16",
             logical_type: IngestedType::UInt16,
-            encoding: ColumnEncoding::Int { signed: false, varint: false, bits: 16 },
+            encoding: ColumnEncoding::Int {
+                signed: false,
+                varint: false,
+                bits: 16,
+            },
             array: Arc::new(UInt16Array::from(vec![50000u16])),
             hints: default_hints(),
             verify: |v| v["val"].as_u64() == Some(50000),
@@ -823,7 +952,11 @@ fn all_roundtrip_test_cases() -> Vec<RoundtripTestCase> {
         RoundtripTestCase {
             name: "UInt16_max",
             logical_type: IngestedType::UInt16,
-            encoding: ColumnEncoding::Int { signed: false, varint: false, bits: 16 },
+            encoding: ColumnEncoding::Int {
+                signed: false,
+                varint: false,
+                bits: 16,
+            },
             array: Arc::new(UInt16Array::from(vec![65535u16])),
             hints: default_hints(),
             verify: |v| v["val"].as_u64() == Some(65535),
@@ -831,7 +964,11 @@ fn all_roundtrip_test_cases() -> Vec<RoundtripTestCase> {
         RoundtripTestCase {
             name: "UInt32",
             logical_type: IngestedType::UInt32,
-            encoding: ColumnEncoding::Int { signed: false, varint: false, bits: 32 },
+            encoding: ColumnEncoding::Int {
+                signed: false,
+                varint: false,
+                bits: 32,
+            },
             array: Arc::new(UInt32Array::from(vec![3000000000u32])),
             hints: default_hints(),
             verify: |v| v["val"].as_u64() == Some(3000000000),
@@ -839,7 +976,11 @@ fn all_roundtrip_test_cases() -> Vec<RoundtripTestCase> {
         RoundtripTestCase {
             name: "UInt64",
             logical_type: IngestedType::UInt64,
-            encoding: ColumnEncoding::Int { signed: false, varint: false, bits: 64 },
+            encoding: ColumnEncoding::Int {
+                signed: false,
+                varint: false,
+                bits: 64,
+            },
             array: Arc::new(UInt64Array::from(vec![10000000000u64])),
             hints: default_hints(),
             verify: |v| v["val"].as_u64() == Some(10000000000),
@@ -848,7 +989,9 @@ fn all_roundtrip_test_cases() -> Vec<RoundtripTestCase> {
         RoundtripTestCase {
             name: "Float32",
             logical_type: IngestedType::Float32,
-            encoding: ColumnEncoding::Float { storage: FloatStorage::F32 },
+            encoding: ColumnEncoding::Float {
+                storage: FloatStorage::F32,
+            },
             array: Arc::new(Float32Array::from(vec![3.14f32])),
             hints: default_hints(),
             verify: |v| (v["val"].as_f64().unwrap() - 3.14).abs() < 0.001,
@@ -856,7 +999,9 @@ fn all_roundtrip_test_cases() -> Vec<RoundtripTestCase> {
         RoundtripTestCase {
             name: "Float64",
             logical_type: IngestedType::Float64,
-            encoding: ColumnEncoding::Float { storage: FloatStorage::F64 },
+            encoding: ColumnEncoding::Float {
+                storage: FloatStorage::F64,
+            },
             array: Arc::new(Float64Array::from(vec![2.718281828f64])),
             hints: default_hints(),
             verify: |v| (v["val"].as_f64().unwrap() - 2.718281828).abs() < 0.0000001,
@@ -882,7 +1027,9 @@ fn all_roundtrip_test_cases() -> Vec<RoundtripTestCase> {
         RoundtripTestCase {
             name: "String",
             logical_type: IngestedType::String,
-            encoding: ColumnEncoding::String { encoding: StringEncoding::Raw },
+            encoding: ColumnEncoding::String {
+                encoding: StringEncoding::Raw,
+            },
             array: Arc::new(StringArray::from(vec!["hello world"])),
             hints: default_hints(),
             verify: |v| v["val"].as_str() == Some("hello world"),
@@ -890,7 +1037,9 @@ fn all_roundtrip_test_cases() -> Vec<RoundtripTestCase> {
         RoundtripTestCase {
             name: "String_empty",
             logical_type: IngestedType::String,
-            encoding: ColumnEncoding::String { encoding: StringEncoding::Raw },
+            encoding: ColumnEncoding::String {
+                encoding: StringEncoding::Raw,
+            },
             array: Arc::new(StringArray::from(vec![""])),
             hints: default_hints(),
             verify: |v| v["val"].as_str() == Some(""),
@@ -909,12 +1058,19 @@ fn all_roundtrip_test_cases() -> Vec<RoundtripTestCase> {
             name: "Uuid",
             logical_type: IngestedType::Uuid,
             encoding: ColumnEncoding::Uuid,
-            array: Arc::new(FixedSizeBinaryArray::from(vec![Some(&[
-                0x55, 0x0e, 0x84, 0x00, 0xe2, 0x9b, 0x41, 0xd4,
-                0xa7, 0x16, 0x44, 0x66, 0x55, 0x44, 0x00, 0x00,
-            ][..])])),
+            array: Arc::new(FixedSizeBinaryArray::from(vec![Some(
+                &[
+                    0x55, 0x0e, 0x84, 0x00, 0xe2, 0x9b, 0x41, 0xd4, 0xa7, 0x16, 0x44, 0x66, 0x55,
+                    0x44, 0x00, 0x00,
+                ][..],
+            )])),
             hints: default_hints(),
-            verify: |v| v["val"].as_str().map(|s| s.contains("550e8400")).unwrap_or(false),
+            verify: |v| {
+                v["val"]
+                    .as_str()
+                    .map(|s| s.contains("550e8400"))
+                    .unwrap_or(false)
+            },
         },
         // ===== UUID256 =====
         RoundtripTestCase {
@@ -923,7 +1079,12 @@ fn all_roundtrip_test_cases() -> Vec<RoundtripTestCase> {
             encoding: ColumnEncoding::Uuid256,
             array: Arc::new(FixedSizeBinaryArray::from(vec![Some(&[0xAAu8; 32][..])])),
             hints: default_hints(),
-            verify: |v| v["val"].as_str().map(|s| s.to_lowercase().contains("aa")).unwrap_or(false),
+            verify: |v| {
+                v["val"]
+                    .as_str()
+                    .map(|s| s.to_lowercase().contains("aa"))
+                    .unwrap_or(false)
+            },
         },
         // ===== IP =====
         RoundtripTestCase {
@@ -938,11 +1099,20 @@ fn all_roundtrip_test_cases() -> Vec<RoundtripTestCase> {
         RoundtripTestCase {
             name: "Date",
             logical_type: IngestedType::Date,
-            encoding: ColumnEncoding::Date { varint: false, bits: 32 },
+            encoding: ColumnEncoding::Date {
+                varint: false,
+                bits: 32,
+            },
             array: Arc::new(Date32Array::from(vec![19000i32])), // ~2022-01-01
             hints: default_hints(),
             // Date may decode as number (days since epoch) or string
-            verify: |v| v["val"].as_i64() == Some(19000) || v["val"].as_str().map(|s| s.contains("2022")).unwrap_or(false),
+            verify: |v| {
+                v["val"].as_i64() == Some(19000)
+                    || v["val"]
+                        .as_str()
+                        .map(|s| s.contains("2022"))
+                        .unwrap_or(false)
+            },
         },
         // ===== Timestamp =====
         RoundtripTestCase {
@@ -951,13 +1121,20 @@ fn all_roundtrip_test_cases() -> Vec<RoundtripTestCase> {
             encoding: ColumnEncoding::Timestamp,
             array: Arc::new(TimestampSecondArray::from(vec![1640000000i64])), // 2021-12-20
             hints: default_hints(),
-            verify: |v| v["val"].as_str().map(|s| s.contains("2021")).unwrap_or(false),
+            verify: |v| {
+                v["val"]
+                    .as_str()
+                    .map(|s| s.contains("2021"))
+                    .unwrap_or(false)
+            },
         },
         // ===== Float Arrays =====
         RoundtripTestCase {
             name: "Float32Array",
             logical_type: IngestedType::Float32Array,
-            encoding: ColumnEncoding::FloatArray { storage: FloatStorage::F32 },
+            encoding: ColumnEncoding::FloatArray {
+                storage: FloatStorage::F32,
+            },
             array: make_list_float32_array(),
             hints: default_hints(),
             verify: |v| v["val"].as_array().map(|a| a.len() == 3).unwrap_or(false),
@@ -965,7 +1142,9 @@ fn all_roundtrip_test_cases() -> Vec<RoundtripTestCase> {
         RoundtripTestCase {
             name: "Float64Array",
             logical_type: IngestedType::Float64Array,
-            encoding: ColumnEncoding::FloatArray { storage: FloatStorage::F64 },
+            encoding: ColumnEncoding::FloatArray {
+                storage: FloatStorage::F64,
+            },
             array: make_list_float64_array(),
             hints: default_hints(),
             verify: |v| v["val"].as_array().map(|a| a.len() == 3).unwrap_or(false),
@@ -973,7 +1152,9 @@ fn all_roundtrip_test_cases() -> Vec<RoundtripTestCase> {
         RoundtripTestCase {
             name: "Float16Array",
             logical_type: IngestedType::Float16Array,
-            encoding: ColumnEncoding::FloatArray { storage: FloatStorage::F16 },
+            encoding: ColumnEncoding::FloatArray {
+                storage: FloatStorage::F16,
+            },
             array: make_list_float32_array(), // Use f32 array, will be stored as f16
             hints: default_hints(),
             verify: |v| v["val"].as_array().map(|a| a.len() == 3).unwrap_or(false),
@@ -991,11 +1172,19 @@ fn all_roundtrip_test_cases() -> Vec<RoundtripTestCase> {
             array: Arc::new(
                 Decimal128Array::from(vec![12345i128])
                     .with_precision_and_scale(10, 2)
-                    .unwrap()
+                    .unwrap(),
             ),
             hints: hints_with_scale(2),
-            verify: |v| v["val"].as_str().map(|s| s.contains("123")).unwrap_or(false)
-                     || v["val"].as_f64().map(|f| (f - 123.45).abs() < 0.01).unwrap_or(false),
+            verify: |v| {
+                v["val"]
+                    .as_str()
+                    .map(|s| s.contains("123"))
+                    .unwrap_or(false)
+                    || v["val"]
+                        .as_f64()
+                        .map(|f| (f - 123.45).abs() < 0.01)
+                        .unwrap_or(false)
+            },
         },
         RoundtripTestCase {
             name: "Decimal256",
@@ -1009,11 +1198,19 @@ fn all_roundtrip_test_cases() -> Vec<RoundtripTestCase> {
             array: Arc::new(
                 Decimal256Array::from(vec![i256::from(12345i64)])
                     .with_precision_and_scale(10, 2)
-                    .unwrap()
+                    .unwrap(),
             ),
             hints: hints_with_scale(2),
-            verify: |v| v["val"].as_str().map(|s| s.contains("123")).unwrap_or(false)
-                     || v["val"].as_f64().map(|f| (f - 123.45).abs() < 0.01).unwrap_or(false),
+            verify: |v| {
+                v["val"]
+                    .as_str()
+                    .map(|s| s.contains("123"))
+                    .unwrap_or(false)
+                    || v["val"]
+                        .as_f64()
+                        .map(|f| (f - 123.45).abs() < 0.01)
+                        .unwrap_or(false)
+            },
         },
     ]
 }
@@ -1030,7 +1227,7 @@ fn test_full_roundtrip_matrix() {
             version: ROWPACK_VERSION,
             columns: vec![ColumnContext {
                 name: "val".to_string(),
-                logical_type: case.logical_type.clone(),
+                logical_type: case.logical_type,
                 encoding: case.encoding.clone(),
             }],
             estimated_row_bytes: 0,
@@ -1076,7 +1273,10 @@ fn test_full_roundtrip_matrix() {
         if (case.verify)(&json) {
             success_count += 1;
         } else {
-            failures.push(format!("{}: verification failed, got {:?}", case.name, json));
+            failures.push(format!(
+                "{}: verification failed, got {:?}",
+                case.name, json
+            ));
         }
     }
 
@@ -1105,32 +1305,110 @@ fn test_roundtrip_coverage() {
     // Check we have tests for key types
     let type_names: Vec<&str> = cases.iter().map(|c| c.name).collect();
 
-    assert!(type_names.iter().any(|n| n.starts_with("Int8")), "Missing Int8 tests");
-    assert!(type_names.iter().any(|n| n.starts_with("Int16")), "Missing Int16 tests");
-    assert!(type_names.iter().any(|n| n.starts_with("Int32")), "Missing Int32 tests");
-    assert!(type_names.iter().any(|n| n.starts_with("Int64")), "Missing Int64 tests");
-    assert!(type_names.iter().any(|n| n.starts_with("UInt8")), "Missing UInt8 tests");
-    assert!(type_names.iter().any(|n| n.starts_with("UInt16")), "Missing UInt16 tests");
-    assert!(type_names.iter().any(|n| n.starts_with("UInt32")), "Missing UInt32 tests");
-    assert!(type_names.iter().any(|n| n.starts_with("UInt64")), "Missing UInt64 tests");
-    assert!(type_names.iter().any(|n| n.starts_with("Float32") && !n.contains("Array")), "Missing Float32 tests");
-    assert!(type_names.iter().any(|n| n.starts_with("Float64") && !n.contains("Array")), "Missing Float64 tests");
-    assert!(type_names.iter().any(|n| n.starts_with("Bool")), "Missing Bool tests");
-    assert!(type_names.iter().any(|n| n.starts_with("String")), "Missing String tests");
-    assert!(type_names.iter().any(|n| n.starts_with("Bytes")), "Missing Bytes tests");
-    assert!(type_names.iter().any(|n| n.starts_with("Uuid") && !n.contains("256")), "Missing Uuid tests");
-    assert!(type_names.iter().any(|n| n.starts_with("Uuid256")), "Missing Uuid256 tests");
-    assert!(type_names.iter().any(|n| n.starts_with("Ip")), "Missing Ip tests");
-    assert!(type_names.iter().any(|n| n.starts_with("Date")), "Missing Date tests");
-    assert!(type_names.iter().any(|n| n.starts_with("Timestamp")), "Missing Timestamp tests");
-    assert!(type_names.iter().any(|n| n.contains("Float32Array")), "Missing Float32Array tests");
-    assert!(type_names.iter().any(|n| n.contains("Float64Array")), "Missing Float64Array tests");
-    assert!(type_names.iter().any(|n| n.contains("Float16Array")), "Missing Float16Array tests");
-    assert!(type_names.iter().any(|n| n.contains("Decimal128")), "Missing Decimal128 tests");
-    assert!(type_names.iter().any(|n| n.contains("Decimal256")), "Missing Decimal256 tests");
+    assert!(
+        type_names.iter().any(|n| n.starts_with("Int8")),
+        "Missing Int8 tests"
+    );
+    assert!(
+        type_names.iter().any(|n| n.starts_with("Int16")),
+        "Missing Int16 tests"
+    );
+    assert!(
+        type_names.iter().any(|n| n.starts_with("Int32")),
+        "Missing Int32 tests"
+    );
+    assert!(
+        type_names.iter().any(|n| n.starts_with("Int64")),
+        "Missing Int64 tests"
+    );
+    assert!(
+        type_names.iter().any(|n| n.starts_with("UInt8")),
+        "Missing UInt8 tests"
+    );
+    assert!(
+        type_names.iter().any(|n| n.starts_with("UInt16")),
+        "Missing UInt16 tests"
+    );
+    assert!(
+        type_names.iter().any(|n| n.starts_with("UInt32")),
+        "Missing UInt32 tests"
+    );
+    assert!(
+        type_names.iter().any(|n| n.starts_with("UInt64")),
+        "Missing UInt64 tests"
+    );
+    assert!(
+        type_names
+            .iter()
+            .any(|n| n.starts_with("Float32") && !n.contains("Array")),
+        "Missing Float32 tests"
+    );
+    assert!(
+        type_names
+            .iter()
+            .any(|n| n.starts_with("Float64") && !n.contains("Array")),
+        "Missing Float64 tests"
+    );
+    assert!(
+        type_names.iter().any(|n| n.starts_with("Bool")),
+        "Missing Bool tests"
+    );
+    assert!(
+        type_names.iter().any(|n| n.starts_with("String")),
+        "Missing String tests"
+    );
+    assert!(
+        type_names.iter().any(|n| n.starts_with("Bytes")),
+        "Missing Bytes tests"
+    );
+    assert!(
+        type_names
+            .iter()
+            .any(|n| n.starts_with("Uuid") && !n.contains("256")),
+        "Missing Uuid tests"
+    );
+    assert!(
+        type_names.iter().any(|n| n.starts_with("Uuid256")),
+        "Missing Uuid256 tests"
+    );
+    assert!(
+        type_names.iter().any(|n| n.starts_with("Ip")),
+        "Missing Ip tests"
+    );
+    assert!(
+        type_names.iter().any(|n| n.starts_with("Date")),
+        "Missing Date tests"
+    );
+    assert!(
+        type_names.iter().any(|n| n.starts_with("Timestamp")),
+        "Missing Timestamp tests"
+    );
+    assert!(
+        type_names.iter().any(|n| n.contains("Float32Array")),
+        "Missing Float32Array tests"
+    );
+    assert!(
+        type_names.iter().any(|n| n.contains("Float64Array")),
+        "Missing Float64Array tests"
+    );
+    assert!(
+        type_names.iter().any(|n| n.contains("Float16Array")),
+        "Missing Float16Array tests"
+    );
+    assert!(
+        type_names.iter().any(|n| n.contains("Decimal128")),
+        "Missing Decimal128 tests"
+    );
+    assert!(
+        type_names.iter().any(|n| n.contains("Decimal256")),
+        "Missing Decimal256 tests"
+    );
 
     // Test varint path
-    assert!(type_names.iter().any(|n| n.contains("varint")), "Missing varint tests");
+    assert!(
+        type_names.iter().any(|n| n.contains("varint")),
+        "Missing varint tests"
+    );
 
     println!("Roundtrip coverage: {} test cases", cases.len());
 }
@@ -1159,8 +1437,16 @@ fn test_integer_value_verification() {
         access.set_cols(&arrays);
         access.set_row(0);
 
-        let actual = access.get_int64(0).expect("should succeed").expect("should not be null");
-        assert_eq!(actual, expected, "Value mismatch for {:?}", array.data_type());
+        let actual = access
+            .get_int64(0)
+            .expect("should succeed")
+            .expect("should not be null");
+        assert_eq!(
+            actual,
+            expected,
+            "Value mismatch for {:?}",
+            array.data_type()
+        );
     }
 }
 
@@ -1169,9 +1455,9 @@ fn test_float_to_int_truncation() {
     // Test that Float → Int truncates toward zero (like SQL CAST)
     let test_cases: Vec<(f64, i64)> = vec![
         (3.14, 3),
-        (3.99, 3),      // Truncate, not round
+        (3.99, 3), // Truncate, not round
         (-3.14, -3),
-        (-3.99, -3),    // Truncate toward zero
+        (-3.99, -3), // Truncate toward zero
         (0.0, 0),
         (-0.0, 0),
         (100.001, 100),
@@ -1183,8 +1469,15 @@ fn test_float_to_int_truncation() {
         access.set_cols(&arrays);
         access.set_row(0);
 
-        let actual = access.get_int64(0).expect("should succeed").expect("should not be null");
-        assert_eq!(actual, expected_int, "Float {} should truncate to {}", float_val, expected_int);
+        let actual = access
+            .get_int64(0)
+            .expect("should succeed")
+            .expect("should not be null");
+        assert_eq!(
+            actual, expected_int,
+            "Float {} should truncate to {}",
+            float_val, expected_int
+        );
     }
 }
 
@@ -1196,7 +1489,7 @@ fn test_string_to_int_parsing() {
         ("-42", -42),
         ("0", 0),
         ("9999999999", 9999999999),
-        ("  123  ", 123),  // Whitespace handling
+        ("  123  ", 123), // Whitespace handling
     ];
 
     for (str_val, expected) in test_cases {
@@ -1205,8 +1498,15 @@ fn test_string_to_int_parsing() {
         access.set_cols(&arrays);
         access.set_row(0);
 
-        let actual = access.get_int64(0).expect("should succeed").expect("should not be null");
-        assert_eq!(actual, expected, "String '{}' should parse to {}", str_val, expected);
+        let actual = access
+            .get_int64(0)
+            .expect("should succeed")
+            .expect("should not be null");
+        assert_eq!(
+            actual, expected,
+            "String '{}' should parse to {}",
+            str_val, expected
+        );
     }
 }
 
@@ -1221,11 +1521,17 @@ fn test_int8_boundaries() {
     access.set_cols(&arrays);
 
     access.set_row(0);
-    let min_val = access.get_int64(0).expect("should succeed").expect("not null");
+    let min_val = access
+        .get_int64(0)
+        .expect("should succeed")
+        .expect("not null");
     assert_eq!(min_val, i8::MIN as i64, "i8::MIN should be preserved");
 
     access.set_row(1);
-    let max_val = access.get_int64(0).expect("should succeed").expect("not null");
+    let max_val = access
+        .get_int64(0)
+        .expect("should succeed")
+        .expect("not null");
     assert_eq!(max_val, i8::MAX as i64, "i8::MAX should be preserved");
 }
 
@@ -1236,11 +1542,17 @@ fn test_int16_boundaries() {
     access.set_cols(&arrays);
 
     access.set_row(0);
-    let min_val = access.get_int64(0).expect("should succeed").expect("not null");
+    let min_val = access
+        .get_int64(0)
+        .expect("should succeed")
+        .expect("not null");
     assert_eq!(min_val, i16::MIN as i64);
 
     access.set_row(1);
-    let max_val = access.get_int64(0).expect("should succeed").expect("not null");
+    let max_val = access
+        .get_int64(0)
+        .expect("should succeed")
+        .expect("not null");
     assert_eq!(max_val, i16::MAX as i64);
 }
 
@@ -1251,11 +1563,17 @@ fn test_int32_boundaries() {
     access.set_cols(&arrays);
 
     access.set_row(0);
-    let min_val = access.get_int64(0).expect("should succeed").expect("not null");
+    let min_val = access
+        .get_int64(0)
+        .expect("should succeed")
+        .expect("not null");
     assert_eq!(min_val, i32::MIN as i64);
 
     access.set_row(1);
-    let max_val = access.get_int64(0).expect("should succeed").expect("not null");
+    let max_val = access
+        .get_int64(0)
+        .expect("should succeed")
+        .expect("not null");
     assert_eq!(max_val, i32::MAX as i64);
 }
 
@@ -1266,11 +1584,17 @@ fn test_int64_boundaries() {
     access.set_cols(&arrays);
 
     access.set_row(0);
-    let min_val = access.get_int64(0).expect("should succeed").expect("not null");
+    let min_val = access
+        .get_int64(0)
+        .expect("should succeed")
+        .expect("not null");
     assert_eq!(min_val, i64::MIN);
 
     access.set_row(1);
-    let max_val = access.get_int64(0).expect("should succeed").expect("not null");
+    let max_val = access
+        .get_int64(0)
+        .expect("should succeed")
+        .expect("not null");
     assert_eq!(max_val, i64::MAX);
 }
 
@@ -1281,7 +1605,10 @@ fn test_uint64_max() {
     access.set_cols(&arrays);
     access.set_row(0);
 
-    let val = access.get_uint64(0).expect("should succeed").expect("not null");
+    let val = access
+        .get_uint64(0)
+        .expect("should succeed")
+        .expect("not null");
     assert_eq!(val, u64::MAX);
 }
 
@@ -1299,7 +1626,11 @@ fn test_null_int64() {
     assert_eq!(access.get_int64(0).unwrap(), Some(42));
 
     access.set_row(1);
-    assert_eq!(access.get_int64(0).unwrap(), None, "Null should return None");
+    assert_eq!(
+        access.get_int64(0).unwrap(),
+        None,
+        "Null should return None"
+    );
 
     access.set_row(2);
     assert_eq!(access.get_int64(0).unwrap(), Some(100));
@@ -1357,10 +1688,7 @@ fn test_null_bool() {
 
 #[test]
 fn test_float_infinity() {
-    let array: ArrayRef = Arc::new(Float64Array::from(vec![
-        f64::INFINITY,
-        f64::NEG_INFINITY,
-    ]));
+    let array: ArrayRef = Arc::new(Float64Array::from(vec![f64::INFINITY, f64::NEG_INFINITY]));
     let (mut access, arrays) = make_access(&array, default_hints());
     access.set_cols(&arrays);
 
@@ -1465,8 +1793,14 @@ fn test_negative_int_preservation() {
         (Arc::new(Int8Array::from(vec![-1i8])), -1),
         (Arc::new(Int8Array::from(vec![-128i8])), -128),
         (Arc::new(Int16Array::from(vec![-32768i16])), -32768),
-        (Arc::new(Int32Array::from(vec![-2147483648i32])), -2147483648),
-        (Arc::new(Int64Array::from(vec![-9223372036854775808i64])), i64::MIN),
+        (
+            Arc::new(Int32Array::from(vec![-2147483648i32])),
+            -2147483648,
+        ),
+        (
+            Arc::new(Int64Array::from(vec![-9223372036854775808i64])),
+            i64::MIN,
+        ),
     ];
 
     for (array, expected) in test_cases {
@@ -1475,6 +1809,11 @@ fn test_negative_int_preservation() {
         access.set_row(0);
 
         let actual = access.get_int64(0).unwrap().unwrap();
-        assert_eq!(actual, expected, "Negative value should be preserved for {:?}", array.data_type());
+        assert_eq!(
+            actual,
+            expected,
+            "Negative value should be preserved for {:?}",
+            array.data_type()
+        );
     }
 }

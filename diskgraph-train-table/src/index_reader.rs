@@ -83,17 +83,20 @@ impl IndexReader {
         Ok(NodeRowIter::Graph {
             table: table_reader,
             node_id: 0,
-            max: graph
-                .table(table)
-                .map(|t| t.node_count())
-                .unwrap_or(0),
+            max: graph.table(table).map(|t| t.node_count()).unwrap_or(0),
         })
     }
 }
 
 pub enum NodeRowIter {
-    File { file: File },
-    Graph { table: Arc<TableReader>, node_id: u64, max: u64 },
+    File {
+        file: File,
+    },
+    Graph {
+        table: Arc<TableReader>,
+        node_id: u64,
+        max: u64,
+    },
 }
 
 impl NodeRowIter {
@@ -114,7 +117,11 @@ impl NodeRowIter {
                 file.read_exact(&mut buf)?;
                 Ok(Some(buf))
             }
-            NodeRowIter::Graph { table, node_id, max } => {
+            NodeRowIter::Graph {
+                table,
+                node_id,
+                max,
+            } => {
                 if *node_id >= *max {
                     return Ok(None);
                 }
@@ -218,8 +225,11 @@ mod tests {
             }],
             edge_relations: Vec::new(),
         };
-        std::fs::write(dir.join("index_metadata.json"), serde_json::to_vec_pretty(&metadata).unwrap())
-            .expect("write metadata");
+        std::fs::write(
+            dir.join("index_metadata.json"),
+            serde_json::to_vec_pretty(&metadata).unwrap(),
+        )
+        .expect("write metadata");
 
         let encoder = RowPackEncoder::new(ctx.clone()).expect("encoder");
         let mut scratch = RowPackScratch::new(encoder.context());

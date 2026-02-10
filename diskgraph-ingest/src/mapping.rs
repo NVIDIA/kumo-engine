@@ -1,13 +1,13 @@
 use anyhow::{anyhow, Result};
+use epserde::prelude::{Deserialize as EpDeserialize, Flags as EpFlags};
 use memmap2::Mmap;
-#[cfg(not(feature = "pkhash128"))]
-use ptr_hash::hash::GxHash64;
 #[cfg(feature = "pkhash128")]
 use ptr_hash::hash::GxHash128;
+#[cfg(not(feature = "pkhash128"))]
+use ptr_hash::hash::GxHash64;
 use ptr_hash::hash::Hasher as PtrHasher;
 use ptr_hash::DefaultPtrHash;
 use std::fs::File;
-use epserde::prelude::{Deserialize as EpDeserialize, Flags as EpFlags};
 
 const PK_DATA_MAGIC: &[u8; 8] = b"DGPKDAT\0";
 const PK_DATA_VERSION: u32 = 3;
@@ -98,17 +98,14 @@ impl PkDataHeader {
     }
 }
 
-
-
 #[cfg(not(feature = "pkhash128"))]
 pub type PkPtrHash = GxHash64;
 #[cfg(feature = "pkhash128")]
 pub type PkPtrHash = GxHash128;
 pub type PkPtrHashOutput = <PkPtrHash as PtrHasher<u64>>::H;
 
-type MphfInt = epserde::prelude::MemCase<
-    epserde::prelude::DeserType<'static, DefaultPtrHash<PkPtrHash, u64>>,
->;
+type MphfInt =
+    epserde::prelude::MemCase<epserde::prelude::DeserType<'static, DefaultPtrHash<PkPtrHash, u64>>>;
 type MphfBytes = epserde::prelude::MemCase<
     epserde::prelude::DeserType<'static, DefaultPtrHash<PkPtrHash, Vec<u8>>>,
 >;
@@ -217,19 +214,15 @@ impl PkHashShard {
         let lookup_fn = lookup_id_only;
         let mphf = match key_type {
             KeyType::Int64 => {
-                let mphf: MphfInt = DefaultPtrHash::<PkPtrHash, u64>::load_mmap(
-                    hash_path,
-                    EpFlags::SEQUENTIAL,
-                )
-                .map_err(|e| anyhow!("load pk hash {}: {e}", hash_path.display()))?;
+                let mphf: MphfInt =
+                    DefaultPtrHash::<PkPtrHash, u64>::load_mmap(hash_path, EpFlags::SEQUENTIAL)
+                        .map_err(|e| anyhow!("load pk hash {}: {e}", hash_path.display()))?;
                 PkHashMphf::Int(mphf)
             }
             KeyType::VarBytes => {
-                let mphf: MphfBytes = DefaultPtrHash::<PkPtrHash, Vec<u8>>::load_mmap(
-                    hash_path,
-                    EpFlags::SEQUENTIAL,
-                )
-                .map_err(|e| anyhow!("load pk hash {}: {e}", hash_path.display()))?;
+                let mphf: MphfBytes =
+                    DefaultPtrHash::<PkPtrHash, Vec<u8>>::load_mmap(hash_path, EpFlags::SEQUENTIAL)
+                        .map_err(|e| anyhow!("load pk hash {}: {e}", hash_path.display()))?;
                 PkHashMphf::Bytes(mphf)
             }
             KeyType::Uuid => {
@@ -316,10 +309,7 @@ pub fn write_pk_data_header(
     header.write_to(&mut out)
 }
 
-pub fn write_pk_data_entry(
-    mut out: impl std::io::Write,
-    value: u32,
-) -> std::io::Result<()> {
+pub fn write_pk_data_entry(mut out: impl std::io::Write, value: u32) -> std::io::Result<()> {
     out.write_all(&value.to_le_bytes())?;
     Ok(())
 }
@@ -336,9 +326,7 @@ fn lookup_id_only(shard: &PkHashShard, key: &Key) -> Option<u32> {
     if shard.data.len() < offset + shard.entry_len {
         return None;
     }
-    let value = u32::from_le_bytes(
-        shard.data[offset..offset + 4].try_into().ok()?,
-    );
+    let value = u32::from_le_bytes(shard.data[offset..offset + 4].try_into().ok()?);
     if value == u32::MAX {
         return None;
     }
@@ -346,8 +334,13 @@ fn lookup_id_only(shard: &PkHashShard, key: &Key) -> Option<u32> {
 }
 
 fn advise_willneed(map: &Mmap) {
-    let ret =
-        unsafe { libc::madvise(map.as_ptr() as *mut libc::c_void, map.len(), libc::MADV_WILLNEED) };
+    let ret = unsafe {
+        libc::madvise(
+            map.as_ptr() as *mut libc::c_void,
+            map.len(),
+            libc::MADV_WILLNEED,
+        )
+    };
     if ret != 0 {
         let _ = std::io::Error::last_os_error();
     }
@@ -357,8 +350,13 @@ fn advise_data(map: &Mmap, advice: PkDataAdvice) {
     match advice {
         PkDataAdvice::WillNeed => advise_willneed(map),
         PkDataAdvice::Random => {
-            let ret =
-                unsafe { libc::madvise(map.as_ptr() as *mut libc::c_void, map.len(), libc::MADV_RANDOM) };
+            let ret = unsafe {
+                libc::madvise(
+                    map.as_ptr() as *mut libc::c_void,
+                    map.len(),
+                    libc::MADV_RANDOM,
+                )
+            };
             if ret != 0 {
                 let _ = std::io::Error::last_os_error();
             }

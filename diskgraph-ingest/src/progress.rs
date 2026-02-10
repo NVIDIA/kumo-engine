@@ -79,10 +79,7 @@ pub struct TableIndexTotals {
 }
 
 impl IndexProgressAdapter {
-    pub fn new(
-        cb: ProgressCallback,
-        table_totals: HashMap<String, TableIndexTotals>,
-    ) -> Self {
+    pub fn new(cb: ProgressCallback, table_totals: HashMap<String, TableIndexTotals>) -> Self {
         let mut table_states = HashMap::new();
         for (table, totals) in table_totals {
             table_states.insert(
@@ -118,8 +115,9 @@ impl IndexProgressAdapter {
 impl GraphProgressSink for IndexProgressAdapter {
     fn report(&self, update: GraphBuildProgress) {
         let (table, shard) = match &update.stage {
-            GraphBuildStage::BuildShard { shard }
-            | GraphBuildStage::Complete { shard } => Self::shard_key(shard.as_ref()),
+            GraphBuildStage::BuildShard { shard } | GraphBuildStage::Complete { shard } => {
+                Self::shard_key(shard.as_ref())
+            }
         };
         let key = (table.clone(), shard);
         let mut state = self.state.lock().unwrap();
@@ -145,15 +143,17 @@ impl GraphProgressSink for IndexProgressAdapter {
                         }
                     }
                 };
-                let table_state = state.table_states.entry(table.clone()).or_insert(
-                    TableProgressState {
-                        current: 0,
-                        total: None,
-                        remaining_shards: None,
-                        started: false,
-                        finished: false,
-                    },
-                );
+                let table_state =
+                    state
+                        .table_states
+                        .entry(table.clone())
+                        .or_insert(TableProgressState {
+                            current: 0,
+                            total: None,
+                            remaining_shards: None,
+                            started: false,
+                            finished: false,
+                        });
                 if !table_state.started && !table_state.finished {
                     table_state.started = true;
                     (self.cb)(ProgressEvent {
@@ -181,15 +181,17 @@ impl GraphProgressSink for IndexProgressAdapter {
             }
             GraphBuildStage::Complete { .. } => {
                 state.shard_states.remove(&key);
-                let table_state = state.table_states.entry(table.clone()).or_insert(
-                    TableProgressState {
-                        current: 0,
-                        total: None,
-                        remaining_shards: None,
-                        started: false,
-                        finished: false,
-                    },
-                );
+                let table_state =
+                    state
+                        .table_states
+                        .entry(table.clone())
+                        .or_insert(TableProgressState {
+                            current: 0,
+                            total: None,
+                            remaining_shards: None,
+                            started: false,
+                            finished: false,
+                        });
                 if let Some(remaining) = table_state.remaining_shards.as_mut() {
                     if *remaining > 0 {
                         *remaining = remaining.saturating_sub(1);
@@ -264,13 +266,11 @@ pub fn build_progress() -> Option<ProgressCallback> {
                             format_count(bar.position()),
                             format_count(total)
                         ));
+                    } else if event.status.is_some() {
+                        bar.set_message(label);
                     } else {
-                        if event.status.is_some() {
-                            bar.set_message(label);
-                        } else {
-                            let count = format_count(bar.position());
-                            bar.set_message(format!("{} {}", label, count));
-                        }
+                        let count = format_count(bar.position());
+                        bar.set_message(format!("{} {}", label, count));
                     }
                 }
             }

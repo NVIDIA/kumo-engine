@@ -11,11 +11,16 @@ use diskgraph_index::layout::OffsetFileHeader;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use tempfile::tempdir;
 
-use diskgraph_train_table::config::{JobConfig, QueryOptions, SplitConfig, SplitType, TemporalSampling};
+use diskgraph_rowpack::{
+    ColumnContext, ColumnEncoding, FloatStorage, IngestedType, RowPackContext, RowPackEncoder,
+    RowPackScratch, ValueRef,
+};
+use diskgraph_train_table::config::{
+    JobConfig, QueryOptions, SplitConfig, SplitType, TemporalSampling,
+};
 use diskgraph_train_table::parser::parse_query;
 use diskgraph_train_table::pipeline::run_job;
 use diskgraph_train_table::temporal::{execute_temporal, execute_temporal_range};
-use diskgraph_rowpack::{ColumnContext, ColumnEncoding, FloatStorage, IngestedType, RowPackContext, RowPackEncoder, RowPackScratch, ValueRef};
 
 #[test]
 fn temporal_count_train_table_e2e() {
@@ -35,10 +40,7 @@ fn temporal_count_train_table_e2e() {
         "users",
         0,
         &metadata,
-        vec![
-            vec![(1u64, 0i64), (2u64, 100i64), (1u64, 200i64)],
-            vec![],
-        ],
+        vec![vec![(1u64, 0i64), (2u64, 100i64), (1u64, 200i64)], vec![]],
     );
     write_empty_shard(&index_root, "articles", 0, 2);
 
@@ -84,9 +86,21 @@ fn temporal_count_train_table_e2e() {
     let batch = reader.next().unwrap().unwrap();
     assert!(batch.num_rows() > 0);
 
-    let entity = batch.column(0).as_any().downcast_ref::<arrow_array::UInt64Array>().unwrap();
-    let target = batch.column(1).as_any().downcast_ref::<arrow_array::UInt64Array>().unwrap();
-    let timestamp = batch.column(2).as_any().downcast_ref::<arrow_array::Int64Array>().unwrap();
+    let entity = batch
+        .column(0)
+        .as_any()
+        .downcast_ref::<arrow_array::UInt64Array>()
+        .unwrap();
+    let target = batch
+        .column(1)
+        .as_any()
+        .downcast_ref::<arrow_array::UInt64Array>()
+        .unwrap();
+    let timestamp = batch
+        .column(2)
+        .as_any()
+        .downcast_ref::<arrow_array::Int64Array>()
+        .unwrap();
 
     for row in 0..batch.num_rows() {
         let entity_id = entity.value(row);
@@ -119,7 +133,10 @@ fn temporal_sum_with_filter_e2e() {
     );
 
     let txn_ctx = build_transactions_ctx();
-    write_rowpack_ctx(&index_root.join("nodes/transactions/node_data.ctx"), &txn_ctx);
+    write_rowpack_ctx(
+        &index_root.join("nodes/transactions/node_data.ctx"),
+        &txn_ctx,
+    );
     write_node_data_shard(
         &index_root,
         "transactions",
@@ -147,7 +164,7 @@ fn temporal_sum_with_filter_e2e() {
         let data = view.node_data().unwrap().unwrap();
         let decoder = txn_table.node_data_decoder().unwrap();
         let mut scratch = diskgraph_rowpack::RowPackDecodeScratch::default();
-        let val = decoder.decode_column_value(&data, 1, &mut scratch).unwrap();
+        let val = decoder.decode_column_value(data, 1, &mut scratch).unwrap();
         let encoder = RowPackEncoder::new(txn_ctx.clone()).unwrap();
         let mut enc_scratch = RowPackScratch::new(encoder.context());
         let mut expected = Vec::new();
@@ -159,12 +176,10 @@ fn temporal_sum_with_filter_e2e() {
             )
             .unwrap();
         assert_eq!(data, expected);
-        assert!(
-            matches!(
-                val,
-                ValueRef::Int64(1) | ValueRef::Int32(1) | ValueRef::UInt64(1) | ValueRef::UInt32(1)
-            )
-        );
+        assert!(matches!(
+            val,
+            ValueRef::Int64(1) | ValueRef::Int32(1) | ValueRef::UInt64(1) | ValueRef::UInt32(1)
+        ));
     }
 
     let output_path = dir.path().join("train.parquet");
@@ -197,9 +212,21 @@ fn temporal_sum_with_filter_e2e() {
     let batch = reader.next().unwrap().unwrap();
     assert!(batch.num_rows() > 0);
 
-    let entity = batch.column(0).as_any().downcast_ref::<arrow_array::UInt64Array>().unwrap();
-    let target = batch.column(1).as_any().downcast_ref::<arrow_array::Float64Array>().unwrap();
-    let timestamp = batch.column(2).as_any().downcast_ref::<arrow_array::Int64Array>().unwrap();
+    let entity = batch
+        .column(0)
+        .as_any()
+        .downcast_ref::<arrow_array::UInt64Array>()
+        .unwrap();
+    let target = batch
+        .column(1)
+        .as_any()
+        .downcast_ref::<arrow_array::Float64Array>()
+        .unwrap();
+    let timestamp = batch
+        .column(2)
+        .as_any()
+        .downcast_ref::<arrow_array::Int64Array>()
+        .unwrap();
 
     for row in 0..batch.num_rows() {
         let entity_id = entity.value(row);
@@ -232,7 +259,10 @@ fn temporal_min_max_avg_e2e() {
     );
 
     let txn_ctx = build_transactions_ctx();
-    write_rowpack_ctx(&index_root.join("nodes/transactions/node_data.ctx"), &txn_ctx);
+    write_rowpack_ctx(
+        &index_root.join("nodes/transactions/node_data.ctx"),
+        &txn_ctx,
+    );
     write_node_data_shard(
         &index_root,
         "transactions",
@@ -251,9 +281,18 @@ fn temporal_min_max_avg_e2e() {
     };
 
     let cases = [
-        ("PREDICT AVG(transactions.price, 0, 100, seconds) FOR EACH users.user_id", "avg"),
-        ("PREDICT MIN(transactions.price, 0, 100, seconds) FOR EACH users.user_id", "min"),
-        ("PREDICT MAX(transactions.price, 0, 100, seconds) FOR EACH users.user_id", "max"),
+        (
+            "PREDICT AVG(transactions.price, 0, 100, seconds) FOR EACH users.user_id",
+            "avg",
+        ),
+        (
+            "PREDICT MIN(transactions.price, 0, 100, seconds) FOR EACH users.user_id",
+            "min",
+        ),
+        (
+            "PREDICT MAX(transactions.price, 0, 100, seconds) FOR EACH users.user_id",
+            "max",
+        ),
     ];
 
     for (query, kind) in cases {
@@ -303,15 +342,13 @@ fn temporal_predict_comparison_e2e() {
         "users",
         0,
         &metadata,
-        vec![
-            vec![(1u64, 0i64), (2u64, 100i64), (1u64, 200i64)],
-            vec![],
-        ],
+        vec![vec![(1u64, 0i64), (2u64, 100i64), (1u64, 200i64)], vec![]],
     );
     write_empty_shard(&index_root, "articles", 0, 2);
 
-    let query = parse_query("PREDICT COUNT(transactions.*, 0, 100, seconds) = 0 FOR EACH users.user_id")
-        .unwrap();
+    let query =
+        parse_query("PREDICT COUNT(transactions.*, 0, 100, seconds) = 0 FOR EACH users.user_id")
+            .unwrap();
     let options = QueryOptions {
         temporal_sampling: TemporalSampling::Timeframe,
         ..Default::default()
@@ -320,12 +357,19 @@ fn temporal_predict_comparison_e2e() {
     assert!(!rows.is_empty());
 
     for row in rows {
-        let expected = count_edges_in_window(match row.entity {
-            diskgraph_train_table::exec::Value::UInt(id) => id,
-            _ => 0,
-        }, row.timestamp, 0, 100);
+        let expected = count_edges_in_window(
+            match row.entity {
+                diskgraph_train_table::exec::Value::UInt(id) => id,
+                _ => 0,
+            },
+            row.timestamp,
+            0,
+            100,
+        );
         let actual = match row.target {
-            diskgraph_train_table::exec::TargetValue::Scalar(diskgraph_train_table::exec::Value::Bool(v)) => v,
+            diskgraph_train_table::exec::TargetValue::Scalar(
+                diskgraph_train_table::exec::Value::Bool(v),
+            ) => v,
             _ => false,
         };
         assert_eq!(actual, expected == 0);
@@ -354,8 +398,9 @@ fn temporal_sampling_global_range_e2e() {
     );
     write_empty_shard(&index_root, "articles", 0, 2);
 
-    let query = parse_query("PREDICT COUNT(transactions.*, 0, 10, seconds) = 0 FOR EACH users.user_id")
-        .unwrap();
+    let query =
+        parse_query("PREDICT COUNT(transactions.*, 0, 10, seconds) = 0 FOR EACH users.user_id")
+            .unwrap();
     let options = QueryOptions {
         temporal_sampling: TemporalSampling::Timeframe,
         ..Default::default()
@@ -393,11 +438,15 @@ fn temporal_sampling_entity_time_column_e2e() {
         &metadata,
         vec![vec![(1u64, 50i64), (2u64, 150i64)]],
         &user_ctx,
-        vec![vec![ValueRef::Timestamp { secs: 120, nanos: 0 }]],
+        vec![vec![ValueRef::Timestamp {
+            secs: 120,
+            nanos: 0,
+        }]],
     );
 
-    let query = parse_query("PREDICT COUNT(transactions.*, 0, 10, seconds) = 0 FOR EACH users.user_id")
-        .unwrap();
+    let query =
+        parse_query("PREDICT COUNT(transactions.*, 0, 10, seconds) = 0 FOR EACH users.user_id")
+            .unwrap();
     let options = QueryOptions {
         temporal_sampling: TemporalSampling::Timeframe,
         entity_time_column: Some("created_at".to_string()),
@@ -430,10 +479,7 @@ fn temporal_where_after_for_each_e2e() {
         "users",
         0,
         &metadata,
-        vec![
-            vec![(1u64, 0i64), (2u64, 100i64), (1u64, 200i64)],
-            vec![],
-        ],
+        vec![vec![(1u64, 0i64), (2u64, 100i64), (1u64, 200i64)], vec![]],
     );
     write_empty_shard(&index_root, "articles", 0, 2);
 
@@ -480,7 +526,10 @@ fn temporal_predict_comparison_sum_e2e() {
     );
 
     let txn_ctx = build_transactions_ctx();
-    write_rowpack_ctx(&index_root.join("nodes/transactions/node_data.ctx"), &txn_ctx);
+    write_rowpack_ctx(
+        &index_root.join("nodes/transactions/node_data.ctx"),
+        &txn_ctx,
+    );
     write_node_data_shard(
         &index_root,
         "transactions",
@@ -493,8 +542,9 @@ fn temporal_predict_comparison_sum_e2e() {
         ],
     );
 
-    let query = parse_query("PREDICT SUM(transactions.price, 0, 100, seconds) > 0 FOR EACH users.user_id")
-        .unwrap();
+    let query =
+        parse_query("PREDICT SUM(transactions.price, 0, 100, seconds) > 0 FOR EACH users.user_id")
+            .unwrap();
     let options = QueryOptions {
         temporal_sampling: TemporalSampling::Timeframe,
         ..Default::default()
@@ -503,12 +553,19 @@ fn temporal_predict_comparison_sum_e2e() {
     assert!(!rows.is_empty());
 
     for row in rows {
-        let expected = sum_all_edges_in_window(match row.entity {
-            diskgraph_train_table::exec::Value::UInt(id) => id,
-            _ => 0,
-        }, row.timestamp, 0, 100);
+        let expected = sum_all_edges_in_window(
+            match row.entity {
+                diskgraph_train_table::exec::Value::UInt(id) => id,
+                _ => 0,
+            },
+            row.timestamp,
+            0,
+            100,
+        );
         let actual = match row.target {
-            diskgraph_train_table::exec::TargetValue::Scalar(diskgraph_train_table::exec::Value::Bool(v)) => v,
+            diskgraph_train_table::exec::TargetValue::Scalar(
+                diskgraph_train_table::exec::Value::Bool(v),
+            ) => v,
             _ => false,
         };
         assert_eq!(actual, expected > 0.0);
@@ -537,7 +594,10 @@ fn temporal_count_with_filter_e2e() {
     );
 
     let txn_ctx = build_transactions_ctx();
-    write_rowpack_ctx(&index_root.join("nodes/transactions/node_data.ctx"), &txn_ctx);
+    write_rowpack_ctx(
+        &index_root.join("nodes/transactions/node_data.ctx"),
+        &txn_ctx,
+    );
     write_node_data_shard(
         &index_root,
         "transactions",
@@ -593,14 +653,13 @@ fn temporal_range_matches_serial() {
         "users",
         0,
         &metadata,
-        vec![
-            vec![(1u64, 0i64), (2u64, 100i64), (1u64, 200i64)],
-            vec![],
-        ],
+        vec![vec![(1u64, 0i64), (2u64, 100i64), (1u64, 200i64)], vec![]],
     );
     write_empty_shard(&index_root, "articles", 0, 2);
 
-    let query = parse_query("PREDICT COUNT(transactions.*, 0, 100, seconds) FOR EACH users.user_id").unwrap();
+    let query =
+        parse_query("PREDICT COUNT(transactions.*, 0, 100, seconds) FOR EACH users.user_id")
+            .unwrap();
     let options = QueryOptions {
         temporal_sampling: TemporalSampling::Timeframe,
         ..Default::default()
@@ -642,7 +701,10 @@ fn temporal_list_distinct_e2e() {
     );
 
     let txn_ctx = build_transactions_ctx();
-    write_rowpack_ctx(&index_root.join("nodes/transactions/node_data.ctx"), &txn_ctx);
+    write_rowpack_ctx(
+        &index_root.join("nodes/transactions/node_data.ctx"),
+        &txn_ctx,
+    );
     write_node_data_shard(
         &index_root,
         "transactions",
@@ -659,7 +721,8 @@ fn temporal_list_distinct_e2e() {
     let config = JobConfig {
         job_name: None,
         index_path: index_root.to_string_lossy().to_string(),
-        query: "PREDICT LIST_DISTINCT(transactions.type, 0, 100, seconds) FOR EACH users.user_id".to_string(),
+        query: "PREDICT LIST_DISTINCT(transactions.type, 0, 100, seconds) FOR EACH users.user_id"
+            .to_string(),
         output_parquet: output_path.to_string_lossy().to_string(),
         split: SplitConfig {
             split_type: SplitType::Random,
@@ -685,16 +748,31 @@ fn temporal_list_distinct_e2e() {
     let batch = reader.next().unwrap().unwrap();
     assert!(batch.num_rows() > 0);
 
-    let entity = batch.column(0).as_any().downcast_ref::<arrow_array::UInt64Array>().unwrap();
-    let target = batch.column(1).as_any().downcast_ref::<arrow_array::ListArray>().unwrap();
-    let timestamp = batch.column(2).as_any().downcast_ref::<arrow_array::Int64Array>().unwrap();
+    let entity = batch
+        .column(0)
+        .as_any()
+        .downcast_ref::<arrow_array::UInt64Array>()
+        .unwrap();
+    let target = batch
+        .column(1)
+        .as_any()
+        .downcast_ref::<arrow_array::ListArray>()
+        .unwrap();
+    let timestamp = batch
+        .column(2)
+        .as_any()
+        .downcast_ref::<arrow_array::Int64Array>()
+        .unwrap();
 
     for row in 0..batch.num_rows() {
         let entity_id = entity.value(row);
         let ts = timestamp.value(row);
         let mut expected = list_distinct_in_window(entity_id, ts, 0, 100);
         let values = target.value(row);
-        let list = values.as_any().downcast_ref::<arrow_array::Int64Array>().unwrap();
+        let list = values
+            .as_any()
+            .downcast_ref::<arrow_array::Int64Array>()
+            .unwrap();
         let mut actual = Vec::new();
         for i in 0..list.len() {
             actual.push(list.value(i));
@@ -727,7 +805,10 @@ fn temporal_assuming_filter_e2e() {
     );
 
     let txn_ctx = build_transactions_ctx();
-    write_rowpack_ctx(&index_root.join("nodes/transactions/node_data.ctx"), &txn_ctx);
+    write_rowpack_ctx(
+        &index_root.join("nodes/transactions/node_data.ctx"),
+        &txn_ctx,
+    );
     write_node_data_shard(
         &index_root,
         "transactions",
@@ -770,8 +851,16 @@ fn temporal_assuming_filter_e2e() {
     let batch = reader.next().unwrap().unwrap();
     assert!(batch.num_rows() > 0);
 
-    let target = batch.column(1).as_any().downcast_ref::<arrow_array::Float64Array>().unwrap();
-    let timestamp = batch.column(2).as_any().downcast_ref::<arrow_array::Int64Array>().unwrap();
+    let target = batch
+        .column(1)
+        .as_any()
+        .downcast_ref::<arrow_array::Float64Array>()
+        .unwrap();
+    let timestamp = batch
+        .column(2)
+        .as_any()
+        .downcast_ref::<arrow_array::Int64Array>()
+        .unwrap();
 
     for row in 0..batch.num_rows() {
         let ts = timestamp.value(row);
@@ -953,7 +1042,10 @@ fn write_edge_shard(
     metadata: &DatasetMetadata,
     edges_per_node: Vec<Vec<(u64, i64)>>,
 ) {
-    let dir = root.join("nodes").join(table).join(format!("shard-{:05}", shard_idx));
+    let dir = root
+        .join("nodes")
+        .join(table)
+        .join(format!("shard-{:05}", shard_idx));
     fs::create_dir_all(&dir).unwrap();
     let rels = metadata.edge_relations.clone();
     let layouts = compute_relation_layouts(&rels, &metadata.node_types).unwrap();
@@ -990,7 +1082,10 @@ fn write_edge_shard_with_node_data(
     ctx: &RowPackContext,
     rows: Vec<Vec<ValueRef<'_>>>,
 ) {
-    let dir = root.join("nodes").join(table).join(format!("shard-{:05}", shard_idx));
+    let dir = root
+        .join("nodes")
+        .join(table)
+        .join(format!("shard-{:05}", shard_idx));
     fs::create_dir_all(&dir).unwrap();
     let rels = metadata.edge_relations.clone();
     let layouts = compute_relation_layouts(&rels, &metadata.node_types).unwrap();
@@ -1007,7 +1102,9 @@ fn write_edge_shard_with_node_data(
         let count = node_edges.len() as u32;
         edge_bytes.extend_from_slice(&encode_varint(count));
         let mut encoded = Vec::new();
-        encoder.encode_row_into(&row, &mut encoded, &mut scratch).unwrap();
+        encoder
+            .encode_row_into(&row, &mut encoded, &mut scratch)
+            .unwrap();
         let len = encoded.len() as u16;
         edge_bytes.extend_from_slice(&len.to_le_bytes());
         for (dst, ts) in node_edges {
@@ -1026,13 +1123,13 @@ fn write_edge_shard_with_node_data(
 }
 
 fn write_empty_shard(root: &Path, table: &str, shard_idx: usize, nodes: u64) {
-    let dir = root.join("nodes").join(table).join(format!("shard-{:05}", shard_idx));
+    let dir = root
+        .join("nodes")
+        .join(table)
+        .join(format!("shard-{:05}", shard_idx));
     fs::create_dir_all(&dir).unwrap();
-    let mut offsets = Vec::with_capacity(nodes as usize + 1);
-    for _ in 0..=nodes {
-        offsets.push(0u64);
-    }
-    fs::write(dir.join("edges.bin"), &[]).unwrap();
+    let offsets = vec![0u64; nodes as usize + 1];
+    fs::write(dir.join("edges.bin"), []).unwrap();
     write_offsets_file(&dir.join("offsets.bin"), offsets, 0);
 }
 
@@ -1043,7 +1140,9 @@ fn build_transactions_ctx() -> RowPackContext {
             ColumnContext {
                 name: "price".to_string(),
                 logical_type: IngestedType::Float64,
-                encoding: ColumnEncoding::Float { storage: FloatStorage::F64 },
+                encoding: ColumnEncoding::Float {
+                    storage: FloatStorage::F64,
+                },
             },
             ColumnContext {
                 name: "type".to_string(),
@@ -1084,7 +1183,10 @@ fn write_node_data_shard(
     ctx: &RowPackContext,
     rows: Vec<Vec<ValueRef<'_>>>,
 ) {
-    let dir = root.join("nodes").join(table).join(format!("shard-{:05}", shard_idx));
+    let dir = root
+        .join("nodes")
+        .join(table)
+        .join(format!("shard-{:05}", shard_idx));
     fs::create_dir_all(&dir).unwrap();
     let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
     let mut scratch = RowPackScratch::new(encoder.context());
@@ -1093,7 +1195,9 @@ fn write_node_data_shard(
     offsets.push(0u64);
     for row in rows {
         let mut encoded = Vec::new();
-        encoder.encode_row_into(&row, &mut encoded, &mut scratch).unwrap();
+        encoder
+            .encode_row_into(&row, &mut encoded, &mut scratch)
+            .unwrap();
         let len = encoded.len() as u16;
         data.extend_from_slice(&len.to_le_bytes());
         data.extend_from_slice(&encoded);
@@ -1149,7 +1253,11 @@ fn encode_varint(count: u32) -> Vec<u8> {
     vec![0x40 | hi, lo]
 }
 
-fn encode_edge_entry(dst: u64, sort_key: u64, layout: &diskgraph_index::layout::RelationLayout) -> Vec<u8> {
+fn encode_edge_entry(
+    dst: u64,
+    sort_key: u64,
+    layout: &diskgraph_index::layout::RelationLayout,
+) -> Vec<u8> {
     let mut acc: u128 = 0;
     let mut bit_cursor = 0usize;
     let dst_val = dst & layout.dst_mask;
@@ -1167,9 +1275,15 @@ fn encode_timestamp(value: i64, kind: EdgeSortKeyTimestampKind, anchor: i64, ste
     let step = step.max(1);
     let delta = value.saturating_sub(anchor).div_euclid(step);
     match kind {
-        EdgeSortKeyTimestampKind::Int8 => ordered_signed_to_u64(delta.clamp(i8::MIN as i64, i8::MAX as i64), 8),
-        EdgeSortKeyTimestampKind::Int16 => ordered_signed_to_u64(delta.clamp(i16::MIN as i64, i16::MAX as i64), 16),
-        EdgeSortKeyTimestampKind::Int32 => ordered_signed_to_u64(delta.clamp(i32::MIN as i64, i32::MAX as i64), 32),
+        EdgeSortKeyTimestampKind::Int8 => {
+            ordered_signed_to_u64(delta.clamp(i8::MIN as i64, i8::MAX as i64), 8)
+        }
+        EdgeSortKeyTimestampKind::Int16 => {
+            ordered_signed_to_u64(delta.clamp(i16::MIN as i64, i16::MAX as i64), 16)
+        }
+        EdgeSortKeyTimestampKind::Int32 => {
+            ordered_signed_to_u64(delta.clamp(i32::MIN as i64, i32::MAX as i64), 32)
+        }
     }
 }
 
@@ -1191,7 +1305,10 @@ fn count_edges_in_window(entity: u64, ts: i64, start: i64, end: i64) -> i64 {
     };
     let window_start = ts + start;
     let window_end = ts + end;
-    edges.into_iter().filter(|t| *t >= window_start && *t < window_end).count() as i64
+    edges
+        .into_iter()
+        .filter(|t| *t >= window_start && *t < window_end)
+        .count() as i64
 }
 
 fn count_edges_in_window_with_type(entity: u64, ts: i64, start: i64, end: i64, ty: i64) -> i64 {

@@ -1,19 +1,18 @@
+use arrow_flight::{
+    flight_service_server::FlightService, Action, ActionType, Criteria, FlightData,
+    FlightDescriptor, FlightInfo, HandshakeRequest, HandshakeResponse, PutResult, SchemaResult,
+    Ticket,
+};
+use futures::Stream;
 use std::pin::Pin;
 use std::sync::Arc;
-use futures::Stream;
 use tonic::{Request, Response, Status};
-use arrow_flight::{
-    flight_service_server::FlightService, Ticket, FlightData,
-    SchemaResult, Action, ActionType,
-    FlightDescriptor, FlightInfo, HandshakeRequest, HandshakeResponse,
-    PutResult, Criteria,
-};
 
 use arrow_ipc::writer::IpcWriteOptions;
+use diskgraph_core::features::BatchFeatureRequest;
+use diskgraph_core::sampling::BatchSamplingRequest;
 use diskgraph_engine::engine::DiskGraphEngine;
 use diskgraph_engine::state::StatePool;
-use diskgraph_core::sampling::BatchSamplingRequest;
-use diskgraph_core::features::BatchFeatureRequest;
 use tokio::sync::mpsc;
 
 mod handler;
@@ -33,13 +32,18 @@ impl SamplerGateway {
 #[tonic::async_trait]
 impl FlightService for SamplerGateway {
     // ... (streams definitions same as before) ...
-    type HandshakeStream = Pin<Box<dyn Stream<Item = Result<HandshakeResponse, Status>> + Send + 'static>>;
-    type ListFlightsStream = Pin<Box<dyn Stream<Item = Result<FlightInfo, Status>> + Send + 'static>>;
+    type HandshakeStream =
+        Pin<Box<dyn Stream<Item = Result<HandshakeResponse, Status>> + Send + 'static>>;
+    type ListFlightsStream =
+        Pin<Box<dyn Stream<Item = Result<FlightInfo, Status>> + Send + 'static>>;
     type DoGetStream = Pin<Box<dyn Stream<Item = Result<FlightData, Status>> + Send + 'static>>;
     type DoPutStream = Pin<Box<dyn Stream<Item = Result<PutResult, Status>> + Send + 'static>>;
-    type DoActionStream = Pin<Box<dyn Stream<Item = Result<arrow_flight::Result, Status>> + Send + 'static>>;
-    type ListActionsStream = Pin<Box<dyn Stream<Item = Result<ActionType, Status>> + Send + 'static>>;
-    type DoExchangeStream = Pin<Box<dyn Stream<Item = Result<FlightData, Status>> + Send + 'static>>;
+    type DoActionStream =
+        Pin<Box<dyn Stream<Item = Result<arrow_flight::Result, Status>> + Send + 'static>>;
+    type ListActionsStream =
+        Pin<Box<dyn Stream<Item = Result<ActionType, Status>> + Send + 'static>>;
+    type DoExchangeStream =
+        Pin<Box<dyn Stream<Item = Result<FlightData, Status>> + Send + 'static>>;
 
     async fn handshake(
         &self,
@@ -146,7 +150,10 @@ impl FlightService for SamplerGateway {
 }
 
 impl SamplerGateway {
-    async fn handle_sampling(&self, req: BatchSamplingRequest) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
+    async fn handle_sampling(
+        &self,
+        req: BatchSamplingRequest,
+    ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
         let sampler = Arc::clone(&self.sampler);
         let pool = self.pool.clone();
         let (tx, rx) = mpsc::channel(100);
@@ -156,8 +163,11 @@ impl SamplerGateway {
             let mut output = ArrowFlightOutput::new(tx.clone());
 
             let options = IpcWriteOptions::default();
-            let schema_flight_data = arrow_flight::SchemaAsIpc::new(&output.schema(), &options).into();
-            if let Err(_) = tx.blocking_send(Ok(schema_flight_data)) { return; }
+            let schema_flight_data =
+                arrow_flight::SchemaAsIpc::new(&output.schema(), &options).into();
+            if tx.blocking_send(Ok(schema_flight_data)).is_err() {
+                return;
+            }
 
             if let Err(e) = sampler.sample(&req, &mut state, &mut output) {
                 let _ = tx.blocking_send(Err(Status::internal(e.to_string())));
@@ -168,7 +178,10 @@ impl SamplerGateway {
         Ok(Response::new(Box::pin(output_stream)))
     }
 
-    async fn handle_features(&self, req: BatchFeatureRequest) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
+    async fn handle_features(
+        &self,
+        req: BatchFeatureRequest,
+    ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
         let sampler = Arc::clone(&self.sampler);
         let (tx, rx) = mpsc::channel(100);
 
@@ -182,14 +195,22 @@ impl SamplerGateway {
                 let node_type_id = match sampler.node_type_to_id.get(&feature_req.node_type) {
                     Some(&id) => id,
                     None => {
-                        let _ = tx.blocking_send(Err(Status::invalid_argument(format!("Unknown node type: {}", feature_req.node_type))));
+                        let _ = tx.blocking_send(Err(Status::invalid_argument(format!(
+                            "Unknown node type: {}",
+                            feature_req.node_type
+                        ))));
                         return;
                     }
                 };
 
-                if let Err(e) = sampler.fetch_features_for_type(node_type_id, &feature_req.node_ids, &feature_names, &mut output) {
-                     let _ = tx.blocking_send(Err(Status::internal(e.to_string())));
-                     return;
+                if let Err(e) = sampler.fetch_features_for_type(
+                    node_type_id,
+                    &feature_req.node_ids,
+                    &feature_names,
+                    &mut output,
+                ) {
+                    let _ = tx.blocking_send(Err(Status::internal(e.to_string())));
+                    return;
                 }
             }
         });

@@ -2,7 +2,9 @@ use std::env;
 use std::fs;
 
 use anyhow::{anyhow, Result};
-use diskgraph_rowpack::{ColumnEncoding, DecimalStorage, FloatStorage, RowPackContext, StringEncoding};
+use diskgraph_rowpack::{
+    ColumnEncoding, DecimalStorage, FloatStorage, RowPackContext, StringEncoding,
+};
 
 const MAX_DICT_PREVIEW: usize = 10;
 
@@ -11,9 +13,7 @@ fn main() -> Result<()> {
     let path = match args.next() {
         Some(path) => path,
         None => {
-            return Err(anyhow!(
-                "usage: rowpack_ctx_inspect <context.ctx>"
-            ));
+            return Err(anyhow!("usage: rowpack_ctx_inspect <context.ctx>"));
         }
     };
     if args.next().is_some() {
@@ -27,12 +27,7 @@ fn main() -> Result<()> {
     println!("Columns: {}", ctx.columns.len());
     for (idx, col) in ctx.columns.iter().enumerate() {
         println!();
-        println!(
-            "[{}] {} ({:?})",
-            idx,
-            col.name,
-            col.logical_type
-        );
+        println!("[{}] {} ({:?})", idx, col.name, col.logical_type);
         print_encoding(&col.encoding)?;
     }
     Ok(())
@@ -40,8 +35,15 @@ fn main() -> Result<()> {
 
 fn print_encoding(encoding: &ColumnEncoding) -> Result<()> {
     match encoding {
-        ColumnEncoding::Int { signed, varint, bits } => {
-            println!("  Encoding: int (signed={}, varint={}, bits={})", signed, varint, bits);
+        ColumnEncoding::Int {
+            signed,
+            varint,
+            bits,
+        } => {
+            println!(
+                "  Encoding: int (signed={}, varint={}, bits={})",
+                signed, varint, bits
+            );
         }
         ColumnEncoding::Float { storage } => {
             println!("  Encoding: float ({})", format_float_storage(*storage));
@@ -107,11 +109,7 @@ fn print_string_encoding(encoding: &StringEncoding) -> Result<()> {
             println!("  Encoding: string dict (entries={})", values.len());
             let preview = values.iter().take(MAX_DICT_PREVIEW);
             for (idx, value) in preview.enumerate() {
-                println!(
-                    "    [{}] {}",
-                    idx,
-                    format_bytes(value)
-                );
+                println!("    [{}] {}", idx, format_bytes(value));
             }
         }
         StringEncoding::Alphabet { alphabet } => {

@@ -51,12 +51,7 @@ fn write_context_section(prompt: &mut String, pop: &PopulationSummary, config: &
     writeln!(prompt, "Graph: {}", config.graph_description).unwrap();
     writeln!(prompt, "Domain: {}", config.domain).unwrap();
     writeln!(prompt).unwrap();
-    writeln!(
-        prompt,
-        "Population (all {} entities):",
-        pop.total_entities
-    )
-    .unwrap();
+    writeln!(prompt, "Population (all {} entities):", pop.total_entities).unwrap();
     writeln!(
         prompt,
         "  mean_prediction: {:.3} (average {})",
@@ -203,11 +198,7 @@ fn write_attribute_motifs(prompt: &mut String, motifs: &HashMap<String, Attribut
     // Group by table
     let mut by_table: HashMap<String, Vec<(&String, &AttributeMotif)>> = HashMap::new();
     for (path, motif) in motifs {
-        let table = path
-            .split('.')
-            .next()
-            .unwrap_or("unknown")
-            .to_string();
+        let table = path.split('.').next().unwrap_or("unknown").to_string();
         by_table.entry(table).or_default().push((path, motif));
     }
 
@@ -229,10 +220,10 @@ fn write_attribute_motifs(prompt: &mut String, motifs: &HashMap<String, Attribut
         .unwrap();
 
         for (path, motif) in attrs {
-            let col = path.split('.').last().unwrap_or(path);
+            let col = path.split('.').next_back().unwrap_or(path);
             match &motif.motif_type {
                 AttributeMotifType::Numeric(n) => {
-                    let parts = vec![
+                    let parts = [
                         format!("count={}", n.count),
                         format_number("sum", n.sum),
                         format_number("mean", n.mean),
@@ -243,7 +234,7 @@ fn write_attribute_motifs(prompt: &mut String, motifs: &HashMap<String, Attribut
                     writeln!(prompt, "    {}: {}", col, parts.join(", ")).unwrap();
                 }
                 AttributeMotifType::Categorical(c) => {
-                    let parts = vec![
+                    let parts = [
                         format!("count={}", c.count),
                         format!("nunique={}", c.nunique),
                         format!("mode={}", c.mode),
@@ -502,7 +493,10 @@ fn extract_entity_values(motifs: &EntityMotifs) -> HashMap<String, f64> {
 }
 
 /// Infer graph description from relation motifs
-pub fn infer_graph_description(relation_motifs: &HashMap<String, RelationMotifs>, root_table: &str) -> String {
+pub fn infer_graph_description(
+    relation_motifs: &HashMap<String, RelationMotifs>,
+    root_table: &str,
+) -> String {
     // Collect all unique destination tables from all relations
     let mut tables: Vec<String> = Vec::new();
     for motif in relation_motifs.values() {

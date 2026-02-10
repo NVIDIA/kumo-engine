@@ -40,6 +40,7 @@ impl JobConfig {
         Ok(cfg)
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(contents: &str) -> Result<Self, ConfigError> {
         let cfg: JobConfig = serde_json::from_str(contents)?;
         cfg.validate()?;
@@ -96,15 +97,11 @@ impl Default for QueryOptions {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum TemporalSampling {
+    #[default]
     Random,
     Timeframe,
-}
-
-impl Default for TemporalSampling {
-    fn default() -> Self {
-        TemporalSampling::Random
-    }
 }
 
 fn default_forecast_length() -> i64 {

@@ -1,14 +1,14 @@
 use crate::dataset::{DatasetHandle, DatasetId, DatasetReservation, DatasetState};
 use crate::errors::{DiskgraphError, Result};
+use crate::features::BatchFeatureRequest;
 use crate::metadata::DatasetMetadata;
 use crate::sampling::BatchSamplingRequest;
-use crate::features::BatchFeatureRequest;
+use arrow_array::RecordBatch;
 use async_trait::async_trait;
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use arrow_array::RecordBatch;
 
 pub mod compression;
 
@@ -135,7 +135,9 @@ impl GraphStorage for LocalGraphStorage {
             )));
         }
         // Placeholder return empty batch
-        Ok(RecordBatch::new_empty(Arc::new(arrow_schema::Schema::empty())))
+        Ok(RecordBatch::new_empty(Arc::new(
+            arrow_schema::Schema::empty(),
+        )))
     }
 
     async fn get_features(&self, request: BatchFeatureRequest) -> Result<RecordBatch> {
@@ -150,6 +152,8 @@ impl GraphStorage for LocalGraphStorage {
             )));
         }
         // Placeholder return empty batch
-        Ok(RecordBatch::new_empty(Arc::new(arrow_schema::Schema::empty())))
+        Ok(RecordBatch::new_empty(Arc::new(
+            arrow_schema::Schema::empty(),
+        )))
     }
 }

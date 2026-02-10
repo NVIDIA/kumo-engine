@@ -46,7 +46,10 @@ fn test_map_dtype_temporal() {
 
 #[test]
 fn test_map_dtype_lists() {
-    assert_eq!(map_kumo_dtype("floatlist"), Some(IngestedType::Float32Array));
+    assert_eq!(
+        map_kumo_dtype("floatlist"),
+        Some(IngestedType::Float32Array)
+    );
     assert_eq!(map_kumo_dtype("intlist"), Some(IngestedType::String));
     assert_eq!(map_kumo_dtype("stringlist"), Some(IngestedType::String));
 }
@@ -80,7 +83,10 @@ fn test_map_timestamp_unit_millis() {
     use crate::graph_config::TimestampUnit;
     assert_eq!(map_timestamp_unit("ms"), Some(TimestampUnit::Millis));
     assert_eq!(map_timestamp_unit("millis"), Some(TimestampUnit::Millis));
-    assert_eq!(map_timestamp_unit("milliseconds"), Some(TimestampUnit::Millis));
+    assert_eq!(
+        map_timestamp_unit("milliseconds"),
+        Some(TimestampUnit::Millis)
+    );
 }
 
 #[test]
@@ -88,7 +94,10 @@ fn test_map_timestamp_unit_micros() {
     use crate::graph_config::TimestampUnit;
     assert_eq!(map_timestamp_unit("us"), Some(TimestampUnit::Micros));
     assert_eq!(map_timestamp_unit("micros"), Some(TimestampUnit::Micros));
-    assert_eq!(map_timestamp_unit("microseconds"), Some(TimestampUnit::Micros));
+    assert_eq!(
+        map_timestamp_unit("microseconds"),
+        Some(TimestampUnit::Micros)
+    );
 }
 
 #[test]
@@ -96,7 +105,10 @@ fn test_map_timestamp_unit_nanos() {
     use crate::graph_config::TimestampUnit;
     assert_eq!(map_timestamp_unit("ns"), Some(TimestampUnit::Nanos));
     assert_eq!(map_timestamp_unit("nanos"), Some(TimestampUnit::Nanos));
-    assert_eq!(map_timestamp_unit("nanoseconds"), Some(TimestampUnit::Nanos));
+    assert_eq!(
+        map_timestamp_unit("nanoseconds"),
+        Some(TimestampUnit::Nanos)
+    );
 }
 
 #[test]
@@ -426,8 +438,15 @@ fn test_convert_time_col_to_create_time() {
     assert_eq!(table.create_time, Some("event_time".to_string()));
 
     // Check that the time column has the correct timestamp unit
-    let time_col = table.columns.iter().find(|c| c.name == "event_time").unwrap();
-    assert_eq!(time_col.timestamp_unit, Some(crate::graph_config::TimestampUnit::Millis));
+    let time_col = table
+        .columns
+        .iter()
+        .find(|c| c.name == "event_time")
+        .unwrap();
+    assert_eq!(
+        time_col.timestamp_unit,
+        Some(crate::graph_config::TimestampUnit::Millis)
+    );
 }
 
 #[test]
@@ -768,7 +787,10 @@ fn test_convert_no_columns_error() {
 
     let result = convert_kumo_to_diskgraph(&kumo_config, &options);
     assert!(result.is_err());
-    assert!(matches!(result.unwrap_err(), ConvertError::NoColumns { .. }));
+    assert!(matches!(
+        result.unwrap_err(),
+        ConvertError::NoColumns { .. }
+    ));
 }
 
 #[test]
@@ -873,7 +895,11 @@ fn test_convert_multi_table_graph() {
     assert!(items.fkeys.is_empty());
 
     // Purchases table - edge table
-    let purchases = result.tables.iter().find(|t| t.name == "purchases").unwrap();
+    let purchases = result
+        .tables
+        .iter()
+        .find(|t| t.name == "purchases")
+        .unwrap();
     assert!(purchases.primary_key.is_none());
     assert!(purchases.edge_table.is_some());
     assert!(purchases.fkeys.is_empty());

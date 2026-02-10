@@ -11,7 +11,9 @@ fn source_dtype_is_decimal(dtype: Option<&str>) -> bool {
         return false;
     };
     let dtype = dtype.trim_start();
-    dtype.starts_with("Decimal128") || dtype.starts_with("Decimal256") || dtype.starts_with("Decimal")
+    dtype.starts_with("Decimal128")
+        || dtype.starts_with("Decimal256")
+        || dtype.starts_with("Decimal")
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -276,7 +278,6 @@ pub struct ForeignKeySpec {
     pub ref_table: String,
 }
 
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum CloudSource {
     S3 { bucket: String },
@@ -287,11 +288,7 @@ enum CloudSource {
 fn parse_cloud_source(path: &str) -> Result<Option<CloudSource>> {
     if let Some(rest) = path.strip_prefix("s3://") {
         let mut parts = rest.splitn(2, '/');
-        let bucket = parts
-            .next()
-            .unwrap_or("")
-            .trim()
-            .to_string();
+        let bucket = parts.next().unwrap_or("").trim().to_string();
         if bucket.is_empty() {
             return Err(anyhow!("invalid s3 path {path}"));
         }
@@ -299,11 +296,7 @@ fn parse_cloud_source(path: &str) -> Result<Option<CloudSource>> {
     }
     if let Some(rest) = path.strip_prefix("gs://") {
         let mut parts = rest.splitn(2, '/');
-        let bucket = parts
-            .next()
-            .unwrap_or("")
-            .trim()
-            .to_string();
+        let bucket = parts.next().unwrap_or("").trim().to_string();
         if bucket.is_empty() {
             return Err(anyhow!("invalid gs path {path}"));
         }
@@ -363,10 +356,8 @@ impl GraphConfig {
                 match parse_cloud_source(path) {
                     Ok(Some(source)) => {
                         if has_local_paths {
-                            errors.push(format!(
-                                "table {} mixes local and cloud paths",
-                                table.name
-                            ));
+                            errors
+                                .push(format!("table {} mixes local and cloud paths", table.name));
                         }
                         if let Some(existing) = &cloud_source {
                             if existing != &source {
@@ -381,10 +372,8 @@ impl GraphConfig {
                     }
                     Ok(None) => {
                         if cloud_source.is_some() {
-                            errors.push(format!(
-                                "table {} mixes local and cloud paths",
-                                table.name
-                            ));
+                            errors
+                                .push(format!("table {} mixes local and cloud paths", table.name));
                         }
                         has_local_paths = true;
                     }
@@ -397,10 +386,16 @@ impl GraphConfig {
                     continue;
                 }
                 if !col_names.insert(col.name.as_str()) {
-                    errors.push(format!("table {} has duplicate column {}", table.name, col.name));
+                    errors.push(format!(
+                        "table {} has duplicate column {}",
+                        table.name, col.name
+                    ));
                 }
                 if col.fixed_len.is_some()
-                    && !matches!(col.ingested_dtype, IngestedType::String | IngestedType::Bytes)
+                    && !matches!(
+                        col.ingested_dtype,
+                        IngestedType::String | IngestedType::Bytes
+                    )
                 {
                     errors.push(format!(
                         "table {} column {} fixed_len only valid for string/bytes",
@@ -468,36 +463,39 @@ impl GraphConfig {
                 if !col_names.contains(pk.as_str()) {
                     errors.push(format!("table {} primary_key {} not found", table.name, pk));
                 } else if let Some(col) = table.columns.iter().find(|c| c.name == *pk) {
-                if !matches!(
-                    col.ingested_dtype,
-                    IngestedType::Int8
-                        | IngestedType::Int16
-                        | IngestedType::Int64
-                        | IngestedType::Int32
-                        | IngestedType::UInt8
-                        | IngestedType::UInt16
-                        | IngestedType::UInt64
-                        | IngestedType::UInt32
-                        | IngestedType::Float32
-                        | IngestedType::Float64
-                        | IngestedType::Decimal128
-                        | IngestedType::Decimal256
-                        | IngestedType::String
-                        | IngestedType::Bytes
-                        | IngestedType::Uuid
-                        | IngestedType::Uuid256
-                        | IngestedType::Ip
-                ) {
-                    errors.push(format!(
+                    if !matches!(
+                        col.ingested_dtype,
+                        IngestedType::Int8
+                            | IngestedType::Int16
+                            | IngestedType::Int64
+                            | IngestedType::Int32
+                            | IngestedType::UInt8
+                            | IngestedType::UInt16
+                            | IngestedType::UInt64
+                            | IngestedType::UInt32
+                            | IngestedType::Float32
+                            | IngestedType::Float64
+                            | IngestedType::Decimal128
+                            | IngestedType::Decimal256
+                            | IngestedType::String
+                            | IngestedType::Bytes
+                            | IngestedType::Uuid
+                            | IngestedType::Uuid256
+                            | IngestedType::Ip
+                    ) {
+                        errors.push(format!(
                         "table {} primary_key {} must be numeric or string/bytes/uuid/uuid256/ip",
                         table.name, pk
                     ));
-                }
+                    }
                 }
             }
             if let Some(weight) = &table.weight {
                 if !col_names.contains(weight.as_str()) {
-                    errors.push(format!("table {} weight column {} not found", table.name, weight));
+                    errors.push(format!(
+                        "table {} weight column {} not found",
+                        table.name, weight
+                    ));
                 } else if let Some(col) = table.columns.iter().find(|c| c.name == *weight) {
                     if !matches!(
                         col.ingested_dtype,
@@ -526,7 +524,10 @@ impl GraphConfig {
                         table.name, ts
                     ));
                 } else if let Some(col) = table.columns.iter().find(|c| c.name == *ts) {
-                    if !matches!(col.ingested_dtype, IngestedType::Date | IngestedType::Timestamp) {
+                    if !matches!(
+                        col.ingested_dtype,
+                        IngestedType::Date | IngestedType::Timestamp
+                    ) {
                         errors.push(format!(
                             "table {} create_time column {} must be date/timestamp",
                             table.name, ts
@@ -667,11 +668,8 @@ impl GraphConfig {
         let mut resolved = self.clone();
 
         // Build table lookup for PK column access
-        let table_map: HashMap<&str, &TableSpec> = self
-            .tables
-            .iter()
-            .map(|t| (t.name.as_str(), t))
-            .collect();
+        let table_map: HashMap<&str, &TableSpec> =
+            self.tables.iter().map(|t| (t.name.as_str(), t)).collect();
 
         // Track which columns need type updates: (table_name, column_name) -> new_type
         let mut type_updates: HashMap<(String, String), IngestedType> = HashMap::new();
@@ -681,8 +679,12 @@ impl GraphConfig {
             for fkey in &table.fkeys {
                 if let Some(ref_table) = table_map.get(fkey.dst_table.as_str()) {
                     if let Some(pk_name) = &ref_table.primary_key {
-                        if let Some(fk_col) = table.columns.iter().find(|c| c.name == fkey.src_column) {
-                            if let Some(pk_col) = ref_table.columns.iter().find(|c| c.name == *pk_name) {
+                        if let Some(fk_col) =
+                            table.columns.iter().find(|c| c.name == fkey.src_column)
+                        {
+                            if let Some(pk_col) =
+                                ref_table.columns.iter().find(|c| c.name == *pk_name)
+                            {
                                 if let Some(new_type) = resolve_fk_type_to_pk(
                                     &fk_col.ingested_dtype,
                                     &pk_col.ingested_dtype,
@@ -707,8 +709,12 @@ impl GraphConfig {
                 for fk in [&edge.src_fk, &edge.dst_fk] {
                     if let Some(ref_table) = table_map.get(fk.ref_table.as_str()) {
                         if let Some(pk_name) = &ref_table.primary_key {
-                            if let Some(fk_col) = table.columns.iter().find(|c| c.name == fk.edge_column) {
-                                if let Some(pk_col) = ref_table.columns.iter().find(|c| c.name == *pk_name) {
+                            if let Some(fk_col) =
+                                table.columns.iter().find(|c| c.name == fk.edge_column)
+                            {
+                                if let Some(pk_col) =
+                                    ref_table.columns.iter().find(|c| c.name == *pk_name)
+                                {
                                     if let Some(new_type) = resolve_fk_type_to_pk(
                                         &fk_col.ingested_dtype,
                                         &pk_col.ingested_dtype,
@@ -839,7 +845,9 @@ mod tests {
             weight: None,
             edge_table: None,
             rowpack: None,
-            source: DataSource::Parquet { paths: vec!["test.parquet".to_string()] },
+            source: DataSource::Parquet {
+                paths: vec!["test.parquet".to_string()],
+            },
             fkeys: vec![],
         }
     }
@@ -882,7 +890,11 @@ mod tests {
         let resolved = config.resolve_fk_types();
 
         let resolved_orders = resolved.tables.iter().find(|t| t.name == "orders").unwrap();
-        let resolved_customer_id = resolved_orders.columns.iter().find(|c| c.name == "customer_id").unwrap();
+        let resolved_customer_id = resolved_orders
+            .columns
+            .iter()
+            .find(|c| c.name == "customer_id")
+            .unwrap();
 
         // String FK resolved to Int64 to match PK
         assert_eq!(resolved_customer_id.ingested_dtype, IngestedType::Int64);
@@ -933,9 +945,21 @@ mod tests {
 
         let resolved = config.resolve_fk_types();
 
-        let resolved_reviews = resolved.tables.iter().find(|t| t.name == "reviews").unwrap();
-        let resolved_user_id = resolved_reviews.columns.iter().find(|c| c.name == "user_id").unwrap();
-        let resolved_product_id = resolved_reviews.columns.iter().find(|c| c.name == "product_id").unwrap();
+        let resolved_reviews = resolved
+            .tables
+            .iter()
+            .find(|t| t.name == "reviews")
+            .unwrap();
+        let resolved_user_id = resolved_reviews
+            .columns
+            .iter()
+            .find(|c| c.name == "user_id")
+            .unwrap();
+        let resolved_product_id = resolved_reviews
+            .columns
+            .iter()
+            .find(|c| c.name == "product_id")
+            .unwrap();
 
         // String → Int64 (to match users.id)
         assert_eq!(resolved_user_id.ingested_dtype, IngestedType::Int64);
@@ -978,7 +1002,11 @@ mod tests {
 
         let resolved = config.resolve_fk_types();
         let resolved_orders = resolved.tables.iter().find(|t| t.name == "orders").unwrap();
-        let resolved_col = resolved_orders.columns.iter().find(|c| c.name == "customer_id").unwrap();
+        let resolved_col = resolved_orders
+            .columns
+            .iter()
+            .find(|c| c.name == "customer_id")
+            .unwrap();
 
         // Int32 FK should be resolved to Int64 to match PK
         assert_eq!(resolved_col.ingested_dtype, IngestedType::Int64);
@@ -1019,7 +1047,11 @@ mod tests {
 
         let resolved = config.resolve_fk_types();
         let resolved_orders = resolved.tables.iter().find(|t| t.name == "orders").unwrap();
-        let resolved_col = resolved_orders.columns.iter().find(|c| c.name == "customer_id").unwrap();
+        let resolved_col = resolved_orders
+            .columns
+            .iter()
+            .find(|c| c.name == "customer_id")
+            .unwrap();
 
         // In Strict mode, FK should NOT be resolved - stays Int32
         assert_eq!(resolved_col.ingested_dtype, IngestedType::Int32);
@@ -1038,7 +1070,10 @@ mod tests {
             CoercionMode::Lossless,
             None,
         );
-        assert!(result.is_none(), "Lossy coercion Float64→Int64 should not resolve");
+        assert!(
+            result.is_none(),
+            "Lossy coercion Float64→Int64 should not resolve"
+        );
 
         // Int64→Int32 is Lossy
         let result = resolve_fk_type_to_pk(
@@ -1047,6 +1082,9 @@ mod tests {
             CoercionMode::Lossless,
             None,
         );
-        assert!(result.is_none(), "Lossy coercion Int64→Int32 should not resolve");
+        assert!(
+            result.is_none(),
+            "Lossy coercion Int64→Int32 should not resolve"
+        );
     }
 }

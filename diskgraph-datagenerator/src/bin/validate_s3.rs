@@ -2,19 +2,25 @@ use anyhow::{anyhow, Context, Result};
 use clap::Parser;
 use diskgraph_datagenerator::downloader::{download_job, parse_job_spec, DownloadOptions};
 use diskgraph_infer::{infer_source_metadata, parse_root_source, InferOptions};
-use diskgraph_ingest::config_converter::{convert_kumo_to_diskgraph, ConvertOptions, KumoGraphConfig};
-use diskgraph_ingest::{ingest_with_stats, Dest, IngestOptions, IngestStats};
+use diskgraph_ingest::config_converter::{
+    convert_kumo_to_diskgraph, ConvertOptions, KumoGraphConfig,
+};
 use diskgraph_ingest::progress::{build_progress, format_count};
+use diskgraph_ingest::{ingest_with_stats, Dest, IngestOptions, IngestStats};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::Instant;
 use std::process::Stdio;
+use std::time::Instant;
 use tokio::process::Command;
 
 #[derive(Parser, Debug)]
-#[command(author, version, about = "Validate ingestion from Kumo customer/job specs.")]
+#[command(
+    author,
+    version,
+    about = "Validate ingestion from Kumo customer/job specs."
+)]
 struct Args {
     /// Job specs (e.g., "customer job_id" or "s3://..." if supported by downloader).
     #[arg(required = true)]
@@ -104,9 +110,13 @@ async fn main() -> Result<()> {
         .collect();
 
     for job in &args.jobs {
-        let (customer, job_id) = parse_job_spec(job).unwrap_or(("unknown".to_string(), "unknown".to_string()));
+        let (customer, job_id) =
+            parse_job_spec(job).unwrap_or(("unknown".to_string(), "unknown".to_string()));
         if completed_jobs.contains(&(customer.clone(), job_id.clone())) {
-            println!("\n>>> Skipping already validated job: {} ({}/{})", job, customer, job_id);
+            println!(
+                "\n>>> Skipping already validated job: {} ({}/{})",
+                job, customer, job_id
+            );
             continue;
         }
 
@@ -226,6 +236,7 @@ struct ValidationReport {
     s3_stats_verification: Option<Vec<String>>,
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn validate_job(
     job_spec: &str,
     download_root_base: &Path,
@@ -298,8 +309,13 @@ async fn validate_job(
         );
 
         // Determine dataset name
-        let dataset_name = kumo_config.name.clone()
-            .unwrap_or_else(|| format!("{}_{}", customer, parse_job_spec(job_spec).map(|(_, j)| j).unwrap_or_default()));
+        let dataset_name = kumo_config.name.clone().unwrap_or_else(|| {
+            format!(
+                "{}_{}",
+                customer,
+                parse_job_spec(job_spec).map(|(_, j)| j).unwrap_or_default()
+            )
+        });
 
         let convert_options = ConvertOptions {
             data_persist_dir,
@@ -328,7 +344,11 @@ async fn validate_job(
             }
 
             if parquet_files.is_empty() {
-                return Err(anyhow!("No parquet files found for table {} in {}", table.name, table_dir.display()));
+                return Err(anyhow!(
+                    "No parquet files found for table {} in {}",
+                    table.name,
+                    table_dir.display()
+                ));
             }
 
             parquet_files.sort(); // Consistent ordering
@@ -341,7 +361,10 @@ async fn validate_job(
             diskgraph_config.num_shards = Some(shards);
         }
 
-        fs::write(&metadata_path, serde_json::to_vec_pretty(&diskgraph_config)?)?;
+        fs::write(
+            &metadata_path,
+            serde_json::to_vec_pretty(&diskgraph_config)?,
+        )?;
         println!("Wrote converted config to {}", metadata_path.display());
     } else {
         println!("Inferring metadata...");
@@ -359,7 +382,10 @@ async fn validate_job(
             infer_res.metadata.num_shards = Some(shards);
         }
 
-        fs::write(&metadata_path, serde_json::to_vec_pretty(&infer_res.metadata)?)?;
+        fs::write(
+            &metadata_path,
+            serde_json::to_vec_pretty(&infer_res.metadata)?,
+        )?;
     }
 
     // 3. Ingest
@@ -373,7 +399,10 @@ async fn validate_job(
     let index_name = format!("{}_index", dataset_name);
     let output_path = output_root_base.join(&index_name);
     if output_path.exists() {
-        println!("Index already exists at {}, clearing...", output_path.display());
+        println!(
+            "Index already exists at {}, clearing...",
+            output_path.display()
+        );
         fs::remove_dir_all(&output_path)?;
     }
 
@@ -388,7 +417,7 @@ async fn validate_job(
         &metadata_path,
         output_path.to_str().unwrap(),
         Dest::Local,
-        options
+        options,
     )?;
 
     // 4. Measure Size
@@ -397,7 +426,16 @@ async fn validate_job(
     // 5. Verify S3 Stats
     let (customer, job_id) = parse_job_spec(job_spec)?;
     println!("Verifying S3 Stats...");
-    let s3_verification = match verify_s3_stats(&data_dir, &customer, &job_id, &stats, bucket.as_deref(), graph_config.as_ref()).await {
+    let s3_verification = match verify_s3_stats(
+        &data_dir,
+        &customer,
+        &job_id,
+        &stats,
+        bucket.as_deref(),
+        graph_config.as_ref(),
+    )
+    .await
+    {
         Ok(v) => Some(v),
         Err(e) => {
             eprintln!("Warning: Failed to verify S3 stats: {:?}", e);
@@ -423,7 +461,12 @@ async fn validate_job(
     })
 }
 
-fn calculate_expected_node_count(table_name: &str, s3_count: u64, stats: &IngestStats, drop_duplicates_map: &HashMap<String, bool>) -> u64 {
+fn calculate_expected_node_count(
+    table_name: &str,
+    s3_count: u64,
+    stats: &IngestStats,
+    drop_duplicates_map: &HashMap<String, bool>,
+) -> u64 {
     let mut dropped = 0;
 
     // 1. Parse Failures (from key_failures_by_context)
@@ -473,7 +516,8 @@ async fn verify_s3_stats(
         if let Some(tables) = cfg.get("tables").and_then(|t| t.as_array()) {
             for table in tables {
                 if let Some(name) = table.get("table_name").and_then(|n| n.as_str()) {
-                    let drop = table.get("pkey")
+                    let drop = table
+                        .get("pkey")
                         .and_then(|pk| pk.get("drop_duplicates"))
                         .and_then(|v| v.as_bool())
                         .unwrap_or(true);
@@ -497,7 +541,10 @@ async fn verify_s3_stats(
     };
 
     // Download materialized_task_persist_paths.json manifest for efficient edge lookups
-    let manifest_key = format!("{}/prod/jobs/{}/jobs/materialized_task_persist_paths.json", customer_path, job_id);
+    let manifest_key = format!(
+        "{}/prod/jobs/{}/jobs/materialized_task_persist_paths.json",
+        customer_path, job_id
+    );
     let manifest_s3_path = format!("s3://{}/{}", bucket, manifest_key);
     let manifest: Option<HashMap<String, String>> = {
         let output = Command::new("aws")
@@ -512,7 +559,8 @@ async fn verify_s3_stats(
 
         if let Ok(out) = output {
             if out.status.success() {
-                let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_default();
+                let json: serde_json::Value =
+                    serde_json::from_slice(&out.stdout).unwrap_or_default();
                 json.get("edge_names_with_paths")
                     .and_then(|v| v.as_object())
                     .map(|obj| {
@@ -520,15 +568,20 @@ async fn verify_s3_stats(
                             .map(|(k, v)| (k.clone(), v.as_str().unwrap_or_default().to_string()))
                             .collect()
                     })
-            } else { None }
-        } else { None }
+            } else {
+                None
+            }
+        } else {
+            None
+        }
     };
 
-    let mut table_infos: std::collections::HashMap<String, TableMetadata> = std::collections::HashMap::new();
+    let mut table_infos: std::collections::HashMap<String, TableMetadata> =
+        std::collections::HashMap::new();
 
     // 1. Verify Node Counts (Table Stats)
-    let mut dir_reader = fs::read_dir(data_dir)?;
-    while let Some(entry) = dir_reader.next() {
+    let dir_reader = fs::read_dir(data_dir)?;
+    for entry in dir_reader {
         let entry = entry?;
         let path = entry.path();
         if !path.is_dir() {
@@ -541,19 +594,39 @@ async fn verify_s3_stats(
 
         let attrs_bytes = fs::read(&attrs_path)?;
         let attrs: serde_json::Value = serde_json::from_slice(&attrs_bytes)?;
-        let meta = attrs.get("table_metadata_config")
+        let meta = attrs
+            .get("table_metadata_config")
             .ok_or_else(|| anyhow::anyhow!("missing table_metadata_config in {:?}", attrs_path))?;
 
-        let source_name = meta.get("source_name").and_then(|v| v.as_str()).unwrap_or_default().to_string();
-        let data_source = meta.get("data_source").and_then(|v| v.as_str()).unwrap_or_default().to_string();
-        let data_version = meta.get("data_version").and_then(|v| v.as_str()).unwrap_or_default().to_string();
-        let table_name = meta.get("table_name").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+        let source_name = meta
+            .get("source_name")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        let data_source = meta
+            .get("data_source")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        let data_version = meta
+            .get("data_version")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        let table_name = meta
+            .get("table_name")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
 
-        table_infos.insert(table_name.clone(), TableMetadata {
-            source_name: source_name.clone(),
-            data_source: data_source.clone(),
-            data_version: data_version.clone(),
-        });
+        table_infos.insert(
+            table_name.clone(),
+            TableMetadata {
+                source_name: source_name.clone(),
+                data_source: data_source.clone(),
+                data_version: data_version.clone(),
+            },
+        );
 
         let s3_key_base = format!(
             "{}/prod/data-persist-dir/data_backend_cache/tables/{}/{}/{}/table_stats",
@@ -572,27 +645,52 @@ async fn verify_s3_stats(
             .await?;
 
         if !output.status.success() {
-             messages.push(format!("SKIP: {} (S3 stats not found at {})", table_name, s3_path));
-             continue;
+            messages.push(format!(
+                "SKIP: {} (S3 stats not found at {})",
+                table_name, s3_path
+            ));
+            continue;
         }
 
         let s3_stats: serde_json::Value = serde_json::from_slice(&output.stdout)?;
-        let s3_rows = s3_stats.get("NUM_ROWS__False")
+        let s3_rows = s3_stats
+            .get("NUM_ROWS__False")
             .and_then(|v| v.get("value"))
             .and_then(|v| v.as_u64());
 
         if let Some(s3_rows) = s3_rows {
             if let Some(&ingest_rows) = stats.node_counts.get(&table_name) {
-                 let expected_rows = calculate_expected_node_count(&table_name, s3_rows, stats, &drop_duplicates_map);
-                 if ingest_rows == s3_rows {
-                     messages.push(format!("PASS: {} (S3: {}, Ingest: {})", table_name, s3_rows, ingest_rows));
-                 } else if ingest_rows == expected_rows {
-                     messages.push(format!("PASS: {} (S3: {}, Ingest: {}, Adjusted: {})", table_name, s3_rows, ingest_rows, expected_rows));
-                 } else {
-                     messages.push(format!("FAIL: {} (S3: {}, Ingest: {}, Expected: {}, Diff: {:.2}%)", table_name, s3_rows, ingest_rows, expected_rows, diff_pct(s3_rows, ingest_rows) * 100.0));
-                 }
+                let expected_rows = calculate_expected_node_count(
+                    &table_name,
+                    s3_rows,
+                    stats,
+                    &drop_duplicates_map,
+                );
+                if ingest_rows == s3_rows {
+                    messages.push(format!(
+                        "PASS: {} (S3: {}, Ingest: {})",
+                        table_name, s3_rows, ingest_rows
+                    ));
+                } else if ingest_rows == expected_rows {
+                    messages.push(format!(
+                        "PASS: {} (S3: {}, Ingest: {}, Adjusted: {})",
+                        table_name, s3_rows, ingest_rows, expected_rows
+                    ));
+                } else {
+                    messages.push(format!(
+                        "FAIL: {} (S3: {}, Ingest: {}, Expected: {}, Diff: {:.2}%)",
+                        table_name,
+                        s3_rows,
+                        ingest_rows,
+                        expected_rows,
+                        diff_pct(s3_rows, ingest_rows) * 100.0
+                    ));
+                }
             } else {
-                 messages.push(format!("INFO: {} (S3 rows: {}, not in node_counts - likely edge table)", table_name, s3_rows));
+                messages.push(format!(
+                    "INFO: {} (S3 rows: {}, not in node_counts - likely edge table)",
+                    table_name, s3_rows
+                ));
             }
         }
     }
@@ -604,36 +702,66 @@ async fn verify_s3_stats(
     } else {
         "prediction_job_input.json"
     };
-    let input_key = format!("{}/prod/jobs/{}/inputs/{}", customer_path, job_id, input_filename);
+    let input_key = format!(
+        "{}/prod/jobs/{}/inputs/{}",
+        customer_path, job_id, input_filename
+    );
     let input_s3_path = format!("s3://{}/{}", bucket, input_key);
 
     let output = Command::new("aws")
-            .arg("s3")
-            .arg("cp")
-            .arg(&input_s3_path)
-            .arg("-")
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .output()
-            .await?;
+        .arg("s3")
+        .arg("cp")
+        .arg(&input_s3_path)
+        .arg("-")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .await?;
 
     if !output.status.success() {
-        messages.push(format!("SKIP: Edge stats ({} not found at {})", input_filename, input_s3_path));
+        messages.push(format!(
+            "SKIP: Edge stats ({} not found at {})",
+            input_filename, input_s3_path
+        ));
         return Ok(messages);
     }
 
     let input_json: serde_json::Value = serde_json::from_slice(&output.stdout)?;
 
     // Prioritize predictive_query.graph.name for graph_id, fallback to config/graph_id or spec/graph_id
-    let graph_id = input_json.pointer("/spec/predictive_query/graph/name").and_then(|v| v.as_str())
-        .or_else(|| input_json.pointer("/config/graph_id").and_then(|v| v.as_str()))
-        .or_else(|| input_json.pointer("/spec/graph_id").and_then(|v| v.as_str()));
+    let graph_id = input_json
+        .pointer("/spec/predictive_query/graph/name")
+        .and_then(|v| v.as_str())
+        .or_else(|| {
+            input_json
+                .pointer("/config/graph_id")
+                .and_then(|v| v.as_str())
+        })
+        .or_else(|| {
+            input_json
+                .pointer("/spec/graph_id")
+                .and_then(|v| v.as_str())
+        });
 
     // Try multiple locations for graph_data_version
-    let graph_version = input_json.pointer("/graph_version_info/graph_data_version").and_then(|v| v.as_str())
-        .or_else(|| input_json.pointer("/config/graph_data_version").and_then(|v| v.as_str()))
-        .or_else(|| input_json.pointer("/config/graph_version_info/graph_data_version").and_then(|v| v.as_str()))
-        .or_else(|| input_json.pointer("/spec/graph_version_info/graph_data_version").and_then(|v| v.as_str()));
+    let graph_version = input_json
+        .pointer("/graph_version_info/graph_data_version")
+        .and_then(|v| v.as_str())
+        .or_else(|| {
+            input_json
+                .pointer("/config/graph_data_version")
+                .and_then(|v| v.as_str())
+        })
+        .or_else(|| {
+            input_json
+                .pointer("/config/graph_version_info/graph_data_version")
+                .and_then(|v| v.as_str())
+        })
+        .or_else(|| {
+            input_json
+                .pointer("/spec/graph_version_info/graph_data_version")
+                .and_then(|v| v.as_str())
+        });
 
     if let (Some(gid), Some(gver)) = (graph_id, graph_version) {
         let edge_stats_key = format!(
@@ -657,14 +785,21 @@ async fn verify_s3_stats(
             if let Some(obj) = edge_stats.as_object() {
                 // Collect table names sorted by length descending to ensure greedy matching
                 let mut sorted_table_names: Vec<String> = table_infos.keys().cloned().collect();
-                sorted_table_names.sort_by(|a, b| b.len().cmp(&a.len()));
+                sorted_table_names.sort_by_key(|a| std::cmp::Reverse(a.len()));
 
                 let mut matched_s3_keys = HashSet::new();
 
                 for (relation_name, &ingest_count) in &stats.edge_counts {
                     // Check for Edge Table pattern: edge_{table}_src_to_dst or edge_{table}_dst_to_src
-                    if relation_name.starts_with("edge_") && (relation_name.ends_with("_src_to_dst") || relation_name.ends_with("_dst_to_src")) {
-                        let suffix = if relation_name.ends_with("_src_to_dst") { "_src_to_dst" } else { "_dst_to_src" };
+                    if relation_name.starts_with("edge_")
+                        && (relation_name.ends_with("_src_to_dst")
+                            || relation_name.ends_with("_dst_to_src"))
+                    {
+                        let suffix = if relation_name.ends_with("_src_to_dst") {
+                            "_src_to_dst"
+                        } else {
+                            "_dst_to_src"
+                        };
                         let table_name = &relation_name[5..relation_name.len() - suffix.len()];
 
                         if let Some(meta) = table_infos.get(table_name) {
@@ -673,32 +808,46 @@ async fn verify_s3_stats(
 
                             let mut any_s3_key_found = false;
                             for (s3_key, val_obj) in obj {
-                                if !s3_key.ends_with("EDGE_COUNT") { continue; }
+                                if !s3_key.ends_with("EDGE_COUNT") {
+                                    continue;
+                                }
 
                                 let parts: Vec<&str> = s3_key.split("__").collect();
-                                if parts.len() < 7 { continue; }
+                                if parts.len() < 7 {
+                                    continue;
+                                }
 
                                 let src_src = parts[0];
                                 let src_ds = parts[1];
                                 let dst_src = parts[2];
                                 let dst_ds = parts[3];
 
-                                let involves_table = (src_src == target_source && src_ds == target_ds) ||
-                                                    (dst_src == target_source && dst_ds == target_ds);
+                                let involves_table = (src_src == target_source
+                                    && src_ds == target_ds)
+                                    || (dst_src == target_source && dst_ds == target_ds);
 
                                 if involves_table {
                                     any_s3_key_found = true;
                                     matched_s3_keys.insert(s3_key.clone());
-                                    let s3_count = val_obj.get("value").and_then(|v| v.as_u64()).unwrap_or(0);
+                                    let s3_count =
+                                        val_obj.get("value").and_then(|v| v.as_u64()).unwrap_or(0);
 
                                     // Some S3 edges for this table might have 0 count (e.g. if one side of the many-to-many isn't in the graph)
                                     // We should only report FAIL if the S3 count is non-zero and doesn't match Ingest,
                                     // OR if Ingest is non-zero and S3 is 0.
                                     if s3_count == ingest_count {
-                                        messages.push(format!("PASS: Edge Table {} (Rel: {}) (S3: {}, Ingest: {})", table_name, s3_key, s3_count, ingest_count));
+                                        messages.push(format!(
+                                            "PASS: Edge Table {} (Rel: {}) (S3: {}, Ingest: {})",
+                                            table_name, s3_key, s3_count, ingest_count
+                                        ));
                                     } else {
-                                        let drop_msg = if let Some(drops) = stats.pk_duplicate_drops.get(relation_name) {
-                                            format!(" (dropped {} edges due to duplicate src PKs)", drops)
+                                        let drop_msg = if let Some(drops) =
+                                            stats.pk_duplicate_drops.get(relation_name)
+                                        {
+                                            format!(
+                                                " (dropped {} edges due to duplicate src PKs)",
+                                                drops
+                                            )
                                         } else {
                                             String::new()
                                         };
@@ -715,7 +864,10 @@ async fn verify_s3_stats(
                                 messages.push(format!("FAIL: Edge Table {} (Ingest: {}) - No matching S3 key found for {}__{}", table_name, ingest_count, target_source, target_ds));
                             }
                         } else {
-                             messages.push(format!("INFO: Missing metadata for edge table {}", table_name));
+                            messages.push(format!(
+                                "INFO: Missing metadata for edge table {}",
+                                table_name
+                            ));
                         }
                         continue;
                     }
@@ -724,8 +876,11 @@ async fn verify_s3_stats(
                     let base_relation = relation_name.trim_end_matches("_reverse");
                     let parts: Vec<&str> = base_relation.split("_to_").collect();
                     if parts.len() != 2 {
-                         messages.push(format!("INFO: Skipping complex edge name {}", relation_name));
-                         continue;
+                        messages.push(format!(
+                            "INFO: Skipping complex edge name {}",
+                            relation_name
+                        ));
+                        continue;
                     }
 
                     let (src_part, dst_part) = (parts[0], parts[1]);
@@ -748,92 +903,140 @@ async fn verify_s3_stats(
                     let src_info = find_table_key(src_part);
                     let dst_info = find_table_key(dst_part);
 
-                    if let (Some((src_table, src_key)), Some((dst_table, dst_key))) = (src_info, dst_info) {
-                        if let (Some(src_meta), Some(dst_meta)) = (table_infos.get(&src_table), table_infos.get(&dst_table)) {
-                             // Construct S3 Key
-                             // Pattern: {src_source}__{src_ds}__{dst_source}__{dst_ds}__{src_key}__{dst_key}__EDGE_COUNT
-                             let s3_key_forward = format!(
-                                 "{}__{}__{}__{}__{}__{}__EDGE_COUNT",
-                                 src_meta.source_name, src_meta.data_source,
-                                 dst_meta.source_name, dst_meta.data_source,
-                                 src_key, dst_key
-                             );
+                    if let (Some((src_table, src_key)), Some((dst_table, dst_key))) =
+                        (src_info, dst_info)
+                    {
+                        if let (Some(src_meta), Some(dst_meta)) =
+                            (table_infos.get(&src_table), table_infos.get(&dst_table))
+                        {
+                            // Construct S3 Key
+                            // Pattern: {src_source}__{src_ds}__{dst_source}__{dst_ds}__{src_key}__{dst_key}__EDGE_COUNT
+                            let s3_key_forward = format!(
+                                "{}__{}__{}__{}__{}__{}__EDGE_COUNT",
+                                src_meta.source_name,
+                                src_meta.data_source,
+                                dst_meta.source_name,
+                                dst_meta.data_source,
+                                src_key,
+                                dst_key
+                            );
 
-                             let s3_key_reverse = format!(
-                                 "{}__{}__{}__{}__{}__{}__EDGE_COUNT",
-                                 dst_meta.source_name, dst_meta.data_source,
-                                 src_meta.source_name, src_meta.data_source,
-                                 dst_key, src_key
-                             );
+                            let s3_key_reverse = format!(
+                                "{}__{}__{}__{}__{}__{}__EDGE_COUNT",
+                                dst_meta.source_name,
+                                dst_meta.data_source,
+                                src_meta.source_name,
+                                src_meta.data_source,
+                                dst_key,
+                                src_key
+                            );
 
-                             let matched_s3_entry = obj.get_key_value(&s3_key_forward).or_else(|| obj.get_key_value(&s3_key_reverse));
+                            let matched_s3_entry = obj
+                                .get_key_value(&s3_key_forward)
+                                .or_else(|| obj.get_key_value(&s3_key_reverse));
 
-                             if let Some((matched_key, _val)) = matched_s3_entry {
-                                 matched_s3_keys.insert(matched_key.clone());
+                            if let Some((matched_key, _val)) = matched_s3_entry {
+                                matched_s3_keys.insert(matched_key.clone());
 
-                                 let manifest_edge_key = format!(
-                                     "{}.{}__{}__{}.{}",
-                                     src_meta.data_source, src_table,
-                                     src_key,
-                                     dst_meta.data_source, dst_table
-                                 );
+                                let manifest_edge_key = format!(
+                                    "{}.{}__{}__{}.{}",
+                                    src_meta.data_source,
+                                    src_table,
+                                    src_key,
+                                    dst_meta.data_source,
+                                    dst_table
+                                );
 
-                                 // Compare against materialized edge count (correctly deduplicated)
-                                 // instead of edge_stats count (inflated when dst has duplicate PKs)
-                                 if let Some(mat_count) = get_materialized_edge_count(
-                                     bucket, customer_path, &src_meta.data_version, &dst_meta.data_version,
-                                     manifest.as_ref(), Some(&manifest_edge_key)
-                                 ).await {
-                                     let drop_msg = if let Some(drops) = stats.pk_duplicate_drops.get(relation_name) {
-                                         format!(" (dropped {} edges due to duplicate src PKs)", drops)
-                                     } else {
-                                         String::new()
-                                     };
+                                // Compare against materialized edge count (correctly deduplicated)
+                                // instead of edge_stats count (inflated when dst has duplicate PKs)
+                                if let Some(mat_count) = get_materialized_edge_count(
+                                    bucket,
+                                    customer_path,
+                                    &src_meta.data_version,
+                                    &dst_meta.data_version,
+                                    manifest.as_ref(),
+                                    Some(&manifest_edge_key),
+                                )
+                                .await
+                                {
+                                    let drop_msg = if let Some(drops) =
+                                        stats.pk_duplicate_drops.get(relation_name)
+                                    {
+                                        format!(
+                                            " (dropped {} edges due to duplicate src PKs)",
+                                            drops
+                                        )
+                                    } else {
+                                        String::new()
+                                    };
 
-                                     if mat_count == ingest_count {
-                                         messages.push(format!("PASS: Edge {} (Materialized: {}, Ingest: {}){}", relation_name, mat_count, ingest_count, drop_msg));
-                                     } else {
-                                         messages.push(format!("FAIL: Edge {} count mismatch (Materialized: {}, Ingest: {}){}", relation_name, mat_count, ingest_count, drop_msg));
-                                     }
-                                 } else {
-                                     // Fallback: materialized edge not found, skip count comparison
-                                     // This can happen for FK-FK edges or if materialization hasn't run
-                                     if ingest_count == 0 {
-                                         messages.push(format!("PASS: Edge {} (Ingest: 0, no materialized edge)", relation_name));
-                                     } else {
-                                         messages.push(format!("INFO: Edge {} (Ingest: {}) - no materialized edge found for version {}_{}",
+                                    if mat_count == ingest_count {
+                                        messages.push(format!(
+                                            "PASS: Edge {} (Materialized: {}, Ingest: {}){}",
+                                            relation_name, mat_count, ingest_count, drop_msg
+                                        ));
+                                    } else {
+                                        messages.push(format!("FAIL: Edge {} count mismatch (Materialized: {}, Ingest: {}){}", relation_name, mat_count, ingest_count, drop_msg));
+                                    }
+                                } else {
+                                    // Fallback: materialized edge not found, skip count comparison
+                                    // This can happen for FK-FK edges or if materialization hasn't run
+                                    if ingest_count == 0 {
+                                        messages.push(format!(
+                                            "PASS: Edge {} (Ingest: 0, no materialized edge)",
+                                            relation_name
+                                        ));
+                                    } else {
+                                        messages.push(format!("INFO: Edge {} (Ingest: {}) - no materialized edge found for version {}_{}",
                                              relation_name, ingest_count, src_meta.data_version, dst_meta.data_version));
-                                     }
-                                 }
-                             } else {
-                                 if ingest_count == 0 {
-                                     messages.push(format!("PASS: Edge {} (Ingest: 0, S3 key not found - expected for pruned edges)", relation_name));
-                                 } else {
-                                     messages.push(format!("FAIL: Edge {} (Ingest: {}) - S3 key {} (or reverse) not found", relation_name, ingest_count, s3_key_forward));
-                                 }
-                             }
+                                    }
+                                }
+                            } else if ingest_count == 0 {
+                                messages.push(format!("PASS: Edge {} (Ingest: 0, S3 key not found - expected for pruned edges)", relation_name));
+                            } else {
+                                messages.push(format!(
+                                    "FAIL: Edge {} (Ingest: {}) - S3 key {} (or reverse) not found",
+                                    relation_name, ingest_count, s3_key_forward
+                                ));
+                            }
                         } else {
-                             messages.push(format!("INFO: Missing metadata for tables in edge {}", relation_name));
+                            messages.push(format!(
+                                "INFO: Missing metadata for tables in edge {}",
+                                relation_name
+                            ));
                         }
                     } else {
-                         messages.push(format!("INFO: Could not parse tables from edge {}", relation_name));
+                        messages.push(format!(
+                            "INFO: Could not parse tables from edge {}",
+                            relation_name
+                        ));
                     }
                 }
 
                 // Reverse check: Verify if any S3 edge was missed by ingestion
-                let mut reverse_table_infos: std::collections::HashMap<(String, String), Vec<String>> = std::collections::HashMap::new();
+                let mut reverse_table_infos: std::collections::HashMap<
+                    (String, String),
+                    Vec<String>,
+                > = std::collections::HashMap::new();
                 for (t_name, meta) in &table_infos {
-                    reverse_table_infos.entry((meta.source_name.clone(), meta.data_source.clone()))
+                    reverse_table_infos
+                        .entry((meta.source_name.clone(), meta.data_source.clone()))
                         .or_default()
                         .push(t_name.clone());
                 }
 
                 for (s3_key, val_obj) in obj {
-                    if !s3_key.ends_with("EDGE_COUNT") { continue; }
-                    if matched_s3_keys.contains(s3_key) { continue; }
+                    if !s3_key.ends_with("EDGE_COUNT") {
+                        continue;
+                    }
+                    if matched_s3_keys.contains(s3_key) {
+                        continue;
+                    }
 
                     let s3_count = val_obj.get("value").and_then(|v| v.as_u64()).unwrap_or(0);
-                    if s3_count == 0 { continue; }
+                    if s3_count == 0 {
+                        continue;
+                    }
 
                     // Try to identify if this S3 key belongs to tables we know about
                     // Key format: {src_src}__{src_ds}__{dst_src}__{dst_ds}__{src_key}__{dst_key}__EDGE_COUNT
@@ -844,30 +1047,34 @@ async fn verify_s3_stats(
                         let dst_src = parts[2];
                         let dst_ds = parts[3];
 
-                        let src_candidates = reverse_table_infos.get(&(src_src.to_string(), src_ds.to_string()));
-                        let dst_candidates = reverse_table_infos.get(&(dst_src.to_string(), dst_ds.to_string()));
+                        let src_candidates =
+                            reverse_table_infos.get(&(src_src.to_string(), src_ds.to_string()));
+                        let dst_candidates =
+                            reverse_table_infos.get(&(dst_src.to_string(), dst_ds.to_string()));
 
                         if let (Some(srcs), Some(dsts)) = (src_candidates, dst_candidates) {
-                             // We have both tables locally, so we SHOULD have seen this edge.
-                             messages.push(format!("FAIL: S3 has edge {} (count: {}), but Ingest has none. Matched local tables: Src={:?}, Dst={:?}", s3_key, s3_count, srcs, dsts));
+                            // We have both tables locally, so we SHOULD have seen this edge.
+                            messages.push(format!("FAIL: S3 has edge {} (count: {}), but Ingest has none. Matched local tables: Src={:?}, Dst={:?}", s3_key, s3_count, srcs, dsts));
                         } else {
-                             // S3 has an edge but we don't have the table locally. Maybe we downloaded a subset?
-                             // But validate_s3 downloads full job.
-                             // Report as INFO or SKIP?
-                             // Actually, if we are validating a specific job, we expect full match.
-                             // But maybe the S3 stats include edges to tables not in this job's input? (Global graph stats?)
-                             // Yes, graph stats are for the graph, which might be reused.
-                             // But if the job input defines the tables, we only download those.
-                             // So it is possible S3 has edges we don't see if we didn't download those tables.
-                             // However, for this task, let's report it if we can match at least one side?
-                             // No, only fail if we have BOTH tables locally.
+                            // S3 has an edge but we don't have the table locally. Maybe we downloaded a subset?
+                            // But validate_s3 downloads full job.
+                            // Report as INFO or SKIP?
+                            // Actually, if we are validating a specific job, we expect full match.
+                            // But maybe the S3 stats include edges to tables not in this job's input? (Global graph stats?)
+                            // Yes, graph stats are for the graph, which might be reused.
+                            // But if the job input defines the tables, we only download those.
+                            // So it is possible S3 has edges we don't see if we didn't download those tables.
+                            // However, for this task, let's report it if we can match at least one side?
+                            // No, only fail if we have BOTH tables locally.
                         }
                     }
                 }
-
             }
         } else {
-             messages.push(format!("SKIP: Edge stats (edge_stats not found at {})", edge_stats_s3));
+            messages.push(format!(
+                "SKIP: Edge stats (edge_stats not found at {})",
+                edge_stats_s3
+            ));
         }
     } else {
         messages.push("SKIP: Edge stats (Could not determine graph_id/version)".to_string());
@@ -976,7 +1183,11 @@ async fn get_materialized_edge_count(
 fn diff_pct(a: u64, b: u64) -> f64 {
     let diff = (a as i64 - b as i64).abs() as f64;
     let max = a.max(b) as f64;
-    if max == 0.0 { 0.0 } else { diff / max }
+    if max == 0.0 {
+        0.0
+    } else {
+        diff / max
+    }
 }
 
 fn get_dir_size(path: &Path) -> Result<u64> {
@@ -1008,12 +1219,20 @@ fn print_report(results: &[JobResult]) {
     for res in results {
         match &res.report {
             Some(report) => {
-                    let verify_status = if let Some(msgs) = &report.s3_stats_verification {
+                let verify_status = if let Some(msgs) = &report.s3_stats_verification {
                     let fails = msgs.iter().filter(|m| m.starts_with("FAIL")).count();
                     let skips = msgs.iter().filter(|m| m.starts_with("SKIP")).count();
-                    if fails > 0 { format!("{} FAIL", fails) }
-                    else if skips > 0 && msgs.iter().all(|m| m.starts_with("SKIP") || m.starts_with("INFO")) { "SKIP".to_string() }
-                    else { "PASS".to_string() }
+                    if fails > 0 {
+                        format!("{} FAIL", fails)
+                    } else if skips > 0
+                        && msgs
+                            .iter()
+                            .all(|m| m.starts_with("SKIP") || m.starts_with("INFO"))
+                    {
+                        "SKIP".to_string()
+                    } else {
+                        "PASS".to_string()
+                    }
                 } else {
                     "N/A".to_string()
                 };
@@ -1029,13 +1248,13 @@ fn print_report(results: &[JobResult]) {
                 );
 
                 if let Some(msgs) = &report.s3_stats_verification {
-                     if verify_status.contains("FAIL") || std::env::var("VERBOSE").is_ok() {
-                         for msg in msgs {
-                             if msg.starts_with("FAIL") {
-                                 println!("    - {}", msg);
-                             }
-                         }
-                     }
+                    if verify_status.contains("FAIL") || std::env::var("VERBOSE").is_ok() {
+                        for msg in msgs {
+                            if msg.starts_with("FAIL") {
+                                println!("    - {}", msg);
+                            }
+                        }
+                    }
                 }
             }
             None => {

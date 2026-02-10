@@ -37,7 +37,9 @@ pub struct CoercionParams {
 impl CoercionParams {
     /// Create params with the given scale.
     pub fn with_scale(scale: i32) -> Self {
-        Self { pk_scale: Some(scale) }
+        Self {
+            pk_scale: Some(scale),
+        }
     }
 }
 
@@ -59,11 +61,11 @@ impl CoercionParams {
 fn max_safe_scale_for_decimal128(fk: &IngestedType) -> Option<i32> {
     use IngestedType::*;
     match fk {
-        Int8 | UInt8 => Some(35),    // max 128/255 → 3 digits
-        Int16 | UInt16 => Some(33),  // max 32768/65535 → 5 digits
-        Int32 | UInt32 => Some(28),  // max ~2×10^9/4×10^9 → 10 digits
-        Int64 => Some(19),           // max ~9×10^18 → 19 digits
-        UInt64 => Some(18),          // max ~1.8×10^19 → 20 digits
+        Int8 | UInt8 => Some(35),   // max 128/255 → 3 digits
+        Int16 | UInt16 => Some(33), // max 32768/65535 → 5 digits
+        Int32 | UInt32 => Some(28), // max ~2×10^9/4×10^9 → 10 digits
+        Int64 => Some(19),          // max ~9×10^18 → 19 digits
+        UInt64 => Some(18),         // max ~1.8×10^19 → 20 digits
         _ => None,
     }
 }

@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Result};
-use diskgraph_ingest::{ingest, Dest, IngestOptions};
 use diskgraph_index::graph::GraphIndexReader;
+use diskgraph_ingest::{ingest, Dest, IngestOptions};
 use parquet::arrow::ArrowWriter;
 use parquet::file::properties::WriterProperties;
 use std::fs;
@@ -9,7 +9,7 @@ use std::sync::Arc;
 use tempfile::tempdir;
 
 use arrow_array::{
-    ArrayRef, Int64Array, Int32Array, StringArray, RecordBatch, FixedSizeBinaryArray
+    ArrayRef, FixedSizeBinaryArray, Int32Array, Int64Array, RecordBatch, StringArray,
 };
 use arrow_schema::{DataType, Field, Schema};
 
@@ -17,7 +17,9 @@ fn write_parquet(path: &Path, schema: Schema, columns: Vec<ArrayRef>) -> Result<
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let props = WriterProperties::builder().set_max_row_group_size(1024).build();
+    let props = WriterProperties::builder()
+        .set_max_row_group_size(1024)
+        .build();
     let file = fs::File::create(path)?;
     let mut writer = ArrowWriter::try_new(file, Arc::new(schema.clone()), Some(props))?;
     let batch = RecordBatch::try_new(Arc::new(schema), columns)?;
@@ -26,10 +28,7 @@ fn write_parquet(path: &Path, schema: Schema, columns: Vec<ArrayRef>) -> Result<
     Ok(())
 }
 
-fn sum_relation_edges(
-    table: &diskgraph_index::graph::TableReader,
-    rel_name: &str,
-) -> Result<u64> {
+fn sum_relation_edges(table: &diskgraph_index::graph::TableReader, rel_name: &str) -> Result<u64> {
     let rel_idx = table
         .relations()
         .iter()
@@ -67,13 +66,17 @@ fn test_fkey_optimization_vectors() -> Result<()> {
     )?;
 
     // Table: users_uuid
-    let schema_users_uuid = Schema::new(vec![Field::new("id", DataType::FixedSizeBinary(16), false)]);
-    let mut uuid1 = [0u8; 16]; uuid1[15] = 1;
-    let mut uuid2 = [0u8; 16]; uuid2[15] = 2;
+    let schema_users_uuid =
+        Schema::new(vec![Field::new("id", DataType::FixedSizeBinary(16), false)]);
+    let mut uuid1 = [0u8; 16];
+    uuid1[15] = 1;
+    let mut uuid2 = [0u8; 16];
+    uuid2[15] = 2;
     let users_uuid_ids = FixedSizeBinaryArray::try_from_sparse_iter_with_size(
-        vec![Some(uuid1), Some(uuid2)].into_iter(), 
-        16
-    ).unwrap();
+        vec![Some(uuid1), Some(uuid2)].into_iter(),
+        16,
+    )
+    .unwrap();
     write_parquet(
         &raw_dir.join("users_uuid/part-0.parquet"),
         schema_users_uuid,
@@ -100,23 +103,21 @@ fn test_fkey_optimization_vectors() -> Result<()> {
 
     let event_ids = Int64Array::from(vec![1, 2, 3, 4]);
 
-    let fk_cast = Int64Array::from(vec![
-        Some(100), Some(200), None, Some(100),
-    ]);
+    let fk_cast = Int64Array::from(vec![Some(100), Some(200), None, Some(100)]);
 
-    let fk_parse_int = StringArray::from(vec![
-        Some("100"), Some("200"), None, Some("not_a_number"),
-    ]);
+    let fk_parse_int =
+        StringArray::from(vec![Some("100"), Some("200"), None, Some("not_a_number")]);
 
     let uuid1_str = "00000000-0000-0000-0000-000000000001";
     let uuid2_str = "00000000-0000-0000-0000-000000000002";
     let fk_parse_uuid = StringArray::from(vec![
-        Some(uuid1_str), Some(uuid2_str), None, Some("invalid-uuid"),
+        Some(uuid1_str),
+        Some(uuid2_str),
+        None,
+        Some("invalid-uuid"),
     ]);
 
-    let fk_direct = Int64Array::from(vec![
-        Some(10), Some(20), None, Some(10),
-    ]);
+    let fk_direct = Int64Array::from(vec![Some(10), Some(20), None, Some(10)]);
 
     write_parquet(
         &raw_dir.join("events/part-0.parquet"),
@@ -178,22 +179,33 @@ fn test_fkey_optimization_vectors() -> Result<()> {
     // 3. Run Ingest
     let opts = IngestOptions::default();
 
-    ingest(
-        &config_path, 
-        index_dir.to_str().unwrap(), 
-        Dest::Local, 
-        opts
-    )?;
+    ingest(&config_path, index_dir.to_str().unwrap(), Dest::Local, opts)?;
 
     // 4. Verify
     let reader = GraphIndexReader::open(&index_dir.join("index_metadata.json"), &index_dir)?;
     let events_table = reader.table("events").unwrap();
 
     // Check counts
-    assert_eq!(sum_relation_edges(&events_table, "events_fk_cast_to_users_int_id")?, 3, "fk_cast mismatch (Int64->Int32)");
-    assert_eq!(sum_relation_edges(&events_table, "events_fk_parse_int_to_users_direct_id")?, 2, "fk_parse_int mismatch (String->Int64)");
-    assert_eq!(sum_relation_edges(&events_table, "events_fk_parse_uuid_to_users_uuid_id")?, 2, "fk_parse_uuid mismatch (String->Uuid)");
-    assert_eq!(sum_relation_edges(&events_table, "events_fk_direct_to_users_direct_id")?, 3, "fk_direct mismatch (Int64->Int64)");
+    assert_eq!(
+        sum_relation_edges(&events_table, "events_fk_cast_to_users_int_id")?,
+        3,
+        "fk_cast mismatch (Int64->Int32)"
+    );
+    assert_eq!(
+        sum_relation_edges(&events_table, "events_fk_parse_int_to_users_direct_id")?,
+        2,
+        "fk_parse_int mismatch (String->Int64)"
+    );
+    assert_eq!(
+        sum_relation_edges(&events_table, "events_fk_parse_uuid_to_users_uuid_id")?,
+        2,
+        "fk_parse_uuid mismatch (String->Uuid)"
+    );
+    assert_eq!(
+        sum_relation_edges(&events_table, "events_fk_direct_to_users_direct_id")?,
+        3,
+        "fk_direct mismatch (Int64->Int64)"
+    );
 
     Ok(())
 }

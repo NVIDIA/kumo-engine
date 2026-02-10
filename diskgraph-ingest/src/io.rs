@@ -1,3 +1,4 @@
+use crate::graph_config::GraphConfig;
 use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
 use diskgraph_fs::{
@@ -11,7 +12,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::runtime::Runtime;
-use crate::graph_config::GraphConfig;
 
 #[derive(Clone, Copy, Debug)]
 pub enum Dest {
@@ -95,7 +95,9 @@ pub fn build_store_for_cloud_path(path: &str) -> Result<Arc<dyn ObjectStore>> {
         Ok(s3.store)
     } else if path.starts_with("gs://") {
         let (bucket, _key) = parse_gs_url(path)?;
-        let gcs = build_gcs_client(GcsConfig { bucket: bucket.clone() })?;
+        let gcs = build_gcs_client(GcsConfig {
+            bucket: bucket.clone(),
+        })?;
         Ok(gcs.store)
     } else if path.starts_with("az://") {
         let (account, container, _key) = parse_az_url(path)?;
@@ -166,7 +168,9 @@ pub fn require_local_output(target: &OutputTarget) -> Result<&Path> {
 
 #[derive(Debug)]
 pub enum OutputTarget {
-    Local { root: PathBuf },
+    Local {
+        root: PathBuf,
+    },
     S3 {
         prefix: String,
         store: Arc<dyn ObjectStore>,
@@ -282,12 +286,17 @@ impl OutputTarget {
                 if let Some(parent) = path.parent() {
                     fs::create_dir_all(parent)?;
                 }
-                fs::write(&path, bytes)
-                    .with_context(|| format!("write {}", path.display()))?;
+                fs::write(&path, bytes).with_context(|| format!("write {}", path.display()))?;
             }
-            OutputTarget::S3 { store, rt, prefix, .. }
-            | OutputTarget::Gcs { store, rt, prefix, .. }
-            | OutputTarget::Adls { store, rt, prefix, .. } => {
+            OutputTarget::S3 {
+                store, rt, prefix, ..
+            }
+            | OutputTarget::Gcs {
+                store, rt, prefix, ..
+            }
+            | OutputTarget::Adls {
+                store, rt, prefix, ..
+            } => {
                 let obj = if prefix.is_empty() {
                     ObjectPath::from(name)
                 } else {
@@ -393,7 +402,9 @@ impl MultipartSink {
         Ok(())
     }
 
-    fn retry_with_backoff<T>(mut op: impl FnMut() -> Result<T, object_store::Error>) -> io::Result<T> {
+    fn retry_with_backoff<T>(
+        mut op: impl FnMut() -> Result<T, object_store::Error>,
+    ) -> io::Result<T> {
         const RETRIES: usize = 3;
         const BASE_DELAY_MS: u64 = 250;
         let mut last_err: Option<object_store::Error> = None;
@@ -413,10 +424,7 @@ impl MultipartSink {
         if let Some(err) = last_err {
             Err(to_io_err(err))
         } else {
-            Err(io::Error::new(
-                io::ErrorKind::Other,
-                "unknown multipart error",
-            ))
+            Err(io::Error::other("unknown multipart error"))
         }
     }
 }
@@ -451,5 +459,5 @@ impl Drop for MultipartSink {
 }
 
 fn to_io_err(err: object_store::Error) -> io::Error {
-    io::Error::new(io::ErrorKind::Other, err)
+    io::Error::other(err)
 }

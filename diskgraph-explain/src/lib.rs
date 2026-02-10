@@ -18,10 +18,10 @@ mod population;
 mod prompt;
 mod subgraph;
 
-pub use config::{ExplainConfig, IdKind, TimestampKind, MotifConfig, PromptConfig};
-pub use motifs::{EntityMotifs, RelationMotifs, TemporalMotifs, AttributeMotif, HomophilyMotifs};
-pub use output::{EntityExplanation, ClusterContext, PopulationSummary};
+pub use config::{ExplainConfig, IdKind, MotifConfig, PromptConfig, TimestampKind};
+pub use motifs::{AttributeMotif, EntityMotifs, HomophilyMotifs, RelationMotifs, TemporalMotifs};
+pub use output::{ClusterContext, EntityExplanation, PopulationSummary};
 pub use pipeline::run;
-pub use population::{PopulationStats, FeatureContext};
+pub use population::{FeatureContext, PopulationStats};
 pub use prompt::{generate_prompt, infer_graph_description};
-pub use subgraph::{SubgraphExtractor, ExtractedSubgraph};
+pub use subgraph::{ExtractedSubgraph, SubgraphExtractor};

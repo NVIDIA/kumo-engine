@@ -3,30 +3,30 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
+use arrow_array::{
+    Array, Int16Array, Int32Array, Int64Array, Int8Array, LargeStringArray, RecordBatch,
+    StringArray, UInt16Array, UInt32Array, UInt64Array, UInt8Array,
+};
+use arrow_schema::{ArrowError, DataType, Schema};
 use bytes::Bytes;
 use chrono::{NaiveDate, NaiveDateTime};
 use diskgraph_fs::{
     build_adls_client, build_gcs_client, build_s3_client, AdlsConfig, CloudTransfer,
     CloudTransferConfig, GcsConfig, S3Config,
 };
-use diskgraph_ingest::graph_config::{
-    ColumnSpec, DataSource, EdgeTableSpec, FKeySpec, ForeignKeySpec, IngestedType, GraphConfig,
-    TableFormat, TableSpec, TimestampUnit,
-};
 use diskgraph_ingest::coercion::CoercionMode;
 use diskgraph_ingest::config_converter::map_kumo_dtype;
-use diskgraph_ingest::utils::is_edge_table_compatible;
-use arrow_array::{
-    Array, Int16Array, Int32Array, Int64Array, Int8Array, LargeStringArray, RecordBatch,
-    StringArray, UInt16Array, UInt32Array, UInt64Array, UInt8Array,
+use diskgraph_ingest::graph_config::{
+    ColumnSpec, DataSource, EdgeTableSpec, FKeySpec, ForeignKeySpec, GraphConfig, IngestedType,
+    TableFormat, TableSpec, TimestampUnit,
 };
-use arrow_schema::{ArrowError, DataType, Schema};
+use diskgraph_ingest::utils::is_edge_table_compatible;
 use futures::StreamExt;
 use object_store::{path::Path as ObjectPath, ObjectStore};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use serde::Deserialize;
 use tokio::runtime::Runtime;
 use url::Url;
-use serde::Deserialize;
 
 #[cfg(test)]
 mod tests_infer;
@@ -52,10 +52,7 @@ fn convert_inferred_fkeys_to_fkeyspecs(
     // Group by src_table
     let mut by_table: HashMap<&str, Vec<&InferredFKey>> = HashMap::new();
     for fk in inferred_fkeys {
-        by_table
-            .entry(fk.src_table.as_str())
-            .or_default()
-            .push(fk);
+        by_table.entry(fk.src_table.as_str()).or_default().push(fk);
     }
 
     // Add fkeys to each table
@@ -174,9 +171,19 @@ struct TableInput {
 #[derive(Clone, Debug)]
 pub enum RootSource {
     Local(PathBuf),
-    S3 { bucket: String, prefix: String },
-    Gcs { bucket: String, prefix: String },
-    Adls { account: String, container: String, prefix: String },
+    S3 {
+        bucket: String,
+        prefix: String,
+    },
+    Gcs {
+        bucket: String,
+        prefix: String,
+    },
+    Adls {
+        account: String,
+        container: String,
+        prefix: String,
+    },
 }
 
 pub fn parse_root_source(input: &str) -> Result<RootSource> {
@@ -201,10 +208,10 @@ pub fn parse_root_source(input: &str) -> Result<RootSource> {
                     prefix,
                 })
             }
-            "file" => Ok(RootSource::Local(PathBuf::from(
+            "file" => Ok(RootSource::Local(
                 url.to_file_path()
                     .map_err(|_| anyhow!("invalid file url {}", input))?,
-            ))),
+            )),
             _ => Err(anyhow!("unsupported source scheme {}", url.scheme())),
         }
     } else {
@@ -220,20 +227,12 @@ pub fn infer_source_metadata(root: &RootSource, options: InferOptions) -> Result
     };
     let mut tables = match root {
         RootSource::Local(path) => infer_local_tables(path, &options, &mut warnings)?,
-        RootSource::S3 { bucket, prefix } => infer_remote_tables(
-            root,
-            bucket,
-            prefix,
-            &options,
-            &mut warnings,
-        )?,
-        RootSource::Gcs { bucket, prefix } => infer_remote_tables(
-            root,
-            bucket,
-            prefix,
-            &options,
-            &mut warnings,
-        )?,
+        RootSource::S3 { bucket, prefix } => {
+            infer_remote_tables(root, bucket, prefix, &options, &mut warnings)?
+        }
+        RootSource::Gcs { bucket, prefix } => {
+            infer_remote_tables(root, bucket, prefix, &options, &mut warnings)?
+        }
         RootSource::Adls {
             account,
             container,
@@ -258,11 +257,8 @@ pub fn infer_source_metadata(root: &RootSource, options: InferOptions) -> Result
 
         for table in &mut tables {
             if let Some(cfg) = config_tables.get(&table.name) {
-                let mut allowed_cols: HashSet<String> = cfg
-                    .cols
-                    .iter()
-                    .map(|c| c.name.clone())
-                    .collect();
+                let mut allowed_cols: HashSet<String> =
+                    cfg.cols.iter().map(|c| c.name.clone()).collect();
 
                 if let Some(pk) = &cfg.pkey {
                     allowed_cols.insert(pk.name.clone());
@@ -290,7 +286,10 @@ pub fn infer_source_metadata(root: &RootSource, options: InferOptions) -> Result
                     if let Some(dtype_str) = col_dtypes.get(&col.name) {
                         if let Some(ingested_type) = map_kumo_dtype(dtype_str) {
                             col.ingested_dtype = ingested_type;
-                            if !matches!(col.ingested_dtype, IngestedType::String | IngestedType::Bytes) {
+                            if !matches!(
+                                col.ingested_dtype,
+                                IngestedType::String | IngestedType::Bytes
+                            ) {
                                 col.fixed_len = None;
                             }
                         }
@@ -311,7 +310,9 @@ pub fn infer_source_metadata(root: &RootSource, options: InferOptions) -> Result
             weight: None,
             edge_table: None,
             rowpack: None,
-            source: DataSource::Parquet { paths: table.paths.clone() },
+            source: DataSource::Parquet {
+                paths: table.paths.clone(),
+            },
             fkeys: Vec::new(),
         })
         .collect();
@@ -344,7 +345,13 @@ pub fn infer_source_metadata(root: &RootSource, options: InferOptions) -> Result
             .iter()
             .map(|t| t.data_source.clone())
             .collect();
-        infer_foreign_keys_with_config(&mut table_specs, &mut inferred_fkeys, &mut warnings.notes, config, &data_sources);
+        infer_foreign_keys_with_config(
+            &table_specs,
+            &mut inferred_fkeys,
+            &mut warnings.notes,
+            config,
+            &data_sources,
+        );
     } else {
         infer_foreign_keys(&table_specs, &mut inferred_fkeys, &mut warnings.notes, None);
     }
@@ -382,15 +389,14 @@ fn root_dataset_name(root: &RootSource) -> String {
             .and_then(|s| s.to_str())
             .unwrap_or("dataset")
             .to_string(),
-        RootSource::S3 { bucket, prefix }
-        | RootSource::Gcs { bucket, prefix } => {
+        RootSource::S3 { bucket, prefix } | RootSource::Gcs { bucket, prefix } => {
             if prefix.is_empty() {
                 bucket.clone()
             } else {
                 prefix
                     .trim_end_matches('/')
                     .split('/')
-                    .last()
+                    .next_back()
                     .unwrap_or(bucket)
                     .to_string()
             }
@@ -402,7 +408,7 @@ fn root_dataset_name(root: &RootSource) -> String {
                 prefix
                     .trim_end_matches('/')
                     .split('/')
-                    .last()
+                    .next_back()
                     .unwrap_or("dataset")
                     .to_string()
             }
@@ -415,13 +421,15 @@ fn estimate_num_shards(total_bytes: u64) -> usize {
         return 1;
     }
     let shard_bytes = shard_target_bytes(total_bytes);
-    ((total_bytes + shard_bytes - 1) / shard_bytes) as usize
+    total_bytes.div_ceil(shard_bytes) as usize
 }
 
 fn shard_target_bytes(total_bytes: u64) -> u64 {
-    const FALLBACK_SHARD_BYTES: u64 = 1 * 1024 * 1024 * 1024;
+    const FALLBACK_SHARD_BYTES: u64 = 1024 * 1024 * 1024;
     let mem_total = read_system_memory_bytes();
-    let cpu_count = std::thread::available_parallelism().ok().map(|n| n.get() as u64);
+    let cpu_count = std::thread::available_parallelism()
+        .ok()
+        .map(|n| n.get() as u64);
     match (mem_total, cpu_count) {
         (Some(mem_total), Some(cpu_count)) if cpu_count > 0 => {
             let per_cpu = mem_total / cpu_count;
@@ -462,7 +470,7 @@ fn read_system_memory_bytes() -> Option<u64> {
         let contents = std::fs::read_to_string("/proc/meminfo").ok()?;
         for line in contents.lines() {
             if let Some(rest) = line.strip_prefix("MemTotal:") {
-                let kb = rest.trim().split_whitespace().next()?.parse::<u64>().ok()?;
+                let kb = rest.split_whitespace().next()?.parse::<u64>().ok()?;
                 return kb.checked_mul(1024);
             }
         }
@@ -478,11 +486,17 @@ fn build_table_config_map(config: &Option<InputGraphConfig>) -> HashMap<String, 
     let mut map = HashMap::new();
     if let Some(cfg) = config {
         for table in &cfg.tables {
-             let mut cols = HashSet::new();
-             for c in &table.cols { cols.insert(c.name.clone()); }
-             if let Some(pk) = &table.pkey { cols.insert(pk.name.clone()); }
-             for fk in &table.fkeys { cols.insert(fk.name.clone()); }
-             map.insert(table.table_name.clone(), cols);
+            let mut cols = HashSet::new();
+            for c in &table.cols {
+                cols.insert(c.name.clone());
+            }
+            if let Some(pk) = &table.pkey {
+                cols.insert(pk.name.clone());
+            }
+            for fk in &table.fkeys {
+                cols.insert(fk.name.clone());
+            }
+            map.insert(table.table_name.clone(), cols);
         }
     }
     map
@@ -535,8 +549,9 @@ fn infer_file_table(
         "csv" => {
             eprintln!("infer_config: reading {}", path.display());
             let size = std::fs::metadata(path)?.len();
-            let columns = infer_csv_schema(path, options, allowed_cols)
-                .with_context(|| format!("infer schema for table {} at {}", name, path.display()))?;
+            let columns = infer_csv_schema(path, options, allowed_cols).with_context(|| {
+                format!("infer schema for table {} at {}", name, path.display())
+            })?;
             let rel_path = path.strip_prefix(root).unwrap_or(path);
             Ok(Some(TableInput {
                 name: name.trim_end_matches(".csv").to_string(),
@@ -549,8 +564,10 @@ fn infer_file_table(
         "parquet" => {
             eprintln!("infer_config: reading {}", path.display());
             let size = std::fs::metadata(path)?.len();
-            let columns = infer_parquet_schema_local(path, options, allowed_cols)
-                .with_context(|| format!("infer schema for table {} at {}", name, path.display()))?;
+            let columns =
+                infer_parquet_schema_local(path, options, allowed_cols).with_context(|| {
+                    format!("infer schema for table {} at {}", name, path.display())
+                })?;
             let rel_path = path.strip_prefix(root).unwrap_or(path);
             Ok(Some(TableInput {
                 name: name.trim_end_matches(".parquet").to_string(),
@@ -602,23 +619,27 @@ fn infer_dir_table(
                 eprintln!("infer_config: reading {}", path.display());
                 let columns = match format {
                     TableFormat::Csv => infer_csv_schema(&path, options, allowed_cols)
-                        .with_context(|| format!("infer schema for table {} at {}", name, path.display()))?,
-                    TableFormat::Parquet => infer_parquet_schema_local(&path, options, allowed_cols)
-                        .with_context(|| format!("infer schema for table {} at {}", name, path.display()))?,
-                };
-                if !same_table_format(&existing.format, &format)
-                    || !columns_match(&existing.columns, &columns)
-                {
-                    if options.validate_dir_schemas {
-                        warnings.schema_mismatches.push(SchemaMismatch {
-                            path: path.to_string_lossy().to_string(),
-                            diffs: schema_diffs(&existing.columns, &columns),
-                        });
-                        warnings
-                            .ignored_files
-                            .push(path.to_string_lossy().to_string());
-                        continue;
+                        .with_context(|| {
+                            format!("infer schema for table {} at {}", name, path.display())
+                        })?,
+                    TableFormat::Parquet => {
+                        infer_parquet_schema_local(&path, options, allowed_cols).with_context(
+                            || format!("infer schema for table {} at {}", name, path.display()),
+                        )?
                     }
+                };
+                if (!same_table_format(&existing.format, &format)
+                    || !columns_match(&existing.columns, &columns))
+                    && options.validate_dir_schemas
+                {
+                    warnings.schema_mismatches.push(SchemaMismatch {
+                        path: path.to_string_lossy().to_string(),
+                        diffs: schema_diffs(&existing.columns, &columns),
+                    });
+                    warnings
+                        .ignored_files
+                        .push(path.to_string_lossy().to_string());
+                    continue;
                 }
                 let rel_path = path.strip_prefix(root).unwrap_or(&path);
                 existing.paths.push(rel_path.to_string_lossy().to_string());
@@ -628,9 +649,14 @@ fn infer_dir_table(
                 eprintln!("infer_config: reading {}", path.display());
                 let columns = match format {
                     TableFormat::Csv => infer_csv_schema(&path, options, allowed_cols)
-                        .with_context(|| format!("infer schema for table {} at {}", name, path.display()))?,
-                    TableFormat::Parquet => infer_parquet_schema_local(&path, options, allowed_cols)
-                        .with_context(|| format!("infer schema for table {} at {}", name, path.display()))?,
+                        .with_context(|| {
+                            format!("infer schema for table {} at {}", name, path.display())
+                        })?,
+                    TableFormat::Parquet => {
+                        infer_parquet_schema_local(&path, options, allowed_cols).with_context(
+                            || format!("infer schema for table {} at {}", name, path.display()),
+                        )?
+                    }
                 };
                 let rel_path = path.strip_prefix(root).unwrap_or(&path);
                 table = Some(TableInput {
@@ -705,7 +731,9 @@ fn infer_remote_tables(
                         options,
                         allowed_cols,
                     )
-                    .with_context(|| format!("infer schema for table {} at {}", table_name, path_str))?,
+                    .with_context(|| {
+                        format!("infer schema for table {} at {}", table_name, path_str)
+                    })?,
                     TableFormat::Csv => infer_csv_schema_remote(
                         &transfer,
                         &obj.location,
@@ -713,15 +741,19 @@ fn infer_remote_tables(
                         options,
                         allowed_cols,
                     )
-                    .with_context(|| format!("infer schema for table {} at {}", table_name, path_str))?,
+                    .with_context(|| {
+                        format!("infer schema for table {} at {}", table_name, path_str)
+                    })?,
                 };
-                let entry = tables.entry(table_name.to_string()).or_insert_with(|| TableInput {
-                    name: table_name.to_string(),
-                    format: format_clone,
-                    paths: Vec::new(),
-                    columns: columns.clone(),
-                    total_bytes: 0,
-                });
+                let entry = tables
+                    .entry(table_name.to_string())
+                    .or_insert_with(|| TableInput {
+                        name: table_name.to_string(),
+                        format: format_clone,
+                        paths: Vec::new(),
+                        columns: columns.clone(),
+                        total_bytes: 0,
+                    });
                 if !same_table_format(&entry.format, &format)
                     || !columns_match(&entry.columns, &columns)
                 {
@@ -731,12 +763,9 @@ fn infer_remote_tables(
                     });
                     warnings.ignored_files.push(path_str);
                 } else {
-                    entry.paths.push(format!(
-                        "{}://{}/{}",
-                        root_scheme(root),
-                        bucket,
-                        path_str
-                    ));
+                    entry
+                        .paths
+                        .push(format!("{}://{}/{}", root_scheme(root), bucket, path_str));
                     entry.total_bytes = entry.total_bytes.saturating_add(obj.size);
                 }
             }
@@ -768,7 +797,9 @@ fn infer_remote_tables(
                         options,
                         allowed_cols,
                     )
-                    .with_context(|| format!("infer schema for table {} at {}", table_name, path_str))?,
+                    .with_context(|| {
+                        format!("infer schema for table {} at {}", table_name, path_str)
+                    })?,
                     TableFormat::Csv => infer_csv_schema_remote(
                         &transfer,
                         &obj.location,
@@ -776,15 +807,19 @@ fn infer_remote_tables(
                         options,
                         allowed_cols,
                     )
-                    .with_context(|| format!("infer schema for table {} at {}", table_name, path_str))?,
+                    .with_context(|| {
+                        format!("infer schema for table {} at {}", table_name, path_str)
+                    })?,
                 };
-                let entry = tables.entry(table_name.to_string()).or_insert_with(|| TableInput {
-                    name: table_name.to_string(),
-                    format: format_clone,
-                    paths: Vec::new(),
-                    columns: columns.clone(),
-                    total_bytes: 0,
-                });
+                let entry = tables
+                    .entry(table_name.to_string())
+                    .or_insert_with(|| TableInput {
+                        name: table_name.to_string(),
+                        format: format_clone,
+                        paths: Vec::new(),
+                        columns: columns.clone(),
+                        total_bytes: 0,
+                    });
                 if !same_table_format(&entry.format, &format)
                     || !columns_match(&entry.columns, &columns)
                 {
@@ -794,12 +829,9 @@ fn infer_remote_tables(
                     });
                     warnings.ignored_files.push(path_str);
                 } else {
-                    entry.paths.push(format!(
-                        "{}://{}/{}",
-                        root_scheme(root),
-                        bucket,
-                        path_str
-                    ));
+                    entry
+                        .paths
+                        .push(format!("{}://{}/{}", root_scheme(root), bucket, path_str));
                     entry.total_bytes = entry.total_bytes.saturating_add(obj.size);
                 }
             }
@@ -864,6 +896,7 @@ fn schema_diffs(a: &[ColumnSpec], b: &[ColumnSpec]) -> Vec<SchemaDiff> {
         }
     }
     if a.len() > min_len {
+        #[allow(clippy::needless_range_loop)]
         for idx in min_len..a.len() {
             diffs.push(SchemaDiff {
                 index: idx,
@@ -872,6 +905,7 @@ fn schema_diffs(a: &[ColumnSpec], b: &[ColumnSpec]) -> Vec<SchemaDiff> {
             });
         }
     } else if b.len() > min_len {
+        #[allow(clippy::needless_range_loop)]
         for idx in min_len..b.len() {
             diffs.push(SchemaDiff {
                 index: idx,
@@ -917,7 +951,9 @@ fn build_store(root: &RootSource) -> Result<(Runtime, Arc<dyn ObjectStore>)> {
             })?;
             client.store
         }
-        RootSource::Adls { account, container, .. } => {
+        RootSource::Adls {
+            account, container, ..
+        } => {
             let client = build_adls_client(AdlsConfig {
                 account: account.clone(),
                 container: container.clone(),
@@ -947,8 +983,8 @@ fn infer_parquet_schema_local(
     let schema = builder.schema();
     let mut columns = infer_parquet_schema_from_arrow(schema.as_ref(), allowed_cols)?;
     if options.sample_rows > 0 {
-    let mut reader = builder.with_batch_size(1024).build()?;
-    apply_parquet_string_samples(&mut columns, &mut reader, options.sample_rows)?;
+        let mut reader = builder.with_batch_size(1024).build()?;
+        apply_parquet_string_samples(&mut columns, &mut reader, options.sample_rows)?;
     }
     Ok(columns)
 }
@@ -1015,9 +1051,9 @@ pub(crate) fn infer_parquet_schema_from_arrow(
             DataType::Float32 => IngestedType::Float32,
             DataType::Boolean => IngestedType::Bool,
             DataType::Utf8 | DataType::LargeUtf8 => IngestedType::String,
-            DataType::Binary
-            | DataType::LargeBinary
-            | DataType::FixedSizeBinary(_) => IngestedType::Bytes,
+            DataType::Binary | DataType::LargeBinary | DataType::FixedSizeBinary(_) => {
+                IngestedType::Bytes
+            }
             DataType::Date32 => IngestedType::Date,
             DataType::Timestamp(_, _) => IngestedType::Timestamp,
             DataType::Decimal128(_, _) => IngestedType::Decimal128,
@@ -1069,15 +1105,17 @@ fn apply_parquet_string_samples<I>(
 where
     I: Iterator<Item = std::result::Result<RecordBatch, ArrowError>>,
 {
-    let mut stats: Vec<Option<ColumnStats>> =
-        (0..columns.len()).map(|_| Some(ColumnStats::default())).collect();
+    let mut stats: Vec<Option<ColumnStats>> = (0..columns.len())
+        .map(|_| Some(ColumnStats::default()))
+        .collect();
     let mut seen = 0usize;
-    while let Some(batch) = batches.next() {
+    for batch in batches.by_ref() {
         let batch = batch.map_err(|err| anyhow!(err))?;
         if seen >= sample_rows {
             break;
         }
         let rows = batch.num_rows().min(sample_rows - seen);
+        #[allow(clippy::needless_range_loop)]
         for idx in 0..columns.len() {
             if let Some(st) = stats[idx].as_mut() {
                 let array = batch.column(idx);
@@ -1161,7 +1199,6 @@ where
     apply_string_stats_overrides(columns, &stats);
     Ok(())
 }
-
 
 fn sample_string_array(array: &StringArray, rows: usize, stats: &mut ColumnStats) {
     for i in 0..rows {
@@ -1271,7 +1308,10 @@ fn apply_string_stats_overrides(columns: &mut [ColumnSpec], stats: &[Option<Colu
             col.timestamp_format = inferred.timestamp_format;
             col.timestamp_unit = inferred.timestamp_unit;
         }
-        if matches!(col.ingested_dtype, IngestedType::String | IngestedType::Bytes) {
+        if matches!(
+            col.ingested_dtype,
+            IngestedType::String | IngestedType::Bytes
+        ) {
             if matches!(
                 inferred_dtype,
                 IngestedType::Uuid | IngestedType::Uuid256 | IngestedType::Ip
@@ -1362,7 +1402,10 @@ fn infer_csv_schema(
         keep_indices.extend(0..headers.len());
     }
 
-    let mut stats: Vec<ColumnStats> = keep_indices.iter().map(|_| ColumnStats::default()).collect();
+    let mut stats: Vec<ColumnStats> = keep_indices
+        .iter()
+        .map(|_| ColumnStats::default())
+        .collect();
     for result in reader.records().take(options.csv_sample_rows) {
         let record = result?;
         for (stat_idx, &col_idx) in keep_indices.iter().enumerate() {
@@ -1419,7 +1462,10 @@ fn infer_csv_schema_from_bytes(
         keep_indices.extend(0..headers.len());
     }
 
-    let mut stats: Vec<ColumnStats> = keep_indices.iter().map(|_| ColumnStats::default()).collect();
+    let mut stats: Vec<ColumnStats> = keep_indices
+        .iter()
+        .map(|_| ColumnStats::default())
+        .collect();
     for result in reader.records().take(options.csv_sample_rows) {
         let record = result?;
         for (stat_idx, &col_idx) in keep_indices.iter().enumerate() {
@@ -1556,9 +1602,7 @@ impl ColumnStats {
         if self.bool_ok {
             ingested_dtype = IngestedType::Bool;
         } else if self.ts_ok {
-            if self.date_ok
-                && matches!(self.ts_format.as_deref(), Some("%Y-%m-%d"))
-            {
+            if self.date_ok && matches!(self.ts_format.as_deref(), Some("%Y-%m-%d")) {
                 ingested_dtype = IngestedType::Date;
                 timestamp_format = self.date_format.clone();
             } else {
@@ -1612,13 +1656,10 @@ fn looks_like_uuid(value: &str) -> bool {
     let bytes = value.as_bytes();
     match bytes.len() {
         32 => bytes.iter().all(|b| is_hex(*b)),
-        36 => bytes
-            .iter()
-            .enumerate()
-            .all(|(idx, b)| match idx {
-                8 | 13 | 18 | 23 => *b == b'-',
-                _ => is_hex(*b),
-            }),
+        36 => bytes.iter().enumerate().all(|(idx, b)| match idx {
+            8 | 13 | 18 | 23 => *b == b'-',
+            _ => is_hex(*b),
+        }),
         _ => false,
     }
 }
@@ -1636,7 +1677,7 @@ fn looks_like_ip(value: &str) -> bool {
 }
 
 fn is_hex(b: u8) -> bool {
-    matches!(b, b'0'..=b'9' | b'a'..=b'f' | b'A'..=b'F')
+    b.is_ascii_hexdigit()
 }
 
 fn parse_int(value: &str) -> Option<i64> {
@@ -1675,7 +1716,7 @@ fn parse_timestamp(value: &str) -> Option<NaiveDateTime> {
 }
 
 fn parse_timestamp_format(value: &str) -> Option<&'static str> {
-    for fmt in [
+    [
         "%Y-%m-%d",
         "%Y-%m-%d %H:%M:%S",
         "%Y-%m-%d %H:%M:%S%.f",
@@ -1688,12 +1729,10 @@ fn parse_timestamp_format(value: &str) -> Option<&'static str> {
         "%Y-%m-%d %H:%M:%S %:z",
         "%Y-%m-%dT%H:%M:%S%z",
         "%Y-%m-%dT%H:%M:%S%:z",
-    ] {
-        if parse_timestamp_with_format(value, fmt).is_some() {
-            return Some(fmt);
-        }
-    }
-    None
+    ]
+    .into_iter()
+    .find(|&fmt| parse_timestamp_with_format(value, fmt).is_some())
+    .map(|v| v as _)
 }
 
 fn parse_timestamp_with_format(value: &str, fmt: &str) -> Option<NaiveDateTime> {
@@ -1795,7 +1834,8 @@ fn parse_ymd_hms_offset(bytes: &[u8], colon: bool, spaced: bool) -> Option<Naive
     let off_min = parse_fixed_u32(bytes, pos, 2)? as i64;
     let (secs, nanos) = timestamp_from_parts_secs(year, month, day, hour, minute, second, 0)?;
     let offset_secs = sign * (off_hour * 3_600 + off_min * 60);
-    chrono::DateTime::from_timestamp(secs.saturating_sub(offset_secs), nanos).map(|dt| dt.naive_utc())
+    chrono::DateTime::from_timestamp(secs.saturating_sub(offset_secs), nanos)
+        .map(|dt| dt.naive_utc())
 }
 
 fn parse_ymd_hms_t_offset(bytes: &[u8], colon: bool) -> Option<NaiveDateTime> {
@@ -1871,6 +1911,7 @@ fn parse_fixed_u32(bytes: &[u8], pos: usize, len: usize) -> Option<u32> {
         return None;
     }
     let mut val: u32 = 0;
+    #[allow(clippy::needless_range_loop)]
     for idx in pos..pos + len {
         let b = bytes[idx];
         if !b.is_ascii_digit() {
@@ -1887,7 +1928,9 @@ fn parse_fraction(bytes: &[u8], pos: usize) -> Option<(u32, usize, usize)> {
     let mut digits = 0usize;
     while idx < bytes.len() && bytes[idx].is_ascii_digit() {
         if digits < 9 {
-            val = val.saturating_mul(10).saturating_add((bytes[idx] - b'0') as u32);
+            val = val
+                .saturating_mul(10)
+                .saturating_add((bytes[idx] - b'0') as u32);
         }
         digits += 1;
         idx += 1;
@@ -1926,7 +1969,8 @@ pub(crate) fn infer_primary_keys(tables: &mut [TableSpec], config: Option<&Input
 
     // Build map of tables where PK is explicitly disabled (null in config)
     let disabled_pks: HashSet<String> = if let Some(cfg) = config {
-        cfg.tables.iter()
+        cfg.tables
+            .iter()
             .filter(|t| t.pkey.is_none())
             .map(|t| t.table_name.clone())
             .collect()
@@ -1998,6 +2042,7 @@ pub(crate) fn infer_primary_keys(tables: &mut [TableSpec], config: Option<&Input
             if matches_table {
                 score += 900;
             }
+            #[allow(clippy::if_same_then_else)]
             if strong_match {
                 score += 12;
             } else if name_match {
@@ -2057,7 +2102,11 @@ fn infer_foreign_keys_with_config(
     // Build a map of table name -> primary key for validation
     let pk_map: HashMap<&str, &str> = tables
         .iter()
-        .filter_map(|t| t.primary_key.as_ref().map(|pk| (t.name.as_str(), pk.as_str())))
+        .filter_map(|t| {
+            t.primary_key
+                .as_ref()
+                .map(|pk| (t.name.as_str(), pk.as_str()))
+        })
         .collect();
 
     for table in tables {
@@ -2141,7 +2190,10 @@ pub(crate) fn infer_foreign_keys(
         let lower = table.name.to_lowercase();
         name_alias_map.entry(lower.clone()).or_default().push(table);
         let singular = singularize(&lower);
-        name_alias_map.entry(singular.clone()).or_default().push(table);
+        name_alias_map
+            .entry(singular.clone())
+            .or_default()
+            .push(table);
         let name_field = format!("{}_name", lower);
         name_alias_map.entry(name_field).or_default().push(table);
         let singular_name_field = format!("{}_name", singular);
@@ -2169,9 +2221,7 @@ pub(crate) fn infer_foreign_keys(
                 if !matches_alias {
                     continue;
                 }
-            } else if matches!(col_name.as_str(), "id" | "uuid" | "pk")
-                && fk_candidate_count >= 2
-            {
+            } else if matches!(col_name.as_str(), "id" | "uuid" | "pk") && fk_candidate_count >= 2 {
                 continue;
             }
             if table_pk == Some(col.name.as_str()) && fk_candidate_count < 2 {
@@ -2190,12 +2240,7 @@ pub(crate) fn infer_foreign_keys(
                 if let Some((dst_table, _dst_pk)) =
                     choose_best_fk_dest(table, col, &candidates, &table_tokens, notes)
                 {
-                    if !fkey_already_declared(
-                        inferred_fkeys,
-                        &table.name,
-                        &col.name,
-                        &dst_table,
-                    ) {
+                    if !fkey_already_declared(inferred_fkeys, &table.name, &col.name, &dst_table) {
                         inferred_fkeys.push(InferredFKey {
                             src_table: table.name.clone(),
                             src_column: col.name.clone(),
@@ -2254,25 +2299,26 @@ pub(crate) fn infer_foreign_keys(
                         matches = col_name.ends_with(&format!("_{}", pk_lower));
                     }
                 }
-                    if !matches {
-                        let col_base = key_name_base(&col_name).unwrap_or("");
-                        if !col_base.is_empty() {
-                            let dest_tokens = normalized_tokens(dest_name);
-                            let base_matches_dest =
-                                dest_tokens.iter().any(|t| overlap_ratio(col_base, t) >= 0.6);
-                            if base_matches_dest {
-                                if is_generic_key_name(&pk_lower) {
-                                    if !column_has_type_like(&col.name) {
-                                        matches = true;
-                                    }
-                                } else if let Some(pk_base) = key_name_base(&pk_lower) {
-                                    if col_base == pk_base {
-                                        matches = true;
-                                    }
+                if !matches {
+                    let col_base = key_name_base(&col_name).unwrap_or("");
+                    if !col_base.is_empty() {
+                        let dest_tokens = normalized_tokens(dest_name);
+                        let base_matches_dest = dest_tokens
+                            .iter()
+                            .any(|t| overlap_ratio(col_base, t) >= 0.6);
+                        if base_matches_dest {
+                            if is_generic_key_name(&pk_lower) {
+                                if !column_has_type_like(&col.name) {
+                                    matches = true;
+                                }
+                            } else if let Some(pk_base) = key_name_base(&pk_lower) {
+                                if col_base == pk_base {
+                                    matches = true;
                                 }
                             }
                         }
                     }
+                }
                 if !matches {
                     continue;
                 }
@@ -2294,11 +2340,7 @@ pub(crate) fn infer_foreign_keys(
                         }
                         Some((_, _, best_score)) if score < *best_score => {}
                         _ => {
-                            best = Some((
-                                dest_table.name.clone(),
-                                pk.clone(),
-                                score,
-                            ));
+                            best = Some((dest_table.name.clone(), pk.clone(), score));
                             tie = false;
                         }
                     }
@@ -2310,33 +2352,28 @@ pub(crate) fn infer_foreign_keys(
                 }
             }
             if let Some((dst_table, _dst_pk, _)) = best {
-                if !tie {
-                    if !fkey_already_declared(
-                        inferred_fkeys,
-                        &table.name,
-                        &col.name,
-                        &dst_table,
-                    ) {
-                        inferred_fkeys.push(InferredFKey {
-                            src_table: table.name.clone(),
-                            src_column: col.name.clone(),
-                            dst_table,
-                        });
-                    }
+                if !tie
+                    && !fkey_already_declared(inferred_fkeys, &table.name, &col.name, &dst_table)
+                {
+                    inferred_fkeys.push(InferredFKey {
+                        src_table: table.name.clone(),
+                        src_column: col.name.clone(),
+                        dst_table,
+                    });
                 }
             }
         }
     }
 }
 
-pub(crate) fn infer_primary_key_relationships(tables: &[TableSpec], inferred_fkeys: &mut Vec<InferredFKey>) {
+pub(crate) fn infer_primary_key_relationships(
+    tables: &[TableSpec],
+    inferred_fkeys: &mut Vec<InferredFKey>,
+) {
     let mut pk_map: HashMap<String, Vec<&TableSpec>> = HashMap::new();
     for table in tables {
         if let Some(pk) = &table.primary_key {
-            pk_map
-                .entry(pk.to_lowercase())
-                .or_default()
-                .push(table);
+            pk_map.entry(pk.to_lowercase()).or_default().push(table);
         }
     }
     for (pk_name, tables_with_pk) in pk_map {
@@ -2388,7 +2425,10 @@ pub(crate) fn infer_primary_key_relationships(tables: &[TableSpec], inferred_fke
     }
 }
 
-pub(crate) fn drop_join_table_primary_keys(tables: &mut [TableSpec], inferred_fkeys: &[InferredFKey]) {
+pub(crate) fn drop_join_table_primary_keys(
+    tables: &mut [TableSpec],
+    inferred_fkeys: &[InferredFKey],
+) {
     let mut fk_counts: HashMap<&str, usize> = HashMap::new();
     let mut fk_cols: HashSet<(&str, &str)> = HashSet::new();
     for fk in inferred_fkeys {
@@ -2412,10 +2452,17 @@ pub(crate) fn drop_join_table_primary_keys(tables: &mut [TableSpec], inferred_fk
 /// Prune FKeys where the destination table lacks a primary key.
 /// Standard FKs always require a destination PK; PK-PK relationships already
 /// imply a destination PK because they are inferred only when both tables have one.
-pub(crate) fn prune_fkeys_without_primary_key(tables: &[TableSpec], inferred_fkeys: &mut Vec<InferredFKey>) {
+pub(crate) fn prune_fkeys_without_primary_key(
+    tables: &[TableSpec],
+    inferred_fkeys: &mut Vec<InferredFKey>,
+) {
     let pk_map: HashMap<&str, &str> = tables
         .iter()
-        .filter_map(|t| t.primary_key.as_ref().map(|pk| (t.name.as_str(), pk.as_str())))
+        .filter_map(|t| {
+            t.primary_key
+                .as_ref()
+                .map(|pk| (t.name.as_str(), pk.as_str()))
+        })
         .collect();
 
     inferred_fkeys.retain(|fk| {
@@ -2450,7 +2497,11 @@ pub(crate) fn infer_edge_tables(tables: &mut [TableSpec], inferred_fkeys: &[Infe
 
         // Use shared edge table compatibility check
         let fkey_col_names: HashSet<&str> = fks_by_col.keys().copied().collect();
-        if !is_edge_table_compatible(&table.columns, &fkey_col_names, table.create_time.as_deref()) {
+        if !is_edge_table_compatible(
+            &table.columns,
+            &fkey_col_names,
+            table.create_time.as_deref(),
+        ) {
             continue;
         }
 
@@ -2480,7 +2531,10 @@ pub(crate) fn infer_edge_tables(tables: &mut [TableSpec], inferred_fkeys: &[Infe
     }
 }
 
-pub(crate) fn prune_fkeys_for_edge_tables(tables: &[TableSpec], inferred_fkeys: &mut Vec<InferredFKey>) {
+pub(crate) fn prune_fkeys_for_edge_tables(
+    tables: &[TableSpec],
+    inferred_fkeys: &mut Vec<InferredFKey>,
+) {
     let edge_tables: HashSet<&str> = tables
         .iter()
         .filter(|t| t.edge_table.is_some())
@@ -2491,17 +2545,12 @@ pub(crate) fn prune_fkeys_for_edge_tables(tables: &[TableSpec], inferred_fkeys: 
         return;
     }
     inferred_fkeys.retain(|fk| {
-        !edge_tables.contains(fk.src_table.as_str())
-            && !edge_tables.contains(fk.dst_table.as_str())
+        !edge_tables.contains(fk.src_table.as_str()) && !edge_tables.contains(fk.dst_table.as_str())
     });
 }
 
 /// Check if a pk-pk relationship already exists between two tables (in either direction).
-fn pk_relationship_exists(
-    inferred_fkeys: &[InferredFKey],
-    table_a: &str,
-    table_b: &str,
-) -> bool {
+fn pk_relationship_exists(inferred_fkeys: &[InferredFKey], table_a: &str, table_b: &str) -> bool {
     inferred_fkeys.iter().any(|fk| {
         (fk.src_table == table_a && fk.dst_table == table_b)
             || (fk.src_table == table_b && fk.dst_table == table_a)
@@ -2553,15 +2602,9 @@ fn choose_best_fk_dest(
                     tie = true;
                 }
                 Some((_, _, best_score, best_len))
-                    if score < *best_score
-                        || (score == *best_score && name_len > *best_len) => {}
+                    if score < *best_score || (score == *best_score && name_len > *best_len) => {}
                 _ => {
-                    best = Some((
-                        dest_table.name.clone(),
-                        pk.clone(),
-                        score,
-                        name_len,
-                    ));
+                    best = Some((dest_table.name.clone(), pk.clone(), score, name_len));
                     tie = false;
                 }
             }
@@ -2687,22 +2730,15 @@ fn is_strong_pk_match(table_name: &str, col_lower: &str) -> bool {
         return true;
     }
     let tokens = normalized_tokens(table_name);
-    if tokens
-        .iter()
-        .filter(|t| t.len() >= 3)
-        .any(|t| {
-            col_lower == format!("{}_id", t)
-                || col_lower == format!("{}_code", t)
-                || col_lower == format!("{}_cd", t)
-        })
-    {
+    if tokens.iter().filter(|t| t.len() >= 3).any(|t| {
+        col_lower == format!("{}_id", t)
+            || col_lower == format!("{}_code", t)
+            || col_lower == format!("{}_cd", t)
+    }) {
         return true;
     }
     if let Some(base) = key_name_base(col_lower) {
-        if tokens
-            .iter()
-            .any(|t| overlap_ratio(base, t) >= 0.6)
-        {
+        if tokens.iter().any(|t| overlap_ratio(base, t) >= 0.6) {
             return true;
         }
     }
@@ -2743,12 +2779,13 @@ fn split_tokens(name: &str) -> Vec<String> {
         let is_upper = ch.is_ascii_uppercase();
         let is_lower = ch.is_ascii_lowercase();
         let is_digit = ch.is_ascii_digit();
-        if !current.is_empty() {
-            if (is_upper && prev_is_lower) || (is_digit && !prev_is_digit) || (!is_digit && prev_is_digit)
-            {
-                tokens.push(current);
-                current = String::new();
-            }
+        if !current.is_empty()
+            && ((is_upper && prev_is_lower)
+                || (is_digit && !prev_is_digit)
+                || (!is_digit && prev_is_digit))
+        {
+            tokens.push(current);
+            current = String::new();
         }
         current.push(ch);
         prev_is_lower = is_lower;
@@ -2788,9 +2825,7 @@ fn overlap_ratio(a: &str, b: &str) -> f32 {
     for i in 0..a_chars.len() {
         for j in 0..b_chars.len() {
             let mut k = 0usize;
-            while i + k < a_chars.len()
-                && j + k < b_chars.len()
-                && a_chars[i + k] == b_chars[j + k]
+            while i + k < a_chars.len() && j + k < b_chars.len() && a_chars[i + k] == b_chars[j + k]
             {
                 k += 1;
             }
@@ -2817,10 +2852,8 @@ fn table_name_column(table: &TableSpec) -> Option<String> {
     let singular = singularize(&table_lower);
     for col in &table.columns {
         let lower = col.name.to_lowercase();
-        if lower == table_lower || lower == singular {
-            if is_pk_dtype(&col.ingested_dtype) {
-                return Some(col.name.clone());
-            }
+        if (lower == table_lower || lower == singular) && is_pk_dtype(&col.ingested_dtype) {
+            return Some(col.name.clone());
         }
     }
     None
@@ -2875,9 +2908,7 @@ fn generic_pk_column_match(col_name: &str, dest_table: &str) -> bool {
     if col_tokens.is_empty() || dest_tokens.is_empty() {
         return false;
     }
-    if has_type_like_token(&col_tokens)
-        && !dest_tokens.iter().any(|t| is_type_like_token(t))
-    {
+    if has_type_like_token(&col_tokens) && !dest_tokens.iter().any(|t| is_type_like_token(t)) {
         return false;
     }
     dest_tokens
@@ -2920,7 +2951,9 @@ fn has_composite_code_version(candidate: &str, columns: &[ColumnSpec]) -> bool {
     let Some(prefix) = candidate.strip_suffix("_code") else {
         return false;
     };
-    columns.iter().any(|col| col.name.to_lowercase() == format!("{}_version", prefix))
+    columns
+        .iter()
+        .any(|col| col.name.to_lowercase() == format!("{}_version", prefix))
 }
 
 pub(crate) fn compatible_key_columns(a: &ColumnSpec, b: &ColumnSpec) -> bool {
@@ -2972,7 +3005,12 @@ pub(crate) fn infer_create_time(tables: &mut [TableSpec]) {
         let time_cols: Vec<&ColumnSpec> = table
             .columns
             .iter()
-            .filter(|col| matches!(col.ingested_dtype, IngestedType::Timestamp | IngestedType::Date))
+            .filter(|col| {
+                matches!(
+                    col.ingested_dtype,
+                    IngestedType::Timestamp | IngestedType::Date
+                )
+            })
             .collect();
         if time_cols.len() == 1 {
             table.create_time = Some(time_cols[0].name.clone());
@@ -3200,11 +3238,7 @@ fn int_looks_like_timestamp(min: Option<i64>, max: Option<i64>) -> Option<Timest
         return None;
     };
     let ranges = [
-        (
-            946_684_800i64,
-            4_102_444_800i64,
-            TimestampUnit::Seconds,
-        ),
+        (946_684_800i64, 4_102_444_800i64, TimestampUnit::Seconds),
         (
             946_684_800_000i64,
             4_102_444_800_000i64,
@@ -3229,6 +3263,7 @@ fn int_looks_like_timestamp(min: Option<i64>, max: Option<i64>) -> Option<Timest
     None
 }
 
+#[allow(clippy::manual_strip)]
 fn singularize(name: &str) -> String {
     if name.ends_with("ies") {
         return format!("{}y", &name[..name.len() - 3]);

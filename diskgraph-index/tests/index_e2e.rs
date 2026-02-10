@@ -1,17 +1,15 @@
-use std::fs;
-use std::io::Write;
-use std::path::Path;
-use std::sync::Arc;
-use diskgraph_core::metadata::{
-    EdgeRelationMetadata, NodeShardMetadata, NodeTypeMetadata,
-};
-use lz4_flex::frame::FrameEncoder;
+use diskgraph_core::metadata::{EdgeRelationMetadata, NodeShardMetadata, NodeTypeMetadata};
 use diskgraph_index::{
     builder::{ShardBuildParams, ShardBuilder},
     layout::RelationSegment,
     reader::ShardReader,
     streaming::EdgeShardInput,
 };
+use lz4_flex::frame::FrameEncoder;
+use std::fs;
+use std::io::Write;
+use std::path::Path;
+use std::sync::Arc;
 use tempfile::tempdir;
 
 #[derive(Clone)]
@@ -64,12 +62,11 @@ fn build_and_read_round_trip_basic() {
         edge_buffer_pool: None,
     });
     let built = builder
-        .build(
-            &[EdgeShardInput {
-                relation: "Follows".into(),
-                source_shard_index: 0,
-                paths: vec![edge_path],            }],
-        )
+        .build(&[EdgeShardInput {
+            relation: "Follows".into(),
+            source_shard_index: 0,
+            paths: vec![edge_path],
+        }])
         .unwrap();
 
     let reader = ShardReader::open(&output_dir, built.layouts.clone(), false).unwrap();
@@ -108,11 +105,7 @@ fn build_handles_all_zero_edges() {
         mem_budget: None,
         edge_buffer_pool: None,
     });
-    let built = builder
-        .build(
-            &[],
-        )
-        .unwrap();
+    let built = builder.build(&[]).unwrap();
 
     let reader = ShardReader::open(&output_dir, built.layouts.clone(), false).unwrap();
 
@@ -152,12 +145,11 @@ fn build_rejects_dangling_edges() {
         mem_budget: None,
         edge_buffer_pool: None,
     });
-    let msg = match builder.build(
-        &[EdgeShardInput {
-            relation: "Follows".into(),
-            source_shard_index: 0,
-            paths: vec![edge_path],        }],
-    ) {
+    let msg = match builder.build(&[EdgeShardInput {
+        relation: "Follows".into(),
+        source_shard_index: 0,
+        paths: vec![edge_path],
+    }]) {
         Ok(_) => panic!("expected DanglingEdges error"),
         Err(err) => err.to_string(),
     };
@@ -281,12 +273,11 @@ fn offsets_span_multiple_chunks_and_edges_decode_correctly() {
         edge_buffer_pool: None,
     });
     let built = builder
-        .build(
-            &[EdgeShardInput {
-                relation: "Follows".into(),
-                source_shard_index: 0,
-                paths: vec![edge_path],            }],
-        )
+        .build(&[EdgeShardInput {
+            relation: "Follows".into(),
+            source_shard_index: 0,
+            paths: vec![edge_path],
+        }])
         .unwrap();
     let reader = ShardReader::open(&output_dir, built.layouts.clone(), false).unwrap();
 
@@ -348,12 +339,11 @@ fn sort_key_round_trip_decodes_correctly() {
         edge_buffer_pool: None,
     });
     let built = builder
-        .build(
-            &[EdgeShardInput {
-                relation: "Temporal".into(),
-                source_shard_index: 0,
-                paths: vec![edge_path],            }],
-        )
+        .build(&[EdgeShardInput {
+            relation: "Temporal".into(),
+            source_shard_index: 0,
+            paths: vec![edge_path],
+        }])
         .unwrap();
     let reader = ShardReader::open(&output_dir, built.layouts.clone(), false).unwrap();
 
@@ -421,18 +411,18 @@ fn multi_relation_counts_and_edges_decode_correctly() {
         edge_buffer_pool: None,
     });
     let built = builder
-        .build(
-            &[
-                EdgeShardInput {
-                    relation: "Follows".into(),
-                    source_shard_index: 0,
-                    paths: vec![edge_path_a],                },
-                EdgeShardInput {
-                    relation: "Temporal".into(),
-                    source_shard_index: 0,
-                    paths: vec![edge_path_b],                },
-            ],
-        )
+        .build(&[
+            EdgeShardInput {
+                relation: "Follows".into(),
+                source_shard_index: 0,
+                paths: vec![edge_path_a],
+            },
+            EdgeShardInput {
+                relation: "Temporal".into(),
+                source_shard_index: 0,
+                paths: vec![edge_path_b],
+            },
+        ])
         .unwrap();
     let reader = ShardReader::open(&output_dir, built.layouts.clone(), false).unwrap();
 
@@ -505,18 +495,18 @@ fn multi_relation_mixed_dst_widths_and_partial_edges() {
         edge_buffer_pool: None,
     });
     let built = builder
-        .build(
-            &[
-                EdgeShardInput {
-                    relation: "Follows".into(),
-                    source_shard_index: 0,
-                    paths: vec![edge_path_a],                },
-                EdgeShardInput {
-                    relation: "Temporal".into(),
-                    source_shard_index: 0,
-                    paths: vec![edge_path_b],                },
-            ],
-        )
+        .build(&[
+            EdgeShardInput {
+                relation: "Follows".into(),
+                source_shard_index: 0,
+                paths: vec![edge_path_a],
+            },
+            EdgeShardInput {
+                relation: "Temporal".into(),
+                source_shard_index: 0,
+                paths: vec![edge_path_b],
+            },
+        ])
         .unwrap();
     let reader = ShardReader::open(&output_dir, built.layouts.clone(), false).unwrap();
 
@@ -578,12 +568,11 @@ fn truncates_large_node_without_sort_key() {
         edge_buffer_pool: None,
     });
     let built = builder
-        .build(
-            &[EdgeShardInput {
-                relation: "Follows".into(),
-                source_shard_index: 0,
-                paths: vec![edge_path],            }],
-        )
+        .build(&[EdgeShardInput {
+            relation: "Follows".into(),
+            source_shard_index: 0,
+            paths: vec![edge_path],
+        }])
         .unwrap();
     let reader = ShardReader::open(&output_dir, built.layouts.clone(), false).unwrap();
     let segments0 = reader
@@ -667,12 +656,11 @@ fn truncates_large_node_with_sort_key() {
         edge_buffer_pool: None,
     });
     let built = builder
-        .build(
-            &[EdgeShardInput {
-                relation: "Temporal".into(),
-                source_shard_index: 0,
-                paths: vec![edge_path],            }],
-        )
+        .build(&[EdgeShardInput {
+            relation: "Temporal".into(),
+            source_shard_index: 0,
+            paths: vec![edge_path],
+        }])
         .unwrap();
     let reader = ShardReader::open(&output_dir, built.layouts.clone(), false).unwrap();
     let segments0 = reader
@@ -753,12 +741,11 @@ fn selects_wider_offsets_for_large_edge_lists() {
         edge_buffer_pool: None,
     });
     let built = builder
-        .build(
-            &[EdgeShardInput {
-                relation: "Follows".into(),
-                source_shard_index: 0,
-                paths: vec![edge_path],            }],
-        )
+        .build(&[EdgeShardInput {
+            relation: "Follows".into(),
+            source_shard_index: 0,
+            paths: vec![edge_path],
+        }])
         .unwrap();
 
     let reader = ShardReader::open(&output_dir, built.layouts.clone(), false).unwrap();
@@ -768,9 +755,8 @@ fn selects_wider_offsets_for_large_edge_lists() {
         .relation_segments()
         .unwrap();
     let entry_bytes = segments[0].layout.entry_bytes as u64;
-    let required = 128u64
-        + varint_len_u64(big as u64) as u64
-        + (big as u64).saturating_mul(entry_bytes);
+    let required =
+        128u64 + varint_len_u64(big as u64) as u64 + (big as u64).saturating_mul(entry_bytes);
     let expected = if required <= u16::MAX as u64 {
         2
     } else if required <= 0xFF_FF_FF {
@@ -837,12 +823,11 @@ fn selects_32bit_offsets_with_large_node_data_budget() {
         edge_buffer_pool: None,
     });
     let built = builder
-        .build(
-            &[EdgeShardInput {
-                relation: "Follows".into(),
-                source_shard_index: 0,
-                paths: vec![edge_path],            }],
-        )
+        .build(&[EdgeShardInput {
+            relation: "Follows".into(),
+            source_shard_index: 0,
+            paths: vec![edge_path],
+        }])
         .unwrap();
 
     let reader = ShardReader::open(&output_dir, built.layouts.clone(), true).unwrap();
@@ -851,8 +836,11 @@ fn selects_32bit_offsets_with_large_node_data_budget() {
         let view = reader.edges_for_node(node_id).unwrap();
         let segs = view.relation_segments().unwrap();
         assert_eq!(segs[0].count, 1);
-        let expected_dst = 10 + node_id as u64;
-        assert_eq!(decode_relation(&reader, node_id, 0), vec![(expected_dst, None)]);
+        let expected_dst = 10 + node_id;
+        assert_eq!(
+            decode_relation(&reader, node_id, 0),
+            vec![(expected_dst, None)]
+        );
         assert_eq!(
             view.node_data().unwrap().unwrap(),
             node_data[node_id as usize].as_slice()
@@ -899,9 +887,8 @@ fn reader_rejects_offsets_out_of_bounds() {
     let offsets_path = output_dir.join("offsets.bin");
     let mut bytes = fs::read(&offsets_path).unwrap();
     // Header is bincode-serialized OffsetFileHeader, then chunk: count(u16), base(u64)
-    let header_len =
-        bincode::serialized_size(&diskgraph_index::layout::OffsetFileHeader::new(0, 0)).unwrap()
-            as usize;
+    let header_len = bincode::serialized_size(&diskgraph_index::layout::OffsetFileHeader::new(0, 0))
+        .unwrap() as usize;
     // write base = large number
     let base_pos = header_len + 2;
     bytes[base_pos..base_pos + 8].copy_from_slice(&1_000_000u64.to_le_bytes());
@@ -938,9 +925,8 @@ fn reader_rejects_offset_chunk_mismatch() {
     let offsets_path = output_dir.join("offsets.bin");
     let mut bytes = fs::read(&offsets_path).unwrap();
     // Tamper with the first chunk count to a larger number.
-    let header_len =
-        bincode::serialized_size(&diskgraph_index::layout::OffsetFileHeader::new(0, 0)).unwrap()
-            as usize;
+    let header_len = bincode::serialized_size(&diskgraph_index::layout::OffsetFileHeader::new(0, 0))
+        .unwrap() as usize;
     bytes[header_len] = 10;
     bytes[header_len + 1] = 0;
     fs::write(&offsets_path, bytes).unwrap();
@@ -1028,12 +1014,11 @@ fn offsets_many_chunks_sparse_edges() {
         edge_buffer_pool: None,
     });
     let built = builder
-        .build(
-            &[EdgeShardInput {
-                relation: "Follows".into(),
-                source_shard_index: 0,
-                paths: vec![edge_path],            }],
-        )
+        .build(&[EdgeShardInput {
+            relation: "Follows".into(),
+            source_shard_index: 0,
+            paths: vec![edge_path],
+        }])
         .unwrap();
     let reader = ShardReader::open(&output_dir, built.layouts.clone(), false).unwrap();
     assert_eq!(decode_relation(&reader, 0, 0), vec![(123, None)]);
@@ -1113,18 +1098,18 @@ fn truncates_large_node_multi_relation() {
         edge_buffer_pool: None,
     });
     let built = builder
-        .build(
-            &[
-                EdgeShardInput {
-                    relation: "Follows".into(),
-                    source_shard_index: 0,
-                    paths: vec![edge_path_a],                },
-                EdgeShardInput {
-                    relation: "Temporal".into(),
-                    source_shard_index: 0,
-                    paths: vec![edge_path_b],                },
-            ],
-        )
+        .build(&[
+            EdgeShardInput {
+                relation: "Follows".into(),
+                source_shard_index: 0,
+                paths: vec![edge_path_a],
+            },
+            EdgeShardInput {
+                relation: "Temporal".into(),
+                source_shard_index: 0,
+                paths: vec![edge_path_b],
+            },
+        ])
         .unwrap();
     let reader = ShardReader::open(&output_dir, built.layouts.clone(), false).unwrap();
     let segments = reader
@@ -1161,8 +1146,6 @@ fn truncates_large_node_multi_relation() {
     assert_eq!(decode_relation(&reader, 1, 1), vec![(1999, Some(5))]);
 }
 
-
-
 #[test]
 fn builder_errors_when_missing_dest_sort_key() {
     let dir = tempdir().unwrap();
@@ -1193,12 +1176,11 @@ fn builder_errors_when_missing_dest_sort_key() {
         mem_budget: None,
         edge_buffer_pool: None,
     });
-    let msg = match builder.build(
-        &[EdgeShardInput {
-            relation: "Temporal".into(),
-            source_shard_index: 0,
-            paths: vec![edge_path],        }],
-    ) {
+    let msg = match builder.build(&[EdgeShardInput {
+        relation: "Temporal".into(),
+        source_shard_index: 0,
+        paths: vec![edge_path],
+    }]) {
         Ok(_) => panic!("expected missing dest_sort_key error"),
         Err(err) => err.to_string(),
     };
@@ -1235,12 +1217,11 @@ fn builder_accepts_binary_edges_with_64bit_sort_key() {
         edge_buffer_pool: None,
     });
     let built = builder
-        .build(
-            &[EdgeShardInput {
-                relation: "Temporal".into(),
-                source_shard_index: 0,
-                paths: vec![edge_path],            }],
-        )
+        .build(&[EdgeShardInput {
+            relation: "Temporal".into(),
+            source_shard_index: 0,
+            paths: vec![edge_path],
+        }])
         .unwrap();
 
     let reader = ShardReader::open(&output_dir, built.layouts.clone(), false).unwrap();
@@ -1278,12 +1259,11 @@ fn builder_errors_when_dst_id_exceeds_mask() {
         mem_budget: None,
         edge_buffer_pool: None,
     });
-    let msg = match builder.build(
-        &[EdgeShardInput {
-            relation: "Follows".into(),
-            source_shard_index: 0,
-            paths: vec![edge_path],        }],
-    ) {
+    let msg = match builder.build(&[EdgeShardInput {
+        relation: "Follows".into(),
+        source_shard_index: 0,
+        paths: vec![edge_path],
+    }]) {
         Ok(_) => panic!("expected dst_id out of range error"),
         Err(err) => err.to_string(),
     };
@@ -1323,12 +1303,11 @@ fn builder_errors_when_dest_sort_key_exceeds_mask() {
         mem_budget: None,
         edge_buffer_pool: None,
     });
-    let msg = match builder.build(
-        &[EdgeShardInput {
-            relation: "Temporal".into(),
-            source_shard_index: 0,
-            paths: vec![edge_path],        }],
-    ) {
+    let msg = match builder.build(&[EdgeShardInput {
+        relation: "Temporal".into(),
+        source_shard_index: 0,
+        paths: vec![edge_path],
+    }]) {
         Ok(_) => panic!("expected dest_sort_key out of range error"),
         Err(err) => err.to_string(),
     };
@@ -1367,12 +1346,11 @@ fn builder_errors_on_unknown_relation_name() {
         mem_budget: None,
         edge_buffer_pool: None,
     });
-    let msg = match builder.build(
-        &[EdgeShardInput {
-            relation: "Unknown".into(),
-            source_shard_index: 0,
-            paths: vec![edge_path],        }],
-    ) {
+    let msg = match builder.build(&[EdgeShardInput {
+        relation: "Unknown".into(),
+        source_shard_index: 0,
+        paths: vec![edge_path],
+    }]) {
         Ok(_) => panic!("expected UnknownRelation error"),
         Err(err) => err.to_string(),
     };
@@ -1403,12 +1381,11 @@ fn builder_errors_on_corrupted_binary() {
         mem_budget: None,
         edge_buffer_pool: None,
     });
-    let msg = match builder.build(
-        &[EdgeShardInput {
-            relation: "Follows".into(),
-            source_shard_index: 0,
-            paths: vec![edge_path],        }],
-    ) {
+    let msg = match builder.build(&[EdgeShardInput {
+        relation: "Follows".into(),
+        source_shard_index: 0,
+        paths: vec![edge_path],
+    }]) {
         Ok(_) => panic!("expected binary error"),
         Err(err) => err.to_string(),
     };
@@ -1447,12 +1424,11 @@ fn builder_errors_on_shard_index_mismatch() {
         mem_budget: None,
         edge_buffer_pool: None,
     });
-    let msg = match builder.build(
-        &[EdgeShardInput {
-            relation: "Follows".into(),
-            source_shard_index: 1,
-            paths: vec![edge_path],        }],
-    ) {
+    let msg = match builder.build(&[EdgeShardInput {
+        relation: "Follows".into(),
+        source_shard_index: 1,
+        paths: vec![edge_path],
+    }]) {
         Ok(_) => panic!("expected shard index mismatch"),
         Err(err) => err.to_string(),
     };
@@ -1479,12 +1455,11 @@ fn builder_fails_on_missing_edge_file() {
         mem_budget: None,
         edge_buffer_pool: None,
     });
-    let msg = match builder.build(
-        &[EdgeShardInput {
-            relation: "Follows".into(),
-            source_shard_index: 0,
-            paths: vec![dir.path().join("missing.bin")],        }],
-    ) {
+    let msg = match builder.build(&[EdgeShardInput {
+        relation: "Follows".into(),
+        source_shard_index: 0,
+        paths: vec![dir.path().join("missing.bin")],
+    }]) {
         Ok(_) => panic!("expected IO error for missing edge file"),
         Err(err) => err.to_string(),
     };
@@ -1526,7 +1501,6 @@ pub fn relation_meta(
     }
 }
 
-
 pub fn write_edges(path: &Path, edges: &[EdgeRow], with_sort_key: bool) -> anyhow::Result<()> {
     let sort_width = if with_sort_key { 8 } else { 0 };
     write_binary_edges(path, edges, 8, 8, sort_width)
@@ -1556,7 +1530,11 @@ pub fn write_binary_edges(
     Ok(())
 }
 
-fn write_u64_width(writer: &mut std::io::BufWriter<std::fs::File>, value: u64, width: u8) -> anyhow::Result<()> {
+fn write_u64_width(
+    writer: &mut std::io::BufWriter<std::fs::File>,
+    value: u64,
+    width: u8,
+) -> anyhow::Result<()> {
     let bytes = value.to_le_bytes();
     writer.write_all(&bytes[..width as usize])?;
     Ok(())
@@ -1573,7 +1551,9 @@ pub fn write_node_data(path: &Path, rows: &[Vec<u8>]) -> anyhow::Result<()> {
         writer.write_all(&len.to_le_bytes())?;
         writer.write_all(row)?;
     }
-    writer.finish().map_err(|e| anyhow::anyhow!("node data finish failed: {e}"))?;
+    writer
+        .finish()
+        .map_err(|e| anyhow::anyhow!("node data finish failed: {e}"))?;
     Ok(())
 }
 
@@ -1645,12 +1625,11 @@ fn build_simple_shard(
         edge_buffer_pool: None,
     });
     let built = builder
-        .build(
-            &[EdgeShardInput {
-                relation: "Follows".into(),
-                source_shard_index: 0,
-                paths: vec![edge_path],            }],
-        )
+        .build(&[EdgeShardInput {
+            relation: "Follows".into(),
+            source_shard_index: 0,
+            paths: vec![edge_path],
+        }])
         .unwrap();
     (dir, output_dir, built.layouts.clone())
 }
@@ -1703,18 +1682,32 @@ fn builder_writes_node_data() {
         edge_buffer_pool: None,
     });
     let built = builder
-        .build(
-            &[EdgeShardInput {
-                relation: "Follows".into(),
-                source_shard_index: 0,
-                paths: vec![edge_path],            }],
-        )
+        .build(&[EdgeShardInput {
+            relation: "Follows".into(),
+            source_shard_index: 0,
+            paths: vec![edge_path],
+        }])
         .unwrap();
 
     let reader = ShardReader::open(&output_dir, built.layouts.clone(), true).unwrap();
-    let data0 = reader.edges_for_node(0).unwrap().node_data().unwrap().unwrap();
-    let data1 = reader.edges_for_node(1).unwrap().node_data().unwrap().unwrap();
-    let data2 = reader.edges_for_node(2).unwrap().node_data().unwrap().unwrap();
+    let data0 = reader
+        .edges_for_node(0)
+        .unwrap()
+        .node_data()
+        .unwrap()
+        .unwrap();
+    let data1 = reader
+        .edges_for_node(1)
+        .unwrap()
+        .node_data()
+        .unwrap()
+        .unwrap();
+    let data2 = reader
+        .edges_for_node(2)
+        .unwrap()
+        .node_data()
+        .unwrap()
+        .unwrap();
     assert_eq!(data0, &[1, 2]);
     assert_eq!(data1, &[3]);
     assert!(data2.is_empty());
@@ -1755,12 +1748,11 @@ fn builder_errors_on_node_data_row_count_mismatch() {
         mem_budget: None,
         edge_buffer_pool: None,
     });
-    let msg = match builder.build(
-        &[EdgeShardInput {
-            relation: "Follows".into(),
-            source_shard_index: 0,
-            paths: vec![edge_path],        }],
-    ) {
+    let msg = match builder.build(&[EdgeShardInput {
+        relation: "Follows".into(),
+        source_shard_index: 0,
+        paths: vec![edge_path],
+    }]) {
         Ok(_) => panic!("expected node data row count error"),
         Err(err) => err.to_string(),
     };
@@ -1769,8 +1761,6 @@ fn builder_errors_on_node_data_row_count_mismatch() {
         "expected node data row count error, got {msg}"
     );
 }
-
-
 
 fn varint_len_u64(v: u64) -> usize {
     if v <= 63 {

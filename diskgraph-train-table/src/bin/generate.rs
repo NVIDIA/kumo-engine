@@ -21,13 +21,10 @@ fn parse_args() -> Args {
     let mut config_path: Option<PathBuf> = None;
 
     while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "--config" => {
-                if let Some(value) = args.next() {
-                    config_path = Some(PathBuf::from(value));
-                }
+        if arg.as_str() == "--config" {
+            if let Some(value) = args.next() {
+                config_path = Some(PathBuf::from(value));
             }
-            _ => {}
         }
     }
 

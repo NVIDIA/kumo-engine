@@ -1,12 +1,14 @@
+use crate::parser::*;
+use crate::RowAccessStats;
+use crate::MAX_INPUT_STRING_BYTES;
+use crate::{
+    apply_decimal_scale_i128, apply_decimal_scale_i256, decimal_i128_to_f64, decimal_i256_to_f64,
+    format_decimal_i128, format_decimal_i256,
+};
 use anyhow::{anyhow, Result};
 use arrow_array::{Array, ArrayRef};
 use arrow_schema::DataType;
 use num_traits::ToPrimitive;
-use crate::MAX_INPUT_STRING_BYTES;
-use crate::parser::*;
-use crate::RowAccessStats;
-use crate::{apply_decimal_scale_i128, apply_decimal_scale_i256, decimal_i128_to_f64, decimal_i256_to_f64, format_decimal_i128, format_decimal_i256};
-
 
 /// How to format binary data when converting to string via `with_string()`.
 #[derive(Debug, Clone, Copy, Default)]
@@ -52,10 +54,7 @@ pub struct FloatListView {
 }
 
 impl<'p> RowAccess<'p> {
-    pub fn new(
-        hints: Vec<RowAccessHints>,
-        stats: RowAccessStats<'p>,
-    ) -> Self {
+    pub fn new(hints: Vec<RowAccessHints>, stats: RowAccessStats<'p>) -> Self {
         let fast_parsers = hints
             .iter()
             .map(|hint| {
@@ -1183,7 +1182,12 @@ impl<'p> RowAccess<'p> {
                         .ok_or_else(|| anyhow!("fixed binary cast"))?
                         .value(self.row),
                 };
-                match self.hints.get(idx).map(|h| h.binary_string_hint).unwrap_or_default() {
+                match self
+                    .hints
+                    .get(idx)
+                    .map(|h| h.binary_string_hint)
+                    .unwrap_or_default()
+                {
                     BinaryStringHint::Uuid if bytes.len() == 16 => {
                         let s = format!(
                             "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
@@ -1856,63 +1860,83 @@ impl<'p> RowAccess<'p> {
             }
             // Integer types → Decimal128: multiply by 10^scale
             DataType::Int8 => {
-                let arr = array.as_any().downcast_ref::<arrow_array::Int8Array>()
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Int8Array>()
                     .ok_or_else(|| anyhow!("int8 cast"))?;
                 let multiplier = 10_i128.pow(scale as u32);
                 Ok(Some(i128::from(arr.value(self.row)) * multiplier))
             }
             DataType::Int16 => {
-                let arr = array.as_any().downcast_ref::<arrow_array::Int16Array>()
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Int16Array>()
                     .ok_or_else(|| anyhow!("int16 cast"))?;
                 let multiplier = 10_i128.pow(scale as u32);
                 Ok(Some(i128::from(arr.value(self.row)) * multiplier))
             }
             DataType::Int32 => {
-                let arr = array.as_any().downcast_ref::<arrow_array::Int32Array>()
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Int32Array>()
                     .ok_or_else(|| anyhow!("int32 cast"))?;
                 let multiplier = 10_i128.pow(scale as u32);
                 Ok(Some(i128::from(arr.value(self.row)) * multiplier))
             }
             DataType::Int64 => {
-                let arr = array.as_any().downcast_ref::<arrow_array::Int64Array>()
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Int64Array>()
                     .ok_or_else(|| anyhow!("int64 cast"))?;
                 let multiplier = 10_i128.pow(scale as u32);
                 Ok(Some(i128::from(arr.value(self.row)) * multiplier))
             }
             DataType::UInt8 => {
-                let arr = array.as_any().downcast_ref::<arrow_array::UInt8Array>()
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::UInt8Array>()
                     .ok_or_else(|| anyhow!("uint8 cast"))?;
                 let multiplier = 10_i128.pow(scale as u32);
                 Ok(Some(i128::from(arr.value(self.row)) * multiplier))
             }
             DataType::UInt16 => {
-                let arr = array.as_any().downcast_ref::<arrow_array::UInt16Array>()
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::UInt16Array>()
                     .ok_or_else(|| anyhow!("uint16 cast"))?;
                 let multiplier = 10_i128.pow(scale as u32);
                 Ok(Some(i128::from(arr.value(self.row)) * multiplier))
             }
             DataType::UInt32 => {
-                let arr = array.as_any().downcast_ref::<arrow_array::UInt32Array>()
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::UInt32Array>()
                     .ok_or_else(|| anyhow!("uint32 cast"))?;
                 let multiplier = 10_i128.pow(scale as u32);
                 Ok(Some(i128::from(arr.value(self.row)) * multiplier))
             }
             DataType::UInt64 => {
-                let arr = array.as_any().downcast_ref::<arrow_array::UInt64Array>()
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::UInt64Array>()
                     .ok_or_else(|| anyhow!("uint64 cast"))?;
                 let multiplier = 10_i128.pow(scale as u32);
                 Ok(Some(i128::from(arr.value(self.row)) * multiplier))
             }
             // Float types → Decimal128: multiply by 10^scale and round
             DataType::Float32 => {
-                let arr = array.as_any().downcast_ref::<arrow_array::Float32Array>()
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Float32Array>()
                     .ok_or_else(|| anyhow!("float32 cast"))?;
                 let multiplier = 10_f64.powi(scale);
                 let scaled = (f64::from(arr.value(self.row)) * multiplier).round();
                 Ok(Some(scaled as i128))
             }
             DataType::Float64 => {
-                let arr = array.as_any().downcast_ref::<arrow_array::Float64Array>()
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Float64Array>()
                     .ok_or_else(|| anyhow!("float64 cast"))?;
                 let multiplier = 10_f64.powi(scale);
                 let scaled = (arr.value(self.row) * multiplier).round();
@@ -2025,56 +2049,72 @@ impl<'p> RowAccess<'p> {
             }
             // Integer types → Decimal256: multiply by 10^scale
             DataType::Int8 => {
-                let arr = array.as_any().downcast_ref::<arrow_array::Int8Array>()
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Int8Array>()
                     .ok_or_else(|| anyhow!("int8 cast"))?;
                 let multiplier = 10_i64.pow(scale as u32);
                 let value = i64::from(arr.value(self.row)) * multiplier;
                 Ok(Some(arrow_buffer::i256::from(value).to_le_bytes()))
             }
             DataType::Int16 => {
-                let arr = array.as_any().downcast_ref::<arrow_array::Int16Array>()
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Int16Array>()
                     .ok_or_else(|| anyhow!("int16 cast"))?;
                 let multiplier = 10_i64.pow(scale as u32);
                 let value = i64::from(arr.value(self.row)) * multiplier;
                 Ok(Some(arrow_buffer::i256::from(value).to_le_bytes()))
             }
             DataType::Int32 => {
-                let arr = array.as_any().downcast_ref::<arrow_array::Int32Array>()
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Int32Array>()
                     .ok_or_else(|| anyhow!("int32 cast"))?;
                 let multiplier = 10_i64.pow(scale as u32);
                 let value = i64::from(arr.value(self.row)) * multiplier;
                 Ok(Some(arrow_buffer::i256::from(value).to_le_bytes()))
             }
             DataType::Int64 => {
-                let arr = array.as_any().downcast_ref::<arrow_array::Int64Array>()
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Int64Array>()
                     .ok_or_else(|| anyhow!("int64 cast"))?;
                 let multiplier = 10_i64.pow(scale as u32);
                 let value = arr.value(self.row).saturating_mul(multiplier);
                 Ok(Some(arrow_buffer::i256::from(value).to_le_bytes()))
             }
             DataType::UInt8 => {
-                let arr = array.as_any().downcast_ref::<arrow_array::UInt8Array>()
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::UInt8Array>()
                     .ok_or_else(|| anyhow!("uint8 cast"))?;
                 let multiplier = 10_i64.pow(scale as u32);
                 let value = i64::from(arr.value(self.row)) * multiplier;
                 Ok(Some(arrow_buffer::i256::from(value).to_le_bytes()))
             }
             DataType::UInt16 => {
-                let arr = array.as_any().downcast_ref::<arrow_array::UInt16Array>()
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::UInt16Array>()
                     .ok_or_else(|| anyhow!("uint16 cast"))?;
                 let multiplier = 10_i64.pow(scale as u32);
                 let value = i64::from(arr.value(self.row)) * multiplier;
                 Ok(Some(arrow_buffer::i256::from(value).to_le_bytes()))
             }
             DataType::UInt32 => {
-                let arr = array.as_any().downcast_ref::<arrow_array::UInt32Array>()
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::UInt32Array>()
                     .ok_or_else(|| anyhow!("uint32 cast"))?;
                 let multiplier = 10_i64.pow(scale as u32);
                 let value = i64::from(arr.value(self.row)) * multiplier;
                 Ok(Some(arrow_buffer::i256::from(value).to_le_bytes()))
             }
             DataType::UInt64 => {
-                let arr = array.as_any().downcast_ref::<arrow_array::UInt64Array>()
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::UInt64Array>()
                     .ok_or_else(|| anyhow!("uint64 cast"))?;
                 // Note: large UInt64 values may overflow i64, use saturating conversion
                 let multiplier = 10_u64.pow(scale as u32);
@@ -2083,14 +2123,18 @@ impl<'p> RowAccess<'p> {
             }
             // Float types → Decimal256: multiply by 10^scale and round
             DataType::Float32 => {
-                let arr = array.as_any().downcast_ref::<arrow_array::Float32Array>()
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Float32Array>()
                     .ok_or_else(|| anyhow!("float32 cast"))?;
                 let multiplier = 10_f64.powi(scale);
                 let scaled = (f64::from(arr.value(self.row)) * multiplier).round() as i64;
                 Ok(Some(arrow_buffer::i256::from(scaled).to_le_bytes()))
             }
             DataType::Float64 => {
-                let arr = array.as_any().downcast_ref::<arrow_array::Float64Array>()
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Float64Array>()
                     .ok_or_else(|| anyhow!("float64 cast"))?;
                 let multiplier = 10_f64.powi(scale);
                 let scaled = (arr.value(self.row) * multiplier).round() as i64;

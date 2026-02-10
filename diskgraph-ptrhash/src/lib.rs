@@ -37,8 +37,8 @@ pub use scratch::PtrHashScratch;
 pub mod bucket_fn;
 mod bucket_idx;
 mod build;
-mod reduce;
 mod radix;
+mod reduce;
 mod scratch;
 mod sort_buckets;
 #[cfg(test)]
@@ -88,6 +88,7 @@ impl PtrHashParams<CubicEps> {
     /// - `alpha=0.99`
     /// - `lambda=3.5`
     /// - `bucket_fn=CubicEps`
+    #[allow(clippy::should_implement_trait)]
     pub fn default() -> Self {
         Self {
             remap: true,
@@ -97,7 +98,6 @@ impl PtrHashParams<CubicEps> {
             single_part: false,
         }
     }
-
 }
 
 impl Default for PtrHashParams<CubicEps> {
@@ -126,13 +126,17 @@ pub trait KeySource<Key: KeyT> {
         Self: 'a,
         Key: 'a;
     fn len(&self) -> usize;
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
     fn iter(&self) -> Self::Iter<'_>;
 }
 
 impl<Key: KeyT + Eq, V, S: std::hash::BuildHasher> KeySource<Key>
     for std::collections::HashMap<Key, V, S>
 {
-    type Iter<'a> = std::collections::hash_map::Keys<'a, Key, V>
+    type Iter<'a>
+        = std::collections::hash_map::Keys<'a, Key, V>
     where
         Self: 'a,
         Key: 'a;
@@ -365,7 +369,7 @@ impl<Key: KeyT, BF: BucketFn, F: MutPacked, Hx: Hasher<Key>> PtrHash<Key, BF, F,
         let mut rng = fastrand::Rng::with_seed(31415);
 
         // Loop over global seeds `s`.
-        let success = 's: loop {
+        's: loop {
             tries += 1;
             if tries > MAX_TRIES {
                 warn!("PtrHash failed to find a global seed after {MAX_TRIES} tries.");
@@ -438,13 +442,12 @@ impl<Key: KeyT, BF: BucketFn, F: MutPacked, Hx: Hasher<Key>> PtrHash<Key, BF, F,
                 continue 's;
             }
 
-            break 's ();
-        };
+            break 's;
+        }
 
         // Pack the data.
         self.pilots.clone_from(&scratch.pilots);
 
-        let _ = success;
         Some(())
     }
 
@@ -478,7 +481,7 @@ impl<Key: KeyT, BF: BucketFn, F: MutPacked, Hx: Hasher<Key>> PtrHash<Key, BF, F,
             })
             .take_while(|&i| i < self.n)
         {
-            while !get(&taken, self.n + free_slots.len()) {
+            while !get(taken, self.n + free_slots.len()) {
                 free_slots.push(i as u64);
             }
             free_slots.push(i as u64);

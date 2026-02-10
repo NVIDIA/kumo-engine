@@ -1,9 +1,9 @@
-use uuid_simd::{parse_hyphenated, parse_simple, AsOut};
+use crate::MAX_INPUT_STRING_BYTES;
 use anyhow::{anyhow, Result};
 use arrow_array::{Array, ArrayRef};
 use arrow_schema::DataType;
 use chrono::{NaiveDate, NaiveDateTime};
-use crate::MAX_INPUT_STRING_BYTES;
+use uuid_simd::{parse_hyphenated, parse_simple, AsOut};
 
 pub(crate) fn parse_bool(value: &str) -> Option<bool> {
     let mut text = value.trim();
@@ -276,41 +276,29 @@ impl TimestampFormatParser {
 
     pub(crate) fn parse_timestamp(&self, value: &str) -> Option<(i64, u32)> {
         match self.kind {
-            TimestampFormatKind::Ymd => {
-                return parse_ymd_fast(value.as_bytes());
-            }
-            TimestampFormatKind::YmdHmSpace => {
-                return parse_ymd_hm_space_fast(value.as_bytes());
-            }
-            TimestampFormatKind::YmdHmsSpace => {
-                return parse_ymd_hms_space_fast(value.as_bytes());
-            }
-            TimestampFormatKind::YmdHmsSpaceFrac => {
-                return parse_ymd_hms_space_frac_fast(value.as_bytes());
-            }
-            TimestampFormatKind::YmdHmsT => {
-                return parse_ymd_hms_space_fast(value.as_bytes());
-            }
-            TimestampFormatKind::YmdHmsTFrac => {
-                return parse_ymd_hms_space_frac_fast(value.as_bytes());
-            }
+            TimestampFormatKind::Ymd => parse_ymd_fast(value.as_bytes()),
+            TimestampFormatKind::YmdHmSpace => parse_ymd_hm_space_fast(value.as_bytes()),
+            TimestampFormatKind::YmdHmsSpace => parse_ymd_hms_space_fast(value.as_bytes()),
+            TimestampFormatKind::YmdHmsSpaceFrac => parse_ymd_hms_space_frac_fast(value.as_bytes()),
+            TimestampFormatKind::YmdHmsT => parse_ymd_hms_space_fast(value.as_bytes()),
+            TimestampFormatKind::YmdHmsTFrac => parse_ymd_hms_space_frac_fast(value.as_bytes()),
             TimestampFormatKind::YmdHmsSpaceOffset => {
-                return parse_ymd_hms_offset_nocolon_fast(value.as_bytes());
+                parse_ymd_hms_offset_nocolon_fast(value.as_bytes())
             }
             TimestampFormatKind::YmdHmsSpaceOffsetColon => {
-                return parse_ymd_hms_offset_colon_fast(value.as_bytes());
+                parse_ymd_hms_offset_colon_fast(value.as_bytes())
             }
             TimestampFormatKind::YmdHmsSpaceOffsetSpaced => {
-                return parse_ymd_hms_offset_nocolon_spaced_fast(value.as_bytes());
+                parse_ymd_hms_offset_nocolon_spaced_fast(value.as_bytes())
             }
             TimestampFormatKind::YmdHmsSpaceOffsetColonSpaced => {
-                return parse_ymd_hms_offset_colon_spaced_fast(value.as_bytes());
+                parse_ymd_hms_offset_colon_spaced_fast(value.as_bytes())
             }
             TimestampFormatKind::YmdHmsTOffset => {
-                return parse_ymd_hms_offset_nocolon_fast(value.as_bytes());
+                parse_ymd_hms_offset_nocolon_fast(value.as_bytes())
             }
             TimestampFormatKind::YmdHmsTOffsetColon => {
-                return parse_ymd_hms_offset_colon_fast(value.as_bytes());
+                parse_ymd_hms_offset_colon_fast(value.as_bytes())
             }
         }
     }
@@ -756,5 +744,3 @@ pub(crate) fn timestamp_parts_from_array(array: &ArrayRef, row: usize) -> Result
         }
     }
 }
-
-

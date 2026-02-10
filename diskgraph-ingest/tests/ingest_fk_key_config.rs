@@ -13,8 +13,8 @@ use arrow_array::{
     ArrayRef, Decimal128Array, Float64Array, Int32Array, Int64Array, RecordBatch, StringArray,
 };
 use arrow_schema::{DataType, Field, Schema};
-use diskgraph_ingest::{ingest, Dest, IngestOptions};
 use diskgraph_index::graph::GraphIndexReader;
+use diskgraph_ingest::{ingest, Dest, IngestOptions};
 use diskgraph_rowpack::IngestedType;
 use parquet::arrow::ArrowWriter;
 use parquet::file::properties::WriterProperties;
@@ -42,10 +42,7 @@ fn write_parquet(path: &Path, schema: Schema, columns: Vec<ArrayRef>) -> Result<
     Ok(())
 }
 
-fn sum_relation_edges(
-    table: &diskgraph_index::graph::TableReader,
-    rel_name: &str,
-) -> Result<u64> {
+fn sum_relation_edges(table: &diskgraph_index::graph::TableReader, rel_name: &str) -> Result<u64> {
     let rel_idx = table
         .relations()
         .iter()
@@ -115,13 +112,9 @@ fn test_int64_fk_to_decimal128_pk() -> Result<()> {
 
     // PK table: users with Decimal128 id (scale=2)
     // Values: 42.00, 43.00, 44.00 stored as 4200, 4300, 4400
-    let users_schema = Schema::new(vec![Field::new(
-        "id",
-        DataType::Decimal128(38, 2),
-        false,
-    )]);
-    let users_ids = Decimal128Array::from(vec![4200i128, 4300, 4400])
-        .with_precision_and_scale(38, 2)?;
+    let users_schema = Schema::new(vec![Field::new("id", DataType::Decimal128(38, 2), false)]);
+    let users_ids =
+        Decimal128Array::from(vec![4200i128, 4300, 4400]).with_precision_and_scale(38, 2)?;
     write_parquet(
         &raw_dir.join("users/part.parquet"),
         users_schema,
@@ -479,14 +472,10 @@ fn test_float64_fk_to_decimal128_pk() -> Result<()> {
     let config_path = root.join("config.json");
 
     // PK table: prices with Decimal128 id (scale=2)
-    let prices_schema = Schema::new(vec![Field::new(
-        "id",
-        DataType::Decimal128(38, 2),
-        false,
-    )]);
+    let prices_schema = Schema::new(vec![Field::new("id", DataType::Decimal128(38, 2), false)]);
     // 10.00, 20.50, 30.99 stored as 1000, 2050, 3099
-    let prices_ids = Decimal128Array::from(vec![1000i128, 2050, 3099])
-        .with_precision_and_scale(38, 2)?;
+    let prices_ids =
+        Decimal128Array::from(vec![1000i128, 2050, 3099]).with_precision_and_scale(38, 2)?;
     write_parquet(
         &raw_dir.join("prices/part.parquet"),
         prices_schema,
@@ -540,7 +529,10 @@ fn test_float64_fk_to_decimal128_pk() -> Result<()> {
         IngestOptions::default(),
     );
 
-    assert!(result.is_err(), "Float64→Decimal128 should be rejected as Lossy coercion");
+    assert!(
+        result.is_err(),
+        "Float64→Decimal128 should be rejected as Lossy coercion"
+    );
     let err = result.unwrap_err().to_string();
     assert!(
         err.contains("lossy") || err.contains("Lossy"),
@@ -576,13 +568,9 @@ fn test_multiple_fk_columns() -> Result<()> {
     )?;
 
     // products: Decimal128 PK (scale=2)
-    let products_schema = Schema::new(vec![Field::new(
-        "id",
-        DataType::Decimal128(38, 2),
-        false,
-    )]);
-    let products_ids = Decimal128Array::from(vec![100i128, 200, 300])
-        .with_precision_and_scale(38, 2)?;
+    let products_schema = Schema::new(vec![Field::new("id", DataType::Decimal128(38, 2), false)]);
+    let products_ids =
+        Decimal128Array::from(vec![100i128, 200, 300]).with_precision_and_scale(38, 2)?;
     write_parquet(
         &raw_dir.join("products/part.parquet"),
         products_schema,
@@ -602,7 +590,11 @@ fn test_multiple_fk_columns() -> Result<()> {
     write_parquet(
         &raw_dir.join("orders/part.parquet"),
         orders_schema,
-        vec![Arc::new(order_ids), Arc::new(user_fks), Arc::new(product_fks)],
+        vec![
+            Arc::new(order_ids),
+            Arc::new(user_fks),
+            Arc::new(product_fks),
+        ],
     )?;
 
     // Config
@@ -695,13 +687,9 @@ fn test_edge_table_fk_types() -> Result<()> {
     )?;
 
     // products: Decimal128 PK (scale=2)
-    let products_schema = Schema::new(vec![Field::new(
-        "id",
-        DataType::Decimal128(38, 2),
-        false,
-    )]);
-    let products_ids = Decimal128Array::from(vec![100i128, 200, 300])
-        .with_precision_and_scale(38, 2)?;
+    let products_schema = Schema::new(vec![Field::new("id", DataType::Decimal128(38, 2), false)]);
+    let products_ids =
+        Decimal128Array::from(vec![100i128, 200, 300]).with_precision_and_scale(38, 2)?;
     write_parquet(
         &raw_dir.join("products/part.parquet"),
         products_schema,

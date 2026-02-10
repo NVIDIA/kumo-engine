@@ -1,12 +1,11 @@
+use anyhow::Result;
 use clap::Parser;
-use diskgraph_gateway::SamplerGateway;
 use diskgraph_engine::engine::DiskGraphEngine;
 use diskgraph_engine::state::StatePool;
-use tonic::transport::Server;
-use std::sync::Arc;
+use diskgraph_gateway::SamplerGateway;
 use std::path::PathBuf;
-use anyhow::Result;
-use tracing_subscriber;
+use std::sync::Arc;
+use tonic::transport::Server;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -33,7 +32,8 @@ async fn main() -> Result<()> {
     let pool = StatePool::new();
 
     let service = SamplerGateway::new(engine, pool);
-    let server = Server::builder().add_service(arrow_flight::flight_service_server::FlightServiceServer::new(service));
+    let server = Server::builder()
+        .add_service(arrow_flight::flight_service_server::FlightServiceServer::new(service));
 
     if let Some(path) = args.uds_path {
         // Clean up existing socket file if any

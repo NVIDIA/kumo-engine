@@ -1,16 +1,19 @@
-use diskgraph_gateway::SamplerGateway;
+use arrow_flight::{flight_service_server::FlightService, Ticket};
 use diskgraph_engine::engine::{DiskGraphEngine, ShardHandle};
 use diskgraph_engine::state::StatePool;
+use diskgraph_gateway::SamplerGateway;
 use diskgraph_index::layout::{OffsetFileHeader, RelationLayout, EDGES_FILENAME, OFFSETS_FILENAME};
 use diskgraph_index::reader::ShardReader;
-use diskgraph_rowpack::{RowPackContextBuilder, RowPackConfig, RowPackColumn, IngestedType, RowPackEncoder, RowPackScratch, ValueRef, RowPackDecoder};
-use arrow_flight::{Ticket, flight_service_server::FlightService};
-use std::sync::Arc;
+use diskgraph_rowpack::{
+    IngestedType, RowPackColumn, RowPackConfig, RowPackContextBuilder, RowPackDecoder,
+    RowPackEncoder, RowPackScratch, ValueRef,
+};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::Write;
-use tokio_stream::StreamExt;
+use std::sync::Arc;
 use tempfile::TempDir;
+use tokio_stream::StreamExt;
 
 struct TestGraph {
     _dir: TempDir,
@@ -23,9 +26,13 @@ impl TestGraph {
         let path = dir.path();
 
         // 1. Setup RowPack Context & Data
-        let cols = vec![
-            RowPackColumn { name: "feat_0".into(), logical_type: IngestedType::Int64, fixed_len: None, precision: None, scale: None },
-        ];
+        let cols = vec![RowPackColumn {
+            name: "feat_0".into(),
+            logical_type: IngestedType::Int64,
+            fixed_len: None,
+            precision: None,
+            scale: None,
+        }];
         let mut ctx_builder = RowPackContextBuilder::new(cols.clone(), RowPackConfig::default());
         let row_val = vec![ValueRef::Int64(123)];
         ctx_builder.observe_row(&row_val).unwrap();
@@ -34,7 +41,9 @@ impl TestGraph {
         let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
         let mut scratch = RowPackScratch::new(&ctx);
         let mut encoded_node_data = Vec::new();
-        encoder.encode_row_into(&row_val, &mut encoded_node_data, &mut scratch).unwrap();
+        encoder
+            .encode_row_into(&row_val, &mut encoded_node_data, &mut scratch)
+            .unwrap();
 
         // 2. Define Layout
         let layout = RelationLayout {
@@ -51,7 +60,8 @@ impl TestGraph {
         // Node 0: 0 edges (0x00)
         f.write_all(&[0x00]).unwrap();
         // Node data len (u16 LE)
-        f.write_all(&(encoded_node_data.len() as u16).to_le_bytes()).unwrap();
+        f.write_all(&(encoded_node_data.len() as u16).to_le_bytes())
+            .unwrap();
         f.write_all(&encoded_node_data).unwrap();
 
         // 4. Write Offsets.bin
@@ -69,14 +79,20 @@ impl TestGraph {
         let reader = ShardReader::open(path, Arc::new(vec![layout]), true).unwrap();
 
         let mut readers = HashMap::new();
-        readers.insert("users".to_string(), vec![ShardHandle {
-            reader: Arc::new(reader),
-            min_id: 0,
-            max_id: 0,
-        }]);
+        readers.insert(
+            "users".to_string(),
+            vec![ShardHandle {
+                reader: Arc::new(reader),
+                min_id: 0,
+                max_id: 0,
+            }],
+        );
 
         let mut node_decoders = HashMap::new();
-        node_decoders.insert("users".to_string(), RowPackDecoder::new(ctx.clone()).unwrap());
+        node_decoders.insert(
+            "users".to_string(),
+            RowPackDecoder::new(ctx.clone()).unwrap(),
+        );
 
         let sampler = DiskGraphEngine::new(readers, HashMap::new(), HashMap::new(), node_decoders);
 
@@ -108,12 +124,21 @@ async fn test_gateway_end_to_end_flow() {
         }
     }"#;
 
-    let ticket = Ticket { ticket: req_json.into() };
-    let response = service.do_get(tonic::Request::new(ticket)).await.expect("do_get failed");
+    let ticket = Ticket {
+        ticket: req_json.into(),
+    };
+    let response = service
+        .do_get(tonic::Request::new(ticket))
+        .await
+        .expect("do_get failed");
     let mut stream = response.into_inner();
 
     // 1. Schema
-    let _schema_msg = stream.next().await.expect("Stream empty").expect("Error in stream");
+    let _schema_msg = stream
+        .next()
+        .await
+        .expect("Stream empty")
+        .expect("Error in stream");
 
     // 2. Data
     while let Some(msg_result) = stream.next().await {
@@ -140,28 +165,44 @@ async fn test_feature_fetching_flow() {
         ]
     }"#;
 
-    let ticket = Ticket { ticket: req_json.into() };
-    let response = service.do_get(tonic::Request::new(ticket)).await.expect("do_get failed");
+    let ticket = Ticket {
+        ticket: req_json.into(),
+    };
+    let response = service
+        .do_get(tonic::Request::new(ticket))
+        .await
+        .expect("do_get failed");
     let mut stream = response.into_inner();
 
     // 1. Schema
-    let schema_msg = stream.next().await.expect("Stream empty").expect("Error in stream");
+    let schema_msg = stream
+        .next()
+        .await
+        .expect("Stream empty")
+        .expect("Error in stream");
     assert!(!schema_msg.data_header.is_empty());
-    let schema = Arc::new(arrow_schema::Schema::new(vec![
-        arrow_schema::Field::new("feat_0", arrow_schema::DataType::Int64, true),
-    ]));
+    let schema = Arc::new(arrow_schema::Schema::new(vec![arrow_schema::Field::new(
+        "feat_0",
+        arrow_schema::DataType::Int64,
+        true,
+    )]));
 
     // 2. Data Batch
-    let data_msg = stream.next().await.expect("No data batch").expect("Error in stream");
+    let data_msg = stream
+        .next()
+        .await
+        .expect("No data batch")
+        .expect("Error in stream");
     let dict_tracker = HashMap::new();
-    let batch = arrow_flight::utils::flight_data_to_arrow_batch(
-        &data_msg,
-        schema,
-        &dict_tracker
-    ).expect("Failed to decode batch");
+    let batch = arrow_flight::utils::flight_data_to_arrow_batch(&data_msg, schema, &dict_tracker)
+        .expect("Failed to decode batch");
 
     assert_eq!(batch.num_rows(), 1);
-    let col = batch.column(0).as_any().downcast_ref::<arrow_array::Int64Array>().unwrap();
+    let col = batch
+        .column(0)
+        .as_any()
+        .downcast_ref::<arrow_array::Int64Array>()
+        .unwrap();
     assert_eq!(col.value(0), 123);
 }
 
@@ -176,10 +217,18 @@ async fn test_get_schema_mapping_action() {
         r#type: "get_schema_mapping".to_string(),
         body: vec![].into(),
     };
-    let response = service.do_action(tonic::Request::new(action)).await.expect("do_action failed");
+    let response = service
+        .do_action(tonic::Request::new(action))
+        .await
+        .expect("do_action failed");
     let mut stream = response.into_inner();
-    let res = stream.next().await.expect("No result").expect("Action error");
+    let res = stream
+        .next()
+        .await
+        .expect("No result")
+        .expect("Action error");
 
-    let mapping: diskgraph_engine::engine::SchemaMapping = serde_json::from_slice(&res.body).expect("Failed to deserialize mapping");
+    let mapping: diskgraph_engine::engine::SchemaMapping =
+        serde_json::from_slice(&res.body).expect("Failed to deserialize mapping");
     assert_eq!(mapping.node_types, vec!["users"]);
 }

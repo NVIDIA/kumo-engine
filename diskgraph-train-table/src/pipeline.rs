@@ -96,10 +96,10 @@ fn min_max_timestamp(rows: &[crate::exec::TrainRow]) -> (Option<i64>, Option<i64
     let mut min_ts = None;
     let mut max_ts = None;
     for row in rows {
-        if min_ts.map_or(true, |v| row.timestamp < v) {
+        if min_ts.is_none_or(|v| row.timestamp < v) {
             min_ts = Some(row.timestamp);
         }
-        if max_ts.map_or(true, |v| row.timestamp > v) {
+        if max_ts.is_none_or(|v| row.timestamp > v) {
             max_ts = Some(row.timestamp);
         }
     }
@@ -134,8 +134,13 @@ fn write_validation_report(
 mod tests {
     use super::*;
     use crate::config::{SplitConfig, SplitType};
-    use diskgraph_core::metadata::{DatasetMetadata, NodeDataCompression, NodeShardMetadata, NodeTypeMetadata};
-    use diskgraph_rowpack::{ColumnContext, ColumnEncoding, IngestedType, RowPackContext, RowPackEncoder, RowPackScratch, ValueRef};
+    use diskgraph_core::metadata::{
+        DatasetMetadata, NodeDataCompression, NodeShardMetadata, NodeTypeMetadata,
+    };
+    use diskgraph_rowpack::{
+        ColumnContext, ColumnEncoding, IngestedType, RowPackContext, RowPackEncoder,
+        RowPackScratch, ValueRef,
+    };
     use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
     use std::fs::File;
     use std::io::Write;

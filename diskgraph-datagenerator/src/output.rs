@@ -12,7 +12,9 @@ use object_store::path::Path as ObjectPath;
 
 #[derive(Clone, Debug)]
 pub enum OutputTarget {
-    Local { root: PathBuf },
+    Local {
+        root: PathBuf,
+    },
     S3 {
         prefix: String,
         transfer: CloudTransfer,
@@ -198,7 +200,9 @@ impl Seek for CloudSink {
 }
 
 fn parse_s3_url(url: &str) -> Result<(String, String)> {
-    let url = url.strip_prefix("s3://").ok_or_else(|| anyhow!("bad s3 url"))?;
+    let url = url
+        .strip_prefix("s3://")
+        .ok_or_else(|| anyhow!("bad s3 url"))?;
     let mut parts = url.splitn(2, '/');
     let bucket = parts.next().unwrap_or_default();
     let prefix = parts.next().unwrap_or_default();
@@ -209,7 +213,9 @@ fn parse_s3_url(url: &str) -> Result<(String, String)> {
 }
 
 fn parse_gs_url(url: &str) -> Result<(String, String)> {
-    let url = url.strip_prefix("gs://").ok_or_else(|| anyhow!("bad gs url"))?;
+    let url = url
+        .strip_prefix("gs://")
+        .ok_or_else(|| anyhow!("bad gs url"))?;
     let mut parts = url.splitn(2, '/');
     let bucket = parts.next().unwrap_or_default();
     let prefix = parts.next().unwrap_or_default();
@@ -220,7 +226,9 @@ fn parse_gs_url(url: &str) -> Result<(String, String)> {
 }
 
 fn parse_az_url(url: &str) -> Result<(String, String, String)> {
-    let url = url.strip_prefix("az://").ok_or_else(|| anyhow!("bad az url"))?;
+    let url = url
+        .strip_prefix("az://")
+        .ok_or_else(|| anyhow!("bad az url"))?;
     let mut parts = url.splitn(3, '/');
     let account = parts.next().unwrap_or_default();
     let container = parts.next().unwrap_or_default();
@@ -228,7 +236,11 @@ fn parse_az_url(url: &str) -> Result<(String, String, String)> {
     if account.is_empty() || container.is_empty() {
         return Err(anyhow!("az url must include account/container"));
     }
-    Ok((account.to_string(), container.to_string(), prefix.to_string()))
+    Ok((
+        account.to_string(),
+        container.to_string(),
+        prefix.to_string(),
+    ))
 }
 
 fn join_prefix(prefix: &str, path: &str) -> String {

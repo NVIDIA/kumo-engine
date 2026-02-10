@@ -39,16 +39,9 @@ pub struct SplitBoundaryInfo {
 
 #[derive(Debug, Clone)]
 enum SplitKind {
-    Random {
-        thresholds: (f64, f64),
-        seed: u64,
-    },
-    Time {
-        boundaries: Vec<SplitBoundary>,
-    },
-    Range {
-        ranges: Vec<SplitBoundary>,
-    },
+    Random { thresholds: (f64, f64), seed: u64 },
+    Time { boundaries: Vec<SplitBoundary> },
+    Range { ranges: Vec<SplitBoundary> },
 }
 
 #[derive(Debug, Clone)]
@@ -145,17 +138,11 @@ impl SplitAssigner {
             }
             SplitKind::Time { boundaries } => {
                 let ts = timestamp?;
-                boundaries
-                    .iter()
-                    .find(|b| b.contains(ts))
-                    .map(|b| b.label)
+                boundaries.iter().find(|b| b.contains(ts)).map(|b| b.label)
             }
             SplitKind::Range { ranges } => {
                 let ts = timestamp?;
-                ranges
-                    .iter()
-                    .find(|b| b.contains(ts))
-                    .map(|b| b.label)
+                ranges.iter().find(|b| b.contains(ts)).map(|b| b.label)
             }
         }
     }
@@ -266,13 +253,9 @@ fn build_time_boundaries(
             )?;
             Ok(boundaries)
         }
-        SplitType::DateOffset => build_date_offset_boundaries(
-            fractions,
-            min_ts,
-            max_ts,
-            time_cfg,
-            step_delta.as_ref(),
-        ),
+        SplitType::DateOffset => {
+            build_date_offset_boundaries(fractions, min_ts, max_ts, time_cfg, step_delta.as_ref())
+        }
         _ => Err(anyhow!("unsupported split type for time boundaries")),
     }
 }
@@ -296,7 +279,9 @@ fn build_date_offset_boundaries(
     };
 
     if train_start >= train_end {
-        return Err(anyhow!("date_offset split requires train_start < train_end"));
+        return Err(anyhow!(
+            "date_offset split requires train_start < train_end"
+        ));
     }
 
     let remaining_start = train_end;
@@ -305,25 +290,26 @@ fn build_date_offset_boundaries(
     let val_fraction = fractions[1] / (fractions[1] + fractions[2]);
     let val_end = remaining_start + (remaining_len as f64 * val_fraction).round() as i64;
 
-    let mut boundaries = Vec::new();
-    boundaries.push(SplitBoundary {
-        label: SplitLabel::Train,
-        start: train_start,
-        end: train_end,
-        end_inclusive: false,
-    });
-    boundaries.push(SplitBoundary {
-        label: SplitLabel::Val,
-        start: train_end,
-        end: val_end,
-        end_inclusive: false,
-    });
-    boundaries.push(SplitBoundary {
-        label: SplitLabel::Test,
-        start: val_end,
-        end: remaining_end,
-        end_inclusive: true,
-    });
+    let mut boundaries = vec![
+        SplitBoundary {
+            label: SplitLabel::Train,
+            start: train_start,
+            end: train_end,
+            end_inclusive: false,
+        },
+        SplitBoundary {
+            label: SplitLabel::Val,
+            start: train_end,
+            end: val_end,
+            end_inclusive: false,
+        },
+        SplitBoundary {
+            label: SplitLabel::Test,
+            start: val_end,
+            end: remaining_end,
+            end_inclusive: true,
+        },
+    ];
 
     if let Some(step) = step_delta {
         boundaries = align_boundaries(boundaries, step)?;
@@ -395,11 +381,7 @@ fn build_fractional_boundaries(
     Ok(boundaries)
 }
 
-fn build_time_buckets(
-    min_ts: i64,
-    max_ts: i64,
-    step: &TimeDelta,
-) -> Result<Vec<(i64, i64)>> {
+fn build_time_buckets(min_ts: i64, max_ts: i64, step: &TimeDelta) -> Result<Vec<(i64, i64)>> {
     let mut buckets = Vec::new();
     let mut cursor = ts_to_datetime(min_ts)?;
     let end = ts_to_datetime(max_ts)?;
@@ -419,7 +401,10 @@ fn build_time_buckets(
     Ok(buckets)
 }
 
-fn align_boundaries(mut boundaries: Vec<SplitBoundary>, step: &TimeDelta) -> Result<Vec<SplitBoundary>> {
+fn align_boundaries(
+    mut boundaries: Vec<SplitBoundary>,
+    step: &TimeDelta,
+) -> Result<Vec<SplitBoundary>> {
     for boundary in &mut boundaries {
         let start = ts_to_datetime(boundary.start)?;
         let end = ts_to_datetime(boundary.end)?;
@@ -441,7 +426,9 @@ fn parse_label(label: &str) -> Result<SplitLabel> {
 }
 
 fn apply_bound_override(reference: i64, value: Option<&str>) -> Result<i64> {
-    let Some(raw) = value else { return Ok(reference) };
+    let Some(raw) = value else {
+        return Ok(reference);
+    };
     if raw.trim().is_empty() {
         return Ok(reference);
     }
@@ -471,7 +458,9 @@ fn parse_duration(value: &str) -> Result<TimeDelta> {
     } else {
         (parts[0], parts[1])
     };
-    let num: i64 = num_str.parse().map_err(|_| anyhow!("invalid duration number"))?;
+    let num: i64 = num_str
+        .parse()
+        .map_err(|_| anyhow!("invalid duration number"))?;
     let unit = unit_str.to_lowercase();
     match unit.as_str() {
         "second" | "seconds" => Ok(TimeDelta::Seconds(num)),
@@ -494,7 +483,7 @@ fn add_delta_datetime(dt: DateTime<Utc>, delta: &TimeDelta) -> Result<DateTime<U
     Ok(match delta {
         TimeDelta::Seconds(sec) => dt + chrono::Duration::seconds(*sec),
         TimeDelta::Months(months) => {
-            let abs = months.abs() as u32;
+            let abs = months.unsigned_abs();
             let shifted = if *months == 0 {
                 Some(dt)
             } else if *months > 0 {
@@ -515,7 +504,9 @@ fn parse_timestamp(value: &str) -> Result<i64> {
         return Ok(dt.timestamp());
     }
     if let Ok(date) = NaiveDate::parse_from_str(value.trim(), "%Y-%m-%d") {
-        let dt = date.and_hms_opt(0, 0, 0).ok_or_else(|| anyhow!("invalid date"))?;
+        let dt = date
+            .and_hms_opt(0, 0, 0)
+            .ok_or_else(|| anyhow!("invalid date"))?;
         return Ok(Utc.from_utc_datetime(&dt).timestamp());
     }
     if let Ok(dt) = NaiveDateTime::parse_from_str(value.trim(), "%Y-%m-%d %H:%M:%S") {
@@ -533,7 +524,9 @@ fn ts_to_datetime(ts: i64) -> Result<DateTime<Utc>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{SplitConfig, SplitRangeConfig, SplitRangeEntry, SplitTimeConfig, SplitType};
+    use crate::config::{
+        SplitConfig, SplitRangeConfig, SplitRangeEntry, SplitTimeConfig, SplitType,
+    };
 
     #[test]
     fn random_split_is_deterministic() {
@@ -571,9 +564,18 @@ mod tests {
         };
         let assigner = SplitAssigner::from_config(&config, Some(0), Some(9 * 86_400)).unwrap();
         let entity = Value::Int(1);
-        assert_eq!(assigner.assign(&entity, Some(1 * 86_400)), Some(SplitLabel::Train));
-        assert_eq!(assigner.assign(&entity, Some(6 * 86_400)), Some(SplitLabel::Val));
-        assert_eq!(assigner.assign(&entity, Some(9 * 86_400)), Some(SplitLabel::Test));
+        assert_eq!(
+            assigner.assign(&entity, Some(86_400)),
+            Some(SplitLabel::Train)
+        );
+        assert_eq!(
+            assigner.assign(&entity, Some(6 * 86_400)),
+            Some(SplitLabel::Val)
+        );
+        assert_eq!(
+            assigner.assign(&entity, Some(9 * 86_400)),
+            Some(SplitLabel::Test)
+        );
     }
 
     #[test]
@@ -596,8 +598,14 @@ mod tests {
         };
         let assigner = SplitAssigner::from_config(&config, Some(0), Some(20 * 86_400)).unwrap();
         let entity = Value::Int(1);
-        assert_eq!(assigner.assign(&entity, Some(12 * 86_400)), Some(SplitLabel::Train));
-        assert_eq!(assigner.assign(&entity, Some(17 * 86_400)), Some(SplitLabel::Val));
+        assert_eq!(
+            assigner.assign(&entity, Some(12 * 86_400)),
+            Some(SplitLabel::Train)
+        );
+        assert_eq!(
+            assigner.assign(&entity, Some(17 * 86_400)),
+            Some(SplitLabel::Val)
+        );
     }
 
     #[test]

@@ -57,11 +57,17 @@ pub fn parse_query(input: &str) -> anyhow::Result<Query> {
 fn build_query(pair: Pair<Rule>) -> anyhow::Result<Query> {
     let mut inner = pair.into_inner();
     consume_keyword(&mut inner, Rule::KW_PREDICT)?;
-    let target_pair = inner.next().ok_or_else(|| anyhow::anyhow!("missing predict"))?;
+    let target_pair = inner
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("missing predict"))?;
     let predict = build_predict_target(target_pair)?;
     consume_keyword(&mut inner, Rule::KW_FOR)?;
     consume_keyword(&mut inner, Rule::KW_EACH)?;
-    let entity = build_entity_ref(inner.next().ok_or_else(|| anyhow::anyhow!("missing entity"))?)?;
+    let entity = build_entity_ref(
+        inner
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("missing entity"))?,
+    )?;
 
     let assuming = if let Some(next) = inner.next() {
         if next.as_rule() == Rule::assuming {
@@ -97,7 +103,9 @@ fn build_predict_target(pair: Pair<Rule>) -> anyhow::Result<PredictExpr> {
 }
 
 fn consume_keyword(pairs: &mut Pairs<Rule>, rule: Rule) -> anyhow::Result<()> {
-    let next = pairs.next().ok_or_else(|| anyhow::anyhow!("missing keyword"))?;
+    let next = pairs
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("missing keyword"))?;
     if next.as_rule() != rule {
         return Err(anyhow::anyhow!("expected {:?}", rule));
     }
@@ -114,21 +122,29 @@ fn build_assuming(pair: Pair<Rule>) -> anyhow::Result<PredicateExpr> {
     } else {
         return Err(anyhow::anyhow!("missing assume/where keyword"));
     }
-    let pred = inner.next().ok_or_else(|| anyhow::anyhow!("missing predicate"))?;
+    let pred = inner
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("missing predicate"))?;
     build_predicate(pred)
 }
 
 fn build_agg_call(pair: Pair<Rule>) -> anyhow::Result<AggregationExpr> {
     let mut inner = pair.into_inner();
-    let func_pair = inner.next().ok_or_else(|| anyhow::anyhow!("missing func"))?;
+    let func_pair = inner
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("missing func"))?;
     let func = parse_func(func_pair.as_str())?;
-    let args_pair = inner.next().ok_or_else(|| anyhow::anyhow!("missing args"))?;
+    let args_pair = inner
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("missing args"))?;
     build_agg_args(func, args_pair)
 }
 
 fn build_agg_args(func: AggFunc, pair: Pair<Rule>) -> anyhow::Result<AggregationExpr> {
     let mut inner = pair.into_inner();
-    let target_pair = inner.next().ok_or_else(|| anyhow::anyhow!("missing target"))?;
+    let target_pair = inner
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("missing target"))?;
     let target = build_agg_target(target_pair)?;
 
     let mut filter: Option<Box<PredicateExpr>> = None;
@@ -139,7 +155,9 @@ fn build_agg_args(func: AggFunc, pair: Pair<Rule>) -> anyhow::Result<Aggregation
             Rule::where_clause => {
                 let mut w_inner = p.into_inner();
                 consume_keyword(&mut w_inner, Rule::KW_WHERE)?;
-                let pred = w_inner.next().ok_or_else(|| anyhow::anyhow!("missing where predicate"))?;
+                let pred = w_inner
+                    .next()
+                    .ok_or_else(|| anyhow::anyhow!("missing where predicate"))?;
                 filter = Some(Box::new(build_predicate(pred)?));
             }
             Rule::window_args => {
@@ -159,9 +177,19 @@ fn build_agg_args(func: AggFunc, pair: Pair<Rule>) -> anyhow::Result<Aggregation
 
 fn build_window(pair: Pair<Rule>) -> anyhow::Result<WindowSpec> {
     let mut inner = pair.into_inner();
-    let start = inner.next().ok_or_else(|| anyhow::anyhow!("missing start"))?.as_str().parse::<i64>()?;
-    let end = inner.next().ok_or_else(|| anyhow::anyhow!("missing end"))?.as_str().parse::<i64>()?;
-    let unit = inner.next().ok_or_else(|| anyhow::anyhow!("missing unit"))?;
+    let start = inner
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("missing start"))?
+        .as_str()
+        .parse::<i64>()?;
+    let end = inner
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("missing end"))?
+        .as_str()
+        .parse::<i64>()?;
+    let unit = inner
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("missing unit"))?;
     Ok(WindowSpec {
         start_offset: start,
         end_offset: end,
@@ -173,12 +201,18 @@ fn build_agg_target(pair: Pair<Rule>) -> anyhow::Result<AggTarget> {
     match pair.as_rule() {
         Rule::agg_target => {
             let mut inner = pair.into_inner();
-            let next = inner.next().ok_or_else(|| anyhow::anyhow!("missing agg target"))?;
+            let next = inner
+                .next()
+                .ok_or_else(|| anyhow::anyhow!("missing agg target"))?;
             build_agg_target(next)
         }
         Rule::star_ref => {
             let mut inner = pair.into_inner();
-            let table = inner.next().ok_or_else(|| anyhow::anyhow!("missing table"))?.as_str().to_string();
+            let table = inner
+                .next()
+                .ok_or_else(|| anyhow::anyhow!("missing table"))?
+                .as_str()
+                .to_string();
             Ok(AggTarget::Star(TableRef { table }))
         }
         Rule::column_ref => {
@@ -193,13 +227,23 @@ fn build_entity_ref(pair: Pair<Rule>) -> anyhow::Result<EntityRef> {
     match pair.as_rule() {
         Rule::entity_ref => {
             let mut inner = pair.into_inner();
-            let next = inner.next().ok_or_else(|| anyhow::anyhow!("missing entity ref"))?;
+            let next = inner
+                .next()
+                .ok_or_else(|| anyhow::anyhow!("missing entity ref"))?;
             build_entity_ref(next)
         }
         Rule::column_ref => {
             let mut inner = pair.into_inner();
-            let table = inner.next().ok_or_else(|| anyhow::anyhow!("missing table"))?.as_str().to_string();
-            let column = inner.next().ok_or_else(|| anyhow::anyhow!("missing column"))?.as_str().to_string();
+            let table = inner
+                .next()
+                .ok_or_else(|| anyhow::anyhow!("missing table"))?
+                .as_str()
+                .to_string();
+            let column = inner
+                .next()
+                .ok_or_else(|| anyhow::anyhow!("missing column"))?
+                .as_str()
+                .to_string();
             Ok(EntityRef { table, column })
         }
         _ => Err(anyhow::anyhow!("invalid entity ref")),
@@ -208,8 +252,16 @@ fn build_entity_ref(pair: Pair<Rule>) -> anyhow::Result<EntityRef> {
 
 fn build_column_ref(pair: Pair<Rule>) -> anyhow::Result<ColumnRef> {
     let mut inner = pair.into_inner();
-    let table = inner.next().ok_or_else(|| anyhow::anyhow!("missing table"))?.as_str().to_string();
-    let column = inner.next().ok_or_else(|| anyhow::anyhow!("missing column"))?.as_str().to_string();
+    let table = inner
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("missing table"))?
+        .as_str()
+        .to_string();
+    let column = inner
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("missing column"))?
+        .as_str()
+        .to_string();
     Ok(ColumnRef { table, column })
 }
 
@@ -217,7 +269,9 @@ fn build_predicate(pair: Pair<Rule>) -> anyhow::Result<PredicateExpr> {
     match pair.as_rule() {
         Rule::predicate => {
             let mut inner = pair.into_inner();
-            let expr = inner.next().ok_or_else(|| anyhow::anyhow!("missing predicate expr"))?;
+            let expr = inner
+                .next()
+                .ok_or_else(|| anyhow::anyhow!("missing predicate expr"))?;
             build_predicate(expr)
         }
         Rule::or_expr => {
@@ -243,8 +297,8 @@ fn build_predicate(pair: Pair<Rule>) -> anyhow::Result<PredicateExpr> {
 
 fn build_logic_list(pair: Pair<Rule>, op_rule: Rule) -> anyhow::Result<Vec<PredicateExpr>> {
     let mut items = Vec::new();
-    let mut inner = pair.into_inner();
-    while let Some(p) = inner.next() {
+    let inner = pair.into_inner();
+    for p in inner {
         if p.as_rule() == op_rule {
             continue;
         }
@@ -255,9 +309,17 @@ fn build_logic_list(pair: Pair<Rule>, op_rule: Rule) -> anyhow::Result<Vec<Predi
 
 fn build_cmp(pair: Pair<Rule>) -> anyhow::Result<PredicateExpr> {
     let mut inner = pair.into_inner();
-    let left = build_expr(inner.next().ok_or_else(|| anyhow::anyhow!("missing left"))?)?;
+    let left = build_expr(
+        inner
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("missing left"))?,
+    )?;
     let op_pair = inner.next().ok_or_else(|| anyhow::anyhow!("missing op"))?;
-    let right = build_expr(inner.next().ok_or_else(|| anyhow::anyhow!("missing right"))?)?;
+    let right = build_expr(
+        inner
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("missing right"))?,
+    )?;
 
     Ok(PredicateExpr::Comparison {
         left: Box::new(left),
@@ -274,7 +336,9 @@ fn build_expr(pair: Pair<Rule>) -> anyhow::Result<Expr> {
         Rule::agg_call => Ok(Expr::Agg(Box::new(build_agg_call(pair)?))),
         Rule::expr => {
             let mut inner = pair.into_inner();
-            let inner_pair = inner.next().ok_or_else(|| anyhow::anyhow!("missing expr inner"))?;
+            let inner_pair = inner
+                .next()
+                .ok_or_else(|| anyhow::anyhow!("missing expr inner"))?;
             build_expr(inner_pair)
         }
         _ => Err(anyhow::anyhow!("unsupported expr")),
@@ -282,7 +346,8 @@ fn build_expr(pair: Pair<Rule>) -> anyhow::Result<Expr> {
 }
 
 fn strip_quotes(input: &str) -> String {
-    input.trim_start_matches('\'')
+    input
+        .trim_start_matches('\'')
         .trim_end_matches('\'')
         .to_string()
 }
@@ -404,10 +469,22 @@ mod tests {
     #[test]
     fn parse_additional_aggs() {
         let cases = [
-            ("PREDICT AVG(transactions.price) FOR EACH transactions.customer_id", AggFunc::Avg),
-            ("PREDICT MIN(transactions.price) FOR EACH transactions.customer_id", AggFunc::Min),
-            ("PREDICT MAX(transactions.price) FOR EACH transactions.customer_id", AggFunc::Max),
-            ("PREDICT COUNT(transactions.*) FOR EACH transactions.customer_id", AggFunc::Count),
+            (
+                "PREDICT AVG(transactions.price) FOR EACH transactions.customer_id",
+                AggFunc::Avg,
+            ),
+            (
+                "PREDICT MIN(transactions.price) FOR EACH transactions.customer_id",
+                AggFunc::Min,
+            ),
+            (
+                "PREDICT MAX(transactions.price) FOR EACH transactions.customer_id",
+                AggFunc::Max,
+            ),
+            (
+                "PREDICT COUNT(transactions.*) FOR EACH transactions.customer_id",
+                AggFunc::Count,
+            ),
         ];
         for (q, expected) in cases {
             let parsed = parse_query(q).expect("parse");

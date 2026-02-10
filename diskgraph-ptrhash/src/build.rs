@@ -4,9 +4,7 @@ use bitvec::slice::BitSlice;
 use itertools::Itertools;
 use std::{
     iter::zip,
-    sync::{
-        atomic::{AtomicUsize, Ordering},
-    },
+    sync::atomic::{AtomicUsize, Ordering},
 };
 
 impl<Key: KeyT, BF: BucketFn, F: Packed, Hx: Hasher<Key>> PtrHash<Key, BF, F, Hx, Vec<u8>> {
@@ -63,7 +61,6 @@ impl<Key: KeyT, BF: BucketFn, F: Packed, Hx: Hasher<Key>> PtrHash<Key, BF, F, Hx
             //         100. * parts_done as f32 / self.parts as f32
             //     );
             // }
-
         }
 
         // All parts completed.
@@ -96,6 +93,7 @@ impl<Key: KeyT, BF: BucketFn, F: Packed, Hx: Hasher<Key>> PtrHash<Key, BF, F, Hx
         true
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn build_part(
         &self,
         part: usize,

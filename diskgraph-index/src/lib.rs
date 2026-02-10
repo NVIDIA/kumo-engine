@@ -16,6 +16,6 @@ pub mod layout;
 pub mod pkmap;
 pub mod reader;
 pub mod streaming;
-pub mod truncate;
 #[cfg(test)]
 mod tests_builder;
+pub mod truncate;

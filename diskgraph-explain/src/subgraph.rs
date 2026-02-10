@@ -101,9 +101,9 @@ impl SubgraphExtractor {
 
                 // Extract timestamp metadata from dest_sort_key
                 let time_meta = rel.dest_sort_key.as_ref().and_then(|dsk| {
-                    dsk.timestamp.as_ref().map(|ts| {
-                        (dsk.width_bits, ts.encoding.anchor, ts.encoding.step)
-                    })
+                    dsk.timestamp
+                        .as_ref()
+                        .map(|ts| (dsk.width_bits, ts.encoding.anchor, ts.encoding.step))
                 });
 
                 rels.push(RelationMeta {
@@ -130,9 +130,9 @@ impl SubgraphExtractor {
     /// Look up internal node ID from entity ID string
     pub fn lookup_node_id(&self, entity_id: &str) -> Result<u64> {
         match self.config.id_lookup {
-            crate::config::IdLookup::NodeId => {
-                entity_id.parse::<u64>().map_err(|e| anyhow!("invalid node id: {}", e))
-            }
+            crate::config::IdLookup::NodeId => entity_id
+                .parse::<u64>()
+                .map_err(|e| anyhow!("invalid node id: {}", e)),
             crate::config::IdLookup::PrimaryKey => {
                 let key = self.root_table.parse_pk_key(entity_id)?;
                 self.root_table
@@ -332,7 +332,7 @@ impl SubgraphExtractor {
         table: &str,
         node_id: u64,
     ) -> usize {
-        if table == &self.root_table_name && node_id == 0 {
+        if table == self.root_table_name && node_id == 0 {
             return 0;
         }
 

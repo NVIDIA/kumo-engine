@@ -68,7 +68,17 @@ struct TtuiHelper {
 impl TtuiHelper {
     fn new(reader: &GraphIndexReader) -> Self {
         let commands = vec![
-            "help", "tables", "relations", "run", "split", "sampling", "output", "show", "last", "quit", "exit",
+            "help",
+            "tables",
+            "relations",
+            "run",
+            "split",
+            "sampling",
+            "output",
+            "show",
+            "last",
+            "quit",
+            "exit",
         ]
         .into_iter()
         .map(|s| s.to_string())
@@ -90,11 +100,16 @@ impl Completer for TtuiHelper {
         let input = &line[..pos];
         let mut parts = input.split_whitespace();
         let Some(first) = parts.next() else {
-            return Ok((0, self
-                .commands
-                .iter()
-                .map(|cmd| Pair { display: cmd.clone(), replacement: cmd.clone() })
-                .collect()));
+            return Ok((
+                0,
+                self.commands
+                    .iter()
+                    .map(|cmd| Pair {
+                        display: cmd.clone(),
+                        replacement: cmd.clone(),
+                    })
+                    .collect(),
+            ));
         };
         if parts.next().is_none() {
             let mut out = Vec::new();
@@ -139,7 +154,10 @@ struct SessionConfig {
 fn main() -> Result<()> {
     let args = parse_args();
     if !args.index_path.exists() {
-        return Err(anyhow!("index path not found: {}", args.index_path.display()));
+        return Err(anyhow!(
+            "index path not found: {}",
+            args.index_path.display()
+        ));
     }
 
     let default_output_dir = args
@@ -164,7 +182,11 @@ fn main() -> Result<()> {
 
     if let Some(command) = args.command {
         let output = run_query(&mut session, &command)?;
-        println!("{} {}", label("output:"), name(&output.display().to_string()));
+        println!(
+            "{} {}",
+            label("output:"),
+            name(&output.display().to_string())
+        );
         return Ok(());
     }
 
@@ -279,7 +301,11 @@ fn repl(reader: Arc<GraphIndexReader>, session: &mut SessionConfig) -> Result<()
                 }
                 if trimmed.eq_ignore_ascii_case("last") {
                     if let Some(path) = &session.last_output {
-                        println!("{} {}", label("last output:"), name(&path.display().to_string()));
+                        println!(
+                            "{} {}",
+                            label("last output:"),
+                            name(&path.display().to_string())
+                        );
                     } else {
                         println!("{}", warn("no output yet"));
                     }
@@ -322,7 +348,11 @@ fn repl(reader: Arc<GraphIndexReader>, session: &mut SessionConfig) -> Result<()
                     }
                     match run_query(session, query) {
                         Ok(output) => {
-                            println!("{} {}", label("output:"), name(&output.display().to_string()));
+                            println!(
+                                "{} {}",
+                                label("output:"),
+                                name(&output.display().to_string())
+                            );
                         }
                         Err(run_err) => {
                             println!("{} {run_err}", err("run failed:"));
@@ -363,10 +393,22 @@ fn print_relations(reader: &GraphIndexReader) {
 }
 
 fn print_config(session: &SessionConfig) {
-    println!("{} {}", label("index:"), name(&session.index_path.display().to_string()));
-    println!("{} {}", label("output dir:"), name(&session.output_dir.display().to_string()));
+    println!(
+        "{} {}",
+        label("index:"),
+        name(&session.index_path.display().to_string())
+    );
+    println!(
+        "{} {}",
+        label("output dir:"),
+        name(&session.output_dir.display().to_string())
+    );
     println!("{} {:?}", label("split:"), session.split);
-    println!("{} {:?}", label("temporal sampling:"), session.options.temporal_sampling);
+    println!(
+        "{} {:?}",
+        label("temporal sampling:"),
+        session.options.temporal_sampling
+    );
 }
 
 fn set_split_config(session: &mut SessionConfig, input: &str) -> Result<()> {
@@ -401,7 +443,8 @@ fn set_split_config(session: &mut SessionConfig, input: &str) -> Result<()> {
         train,
         val,
         test,
-        seed.map(|s| s.to_string()).unwrap_or_else(|| "none".to_string())
+        seed.map(|s| s.to_string())
+            .unwrap_or_else(|| "none".to_string())
     );
     Ok(())
 }
@@ -432,7 +475,7 @@ fn run_query(session: &mut SessionConfig, query_str: &str) -> Result<PathBuf> {
             .table(&query.for_each.table)
             .ok_or_else(|| anyhow!("missing entity table {}", query.for_each.table))?;
         let node_count = table.node_count();
-        let chunk = (node_count + threads as u64 - 1) / threads as u64;
+        let chunk = node_count.div_ceil(threads as u64);
         let mut ranges = Vec::new();
         for i in 0..threads {
             let start = i as u64 * chunk;
@@ -606,10 +649,10 @@ fn min_max_timestamp_shards(rows: &[Vec<TrainRow>]) -> (Option<i64>, Option<i64>
     let mut max_ts = None;
     for shard in rows {
         for row in shard {
-            if min_ts.map_or(true, |v| row.timestamp < v) {
+            if min_ts.is_none_or(|v| row.timestamp < v) {
                 min_ts = Some(row.timestamp);
             }
-            if max_ts.map_or(true, |v| row.timestamp > v) {
+            if max_ts.is_none_or(|v| row.timestamp > v) {
                 max_ts = Some(row.timestamp);
             }
         }
@@ -633,7 +676,11 @@ fn print_stats_sharded(shards: &[Vec<TrainTableRow>]) {
         let count = split_counts[split_index(split)];
         println!("  {} {}", name(split.as_str()), format_number(count));
     }
-    let Some(first) = shards.iter().find(|s| !s.is_empty()).and_then(|s| s.first()) else {
+    let Some(first) = shards
+        .iter()
+        .find(|s| !s.is_empty())
+        .and_then(|s| s.first())
+    else {
         return;
     };
     let target_kind = match &first.target {
@@ -795,13 +842,11 @@ fn hex_encode(bytes: &[u8]) -> String {
 fn format_number(value: u64) -> String {
     let s = value.to_string();
     let mut out = String::with_capacity(s.len() + s.len() / 3);
-    let mut count = 0usize;
-    for ch in s.chars().rev() {
-        if count != 0 && count % 3 == 0 {
+    for (count, ch) in s.chars().rev().enumerate() {
+        if count != 0 && count.is_multiple_of(3) {
             out.push(',');
         }
         out.push(ch);
-        count += 1;
     }
     out.chars().rev().collect()
 }
@@ -943,7 +988,10 @@ struct BoolAgg {
 
 impl BoolAgg {
     fn new() -> Self {
-        Self { count: 0, true_count: 0 }
+        Self {
+            count: 0,
+            true_count: 0,
+        }
     }
 
     fn add(&mut self, value: bool) {

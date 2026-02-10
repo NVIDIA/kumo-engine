@@ -1,26 +1,36 @@
 //! Diskgraph ingest: convert raw CSV/Parquet sources into index-ready artifacts.
 
-mod mapping;
-pub mod graph_config;
-pub mod config_converter;
-pub mod utils;
-pub mod progress;
+pub mod coercion;
 pub mod config;
+pub mod config_converter;
+pub mod consts;
 pub mod errors;
+pub mod graph_config;
+pub mod io;
+mod mapping;
+pub mod progress;
+pub mod scratch;
 pub mod stats;
 pub mod stats_publish;
-pub mod scratch;
-pub mod consts;
-pub mod io;
-pub mod coercion;
 #[cfg(test)]
 mod tests_unit;
+pub mod utils;
 
 pub use crate::config::IngestOptions;
 use crate::config::PeakMemStats;
-pub use crate::io::Dest;
 use crate::consts::*;
-pub use crate::errors::{CoercionError, CoercionWarning, ConvertError, KeyParseError, KeyParseResult};
+pub use crate::errors::{
+    CoercionError, CoercionWarning, ConvertError, KeyParseError, KeyParseResult,
+};
+use crate::graph_config::{
+    ColumnSpec, DirectionSpec, IngestedType, TableFormat, TableSpec, TimeSpec, WeightSpec,
+};
+pub use crate::io::Dest;
+use crate::io::{
+    build_input_transfer, download_cloud_bytes, is_cloud_path, require_local_output,
+    resolve_local_paths, OutputSink, OutputTarget,
+};
+pub use crate::io::{build_transfer_for_cloud_path, object_path_from_cloud_url};
 use crate::mapping::{
     write_pk_data_entry, write_pk_data_header, Key, KeyType, PkDataAdvice, PkHashShard,
     PkHashStore, PkPtrHash,
@@ -33,15 +43,12 @@ pub use crate::scratch::{
     estimate_pk_map_bytes, estimate_varbytes_avg_len_multi, new_pk_map, reserve_map,
     EdgeMapScratch, PkMapHashMap, PkMapHasher, PkMapScratch,
 };
-pub use crate::stats::{
-    IngestReport, IngestStats, KeyFailureCounts, KeyFailureState, PerfStats,
-};
-use crate::graph_config::{
-    ColumnSpec, DirectionSpec, IngestedType, TableFormat, TableSpec, TimeSpec, WeightSpec,
-};
+pub use crate::stats::{IngestReport, IngestStats, KeyFailureCounts, KeyFailureState, PerfStats};
 use anyhow::{anyhow, Context, Result};
 use arrow_array::{Array, ArrayRef};
 use arrow_schema::{DataType, Field, Schema};
+use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine;
 use diskgraph_core::metadata::{
     DatasetMetadata, EdgeRelationMetadata, EdgeShardMetadata, EdgeSortKeyMetadata,
     EdgeSortKeyTimestampEncoding, EdgeSortKeyTimestampKind, EdgeSortKeyTimestampMetadata,
@@ -49,46 +56,36 @@ use diskgraph_core::metadata::{
     NodeDataCompression, NodeShardMetadata, NodeTypeMetadata, PrimaryKeyMap,
 };
 use diskgraph_fs::CloudTransfer;
-use crate::io::{
-    build_input_transfer, download_cloud_bytes, is_cloud_path, resolve_local_paths, OutputTarget, OutputSink, require_local_output,
-};
-pub use crate::io::{
-    build_transfer_for_cloud_path, object_path_from_cloud_url,
-};
-use diskgraph_rowpack::{
-    BinaryStringHint, IngestedType as RowpackType, RowAccess, RowAccessHints, RowAccessStats, RowPackConfig,
-    RowPackContextBuilder, RowPackEncoder, RowPackRowLens,
-};
 use diskgraph_index::builder::{EdgeBufferPool as IndexEdgeBufferPool, MemoryBudget};
-use diskgraph_index::graph::{
-    GraphDataSource, GraphIndexBuilder, GraphProgressSink,
+use diskgraph_index::graph::{GraphDataSource, GraphIndexBuilder, GraphProgressSink};
+use diskgraph_rowpack::{
+    BinaryStringHint, IngestedType as RowpackType, RowAccess, RowAccessHints, RowAccessStats,
+    RowPackConfig, RowPackContextBuilder, RowPackEncoder, RowPackRowLens,
 };
-use lz4_flex::frame::{FrameDecoder, FrameEncoder};
-use ptr_hash::PtrHashScratch;
+use epserde::prelude::Serialize as EpSerialize;
 use fasteval::{eval_compiled_ref, Compiler, Evaler, Parser, Slab};
+use gxhash::GxHasher;
 use half::f16;
+use lz4_flex::frame::{FrameDecoder, FrameEncoder};
 use memmap2::Mmap;
 use num_traits::{Signed, ToPrimitive};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use pprof::protos::Message;
 use pprof::ProfilerGuard;
-use serde_json::Value as JsonValue;
-use gxhash::GxHasher;
-use epserde::prelude::Serialize as EpSerialize;
 use ptr_hash::DefaultPtrHash;
-use std::fs;
-use std::io::{self as std_io, BufWriter, Cursor, Read, Write};
-use std::hash::{Hash, Hasher};
-use std::path::{Path, PathBuf};
-#[cfg(target_os = "linux")]
-use std::os::unix::io::AsRawFd;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use ptr_hash::PtrHashScratch;
+use serde_json::Value as JsonValue;
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
+use std::fs;
+use std::hash::{Hash, Hasher};
+use std::io::{self as std_io, BufWriter, Cursor, Read, Write};
+#[cfg(target_os = "linux")]
+use std::os::unix::io::AsRawFd;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use base64::engine::general_purpose::STANDARD as BASE64;
-use base64::Engine;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use uuid_simd::{parse_hyphenated, parse_simple, AsOut};
 
 pub use graph_config::GraphConfig;
@@ -212,7 +209,9 @@ pub fn ingest_with_stats_from_source(
     ctx.set_peak_stage(Some(3));
     let edges_map_start = std::time::Instant::now();
     if let Some(profile_dir) = &profile_dir {
-        profile_phase(profile_dir, "edges_map", || ctx.build_edges_mapped(&edge_ctx))?;
+        profile_phase(profile_dir, "edges_map", || {
+            ctx.build_edges_mapped(&edge_ctx)
+        })?;
     } else {
         ctx.build_edges_mapped(&edge_ctx)?;
     }
@@ -226,7 +225,9 @@ pub fn ingest_with_stats_from_source(
     let index_start = std::time::Instant::now();
     let index_metadata = ctx.build_index_metadata()?;
     if let Some(profile_dir) = &profile_dir {
-        profile_phase(profile_dir, "index", || ctx.build_index(index_metadata.clone()))?;
+        profile_phase(profile_dir, "index", || {
+            ctx.build_index(index_metadata.clone())
+        })?;
     } else {
         ctx.build_index(index_metadata.clone())?;
     }
@@ -574,16 +575,7 @@ fn spawn_background_delete(path: PathBuf) {
 fn spawn_delete_process(path: &Path) -> std_io::Result<()> {
     let mut cmd = if command_exists("ionice") {
         let mut cmd = Command::new("ionice");
-        cmd.args([
-            "-c3",
-            "-n7",
-            "nice",
-            "-n",
-            "19",
-            "rm",
-            "-rf",
-            "--",
-        ]);
+        cmd.args(["-c3", "-n7", "nice", "-n", "19", "rm", "-rf", "--"]);
         cmd.arg(path);
         cmd
     } else if command_exists("nice") {
@@ -772,6 +764,7 @@ struct SortKeyComponentInfo {
     spec: SortKeyComponentSpec,
 }
 
+#[allow(clippy::large_enum_variant)]
 enum SortKeyComponentEncoder {
     Timestamp {
         column_idx: usize,
@@ -852,19 +845,22 @@ fn build_relation_sort_key_config(spec: &DirectionSpec) -> Option<RelationSortKe
 fn build_sort_key_metadata(cfg: &RelationSortKeyConfig) -> EdgeSortKeyMetadata {
     EdgeSortKeyMetadata {
         width_bits: cfg.width_bits,
-        timestamp: cfg.timestamp.as_ref().map(|ts| EdgeSortKeyTimestampMetadata {
-            table: ts.table.clone(),
-            column: ts.column.clone(),
-            encoding: EdgeSortKeyTimestampEncoding {
-                kind: match ts.encoding.kind {
-                    TimestampEncodingKind::Int8 => EdgeSortKeyTimestampKind::Int8,
-                    TimestampEncodingKind::Int16 => EdgeSortKeyTimestampKind::Int16,
-                    TimestampEncodingKind::Int32 => EdgeSortKeyTimestampKind::Int32,
+        timestamp: cfg
+            .timestamp
+            .as_ref()
+            .map(|ts| EdgeSortKeyTimestampMetadata {
+                table: ts.table.clone(),
+                column: ts.column.clone(),
+                encoding: EdgeSortKeyTimestampEncoding {
+                    kind: match ts.encoding.kind {
+                        TimestampEncodingKind::Int8 => EdgeSortKeyTimestampKind::Int8,
+                        TimestampEncodingKind::Int16 => EdgeSortKeyTimestampKind::Int16,
+                        TimestampEncodingKind::Int32 => EdgeSortKeyTimestampKind::Int32,
+                    },
+                    anchor: ts.encoding.anchor,
+                    step: ts.encoding.step,
                 },
-                anchor: ts.encoding.anchor,
-                step: ts.encoding.step,
-            },
-        }),
+            }),
         weight: cfg.weight.as_ref().map(|w| EdgeSortKeyWeightMetadata {
             table: w.table.clone(),
             expr: w.expr.clone(),
@@ -883,15 +879,14 @@ fn build_sort_key_metadata(cfg: &RelationSortKeyConfig) -> EdgeSortKeyMetadata {
 
 fn rewrite_weight_expr(expr: &str) -> Result<(String, std::collections::HashMap<String, String>)> {
     let mut out = String::new();
-    let mut map: std::collections::HashMap<String, String> =
-        std::collections::HashMap::new();
+    let mut map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     let mut chars = expr.chars().peekable();
     let mut idx = 0usize;
     while let Some(ch) = chars.next() {
         if ch == '`' {
             let mut name = String::new();
             let mut escaped = false;
-            while let Some(c) = chars.next() {
+            for c in chars.by_ref() {
                 if escaped {
                     match c {
                         'n' => name.push('\n'),
@@ -1004,23 +999,16 @@ fn access_value_to_f64(
         }
         IngestedType::Decimal256 => {
             let scale = scale.unwrap_or(0);
-            access
-                .get_decimal256(idx)
-                .ok()
-                .flatten()
-                .and_then(|v| {
-                    let num = num_bigint::BigInt::from_signed_bytes_le(&v);
-                    num.to_f64().map(|f| f / 10_f64.powi(scale))
-                })
+            access.get_decimal256(idx).ok().flatten().and_then(|v| {
+                let num = num_bigint::BigInt::from_signed_bytes_le(&v);
+                num.to_f64().map(|f| f / 10_f64.powi(scale))
+            })
         }
         _ => None,
     }
 }
 
-pub(crate) fn encode_timestamp_value(
-    value: Option<i64>,
-    encoding: &TimestampEncodingSpec,
-) -> u64 {
+pub(crate) fn encode_timestamp_value(value: Option<i64>, encoding: &TimestampEncodingSpec) -> u64 {
     let step = encoding.step.max(1);
     let raw = value.unwrap_or(i64::MIN);
     let delta = raw.saturating_sub(encoding.anchor).div_euclid(step);
@@ -1083,7 +1071,10 @@ fn encode_weight_value(value: Option<f64>, encoding: &WeightEncodingSpec) -> u64
     }
 }
 
-fn eval_weight_expr(expr: &mut WeightExprRuntime, access: &mut RowAccess<'_>) -> Result<Option<f64>> {
+fn eval_weight_expr(
+    expr: &mut WeightExprRuntime,
+    access: &mut RowAccess<'_>,
+) -> Result<Option<f64>> {
     if let Some(idx) = expr.simple_idx {
         return Ok(access_value_to_f64(
             access,
@@ -1122,7 +1113,7 @@ fn build_sort_key_batchers_for_node_table(
         if let Some(ts) = &cfg.timestamp {
             if ts.table == table.name {
                 let idx = column_index(table, &ts.column)?;
-                let width_bytes = (timestamp_width_bits(&ts.encoding.kind) / 8) as u8;
+                let width_bytes = timestamp_width_bits(&ts.encoding.kind) / 8;
                 batchers.push(SortKeyComponentBatcher::new(
                     std::sync::Arc::<str>::from(rel.name.clone()),
                     SortKeyComponentKind::Timestamp,
@@ -1140,7 +1131,7 @@ fn build_sort_key_batchers_for_node_table(
         if let Some(weight) = &cfg.weight {
             if weight.table == table.name {
                 let expr = compile_weight_expr(&weight.expr, table)?;
-                let width_bytes = (weight_width_bits(&weight.encoding.dtype) / 8) as u8;
+                let width_bytes = weight_width_bits(&weight.encoding.dtype) / 8;
                 batchers.push(SortKeyComponentBatcher::new(
                     std::sync::Arc::<str>::from(rel.name.clone()),
                     SortKeyComponentKind::Weight,
@@ -1175,7 +1166,7 @@ fn build_sort_key_batchers_for_edge_table(
         if let Some(ts) = &cfg.timestamp {
             if ts.table == table.name {
                 let idx = column_index(table, &ts.column)?;
-                let width_bytes = (timestamp_width_bits(&ts.encoding.kind) / 8) as u8;
+                let width_bytes = timestamp_width_bits(&ts.encoding.kind) / 8;
                 batchers.push(SortKeyComponentBatcher::new(
                     std::sync::Arc::<str>::from(rel.name.clone()),
                     SortKeyComponentKind::Timestamp,
@@ -1193,7 +1184,7 @@ fn build_sort_key_batchers_for_edge_table(
         if let Some(weight) = &cfg.weight {
             if weight.table == table.name {
                 let expr = compile_weight_expr(&weight.expr, table)?;
-                let width_bytes = (weight_width_bits(&weight.encoding.dtype) / 8) as u8;
+                let width_bytes = weight_width_bits(&weight.encoding.dtype) / 8;
                 batchers.push(SortKeyComponentBatcher::new(
                     std::sync::Arc::<str>::from(rel.name.clone()),
                     SortKeyComponentKind::Weight,
@@ -1228,9 +1219,7 @@ impl IngestContext {
     }
 
     fn merge_key_failures(&mut self, state: KeyFailureState) {
-        self.key_parse_failures = self
-            .key_parse_failures
-            .saturating_add(state.parse_failures);
+        self.key_parse_failures = self.key_parse_failures.saturating_add(state.parse_failures);
         self.key_lookup_failures = self
             .key_lookup_failures
             .saturating_add(state.lookup_failures);
@@ -1255,8 +1244,8 @@ impl IngestContext {
         let index_mem_budget_bytes = options
             .index_mem_budget_bytes
             .or_else(default_index_mem_budget_bytes);
-        let index_mem_budget = index_mem_budget_bytes
-            .map(|bytes| std::sync::Arc::new(MemoryBudget::new(bytes)));
+        let index_mem_budget =
+            index_mem_budget_bytes.map(|bytes| std::sync::Arc::new(MemoryBudget::new(bytes)));
         let num_shards = source.num_shards.unwrap_or(1).max(1);
         let mut relation_defs = Vec::new();
         let mut relationships = Vec::new();
@@ -1269,11 +1258,8 @@ impl IngestContext {
             .collect();
 
         // Build table name -> TableSpec map for column lookups
-        let table_map: HashMap<&str, &TableSpec> = source
-            .tables
-            .iter()
-            .map(|t| (t.name.as_str(), t))
-            .collect();
+        let table_map: HashMap<&str, &TableSpec> =
+            source.tables.iter().map(|t| (t.name.as_str(), t)).collect();
 
         // Build FK edge targets for all FK columns
         // Key: "table_name.column_name" -> FkEdgeTarget
@@ -1285,16 +1271,22 @@ impl IngestContext {
                 let fk_col = table.columns.iter().find(|c| c.name == fkey.src_column);
                 let ref_table = table_map.get(fkey.dst_table.as_str());
                 if let (Some(fk_col), Some(ref_table)) = (fk_col, ref_table) {
-                    let pk_name = table_pk_map.get(fkey.dst_table.as_str()).copied().unwrap_or("id");
+                    let pk_name = table_pk_map
+                        .get(fkey.dst_table.as_str())
+                        .copied()
+                        .unwrap_or("id");
                     let pk_col = ref_table.columns.iter().find(|c| c.name == pk_name);
                     if let Some(pk_col) = pk_col {
                         let key = format!("{}.{}", table.name, fkey.src_column);
-                        fk_edge_targets.insert(key, FkEdgeTarget {
-                            ingested_type: fk_col.ingested_dtype.clone(),
-                            target_type: pk_col.ingested_dtype.clone(),
-                            scale: pk_col.scale,
-                            precision: pk_col.precision,
-                        });
+                        fk_edge_targets.insert(
+                            key,
+                            FkEdgeTarget {
+                                ingested_type: fk_col.ingested_dtype.clone(),
+                                target_type: pk_col.ingested_dtype.clone(),
+                                scale: pk_col.scale,
+                                precision: pk_col.precision,
+                            },
+                        );
                     }
                 }
             }
@@ -1302,36 +1294,54 @@ impl IngestContext {
             // Process edge tables
             if let Some(edge) = &table.edge_table {
                 // src_fk column
-                let fk_col = table.columns.iter().find(|c| c.name == edge.src_fk.edge_column);
+                let fk_col = table
+                    .columns
+                    .iter()
+                    .find(|c| c.name == edge.src_fk.edge_column);
                 let ref_table = table_map.get(edge.src_fk.ref_table.as_str());
                 if let (Some(fk_col), Some(ref_table)) = (fk_col, ref_table) {
-                    let pk_name = table_pk_map.get(edge.src_fk.ref_table.as_str()).copied().unwrap_or("id");
+                    let pk_name = table_pk_map
+                        .get(edge.src_fk.ref_table.as_str())
+                        .copied()
+                        .unwrap_or("id");
                     let pk_col = ref_table.columns.iter().find(|c| c.name == pk_name);
                     if let Some(pk_col) = pk_col {
                         let key = format!("{}.{}", table.name, edge.src_fk.edge_column);
-                        fk_edge_targets.insert(key, FkEdgeTarget {
-                            ingested_type: fk_col.ingested_dtype.clone(),
-                            target_type: pk_col.ingested_dtype.clone(),
-                            scale: pk_col.scale,
-                            precision: pk_col.precision,
-                        });
+                        fk_edge_targets.insert(
+                            key,
+                            FkEdgeTarget {
+                                ingested_type: fk_col.ingested_dtype.clone(),
+                                target_type: pk_col.ingested_dtype.clone(),
+                                scale: pk_col.scale,
+                                precision: pk_col.precision,
+                            },
+                        );
                     }
                 }
 
                 // dst_fk column
-                let fk_col = table.columns.iter().find(|c| c.name == edge.dst_fk.edge_column);
+                let fk_col = table
+                    .columns
+                    .iter()
+                    .find(|c| c.name == edge.dst_fk.edge_column);
                 let ref_table = table_map.get(edge.dst_fk.ref_table.as_str());
                 if let (Some(fk_col), Some(ref_table)) = (fk_col, ref_table) {
-                    let pk_name = table_pk_map.get(edge.dst_fk.ref_table.as_str()).copied().unwrap_or("id");
+                    let pk_name = table_pk_map
+                        .get(edge.dst_fk.ref_table.as_str())
+                        .copied()
+                        .unwrap_or("id");
                     let pk_col = ref_table.columns.iter().find(|c| c.name == pk_name);
                     if let Some(pk_col) = pk_col {
                         let key = format!("{}.{}", table.name, edge.dst_fk.edge_column);
-                        fk_edge_targets.insert(key, FkEdgeTarget {
-                            ingested_type: fk_col.ingested_dtype.clone(),
-                            target_type: pk_col.ingested_dtype.clone(),
-                            scale: pk_col.scale,
-                            precision: pk_col.precision,
-                        });
+                        fk_edge_targets.insert(
+                            key,
+                            FkEdgeTarget {
+                                ingested_type: fk_col.ingested_dtype.clone(),
+                                target_type: pk_col.ingested_dtype.clone(),
+                                scale: pk_col.scale,
+                                precision: pk_col.precision,
+                            },
+                        );
                     }
                 }
             }
@@ -1341,7 +1351,10 @@ impl IngestContext {
         for table in &source.tables {
             for fkey in &table.fkeys {
                 // Get the destination table's primary key
-                let dst_pk = table_pk_map.get(fkey.dst_table.as_str()).copied().unwrap_or("id");
+                let dst_pk = table_pk_map
+                    .get(fkey.dst_table.as_str())
+                    .copied()
+                    .unwrap_or("id");
 
                 // Build relationship name: {src_table}_{src_column}_to_{dst_table}_{dst_pk}
                 let base = format!(
@@ -1480,7 +1493,7 @@ impl IngestContext {
                             delta: 0,
                             total: Some(table.get_paths().len() as u64),
                             status: None,
-});
+                        });
                     }
                     let rowpack_config = rowpack_config_for_table(rowpack_cfg.as_ref(), &table);
                     let node_columns = rowpack_columns(&table)?;
@@ -1514,7 +1527,11 @@ impl IngestContext {
                                 if let Some(pooled) = pooled {
                                     let bytes = pooled.bytes();
                                     let builder = ParquetRecordBatchReaderBuilder::try_new(bytes)?;
-                                    validate_parquet_column_types(builder.schema(), &table.columns, path)?;
+                                    validate_parquet_column_types(
+                                        builder.schema(),
+                                        &table.columns,
+                                        path,
+                                    )?;
                                     let reader =
                                         builder.with_batch_size(NODE_BATCH_SIZE).build()?;
                                     for batch in reader {
@@ -1547,7 +1564,11 @@ impl IngestContext {
                                         .with_context(|| format!("open {}", path))?;
                                     advise_file_willneed(&file);
                                     let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
-                                    validate_parquet_column_types(builder.schema(), &table.columns, path)?;
+                                    validate_parquet_column_types(
+                                        builder.schema(),
+                                        &table.columns,
+                                        path,
+                                    )?;
                                     let reader =
                                         builder.with_batch_size(NODE_BATCH_SIZE).build()?;
                                     for batch in reader {
@@ -1653,7 +1674,7 @@ impl IngestContext {
                                 delta: 1,
                                 total: Some(table.get_paths().len() as u64),
                                 status: None,
-});
+                            });
                         }
                         if reached_limit {
                             break 'file_loop;
@@ -1672,7 +1693,7 @@ impl IngestContext {
                             delta: 0,
                             total: Some(processed_paths.max(1)),
                             status: None,
-});
+                        });
                     }
                     tx.send(Ok((
                         table.name.clone(),
@@ -1697,7 +1718,6 @@ impl IngestContext {
         Ok(())
     }
 
-
     fn build_temp_shards(&mut self) -> Result<()> {
         let root = require_local_output(&self.target)?.to_path_buf();
         let temp_root = root.join(TEMP_DIR_NAME);
@@ -1720,8 +1740,10 @@ impl IngestContext {
         let num_shards = self.num_shards;
         let target = std::sync::Arc::clone(&self.target);
         let node_pool = NodeWritePool::new(std::sync::Arc::clone(&target), edge_writer_workers());
-        let edge_pool = EdgeSrcWritePool::new(std::sync::Arc::clone(&target), edge_writer_workers());
-        let dest_key_pool = DestKeyWritePool::new(std::sync::Arc::clone(&target), edge_writer_workers());
+        let edge_pool =
+            EdgeSrcWritePool::new(std::sync::Arc::clone(&target), edge_writer_workers());
+        let dest_key_pool =
+            DestKeyWritePool::new(std::sync::Arc::clone(&target), edge_writer_workers());
         let sort_key_pool =
             SortKeyWritePool::new(std::sync::Arc::clone(&target), edge_writer_workers());
         let node_senders = node_pool.senders();
@@ -1743,7 +1765,7 @@ impl IngestContext {
                     delta: 0,
                     total: Some(table.get_paths().len() as u64),
                     status: None,
-});
+                });
             }
             let table = table.clone();
             let relationships = relationships.clone();
@@ -1849,7 +1871,10 @@ impl IngestContext {
                 table_rows.insert(result.table.clone(), result.total_rows);
             }
             if result.node_data_dropped > 0 {
-                let entry = self.dropped_rows_counts.entry(result.table.clone()).or_insert(0);
+                let entry = self
+                    .dropped_rows_counts
+                    .entry(result.table.clone())
+                    .or_insert(0);
                 *entry = entry.saturating_add(result.node_data_dropped);
             }
             self.merge_key_failures(result.key_failures);
@@ -1867,7 +1892,7 @@ impl IngestContext {
                     delta: 0,
                     total: Some(expected),
                     status: None,
-});
+                });
             }
         }
         drop(node_senders);
@@ -1884,13 +1909,13 @@ impl IngestContext {
         Ok(())
     }
 
-
     fn refresh_shard_rows_from_stats(&mut self, stats: &NodeWriterStats) {
         for table in &self.source.tables {
             if table.edge_table.is_some() {
                 continue;
             }
             let mut shard_rows = vec![0u64; self.num_shards];
+            #[allow(clippy::needless_range_loop)]
             for shard in 0..self.num_shards {
                 let key = (table.name.clone(), shard);
                 if let Some(count) = stats.node_rows.get(&key) {
@@ -2043,6 +2068,7 @@ impl IngestContext {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn build_temp_node_file(
         table: &TableSpec,
         relationships: &[RelationshipRuntime],
@@ -2061,7 +2087,10 @@ impl IngestContext {
         sort_key_senders: &std::sync::Arc<Vec<std::sync::mpsc::SyncSender<SortKeyWriteMessage>>>,
         fk_edge_targets: &HashMap<String, FkEdgeTarget>,
     ) -> Result<TempNodeFileResult> {
-        let pk_col = table.primary_key.as_ref().and_then(|pk| column_spec(table, pk).ok());
+        let pk_col = table
+            .primary_key
+            .as_ref()
+            .and_then(|pk| column_spec(table, pk).ok());
         let pk_idx = table
             .primary_key
             .as_ref()
@@ -2170,7 +2199,10 @@ impl IngestContext {
                 for row in 0..$batch.num_rows() {
                     access.set_row(row);
                     total_rows += 1;
-                    let timestamp_valid = validity_array.as_ref().map(|a| a.is_valid(row)).unwrap_or(true);
+                    let timestamp_valid = validity_array
+                        .as_ref()
+                        .map(|a| a.is_valid(row))
+                        .unwrap_or(true);
                     if !timestamp_valid && pk_idx.is_none() {
                         node_data_dropped += 1;
                     }
@@ -2230,8 +2262,8 @@ impl IngestContext {
                         }
                         drop(pooled);
                     } else {
-                        let file = fs::File::open(path)
-                            .with_context(|| format!("open {}", path))?;
+                        let file =
+                            fs::File::open(path).with_context(|| format!("open {}", path))?;
                         advise_file_willneed(&file);
                         let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
                         validate_parquet_column_types(builder.schema(), &table.columns, path)?;
@@ -2251,8 +2283,7 @@ impl IngestContext {
                         }
                     }
                 } else {
-                    let file = fs::File::open(path)
-                        .with_context(|| format!("open {}", path))?;
+                    let file = fs::File::open(path).with_context(|| format!("open {}", path))?;
                     advise_file_willneed(&file);
                     let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
                     validate_parquet_column_types(builder.schema(), &table.columns, path)?;
@@ -2297,11 +2328,11 @@ impl IngestContext {
                         }
                         drop(pooled);
                     } else {
-                        let file = fs::File::open(path)
-                            .with_context(|| format!("open {}", path))?;
+                        let file =
+                            fs::File::open(path).with_context(|| format!("open {}", path))?;
                         advise_file_willneed(&file);
-                        let builder = arrow_csv::ReaderBuilder::new(Arc::new(schema))
-                            .with_header(true);
+                        let builder =
+                            arrow_csv::ReaderBuilder::new(Arc::new(schema)).with_header(true);
                         let reader = builder.build(file)?;
                         for batch in reader {
                             let batch = batch?;
@@ -2318,11 +2349,9 @@ impl IngestContext {
                         }
                     }
                 } else {
-                    let file = fs::File::open(path)
-                        .with_context(|| format!("open {}", path))?;
+                    let file = fs::File::open(path).with_context(|| format!("open {}", path))?;
                     advise_file_willneed(&file);
-                    let builder =
-                        arrow_csv::ReaderBuilder::new(Arc::new(schema)).with_header(true);
+                    let builder = arrow_csv::ReaderBuilder::new(Arc::new(schema)).with_header(true);
                     let reader = builder.build(file)?;
                     for batch in reader {
                         let batch = batch?;
@@ -2354,7 +2383,7 @@ impl IngestContext {
                 delta: 1,
                 total: Some(table.get_paths().len() as u64),
                 status: None,
-});
+            });
         }
         Ok(TempNodeFileResult {
             total_rows,
@@ -2362,6 +2391,7 @@ impl IngestContext {
         })
     }
 
+    #[allow(clippy::too_many_arguments, clippy::ptr_arg)]
     fn write_node_row_from_access(
         table: &TableSpec,
         pk_idx: Option<usize>,
@@ -2418,7 +2448,9 @@ impl IngestContext {
         } else {
             (*row_id as usize) % num_shards
         };
-        for (i, (_rel_name, rel_idx, _rel_pos, _fk_col_name, target_type)) in rel_specs.iter().enumerate() {
+        for (i, (_rel_name, rel_idx, _rel_pos, _fk_col_name, target_type)) in
+            rel_specs.iter().enumerate()
+        {
             let col = table
                 .columns
                 .get(*rel_idx)
@@ -2464,12 +2496,7 @@ impl IngestContext {
             node_bool_start = sink.bools.len();
             node_data_start = sink.data.len();
             let lens = encoder.encode_row_from_access_into_buffers(
-                access,
-                sink.tags,
-                sink.bools,
-                sink.data,
-                f16_buf,
-                key_bufs,
+                access, sink.tags, sink.bools, sink.data, f16_buf, key_bufs,
             )?;
             let row_len = lens
                 .tag_bytes
@@ -2510,6 +2537,7 @@ impl IngestContext {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn build_temp_edge_file(
         table: &TableSpec,
         file_idx: usize,
@@ -2602,7 +2630,10 @@ impl IngestContext {
 
                 for row in 0..$batch.num_rows() {
                     access.set_row(row);
-                    let timestamp_valid = validity_array.as_ref().map(|a| a.is_valid(row)).unwrap_or(true);
+                    let timestamp_valid = validity_array
+                        .as_ref()
+                        .map(|a| a.is_valid(row))
+                        .unwrap_or(true);
                     let src_key_pre = src_keys_pre.as_ref().and_then(|v| v[row].as_ref());
                     let dst_key_pre = dst_keys_pre.as_ref().and_then(|v| v[row].as_ref());
 
@@ -2654,8 +2685,10 @@ impl IngestContext {
                                 cols.push(batch.column(idx).clone());
                             }
                             access.set_cols(&cols);
-                            let src_fast = edge_fast_path_for_array(&cols[src_fk_idx], src_target_type);
-                            let dst_fast = edge_fast_path_for_array(&cols[dst_fk_idx], dst_target_type);
+                            let src_fast =
+                                edge_fast_path_for_array(&cols[src_fk_idx], src_target_type);
+                            let dst_fast =
+                                edge_fast_path_for_array(&cols[dst_fk_idx], dst_target_type);
                             let mut src_key_buf = Vec::new();
                             let mut dst_key_buf = Vec::new();
                             let mut forward_row = Vec::new();
@@ -2671,8 +2704,8 @@ impl IngestContext {
                         }
                         drop(pooled);
                     } else {
-                        let file = fs::File::open(path)
-                            .with_context(|| format!("open {}", path))?;
+                        let file =
+                            fs::File::open(path).with_context(|| format!("open {}", path))?;
                         advise_file_willneed(&file);
                         let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
                         validate_parquet_column_types(builder.schema(), &table.columns, path)?;
@@ -2688,8 +2721,10 @@ impl IngestContext {
                                 cols.push(batch.column(idx).clone());
                             }
                             access.set_cols(&cols);
-                            let src_fast = edge_fast_path_for_array(&cols[src_fk_idx], src_target_type);
-                            let dst_fast = edge_fast_path_for_array(&cols[dst_fk_idx], dst_target_type);
+                            let src_fast =
+                                edge_fast_path_for_array(&cols[src_fk_idx], src_target_type);
+                            let dst_fast =
+                                edge_fast_path_for_array(&cols[dst_fk_idx], dst_target_type);
                             let mut src_key_buf = Vec::new();
                             let mut dst_key_buf = Vec::new();
                             let mut forward_row = Vec::new();
@@ -2705,8 +2740,7 @@ impl IngestContext {
                         }
                     }
                 } else {
-                    let file = fs::File::open(path)
-                        .with_context(|| format!("open {}", path))?;
+                    let file = fs::File::open(path).with_context(|| format!("open {}", path))?;
                     advise_file_willneed(&file);
                     let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
                     validate_parquet_column_types(builder.schema(), &table.columns, path)?;
@@ -2724,24 +2758,24 @@ impl IngestContext {
                         access.set_cols(&cols);
                         let src_fast = edge_fast_path_for_array(&cols[src_fk_idx], src_target_type);
                         let dst_fast = edge_fast_path_for_array(&cols[dst_fk_idx], dst_target_type);
-                            let mut src_key_buf = Vec::new();
-                            let mut dst_key_buf = Vec::new();
-                            let mut forward_row = Vec::new();
-                            process_edge_batch!(
-                                batch,
-                                &cols,
-                                src_fast,
-                                dst_fast,
-                                &mut src_key_buf,
-                                &mut dst_key_buf,
-                                &mut forward_row
-                            );
-                        }
+                        let mut src_key_buf = Vec::new();
+                        let mut dst_key_buf = Vec::new();
+                        let mut forward_row = Vec::new();
+                        process_edge_batch!(
+                            batch,
+                            &cols,
+                            src_fast,
+                            dst_fast,
+                            &mut src_key_buf,
+                            &mut dst_key_buf,
+                            &mut forward_row
+                        );
                     }
-            },
+                }
+            }
             TableFormat::Csv => {
-                let builder = arrow_csv::ReaderBuilder::new(Arc::new(schema.clone()))
-                    .with_header(true);
+                let builder =
+                    arrow_csv::ReaderBuilder::new(Arc::new(schema.clone())).with_header(true);
                 if let Some(transfer) = &input_transfer {
                     if is_cloud_path(path) {
                         let pooled = download_cloud_bytes(transfer, path)?;
@@ -2759,8 +2793,10 @@ impl IngestContext {
                                 cols.push(batch.column(idx).clone());
                             }
                             access.set_cols(&cols);
-                            let src_fast = edge_fast_path_for_array(&cols[src_fk_idx], src_target_type);
-                            let dst_fast = edge_fast_path_for_array(&cols[dst_fk_idx], dst_target_type);
+                            let src_fast =
+                                edge_fast_path_for_array(&cols[src_fk_idx], src_target_type);
+                            let dst_fast =
+                                edge_fast_path_for_array(&cols[dst_fk_idx], dst_target_type);
                             let mut src_key_buf = Vec::new();
                             let mut dst_key_buf = Vec::new();
                             let mut forward_row = Vec::new();
@@ -2776,8 +2812,8 @@ impl IngestContext {
                         }
                         drop(pooled);
                     } else {
-                        let file = fs::File::open(path)
-                            .with_context(|| format!("open {}", path))?;
+                        let file =
+                            fs::File::open(path).with_context(|| format!("open {}", path))?;
                         advise_file_willneed(&file);
                         let reader = builder.build(file)?;
                         for batch in reader {
@@ -2791,8 +2827,10 @@ impl IngestContext {
                                 cols.push(batch.column(idx).clone());
                             }
                             access.set_cols(&cols);
-                            let src_fast = edge_fast_path_for_array(&cols[src_fk_idx], src_target_type);
-                            let dst_fast = edge_fast_path_for_array(&cols[dst_fk_idx], dst_target_type);
+                            let src_fast =
+                                edge_fast_path_for_array(&cols[src_fk_idx], src_target_type);
+                            let dst_fast =
+                                edge_fast_path_for_array(&cols[dst_fk_idx], dst_target_type);
                             let mut src_key_buf = Vec::new();
                             let mut dst_key_buf = Vec::new();
                             let mut forward_row = Vec::new();
@@ -2808,8 +2846,7 @@ impl IngestContext {
                         }
                     }
                 } else {
-                    let file = fs::File::open(path)
-                        .with_context(|| format!("open {}", path))?;
+                    let file = fs::File::open(path).with_context(|| format!("open {}", path))?;
                     advise_file_willneed(&file);
                     let reader = builder.build(file)?;
                     for batch in reader {
@@ -2855,12 +2892,12 @@ impl IngestContext {
                 delta: 1,
                 total: Some(table.get_paths().len() as u64),
                 status: None,
-});
+            });
         }
         Ok(0)
     }
 
-
+    #[allow(clippy::too_many_arguments)]
     fn write_edge_row_from_access(
         src_idx: usize,
         dst_idx: usize,
@@ -2898,7 +2935,9 @@ impl IngestContext {
                 );
                 return Ok(());
             }
-        } else if key_from_access_into_buf(access, src_idx, src_col, src_target_type, src_key_buf).is_err() {
+        } else if key_from_access_into_buf(access, src_idx, src_col, src_target_type, src_key_buf)
+            .is_err()
+        {
             record_key_parse_failure_sample(
                 &mut key_failures.parse_failures,
                 &mut key_failures.samples,
@@ -2920,7 +2959,9 @@ impl IngestContext {
                 );
                 return Ok(());
             }
-        } else if key_from_access_into_buf(access, dst_idx, dst_col, dst_target_type, dst_key_buf).is_err() {
+        } else if key_from_access_into_buf(access, dst_idx, dst_col, dst_target_type, dst_key_buf)
+            .is_err()
+        {
             record_key_parse_failure_sample(
                 &mut key_failures.parse_failures,
                 &mut key_failures.samples,
@@ -2933,7 +2974,12 @@ impl IngestContext {
         let forward_shard = shard_for_key(src_key_buf, num_shards);
         let dst_shard = shard_for_key(dst_key_buf, num_shards);
         forward_row.clear();
-        forward_row.reserve(src_key_buf.len().saturating_add(dst_key_buf.len()).saturating_add(4));
+        forward_row.reserve(
+            src_key_buf
+                .len()
+                .saturating_add(dst_key_buf.len())
+                .saturating_add(4),
+        );
         append_key_bytes_with_len_prefix(forward_row, src_key_buf, src_col, src_target_type)?;
         append_key_bytes_with_len_prefix(forward_row, dst_key_buf, dst_col, dst_target_type)?;
         batcher.push(forward_shard, forward_row, timestamp_valid)?;
@@ -2962,8 +3008,7 @@ impl IngestContext {
         let mut pk_hash_handles: HashMap<
             String,
             std::sync::Arc<std::sync::Mutex<Vec<Option<PkHashPaths>>>>,
-        > =
-            HashMap::new();
+        > = HashMap::new();
         for table in &self.source.tables {
             if table.edge_table.is_some() || table.primary_key.is_none() {
                 continue;
@@ -2979,10 +3024,8 @@ impl IngestContext {
             });
             let pk_name = table.primary_key.clone().unwrap();
             let pk_col = column_spec(table, &pk_name)?;
-            let pk_hash_paths = std::sync::Arc::new(std::sync::Mutex::new(vec![
-                None;
-                self.num_shards
-            ]));
+            let pk_hash_paths =
+                std::sync::Arc::new(std::sync::Mutex::new(vec![None; self.num_shards]));
             pk_hash_handles.insert(table.name.clone(), std::sync::Arc::clone(&pk_hash_paths));
             let num_shards = self.num_shards as u64;
             for shard in 0..self.num_shards {
@@ -3786,7 +3829,7 @@ impl IngestContext {
             }
         }
         let pool = self.make_pool::<PkMapScratch>();
-        let run_result = run_tasks(tasks.drain(..).collect(), &pool);
+        let run_result = run_tasks(std::mem::take(&mut tasks), &pool);
         run_result?;
         for table in &self.source.tables {
             if table.edge_table.is_some() || table.primary_key.is_none() {
@@ -3854,8 +3897,7 @@ impl IngestContext {
                 fs::create_dir_all(parent)?;
             }
         }
-        let mut hash_writer =
-            BufWriter::with_capacity(4 * 1024 * 1024, target.sink(&hash_path)?);
+        let mut hash_writer = BufWriter::with_capacity(4 * 1024 * 1024, target.sink(&hash_path)?);
         mphf.serialize(&mut hash_writer)?;
         hash_writer.flush()?;
         let hash_sink = hash_writer
@@ -3863,8 +3905,7 @@ impl IngestContext {
             .map_err(|_| anyhow!("pk hash flush failed"))?;
         hash_sink.finish()?;
 
-        let mut data_writer =
-            BufWriter::with_capacity(4 * 1024 * 1024, target.sink(&data_path)?);
+        let mut data_writer = BufWriter::with_capacity(4 * 1024 * 1024, target.sink(&data_path)?);
         write_pk_data_header(&mut data_writer, key_type, entries.len() as u64)?;
         for (_key_hash, value) in entries {
             write_pk_data_entry(&mut data_writer, *value)?;
@@ -3900,13 +3941,7 @@ impl IngestContext {
                         width_bits: weight_width_bits(&w.encoding.dtype),
                     },
                 });
-                rel_sort_keys.insert(
-                    rel.name.clone(),
-                    RelationSortKeyInfo {
-                        timestamp,
-                        weight,
-                    },
-                );
+                rel_sort_keys.insert(rel.name.clone(), RelationSortKeyInfo { timestamp, weight });
             }
         }
         let mut max_ids = HashMap::new();
@@ -3926,7 +3961,10 @@ impl IngestContext {
         let mut sort_key_total_bytes = 0u64;
         let mut sort_key_edge_bytes = 0u64;
         let mut sort_key_dest_bytes = 0u64;
-        for lookup in rel_sort_lookups.values().filter_map(|lookup| lookup.as_ref()) {
+        for lookup in rel_sort_lookups
+            .values()
+            .filter_map(|lookup| lookup.as_ref())
+        {
             sort_key_total_bytes = sort_key_total_bytes.saturating_add(lookup.total_bytes());
             sort_key_edge_bytes = sort_key_edge_bytes.saturating_add(lookup.edge_bytes());
             sort_key_dest_bytes = sort_key_dest_bytes.saturating_add(lookup.dest_bytes());
@@ -4010,7 +4048,6 @@ impl IngestContext {
         let mut tasks = Vec::with_capacity(shard_jobs.len());
         for (table_name, shard_idx, key_type, hash_path, data_path) in shard_jobs {
             let tx = tx.clone();
-            let data_advice = data_advice;
             tasks.push(WorkItem {
                 bucket: None,
                 run: Box::new(move |_scratch| {
@@ -4029,13 +4066,20 @@ impl IngestContext {
             tables.insert(table_name, shards);
         }
         for _ in 0..tables.values().map(|v| v.len()).sum::<usize>() {
-            match rx.recv().map_err(|e| anyhow!("pk hash output error: {e}"))? {
+            match rx
+                .recv()
+                .map_err(|e| anyhow!("pk hash output error: {e}"))?
+            {
                 Ok((table_name, shard_idx, shard)) => {
                     let entry = tables
                         .get_mut(&table_name)
                         .ok_or_else(|| anyhow!("pk hash table missing {}", table_name))?;
                     if shard_idx >= entry.len() {
-                        return Err(anyhow!("pk hash shard out of range {}:{}", table_name, shard_idx));
+                        return Err(anyhow!(
+                            "pk hash shard out of range {}:{}",
+                            table_name,
+                            shard_idx
+                        ));
                     }
                     entry[shard_idx] = Some(shard);
                 }
@@ -4046,9 +4090,8 @@ impl IngestContext {
         for (table_name, shards) in tables {
             let mut resolved = Vec::with_capacity(shards.len());
             for shard in shards {
-                resolved.push(
-                    shard.ok_or_else(|| anyhow!("missing pk hash shard {}", table_name))?,
-                );
+                resolved
+                    .push(shard.ok_or_else(|| anyhow!("missing pk hash shard {}", table_name))?);
             }
             final_tables.insert(table_name, resolved);
         }
@@ -4063,7 +4106,8 @@ impl IngestContext {
     ) -> Result<HashMap<String, Option<std::sync::Arc<SortKeyLookup>>>> {
         let edge_tables = std::sync::Arc::new(edge_tables.clone());
         let rel_sort_keys = std::sync::Arc::new(rel_sort_keys.clone());
-        let (tx, rx) = std::sync::mpsc::channel::<Result<(String, Option<std::sync::Arc<SortKeyLookup>>)>>();
+        let (tx, rx) =
+            std::sync::mpsc::channel::<Result<(String, Option<std::sync::Arc<SortKeyLookup>>)>>();
         let mut tasks = Vec::with_capacity(self.relation_defs.len());
         for rel in &self.relation_defs {
             let rel_name = rel.name.clone();
@@ -4093,7 +4137,10 @@ impl IngestContext {
         run_tasks(tasks, &pool)?;
         let mut lookups = HashMap::with_capacity(self.relation_defs.len());
         for _ in 0..self.relation_defs.len() {
-            match rx.recv().map_err(|e| anyhow!("sort key output error: {e}"))? {
+            match rx
+                .recv()
+                .map_err(|e| anyhow!("sort key output error: {e}"))?
+            {
                 Ok((rel_name, lookup)) => {
                     lookups.insert(rel_name, lookup);
                 }
@@ -4102,7 +4149,6 @@ impl IngestContext {
         }
         Ok(lookups)
     }
-
 
     fn build_edges_mapped(&mut self, edge_ctx: &EdgeBuildContext) -> Result<()> {
         let root = &edge_ctx.root;
@@ -4171,7 +4217,8 @@ impl IngestContext {
                 let src_fk_col = column_spec(src_table, &rel.src_column)?;
                 // Look up target_type for this FK (keys were written using target_type in encode)
                 let fk_key = format!("{}.{}", rel.src_table, rel.src_column);
-                let fk_target_type = self.fk_edge_targets
+                let fk_target_type = self
+                    .fk_edge_targets
                     .get(&fk_key)
                     .map(|t| t.target_type.clone())
                     .unwrap_or_else(|| src_fk_col.ingested_dtype.clone());
@@ -4217,8 +4264,10 @@ impl IngestContext {
                             let failure_context =
                                 format!("fkey:{}.{}", rel.src_table, rel.src_column);
                             let lookup_context = format!("dst_lookup:{}", rel.name_forward);
-                            let mut result = EdgeMapResult::default();
-                            result.relation = rel.name_forward.clone();
+                            let mut result = EdgeMapResult {
+                                relation: rel.name_forward.clone(),
+                                ..Default::default()
+                            };
                             let src_offsets = shard_offsets
                                 .get(&rel.src_table)
                                 .cloned()
@@ -4227,14 +4276,10 @@ impl IngestContext {
                                 .get(&rel.dst_table)
                                 .cloned()
                                 .unwrap_or_else(|| vec![0; num_shards]);
-                            let forward_sort_bits = rel_sort_bits
-                                .get(&rel.name_forward)
-                                .copied()
-                                .flatten();
-                            let reverse_sort_bits = rel_sort_bits
-                                .get(&rel.name_reverse)
-                                .copied()
-                                .flatten();
+                            let forward_sort_bits =
+                                rel_sort_bits.get(&rel.name_forward).copied().flatten();
+                            let reverse_sort_bits =
+                                rel_sort_bits.get(&rel.name_reverse).copied().flatten();
                             let forward_lookup = rel_sort_lookups
                                 .get(&rel.name_forward)
                                 .and_then(|lookup| lookup.as_ref().map(std::sync::Arc::clone));
@@ -4283,11 +4328,8 @@ impl IngestContext {
                             let mut forward_count = 0u64;
                             let mut reverse_count = 0u64;
                             let mut pk_duplicate_drops = 0u64;
-                            let fkey_path = root.join(temp_fkey_path(
-                                &rel.src_table,
-                                &rel.name_forward,
-                                shard,
-                            ));
+                            let fkey_path =
+                                root.join(temp_fkey_path(&rel.src_table, &rel.name_forward, shard));
                             let bitmap_path = root.join(temp_fkey_bitmap_path(
                                 &rel.src_table,
                                 &rel.name_forward,
@@ -4296,7 +4338,8 @@ impl IngestContext {
                             {
                                 let edge_scratch = scratch;
                                 edge_scratch.key_buf.clear();
-                                let fkey_bitmap = read_fkey_bitmap_mmap(&bitmap_path, meta.row_count)?;
+                                let fkey_bitmap =
+                                    read_fkey_bitmap_mmap(&bitmap_path, meta.row_count)?;
                                 edge_scratch.fkey_bitmap = Some(fkey_bitmap);
                                 let fkey_bitmap = edge_scratch.fkey_bitmap.as_ref().unwrap();
                                 let key_buf = &mut edge_scratch.key_buf;
@@ -4312,7 +4355,7 @@ impl IngestContext {
                                                 delta: pending,
                                                 total: Some(total_rows),
                                                 status: None,
-});
+                                            });
                                         }
                                         pending = 0;
                                     }
@@ -4333,7 +4376,10 @@ impl IngestContext {
                                         return Ok(());
                                     }
                                     let mut data = row;
-                                    let dst_key = match read_key_from_buf_for_type(&mut data, &fk_target_type) {
+                                    let dst_key = match read_key_from_buf_for_type(
+                                        &mut data,
+                                        &fk_target_type,
+                                    ) {
                                         Ok(key) => key,
                                         Err(_) => {
                                             record_key_parse_failure(
@@ -4375,25 +4421,29 @@ impl IngestContext {
                                         .unwrap_or(0)
                                         .saturating_add(dst_local);
                                     let forward_sort_key = match &forward_lookup {
-                                        Some(lookup) => lookup.sort_key(
-                                            dst_shard,
-                                            dst_local,
-                                            shard,
-                                            0,
-                                        )?,
+                                        Some(lookup) => {
+                                            lookup.sort_key(dst_shard, dst_local, shard, 0)?
+                                        }
                                         None => 0,
                                     };
                                     let reverse_sort_key = match &reverse_lookup {
-                                        Some(lookup) => lookup.sort_key(
-                                            shard,
-                                            src_local,
-                                            shard,
-                                            0,
-                                        )?,
+                                        Some(lookup) => {
+                                            lookup.sort_key(shard, src_local, shard, 0)?
+                                        }
                                         None => 0,
                                     };
-                                    forward_batcher.push(shard, src_id, dst_id, forward_sort_key)?;
-                                    reverse_batcher.push(dst_shard, dst_id, src_id, reverse_sort_key)?;
+                                    forward_batcher.push(
+                                        shard,
+                                        src_id,
+                                        dst_id,
+                                        forward_sort_key,
+                                    )?;
+                                    reverse_batcher.push(
+                                        dst_shard,
+                                        dst_id,
+                                        src_id,
+                                        reverse_sort_key,
+                                    )?;
                                     forward_count = forward_count.saturating_add(1);
                                     reverse_count = reverse_count.saturating_add(1);
                                     Ok(())
@@ -4412,7 +4462,7 @@ impl IngestContext {
                                         delta: pending,
                                         total: Some(total_rows),
                                         status: None,
-});
+                                    });
                                 }
                             }
                             result
@@ -4497,8 +4547,10 @@ impl IngestContext {
                     tasks.push(WorkItem {
                         bucket: None,
                         run: Box::new(move |scratch: &mut EdgeMapScratch| {
-                            let mut result = EdgeMapResult::default();
-                            result.relation = forward_name.clone();
+                            let mut result = EdgeMapResult {
+                                relation: forward_name.clone(),
+                                ..Default::default()
+                            };
                             let src_lookup_context = format!("src_lookup:{}", forward_name);
                             let dst_lookup_context = format!("dst_lookup:{}", forward_name);
                             let src_offsets = shard_offsets
@@ -4509,14 +4561,10 @@ impl IngestContext {
                                 .get(&edge.dst_fk.ref_table)
                                 .cloned()
                                 .unwrap_or_else(|| vec![0; num_shards]);
-                            let forward_sort_bits = rel_sort_bits
-                                .get(&forward_name)
-                                .copied()
-                                .flatten();
-                            let reverse_sort_bits = rel_sort_bits
-                                .get(&reverse_name)
-                                .copied()
-                                .flatten();
+                            let forward_sort_bits =
+                                rel_sort_bits.get(&forward_name).copied().flatten();
+                            let reverse_sort_bits =
+                                rel_sort_bits.get(&reverse_name).copied().flatten();
                             let forward_lookup = rel_sort_lookups
                                 .get(&forward_name)
                                 .and_then(|lookup| lookup.as_ref().map(std::sync::Arc::clone));
@@ -4524,25 +4572,13 @@ impl IngestContext {
                                 .get(&reverse_name)
                                 .and_then(|lookup| lookup.as_ref().map(std::sync::Arc::clone));
                             let forward_spec = edge_binary_spec(
-                                max_ids
-                                    .get(&edge.src_fk.ref_table)
-                                    .copied()
-                                    .unwrap_or(0),
-                                max_ids
-                                    .get(&edge.dst_fk.ref_table)
-                                    .copied()
-                                    .unwrap_or(0),
+                                max_ids.get(&edge.src_fk.ref_table).copied().unwrap_or(0),
+                                max_ids.get(&edge.dst_fk.ref_table).copied().unwrap_or(0),
                                 forward_sort_bits,
                             );
                             let reverse_spec = edge_binary_spec(
-                                max_ids
-                                    .get(&edge.dst_fk.ref_table)
-                                    .copied()
-                                    .unwrap_or(0),
-                                max_ids
-                                    .get(&edge.src_fk.ref_table)
-                                    .copied()
-                                    .unwrap_or(0),
+                                max_ids.get(&edge.dst_fk.ref_table).copied().unwrap_or(0),
+                                max_ids.get(&edge.src_fk.ref_table).copied().unwrap_or(0),
                                 reverse_sort_bits,
                             );
                             let buffer_limit = edge_batch_buffer_limit(num_shards);
@@ -4576,119 +4612,123 @@ impl IngestContext {
                                     pending = pending.saturating_add(1);
                                     if pending >= PROGRESS_ROW_BATCH {
                                         if let Some(cb) = &progress {
-                                        cb(ProgressEvent {
-                                            phase: ProgressPhase::EdgesPassA,
-                                            table: forward_name.clone(),
-                                            shard: None,
-                                            kind: ProgressKind::Advance,
-                                            delta: pending,
-                                            total: Some(total_rows),
-                                            status: None,
-});
+                                            cb(ProgressEvent {
+                                                phase: ProgressPhase::EdgesPassA,
+                                                table: forward_name.clone(),
+                                                shard: None,
+                                                kind: ProgressKind::Advance,
+                                                delta: pending,
+                                                total: Some(total_rows),
+                                                status: None,
+                                            });
+                                        }
+                                        pending = 0;
                                     }
-                                    pending = 0;
-                                }
-                                let mut data = row;
-                                let src_key = read_key_from_buf_len_prefixed(&mut data, &src_pk_col)?;
-                                let dst_key = read_key_from_buf_len_prefixed(&mut data, &dst_pk_col)?;
-                                let timestamp_valid = if !data.is_empty() {
-                                    data[0] != 0
-                                } else {
-                                    true
-                                };
-                                if !timestamp_valid {
-                                    null_timestamp_drops = null_timestamp_drops.saturating_add(1);
-                                    let context = format!("node_data_dropped:{}", table_name);
-                                    record_key_parse_failure_sample(
-                                        &mut result.key_failures.parse_failures,
-                                        &mut result.key_failures.samples,
-                                        &mut result.key_failures.by_context,
-                                        &context,
-                                        sample_key(&src_key),
-                                    );
-                                    row_idx = row_idx.saturating_add(1);
-                                    return Ok(());
-                                }
-                                let src_shard =
-                                    shard_for_key_from_key(&src_key, key_buf, num_shards)?;
-                                let dst_shard =
-                                    shard_for_key_from_key(&dst_key, key_buf, num_shards)?;
-                                let src_local = match pk_hash_store
-                                    .shard(&edge.src_fk.ref_table, src_shard)?
-                                    .lookup(&src_key)
-                                {
-                                    Some(id) => u64::from(id),
-                                    None => {
-                                        let sample = if result.key_failures.samples.len() < 10 {
-                                            sample_key(&src_key)
-                                        } else {
-                                            None
-                                        };
-                                        record_key_lookup_failure(
-                                            &mut result.key_failures.lookup_failures,
+                                    let mut data = row;
+                                    let src_key =
+                                        read_key_from_buf_len_prefixed(&mut data, &src_pk_col)?;
+                                    let dst_key =
+                                        read_key_from_buf_len_prefixed(&mut data, &dst_pk_col)?;
+                                    let timestamp_valid =
+                                        if !data.is_empty() { data[0] != 0 } else { true };
+                                    if !timestamp_valid {
+                                        null_timestamp_drops =
+                                            null_timestamp_drops.saturating_add(1);
+                                        let context = format!("node_data_dropped:{}", table_name);
+                                        record_key_parse_failure_sample(
+                                            &mut result.key_failures.parse_failures,
                                             &mut result.key_failures.samples,
                                             &mut result.key_failures.by_context,
-                                            &src_lookup_context,
-                                            sample,
+                                            &context,
+                                            sample_key(&src_key),
                                         );
+                                        row_idx = row_idx.saturating_add(1);
                                         return Ok(());
                                     }
-                                };
-                                let dst_local = match pk_hash_store
-                                    .shard(&edge.dst_fk.ref_table, dst_shard)?
-                                    .lookup(&dst_key)
-                                {
-                                    Some(id) => u64::from(id),
-                                    None => {
-                                        let sample = if result.key_failures.samples.len() < 10 {
-                                            sample_key(&dst_key)
-                                        } else {
-                                            None
-                                        };
-                                        record_key_lookup_failure(
-                                            &mut result.key_failures.lookup_failures,
-                                            &mut result.key_failures.samples,
-                                            &mut result.key_failures.by_context,
-                                            &dst_lookup_context,
-                                            sample,
-                                        );
-                                        return Ok(());
-                                    }
-                                };
-                                let src_id = src_offsets
-                                    .get(src_shard)
-                                    .copied()
-                                    .unwrap_or(0)
-                                    .saturating_add(src_local);
-                                let dst_id = dst_offsets
-                                    .get(dst_shard)
-                                    .copied()
-                                    .unwrap_or(0)
-                                    .saturating_add(dst_local);
-                                let forward_sort_key = match &forward_lookup {
-                                    Some(lookup) => lookup.sort_key(
+                                    let src_shard =
+                                        shard_for_key_from_key(&src_key, key_buf, num_shards)?;
+                                    let dst_shard =
+                                        shard_for_key_from_key(&dst_key, key_buf, num_shards)?;
+                                    let src_local = match pk_hash_store
+                                        .shard(&edge.src_fk.ref_table, src_shard)?
+                                        .lookup(&src_key)
+                                    {
+                                        Some(id) => u64::from(id),
+                                        None => {
+                                            let sample = if result.key_failures.samples.len() < 10 {
+                                                sample_key(&src_key)
+                                            } else {
+                                                None
+                                            };
+                                            record_key_lookup_failure(
+                                                &mut result.key_failures.lookup_failures,
+                                                &mut result.key_failures.samples,
+                                                &mut result.key_failures.by_context,
+                                                &src_lookup_context,
+                                                sample,
+                                            );
+                                            return Ok(());
+                                        }
+                                    };
+                                    let dst_local = match pk_hash_store
+                                        .shard(&edge.dst_fk.ref_table, dst_shard)?
+                                        .lookup(&dst_key)
+                                    {
+                                        Some(id) => u64::from(id),
+                                        None => {
+                                            let sample = if result.key_failures.samples.len() < 10 {
+                                                sample_key(&dst_key)
+                                            } else {
+                                                None
+                                            };
+                                            record_key_lookup_failure(
+                                                &mut result.key_failures.lookup_failures,
+                                                &mut result.key_failures.samples,
+                                                &mut result.key_failures.by_context,
+                                                &dst_lookup_context,
+                                                sample,
+                                            );
+                                            return Ok(());
+                                        }
+                                    };
+                                    let src_id = src_offsets
+                                        .get(src_shard)
+                                        .copied()
+                                        .unwrap_or(0)
+                                        .saturating_add(src_local);
+                                    let dst_id = dst_offsets
+                                        .get(dst_shard)
+                                        .copied()
+                                        .unwrap_or(0)
+                                        .saturating_add(dst_local);
+                                    let forward_sort_key = match &forward_lookup {
+                                        Some(lookup) => {
+                                            lookup.sort_key(dst_shard, dst_local, shard, row_idx)?
+                                        }
+                                        None => 0,
+                                    };
+                                    let reverse_sort_key = match &reverse_lookup {
+                                        Some(lookup) => {
+                                            lookup.sort_key(src_shard, src_local, shard, row_idx)?
+                                        }
+                                        None => 0,
+                                    };
+                                    forward_batcher.push(
+                                        shard,
+                                        src_id,
+                                        dst_id,
+                                        forward_sort_key,
+                                    )?;
+                                    reverse_batcher.push(
                                         dst_shard,
-                                        dst_local,
-                                        shard,
-                                        row_idx,
-                                    )?,
-                                    None => 0,
-                                };
-                                let reverse_sort_key = match &reverse_lookup {
-                                    Some(lookup) => lookup.sort_key(
-                                        src_shard,
-                                        src_local,
-                                        shard,
-                                        row_idx,
-                                    )?,
-                                    None => 0,
-                                };
-                                forward_batcher.push(shard, src_id, dst_id, forward_sort_key)?;
-                                reverse_batcher.push(dst_shard, dst_id, src_id, reverse_sort_key)?;
-                                forward_count = forward_count.saturating_add(1);
-                                reverse_count = reverse_count.saturating_add(1);
-                                row_idx = row_idx.saturating_add(1);
-                                Ok(())
+                                        dst_id,
+                                        src_id,
+                                        reverse_sort_key,
+                                    )?;
+                                    forward_count = forward_count.saturating_add(1);
+                                    reverse_count = reverse_count.saturating_add(1);
+                                    row_idx = row_idx.saturating_add(1);
+                                    Ok(())
                                 });
                                 result?;
                             }
@@ -4704,7 +4744,7 @@ impl IngestContext {
                                         delta: pending,
                                         total: Some(total_rows),
                                         status: None,
-});
+                                    });
                                 }
                             }
                             result.edge_counts.insert(forward_name, forward_count);
@@ -4759,7 +4799,7 @@ impl IngestContext {
                                 delta: 0,
                                 total,
                                 status: None,
-});
+                            });
                         }
                     }
                 }
@@ -4782,7 +4822,7 @@ impl IngestContext {
             self.cleanup_edge_stage("fkeys")?;
             self.cleanup_edge_stage("fkeys_dst")?;
             self.cleanup_edge_stage("edge_keys")?;
-            return Ok(());
+            Ok(())
         }
     }
 
@@ -4875,9 +4915,7 @@ impl IngestContext {
         let adapter = self
             .progress
             .clone()
-            .map(|cb| {
-                IndexProgressAdapter::new(cb, table_totals.clone())
-            });
+            .map(|cb| IndexProgressAdapter::new(cb, table_totals.clone()));
         let adapter = adapter.map(std::sync::Arc::new);
         let mut tasks = Vec::with_capacity(jobs.len());
         for job in jobs {
@@ -4889,8 +4927,8 @@ impl IngestContext {
                     let progress = adapter
                         .as_ref()
                         .map(|value| value.as_ref() as &dyn GraphProgressSink);
-                    let result = job.run_with_budget(progress, mem_budget).map(|_| ());
-                    result
+
+                    job.run_with_budget(progress, mem_budget).map(|_| ())
                 }),
             });
         }
@@ -4898,7 +4936,6 @@ impl IngestContext {
         run_tasks(tasks, &pool)?;
         Ok(())
     }
-
 
     fn index_table_totals(&self) -> HashMap<String, TableIndexTotals> {
         let mut totals = HashMap::new();
@@ -5100,7 +5137,6 @@ impl IngestContext {
             num_shards: Some(self.num_shards),
         }
     }
-
 }
 
 fn profile_phase<T>(dir: &Path, name: &str, f: impl FnOnce() -> Result<T>) -> Result<T> {
@@ -5117,15 +5153,12 @@ fn profile_phase<T>(dir: &Path, name: &str, f: impl FnOnce() -> Result<T>) -> Re
     let mut file = fs::File::create(&pb_path).context("create pprof output")?;
     let bytes = profile.encode_to_vec();
     file.write_all(&bytes).context("write pprof profile")?;
-    match result {
-        Ok(value) => Ok(value),
-        Err(err) => Err(err),
-    }
+    result
 }
 
 fn edge_id_width(max_id: u64) -> u8 {
     let bits = 64 - max_id.leading_zeros();
-    let bytes = ((bits + 7) / 8).max(1) as u8;
+    let bytes = bits.div_ceil(8).max(1) as u8;
     bytes.min(8)
 }
 
@@ -5137,12 +5170,8 @@ fn shard_range(min_id: u64, count: u64) -> (u64, u64) {
     (min_id, max_id)
 }
 
-fn edge_binary_spec(
-    src_max_id: u64,
-    dst_max_id: u64,
-    sort_bits: Option<u8>,
-) -> EdgeBinarySpec {
-    let sort_width = sort_bits.map(|b| ((b as u16 + 7) / 8) as u8).unwrap_or(0);
+fn edge_binary_spec(src_max_id: u64, dst_max_id: u64, sort_bits: Option<u8>) -> EdgeBinarySpec {
+    let sort_width = sort_bits.map(|b| (b as u16).div_ceil(8) as u8).unwrap_or(0);
     EdgeBinarySpec {
         src_width: edge_id_width(src_max_id),
         dst_width: edge_id_width(dst_max_id),
@@ -5188,7 +5217,11 @@ fn temp_node_data_meta_path(name: &str, shard: usize) -> String {
 }
 
 fn temp_node_context_path(name: &str) -> String {
-    format!("{}/nodes/{}/node_data.ctx", TEMP_DIR_NAME, name.to_lowercase())
+    format!(
+        "{}/nodes/{}/node_data.ctx",
+        TEMP_DIR_NAME,
+        name.to_lowercase()
+    )
 }
 
 fn node_context_output_path(name: &str) -> String {
@@ -5267,11 +5300,17 @@ fn temp_edge_key_shard_dir(edge_table: &str, kind: EdgeKeyKind, shard: usize) ->
 }
 
 fn temp_edge_key_path(edge_table: &str, kind: EdgeKeyKind, shard: usize) -> String {
-    format!("{}/rows.bin", temp_edge_key_shard_dir(edge_table, kind, shard))
+    format!(
+        "{}/rows.bin",
+        temp_edge_key_shard_dir(edge_table, kind, shard)
+    )
 }
 
 fn temp_edge_key_meta_path(edge_table: &str, kind: EdgeKeyKind, shard: usize) -> String {
-    format!("{}/rows.meta", temp_edge_key_shard_dir(edge_table, kind, shard))
+    format!(
+        "{}/rows.meta",
+        temp_edge_key_shard_dir(edge_table, kind, shard)
+    )
 }
 
 fn temp_edge_shard_dir(rel: &str, shard: usize) -> String {
@@ -5298,7 +5337,11 @@ fn sort_key_component_name(kind: SortKeyComponentKind) -> &'static str {
     }
 }
 
-fn temp_sort_key_component_shard_dir(rel: &str, kind: SortKeyComponentKind, shard: usize) -> String {
+fn temp_sort_key_component_shard_dir(
+    rel: &str,
+    kind: SortKeyComponentKind,
+    shard: usize,
+) -> String {
     format!(
         "{}/sort_keys/{}/{}/shard-{:05}",
         TEMP_DIR_NAME,
@@ -5376,7 +5419,10 @@ fn open_sort_key_writer(target: &OutputTarget, rel_path: &str) -> Result<BufWrit
             fs::create_dir_all(parent)?;
         }
     }
-    Ok(BufWriter::with_capacity(4 * 1024 * 1024, target.sink(&path)?))
+    Ok(BufWriter::with_capacity(
+        4 * 1024 * 1024,
+        target.sink(&path)?,
+    ))
 }
 
 fn ensure_sort_key_file(target: &OutputTarget, rel_path: &str) -> Result<()> {
@@ -5414,7 +5460,10 @@ fn open_fkey_bitmap_writer(target: &OutputTarget, rel_path: &str) -> Result<BufW
             fs::create_dir_all(parent)?;
         }
     }
-    Ok(BufWriter::with_capacity(4 * 1024 * 1024, target.sink(&path)?))
+    Ok(BufWriter::with_capacity(
+        4 * 1024 * 1024,
+        target.sink(&path)?,
+    ))
 }
 
 fn ensure_fkey_bitmap_file(target: &OutputTarget, rel_path: &str) -> Result<()> {
@@ -5455,9 +5504,9 @@ fn write_temp_rows_segments(
         let len = u32::try_from(row_len).map_err(|_| anyhow!("temp row too large"))?;
         writer.writer.write_all(&len.to_le_bytes())?;
         if lens.tag_bytes > 0 {
-            writer.writer.write_all(
-                &batch.tags[tag_offset..tag_offset.saturating_add(lens.tag_bytes)],
-            )?;
+            writer
+                .writer
+                .write_all(&batch.tags[tag_offset..tag_offset.saturating_add(lens.tag_bytes)])?;
         }
         if lens.bool_bytes > 0 {
             writer.writer.write_all(
@@ -5465,9 +5514,9 @@ fn write_temp_rows_segments(
             )?;
         }
         if lens.data_bytes > 0 {
-            writer.writer.write_all(
-                &batch.data[data_offset..data_offset.saturating_add(lens.data_bytes)],
-            )?;
+            writer
+                .writer
+                .write_all(&batch.data[data_offset..data_offset.saturating_add(lens.data_bytes)])?;
         }
         tag_offset = tag_offset.saturating_add(lens.tag_bytes);
         bool_offset = bool_offset.saturating_add(lens.bool_bytes);
@@ -5530,7 +5579,7 @@ fn read_temp_rows(path: &Path, mut f: impl FnMut(&[u8]) -> Result<()>) -> Result
 }
 
 fn read_fkey_bitmap_mmap(path: &Path, row_count: u64) -> Result<Mmap> {
-    let expected = ((row_count + 7) / 8) as usize;
+    let expected = row_count.div_ceil(8) as usize;
     let file = fs::File::open(path).with_context(|| format!("read {}", path.display()))?;
     let map = unsafe { Mmap::map(&file)? };
     if map.len() < expected {
@@ -5554,8 +5603,7 @@ fn load_sort_key_component_shards(
     let mut shards = Vec::with_capacity(num_shards);
     for shard in 0..num_shards {
         let path = root.join(temp_sort_key_component_path(rel_name, kind, shard));
-        let file = fs::File::open(&path)
-            .with_context(|| format!("open {}", path.display()))?;
+        let file = fs::File::open(&path).with_context(|| format!("open {}", path.display()))?;
         let data = unsafe { Mmap::map(&file)? };
         if sequential {
             advise_sequential(&data);
@@ -5657,11 +5705,7 @@ fn build_sort_key_lookup(
         weight = Some(source);
     }
     Ok(Some(SortKeyLookup {
-        weight_bits: info
-            .weight
-            .as_ref()
-            .map(|w| w.spec.width_bits)
-            .unwrap_or(0),
+        weight_bits: info.weight.as_ref().map(|w| w.spec.width_bits).unwrap_or(0),
         timestamp,
         weight,
     }))
@@ -5779,10 +5823,13 @@ impl EdgeWriterPool {
         let mut senders = Vec::with_capacity(workers);
         let mut handles = Vec::with_capacity(workers);
         for _ in 0..workers {
-            let (tx, rx) = std::sync::mpsc::sync_channel::<EdgeWriteMessage>(EDGE_WRITE_QUEUE_DEPTH);
+            let (tx, rx) =
+                std::sync::mpsc::sync_channel::<EdgeWriteMessage>(EDGE_WRITE_QUEUE_DEPTH);
             let target = std::sync::Arc::clone(&target);
             let buffer_pool = std::sync::Arc::clone(&buffer_pool);
-            handles.push(std::thread::spawn(move || edge_writer_worker(target, buffer_pool, rx)));
+            handles.push(std::thread::spawn(move || {
+                edge_writer_worker(target, buffer_pool, rx)
+            }));
             senders.push(tx);
         }
         Self {
@@ -6104,7 +6151,10 @@ impl BitWriter {
             self.writer.write_all(&[self.buffer])?;
         }
         self.writer.flush()?;
-        let sink = self.writer.into_inner().map_err(|_| anyhow!("bit writer flush failed"))?;
+        let sink = self
+            .writer
+            .into_inner()
+            .map_err(|_| anyhow!("bit writer flush failed"))?;
         sink.finish()?;
         Ok(())
     }
@@ -6128,7 +6178,8 @@ impl NodeWritePool {
         let mut senders = Vec::with_capacity(workers);
         let mut handles = Vec::with_capacity(workers);
         for _ in 0..workers {
-            let (tx, rx) = std::sync::mpsc::sync_channel::<NodeWriteMessage>(EDGE_WRITE_QUEUE_DEPTH);
+            let (tx, rx) =
+                std::sync::mpsc::sync_channel::<NodeWriteMessage>(EDGE_WRITE_QUEUE_DEPTH);
             let target = std::sync::Arc::clone(&target);
             handles.push(std::thread::spawn(move || node_writer_worker(target, rx)));
             senders.push(tx);
@@ -6171,8 +6222,10 @@ fn node_writer_worker(
                 let writer = match writers.get_mut(&key) {
                     Some(writer) => writer,
                     None => {
-                        let node =
-                            open_temp_row_writer(&target, &temp_node_data_path(&batch.table, batch.shard))?;
+                        let node = open_temp_row_writer(
+                            &target,
+                            &temp_node_data_path(&batch.table, batch.shard),
+                        )?;
                         let pkey = if batch.pkey_data.is_some() {
                             Some(open_temp_row_writer(
                                 &target,
@@ -6315,11 +6368,7 @@ impl NodeBatcher {
                     data: Vec::new(),
                     rows: Vec::new(),
                 },
-                pkey: if has_pkey {
-                    Some(Vec::new())
-                } else {
-                    None
-                },
+                pkey: if has_pkey { Some(Vec::new()) } else { None },
                 pkey_rows: 0,
                 fkeys: vec![Vec::new(); rel_names.len()],
                 fkey_bits: vec![Vec::new(); rel_names.len()],
@@ -6391,7 +6440,13 @@ impl NodeBatcher {
         Ok(())
     }
 
-    fn push_fkey(&mut self, shard: usize, rel_idx: usize, row: &[u8], timestamp_valid: bool) -> Result<()> {
+    fn push_fkey(
+        &mut self,
+        shard: usize,
+        rel_idx: usize,
+        row: &[u8],
+        timestamp_valid: bool,
+    ) -> Result<()> {
         let buffer = self
             .buffers
             .get_mut(shard)
@@ -6556,7 +6611,9 @@ impl SortKeyWritePool {
             let (tx, rx) =
                 std::sync::mpsc::sync_channel::<SortKeyWriteMessage>(EDGE_WRITE_QUEUE_DEPTH);
             let target = std::sync::Arc::clone(&target);
-            handles.push(std::thread::spawn(move || sort_key_writer_worker(target, rx)));
+            handles.push(std::thread::spawn(move || {
+                sort_key_writer_worker(target, rx)
+            }));
             senders.push(tx);
         }
         Self {
@@ -6588,21 +6645,20 @@ fn sort_key_writer_worker(
     target: std::sync::Arc<OutputTarget>,
     rx: std::sync::mpsc::Receiver<SortKeyWriteMessage>,
 ) -> Result<SortKeyWriterStats> {
-    let mut writers: HashMap<(std::sync::Arc<str>, SortKeyComponentKind, usize), SortKeyShardWriter> =
-        HashMap::new();
+    let mut writers: HashMap<
+        (std::sync::Arc<str>, SortKeyComponentKind, usize),
+        SortKeyShardWriter,
+    > = HashMap::new();
     let mut stats = SortKeyWriterStats::default();
     while let Ok(msg) = rx.recv() {
         match msg {
             SortKeyWriteMessage::Batch(batch) => {
-                let key = (
-                    std::sync::Arc::clone(&batch.rel),
-                    batch.kind,
-                    batch.shard,
-                );
+                let key = (std::sync::Arc::clone(&batch.rel), batch.kind, batch.shard);
                 let writer = match writers.get_mut(&key) {
                     Some(writer) => writer,
                     None => {
-                        let path = temp_sort_key_component_path(&batch.rel, batch.kind, batch.shard);
+                        let path =
+                            temp_sort_key_component_path(&batch.rel, batch.kind, batch.shard);
                         let writer = open_sort_key_writer(&target, &path)?;
                         writers.insert(
                             key.clone(),
@@ -6680,18 +6736,20 @@ impl SortKeyComponentBatcher {
 
     fn push_row(&mut self, shard: usize, access: &mut RowAccess<'_>) -> Result<()> {
         let value = match &mut self.encoder {
-            SortKeyComponentEncoder::Timestamp { column_idx, encoding } => {
-                let ts_value = if let Some((secs, _)) =
-                    access.get_timestamp(*column_idx).ok().flatten()
-                {
-                    Some(secs)
-                } else {
-                    access
-                        .get_date(*column_idx)
-                        .ok()
-                        .flatten()
-                        .map(|days| i64::from(days) * 86_400)
-                };
+            SortKeyComponentEncoder::Timestamp {
+                column_idx,
+                encoding,
+            } => {
+                let ts_value =
+                    if let Some((secs, _)) = access.get_timestamp(*column_idx).ok().flatten() {
+                        Some(secs)
+                    } else {
+                        access
+                            .get_date(*column_idx)
+                            .ok()
+                            .flatten()
+                            .map(|days| i64::from(days) * 86_400)
+                    };
                 encode_timestamp_value(ts_value, encoding)
             }
             SortKeyComponentEncoder::Weight { expr, encoding } => {
@@ -6718,7 +6776,10 @@ impl SortKeyComponentBatcher {
             .buffers
             .get_mut(shard)
             .ok_or_else(|| anyhow!("sort key buffer shard {} out of bounds", shard))?;
-        let rows = self.rows.get_mut(shard).ok_or_else(|| anyhow!("sort key row count missing"))?;
+        let rows = self
+            .rows
+            .get_mut(shard)
+            .ok_or_else(|| anyhow!("sort key row count missing"))?;
         if *rows == 0 {
             return Ok(());
         }
@@ -6853,7 +6914,10 @@ fn edge_src_writer_worker(
                     None => {
                         writers.insert(
                             key.clone(),
-                            open_temp_row_writer(&target, &temp_edge_path(&batch.rel, batch.shard))?,
+                            open_temp_row_writer(
+                                &target,
+                                &temp_edge_path(&batch.rel, batch.shard),
+                            )?,
                         );
                         writers.get_mut(&key).unwrap()
                     }
@@ -6978,8 +7042,10 @@ fn dest_key_writer_worker(
     target: std::sync::Arc<OutputTarget>,
     rx: std::sync::mpsc::Receiver<DestKeyWriteMessage>,
 ) -> Result<DestKeyWriterStats> {
-    let mut node_writers: HashMap<(std::sync::Arc<str>, std::sync::Arc<str>, usize), TempRowWriter> =
-        HashMap::new();
+    let mut node_writers: HashMap<
+        (std::sync::Arc<str>, std::sync::Arc<str>, usize),
+        TempRowWriter,
+    > = HashMap::new();
     let mut edge_writers: HashMap<(std::sync::Arc<str>, EdgeKeyKind, usize), TempRowWriter> =
         HashMap::new();
     let mut stats = DestKeyWriterStats::default();
@@ -6992,13 +7058,20 @@ fn dest_key_writer_worker(
                 data,
                 row_count,
             } => {
-                let key = (std::sync::Arc::clone(&table), std::sync::Arc::clone(&rel), shard);
+                let key = (
+                    std::sync::Arc::clone(&table),
+                    std::sync::Arc::clone(&rel),
+                    shard,
+                );
                 let writer = match node_writers.get_mut(&key) {
                     Some(writer) => writer,
                     None => {
                         node_writers.insert(
                             key.clone(),
-                            open_temp_row_writer(&target, &temp_fkey_dst_path(&table, &rel, shard))?,
+                            open_temp_row_writer(
+                                &target,
+                                &temp_fkey_dst_path(&table, &rel, shard),
+                            )?,
                         );
                         node_writers.get_mut(&key).unwrap()
                     }
@@ -7490,6 +7563,7 @@ fn parse_kb_line(value: &str) -> Option<u64> {
     Some(num.saturating_mul(1024))
 }
 
+#[allow(clippy::type_complexity)]
 struct WorkItem<S> {
     run: Box<dyn FnOnce(&mut S) -> Result<()> + Send>,
     bucket: Option<std::sync::Arc<std::sync::atomic::AtomicU64>>,
@@ -7557,7 +7631,10 @@ impl<S: Default + Send + 'static> TaskPool<S> {
         for task in tasks {
             let (tx, rx) = std::sync::mpsc::channel::<Result<()>>();
             self.sender
-                .send(PoolMessage::Task(PoolTask { item: task, done: tx }))
+                .send(PoolMessage::Task(PoolTask {
+                    item: task,
+                    done: tx,
+                }))
                 .map_err(|e| anyhow!("task queue error: {e}"))?;
             receivers.push(rx);
         }
@@ -7598,7 +7675,6 @@ fn run_tasks<S: Default + Send + 'static>(
 ) -> Result<()> {
     pool.run_tasks(tasks)
 }
-
 
 fn key_type_for_dtype(dtype: &IngestedType) -> Result<KeyType> {
     match dtype {
@@ -7694,11 +7770,9 @@ fn key_from_access_into_buf(
                     return Ok(());
                 }
                 IngestedType::String | IngestedType::Bytes => {
-                    let array = access
-                        .array(idx)
-                        .map_err(|_| KeyParseError::TypeMismatch)?;
-                    let bytes = read_bytes(array, access.row())
-                        .map_err(|_| KeyParseError::TypeMismatch)?;
+                    let array = access.array(idx).map_err(|_| KeyParseError::TypeMismatch)?;
+                    let bytes =
+                        read_bytes(array, access.row()).map_err(|_| KeyParseError::TypeMismatch)?;
                     let value = parse_base10_bytes(bytes)?;
                     out.extend_from_slice(&value.to_le_bytes());
                     return Ok(());
@@ -7721,17 +7795,16 @@ fn key_from_access_into_buf(
             };
             match *target_type {
                 IngestedType::Bytes => {
-                    let array = access
-                        .array(idx)
-                        .map_err(|_| KeyParseError::TypeMismatch)?;
-                    let bytes = read_bytes(array, access.row())
-                        .map_err(|_| KeyParseError::TypeMismatch)?;
+                    let array = access.array(idx).map_err(|_| KeyParseError::TypeMismatch)?;
+                    let bytes =
+                        read_bytes(array, access.row()).map_err(|_| KeyParseError::TypeMismatch)?;
                     write_bytes(bytes)?;
                 }
                 IngestedType::String | IngestedType::Decimal256 => {
                     access
                         .with_string(idx, |text| {
-                            write_bytes(text.as_bytes()).map_err(|_| anyhow!("key parse failed"))?;
+                            write_bytes(text.as_bytes())
+                                .map_err(|_| anyhow!("key parse failed"))?;
                             Ok(())
                         })
                         .map_err(|_| KeyParseError::TypeMismatch)?;
@@ -7800,9 +7873,7 @@ fn key_from_access_into_buf(
                     buf
                 }
                 IngestedType::String | IngestedType::Bytes => {
-                    let array = access
-                        .array(idx)
-                        .map_err(|_| KeyParseError::TypeMismatch)?;
+                    let array = access.array(idx).map_err(|_| KeyParseError::TypeMismatch)?;
                     if let Ok(text) = read_utf8(array, access.row()) {
                         parse_uuid_string(text.as_bytes())?
                     } else {
@@ -7832,9 +7903,7 @@ fn key_from_access_into_buf(
                     buf
                 }
                 IngestedType::String | IngestedType::Bytes => {
-                    let array = access
-                        .array(idx)
-                        .map_err(|_| KeyParseError::TypeMismatch)?;
+                    let array = access.array(idx).map_err(|_| KeyParseError::TypeMismatch)?;
                     if let Ok(text) = read_utf8(array, access.row()) {
                         parse_uuid256_string(text.as_bytes())?
                     } else {
@@ -7854,17 +7923,12 @@ fn key_from_access_into_buf(
         }
         KeyType::Ip => {
             let ip = match *target_type {
-                IngestedType::Ip => {
-                    let value = access
-                        .get_ip(idx)
-                        .map_err(|_| KeyParseError::TypeMismatch)?
-                        .ok_or(KeyParseError::TypeMismatch)?;
-                    value
-                }
+                IngestedType::Ip => access
+                    .get_ip(idx)
+                    .map_err(|_| KeyParseError::TypeMismatch)?
+                    .ok_or(KeyParseError::TypeMismatch)?,
                 IngestedType::String | IngestedType::Bytes => {
-                    let array = access
-                        .array(idx)
-                        .map_err(|_| KeyParseError::TypeMismatch)?;
+                    let array = access.array(idx).map_err(|_| KeyParseError::TypeMismatch)?;
                     if let Ok(text) = read_utf8(array, access.row()) {
                         parse_ip_string(text.as_bytes())?
                     } else {
@@ -7908,8 +7972,7 @@ fn append_key_bytes_with_len_prefix(
 ) -> Result<()> {
     match key_type_for_dtype(target_type)? {
         KeyType::VarBytes => {
-            let len = u16::try_from(key_bytes.len())
-                .map_err(|_| anyhow!("temp key too large"))?;
+            let len = u16::try_from(key_bytes.len()).map_err(|_| anyhow!("temp key too large"))?;
             row.extend_from_slice(&len.to_le_bytes());
             row.extend_from_slice(key_bytes);
         }
@@ -7990,7 +8053,12 @@ fn read_key_from_buf_for_type(data: &mut &[u8], target_type: &IngestedType) -> R
         IngestedType::Uuid => KeyType::Uuid,
         IngestedType::Uuid256 => KeyType::Uuid256,
         IngestedType::Ip => KeyType::Ip,
-        _ => return Err(anyhow!("unsupported key type for target: {:?}", target_type)),
+        _ => {
+            return Err(anyhow!(
+                "unsupported key type for target: {:?}",
+                target_type
+            ))
+        }
     };
     match key_type {
         KeyType::Int64 => {
@@ -8154,8 +8222,6 @@ fn parse_base10_bytes(bytes: &[u8]) -> KeyParseResult<u64> {
     }
 }
 
-
-
 pub(crate) fn parse_uuid_string(bytes: &[u8]) -> KeyParseResult<[u8; 16]> {
     let mut out = [0u8; 16];
     if bytes.len() == 32 {
@@ -8254,7 +8320,11 @@ fn write_normalized_base10_bytes(out: &mut Vec<u8>, bytes: &[u8]) -> KeyParseRes
         }
     }
     let int_trimmed = int_part.trim_start_matches('0');
-    let int_out = if int_trimmed.is_empty() { "0" } else { int_trimmed };
+    let int_out = if int_trimmed.is_empty() {
+        "0"
+    } else {
+        int_trimmed
+    };
     let frac_out = frac_part.unwrap_or("").trim_end_matches('0');
     out.extend_from_slice(int_out.as_bytes());
     if frac_out.is_empty() {
@@ -8399,8 +8469,6 @@ fn record_key_lookup_failure(
     }
 }
 
-
-
 fn table_schema(table: &TableSpec) -> Result<Schema> {
     let mut fields = Vec::with_capacity(table.columns.len());
     for col in &table.columns {
@@ -8528,7 +8596,10 @@ fn precompute_shards(
 
     match (array.data_type(), &pk_col.ingested_dtype) {
         (DataType::Int64, IngestedType::Int64) => {
-            let arr = array.as_any().downcast_ref::<arrow_array::Int64Array>().unwrap();
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::Int64Array>()
+                .unwrap();
             let mut shards = Vec::with_capacity(len);
             for i in 0..len {
                 if arr.is_null(i) {
@@ -8543,7 +8614,10 @@ fn precompute_shards(
             Some(PrecomputedKeys { shards, keys: None })
         }
         (DataType::Int64, IngestedType::Int32) => {
-            let arr = array.as_any().downcast_ref::<arrow_array::Int64Array>().unwrap();
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::Int64Array>()
+                .unwrap();
             let mut shards = Vec::with_capacity(len);
             let mut keys = Vec::with_capacity(len);
             for i in 0..len {
@@ -8558,7 +8632,10 @@ fn precompute_shards(
                     keys.push(Some(Key::Int(val)));
                 }
             }
-            Some(PrecomputedKeys { shards, keys: Some(keys) })
+            Some(PrecomputedKeys {
+                shards,
+                keys: Some(keys),
+            })
         }
         (DataType::Utf8 | DataType::LargeUtf8, IngestedType::Uuid) => {
             let mut shards = Vec::with_capacity(len);
@@ -8576,10 +8653,16 @@ fn precompute_shards(
                     keys.push(Some(Key::Uuid(uuid)));
                 }
             }
-            Some(PrecomputedKeys { shards, keys: Some(keys) })
+            Some(PrecomputedKeys {
+                shards,
+                keys: Some(keys),
+            })
         }
         (DataType::FixedSizeBinary(16), IngestedType::Uuid | IngestedType::Ip) => {
-            let arr = array.as_any().downcast_ref::<arrow_array::FixedSizeBinaryArray>().unwrap();
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::FixedSizeBinaryArray>()
+                .unwrap();
             let mut shards = Vec::with_capacity(len);
             for i in 0..len {
                 if arr.is_null(i) {
@@ -8594,7 +8677,10 @@ fn precompute_shards(
             Some(PrecomputedKeys { shards, keys: None })
         }
         (DataType::FixedSizeBinary(32), IngestedType::Uuid256) => {
-            let arr = array.as_any().downcast_ref::<arrow_array::FixedSizeBinaryArray>().unwrap();
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::FixedSizeBinaryArray>()
+                .unwrap();
             let mut shards = Vec::with_capacity(len);
             for i in 0..len {
                 if arr.is_null(i) {
@@ -8643,7 +8729,10 @@ enum EdgeKeyFastKind {
     BytesIp,
 }
 
-fn edge_fast_path_for_array(array: &ArrayRef, target_type: &IngestedType) -> Option<EdgeKeyFastKind> {
+fn edge_fast_path_for_array(
+    array: &ArrayRef,
+    target_type: &IngestedType,
+) -> Option<EdgeKeyFastKind> {
     match (array.data_type(), target_type) {
         (DataType::Int64, IngestedType::Int64) => Some(EdgeKeyFastKind::Int64),
         (DataType::Int32, IngestedType::Int32) => Some(EdgeKeyFastKind::Int32),
@@ -8678,9 +8767,7 @@ fn edge_fast_path_for_array(array: &ArrayRef, target_type: &IngestedType) -> Opt
             DataType::Binary | DataType::LargeBinary | DataType::FixedSizeBinary(_),
             IngestedType::Uuid256,
         ) => Some(EdgeKeyFastKind::BytesUuid256),
-        (DataType::Utf8 | DataType::LargeUtf8, IngestedType::Ip) => {
-            Some(EdgeKeyFastKind::StringIp)
-        }
+        (DataType::Utf8 | DataType::LargeUtf8, IngestedType::Ip) => Some(EdgeKeyFastKind::StringIp),
         (
             DataType::Binary | DataType::LargeBinary | DataType::FixedSizeBinary(_),
             IngestedType::Ip,
@@ -8689,80 +8776,132 @@ fn edge_fast_path_for_array(array: &ArrayRef, target_type: &IngestedType) -> Opt
     }
 }
 
-fn extract_batch_keys(
-    array: &ArrayRef,
-    kind: EdgeKeyFastKind,
-) -> Result<Vec<Option<Key>>> {
+fn extract_batch_keys(array: &ArrayRef, kind: EdgeKeyFastKind) -> Result<Vec<Option<Key>>> {
     let len = array.len();
     let mut out = Vec::with_capacity(len);
     match kind {
         EdgeKeyFastKind::Int64 => {
-            let arr = array.as_any().downcast_ref::<arrow_array::Int64Array>().unwrap();
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::Int64Array>()
+                .unwrap();
             for i in 0..len {
-                if arr.is_null(i) { out.push(None); }
-                else { out.push(Some(Key::Int(arr.value(i) as u64))); }
+                if arr.is_null(i) {
+                    out.push(None);
+                } else {
+                    out.push(Some(Key::Int(arr.value(i) as u64)));
+                }
             }
         }
         EdgeKeyFastKind::Int32 => {
-            let arr = array.as_any().downcast_ref::<arrow_array::Int32Array>().unwrap();
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::Int32Array>()
+                .unwrap();
             for i in 0..len {
-                if arr.is_null(i) { out.push(None); }
-                else { out.push(Some(Key::Int(arr.value(i) as u64))); }
+                if arr.is_null(i) {
+                    out.push(None);
+                } else {
+                    out.push(Some(Key::Int(arr.value(i) as u64)));
+                }
             }
         }
         EdgeKeyFastKind::Int16 => {
-            let arr = array.as_any().downcast_ref::<arrow_array::Int16Array>().unwrap();
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::Int16Array>()
+                .unwrap();
             for i in 0..len {
-                if arr.is_null(i) { out.push(None); }
-                else { out.push(Some(Key::Int(arr.value(i) as u64))); }
+                if arr.is_null(i) {
+                    out.push(None);
+                } else {
+                    out.push(Some(Key::Int(arr.value(i) as u64)));
+                }
             }
         }
         EdgeKeyFastKind::Int8 => {
-            let arr = array.as_any().downcast_ref::<arrow_array::Int8Array>().unwrap();
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::Int8Array>()
+                .unwrap();
             for i in 0..len {
-                if arr.is_null(i) { out.push(None); }
-                else { out.push(Some(Key::Int(arr.value(i) as u64))); }
+                if arr.is_null(i) {
+                    out.push(None);
+                } else {
+                    out.push(Some(Key::Int(arr.value(i) as u64)));
+                }
             }
         }
         EdgeKeyFastKind::UInt64 => {
-            let arr = array.as_any().downcast_ref::<arrow_array::UInt64Array>().unwrap();
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::UInt64Array>()
+                .unwrap();
             for i in 0..len {
-                if arr.is_null(i) { out.push(None); }
-                else { out.push(Some(Key::Int(arr.value(i)))); }
+                if arr.is_null(i) {
+                    out.push(None);
+                } else {
+                    out.push(Some(Key::Int(arr.value(i))));
+                }
             }
         }
         EdgeKeyFastKind::UInt32 => {
-            let arr = array.as_any().downcast_ref::<arrow_array::UInt32Array>().unwrap();
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::UInt32Array>()
+                .unwrap();
             for i in 0..len {
-                if arr.is_null(i) { out.push(None); }
-                else { out.push(Some(Key::Int(arr.value(i) as u64))); }
+                if arr.is_null(i) {
+                    out.push(None);
+                } else {
+                    out.push(Some(Key::Int(arr.value(i) as u64)));
+                }
             }
         }
         EdgeKeyFastKind::UInt16 => {
-            let arr = array.as_any().downcast_ref::<arrow_array::UInt16Array>().unwrap();
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::UInt16Array>()
+                .unwrap();
             for i in 0..len {
-                if arr.is_null(i) { out.push(None); }
-                else { out.push(Some(Key::Int(arr.value(i) as u64))); }
+                if arr.is_null(i) {
+                    out.push(None);
+                } else {
+                    out.push(Some(Key::Int(arr.value(i) as u64)));
+                }
             }
         }
         EdgeKeyFastKind::UInt8 => {
-            let arr = array.as_any().downcast_ref::<arrow_array::UInt8Array>().unwrap();
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::UInt8Array>()
+                .unwrap();
             for i in 0..len {
-                if arr.is_null(i) { out.push(None); }
-                else { out.push(Some(Key::Int(arr.value(i) as u64))); }
+                if arr.is_null(i) {
+                    out.push(None);
+                } else {
+                    out.push(Some(Key::Int(arr.value(i) as u64)));
+                }
             }
         }
         EdgeKeyFastKind::Int64ToInt32 => {
-            let arr = array.as_any().downcast_ref::<arrow_array::Int64Array>().unwrap();
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::Int64Array>()
+                .unwrap();
             for i in 0..len {
-                if arr.is_null(i) { out.push(None); }
-                else { out.push(Some(Key::Int(arr.value(i) as i32 as u64))); }
+                if arr.is_null(i) {
+                    out.push(None);
+                } else {
+                    out.push(Some(Key::Int(arr.value(i) as i32 as u64)));
+                }
             }
         }
         EdgeKeyFastKind::StringToInt64 => {
             for i in 0..len {
-                if array.is_null(i) { out.push(None); }
-                else {
+                if array.is_null(i) {
+                    out.push(None);
+                } else {
                     let res = (|| -> Result<u64> {
                         let text = fast_string_value(array, i)?;
                         let v = parse_base10_bytes(text.as_bytes())?;
@@ -8777,11 +8916,14 @@ fn extract_batch_keys(
         }
         EdgeKeyFastKind::StringVar => {
             for i in 0..len {
-                if array.is_null(i) { out.push(None); }
-                else {
+                if array.is_null(i) {
+                    out.push(None);
+                } else {
                     let res = (|| -> Result<Vec<u8>> {
                         let data = fast_string_value(array, i)?.as_bytes();
-                        if data.len() > MAX_VAR_KEY_LEN { return Err(anyhow!("key too large")); }
+                        if data.len() > MAX_VAR_KEY_LEN {
+                            return Err(anyhow!("key too large"));
+                        }
                         Ok(data.to_vec())
                     })();
                     match res {
@@ -8793,11 +8935,14 @@ fn extract_batch_keys(
         }
         EdgeKeyFastKind::BytesVar => {
             for i in 0..len {
-                if array.is_null(i) { out.push(None); }
-                else {
+                if array.is_null(i) {
+                    out.push(None);
+                } else {
                     let res = (|| -> Result<Vec<u8>> {
                         let data = fast_bytes_value(array, i)?;
-                        if data.len() > MAX_VAR_KEY_LEN { return Err(anyhow!("key too large")); }
+                        if data.len() > MAX_VAR_KEY_LEN {
+                            return Err(anyhow!("key too large"));
+                        }
                         Ok(data.to_vec())
                     })();
                     match res {
@@ -8809,8 +8954,9 @@ fn extract_batch_keys(
         }
         EdgeKeyFastKind::StringUuid => {
             for i in 0..len {
-                if array.is_null(i) { out.push(None); }
-                else {
+                if array.is_null(i) {
+                    out.push(None);
+                } else {
                     let res = (|| -> Result<[u8; 16]> {
                         let text = fast_string_value(array, i)?;
                         let uuid = parse_uuid_string(text.as_bytes())?;
@@ -8825,11 +8971,14 @@ fn extract_batch_keys(
         }
         EdgeKeyFastKind::BytesUuid => {
             for i in 0..len {
-                if array.is_null(i) { out.push(None); }
-                else {
+                if array.is_null(i) {
+                    out.push(None);
+                } else {
                     let res = (|| -> Result<[u8; 16]> {
                         let data = fast_bytes_value(array, i)?;
-                        if data.len() != 16 { return Err(anyhow!("length mismatch")); }
+                        if data.len() != 16 {
+                            return Err(anyhow!("length mismatch"));
+                        }
                         let mut buf = [0u8; 16];
                         buf.copy_from_slice(data);
                         Ok(buf)
@@ -8843,8 +8992,9 @@ fn extract_batch_keys(
         }
         EdgeKeyFastKind::StringUuid256 => {
             for i in 0..len {
-                if array.is_null(i) { out.push(None); }
-                else {
+                if array.is_null(i) {
+                    out.push(None);
+                } else {
                     let res = (|| -> Result<[u8; 32]> {
                         let text = fast_string_value(array, i)?;
                         let uuid = parse_uuid256_string(text.as_bytes())?;
@@ -8859,11 +9009,14 @@ fn extract_batch_keys(
         }
         EdgeKeyFastKind::BytesUuid256 => {
             for i in 0..len {
-                if array.is_null(i) { out.push(None); }
-                else {
+                if array.is_null(i) {
+                    out.push(None);
+                } else {
                     let res = (|| -> Result<[u8; 32]> {
                         let data = fast_bytes_value(array, i)?;
-                        if data.len() != 32 { return Err(anyhow!("length mismatch")); }
+                        if data.len() != 32 {
+                            return Err(anyhow!("length mismatch"));
+                        }
                         let mut buf = [0u8; 32];
                         buf.copy_from_slice(data);
                         Ok(buf)
@@ -8877,8 +9030,9 @@ fn extract_batch_keys(
         }
         EdgeKeyFastKind::StringIp => {
             for i in 0..len {
-                if array.is_null(i) { out.push(None); }
-                else {
+                if array.is_null(i) {
+                    out.push(None);
+                } else {
                     let res = (|| -> Result<[u8; 16]> {
                         let text = fast_string_value(array, i)?;
                         let ip = parse_ip_string(text.as_bytes())?;
@@ -8893,8 +9047,9 @@ fn extract_batch_keys(
         }
         EdgeKeyFastKind::BytesIp => {
             for i in 0..len {
-                if array.is_null(i) { out.push(None); }
-                else {
+                if array.is_null(i) {
+                    out.push(None);
+                } else {
                     let res = (|| -> Result<[u8; 16]> {
                         let data = fast_bytes_value(array, i)?;
                         let ip = parse_ip_bytes(data)?;
@@ -8911,10 +9066,7 @@ fn extract_batch_keys(
     Ok(out)
 }
 
-fn fast_string_value<'a>(
-    array: &'a ArrayRef,
-    row: usize,
-) -> Result<&'a str, KeyParseError> {
+fn fast_string_value(array: &ArrayRef, row: usize) -> Result<&str, KeyParseError> {
     if let Some(arr) = array.as_any().downcast_ref::<arrow_array::StringArray>() {
         Ok(arr.value(row))
     } else if let Some(arr) = array
@@ -8927,10 +9079,7 @@ fn fast_string_value<'a>(
     }
 }
 
-fn fast_bytes_value<'a>(
-    array: &'a ArrayRef,
-    row: usize,
-) -> Result<&'a [u8], KeyParseError> {
+fn fast_bytes_value(array: &ArrayRef, row: usize) -> Result<&[u8], KeyParseError> {
     if let Some(arr) = array.as_any().downcast_ref::<arrow_array::BinaryArray>() {
         Ok(arr.value(row))
     } else if let Some(arr) = array
@@ -8948,9 +9097,7 @@ fn fast_bytes_value<'a>(
     }
 }
 
-fn read_utf8<'a>(
-
-array: &'a ArrayRef, row: usize) -> Result<&'a str> {
+fn read_utf8(array: &ArrayRef, row: usize) -> Result<&str> {
     match array.data_type() {
         DataType::Utf8 => {
             let arr = array
@@ -8991,7 +9138,7 @@ array: &'a ArrayRef, row: usize) -> Result<&'a str> {
     }
 }
 
-fn read_bytes<'a>(array: &'a ArrayRef, row: usize) -> Result<&'a [u8]> {
+fn read_bytes(array: &ArrayRef, row: usize) -> Result<&[u8]> {
     match array.data_type() {
         DataType::Utf8 => {
             let arr = array
@@ -9032,7 +9179,7 @@ fn read_bytes<'a>(array: &'a ArrayRef, row: usize) -> Result<&'a [u8]> {
     }
 }
 
- fn value_from_array(array: &ArrayRef, row: usize) -> Result<JsonValue> {
+fn value_from_array(array: &ArrayRef, row: usize) -> Result<JsonValue> {
     if array.is_null(row) {
         return Ok(JsonValue::Null);
     }

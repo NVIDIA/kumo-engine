@@ -9,7 +9,10 @@ use diskgraph_core::metadata::{
 };
 use diskgraph_index::graph::{GraphIndexReader, TableReader};
 use diskgraph_index::layout::{EDGES_FILENAME, OFFSETS_FILENAME};
-use diskgraph_rowpack::{ColumnEncoding, DecimalStorage, FloatStorage, RowPackContext, StringEncoding};
+use diskgraph_rowpack::{
+    ColumnEncoding, DecimalStorage, FloatStorage, RowPackContext, StringEncoding,
+};
+use half::f16;
 use rustyline::completion::{Completer, Pair};
 use rustyline::error::ReadlineError;
 use rustyline::highlight::Highlighter;
@@ -20,11 +23,10 @@ use rustyline::{Context as ReadlineContext, Editor, Helper};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs;
-use std::io::{self, Write, IsTerminal};
+use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use half::f16;
+use std::sync::Arc;
 
 const HEX_CHARS: &[u8; 16] = b"0123456789abcdef";
 
@@ -93,12 +95,15 @@ impl TableSpecReport {
 #[derive(Debug, Deserialize, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum DataSourceReport {
-    Parquet { paths: Vec<String> },
-    Csv { paths: Vec<String> },
+    Parquet {
+        paths: Vec<String>,
+    },
+    Csv {
+        paths: Vec<String>,
+    },
     #[serde(other)]
     Other,
 }
-
 
 #[derive(Debug, Deserialize, Clone)]
 struct ColumnSpecReport {
@@ -309,9 +314,9 @@ struct BuildStatsReport {
 }
 
 fn main() -> Result<()> {
-    let mut args = std::env::args().skip(1).peekable();
+    let args = std::env::args().skip(1).peekable();
     let mut source_str: Option<String> = None;
-    while let Some(arg) = args.next() {
+    for arg in args {
         if arg.starts_with("--") {
             return Err(anyhow!("unknown flag: {arg}"));
         }
@@ -319,9 +324,7 @@ fn main() -> Result<()> {
             source_str = Some(arg);
         }
     }
-    let source_str = source_str.ok_or_else(|| {
-        anyhow!("usage: explore <source> (local path)")
-    })?;
+    let source_str = source_str.ok_or_else(|| anyhow!("usage: explore <source> (local path)"))?;
     run_explore(&source_str)
 }
 
@@ -331,7 +334,9 @@ fn run_explore(source_str: &str) -> Result<()> {
     let (metadata, index_root) = match &source {
         Source::Local(p) => {
             let (root, meta_path) = if p.is_file()
-                && p.file_name().map(|n| n == "index_metadata.json").unwrap_or(false)
+                && p.file_name()
+                    .map(|n| n == "index_metadata.json")
+                    .unwrap_or(false)
             {
                 let root = p.parent().unwrap_or(p).to_path_buf();
                 (root, p.to_path_buf())
@@ -518,13 +523,11 @@ fn format_count(value: u64) -> String {
 fn format_number(value: u64) -> String {
     let s = value.to_string();
     let mut out = String::with_capacity(s.len() + s.len() / 3);
-    let mut count = 0usize;
-    for ch in s.chars().rev() {
+    for (count, ch) in s.chars().rev().enumerate() {
         if count != 0 && count % 3 == 0 {
             out.push(',');
         }
         out.push(ch);
-        count += 1;
     }
     out.chars().rev().collect()
 }
@@ -831,7 +834,11 @@ fn print_formats(metadata: &DatasetMetadata, root: &Path) -> Result<()> {
                 label("dtype"),
                 highlight(&pk.dtype),
                 label("fixed_len"),
-                if fixed == "n/a" { dim(&fixed) } else { ok(&fixed) },
+                if fixed == "n/a" {
+                    dim(&fixed)
+                } else {
+                    ok(&fixed)
+                },
                 label("mapping"),
                 highlight(&pk.mapping_kind)
             );
@@ -914,8 +921,8 @@ fn read_ingest_report(root: &Path) -> Result<Option<IngestReport>> {
         return Ok(None);
     }
     let bytes = fs::read(&path).with_context(|| format!("read {}", path.display()))?;
-    let report: IngestReport = serde_json::from_slice(&bytes)
-        .with_context(|| format!("parse {}", path.display()))?;
+    let report: IngestReport =
+        serde_json::from_slice(&bytes).with_context(|| format!("parse {}", path.display()))?;
     Ok(Some(report))
 }
 
@@ -1009,19 +1016,27 @@ fn read_build_reports_recursive(root: &Path) -> Result<Option<BuildReport>> {
                 continue;
             }
             let bytes = fs::read(&path).with_context(|| format!("read {}", path.display()))?;
-            let report: BuildReport =
-                serde_json::from_slice(&bytes).with_context(|| format!("parse {}", path.display()))?;
+            let report: BuildReport = serde_json::from_slice(&bytes)
+                .with_context(|| format!("parse {}", path.display()))?;
             found = true;
-            agg.nodes_ingested = agg.nodes_ingested.saturating_add(report.build_stats.nodes_ingested);
-            agg.edges_ingested = agg.edges_ingested.saturating_add(report.build_stats.edges_ingested);
-            agg.truncated_nodes =
-                agg.truncated_nodes.saturating_add(report.build_stats.truncated_nodes);
-            agg.truncated_edges_total =
-                agg.truncated_edges_total.saturating_add(report.build_stats.truncated_edges_total);
-            agg.capped_edge_lists =
-                agg.capped_edge_lists.saturating_add(report.build_stats.capped_edge_lists);
-            agg.node_data_trimmed =
-                agg.node_data_trimmed.saturating_add(report.build_stats.node_data_trimmed);
+            agg.nodes_ingested = agg
+                .nodes_ingested
+                .saturating_add(report.build_stats.nodes_ingested);
+            agg.edges_ingested = agg
+                .edges_ingested
+                .saturating_add(report.build_stats.edges_ingested);
+            agg.truncated_nodes = agg
+                .truncated_nodes
+                .saturating_add(report.build_stats.truncated_nodes);
+            agg.truncated_edges_total = agg
+                .truncated_edges_total
+                .saturating_add(report.build_stats.truncated_edges_total);
+            agg.capped_edge_lists = agg
+                .capped_edge_lists
+                .saturating_add(report.build_stats.capped_edge_lists);
+            agg.node_data_trimmed = agg
+                .node_data_trimmed
+                .saturating_add(report.build_stats.node_data_trimmed);
         }
     }
     if !found {
@@ -1146,11 +1161,7 @@ fn print_ingest_report(report: &IngestReport, root: &Path) {
         let mut entries: Vec<_> = report.stats.pk_duplicate_counts.iter().collect();
         entries.sort_by(|a, b| a.0.cmp(b.0));
         for (table, count) in entries {
-            println!(
-                "    {}: {}",
-                name(table),
-                warn(&format_number(*count))
-            );
+            println!("    {}: {}", name(table), warn(&format_number(*count)));
             if let Some(samples) = report.stats.pk_duplicate_samples.get(table) {
                 if !samples.is_empty() {
                     println!("      {} {}", label("samples:"), dim(&samples.join(", ")));
@@ -1199,18 +1210,19 @@ fn print_source_schema(source: &SourceMetadataReport) {
     if !source.relationships.is_empty() {
         println!("  {}", label("Relationships:"));
         for rel in &source.relationships {
-            let rel_name = rel
-                .name
-                .as_deref()
-                .unwrap_or("unnamed");
+            let rel_name = rel.name.as_deref().unwrap_or("unnamed");
             let src = table_map
                 .get(rel.src_table.as_str())
                 .and_then(|t| t.columns.iter().find(|c| c.name == rel.src_column));
             let dst = table_map
                 .get(rel.dst_table.as_str())
                 .and_then(|t| t.columns.iter().find(|c| c.name == rel.dst_column));
-            let src_desc = src.map(format_column).unwrap_or_else(|| "unknown".to_string());
-            let dst_desc = dst.map(format_column).unwrap_or_else(|| "unknown".to_string());
+            let src_desc = src
+                .map(format_column)
+                .unwrap_or_else(|| "unknown".to_string());
+            let dst_desc = dst
+                .map(format_column)
+                .unwrap_or_else(|| "unknown".to_string());
             println!(
                 "    {}: {}.{} ({}) {} {}.{} ({})",
                 highlight(rel_name),
@@ -1232,10 +1244,20 @@ fn print_source_schema(source: &SourceMetadataReport) {
     if !edge_tables.is_empty() {
         println!("  {}", label("Edge table relationships:"));
         for (table, edge) in edge_tables {
-            let src_col = table.columns.iter().find(|c| c.name == edge.src_fk.edge_column);
-            let dst_col = table.columns.iter().find(|c| c.name == edge.dst_fk.edge_column);
-            let src_desc = src_col.map(format_column).unwrap_or_else(|| "unknown".to_string());
-            let dst_desc = dst_col.map(format_column).unwrap_or_else(|| "unknown".to_string());
+            let src_col = table
+                .columns
+                .iter()
+                .find(|c| c.name == edge.src_fk.edge_column);
+            let dst_col = table
+                .columns
+                .iter()
+                .find(|c| c.name == edge.dst_fk.edge_column);
+            let src_desc = src_col
+                .map(format_column)
+                .unwrap_or_else(|| "unknown".to_string());
+            let dst_desc = dst_col
+                .map(format_column)
+                .unwrap_or_else(|| "unknown".to_string());
             let src_ref_name = ref_table_pk(source, &edge.src_fk.ref_table);
             let dst_ref_name = ref_table_pk(source, &edge.dst_fk.ref_table);
             let src_ref_col = source
@@ -1248,10 +1270,12 @@ fn print_source_schema(source: &SourceMetadataReport) {
                 .iter()
                 .find(|t| t.name == edge.dst_fk.ref_table)
                 .and_then(|t| t.columns.iter().find(|c| c.name == dst_ref_name.as_str()));
-            let src_ref_desc =
-                src_ref_col.map(format_column).unwrap_or_else(|| "unknown".to_string());
-            let dst_ref_desc =
-                dst_ref_col.map(format_column).unwrap_or_else(|| "unknown".to_string());
+            let src_ref_desc = src_ref_col
+                .map(format_column)
+                .unwrap_or_else(|| "unknown".to_string());
+            let dst_ref_desc = dst_ref_col
+                .map(format_column)
+                .unwrap_or_else(|| "unknown".to_string());
             println!(
                 "    {}: {} {} ({}) {} {}.{} ({}); {} {} ({}) {} {}.{} ({})",
                 name(&table.name),
@@ -1458,7 +1482,11 @@ fn print_rowpack_summary(ctx: &RowPackContext) {
 
 fn format_rowpack_encoding(encoding: &ColumnEncoding) -> String {
     match encoding {
-        ColumnEncoding::Int { signed, varint, bits } => {
+        ColumnEncoding::Int {
+            signed,
+            varint,
+            bits,
+        } => {
             format!("int(signed={}, varint={}, bits={})", signed, varint, bits)
         }
         ColumnEncoding::Float { storage } => format!("float({})", format_float_storage(*storage)),
@@ -1676,8 +1704,16 @@ fn format_sort_key_value(rel: &EdgeRelationMetadata, raw: u64) -> String {
     } else {
         0
     };
-    let weight_raw = if weight_bits > 0 { raw & weight_mask } else { 0 };
-    let ts_raw = if weight_bits > 0 { raw >> weight_bits } else { raw };
+    let weight_raw = if weight_bits > 0 {
+        raw & weight_mask
+    } else {
+        0
+    };
+    let ts_raw = if weight_bits > 0 {
+        raw >> weight_bits
+    } else {
+        raw
+    };
     let mut parts = Vec::new();
     if let Some(ts) = &meta.timestamp {
         let bits = timestamp_bits_for_meta(ts);
@@ -1760,7 +1796,11 @@ fn ordered_f32_from_bits(raw: u32) -> f32 {
 }
 
 fn ordered_f16_from_bits(raw: u16) -> f32 {
-    let bits = if raw & 0x8000 != 0 { raw ^ 0x8000 } else { !raw };
+    let bits = if raw & 0x8000 != 0 {
+        raw ^ 0x8000
+    } else {
+        !raw
+    };
     f16::from_bits(bits).to_f32()
 }
 
@@ -1826,7 +1866,11 @@ fn print_info(reader: &GraphIndexReader, table_name: &str, root: &Path) {
         "  {} {}",
         label("Node data:"),
         node_meta
-            .map(|n| if n.has_node_data { ok("enabled") } else { dim("disabled") })
+            .map(|n| if n.has_node_data {
+                ok("enabled")
+            } else {
+                dim("disabled")
+            })
             .unwrap_or_else(|| dim("unknown"))
     );
 
@@ -1843,11 +1887,7 @@ fn print_info(reader: &GraphIndexReader, table_name: &str, root: &Path) {
             };
             if let Some(reader_shard) = table.shard(idx) {
                 let header = reader_shard.header();
-                let node_data_paths = shard
-                    .node_data_paths
-                    .as_ref()
-                    .map(|v| v.len())
-                    .unwrap_or(0);
+                let node_data_paths = shard.node_data_paths.as_ref().map(|v| v.len()).unwrap_or(0);
                 total_edges = total_edges.saturating_add(reader_shard.edge_count());
                 total_offsets = total_offsets.saturating_add(reader_shard.offsets_len());
                 total_edge_bytes = total_edge_bytes.saturating_add(reader_shard.edges_len());
@@ -1920,7 +1960,11 @@ fn print_info(reader: &GraphIndexReader, table_name: &str, root: &Path) {
             dim("->"),
             name(&rel.dst_type),
             label("sort_key"),
-            if sort == "none" { dim(&sort) } else { highlight(&sort) },
+            if sort == "none" {
+                dim(&sort)
+            } else {
+                highlight(&sort)
+            },
             label("dst_bits"),
             ok(&dst_bits.to_string()),
             label("entry_bytes"),
@@ -1962,7 +2006,6 @@ fn print_info(reader: &GraphIndexReader, table_name: &str, root: &Path) {
             println!("  {}", label("Outgoing edge stats:"));
             print_edge_stats(&stats, &outgoing);
         }
-
     }
 
     if let Ok(Some(report)) = read_build_report(root) {
@@ -2058,7 +2101,11 @@ fn show_node(reader: &GraphIndexReader, table_name: &str, node: u64) -> Result<(
     let segments = match view.relation_segments() {
         Ok(s) => s,
         Err(e) => {
-            println!("{} {}", err("Error decoding relations:"), err(&e.to_string()));
+            println!(
+                "{} {}",
+                err("Error decoding relations:"),
+                err(&e.to_string())
+            );
             return Ok(());
         }
     };
@@ -2113,15 +2160,27 @@ fn show_node(reader: &GraphIndexReader, table_name: &str, node: u64) -> Result<(
                 }
                 Ok(None) => {}
                 Err(e) => {
-                    println!("  {} {}", label("node_data:"), err(&format!("<error: {e}>")));
+                    println!(
+                        "  {} {}",
+                        label("node_data:"),
+                        err(&format!("<error: {e}>"))
+                    );
                 }
             },
             Err(e) => {
-                println!("  {} {}", label("node_data:"), err(&format!("<error: {e}>")));
+                println!(
+                    "  {} {}",
+                    label("node_data:"),
+                    err(&format!("<error: {e}>"))
+                );
             }
         },
         Err(e) => {
-            println!("  {} {}", label("node_data:"), err(&format!("<error: {e}>")));
+            println!(
+                "  {} {}",
+                label("node_data:"),
+                err(&format!("<error: {e}>"))
+            );
         }
     }
     let elapsed = start.elapsed();
@@ -2207,7 +2266,12 @@ fn format_pk_key_debug(key: &diskgraph_index::pkmap::Key) -> String {
         diskgraph_index::pkmap::Key::Ip(v) => format!("ip={}", hex_bytes(v)),
         diskgraph_index::pkmap::Key::Bytes(v) => {
             let ascii = escape_ascii(v);
-            format!("bytes_len={} ascii=\"{}\" hex={}", v.len(), ascii, hex_bytes(v))
+            format!(
+                "bytes_len={} ascii=\"{}\" hex={}",
+                v.len(),
+                ascii,
+                hex_bytes(v)
+            )
         }
     }
 }
@@ -2220,7 +2284,6 @@ fn hex_bytes(bytes: &[u8]) -> String {
     }
     out
 }
-
 
 fn run_benchmark(
     table: Arc<TableReader>,
@@ -2259,7 +2322,11 @@ fn run_benchmark_tables(
         return Ok(());
     }
     let total_nodes: u64 = tables.iter().map(|t| t.node_count()).sum();
-    let heading = if round_robin { "Benchmark all" } else { "Benchmark" };
+    let heading = if round_robin {
+        "Benchmark all"
+    } else {
+        "Benchmark"
+    };
     println!(
         "{} {}={} {}={} {}={} {}={}",
         label(heading),
@@ -2281,16 +2348,15 @@ fn run_benchmark_tables(
     }
 
     const BUCKETS_US: [u64; 18] = [
-        1, 2, 5, 10, 20, 50, 100, 200, 500, 1_000, 2_000, 5_000, 10_000, 20_000, 50_000,
-        100_000, 200_000, 500_000,
+        1, 2, 5, 10, 20, 50, 100, 200, 500, 1_000, 2_000, 5_000, 10_000, 20_000, 50_000, 100_000,
+        200_000, 500_000,
     ];
 
     let mut handles = Vec::with_capacity(threads);
+    #[allow(clippy::needless_range_loop)]
     for idx in 0..threads {
         let tables = tables.clone();
-        let table_count = table_count;
         let ops_counter = ops_counters[idx].clone();
-        let round_robin = round_robin;
         let stop_flag = Arc::clone(&stop_flag);
         handles.push(std::thread::spawn(move || {
             let mut state = (idx as u64 + 1) * 0x9E37_79B9_7F4A_7C15;
@@ -2320,7 +2386,7 @@ fn run_benchmark_tables(
                     ops_counter.fetch_add(1, Ordering::Relaxed);
                     continue;
                 }
-                let offset = ((state >> 32) % node_count) as u64;
+                let offset = (state >> 32) % node_count;
                 let Some(node) = table.node_id_from_offset(offset) else {
                     errors += 1;
                     ops += 1;
@@ -2405,12 +2471,12 @@ fn run_benchmark_tables(
             while std::time::Instant::now() < end_time && !stop_flag.load(Ordering::Relaxed) {
                 let now = std::time::Instant::now();
                 let elapsed = now.duration_since(start_time);
-                let total_ops: u64 = ops_counters
-                    .iter()
-                    .map(|c| c.load(Ordering::Relaxed))
-                    .sum();
+                let total_ops: u64 = ops_counters.iter().map(|c| c.load(Ordering::Relaxed)).sum();
                 if now.duration_since(last_bucket_time) >= std::time::Duration::from_secs(1) {
-                    let bucket_secs = now.duration_since(last_bucket_time).as_secs_f64().max(0.001);
+                    let bucket_secs = now
+                        .duration_since(last_bucket_time)
+                        .as_secs_f64()
+                        .max(0.001);
                     let delta = total_ops.saturating_sub(last_ops);
                     let throughput = (delta as f64 / bucket_secs).round() as u64;
                     samples.push(throughput);
@@ -2426,10 +2492,7 @@ fn run_benchmark_tables(
                 }
                 std::thread::sleep(std::time::Duration::from_millis(200));
             }
-            let total_ops: u64 = ops_counters
-                .iter()
-                .map(|c| c.load(Ordering::Relaxed))
-                .sum();
+            let total_ops: u64 = ops_counters.iter().map(|c| c.load(Ordering::Relaxed)).sum();
             let bucket_secs = std::time::Instant::now()
                 .duration_since(last_bucket_time)
                 .as_secs_f64()
@@ -2511,7 +2574,11 @@ fn run_benchmark_tables(
         } else {
             0.0
         };
-        println!("  {} {}", label("load factor:"), ok(&format!("{load_factor:.2}")));
+        println!(
+            "  {} {}",
+            label("load factor:"),
+            ok(&format!("{load_factor:.2}"))
+        );
     } else {
         println!("  {} {}", label("available ram:"), dim("n/a"));
         println!("  {} {}", label("load factor:"), dim("n/a"));
@@ -2566,11 +2633,7 @@ fn run_benchmark_tables(
         ok(&format_duration_ns(avg_ns as u128))
     );
     if min_ns != u128::MAX {
-        println!(
-            "  {} {}",
-            label("min:"),
-            ok(&format_duration_ns(min_ns))
-        );
+        println!("  {} {}", label("min:"), ok(&format_duration_ns(min_ns)));
     }
     println!("  {} {}", label("max:"), ok(&format_duration_ns(max_ns)));
     println!(
@@ -2758,7 +2821,7 @@ fn poll_escape(fd: i32) -> Result<bool> {
     if read == 0 {
         return Ok(false);
     }
-    Ok(buf[..read as usize].iter().any(|b| *b == 0x1b))
+    Ok(buf[..read as usize].contains(&0x1b))
 }
 
 fn enter_benchmark_screen() -> Result<()> {
@@ -2775,15 +2838,19 @@ fn leave_benchmark_screen() -> Result<()> {
     Ok(())
 }
 
-fn render_progress_bar(width: usize, elapsed: std::time::Duration, duration: std::time::Duration) -> String {
+fn render_progress_bar(
+    width: usize,
+    elapsed: std::time::Duration,
+    duration: std::time::Duration,
+) -> String {
     let bar_width = width.saturating_sub(20).max(10);
-    let frac = (elapsed.as_secs_f64() / duration.as_secs_f64()).min(1.0).max(0.0);
+    let frac = (elapsed.as_secs_f64() / duration.as_secs_f64()).clamp(0.0, 1.0);
     let filled = (bar_width as f64 * frac).round() as usize;
     let empty = bar_width.saturating_sub(filled);
     let percent = (frac * 100.0).round() as u64;
     format!(
-        "[{}{}] {:>3}%",
-        format!("\x1b[46m{}\x1b[0m", " ".repeat(filled)),
+        "[\x1b[46m{}\x1b[0m{}] {:>3}%",
+        " ".repeat(filled),
         "-".repeat(empty),
         percent
     )
@@ -2829,8 +2896,8 @@ fn render_ops_chart(samples: &[u64], width: usize, height: usize, scale_max: &mu
         };
         out.push_str(&format!("{:>width$} |", label, width = label_width));
         for &val in window {
-            let bar_height = ((val as u128 * height as u128) + scale_max as u128 - 1)
-                / scale_max as u128;
+            let bar_height =
+                ((val as u128 * height as u128) + scale_max as u128 - 1) / scale_max as u128;
             if bar_height >= row as u128 {
                 let color = color_for_row(row, height);
                 out.push_str(color);
@@ -2914,7 +2981,7 @@ fn available_memory_bytes() -> Option<u64> {
     let contents = fs::read_to_string("/proc/meminfo").ok()?;
     for line in contents.lines() {
         if let Some(rest) = line.strip_prefix("MemAvailable:") {
-            let parts: Vec<&str> = rest.trim().split_whitespace().collect();
+            let parts: Vec<&str> = rest.split_whitespace().collect();
             if let Some(kb) = parts.first() {
                 if let Ok(value) = kb.parse::<u64>() {
                     return Some(value.saturating_mul(1024));

@@ -1,6 +1,6 @@
+use crate::graph_config::GraphConfig;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use crate::graph_config::GraphConfig;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct IngestReport {

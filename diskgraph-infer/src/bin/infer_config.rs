@@ -14,7 +14,11 @@ use url::Url;
 const CONFIG_FILENAME: &str = "diskgraph_config.json";
 
 #[derive(Parser, Debug)]
-#[command(author, version, about = "Infer diskgraph_config.json from CSV/Parquet tables.")]
+#[command(
+    author,
+    version,
+    about = "Infer diskgraph_config.json from CSV/Parquet tables."
+)]
 struct Args {
     /// Root directory or cloud URL (s3://, gs://, az://).
     #[arg(long)]
@@ -92,10 +96,7 @@ fn main() -> Result<()> {
         println!("Foreign Keys:");
         for table in tables_with_fkeys {
             for fkey in &table.fkeys {
-                println!(
-                    "  {}.{} -> {}",
-                    table.name, fkey.src_column, fkey.dst_table
-                );
+                println!("  {}.{} -> {}", table.name, fkey.src_column, fkey.dst_table);
             }
         }
     }
@@ -119,7 +120,12 @@ fn main() -> Result<()> {
             for mismatch in &result.warnings.schema_mismatches {
                 println!("  {}", mismatch.path);
                 for diff in &mismatch.diffs {
-                    println!("    [{}] {} -> {}", diff.index, fmt_column(&diff.left), fmt_column(&diff.right));
+                    println!(
+                        "    [{}] {} -> {}",
+                        diff.index,
+                        fmt_column(&diff.left),
+                        fmt_column(&diff.right)
+                    );
                 }
             }
         }
@@ -137,10 +143,7 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn default_output_target(
-    root: &diskgraph_infer::RootSource,
-    input: &str,
-) -> Result<OutputTarget> {
+fn default_output_target(root: &diskgraph_infer::RootSource, input: &str) -> Result<OutputTarget> {
     let target = match root {
         diskgraph_infer::RootSource::Local(path) => OutputTarget::Local(path.join(CONFIG_FILENAME)),
         diskgraph_infer::RootSource::S3 { bucket, prefix } => OutputTarget::S3 {
@@ -180,8 +183,14 @@ fn ingest_command_hint(root: &diskgraph_infer::RootSource, input: &str) -> Optio
 #[derive(Debug)]
 enum OutputTarget {
     Local(PathBuf),
-    S3 { bucket: String, key: String },
-    Gcs { bucket: String, key: String },
+    S3 {
+        bucket: String,
+        key: String,
+    },
+    Gcs {
+        bucket: String,
+        key: String,
+    },
     Adls {
         account: String,
         container: String,

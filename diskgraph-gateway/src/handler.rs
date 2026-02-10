@@ -1,15 +1,15 @@
+use arrow_array::{ArrayRef, Int8Array, RecordBatch, UInt64Array};
+use arrow_flight::FlightData;
+use arrow_ipc::writer::IpcWriteOptions;
+use arrow_ipc::writer::{DictionaryTracker, IpcDataGenerator};
+use arrow_schema::{DataType, Field, Schema};
+use diskgraph_engine::errors::EngineError;
 use diskgraph_engine::output::OutputHandler;
 use diskgraph_engine::state::SamplingState;
-use diskgraph_engine::errors::EngineError;
-use arrow_array::{RecordBatch, UInt64Array, Int8Array, ArrayRef};
-use arrow_schema::{DataType, Field, Schema};
-use arrow_flight::FlightData;
-use arrow_ipc::writer::{IpcDataGenerator, DictionaryTracker};
-use arrow_ipc::writer::IpcWriteOptions;
-use tonic::Status;
-use tokio::sync::mpsc;
-use std::sync::Arc;
 use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::mpsc;
+use tonic::Status;
 
 const CHUNK_SIZE: usize = 64 * 1024; // 64k edges per batch
 
@@ -63,7 +63,9 @@ impl ArrowFlightOutput {
     fn flush_edge_buffer(&mut self, rel_id: u16) -> Result<(), EngineError> {
         let mut buffer_contents = EdgeBuffer::new();
         if let Some(buffer) = self.edge_buffers.get_mut(&rel_id) {
-            if buffer.len() == 0 { return Ok(()); }
+            if buffer.len() == 0 {
+                return Ok(());
+            }
             // Swap buffer out to release borrow on self
             std::mem::swap(buffer, &mut buffer_contents);
         } else {
@@ -73,8 +75,20 @@ impl ArrowFlightOutput {
         let len = buffer_contents.len();
 
         let row_type = Int8Array::from(vec![0; len]);
-        let id_a = UInt64Array::from(buffer_contents.src.iter().map(|&x| x as u64).collect::<Vec<_>>());
-        let id_b = UInt64Array::from(buffer_contents.dst.iter().map(|&x| x as u64).collect::<Vec<_>>());
+        let id_a = UInt64Array::from(
+            buffer_contents
+                .src
+                .iter()
+                .map(|&x| x as u64)
+                .collect::<Vec<_>>(),
+        );
+        let id_b = UInt64Array::from(
+            buffer_contents
+                .dst
+                .iter()
+                .map(|&x| x as u64)
+                .collect::<Vec<_>>(),
+        );
         let meta_type = UInt64Array::from(vec![rel_id as u64; len]);
         let meta_val = UInt64Array::from(vec![0; len]);
 
@@ -87,15 +101,16 @@ impl ArrowFlightOutput {
                 Arc::new(meta_type) as ArrayRef,
                 Arc::new(meta_val) as ArrayRef,
             ],
-        ).map_err(|e| EngineError::Internal(e.to_string()))?;
+        )
+        .map_err(|e| EngineError::Internal(e.to_string()))?;
 
         self.send_batch(batch)?;
 
         // We could reuse the buffer capacity by swapping back, but for simplicity we just let it drop.
         // Or better: put it back.
         if let Some(buffer) = self.edge_buffers.get_mut(&rel_id) {
-             buffer_contents.clear();
-             *buffer = buffer_contents;
+            buffer_contents.clear();
+            *buffer = buffer_contents;
         }
         Ok(())
     }
@@ -110,14 +125,17 @@ impl ArrowFlightOutput {
         ]))
     }
 
+    #[allow(deprecated)]
     fn send_batch(&mut self, batch: RecordBatch) -> Result<(), EngineError> {
         let generator = IpcDataGenerator::default();
         let mut tracker = DictionaryTracker::new(false);
-        let (_dictionaries, encoded_data) = generator.encoded_batch(&batch, &mut tracker, &self.options)
-             .map_err(|e: arrow_schema::ArrowError| EngineError::Internal(e.to_string()))?;
+        let (_dictionaries, encoded_data) = generator
+            .encoded_batch(&batch, &mut tracker, &self.options)
+            .map_err(|e: arrow_schema::ArrowError| EngineError::Internal(e.to_string()))?;
 
         let flight_data: FlightData = encoded_data.into();
-        self.sender.blocking_send(Ok(flight_data))
+        self.sender
+            .blocking_send(Ok(flight_data))
             .map_err(|_| EngineError::Output("channel closed".into()))?;
         Ok(())
     }
@@ -131,7 +149,10 @@ impl OutputHandler for ArrowFlightOutput {
         src_local_id: u32,
         dst_local_id: u32,
     ) -> Result<(), EngineError> {
-        let buffer = self.edge_buffers.entry(rel_id).or_insert_with(EdgeBuffer::new);
+        let buffer = self
+            .edge_buffers
+            .entry(rel_id)
+            .or_insert_with(EdgeBuffer::new);
         buffer.push(src_local_id, dst_local_id, hop as u32);
 
         if buffer.len() >= CHUNK_SIZE {
@@ -143,9 +164,9 @@ impl OutputHandler for ArrowFlightOutput {
         // Correct logic:
         let needs_flush = buffer.len() >= CHUNK_SIZE;
         if needs_flush {
-             // Drop borrow
+            // Drop borrow
         } else {
-             return Ok(());
+            return Ok(());
         }
 
         // Flush
@@ -155,7 +176,8 @@ impl OutputHandler for ArrowFlightOutput {
 
     fn handle_schema(&mut self, schema: Arc<Schema>) -> Result<(), EngineError> {
         let schema_flight_data = arrow_flight::SchemaAsIpc::new(&schema, &self.options).into();
-        self.sender.blocking_send(Ok(schema_flight_data))
+        self.sender
+            .blocking_send(Ok(schema_flight_data))
             .map_err(|_| EngineError::Output("channel closed".into()))?;
         Ok(())
     }
@@ -175,12 +197,20 @@ impl OutputHandler for ArrowFlightOutput {
         // 2. Send Node Mappings (Global IDs)
         // state.type_states maps type_id -> nodes[global_id]
         for (type_id, type_state) in &state.type_states {
-            if type_state.nodes.is_empty() { continue; }
+            if type_state.nodes.is_empty() {
+                continue;
+            }
 
             let len = type_state.nodes.len();
             let row_type = Int8Array::from(vec![1; len]);
             let id_a = UInt64Array::from(vec![0; len]); // Not used for nodes
-            let id_b = UInt64Array::from(type_state.nodes.iter().map(|n| n.global_id).collect::<Vec<_>>()); // Global ID
+            let id_b = UInt64Array::from(
+                type_state
+                    .nodes
+                    .iter()
+                    .map(|n| n.global_id)
+                    .collect::<Vec<_>>(),
+            ); // Global ID
             let meta_type = UInt64Array::from(vec![*type_id as u64; len]);
             let meta_val = UInt64Array::from(vec![0; len]);
 
@@ -193,7 +223,8 @@ impl OutputHandler for ArrowFlightOutput {
                     Arc::new(meta_type) as ArrayRef,
                     Arc::new(meta_val) as ArrayRef,
                 ],
-            ).map_err(|e| EngineError::Internal(e.to_string()))?;
+            )
+            .map_err(|e| EngineError::Internal(e.to_string()))?;
 
             self.send_batch(batch)?;
         }
@@ -209,7 +240,8 @@ impl OutputHandler for ArrowFlightOutput {
             flight_descriptor: None,
         };
 
-        self.sender.blocking_send(Ok(metadata_msg))
+        self.sender
+            .blocking_send(Ok(metadata_msg))
             .map_err(|_| EngineError::Output("channel closed".into()))?;
 
         Ok(())
@@ -221,7 +253,6 @@ mod tests {
     use super::*;
     use diskgraph_engine::state::{SamplingState, SamplingStats, TypeState};
     use gxhash::HashMap as GxHashMap;
-    use std::sync::Arc;
 
     #[tokio::test]
     async fn test_edge_buffering() {
@@ -252,9 +283,9 @@ mod tests {
         let msg2 = rx.recv().await.unwrap().unwrap();
         let msg3 = rx.recv().await.unwrap().unwrap();
 
-        assert!(msg1.data_header.len() > 0);
-        assert!(msg2.data_header.len() > 0);
-        assert!(msg3.app_metadata.len() > 0);
+        assert!(!msg1.data_header.is_empty());
+        assert!(!msg2.data_header.is_empty());
+        assert!(!msg3.app_metadata.is_empty());
     }
 
     #[tokio::test]
@@ -266,8 +297,16 @@ mod tests {
 
             let mut type_states = GxHashMap::default();
             let mut t0 = TypeState::new();
-            t0.nodes.push(diskgraph_engine::state::NodeRecord { global_id: 100, local_id: 0, seed_index: 0 });
-            t0.nodes.push(diskgraph_engine::state::NodeRecord { global_id: 101, local_id: 1, seed_index: 0 });
+            t0.nodes.push(diskgraph_engine::state::NodeRecord {
+                global_id: 100,
+                local_id: 0,
+                seed_index: 0,
+            });
+            t0.nodes.push(diskgraph_engine::state::NodeRecord {
+                global_id: 101,
+                local_id: 1,
+                seed_index: 0,
+            });
             type_states.insert(0, t0);
 
             let state = SamplingState {
@@ -285,8 +324,7 @@ mod tests {
         let msg1 = rx.recv().await.unwrap().unwrap();
         let msg2 = rx.recv().await.unwrap().unwrap();
 
-        assert!(msg1.data_header.len() > 0);
-        assert!(msg2.app_metadata.len() > 0);
+        assert!(!msg1.data_header.is_empty());
+        assert!(!msg2.app_metadata.is_empty());
     }
 }
-

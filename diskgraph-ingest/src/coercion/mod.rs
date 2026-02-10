@@ -37,9 +37,9 @@
 
 mod kind;
 mod mode;
-mod validate;
 #[cfg(test)]
 mod tests_matrix;
+mod validate;
 
 pub use kind::{coercion_kind, CoercionKind, CoercionParams};
 pub use mode::CoercionMode;

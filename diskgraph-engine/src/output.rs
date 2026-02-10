@@ -1,5 +1,5 @@
-use crate::state::SamplingState;
 use crate::errors::Result;
+use crate::state::SamplingState;
 
 /// Trait for handling the output stream of the sampler.
 pub trait OutputHandler {
@@ -24,9 +24,15 @@ pub trait OutputHandler {
 
 /// A simple in-memory accumulator for testing/benchmarking.
 pub struct InMemoryOutput {
-    pub edges: Vec<(usize, u16, u32, u32)>,        // (hop, rel, src, dst)
+    pub edges: Vec<(usize, u16, u32, u32)>, // (hop, rel, src, dst)
     pub feature_batches: Vec<arrow_array::RecordBatch>,
     pub schema: Option<arrow_schema::SchemaRef>,
+}
+
+impl Default for InMemoryOutput {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl InMemoryOutput {
