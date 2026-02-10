@@ -1,2 +1,3 @@
 scripts/benchmarks/benchmark_configs/alt_detection_10pct.json
 scripts/benchmarks/benchmark_configs/mimic.json
+scripts/benchmarks/benchmark_configs/social_sampling_50m.json

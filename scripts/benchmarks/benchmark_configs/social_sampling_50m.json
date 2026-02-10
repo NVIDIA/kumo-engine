@@ -1,0 +1,308 @@
+{
+  "dataset_name": "social_sampling_50m",
+  "tables": [
+    {
+      "name": "posts",
+      "columns": [
+        {
+          "name": "post_id",
+          "source_dtype": "Int64",
+          "ingested_dtype": "int64"
+        },
+        {
+          "name": "author_id",
+          "source_dtype": "Int64",
+          "ingested_dtype": "int64"
+        },
+        {
+          "name": "created_ts",
+          "source_dtype": "Timestamp(ms)",
+          "ingested_dtype": "timestamp"
+        },
+        {
+          "name": "category",
+          "source_dtype": "Utf8",
+          "ingested_dtype": "string"
+        }
+      ],
+      "primary_key": "post_id",
+      "create_time": "created_ts",
+      "weight": null,
+      "edge_table": null,
+      "rowpack": null,
+      "source": {
+        "type": "parquet",
+        "paths": [
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/posts/part-00013.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/posts/part-00006.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/posts/part-00007.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/posts/part-00014.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/posts/part-00002.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/posts/part-00000.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/posts/part-00011.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/posts/part-00001.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/posts/part-00012.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/posts/part-00008.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/posts/part-00004.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/posts/part-00005.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/posts/part-00010.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/posts/part-00009.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/posts/part-00015.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/posts/part-00003.parquet"
+        ]
+      }
+    },
+    {
+      "name": "comments",
+      "columns": [
+        {
+          "name": "user_id",
+          "source_dtype": "Int64",
+          "ingested_dtype": "int64"
+        },
+        {
+          "name": "post_id",
+          "source_dtype": "Int64",
+          "ingested_dtype": "int64"
+        },
+        {
+          "name": "comment_ts",
+          "source_dtype": "Timestamp(ms)",
+          "ingested_dtype": "timestamp"
+        },
+        {
+          "name": "sentiment_score",
+          "source_dtype": "Float32",
+          "ingested_dtype": "float32"
+        }
+      ],
+      "primary_key": null,
+      "create_time": "comment_ts",
+      "weight": "sentiment_score",
+      "edge_table": {
+        "src_fk": {
+          "edge_column": "user_id",
+          "ref_table": "users"
+        },
+        "dst_fk": {
+          "edge_column": "post_id",
+          "ref_table": "posts"
+        }
+      },
+      "rowpack": null,
+      "source": {
+        "type": "parquet",
+        "paths": [
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/comments/part-00013.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/comments/part-00006.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/comments/part-00007.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/comments/part-00014.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/comments/part-00002.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/comments/part-00000.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/comments/part-00011.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/comments/part-00001.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/comments/part-00012.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/comments/part-00008.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/comments/part-00004.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/comments/part-00005.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/comments/part-00010.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/comments/part-00009.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/comments/part-00015.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/comments/part-00003.parquet"
+        ]
+      }
+    },
+    {
+      "name": "likes",
+      "columns": [
+        {
+          "name": "user_id",
+          "source_dtype": "Int64",
+          "ingested_dtype": "int64"
+        },
+        {
+          "name": "post_id",
+          "source_dtype": "Int64",
+          "ingested_dtype": "int64"
+        },
+        {
+          "name": "liked_ts",
+          "source_dtype": "Timestamp(ms)",
+          "ingested_dtype": "timestamp"
+        },
+        {
+          "name": "engagement_score",
+          "source_dtype": "Float32",
+          "ingested_dtype": "float32"
+        }
+      ],
+      "primary_key": null,
+      "create_time": "liked_ts",
+      "weight": "engagement_score",
+      "edge_table": {
+        "src_fk": {
+          "edge_column": "user_id",
+          "ref_table": "users"
+        },
+        "dst_fk": {
+          "edge_column": "post_id",
+          "ref_table": "posts"
+        }
+      },
+      "rowpack": null,
+      "source": {
+        "type": "parquet",
+        "paths": [
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/likes/part-00013.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/likes/part-00018.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/likes/part-00006.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/likes/part-00007.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/likes/part-00014.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/likes/part-00002.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/likes/part-00025.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/likes/part-00027.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/likes/part-00026.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/likes/part-00000.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/likes/part-00016.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/likes/part-00011.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/likes/part-00001.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/likes/part-00012.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/likes/part-00022.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/likes/part-00021.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/likes/part-00028.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/likes/part-00008.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/likes/part-00004.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/likes/part-00031.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/likes/part-00017.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/likes/part-00019.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/likes/part-00005.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/likes/part-00024.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/likes/part-00029.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/likes/part-00010.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/likes/part-00009.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/likes/part-00015.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/likes/part-00023.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/likes/part-00003.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/likes/part-00030.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/likes/part-00020.parquet"
+        ]
+      }
+    },
+    {
+      "name": "users",
+      "columns": [
+        {
+          "name": "user_id",
+          "source_dtype": "Int64",
+          "ingested_dtype": "int64"
+        },
+        {
+          "name": "region",
+          "source_dtype": "Utf8",
+          "ingested_dtype": "string"
+        },
+        {
+          "name": "signup_ts",
+          "source_dtype": "Timestamp(ms)",
+          "ingested_dtype": "timestamp"
+        },
+        {
+          "name": "activity_score",
+          "source_dtype": "Float32",
+          "ingested_dtype": "float32"
+        }
+      ],
+      "primary_key": "user_id",
+      "create_time": "signup_ts",
+      "weight": null,
+      "edge_table": null,
+      "rowpack": null,
+      "source": {
+        "type": "parquet",
+        "paths": [
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/users/part-00006.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/users/part-00007.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/users/part-00002.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/users/part-00000.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/users/part-00001.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/users/part-00004.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/users/part-00005.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/users/part-00003.parquet"
+        ]
+      }
+    },
+    {
+      "name": "follows",
+      "columns": [
+        {
+          "name": "follower_id",
+          "source_dtype": "Int64",
+          "ingested_dtype": "int64"
+        },
+        {
+          "name": "followee_id",
+          "source_dtype": "Int64",
+          "ingested_dtype": "int64"
+        },
+        {
+          "name": "followed_ts",
+          "source_dtype": "Timestamp(ms)",
+          "ingested_dtype": "timestamp"
+        }
+      ],
+      "primary_key": null,
+      "create_time": "followed_ts",
+      "weight": null,
+      "edge_table": {
+        "src_fk": {
+          "edge_column": "follower_id",
+          "ref_table": "users"
+        },
+        "dst_fk": {
+          "edge_column": "followee_id",
+          "ref_table": "users"
+        }
+      },
+      "rowpack": null,
+      "source": {
+        "type": "parquet",
+        "paths": [
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/follows/part-00013.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/follows/part-00018.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/follows/part-00006.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/follows/part-00007.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/follows/part-00014.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/follows/part-00002.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/follows/part-00025.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/follows/part-00027.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/follows/part-00026.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/follows/part-00000.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/follows/part-00016.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/follows/part-00011.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/follows/part-00001.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/follows/part-00012.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/follows/part-00022.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/follows/part-00021.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/follows/part-00028.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/follows/part-00008.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/follows/part-00004.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/follows/part-00031.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/follows/part-00017.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/follows/part-00019.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/follows/part-00005.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/follows/part-00024.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/follows/part-00029.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/follows/part-00010.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/follows/part-00009.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/follows/part-00015.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/follows/part-00023.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/follows/part-00003.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/follows/part-00030.parquet",
+          "s3://kumo-unit-test/diskgraph-datagenerator/social_sampling_50m/follows/part-00020.parquet"
+        ]
+      }
+    }
+  ],
+  "rowpack": null,
+  "num_shards": 6
+}
