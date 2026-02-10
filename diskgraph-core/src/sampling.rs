@@ -113,25 +113,31 @@ mod tests {
         let plan = SamplingPlan {
             layers: vec![
                 LayerSpec {
-                    fanouts: [
-                        ("user__click__item".to_string(), FanoutSpec {
+                    fanouts: [(
+                        "user__click__item".to_string(),
+                        FanoutSpec {
                             fanout: 10,
                             mode: SamplingMode::TemporalMostRecent,
                             absent_key_policy: AbsentKeyPolicy::RejectPlan,
-                        }),
-                    ].into(),
+                        },
+                    )]
+                    .into(),
                     default_fanout: None,
                 },
                 LayerSpec {
-                    fanouts: [
-                        ("item__click__user".to_string(), FanoutSpec {
+                    fanouts: [(
+                        "item__click__user".to_string(),
+                        FanoutSpec {
                             fanout: 5,
                             mode: SamplingMode::Weighted {
-                                weighting: Weighting::LinearDecay { half_life_seconds: 3600 }
+                                weighting: Weighting::LinearDecay {
+                                    half_life_seconds: 3600,
+                                },
                             },
                             absent_key_policy: AbsentKeyPolicy::UniformFallback,
-                        }),
-                    ].into(),
+                        },
+                    )]
+                    .into(),
                     default_fanout: None,
                 },
             ],
@@ -162,7 +168,10 @@ mod tests {
         assert_eq!(layer0["mode"], "temporal_most_recent");
 
         let layer1 = &json["plan"]["layers"][1]["fanouts"]["item__click__user"];
-        assert_eq!(layer1["mode"]["weighted"]["weighting"]["linear_decay"]["half_life_seconds"], 3600);
+        assert_eq!(
+            layer1["mode"]["weighted"]["weighting"]["linear_decay"]["half_life_seconds"],
+            3600
+        );
     }
 
     #[test]
@@ -172,18 +181,18 @@ mod tests {
             seed_nodes: [("User".to_string(), vec![1, 2, 3])].into(),
             seed_timestamps: None,
             plan: SamplingPlan {
-                layers: vec![
-                    LayerSpec {
-                        fanouts: [
-                            ("user__click__item".to_string(), FanoutSpec {
-                                fanout: 10,
-                                mode: SamplingMode::TemporalMostRecent,
-                                absent_key_policy: AbsentKeyPolicy::RejectPlan,
-                            }),
-                        ].into(),
-                        default_fanout: None,
-                    },
-                ],
+                layers: vec![LayerSpec {
+                    fanouts: [(
+                        "user__click__item".to_string(),
+                        FanoutSpec {
+                            fanout: 10,
+                            mode: SamplingMode::TemporalMostRecent,
+                            absent_key_policy: AbsentKeyPolicy::RejectPlan,
+                        },
+                    )]
+                    .into(),
+                    default_fanout: None,
+                }],
             },
             flags: SamplingFlags {
                 replace: false,

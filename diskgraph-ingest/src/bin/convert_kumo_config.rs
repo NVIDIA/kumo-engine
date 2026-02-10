@@ -12,7 +12,9 @@ use std::process::Command;
 use anyhow::{bail, Context, Result};
 use clap::{Parser, ValueEnum};
 
-use diskgraph_ingest::config_converter::{convert_kumo_to_diskgraph, ConvertOptions, KumoGraphConfig};
+use diskgraph_ingest::config_converter::{
+    convert_kumo_to_diskgraph, ConvertOptions, KumoGraphConfig,
+};
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum Region {
@@ -104,7 +106,10 @@ fn main() -> Result<()> {
     let customer = &args.customer;
     let job_id = &args.job;
 
-    eprintln!("Looking up job {} for customer {} in {}...", job_id, customer, bucket);
+    eprintln!(
+        "Looking up job {} for customer {} in {}...",
+        job_id, customer, bucket
+    );
 
     // Find the graph directory (e.g., NA-abc123)
     let graphs_prefix = format!("{}/prod/jobs/{}/graphs/", customer, job_id);

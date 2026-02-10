@@ -210,11 +210,23 @@ impl PopulationStatsBuilder {
         // Compute global prediction stats
         let (pred_mean, pred_std, pred_min, pred_max) = if !self.predictions.is_empty() {
             let mean = self.predictions.iter().sum::<f64>() / self.predictions.len() as f64;
-            let variance = self.predictions.iter().map(|p| (p - mean).powi(2)).sum::<f64>()
+            let variance = self
+                .predictions
+                .iter()
+                .map(|p| (p - mean).powi(2))
+                .sum::<f64>()
                 / (self.predictions.len() - 1).max(1) as f64;
             let std = variance.sqrt();
-            let min = self.predictions.iter().cloned().fold(f64::INFINITY, f64::min);
-            let max = self.predictions.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+            let min = self
+                .predictions
+                .iter()
+                .cloned()
+                .fold(f64::INFINITY, f64::min);
+            let max = self
+                .predictions
+                .iter()
+                .cloned()
+                .fold(f64::NEG_INFINITY, f64::max);
             (mean, std, min, max)
         } else {
             (0.0, 0.0, 0.0, 0.0)
@@ -243,11 +255,17 @@ fn compute_feature_stats(
     let feature_values: Vec<f64> = values.iter().map(|(v, _)| *v).collect();
 
     let mean = feature_values.iter().sum::<f64>() / n as f64;
-    let variance = feature_values.iter().map(|v| (v - mean).powi(2)).sum::<f64>()
+    let variance = feature_values
+        .iter()
+        .map(|v| (v - mean).powi(2))
+        .sum::<f64>()
         / (n - 1).max(1) as f64;
     let std = variance.sqrt();
     let min = feature_values.iter().cloned().fold(f64::INFINITY, f64::min);
-    let max = feature_values.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let max = feature_values
+        .iter()
+        .cloned()
+        .fold(f64::NEG_INFINITY, f64::max);
 
     // Sort by feature value to compute deciles
     let mut sorted: Vec<(f64, f64)> = values.to_vec();
@@ -266,7 +284,11 @@ fn compute_feature_stats(
 
     for i in 0..num_deciles {
         let start = i * decile_size;
-        let end = if i == num_deciles - 1 { n } else { (i + 1) * decile_size };
+        let end = if i == num_deciles - 1 {
+            n
+        } else {
+            (i + 1) * decile_size
+        };
 
         let decile_predictions: Vec<f64> = sorted[start..end].iter().map(|(_, p)| *p).collect();
         let decile_mean = if !decile_predictions.is_empty() {
@@ -318,14 +340,18 @@ impl PopulationStats {
         } else {
             stats.decile_boundaries[decile - 2]
         };
-        let decile_max = if decile >= stats.decile_boundaries.len() + 1 {
+        let decile_max = if decile > stats.decile_boundaries.len() {
             stats.max
         } else {
             stats.decile_boundaries[decile - 1]
         };
 
         // Get conditional rate for this decile
-        let conditional_rate = stats.decile_conditional_rates.get(decile - 1).copied().unwrap_or(0.0);
+        let conditional_rate = stats
+            .decile_conditional_rates
+            .get(decile - 1)
+            .copied()
+            .unwrap_or(0.0);
 
         Some(FeatureContext {
             feature: feature_name.to_string(),
@@ -357,7 +383,8 @@ impl PopulationStats {
 
             // Unique destinations
             let key = format!("relation:{}:unique_destinations", rel_name);
-            if let Some(ctx) = self.get_feature_context(&key, rel_motifs.unique_destinations as f64) {
+            if let Some(ctx) = self.get_feature_context(&key, rel_motifs.unique_destinations as f64)
+            {
                 contexts.push(ctx);
             }
 
@@ -451,7 +478,9 @@ impl PopulationStats {
         sorted.sort_by(|a, b| {
             let a_dev = (a.conditional_rate - a.population_rate).abs();
             let b_dev = (b.conditional_rate - b.population_rate).abs();
-            b_dev.partial_cmp(&a_dev).unwrap_or(std::cmp::Ordering::Equal)
+            b_dev
+                .partial_cmp(&a_dev)
+                .unwrap_or(std::cmp::Ordering::Equal)
         });
         sorted.truncate(k);
         sorted
@@ -481,8 +510,8 @@ impl PopulationStats {
                 } else {
                     1.0
                 };
-                let is_predictive = rate_ratio > rate_ratio_threshold
-                    || rate_ratio < (1.0 / rate_ratio_threshold);
+                let is_predictive =
+                    rate_ratio > rate_ratio_threshold || rate_ratio < (1.0 / rate_ratio_threshold);
 
                 is_global_outlier || is_predictive
             })
@@ -518,9 +547,7 @@ mod tests {
 
     #[test]
     fn test_z_score() {
-        let values: Vec<(f64, f64)> = (0..100)
-            .map(|i| (i as f64, 0.5))
-            .collect();
+        let values: Vec<(f64, f64)> = (0..100).map(|i| (i as f64, 0.5)).collect();
 
         let stats = compute_feature_stats("test", &values, 10);
 

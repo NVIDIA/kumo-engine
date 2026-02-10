@@ -1,15 +1,15 @@
 use anyhow::{anyhow, Result};
 use diskgraph_core::metadata::PrimaryKeyMap;
 use epserde::prelude::{Deserialize as EpDeserialize, Flags as EpFlags};
-use memmap2::Mmap;
 #[cfg(not(feature = "pkhash128"))]
 use gxhash::GxHasher;
-use std::hash::Hasher;
-use ptr_hash::hash::GxHash64;
+use memmap2::Mmap;
 #[cfg(feature = "pkhash128")]
 use ptr_hash::hash::GxHash128;
+use ptr_hash::hash::GxHash64;
 use ptr_hash::DefaultPtrHash;
 use std::fs::File;
+use std::hash::Hasher;
 use uuid_simd::{parse_hyphenated, parse_simple, AsOut};
 
 const PK_DATA_MAGIC: &[u8; 8] = b"DGPKDAT\0";
@@ -126,9 +126,8 @@ impl PkDataHeader {
     }
 }
 
-type MphfInt = epserde::prelude::MemCase<
-    epserde::prelude::DeserType<'static, DefaultPtrHash<PkPtrHash, u64>>,
->;
+type MphfInt =
+    epserde::prelude::MemCase<epserde::prelude::DeserType<'static, DefaultPtrHash<PkPtrHash, u64>>>;
 type MphfBytes = epserde::prelude::MemCase<
     epserde::prelude::DeserType<'static, DefaultPtrHash<PkPtrHash, Vec<u8>>>,
 >;
@@ -208,7 +207,11 @@ pub struct PkHashShard {
 }
 
 impl PkHashShard {
-    pub fn load(hash_path: &std::path::Path, data_path: &std::path::Path, key_type: KeyType) -> Result<Self> {
+    pub fn load(
+        hash_path: &std::path::Path,
+        data_path: &std::path::Path,
+        key_type: KeyType,
+    ) -> Result<Self> {
         let data_file = File::open(data_path)
             .map_err(|e| anyhow!("open pk data {}: {e}", data_path.display()))?;
         let data = unsafe { Mmap::map(&data_file)? };
@@ -226,19 +229,15 @@ impl PkHashShard {
         let lookup_fn = lookup_id_only;
         let mphf = match key_type {
             KeyType::Int64 => {
-                let mphf: MphfInt = DefaultPtrHash::<PkPtrHash, u64>::load_mmap(
-                    hash_path,
-                    EpFlags::SEQUENTIAL,
-                )
-                .map_err(|e| anyhow!("load pk hash {}: {e}", hash_path.display()))?;
+                let mphf: MphfInt =
+                    DefaultPtrHash::<PkPtrHash, u64>::load_mmap(hash_path, EpFlags::SEQUENTIAL)
+                        .map_err(|e| anyhow!("load pk hash {}: {e}", hash_path.display()))?;
                 PkHashMphf::Int(mphf)
             }
             KeyType::VarBytes => {
-                let mphf: MphfBytes = DefaultPtrHash::<PkPtrHash, Vec<u8>>::load_mmap(
-                    hash_path,
-                    EpFlags::SEQUENTIAL,
-                )
-                .map_err(|e| anyhow!("load pk hash {}: {e}", hash_path.display()))?;
+                let mphf: MphfBytes =
+                    DefaultPtrHash::<PkPtrHash, Vec<u8>>::load_mmap(hash_path, EpFlags::SEQUENTIAL)
+                        .map_err(|e| anyhow!("load pk hash {}: {e}", hash_path.display()))?;
                 PkHashMphf::Bytes(mphf)
             }
             KeyType::Uuid => {
@@ -306,18 +305,8 @@ impl PkHashTable {
 
 pub fn key_type_from_metadata(pk: &PrimaryKeyMap) -> Result<KeyType> {
     match pk.dtype.as_str() {
-        "int64"
-        | "int32"
-        | "int16"
-        | "int8"
-        | "uint64"
-        | "uint32"
-        | "uint16"
-        | "uint8"
-        | "float64"
-        | "float32"
-        | "decimal128"
-        | "decimal256" => Ok(KeyType::Int64),
+        "int64" | "int32" | "int16" | "int8" | "uint64" | "uint32" | "uint16" | "uint8"
+        | "float64" | "float32" | "decimal128" | "decimal256" => Ok(KeyType::Int64),
         "string" | "bytes" => Ok(KeyType::VarBytes),
         "uuid" => Ok(KeyType::Uuid),
         "uuid256" => Ok(KeyType::Uuid256),
@@ -334,10 +323,10 @@ pub fn parse_key_from_str(pk: &PrimaryKeyMap, input: &str) -> Result<Key> {
             let raw = input.as_bytes();
             let mut out = [0u8; 16];
             let value = match raw.len() {
-                32 => parse_simple(raw, out.as_out())
-                    .map_err(|e| anyhow!("invalid uuid: {e}"))?,
-                36 => parse_hyphenated(raw, out.as_out())
-                    .map_err(|e| anyhow!("invalid uuid: {e}"))?,
+                32 => parse_simple(raw, out.as_out()).map_err(|e| anyhow!("invalid uuid: {e}"))?,
+                36 => {
+                    parse_hyphenated(raw, out.as_out()).map_err(|e| anyhow!("invalid uuid: {e}"))?
+                }
                 _ => return Err(anyhow!("invalid uuid: wrong length")),
             };
             Ok(Key::Uuid(*value))
@@ -404,8 +393,12 @@ fn parse_hex_bytes(input: &str) -> Result<Vec<u8>> {
     let mut out = Vec::with_capacity(input.len() / 2);
     let bytes = input.as_bytes();
     for chunk in bytes.chunks(2) {
-        let hi = (chunk[0] as char).to_digit(16).ok_or_else(|| anyhow!("invalid hex"))?;
-        let lo = (chunk[1] as char).to_digit(16).ok_or_else(|| anyhow!("invalid hex"))?;
+        let hi = (chunk[0] as char)
+            .to_digit(16)
+            .ok_or_else(|| anyhow!("invalid hex"))?;
+        let lo = (chunk[1] as char)
+            .to_digit(16)
+            .ok_or_else(|| anyhow!("invalid hex"))?;
         out.push(((hi << 4) | lo) as u8);
     }
     Ok(out)
@@ -423,7 +416,10 @@ fn parse_uuid256_hex(input: &str) -> Result<[u8; 32]> {
 }
 
 fn parse_ip_text(input: &str) -> Result<[u8; 16]> {
-    let ip: std::net::IpAddr = input.trim().parse().map_err(|e| anyhow!("invalid ip: {e}"))?;
+    let ip: std::net::IpAddr = input
+        .trim()
+        .parse()
+        .map_err(|e| anyhow!("invalid ip: {e}"))?;
     let bytes = match ip {
         std::net::IpAddr::V4(v4) => v4.to_ipv6_mapped().octets(),
         std::net::IpAddr::V6(v6) => v6.octets(),
@@ -443,9 +439,7 @@ fn lookup_id_only(shard: &PkHashShard, key: &Key) -> Option<u32> {
     if shard.data.len() < offset + shard.entry_len {
         return None;
     }
-    let value = u32::from_le_bytes(
-        shard.data[offset..offset + 4].try_into().ok()?,
-    );
+    let value = u32::from_le_bytes(shard.data[offset..offset + 4].try_into().ok()?);
     if value == u32::MAX {
         return None;
     }
@@ -453,7 +447,13 @@ fn lookup_id_only(shard: &PkHashShard, key: &Key) -> Option<u32> {
 }
 
 fn advise_random(map: &Mmap) {
-    let ret = unsafe { libc::madvise(map.as_ptr() as *mut libc::c_void, map.len(), libc::MADV_RANDOM) };
+    let ret = unsafe {
+        libc::madvise(
+            map.as_ptr() as *mut libc::c_void,
+            map.len(),
+            libc::MADV_RANDOM,
+        )
+    };
     if ret != 0 {
         let _ = std::io::Error::last_os_error();
     }

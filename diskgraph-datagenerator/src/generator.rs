@@ -7,9 +7,9 @@ use std::time::Duration;
 use anyhow::{anyhow, bail, Context, Result};
 use arrow_array::builder::{
     BinaryBuilder, BooleanBuilder, Date32Builder, Float32Builder, Float64Builder, Int16Builder,
-    Int32Builder, Int64Builder, Int8Builder, ListBuilder, StringBuilder, TimestampMicrosecondBuilder,
-    TimestampMillisecondBuilder, TimestampNanosecondBuilder, TimestampSecondBuilder, UInt16Builder,
-    UInt32Builder, UInt64Builder, UInt8Builder,
+    Int32Builder, Int64Builder, Int8Builder, ListBuilder, StringBuilder,
+    TimestampMicrosecondBuilder, TimestampMillisecondBuilder, TimestampNanosecondBuilder,
+    TimestampSecondBuilder, UInt16Builder, UInt32Builder, UInt64Builder, UInt8Builder,
 };
 use arrow_array::{ArrayRef, RecordBatch};
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
@@ -134,7 +134,10 @@ fn truncate_status(input: &str, max_len: usize) -> String {
     if input.len() <= max_len {
         return input.to_string();
     }
-    let mut out = input.chars().take(max_len.saturating_sub(3)).collect::<String>();
+    let mut out = input
+        .chars()
+        .take(max_len.saturating_sub(3))
+        .collect::<String>();
     out.push_str("...");
     out
 }
@@ -217,24 +220,61 @@ struct ForeignKeyGenerator {
 #[derive(Clone, Debug)]
 enum PreparedGenerator {
     Constant(GeneratedValue),
-    Sequence { start: i64, step: i64 },
-    UniformInt { min: i64, max: i64 },
-    UniformUInt { min: u64, max: u64 },
-    UniformFloat { min: f64, max: f64 },
-    Bool { true_ratio: f64 },
+    Sequence {
+        start: i64,
+        step: i64,
+    },
+    UniformInt {
+        min: i64,
+        max: i64,
+    },
+    UniformUInt {
+        min: u64,
+        max: u64,
+    },
+    UniformFloat {
+        min: f64,
+        max: f64,
+    },
+    Bool {
+        true_ratio: f64,
+    },
     String {
         min_len: usize,
         max_len: usize,
         alphabet: Vec<u8>,
         prefix: String,
     },
-    Bytes { min_len: usize, max_len: usize },
-    Uuid { mode: UuidMode, format: UuidFormat },
-    Timestamp { start_ms: i64, step_ms: i64 },
-    Date { start_days: i32, step_days: i32 },
-    Categorical { values: Vec<String>, cumulative: Vec<f64> },
-    ArrayF32 { len: usize, min: f32, max: f32 },
-    ArrayF64 { len: usize, min: f64, max: f64 },
+    Bytes {
+        min_len: usize,
+        max_len: usize,
+    },
+    Uuid {
+        mode: UuidMode,
+        format: UuidFormat,
+    },
+    Timestamp {
+        start_ms: i64,
+        step_ms: i64,
+    },
+    Date {
+        start_days: i32,
+        step_days: i32,
+    },
+    Categorical {
+        values: Vec<String>,
+        cumulative: Vec<f64>,
+    },
+    ArrayF32 {
+        len: usize,
+        min: f32,
+        max: f32,
+    },
+    ArrayF64 {
+        len: usize,
+        min: f64,
+        max: f64,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -281,7 +321,7 @@ fn build_plan(config: &DatasetConfig) -> Result<Plan> {
         .collect();
 
     let mut pk_columns: Vec<Option<(usize, KeyGenerator)>> = Vec::new();
-    for (_idx, table) in config.tables.iter().enumerate() {
+    for table in config.tables.iter() {
         let table_seed = mix64(config.seed ^ hash_name(&table.name));
         let pk = resolve_primary_key(table, table_seed)
             .with_context(|| format!("table {} primary key config", table.name))?;
@@ -294,13 +334,7 @@ fn build_plan(config: &DatasetConfig) -> Result<Plan> {
         let row_count = row_counts[idx];
         let table_seed = mix64(config.seed ^ hash_name(&table.name));
         let pk = pk_columns[idx].as_ref();
-        let columns = build_column_plans(
-            table,
-            table_seed,
-            pk,
-            idx,
-            &fk_map,
-        )?;
+        let columns = build_column_plans(table, table_seed, pk, idx, &fk_map)?;
         let schema = build_schema(&columns)?;
         let shard_ranges = shard_ranges(row_count, table.shards)?;
         tables.push(TablePlan {
@@ -420,7 +454,9 @@ fn resolve_primary_key(
     };
     let pk_col = &table.columns[pk_idx];
     validate_key_column(pk_col)?;
-    let encoding = pk_col.key_encoding.unwrap_or(default_key_encoding(&pk_col.dtype));
+    let encoding = pk_col
+        .key_encoding
+        .unwrap_or(default_key_encoding(&pk_col.dtype));
     Ok(Some((
         pk_idx,
         KeyGenerator {
@@ -473,9 +509,7 @@ fn build_column_plans(
             dtype: column.dtype,
             arrow_type,
             generator,
-            null_ratio: if pk_index == Some(idx) {
-                None
-            } else if fk_generator.is_some() {
+            null_ratio: if pk_index == Some(idx) || fk_generator.is_some() {
                 None
             } else {
                 column.null_ratio
@@ -490,7 +524,11 @@ fn build_column_plans(
 fn build_schema(columns: &[ColumnPlan]) -> Result<Arc<Schema>> {
     let mut fields = Vec::new();
     for column in columns {
-        let field = Field::new(&column.name, column.arrow_type.clone(), column.null_ratio.is_some());
+        let field = Field::new(
+            &column.name,
+            column.arrow_type.clone(),
+            column.null_ratio.is_some(),
+        );
         fields.push(field);
     }
     Ok(Arc::new(Schema::new(fields)))
@@ -1064,14 +1102,12 @@ impl KeyGenerator {
         timestamp_unit: Option<TimestampUnit>,
     ) -> Result<GeneratedValue> {
         match self.dtype {
-            ColumnType::Int8
-            | ColumnType::Int16
-            | ColumnType::Int32
-            | ColumnType::Int64 => Ok(GeneratedValue::Int(id as i64)),
-            ColumnType::UInt8
-            | ColumnType::UInt16
-            | ColumnType::UInt32
-            | ColumnType::UInt64 => Ok(GeneratedValue::UInt(id)),
+            ColumnType::Int8 | ColumnType::Int16 | ColumnType::Int32 | ColumnType::Int64 => {
+                Ok(GeneratedValue::Int(id as i64))
+            }
+            ColumnType::UInt8 | ColumnType::UInt16 | ColumnType::UInt32 | ColumnType::UInt64 => {
+                Ok(GeneratedValue::UInt(id))
+            }
             ColumnType::String => {
                 let bytes = encode_key_bytes(self.encoding, self.table_seed, id);
                 let value = String::from_utf8_lossy(&bytes).to_string();
@@ -1083,15 +1119,18 @@ impl KeyGenerator {
                 apply_fixed_len_bytes(&mut bytes, self.fixed_len);
                 Ok(GeneratedValue::Bytes(bytes))
             }
-            ColumnType::Uuid => Ok(GeneratedValue::String(hex_encode(
-                &uuid_from_id(self.table_seed, id),
-            ))),
-            ColumnType::Uuid256 => Ok(GeneratedValue::String(hex_encode(
-                &uuid256_from_id(self.table_seed, id),
-            ))),
-            ColumnType::Ip => Ok(GeneratedValue::String(format_ip(
-                ip_from_id(self.table_seed, id),
-            ))),
+            ColumnType::Uuid => Ok(GeneratedValue::String(hex_encode(&uuid_from_id(
+                self.table_seed,
+                id,
+            )))),
+            ColumnType::Uuid256 => Ok(GeneratedValue::String(hex_encode(&uuid256_from_id(
+                self.table_seed,
+                id,
+            )))),
+            ColumnType::Ip => Ok(GeneratedValue::String(format_ip(ip_from_id(
+                self.table_seed,
+                id,
+            )))),
             ColumnType::Timestamp => {
                 let unit = timestamp_unit.unwrap_or(TimestampUnit::Millis);
                 let value = match unit {
@@ -1142,7 +1181,7 @@ impl PreparedGenerator {
         match self {
             PreparedGenerator::Constant(value) => Ok(value.clone()),
             PreparedGenerator::Sequence { start, step } => {
-                let value = start + (*step as i64) * row_id as i64;
+                let value = start + *step * row_id as i64;
                 match dtype {
                     ColumnType::UInt8
                     | ColumnType::UInt16
@@ -1197,11 +1236,13 @@ impl PreparedGenerator {
                     (UuidFormat::Hex, ColumnType::Bytes) => {
                         Ok(GeneratedValue::Bytes(hex_encode(&bytes).into_bytes()))
                     }
-                    (UuidFormat::Dashed, ColumnType::Bytes) => {
-                        Ok(GeneratedValue::Bytes(format_uuid(bytes, *format).into_bytes()))
-                    }
+                    (UuidFormat::Dashed, ColumnType::Bytes) => Ok(GeneratedValue::Bytes(
+                        format_uuid(bytes, *format).into_bytes(),
+                    )),
                     (UuidFormat::Hex, _) => Ok(GeneratedValue::String(hex_encode(&bytes))),
-                    (UuidFormat::Dashed, _) => Ok(GeneratedValue::String(format_uuid(bytes, *format))),
+                    (UuidFormat::Dashed, _) => {
+                        Ok(GeneratedValue::String(format_uuid(bytes, *format)))
+                    }
                 }
             }
             PreparedGenerator::Timestamp { start_ms, step_ms } => {
@@ -1224,10 +1265,7 @@ impl PreparedGenerator {
             }
             PreparedGenerator::Categorical { values, cumulative } => {
                 let random = rand_f64(mix64(seed ^ row_id));
-                let idx = cumulative
-                    .iter()
-                    .position(|v| random <= *v)
-                    .unwrap_or(0);
+                let idx = cumulative.iter().position(|v| random <= *v).unwrap_or(0);
                 Ok(GeneratedValue::String(values[idx].clone()))
             }
             PreparedGenerator::ArrayF32 { len, min, max } => {
@@ -1310,14 +1348,30 @@ fn prepare_generator(column: &ColumnConfig, gen: GeneratorSpec) -> Result<Prepar
             Ok(PreparedGenerator::Sequence { start, step })
         }
         GeneratorSpec::UniformInt { min, max } => {
-            ensure_dtype(column.dtype, &[ColumnType::Int8, ColumnType::Int16, ColumnType::Int32, ColumnType::Int64])?;
+            ensure_dtype(
+                column.dtype,
+                &[
+                    ColumnType::Int8,
+                    ColumnType::Int16,
+                    ColumnType::Int32,
+                    ColumnType::Int64,
+                ],
+            )?;
             if min > max {
                 bail!("uniform_int min {} exceeds max {}", min, max);
             }
             Ok(PreparedGenerator::UniformInt { min, max })
         }
         GeneratorSpec::UniformUInt { min, max } => {
-            ensure_dtype(column.dtype, &[ColumnType::UInt8, ColumnType::UInt16, ColumnType::UInt32, ColumnType::UInt64])?;
+            ensure_dtype(
+                column.dtype,
+                &[
+                    ColumnType::UInt8,
+                    ColumnType::UInt16,
+                    ColumnType::UInt32,
+                    ColumnType::UInt64,
+                ],
+            )?;
             if min > max {
                 bail!("uniform_uint min {} exceeds max {}", min, max);
             }
@@ -1355,7 +1409,11 @@ fn prepare_generator(column: &ColumnConfig, gen: GeneratorSpec) -> Result<Prepar
                 prefix,
             })
         }
-        GeneratorSpec::Bytes { len, min_len, max_len } => {
+        GeneratorSpec::Bytes {
+            len,
+            min_len,
+            max_len,
+        } => {
             ensure_dtype(column.dtype, &[ColumnType::Bytes])?;
             let (min_len, max_len) = resolve_len(len, min_len, max_len)?;
             Ok(PreparedGenerator::Bytes { min_len, max_len })
@@ -1391,14 +1449,20 @@ fn prepare_generator(column: &ColumnConfig, gen: GeneratorSpec) -> Result<Prepar
             }
             Ok(PreparedGenerator::Uuid { mode, format })
         }
-        GeneratorSpec::Timestamp { start_epoch_ms, step_ms } => {
+        GeneratorSpec::Timestamp {
+            start_epoch_ms,
+            step_ms,
+        } => {
             ensure_dtype(column.dtype, &[ColumnType::Timestamp])?;
             Ok(PreparedGenerator::Timestamp {
                 start_ms: start_epoch_ms,
                 step_ms,
             })
         }
-        GeneratorSpec::Date { start_ymd, step_days } => {
+        GeneratorSpec::Date {
+            start_ymd,
+            step_days,
+        } => {
             ensure_dtype(column.dtype, &[ColumnType::Date])?;
             let start_days = parse_date_days(&start_ymd)?;
             Ok(PreparedGenerator::Date {
@@ -1453,14 +1517,12 @@ fn resolve_len(
 
 fn parse_constant(dtype: ColumnType, value: serde_json::Value) -> Result<GeneratedValue> {
     Ok(match dtype {
-        ColumnType::Int8
-        | ColumnType::Int16
-        | ColumnType::Int32
-        | ColumnType::Int64 => GeneratedValue::Int(value.as_i64().unwrap_or(0)),
-        ColumnType::UInt8
-        | ColumnType::UInt16
-        | ColumnType::UInt32
-        | ColumnType::UInt64 => GeneratedValue::UInt(value.as_u64().unwrap_or(0)),
+        ColumnType::Int8 | ColumnType::Int16 | ColumnType::Int32 | ColumnType::Int64 => {
+            GeneratedValue::Int(value.as_i64().unwrap_or(0))
+        }
+        ColumnType::UInt8 | ColumnType::UInt16 | ColumnType::UInt32 | ColumnType::UInt64 => {
+            GeneratedValue::UInt(value.as_u64().unwrap_or(0))
+        }
         ColumnType::Float32 | ColumnType::Float64 => {
             GeneratedValue::Float(value.as_f64().unwrap_or(0.0))
         }
@@ -1548,18 +1610,18 @@ fn validate_key_column(column: &ColumnConfig) -> Result<()> {
         | ColumnType::Uuid
         | ColumnType::Uuid256
         | ColumnType::Ip => {}
-        _ => bail!("invalid key dtype {:?} for column {}", column.dtype, column.name),
+        _ => bail!(
+            "invalid key dtype {:?} for column {}",
+            column.dtype,
+            column.name
+        ),
     }
     if column.dtype == ColumnType::String && column.key_encoding == Some(KeyEncoding::U64Le) {
         bail!("key_encoding u64_le is only valid for bytes columns");
     }
-    if column.fixed_len.is_some()
-        && !matches!(column.dtype, ColumnType::String | ColumnType::Bytes)
+    if column.fixed_len.is_some() && !matches!(column.dtype, ColumnType::String | ColumnType::Bytes)
     {
-        bail!(
-            "fixed_len only valid for string/bytes for {}",
-            column.name
-        );
+        bail!("fixed_len only valid for string/bytes for {}", column.name);
     }
     Ok(())
 }
@@ -1595,7 +1657,12 @@ fn shard_ranges(total: u64, shards: usize) -> Result<Vec<RowRange>> {
     let mut ranges = Vec::with_capacity(shards);
     let mut start = 0u64;
     for _ in 0..shards {
-        let extra = if rem > 0 { rem -= 1; 1 } else { 0 };
+        let extra = if rem > 0 {
+            rem -= 1;
+            1
+        } else {
+            0
+        };
         let len = base + extra;
         ranges.push(RowRange { start, len });
         start += len;
@@ -1631,7 +1698,9 @@ fn apply_fixed_len_bytes(bytes: &mut Vec<u8>, fixed_len: Option<usize>) {
 }
 
 fn apply_fixed_len_string(mut value: String, fixed_len: Option<usize>) -> String {
-    let Some(fixed_len) = fixed_len else { return value };
+    let Some(fixed_len) = fixed_len else {
+        return value;
+    };
     if value.len() > fixed_len {
         value.truncate(fixed_len);
     } else if value.len() < fixed_len {

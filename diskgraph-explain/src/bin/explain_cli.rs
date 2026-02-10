@@ -15,10 +15,10 @@
 use anyhow::{anyhow, Result};
 use diskgraph_explain::{EntityExplanation, FeatureContext};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, Write};
-use std::cmp::Ordering;
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
@@ -76,7 +76,10 @@ fn main() -> Result<()> {
                     println!("{}", err("usage: similar <id> [k]"));
                     continue;
                 };
-                let k = parts.next().and_then(|v| v.parse::<usize>().ok()).unwrap_or(5);
+                let k = parts
+                    .next()
+                    .and_then(|v| v.parse::<usize>().ok())
+                    .unwrap_or(5);
                 match explanations.get(id) {
                     Some(exp) => print_similar(exp, &explanations, k),
                     None => println!("{} {}", err("unknown id"), dim(id)),
@@ -93,7 +96,10 @@ fn main() -> Result<()> {
                 }
             }
             "list" => {
-                let n = parts.next().and_then(|v| v.parse::<usize>().ok()).unwrap_or(10);
+                let n = parts
+                    .next()
+                    .and_then(|v| v.parse::<usize>().ok())
+                    .unwrap_or(10);
                 print_list(&explanations, n);
             }
             _ => println!("{} {}", err("unknown command"), dim(head)),
@@ -104,10 +110,10 @@ fn main() -> Result<()> {
 
 fn load_explanations(path: &str) -> Result<HashMap<String, EntityExplanation>> {
     let file = File::open(path)?;
-    let mut reader = ParquetRecordBatchReaderBuilder::try_new(file)?.build()?;
+    let reader = ParquetRecordBatchReaderBuilder::try_new(file)?.build()?;
     let mut explanations = HashMap::new();
 
-    while let Some(batch) = reader.next() {
+    for batch in reader {
         let batch = batch?;
         let schema = batch.schema();
         let id_idx = schema.index_of("entity_id")?;
@@ -156,7 +162,10 @@ fn print_stats(explanations: &HashMap<String, EntityExplanation>) {
     let predictions: Vec<f64> = explanations.values().map(|e| e.prediction).collect();
     let mean = predictions.iter().sum::<f64>() / predictions.len() as f64;
     let min = predictions.iter().cloned().fold(f64::INFINITY, f64::min);
-    let max = predictions.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let max = predictions
+        .iter()
+        .cloned()
+        .fold(f64::NEG_INFINITY, f64::max);
 
     // Count entities by cluster
     let mut cluster_counts: HashMap<usize, usize> = HashMap::new();
@@ -292,7 +301,11 @@ fn print_similar(exp: &EntityExplanation, all: &HashMap<String, EntityExplanatio
         a_diff.partial_cmp(&b_diff).unwrap_or(Ordering::Equal)
     });
 
-    println!("{} (cluster {})", title("Similar Entities"), cluster.cluster_id);
+    println!(
+        "{} (cluster {})",
+        title("Similar Entities"),
+        cluster.cluster_id
+    );
     for e in same_cluster.into_iter().take(k) {
         println!(
             "  {} {} pred {:.4}",
@@ -337,7 +350,11 @@ fn print_cluster(exp: &EntityExplanation) {
 fn print_list(explanations: &HashMap<String, EntityExplanation>, n: usize) {
     // Sort by prediction descending
     let mut sorted: Vec<&EntityExplanation> = explanations.values().collect();
-    sorted.sort_by(|a, b| b.prediction.partial_cmp(&a.prediction).unwrap_or(Ordering::Equal));
+    sorted.sort_by(|a, b| {
+        b.prediction
+            .partial_cmp(&a.prediction)
+            .unwrap_or(Ordering::Equal)
+    });
 
     println!("{}", title("Entities (by prediction)"));
     for exp in sorted.into_iter().take(n) {

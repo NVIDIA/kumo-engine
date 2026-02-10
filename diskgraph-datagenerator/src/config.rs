@@ -109,19 +109,44 @@ pub struct RelationshipConfig {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum FkDistribution {
     Uniform,
-    Sequential { #[serde(default)] offset: u64 },
-    Hotspot { hot_fraction: f64, hot_share: f64 },
+    Sequential {
+        #[serde(default)]
+        offset: u64,
+    },
+    Hotspot {
+        hot_fraction: f64,
+        hot_share: f64,
+    },
 }
 
 #[derive(Debug, Deserialize, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum GeneratorSpec {
-    Constant { value: serde_json::Value },
-    Sequence { #[serde(default)] start: i64, #[serde(default = "default_step")] step: i64 },
-    UniformInt { min: i64, max: i64 },
-    UniformUInt { min: u64, max: u64 },
-    UniformFloat { min: f64, max: f64 },
-    Bool { #[serde(default = "default_true_ratio")] true_ratio: f64 },
+    Constant {
+        value: serde_json::Value,
+    },
+    Sequence {
+        #[serde(default)]
+        start: i64,
+        #[serde(default = "default_step")]
+        step: i64,
+    },
+    UniformInt {
+        min: i64,
+        max: i64,
+    },
+    UniformUInt {
+        min: u64,
+        max: u64,
+    },
+    UniformFloat {
+        min: f64,
+        max: f64,
+    },
+    Bool {
+        #[serde(default = "default_true_ratio")]
+        true_ratio: f64,
+    },
     String {
         #[serde(default)]
         len: Option<usize>,
@@ -142,12 +167,37 @@ pub enum GeneratorSpec {
         #[serde(default)]
         max_len: Option<usize>,
     },
-    Uuid { #[serde(default)] mode: Option<String>, #[serde(default)] format: Option<String> },
-    Timestamp { start_epoch_ms: i64, #[serde(default = "default_step_ms")] step_ms: i64 },
-    Date { start_ymd: String, #[serde(default = "default_step_days")] step_days: i32 },
-    Categorical { values: Vec<String>, #[serde(default)] weights: Option<Vec<f64>> },
-    ArrayFloat32 { len: usize, min: f32, max: f32 },
-    ArrayFloat64 { len: usize, min: f64, max: f64 },
+    Uuid {
+        #[serde(default)]
+        mode: Option<String>,
+        #[serde(default)]
+        format: Option<String>,
+    },
+    Timestamp {
+        start_epoch_ms: i64,
+        #[serde(default = "default_step_ms")]
+        step_ms: i64,
+    },
+    Date {
+        start_ymd: String,
+        #[serde(default = "default_step_days")]
+        step_days: i32,
+    },
+    Categorical {
+        values: Vec<String>,
+        #[serde(default)]
+        weights: Option<Vec<f64>>,
+    },
+    ArrayFloat32 {
+        len: usize,
+        min: f32,
+        max: f32,
+    },
+    ArrayFloat64 {
+        len: usize,
+        min: f64,
+        max: f64,
+    },
 }
 
 fn default_batch_size() -> usize {

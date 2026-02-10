@@ -1,5 +1,5 @@
-use super::{RowAccess, RowAccessStats, RowAccessHints};
-use arrow_array::{Float64Array, BooleanArray, Decimal128Array, ArrayRef};
+use super::{RowAccess, RowAccessHints, RowAccessStats};
+use arrow_array::{ArrayRef, BooleanArray, Decimal128Array, Float64Array};
 use std::sync::Arc;
 
 #[test]
@@ -11,17 +11,17 @@ fn test_cast_float_to_int() {
         timestamp_format: None,
         timestamp_unit: None,
         decimal_scale: None,
-    ..Default::default()
-}];
+        ..Default::default()
+    }];
     let mut access = RowAccess::new(hints, stats);
     access.set_cols(&arrays);
-    
+
     access.set_row(0);
     assert_eq!(access.get_int64(0).unwrap(), Some(1));
-    
+
     access.set_row(1);
     assert_eq!(access.get_int64(0).unwrap(), Some(3)); // Truncate
-    
+
     access.set_row(2);
     assert_eq!(access.get_int64(0).unwrap(), Some(-2));
 }
@@ -35,16 +35,16 @@ fn test_cast_bool_to_int_float() {
         timestamp_format: None,
         timestamp_unit: None,
         decimal_scale: None,
-    ..Default::default()
-}];
+        ..Default::default()
+    }];
     let mut access = RowAccess::new(hints, stats);
     access.set_cols(&arrays);
-    
+
     // True
     access.set_row(0);
     assert_eq!(access.get_int64(0).unwrap(), Some(1));
     assert_eq!(access.get_float64(0).unwrap(), Some(1.0));
-    
+
     // False
     access.set_row(1);
     assert_eq!(access.get_int64(0).unwrap(), Some(0));
@@ -55,20 +55,24 @@ fn test_cast_bool_to_int_float() {
 fn test_cast_decimal_to_string_scaled() {
     // 12345, scale 2 -> "123.45"
     let array = Decimal128Array::from_iter_values([12345])
-        .with_precision_and_scale(10, 2).unwrap();
+        .with_precision_and_scale(10, 2)
+        .unwrap();
     let arrays: Vec<ArrayRef> = vec![Arc::new(array)];
     let stats = RowAccessStats::default();
     let hints = vec![RowAccessHints {
         timestamp_format: None,
         timestamp_unit: None,
         decimal_scale: Some(2),
-    ..Default::default()
-}];
+        ..Default::default()
+    }];
     let mut access = RowAccess::new(hints, stats);
     access.set_cols(&arrays);
-    
+
     access.set_row(0);
-    let s = access.with_string(0, |s| Ok(s.to_string())).unwrap().unwrap();
+    let s = access
+        .with_string(0, |s| Ok(s.to_string()))
+        .unwrap()
+        .unwrap();
     assert_eq!(s, "123.45");
 }
 
@@ -79,7 +83,7 @@ fn test_cast_decimal_to_string_scaled() {
 #[cfg(test)]
 mod clone_approach_verification {
     use super::*;
-    use arrow_array::{Int32Array, StringArray, UInt64Array, FixedSizeBinaryArray};
+    use arrow_array::{FixedSizeBinaryArray, Int32Array, StringArray, UInt64Array};
 
     fn make_access(arrays: &[ArrayRef]) -> RowAccess<'static> {
         let hints = (0..arrays.len())
@@ -87,8 +91,8 @@ mod clone_approach_verification {
                 timestamp_format: None,
                 timestamp_unit: None,
                 decimal_scale: None,
-            ..Default::default()
-})
+                ..Default::default()
+            })
             .collect();
         let mut access = RowAccess::new(hints, RowAccessStats::default());
         access.set_cols(arrays);
@@ -119,10 +123,16 @@ mod clone_approach_verification {
         let mut access = make_access(&arrays);
 
         access.set_row(0);
-        let s = access.with_string(0, |s| Ok(s.to_string())).unwrap().unwrap();
+        let s = access
+            .with_string(0, |s| Ok(s.to_string()))
+            .unwrap()
+            .unwrap();
         assert_eq!(s, "42");
         access.set_row(1);
-        let s = access.with_string(0, |s| Ok(s.to_string())).unwrap().unwrap();
+        let s = access
+            .with_string(0, |s| Ok(s.to_string()))
+            .unwrap()
+            .unwrap();
         assert_eq!(s, "-7");
     }
 
@@ -156,7 +166,10 @@ mod clone_approach_verification {
         let mut access = make_access(&arrays);
 
         access.set_row(0);
-        let s = access.with_string(0, |s| Ok(s.to_string())).unwrap().unwrap();
+        let s = access
+            .with_string(0, |s| Ok(s.to_string()))
+            .unwrap()
+            .unwrap();
         assert_eq!(s, "42");
     }
 
@@ -165,11 +178,12 @@ mod clone_approach_verification {
     #[test]
     fn uuid_binary_read_as_string() {
         // UUID raw bytes (16 bytes)
-        let uuid_bytes: [u8; 16] = [0xc0, 0x99, 0x3c, 0xa4, 0x28, 0x04, 0x42, 0x56,
-                                     0xa3, 0xb7, 0xba, 0x9b, 0x3a, 0xb7, 0x6f, 0xce];
-        let array = FixedSizeBinaryArray::try_from_iter(
-            vec![uuid_bytes.as_slice()].into_iter()
-        ).unwrap();
+        let uuid_bytes: [u8; 16] = [
+            0xc0, 0x99, 0x3c, 0xa4, 0x28, 0x04, 0x42, 0x56, 0xa3, 0xb7, 0xba, 0x9b, 0x3a, 0xb7,
+            0x6f, 0xce,
+        ];
+        let array =
+            FixedSizeBinaryArray::try_from_iter(vec![uuid_bytes.as_slice()].into_iter()).unwrap();
         let arrays: Vec<ArrayRef> = vec![Arc::new(array)];
         let mut access = make_access(&arrays);
 
@@ -189,9 +203,9 @@ mod clone_approach_verification {
     #[test]
     fn uuid_string_read_as_uuid() {
         // UUID as hyphenated string
-        let arrays: Vec<ArrayRef> = vec![Arc::new(StringArray::from(
-            vec!["c0993ca4-2804-4256-a3b7-ba9b3ab76fce"]
-        ))];
+        let arrays: Vec<ArrayRef> = vec![Arc::new(StringArray::from(vec![
+            "c0993ca4-2804-4256-a3b7-ba9b3ab76fce",
+        ]))];
         let access = make_access(&arrays);
 
         let result = access.get_uuid(0);
@@ -203,9 +217,9 @@ mod clone_approach_verification {
     // This is the actual format in the benchmark data
     #[test]
     fn uuid_hex_string_read_as_uuid() {
-        let arrays: Vec<ArrayRef> = vec![Arc::new(StringArray::from(
-            vec!["c0993ca428044256a3b7ba9b3ab76fce"]
-        ))];
+        let arrays: Vec<ArrayRef> = vec![Arc::new(StringArray::from(vec![
+            "c0993ca428044256a3b7ba9b3ab76fce",
+        ]))];
         let access = make_access(&arrays);
 
         let result = access.get_uuid(0);
@@ -215,7 +229,9 @@ mod clone_approach_verification {
             Err(e) => println!("uuid hex -> uuid failed: {}", e),
         }
         // Document if non-hyphenated UUID strings work
-        assert!(result.is_ok() && result.unwrap().is_some(),
-            "get_uuid should handle non-hyphenated UUID hex strings");
+        assert!(
+            result.is_ok() && result.unwrap().is_some(),
+            "get_uuid should handle non-hyphenated UUID hex strings"
+        );
     }
 }

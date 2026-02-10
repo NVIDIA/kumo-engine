@@ -38,6 +38,7 @@ pub struct ValidationResult {
 ///
 /// # Returns
 /// A `ValidationResult` with allowed status and any warnings/errors.
+#[allow(clippy::too_many_arguments)]
 pub fn validate_fk_pk(
     fk_type: IngestedType,
     pk_type: IngestedType,
@@ -141,8 +142,12 @@ fn lossy_reason(fk: &IngestedType, pk: &IngestedType) -> String {
         (UInt64, UInt8 | UInt16 | UInt32) | (UInt32, UInt8 | UInt16) | (UInt16, UInt8) => {
             "unsigned integer narrowing may overflow".into()
         }
-        (Int32 | UInt32, Float32) => "int32/uint32 exceeds float32 mantissa precision (23 bits)".into(),
-        (Int64 | UInt64, Float64) => "int64/uint64 exceeds float64 mantissa precision (52 bits)".into(),
+        (Int32 | UInt32, Float32) => {
+            "int32/uint32 exceeds float32 mantissa precision (23 bits)".into()
+        }
+        (Int64 | UInt64, Float64) => {
+            "int64/uint64 exceeds float64 mantissa precision (52 bits)".into()
+        }
         (Float64, Float32) => "float64 to float32 loses precision".into(),
         (Timestamp, Date) => "timestamp to date truncates time component".into(),
         (Decimal128, Float32 | Float64) => "decimal128 exceeds float mantissa precision".into(),
@@ -373,7 +378,10 @@ mod tests {
         let msg = warning.to_string();
         // Warning should mention the table/column names and types
         assert!(msg.contains("orders"), "Warning should mention FK table");
-        assert!(msg.contains("customer_id"), "Warning should mention FK column");
+        assert!(
+            msg.contains("customer_id"),
+            "Warning should mention FK column"
+        );
         assert!(msg.contains("customers"), "Warning should mention PK table");
     }
 

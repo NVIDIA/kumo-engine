@@ -8,15 +8,15 @@ use crate::reader::ShardReader;
 use crate::streaming::EdgeShardInput;
 use anyhow::{anyhow, Context, Result};
 use diskgraph_core::metadata::{
-    DatasetMetadata, EdgeRelationMetadata, NodeDataCompression, NodeShardMetadata, NodeTypeMetadata,
-    PrimaryKeyMap,
+    DatasetMetadata, EdgeRelationMetadata, NodeDataCompression, NodeShardMetadata,
+    NodeTypeMetadata, PrimaryKeyMap,
 };
+use serde_json;
 use std::collections::HashMap;
 use std::fs;
+use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use serde_json;
-use std::io::{BufWriter, Write};
 
 const TEMP_META_MAGIC: [u8; 4] = *b"DGTP";
 const TEMP_META_VERSION: u8 = 2;
@@ -34,12 +34,8 @@ pub enum GraphDataSource {
 
 #[derive(Clone, Debug)]
 pub enum GraphBuildStage {
-    BuildShard {
-        shard: Arc<str>,
-    },
-    Complete {
-        shard: Arc<str>,
-    },
+    BuildShard { shard: Arc<str> },
+    Complete { shard: Arc<str> },
 }
 
 #[derive(Clone, Debug)]
@@ -141,19 +137,20 @@ impl GraphIndexBuilder {
                 let shard_key: Arc<str> =
                     Arc::from(format!("{}/shard-{:05}", node_type.name, shard_idx));
                 let output_dir = Arc::new(
-                    self
-                    .output_root
-                    .join("nodes")
-                    .join(&node_type.name)
-                    .join(format!("shard-{:05}", shard_idx)),
+                    self.output_root
+                        .join("nodes")
+                        .join(&node_type.name)
+                        .join(format!("shard-{:05}", shard_idx)),
                 );
                 let (node_data, node_data_max_len) = if node_type.has_node_data {
                     let paths = shard_meta
                         .node_data_paths
                         .clone()
                         .ok_or_else(|| anyhow!("node data paths missing for {shard_key}"))?;
-                    let resolved: Vec<PathBuf> =
-                        paths.into_iter().map(|path| self.resolve_path(&path)).collect();
+                    let resolved: Vec<PathBuf> = paths
+                        .into_iter()
+                        .map(|path| self.resolve_path(&path))
+                        .collect();
                     let max_len = read_node_data_max_len(&resolved)?;
                     (Some(Arc::new(resolved)), max_len)
                 } else {
@@ -162,10 +159,9 @@ impl GraphIndexBuilder {
                 let edge_inputs = relation_metas
                     .iter()
                     .map(|rel| {
-                        let shard = rel
-                            .shards
-                            .get(shard_idx)
-                            .ok_or_else(|| anyhow!("missing edge shard {} index {}", rel.name, shard_idx))?;
+                        let shard = rel.shards.get(shard_idx).ok_or_else(|| {
+                            anyhow!("missing edge shard {} index {}", rel.name, shard_idx)
+                        })?;
                         Ok(EdgeShardInput {
                             relation: rel.name.clone(),
                             source_shard_index: shard_idx,
@@ -228,8 +224,7 @@ fn read_node_data_max_len(paths: &[PathBuf]) -> Result<u32> {
     if !meta_path.exists() {
         return Ok(0);
     }
-    let bytes = fs::read(&meta_path)
-        .with_context(|| format!("read {}", meta_path.display()))?;
+    let bytes = fs::read(&meta_path).with_context(|| format!("read {}", meta_path.display()))?;
     if bytes.len() < 4 + 1 + 1 + 8 + 4 + 4 {
         return Err(anyhow!("node data meta truncated"));
     }
@@ -292,11 +287,14 @@ impl ShardBuildJob {
             edge_buffer_pool: self.edge_buffer_pool.clone(),
         };
         let builder = ShardBuilder::new(params);
-        let adapter = progress.map(|sink| ShardProgressAdapter::new(Arc::clone(&self.shard_key), sink));
+        let adapter =
+            progress.map(|sink| ShardProgressAdapter::new(Arc::clone(&self.shard_key), sink));
         let result = builder.build_with_progress(
             &self.edge_inputs,
             Some(self.expected_nodes),
-            adapter.as_ref().map(|a| a as &dyn crate::builder::ProgressSink),
+            adapter
+                .as_ref()
+                .map(|a| a as &dyn crate::builder::ProgressSink),
             None,
         );
         if let Some(sink) = progress {
@@ -353,7 +351,8 @@ impl GraphIndexReader {
             serde_json::from_slice(&bytes).context("parse index_metadata.json")?;
         let mut tables = HashMap::new();
         for node_type in &metadata.node_types {
-            let (node_data_compression, node_data_decoder) = match &node_type.node_data_compression {
+            let (node_data_compression, node_data_decoder) = match &node_type.node_data_compression
+            {
                 Some(cfg) => {
                     if !node_type.has_node_data {
                         return Err(anyhow!(
@@ -384,7 +383,8 @@ impl GraphIndexReader {
                     .join("nodes")
                     .join(&node_type.name)
                     .join(format!("shard-{:05}", shard_idx));
-                let reader = ShardReader::open(&dir, Arc::clone(&layouts), node_type.has_node_data)?;
+                let reader =
+                    ShardReader::open(&dir, Arc::clone(&layouts), node_type.has_node_data)?;
                 shard_readers.push(reader);
             }
             let pk_map = match &node_type.primary_key_map {
@@ -429,7 +429,6 @@ impl GraphIndexReader {
         tables.sort_by(|a, b| a.node_type().cmp(b.node_type()));
         tables
     }
-
 }
 
 pub struct TableReader {
@@ -447,6 +446,7 @@ pub struct TableReader {
 }
 
 impl TableReader {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         node_type: &NodeTypeMetadata,
         relations: Vec<EdgeRelationMetadata>,
@@ -648,7 +648,6 @@ impl TableReader {
         view.pk_matches(pk, decoder, key)
             .map_err(|e| anyhow!("node lookup failed: {e}"))
     }
-
 
     pub fn shard_for_node(&self, node_id: u64) -> Option<(usize, u64)> {
         for (idx, shard) in self.shard_ranges.iter().enumerate() {

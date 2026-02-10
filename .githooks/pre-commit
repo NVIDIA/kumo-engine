@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+echo "Running cargo fmt --check..."
+if ! cargo fmt --check 2>/dev/null; then
+    echo "Formatting check failed. Run 'cargo fmt' to fix."
+    exit 1
+fi
+
+echo "Running cargo clippy..."
+if ! cargo clippy --workspace --all-targets -- -D warnings 2>/dev/null; then
+    echo "Clippy check failed. Fix the warnings above."
+    exit 1
+fi

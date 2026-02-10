@@ -1,7 +1,7 @@
-use serde::{Deserialize, Serialize};
 use crate::pkmap::Key;
 use diskgraph_core::metadata::PrimaryKeyMap;
 use diskgraph_rowpack::{RowPackDecodeScratch, RowPackDecoder, ValueRef};
+use serde::{Deserialize, Serialize};
 
 /// Logical layout version for on-disk shard artifacts.
 /// v4: offset deltas are 16/24/32-bit; node_data_len width stored in header.

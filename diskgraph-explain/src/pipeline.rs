@@ -86,7 +86,10 @@ pub fn run(config: ExplainConfig) -> Result<()> {
         let subgraph = match extractor.extract_subgraph(&entity.id, entity.timestamp) {
             Ok(sg) => sg,
             Err(e) => {
-                eprintln!("  Warning: Failed to extract subgraph for {}: {}", entity.id, e);
+                eprintln!(
+                    "  Warning: Failed to extract subgraph for {}: {}",
+                    entity.id, e
+                );
                 continue;
             }
         };
@@ -111,13 +114,24 @@ pub fn run(config: ExplainConfig) -> Result<()> {
     );
 
     // Phase 5: Cluster embeddings
-    eprintln!("Pass 4: Clustering embeddings (k={})...", config.num_clusters);
+    eprintln!(
+        "Pass 4: Clustering embeddings (k={})...",
+        config.num_clusters
+    );
     let embeddings: Vec<Vec<f32>> = all_entities.iter().map(|e| e.embedding.clone()).collect();
     let predictions: Vec<f64> = all_entities.iter().map(|e| e.prediction).collect();
-    let clustering = run_kmeans(&embeddings, &predictions, config.num_clusters, config.kmeans_iterations);
+    let clustering = run_kmeans(
+        &embeddings,
+        &predictions,
+        config.num_clusters,
+        config.kmeans_iterations,
+    );
 
     // Find archetype samples (N nearest entities to each centroid)
-    eprintln!("  Finding archetype samples ({} per cluster)...", config.archetype_sample_size);
+    eprintln!(
+        "  Finding archetype samples ({} per cluster)...",
+        config.archetype_sample_size
+    );
     let archetype_samples = find_archetype_samples(&clustering, config.archetype_sample_size);
 
     // Add feature values to cluster stats
@@ -143,7 +157,10 @@ pub fn run(config: ExplainConfig) -> Result<()> {
             }
         }
     }
-    eprintln!("  Built cluster profiles for {} clusters", cluster_stats.len());
+    eprintln!(
+        "  Built cluster profiles for {} clusters",
+        cluster_stats.len()
+    );
 
     // Phase 6: Generate explanations
     eprintln!("Pass 5: Generating explanations...");
@@ -159,7 +176,11 @@ pub fn run(config: ExplainConfig) -> Result<()> {
 
     for (idx, (entity, motifs)) in all_entities.iter().zip(all_motifs.iter()).enumerate() {
         if (idx + 1) % 1000 == 0 {
-            eprintln!("  Generated {}/{} explanations...", idx + 1, all_entities.len());
+            eprintln!(
+                "  Generated {}/{} explanations...",
+                idx + 1,
+                all_entities.len()
+            );
         }
 
         let all_feature_contexts = population_stats.contextualize_motifs(motifs);
@@ -225,7 +246,8 @@ pub fn run(config: ExplainConfig) -> Result<()> {
             .map(|exp| generate_prompt(exp, &effective_config))
             .collect();
 
-        eprintln!("  Generated {} prompts (avg {} chars)",
+        eprintln!(
+            "  Generated {} prompts (avg {} chars)",
             prompts.len(),
             prompts.iter().map(|p| p.len()).sum::<usize>() / prompts.len().max(1)
         );
@@ -235,7 +257,11 @@ pub fn run(config: ExplainConfig) -> Result<()> {
     };
 
     // Phase 8: Write output
-    eprintln!("Writing {} explanations to {:?}...", explanations.len(), config.output_parquet);
+    eprintln!(
+        "Writing {} explanations to {:?}...",
+        explanations.len(),
+        config.output_parquet
+    );
     write_explanations(&config.output_parquet, &explanations, prompts.as_deref())?;
 
     eprintln!("Done!");
@@ -256,7 +282,7 @@ fn write_explanations(
     explanations: &[EntityExplanation],
     prompts: Option<&[String]>,
 ) -> Result<()> {
-    use arrow_array::{ArrayRef, Float64Array, StringArray, RecordBatch};
+    use arrow_array::{ArrayRef, Float64Array, RecordBatch, StringArray};
     use arrow_schema::{DataType, Field, Schema};
     use std::sync::Arc;
 

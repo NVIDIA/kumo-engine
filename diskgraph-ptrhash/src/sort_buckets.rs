@@ -9,11 +9,10 @@ impl<Key: KeyT, BF: BucketFn, F: Packed, Hx: Hasher<Key>> PtrHash<Key, BF, F, Hx
     /// 3. Order of the buckets within each part.
     ///
     /// This returns None if duplicate hashes are found.
-    #[must_use]
     pub(super) fn sort_parts_with_scratch(
         &self,
         shard: usize,
-        hashes: &mut Vec<Hx::H>,
+        hashes: &mut [Hx::H],
         part_starts: &mut Vec<u32>,
         hashes_tmp: &mut Vec<Hx::H>,
     ) -> Result<(), SortPartsError> {
@@ -45,6 +44,7 @@ impl<Key: KeyT, BF: BucketFn, F: Packed, Hx: Hasher<Key>> PtrHash<Key, BF, F, Hx
             assert!(self.part(*hashes.last().unwrap()) < (shard + 1) * self.parts_per_shard);
         }
         part_starts.resize(self.parts_per_shard + 1, 0);
+        #[allow(clippy::needless_range_loop)]
         for part_in_shard in 1..=self.parts_per_shard {
             part_starts[part_in_shard] = hashes
                 .binary_search_by(|h| {
@@ -93,7 +93,7 @@ impl<Key: KeyT, BF: BucketFn, F: Packed, Hx: Hasher<Key>> PtrHash<Key, BF, F, Hx
             100. * max_part_len as f32 / self.slots as f32
         );
 
-        if max_part_len as usize > self.slots {
+        if max_part_len > self.slots {
             return Err(SortPartsError::PartOverflow);
         }
 

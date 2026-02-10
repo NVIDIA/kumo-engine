@@ -114,7 +114,10 @@ impl IndexSchema {
 fn build_table_schema(columns: &[ColumnContext]) -> TableSchema {
     let mut map = HashMap::new();
     for col in columns {
-        map.insert(col.name.clone(), column_type(&col.encoding, col.logical_type));
+        map.insert(
+            col.name.clone(),
+            column_type(&col.encoding, col.logical_type),
+        );
     }
     TableSchema { columns: map }
 }
@@ -170,7 +173,10 @@ pub fn validate_query(query: &Query, schema: &IndexSchema) -> ValidationOutcome 
         if !schema.has_table(table) && !schema.has_relation(table) {
             outcome.error("UNKNOWN_TABLE", format!("unknown table: {table}"));
         } else if schema.has_table(table) && !schema.has_schema(table) {
-            outcome.warn("MISSING_SCHEMA", format!("no node schema for table: {table}"));
+            outcome.warn(
+                "MISSING_SCHEMA",
+                format!("no node schema for table: {table}"),
+            );
         }
     }
 
@@ -180,7 +186,9 @@ pub fn validate_query(query: &Query, schema: &IndexSchema) -> ValidationOutcome 
         if !schema.has_table(&col.table) {
             continue;
         }
-        if schema.has_schema(&col.table) && schema.get_column_type(&col.table, &col.column).is_none() {
+        if schema.has_schema(&col.table)
+            && schema.get_column_type(&col.table, &col.column).is_none()
+        {
             outcome.error(
                 "UNKNOWN_COLUMN",
                 format!("unknown column: {}.{}", col.table, col.column),
@@ -200,20 +208,18 @@ pub fn validate_query(query: &Query, schema: &IndexSchema) -> ValidationOutcome 
                 );
             }
         }
-        PredictExpr::Comparison(pred) => {
-            match extract_predict_comparison(pred) {
-                Ok(PredictComparison::Agg(agg)) => validate_aggregation(&agg, schema, &mut outcome),
-                Ok(PredictComparison::Column(col)) => {
-                    if col.table != query.for_each.table {
-                        outcome.error(
-                            "PREDICT_COMPARISON_TABLE_MISMATCH",
-                            "predict comparison column must come from entity table",
-                        );
-                    }
+        PredictExpr::Comparison(pred) => match extract_predict_comparison(pred) {
+            Ok(PredictComparison::Agg(agg)) => validate_aggregation(&agg, schema, &mut outcome),
+            Ok(PredictComparison::Column(col)) => {
+                if col.table != query.for_each.table {
+                    outcome.error(
+                        "PREDICT_COMPARISON_TABLE_MISMATCH",
+                        "predict comparison column must come from entity table",
+                    );
                 }
-                Err(msg) => outcome.error("PREDICT_COMPARISON_INVALID", msg),
             }
-        }
+            Err(msg) => outcome.error("PREDICT_COMPARISON_INVALID", msg),
+        },
     }
     if let Some(assuming) = &query.assuming {
         validate_predicate(assuming, schema, &mut outcome);
@@ -225,7 +231,10 @@ pub fn validate_query(query: &Query, schema: &IndexSchema) -> ValidationOutcome 
         }
     }
 
-    if matches!(query.predict, PredictExpr::Aggregation(_) | PredictExpr::Comparison(_)) {
+    if matches!(
+        query.predict,
+        PredictExpr::Aggregation(_) | PredictExpr::Comparison(_)
+    ) {
         validate_temporal_query(query, schema, &mut outcome);
     }
 
@@ -322,7 +331,10 @@ fn validate_temporal_query(query: &Query, schema: &IndexSchema, outcome: &mut Va
                         } else if candidates.is_empty() {
                             outcome.error(
                                 "temporal_missing_relation",
-                                format!("temporal aggregation requires edge relation {}", tbl.table),
+                                format!(
+                                    "temporal aggregation requires edge relation {}",
+                                    tbl.table
+                                ),
                             );
                         } else {
                             candidates.sort_by(|a, b| a.name.cmp(&b.name));
@@ -460,20 +472,13 @@ fn collect_column_refs(query: &Query, out: &mut Vec<ColumnRef>) {
 
 fn has_agg_in_pred(pred: &PredicateExpr) -> bool {
     match pred {
-        PredicateExpr::Comparison { left, right, .. } => {
-            expr_has_agg(left) || expr_has_agg(right)
-        }
-        PredicateExpr::And(items) | PredicateExpr::Or(items) => {
-            items.iter().any(has_agg_in_pred)
-        }
+        PredicateExpr::Comparison { left, right, .. } => expr_has_agg(left) || expr_has_agg(right),
+        PredicateExpr::And(items) | PredicateExpr::Or(items) => items.iter().any(has_agg_in_pred),
     }
 }
 
 fn expr_has_agg(expr: &crate::ast::Expr) -> bool {
-    match expr {
-        crate::ast::Expr::Agg(_) => true,
-        _ => false,
-    }
+    matches!(expr, crate::ast::Expr::Agg(_))
 }
 
 fn collect_columns_from_agg(agg: &AggregationExpr, out: &mut Vec<ColumnRef>) {
@@ -551,7 +556,11 @@ fn collect_aggs_from_expr(expr: &Expr, out: &mut Vec<AggregationExpr>) {
     }
 }
 
-fn validate_aggregation(agg: &AggregationExpr, schema: &IndexSchema, outcome: &mut ValidationOutcome) {
+fn validate_aggregation(
+    agg: &AggregationExpr,
+    schema: &IndexSchema,
+    outcome: &mut ValidationOutcome,
+) {
     let target_type = match &agg.target {
         AggTarget::Column(col) => schema.get_column_type(&col.table, &col.column),
         AggTarget::Star(_) => None,
@@ -567,7 +576,10 @@ fn validate_aggregation(agg: &AggregationExpr, schema: &IndexSchema, outcome: &m
         }
         AggFunc::Min | AggFunc::Max => {
             if let Some(ty) = target_type {
-                if !(ty == ColumnType::Numeric || ty == ColumnType::Date || ty == ColumnType::Timestamp) {
+                if !(ty == ColumnType::Numeric
+                    || ty == ColumnType::Date
+                    || ty == ColumnType::Timestamp)
+                {
                     outcome.error("INVALID_TYPE", "MIN/MAX require numeric or time column");
                 }
             }
@@ -578,7 +590,6 @@ fn validate_aggregation(agg: &AggregationExpr, schema: &IndexSchema, outcome: &m
     if let Some(filter) = &agg.filter {
         validate_predicate(filter, schema, outcome);
     }
-
 }
 
 fn validate_predicate(pred: &PredicateExpr, schema: &IndexSchema, outcome: &mut ValidationOutcome) {
@@ -622,7 +633,9 @@ fn types_comparable(left: &ColumnType, right: &ColumnType, op: CompareOp) -> boo
         | (ColumnType::Uuid256, ColumnType::Uuid256)
         | (ColumnType::Ip, ColumnType::Ip) => true,
         (ColumnType::Bool, ColumnType::Bool) => matches!(op, CompareOp::Eq | CompareOp::Neq),
-        (ColumnType::Date, ColumnType::Date) | (ColumnType::Timestamp, ColumnType::Timestamp) => true,
+        (ColumnType::Date, ColumnType::Date) | (ColumnType::Timestamp, ColumnType::Timestamp) => {
+            true
+        }
         _ => false,
     }
 }
@@ -631,8 +644,10 @@ fn types_comparable(left: &ColumnType, right: &ColumnType, op: CompareOp) -> boo
 mod tests {
     use super::*;
     use crate::parser::parse_query;
-    use diskgraph_core::metadata::{DatasetMetadata, NodeDataCompression, NodeShardMetadata, NodeTypeMetadata};
-    use diskgraph_rowpack::{RowPackConfig, RowPackContextBuilder, RowPackColumn};
+    use diskgraph_core::metadata::{
+        DatasetMetadata, NodeDataCompression, NodeShardMetadata, NodeTypeMetadata,
+    };
+    use diskgraph_rowpack::{RowPackColumn, RowPackConfig, RowPackContextBuilder};
     use std::path::PathBuf;
 
     fn temp_dir(name: &str) -> PathBuf {
@@ -658,13 +673,31 @@ mod tests {
 
         write_context(
             &user_ctx,
-            vec![RowPackColumn { name: "user_id".to_string(), logical_type: IngestedType::Int64, fixed_len: None, precision: None, scale: None }],
+            vec![RowPackColumn {
+                name: "user_id".to_string(),
+                logical_type: IngestedType::Int64,
+                fixed_len: None,
+                precision: None,
+                scale: None,
+            }],
         );
         write_context(
             &txn_ctx,
             vec![
-                RowPackColumn { name: "price".to_string(), logical_type: IngestedType::Float64, fixed_len: None, precision: None, scale: None },
-                RowPackColumn { name: "article_id".to_string(), logical_type: IngestedType::Uuid, fixed_len: None, precision: None, scale: None },
+                RowPackColumn {
+                    name: "price".to_string(),
+                    logical_type: IngestedType::Float64,
+                    fixed_len: None,
+                    precision: None,
+                    scale: None,
+                },
+                RowPackColumn {
+                    name: "article_id".to_string(),
+                    logical_type: IngestedType::Uuid,
+                    fixed_len: None,
+                    precision: None,
+                    scale: None,
+                },
             ],
         );
 
@@ -675,17 +708,31 @@ mod tests {
                     name: "users".to_string(),
                     max_id: 1,
                     has_node_data: true,
-                    node_data_compression: Some(NodeDataCompression { codec: "rowpack".to_string(), context_path: "nodes/users/node_data.ctx".to_string() }),
+                    node_data_compression: Some(NodeDataCompression {
+                        codec: "rowpack".to_string(),
+                        context_path: "nodes/users/node_data.ctx".to_string(),
+                    }),
                     primary_key_map: None,
-                    shards: vec![NodeShardMetadata { min_id: 0, max_id: 0, node_data_paths: None }],
+                    shards: vec![NodeShardMetadata {
+                        min_id: 0,
+                        max_id: 0,
+                        node_data_paths: None,
+                    }],
                 },
                 NodeTypeMetadata {
                     name: "transactions".to_string(),
                     max_id: 1,
                     has_node_data: true,
-                    node_data_compression: Some(NodeDataCompression { codec: "rowpack".to_string(), context_path: "nodes/transactions/node_data.ctx".to_string() }),
+                    node_data_compression: Some(NodeDataCompression {
+                        codec: "rowpack".to_string(),
+                        context_path: "nodes/transactions/node_data.ctx".to_string(),
+                    }),
                     primary_key_map: None,
-                    shards: vec![NodeShardMetadata { min_id: 0, max_id: 0, node_data_paths: None }],
+                    shards: vec![NodeShardMetadata {
+                        min_id: 0,
+                        max_id: 0,
+                        node_data_paths: None,
+                    }],
                 },
             ],
             edge_relations: vec![diskgraph_core::metadata::EdgeRelationMetadata {
@@ -724,7 +771,9 @@ mod tests {
         write_metadata(&dir, &metadata);
 
         let schema = IndexSchema::from_index_path(&dir).expect("schema");
-        let query = parse_query("PREDICT SUM(transactions.price, 0, 7, days) FOR EACH users.user_id").expect("parse");
+        let query =
+            parse_query("PREDICT SUM(transactions.price, 0, 7, days) FOR EACH users.user_id")
+                .expect("parse");
         let outcome = validate_query(&query, &schema);
         assert!(outcome.errors.is_empty());
     }
@@ -736,7 +785,9 @@ mod tests {
         write_metadata(&dir, &metadata);
 
         let schema = IndexSchema::from_index_path(&dir).expect("schema");
-        let query = parse_query("PREDICT SUM(transactions.missing, 0, 7, days) FOR EACH users.user_id").expect("parse");
+        let query =
+            parse_query("PREDICT SUM(transactions.missing, 0, 7, days) FOR EACH users.user_id")
+                .expect("parse");
         let outcome = validate_query(&query, &schema);
         assert!(outcome.errors.iter().any(|e| e.code == "UNKNOWN_COLUMN"));
     }
@@ -748,7 +799,9 @@ mod tests {
         write_metadata(&dir, &metadata);
 
         let schema = IndexSchema::from_index_path(&dir).expect("schema");
-        let query = parse_query("PREDICT SUM(transactions.article_id, 0, 7, days) FOR EACH users.user_id").expect("parse");
+        let query =
+            parse_query("PREDICT SUM(transactions.article_id, 0, 7, days) FOR EACH users.user_id")
+                .expect("parse");
         let outcome = validate_query(&query, &schema);
         assert!(outcome.errors.iter().any(|e| e.code == "INVALID_TYPE"));
     }
@@ -772,10 +825,9 @@ mod tests {
         write_metadata(&dir, &metadata);
 
         let schema = IndexSchema::from_index_path(&dir).expect("schema");
-        let query = parse_query(
-            "PREDICT COUNT(transactions.*, 0, 7, days) = 0 FOR EACH users.user_id",
-        )
-        .expect("parse");
+        let query =
+            parse_query("PREDICT COUNT(transactions.*, 0, 7, days) = 0 FOR EACH users.user_id")
+                .expect("parse");
         let outcome = validate_query(&query, &schema);
         assert!(outcome.errors.is_empty());
     }
@@ -787,10 +839,7 @@ mod tests {
         write_metadata(&dir, &metadata);
 
         let schema = IndexSchema::from_index_path(&dir).expect("schema");
-        let query = parse_query(
-            "PREDICT users.user_id = 1 FOR EACH users.user_id",
-        )
-        .expect("parse");
+        let query = parse_query("PREDICT users.user_id = 1 FOR EACH users.user_id").expect("parse");
         let outcome = validate_query(&query, &schema);
         assert!(outcome.errors.is_empty());
     }
@@ -814,27 +863,29 @@ mod tests {
         let dir = temp_dir("temporal_relation_disambiguate");
         let mut metadata = build_metadata(&dir);
         metadata.edge_relations[0].name = "users_to_transactions".to_string();
-        metadata.edge_relations.push(diskgraph_core::metadata::EdgeRelationMetadata {
-            name: "articles_to_transactions".to_string(),
-            src_type: "articles".to_string(),
-            dst_type: "transactions".to_string(),
-            shards: vec![],
-            dest_sort_key_bits: Some(16),
-            dest_sort_key: Some(diskgraph_core::metadata::EdgeSortKeyMetadata {
-                width_bits: 16,
-                timestamp: Some(diskgraph_core::metadata::EdgeSortKeyTimestampMetadata {
-                    table: "transactions".to_string(),
-                    column: "timestamp".to_string(),
-                    encoding: diskgraph_core::metadata::EdgeSortKeyTimestampEncoding {
-                        kind: diskgraph_core::metadata::EdgeSortKeyTimestampKind::Int16,
-                        anchor: 0,
-                        step: 1,
-                    },
+        metadata
+            .edge_relations
+            .push(diskgraph_core::metadata::EdgeRelationMetadata {
+                name: "articles_to_transactions".to_string(),
+                src_type: "articles".to_string(),
+                dst_type: "transactions".to_string(),
+                shards: vec![],
+                dest_sort_key_bits: Some(16),
+                dest_sort_key: Some(diskgraph_core::metadata::EdgeSortKeyMetadata {
+                    width_bits: 16,
+                    timestamp: Some(diskgraph_core::metadata::EdgeSortKeyTimestampMetadata {
+                        table: "transactions".to_string(),
+                        column: "timestamp".to_string(),
+                        encoding: diskgraph_core::metadata::EdgeSortKeyTimestampEncoding {
+                            kind: diskgraph_core::metadata::EdgeSortKeyTimestampKind::Int16,
+                            anchor: 0,
+                            step: 1,
+                        },
+                    }),
+                    weight: None,
                 }),
-                weight: None,
-            }),
-            format: diskgraph_core::metadata::EdgeStorageFormat::Binary,
-        });
+                format: diskgraph_core::metadata::EdgeStorageFormat::Binary,
+            });
         write_metadata(&dir, &metadata);
 
         let schema = IndexSchema::from_index_path(&dir).expect("schema");

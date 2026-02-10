@@ -1,18 +1,19 @@
 use anyhow::Result;
+use diskgraph_core::metadata::DatasetMetadata;
 use diskgraph_core::sampling::*;
 use diskgraph_engine::engine::DiskGraphEngine;
-use diskgraph_engine::state::StatePool;
 use diskgraph_engine::output::InMemoryOutput;
-use diskgraph_core::metadata::DatasetMetadata;
-use std::sync::Arc;
-use std::time::Instant;
-use std::path::PathBuf;
+use diskgraph_engine::state::StatePool;
 use rand::Rng;
 use std::fs;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Instant;
 
 fn main() -> Result<()> {
     // 1. Setup Environment
-    let data_path = PathBuf::from("/mnt/data/data/index/ifood_bp-job-8dd9d07e93bf4dbf8fe2845687bd96ef_index");
+    let data_path =
+        PathBuf::from("/mnt/data/data/index/ifood_bp-job-8dd9d07e93bf4dbf8fe2845687bd96ef_index");
     let index_path = data_path.join("index_metadata.json");
     let metadata_bytes = fs::read(&index_path)?;
     let metadata: DatasetMetadata = serde_json::from_slice(&metadata_bytes)?;
@@ -24,7 +25,12 @@ fn main() -> Result<()> {
 
     // 2. Define Request
     let seed_type = "orders_parquet";
-    let max_id = metadata.node_types.iter().find(|n| n.name == seed_type).unwrap().max_id;
+    let max_id = metadata
+        .node_types
+        .iter()
+        .find(|n| n.name == seed_type)
+        .unwrap()
+        .max_id;
 
     let batch_size = 100;
     let mut rng = rand::thread_rng();
@@ -34,26 +40,32 @@ fn main() -> Result<()> {
     let plan = SamplingPlan {
         layers: vec![
             LayerSpec {
-                fanouts: [
-                    ("orders_parquet_merchant_id_numerical_to_merchants_merchant_id_numerical".to_string(), FanoutSpec {
+                fanouts: [(
+                    "orders_parquet_merchant_id_numerical_to_merchants_merchant_id_numerical"
+                        .to_string(),
+                    FanoutSpec {
                         fanout: 10,
                         mode: SamplingMode::TemporalMostRecent,
                         absent_key_policy: AbsentKeyPolicy::UniformFallback,
-                    })
-                ].into(),
+                    },
+                )]
+                .into(),
                 default_fanout: None,
             },
             LayerSpec {
-                fanouts: [
-                    ("reviews_merchant_id_numerical_to_merchants_merchant_id_numerical_reverse".to_string(), FanoutSpec {
+                fanouts: [(
+                    "reviews_merchant_id_numerical_to_merchants_merchant_id_numerical_reverse"
+                        .to_string(),
+                    FanoutSpec {
                         fanout: 10,
                         mode: SamplingMode::TemporalMostRecent,
                         absent_key_policy: AbsentKeyPolicy::UniformFallback,
-                    })
-                ].into(),
+                    },
+                )]
+                .into(),
                 default_fanout: None,
             },
-        ]
+        ],
     };
 
     let request = BatchSamplingRequest {
@@ -62,7 +74,11 @@ fn main() -> Result<()> {
         seed_timestamps: None,
         plan,
         flags: SamplingFlags {
-            replace: false, directed: true, disjoint: true, return_edge_id: false, adaptive: false,
+            replace: false,
+            directed: true,
+            disjoint: true,
+            return_edge_id: false,
+            adaptive: false,
         },
     };
 
@@ -78,7 +94,11 @@ fn main() -> Result<()> {
 
     println!("Done in {:?}", duration);
     for (id, ts) in &pooled_state.type_states {
-        let name = sampler.id_to_node_type.get(*id).map(|s| s.as_str()).unwrap_or("unknown");
+        let name = sampler
+            .id_to_node_type
+            .get(*id)
+            .map(|s| s.as_str())
+            .unwrap_or("unknown");
         println!("Type {}: {} nodes", name, ts.nodes.len());
     }
     println!("Total Unique Nodes: {}", pooled_state.stats.total_nodes);

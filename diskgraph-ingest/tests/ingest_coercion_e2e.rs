@@ -33,10 +33,7 @@ use tempfile::tempdir;
 fn keyable_pk_types() -> Vec<IngestedType> {
     use IngestedType::*;
     vec![
-        Int8, Int16, Int32, Int64,
-        UInt8, UInt16, UInt32, UInt64,
-        String, Bytes,
-        Uuid, Uuid256, Ip,
+        Int8, Int16, Int32, Int64, UInt8, UInt16, UInt32, UInt64, String, Bytes, Uuid, Uuid256, Ip,
     ]
 }
 
@@ -44,10 +41,7 @@ fn keyable_pk_types() -> Vec<IngestedType> {
 fn keyable_fk_types() -> Vec<IngestedType> {
     use IngestedType::*;
     vec![
-        Int8, Int16, Int32, Int64,
-        UInt8, UInt16, UInt32, UInt64,
-        String,
-        Uuid, Uuid256, Ip,
+        Int8, Int16, Int32, Int64, UInt8, UInt16, UInt32, UInt64, String, Uuid, Uuid256, Ip,
     ]
 }
 
@@ -93,7 +87,9 @@ fn build_test_array(
     let strings: Vec<std::string::String> = (0..count).map(|i| format!("{}", i + 1)).collect();
 
     let arr: ArrayRef = match dtype {
-        Int8 => Arc::new(Int8Array::from_iter_values((1..=count as i8).collect::<Vec<_>>())),
+        Int8 => Arc::new(Int8Array::from_iter_values(
+            (1..=count as i8).collect::<Vec<_>>(),
+        )),
         Int16 => Arc::new(Int16Array::from_iter_values(
             (1..=count as i16).collect::<Vec<_>>(),
         )),
@@ -130,13 +126,15 @@ fn build_test_array(
             let values: Vec<arrow_buffer::i256> = (1..=count)
                 .map(|i| arrow_buffer::i256::from_i128(i as i128))
                 .collect();
-            let arr =
-                Decimal256Array::from_iter_values(values).with_precision_and_scale(76, 0)?;
+            let arr = Decimal256Array::from_iter_values(values).with_precision_and_scale(76, 0)?;
             Arc::new(arr)
         }
         String => Arc::new(StringArray::from(strings.clone())),
         Bytes => {
-            let bytes: Vec<&[u8]> = strings.iter().map(|s: &std::string::String| s.as_bytes()).collect();
+            let bytes: Vec<&[u8]> = strings
+                .iter()
+                .map(|s: &std::string::String| s.as_bytes())
+                .collect();
             Arc::new(BinaryArray::from_vec(bytes))
         }
         Bool => {
@@ -146,17 +144,15 @@ fn build_test_array(
         Date => Arc::new(Date32Array::from_iter_values(
             (1..=count as i32).collect::<Vec<_>>(),
         )),
-        Timestamp => Arc::new(
-            TimestampSecondArray::from_iter_values((1..=count as i64).collect::<Vec<_>>()),
-        ),
+        Timestamp => Arc::new(TimestampSecondArray::from_iter_values(
+            (1..=count as i64).collect::<Vec<_>>(),
+        )),
         Uuid => {
             // UUIDs as 16-byte binary with sequential values
             let uuids: Vec<&[u8]> = (1..=count)
                 .map(|i| {
                     // Create a simple UUID-like 16-byte value
-                    let bytes: [u8; 16] = [
-                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, i as u8,
-                    ];
+                    let bytes: [u8; 16] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, i as u8];
                     Box::leak(Box::new(bytes)) as &[u8]
                 })
                 .collect();
@@ -202,8 +198,10 @@ fn build_matching_pk_fk_arrays(
 
     // For UUID-related coercions, use UUID format
     // Only handle Uuid ↔ Uuid, Uuid ↔ String, Uuid ↔ Bytes (valid coercions)
-    if matches!((pk_type, fk_type),
-        (Uuid, Uuid) | (Uuid, String) | (String, Uuid) | (Bytes, Uuid) | (Uuid, Bytes)) {
+    if matches!(
+        (pk_type, fk_type),
+        (Uuid, Uuid) | (Uuid, String) | (String, Uuid) | (Bytes, Uuid) | (Uuid, Bytes)
+    ) {
         let uuid_strings: Vec<std::string::String> = (1..=count)
             .map(|i| format!("00000000-0000-0000-0000-0000000000{:02x}", i))
             .collect();
@@ -216,13 +214,19 @@ fn build_matching_pk_fk_arrays(
             .collect();
 
         let pk_arr: ArrayRef = match pk_type {
-            Uuid => Arc::new(BinaryArray::from(uuid_bytes.iter().map(|b| b.as_slice()).collect::<Vec<_>>())),
+            Uuid => Arc::new(BinaryArray::from(
+                uuid_bytes.iter().map(|b| b.as_slice()).collect::<Vec<_>>(),
+            )),
             String => Arc::new(StringArray::from(uuid_strings.clone())),
-            Bytes => Arc::new(BinaryArray::from(uuid_bytes.iter().map(|b| b.as_slice()).collect::<Vec<_>>())),
+            Bytes => Arc::new(BinaryArray::from(
+                uuid_bytes.iter().map(|b| b.as_slice()).collect::<Vec<_>>(),
+            )),
             _ => unreachable!(),
         };
         let fk_arr: ArrayRef = match fk_type {
-            Uuid => Arc::new(BinaryArray::from(uuid_bytes.iter().map(|b| b.as_slice()).collect::<Vec<_>>())),
+            Uuid => Arc::new(BinaryArray::from(
+                uuid_bytes.iter().map(|b| b.as_slice()).collect::<Vec<_>>(),
+            )),
             String => Arc::new(StringArray::from(uuid_strings)),
             _ => unreachable!(),
         };
@@ -230,8 +234,14 @@ fn build_matching_pk_fk_arrays(
     }
 
     // For Uuid256-related coercions
-    if matches!((pk_type, fk_type),
-        (Uuid256, Uuid256) | (Uuid256, String) | (String, Uuid256) | (Bytes, Uuid256) | (Uuid256, Bytes)) {
+    if matches!(
+        (pk_type, fk_type),
+        (Uuid256, Uuid256)
+            | (Uuid256, String)
+            | (String, Uuid256)
+            | (Bytes, Uuid256)
+            | (Uuid256, Bytes)
+    ) {
         let uuid256_bytes: Vec<[u8; 32]> = (1..=count)
             .map(|i| {
                 let mut bytes = [0u8; 32];
@@ -240,18 +250,34 @@ fn build_matching_pk_fk_arrays(
             })
             .collect();
         // Uuid256 string format is 64 hex chars
-        let uuid256_strings: Vec<std::string::String> = uuid256_bytes.iter()
+        let uuid256_strings: Vec<std::string::String> = uuid256_bytes
+            .iter()
             .map(|b| b.iter().map(|byte| format!("{:02x}", byte)).collect())
             .collect();
 
         let pk_arr: ArrayRef = match pk_type {
-            Uuid256 => Arc::new(BinaryArray::from(uuid256_bytes.iter().map(|b| b.as_slice()).collect::<Vec<_>>())),
+            Uuid256 => Arc::new(BinaryArray::from(
+                uuid256_bytes
+                    .iter()
+                    .map(|b| b.as_slice())
+                    .collect::<Vec<_>>(),
+            )),
             String => Arc::new(StringArray::from(uuid256_strings.clone())),
-            Bytes => Arc::new(BinaryArray::from(uuid256_bytes.iter().map(|b| b.as_slice()).collect::<Vec<_>>())),
+            Bytes => Arc::new(BinaryArray::from(
+                uuid256_bytes
+                    .iter()
+                    .map(|b| b.as_slice())
+                    .collect::<Vec<_>>(),
+            )),
             _ => unreachable!(),
         };
         let fk_arr: ArrayRef = match fk_type {
-            Uuid256 => Arc::new(BinaryArray::from(uuid256_bytes.iter().map(|b| b.as_slice()).collect::<Vec<_>>())),
+            Uuid256 => Arc::new(BinaryArray::from(
+                uuid256_bytes
+                    .iter()
+                    .map(|b| b.as_slice())
+                    .collect::<Vec<_>>(),
+            )),
             String => Arc::new(StringArray::from(uuid256_strings)),
             _ => unreachable!(),
         };
@@ -259,12 +285,13 @@ fn build_matching_pk_fk_arrays(
     }
 
     // For IP-related coercions
-    if matches!((pk_type, fk_type),
-        (Ip, Ip) | (Ip, String) | (String, Ip) | (Bytes, Ip) | (Ip, Bytes)) {
+    if matches!(
+        (pk_type, fk_type),
+        (Ip, Ip) | (Ip, String) | (String, Ip) | (Bytes, Ip) | (Ip, Bytes)
+    ) {
         // IPv4 format - used for Ip column input (gets parsed to binary)
-        let ip_strings_v4: Vec<std::string::String> = (1..=count)
-            .map(|i| format!("192.168.1.{}", i))
-            .collect();
+        let ip_strings_v4: Vec<std::string::String> =
+            (1..=count).map(|i| format!("192.168.1.{}", i)).collect();
         // IP is stored as 16-byte IPv6 (IPv4 mapped to IPv6)
         let ip_bytes: Vec<[u8; 16]> = (1..=count)
             .map(|i| {
@@ -285,14 +312,21 @@ fn build_matching_pk_fk_arrays(
             // When PK is String and FK is Ip, FK data is Utf8 so with_string() returns as-is
             String => Arc::new(StringArray::from(ip_strings_v4.clone())),
             // When PK is Bytes and FK is Ip, FK data is Utf8 so read_bytes returns string bytes
-            Bytes => Arc::new(BinaryArray::from(ip_strings_v4.iter().map(|s| s.as_bytes()).collect::<Vec<_>>())),
+            Bytes => Arc::new(BinaryArray::from(
+                ip_strings_v4
+                    .iter()
+                    .map(|s| s.as_bytes())
+                    .collect::<Vec<_>>(),
+            )),
             _ => unreachable!(),
         };
         let fk_arr: ArrayRef = match fk_type {
             Ip => Arc::new(StringArray::from(ip_strings_v4.clone())),
             // When FK is String and PK is Ip, use IPv4 format (gets parsed)
             String => Arc::new(StringArray::from(ip_strings_v4)),
-            Bytes => Arc::new(BinaryArray::from(ip_bytes.iter().map(|b| b.as_slice()).collect::<Vec<_>>())),
+            Bytes => Arc::new(BinaryArray::from(
+                ip_bytes.iter().map(|b| b.as_slice()).collect::<Vec<_>>(),
+            )),
             _ => unreachable!(),
         };
         return Ok((pk_arr, fk_arr));
@@ -303,32 +337,72 @@ fn build_matching_pk_fk_arrays(
     let str_values: Vec<std::string::String> = int_values.iter().map(|v| v.to_string()).collect();
 
     let pk_arr: ArrayRef = match pk_type {
-        Int8 => Arc::new(Int8Array::from(int_values.iter().map(|&v| v as i8).collect::<Vec<_>>())),
-        Int16 => Arc::new(Int16Array::from(int_values.iter().map(|&v| v as i16).collect::<Vec<_>>())),
-        Int32 => Arc::new(Int32Array::from(int_values.iter().map(|&v| v as i32).collect::<Vec<_>>())),
+        Int8 => Arc::new(Int8Array::from(
+            int_values.iter().map(|&v| v as i8).collect::<Vec<_>>(),
+        )),
+        Int16 => Arc::new(Int16Array::from(
+            int_values.iter().map(|&v| v as i16).collect::<Vec<_>>(),
+        )),
+        Int32 => Arc::new(Int32Array::from(
+            int_values.iter().map(|&v| v as i32).collect::<Vec<_>>(),
+        )),
         Int64 => Arc::new(Int64Array::from(int_values.clone())),
-        UInt8 => Arc::new(UInt8Array::from(int_values.iter().map(|&v| v as u8).collect::<Vec<_>>())),
-        UInt16 => Arc::new(UInt16Array::from(int_values.iter().map(|&v| v as u16).collect::<Vec<_>>())),
-        UInt32 => Arc::new(UInt32Array::from(int_values.iter().map(|&v| v as u32).collect::<Vec<_>>())),
-        UInt64 => Arc::new(UInt64Array::from(int_values.iter().map(|&v| v as u64).collect::<Vec<_>>())),
+        UInt8 => Arc::new(UInt8Array::from(
+            int_values.iter().map(|&v| v as u8).collect::<Vec<_>>(),
+        )),
+        UInt16 => Arc::new(UInt16Array::from(
+            int_values.iter().map(|&v| v as u16).collect::<Vec<_>>(),
+        )),
+        UInt32 => Arc::new(UInt32Array::from(
+            int_values.iter().map(|&v| v as u32).collect::<Vec<_>>(),
+        )),
+        UInt64 => Arc::new(UInt64Array::from(
+            int_values.iter().map(|&v| v as u64).collect::<Vec<_>>(),
+        )),
         String => Arc::new(StringArray::from(str_values.clone())),
-        Bytes => Arc::new(BinaryArray::from(str_values.iter().map(|s| s.as_bytes()).collect::<Vec<_>>())),
+        Bytes => Arc::new(BinaryArray::from(
+            str_values.iter().map(|s| s.as_bytes()).collect::<Vec<_>>(),
+        )),
         // Unhandled PK type - return error so caller can fall back to separate arrays
-        _ => return Err(anyhow!("Unhandled PK type {:?} in build_matching_pk_fk_arrays", pk_type)),
+        _ => {
+            return Err(anyhow!(
+                "Unhandled PK type {:?} in build_matching_pk_fk_arrays",
+                pk_type
+            ))
+        }
     };
 
     let fk_arr: ArrayRef = match fk_type {
-        Int8 => Arc::new(Int8Array::from(int_values.iter().map(|&v| v as i8).collect::<Vec<_>>())),
-        Int16 => Arc::new(Int16Array::from(int_values.iter().map(|&v| v as i16).collect::<Vec<_>>())),
-        Int32 => Arc::new(Int32Array::from(int_values.iter().map(|&v| v as i32).collect::<Vec<_>>())),
+        Int8 => Arc::new(Int8Array::from(
+            int_values.iter().map(|&v| v as i8).collect::<Vec<_>>(),
+        )),
+        Int16 => Arc::new(Int16Array::from(
+            int_values.iter().map(|&v| v as i16).collect::<Vec<_>>(),
+        )),
+        Int32 => Arc::new(Int32Array::from(
+            int_values.iter().map(|&v| v as i32).collect::<Vec<_>>(),
+        )),
         Int64 => Arc::new(Int64Array::from(int_values.clone())),
-        UInt8 => Arc::new(UInt8Array::from(int_values.iter().map(|&v| v as u8).collect::<Vec<_>>())),
-        UInt16 => Arc::new(UInt16Array::from(int_values.iter().map(|&v| v as u16).collect::<Vec<_>>())),
-        UInt32 => Arc::new(UInt32Array::from(int_values.iter().map(|&v| v as u32).collect::<Vec<_>>())),
-        UInt64 => Arc::new(UInt64Array::from(int_values.iter().map(|&v| v as u64).collect::<Vec<_>>())),
+        UInt8 => Arc::new(UInt8Array::from(
+            int_values.iter().map(|&v| v as u8).collect::<Vec<_>>(),
+        )),
+        UInt16 => Arc::new(UInt16Array::from(
+            int_values.iter().map(|&v| v as u16).collect::<Vec<_>>(),
+        )),
+        UInt32 => Arc::new(UInt32Array::from(
+            int_values.iter().map(|&v| v as u32).collect::<Vec<_>>(),
+        )),
+        UInt64 => Arc::new(UInt64Array::from(
+            int_values.iter().map(|&v| v as u64).collect::<Vec<_>>(),
+        )),
         String => Arc::new(StringArray::from(str_values)),
         // Unhandled FK type - return error so caller can fall back to separate arrays
-        _ => return Err(anyhow!("Unhandled FK type {:?} in build_matching_pk_fk_arrays", fk_type)),
+        _ => {
+            return Err(anyhow!(
+                "Unhandled FK type {:?} in build_matching_pk_fk_arrays",
+                fk_type
+            ))
+        }
     };
 
     Ok((pk_arr, fk_arr))
@@ -413,7 +487,11 @@ fn run_coercion_test(
 
     // Write PK table
     let pk_schema = Schema::new(vec![Field::new("id", arrow_dtype(pk_type), false)]);
-    write_parquet(&input_root.join("pk_table.parquet"), pk_schema, vec![pk_arr])?;
+    write_parquet(
+        &input_root.join("pk_table.parquet"),
+        pk_schema,
+        vec![pk_arr],
+    )?;
 
     // Build FK table with fk_type
     let fk_id_arr: ArrayRef = Arc::new(Int64Array::from_iter_values(
@@ -474,7 +552,7 @@ fn run_coercion_test(
     let edge_count = stats.edge_counts.get(rel_name).copied().unwrap_or(0);
     let parse_failures = stats
         .key_failures_by_context
-        .get(&format!("fkey:FkTable.fk_col"))
+        .get("fkey:FkTable.fk_col")
         .map(|c| c.parse_failures)
         .unwrap_or(0);
 
@@ -490,7 +568,11 @@ fn expect_config_rejection(fk_type: &IngestedType, pk_type: &IngestedType) -> Re
     // Create minimal parquet files (just need schema)
     let (pk_arr, _) = build_test_array(pk_type, 1)?;
     let pk_schema = Schema::new(vec![Field::new("id", arrow_dtype(pk_type), false)]);
-    write_parquet(&input_root.join("pk_table.parquet"), pk_schema, vec![pk_arr])?;
+    write_parquet(
+        &input_root.join("pk_table.parquet"),
+        pk_schema,
+        vec![pk_arr],
+    )?;
 
     let fk_arr = build_fk_array(fk_type, pk_type, 1)?;
     let fk_id_arr: ArrayRef = Arc::new(Int64Array::from_iter_values(vec![100]));
@@ -612,10 +694,8 @@ fn test_coercion_matrix_e2e() {
                             }
                         }
                         Err(e) => {
-                            failures.push(format!(
-                                "{}: error checking rejection: {}",
-                                test_name, e
-                            ));
+                            failures
+                                .push(format!("{}: error checking rejection: {}", test_name, e));
                         }
                     }
                 }
@@ -936,11 +1016,11 @@ fn test_string_to_int64_parse_failures() -> Result<()> {
     ]);
     let fk_id: ArrayRef = Arc::new(Int64Array::from(vec![100i64, 101, 102, 103, 104]));
     let fk_col: ArrayRef = Arc::new(StringArray::from(vec![
-        "1",        // valid
-        "not_int",  // invalid - parse failure
-        "2",        // valid
-        "",         // invalid - empty
-        "1.5",      // invalid - float
+        "1",       // valid
+        "not_int", // invalid - parse failure
+        "2",       // valid
+        "",        // invalid - empty
+        "1.5",     // invalid - float
     ]));
     write_parquet(
         &input_root.join("fk.parquet"),
@@ -1163,7 +1243,7 @@ fn test_int64_to_decimal128_various_scales() -> Result<()> {
         let scale_factor = 10i128.pow(scale as u32);
         let pk_arr: ArrayRef = Arc::new(
             Decimal128Array::from_iter_values(vec![
-                1 * scale_factor,
+                scale_factor,
                 2 * scale_factor,
                 3 * scale_factor,
             ])
@@ -1246,12 +1326,12 @@ fn test_int64_to_decimal128_various_scales() -> Result<()> {
 fn test_lossy_coercions_rejected() {
     use IngestedType::*;
     let lossy_pairs = [
-        (Int64, Int32),       // narrowing
-        (Float64, Int64),     // float to int
-        (Int64, UInt64),      // signed to unsigned
-        (UInt64, Int64),      // unsigned to signed (overflow)
-        (Float64, Float32),   // float narrowing
-        // Note: Decimal128→Int64 is Incompatible, not Lossy
+        (Int64, Int32),   // narrowing
+        (Float64, Int64), // float to int
+        (Int64, UInt64),  // signed to unsigned
+        (UInt64, Int64),  // unsigned to signed (overflow)
+        (Float64, Float32), // float narrowing
+                          // Note: Decimal128→Int64 is Incompatible, not Lossy
     ];
 
     for (fk, pk) in lossy_pairs {
@@ -1336,7 +1416,11 @@ fn run_coercion_test_with_arrays(
 
     // Write PK table
     let pk_schema = Schema::new(vec![Field::new("id", arrow_dtype(pk_type), false)]);
-    write_parquet(&input_root.join("pk_table.parquet"), pk_schema, vec![pk_arr])?;
+    write_parquet(
+        &input_root.join("pk_table.parquet"),
+        pk_schema,
+        vec![pk_arr],
+    )?;
 
     // Write FK table
     let fk_id_arr: ArrayRef = Arc::new(Int64Array::from_iter_values(
@@ -1388,7 +1472,7 @@ fn run_coercion_test_with_arrays(
     let edge_count = stats.edge_counts.get(rel_name).copied().unwrap_or(0);
     let parse_failures = stats
         .key_failures_by_context
-        .get(&format!("fkey:FkTable.fk_col"))
+        .get("fkey:FkTable.fk_col")
         .map(|c| c.parse_failures)
         .unwrap_or(0);
 
@@ -1422,7 +1506,10 @@ fn test_string_to_int64_limits_comprehensive() -> Result<()> {
     let fk_arr: ArrayRef = Arc::new(StringArray::from(str_values));
 
     let (edge_count, _) = run_coercion_test_with_arrays(pk_arr, &Int64, fk_arr, &String)?;
-    assert_eq!(edge_count, 5, "All 5 string-to-int64 limit values should match");
+    assert_eq!(
+        edge_count, 5,
+        "All 5 string-to-int64 limit values should match"
+    );
 
     Ok(())
 }
@@ -1439,7 +1526,10 @@ fn test_int_to_string_limits_comprehensive() -> Result<()> {
     let fk_arr: ArrayRef = Arc::new(Int64Array::from(int_values));
 
     let (edge_count, _) = run_coercion_test_with_arrays(pk_arr, &String, fk_arr, &Int64)?;
-    assert_eq!(edge_count, 5, "All 5 int64-to-string limit values should match");
+    assert_eq!(
+        edge_count, 5,
+        "All 5 int64-to-string limit values should match"
+    );
 
     Ok(())
 }
@@ -1461,9 +1551,7 @@ fn test_all_signed_int_limits() -> Result<()> {
         let pk_arr: ArrayRef = Arc::new(Int64Array::from(values.clone()));
         let fk_arr: ArrayRef = Arc::new(Int64Array::from(values.clone()));
 
-        let (edge_count, _) = run_coercion_test_with_arrays(
-            pk_arr, &Int64, fk_arr, &Int64
-        )?;
+        let (edge_count, _) = run_coercion_test_with_arrays(pk_arr, &Int64, fk_arr, &Int64)?;
         assert_eq!(edge_count, 5, "{:?} limits should all match", int_type);
     }
 
@@ -1510,7 +1598,11 @@ fn test_string_edge_cases_comprehensive() -> Result<()> {
     let fk_arr: ArrayRef = Arc::new(StringArray::from(strings.clone()));
 
     let (edge_count, _) = run_coercion_test_with_arrays(pk_arr, &String, fk_arr, &String)?;
-    assert_eq!(edge_count, strings.len() as u64, "All string edge cases should match");
+    assert_eq!(
+        edge_count,
+        strings.len() as u64,
+        "All string edge cases should match"
+    );
 
     Ok(())
 }
@@ -1521,24 +1613,28 @@ fn test_bytes_edge_cases() -> Result<()> {
 
     // Various byte patterns
     let byte_values: Vec<Vec<u8>> = vec![
-        vec![0],                          // Single zero byte
-        vec![255],                        // Single max byte
-        vec![0, 0, 0, 0],                 // Multiple zeros
-        vec![255, 255, 255, 255],         // Multiple max bytes
-        vec![1, 2, 3, 4, 5],              // Sequential
-        b"ascii_text".to_vec(),           // ASCII as bytes
-        vec![0x00, 0xFF, 0x7F, 0x80],     // Mixed byte values
+        vec![0],                      // Single zero byte
+        vec![255],                    // Single max byte
+        vec![0, 0, 0, 0],             // Multiple zeros
+        vec![255, 255, 255, 255],     // Multiple max bytes
+        vec![1, 2, 3, 4, 5],          // Sequential
+        b"ascii_text".to_vec(),       // ASCII as bytes
+        vec![0x00, 0xFF, 0x7F, 0x80], // Mixed byte values
     ];
 
     let pk_arr: ArrayRef = Arc::new(BinaryArray::from(
-        byte_values.iter().map(|v| v.as_slice()).collect::<Vec<_>>()
+        byte_values.iter().map(|v| v.as_slice()).collect::<Vec<_>>(),
     ));
     let fk_arr: ArrayRef = Arc::new(BinaryArray::from(
-        byte_values.iter().map(|v| v.as_slice()).collect::<Vec<_>>()
+        byte_values.iter().map(|v| v.as_slice()).collect::<Vec<_>>(),
     ));
 
     let (edge_count, _) = run_coercion_test_with_arrays(pk_arr, &Bytes, fk_arr, &Bytes)?;
-    assert_eq!(edge_count, byte_values.len() as u64, "All byte patterns should match");
+    assert_eq!(
+        edge_count,
+        byte_values.len() as u64,
+        "All byte patterns should match"
+    );
 
     Ok(())
 }
@@ -1549,17 +1645,17 @@ fn test_uuid_coercion() -> Result<()> {
 
     // UUIDs as 16-byte binary
     let uuids: Vec<[u8; 16]> = vec![
-        [0; 16],                                                     // Nil UUID
-        [255; 16],                                                   // Max UUID
-        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],           // UUID with 1
-        [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],    // Sequential
+        [0; 16],                                                 // Nil UUID
+        [255; 16],                                               // Max UUID
+        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],        // UUID with 1
+        [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16], // Sequential
     ];
 
     let pk_arr: ArrayRef = Arc::new(BinaryArray::from(
-        uuids.iter().map(|u| u.as_slice()).collect::<Vec<_>>()
+        uuids.iter().map(|u| u.as_slice()).collect::<Vec<_>>(),
     ));
     let fk_arr: ArrayRef = Arc::new(BinaryArray::from(
-        uuids.iter().map(|u| u.as_slice()).collect::<Vec<_>>()
+        uuids.iter().map(|u| u.as_slice()).collect::<Vec<_>>(),
     ));
 
     let (edge_count, _) = run_coercion_test_with_arrays(pk_arr, &Uuid, fk_arr, &Uuid)?;
@@ -1574,29 +1670,36 @@ fn test_uuid_string_coercion() -> Result<()> {
 
     // String UUIDs that should parse to UUID
     let uuid_strings: Vec<&str> = vec![
-        "00000000-0000-0000-0000-000000000000",  // Nil
-        "00000000-0000-0000-0000-000000000001",  // Simple
-        "12345678-1234-1234-1234-123456789abc",  // Mixed
-        "FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF",  // Max (uppercase)
+        "00000000-0000-0000-0000-000000000000", // Nil
+        "00000000-0000-0000-0000-000000000001", // Simple
+        "12345678-1234-1234-1234-123456789abc", // Mixed
+        "FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF", // Max (uppercase)
     ];
 
     // Convert to binary UUIDs for PK
-    let uuids: Vec<[u8; 16]> = uuid_strings.iter().map(|s| {
-        let s = s.replace("-", "");
-        let mut bytes = [0u8; 16];
-        for i in 0..16 {
-            bytes[i] = u8::from_str_radix(&s[i*2..i*2+2], 16).unwrap();
-        }
-        bytes
-    }).collect();
+    let uuids: Vec<[u8; 16]> = uuid_strings
+        .iter()
+        .map(|s| {
+            let s = s.replace("-", "");
+            let mut bytes = [0u8; 16];
+            for i in 0..16 {
+                bytes[i] = u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).unwrap();
+            }
+            bytes
+        })
+        .collect();
 
     let pk_arr: ArrayRef = Arc::new(BinaryArray::from(
-        uuids.iter().map(|u| u.as_slice()).collect::<Vec<_>>()
+        uuids.iter().map(|u| u.as_slice()).collect::<Vec<_>>(),
     ));
     let fk_arr: ArrayRef = Arc::new(StringArray::from(uuid_strings.clone()));
 
     let (edge_count, _) = run_coercion_test_with_arrays(pk_arr, &Uuid, fk_arr, &String)?;
-    assert_eq!(edge_count, uuid_strings.len() as u64, "All string UUIDs should coerce and match");
+    assert_eq!(
+        edge_count,
+        uuid_strings.len() as u64,
+        "All string UUIDs should coerce and match"
+    );
 
     Ok(())
 }
@@ -1607,11 +1710,11 @@ fn test_ip_coercion() -> Result<()> {
 
     // IP addresses as strings
     let ip_strings: Vec<&str> = vec![
-        "0.0.0.0",           // Min IPv4
-        "127.0.0.1",         // Localhost
-        "192.168.1.1",       // Common private
-        "255.255.255.255",   // Max IPv4
-        "::1",               // IPv6 localhost
+        "0.0.0.0",            // Min IPv4
+        "127.0.0.1",          // Localhost
+        "192.168.1.1",        // Common private
+        "255.255.255.255",    // Max IPv4
+        "::1",                // IPv6 localhost
         "::ffff:192.168.1.1", // IPv4-mapped IPv6
     ];
 
@@ -1619,7 +1722,11 @@ fn test_ip_coercion() -> Result<()> {
     let fk_arr: ArrayRef = Arc::new(StringArray::from(ip_strings.clone()));
 
     let (edge_count, _) = run_coercion_test_with_arrays(pk_arr, &Ip, fk_arr, &Ip)?;
-    assert_eq!(edge_count, ip_strings.len() as u64, "All IP addresses should match");
+    assert_eq!(
+        edge_count,
+        ip_strings.len() as u64,
+        "All IP addresses should match"
+    );
 
     Ok(())
 }
@@ -1629,17 +1736,17 @@ fn test_string_to_ip_coercion() -> Result<()> {
     use IngestedType::*;
 
     // String FK -> IP PK
-    let ip_strings: Vec<&str> = vec![
-        "192.168.1.1",
-        "10.0.0.1",
-        "172.16.0.1",
-    ];
+    let ip_strings: Vec<&str> = vec!["192.168.1.1", "10.0.0.1", "172.16.0.1"];
 
     let pk_arr: ArrayRef = Arc::new(StringArray::from(ip_strings.clone()));
     let fk_arr: ArrayRef = Arc::new(StringArray::from(ip_strings.clone()));
 
     let (edge_count, _) = run_coercion_test_with_arrays(pk_arr, &Ip, fk_arr, &String)?;
-    assert_eq!(edge_count, ip_strings.len() as u64, "String to IP coercion should work");
+    assert_eq!(
+        edge_count,
+        ip_strings.len() as u64,
+        "String to IP coercion should work"
+    );
 
     Ok(())
 }
@@ -1682,8 +1789,11 @@ fn test_matrix_with_limits() {
     // Test String -> Int with negative values
     for pk_type in &signed_types {
         let str_values: Vec<std::string::String> = vec![
-            "-128".to_string(), "-1".to_string(), "0".to_string(),
-            "1".to_string(), "127".to_string()
+            "-128".to_string(),
+            "-1".to_string(),
+            "0".to_string(),
+            "1".to_string(),
+            "127".to_string(),
         ];
         let int_values: Vec<i64> = vec![-128, -1, 0, 1, 127];
 
@@ -1708,7 +1818,8 @@ fn test_matrix_with_limits() {
     // Test Int -> String with negative values
     for fk_type in &signed_types {
         let int_values: Vec<i64> = vec![-128, -1, 0, 1, 127];
-        let str_values: Vec<std::string::String> = int_values.iter().map(|v| v.to_string()).collect();
+        let str_values: Vec<std::string::String> =
+            int_values.iter().map(|v| v.to_string()).collect();
 
         let pk_arr: ArrayRef = Arc::new(StringArray::from(str_values));
         let fk_arr: ArrayRef = Arc::new(Int64Array::from(int_values));

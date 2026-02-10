@@ -17,6 +17,12 @@ pub struct PtrHashScratch<H: Hash> {
     pub stack: BinaryHeap<(usize, BucketIdx)>,
 }
 
+impl<H: Hash> Default for PtrHashScratch<H> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<H: Hash> PtrHashScratch<H> {
     pub fn new() -> Self {
         Self {

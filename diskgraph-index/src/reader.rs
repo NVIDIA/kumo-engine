@@ -29,7 +29,11 @@ pub struct ShardReader {
 }
 
 impl ShardReader {
-    pub fn open(dir: &Path, layouts: Arc<Vec<RelationLayout>>, has_node_data: bool) -> Result<Self> {
+    pub fn open(
+        dir: &Path,
+        layouts: Arc<Vec<RelationLayout>>,
+        has_node_data: bool,
+    ) -> Result<Self> {
         let offsets_path = dir.join(OFFSETS_FILENAME);
         let edges_path = dir.join(EDGES_FILENAME);
         let offsets_file = File::open(&offsets_path)?;
@@ -45,17 +49,22 @@ impl ShardReader {
         }
         let header: OffsetFileHeader = bincode::deserialize(&offsets[..header_len])
             .map_err(|_| DiskgraphError::InvalidMetadata("invalid offsets header".into()))?;
-        if !matches!(header.delta_bytes, 2 | 3 | 4) {
-            return Err(DiskgraphError::InvalidMetadata("offset delta width invalid".into()).into());
+        if !matches!(header.delta_bytes, 2..=4) {
+            return Err(
+                DiskgraphError::InvalidMetadata("offset delta width invalid".into()).into(),
+            );
         }
-        if !matches!(header.node_data_len_bytes, 2 | 3 | 4) {
+        if !matches!(header.node_data_len_bytes, 2..=4) {
             return Err(
                 DiskgraphError::InvalidMetadata("node data len width invalid".into()).into(),
             );
         }
-        let header_len = header_len;
-        let chunks =
-            parse_offset_chunks(&offsets, header.total_offsets, header.delta_bytes, header_len)?;
+        let chunks = parse_offset_chunks(
+            &offsets,
+            header.total_offsets,
+            header.delta_bytes,
+            header_len,
+        )?;
         let edge_count = header.edge_count;
         Ok(Self {
             offsets_mmap: offsets,
@@ -119,7 +128,13 @@ impl ShardReader {
 }
 
 fn advise_random(map: &Mmap) {
-    let ret = unsafe { madvise(map.as_ptr() as *mut libc::c_void, map.len(), libc::MADV_RANDOM) };
+    let ret = unsafe {
+        madvise(
+            map.as_ptr() as *mut libc::c_void,
+            map.len(),
+            libc::MADV_RANDOM,
+        )
+    };
     if ret != 0 {
         let _ = std::io::Error::last_os_error();
     }
@@ -153,12 +168,7 @@ fn parse_offset_chunks(
     Ok(chunks)
 }
 
-fn decode_offset(
-    offsets: &Mmap,
-    chunks: &[OffsetChunk],
-    idx: u64,
-    delta_bytes: u8,
-) -> Result<u64> {
+fn decode_offset(offsets: &Mmap, chunks: &[OffsetChunk], idx: u64, delta_bytes: u8) -> Result<u64> {
     let chunk = find_chunk(chunks, idx)?;
     let within = idx - chunk.base_idx;
     let mut cursor = chunk.data_offset;
@@ -180,12 +190,15 @@ fn decode_offset(
         2 => {
             for _ in 0..within {
                 if cursor + 2 > offsets.len() {
-                    return Err(DiskgraphError::InvalidMetadata("offset delta out of bounds".into()).into());
+                    return Err(DiskgraphError::InvalidMetadata(
+                        "offset delta out of bounds".into(),
+                    )
+                    .into());
                 }
                 let delta = u16::from_le_bytes([offsets[cursor], offsets[cursor + 1]]);
-                acc = acc
-                    .checked_add(delta as u64)
-                    .ok_or_else(|| DiskgraphError::InvalidMetadata("offset delta overflow".into()))?;
+                acc = acc.checked_add(delta as u64).ok_or_else(|| {
+                    DiskgraphError::InvalidMetadata("offset delta overflow".into())
+                })?;
                 cursor += 2;
             }
         }
@@ -193,36 +206,45 @@ fn decode_offset(
             let mut remaining = within;
             while remaining >= 4 {
                 if cursor + 12 > offsets.len() {
-                    return Err(DiskgraphError::InvalidMetadata("offset delta out of bounds".into()).into());
+                    return Err(DiskgraphError::InvalidMetadata(
+                        "offset delta out of bounds".into(),
+                    )
+                    .into());
                 }
                 for _ in 0..4 {
                     let delta = offsets[cursor] as u64
                         | ((offsets[cursor + 1] as u64) << 8)
                         | ((offsets[cursor + 2] as u64) << 16);
-                    acc = acc
-                        .checked_add(delta)
-                        .ok_or_else(|| DiskgraphError::InvalidMetadata("offset delta overflow".into()))?;
+                    acc = acc.checked_add(delta).ok_or_else(|| {
+                        DiskgraphError::InvalidMetadata("offset delta overflow".into())
+                    })?;
                     cursor += 3;
                 }
                 remaining -= 4;
             }
             for _ in 0..remaining {
                 if cursor + 3 > offsets.len() {
-                    return Err(DiskgraphError::InvalidMetadata("offset delta out of bounds".into()).into());
+                    return Err(DiskgraphError::InvalidMetadata(
+                        "offset delta out of bounds".into(),
+                    )
+                    .into());
                 }
                 let delta = offsets[cursor] as u64
                     | ((offsets[cursor + 1] as u64) << 8)
                     | ((offsets[cursor + 2] as u64) << 16);
-                acc = acc
-                    .checked_add(delta)
-                    .ok_or_else(|| DiskgraphError::InvalidMetadata("offset delta overflow".into()))?;
+                acc = acc.checked_add(delta).ok_or_else(|| {
+                    DiskgraphError::InvalidMetadata("offset delta overflow".into())
+                })?;
                 cursor += 3;
             }
         }
         4 => {
             for _ in 0..within {
                 if cursor + 4 > offsets.len() {
-                    return Err(DiskgraphError::InvalidMetadata("offset delta out of bounds".into()).into());
+                    return Err(DiskgraphError::InvalidMetadata(
+                        "offset delta out of bounds".into(),
+                    )
+                    .into());
                 }
                 let delta = u32::from_le_bytes([
                     offsets[cursor],
@@ -230,20 +252,22 @@ fn decode_offset(
                     offsets[cursor + 2],
                     offsets[cursor + 3],
                 ]);
-                acc = acc
-                    .checked_add(delta as u64)
-                    .ok_or_else(|| DiskgraphError::InvalidMetadata("offset delta overflow".into()))?;
+                acc = acc.checked_add(delta as u64).ok_or_else(|| {
+                    DiskgraphError::InvalidMetadata("offset delta overflow".into())
+                })?;
                 cursor += 4;
             }
         }
         _ => {
-            return Err(DiskgraphError::InvalidMetadata("offset delta width invalid".into()).into());
+            return Err(
+                DiskgraphError::InvalidMetadata("offset delta width invalid".into()).into(),
+            );
         }
     }
     Ok(acc)
 }
 
-fn find_chunk<'a>(chunks: &'a [OffsetChunk], idx: u64) -> Result<&'a OffsetChunk> {
+fn find_chunk(chunks: &[OffsetChunk], idx: u64) -> Result<&OffsetChunk> {
     if chunks.is_empty() {
         return Err(DiskgraphError::InvalidMetadata("no offset chunks".into()).into());
     }

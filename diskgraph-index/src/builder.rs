@@ -6,8 +6,9 @@ use crate::truncate::truncate_counts;
 use anyhow::Result;
 use diskgraph_core::metadata::{EdgeRelationMetadata, NodeTypeMetadata};
 use lz4_flex::frame::FrameDecoder;
-use serde_json;
 use serde::Serialize;
+use serde_json;
+use std::cell::RefCell;
 use std::fs::{self, File};
 use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
 #[cfg(target_os = "linux")]
@@ -17,7 +18,6 @@ use std::sync::{
     atomic::{AtomicU64, AtomicUsize, Ordering},
     Arc, Condvar, Mutex,
 };
-use std::cell::RefCell;
 use thiserror::Error;
 
 const MAX_NODE_DATA_LEN: usize = 64 * 1024 * 1024;
@@ -223,10 +223,9 @@ impl MemoryBudget {
             });
         }
         if bytes > self.total {
-            return Err(IndexBuildError::NotImplemented(
-                "memory budget too small for shard",
-            )
-            .into());
+            return Err(
+                IndexBuildError::NotImplemented("memory budget too small for shard").into(),
+            );
         }
         let mut available = self.available.lock().unwrap();
         let mut waited = false;
@@ -398,8 +397,12 @@ impl EdgeBufferPool {
         }
     }
 
-    fn acquire_with_eviction(&self, budget: &Arc<MemoryBudget>, bytes: u64, force: bool) -> Result<BudgetReservation> {
-
+    fn acquire_with_eviction(
+        &self,
+        budget: &Arc<MemoryBudget>,
+        bytes: u64,
+        force: bool,
+    ) -> Result<BudgetReservation> {
         loop {
             if let Some(guard) = budget.try_acquire(bytes) {
                 return Ok(BudgetReservation {
@@ -449,7 +452,9 @@ impl EdgeBufferPool {
         reserved: Option<&mut BudgetReservation>,
     ) -> Result<(EdgeBufferLease, EdgeBufferLease)> {
         let mut buffers = self.buffers.lock().unwrap();
-        let take_best = |buffers: &mut Vec<PooledEdgeBuffer>, min_capacity: usize| -> Option<PooledEdgeBuffer> {
+        let take_best = |buffers: &mut Vec<PooledEdgeBuffer>,
+                         min_capacity: usize|
+         -> Option<PooledEdgeBuffer> {
             let mut best_idx = None;
             let mut best_cap = usize::MAX;
             for (idx, entry) in buffers.iter().enumerate() {
@@ -498,7 +503,7 @@ impl EdgeBufferPool {
                     let available = res.bytes;
                     let mut combined = res.split(available);
                     let deficit = needed - available;
-                    
+
                     // We must use the same budget instance
                     if let Some(budget) = &self.budget {
                         let extra = self.acquire_with_eviction(budget, deficit, true)?;
@@ -533,9 +538,7 @@ impl EdgeBufferPool {
             }
         }
 
-        debug_assert!(
-            new_reservation.as_ref().map(|r| r.bytes).unwrap_or(0) == 0
-        );
+        debug_assert!(new_reservation.as_ref().map(|r| r.bytes).unwrap_or(0) == 0);
 
         let second = picked.pop().unwrap();
         let first = picked.pop().unwrap();
@@ -741,8 +744,7 @@ impl ShardBuilder {
             &self.params.node_types,
         )?);
 
-        let mut node_stream =
-            NodeStream::try_new(&self.params.node_meta, self.params.shard_index)?;
+        let mut node_stream = NodeStream::try_new(&self.params.node_meta, self.params.shard_index)?;
         let mut edge_stream =
             MergedEdgeStream::try_new(edge_shards, &self.params.relation_metas, &pool)?;
         let expected_nodes = shard_node_count(&self.params.node_meta, self.params.shard_index)?;
@@ -755,11 +757,10 @@ impl ShardBuilder {
         let mut node_data_stream = if self.params.node_meta.has_node_data {
             let sources = node_data_paths
                 .as_ref()
-                .ok_or(IndexBuildError::NotImplemented("node data missing for shard"))?;
-            Some(NodeDataStream::try_new(
-                sources,
-                expected_nodes,
-            )?)
+                .ok_or(IndexBuildError::NotImplemented(
+                    "node data missing for shard",
+                ))?;
+            Some(NodeDataStream::try_new(sources, expected_nodes)?)
         } else {
             None
         };
@@ -824,169 +825,171 @@ impl ShardBuilder {
                 });
             }
             while let Some(node_id) = node_stream.next_id()? {
-            if let Some(should_abort) = should_abort {
-                if should_abort() {
-                    return Err(IndexBuildError::Aborted.into());
+                if let Some(should_abort) = should_abort {
+                    if should_abort() {
+                        return Err(IndexBuildError::Aborted.into());
+                    }
                 }
-            }
-            nodes_seen += 1;
-            build_stats.nodes_ingested += 1;
-            if let Some(progress) = progress {
-                if nodes_seen - last_progress_at >= INDEX_PROGRESS_ROW_BATCH {
-                    progress.report(BuildProgress {
-                        stage: BuildStage::BuildIndex,
-                        current: nodes_seen,
-                        total: total_nodes,
-                    });
-                    last_progress_at = nodes_seen;
+                nodes_seen += 1;
+                build_stats.nodes_ingested += 1;
+                if let Some(progress) = progress {
+                    if nodes_seen - last_progress_at >= INDEX_PROGRESS_ROW_BATCH {
+                        progress.report(BuildProgress {
+                            stage: BuildStage::BuildIndex,
+                            current: nodes_seen,
+                            total: total_nodes,
+                        });
+                        last_progress_at = nodes_seen;
+                    }
                 }
-            }
-            let start_offset = edges_writer.byte_offset();
-            let mut node_data_len: Option<usize> = None;
-            if let Some(stream) = node_data_stream.as_mut() {
-                let len = stream.next_into(&mut node_data_buf)?;
-                if len > MAX_NODE_DATA_LEN {
-                    node_data_buf.clear();
-                    build_stats.node_data_trimmed =
-                        build_stats.node_data_trimmed.saturating_add(1);
-                } else {
-                    node_data_len = Some(len);
+                let start_offset = edges_writer.byte_offset();
+                let mut node_data_len: Option<usize> = None;
+                if let Some(stream) = node_data_stream.as_mut() {
+                    let len = stream.next_into(&mut node_data_buf)?;
+                    if len > MAX_NODE_DATA_LEN {
+                        node_data_buf.clear();
+                        build_stats.node_data_trimmed =
+                            build_stats.node_data_trimmed.saturating_add(1);
+                    } else {
+                        node_data_len = Some(len);
+                    }
                 }
-            }
-            // Collect edges for this node by relation.
-            for (i, bucket) in buckets.iter_mut().enumerate() {
-                bucket.clear();
-                if last_counts[i] > bucket.capacity() {
-                    bucket.reserve_exact(last_counts[i] - bucket.capacity());
+                // Collect edges for this node by relation.
+                for (i, bucket) in buckets.iter_mut().enumerate() {
+                    bucket.clear();
+                    if last_counts[i] > bucket.capacity() {
+                        bucket.reserve_exact(last_counts[i] - bucket.capacity());
+                    }
                 }
-            }
-            let mut truncated_node = false;
-            edge_stream.drain_for_node(node_id, &mut buckets)?;
-            // Compute lengths first to avoid borrowing conflicts, then apply truncation.
-            let mut any_truncated = false;
-            let mut total_edges: usize = 0;
-            for i in 0..rel_count {
-                let len = buckets[i].len();
-                lens[i] = len;
-                counts[i] = len;
-                total_edges = total_edges.saturating_add(len);
-                let cap = max_edge_counts.get(i).copied().unwrap_or(0);
-                if cap > 0 && len > cap {
-                    buckets[i].truncate(cap);
-                    counts[i] = cap;
-                    total_edges = total_edges.saturating_sub(len - cap);
-                    truncated_node = true;
-                    any_truncated = true;
-                    build_stats.capped_edge_lists = build_stats.capped_edge_lists.saturating_add(1);
+                let mut truncated_node = false;
+                edge_stream.drain_for_node(node_id, &mut buckets)?;
+                // Compute lengths first to avoid borrowing conflicts, then apply truncation.
+                let mut any_truncated = false;
+                let mut total_edges: usize = 0;
+                for i in 0..rel_count {
+                    let len = buckets[i].len();
+                    lens[i] = len;
+                    counts[i] = len;
+                    total_edges = total_edges.saturating_add(len);
+                    let cap = max_edge_counts.get(i).copied().unwrap_or(0);
+                    if cap > 0 && len > cap {
+                        buckets[i].truncate(cap);
+                        counts[i] = cap;
+                        total_edges = total_edges.saturating_sub(len - cap);
+                        truncated_node = true;
+                        any_truncated = true;
+                        build_stats.capped_edge_lists =
+                            build_stats.capped_edge_lists.saturating_add(1);
+                    }
                 }
-            }
-            if any_truncated {
-                original_counts.copy_from_slice(&lens);
-            }
-            if total_edges == 0 && node_data_len.is_none() {
-                // No edges for this node across all relations; avoid writing zero counts.
-                offsets_writer.push(start_offset)?;
-                prev_offset = start_offset;
-                continue;
-            }
-            let extra_bytes = node_data_len
-                .map(|len| node_data_len_bytes as u64 + len as u64)
-                .unwrap_or(0);
-            let node_bytes = EdgeWriter::node_length_bytes_fast(&layouts, &counts)
-                .saturating_add(extra_bytes);
-
-            // Determine if we need to truncate to stay within u16 delta budget.
-            let base_span = start_offset
-                .checked_sub(prev_offset)
-                .ok_or(IndexBuildError::CountOverflow)?;
-            let budget = max_delta
-                .checked_sub(base_span)
-                .ok_or(IndexBuildError::OffsetDeltaOverflow)?;
-            if node_bytes > budget {
-                if !any_truncated {
+                if any_truncated {
                     original_counts.copy_from_slice(&lens);
-                    any_truncated = true;
                 }
-                truncate_counts(
-                    &mut buckets,
-                    &mut counts,
-                    &layouts,
-                    start_offset,
-                    prev_offset,
-                    extra_bytes,
-                    max_delta,
+                if total_edges == 0 && node_data_len.is_none() {
+                    // No edges for this node across all relations; avoid writing zero counts.
+                    offsets_writer.push(start_offset)?;
+                    prev_offset = start_offset;
+                    continue;
+                }
+                let extra_bytes = node_data_len
+                    .map(|len| node_data_len_bytes as u64 + len as u64)
+                    .unwrap_or(0);
+                let node_bytes = EdgeWriter::node_length_bytes_fast(&layouts, &counts)
+                    .saturating_add(extra_bytes);
+
+                // Determine if we need to truncate to stay within u16 delta budget.
+                let base_span = start_offset
+                    .checked_sub(prev_offset)
+                    .ok_or(IndexBuildError::CountOverflow)?;
+                let budget = max_delta
+                    .checked_sub(base_span)
+                    .ok_or(IndexBuildError::OffsetDeltaOverflow)?;
+                if node_bytes > budget {
+                    if !any_truncated {
+                        original_counts.copy_from_slice(&lens);
+                        any_truncated = true;
+                    }
+                    truncate_counts(
+                        &mut buckets,
+                        &mut counts,
+                        &layouts,
+                        start_offset,
+                        prev_offset,
+                        extra_bytes,
+                        max_delta,
+                    )?;
+                    truncated_node = true;
+                }
+
+                if truncated_node {
+                    build_stats.truncated_nodes = build_stats.truncated_nodes.saturating_add(1);
+                }
+                // Write all counts + edge data for this node in a single buffer.
+                for (rel_idx, target_len) in counts.iter().enumerate() {
+                    let truncated = if any_truncated {
+                        original_counts[rel_idx].saturating_sub(*target_len)
+                    } else {
+                        0
+                    };
+                    if truncated > 0 {
+                        build_stats.truncated_edges_total += truncated as u64;
+                        build_stats.truncated_edges_per_relation[rel_idx] = build_stats
+                            .truncated_edges_per_relation[rel_idx]
+                            .saturating_add(truncated as u64);
+                    }
+                }
+                let node_data_slice = node_data_len.map(|_| node_data_buf.as_slice());
+                edges_writer.write_node(
+                    &counts,
+                    &buckets,
+                    total_edges,
+                    &mut node_buf,
+                    node_data_slice,
                 )?;
-                truncated_node = true;
+                build_stats.edges_ingested = build_stats
+                    .edges_ingested
+                    .saturating_add(total_edges as u64);
+                offsets_writer.push(edges_writer.byte_offset())?;
+                prev_offset = edges_writer.byte_offset();
+                last_counts.copy_from_slice(&counts);
             }
 
-            if truncated_node {
-                build_stats.truncated_nodes = build_stats.truncated_nodes.saturating_add(1);
+            if let Some(progress) = progress {
+                progress.report(BuildProgress {
+                    stage: BuildStage::BuildIndex,
+                    current: nodes_seen,
+                    total: total_nodes.or(Some(nodes_seen)),
+                });
             }
-            // Write all counts + edge data for this node in a single buffer.
-            for (rel_idx, target_len) in counts.iter().enumerate() {
-                let truncated = if any_truncated {
-                    original_counts[rel_idx].saturating_sub(*target_len)
-                } else {
-                    0
-                };
-                if truncated > 0 {
-                    build_stats.truncated_edges_total += truncated as u64;
-                    build_stats.truncated_edges_per_relation[rel_idx] = build_stats
-                        .truncated_edges_per_relation[rel_idx]
-                        .saturating_add(truncated as u64);
-                }
+
+            if edge_stream.peek_any().is_some() {
+                return Err(IndexBuildError::DanglingEdges.into());
             }
-            let node_data_slice = node_data_len.map(|_| node_data_buf.as_slice());
-            edges_writer.write_node(
-                &counts,
-                &buckets,
-                total_edges,
-                &mut node_buf,
-                node_data_slice,
-            )?;
-            build_stats.edges_ingested =
-                build_stats.edges_ingested.saturating_add(total_edges as u64);
-            offsets_writer.push(edges_writer.byte_offset())?;
-            prev_offset = edges_writer.byte_offset();
-            last_counts.copy_from_slice(&counts);
-        }
 
-        if let Some(progress) = progress {
-            progress.report(BuildProgress {
-                stage: BuildStage::BuildIndex,
-                current: nodes_seen,
-                total: total_nodes.or(Some(nodes_seen)),
-            });
-        }
+            offsets_writer.finish(nodes_seen, edges_writer.edge_count)?;
+            let stats = NodeEdgeStats {
+                edge_count: edges_writer.edge_count,
+                byte_len: edges_writer.bytes_written,
+            };
+            edges_writer.finish()?;
+            let report = BuildReport {
+                node_edge_stats: stats,
+                build_stats: build_stats.clone(),
+            };
+            let report_path = self.params.output_dir.join("build_stats.json");
+            let report_file = File::create(&report_path)?;
+            let mut report_writer = BufWriter::new(report_file);
+            serde_json::to_writer_pretty(&mut report_writer, &report)?;
+            report_writer.flush()?;
 
-        if edge_stream.peek_any().is_some() {
-            return Err(IndexBuildError::DanglingEdges.into());
-        }
-
-        offsets_writer.finish(nodes_seen, edges_writer.edge_count)?;
-        let stats = NodeEdgeStats {
-            edge_count: edges_writer.edge_count,
-            byte_len: edges_writer.bytes_written,
-        };
-        edges_writer.finish()?;
-        let report = BuildReport {
-            node_edge_stats: stats,
-            build_stats: build_stats.clone(),
-        };
-        let report_path = self.params.output_dir.join("build_stats.json");
-        let report_file = File::create(&report_path)?;
-        let mut report_writer = BufWriter::new(report_file);
-        serde_json::to_writer_pretty(&mut report_writer, &report)?;
-        report_writer.flush()?;
-
-        Ok(ShardBuildOutput {
-            offsets_path,
-            edges_path,
-            stats,
-            layouts,
-            build_stats,
-            wall_ms: 0,
-        })
+            Ok(ShardBuildOutput {
+                offsets_path,
+                edges_path,
+                stats,
+                layouts,
+                build_stats,
+                wall_ms: 0,
+            })
         })();
         result
     }
@@ -1139,8 +1142,7 @@ impl OffsetChunkWriter {
         let mut writer = BufWriter::with_capacity(32 * 1024 * 1024, File::create(path)?);
         let header_len =
             bincode::serialized_size(&OffsetFileHeader::new(0, 0)).unwrap_or(32) as usize;
-        let mut scratch = Vec::new();
-        scratch.resize(header_len, 0u8);
+        let mut scratch = vec![0; header_len];
         writer.write_all(&scratch)?;
         scratch.clear();
         Ok(Self {
@@ -1269,17 +1271,14 @@ impl EdgeWriter {
                 .map_err(|_| IndexBuildError::ValueOutOfRange("node_data_len"))?;
             write_len_le(scratch, len, self.node_data_len_bytes)?;
         }
-        for (rel_idx, (layout, rel_edges)) in
-            self.layouts.iter().zip(buckets.iter()).enumerate()
-        {
+        for (rel_idx, (layout, rel_edges)) in self.layouts.iter().zip(buckets.iter()).enumerate() {
             let target_len = counts[rel_idx];
             for edge in rel_edges.iter().take(target_len) {
                 if edge.dst > layout.dst_mask {
                     return Err(IndexBuildError::ValueOutOfRange("dst_id").into());
                 }
                 debug_assert!(
-                    (layout.dst_bits as usize
-                        + layout.dest_sort_key_bits.unwrap_or(0) as usize)
+                    (layout.dst_bits as usize + layout.dest_sort_key_bits.unwrap_or(0) as usize)
                         <= layout.entry_bytes * 8
                 );
                 let mut acc: u128 = 0;
@@ -1466,11 +1465,7 @@ impl EdgeSubStream {
         }
     }
 
-    fn drain_edges(
-        &mut self,
-        node_id: u64,
-        buckets: &mut [Vec<EdgeRec>],
-    ) -> Result<Option<u64>> {
+    fn drain_edges(&mut self, node_id: u64, buckets: &mut [Vec<EdgeRec>]) -> Result<Option<u64>> {
         match self {
             EdgeSubStream::Memory(inner) => inner.drain_edges(node_id, buckets),
         }
@@ -1494,11 +1489,7 @@ impl MemoryEdgeSubStream {
         Ok(self.buffer.as_slice().get(self.index).map(|r| r.src_id))
     }
 
-    fn drain_edges(
-        &mut self,
-        node_id: u64,
-        buckets: &mut [Vec<EdgeRec>],
-    ) -> Result<Option<u64>> {
+    fn drain_edges(&mut self, node_id: u64, buckets: &mut [Vec<EdgeRec>]) -> Result<Option<u64>> {
         while let Some(record) = self.buffer.as_slice().get(self.index) {
             if record.src_id != node_id {
                 break;
@@ -1581,23 +1572,18 @@ fn read_edge_parts(
             return Err(IndexBuildError::NotImplemented("invalid binary edge width").into());
         }
         if sort_width > 8 {
-            return Err(IndexBuildError::NotImplemented(
-                "binary edge sort key width too large",
-            )
-            .into());
+            return Err(
+                IndexBuildError::NotImplemented("binary edge sort key width too large").into(),
+            );
         }
         if dest_sort_key_bits.is_some() && sort_width == 0 {
-            return Err(IndexBuildError::NotImplemented(
-                "binary edge missing dest_sort_key",
-            )
-            .into());
+            return Err(
+                IndexBuildError::NotImplemented("binary edge missing dest_sort_key").into(),
+            );
         }
         if let Some((s_src, s_dst, s_sort)) = spec {
             if s_src != src_width || s_dst != dst_width || s_sort != sort_width {
-                return Err(IndexBuildError::NotImplemented(
-                    "binary edge header mismatch",
-                )
-                .into());
+                return Err(IndexBuildError::NotImplemented("binary edge header mismatch").into());
             }
         } else {
             spec = Some((src_width, dst_width, sort_width));
@@ -1605,10 +1591,7 @@ fn read_edge_parts(
         let record_size = src_width as u64 + dst_width as u64 + sort_width as u64;
         let payload = file_len - 3;
         if payload % record_size != 0 {
-            return Err(IndexBuildError::NotImplemented(
-                "binary edge file size mismatch",
-            )
-            .into());
+            return Err(IndexBuildError::NotImplemented("binary edge file size mismatch").into());
         }
         let remaining = payload / record_size;
         total_records = total_records.saturating_add(remaining);
@@ -1685,18 +1668,12 @@ fn edge_record_count(path: &Path) -> Result<u64> {
         return Err(IndexBuildError::NotImplemented("invalid binary edge width").into());
     }
     if sort_width > 8 {
-        return Err(IndexBuildError::NotImplemented(
-            "binary edge sort key width too large",
-        )
-        .into());
+        return Err(IndexBuildError::NotImplemented("binary edge sort key width too large").into());
     }
     let record_size = src_width as u64 + dst_width as u64 + sort_width as u64;
     let payload = file_len - 3;
     if payload % record_size != 0 {
-        return Err(IndexBuildError::NotImplemented(
-            "binary edge file size mismatch",
-        )
-        .into());
+        return Err(IndexBuildError::NotImplemented("binary edge file size mismatch").into());
     }
     Ok(payload / record_size)
 }
@@ -1728,7 +1705,7 @@ fn radix_sort_edge_records(records: &mut [EdgeRecord], tmp: &mut EdgeBufferLease
         or_src |= rec.src_id;
     }
     let mut passes = ((64 - or_src.leading_zeros() + 7) / 8) as usize;
-    passes = passes.max(1).min(8);
+    passes = passes.clamp(1, 8);
     if passes == 0 {
         return Ok(());
     }
@@ -1785,10 +1762,9 @@ impl NodeDataStream {
         }
         for path in sources {
             if path.extension().and_then(|e| e.to_str()) != Some("bin") {
-                return Err(IndexBuildError::NotImplemented(
-                    "node data parts must be .bin files",
-                )
-                .into());
+                return Err(
+                    IndexBuildError::NotImplemented("node data parts must be .bin files").into(),
+                );
             }
         }
         Ok(NodeDataStream::MultiBinary(MultiBinaryNodeDataStream {
@@ -1809,10 +1785,9 @@ impl NodeDataStream {
 impl MultiBinaryNodeDataStream {
     fn next_into(&mut self, out: &mut Vec<u8>) -> Result<usize> {
         if self.seen_rows >= self.expected_rows {
-            return Err(IndexBuildError::NotImplemented(
-                "node data row count exceeds shard range",
-            )
-            .into());
+            return Err(
+                IndexBuildError::NotImplemented("node data row count exceeds shard range").into(),
+            );
         }
         loop {
             if self.reader.is_none() {
@@ -1837,15 +1812,15 @@ impl MultiBinaryNodeDataStream {
                     if len > 0 {
                         out.reserve(len as usize);
                         // SAFETY: read_exact fills the full buffer; clear on error avoids exposing uninit bytes.
+                        #[allow(clippy::uninit_vec)]
                         unsafe {
                             out.set_len(len as usize);
                         }
-                        if let Err(_) = reader.read_exact(out.as_mut_slice()) {
+                        if reader.read_exact(out.as_mut_slice()).is_err() {
                             out.clear();
-                            return Err(IndexBuildError::NotImplemented(
-                                "node data row truncated",
-                            )
-                            .into());
+                            return Err(
+                                IndexBuildError::NotImplemented("node data row truncated").into()
+                            );
                         }
                     }
                     self.seen_rows += 1;
@@ -1902,18 +1877,21 @@ impl MergedEdgeStream {
         }
         let mut streams = Vec::new();
         let mut head_srcs = Vec::new();
-        for (_idx, input) in inputs.iter().enumerate() {
+        for input in inputs.iter() {
             let (relation_id, sort_bits) = rel_lookup
                 .get(&input.relation)
                 .ok_or(IndexBuildError::UnknownRelation)?;
-            let stream = EdgeSubStream::try_new(input, *relation_id, *sort_bits, pool, reservation.as_mut())?;
+            let stream = EdgeSubStream::try_new(
+                input,
+                *relation_id,
+                *sort_bits,
+                pool,
+                reservation.as_mut(),
+            )?;
             streams.push(stream);
             head_srcs.push(streams.last_mut().unwrap().peek_src()?);
         }
-        Ok(Self {
-            streams,
-            head_srcs,
-        })
+        Ok(Self { streams, head_srcs })
     }
 
     fn max_edges_per_relation(&self, rel_count: usize) -> Vec<usize> {
@@ -1933,7 +1911,9 @@ impl MergedEdgeStream {
 
     fn drain_for_node(&mut self, node_id: u64, buckets: &mut [Vec<EdgeRec>]) -> Result<()> {
         for idx in 0..self.streams.len() {
-            let Some(head_src) = self.head_srcs[idx] else { continue };
+            let Some(head_src) = self.head_srcs[idx] else {
+                continue;
+            };
             if head_src != node_id {
                 continue;
             }
@@ -1948,4 +1928,3 @@ impl MergedEdgeStream {
         Ok(())
     }
 }
-

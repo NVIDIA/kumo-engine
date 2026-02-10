@@ -116,7 +116,14 @@ impl NumericMotifs {
         let min = values.iter().cloned().fold(f64::INFINITY, f64::min);
         let max = values.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
 
-        Some(Self { count, sum, mean, std, min, max })
+        Some(Self {
+            count,
+            sum,
+            mean,
+            std,
+            min,
+            max,
+        })
     }
 }
 
@@ -148,7 +155,12 @@ impl CategoricalMotifs {
             .map(|(k, v)| (k.to_string(), *v))
             .unwrap_or_default();
 
-        Some(Self { count, nunique, mode, mode_count })
+        Some(Self {
+            count,
+            nunique,
+            mode,
+            mode_count,
+        })
     }
 }
 
@@ -232,7 +244,10 @@ fn compute_relation_motifs(
         .len() as u32;
 
     // Get destination table (assume all edges in a relation go to same table)
-    let dst_table = edges.first().map(|e| e.dst_table.clone()).unwrap_or_default();
+    let dst_table = edges
+        .first()
+        .map(|e| e.dst_table.clone())
+        .unwrap_or_default();
 
     // Temporal motifs
     let timestamps: Vec<i64> = edges.iter().filter_map(|e| e.timestamp).collect();
@@ -268,10 +283,7 @@ pub fn compute_temporal_motifs(
     let span = timestamp_max - timestamp_min;
 
     // Inter-arrival times
-    let inter_arrivals: Vec<f64> = sorted
-        .windows(2)
-        .map(|w| (w[1] - w[0]) as f64)
-        .collect();
+    let inter_arrivals: Vec<f64> = sorted.windows(2).map(|w| (w[1] - w[0]) as f64).collect();
 
     let inter_arrival_mean = if !inter_arrivals.is_empty() {
         Some(inter_arrivals.iter().sum::<f64>() / inter_arrivals.len() as f64)
@@ -323,8 +335,14 @@ fn compute_trend_slope(timestamps: &[i64]) -> f64 {
 
     // Divide into two halves and compare activity
     let midpoint = t_min + t_range / 2.0;
-    let first_half = timestamps.iter().filter(|&&t| (t as f64) < midpoint).count() as f64;
-    let second_half = timestamps.iter().filter(|&&t| (t as f64) >= midpoint).count() as f64;
+    let first_half = timestamps
+        .iter()
+        .filter(|&&t| (t as f64) < midpoint)
+        .count() as f64;
+    let second_half = timestamps
+        .iter()
+        .filter(|&&t| (t as f64) >= midpoint)
+        .count() as f64;
 
     // Return relative change
     if first_half > 0.0 {
@@ -373,7 +391,10 @@ fn compute_attribute_motifs_for_table(
                     AttributeValue::Boolean(b) => b.to_string(),
                     AttributeValue::Missing => continue,
                 };
-                categorical_values.entry(col_name.clone()).or_default().push(str_val);
+                categorical_values
+                    .entry(col_name.clone())
+                    .or_default()
+                    .push(str_val);
                 continue;
             }
 
@@ -382,7 +403,10 @@ fn compute_attribute_motifs_for_table(
                     numeric_values.entry(col_name.clone()).or_default().push(*v);
                 }
                 AttributeValue::Categorical(v) => {
-                    categorical_values.entry(col_name.clone()).or_default().push(v.clone());
+                    categorical_values
+                        .entry(col_name.clone())
+                        .or_default()
+                        .push(v.clone());
                 }
                 AttributeValue::Boolean(b) => {
                     // Treat boolean as categorical
@@ -413,7 +437,10 @@ fn compute_attribute_motifs_for_table(
     // Compute categorical motifs
     for (col_name, values) in categorical_values {
         // Check cardinality limit
-        let unique_count = values.iter().collect::<std::collections::HashSet<_>>().len();
+        let unique_count = values
+            .iter()
+            .collect::<std::collections::HashSet<_>>()
+            .len();
         if unique_count > config.max_categorical_cardinality {
             continue;
         }
@@ -468,7 +495,10 @@ pub fn compute_homophily_motifs(
     };
 
     let prediction_min = neighbor_preds.iter().cloned().fold(f64::INFINITY, f64::min);
-    let prediction_max = neighbor_preds.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let prediction_max = neighbor_preds
+        .iter()
+        .cloned()
+        .fold(f64::NEG_INFINITY, f64::max);
 
     Some(HomophilyMotifs {
         hop,
@@ -497,7 +527,12 @@ mod tests {
 
     #[test]
     fn test_categorical_motifs() {
-        let values = vec!["a".to_string(), "b".to_string(), "a".to_string(), "a".to_string()];
+        let values = vec![
+            "a".to_string(),
+            "b".to_string(),
+            "a".to_string(),
+            "a".to_string(),
+        ];
         let motifs = CategoricalMotifs::from_values(&values).unwrap();
         assert_eq!(motifs.count, 4);
         assert_eq!(motifs.nunique, 2);

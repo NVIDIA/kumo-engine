@@ -35,8 +35,7 @@ impl CloudTransferConfig {
         let max_files_in_flight = env_usize("DISKGRAPH_CLOUD_FILES_IN_FLIGHT", cpu_default.max(1));
         let max_part_requests = env_usize("DISKGRAPH_CLOUD_MAX_REQUESTS", cpu_default.max(1));
         let part_size = env_usize("DISKGRAPH_CLOUD_PART_SIZE_MB", 64) * 1024 * 1024;
-        let download_part_size =
-            env_usize("DISKGRAPH_CLOUD_DOWNLOAD_PART_MB", 0).max(part_size);
+        let download_part_size = env_usize("DISKGRAPH_CLOUD_DOWNLOAD_PART_MB", 0).max(part_size);
         let buffer_count = env_usize(
             "DISKGRAPH_CLOUD_FILE_BUFFER_COUNT",
             cpu_default.saturating_mul(2).max(1),
@@ -152,10 +151,7 @@ impl CloudTransferStatsHandle {
             .and_then(|value| value.clone());
         CloudTransferStatsSnapshot {
             total_buffers: self.inner.total_buffers,
-            available_buffers: self
-                .inner
-                .available_buffers
-                .load(Ordering::Relaxed),
+            available_buffers: self.inner.available_buffers.load(Ordering::Relaxed),
             queued_jobs: self.inner.queued_jobs.load(Ordering::Relaxed),
             inflight_files: self.inner.inflight_files.load(Ordering::Relaxed),
             inflight_parts: self.inner.inflight_parts.load(Ordering::Relaxed),
@@ -278,7 +274,11 @@ impl BufferPool {
                     .fetch_sub(1, Ordering::Relaxed);
                 return buffer;
             }
-            guard = self.inner.available.wait(guard).expect("cloud buffer pool wait");
+            guard = self
+                .inner
+                .available
+                .wait(guard)
+                .expect("cloud buffer pool wait");
         }
     }
 
@@ -551,16 +551,10 @@ impl CloudTransfer {
             attempt: 0,
             response: tx,
         };
-        self.inner
-            .stats
-            .queued_jobs
-            .fetch_add(1, Ordering::Relaxed);
+        self.inner.stats.queued_jobs.fetch_add(1, Ordering::Relaxed);
         if let Err(err) = self.inner.sender.blocking_send(TransferJob::Upload(job)) {
             let job = err.0.into_upload();
-            self.inner
-                .stats
-                .queued_jobs
-                .fetch_sub(1, Ordering::Relaxed);
+            self.inner.stats.queued_jobs.fetch_sub(1, Ordering::Relaxed);
             self.inner.pool.release(job.buffer);
             return Err(anyhow!("cloud transfer stopped"));
         }
@@ -581,15 +575,14 @@ impl CloudTransfer {
             attempt: 0,
             response: tx,
         };
-        self.inner
-            .stats
-            .queued_jobs
-            .fetch_add(1, Ordering::Relaxed);
-        if let Err(_) = self.inner.sender.blocking_send(TransferJob::Download(job)) {
-            self.inner
-                .stats
-                .queued_jobs
-                .fetch_sub(1, Ordering::Relaxed);
+        self.inner.stats.queued_jobs.fetch_add(1, Ordering::Relaxed);
+        if self
+            .inner
+            .sender
+            .blocking_send(TransferJob::Download(job))
+            .is_err()
+        {
+            self.inner.stats.queued_jobs.fetch_sub(1, Ordering::Relaxed);
             return Err(anyhow!("cloud transfer stopped"));
         }
         Ok(CloudTransferDownloadTicket { receiver: Some(rx) })
@@ -608,11 +601,7 @@ impl CloudTransfer {
     }
 
     pub async fn list_prefixes(&self, prefix: &ObjectPath) -> Result<Vec<ObjectPath>> {
-        let result = self
-            .inner
-            .store
-            .list_with_delimiter(Some(prefix))
-            .await?;
+        let result = self.inner.store.list_with_delimiter(Some(prefix)).await?;
         Ok(result.common_prefixes)
     }
 
@@ -666,8 +655,14 @@ struct DownloadJob {
 }
 
 enum TransferResult {
-    Upload { job: UploadJob, result: Result<(), anyhow::Error> },
-    Download { job: DownloadJob, result: Result<PooledBuffer, anyhow::Error> },
+    Upload {
+        job: UploadJob,
+        result: Result<(), anyhow::Error>,
+    },
+    Download {
+        job: DownloadJob,
+        result: Result<PooledBuffer, anyhow::Error>,
+    },
 }
 
 struct SharedSlice {
@@ -914,15 +909,17 @@ async fn download_file_once(
         stats.parts_started.fetch_add(1, Ordering::Relaxed);
         stats.inflight_parts.fetch_add(1, Ordering::Relaxed);
         tasks.spawn(async move {
-            let _permit = part_sema.acquire_owned().await.map_err(|_| {
-                object_store::Error::Generic {
-                    store: "multipart",
-                    source: Box::new(io::Error::new(
-                        io::ErrorKind::Other,
-                        "download semaphore closed",
-                    )),
-                }
-            })?;
+            let _permit =
+                part_sema
+                    .acquire_owned()
+                    .await
+                    .map_err(|_| object_store::Error::Generic {
+                        store: "multipart",
+                        source: Box::new(io::Error::new(
+                            io::ErrorKind::Other,
+                            "download semaphore closed",
+                        )),
+                    })?;
             let bytes = store.get_range(&path, offset..end).await?;
             let mut guard = buffer.lock().await;
             let dest = &mut guard[start_usize..start_usize + bytes.len()];
@@ -997,15 +994,17 @@ async fn upload_file_once(
         stats.parts_started.fetch_add(1, Ordering::Relaxed);
         stats.inflight_parts.fetch_add(1, Ordering::Relaxed);
         tasks.spawn(async move {
-            let _permit = part_sema.acquire_owned().await.map_err(|_| {
-                object_store::Error::Generic {
-                    store: "multipart",
-                    source: Box::new(io::Error::new(
-                        io::ErrorKind::Other,
-                        "upload semaphore closed",
-                    )),
-                }
-            })?;
+            let _permit =
+                part_sema
+                    .acquire_owned()
+                    .await
+                    .map_err(|_| object_store::Error::Generic {
+                        store: "multipart",
+                        source: Box::new(io::Error::new(
+                            io::ErrorKind::Other,
+                            "upload semaphore closed",
+                        )),
+                    })?;
             fut.await
         });
         offset = end;
@@ -1100,9 +1099,7 @@ mod tests {
         let mut buffer = transfer.acquire_buffer();
         buffer.write_all(b"hello world")?;
         let path = ObjectPath::from("test/part.parquet");
-        transfer
-            .submit(path.clone(), buffer.into_inner())?
-            .wait()?;
+        transfer.submit(path.clone(), buffer.into_inner())?.wait()?;
         let rt = Runtime::new()?;
         let data = rt
             .block_on(async { store.get(&path).await?.bytes().await })
@@ -1127,7 +1124,11 @@ mod tests {
         let transfer = CloudTransfer::new(store.clone(), config);
         let path = ObjectPath::from("test/read.parquet");
         let rt = Runtime::new()?;
-        rt.block_on(async { store.put(&path, Bytes::from_static(b"read-back").into()).await })?;
+        rt.block_on(async {
+            store
+                .put(&path, Bytes::from_static(b"read-back").into())
+                .await
+        })?;
         let buffer = transfer.submit_download(path)?.wait()?;
         assert_eq!(buffer.as_slice(), b"read-back");
         Ok(())
@@ -1167,15 +1168,17 @@ mod tests {
                     Bytes::from_static(b"three").into(),
                 )
                 .await?;
-            let prefixes = transfer
-                .list_prefixes(&ObjectPath::from("root/"))
-                .await?;
+            let prefixes = transfer.list_prefixes(&ObjectPath::from("root/")).await?;
             let mut prefix_strings: Vec<String> =
                 prefixes.into_iter().map(|p| p.to_string()).collect();
             prefix_strings.sort();
             assert_eq!(
                 prefix_strings,
-                vec!["root/a".to_string(), "root/b".to_string(), "root/c".to_string()]
+                vec![
+                    "root/a".to_string(),
+                    "root/b".to_string(),
+                    "root/c".to_string()
+                ]
             );
             Ok::<_, anyhow::Error>(())
         })?;

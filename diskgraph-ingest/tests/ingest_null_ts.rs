@@ -1,7 +1,5 @@
 use anyhow::Result;
-use arrow_array::{
-    ArrayRef, Int64Array, RecordBatch, TimestampSecondArray,
-};
+use arrow_array::{ArrayRef, Int64Array, RecordBatch, TimestampSecondArray};
 use arrow_schema::{DataType, Field, Schema};
 use diskgraph_index::graph::GraphIndexReader;
 use diskgraph_ingest::io::Dest;
@@ -33,7 +31,11 @@ fn test_null_timestamp_metrics_and_filtering() -> Result<()> {
     let path_pk = input_root.join("with_pk.parquet");
     let schema_pk = Schema::new(vec![
         Field::new("id", DataType::Int64, false),
-        Field::new("ts", DataType::Timestamp(arrow_schema::TimeUnit::Second, None), true),
+        Field::new(
+            "ts",
+            DataType::Timestamp(arrow_schema::TimeUnit::Second, None),
+            true,
+        ),
     ]);
     let ids_pk = Arc::new(Int64Array::from(vec![1, 2])) as ArrayRef;
     let tss_pk = Arc::new(TimestampSecondArray::from(vec![Some(100), None])) as ArrayRef;
@@ -46,10 +48,15 @@ fn test_null_timestamp_metrics_and_filtering() -> Result<()> {
     let path_nopk = input_root.join("no_pk.parquet");
     let schema_nopk = Schema::new(vec![
         Field::new("target_id", DataType::Int64, false),
-        Field::new("ts", DataType::Timestamp(arrow_schema::TimeUnit::Second, None), true),
+        Field::new(
+            "ts",
+            DataType::Timestamp(arrow_schema::TimeUnit::Second, None),
+            true,
+        ),
     ]);
     let target_ids = Arc::new(Int64Array::from(vec![1, 1, 1])) as ArrayRef;
-    let tss_nopk = Arc::new(TimestampSecondArray::from(vec![Some(100), None, Some(200)])) as ArrayRef;
+    let tss_nopk =
+        Arc::new(TimestampSecondArray::from(vec![Some(100), None, Some(200)])) as ArrayRef;
     write_parquet(&path_nopk, schema_nopk, vec![target_ids, tss_nopk])?;
 
     let source = serde_json::json!({
@@ -105,10 +112,18 @@ fn test_null_timestamp_metrics_and_filtering() -> Result<()> {
     println!("Dropped rows counts: {:?}", stats.dropped_rows_counts);
 
     // 1. TableWithPK should have 1 drop.
-    assert_eq!(*stats.dropped_rows_counts.get("TableWithPK").unwrap_or(&0), 1, "TableWithPK should have 1 drop");
+    assert_eq!(
+        *stats.dropped_rows_counts.get("TableWithPK").unwrap_or(&0),
+        1,
+        "TableWithPK should have 1 drop"
+    );
 
     // 2. TableNoPK should have 1 drop.
-    assert_eq!(*stats.dropped_rows_counts.get("TableNoPK").unwrap_or(&0), 1, "TableNoPK should have 1 drop");
+    assert_eq!(
+        *stats.dropped_rows_counts.get("TableNoPK").unwrap_or(&0),
+        1,
+        "TableNoPK should have 1 drop"
+    );
 
     // Check Graph Structure (Validation)
     let metadata_path = output_root.join("index_metadata.json");
@@ -119,7 +134,9 @@ fn test_null_timestamp_metrics_and_filtering() -> Result<()> {
     // TableNoPK has 3 rows: 1 (valid), 2 (null ts), 3 (valid).
     // So node 1 should have 2 incoming edges (from rows 1 and 3).
     let table = reader.table("TableWithPK").unwrap();
-    let _node_id = table.node_id_from_pk(&diskgraph_index::pkmap::Key::Int(1))?.unwrap();
+    let _node_id = table
+        .node_id_from_pk(&diskgraph_index::pkmap::Key::Int(1))?
+        .unwrap();
 
     // Check edge counts from stats
     let mut edge_count = 0;
@@ -130,7 +147,10 @@ fn test_null_timestamp_metrics_and_filtering() -> Result<()> {
             edge_count = *count;
         }
     }
-    assert_eq!(edge_count, 2, "Should have 2 edges (1 dropped due to null TS)");
+    assert_eq!(
+        edge_count, 2,
+        "Should have 2 edges (1 dropped due to null TS)"
+    );
 
     Ok(())
 }

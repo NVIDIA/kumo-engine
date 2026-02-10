@@ -1,8 +1,13 @@
 use std::fs::{self, File};
 use std::path::Path;
 
-use diskgraph_core::metadata::{DatasetMetadata, NodeDataCompression, NodeShardMetadata, NodeTypeMetadata};
-use diskgraph_rowpack::{ColumnContext, ColumnEncoding, IngestedType, RowPackContext, RowPackEncoder, RowPackScratch, ValueRef};
+use diskgraph_core::metadata::{
+    DatasetMetadata, NodeDataCompression, NodeShardMetadata, NodeTypeMetadata,
+};
+use diskgraph_rowpack::{
+    ColumnContext, ColumnEncoding, IngestedType, RowPackContext, RowPackEncoder, RowPackScratch,
+    ValueRef,
+};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use tempfile::tempdir;
 

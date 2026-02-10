@@ -11,8 +11,8 @@ use object_store::aws::AmazonS3Builder;
 use object_store::azure::MicrosoftAzureBuilder;
 use object_store::gcp::GoogleCloudStorageBuilder;
 use object_store::path::Path as ObjectPath;
-use object_store::{ObjectStore, ObjectStoreExt};
 use object_store::WriteMultipart;
+use object_store::{ObjectStore, ObjectStoreExt};
 use tokio::runtime::Runtime;
 use tokio::sync::{mpsc, oneshot};
 
@@ -56,8 +56,8 @@ pub struct S3Client {
 
 pub mod cloud_transfer;
 pub use cloud_transfer::{
-    BufferPool, CloudTransfer, CloudTransferConfig, CloudTransferStatsHandle,
-    CloudTransferBytesTicket, CloudTransferDownloadTicket, CloudTransferStatsSnapshot,
+    BufferPool, CloudTransfer, CloudTransferBytesTicket, CloudTransferConfig,
+    CloudTransferDownloadTicket, CloudTransferStatsHandle, CloudTransferStatsSnapshot,
     CloudTransferTicket, PooledBuffer, PooledBytes,
 };
 
@@ -67,7 +67,10 @@ pub fn build_s3_client(cfg: S3Config) -> Result<S3Client> {
         .or_else(|| env_flag("S3_ALLOW_HTTP"))
         .or_else(|| env_flag("AWS_ALLOW_HTTP"))
         .unwrap_or(false);
-    let endpoint = cfg.endpoint.clone().or_else(|| std::env::var("S3_ENDPOINT").ok());
+    let endpoint = cfg
+        .endpoint
+        .clone()
+        .or_else(|| std::env::var("S3_ENDPOINT").ok());
     let profile = cfg
         .profile
         .clone()
@@ -77,14 +80,18 @@ pub fn build_s3_client(cfg: S3Config) -> Result<S3Client> {
     if let Some(p) = profile.clone() {
         loader = loader.profile_name(p);
     }
-    if let Some(region) = cfg.region.clone().or_else(|| std::env::var("S3_REGION").ok()) {
+    if let Some(region) = cfg
+        .region
+        .clone()
+        .or_else(|| std::env::var("S3_REGION").ok())
+    {
         loader = loader.region(Region::new(region));
     }
     let rt = Runtime::new()?;
     let aws_conf = rt.block_on(loader.load());
-    let creds_provider = aws_conf
-        .credentials_provider()
-        .ok_or_else(|| anyhow!("No AWS credentials provider found; ensure AWS_PROFILE/SSO is set"))?;
+    let creds_provider = aws_conf.credentials_provider().ok_or_else(|| {
+        anyhow!("No AWS credentials provider found; ensure AWS_PROFILE/SSO is set")
+    })?;
     let creds = rt.block_on(async {
         creds_provider
             .provide_credentials()
@@ -101,7 +108,11 @@ pub fn build_s3_client(cfg: S3Config) -> Result<S3Client> {
     let virtual_hosted = cfg
         .virtual_hosted
         .or_else(|| env_flag("S3_VIRTUAL_HOSTED"))
-        .unwrap_or_else(|| endpoint.as_ref().map_or(true, |ep| ep.contains("amazonaws.com")));
+        .unwrap_or_else(|| {
+            endpoint
+                .as_ref()
+                .map_or(true, |ep| ep.contains("amazonaws.com"))
+        });
     let access_key_id = cfg
         .access_key_id
         .clone()
@@ -155,7 +166,10 @@ pub async fn build_s3_client_async(cfg: S3Config) -> Result<S3Client> {
         .or_else(|| env_flag("S3_ALLOW_HTTP"))
         .or_else(|| env_flag("AWS_ALLOW_HTTP"))
         .unwrap_or(false);
-    let endpoint = cfg.endpoint.clone().or_else(|| std::env::var("S3_ENDPOINT").ok());
+    let endpoint = cfg
+        .endpoint
+        .clone()
+        .or_else(|| std::env::var("S3_ENDPOINT").ok());
     let profile = cfg
         .profile
         .clone()
@@ -165,13 +179,17 @@ pub async fn build_s3_client_async(cfg: S3Config) -> Result<S3Client> {
     if let Some(p) = profile.clone() {
         loader = loader.profile_name(p);
     }
-    if let Some(region) = cfg.region.clone().or_else(|| std::env::var("S3_REGION").ok()) {
+    if let Some(region) = cfg
+        .region
+        .clone()
+        .or_else(|| std::env::var("S3_REGION").ok())
+    {
         loader = loader.region(Region::new(region));
     }
     let aws_conf = loader.load().await;
-    let creds_provider = aws_conf
-        .credentials_provider()
-        .ok_or_else(|| anyhow!("No AWS credentials provider found; ensure AWS_PROFILE/SSO is set"))?;
+    let creds_provider = aws_conf.credentials_provider().ok_or_else(|| {
+        anyhow!("No AWS credentials provider found; ensure AWS_PROFILE/SSO is set")
+    })?;
     let creds = creds_provider
         .provide_credentials()
         .await
@@ -186,7 +204,11 @@ pub async fn build_s3_client_async(cfg: S3Config) -> Result<S3Client> {
     let virtual_hosted = cfg
         .virtual_hosted
         .or_else(|| env_flag("S3_VIRTUAL_HOSTED"))
-        .unwrap_or_else(|| endpoint.as_ref().map_or(true, |ep| ep.contains("amazonaws.com")));
+        .unwrap_or_else(|| {
+            endpoint
+                .as_ref()
+                .map_or(true, |ep| ep.contains("amazonaws.com"))
+        });
     let access_key_id = cfg
         .access_key_id
         .clone()
@@ -296,7 +318,11 @@ pub fn build_adls_client(cfg: AdlsConfig) -> Result<AdlsClient> {
         .with_account(&cfg.account)
         .with_container_name(&cfg.container)
         .with_allow_http(allow_http);
-    if let Some(ep) = cfg.endpoint.clone().or_else(|| std::env::var("AZURE_ENDPOINT").ok()) {
+    if let Some(ep) = cfg
+        .endpoint
+        .clone()
+        .or_else(|| std::env::var("AZURE_ENDPOINT").ok())
+    {
         builder = builder.with_endpoint(ep);
     }
     if let Some(access_key) = cfg
@@ -396,7 +422,11 @@ impl UploadBufferPool {
                 buffer.clear();
                 return buffer;
             }
-            guard = self.inner.available.wait(guard).expect("upload buffer pool wait");
+            guard = self
+                .inner
+                .available
+                .wait(guard)
+                .expect("upload buffer pool wait");
         }
     }
 
@@ -541,7 +571,8 @@ impl Write for MultipartUploadWriter {
         while offset < buf.len() {
             let remaining = self.part_size - self.buffer.len();
             let to_write = remaining.min(buf.len() - offset);
-            self.buffer.extend_from_slice(&buf[offset..offset + to_write]);
+            self.buffer
+                .extend_from_slice(&buf[offset..offset + to_write]);
             offset += to_write;
             self.position += to_write as u64;
             if self.buffer.len() == self.part_size {

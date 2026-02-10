@@ -5,27 +5,27 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
+use diskgraph_core::metadata::DatasetMetadata;
+use diskgraph_core::sampling::*;
+use diskgraph_engine::engine::DiskGraphEngine;
+use diskgraph_engine::output::InMemoryOutput;
+use diskgraph_engine::state::StatePool;
+use hdrhistogram::Histogram;
+use rand::Rng;
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout},
     widgets::{Block, Borders, Paragraph},
     Terminal,
 };
+use std::fs;
 use std::path::PathBuf;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
 };
 use std::time::{Duration, Instant};
-use hdrhistogram::Histogram;
-use rand::Rng;
 use sysinfo::System;
-use diskgraph_core::sampling::*;
-use diskgraph_engine::engine::DiskGraphEngine;
-use diskgraph_engine::state::StatePool;
-use diskgraph_engine::output::InMemoryOutput;
-use diskgraph_core::metadata::DatasetMetadata;
-use std::fs;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -69,10 +69,13 @@ struct AppStats {
     validation_failures: u64,
 }
 
-fn load_graph(path: &PathBuf) -> Result<(DiskGraphEngine, DatasetMetadata)> {
+fn load_graph(path: &std::path::Path) -> Result<(DiskGraphEngine, DatasetMetadata)> {
     let index_path = path.join("index_metadata.json");
     if !index_path.exists() {
-        return Err(anyhow!("Metadata not found at {:?}. Run ingestion first.", index_path));
+        return Err(anyhow!(
+            "Metadata not found at {:?}. Run ingestion first.",
+            index_path
+        ));
     }
     let metadata_bytes = fs::read(&index_path)?;
     let metadata: DatasetMetadata = serde_json::from_slice(&metadata_bytes)?;
@@ -120,7 +123,12 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-async fn run_app<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, args: Args, sampler: Arc<DiskGraphEngine>, metadata: DatasetMetadata) -> Result<AppStats> {
+async fn run_app<B: ratatui::backend::Backend>(
+    terminal: &mut Terminal<B>,
+    args: Args,
+    sampler: Arc<DiskGraphEngine>,
+    metadata: DatasetMetadata,
+) -> Result<AppStats> {
     let running = Arc::new(AtomicBool::new(true));
     let stats = Arc::new(Mutex::new(AppStats {
         requests_completed: 0,
@@ -136,9 +144,15 @@ async fn run_app<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, args:
     let mut handles = Vec::new();
 
     let seed_type = args.seed_type.clone().unwrap_or_else(|| {
-        metadata.node_types.first().map(|n| n.name.clone()).unwrap_or_default()
+        metadata
+            .node_types
+            .first()
+            .map(|n| n.name.clone())
+            .unwrap_or_default()
     });
-    let max_seed_id = metadata.node_types.iter()
+    let max_seed_id = metadata
+        .node_types
+        .iter()
         .find(|n| n.name == seed_type)
         .map(|n| n.max_id)
         .unwrap_or(0);
@@ -157,7 +171,9 @@ async fn run_app<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, args:
         handles.push(tokio::task::spawn_blocking(move || {
             let mut rng = rand::thread_rng();
             while running.load(Ordering::Relaxed) {
-                let seeds: Vec<u64> = (0..args.batch_size).map(|_| rng.gen_range(0..=max_seed_id)).collect();
+                let seeds: Vec<u64> = (0..args.batch_size)
+                    .map(|_| rng.gen_range(0..=max_seed_id))
+                    .collect();
 
                 let request = BatchSamplingRequest {
                     dataset_id: diskgraph_core::dataset::DatasetId::nil(),
@@ -165,7 +181,11 @@ async fn run_app<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, args:
                     seed_timestamps: None,
                     plan: plan.clone(),
                     flags: SamplingFlags {
-                        replace: false, directed: true, disjoint: true, return_edge_id: false, adaptive: false,
+                        replace: false,
+                        directed: true,
+                        disjoint: true,
+                        return_edge_id: false,
+                        adaptive: false,
                     },
                 };
 
@@ -173,28 +193,25 @@ async fn run_app<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, args:
                 let mut state = pool.acquire();
                 let mut output = InMemoryOutput::new();
 
-                match sampler.sample(&request, &mut state, &mut output) {
-                    Ok(_) => {
-                        let duration = start.elapsed().as_micros() as u64;
-                        let nodes_count = state.stats.total_nodes;
-                        let edges_count = state.stats.total_edges;
+                if sampler.sample(&request, &mut state, &mut output).is_ok() {
+                    let duration = start.elapsed().as_micros() as u64;
+                    let nodes_count = state.stats.total_nodes;
+                    let edges_count = state.stats.total_edges;
 
-                        let mut v_failures = 0;
-                        if do_validate {
-                            // Validation needs to inspect output now
-                            if let Err(_e) = validate_sample(&output, &state) {
-                                v_failures = 1;
-                            }
+                    let mut v_failures = 0;
+                    if do_validate {
+                        // Validation needs to inspect output now
+                        if let Err(_e) = validate_sample(&output, &state) {
+                            v_failures = 1;
                         }
-
-                        let mut s = stats.lock().unwrap();
-                        s.requests_completed += 1;
-                        s.nodes_sampled += nodes_count;
-                        s.edges_sampled += edges_count;
-                        s.validation_failures += v_failures;
-                        s.latency_hist.record(duration).ok();
                     }
-                    Err(_) => {}
+
+                    let mut s = stats.lock().unwrap();
+                    s.requests_completed += 1;
+                    s.nodes_sampled += nodes_count;
+                    s.edges_sampled += edges_count;
+                    s.validation_failures += v_failures;
+                    s.latency_hist.record(duration).ok();
                 }
             }
         }));
@@ -206,7 +223,10 @@ async fn run_app<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, args:
     loop {
         // Update memory usage
         sys.refresh_process(pid);
-        let mem = sys.process(pid).map(|p: &sysinfo::Process| p.memory()).unwrap_or(0);
+        let mem = sys
+            .process(pid)
+            .map(|p: &sysinfo::Process| p.memory())
+            .unwrap_or(0);
         {
             let mut s = stats.lock().unwrap();
             s.memory_bytes = mem;
@@ -228,17 +248,38 @@ async fn run_app<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, args:
                 .split(f.size());
 
             let text = vec![
-                ratatui::text::Line::from(format!("Requests: {} | Throughput: {:.2} req/s", s.requests_completed, req_rate)),
-                ratatui::text::Line::from(format!("Nodes: {} | Throughput: {:.2} nodes/s", s.nodes_sampled, node_rate)),
-                ratatui::text::Line::from(format!("Edges: {} | Throughput: {:.2} edges/s", s.edges_sampled, edge_rate)),
+                ratatui::text::Line::from(format!(
+                    "Requests: {} | Throughput: {:.2} req/s",
+                    s.requests_completed, req_rate
+                )),
+                ratatui::text::Line::from(format!(
+                    "Nodes: {} | Throughput: {:.2} nodes/s",
+                    s.nodes_sampled, node_rate
+                )),
+                ratatui::text::Line::from(format!(
+                    "Edges: {} | Throughput: {:.2} edges/s",
+                    s.edges_sampled, edge_rate
+                )),
                 ratatui::text::Line::from(format!("Latency (us): P50={} P99={}", p50, p99)),
-                ratatui::text::Line::from(format!("Memory Usage: {:.2} MB", s.memory_bytes as f64 / 1024.0 / 1024.0)),
-                ratatui::text::Line::from(format!("Validation Failures: {}", s.validation_failures)),
-                ratatui::text::Line::from(format!("Seed Type: {} | Max ID: {}", seed_type, max_seed_id)),
+                ratatui::text::Line::from(format!(
+                    "Memory Usage: {:.2} MB",
+                    s.memory_bytes as f64 / 1024.0 / 1024.0
+                )),
+                ratatui::text::Line::from(format!(
+                    "Validation Failures: {}",
+                    s.validation_failures
+                )),
+                ratatui::text::Line::from(format!(
+                    "Seed Type: {} | Max ID: {}",
+                    seed_type, max_seed_id
+                )),
             ];
 
-            let p = Paragraph::new(text)
-                .block(Block::default().title("Sampler TUI - Real-time Performance & Correctness").borders(Borders::ALL));
+            let p = Paragraph::new(text).block(
+                Block::default()
+                    .title("Sampler TUI - Real-time Performance & Correctness")
+                    .borders(Borders::ALL),
+            );
             f.render_widget(p, chunks[0]);
         })?;
 
@@ -268,22 +309,27 @@ async fn run_app<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, args:
     })
 }
 
-fn validate_sample(output: &diskgraph_engine::output::InMemoryOutput, state: &diskgraph_engine::state::SamplingState) -> Result<()> {
+fn validate_sample(
+    output: &diskgraph_engine::output::InMemoryOutput,
+    state: &diskgraph_engine::state::SamplingState,
+) -> Result<()> {
     // Basic structural validation
     for (_hop, _rel, src_local, dst_local) in &output.edges {
         // Check if src/dst local IDs are within range of total nodes
         if *src_local as u64 >= state.stats.total_nodes {
-             return Err(anyhow!("src_local_id out of range"));
+            return Err(anyhow!("src_local_id out of range"));
         }
         if *dst_local as u64 >= state.stats.total_nodes {
-             return Err(anyhow!("dst_local_id out of range"));
+            return Err(anyhow!("dst_local_id out of range"));
         }
     }
     Ok(())
 }
 
 fn make_plan(args: &Args, meta: &DatasetMetadata, seed_type: &str) -> SamplingPlan {
-    let candidates: Vec<&str> = meta.edge_relations.iter()
+    let candidates: Vec<&str> = meta
+        .edge_relations
+        .iter()
         .filter(|r| r.name.starts_with(seed_type))
         .map(|r| r.name.as_str())
         .collect();
@@ -299,8 +345,10 @@ fn make_plan(args: &Args, meta: &DatasetMetadata, seed_type: &str) -> SamplingPl
                     fanout: args.fanout,
                     mode: SamplingMode::TemporalMostRecent,
                     absent_key_policy: diskgraph_core::sampling::AbsentKeyPolicy::UniformFallback,
-                }
-            )].into_iter().collect(),
+                },
+            )]
+            .into_iter()
+            .collect(),
             default_fanout: None,
         });
     }

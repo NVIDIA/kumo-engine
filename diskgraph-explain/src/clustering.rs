@@ -40,7 +40,10 @@ impl ClusterStats {
     }
 
     pub fn add_feature(&mut self, feature: &str, value: f64) {
-        let entry = self.feature_sums.entry(feature.to_string()).or_insert((0.0, 0));
+        let entry = self
+            .feature_sums
+            .entry(feature.to_string())
+            .or_insert((0.0, 0));
         entry.0 += value;
         entry.1 += 1;
     }
@@ -94,7 +97,6 @@ impl ClusterStats {
             0.0
         }
     }
-
 }
 
 /// Run K-means clustering on embeddings
@@ -177,14 +179,23 @@ pub fn find_archetype_samples(
 
     // Group entities by cluster with their distances
     let mut cluster_entities: Vec<Vec<(usize, f32)>> = vec![Vec::new(); k];
-    for (idx, (&cluster, &dist)) in clustering.assignments.iter().zip(clustering.distances.iter()).enumerate() {
+    for (idx, (&cluster, &dist)) in clustering
+        .assignments
+        .iter()
+        .zip(clustering.distances.iter())
+        .enumerate()
+    {
         cluster_entities[cluster].push((idx, dist));
     }
 
     // Sort each cluster by distance and take top N
     for (cluster_id, entities) in cluster_entities.iter_mut().enumerate() {
         entities.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-        result[cluster_id] = entities.iter().take(n_per_cluster).map(|(idx, _)| *idx).collect();
+        result[cluster_id] = entities
+            .iter()
+            .take(n_per_cluster)
+            .map(|(idx, _)| *idx)
+            .collect();
     }
 
     result
@@ -207,7 +218,11 @@ fn initialize_centroids(embeddings: &[Vec<f32>], k: usize) -> Vec<Vec<f32>> {
     let mut indices: Vec<usize> = (0..embeddings.len()).collect();
     indices.shuffle(&mut rng);
 
-    indices.iter().take(k).map(|&i| embeddings[i].clone()).collect()
+    indices
+        .iter()
+        .take(k)
+        .map(|&i| embeddings[i].clone())
+        .collect()
 }
 
 /// Find nearest centroid to a vector
@@ -388,7 +403,11 @@ mod tests {
         assert_eq!(result.cluster_stats.len(), 2);
 
         // One cluster should have low predictions, one should have high
-        let means: Vec<f64> = result.cluster_stats.iter().map(|s| s.mean_prediction()).collect();
+        let means: Vec<f64> = result
+            .cluster_stats
+            .iter()
+            .map(|s| s.mean_prediction())
+            .collect();
         assert!(means[0] < 0.5 || means[1] < 0.5);
         assert!(means[0] > 0.5 || means[1] > 0.5);
     }

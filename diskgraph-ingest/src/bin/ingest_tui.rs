@@ -9,19 +9,23 @@ use crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyModifiers,
     MouseButton, MouseEvent, MouseEventKind,
 };
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
+use crossterm::terminal::{
+    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+};
 use crossterm::ExecutableCommand;
+use futures::stream;
+use futures::{pin_mut, StreamExt};
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Direction, Layout, Rect, Position};
+use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState, Wrap, List, ListItem, ListState};
+use ratatui::widgets::{
+    Block, Borders, Cell, Clear, List, ListItem, ListState, Paragraph, Row, Table, TableState, Wrap,
+};
 use ratatui::Terminal;
 use serde::Deserialize;
 use tokio::runtime::Runtime;
-use futures::{pin_mut, StreamExt};
-use futures::stream;
- 
+
 use object_store::{GetResult, ObjectStoreExt};
 
 use diskgraph_ingest::io::{build_store_for_cloud_path, parse_az_url, parse_gs_url, parse_s3_url};
@@ -268,8 +272,7 @@ fn resolve_stats_root(args: &Args) -> Result<String> {
     {
         return Ok("gs://kumo-unit-test/diskgraph-profiles".to_string());
     }
-    if std::env::var("AZURE_TENANT_ID").is_ok() || std::env::var("AZURE_STORAGE_ACCOUNT").is_ok()
-    {
+    if std::env::var("AZURE_TENANT_ID").is_ok() || std::env::var("AZURE_STORAGE_ACCOUNT").is_ok() {
         let account = std::env::var("AZURE_STORAGE_ACCOUNT")
             .or_else(|_| std::env::var("AZURE_ACCOUNT"))
             .unwrap_or_else(|_| "account".to_string());
@@ -278,7 +281,9 @@ fn resolve_stats_root(args: &Args) -> Result<String> {
             .unwrap_or_else(|_| "container".to_string());
         return Ok(format!("az://{account}/{container}/diskgraph-profiles"));
     }
-    Err(anyhow!("stats root not specified; set DISKGRAPH_STATS_DEST"))
+    Err(anyhow!(
+        "stats root not specified; set DISKGRAPH_STATS_DEST"
+    ))
 }
 
 fn stats_root_from_imds() -> Option<String> {
@@ -317,11 +322,12 @@ fn fetch_aws_instance_type() -> Option<String> {
 }
 
 fn fetch_gcp_instance_type() -> Option<String> {
-    let resp = ureq::get("http://metadata.google.internal/computeMetadata/v1/instance/machine-type")
-        .timeout(Duration::from_millis(800))
-        .set("Metadata-Flavor", "Google")
-        .call()
-        .ok()?;
+    let resp =
+        ureq::get("http://metadata.google.internal/computeMetadata/v1/instance/machine-type")
+            .timeout(Duration::from_millis(800))
+            .set("Metadata-Flavor", "Google")
+            .call()
+            .ok()?;
     let raw = resp.into_string().ok()?;
     Some(
         raw.trim()
@@ -333,11 +339,12 @@ fn fetch_gcp_instance_type() -> Option<String> {
 }
 
 fn fetch_azure_instance_type() -> Option<String> {
-    let resp = ureq::get("http://169.254.169.254/metadata/instance/compute/vmSize?api-version=2021-02-01")
-        .timeout(Duration::from_millis(800))
-        .set("Metadata", "true")
-        .call()
-        .ok()?;
+    let resp =
+        ureq::get("http://169.254.169.254/metadata/instance/compute/vmSize?api-version=2021-02-01")
+            .timeout(Duration::from_millis(800))
+            .set("Metadata", "true")
+            .call()
+            .ok()?;
     resp.into_string().ok().map(|s| s.trim().to_string())
 }
 
@@ -556,8 +563,15 @@ fn handle_mouse(
         x: mouse.column,
         y: mouse.row,
     };
-    if matches!(mouse.kind, MouseEventKind::ScrollDown | MouseEventKind::ScrollUp) {
-        let delta = if mouse.kind == MouseEventKind::ScrollDown { 1 } else { -1 };
+    if matches!(
+        mouse.kind,
+        MouseEventKind::ScrollDown | MouseEventKind::ScrollUp
+    ) {
+        let delta = if mouse.kind == MouseEventKind::ScrollDown {
+            1
+        } else {
+            -1
+        };
         if app.dataset_rect.contains(pos) {
             move_dataset_selection(delta, store, app, args)?;
             return Ok(());
@@ -645,7 +659,12 @@ fn table_index_from_click(rect: Rect, y: u16, len: usize, offset: usize) -> Opti
         None
     }
 }
-fn handle_key_normal(key: KeyEvent, store: &StatsStore, args: &Args, app: &mut AppState) -> Result<bool> {
+fn handle_key_normal(
+    key: KeyEvent,
+    store: &StatsStore,
+    args: &Args,
+    app: &mut AppState,
+) -> Result<bool> {
     match key.code {
         KeyCode::Char('q') => return Ok(false),
         KeyCode::Char('p') => {
@@ -674,28 +693,40 @@ fn handle_key_normal(key: KeyEvent, store: &StatsStore, args: &Args, app: &mut A
     Ok(true)
 }
 
-fn move_instance_selection(delta: isize, _store: &StatsStore, app: &mut AppState, _args: &Args) -> Result<()> {
+fn move_instance_selection(
+    delta: isize,
+    _store: &StatsStore,
+    app: &mut AppState,
+    _args: &Args,
+) -> Result<()> {
     if app.instances.is_empty() {
         return Ok(());
     }
-    let current = app
-        .instance_state
-        .selected()
-        .unwrap_or(if delta >= 0 { 0 } else { app.instances.len().saturating_sub(1) }) as isize;
+    let current = app.instance_state.selected().unwrap_or(if delta >= 0 {
+        0
+    } else {
+        app.instances.len().saturating_sub(1)
+    }) as isize;
     let next = (current + delta).clamp(0, (app.instances.len() - 1) as isize) as usize;
     app.instance_state.select(Some(next));
     schedule_instance_reload(app);
     Ok(())
 }
 
-fn move_dataset_selection(delta: isize, _store: &StatsStore, app: &mut AppState, _args: &Args) -> Result<()> {
+fn move_dataset_selection(
+    delta: isize,
+    _store: &StatsStore,
+    app: &mut AppState,
+    _args: &Args,
+) -> Result<()> {
     if app.datasets.is_empty() {
         return Ok(());
     }
-    let current = app
-        .dataset_state
-        .selected()
-        .unwrap_or(if delta >= 0 { 0 } else { app.datasets.len().saturating_sub(1) }) as isize;
+    let current = app.dataset_state.selected().unwrap_or(if delta >= 0 {
+        0
+    } else {
+        app.datasets.len().saturating_sub(1)
+    }) as isize;
     let next = (current + delta).clamp(0, (app.datasets.len() - 1) as isize) as usize;
     if app.dataset_state.selected() == Some(next) {
         return Ok(());
@@ -709,10 +740,11 @@ fn move_run_selection(delta: isize, app: &mut AppState) {
     if app.runs.is_empty() {
         return;
     }
-    let current = app
-        .run_state
-        .selected()
-        .unwrap_or(if delta >= 0 { 0 } else { app.runs.len().saturating_sub(1) }) as isize;
+    let current = app.run_state.selected().unwrap_or(if delta >= 0 {
+        0
+    } else {
+        app.runs.len().saturating_sub(1)
+    }) as isize;
     let next = (current + delta).clamp(0, (app.runs.len() - 1) as isize) as usize;
     app.run_state.select(Some(next));
 }
@@ -731,7 +763,11 @@ fn reload_for_dataset(store: &StatsStore, app: &mut AppState, args: &Args) -> Re
         }
     };
     app.instances = store.list_instances(&dataset)?;
-    app.instance_state.select(if app.instances.is_empty() { None } else { Some(0) });
+    app.instance_state.select(if app.instances.is_empty() {
+        None
+    } else {
+        Some(0)
+    });
     *app.instance_state.offset_mut() = 0;
     load_runs_for_selected(store, app, args)?;
     app.loaded_dataset_index = app.dataset_state.selected();
@@ -769,7 +805,8 @@ fn load_runs_for_selected(store: &StatsStore, app: &mut AppState, args: &Args) -
             regression: RegressionInfo,
         })
         .collect();
-    app.run_state.select(if app.runs.is_empty() { None } else { Some(0) });
+    app.run_state
+        .select(if app.runs.is_empty() { None } else { Some(0) });
     *app.run_state.offset_mut() = 0;
     app.loaded_instance_index = app.instance_state.selected();
     if let Some(idx) = app.instance_state.selected() {
@@ -869,26 +906,46 @@ fn show_profile_top(store: &StatsStore, app: &mut AppState, top_profiles: usize)
 }
 
 fn selected_run(app: &AppState) -> Result<&RunSummary> {
-    let idx = app.run_state.selected().ok_or_else(|| anyhow!("no run selected"))?;
-    let run = app.runs.get(idx).ok_or_else(|| anyhow!("no run selected"))?;
+    let idx = app
+        .run_state
+        .selected()
+        .ok_or_else(|| anyhow!("no run selected"))?;
+    let run = app
+        .runs
+        .get(idx)
+        .ok_or_else(|| anyhow!("no run selected"))?;
     Ok(&run.summary)
 }
 
-
 fn profile_cache_dir(dataset: &str, run_id: &str) -> Result<PathBuf> {
     let base = dirs::cache_dir().ok_or_else(|| anyhow!("cache dir not available"))?;
-    Ok(base.join("diskgraph-profiles").join(dataset).join(run_id).join("profiles"))
+    Ok(base
+        .join("diskgraph-profiles")
+        .join(dataset)
+        .join(run_id)
+        .join("profiles"))
 }
 
 fn draw(frame: &mut ratatui::Frame, app: &mut AppState) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Min(0), Constraint::Length(1)].as_ref())
+        .constraints(
+            [
+                Constraint::Length(1),
+                Constraint::Min(0),
+                Constraint::Length(1),
+            ]
+            .as_ref(),
+        )
         .split(frame.size());
     let body = chunks[1];
     let columns = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(20), Constraint::Percentage(45), Constraint::Percentage(35)])
+        .constraints([
+            Constraint::Percentage(20),
+            Constraint::Percentage(45),
+            Constraint::Percentage(35),
+        ])
         .split(body);
     let left_stack = Layout::default()
         .direction(Direction::Vertical)
@@ -919,7 +976,9 @@ fn draw_header(frame: &mut ratatui::Frame, area: Rect, app: &AppState) {
     let text = Line::from(vec![
         Span::styled(
             format!("Diskgraph Ingest Perf Explorer — {}", dataset),
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         ),
         Span::raw("   "),
         Span::styled(app.status.clone(), Style::default().fg(Color::Yellow)),
@@ -934,9 +993,10 @@ fn draw_footer(frame: &mut ratatui::Frame, area: Rect, app: &AppState) {
         Mode::Help => "press any key to return",
         Mode::ProfileView => "h/l: tabs  j/k: runs  esc/q: back",
     };
-    let widget = Paragraph::new(Line::from(vec![
-        Span::styled(hint, Style::default().fg(Color::Gray)),
-    ]));
+    let widget = Paragraph::new(Line::from(vec![Span::styled(
+        hint,
+        Style::default().fg(Color::Gray),
+    )]));
     frame.render_widget(widget, area);
 }
 
@@ -944,9 +1004,7 @@ fn draw_instances(frame: &mut ratatui::Frame, area: Rect, app: &mut AppState) {
     let items: Vec<ListItem> = app
         .instances
         .iter()
-        .map(|d| {
-            ListItem::new(d.name.clone())
-        })
+        .map(|d| ListItem::new(d.name.clone()))
         .collect();
     let list = List::new(items)
         .block(Block::default().borders(Borders::ALL).title("Instances"))
@@ -977,7 +1035,9 @@ fn draw_datasets(frame: &mut ratatui::Frame, area: Rect, app: &mut AppState) {
 }
 
 fn draw_runs(frame: &mut ratatui::Frame, area: Rect, app: &mut AppState) {
-    let header_style = Style::default().fg(Color::White).add_modifier(Modifier::BOLD);
+    let header_style = Style::default()
+        .fg(Color::White)
+        .add_modifier(Modifier::BOLD);
     let rows = app.runs.iter().map(|entry| {
         let run = &entry.summary;
         let (wall_text, wall_style) = colorize_cell(
@@ -1025,7 +1085,14 @@ fn draw_runs(frame: &mut ratatui::Frame, area: Rect, app: &mut AppState) {
         };
         Row::new(vec![
             Cell::from(shorten(&date_only(&run.finished_at), 10)),
-            Cell::from(run.git_sha.clone().unwrap_or_else(|| "-".to_string()).chars().take(8).collect::<String>()),
+            Cell::from(
+                run.git_sha
+                    .clone()
+                    .unwrap_or_else(|| "-".to_string())
+                    .chars()
+                    .take(8)
+                    .collect::<String>(),
+            ),
             Cell::from(wall_text).style(wall_style),
             Cell::from(context_text).style(context_style),
             Cell::from(encode_text).style(encode_style),
@@ -1075,12 +1142,23 @@ fn draw_details(frame: &mut ratatui::Frame, area: Rect, app: &mut AppState) {
     let run = app.run_state.selected().and_then(|idx| app.runs.get(idx));
     let lines = if let Some(run) = run {
         let r = &run.summary;
-        let label_style = Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD);
+        let label_style = Style::default()
+            .fg(Color::Magenta)
+            .add_modifier(Modifier::BOLD);
         let value_style = Style::default().fg(Color::White);
-        let stage_style = Style::default().fg(Color::LightBlue).add_modifier(Modifier::BOLD);
-        let peak_style = Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD);
+        let stage_style = Style::default()
+            .fg(Color::LightBlue)
+            .add_modifier(Modifier::BOLD);
+        let peak_style = Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD);
         vec![
-            Line::from(vec![Span::styled("Details", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))]),
+            Line::from(vec![Span::styled(
+                "Details",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )]),
             Line::from(vec![
                 Span::styled("dataset: ", label_style),
                 Span::styled(r.dataset.clone(), value_style),
@@ -1095,27 +1173,45 @@ fn draw_details(frame: &mut ratatui::Frame, area: Rect, app: &mut AppState) {
             ]),
             Line::from(vec![
                 Span::styled("git: ", label_style),
-                Span::styled(format!(
-                    "{} {}",
-                    r.git_branch.clone().unwrap_or_else(|| "-".to_string()),
-                    r.git_sha.clone().unwrap_or_else(|| "-".to_string())
-                ), value_style),
+                Span::styled(
+                    format!(
+                        "{} {}",
+                        r.git_branch.clone().unwrap_or_else(|| "-".to_string()),
+                        r.git_sha.clone().unwrap_or_else(|| "-".to_string())
+                    ),
+                    value_style,
+                ),
             ]),
             Line::from(vec![
                 Span::styled("instance: ", label_style),
-                Span::styled(r.instance_type.clone().unwrap_or_else(|| "n/a".to_string()), value_style),
+                Span::styled(
+                    r.instance_type.clone().unwrap_or_else(|| "n/a".to_string()),
+                    value_style,
+                ),
             ]),
             Line::from(vec![
                 Span::styled("cpu: ", label_style),
-                Span::styled(format!(
-                    "{} logical, {} physical",
-                    r.cpu_logical.map(|v| v.to_string()).unwrap_or_else(|| "-".to_string()),
-                    r.cpu_physical.map(|v| v.to_string()).unwrap_or_else(|| "-".to_string())
-                ), value_style),
+                Span::styled(
+                    format!(
+                        "{} logical, {} physical",
+                        r.cpu_logical
+                            .map(|v| v.to_string())
+                            .unwrap_or_else(|| "-".to_string()),
+                        r.cpu_physical
+                            .map(|v| v.to_string())
+                            .unwrap_or_else(|| "-".to_string())
+                    ),
+                    value_style,
+                ),
             ]),
             Line::from(vec![
                 Span::styled("shards: ", label_style),
-                Span::styled(r.num_shards.map(|v| v.to_string()).unwrap_or_else(|| "-".to_string()), value_style),
+                Span::styled(
+                    r.num_shards
+                        .map(|v| v.to_string())
+                        .unwrap_or_else(|| "-".to_string()),
+                    value_style,
+                ),
             ]),
             Line::from(vec![
                 Span::styled("mem: ", label_style),
@@ -1127,7 +1223,10 @@ fn draw_details(frame: &mut ratatui::Frame, area: Rect, app: &mut AppState) {
             ]),
             Line::from(vec![
                 Span::styled("throughput: ", label_style),
-                Span::styled(format!("{}/s", format_bytes(r.throughput_bytes_per_sec)), value_style),
+                Span::styled(
+                    format!("{}/s", format_bytes(r.throughput_bytes_per_sec)),
+                    value_style,
+                ),
             ]),
             Line::from(vec![
                 Span::styled("wall: ", label_style),
@@ -1159,7 +1258,7 @@ fn draw_details(frame: &mut ratatui::Frame, area: Rect, app: &mut AppState) {
                         format_bytes_opt(r.peak_rss_anon_bytes),
                         mem_pct_of_total(r.peak_rss_anon_bytes, r.memory_bytes_total)
                     ),
-                    value_style
+                    value_style,
                 ),
             ]),
             Line::from(vec![
@@ -1172,19 +1271,35 @@ fn draw_details(frame: &mut ratatui::Frame, area: Rect, app: &mut AppState) {
             ]),
             Line::from(vec![
                 Span::styled("  edges_map ", peak_style),
-                Span::styled(format_bytes_opt(r.peak_edges_map_rss_anon_bytes), value_style),
+                Span::styled(
+                    format_bytes_opt(r.peak_edges_map_rss_anon_bytes),
+                    value_style,
+                ),
                 Span::styled("  index ", peak_style),
                 Span::styled(format_bytes_opt(r.peak_index_rss_anon_bytes), value_style),
                 Span::styled("  finalize ", peak_style),
-                Span::styled(format_bytes_opt(r.peak_finalize_rss_anon_bytes), value_style),
+                Span::styled(
+                    format_bytes_opt(r.peak_finalize_rss_anon_bytes),
+                    value_style,
+                ),
             ]),
             Line::from(vec![
                 Span::styled("profiles: ", label_style),
-                Span::styled(if r.profiles_present { "yes".to_string() } else { "no".to_string() }, value_style),
+                Span::styled(
+                    if r.profiles_present {
+                        "yes".to_string()
+                    } else {
+                        "no".to_string()
+                    },
+                    value_style,
+                ),
             ]),
         ]
     } else {
-        vec![Line::from(Span::styled("No run selected", Style::default().fg(Color::DarkGray)))]
+        vec![Line::from(Span::styled(
+            "No run selected",
+            Style::default().fg(Color::DarkGray),
+        ))]
     };
     let widget = Paragraph::new(lines)
         .block(Block::default().borders(Borders::ALL).title("Details"))
@@ -1216,7 +1331,9 @@ fn draw_profile_view(frame: &mut ratatui::Frame, app: &AppState) {
     let mut header = Vec::new();
     for (idx, tab) in app.profile_tabs.iter().enumerate() {
         let style = if idx == app.profile_tab_index {
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(Color::Gray)
         };
@@ -1231,7 +1348,11 @@ fn draw_profile_view(frame: &mut ratatui::Frame, app: &AppState) {
         text.extend(tab.lines.iter().map(|l| Line::from(l.as_str())));
     }
     let widget = Paragraph::new(text)
-        .block(Block::default().borders(Borders::ALL).title("Profile Top 10"))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Profile Top 10"),
+        )
         .wrap(Wrap { trim: false });
     frame.render_widget(widget, area);
 }
@@ -1276,7 +1397,10 @@ fn colorize_cell(text: String, current_ms: u64, baseline_ms: Option<u64>) -> (St
     } else {
         Color::Red
     };
-    (text, Style::default().fg(color).add_modifier(Modifier::BOLD))
+    (
+        text,
+        Style::default().fg(color).add_modifier(Modifier::BOLD),
+    )
 }
 
 fn format_bytes(bytes: u64) -> String {
@@ -1564,13 +1688,7 @@ fn refresh_runs_for_selected(store: &StatsStore, app: &mut AppState, args: &Args
     } else {
         None
     };
-    let next_selected = next_selected.or_else(|| {
-        if app.runs.is_empty() {
-            None
-        } else {
-            Some(0)
-        }
-    });
+    let next_selected = next_selected.or(if app.runs.is_empty() { None } else { Some(0) });
     app.run_state.select(next_selected);
     if let Some(idx) = app.instance_state.selected() {
         if let Some(entry) = app.instances.get_mut(idx) {
@@ -1608,7 +1726,11 @@ fn join_prefix(prefix: &str, suffix: &str) -> String {
     if prefix.is_empty() {
         suffix.trim_start_matches('/').to_string()
     } else {
-        format!("{}/{}", prefix.trim_end_matches('/'), suffix.trim_start_matches('/'))
+        format!(
+            "{}/{}",
+            prefix.trim_end_matches('/'),
+            suffix.trim_start_matches('/')
+        )
     }
 }
 

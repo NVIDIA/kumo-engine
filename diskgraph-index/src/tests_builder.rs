@@ -145,17 +145,17 @@ fn count_len_correctness() {
 #[test]
 fn write_len_le_correctness() {
     let mut buf = Vec::new();
-    
+
     // 2 bytes
     buf.clear();
     write_len_le(&mut buf, 0x1234, 2).unwrap();
     assert_eq!(buf, vec![0x34, 0x12]);
-    
+
     // 3 bytes
     buf.clear();
     write_len_le(&mut buf, 0x123456, 3).unwrap();
     assert_eq!(buf, vec![0x56, 0x34, 0x12]);
-    
+
     // 4 bytes
     buf.clear();
     write_len_le(&mut buf, 0x12345678, 4).unwrap();
@@ -164,7 +164,7 @@ fn write_len_le_correctness() {
     // Overflow check 2 bytes
     buf.clear();
     assert!(write_len_le(&mut buf, 0x10000, 2).is_err());
-    
+
     // Overflow check 3 bytes
     buf.clear();
     assert!(write_len_le(&mut buf, 0x1000000, 3).is_err());
@@ -174,10 +174,10 @@ fn write_len_le_correctness() {
 fn delta_encode_offsets_into_correctness() {
     let mut buf = Vec::new();
     let offsets = vec![100, 105, 120, 122];
-    
+
     // Base 100
     // Deltas: 105-100=5, 120-105=15, 122-120=2
-    
+
     // Test with 2-byte deltas
     buf.clear();
     delta_encode_offsets_into(&offsets, &mut buf, 2).unwrap();
@@ -185,14 +185,14 @@ fn delta_encode_offsets_into_correctness() {
     // count = 4
     // base = 100
     // deltas = 5, 15, 2
-    
+
     let mut expected = Vec::new();
     expected.extend_from_slice(&4u16.to_le_bytes());
     expected.extend_from_slice(&100u64.to_le_bytes());
     expected.extend_from_slice(&5u16.to_le_bytes());
     expected.extend_from_slice(&15u16.to_le_bytes());
     expected.extend_from_slice(&2u16.to_le_bytes());
-    
+
     assert_eq!(buf, expected);
 
     // Test with empty

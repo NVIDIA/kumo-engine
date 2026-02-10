@@ -1,9 +1,12 @@
 use anyhow::Result;
-use arrow_array::{Array, ArrayRef, Float32Array, Int64Array, ListArray, RecordBatch, StringArray, TimestampSecondArray};
+use arrow_array::{
+    Array, ArrayRef, Float32Array, Int64Array, ListArray, RecordBatch, StringArray,
+    TimestampSecondArray,
+};
 use arrow_buffer::OffsetBuffer;
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
-use diskgraph_explain::ExplainConfig;
 use diskgraph_explain::run;
+use diskgraph_explain::ExplainConfig;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::arrow::ArrowWriter;
 use parquet::file::properties::WriterProperties;
@@ -107,7 +110,11 @@ fn write_input(path: &PathBuf) -> Result<()> {
         Field::new("id", DataType::Utf8, false),
         Field::new("timestamp", DataType::Int64, false),
         Field::new("prediction", DataType::Float32, false),
-        Field::new("embedding", DataType::List(Arc::new(Field::new("item", DataType::Float32, false))), false),
+        Field::new(
+            "embedding",
+            DataType::List(Arc::new(Field::new("item", DataType::Float32, false))),
+            false,
+        ),
     ]));
     let batch = RecordBatch::try_new(
         schema.clone(),
@@ -191,7 +198,12 @@ fn e2e_explain_with_graph_features() -> Result<()> {
     write_input(&input)?;
 
     let options = diskgraph_ingest::IngestOptions::default();
-    diskgraph_ingest::ingest(&config_path, index_path.to_str().unwrap(), diskgraph_ingest::Dest::Local, options)?;
+    diskgraph_ingest::ingest(
+        &config_path,
+        index_path.to_str().unwrap(),
+        diskgraph_ingest::Dest::Local,
+        options,
+    )?;
 
     let config: ExplainConfig = serde_json::from_value(serde_json::json!({
         "input_parquet": input,

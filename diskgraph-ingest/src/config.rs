@@ -1,7 +1,7 @@
+use crate::progress::ProgressCallback;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
-use crate::progress::ProgressCallback;
 
 pub const PEAK_MEM_STAGE_COUNT: usize = 6;
 
@@ -11,12 +11,20 @@ pub struct PeakMemStats {
     stage_max: Vec<AtomicU64>,
 }
 
+impl Default for PeakMemStats {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PeakMemStats {
     pub fn new() -> Self {
         Self {
             stage_index: AtomicUsize::new(usize::MAX),
             overall_max: AtomicU64::new(0),
-            stage_max: (0..PEAK_MEM_STAGE_COUNT).map(|_| AtomicU64::new(0)).collect(),
+            stage_max: (0..PEAK_MEM_STAGE_COUNT)
+                .map(|_| AtomicU64::new(0))
+                .collect(),
         }
     }
 

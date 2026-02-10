@@ -1,6 +1,6 @@
 use diskgraph_ingest::graph_config::{
-    ColumnSpec, DataSource, DirectionSpec, EdgeTableSpec, FKeySpec,
-    ForeignKeySpec, IngestedType, GraphConfig, TableSpec, TimeSpec, WeightSpec,
+    ColumnSpec, DataSource, DirectionSpec, EdgeTableSpec, FKeySpec, ForeignKeySpec, GraphConfig,
+    IngestedType, TableSpec, TimeSpec, WeightSpec,
 };
 
 fn base_table(name: &str) -> TableSpec {
@@ -34,7 +34,9 @@ fn base_table(name: &str) -> TableSpec {
         weight: None,
         edge_table: None,
         rowpack: None,
-        source: DataSource::Parquet { paths: vec!["/tmp/table.parquet".into()] },
+        source: DataSource::Parquet {
+            paths: vec!["/tmp/table.parquet".into()],
+        },
         fkeys: Vec::new(),
     }
 }
@@ -96,7 +98,9 @@ fn validate_missing_pk_column() {
             weight: None,
             edge_table: None,
             rowpack: None,
-            source: DataSource::Parquet { paths: vec!["/tmp/user.parquet".into()] },
+            source: DataSource::Parquet {
+                paths: vec!["/tmp/user.parquet".into()],
+            },
             fkeys: Vec::new(),
         }],
         rowpack: None,
@@ -318,7 +322,9 @@ fn validate_edge_fk_missing_column() {
             reverse: None,
         }),
         rowpack: None,
-        source: DataSource::Parquet { paths: vec!["/tmp/edge.parquet".into()] },
+        source: DataSource::Parquet {
+            paths: vec!["/tmp/edge.parquet".into()],
+        },
         fkeys: Vec::new(),
     });
     assert_err_contains(meta, "edge fk column dst_id not found");
@@ -368,7 +374,9 @@ fn validate_edge_fk_missing_table() {
             reverse: None,
         }),
         rowpack: None,
-        source: DataSource::Parquet { paths: vec!["/tmp/edge.parquet".into()] },
+        source: DataSource::Parquet {
+            paths: vec!["/tmp/edge.parquet".into()],
+        },
         fkeys: Vec::new(),
     });
     assert_err_contains(meta, "edge table Edge references missing table Missing");
@@ -419,7 +427,9 @@ fn validate_edge_fk_ref_table_no_pk() {
             reverse: None,
         }),
         rowpack: None,
-        source: DataSource::Parquet { paths: vec!["/tmp/edge.parquet".into()] },
+        source: DataSource::Parquet {
+            paths: vec!["/tmp/edge.parquet".into()],
+        },
         fkeys: Vec::new(),
     });
     assert_err_contains(meta, "references Device which has no primary key");
@@ -471,7 +481,9 @@ fn validate_edge_fk_int_string_ok() {
             reverse: None,
         }),
         rowpack: None,
-        source: DataSource::Parquet { paths: vec!["/tmp/edge.parquet".into()] },
+        source: DataSource::Parquet {
+            paths: vec!["/tmp/edge.parquet".into()],
+        },
         fkeys: Vec::new(),
     });
     assert!(meta.validate().is_ok());
@@ -521,7 +533,9 @@ fn validate_edge_fk_string_int_ok() {
             reverse: None,
         }),
         rowpack: None,
-        source: DataSource::Parquet { paths: vec!["/tmp/edge.parquet".into()] },
+        source: DataSource::Parquet {
+            paths: vec!["/tmp/edge.parquet".into()],
+        },
         fkeys: Vec::new(),
     });
     assert!(meta.validate().is_ok());
@@ -579,7 +593,9 @@ fn validate_edge_fk_string_bytes_ok() {
             reverse: None,
         }),
         rowpack: None,
-        source: DataSource::Parquet { paths: vec!["/tmp/edge.parquet".into()] },
+        source: DataSource::Parquet {
+            paths: vec!["/tmp/edge.parquet".into()],
+        },
         fkeys: Vec::new(),
     });
     assert!(meta.validate().is_ok());
@@ -637,7 +653,9 @@ fn validate_edge_fk_string_bytes_len_mismatch() {
             reverse: None,
         }),
         rowpack: None,
-        source: DataSource::Parquet { paths: vec!["/tmp/edge.parquet".into()] },
+        source: DataSource::Parquet {
+            paths: vec!["/tmp/edge.parquet".into()],
+        },
         fkeys: Vec::new(),
     });
     assert!(meta.validate().is_ok());
@@ -678,7 +696,9 @@ fn validate_edge_fk_uuid_ok() {
             reverse: None,
         }),
         rowpack: None,
-        source: DataSource::Parquet { paths: vec!["/tmp/edge.parquet".into()] },
+        source: DataSource::Parquet {
+            paths: vec!["/tmp/edge.parquet".into()],
+        },
         fkeys: Vec::new(),
     });
     assert!(meta.validate().is_ok());
@@ -719,7 +739,9 @@ fn validate_edge_fk_uuid_mismatch() {
             reverse: None,
         }),
         rowpack: None,
-        source: DataSource::Parquet { paths: vec!["/tmp/edge.parquet".into()] },
+        source: DataSource::Parquet {
+            paths: vec!["/tmp/edge.parquet".into()],
+        },
         fkeys: Vec::new(),
     });
     assert_err_contains(meta, "incompatible types");
@@ -1134,7 +1156,9 @@ mod new_schema_types {
             weight: None,
             edge_table: None,
             rowpack: None,
-            source: DataSource::Parquet { paths: vec!["s3://bucket/data/".into(), "/local/path/".into()] },
+            source: DataSource::Parquet {
+                paths: vec!["s3://bucket/data/".into(), "/local/path/".into()],
+            },
             fkeys: vec![FKeySpec {
                 src_column: "user_id".into(),
                 dst_table: "users".into(),
@@ -1158,7 +1182,9 @@ mod new_schema_types {
             weight: None,
             edge_table: None,
             rowpack: None,
-            source: DataSource::Parquet { paths: vec!["/data/subs.parquet".into()] },
+            source: DataSource::Parquet {
+                paths: vec!["/data/subs.parquet".into()],
+            },
             fkeys: Vec::new(),
         };
         let json = serde_json::to_string(&table).unwrap();
@@ -1316,5 +1342,4 @@ mod new_schema_types {
         let parsed: FKeySpec = serde_json::from_str(&json).unwrap();
         assert_eq!(original, parsed);
     }
-
 }

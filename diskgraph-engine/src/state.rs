@@ -1,8 +1,8 @@
+use gxhash::{HashMap as GxHashMap, HashMapExt};
 use parking_lot::Mutex;
 use std::sync::Arc;
-use gxhash::{HashMap as GxHashMap, HashMapExt};
 
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 /// Aggregated statistics for the sampling request.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -110,6 +110,12 @@ pub struct TypeState {
     pub next_frontier: Vec<NodeRecord>,
 }
 
+impl Default for TypeState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TypeState {
     pub fn new() -> Self {
         Self {
@@ -189,16 +195,21 @@ impl SamplingState {
     }
     /// Access or create the state for a specific node type.
     pub fn get_type_state_mut(&mut self, node_type_id: usize) -> &mut TypeState {
-        self.type_states
-            .entry(node_type_id)
-            .or_insert_with(TypeState::new)
+        self.type_states.entry(node_type_id).or_default()
     }
 }
 
 /// A thread-safe pool of SamplingState objects.
 #[derive(Clone)]
+#[allow(clippy::vec_box)]
 pub struct StatePool {
     pool: Arc<Mutex<Vec<Box<SamplingState>>>>,
+}
+
+impl Default for StatePool {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl StatePool {
@@ -267,8 +278,18 @@ mod tests {
 
             // Push some data to grow capacity
             ts.nodes.reserve(1000);
-            ts.nodes.push(NodeRecord { global_id: 1, seed_index: 0, local_id: 0 });
-            ts.index_map.insert(LookupKey { seed_index: 0, global_id: 1 }, 0);
+            ts.nodes.push(NodeRecord {
+                global_id: 1,
+                seed_index: 0,
+                local_id: 0,
+            });
+            ts.index_map.insert(
+                LookupKey {
+                    seed_index: 0,
+                    global_id: 1,
+                },
+                0,
+            );
 
             assert!(ts.nodes.capacity() >= 1000);
             assert_eq!(ts.nodes.len(), 1);

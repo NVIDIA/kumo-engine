@@ -1,9 +1,9 @@
 use anyhow::{anyhow, bail, Context, Result};
-use object_store::path::Path as ObjectPath;
-use object_store::ObjectMeta;
 use diskgraph_fs::{build_s3_client_async, CloudTransfer, CloudTransferConfig, S3Config};
 use futures_util::stream::{self, StreamExt, TryStreamExt};
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
+use object_store::path::Path as ObjectPath;
+use object_store::ObjectMeta;
 use std::collections::VecDeque;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
@@ -43,11 +43,17 @@ pub async fn download_job(job_spec: &str, options: DownloadOptions) -> Result<Pa
         .join(format!("{}_{}", customer_name, job_id));
 
     if !options.clean && out_dir.exists() {
-        println!("Using existing data at {} (skipping S3 check)", out_dir.display());
+        println!(
+            "Using existing data at {} (skipping S3 check)",
+            out_dir.display()
+        );
         return Ok(out_dir);
     }
 
-    let bucket = options.bucket.as_deref().unwrap_or_else(|| bucket_for_customer(&customer_name));
+    let bucket = options
+        .bucket
+        .as_deref()
+        .unwrap_or_else(|| bucket_for_customer(&customer_name));
     let customer_path = customer_for_paths(&customer_name);
     let s3 = build_s3_client_async(S3Config {
         bucket: bucket.to_string(),
@@ -156,7 +162,7 @@ pub async fn download_job(job_spec: &str, options: DownloadOptions) -> Result<Pa
 
         for obj in parquet_objects {
             let key = obj.location.to_string();
-            let size = obj.size as u64;
+            let size = obj.size;
             let relative = key
                 .strip_prefix(&raw_prefix_key)
                 .unwrap_or(&key)
@@ -192,14 +198,7 @@ pub async fn download_job(job_spec: &str, options: DownloadOptions) -> Result<Pa
         .try_for_each_concurrent(max_requests, |item| {
             let transfer = transfer_ref.clone();
             let progress = progress.clone();
-            async move {
-                download_path(
-                    item,
-                    transfer,
-                    &progress,
-                )
-                .await
-            }
+            async move { download_path(item, transfer, &progress).await }
         })
         .await?;
 
@@ -223,7 +222,10 @@ pub fn parse_job_spec(input: &str) -> Result<(String, String)> {
         if parts.len() == 2 {
             Ok((parts[0].to_string(), parts[1].to_string()))
         } else {
-            Err(anyhow!("invalid job spec '{}': expected 'customer job_id' or url", input))
+            Err(anyhow!(
+                "invalid job spec '{}': expected 'customer job_id' or url",
+                input
+            ))
         }
     }
 }
@@ -236,8 +238,8 @@ fn parse_job_url(input: &str) -> Result<(String, String)> {
         bail!("unable to parse customer from job_url");
     }
     let path = url.path();
-    let job_id = extract_job_id(path)
-        .ok_or_else(|| anyhow!("unable to parse job id from job_url"))?;
+    let job_id =
+        extract_job_id(path).ok_or_else(|| anyhow!("unable to parse job id from job_url"))?;
     Ok((customer, job_id))
 }
 
@@ -326,9 +328,7 @@ fn parse_table_metadata(input: &str) -> Result<TableMetadata> {
 }
 
 fn get_string(map: &serde_json::Value, key: &str) -> Result<String> {
-    let value = map
-        .get(key)
-        .ok_or_else(|| anyhow!("missing {}", key))?;
+    let value = map.get(key).ok_or_else(|| anyhow!("missing {}", key))?;
     match value {
         serde_json::Value::String(s) => Ok(s.clone()),
         serde_json::Value::Number(n) => Ok(n.to_string()),
@@ -364,10 +364,7 @@ fn is_not_found(err: &anyhow::Error) -> bool {
         .unwrap_or(false)
 }
 
-async fn list_parquet_objects(
-    transfer: &CloudTransfer,
-    prefix: &str,
-) -> Result<Vec<ObjectMeta>> {
+async fn list_parquet_objects(transfer: &CloudTransfer, prefix: &str) -> Result<Vec<ObjectMeta>> {
     let mut objects = Vec::new();
     let prefix = ObjectPath::from(prefix);
     for obj in transfer.list_objects(&prefix).await? {
@@ -399,7 +396,7 @@ async fn download_path(
         if meta.len() == size {
             progress.add_bytes(size);
             progress.add_file_done();
-            return Ok(())
+            return Ok(());
         }
     }
 

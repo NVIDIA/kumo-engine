@@ -54,7 +54,8 @@ impl<'a> EdgeUnpacker<'a> {
 
                 unsafe {
                     *dst_out.get_unchecked_mut(n) = (raw & self.dst_mask as u128) as u64;
-                    *key_out.get_unchecked_mut(n) = ((raw >> self.dst_bits) & self.sort_key_mask as u128) as u64;
+                    *key_out.get_unchecked_mut(n) =
+                        ((raw >> self.dst_bits) & self.sort_key_mask as u128) as u64;
 
                     self.ptr = self.ptr.add(self.entry_bytes);
                 }

@@ -47,7 +47,10 @@ pub fn convert_kumo_to_diskgraph(
 }
 
 /// Convert a single Kumo table to a DiskGraph TableSpec.
-fn convert_table(kumo_table: &KumoTable, options: &ConvertOptions) -> Result<TableSpec, ConvertError> {
+fn convert_table(
+    kumo_table: &KumoTable,
+    options: &ConvertOptions,
+) -> Result<TableSpec, ConvertError> {
     // Build the S3 path
     let paths = build_table_paths(kumo_table, options)?;
 
@@ -74,7 +77,7 @@ fn convert_table(kumo_table: &KumoTable, options: &ConvertOptions) -> Result<Tab
         .time_col
         .as_ref()
         .and_then(|tc| tc.timestamp_unit.as_deref())
-        .map(|u| map_time_unit_for_spec(u))
+        .map(map_time_unit_for_spec)
         .unwrap_or_else(|| "s".to_string()); // Default to seconds
 
     // Detect if this should be an edge table
@@ -101,11 +104,18 @@ fn convert_table(kumo_table: &KumoTable, options: &ConvertOptions) -> Result<Tab
 }
 
 /// Build the S3 paths for a table using the fpv3 pattern.
-fn build_table_paths(kumo_table: &KumoTable, options: &ConvertOptions) -> Result<Vec<String>, ConvertError> {
-    let data_source = kumo_table.data_source.as_ref().ok_or_else(|| ConvertError::MissingField {
-        table: kumo_table.table_name.clone(),
-        field: "data_source".to_string(),
-    })?;
+fn build_table_paths(
+    kumo_table: &KumoTable,
+    options: &ConvertOptions,
+) -> Result<Vec<String>, ConvertError> {
+    let data_source =
+        kumo_table
+            .data_source
+            .as_ref()
+            .ok_or_else(|| ConvertError::MissingField {
+                table: kumo_table.table_name.clone(),
+                field: "data_source".to_string(),
+            })?;
 
     // source_name defaults to table_name if not specified
     let source_name = kumo_table
@@ -113,10 +123,14 @@ fn build_table_paths(kumo_table: &KumoTable, options: &ConvertOptions) -> Result
         .as_ref()
         .unwrap_or(&kumo_table.table_name);
 
-    let data_version = kumo_table.data_version.as_ref().ok_or_else(|| ConvertError::MissingField {
-        table: kumo_table.table_name.clone(),
-        field: "data_version".to_string(),
-    })?;
+    let data_version =
+        kumo_table
+            .data_version
+            .as_ref()
+            .ok_or_else(|| ConvertError::MissingField {
+                table: kumo_table.table_name.clone(),
+                field: "data_version".to_string(),
+            })?;
 
     // Build fpv3 path: {data_persist_dir}/ingest/fpv3.{data_source}.{source_name}/{data_version}/
     let base = options.data_persist_dir.trim_end_matches('/');
@@ -134,7 +148,10 @@ fn build_columns(kumo_table: &KumoTable) -> Result<Vec<ColumnSpec>, ConvertError
     let mut seen_names: HashSet<String> = HashSet::new();
 
     // Helper to add a column if not already seen
-    let mut add_column = |name: &str, dtype: Option<&str>, timestamp_unit: Option<&str>| -> Result<(), ConvertError> {
+    let mut add_column = |name: &str,
+                          dtype: Option<&str>,
+                          timestamp_unit: Option<&str>|
+     -> Result<(), ConvertError> {
         if seen_names.contains(name) {
             return Ok(());
         }
@@ -173,17 +190,29 @@ fn build_columns(kumo_table: &KumoTable) -> Result<Vec<ColumnSpec>, ConvertError
 
     // Add regular columns
     for col in &kumo_table.cols {
-        add_column(&col.name, col.dtype.as_deref(), col.timestamp_unit.as_deref())?;
+        add_column(
+            &col.name,
+            col.dtype.as_deref(),
+            col.timestamp_unit.as_deref(),
+        )?;
     }
 
     // Add time column
     if let Some(time_col) = &kumo_table.time_col {
-        add_column(&time_col.name, time_col.dtype.as_deref(), time_col.timestamp_unit.as_deref())?;
+        add_column(
+            &time_col.name,
+            time_col.dtype.as_deref(),
+            time_col.timestamp_unit.as_deref(),
+        )?;
     }
 
     // Add end time column
     if let Some(end_time_col) = &kumo_table.end_time_col {
-        add_column(&end_time_col.name, end_time_col.dtype.as_deref(), end_time_col.timestamp_unit.as_deref())?;
+        add_column(
+            &end_time_col.name,
+            end_time_col.dtype.as_deref(),
+            end_time_col.timestamp_unit.as_deref(),
+        )?;
     }
 
     Ok(columns)

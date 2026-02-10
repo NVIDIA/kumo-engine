@@ -63,7 +63,10 @@ fn main() -> Result<()> {
         encoded_slices.push(r.as_slice());
     }
 
-    println!("Data ready. Size: {:.2} MB", encoded_rows.iter().map(|v| v.len()).sum::<usize>() as f64 / 1024.0 / 1024.0);
+    println!(
+        "Data ready. Size: {:.2} MB",
+        encoded_rows.iter().map(|v| v.len()).sum::<usize>() as f64 / 1024.0 / 1024.0
+    );
 
     let decoder = RowPackDecoder::new(ctx.clone())?;
     let col_indices: Vec<usize> = (0..num_cols).collect();
@@ -90,7 +93,10 @@ fn main() -> Result<()> {
     let batch = decoder.decode_batch_to_arrow(&subset_slices, &col_indices)?;
     let duration_batched = start.elapsed();
     println!("Time: {:?}", duration_batched);
-    println!("Throughput: {:.2} rows/sec", subset_size as f64 / duration_batched.as_secs_f64());
+    println!(
+        "Throughput: {:.2} rows/sec",
+        subset_size as f64 / duration_batched.as_secs_f64()
+    );
 
     assert_eq!(batch.num_rows(), subset_size);
 
@@ -101,7 +107,9 @@ fn main() -> Result<()> {
         let b: Box<dyn ArrayBuilder> = match col.logical_type {
             IngestedType::Int64 => Box::new(Int64Builder::with_capacity(subset_size)),
             IngestedType::Float32 => Box::new(Float32Builder::with_capacity(subset_size)),
-            IngestedType::String => Box::new(StringBuilder::with_capacity(subset_size, subset_size*10)),
+            IngestedType::String => {
+                Box::new(StringBuilder::with_capacity(subset_size, subset_size * 10))
+            }
             IngestedType::Bool => Box::new(BooleanBuilder::with_capacity(subset_size)),
             _ => panic!("unsupported in bench"),
         };
@@ -112,14 +120,25 @@ fn main() -> Result<()> {
 
     let start = Instant::now();
     for slice in &subset_slices {
-        decoder.decode_row_to_builders(slice, &mut row_by_row_builders, &requested_mask, &mut row_by_row_scratch)?;
+        decoder.decode_row_to_builders(
+            slice,
+            &mut row_by_row_builders,
+            &requested_mask,
+            &mut row_by_row_scratch,
+        )?;
     }
     let duration_row_batched = start.elapsed();
     println!("Time: {:?}", duration_row_batched);
-    println!("Throughput: {:.2} rows/sec", subset_size as f64 / duration_row_batched.as_secs_f64());
+    println!(
+        "Throughput: {:.2} rows/sec",
+        subset_size as f64 / duration_row_batched.as_secs_f64()
+    );
 
     // Finish to ensure work is done
-    let _ = row_by_row_builders.into_iter().map(|mut b| b.finish()).collect::<Vec<_>>();
+    let _ = row_by_row_builders
+        .into_iter()
+        .map(|mut b| b.finish())
+        .collect::<Vec<_>>();
 
     // 4. Benchmark Single-Col (Baseline)
     println!("\n--- Benchmarking Single-Col Loop (No Batching) ---");
@@ -127,17 +146,29 @@ fn main() -> Result<()> {
     let _ = decode_single_col_loop(&decoder, &subset_slices, &columns)?;
     let duration_single = start.elapsed();
     println!("Time: {:?}", duration_single);
-    println!("Throughput: {:.2} rows/sec", subset_size as f64 / duration_single.as_secs_f64());
+    println!(
+        "Throughput: {:.2} rows/sec",
+        subset_size as f64 / duration_single.as_secs_f64()
+    );
 
     println!("\n--- Speedups ---");
-    println!("Fully Batched vs Single-Col: {:.2}x", duration_single.as_secs_f64() / duration_batched.as_secs_f64());
-    println!("Row-by-Row vs Single-Col:    {:.2}x", duration_single.as_secs_f64() / duration_row_batched.as_secs_f64());
-    println!("Fully Batched vs Row-by-Row: {:.2}x", duration_row_batched.as_secs_f64() / duration_batched.as_secs_f64());
+    println!(
+        "Fully Batched vs Single-Col: {:.2}x",
+        duration_single.as_secs_f64() / duration_batched.as_secs_f64()
+    );
+    println!(
+        "Row-by-Row vs Single-Col:    {:.2}x",
+        duration_single.as_secs_f64() / duration_row_batched.as_secs_f64()
+    );
+    println!(
+        "Fully Batched vs Row-by-Row: {:.2}x",
+        duration_row_batched.as_secs_f64() / duration_batched.as_secs_f64()
+    );
 
     Ok(())
 }
 
-fn generate_random_row<'a>(num_cols: usize, rng: &mut impl Rng) -> Vec<ValueRef<'static>> {
+fn generate_random_row(num_cols: usize, rng: &mut impl Rng) -> Vec<ValueRef<'static>> {
     let mut row = Vec::with_capacity(num_cols);
     for i in 0..num_cols {
         let val = match i % 4 {
@@ -164,10 +195,22 @@ fn decode_single_col_loop(
     // In reality, we'd use a helper to create them.
     for col in columns {
         let (dtype, b): (DataType, Box<dyn ArrayBuilder>) = match col.logical_type {
-            IngestedType::Int64 => (DataType::Int64, Box::new(Int64Builder::with_capacity(rows.len()))),
-            IngestedType::Float32 => (DataType::Float32, Box::new(Float32Builder::with_capacity(rows.len()))),
-            IngestedType::String => (DataType::Utf8, Box::new(StringBuilder::with_capacity(rows.len(), rows.len()*10))),
-            IngestedType::Bool => (DataType::Boolean, Box::new(BooleanBuilder::with_capacity(rows.len()))),
+            IngestedType::Int64 => (
+                DataType::Int64,
+                Box::new(Int64Builder::with_capacity(rows.len())),
+            ),
+            IngestedType::Float32 => (
+                DataType::Float32,
+                Box::new(Float32Builder::with_capacity(rows.len())),
+            ),
+            IngestedType::String => (
+                DataType::Utf8,
+                Box::new(StringBuilder::with_capacity(rows.len(), rows.len() * 10)),
+            ),
+            IngestedType::Bool => (
+                DataType::Boolean,
+                Box::new(BooleanBuilder::with_capacity(rows.len())),
+            ),
             _ => panic!("unsupported in bench"),
         };
         builders.push(b);
@@ -181,16 +224,37 @@ fn decode_single_col_loop(
             let val = decoder.decode_column_value(row, i, &mut scratch)?;
             // Append
             match val {
-                ValueRef::Int64(v) => builder.as_any_mut().downcast_mut::<Int64Builder>().unwrap().append_value(v),
-                ValueRef::Float32(v) => builder.as_any_mut().downcast_mut::<Float32Builder>().unwrap().append_value(v),
-                ValueRef::String(v) => builder.as_any_mut().downcast_mut::<StringBuilder>().unwrap().append_value(v),
-                ValueRef::Bool(v) => builder.as_any_mut().downcast_mut::<BooleanBuilder>().unwrap().append_value(v),
+                ValueRef::Int64(v) => builder
+                    .as_any_mut()
+                    .downcast_mut::<Int64Builder>()
+                    .unwrap()
+                    .append_value(v),
+                ValueRef::Float32(v) => builder
+                    .as_any_mut()
+                    .downcast_mut::<Float32Builder>()
+                    .unwrap()
+                    .append_value(v),
+                ValueRef::String(v) => builder
+                    .as_any_mut()
+                    .downcast_mut::<StringBuilder>()
+                    .unwrap()
+                    .append_value(v),
+                ValueRef::Bool(v) => builder
+                    .as_any_mut()
+                    .downcast_mut::<BooleanBuilder>()
+                    .unwrap()
+                    .append_value(v),
                 ValueRef::Null => {
-                     // simplified null handling
-                     if let Some(b) = builder.as_any_mut().downcast_mut::<Int64Builder>() { b.append_null(); }
-                     else if let Some(b) = builder.as_any_mut().downcast_mut::<Float32Builder>() { b.append_null(); }
-                     else if let Some(b) = builder.as_any_mut().downcast_mut::<StringBuilder>() { b.append_null(); }
-                     else if let Some(b) = builder.as_any_mut().downcast_mut::<BooleanBuilder>() { b.append_null(); }
+                    // simplified null handling
+                    if let Some(b) = builder.as_any_mut().downcast_mut::<Int64Builder>() {
+                        b.append_null();
+                    } else if let Some(b) = builder.as_any_mut().downcast_mut::<Float32Builder>() {
+                        b.append_null();
+                    } else if let Some(b) = builder.as_any_mut().downcast_mut::<StringBuilder>() {
+                        b.append_null();
+                    } else if let Some(b) = builder.as_any_mut().downcast_mut::<BooleanBuilder>() {
+                        b.append_null();
+                    }
                 }
                 _ => panic!("unexpected type"),
             }
