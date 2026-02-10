@@ -153,6 +153,18 @@ impl OutputHandler for ArrowFlightOutput {
         Ok(())
     }
 
+    fn handle_schema(&mut self, schema: Arc<Schema>) -> Result<(), EngineError> {
+        let schema_flight_data = arrow_flight::SchemaAsIpc::new(&schema, &self.options).into();
+        self.sender.blocking_send(Ok(schema_flight_data))
+            .map_err(|_| EngineError::Output("channel closed".into()))?;
+        Ok(())
+    }
+
+    fn handle_feature_batch(&mut self, batch: RecordBatch) -> Result<(), EngineError> {
+        // Just send data (schema already sent)
+        self.send_batch(batch)
+    }
+
     fn finalize(&mut self, state: &SamplingState) -> Result<(), EngineError> {
         // 1. Flush remaining edges
         let rel_ids: Vec<u16> = self.edge_buffers.keys().cloned().collect();

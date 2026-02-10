@@ -11,7 +11,6 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph},
     Terminal,
 };
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -22,7 +21,6 @@ use hdrhistogram::Histogram;
 use rand::Rng;
 use sysinfo::System;
 use diskgraph_core::sampling::*;
-use diskgraph_index::reader::ShardReader;
 use diskgraph_engine::engine::DiskGraphEngine;
 use diskgraph_engine::state::StatePool;
 use diskgraph_engine::output::InMemoryOutput;
@@ -208,7 +206,7 @@ async fn run_app<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, args:
     loop {
         // Update memory usage
         sys.refresh_process(pid);
-        let mem = sys.process(pid).map(|p| p.memory()).unwrap_or(0);
+        let mem = sys.process(pid).map(|p: &sysinfo::Process| p.memory()).unwrap_or(0);
         {
             let mut s = stats.lock().unwrap();
             s.memory_bytes = mem;

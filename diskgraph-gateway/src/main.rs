@@ -2,7 +2,6 @@ use clap::Parser;
 use diskgraph_gateway::SamplerGateway;
 use diskgraph_engine::engine::DiskGraphEngine;
 use diskgraph_engine::state::StatePool;
-use arrow_flight::flight_service_server::FlightServiceServer;
 use tonic::transport::Server;
 use std::sync::Arc;
 use std::path::PathBuf;

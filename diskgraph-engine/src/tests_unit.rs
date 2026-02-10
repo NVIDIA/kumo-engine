@@ -100,13 +100,18 @@ impl TestGraph {
 #[test]
 fn test_fetch_features() {
     let graph = TestGraph::new();
+    let mut output = MockOutput { edges: vec![], feature_batches: vec![], schema: None };
 
     // Fetch both features
-    let batch = graph.sampler.fetch_features_for_type(
+    graph.sampler.fetch_features_for_type(
         0, // User type ID
         &[0], // Node 0
-        &["feat_0".to_string(), "feat_1".to_string()]
+        &["feat_0".to_string(), "feat_1".to_string()],
+        &mut output
     ).unwrap();
+
+    assert_eq!(output.feature_batches.len(), 1);
+    let batch = &output.feature_batches[0];
 
     assert_eq!(batch.num_rows(), 1);
     assert_eq!(batch.num_columns(), 2);
@@ -118,18 +123,33 @@ fn test_fetch_features() {
     assert_eq!(col1.value(0), 3.14);
 
     // Test wildcard select all
-    let batch_all = graph.sampler.fetch_features_for_type(0, &[0], &[]).unwrap();
+    let mut output_all = MockOutput { edges: vec![], feature_batches: vec![], schema: None };
+    graph.sampler.fetch_features_for_type(0, &[0], &[], &mut output_all).unwrap();
+    let batch_all = &output_all.feature_batches[0];
     assert_eq!(batch_all.num_columns(), 2);
 }
 
 struct MockOutput {
     edges: Vec<(usize, u16, u32, u32)>,
+    feature_batches: Vec<arrow_array::RecordBatch>,
+    schema: Option<arrow_schema::SchemaRef>,
 }
 impl OutputHandler for MockOutput {
     fn handle_edge(&mut self, hop: usize, rel_id: u16, src: u32, dst: u32) -> crate::errors::Result<()> {
         self.edges.push((hop, rel_id, src, dst));
         Ok(())
     }
+
+    fn handle_schema(&mut self, schema: arrow_schema::SchemaRef) -> crate::errors::Result<()> {
+        self.schema = Some(schema);
+        Ok(())
+    }
+
+    fn handle_feature_batch(&mut self, batch: arrow_array::RecordBatch) -> crate::errors::Result<()> {
+        self.feature_batches.push(batch);
+        Ok(())
+    }
+
     fn finalize(&mut self, _state: &SamplingState) -> crate::errors::Result<()> { Ok(()) }
 }
 
@@ -137,7 +157,7 @@ impl OutputHandler for MockOutput {
 fn test_basic_sampling() {
     let graph = TestGraph::new();
     let mut state = crate::state::StatePool::new().acquire();
-    let mut output = MockOutput { edges: vec![] };
+    let mut output = MockOutput { edges: vec![], feature_batches: vec![], schema: None };
 
     let plan = SamplingPlan {
         layers: vec![

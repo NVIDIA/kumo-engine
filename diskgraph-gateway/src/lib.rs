@@ -170,43 +170,31 @@ impl SamplerGateway {
 
     async fn handle_features(&self, req: BatchFeatureRequest) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
         let sampler = Arc::clone(&self.sampler);
+        let (tx, rx) = mpsc::channel(100);
 
-        // We will stream one RecordBatch per Node Type.
-        // Or if large, multiple batches per type.
-        // For now, fetch_features_for_type returns one large batch.
+        tokio::task::spawn_blocking(move || {
+            let mut output = ArrowFlightOutput::new(tx.clone());
 
-        let mut streams = Vec::new();
+            for feature_req in req.batch {
+                let feature_names = feature_req.feature_names;
 
-        // Iterate over requested node types
-        for (node_type_name, node_ids) in req.nodes {
-            let sampler = sampler.clone();
-            let feature_names = req.features.get(&node_type_name).cloned().unwrap_or_default();
+                // Resolve Node Type ID
+                let node_type_id = match sampler.node_type_to_id.get(&feature_req.node_type) {
+                    Some(&id) => id,
+                    None => {
+                        let _ = tx.blocking_send(Err(Status::invalid_argument(format!("Unknown node type: {}", feature_req.node_type))));
+                        return;
+                    }
+                };
 
-            // Resolve Node Type ID
-            let node_type_id = *sampler.node_type_to_id.get(&node_type_name)
-                .ok_or_else(|| Status::invalid_argument(format!("Unknown node type: {}", node_type_name)))?;
+                if let Err(e) = sampler.fetch_features_for_type(node_type_id, &feature_req.node_ids, &feature_names, &mut output) {
+                     let _ = tx.blocking_send(Err(Status::internal(e.to_string())));
+                     return;
+                }
+            }
+        });
 
-            // Spawn blocking task for this type
-            let batch_result = tokio::task::spawn_blocking(move || {
-                sampler.fetch_features_for_type(node_type_id, &node_ids, &feature_names)
-            }).await.map_err(|e| Status::internal(e.to_string()))?;
-
-            let batch = batch_result.map_err(|e| Status::internal(e.to_string()))?;
-
-            // Encode batch
-            let options = IpcWriteOptions::default();
-            let generator = arrow_ipc::writer::IpcDataGenerator::default();
-            let mut tracker = arrow_ipc::writer::DictionaryTracker::new(false);
-
-            let schema_flight_data = arrow_flight::SchemaAsIpc::new(&batch.schema(), &options).into();
-            let (_, encoded_batch) = generator.encoded_batch(&batch, &mut tracker, &options)
-                .map_err(|e| Status::internal(e.to_string()))?;
-
-            streams.push(Ok(schema_flight_data));
-            streams.push(Ok(encoded_batch.into()));
-        }
-
-        let stream = futures::stream::iter(streams);
-        Ok(Response::new(Box::pin(stream)))
+        let output_stream = tokio_stream::wrappers::ReceiverStream::new(rx);
+        Ok(Response::new(Box::pin(output_stream)))
     }
 }

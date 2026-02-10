@@ -1,10 +1,9 @@
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use diskgraph_core::sampling::*;
 use diskgraph_engine::engine::DiskGraphEngine;
 use diskgraph_engine::state::StatePool;
 use diskgraph_engine::output::InMemoryOutput;
 use diskgraph_core::metadata::DatasetMetadata;
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 use std::path::PathBuf;

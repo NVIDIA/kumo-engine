@@ -7,7 +7,7 @@ use diskgraph_rowpack::{RowPackContextBuilder, RowPackConfig, RowPackColumn, Ing
 use arrow_flight::{Ticket, flight_service_server::FlightService};
 use std::sync::Arc;
 use std::collections::HashMap;
-use std::fs::{self, File};
+use std::fs::File;
 use std::io::Write;
 use tokio_stream::StreamExt;
 use tempfile::TempDir;
@@ -131,8 +131,13 @@ async fn test_feature_fetching_flow() {
 
     let req_json = r#"{
         "dataset_id": "00000000-0000-0000-0000-000000000000",
-        "nodes": { "users": [0] },
-        "features": { "users": ["feat_0"] }
+        "batch": [
+            {
+                "node_type": "users",
+                "node_ids": [0],
+                "feature_names": ["feat_0"]
+            }
+        ]
     }"#;
 
     let ticket = Ticket { ticket: req_json.into() };

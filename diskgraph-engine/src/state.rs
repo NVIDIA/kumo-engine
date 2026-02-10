@@ -137,10 +137,6 @@ impl TypeState {
             self.index_map.shrink_to(threshold);
         }
     }
-
-    fn reset(&mut self) {
-        self.adaptive_reset(usize::MAX);
-    }
 }
 
 /// Metadata recorded for every sampled edge.

@@ -207,18 +207,35 @@ impl DiskGraphEngine {
         node_type_id: usize,
         node_ids: &[u64],
         feature_names: &[String],
-    ) -> Result<arrow_array::RecordBatch> {
+        output: &mut impl OutputHandler,
+    ) -> Result<()> {
+        if node_ids.is_empty() { return Ok(()); }
+
         let decoder = self.node_decoders.get(node_type_id)
             .and_then(|d| d.as_ref())
             .ok_or_else(|| EngineError::InvalidRequest(format!("no feature data for node type {}", node_type_id)))?;
 
-        // 1. Resolve Column Indices
+        // 1. Resolve Column Indices & Send Schema
         let context = decoder.context();
         let mut col_indices = Vec::new();
-
-        // Wildcard support: if empty or contains "*", select all columns.
         let select_all = feature_names.is_empty() || feature_names.iter().any(|n| n == "*");
 
+        // Compute schema based on selection
+        // We need a dummy batch or just construct schema from context?
+        // Decoder has a method for schema? No.
+        // But `decode_batch_to_arrow` creates one.
+        // We can create a dummy empty batch to get schema? Or just construct it.
+        // Constructing it is cheaper.
+        // But for simplicity/correctness, let's create a dummy batch of 0 rows if we can.
+        // RowPackDecoder doesn't expose `schema()`.
+        // Let's defer schema sending to the first batch?
+        // But we want to avoid sending it EVERY time.
+
+        // Wait, if I call `output.handle_schema`, the OutputHandler implementation decides.
+        // `ArrowFlightOutput` in Gateway will be implemented to send it once.
+
+        // But I need the schema object here.
+        // I'll create a dummy batch of 0 rows.
         if select_all {
             col_indices = (0..context.columns.len()).collect();
         } else {
@@ -229,41 +246,86 @@ impl DiskGraphEngine {
             }
         }
 
-        // 2. Fetch Raw Rows
+        // Generate Schema
+        // We decode 0 rows to get the schema.
+        let dummy_batch = decoder.decode_batch_to_arrow(&[], &col_indices)
+             .map_err(|e| EngineError::Internal(format!("schema generation failed: {}", e)))?;
+        output.handle_schema(dummy_batch.schema())?;
+
+        // 2. Shard Access
         let shards = self.readers.get(node_type_id)
             .ok_or_else(|| EngineError::InvalidRequest("invalid node type id".to_string()))?;
 
-        let mut raw_rows: Vec<&[u8]> = Vec::with_capacity(node_ids.len());
+        // Optimization: Cache last shard index to avoid binary search for sorted/clustered IDs
+        let mut last_shard_idx = 0;
 
-        for &global_id in node_ids {
-            // Find shard
-            let shard_idx = shards.binary_search_by(|s| {
-                if global_id < s.min_id {
-                    std::cmp::Ordering::Greater
-                } else if global_id > s.max_id {
-                    std::cmp::Ordering::Less
+        // 3. Adaptive Batching Loop
+        // Start conservative to estimate size quickly without over-allocating
+        let mut batch_size = 128;
+        const TARGET_BYTES: usize = 64 * 1024 * 1024;
+        const MAX_BATCH_SIZE: usize = 64_000;
+
+        let mut ptr = 0;
+        while ptr < node_ids.len() {
+            let end = (ptr + batch_size).min(node_ids.len());
+            let chunk_ids = &node_ids[ptr..end];
+
+            let mut raw_rows = Vec::with_capacity(chunk_ids.len());
+            let mut chunk_bytes = 0;
+
+            for &global_id in chunk_ids {
+                // Shard Lookup with Cache
+                let shard = if global_id >= shards[last_shard_idx].min_id && global_id <= shards[last_shard_idx].max_id {
+                    &shards[last_shard_idx]
                 } else {
-                    std::cmp::Ordering::Equal
+                    // Fallback to search
+                    last_shard_idx = self.find_shard(shards, global_id)?;
+                    &shards[last_shard_idx]
+                };
+
+                let edges_view = shard.reader.edges_for_node(global_id - shard.min_id)
+                    .map_err(|e| EngineError::DataCorruption(e.to_string()))?;
+
+                let data = edges_view.node_data()
+                    .map_err(|e| EngineError::DataCorruption(e.to_string()))?
+                    .ok_or_else(|| EngineError::DataCorruption(format!("node {} has no feature data", global_id)))?;
+
+                chunk_bytes += data.len();
+                raw_rows.push(data);
+            }
+
+            // Decode & Send
+            let batch = decoder.decode_batch_to_arrow(&raw_rows, &col_indices)
+                .map_err(|e| EngineError::Internal(format!("decoding failed: {}", e)))?;
+
+            output.handle_feature_batch(batch)?;
+
+            // Adapt batch size for next iteration
+            // avg_bytes = chunk_bytes / count
+            // next_size = TARGET / avg_bytes
+            if chunk_bytes > 0 {
+                let avg_bytes = chunk_bytes / chunk_ids.len();
+                if avg_bytes > 0 {
+                    batch_size = (TARGET_BYTES / avg_bytes).clamp(1, MAX_BATCH_SIZE);
                 }
-            }).map_err(|_| EngineError::DataCorruption(format!("node id {} not found in any shard", global_id)))?;
+            }
 
-            let shard = &shards[shard_idx];
-            let local_idx = global_id - shard.min_id;
-            let edges_view = shard.reader.edges_for_node(local_idx)
-                .map_err(|e| EngineError::DataCorruption(e.to_string()))?;
-
-            let data = edges_view.node_data()
-                .map_err(|e| EngineError::DataCorruption(e.to_string()))?
-                .ok_or_else(|| EngineError::DataCorruption(format!("node {} has no feature data", global_id)))?;
-
-            raw_rows.push(data);
+            ptr = end;
         }
 
-        // 3. Decode
-        let batch = decoder.decode_batch_to_arrow(&raw_rows, &col_indices)
-            .map_err(|e| EngineError::Internal(format!("decoding failed: {}", e)))?;
+        Ok(())
+    }
 
-        Ok(batch)
+    fn find_shard(&self, shards: &[ShardHandle], global_id: u64) -> Result<usize> {
+        shards.binary_search_by(|s| {
+            if global_id < s.min_id {
+                std::cmp::Ordering::Greater
+            } else if global_id > s.max_id {
+                std::cmp::Ordering::Less
+            } else {
+                std::cmp::Ordering::Equal
+            }
+        }).map_err(|_| EngineError::DataCorruption(format!("node id {} not found in any shard", global_id)))
     }
 
     fn compile_plan(&self, plan: &diskgraph_core::sampling::SamplingPlan) -> Result<CompiledSamplingPlan> {

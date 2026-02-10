@@ -1,7 +1,5 @@
-
-
 use crate::state::SamplingState;
-use crate::errors::{Result, EngineError};
+use crate::errors::Result;
 
 /// Trait for handling the output stream of the sampler.
 pub trait OutputHandler {
@@ -14,6 +12,12 @@ pub trait OutputHandler {
         dst_local_id: u32,
     ) -> Result<()>;
 
+    /// Called before sending feature batches to define schema.
+    fn handle_schema(&mut self, schema: arrow_schema::SchemaRef) -> Result<()>;
+
+    /// Called when a batch of features is decoded.
+    fn handle_feature_batch(&mut self, batch: arrow_array::RecordBatch) -> Result<()>;
+
     /// Called at the end of sampling to flush nodes and stats.
     fn finalize(&mut self, state: &SamplingState) -> Result<()>;
 }
@@ -21,12 +25,16 @@ pub trait OutputHandler {
 /// A simple in-memory accumulator for testing/benchmarking.
 pub struct InMemoryOutput {
     pub edges: Vec<(usize, u16, u32, u32)>,        // (hop, rel, src, dst)
+    pub feature_batches: Vec<arrow_array::RecordBatch>,
+    pub schema: Option<arrow_schema::SchemaRef>,
 }
 
 impl InMemoryOutput {
     pub fn new() -> Self {
         Self {
             edges: Vec::new(),
+            feature_batches: Vec::new(),
+            schema: None,
         }
     }
 }
@@ -40,6 +48,16 @@ impl OutputHandler for InMemoryOutput {
         dst_local_id: u32,
     ) -> Result<()> {
         self.edges.push((hop, rel_id, src_local_id, dst_local_id));
+        Ok(())
+    }
+
+    fn handle_schema(&mut self, schema: arrow_schema::SchemaRef) -> Result<()> {
+        self.schema = Some(schema);
+        Ok(())
+    }
+
+    fn handle_feature_batch(&mut self, batch: arrow_array::RecordBatch) -> Result<()> {
+        self.feature_batches.push(batch);
         Ok(())
     }
 
