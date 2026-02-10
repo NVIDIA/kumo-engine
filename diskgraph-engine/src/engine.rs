@@ -202,7 +202,7 @@ impl DiskGraphEngine {
         }
     }
 
-    pub fn fetch_features(
+    pub fn fetch_features_for_type(
         &self,
         node_type_id: usize,
         node_ids: &[u64],
@@ -215,37 +215,25 @@ impl DiskGraphEngine {
         // 1. Resolve Column Indices
         let context = decoder.context();
         let mut col_indices = Vec::new();
-        for name in feature_names {
-            let idx = context.columns.iter().position(|c| &c.name == name)
-                .ok_or_else(|| EngineError::InvalidRequest(format!("unknown feature: {}", name)))?;
-            col_indices.push(idx);
+
+        // Wildcard support: if empty or contains "*", select all columns.
+        let select_all = feature_names.is_empty() || feature_names.iter().any(|n| n == "*");
+
+        if select_all {
+            col_indices = (0..context.columns.len()).collect();
+        } else {
+            for name in feature_names {
+                let idx = context.columns.iter().position(|c| &c.name == name)
+                    .ok_or_else(|| EngineError::InvalidRequest(format!("unknown feature: {}", name)))?;
+                col_indices.push(idx);
+            }
         }
 
         // 2. Fetch Raw Rows
-        // We reuse the logic from process_layer to group by shard for efficiency?
-        // Or since node_ids might be random, we just binary search.
-
         let shards = self.readers.get(node_type_id)
             .ok_or_else(|| EngineError::InvalidRequest("invalid node type id".to_string()))?;
 
-        // Pre-allocate pointers to raw data. The data itself is in mmap, so safe to hold slice refs.
-        // We need to keep the EdgeListViews alive? No, EdgeListView borrows from ShardReader (Arc).
-        // BUT `node_data()` returns `&'a [u8]`.
-        // The lifetime 'a is tied to EdgeListView.
-        // EdgeListView is created in the loop.
-        // We need to extend the lifetime?
-        // ShardReader is Arc. Mmap is owned by ShardReader.
-        // If we hold Arc<ShardReader>, we can get a slice that lives as long as Arc?
-        // `edges_for_node` returns `EdgeListView<'a>` where 'a is lifetime of &self (ShardReader).
-        // So we need to hold the ShardReaders alive. They are in `self.readers`.
-        // So `&self` lifetime is sufficient.
-
         let mut raw_rows: Vec<&[u8]> = Vec::with_capacity(node_ids.len());
-
-        // Optimize: Sort node_ids to access shards sequentially?
-        // Or just process them in order requested?
-        // RowPackDecoder expects rows in order they appear in output batch.
-        // So we MUST process `node_ids` in the order provided.
 
         for &global_id in node_ids {
             // Find shard

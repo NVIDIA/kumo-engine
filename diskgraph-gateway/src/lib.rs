@@ -12,7 +12,8 @@ use arrow_flight::{
 use arrow_ipc::writer::IpcWriteOptions;
 use diskgraph_engine::engine::DiskGraphEngine;
 use diskgraph_engine::state::StatePool;
-use diskgraph_core::sampling::{BatchSamplingRequest, BatchFeatureRequest};
+use diskgraph_core::sampling::BatchSamplingRequest;
+use diskgraph_core::features::BatchFeatureRequest;
 use tokio::sync::mpsc;
 
 mod handler;
@@ -170,30 +171,42 @@ impl SamplerGateway {
     async fn handle_features(&self, req: BatchFeatureRequest) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
         let sampler = Arc::clone(&self.sampler);
 
-        // Resolve Node Type ID
-        let node_type_id = *sampler.node_type_to_id.get(&req.node_type)
-            .ok_or_else(|| Status::invalid_argument(format!("Unknown node type: {}", req.node_type)))?;
+        // We will stream one RecordBatch per Node Type.
+        // Or if large, multiple batches per type.
+        // For now, fetch_features_for_type returns one large batch.
 
-        let batch_result = tokio::task::spawn_blocking(move || {
-            sampler.fetch_features(node_type_id, &req.node_ids, &req.feature_names)
-        }).await.map_err(|e| Status::internal(e.to_string()))?;
+        let mut streams = Vec::new();
 
-        let batch = batch_result.map_err(|e| Status::internal(e.to_string()))?;
+        // Iterate over requested node types
+        for (node_type_name, node_ids) in req.nodes {
+            let sampler = sampler.clone();
+            let feature_names = req.features.get(&node_type_name).cloned().unwrap_or_default();
 
-        // Stream the single batch
-        let options = IpcWriteOptions::default();
-        let generator = arrow_ipc::writer::IpcDataGenerator::default();
-        let mut tracker = arrow_ipc::writer::DictionaryTracker::new(false);
+            // Resolve Node Type ID
+            let node_type_id = *sampler.node_type_to_id.get(&node_type_name)
+                .ok_or_else(|| Status::invalid_argument(format!("Unknown node type: {}", node_type_name)))?;
 
-        let schema_flight_data = arrow_flight::SchemaAsIpc::new(&batch.schema(), &options).into();
-        let (_, encoded_batch) = generator.encoded_batch(&batch, &mut tracker, &options)
-            .map_err(|e| Status::internal(e.to_string()))?;
+            // Spawn blocking task for this type
+            let batch_result = tokio::task::spawn_blocking(move || {
+                sampler.fetch_features_for_type(node_type_id, &node_ids, &feature_names)
+            }).await.map_err(|e| Status::internal(e.to_string()))?;
 
-        let stream = futures::stream::iter(vec![
-            Ok(schema_flight_data),
-            Ok(encoded_batch.into()),
-        ]);
+            let batch = batch_result.map_err(|e| Status::internal(e.to_string()))?;
 
+            // Encode batch
+            let options = IpcWriteOptions::default();
+            let generator = arrow_ipc::writer::IpcDataGenerator::default();
+            let mut tracker = arrow_ipc::writer::DictionaryTracker::new(false);
+
+            let schema_flight_data = arrow_flight::SchemaAsIpc::new(&batch.schema(), &options).into();
+            let (_, encoded_batch) = generator.encoded_batch(&batch, &mut tracker, &options)
+                .map_err(|e| Status::internal(e.to_string()))?;
+
+            streams.push(Ok(schema_flight_data));
+            streams.push(Ok(encoded_batch.into()));
+        }
+
+        let stream = futures::stream::iter(streams);
         Ok(Response::new(Box::pin(stream)))
     }
 }

@@ -102,15 +102,6 @@ pub enum Weighting {
     CustomExpression { id: String },
 }
 
-/// A request to fetch dense features for a batch of nodes.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BatchFeatureRequest {
-    pub dataset_id: DatasetId,
-    pub node_type: String,
-    pub node_ids: Vec<u64>,
-    pub feature_names: Vec<String>,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

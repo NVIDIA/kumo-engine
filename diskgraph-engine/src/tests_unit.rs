@@ -11,9 +11,12 @@ use std::io::Write;
 use std::sync::Arc;
 use tempfile::TempDir;
 
+use diskgraph_rowpack::{RowPackContextBuilder, RowPackConfig, RowPackColumn, IngestedType, RowPackEncoder, RowPackScratch, ValueRef, RowPackDecoder};
+
 struct TestGraph {
     _dir: TempDir,
     sampler: DiskGraphEngine,
+    rowpack_ctx: diskgraph_rowpack::RowPackContext,
 }
 
 impl TestGraph {
@@ -21,7 +24,22 @@ impl TestGraph {
         let dir = TempDir::new().unwrap();
         let path = dir.path();
 
-        // layout: rel_id=0, dst_bits=8 (1 byte), no sort key, entry=1 byte
+        // 1. Setup RowPack Context & Data
+        let cols = vec![
+            RowPackColumn { name: "feat_0".into(), logical_type: IngestedType::Int64, fixed_len: None, precision: None, scale: None },
+            RowPackColumn { name: "feat_1".into(), logical_type: IngestedType::Float32, fixed_len: None, precision: None, scale: None },
+        ];
+        let mut ctx_builder = RowPackContextBuilder::new(cols.clone(), RowPackConfig::default());
+        let row_val = vec![ValueRef::Int64(42), ValueRef::Float32(3.14)];
+        ctx_builder.observe_row(&row_val).unwrap();
+        let ctx = ctx_builder.finish().unwrap();
+
+        let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
+        let mut scratch = RowPackScratch::new(&ctx);
+        let mut encoded_node_data = Vec::new();
+        encoder.encode_row_into(&row_val, &mut encoded_node_data, &mut scratch).unwrap();
+
+        // 2. Define Layout: RelID=0, Dst=1 byte
         let layout = RelationLayout {
             relation_id: 0,
             dst_bits: 8,
@@ -31,47 +49,77 @@ impl TestGraph {
             dest_sort_key_mask: None,
         };
 
-        // Create artifacts for 1 node with 2 edges
-        // Node 0 -> [1, 2]
-        // Edges: dst=1 (0x01), dst=2 (0x02)
+        // 3. Write Edges.bin (Count 2 + u16 Data Len + 2 Edges + Node Data)
         let mut f = File::create(path.join(EDGES_FILENAME)).unwrap();
-        // Node 0 edges: count=2 (0x02), data=[0x01, 0x02]
-        f.write_all(&[0x02, 0x01, 0x02]).unwrap();
-        
-        // Offsets:
-        // Header (32 bytes)
-        // Chunk 0 (count=2, base=0)
+        // Node 0: 2 edges (0x02)
+        f.write_all(&[0x02]).unwrap();
+        // Node data len (u16 LE)
+        f.write_all(&(encoded_node_data.len() as u16).to_le_bytes()).unwrap();
+        // Edges: dst=1, dst=2
+        f.write_all(&[0x01, 0x02]).unwrap();
+        f.write_all(&encoded_node_data).unwrap();
+
+        // 4. Write Offsets.bin
         let mut offsets = Vec::new();
+        // total_offsets = 2 (start of node 0, start of node 1/end of shard)
         let header = OffsetFileHeader::new(1, 2);
         let header_bytes = bincode::serialize(&header).unwrap();
         offsets.extend_from_slice(&header_bytes);
-        
-        // Chunk: count=2 (u16), base=0 (u64)
-        offsets.extend_from_slice(&2u16.to_le_bytes());
-        offsets.extend_from_slice(&0u64.to_le_bytes()); // Base offset = 0
-        
-        // Offset 1: delta=3 (relative to base) -> 3
-        offsets.extend_from_slice(&3u16.to_le_bytes()); 
+
+        offsets.extend_from_slice(&2u16.to_le_bytes()); // 2 offsets in this chunk
+        offsets.extend_from_slice(&0u64.to_le_bytes()); // offset[0] = 0
+        // offset[1] = 1 (count byte) + 2 (len bytes) + 2 (edge bytes) + data len
+        let end_offset = (1 + 2 + 2 + encoded_node_data.len()) as u16;
+        offsets.extend_from_slice(&end_offset.to_le_bytes());
 
         let mut f = File::create(path.join(OFFSETS_FILENAME)).unwrap();
         f.write_all(&offsets).unwrap();
 
-        let reader = ShardReader::open(path, Arc::new(vec![layout]), false).unwrap();
-        
+        // 5. Create Reader
+        let reader = ShardReader::open(path, Arc::new(vec![layout]), true).unwrap();
+
         let mut readers = HashMap::new();
         readers.insert("User".to_string(), vec![ShardHandle {
             reader: Arc::new(reader),
             min_id: 0,
-            max_id: 10,
+            max_id: 0,
         }]);
 
         let mut relation_info = HashMap::new();
         relation_info.insert(0, ("Connects".to_string(), "User".to_string()));
 
-        let sampler = DiskGraphEngine::new(readers, relation_info, HashMap::new(), HashMap::new());
-        
-        Self { _dir: dir, sampler }
+        let mut node_decoders = HashMap::new();
+        node_decoders.insert("User".to_string(), RowPackDecoder::new(ctx.clone()).unwrap());
+
+        let sampler = DiskGraphEngine::new(readers, relation_info, HashMap::new(), node_decoders);
+
+        Self { _dir: dir, sampler, rowpack_ctx: ctx }
     }
+}
+
+#[test]
+fn test_fetch_features() {
+    let graph = TestGraph::new();
+
+    // Fetch both features
+    let batch = graph.sampler.fetch_features_for_type(
+        0, // User type ID
+        &[0], // Node 0
+        &["feat_0".to_string(), "feat_1".to_string()]
+    ).unwrap();
+
+    assert_eq!(batch.num_rows(), 1);
+    assert_eq!(batch.num_columns(), 2);
+
+    let col0 = batch.column(0).as_any().downcast_ref::<arrow_array::Int64Array>().unwrap();
+    let col1 = batch.column(1).as_any().downcast_ref::<arrow_array::Float32Array>().unwrap();
+
+    assert_eq!(col0.value(0), 42);
+    assert_eq!(col1.value(0), 3.14);
+
+    // Test wildcard select all
+    let batch_all = graph.sampler.fetch_features_for_type(0, &[0], &[]).unwrap();
+    assert_eq!(batch_all.num_columns(), 2);
 }
 
 struct MockOutput {
@@ -116,5 +164,4 @@ fn test_basic_sampling() {
 
     assert_eq!(output.edges.len(), 2);
     // Node 0 (Local 0) -> 1 (Local 1) and 2 (Local 2)
-    // Order depends on reservoir/scan, but for small k, likely sequential if Uniform logic falls back to take-all.
 }
