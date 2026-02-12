@@ -20,8 +20,6 @@ pub struct ArrowFlightOutput {
     edge_builders: HashMap<u16, (UInt64Builder, UInt64Builder)>,
     // Map of node_type_id -> (Sender, Buffer)
     feature_senders: HashMap<usize, (FeatureSender, Vec<RecordBatch>)>,
-    tickets: Option<HashMap<usize, String>>,
-    tickets_sent: bool,
 }
 
 impl ArrowFlightOutput {
@@ -30,8 +28,6 @@ impl ArrowFlightOutput {
             flight_sender: FlightSender::new(sender),
             edge_builders: HashMap::new(),
             feature_senders: HashMap::new(),
-            tickets: None,
-            tickets_sent: false,
         }
     }
 
@@ -47,15 +43,22 @@ impl ArrowFlightOutput {
             flight_sender: FlightSender::new(sender),
             edge_builders: HashMap::new(),
             feature_senders,
-            tickets: None,
-            tickets_sent: false,
         }
     }
 
-    pub fn set_tickets(&mut self, tickets: HashMap<usize, String>) {
-        if !tickets.is_empty() {
-            self.tickets = Some(tickets);
+    pub fn send_ticket_batch(&self, tickets: HashMap<usize, String>) -> Result<(), EngineError> {
+        if tickets.is_empty() {
+            return Ok(());
         }
+        // Send an empty batch with the tickets metadata
+        let batch = RecordBatch::new_empty(self.schema());
+        let tickets_bytes = serde_json::to_vec(&tickets)
+            .map_err(|e| EngineError::Internal(format!("failed to serialize tickets: {}", e)))?;
+
+        self.flight_sender
+            .send_batch_with_metadata(batch, tickets_bytes.into())
+            .map_err(|e| EngineError::Output(e.to_string()))?;
+        Ok(())
     }
 
     fn flush_edge_builder(&mut self, rel_id: u16) -> Result<(), EngineError> {
@@ -103,20 +106,6 @@ impl ArrowFlightOutput {
     }
 
     fn send_batch(&mut self, batch: RecordBatch) -> Result<(), EngineError> {
-        if !self.tickets_sent {
-            if let Some(tickets) = &self.tickets {
-                let tickets_bytes = serde_json::to_vec(tickets)
-                    .map_err(|e| EngineError::Internal(format!("failed to serialize tickets: {}", e)))?;
-
-                self.flight_sender
-                    .send_batch_with_metadata(batch, tickets_bytes.into())
-                    .map_err(|e| EngineError::Output(e.to_string()))?;
-
-                self.tickets_sent = true;
-                return Ok(());
-            }
-        }
-
         self.flight_sender
             .send_batch(batch)
             .map_err(|e| EngineError::Output(e.to_string()))

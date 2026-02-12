@@ -202,7 +202,10 @@ impl SamplerGateway {
             }
 
             // Injected tickets metadata into output handler
-            output.set_tickets(tickets);
+            if let Err(e) = output.send_ticket_batch(tickets) {
+                let _ = tx.blocking_send(Err(Status::internal(e.to_string())));
+                return;
+            }
 
             if let Err(e) = sampler.sample(&req, &mut state, &mut output) {
                 let _ = tx.blocking_send(Err(Status::internal(e.to_string())));
