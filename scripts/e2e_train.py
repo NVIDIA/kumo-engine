@@ -25,6 +25,7 @@ if str(_LOCAL_KUMO_ROOT) not in sys.path:
 
 import pandas as pd
 import pyarrow.flight as flight
+import pyarrow.parquet as pq
 import torch
 from torch_geometric.sampler import NodeSamplerInput
 
@@ -56,18 +57,40 @@ def edge_types_from_mapping(mapping: dict) -> List[EdgeType]:
     ]
 
 
-def load_parquet_table(data_root: Path, table_name: str) -> pd.DataFrame:
+def resolve_parquet_path(data_root: Path, table_name: str) -> Path:
     file_path = data_root / f"{table_name}.parquet"
     dir_path = data_root / table_name
-
     if file_path.exists():
-        return pd.read_parquet(file_path)
+        return file_path
     if dir_path.exists() and dir_path.is_dir():
-        return pd.read_parquet(dir_path)
-
+        return dir_path
     raise FileNotFoundError(
         f"Missing parquet table: expected {file_path} or directory {dir_path}"
     )
+
+
+def describe_parquet_table(data_root: Path, table_name: str) -> tuple[Path, list[str]]:
+    path = resolve_parquet_path(data_root, table_name)
+    sample_file = path
+    if path.is_dir():
+        parquet_files = sorted(path.glob("*.parquet"))
+        if not parquet_files:
+            raise FileNotFoundError(f"No parquet files found in directory: {path}")
+        sample_file = parquet_files[0]
+    schema = pq.read_schema(sample_file)
+    return path, schema.names
+
+
+def load_parquet_table(
+    data_root: Path,
+    table_name: str,
+    row_limit: int | None = None,
+) -> pd.DataFrame:
+    path = resolve_parquet_path(data_root, table_name)
+    df = pd.read_parquet(path)
+    if row_limit is not None and row_limit > 0:
+        return df.head(row_limit).copy()
+    return df
 
 
 def infer_col(columns: List[str], candidates: List[str]) -> str:
@@ -108,13 +131,13 @@ def create_user_post_train_table(
     post_user_key: str,
     post_time_col: str,
     num_windows: int,
-    window_days: int,
+    window_seconds: int,
 ) -> pd.DataFrame:
     post_df = posts_df[[post_user_key, post_time_col]].copy()
     post_df[post_time_col] = to_datetime_series(post_df[post_time_col])
     post_df = post_df.dropna(subset=[post_time_col]).sort_values(post_time_col)
 
-    offset = pd.Timedelta(days=window_days)
+    offset = pd.Timedelta(seconds=window_seconds)
     max_t = post_df[post_time_col].max()
     cur_t = max_t - offset
 
@@ -183,10 +206,14 @@ def build_encoders(df_dict: Dict[str, pd.DataFrame], user_key: str) -> EncodersC
 def build_time_col_dict(df_dict: Dict[str, pd.DataFrame]) -> Dict[str, str]:
     out: Dict[str, str] = {}
     for table, df in df_dict.items():
+        # Keep time columns for graph tables. We intentionally do not register
+        # train_table time here so the first E2E path runs with non-temporal
+        # sampling semantics.
+        if table == "train_table":
+            continue
         dt_cols = [col for col in df.columns if pd.api.types.is_datetime64_any_dtype(df[col])]
         if dt_cols:
             out[table] = dt_cols[0]
-    out["train_table"] = "time"
     return out
 
 
@@ -199,7 +226,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=1024)
     parser.add_argument("--max-steps-per-epoch", type=int, default=500)
     parser.add_argument("--num-windows", type=int, default=12)
-    parser.add_argument("--window-days", type=int, default=7)
+    parser.add_argument("--window-seconds", type=int, default=3600)
+    parser.add_argument(
+        "--row-limit",
+        type=int,
+        default=None,
+        help="Optional cap per table for smoke tests (loads head(N) rows)",
+    )
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
 
@@ -208,20 +241,24 @@ def assert_edge_type_alignment(trainer: kumo.Trainer, input_node_type: str) -> N
     train_table_name = trainer.feature_store.train_table_name
     fkey = trainer.feature_store[train_table_name, "fkey", :]
     train_mask = trainer.feature_store[train_table_name, "train_mask", :]
-    time_v = trainer.feature_store[train_table_name, "time", :]
+    seed_time = None
 
     seed_nodes = fkey[train_mask]
     if seed_nodes.dim() > 1:
         seed_nodes = seed_nodes[:, 0]
     seed_nodes = seed_nodes.view(-1).to(torch.long)
-    seed_time = time_v[train_mask].view(-1)
+
+    if trainer.feature_store.has_train_table_time_col:
+        time_v = trainer.feature_store[train_table_name, "time", :]
+        seed_time = time_v[train_mask].view(-1)
 
     if seed_nodes.numel() == 0:
         raise RuntimeError("No train seeds available for edge-type alignment assertion")
 
     sample_size = min(256, seed_nodes.numel())
     seed_nodes = seed_nodes[:sample_size]
-    seed_time = seed_time[:sample_size]
+    if seed_time is not None:
+        seed_time = seed_time[:sample_size]
     input_id = torch.arange(sample_size, dtype=torch.long)
 
     sample_input = NodeSamplerInput(
@@ -257,11 +294,19 @@ def main() -> None:
     node_types = mapping.get("node_types", [])
     edge_types = edge_types_from_mapping(mapping)
 
-    users_df = load_parquet_table(data_root, "users")
-    posts_df = load_parquet_table(data_root, "posts")
-    comments_df = load_parquet_table(data_root, "comments")
-    likes_df = load_parquet_table(data_root, "likes")
-    follows_df = load_parquet_table(data_root, "follows")
+    if args.dry_run:
+        print("Dry-run schema check:")
+        for table_name in ["users", "posts", "comments", "likes", "follows"]:
+            path, columns = describe_parquet_table(data_root, table_name)
+            print(f"  {table_name}: path={path}")
+            print(f"    columns={columns}")
+        print(f"  node_types={node_types}")
+        print(f"  edge_types={len(edge_types)}")
+        return
+
+    # Keep full users table to ensure train fkeys map to valid user indices.
+    users_df = load_parquet_table(data_root, "users", row_limit=None)
+    posts_df = load_parquet_table(data_root, "posts", row_limit=None)
 
     user_key = infer_col(list(users_df.columns), ["user_id", "id"])
     post_user_key = infer_col(list(posts_df.columns), ["user_id", "author_id"])
@@ -274,15 +319,12 @@ def main() -> None:
         post_user_key=post_user_key,
         post_time_col=post_time_col,
         num_windows=args.num_windows,
-        window_days=args.window_days,
+        window_seconds=args.window_seconds,
     )
 
     df_dict: Dict[str, pd.DataFrame] = {
         "users": users_df,
         "posts": posts_df,
-        "comments": comments_df,
-        "likes": likes_df,
-        "follows": follows_df,
         "train_table": train_df,
     }
 
@@ -306,14 +348,6 @@ def main() -> None:
         node_types=node_types,
     )
 
-    if args.dry_run:
-        print("Dry run complete:")
-        print(f"  users: {len(users_df)} rows")
-        print(f"  train_table: {len(train_df)} rows")
-        print(f"  node_types: {node_types}")
-        print(f"  edge_types: {len(edge_types)}")
-        return
-
     trainer = kumo.Trainer(
         task=TaskConfig(
             task_type=TaskType.BINARY_CLASSIFICATION,
@@ -323,7 +357,10 @@ def main() -> None:
         encoder=HeteroTensorFrameEncoder(),
         model=HeteroGNN(channels=128, num_mp_layers=2),
         head=NodePredHead(),
-        sampler_kwargs=dict(num_neighbors=[args.num_neighbors, args.num_neighbors]),
+        sampler_kwargs=dict(
+            num_neighbors=[args.num_neighbors, args.num_neighbors],
+            temporal_strategy="uniform",
+        ),
         loader_kwargs=dict(batch_size=args.batch_size),
         max_epochs=args.epochs,
         max_steps_per_epoch=args.max_steps_per_epoch,
