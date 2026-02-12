@@ -57,10 +57,17 @@ def edge_types_from_mapping(mapping: dict) -> List[EdgeType]:
 
 
 def load_parquet_table(data_root: Path, table_name: str) -> pd.DataFrame:
-    path = data_root / f"{table_name}.parquet"
-    if not path.exists():
-        raise FileNotFoundError(f"Missing parquet table: {path}")
-    return pd.read_parquet(path)
+    file_path = data_root / f"{table_name}.parquet"
+    dir_path = data_root / table_name
+
+    if file_path.exists():
+        return pd.read_parquet(file_path)
+    if dir_path.exists() and dir_path.is_dir():
+        return pd.read_parquet(dir_path)
+
+    raise FileNotFoundError(
+        f"Missing parquet table: expected {file_path} or directory {dir_path}"
+    )
 
 
 def infer_col(columns: List[str], candidates: List[str]) -> str:
