@@ -8,30 +8,40 @@ use std::pin::Pin;
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
 
+use arrow_array::RecordBatch;
 use arrow_ipc::writer::IpcWriteOptions;
 use diskgraph_core::features::BatchFeatureRequest;
 use diskgraph_core::sampling::BatchSamplingRequest;
 use diskgraph_engine::engine::DiskGraphEngine;
 use diskgraph_engine::state::StatePool;
+use std::collections::HashMap;
 use tokio::sync::mpsc;
 
 mod handler;
+mod registry;
+mod sender;
 use handler::ArrowFlightOutput;
+pub use registry::TicketRegistry;
+use sender::FlightSender;
 
 pub struct SamplerGateway {
     sampler: Arc<DiskGraphEngine>,
     pool: StatePool,
+    registry: TicketRegistry,
 }
 
 impl SamplerGateway {
     pub fn new(sampler: Arc<DiskGraphEngine>, pool: StatePool) -> Self {
-        Self { sampler, pool }
+        Self {
+            sampler,
+            pool,
+            registry: TicketRegistry::new(),
+        }
     }
 }
 
 #[tonic::async_trait]
 impl FlightService for SamplerGateway {
-    // ... (streams definitions same as before) ...
     type HandshakeStream =
         Pin<Box<dyn Stream<Item = Result<HandshakeResponse, Status>> + Send + 'static>>;
     type ListFlightsStream =
@@ -86,15 +96,22 @@ impl FlightService for SamplerGateway {
     ) -> Result<Response<Self::DoGetStream>, Status> {
         let ticket = request.into_inner();
 
-        // Attempt to deserialize as BatchSamplingRequest
+        // 1. Resolve Side-Channel Feature Tickets (Plain string ticket)
+        if ticket.ticket.len() == 36 {
+            if let Ok(ticket_str) = std::str::from_utf8(&ticket.ticket) {
+                if let Some(rx) = self.registry.take(ticket_str) {
+                    return self.handle_ticket_stream(rx).await;
+                }
+            }
+        }
+
+        // 2. Resolve Standard Requests
         if let Ok(req) = serde_json::from_slice::<BatchSamplingRequest>(&ticket.ticket) {
             return self.handle_sampling(req).await;
         }
-        // Attempt to deserialize as BatchFeatureRequest
         if let Ok(req) = serde_json::from_slice::<BatchFeatureRequest>(&ticket.ticket) {
             return self.handle_features(req).await;
         }
-        // Fallback Bincode (Legacy compat for Sampling)
         if let Ok(req) = bincode::deserialize::<BatchSamplingRequest>(&ticket.ticket) {
             return self.handle_sampling(req).await;
         }
@@ -102,14 +119,13 @@ impl FlightService for SamplerGateway {
         Err(Status::invalid_argument("Unknown request type in ticket"))
     }
 
-    // ... (Action handlers) ...
     async fn do_action(
         &self,
         request: Request<Action>,
     ) -> Result<Response<Self::DoActionStream>, Status> {
         let action = request.into_inner();
-        if action.r#type == "get_schema_mapping" {
-            let mapping = self.sampler.get_schema_mapping();
+        if action.r#type == "get_type_name_mapping" {
+            let mapping = self.sampler.get_type_name_mapping();
             let body = serde_json::to_vec(&mapping)
                 .map_err(|e| Status::internal(format!("Failed to serialize mapping: {}", e)))?;
 
@@ -126,7 +142,7 @@ impl FlightService for SamplerGateway {
     ) -> Result<Response<Self::ListActionsStream>, Status> {
         let actions = vec![
             ActionType {
-                r#type: "get_schema_mapping".to_string(),
+                r#type: "get_type_name_mapping".to_string(),
                 description: "Returns JSON object mapping internal IDs to names for node_types and edge_relations.".to_string(),
             }
         ];
@@ -156,18 +172,37 @@ impl SamplerGateway {
     ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
         let sampler = Arc::clone(&self.sampler);
         let pool = self.pool.clone();
+        let registry = self.registry.clone();
         let (tx, rx) = mpsc::channel(100);
 
         tokio::task::spawn_blocking(move || {
             let mut state = pool.acquire();
-            let mut output = ArrowFlightOutput::new(tx.clone());
 
+            // Side-Channel Setup
+            let mut feature_senders = HashMap::new();
+            let mut tickets = HashMap::new();
+
+            if req.flags.fused_feature_fetching {
+                for (type_id, ntype) in sampler.id_to_node_type.iter().enumerate() {
+                    let (ftx, frx) = mpsc::channel(100);
+                    let ticket_id = registry.register(frx);
+                    tickets.insert(type_id, ticket_id);
+                    feature_senders.insert(type_id, ftx);
+                }
+            }
+
+            let mut output = ArrowFlightOutput::with_feature_senders(tx.clone(), feature_senders);
             let options = IpcWriteOptions::default();
-            let schema_flight_data =
+
+            // Message 1: Edges Schema (No metadata)
+            let schema_msg: arrow_flight::FlightData =
                 arrow_flight::SchemaAsIpc::new(&output.schema(), &options).into();
-            if tx.blocking_send(Ok(schema_flight_data)).is_err() {
+            if let Err(_) = tx.blocking_send(Ok(schema_msg)) {
                 return;
             }
+
+            // Injected tickets metadata into output handler
+            output.set_tickets(tickets);
 
             if let Err(e) = sampler.sample(&req, &mut state, &mut output) {
                 let _ = tx.blocking_send(Err(Status::internal(e.to_string())));
@@ -187,11 +222,7 @@ impl SamplerGateway {
 
         tokio::task::spawn_blocking(move || {
             let mut output = ArrowFlightOutput::new(tx.clone());
-
             for feature_req in req.batch {
-                let feature_names = feature_req.feature_names;
-
-                // Resolve Node Type ID
                 let node_type_id = match sampler.node_type_to_id.get(&feature_req.node_type) {
                     Some(&id) => id,
                     None => {
@@ -202,11 +233,10 @@ impl SamplerGateway {
                         return;
                     }
                 };
-
                 if let Err(e) = sampler.fetch_features_for_type(
                     node_type_id,
                     &feature_req.node_ids,
-                    &feature_names,
+                    &feature_req.feature_names,
                     &mut output,
                 ) {
                     let _ = tx.blocking_send(Err(Status::internal(e.to_string())));
@@ -216,6 +246,37 @@ impl SamplerGateway {
         });
 
         let output_stream = tokio_stream::wrappers::ReceiverStream::new(rx);
+        Ok(Response::new(Box::pin(output_stream)))
+    }
+
+    async fn handle_ticket_stream(
+        &self,
+        mut rx: mpsc::Receiver<RecordBatch>,
+    ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
+        let (tx, response_rx) = mpsc::channel(100);
+
+        tokio::spawn(async move {
+            let sender = FlightSender::new(tx);
+            let mut schema_sent = false;
+
+            while let Some(batch) = rx.recv().await {
+                if !schema_sent {
+                    // Send schema derived from first batch
+                    if let Err(e) = sender.send_schema_async(batch.schema()).await {
+                        eprintln!("Failed to send side channel schema: {}", e);
+                        return;
+                    }
+                    schema_sent = true;
+                }
+
+                if let Err(e) = sender.send_batch_async(batch).await {
+                    eprintln!("Failed to send side channel batch: {}", e);
+                    return;
+                }
+            }
+        });
+
+        let output_stream = tokio_stream::wrappers::ReceiverStream::new(response_rx);
         Ok(Response::new(Box::pin(output_stream)))
     }
 }

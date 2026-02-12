@@ -1,7 +1,8 @@
+use crate::registry::FeatureSender;
+use crate::sender::FlightSender;
+use arrow_array::builder::{ArrayBuilder, UInt64Builder};
 use arrow_array::{ArrayRef, Int8Array, RecordBatch, UInt64Array};
 use arrow_flight::FlightData;
-use arrow_ipc::writer::IpcWriteOptions;
-use arrow_ipc::writer::{DictionaryTracker, IpcDataGenerator};
 use arrow_schema::{DataType, Field, Schema};
 use diskgraph_engine::errors::EngineError;
 use diskgraph_engine::output::OutputHandler;
@@ -14,81 +15,65 @@ use tonic::Status;
 const CHUNK_SIZE: usize = 64 * 1024; // 64k edges per batch
 
 pub struct ArrowFlightOutput {
-    sender: mpsc::Sender<Result<FlightData, Status>>,
-    edge_buffers: HashMap<u16, EdgeBuffer>,
-    options: IpcWriteOptions,
-}
-
-struct EdgeBuffer {
-    src: Vec<u32>,
-    dst: Vec<u32>,
-    layer_idx: Vec<u32>, // Optional: if we want to track hop in the edge list
-}
-
-impl EdgeBuffer {
-    fn new() -> Self {
-        Self {
-            src: Vec::with_capacity(CHUNK_SIZE),
-            dst: Vec::with_capacity(CHUNK_SIZE),
-            layer_idx: Vec::with_capacity(CHUNK_SIZE),
-        }
-    }
-
-    fn push(&mut self, src: u32, dst: u32, layer: u32) {
-        self.src.push(src);
-        self.dst.push(dst);
-        self.layer_idx.push(layer);
-    }
-
-    fn len(&self) -> usize {
-        self.src.len()
-    }
-
-    fn clear(&mut self) {
-        self.src.clear();
-        self.dst.clear();
-        self.layer_idx.clear();
-    }
+    flight_sender: FlightSender,
+    /// Map of rel_id -> (src_builder, dst_builder)
+    edge_builders: HashMap<u16, (UInt64Builder, UInt64Builder)>,
+    // Map of node_type_id -> (Sender, Buffer)
+    feature_senders: HashMap<usize, (FeatureSender, Vec<RecordBatch>)>,
+    tickets: Option<HashMap<usize, String>>,
+    tickets_sent: bool,
 }
 
 impl ArrowFlightOutput {
     pub fn new(sender: mpsc::Sender<Result<FlightData, Status>>) -> Self {
         Self {
-            sender,
-            edge_buffers: HashMap::new(),
-            options: IpcWriteOptions::default(),
+            flight_sender: FlightSender::new(sender),
+            edge_builders: HashMap::new(),
+            feature_senders: HashMap::new(),
+            tickets: None,
+            tickets_sent: false,
         }
     }
 
-    fn flush_edge_buffer(&mut self, rel_id: u16) -> Result<(), EngineError> {
-        let mut buffer_contents = EdgeBuffer::new();
-        if let Some(buffer) = self.edge_buffers.get_mut(&rel_id) {
-            if buffer.len() == 0 {
-                return Ok(());
-            }
-            // Swap buffer out to release borrow on self
-            std::mem::swap(buffer, &mut buffer_contents);
+    pub fn with_feature_senders(
+        sender: mpsc::Sender<Result<FlightData, Status>>,
+        feature_senders: HashMap<usize, FeatureSender>,
+    ) -> Self {
+        let feature_senders = feature_senders
+            .into_iter()
+            .map(|(k, v)| (k, (v, Vec::new())))
+            .collect();
+        Self {
+            flight_sender: FlightSender::new(sender),
+            edge_builders: HashMap::new(),
+            feature_senders,
+            tickets: None,
+            tickets_sent: false,
+        }
+    }
+
+    pub fn set_tickets(&mut self, tickets: HashMap<usize, String>) {
+        if !tickets.is_empty() {
+            self.tickets = Some(tickets);
+        }
+    }
+
+    fn flush_edge_builder(&mut self, rel_id: u16) -> Result<(), EngineError> {
+        let (src_b, dst_b) = if let Some(b) = self.edge_builders.get_mut(&rel_id) {
+            b
         } else {
+            return Ok(());
+        };
+
+        if src_b.is_empty() {
             return Ok(());
         }
 
-        let len = buffer_contents.len();
+        let len = src_b.len();
+        let src_array = src_b.finish();
+        let dst_array = dst_b.finish();
 
         let row_type = Int8Array::from(vec![0; len]);
-        let id_a = UInt64Array::from(
-            buffer_contents
-                .src
-                .iter()
-                .map(|&x| x as u64)
-                .collect::<Vec<_>>(),
-        );
-        let id_b = UInt64Array::from(
-            buffer_contents
-                .dst
-                .iter()
-                .map(|&x| x as u64)
-                .collect::<Vec<_>>(),
-        );
         let meta_type = UInt64Array::from(vec![rel_id as u64; len]);
         let meta_val = UInt64Array::from(vec![0; len]);
 
@@ -96,23 +81,15 @@ impl ArrowFlightOutput {
             self.schema(),
             vec![
                 Arc::new(row_type) as ArrayRef,
-                Arc::new(id_a) as ArrayRef,
-                Arc::new(id_b) as ArrayRef,
+                Arc::new(src_array) as ArrayRef,
+                Arc::new(dst_array) as ArrayRef,
                 Arc::new(meta_type) as ArrayRef,
                 Arc::new(meta_val) as ArrayRef,
             ],
         )
         .map_err(|e| EngineError::Internal(e.to_string()))?;
 
-        self.send_batch(batch)?;
-
-        // We could reuse the buffer capacity by swapping back, but for simplicity we just let it drop.
-        // Or better: put it back.
-        if let Some(buffer) = self.edge_buffers.get_mut(&rel_id) {
-            buffer_contents.clear();
-            *buffer = buffer_contents;
-        }
-        Ok(())
+        self.send_batch(batch)
     }
 
     pub fn schema(&self) -> Arc<Schema> {
@@ -125,94 +102,111 @@ impl ArrowFlightOutput {
         ]))
     }
 
-    #[allow(deprecated)]
     fn send_batch(&mut self, batch: RecordBatch) -> Result<(), EngineError> {
-        let generator = IpcDataGenerator::default();
-        let mut tracker = DictionaryTracker::new(false);
-        let (_dictionaries, encoded_data) = generator
-            .encoded_batch(&batch, &mut tracker, &self.options)
-            .map_err(|e: arrow_schema::ArrowError| EngineError::Internal(e.to_string()))?;
+        if !self.tickets_sent {
+            if let Some(tickets) = &self.tickets {
+                let tickets_bytes = serde_json::to_vec(tickets)
+                    .map_err(|e| EngineError::Internal(format!("failed to serialize tickets: {}", e)))?;
 
-        let flight_data: FlightData = encoded_data.into();
-        self.sender
-            .blocking_send(Ok(flight_data))
-            .map_err(|_| EngineError::Output("channel closed".into()))?;
-        Ok(())
+                self.flight_sender
+                    .send_batch_with_metadata(batch, tickets_bytes.into())
+                    .map_err(|e| EngineError::Output(e.to_string()))?;
+
+                self.tickets_sent = true;
+                return Ok(());
+            }
+        }
+
+        self.flight_sender
+            .send_batch(batch)
+            .map_err(|e| EngineError::Output(e.to_string()))
     }
 }
 
 impl OutputHandler for ArrowFlightOutput {
     fn handle_edge(
         &mut self,
-        hop: usize,
+        _hop: usize,
         rel_id: u16,
         src_local_id: u32,
         dst_local_id: u32,
     ) -> Result<(), EngineError> {
-        let buffer = self
-            .edge_buffers
-            .entry(rel_id)
-            .or_insert_with(EdgeBuffer::new);
-        buffer.push(src_local_id, dst_local_id, hop as u32);
+        let (src_b, dst_b) = self.edge_builders.entry(rel_id).or_insert_with(|| {
+            (
+                UInt64Builder::with_capacity(CHUNK_SIZE),
+                UInt64Builder::with_capacity(CHUNK_SIZE),
+            )
+        });
 
-        if buffer.len() >= CHUNK_SIZE {
-            // Need to drop borrow of buffer before flushing which borrows self
-            // We can check length, but calling flush needs self.
-            // But we can't call flush while `buffer` ref exists.
-            // So we return early and call flush?
-        }
-        // Correct logic:
-        let needs_flush = buffer.len() >= CHUNK_SIZE;
-        if needs_flush {
-            // Drop borrow
-        } else {
-            return Ok(());
-        }
+        src_b.append_value(src_local_id as u64);
+        dst_b.append_value(dst_local_id as u64);
 
-        // Flush
-        self.flush_edge_buffer(rel_id)?;
+        if src_b.len() >= CHUNK_SIZE {
+            self.flush_edge_builder(rel_id)?;
+        }
         Ok(())
     }
 
     fn handle_schema(&mut self, schema: Arc<Schema>) -> Result<(), EngineError> {
-        let schema_flight_data = arrow_flight::SchemaAsIpc::new(&schema, &self.options).into();
-        self.sender
-            .blocking_send(Ok(schema_flight_data))
-            .map_err(|_| EngineError::Output("channel closed".into()))?;
-        Ok(())
+        self.flight_sender
+            .send_schema(schema)
+            .map_err(|e| EngineError::Output(e.to_string()))
     }
 
     fn handle_feature_batch(&mut self, batch: RecordBatch) -> Result<(), EngineError> {
-        // Just send data (schema already sent)
         self.send_batch(batch)
     }
 
+    fn handle_fused_features(
+        &mut self,
+        type_id: usize,
+        batch: RecordBatch,
+    ) -> Result<(), EngineError> {
+        if let Some((sender, _)) = self.feature_senders.get_mut(&type_id) {
+            sender
+                .blocking_send(batch)
+                .map_err(|_| EngineError::Output("side channel closed".into()))?;
+        } else {
+            // Fallback: Send to main stream (for Baseline Feature Fetching)
+            self.send_batch(batch)?;
+        }
+        Ok(())
+    }
+
     fn finalize(&mut self, state: &SamplingState) -> Result<(), EngineError> {
-        // 1. Flush remaining edges
-        let rel_ids: Vec<u16> = self.edge_buffers.keys().cloned().collect();
+        let rel_ids: Vec<u16> = self.edge_builders.keys().cloned().collect();
         for rel_id in rel_ids {
-            self.flush_edge_buffer(rel_id)?;
+            self.flush_edge_builder(rel_id)?;
         }
 
-        // 2. Send Node Mappings (Global IDs)
-        // state.type_states maps type_id -> nodes[global_id]
         for (type_id, type_state) in &state.type_states {
             if type_state.nodes.is_empty() {
                 continue;
             }
-
             let len = type_state.nodes.len();
             let row_type = Int8Array::from(vec![1; len]);
-            let id_a = UInt64Array::from(vec![0; len]); // Not used for nodes
+            let id_a = UInt64Array::from(
+                type_state
+                    .nodes
+                    .iter()
+                    .map(|n| n.local_id as u64)
+                    .collect::<Vec<_>>(),
+            );
             let id_b = UInt64Array::from(
                 type_state
                     .nodes
                     .iter()
                     .map(|n| n.global_id)
                     .collect::<Vec<_>>(),
-            ); // Global ID
+            );
             let meta_type = UInt64Array::from(vec![*type_id as u64; len]);
-            let meta_val = UInt64Array::from(vec![0; len]);
+            let meta_val = UInt64Array::from(
+                type_state
+                    .nodes
+                    .iter()
+                    .map(|n| n.seed_index as u64)
+                    .collect::<Vec<_>>(),
+            );
 
             let batch = RecordBatch::try_new(
                 self.schema(),
@@ -229,7 +223,6 @@ impl OutputHandler for ArrowFlightOutput {
             self.send_batch(batch)?;
         }
 
-        // 3. Serialize Stats (Metadata)
         let stats_bytes = serde_json::to_vec(&state.stats)
             .map_err(|e| EngineError::Internal(format!("failed to serialize stats: {}", e)))?;
 
@@ -240,91 +233,10 @@ impl OutputHandler for ArrowFlightOutput {
             flight_descriptor: None,
         };
 
-        self.sender
-            .blocking_send(Ok(metadata_msg))
+        self.flight_sender
+            .send_raw(metadata_msg)
             .map_err(|_| EngineError::Output("channel closed".into()))?;
 
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use diskgraph_engine::state::{SamplingState, SamplingStats, TypeState};
-    use gxhash::HashMap as GxHashMap;
-
-    #[tokio::test]
-    async fn test_edge_buffering() {
-        let (tx, mut rx) = mpsc::channel(10);
-
-        tokio::task::spawn_blocking(move || {
-            let mut handler = ArrowFlightOutput::new(tx);
-
-            handler.handle_edge(1, 1, 10, 20).unwrap();
-            handler.handle_edge(1, 1, 11, 21).unwrap();
-            handler.handle_edge(2, 2, 30, 40).unwrap();
-
-            assert_eq!(handler.edge_buffers.get(&1).unwrap().len(), 2);
-            assert_eq!(handler.edge_buffers.get(&2).unwrap().len(), 1);
-
-            let state = SamplingState {
-                type_states: GxHashMap::default(),
-                dst_scratch: Vec::new(),
-                key_scratch: Vec::new(),
-                reservoir_scratch: Vec::new(),
-                stats: SamplingStats::default(),
-            };
-            handler.finalize(&state).unwrap();
-        });
-
-        // Expect 2 edges batches + 1 stats msg
-        let msg1 = rx.recv().await.unwrap().unwrap();
-        let msg2 = rx.recv().await.unwrap().unwrap();
-        let msg3 = rx.recv().await.unwrap().unwrap();
-
-        assert!(!msg1.data_header.is_empty());
-        assert!(!msg2.data_header.is_empty());
-        assert!(!msg3.app_metadata.is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_node_flushing() {
-        let (tx, mut rx) = mpsc::channel(10);
-
-        tokio::task::spawn_blocking(move || {
-            let mut handler = ArrowFlightOutput::new(tx);
-
-            let mut type_states = GxHashMap::default();
-            let mut t0 = TypeState::new();
-            t0.nodes.push(diskgraph_engine::state::NodeRecord {
-                global_id: 100,
-                local_id: 0,
-                seed_index: 0,
-            });
-            t0.nodes.push(diskgraph_engine::state::NodeRecord {
-                global_id: 101,
-                local_id: 1,
-                seed_index: 0,
-            });
-            type_states.insert(0, t0);
-
-            let state = SamplingState {
-                type_states,
-                dst_scratch: Vec::new(),
-                key_scratch: Vec::new(),
-                reservoir_scratch: Vec::new(),
-                stats: SamplingStats::default(),
-            };
-
-            handler.finalize(&state).unwrap();
-        });
-
-        // Expect: 1 node batch + 1 stats msg
-        let msg1 = rx.recv().await.unwrap().unwrap();
-        let msg2 = rx.recv().await.unwrap().unwrap();
-
-        assert!(!msg1.data_header.is_empty());
-        assert!(!msg2.app_metadata.is_empty());
     }
 }

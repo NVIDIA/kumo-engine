@@ -66,29 +66,57 @@ impl TestGraph {
             dest_sort_key_mask: None,
         };
 
-        // 3. Write Edges.bin (Count 2 + u16 Data Len + 2 Edges + Node Data)
+        // 3. Write Edges.bin
         let mut f = File::create(path.join(EDGES_FILENAME)).unwrap();
-        // Node 0: 2 edges (0x02)
+        // Node 0: 2 edges (0x02), Len, Edges[1, 2], Data
         f.write_all(&[0x02]).unwrap();
-        // Node data len (u16 LE)
         f.write_all(&(encoded_node_data.len() as u16).to_le_bytes())
             .unwrap();
-        // Edges: dst=1, dst=2
         f.write_all(&[0x01, 0x02]).unwrap();
         f.write_all(&encoded_node_data).unwrap();
 
+        // Node 1: 0 edges, Len, Data
+        f.write_all(&[0x00]).unwrap();
+        f.write_all(&(encoded_node_data.len() as u16).to_le_bytes())
+            .unwrap();
+        f.write_all(&encoded_node_data).unwrap();
+
+        // Node 2: 0 edges, Len, Data
+        f.write_all(&[0x00]).unwrap();
+        f.write_all(&(encoded_node_data.len() as u16).to_le_bytes())
+            .unwrap();
+        f.write_all(&encoded_node_data).unwrap();
+        f.flush().unwrap(); // Ensure written
+        let edges_len = f.metadata().unwrap().len();
+
         // 4. Write Offsets.bin
         let mut offsets = Vec::new();
-        // total_offsets = 2 (start of node 0, start of node 1/end of shard)
-        let header = OffsetFileHeader::new(1, 2);
+        // Header: count=3 nodes -> 4 offsets
+        let header = OffsetFileHeader::new(3, 4);
         let header_bytes = bincode::serialize(&header).unwrap();
         offsets.extend_from_slice(&header_bytes);
 
-        offsets.extend_from_slice(&2u16.to_le_bytes()); // 2 offsets in this chunk
+        offsets.extend_from_slice(&4u16.to_le_bytes()); // Chunk count = 4
         offsets.extend_from_slice(&0u64.to_le_bytes()); // offset[0] = 0
-                                                        // offset[1] = 1 (count byte) + 2 (len bytes) + 2 (edge bytes) + data len
-        let end_offset = (1 + 2 + 2 + encoded_node_data.len()) as u16;
-        offsets.extend_from_slice(&end_offset.to_le_bytes());
+
+        // offset[0] = 0 (Base)
+        // offset[1] = 0 + node0_len
+        let node0_len = 1 + 2 + 2 + encoded_node_data.len();
+        let delta1 = node0_len as u16;
+        offsets.extend_from_slice(&delta1.to_le_bytes());
+
+        // offset[2] = offset[1] + node1_len
+        let node1_len = 1 + 2 + encoded_node_data.len();
+        let delta2 = node1_len as u16;
+        offsets.extend_from_slice(&delta2.to_le_bytes());
+
+        // offset[3] = offset[2] + node2_len
+        let node2_len = 1 + 2 + encoded_node_data.len();
+        let delta3 = node2_len as u16;
+        offsets.extend_from_slice(&delta3.to_le_bytes());
+
+        let expected_size = (node0_len + node1_len + node2_len) as u64;
+        assert_eq!(expected_size, edges_len, "Offsets sum must match file size");
 
         let mut f = File::create(path.join(OFFSETS_FILENAME)).unwrap();
         f.write_all(&offsets).unwrap();
@@ -102,7 +130,7 @@ impl TestGraph {
             vec![ShardHandle {
                 reader: Arc::new(reader),
                 min_id: 0,
-                max_id: 0,
+                max_id: 2,
             }],
         );
 
@@ -129,6 +157,7 @@ struct MockOutput {
     edges: Vec<(usize, u16, u32, u32)>,
     feature_batches: Vec<arrow_array::RecordBatch>,
     schema: Option<arrow_schema::SchemaRef>,
+    fused_batches: Vec<(usize, arrow_array::RecordBatch)>,
 }
 impl OutputHandler for MockOutput {
     fn handle_edge(
@@ -155,6 +184,15 @@ impl OutputHandler for MockOutput {
         Ok(())
     }
 
+    fn handle_fused_features(
+        &mut self,
+        type_id: usize,
+        batch: arrow_array::RecordBatch,
+    ) -> crate::errors::Result<()> {
+        self.fused_batches.push((type_id, batch));
+        Ok(())
+    }
+
     fn finalize(&mut self, _state: &SamplingState) -> crate::errors::Result<()> {
         Ok(())
     }
@@ -167,6 +205,7 @@ fn test_fetch_features() {
         edges: vec![],
         feature_batches: vec![],
         schema: None,
+        fused_batches: vec![],
     };
 
     // Fetch both features
@@ -205,6 +244,7 @@ fn test_fetch_features() {
         edges: vec![],
         feature_batches: vec![],
         schema: None,
+        fused_batches: vec![],
     };
     graph
         .sampler
@@ -221,6 +261,7 @@ fn test_fetch_features_missing_node() {
         edges: vec![],
         feature_batches: vec![],
         schema: None,
+        fused_batches: vec![],
     };
 
     // Fetch for non-existent node 999
@@ -241,6 +282,7 @@ fn test_fetch_features_unknown_column() {
         edges: vec![],
         feature_batches: vec![],
         schema: None,
+        fused_batches: vec![],
     };
 
     // Fetch unknown column
@@ -262,6 +304,7 @@ fn test_basic_sampling() {
         edges: vec![],
         feature_batches: vec![],
         schema: None,
+        fused_batches: vec![],
     };
 
     let plan = SamplingPlan {
@@ -290,13 +333,69 @@ fn test_basic_sampling() {
             disjoint: true,
             return_edge_id: false,
             adaptive: false,
+            fused_feature_fetching: false,
         },
     };
 
     graph.sampler.sample(&req, &mut state, &mut output).unwrap();
 
     assert_eq!(output.edges.len(), 2);
-    // Node 0 (Local 0) -> 1 (Local 1) and 2 (Local 2)
+    assert_eq!(output.fused_batches.len(), 0);
+}
+
+#[test]
+fn test_fused_sampling() {
+    let graph = TestGraph::new();
+    let mut state = crate::state::StatePool::new().acquire();
+    let mut output = MockOutput {
+        edges: vec![],
+        feature_batches: vec![],
+        schema: None,
+        fused_batches: vec![],
+    };
+
+    let plan = SamplingPlan {
+        layers: vec![LayerSpec {
+            fanouts: [(
+                "Connects".to_string(),
+                FanoutSpec {
+                    fanout: 10,
+                    mode: SamplingMode::Uniform,
+                    absent_key_policy: AbsentKeyPolicy::UniformFallback,
+                },
+            )]
+            .into(),
+            default_fanout: None,
+        }],
+    };
+
+    let req = BatchSamplingRequest {
+        dataset_id: DatasetId::nil(),
+        seed_nodes: [("User".to_string(), vec![0])].into(),
+        seed_timestamps: None,
+        plan,
+        flags: SamplingFlags {
+            replace: false,
+            directed: true,
+            disjoint: true,
+            return_edge_id: false,
+            adaptive: false,
+            fused_feature_fetching: true, // Enable Fused
+        },
+    };
+
+    graph.sampler.sample(&req, &mut state, &mut output).unwrap();
+
+    assert_eq!(output.edges.len(), 2);
+
+    // Check fused batches
+    // We expect at least one batch for type "User" (ID 0)
+    assert!(output.fused_batches.len() > 0);
+    let (type_id, batch) = &output.fused_batches[0];
+    assert_eq!(*type_id, 0);
+
+    // Batch should contain seed (0) and its neighbors (1, 2) = 3 rows
+    assert_eq!(batch.num_rows(), 3);
 }
 
 #[test]
@@ -307,6 +406,7 @@ fn test_sampling_empty_seeds() {
         edges: vec![],
         feature_batches: vec![],
         schema: None,
+        fused_batches: vec![],
     };
 
     let plan = SamplingPlan {
@@ -335,6 +435,7 @@ fn test_sampling_empty_seeds() {
             disjoint: true,
             return_edge_id: false,
             adaptive: false,
+            fused_feature_fetching: false,
         },
     };
 

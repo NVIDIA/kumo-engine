@@ -3885,9 +3885,9 @@ impl RowPackDecoder {
         Ok(())
     }
 
-    pub fn decode_batch_to_arrow(
+    pub fn decode_batch_to_arrow<T: AsRef<[u8]>>(
         &self,
-        rows: &[&[u8]],
+        rows: &[T],
         col_indices: &[usize],
     ) -> Result<arrow_array::RecordBatch> {
         use arrow_array::builder::*;
@@ -3915,7 +3915,12 @@ impl RowPackDecoder {
         let mut scratch = RowPackDecodeScratch::default();
 
         for row in rows {
-            self.decode_row_to_builders(row, &mut builders, &requested_mask, &mut scratch)?;
+            self.decode_row_to_builders(
+                row.as_ref(),
+                &mut builders,
+                &requested_mask,
+                &mut scratch,
+            )?;
         }
 
         let arrays: Vec<Arc<dyn arrow_array::Array>> =
@@ -5121,7 +5126,7 @@ fn append_null(builder: &mut dyn arrow_array::builder::ArrayBuilder) {
     }
 }
 
-fn make_arrow_builder(
+pub fn make_arrow_builder(
     name: &str,
     dtype: IngestedType,
     capacity: usize,

@@ -21,6 +21,10 @@ pub struct SamplingFlags {
     /// If true, enables dynamic fanout compensation (Metapath-aware/Adaptive).
     /// Default: false
     pub adaptive: bool,
+    /// If true, returns tickets for side-channel feature streams.
+    /// Default: false
+    #[serde(default)]
+    pub fused_feature_fetching: bool,
 }
 
 /// A request to sample a neighborhood subgraph starting from a batch of seeds.
@@ -154,6 +158,7 @@ mod tests {
                 disjoint: true,
                 return_edge_id: false,
                 adaptive: false,
+                fused_feature_fetching: false,
             },
         };
 
@@ -200,6 +205,7 @@ mod tests {
                 disjoint: true,
                 return_edge_id: false,
                 adaptive: false,
+                fused_feature_fetching: false,
             },
         };
 

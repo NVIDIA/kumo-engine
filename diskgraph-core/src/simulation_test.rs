@@ -145,6 +145,7 @@ mod tests {
                 disjoint: true,
                 return_edge_id: false,
                 adaptive: false,
+                fused_feature_fetching: false,
             },
         };
 

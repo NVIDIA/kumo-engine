@@ -108,6 +108,13 @@ pub struct TypeState {
 
     /// Nodes to be processed in the next hop for this type
     pub next_frontier: Vec<NodeRecord>,
+
+    /// Pooled Arrow Builders for fused feature fetching.
+    pub builders: Option<Vec<Box<dyn arrow_array::builder::ArrayBuilder>>>,
+    /// Number of rows currently accumulated in builders.
+    pub builder_rows: usize,
+    /// Approximate size of accumulated data in bytes.
+    pub builder_bytes: usize,
 }
 
 impl Default for TypeState {
@@ -122,6 +129,9 @@ impl TypeState {
             index_map: GxHashMap::with_capacity(1024),
             nodes: Vec::with_capacity(1024),
             next_frontier: Vec::with_capacity(1024),
+            builders: None,
+            builder_rows: 0,
+            builder_bytes: 0,
         }
     }
 
@@ -142,15 +152,10 @@ impl TypeState {
         if self.index_map.capacity() > threshold {
             self.index_map.shrink_to(threshold);
         }
-    }
-}
 
-/// Metadata recorded for every sampled edge.
-#[derive(Debug, Clone, Copy)]
-pub struct EdgeRecord {
-    pub src_local_id: u32,
-    pub dst_local_id: u32,
-    pub rel_id: u16,
+        self.builder_rows = 0;
+        self.builder_bytes = 0;
+    }
 }
 
 /// The main context for a single sampling request.
@@ -166,6 +171,9 @@ pub struct SamplingState {
     // Scratch buffer for Reservoir Sampling
     pub reservoir_scratch: Vec<u64>,
 
+    /// Scratch space for RowPack decoding (shared across types).
+    pub decode_scratch: diskgraph_rowpack::RowPackDecodeScratch,
+
     /// Statistics for the current run.
     pub stats: SamplingStats,
 }
@@ -179,6 +187,7 @@ impl SamplingState {
             dst_scratch: Vec::with_capacity(1024),
             key_scratch: Vec::with_capacity(1024),
             reservoir_scratch: Vec::with_capacity(128),
+            decode_scratch: diskgraph_rowpack::RowPackDecodeScratch::default(),
             stats: SamplingStats::new(),
         }
     }
@@ -192,6 +201,7 @@ impl SamplingState {
         self.key_scratch.clear();
         self.reservoir_scratch.clear();
         self.stats.reset();
+        // Scratch buffer is inherently reusable
     }
     /// Access or create the state for a specific node type.
     pub fn get_type_state_mut(&mut self, node_type_id: usize) -> &mut TypeState {
