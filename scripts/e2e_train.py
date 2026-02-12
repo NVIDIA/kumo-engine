@@ -17,6 +17,8 @@ from typing import Dict, List, Tuple
 
 import pandas as pd
 import pyarrow.flight as flight
+import torch
+from torch_geometric.sampler import NodeSamplerInput
 
 import kumo
 from kumo.engine.diskgraph_sampler import DiskgraphGraphStore
@@ -187,6 +189,51 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def assert_edge_type_alignment(trainer: kumo.Trainer, input_node_type: str) -> None:
+    train_table_name = trainer.feature_store.train_table_name
+    fkey = trainer.feature_store[train_table_name, "fkey", :]
+    train_mask = trainer.feature_store[train_table_name, "train_mask", :]
+    time_v = trainer.feature_store[train_table_name, "time", :]
+
+    seed_nodes = fkey[train_mask]
+    if seed_nodes.dim() > 1:
+        seed_nodes = seed_nodes[:, 0]
+    seed_nodes = seed_nodes.view(-1).to(torch.long)
+    seed_time = time_v[train_mask].view(-1)
+
+    if seed_nodes.numel() == 0:
+        raise RuntimeError("No train seeds available for edge-type alignment assertion")
+
+    sample_size = min(256, seed_nodes.numel())
+    seed_nodes = seed_nodes[:sample_size]
+    seed_time = seed_time[:sample_size]
+    input_id = torch.arange(sample_size, dtype=torch.long)
+
+    sample_input = NodeSamplerInput(
+        input_id=input_id,
+        node=seed_nodes,
+        time=seed_time,
+        input_type=input_node_type,
+    )
+    result = trainer.graph_sampler.sample_from_nodes(sample_input)
+
+    graph_edge_types = {
+        attr.edge_type
+        for attr in trainer.graph_store.get_all_edge_attrs()
+    }
+    sampled_edge_types = set(result.row.keys())
+
+    assert sampled_edge_types, "Sampler returned no edges"
+    missing = sampled_edge_types - graph_edge_types
+    assert not missing, (
+        f"Sampled edge types missing from graph store attrs: {missing}"
+    )
+    print(
+        "Edge-type alignment check passed: "
+        f"sampled={len(sampled_edge_types)}, graph_store={len(graph_edge_types)}"
+    )
+
+
 def main() -> None:
     args = parse_args()
     data_root = Path(os.path.expanduser(args.data_root))
@@ -268,7 +315,9 @@ def main() -> None:
         feature_store=feature_store,
         graph_store=graph_store,
         encoders=encoders,
-    )
+    ).init()
+
+    assert_edge_type_alignment(trainer=trainer, input_node_type="users")
 
     trainer.fit()
     trainer.test()
