@@ -1,17 +1,30 @@
 #!/usr/bin/env python3
-"""E2E training scaffold for diskgraph sampling + Kumo trainer.
+"""Run E2E Kumo training with diskgraph sampling on social_sampling_50m.
 
-This script intentionally starts as a schema/bootstrap scaffold. Subsequent
-commits fill in feature-store construction and trainer execution.
+Usage (from kumo repo root):
+  python ../kumo-diskgraph/scripts/e2e_train.py \
+    --data-root /path/to/social_sampling_50m \
+    --server grpc://localhost:8815
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-from typing import List, Tuple
+import os
+from pathlib import Path
+from typing import Dict, List, Tuple
 
+import pandas as pd
 import pyarrow.flight as flight
+
+import kumo
+from kumo.engine.diskgraph_sampler import DiskgraphGraphStore
+from kumo.typing import TaskType
+from kumoapi.encoder import Datetime, Index, Numerical
+from kumoml.common.config import EncodersConfig, TargetEncoderConfig, TaskConfig
+from kumoml.common.data import InMemoryFeatureStore
+from kumoml.enterprise.nn import HeteroGNN, HeteroTensorFrameEncoder, NodePredHead
 
 
 EdgeType = Tuple[str, str, str]
@@ -33,35 +46,232 @@ def edge_types_from_mapping(mapping: dict) -> List[EdgeType]:
     ]
 
 
+def load_parquet_table(data_root: Path, table_name: str) -> pd.DataFrame:
+    path = data_root / f"{table_name}.parquet"
+    if not path.exists():
+        raise FileNotFoundError(f"Missing parquet table: {path}")
+    return pd.read_parquet(path)
+
+
+def infer_col(columns: List[str], candidates: List[str]) -> str:
+    lower_map = {c.lower(): c for c in columns}
+    for cand in candidates:
+        if cand.lower() in lower_map:
+            return lower_map[cand.lower()]
+    raise ValueError(f"Could not infer required column from candidates={candidates}")
+
+
+def infer_time_col(df: pd.DataFrame, table_name: str) -> str:
+    candidates = [
+        "time", "timestamp", "ts", "created_at", "created_ts",
+        "event_time", f"{table_name}_ts",
+    ]
+    for candidate in candidates:
+        if candidate in df.columns:
+            return candidate
+    dt_cols = [
+        col for col in df.columns
+        if pd.api.types.is_datetime64_any_dtype(df[col])
+    ]
+    if dt_cols:
+        return dt_cols[0]
+    raise ValueError(f"No time-like column found for table '{table_name}'")
+
+
+def to_datetime_series(s: pd.Series) -> pd.Series:
+    if pd.api.types.is_datetime64_any_dtype(s):
+        return s
+    return pd.to_datetime(s, errors="coerce", utc=False)
+
+
+def create_user_post_train_table(
+    users_df: pd.DataFrame,
+    posts_df: pd.DataFrame,
+    user_key: str,
+    post_user_key: str,
+    post_time_col: str,
+    num_windows: int,
+    window_days: int,
+) -> pd.DataFrame:
+    post_df = posts_df[[post_user_key, post_time_col]].copy()
+    post_df[post_time_col] = to_datetime_series(post_df[post_time_col])
+    post_df = post_df.dropna(subset=[post_time_col]).sort_values(post_time_col)
+
+    offset = pd.Timedelta(days=window_days)
+    max_t = post_df[post_time_col].max()
+    cur_t = max_t - offset
+
+    rows: List[pd.DataFrame] = []
+    for i in range(num_windows):
+        hist_start = cur_t - offset
+        hist_end = cur_t
+        fut_end = cur_t + offset
+
+        hist_mask = (post_df[post_time_col] > hist_start) & (post_df[post_time_col] <= hist_end)
+        fut_mask = (post_df[post_time_col] > cur_t) & (post_df[post_time_col] <= fut_end)
+
+        active_users = post_df.loc[hist_mask, post_user_key].dropna().drop_duplicates()
+        if active_users.empty:
+            cur_t = cur_t - offset
+            continue
+
+        targets = post_df.loc[fut_mask, post_user_key].dropna().drop_duplicates()
+        target_set = set(targets.tolist())
+
+        frame = pd.DataFrame({
+            user_key: active_users.values,
+            "target": [u in target_set for u in active_users.values],
+            "time": cur_t,
+            "train_mask": i >= 2,
+            "val_mask": i == 1,
+            "test_mask": i == 0,
+        })
+        rows.append(frame)
+        cur_t = cur_t - offset
+
+    if not rows:
+        raise RuntimeError("Failed to build training table: no windows produced rows")
+
+    train_df = pd.concat(rows, ignore_index=True)
+    # Ensure bool masks:
+    for col in ["train_mask", "val_mask", "test_mask", "target"]:
+        train_df[col] = train_df[col].astype(bool)
+    return train_df
+
+
+def build_encoders(df_dict: Dict[str, pd.DataFrame], user_key: str) -> EncodersConfig:
+    encoders = EncodersConfig()
+
+    def add_table_encoders(table_name: str, skip_cols: set[str]) -> None:
+        for col in df_dict[table_name].columns:
+            if col in skip_cols:
+                continue
+            dtype = df_dict[table_name][col].dtype
+            if pd.api.types.is_datetime64_any_dtype(dtype):
+                encoders[table_name][col] = Datetime()
+            elif pd.api.types.is_numeric_dtype(dtype):
+                encoders[table_name][col] = Numerical()
+            else:
+                encoders[table_name][col] = Index()
+
+    add_table_encoders("users", {user_key})
+    for table in ["posts", "comments", "likes", "follows"]:
+        if table in df_dict:
+            add_table_encoders(table, set())
+
+    encoders.target = TargetEncoderConfig("target", Index())
+    return encoders
+
+
+def build_time_col_dict(df_dict: Dict[str, pd.DataFrame]) -> Dict[str, str]:
+    out: Dict[str, str] = {}
+    for table, df in df_dict.items():
+        dt_cols = [col for col in df.columns if pd.api.types.is_datetime64_any_dtype(df[col])]
+        if dt_cols:
+            out[table] = dt_cols[0]
+    out["train_table"] = "time"
+    return out
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Diskgraph E2E training script")
-    parser.add_argument(
-        "--server",
-        type=str,
-        default="grpc://localhost:8815",
-        help="Arrow Flight server address",
-    )
-    parser.add_argument(
-        "--data-root",
-        type=str,
-        required=True,
-        help="Directory with social_sampling_50m parquet tables",
-    )
+    parser.add_argument("--server", type=str, default="grpc://localhost:8815")
+    parser.add_argument("--data-root", type=str, required=True)
+    parser.add_argument("--epochs", type=int, default=3)
+    parser.add_argument("--num-neighbors", type=int, default=10)
+    parser.add_argument("--batch-size", type=int, default=1024)
+    parser.add_argument("--max-steps-per-epoch", type=int, default=500)
+    parser.add_argument("--num-windows", type=int, default=12)
+    parser.add_argument("--window-days", type=int, default=7)
+    parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
+    data_root = Path(os.path.expanduser(args.data_root))
+
     mapping = fetch_schema_mapping(args.server)
     node_types = mapping.get("node_types", [])
     edge_types = edge_types_from_mapping(mapping)
 
-    print(f"Gateway node types: {node_types}")
-    print(f"Gateway edge types ({len(edge_types)}):")
-    for edge_type in edge_types:
-        print(f"  - {edge_type}")
+    users_df = load_parquet_table(data_root, "users")
+    posts_df = load_parquet_table(data_root, "posts")
+    comments_df = load_parquet_table(data_root, "comments")
+    likes_df = load_parquet_table(data_root, "likes")
+    follows_df = load_parquet_table(data_root, "follows")
 
-    print("Schema bootstrap complete. Training pipeline wiring follows in next commit.")
+    user_key = infer_col(list(users_df.columns), ["user_id", "id"])
+    post_user_key = infer_col(list(posts_df.columns), ["user_id", "author_id"])
+    post_time_col = infer_time_col(posts_df, "posts")
+
+    train_df = create_user_post_train_table(
+        users_df=users_df,
+        posts_df=posts_df,
+        user_key=user_key,
+        post_user_key=post_user_key,
+        post_time_col=post_time_col,
+        num_windows=args.num_windows,
+        window_days=args.window_days,
+    )
+
+    df_dict: Dict[str, pd.DataFrame] = {
+        "users": users_df,
+        "posts": posts_df,
+        "comments": comments_df,
+        "likes": likes_df,
+        "follows": follows_df,
+        "train_table": train_df,
+    }
+
+    encoders = build_encoders(df_dict, user_key=user_key)
+    time_col_dict = build_time_col_dict(df_dict)
+
+    feature_store = InMemoryFeatureStore.from_encoders(
+        df_dict=df_dict,
+        encoders=encoders,
+        pkey_name_dict={"users": user_key},
+        time_col_dict=time_col_dict,
+        end_time_col_dict={},
+        train_table_name="train_table",
+        train_fkeys=[(user_key, "users")],
+        train_mask_names=("train_mask", "val_mask", "test_mask"),
+    )
+
+    graph_store = DiskgraphGraphStore(
+        server_address=args.server,
+        edge_types=edge_types,
+        node_types=node_types,
+    )
+
+    if args.dry_run:
+        print("Dry run complete:")
+        print(f"  users: {len(users_df)} rows")
+        print(f"  train_table: {len(train_df)} rows")
+        print(f"  node_types: {node_types}")
+        print(f"  edge_types: {len(edge_types)}")
+        return
+
+    trainer = kumo.Trainer(
+        task=TaskConfig(
+            task_type=TaskType.BINARY_CLASSIFICATION,
+            name="social_sampling_50m_diskgraph_e2e",
+            metrics=["auroc", "auprc"],
+        ),
+        encoder=HeteroTensorFrameEncoder(),
+        model=HeteroGNN(channels=128, num_mp_layers=2),
+        head=NodePredHead(),
+        sampler_kwargs=dict(num_neighbors=[args.num_neighbors, args.num_neighbors]),
+        loader_kwargs=dict(batch_size=args.batch_size),
+        max_epochs=args.epochs,
+        max_steps_per_epoch=args.max_steps_per_epoch,
+        feature_store=feature_store,
+        graph_store=graph_store,
+        encoders=encoders,
+    )
+
+    trainer.fit()
+    trainer.test()
 
 
 if __name__ == "__main__":
