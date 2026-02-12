@@ -12,8 +12,16 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Dict, List, Tuple
+
+# Ensure we import the local sibling `kumo` repo (this workspace), not some
+# other editable install from a different checkout.
+_WORKSPACE_ROOT = Path(__file__).resolve().parents[2]
+_LOCAL_KUMO_ROOT = _WORKSPACE_ROOT / "kumo"
+if str(_LOCAL_KUMO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_LOCAL_KUMO_ROOT))
 
 import pandas as pd
 import pyarrow.flight as flight
