@@ -234,6 +234,16 @@ def parse_args() -> argparse.Namespace:
         help="Optional cap per table for smoke tests (loads head(N) rows)",
     )
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--diagnose-hop-semantics",
+        action="store_true",
+        help="Run one-batch hop/local-index diagnostics before fit()",
+    )
+    parser.add_argument(
+        "--diagnose-only",
+        action="store_true",
+        help="Run diagnostics and exit before fit()",
+    )
     return parser.parse_args()
 
 
@@ -284,6 +294,79 @@ def assert_edge_type_alignment(trainer: kumo.Trainer, input_node_type: str) -> N
         "Edge-type alignment check passed: "
         f"sampled={len(sampled_edge_types)}, graph_store={len(graph_edge_types)}"
     )
+
+
+def diagnose_hop_semantics(trainer: kumo.Trainer, split: str = "val") -> None:
+    """Print hop-wise diagnostics for edge/local-index semantics on one batch."""
+    if split == "train":
+        loader = trainer.datamodule.train_dataloader()
+    elif split == "test":
+        loader = trainer.datamodule.test_dataloader()
+    else:
+        loader = trainer.datamodule.val_dataloader()
+
+    batch = next(iter(loader))
+    print(f"\n=== Hop diagnostics ({split} split, first batch) ===")
+
+    node_hops: Dict[str, List[int]] = {}
+    for node_type in batch.node_types:
+        counts = batch[node_type].get("num_sampled_nodes", None)
+        if counts is None:
+            continue
+        if isinstance(counts, torch.Tensor):
+            counts_list = [int(x) for x in counts.tolist()]
+        else:
+            counts_list = [int(x) for x in counts]
+        node_hops[node_type] = counts_list
+        print(f"node[{node_type}] per-hop: {counts_list} total={int(batch[node_type].num_nodes)}")
+
+    for edge_type in batch.edge_types:
+        store = batch[edge_type]
+        edge_index = store.edge_index
+        counts = store.get("num_sampled_edges", None)
+        if counts is None:
+            print(f"edge[{edge_type}] missing num_sampled_edges metadata")
+            continue
+
+        if isinstance(counts, torch.Tensor):
+            edge_hops = [int(x) for x in counts.tolist()]
+        else:
+            edge_hops = [int(x) for x in counts]
+
+        src_type, _, dst_type = edge_type
+        src_hops = node_hops.get(src_type, [])
+        dst_hops = node_hops.get(dst_type, [])
+        print(f"\nedge[{edge_type}] per-hop: {edge_hops} total_edges={edge_index.size(1)}")
+
+        offset = 0
+        for hop, edge_count in enumerate(edge_hops):
+            if edge_count <= 0:
+                continue
+            seg = edge_index[:, offset: offset + edge_count]
+            offset += edge_count
+
+            src_max = int(seg[0].max().item()) if seg.size(1) > 0 else -1
+            dst_max = int(seg[1].max().item()) if seg.size(1) > 0 else -1
+
+            # Cumulative bounds implied by per-hop node counts.
+            src_cum_bound = sum(src_hops[: min(hop + 1, len(src_hops))]) - 1 if src_hops else -1
+            dst_cum_bound = sum(dst_hops[: min(hop + 2, len(dst_hops))]) - 1 if dst_hops else -1
+
+            dst_local_start = sum(dst_hops[: min(hop + 1, len(dst_hops))]) if dst_hops else 0
+            dst_local_end = sum(dst_hops[: min(hop + 2, len(dst_hops))]) if dst_hops else 0
+
+            print(
+                f"  hop={hop}: edges={edge_count}, src_max={src_max}, dst_max={dst_max}, "
+                f"src_cum_bound={src_cum_bound}, dst_cum_bound={dst_cum_bound}, "
+                f"dst_local_range=[{dst_local_start}, {max(dst_local_end - 1, -1)}]"
+            )
+
+            if src_cum_bound >= 0 and src_max > src_cum_bound:
+                print("    !! src_max exceeds src cumulative bound")
+            if dst_cum_bound >= 0 and dst_max > dst_cum_bound:
+                print("    !! dst_max exceeds dst cumulative bound")
+            if dst_local_end > 0 and not (dst_local_start <= dst_max < dst_local_end):
+                print("    !! dst_max outside expected hop-local destination range")
 
 
 def main() -> None:
@@ -360,6 +443,7 @@ def main() -> None:
         sampler_kwargs=dict(
             num_neighbors=[args.num_neighbors, args.num_neighbors],
             temporal_strategy="uniform",
+            disjoint=True,
         ),
         loader_kwargs=dict(batch_size=args.batch_size),
         max_epochs=args.epochs,
