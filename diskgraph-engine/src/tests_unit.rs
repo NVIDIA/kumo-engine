@@ -135,7 +135,14 @@ impl TestGraph {
         );
 
         let mut relation_info = HashMap::new();
-        relation_info.insert(0, ("Connects".to_string(), "User".to_string(), "User".to_string()));
+        relation_info.insert(
+            0,
+            (
+                "Connects".to_string(),
+                "User".to_string(),
+                "User".to_string(),
+            ),
+        );
 
         let mut node_decoders = HashMap::new();
         node_decoders.insert(
@@ -390,7 +397,7 @@ fn test_fused_sampling() {
 
     // Check fused batches
     // We expect at least one batch for type "User" (ID 0)
-    assert!(output.fused_batches.len() > 0);
+    assert!(!output.fused_batches.is_empty());
     let (type_id, batch) = &output.fused_batches[0];
     assert_eq!(*type_id, 0);
 

@@ -217,7 +217,7 @@ impl SamplerGateway {
             // Message 1: Edges Schema (No metadata)
             let schema_msg: arrow_flight::FlightData =
                 arrow_flight::SchemaAsIpc::new(&output.schema(), &options).into();
-            if let Err(_) = tx.blocking_send(Ok(schema_msg)) {
+            if tx.blocking_send(Ok(schema_msg)).is_err() {
                 return;
             }
 

@@ -105,7 +105,8 @@ impl DiskGraphEngine {
         let all_layouts = diskgraph_index::builder::compute_relation_layouts(
             &metadata.edge_relations,
             &metadata.node_types,
-        ).map_err(|e| EngineError::Internal(format!("failed to compute layouts: {}", e)))?;
+        )
+        .map_err(|e| EngineError::Internal(format!("failed to compute layouts: {}", e)))?;
 
         let mut readers = HashMap::new();
         let mut node_decoders_map = HashMap::new();
@@ -128,11 +129,12 @@ impl DiskGraphEngine {
                     .join(format!("shard-{:05}", i));
 
                 if shard_dir.exists() {
-                    let reader =
-                        ShardReader::open(&shard_dir, type_layouts.clone(), node_type.has_node_data)
-                            .map_err(|e| {
-                                EngineError::Internal(format!("failed to open shard: {}", e))
-                            })?;
+                    let reader = ShardReader::open(
+                        &shard_dir,
+                        type_layouts.clone(),
+                        node_type.has_node_data,
+                    )
+                    .map_err(|e| EngineError::Internal(format!("failed to open shard: {}", e)))?;
 
                     shards.push(ShardHandle {
                         reader: Arc::new(reader),
@@ -240,10 +242,9 @@ impl DiskGraphEngine {
         let mut decoders: Vec<Option<SortKeyDecoder>> = vec![None; max_rel_id + 1];
 
         for (rel_id, (rel_name, src_type, dst_type)) in &relation_info_map {
-            if let (Some(&src_id), Some(&dst_id)) = (
-                node_type_to_id.get(src_type),
-                node_type_to_id.get(dst_type),
-            ) {
+            if let (Some(&src_id), Some(&dst_id)) =
+                (node_type_to_id.get(src_type), node_type_to_id.get(dst_type))
+            {
                 rel_name_to_id.insert(rel_name.clone(), *rel_id);
                 id_to_rel_name[*rel_id] = rel_name.clone();
                 relation_info[*rel_id] = dst_id;
@@ -372,11 +373,20 @@ impl DiskGraphEngine {
                 .map_err(|e| EngineError::Internal(format!("schema projection failed: {}", e)))?;
             output.handle_schema(Arc::new(projected))?;
         } else {
-             return Err(EngineError::Internal(format!("no schema for type {}", node_type_id)));
+            return Err(EngineError::Internal(format!(
+                "no schema for type {}",
+                node_type_id
+            )));
         }
 
         // Use Bulk Fetch helper
-        self.accumulate_features_from_ids_chunked(node_type_id, node_ids, &col_indices, decoder, output)?;
+        self.accumulate_features_from_ids_chunked(
+            node_type_id,
+            node_ids,
+            &col_indices,
+            decoder,
+            output,
+        )?;
 
         Ok(())
     }
@@ -508,9 +518,12 @@ impl DiskGraphEngine {
                 let scratch = &mut state.decode_scratch;
                 if let Some(ts) = state.type_states.get_mut(&type_id) {
                     if !ts.next_frontier.is_empty() {
-                         let node_ids: Vec<u64> = ts.next_frontier.iter().map(|n| n.global_id).collect();
-                         self.accumulate_features_from_ids_builder(type_id, &node_ids, ts, scratch, output)?;
-                         ts.next_frontier.clear();
+                        let node_ids: Vec<u64> =
+                            ts.next_frontier.iter().map(|n| n.global_id).collect();
+                        self.accumulate_features_from_ids_builder(
+                            type_id, &node_ids, ts, scratch, output,
+                        )?;
+                        ts.next_frontier.clear();
                     }
                     self.flush_fused_features(type_id, ts, output)?;
                 }
@@ -537,7 +550,9 @@ impl DiskGraphEngine {
             .and_then(|d| d.as_ref())
             .ok_or_else(|| EngineError::Internal(format!("no decoder for type {}", type_id)))?;
 
-        self.accumulate_features_from_view_internal(type_id, type_state, scratch, decoder, edges_view, output)
+        self.accumulate_features_from_view_internal(
+            type_id, type_state, scratch, decoder, edges_view, output,
+        )
     }
 
     fn accumulate_features_from_view_internal(
@@ -593,9 +608,10 @@ impl DiskGraphEngine {
         scratch: &mut RowPackDecodeScratch,
         output: &mut impl OutputHandler,
     ) -> Result<()> {
-        let shards = self.readers.get(type_id).ok_or_else(|| {
-            EngineError::InvalidRequest("invalid node type id".to_string())
-        })?;
+        let shards = self
+            .readers
+            .get(type_id)
+            .ok_or_else(|| EngineError::InvalidRequest("invalid node type id".to_string()))?;
 
         let decoder = self
             .node_decoders
@@ -613,7 +629,14 @@ impl DiskGraphEngine {
                 .edges_for_node(local_id)
                 .map_err(|e| EngineError::DataCorruption(e.to_string()))?;
 
-            self.accumulate_features_from_view_internal(type_id, type_state, scratch, decoder, &edges_view, output)?;
+            self.accumulate_features_from_view_internal(
+                type_id,
+                type_state,
+                scratch,
+                decoder,
+                &edges_view,
+                output,
+            )?;
         }
         Ok(())
     }
@@ -626,9 +649,10 @@ impl DiskGraphEngine {
         decoder: &RowPackDecoder,
         output: &mut impl OutputHandler,
     ) -> Result<()> {
-        let shards = self.readers.get(type_id).ok_or_else(|| {
-            EngineError::InvalidRequest("invalid node type id".to_string())
-        })?;
+        let shards = self
+            .readers
+            .get(type_id)
+            .ok_or_else(|| EngineError::InvalidRequest("invalid node type id".to_string()))?;
 
         let mut last_shard_idx = 0;
         let mut batch_size = 128;
@@ -707,9 +731,9 @@ impl DiskGraphEngine {
             }
         }
 
-        let schema = self.node_schemas[type_id]
-            .as_ref()
-            .ok_or_else(|| EngineError::Internal(format!("no precomputed schema for type {}", type_id)))?;
+        let schema = self.node_schemas[type_id].as_ref().ok_or_else(|| {
+            EngineError::Internal(format!("no precomputed schema for type {}", type_id))
+        })?;
 
         let batch = arrow_array::RecordBatch::try_new(schema.clone(), arrays)
             .map_err(|e| EngineError::Internal(e.to_string()))?;
@@ -741,9 +765,13 @@ impl DiskGraphEngine {
         // Fused fetching path
         if fused {
             for (src_type_id, frontier) in work_queue {
-                if src_type_id >= self.readers.len() { continue; }
+                if src_type_id >= self.readers.len() {
+                    continue;
+                }
                 let shards = &self.readers[src_type_id];
-                if shards.is_empty() { continue; }
+                if shards.is_empty() {
+                    continue;
+                }
 
                 for node in &frontier {
                     let shard_idx = self.find_shard(shards, node.global_id)?;
@@ -768,12 +796,11 @@ impl DiskGraphEngine {
                         )?;
                     }
 
-                    let segments = match edges_view.relation_segments() {
-                        Ok(s) => s,
-                        Err(_) => Vec::new(),
-                    };
+                    let segments = edges_view.relation_segments().unwrap_or_default();
 
-                    self.process_node_relations(layer_idx, &segments, node, layer_spec, request, state, output)?;
+                    self.process_node_relations(
+                        layer_idx, &segments, node, layer_spec, request, state, output,
+                    )?;
                 }
             }
             return Ok(());
@@ -817,13 +844,18 @@ impl DiskGraphEngine {
                             .map_err(|e| EngineError::DataCorruption(e.to_string()))?;
 
                         last_id = Some(node.global_id);
-                        current_segments = match edges_view.relation_segments() {
-                            Ok(s) => s,
-                            Err(_) => Vec::new(),
-                        };
+                        current_segments = edges_view.relation_segments().unwrap_or_default();
                     }
 
-                    self.process_node_relations(layer_idx, &current_segments, node, layer_spec, request, state, output)?;
+                    self.process_node_relations(
+                        layer_idx,
+                        &current_segments,
+                        node,
+                        layer_spec,
+                        request,
+                        state,
+                        output,
+                    )?;
                 }
             }
         }
@@ -831,6 +863,7 @@ impl DiskGraphEngine {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn process_node_relations(
         &self,
         layer_idx: usize,

@@ -124,11 +124,10 @@ impl OutputHandler for ArrowFlightOutput {
     ) -> Result<(), EngineError> {
         // Reverse edge direction: swap src↔dst and map to reverse relation.
         // This makes the output match PyG's CSC convention where col = closer-to-seed.
-        let (actual_rel, actual_src, actual_dst) =
-            match self.reverse_rel_map.get(rel_id as usize) {
-                Some(Some(rev_id)) => (*rev_id as u16, dst_local_id, src_local_id),
-                _ => (rel_id, src_local_id, dst_local_id),
-            };
+        let (actual_rel, actual_src, actual_dst) = match self.reverse_rel_map.get(rel_id as usize) {
+            Some(Some(rev_id)) => (*rev_id as u16, dst_local_id, src_local_id),
+            _ => (rel_id, src_local_id, dst_local_id),
+        };
 
         // Track max IDs for validation
         let maxes = self.edge_max_ids.entry(actual_rel).or_insert((0, 0));
@@ -257,11 +256,9 @@ impl OutputHandler for ArrowFlightOutput {
         let mut stats_out = state.stats.clone();
         for (i, rev) in self.reverse_rel_map.iter().enumerate() {
             if let Some(rev_id) = rev {
-                if i < state.stats.edges_per_type.len()
-                    && *rev_id < stats_out.edges_per_type.len()
+                if i < state.stats.edges_per_type.len() && *rev_id < stats_out.edges_per_type.len()
                 {
-                    stats_out.edges_per_type[*rev_id] =
-                        state.stats.edges_per_type[i].clone();
+                    stats_out.edges_per_type[*rev_id] = state.stats.edges_per_type[i].clone();
                 }
             }
         }

@@ -46,15 +46,15 @@ impl TicketRegistry {
     pub fn register(&self, receiver: FeatureReceiver) -> String {
         let ticket = Uuid::new_v4().to_string();
         let now = Instant::now();
-        
+
         let mut guard = self.inner.write();
-        
+
         // Lazy GC
         if now.duration_since(guard.last_gc) > GC_INTERVAL {
             let initial_len = guard.channels.len();
-            guard.channels.retain(|_, (_, created_at)| {
-                now.duration_since(*created_at) < TICKET_TTL
-            });
+            guard
+                .channels
+                .retain(|_, (_, created_at)| now.duration_since(*created_at) < TICKET_TTL);
             guard.last_gc = now;
             let dropped = initial_len - guard.channels.len();
             if dropped > 0 {
