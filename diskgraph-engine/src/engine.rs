@@ -20,9 +20,16 @@ pub struct ShardHandle {
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize)]
+pub struct EdgeRelationInfo {
+    pub name: String,
+    pub src_type: String,
+    pub dst_type: String,
+}
+
+#[derive(Serialize, Deserialize)]
 pub struct TypeNameMapping {
     pub node_types: Vec<String>,
-    pub edge_relations: Vec<String>,
+    pub edge_relations: Vec<EdgeRelationInfo>,
 }
 
 use diskgraph_rowpack::{RowPackDecodeScratch, RowPackDecoder};
@@ -61,6 +68,11 @@ pub struct DiskGraphEngine {
     pub id_to_node_type: Vec<String>,
     /// Map from dense ID to relation name.
     pub id_to_rel_name: Vec<String>,
+    /// Map from dense Relation ID to SrcTypeID.
+    pub relation_src_type: Vec<usize>,
+    /// Forward↔reverse relation pairs: rel_id -> reverse_rel_id.
+    /// Built from the `*_src_to_dst` ↔ `*_dst_to_src` naming convention.
+    pub reverse_rel_map: Vec<Option<usize>>,
     /// Feature batch target size in bytes.
     pub target_batch_bytes: usize,
     /// Feature batch target size in num rows.
@@ -151,7 +163,10 @@ impl DiskGraphEngine {
         let mut relation_info = HashMap::new();
         let mut decoders = HashMap::new();
         for (rel_id, rel) in metadata.edge_relations.iter().enumerate() {
-            relation_info.insert(rel_id, (rel.name.clone(), rel.dst_type.clone()));
+            relation_info.insert(
+                rel_id,
+                (rel.name.clone(), rel.src_type.clone(), rel.dst_type.clone()),
+            );
 
             if let Some(meta) = &rel.dest_sort_key {
                 let decoder = SortKeyDecoder::new(meta);
@@ -170,7 +185,7 @@ impl DiskGraphEngine {
 
     pub fn new(
         readers_map: HashMap<String, Vec<ShardHandle>>,
-        relation_info_map: HashMap<usize, (String, String)>,
+        relation_info_map: HashMap<usize, (String, String, String)>,
         decoders_map: HashMap<usize, SortKeyDecoder>,
         node_decoders_map: HashMap<String, RowPackDecoder>,
     ) -> Self {
@@ -221,17 +236,41 @@ impl DiskGraphEngine {
         id_to_rel_name.resize(max_rel_id + 1, String::new());
         // Use usize::MAX as sentinel for invalid/unmapped relations
         let mut relation_info = vec![usize::MAX; max_rel_id + 1];
+        let mut relation_src_type = vec![usize::MAX; max_rel_id + 1];
         let mut decoders: Vec<Option<SortKeyDecoder>> = vec![None; max_rel_id + 1];
 
-        for (rel_id, (rel_name, dst_type)) in relation_info_map {
-            if let Some(&dst_id) = node_type_to_id.get(&dst_type) {
-                rel_name_to_id.insert(rel_name.clone(), rel_id);
-                id_to_rel_name[rel_id] = rel_name.clone();
-                relation_info[rel_id] = dst_id;
+        for (rel_id, (rel_name, src_type, dst_type)) in &relation_info_map {
+            if let (Some(&src_id), Some(&dst_id)) = (
+                node_type_to_id.get(src_type),
+                node_type_to_id.get(dst_type),
+            ) {
+                rel_name_to_id.insert(rel_name.clone(), *rel_id);
+                id_to_rel_name[*rel_id] = rel_name.clone();
+                relation_info[*rel_id] = dst_id;
+                relation_src_type[*rel_id] = src_id;
 
-                if let Some(decoder) = decoders_map.get(&rel_id) {
-                    decoders[rel_id] = Some(decoder.clone());
+                if let Some(decoder) = decoders_map.get(rel_id) {
+                    decoders[*rel_id] = Some(decoder.clone());
                 }
+            }
+        }
+
+        // Build forward↔reverse relation pairs from naming convention.
+        let mut reverse_rel_map: Vec<Option<usize>> = vec![None; id_to_rel_name.len()];
+        for (i, name_i) in id_to_rel_name.iter().enumerate() {
+            if name_i.is_empty() || reverse_rel_map[i].is_some() {
+                continue;
+            }
+            let partner = if let Some(base) = name_i.strip_suffix("_src_to_dst") {
+                format!("{}_dst_to_src", base)
+            } else if let Some(base) = name_i.strip_suffix("_dst_to_src") {
+                format!("{}_src_to_dst", base)
+            } else {
+                continue;
+            };
+            if let Some(&j) = rel_name_to_id.get(&partner) {
+                reverse_rel_map[i] = Some(j);
+                reverse_rel_map[j] = Some(i);
             }
         }
 
@@ -245,15 +284,41 @@ impl DiskGraphEngine {
             rel_name_to_id,
             id_to_node_type,
             id_to_rel_name,
+            relation_src_type,
+            reverse_rel_map,
             target_batch_bytes: get_feature_batch_bytes(),
             target_batch_rows: get_feature_batch_rows(),
         }
     }
 
     pub fn get_type_name_mapping(&self) -> TypeNameMapping {
+        let edge_relations = self
+            .id_to_rel_name
+            .iter()
+            .enumerate()
+            .map(|(rel_id, name)| {
+                let src_type = self
+                    .relation_src_type
+                    .get(rel_id)
+                    .and_then(|&id| self.id_to_node_type.get(id))
+                    .cloned()
+                    .unwrap_or_default();
+                let dst_type = self
+                    .relation_info
+                    .get(rel_id)
+                    .and_then(|&id| self.id_to_node_type.get(id))
+                    .cloned()
+                    .unwrap_or_default();
+                EdgeRelationInfo {
+                    name: name.clone(),
+                    src_type,
+                    dst_type,
+                }
+            })
+            .collect();
         TypeNameMapping {
             node_types: self.id_to_node_type.clone(),
-            edge_relations: self.id_to_rel_name.clone(),
+            edge_relations,
         }
     }
 

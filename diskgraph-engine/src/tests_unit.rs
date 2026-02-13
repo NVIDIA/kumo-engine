@@ -135,7 +135,7 @@ impl TestGraph {
         );
 
         let mut relation_info = HashMap::new();
-        relation_info.insert(0, ("Connects".to_string(), "User".to_string()));
+        relation_info.insert(0, ("Connects".to_string(), "User".to_string(), "User".to_string()));
 
         let mut node_decoders = HashMap::new();
         node_decoders.insert(

@@ -150,8 +150,8 @@ impl TestGraph {
 
         // --- Relations ---
         let mut relation_info = HashMap::new();
-        relation_info.insert(0, ("purchased".to_string(), "items".to_string()));
-        relation_info.insert(1, ("viewed".to_string(), "users".to_string()));
+        relation_info.insert(0, ("purchased".to_string(), "users".to_string(), "items".to_string()));
+        relation_info.insert(1, ("viewed".to_string(), "items".to_string(), "users".to_string()));
 
         let mut node_decoders = HashMap::new();
         node_decoders.insert("users".to_string(), RowPackDecoder::new(ctx_user).unwrap());

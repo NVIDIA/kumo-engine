@@ -20,6 +20,14 @@ pub struct ArrowFlightOutput {
     feature_senders: HashMap<usize, FeatureSender>,
     /// Edge batch target chunk size in num rows
     chunk_size: usize,
+    // Relation ID -> source node type ID
+    relation_src_type: Vec<usize>,
+    // Relation ID -> destination node type ID
+    relation_dst_type: Vec<usize>,
+    // Forward↔reverse relation pairs for edge direction reversal.
+    reverse_rel_map: Vec<Option<usize>>,
+    // Track max src/dst local-IDs per relation for validation.
+    edge_max_ids: HashMap<u16, (u32, u32)>,
 }
 
 impl ArrowFlightOutput {
@@ -27,12 +35,19 @@ impl ArrowFlightOutput {
         sender: mpsc::Sender<Result<FlightData, Status>>,
         feature_senders: HashMap<usize, FeatureSender>,
         chunk_size: usize,
+        relation_src_type: Vec<usize>,
+        relation_dst_type: Vec<usize>,
+        reverse_rel_map: Vec<Option<usize>>,
     ) -> Self {
         Self {
             flight_sender: FlightSender::new(sender),
             edge_builders: HashMap::new(),
             feature_senders,
             chunk_size,
+            relation_src_type,
+            relation_dst_type,
+            reverse_rel_map,
+            edge_max_ids: HashMap::new(),
         }
     }
 
@@ -107,19 +122,32 @@ impl OutputHandler for ArrowFlightOutput {
         src_local_id: u32,
         dst_local_id: u32,
     ) -> Result<(), EngineError> {
+        // Reverse edge direction: swap src↔dst and map to reverse relation.
+        // This makes the output match PyG's CSC convention where col = closer-to-seed.
+        let (actual_rel, actual_src, actual_dst) =
+            match self.reverse_rel_map.get(rel_id as usize) {
+                Some(Some(rev_id)) => (*rev_id as u16, dst_local_id, src_local_id),
+                _ => (rel_id, src_local_id, dst_local_id),
+            };
+
+        // Track max IDs for validation
+        let maxes = self.edge_max_ids.entry(actual_rel).or_insert((0, 0));
+        maxes.0 = maxes.0.max(actual_src);
+        maxes.1 = maxes.1.max(actual_dst);
+
         let chunk_size = self.chunk_size;
-        let (src_b, dst_b) = self.edge_builders.entry(rel_id).or_insert_with(|| {
+        let (src_b, dst_b) = self.edge_builders.entry(actual_rel).or_insert_with(|| {
             (
                 UInt64Builder::with_capacity(chunk_size),
                 UInt64Builder::with_capacity(chunk_size),
             )
         });
 
-        src_b.append_value(src_local_id as u64);
-        dst_b.append_value(dst_local_id as u64);
+        src_b.append_value(actual_src as u64);
+        dst_b.append_value(actual_dst as u64);
 
         if src_b.len() >= chunk_size {
-            self.flush_edge_builder(rel_id)?;
+            self.flush_edge_builder(actual_rel)?;
         }
         Ok(())
     }
@@ -151,6 +179,38 @@ impl OutputHandler for ArrowFlightOutput {
     }
 
     fn finalize(&mut self, state: &SamplingState) -> Result<(), EngineError> {
+        // Validate edge local-ID bounds before flushing.
+        for (&rel_id, &(max_src, max_dst)) in &self.edge_max_ids {
+            let rel_idx = rel_id as usize;
+            if let (Some(&src_type_id), Some(&dst_type_id)) = (
+                self.relation_src_type.get(rel_idx),
+                self.relation_dst_type.get(rel_idx),
+            ) {
+                let src_count = state
+                    .type_states
+                    .get(&src_type_id)
+                    .map(|s| s.nodes.len())
+                    .unwrap_or(0);
+                let dst_count = state
+                    .type_states
+                    .get(&dst_type_id)
+                    .map(|s| s.nodes.len())
+                    .unwrap_or(0);
+                if src_count > 0 && (max_src as usize) >= src_count {
+                    return Err(EngineError::DataCorruption(format!(
+                        "invalid src_local_id for rel_id={}: max_src={} >= src_count={}",
+                        rel_id, max_src, src_count
+                    )));
+                }
+                if dst_count > 0 && (max_dst as usize) >= dst_count {
+                    return Err(EngineError::DataCorruption(format!(
+                        "invalid dst_local_id for rel_id={}: max_dst={} >= dst_count={}",
+                        rel_id, max_dst, dst_count
+                    )));
+                }
+            }
+        }
+
         let rel_ids: Vec<u16> = self.edge_builders.keys().cloned().collect();
         for rel_id in rel_ids {
             self.flush_edge_builder(rel_id)?;
@@ -192,7 +252,20 @@ impl OutputHandler for ArrowFlightOutput {
             self.send_batch(batch)?;
         }
 
-        let stats_bytes = serde_json::to_vec(&state.stats)
+        // Swap edges_per_type via reverse relation map to match the edge
+        // direction reversal applied in handle_edge().
+        let mut stats_out = state.stats.clone();
+        for (i, rev) in self.reverse_rel_map.iter().enumerate() {
+            if let Some(rev_id) = rev {
+                if i < state.stats.edges_per_type.len()
+                    && *rev_id < stats_out.edges_per_type.len()
+                {
+                    stats_out.edges_per_type[*rev_id] =
+                        state.stats.edges_per_type[i].clone();
+                }
+            }
+        }
+        let stats_bytes = serde_json::to_vec(&stats_out)
             .map_err(|e| EngineError::Internal(format!("failed to serialize stats: {}", e)))?;
 
         let metadata_msg = FlightData {
