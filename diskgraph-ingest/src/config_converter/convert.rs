@@ -1,6 +1,6 @@
 //! Conversion from Kumo GraphConfig to DiskGraph GraphConfig.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use anyhow::Result;
 
@@ -13,6 +13,12 @@ use crate::utils::is_edge_table_compatible;
 
 use super::mapping::{map_kumo_dtype, map_timestamp_unit};
 use super::types::{KumoForeignKey, KumoGraphConfig, KumoTable};
+
+/// Time column info for a table, used for cross-table sort key lookups.
+struct TableTimeInfo {
+    column: String,
+    unit: String,
+}
 
 /// Options for the conversion.
 #[derive(Debug, Clone)]
@@ -29,10 +35,31 @@ pub fn convert_kumo_to_diskgraph(
     kumo_config: &KumoGraphConfig,
     options: &ConvertOptions,
 ) -> Result<GraphConfig, ConvertError> {
+    // Build a map of table_name -> time info so FK sort keys can reference
+    // the destination table's create_time (matching diskgraph-infer behavior).
+    let mut time_info_map: HashMap<String, TableTimeInfo> = HashMap::new();
+    for kumo_table in &kumo_config.tables {
+        if let Some(tc) = &kumo_table.time_col {
+            let unit = tc
+                .timestamp_unit
+                .as_deref()
+                .map(map_time_unit_for_spec)
+                .unwrap_or_else(|| "s".to_string());
+            let table_name = kumo_table.table_name.clone();
+            time_info_map.insert(
+                table_name,
+                TableTimeInfo {
+                    column: tc.name.clone(),
+                    unit,
+                },
+            );
+        }
+    }
+
     let mut tables = Vec::new();
 
     for kumo_table in &kumo_config.tables {
-        let table_spec = convert_table(kumo_table, options)?;
+        let table_spec = convert_table(kumo_table, options, &time_info_map)?;
         tables.push(table_spec);
     }
 
@@ -50,6 +77,7 @@ pub fn convert_kumo_to_diskgraph(
 fn convert_table(
     kumo_table: &KumoTable,
     options: &ConvertOptions,
+    time_info_map: &HashMap<String, TableTimeInfo>,
 ) -> Result<TableSpec, ConvertError> {
     // Build the S3 path
     let paths = build_table_paths(kumo_table, options)?;
@@ -87,6 +115,7 @@ fn convert_table(
         create_time.as_deref(),
         &kumo_table.table_name,
         &time_unit,
+        time_info_map,
     );
 
     Ok(TableSpec {
@@ -223,17 +252,24 @@ fn build_columns(kumo_table: &KumoTable) -> Result<Vec<ColumnSpec>, ConvertError
 /// Edge table criteria (same as diskgraph-infer):
 /// - Exactly 2 foreign keys
 /// - All other columns are only create_time or weight-like (numeric)
+///
+/// Sort key direction convention (matching diskgraph-infer):
+/// - FK forward: timestamp from **destination** table's create_time
+/// - FK reverse: timestamp from **source** (current) table's create_time
+/// - Edge table: timestamp from edge table's own create_time (both directions)
 fn detect_edge_table_or_fkeys(
     kumo_table: &KumoTable,
     columns: &[ColumnSpec],
     create_time: Option<&str>,
     table_name: &str,
     time_unit: &str,
+    time_info_map: &HashMap<String, TableTimeInfo>,
 ) -> (Option<EdgeTableSpec>, Vec<FKeySpec>) {
     let fkeys = &kumo_table.fkeys;
 
-    // Build direction spec if we have create_time
-    let direction_spec = create_time.map(|col| DirectionSpec {
+    // Build direction spec for the current (source) table's create_time.
+    // Used for: FK reverse direction, edge table both directions.
+    let src_direction_spec = create_time.map(|col| DirectionSpec {
         time: Some(TimeSpec {
             table: table_name.to_string(),
             column: col.to_string(),
@@ -246,7 +282,7 @@ fn detect_edge_table_or_fkeys(
 
     // Check if this should be an edge table
     if should_be_edge_table(fkeys, columns, create_time) {
-        // Create EdgeTableSpec
+        // Create EdgeTableSpec — edge tables use their own create_time for both directions
         let src_fk = &fkeys[0];
         let dst_fk = &fkeys[1];
 
@@ -259,20 +295,37 @@ fn detect_edge_table_or_fkeys(
                 edge_column: dst_fk.name.clone(),
                 ref_table: strip_namespace(&dst_fk.dst_table),
             },
-            forward: direction_spec.clone(),
-            reverse: direction_spec,
+            forward: src_direction_spec.clone(),
+            reverse: src_direction_spec,
         };
 
         (Some(edge_table), Vec::new())
     } else {
-        // Create FKeySpecs with direction spec
+        // Create FKeySpecs with correct per-direction sort keys:
+        // - forward: use destination table's create_time
+        // - reverse: use source (current) table's create_time
         let fkey_specs: Vec<FKeySpec> = fkeys
             .iter()
-            .map(|fk| FKeySpec {
-                src_column: fk.name.clone(),
-                dst_table: strip_namespace(&fk.dst_table),
-                forward: direction_spec.clone(),
-                reverse: direction_spec.clone(),
+            .map(|fk| {
+                let dst_table_name = strip_namespace(&fk.dst_table);
+                let forward_spec = time_info_map
+                    .get(&dst_table_name)
+                    .map(|info| DirectionSpec {
+                        time: Some(TimeSpec {
+                            table: dst_table_name.clone(),
+                            column: info.column.clone(),
+                            bitwidth: None,
+                            anchor_time: None,
+                            unit: info.unit.clone(),
+                        }),
+                        weight: None,
+                    });
+                FKeySpec {
+                    src_column: fk.name.clone(),
+                    dst_table: dst_table_name,
+                    forward: forward_spec,
+                    reverse: src_direction_spec.clone(),
+                }
             })
             .collect();
 
