@@ -30,7 +30,7 @@ import torch
 from torch_geometric.sampler import NodeSamplerInput
 
 import kumo
-from kumo.engine.diskgraph_sampler import DiskgraphGraphStore
+from kumo.engine.diskgraph_sampler import DiskgraphFeatureStore, DiskgraphGraphStore
 from kumo.typing import TaskType
 from kumoapi.encoder import Datetime, Index, Numerical
 from kumoml.common.config import EncodersConfig, TargetEncoderConfig, TaskConfig
@@ -244,6 +244,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Run diagnostics and exit before fit()",
     )
+    parser.add_argument(
+        "--no-fused",
+        action="store_true",
+        help="Disable fused feature fetching (use InMemoryFeatureStore only)",
+    )
     return parser.parse_args()
 
 
@@ -414,7 +419,8 @@ def main() -> None:
     encoders = build_encoders(df_dict, user_key=user_key)
     time_col_dict = build_time_col_dict(df_dict)
 
-    feature_store = InMemoryFeatureStore.from_encoders(
+    FeatureStoreCls = InMemoryFeatureStore if args.no_fused else DiskgraphFeatureStore
+    feature_store = FeatureStoreCls.from_encoders(
         df_dict=df_dict,
         encoders=encoders,
         pkey_name_dict={"users": user_key},
