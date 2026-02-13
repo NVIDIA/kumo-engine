@@ -411,6 +411,7 @@ async fn validate_job(
         parallel,
         index_mem_budget_bytes,
         progress: build_progress(),
+        col_stats: false,
         ..Default::default()
     };
     let (_, stats) = ingest_with_stats(

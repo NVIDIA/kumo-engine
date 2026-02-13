@@ -1092,6 +1092,7 @@ pub(crate) fn infer_parquet_schema_from_arrow(
             timestamp_unit: None,
             precision,
             scale,
+            semantic_type: None,
         });
     }
     Ok(columns)
@@ -1648,6 +1649,7 @@ impl ColumnStats {
             timestamp_unit,
             precision: None,
             scale: None,
+            semantic_type: None,
         }
     }
 }

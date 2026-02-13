@@ -114,6 +114,7 @@ mod tests {
             timestamp_unit: None,
             precision: None,
             scale: None,
+            semantic_type: None,
         }
     }
 

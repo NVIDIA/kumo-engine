@@ -11,7 +11,7 @@ use crate::graph_config::{
 };
 use crate::utils::is_edge_table_compatible;
 
-use super::mapping::{map_kumo_dtype, map_timestamp_unit};
+use super::mapping::{map_kumo_dtype, map_kumo_stype, map_timestamp_unit};
 use super::types::{KumoForeignKey, KumoGraphConfig, KumoTable};
 
 /// Time column info for a table, used for cross-table sort key lookups.
@@ -179,6 +179,7 @@ fn build_columns(kumo_table: &KumoTable) -> Result<Vec<ColumnSpec>, ConvertError
     // Helper to add a column if not already seen
     let mut add_column = |name: &str,
                           dtype: Option<&str>,
+                          stype: Option<&str>,
                           timestamp_unit: Option<&str>|
      -> Result<(), ConvertError> {
         if seen_names.contains(name) {
@@ -192,6 +193,7 @@ fn build_columns(kumo_table: &KumoTable) -> Result<Vec<ColumnSpec>, ConvertError
         };
 
         let ts_unit = timestamp_unit.and_then(map_timestamp_unit);
+        let semantic_type = stype.and_then(map_kumo_stype);
 
         columns.push(ColumnSpec {
             name: name.to_string(),
@@ -202,6 +204,7 @@ fn build_columns(kumo_table: &KumoTable) -> Result<Vec<ColumnSpec>, ConvertError
             timestamp_unit: ts_unit,
             precision: None,
             scale: None,
+            semantic_type,
         });
 
         Ok(())
@@ -209,12 +212,22 @@ fn build_columns(kumo_table: &KumoTable) -> Result<Vec<ColumnSpec>, ConvertError
 
     // Add primary key column
     if let Some(pkey) = &kumo_table.pkey {
-        add_column(&pkey.name, pkey.dtype.as_deref(), None)?;
+        add_column(
+            &pkey.name,
+            pkey.dtype.as_deref(),
+            pkey.stype.as_deref(),
+            None,
+        )?;
     }
 
     // Add foreign key columns
     for fkey in &kumo_table.fkeys {
-        add_column(&fkey.name, fkey.dtype.as_deref(), None)?;
+        add_column(
+            &fkey.name,
+            fkey.dtype.as_deref(),
+            fkey.stype.as_deref(),
+            None,
+        )?;
     }
 
     // Add regular columns
@@ -222,6 +235,7 @@ fn build_columns(kumo_table: &KumoTable) -> Result<Vec<ColumnSpec>, ConvertError
         add_column(
             &col.name,
             col.dtype.as_deref(),
+            col.stype.as_deref(),
             col.timestamp_unit.as_deref(),
         )?;
     }
@@ -231,6 +245,7 @@ fn build_columns(kumo_table: &KumoTable) -> Result<Vec<ColumnSpec>, ConvertError
         add_column(
             &time_col.name,
             time_col.dtype.as_deref(),
+            time_col.stype.as_deref(),
             time_col.timestamp_unit.as_deref(),
         )?;
     }
@@ -240,6 +255,7 @@ fn build_columns(kumo_table: &KumoTable) -> Result<Vec<ColumnSpec>, ConvertError
         add_column(
             &end_time_col.name,
             end_time_col.dtype.as_deref(),
+            end_time_col.stype.as_deref(),
             end_time_col.timestamp_unit.as_deref(),
         )?;
     }

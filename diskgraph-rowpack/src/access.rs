@@ -53,6 +53,66 @@ pub struct FloatListView {
     pub values: FloatListValues,
 }
 
+impl FloatListView {
+    /// Number of elements in this list.
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.end.saturating_sub(self.start)
+    }
+
+    /// Returns true if this list has no elements.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.end <= self.start
+    }
+
+    /// Iterate over all values as f64, calling `f` for each.
+    /// Null elements are passed as 0.0 (matching the encoding behaviour).
+    #[inline]
+    pub fn for_each_f64(&self, mut f: impl FnMut(f64)) {
+        match &self.values {
+            FloatListValues::F16(arr) => {
+                let arr = arr
+                    .as_any()
+                    .downcast_ref::<arrow_array::Float16Array>()
+                    .unwrap();
+                for i in self.start..self.end {
+                    let v = if arr.is_null(i) {
+                        0.0
+                    } else {
+                        half::f16::to_f64(arr.value(i))
+                    };
+                    f(v);
+                }
+            }
+            FloatListValues::F32(arr) => {
+                let arr = arr
+                    .as_any()
+                    .downcast_ref::<arrow_array::Float32Array>()
+                    .unwrap();
+                for i in self.start..self.end {
+                    let v = if arr.is_null(i) {
+                        0.0
+                    } else {
+                        arr.value(i) as f64
+                    };
+                    f(v);
+                }
+            }
+            FloatListValues::F64(arr) => {
+                let arr = arr
+                    .as_any()
+                    .downcast_ref::<arrow_array::Float64Array>()
+                    .unwrap();
+                for i in self.start..self.end {
+                    let v = if arr.is_null(i) { 0.0 } else { arr.value(i) };
+                    f(v);
+                }
+            }
+        }
+    }
+}
+
 impl<'p> RowAccess<'p> {
     pub fn new(hints: Vec<RowAccessHints>, stats: RowAccessStats<'p>) -> Self {
         let fast_parsers = hints

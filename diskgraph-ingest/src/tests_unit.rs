@@ -16,6 +16,7 @@ fn test_negative_int64_key() {
         timestamp_unit: None,
         precision: None,
         scale: None,
+        semantic_type: None,
     };
 
     let val: i64 = -1;
@@ -52,6 +53,7 @@ fn test_negative_decimal128_key() {
         timestamp_unit: None,
         precision: Some(38),
         scale: Some(0),
+        semantic_type: None,
     };
 
     let val: i128 = -1;
@@ -90,6 +92,7 @@ fn test_decimal256_key_as_string() {
         timestamp_unit: None,
         precision: Some(76),
         scale: Some(0),
+        semantic_type: None,
     };
 
     let val = arrow_buffer::i256::from_i128(12345);
@@ -213,6 +216,7 @@ fn single_col_table(ingested: IngestedType) -> TableSpec {
             timestamp_unit: None,
             precision: None,
             scale: None,
+            semantic_type: None,
         }],
         primary_key: None,
         create_time: None,
@@ -305,6 +309,7 @@ fn convert_string_timestamp_to_rowpack_timestamp() {
             timestamp_unit: None,
             precision: None,
             scale: None,
+            semantic_type: None,
         }],
         primary_key: None,
         create_time: None,
@@ -337,6 +342,7 @@ fn convert_int_timestamp_with_unit() {
             timestamp_unit: Some(TimestampUnit::Millis),
             precision: None,
             scale: None,
+            semantic_type: None,
         }],
         primary_key: None,
         create_time: None,
@@ -385,6 +391,7 @@ fn convert_string_date_to_rowpack_date() {
             timestamp_unit: None,
             precision: None,
             scale: None,
+            semantic_type: None,
         }],
         primary_key: None,
         create_time: None,
@@ -424,6 +431,7 @@ fn convert_numeric_to_string_for_rowpack() {
             timestamp_unit: None,
             precision: None,
             scale: None,
+            semantic_type: None,
         }],
         primary_key: None,
         create_time: None,
@@ -458,6 +466,7 @@ fn convert_bytes_to_int_for_rowpack() {
             timestamp_unit: None,
             precision: None,
             scale: None,
+            semantic_type: None,
         }],
         primary_key: None,
         create_time: None,
@@ -573,6 +582,7 @@ fn test_precompute_shards_consistency() {
             timestamp_unit: None,
             precision: None,
             scale: None,
+            semantic_type: None,
         };
 
         let precomputed =
@@ -616,6 +626,7 @@ fn test_precompute_shards_consistency() {
             timestamp_unit: None,
             precision: None,
             scale: None,
+            semantic_type: None,
         };
 
         let precomputed =
@@ -661,6 +672,7 @@ fn test_precompute_shards_casting() {
             timestamp_unit: None,
             precision: None,
             scale: None,
+            semantic_type: None,
         };
 
         let precomputed =
@@ -701,6 +713,7 @@ fn test_precompute_shards_casting() {
             timestamp_unit: None,
             precision: None,
             scale: None,
+            semantic_type: None,
         };
 
         let precomputed =

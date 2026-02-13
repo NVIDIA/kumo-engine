@@ -90,6 +90,32 @@ impl TableSpec {
     }
 }
 
+/// The semantic type of a column, mirroring kumo-ml's `Stype`.
+///
+/// Determines which encoder and statistics are appropriate for a column.
+/// Can be inferred from `IngestedType` + column name heuristics (Phase 1),
+/// or refined later using column statistics like num_unique (Phase 2).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SemanticType {
+    /// Numeric values (integers, floats, decimals).
+    Numerical,
+    /// Low-cardinality discrete values (booleans, enums, small int sets).
+    Categorical,
+    /// Unique identifiers (primary keys, foreign keys).
+    Id,
+    /// Free-form text with semantic content.
+    Text,
+    /// Date/time values.
+    Timestamp,
+    /// Ordered lists (embeddings, float arrays).
+    Sequence,
+    /// Concatenation of multiple categories (e.g. comma-separated tags).
+    Multicategorical,
+    /// Column type not supported for ML encoding.
+    Unsupported,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ColumnSpec {
     pub name: String,
@@ -108,6 +134,9 @@ pub struct ColumnSpec {
     pub precision: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scale: Option<i32>,
+    /// Semantic type for ML encoding. Inferred from dtype/name if not provided.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantic_type: Option<SemanticType>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -818,6 +847,134 @@ fn check_fk_pk_types(
     }
 }
 
+// ── Semantic type inference ─────────────────────────────────────────────────
+
+/// Thresholds matching kumo-ml's `EncoderGenerator` constants.
+const MAX_AUTO_CATEGORICAL_THRESHOLD: usize = 3;
+const MAX_CATEGORIES: usize = 1_000_000;
+const UNIQUE_INT_THRESHOLD: f64 = 0.05;
+
+/// Column role context for semantic type inference.
+pub struct ColumnRole<'a> {
+    pub is_pk: bool,
+    pub is_fk: bool,
+    pub name: &'a str,
+}
+
+/// Sample statistics for a single column, computed during the context phase.
+pub struct ColumnSampleStats {
+    /// Number of unique values observed in the sample.
+    pub num_unique: usize,
+    /// Total non-null values observed.
+    pub count: usize,
+}
+
+/// Infer the semantic type of a column.
+///
+/// Uses IngestedType for unambiguous cases, then falls back to sample stats
+/// and column role for ambiguous types (integers, strings).
+pub fn infer_semantic_type(
+    col: &ColumnSpec,
+    role: &ColumnRole<'_>,
+    sample: Option<&ColumnSampleStats>,
+) -> SemanticType {
+    // PK/FK columns are always Id.
+    if role.is_pk || role.is_fk {
+        return SemanticType::Id;
+    }
+
+    // Unambiguous from IngestedType alone.
+    match col.ingested_dtype {
+        IngestedType::Bool => return SemanticType::Categorical,
+        IngestedType::Date | IngestedType::Timestamp => return SemanticType::Timestamp,
+        IngestedType::Uuid | IngestedType::Uuid256 | IngestedType::Ip => {
+            return SemanticType::Id;
+        }
+        IngestedType::Float32Array | IngestedType::Float64Array | IngestedType::Float16Array => {
+            return SemanticType::Sequence;
+        }
+        IngestedType::Float32
+        | IngestedType::Float64
+        | IngestedType::Decimal128
+        | IngestedType::Decimal256 => return SemanticType::Numerical,
+        IngestedType::Bytes => return SemanticType::Unsupported,
+        // Int and String types need stats — fall through.
+        _ => {}
+    }
+
+    // Name heuristic: columns containing "id" are likely identifiers.
+    if contains_identifier(role.name) {
+        return SemanticType::Id;
+    }
+
+    // If no sample stats, use defaults.
+    let Some(sample) = sample else {
+        return match col.ingested_dtype {
+            IngestedType::String => SemanticType::Categorical,
+            _ => SemanticType::Numerical, // int types
+        };
+    };
+
+    if sample.count == 0 {
+        return SemanticType::Unsupported;
+    }
+
+    let num_unique = sample.num_unique;
+    let unique_fraction = num_unique as f64 / sample.count as f64;
+
+    // Binary/ternary: always categorical.
+    if num_unique <= MAX_AUTO_CATEGORICAL_THRESHOLD {
+        return SemanticType::Categorical;
+    }
+
+    // Within categorical cardinality range.
+    if num_unique <= MAX_CATEGORIES {
+        // High unique fraction for ints → numerical (not categorical).
+        if is_int_type(&col.ingested_dtype) && unique_fraction > UNIQUE_INT_THRESHOLD {
+            return SemanticType::Numerical;
+        }
+        return SemanticType::Categorical;
+    }
+
+    // High cardinality: numerical for ints, text for strings.
+    match col.ingested_dtype {
+        IngestedType::String => SemanticType::Text,
+        _ => SemanticType::Numerical,
+    }
+}
+
+/// Check if a column name looks like an identifier.
+fn contains_identifier(name: &str) -> bool {
+    let name_lower = name.to_lowercase();
+    if name_lower == "id" {
+        return true;
+    }
+    if name_lower.ends_with("_id") || name_lower.starts_with("id_") {
+        return true;
+    }
+    if name_lower.contains("_id_") {
+        return true;
+    }
+    if name_lower.contains("uuid") || name_lower.contains("guid") {
+        return true;
+    }
+    false
+}
+
+fn is_int_type(dtype: &IngestedType) -> bool {
+    matches!(
+        dtype,
+        IngestedType::Int8
+            | IngestedType::Int16
+            | IngestedType::Int32
+            | IngestedType::Int64
+            | IngestedType::UInt8
+            | IngestedType::UInt16
+            | IngestedType::UInt32
+            | IngestedType::UInt64
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -832,6 +989,7 @@ mod tests {
             timestamp_unit: None,
             precision: None,
             scale: None,
+            semantic_type: None,
         }
     }
 

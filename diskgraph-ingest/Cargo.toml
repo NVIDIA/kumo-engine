@@ -27,6 +27,9 @@ bytes = "1"
 url = "2"
 tempfile = "3"
 gxhash = "3.5.0"
+dashmap = "6"
+arc-swap = { workspace = true }
+parking_lot = { workspace = true }
 uuid_simd = { package = "uuid-simd", version = "0.8.0", default-features = false, features = ["std"] }
 base64 = "0.22"
 num-bigint = "0.4"

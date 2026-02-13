@@ -3,20 +3,22 @@ name: EC2 Benchmark
 on:
   push:
     branches: [main]
+  schedule:
+    - cron: '0 */6 * * *'
   workflow_dispatch:
 
 concurrency:
   group: ec2-benchmark
   cancel-in-progress: false
 
-
 env:
-  BENCHMARK_SOURCE: s3://kumo-unit-test/diskgraph-datagenerator/alt_detection_10pct
-  STATS_FILE: /mnt/localssd/diskgraph-index/alt_detection_10pct/ingest_stats.json
-  BASELINE_FILE: /mnt/localssd/benchmark_baseline/ingest_stats.json
   WARN_THRESHOLD: 12
   FAIL_THRESHOLD: 20
-  
+  BASELINE_ROOT: /mnt/localssd/benchmark_baseline
+  DATA_ROOT: /mnt/localssd/benchmark_data
+  CONFIG_LIST: scripts/benchmarks/benchmark_configs/config_list.txt
+  S3_PREFIX: s3://kumo-unit-test/diskgraph-datagenerator
+
 jobs:
   benchmark:
     runs-on: [self-hosted, Linux, ARM64]
@@ -28,34 +30,109 @@ jobs:
       - name: Build release
         run: cargo build --release
 
-      - name: Run benchmark
+      - name: Cache benchmark data
+        run: |
+          set -euo pipefail
+          mkdir -p "${DATA_ROOT}"
+
+          while IFS= read -r config_path || [[ -n "$config_path" ]]; do
+            [[ -z "$config_path" || "$config_path" =~ ^[[:space:]]*# ]] && continue
+            config="${GITHUB_WORKSPACE}/${config_path}"
+            [[ ! -f "$config" ]] && continue
+
+            dataset=$(python3 -c "import json; print(json.load(open('${config}'))['dataset_name'])")
+            local_dir="${DATA_ROOT}/${dataset}"
+
+            # On schedule: always refresh from S3.
+            # On push: only download if data is missing locally.
+            if [[ "${{ github.event_name }}" == "schedule" ]] || [[ ! -d "${local_dir}" ]]; then
+              echo "Syncing ${dataset} from S3..."
+              aws s3 sync "${S3_PREFIX}/${dataset}/" "${local_dir}/" --quiet
+            else
+              echo "Using cached data for ${dataset}"
+            fi
+
+            # Generate local config by rewriting S3 paths to local paths.
+            python3 -c "
+import json, sys
+with open('${config}') as f:
+    cfg = json.load(f)
+for table in cfg.get('tables', []):
+    src = table.get('source', {})
+    paths = src.get('paths', [])
+    src['paths'] = [p.replace('${S3_PREFIX}/', '${DATA_ROOT}/') for p in paths]
+with open('${local_dir}/diskgraph_config.json', 'w') as f:
+    json.dump(cfg, f, indent=2)
+"
+            echo "Prepared local config: ${local_dir}/diskgraph_config.json"
+          done < "${CONFIG_LIST}"
+
+      - name: Run all benchmarks
         id: benchmark
         run: |
-          ./diskgraph-ingest/scripts/ingest_s3.sh "$BENCHMARK_SOURCE"
+          set -euo pipefail
 
-      - name: Check for regression
-        if: always() && steps.benchmark.outcome == 'success'
-        run: |
-          if [ ! -f "$BASELINE_FILE" ]; then
-            echo "No baseline found — saving current run as baseline."
-            mkdir -p "$(dirname "$BASELINE_FILE")"
-            cp "$STATS_FILE" "$BASELINE_FILE"
-            exit 0
-          fi
+          overall_failed=0
+          overall_warned=0
+          summary=""
 
-          python3 - <<'PYEOF'
-          import json, os, sys
+          while IFS= read -r config_path || [[ -n "$config_path" ]]; do
+            # Skip empty lines and comments
+            [[ -z "$config_path" || "$config_path" =~ ^[[:space:]]*# ]] && continue
 
-          stats = os.environ["STATS_FILE"]
-          baseline = os.environ["BASELINE_FILE"]
-          warn_threshold = int(os.environ["WARN_THRESHOLD"])
-          fail_threshold = int(os.environ["FAIL_THRESHOLD"])
+            config="${GITHUB_WORKSPACE}/${config_path}"
+            if [[ ! -f "$config" ]]; then
+              echo "::warning::Config not found: ${config_path}"
+              continue
+            fi
 
-          with open(stats) as f:
+            dataset=$(python3 -c "import json; print(json.load(open('${config}'))['dataset_name'])")
+            local_config="${DATA_ROOT}/${dataset}/diskgraph_config.json"
+            stats_file="/mnt/localssd/diskgraph-index/${dataset}/ingest_stats.json"
+            baseline_file="${BASELINE_ROOT}/${dataset}/ingest_stats.json"
+
+            echo "::group::Benchmark: ${dataset}"
+            echo "Config: ${local_config}"
+            echo "Stats:  ${stats_file}"
+            echo "Baseline: ${baseline_file}"
+
+            # Run ingest with --col-stats using local data
+            if ! COL_STATS_ENABLED=true ./diskgraph-ingest/scripts/ingest_s3.sh "${local_config}"; then
+              echo "::error::Ingest failed for ${dataset}"
+              overall_failed=1
+              summary="${summary}| ${dataset} | FAIL (ingest error) | - | - |\n"
+              echo "::endgroup::"
+              continue
+            fi
+
+            # Compare against baseline
+            if [[ ! -f "$stats_file" ]]; then
+              echo "::warning::No stats file produced for ${dataset}"
+              summary="${summary}| ${dataset} | WARN (no stats) | - | - |\n"
+              echo "::endgroup::"
+              continue
+            fi
+
+            if [[ ! -f "$baseline_file" ]]; then
+              echo "No baseline found for ${dataset} — saving current run as baseline."
+              mkdir -p "$(dirname "$baseline_file")"
+              cp "$stats_file" "$baseline_file"
+              summary="${summary}| ${dataset} | NEW BASELINE | - | - |\n"
+              echo "::endgroup::"
+              continue
+            fi
+
+            # Regression check
+            result=$(python3 - <<PYEOF
+          import json, sys
+
+          with open("${stats_file}") as f:
               current = json.load(f)["stats"]["perf"]
-          with open(baseline) as f:
+          with open("${baseline_file}") as f:
               base = json.load(f)["stats"]["perf"]
 
+          warn_threshold = ${WARN_THRESHOLD}
+          fail_threshold = ${FAIL_THRESHOLD}
           metrics = ["encode_wall_ms", "pk_map_wall_ms", "edges_map_wall_ms", "index_wall_ms"]
           warned = False
           failed = False
@@ -72,14 +149,13 @@ jobs:
               if delta_pct > fail_threshold:
                   status = "FAIL"
                   failed = True
-                  print(f"::error::Benchmark failure: {m} is {delta_pct:+.1f}% vs baseline ({cur}ms vs {bas}ms)")
+                  print(f"::error::${dataset}: {m} is {delta_pct:+.1f}% vs baseline ({cur}ms vs {bas}ms)")
               elif delta_pct > warn_threshold:
                   status = "WARN"
                   warned = True
-                  print(f"::warning::Benchmark regression: {m} is {delta_pct:+.1f}% vs baseline ({cur}ms vs {bas}ms)")
+                  print(f"::warning::${dataset}: {m} is {delta_pct:+.1f}% vs baseline ({cur}ms vs {bas}ms)")
               print(f"  {m}: {bas}ms -> {cur}ms ({delta_pct:+.1f}%) {status}")
 
-          # Total wall time
           cur_total = sum(current.get(m, 0) for m in metrics)
           bas_total = sum(base.get(m, 0) for m in metrics)
           if bas_total > 0:
@@ -87,20 +163,71 @@ jobs:
               print(f"  TOTAL: {bas_total}ms -> {cur_total}ms ({total_delta:+.1f}%)")
               if total_delta > fail_threshold:
                   failed = True
-                  print(f"::error::Overall benchmark failure: {total_delta:+.1f}% vs baseline")
+                  print(f"::error::${dataset}: overall {total_delta:+.1f}% vs baseline")
               elif total_delta > warn_threshold:
                   warned = True
-                  print(f"::warning::Overall benchmark regression: {total_delta:+.1f}% vs baseline")
+                  print(f"::warning::${dataset}: overall {total_delta:+.1f}% vs baseline")
 
           if failed:
-              print("::error::Performance regression >{fail_threshold}% — benchmark failed.")
+              print("STATUS:FAIL")
+              print(f"DELTA:{total_delta:+.1f}%")
               sys.exit(1)
           elif warned:
-              print(f"::warning::Performance regression >{warn_threshold}% detected. Review recommended.")
+              print("STATUS:WARN")
+              print(f"DELTA:{total_delta:+.1f}%")
+          else:
+              print("STATUS:OK")
+              print(f"DELTA:{total_delta:+.1f}%")
           PYEOF
+            )
+            rc=$?
 
-      - name: Save baseline
+            echo "$result"
+
+            if [[ $rc -ne 0 ]]; then
+              overall_failed=1
+              delta=$(echo "$result" | grep "^DELTA:" | tail -1 | cut -d: -f2)
+              summary="${summary}| ${dataset} | FAIL | ${delta} | regression |\n"
+            elif echo "$result" | grep -q "STATUS:WARN"; then
+              overall_warned=1
+              delta=$(echo "$result" | grep "^DELTA:" | tail -1 | cut -d: -f2)
+              summary="${summary}| ${dataset} | WARN | ${delta} | review recommended |\n"
+            else
+              delta=$(echo "$result" | grep "^DELTA:" | tail -1 | cut -d: -f2)
+              summary="${summary}| ${dataset} | OK | ${delta} | - |\n"
+            fi
+
+            echo "::endgroup::"
+          done < "${CONFIG_LIST}"
+
+          # Print summary
+          echo ""
+          echo "## Benchmark Summary"
+          echo "| Dataset | Status | Delta | Notes |"
+          echo "|---------|--------|-------|-------|"
+          echo -e "$summary"
+
+          if [[ $overall_failed -ne 0 ]]; then
+            echo "::error::One or more benchmarks failed regression check."
+            exit 1
+          fi
+
+      - name: Save baselines
         if: success()
         run: |
-          mkdir -p "$(dirname "$BASELINE_FILE")"
-          cp "$STATS_FILE" "$BASELINE_FILE"
+          set -euo pipefail
+          while IFS= read -r config_path || [[ -n "$config_path" ]]; do
+            [[ -z "$config_path" || "$config_path" =~ ^[[:space:]]*# ]] && continue
+            config="${GITHUB_WORKSPACE}/${config_path}"
+            [[ ! -f "$config" ]] && continue
+
+            dataset=$(python3 -c "import json; print(json.load(open('${config}'))['dataset_name'])")
+            stats_file="/mnt/localssd/diskgraph-index/${dataset}/ingest_stats.json"
+            baseline_file="${BASELINE_ROOT}/${dataset}/ingest_stats.json"
+
+            if [[ -f "$stats_file" ]]; then
+              mkdir -p "$(dirname "$baseline_file")"
+              cp "$stats_file" "$baseline_file"
+              echo "Saved baseline for ${dataset}"
+            fi
+          done < "${CONFIG_LIST}"

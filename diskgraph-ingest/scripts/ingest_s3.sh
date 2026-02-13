@@ -12,6 +12,7 @@ set -euo pipefail
 #   -P  Disable pprof profiling output (default: enabled).
 #   -d  Build with debuginfo + frame pointers for stack dumps.
 #   -m  Enable jemalloc heap dump watchdog.
+#   -c  Enable per-column statistics collection (--col-stats).
 
 ULIMIT_NOFILE="${ULIMIT_NOFILE:-100000}"
 if ! ulimit -n "${ULIMIT_NOFILE}" 2>/dev/null; then
@@ -22,6 +23,7 @@ PROFILE_ENABLED="true"
 DEBUGINFO_ENABLED="false"
 MEM_PROFILE_ENABLED="false"
 PARALLEL_ENABLED="${PARALLEL_ENABLED:-true}"
+COL_STATS_ENABLED="${COL_STATS_ENABLED:-false}"
 POSITIONAL=()
 for arg in "$@"; do
   case "${arg}" in
@@ -33,6 +35,9 @@ for arg in "$@"; do
       ;;
     -m)
       MEM_PROFILE_ENABLED="true"
+      ;;
+    -c)
+      COL_STATS_ENABLED="true"
       ;;
     *)
       POSITIONAL+=("${arg}")
@@ -105,6 +110,9 @@ if [[ "${MEM_PROFILE_ENABLED}" == "true" ]]; then
 fi
 if [[ "${PARALLEL_ENABLED}" == "true" ]]; then
   args+=(--parallel)
+fi
+if [[ "${COL_STATS_ENABLED}" == "true" ]]; then
+  args+=(--col-stats)
 fi
 env ${env_args[@]+"${env_args[@]}"} "${args[@]}"
 echo -e "\033[36;1mNext:\033[0m ./diskgraph-ingest/scripts/perf_explorer.sh \"${INPUT_NAME}\""

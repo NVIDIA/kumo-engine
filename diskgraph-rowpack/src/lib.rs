@@ -2,7 +2,7 @@ use anyhow::{anyhow, Result};
 use arrow_array::{Array, RecordBatch};
 use base64::Engine;
 use chrono::{DateTime, Utc};
-use gxhash::{HashMap, HashMapExt};
+use gxhash::{HashMap, HashMapExt, HashSet, HashSetExt};
 use half::f16;
 use half::slice::HalfFloatSliceExt;
 use num_bigint::BigInt;
@@ -28,8 +28,8 @@ mod tests_type_matrix;
 #[allow(clippy::field_reassign_with_default)]
 mod tests_unit;
 
-pub use crate::access::{BinaryStringHint, RowAccess, RowAccessHints};
-use crate::access::{FloatListValues, FloatListView};
+use crate::access::FloatListValues;
+pub use crate::access::{BinaryStringHint, FloatListView, RowAccess, RowAccessHints};
 
 pub(crate) const ROWPACK_VERSION: u8 = 3;
 pub(crate) const MAX_INPUT_STRING_BYTES: usize = 64 * 1024 * 1024;
@@ -38,6 +38,9 @@ pub(crate) const MAX_ARRAY_LEN: usize = 1_000_000;
 const ALPHABET_MAX_CHARS: usize = 64;
 const ALPHABET_MIN_COVERAGE: f32 = 0.95;
 const ALPHABET_INVALID: u8 = u8::MAX;
+/// Maximum unique values tracked per column during context-phase sampling.
+/// Matches the string_counts cap. Beyond this, stype is resolvable without exact count.
+const MAX_SAMPLE_UNIQUES: usize = 1_000_000;
 type FastHashMap<K, V> = HashMap<K, V>;
 
 #[derive(Clone)]
@@ -851,6 +854,33 @@ impl RowPackContextBuilder {
         Ok(())
     }
 
+    /// Returns per-column `(num_unique, count)` from the context-phase sample.
+    ///
+    /// For integer columns: uses `int_uniques.len()` (capped at 1M).
+    /// For string columns: uses `string_counts.len()` (capped at 1M).
+    /// For other types: `num_unique` is 0 (stype is unambiguous from dtype).
+    pub fn sample_unique_counts(&self) -> Vec<(usize, usize)> {
+        self.stats
+            .iter()
+            .zip(self.columns.iter())
+            .map(|(s, logical)| {
+                let num_unique = match logical {
+                    IngestedType::Int8
+                    | IngestedType::Int16
+                    | IngestedType::Int32
+                    | IngestedType::Int64
+                    | IngestedType::UInt8
+                    | IngestedType::UInt16
+                    | IngestedType::UInt32
+                    | IngestedType::UInt64 => s.int_uniques.len(),
+                    IngestedType::String => s.string_counts.len(),
+                    _ => 0,
+                };
+                (num_unique, s.count)
+            })
+            .collect()
+    }
+
     pub fn finish(self) -> Result<RowPackContext> {
         let mut columns = Vec::with_capacity(self.columns.len());
         let mut estimate = 0usize;
@@ -1035,6 +1065,7 @@ struct ColumnStats {
     nulls: usize,
     int_min: i64,
     int_max: i64,
+    int_uniques: HashSet<i64>,
     uint_max: u64,
     float_min: f64,
     float_max: f64,
@@ -1070,6 +1101,7 @@ impl ColumnStats {
             nulls: 0,
             int_min: i64::MAX,
             int_max: i64::MIN,
+            int_uniques: HashSet::new(),
             uint_max: 0,
             float_min: f64::INFINITY,
             float_max: f64::NEG_INFINITY,
@@ -1108,17 +1140,29 @@ impl ColumnStats {
             ValueRef::Int64(v) => {
                 self.int_min = self.int_min.min(*v);
                 self.int_max = self.int_max.max(*v);
+                if self.int_uniques.len() < MAX_SAMPLE_UNIQUES {
+                    self.int_uniques.insert(*v);
+                }
             }
             ValueRef::Int32(v) => {
                 let v = *v as i64;
                 self.int_min = self.int_min.min(v);
                 self.int_max = self.int_max.max(v);
+                if self.int_uniques.len() < MAX_SAMPLE_UNIQUES {
+                    self.int_uniques.insert(v);
+                }
             }
             ValueRef::UInt64(v) => {
                 self.uint_max = self.uint_max.max(*v);
+                if self.int_uniques.len() < MAX_SAMPLE_UNIQUES {
+                    self.int_uniques.insert(*v as i64);
+                }
             }
             ValueRef::UInt32(v) => {
                 self.uint_max = self.uint_max.max(*v as u64);
+                if self.int_uniques.len() < MAX_SAMPLE_UNIQUES {
+                    self.int_uniques.insert(*v as i64);
+                }
             }
             ValueRef::Float64(v) => {
                 if v.is_nan() {
@@ -1149,7 +1193,7 @@ impl ColumnStats {
                 let bytes = v.as_bytes();
                 self.string_max_len = self.string_max_len.max(bytes.len());
                 self.string_bytes += bytes.len();
-                if self.string_counts.len() < 1_000_000 {
+                if self.string_counts.len() < MAX_SAMPLE_UNIQUES {
                     *self.string_counts.entry(bytes.to_vec()).or_insert(0) += 1;
                 }
                 if self.string_samples.len() < config.bpe_max_samples()
@@ -1267,6 +1311,9 @@ impl ColumnStats {
         self.count += 1;
         self.int_min = self.int_min.min(v);
         self.int_max = self.int_max.max(v);
+        if self.int_uniques.len() < MAX_SAMPLE_UNIQUES {
+            self.int_uniques.insert(v);
+        }
     }
 
     fn observe_int32(&mut self, v: i32) {
@@ -1276,6 +1323,9 @@ impl ColumnStats {
     fn observe_uint64(&mut self, v: u64) {
         self.count += 1;
         self.uint_max = self.uint_max.max(v);
+        if self.int_uniques.len() < MAX_SAMPLE_UNIQUES {
+            self.int_uniques.insert(v as i64);
+        }
     }
 
     fn observe_uint32(&mut self, v: u32) {
@@ -1302,7 +1352,7 @@ impl ColumnStats {
         let bytes = value.as_bytes();
         self.string_max_len = self.string_max_len.max(bytes.len());
         self.string_bytes += bytes.len();
-        if self.string_counts.len() < 1_000_000 {
+        if self.string_counts.len() < MAX_SAMPLE_UNIQUES {
             *self.string_counts.entry(bytes.to_vec()).or_insert(0) += 1;
         }
         if self.string_samples.len() < config.bpe_max_samples()
@@ -1681,6 +1731,38 @@ pub(crate) fn train_bpe_dict(
     let mut entries: Vec<(Vec<u8>, usize)> = dict_entries.into_iter().zip(dict_counts).collect();
     entries.sort_by(|a, b| b.1.cmp(&a.1));
     entries.into_iter().map(|(bytes, _)| bytes).collect()
+}
+
+/// Trait for observing column values during the encode loop.
+///
+/// When col-stats are **disabled**, `NoOpObserver` is used — LLVM monomorphizes
+/// the generic `encode_row_observed` and eliminates all observer calls entirely.
+/// When enabled, a real observer (e.g. `FileColStats`) collects streaming statistics.
+pub trait ColumnValueObserver {
+    fn observe_i64(&mut self, col_idx: usize, value: i64);
+    fn observe_f64(&mut self, col_idx: usize, value: f64);
+    fn observe_string(&mut self, col_idx: usize, value: &str);
+    fn observe_timestamp(&mut self, col_idx: usize, secs: i64, nanos: u32);
+    fn observe_float_list(&mut self, col_idx: usize, view: &FloatListView);
+    fn observe_null(&mut self, col_idx: usize);
+}
+
+/// Zero-sized observer that does nothing. LLVM eliminates all calls via monomorphization.
+pub struct NoOpObserver;
+
+impl ColumnValueObserver for NoOpObserver {
+    #[inline(always)]
+    fn observe_i64(&mut self, _col_idx: usize, _value: i64) {}
+    #[inline(always)]
+    fn observe_f64(&mut self, _col_idx: usize, _value: f64) {}
+    #[inline(always)]
+    fn observe_string(&mut self, _col_idx: usize, _value: &str) {}
+    #[inline(always)]
+    fn observe_timestamp(&mut self, _col_idx: usize, _secs: i64, _nanos: u32) {}
+    #[inline(always)]
+    fn observe_float_list(&mut self, _col_idx: usize, _view: &FloatListView) {}
+    #[inline(always)]
+    fn observe_null(&mut self, _col_idx: usize) {}
 }
 
 pub struct RowPackEncoder {
@@ -2253,6 +2335,30 @@ impl RowPackEncoder {
         f16_buf: &mut Vec<f16>,
         key_bufs: &[Vec<u8>],
     ) -> Result<RowPackRowLens> {
+        self.encode_row_observed(
+            access,
+            tags,
+            bools,
+            data,
+            f16_buf,
+            key_bufs,
+            &mut NoOpObserver,
+        )
+    }
+
+    /// Generic version of `encode_row_from_access_into_buffers` that accepts a
+    /// `ColumnValueObserver`. With `NoOpObserver`, LLVM monomorphizes away all
+    /// observer calls — the generated code is identical to the non-generic path.
+    pub fn encode_row_observed<O: ColumnValueObserver>(
+        &self,
+        access: &mut RowAccess<'_>,
+        tags: &mut Vec<u8>,
+        bools: &mut Vec<u8>,
+        data: &mut Vec<u8>,
+        f16_buf: &mut Vec<f16>,
+        key_bufs: &[Vec<u8>],
+        observer: &mut O,
+    ) -> Result<RowPackRowLens> {
         debug_assert_eq!(key_bufs.len(), self.ctx.columns.len());
         let tag_start = tags.len();
         let bool_start = bools.len();
@@ -2265,6 +2371,7 @@ impl RowPackEncoder {
                 IngestedType::Bool => match access.get_bool(idx).ok().flatten() {
                     None => 0u8,
                     Some(v) => {
+                        observer.observe_i64(idx, i64::from(v));
                         bool_writer.write_bits(if v { 1 } else { 0 }, 1);
                         1u8
                     }
@@ -2272,6 +2379,7 @@ impl RowPackEncoder {
                 IngestedType::Int64 => match access.get_int64(idx).ok().flatten() {
                     None => 0u8,
                     Some(v) => {
+                        observer.observe_i64(idx, v);
                         if let ColumnEncoding::Int {
                             signed,
                             varint,
@@ -2288,6 +2396,7 @@ impl RowPackEncoder {
                 IngestedType::Int16 => match access.get_int32(idx).ok().flatten() {
                     None => 0u8,
                     Some(v) => {
+                        observer.observe_i64(idx, v as i64);
                         if let ColumnEncoding::Int {
                             signed,
                             varint,
@@ -2304,6 +2413,7 @@ impl RowPackEncoder {
                 IngestedType::Int8 => match access.get_int32(idx).ok().flatten() {
                     None => 0u8,
                     Some(v) => {
+                        observer.observe_i64(idx, v as i64);
                         if let ColumnEncoding::Int {
                             signed,
                             varint,
@@ -2320,6 +2430,7 @@ impl RowPackEncoder {
                 IngestedType::Int32 => match access.get_int32(idx).ok().flatten() {
                     None => 0u8,
                     Some(v) => {
+                        observer.observe_i64(idx, v as i64);
                         if let ColumnEncoding::Int {
                             signed,
                             varint,
@@ -2336,6 +2447,7 @@ impl RowPackEncoder {
                 IngestedType::UInt64 => match access.get_uint64(idx).ok().flatten() {
                     None => 0u8,
                     Some(v) => {
+                        observer.observe_i64(idx, v as i64);
                         if let ColumnEncoding::Int {
                             signed,
                             varint,
@@ -2352,6 +2464,7 @@ impl RowPackEncoder {
                 IngestedType::UInt16 => match access.get_uint32(idx).ok().flatten() {
                     None => 0u8,
                     Some(v) => {
+                        observer.observe_i64(idx, v as i64);
                         if let ColumnEncoding::Int {
                             signed,
                             varint,
@@ -2368,6 +2481,7 @@ impl RowPackEncoder {
                 IngestedType::UInt8 => match access.get_uint32(idx).ok().flatten() {
                     None => 0u8,
                     Some(v) => {
+                        observer.observe_i64(idx, v as i64);
                         if let ColumnEncoding::Int {
                             signed,
                             varint,
@@ -2384,6 +2498,7 @@ impl RowPackEncoder {
                 IngestedType::UInt32 => match access.get_uint32(idx).ok().flatten() {
                     None => 0u8,
                     Some(v) => {
+                        observer.observe_i64(idx, v as i64);
                         if let ColumnEncoding::Int {
                             signed,
                             varint,
@@ -2400,6 +2515,7 @@ impl RowPackEncoder {
                 IngestedType::Float64 => match access.get_float64(idx).ok().flatten() {
                     None => 0u8,
                     Some(v) => {
+                        observer.observe_f64(idx, v);
                         if let ColumnEncoding::Float { storage } = &col.encoding {
                             encode_float_with_tag(data, col.logical_type, *storage, v)?
                         } else {
@@ -2410,6 +2526,7 @@ impl RowPackEncoder {
                 IngestedType::Float32 => match access.get_float32(idx).ok().flatten() {
                     None => 0u8,
                     Some(v) => {
+                        observer.observe_f64(idx, v as f64);
                         if let ColumnEncoding::Float { storage } = &col.encoding {
                             encode_float_with_tag(data, col.logical_type, *storage, v as f64)?
                         } else {
@@ -2422,6 +2539,7 @@ impl RowPackEncoder {
                     #[allow(clippy::manual_unwrap_or_default)]
                     access
                         .with_string(idx, |v| {
+                            observer.observe_string(idx, v);
                             encode_string(
                                 data,
                                 v,
@@ -2509,6 +2627,7 @@ impl RowPackEncoder {
                 IngestedType::Date => match access.get_date(idx).ok().flatten() {
                     None => 0u8,
                     Some(v) => {
+                        observer.observe_i64(idx, v as i64);
                         if let ColumnEncoding::Date { varint, bits } = &col.encoding {
                             encode_int(data, true, *varint, *bits, v as i128)?;
                             1u8
@@ -2520,6 +2639,7 @@ impl RowPackEncoder {
                 IngestedType::Timestamp => match access.get_timestamp(idx).ok().flatten() {
                     None => 0u8,
                     Some((secs, nanos)) => {
+                        observer.observe_timestamp(idx, secs, nanos);
                         write_varint(zigzag_encode(secs), data);
                         write_varint(nanos as u64, data);
                         1u8
@@ -2535,6 +2655,7 @@ impl RowPackEncoder {
                             ..
                         } = &col.encoding
                         {
+                            observer.observe_f64(idx, v as f64 / 10_f64.powi(*scale));
                             if *bytes == 0 || *bytes > 16 {
                                 return Err(anyhow!("rowpack decimal size mismatch"));
                             }
@@ -2566,6 +2687,7 @@ impl RowPackEncoder {
                 IngestedType::Float32Array => match access.float_list_view(idx)? {
                     None => 0u8,
                     Some(view) => {
+                        observer.observe_float_list(idx, &view);
                         if let ColumnEncoding::FloatArray { storage } = &col.encoding {
                             encode_float_list_with_tag(
                                 data,
@@ -2582,6 +2704,7 @@ impl RowPackEncoder {
                 IngestedType::Float16Array => match access.float_list_view(idx)? {
                     None => 0u8,
                     Some(view) => {
+                        observer.observe_float_list(idx, &view);
                         if let ColumnEncoding::FloatArray { storage } = &col.encoding {
                             encode_float_list_with_tag(
                                 data,
@@ -2598,6 +2721,7 @@ impl RowPackEncoder {
                 IngestedType::Float64Array => match access.float_list_view(idx)? {
                     None => 0u8,
                     Some(view) => {
+                        observer.observe_float_list(idx, &view);
                         if let ColumnEncoding::FloatArray { storage } = &col.encoding {
                             encode_float_list_with_tag(
                                 data,
@@ -2612,6 +2736,9 @@ impl RowPackEncoder {
                     }
                 },
             };
+            if tag == 0 {
+                observer.observe_null(idx);
+            }
             tag_writer.write_bits(tag, 2);
         }
         tag_writer.finish();

@@ -1,6 +1,7 @@
 //! Diskgraph ingest: convert raw CSV/Parquet sources into index-ready artifacts.
 
 pub mod coercion;
+pub mod col_stats;
 pub mod config;
 pub mod config_converter;
 pub mod consts;
@@ -23,7 +24,8 @@ pub use crate::errors::{
     CoercionError, CoercionWarning, ConvertError, KeyParseError, KeyParseResult,
 };
 use crate::graph_config::{
-    ColumnSpec, DirectionSpec, IngestedType, TableFormat, TableSpec, TimeSpec, WeightSpec,
+    ColumnSpec, DirectionSpec, IngestedType, SemanticType, TableFormat, TableSpec, TimeSpec,
+    WeightSpec,
 };
 pub use crate::io::Dest;
 use crate::io::{
@@ -368,6 +370,11 @@ struct IngestContext {
     temp_edges_map_bytes: u64,
     temp_node_data_bytes: u64,
     peak_mem_stats: Option<std::sync::Arc<PeakMemStats>>,
+    col_stats: bool,
+    cat_count_strategy: crate::col_stats::CategoryCountStrategy,
+    row_subsample: bool,
+    /// Text sample stats computed during the context phase (table -> col -> stats).
+    text_sample_stats: HashMap<String, HashMap<String, crate::col_stats::TextSampleStats>>,
 }
 
 struct EdgeBuildContext {
@@ -1455,6 +1462,10 @@ impl IngestContext {
             temp_edges_map_bytes: 0,
             temp_node_data_bytes: 0,
             peak_mem_stats: options.peak_mem_stats,
+            col_stats: options.col_stats,
+            cat_count_strategy: options.cat_count_strategy,
+            row_subsample: options.row_subsample,
+            text_sample_stats: HashMap::new(),
         })
     }
 
@@ -1465,11 +1476,18 @@ impl IngestContext {
     }
 
     fn build_node_contexts(&mut self) -> Result<()> {
+        type ContextResult = (
+            String,
+            String,
+            Vec<SemanticType>,
+            HashMap<String, crate::col_stats::TextSampleStats>,
+        );
         let tables = self.source.tables.clone();
-        let (tx, rx) = std::sync::mpsc::channel::<Result<(String, String)>>();
+        let (tx, rx) = std::sync::mpsc::channel::<Result<ContextResult>>();
         let mut tasks = Vec::new();
         let source_rowpack = self.source.rowpack.clone();
         let input_transfer = self.input_transfer.clone();
+        let col_stats_enabled = self.col_stats;
         for table in &tables {
             if table.edge_table.is_some() {
                 continue;
@@ -1680,6 +1698,50 @@ impl IngestContext {
                             break 'file_loop;
                         }
                     }
+                    // Infer semantic types from sample stats before finish() consumes the builder.
+                    let unique_counts = node_builder.sample_unique_counts();
+                    let fk_columns: HashSet<&str> = table
+                        .fkeys
+                        .iter()
+                        .map(|fk| fk.src_column.as_str())
+                        .collect();
+                    let semantic_types: Vec<SemanticType> = table
+                        .columns
+                        .iter()
+                        .zip(unique_counts.iter())
+                        .map(|(col, &(num_unique, count))| {
+                            // Respect explicit semantic_type from config.
+                            if let Some(stype) = col.semantic_type {
+                                return stype;
+                            }
+                            use crate::graph_config::{
+                                infer_semantic_type, ColumnRole, ColumnSampleStats,
+                            };
+                            let role = ColumnRole {
+                                is_pk: table
+                                    .primary_key
+                                    .as_deref()
+                                    .is_some_and(|pk| pk == col.name),
+                                is_fk: fk_columns.contains(col.name.as_str()),
+                                name: &col.name,
+                            };
+                            let sample = if num_unique > 0 || count > 0 {
+                                Some(ColumnSampleStats { num_unique, count })
+                            } else {
+                                None
+                            };
+                            infer_semantic_type(col, &role, sample.as_ref())
+                        })
+                        .collect();
+
+                    // Compute text sample stats from context-phase sample rows.
+                    // Read first parquet file(s) for text columns, up to 10K strings each.
+                    let text_stats_map = if col_stats_enabled {
+                        compute_context_text_stats(&table, &semantic_types, &input_transfer)?
+                    } else {
+                        HashMap::new()
+                    };
+
                     let node_context = node_builder.finish()?;
                     let ctx_bytes = node_context.to_bytes()?;
                     target.write_bytes(&temp_node_context_path(&table.name), ctx_bytes.clone())?;
@@ -1698,6 +1760,8 @@ impl IngestContext {
                     tx.send(Ok((
                         table.name.clone(),
                         format!("nodes/{}/node_data.ctx", table.name.to_lowercase()),
+                        semantic_types,
+                        text_stats_map,
                     )))
                     .map_err(|e| anyhow!("context output error: {e}"))?;
                     Ok(())
@@ -1712,8 +1776,18 @@ impl IngestContext {
             let result = rx
                 .recv()
                 .map_err(|e| anyhow!("context output error: {e}"))??;
-            let (table_name, ctx_path) = result;
+            let (table_name, ctx_path, semantic_types, text_stats) = result;
             self.table_contexts.insert(table_name.clone(), ctx_path);
+            if !text_stats.is_empty() {
+                self.text_sample_stats
+                    .insert(table_name.clone(), text_stats);
+            }
+            // Populate semantic_type on each column.
+            if let Some(table) = self.source.tables.iter_mut().find(|t| t.name == table_name) {
+                for (col, stype) in table.columns.iter_mut().zip(semantic_types) {
+                    col.semantic_type = Some(stype);
+                }
+            }
         }
         Ok(())
     }
@@ -1724,12 +1798,12 @@ impl IngestContext {
         fs::create_dir_all(&temp_root)?;
         let mut table_rows: HashMap<String, u64> = HashMap::new();
         let tables = self.source.tables.clone();
-        #[derive(Default)]
         struct EncodeResult {
             table: String,
             total_rows: u64,
             node_data_dropped: u64,
             key_failures: KeyFailureState,
+            file_col_stats: Option<crate::col_stats::FileColStats>,
         }
 
         let (tx, rx) = std::sync::mpsc::channel::<Result<EncodeResult>>();
@@ -1755,6 +1829,34 @@ impl IngestContext {
         let input_transfer = self.input_transfer.clone();
         let trimmed_strings = std::sync::Arc::clone(&self.trimmed_strings);
         let progress = self.progress.clone();
+        let col_stats_enabled = self.col_stats;
+        let cat_count_strategy = self.cat_count_strategy;
+        let row_subsample = self.row_subsample;
+
+        // Create shared category count state per table (if enabled).
+        let table_cat_counts: HashMap<
+            String,
+            std::sync::Arc<crate::col_stats::TableCategoryCounts>,
+        > = if cat_count_strategy != crate::col_stats::CategoryCountStrategy::None
+            && col_stats_enabled
+        {
+            tables
+                .iter()
+                .filter(|t| t.edge_table.is_none()) // Only node tables
+                .map(|t| {
+                    let stypes: Vec<_> = t.columns.iter().map(|c| c.semantic_type).collect();
+                    let cat = crate::col_stats::TableCategoryCounts::new(
+                        cat_count_strategy,
+                        &stypes,
+                        row_subsample,
+                    );
+                    (t.name.clone(), std::sync::Arc::new(cat))
+                })
+                .collect()
+        } else {
+            HashMap::new()
+        };
+
         for table in &tables {
             if let Some(cb) = &self.progress {
                 cb(ProgressEvent {
@@ -1778,6 +1880,7 @@ impl IngestContext {
             let root = root.clone();
             let relation_defs = std::sync::Arc::clone(&relation_defs);
             let fk_edge_targets = std::sync::Arc::clone(&fk_edge_targets);
+            let table_cat = table_cat_counts.get(&table.name).cloned();
             let file_count = table.get_paths().len();
             for file_idx in 0..file_count {
                 let table = table.clone();
@@ -1796,6 +1899,7 @@ impl IngestContext {
                 let input_transfer = input_transfer.clone();
                 let tx = tx.clone();
                 let edge_errors = std::sync::Arc::clone(&edge_errors);
+                let table_cat = table_cat.clone();
                 tasks.push(WorkItem {
                     bucket: None,
                     run: Box::new(move |_scratch| {
@@ -1823,33 +1927,72 @@ impl IngestContext {
                                 total_rows: 0,
                                 node_data_dropped,
                                 key_failures,
+                                file_col_stats: None,
                             }))
                             .map_err(|e| anyhow!("encode output error: {e}"))?;
                             return Ok(());
                         }
-                        let node = Self::build_temp_node_file(
-                            &table,
-                            &relationships,
-                            &relation_defs,
-                            file_idx,
-                            num_shards,
-                            &target,
-                            &root,
-                            input_transfer.clone(),
-                            &trimmed_strings,
-                            &progress,
-                            &mut key_failures,
-                            &node_senders,
-                            &dest_key_senders,
-                            &dest_key_errors,
-                            &sort_key_senders,
-                            &fk_edge_targets,
-                        )?;
+                        let (node, file_stats) = if col_stats_enabled {
+                            let stypes: Vec<_> =
+                                table.columns.iter().map(|c| c.semantic_type).collect();
+                            let mut obs = if let Some(ref tc) = table_cat {
+                                crate::col_stats::FileColStats::new_with_categories(
+                                    &stypes,
+                                    std::sync::Arc::clone(tc),
+                                )
+                            } else {
+                                crate::col_stats::FileColStats::new(&stypes)
+                            };
+                            let result = Self::build_temp_node_file(
+                                &table,
+                                &relationships,
+                                &relation_defs,
+                                file_idx,
+                                num_shards,
+                                &target,
+                                &root,
+                                input_transfer.clone(),
+                                &trimmed_strings,
+                                &progress,
+                                &mut key_failures,
+                                &node_senders,
+                                &dest_key_senders,
+                                &dest_key_errors,
+                                &sort_key_senders,
+                                &fk_edge_targets,
+                                &mut obs,
+                            )?;
+                            // Flush local category counts to shared state (Approach 3)
+                            obs.flush_categories();
+                            (result, Some(obs))
+                        } else {
+                            let result = Self::build_temp_node_file(
+                                &table,
+                                &relationships,
+                                &relation_defs,
+                                file_idx,
+                                num_shards,
+                                &target,
+                                &root,
+                                input_transfer.clone(),
+                                &trimmed_strings,
+                                &progress,
+                                &mut key_failures,
+                                &node_senders,
+                                &dest_key_senders,
+                                &dest_key_errors,
+                                &sort_key_senders,
+                                &fk_edge_targets,
+                                &mut diskgraph_rowpack::NoOpObserver,
+                            )?;
+                            (result, None)
+                        };
                         tx.send(Ok(EncodeResult {
                             table: table.name.clone(),
                             total_rows: node.total_rows,
                             node_data_dropped: node.node_data_dropped,
                             key_failures,
+                            file_col_stats: file_stats,
                         }))
                         .map_err(|e| anyhow!("encode output error: {e}"))?;
                         Ok(())
@@ -1861,6 +2004,8 @@ impl IngestContext {
         let task_count = tasks.len();
         let pool = self.make_pool::<()>();
         run_tasks(tasks, &pool)?;
+        // Per-table col stats accumulator (Option C: merge on receive side)
+        let mut table_col_stats: HashMap<String, crate::col_stats::FileColStats> = HashMap::new();
         for _ in 0..task_count {
             let result = rx
                 .recv()
@@ -1878,6 +2023,13 @@ impl IngestContext {
                 *entry = entry.saturating_add(result.node_data_dropped);
             }
             self.merge_key_failures(result.key_failures);
+            // Merge per-file col stats into per-table accumulator
+            if let Some(mut file_stats) = result.file_col_stats {
+                table_col_stats
+                    .entry(result.table.clone())
+                    .and_modify(|acc| acc.merge(&mut file_stats))
+                    .or_insert(file_stats);
+            }
             if let Some(cb) = &self.progress {
                 let expected = tables
                     .iter()
@@ -1894,6 +2046,23 @@ impl IngestContext {
                     status: None,
                 });
             }
+        }
+        // Write col_stats.json if enabled
+        if col_stats_enabled && !table_col_stats.is_empty() {
+            let mut root_map = serde_json::Map::new();
+            for table in &tables {
+                if let Some(mut stats) = table_col_stats.remove(&table.name) {
+                    let col_names: Vec<String> =
+                        table.columns.iter().map(|c| c.name.clone()).collect();
+                    let tc = table_cat_counts.get(&table.name).map(|a| a.as_ref());
+                    let tss = self.text_sample_stats.get(&table.name);
+                    root_map.insert(table.name.clone(), stats.to_json(&col_names, tc, tss));
+                }
+            }
+            let json_str = serde_json::to_string_pretty(&serde_json::Value::Object(root_map))?;
+            let col_stats_path = root.join("col_stats.json");
+            std::fs::write(&col_stats_path, json_str)?;
+            eprintln!("wrote col_stats.json to {}", col_stats_path.display());
         }
         drop(node_senders);
         drop(edge_senders);
@@ -2069,7 +2238,7 @@ impl IngestContext {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn build_temp_node_file(
+    fn build_temp_node_file<O: diskgraph_rowpack::ColumnValueObserver>(
         table: &TableSpec,
         relationships: &[RelationshipRuntime],
         relation_defs: &[RelationDef],
@@ -2086,6 +2255,7 @@ impl IngestContext {
         dest_key_errors: &std::sync::Arc<std::sync::Mutex<Option<String>>>,
         sort_key_senders: &std::sync::Arc<Vec<std::sync::mpsc::SyncSender<SortKeyWriteMessage>>>,
         fk_edge_targets: &HashMap<String, FkEdgeTarget>,
+        observer: &mut O,
     ) -> Result<TempNodeFileResult> {
         let pk_col = table
             .primary_key
@@ -2233,6 +2403,7 @@ impl IngestContext {
                         key_failures,
                         timestamp_valid,
                         shard_override,
+                        observer,
                     )?;
                 }
             };
@@ -2392,7 +2563,7 @@ impl IngestContext {
     }
 
     #[allow(clippy::too_many_arguments, clippy::ptr_arg)]
-    fn write_node_row_from_access(
+    fn write_node_row_from_access<O: diskgraph_rowpack::ColumnValueObserver>(
         table: &TableSpec,
         pk_idx: Option<usize>,
         rel_specs: &[(std::sync::Arc<str>, usize, usize, String, IngestedType)],
@@ -2413,6 +2584,7 @@ impl IngestContext {
         key_failures: &mut KeyFailureState,
         timestamp_valid: bool,
         shard_override: Option<usize>,
+        observer: &mut O,
     ) -> Result<()> {
         for buf in key_bufs.iter_mut() {
             buf.clear();
@@ -2495,8 +2667,8 @@ impl IngestContext {
             node_tag_start = sink.tags.len();
             node_bool_start = sink.bools.len();
             node_data_start = sink.data.len();
-            let lens = encoder.encode_row_from_access_into_buffers(
-                access, sink.tags, sink.bools, sink.data, f16_buf, key_bufs,
+            let lens = encoder.encode_row_observed(
+                access, sink.tags, sink.bools, sink.data, f16_buf, key_bufs, observer,
             )?;
             let row_len = lens
                 .tag_bytes
@@ -5137,6 +5309,135 @@ impl IngestContext {
             num_shards: Some(self.num_shards),
         }
     }
+}
+
+/// Compute text sample stats during the context phase.
+/// Reads up to TEXT_SAMPLE_LIMIT rows from the first parquet file(s) for text columns.
+const TEXT_SAMPLE_LIMIT: usize = 10_000;
+
+fn compute_context_text_stats(
+    table: &crate::graph_config::TableSpec,
+    semantic_types: &[SemanticType],
+    input_transfer: &Option<CloudTransfer>,
+) -> Result<HashMap<String, crate::col_stats::TextSampleStats>> {
+    // Find text column indices and names.
+    let text_cols: Vec<(usize, &str)> = table
+        .columns
+        .iter()
+        .zip(semantic_types.iter())
+        .enumerate()
+        .filter(|(_, (_, stype))| **stype == SemanticType::Text)
+        .map(|(i, (col, _))| (i, col.name.as_str()))
+        .collect();
+
+    if text_cols.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    // Buffer: col_idx -> Vec<String>
+    let mut buffers: Vec<Vec<String>> = vec![Vec::new(); text_cols.len()];
+
+    // Decide how many files to read and rows per file:
+    //   1 file  → 10K from it
+    //   2 files → 5K each
+    //   3+ files → 4K, 3K, 3K
+    let all_paths = table.get_paths();
+    let num_files = all_paths.len();
+    let file_limits: Vec<(&str, usize)> = if num_files == 1 {
+        vec![(all_paths[0].as_str(), TEXT_SAMPLE_LIMIT)]
+    } else if num_files == 2 {
+        vec![
+            (all_paths[0].as_str(), 5_000),
+            (all_paths[1].as_str(), 5_000),
+        ]
+    } else {
+        vec![
+            (all_paths[0].as_str(), 4_000),
+            (all_paths[1].as_str(), 3_000),
+            (all_paths[2].as_str(), 3_000),
+        ]
+    };
+
+    for (path, row_limit) in &file_limits {
+        let mut rows_read = 0usize;
+        match table.format() {
+            TableFormat::Parquet => {
+                let pooled = if let Some(transfer) = input_transfer {
+                    if is_cloud_path(path) {
+                        Some(download_cloud_bytes(transfer, path)?)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                macro_rules! read_batches {
+                    ($reader:expr) => {
+                        for batch in $reader {
+                            let batch = batch?;
+                            for (buf_idx, &(col_idx, _)) in text_cols.iter().enumerate() {
+                                let col_name = &table.columns[col_idx].name;
+                                let arr_idx = batch
+                                    .schema()
+                                    .index_of(col_name)
+                                    .context("missing column in batch")?;
+                                let array = batch.column(arr_idx);
+                                for row in 0..batch.num_rows() {
+                                    if rows_read + row >= *row_limit {
+                                        break;
+                                    }
+                                    if array.is_null(row) {
+                                        continue;
+                                    }
+                                    if let Some(s) =
+                                        array.as_any().downcast_ref::<arrow_array::StringArray>()
+                                    {
+                                        buffers[buf_idx].push(s.value(row).to_string());
+                                    } else if let Some(s) = array
+                                        .as_any()
+                                        .downcast_ref::<arrow_array::LargeStringArray>(
+                                    ) {
+                                        buffers[buf_idx].push(s.value(row).to_string());
+                                    }
+                                }
+                            }
+                            rows_read += batch.num_rows();
+                            if rows_read >= *row_limit {
+                                break;
+                            }
+                        }
+                    };
+                }
+
+                if let Some(pooled) = pooled {
+                    let bytes = pooled.bytes();
+                    let builder = ParquetRecordBatchReaderBuilder::try_new(bytes)?;
+                    let reader = builder.with_batch_size(NODE_BATCH_SIZE).build()?;
+                    read_batches!(reader);
+                } else {
+                    let file = fs::File::open(path).with_context(|| format!("open {}", path))?;
+                    let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
+                    let reader = builder.with_batch_size(NODE_BATCH_SIZE).build()?;
+                    read_batches!(reader);
+                }
+            }
+            TableFormat::Csv => {
+                break;
+            }
+        }
+    }
+
+    // Compute text sample stats for each text column.
+    let mut result = HashMap::new();
+    for (buf_idx, &(_, col_name)) in text_cols.iter().enumerate() {
+        let refs: Vec<&str> = buffers[buf_idx].iter().map(|s| s.as_str()).collect();
+        if !refs.is_empty() {
+            let stats = crate::col_stats::compute_text_sample_stats(&refs);
+            result.insert(col_name.to_string(), stats);
+        }
+    }
+    Ok(result)
 }
 
 fn profile_phase<T>(dir: &Path, name: &str, f: impl FnOnce() -> Result<T>) -> Result<T> {

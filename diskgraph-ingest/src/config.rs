@@ -76,6 +76,12 @@ pub struct IngestOptions {
     pub parallel: bool,
     pub index_mem_budget_bytes: Option<u64>,
     pub peak_mem_stats: Option<Arc<PeakMemStats>>,
+    /// Collect per-column statistics during the encode stage.
+    pub col_stats: bool,
+    /// Category count collection strategy.
+    pub cat_count_strategy: crate::col_stats::CategoryCountStrategy,
+    /// Enable per-row 30% subsampling for category counts (scale ÷0.3).
+    pub row_subsample: bool,
 }
 
 impl Default for IngestOptions {
@@ -86,6 +92,9 @@ impl Default for IngestOptions {
             parallel: true,
             index_mem_budget_bytes: None,
             peak_mem_stats: None,
+            col_stats: false,
+            cat_count_strategy: crate::col_stats::CategoryCountStrategy::None,
+            row_subsample: false,
         }
     }
 }

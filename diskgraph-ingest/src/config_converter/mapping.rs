@@ -1,6 +1,6 @@
 //! Type mapping functions for Kumo to DiskGraph conversion.
 
-use crate::graph_config::{IngestedType, TimestampUnit};
+use crate::graph_config::{IngestedType, SemanticType, TimestampUnit};
 
 /// Map a Kumo dtype string to a DiskGraph IngestedType.
 ///
@@ -43,6 +43,24 @@ pub fn map_kumo_dtype(dtype: &str) -> Option<IngestedType> {
 
         // Unsupported or unknown
         "unsupported" => None,
+        _ => None,
+    }
+}
+
+/// Map a Kumo stype string to a DiskGraph SemanticType.
+///
+/// Returns None for unknown stypes (let inference decide).
+pub fn map_kumo_stype(stype: &str) -> Option<SemanticType> {
+    match stype {
+        "numerical" => Some(SemanticType::Numerical),
+        "categorical" => Some(SemanticType::Categorical),
+        "multicategorical" => Some(SemanticType::Multicategorical),
+        "ID" => Some(SemanticType::Id),
+        "text" => Some(SemanticType::Text),
+        "timestamp" => Some(SemanticType::Timestamp),
+        "sequence" => Some(SemanticType::Sequence),
+        "image" => Some(SemanticType::Text), // image URLs stored as text
+        "unsupported" => Some(SemanticType::Unsupported),
         _ => None,
     }
 }

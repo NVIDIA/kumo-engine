@@ -61,6 +61,22 @@ struct Args {
     /// Fail the ingest if stats publishing fails.
     #[arg(long, default_value_t = false)]
     stats_required: bool,
+    /// Collect per-column statistics during encode.
+    #[arg(long, default_value_t = false)]
+    col_stats: bool,
+    /// Category count strategy: none, hybrid, graduation.
+    #[arg(long, value_enum, default_value = "none")]
+    cat_count_strategy: CatCountStrategyArg,
+    /// Enable per-row 30% subsampling for category counts (scale ÷0.3).
+    #[arg(long, default_value_t = false)]
+    row_subsample: bool,
+}
+
+#[derive(Copy, Clone, Debug, ValueEnum)]
+enum CatCountStrategyArg {
+    None,
+    Hybrid,
+    Graduation,
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
@@ -114,6 +130,17 @@ fn main() -> Result<()> {
         parallel: args.parallel,
         index_mem_budget_bytes: args.index_mem_budget_bytes,
         peak_mem_stats: peak_tracker.as_ref().map(|t| Arc::clone(&t.stats)),
+        col_stats: args.col_stats,
+        cat_count_strategy: match args.cat_count_strategy {
+            CatCountStrategyArg::None => diskgraph_ingest::col_stats::CategoryCountStrategy::None,
+            CatCountStrategyArg::Hybrid => {
+                diskgraph_ingest::col_stats::CategoryCountStrategy::Hybrid
+            }
+            CatCountStrategyArg::Graduation => {
+                diskgraph_ingest::col_stats::CategoryCountStrategy::Graduation
+            }
+        },
+        row_subsample: args.row_subsample,
     };
     let dest = match args.dest {
         DestArg::Local => Dest::Local,

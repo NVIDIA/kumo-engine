@@ -16,6 +16,7 @@ fn base_table(name: &str) -> TableSpec {
                 fixed_len: None,
                 precision: None,
                 scale: None,
+                semantic_type: None,
             },
             ColumnSpec {
                 name: "name".into(),
@@ -26,6 +27,7 @@ fn base_table(name: &str) -> TableSpec {
                 fixed_len: Some(8),
                 precision: None,
                 scale: None,
+                semantic_type: None,
             },
         ],
         primary_key: Some("id".into()),
@@ -91,6 +93,7 @@ fn validate_missing_pk_column() {
                 fixed_len: Some(8),
                 precision: None,
                 scale: None,
+                semantic_type: None,
             }],
             primary_key: Some("id".into()),
             create_time: None,
@@ -151,6 +154,7 @@ fn validate_duplicate_column_names() {
         fixed_len: None,
         precision: None,
         scale: None,
+        semantic_type: None,
     });
     assert_err_contains(meta, "table User has duplicate column id");
 }
@@ -206,6 +210,7 @@ fn validate_decimal_missing_precision() {
         fixed_len: None,
         precision: None,
         scale: Some(2),
+        semantic_type: None,
     });
     assert_err_contains(meta, "missing precision");
 }
@@ -222,6 +227,7 @@ fn validate_decimal_missing_scale() {
         fixed_len: None,
         precision: Some(10),
         scale: None,
+        semantic_type: None,
     });
     assert_err_contains(meta, "missing scale");
 }
@@ -238,6 +244,7 @@ fn validate_decimal_precision_out_of_range() {
         fixed_len: None,
         precision: Some(50),
         scale: Some(2),
+        semantic_type: None,
     });
     assert_err_contains(meta, "precision out of range");
 }
@@ -254,6 +261,7 @@ fn validate_decimal_scale_out_of_range() {
         fixed_len: None,
         precision: Some(10),
         scale: Some(20),
+        semantic_type: None,
     });
     assert_err_contains(meta, "scale out of range");
 }
@@ -270,6 +278,7 @@ fn validate_decimal_precision_on_non_decimal() {
         fixed_len: None,
         precision: Some(10),
         scale: None,
+        semantic_type: None,
     });
     assert_err_contains(meta, "precision/scale only valid for decimal");
 }
@@ -286,6 +295,7 @@ fn validate_decimal_precision_allowed_with_source_decimal() {
         fixed_len: None,
         precision: Some(10),
         scale: Some(2),
+        semantic_type: None,
     });
     assert!(meta.validate().is_ok());
 }
@@ -304,6 +314,7 @@ fn validate_edge_fk_missing_column() {
             fixed_len: None,
             precision: None,
             scale: None,
+            semantic_type: None,
         }],
         primary_key: None,
         create_time: None,
@@ -345,6 +356,7 @@ fn validate_edge_fk_missing_table() {
                 fixed_len: None,
                 precision: None,
                 scale: None,
+                semantic_type: None,
             },
             ColumnSpec {
                 name: "dst_id".into(),
@@ -355,6 +367,7 @@ fn validate_edge_fk_missing_table() {
                 fixed_len: None,
                 precision: None,
                 scale: None,
+                semantic_type: None,
             },
         ],
         primary_key: None,
@@ -398,6 +411,7 @@ fn validate_edge_fk_ref_table_no_pk() {
                 fixed_len: None,
                 precision: None,
                 scale: None,
+                semantic_type: None,
             },
             ColumnSpec {
                 name: "dst_id".into(),
@@ -408,6 +422,7 @@ fn validate_edge_fk_ref_table_no_pk() {
                 fixed_len: None,
                 precision: None,
                 scale: None,
+                semantic_type: None,
             },
         ],
         primary_key: None,
@@ -452,6 +467,7 @@ fn validate_edge_fk_int_string_ok() {
                 fixed_len: None,
                 precision: None,
                 scale: None,
+                semantic_type: None,
             },
             ColumnSpec {
                 name: "dst_id".into(),
@@ -462,6 +478,7 @@ fn validate_edge_fk_int_string_ok() {
                 fixed_len: None,
                 precision: None,
                 scale: None,
+                semantic_type: None,
             },
         ],
         primary_key: None,
@@ -504,6 +521,7 @@ fn validate_edge_fk_string_int_ok() {
                 fixed_len: None,
                 precision: None,
                 scale: None,
+                semantic_type: None,
             },
             ColumnSpec {
                 name: "dst_id".into(),
@@ -514,6 +532,7 @@ fn validate_edge_fk_string_int_ok() {
                 fixed_len: None,
                 precision: None,
                 scale: None,
+                semantic_type: None,
             },
         ],
         primary_key: None,
@@ -564,6 +583,7 @@ fn validate_edge_fk_string_bytes_ok() {
                 fixed_len: Some(8),
                 precision: None,
                 scale: None,
+                semantic_type: None,
             },
             ColumnSpec {
                 name: "dst_id".into(),
@@ -574,6 +594,7 @@ fn validate_edge_fk_string_bytes_ok() {
                 fixed_len: Some(8),
                 precision: None,
                 scale: None,
+                semantic_type: None,
             },
         ],
         primary_key: None,
@@ -624,6 +645,7 @@ fn validate_edge_fk_string_bytes_len_mismatch() {
                 fixed_len: Some(4),
                 precision: None,
                 scale: None,
+                semantic_type: None,
             },
             ColumnSpec {
                 name: "dst_id".into(),
@@ -634,6 +656,7 @@ fn validate_edge_fk_string_bytes_len_mismatch() {
                 fixed_len: Some(8),
                 precision: None,
                 scale: None,
+                semantic_type: None,
             },
         ],
         primary_key: None,
@@ -678,6 +701,7 @@ fn validate_edge_fk_uuid_ok() {
             fixed_len: None,
             precision: None,
             scale: None,
+            semantic_type: None,
         }],
         primary_key: None,
         create_time: None,
@@ -721,6 +745,7 @@ fn validate_edge_fk_uuid_mismatch() {
             fixed_len: None,
             precision: None,
             scale: None,
+            semantic_type: None,
         }],
         primary_key: None,
         create_time: None,
@@ -1149,6 +1174,7 @@ mod new_schema_types {
                 timestamp_unit: None,
                 precision: None,
                 scale: None,
+                semantic_type: None,
             }],
             primary_key: None,
             create_time: None,
