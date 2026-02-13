@@ -43,7 +43,7 @@ EdgeType = Tuple[str, str, str]
 
 def fetch_schema_mapping(server_address: str) -> dict:
     client = flight.connect(server_address)
-    result = list(client.do_action(flight.Action("get_schema_mapping", b"")))
+    result = list(client.do_action(flight.Action("get_type_name_mapping", b"")))
     if not result:
         raise RuntimeError("Gateway returned no schema mapping payload")
     return json.loads(result[0].body.to_pybytes())

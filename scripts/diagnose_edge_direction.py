@@ -63,7 +63,7 @@ index 0000000..56ef1f4
 +
 +
 +def get_schema(client):
-+    action = flight.Action("get_schema_mapping", b"")
++    action = flight.Action("get_type_name_mapping", b"")
 +    results = list(client.do_action(action))
 +    return json.loads(results[0].body.to_pybytes())
 +

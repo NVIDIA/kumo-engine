@@ -21,12 +21,12 @@ import pyarrow.flight as flight
 
 
 def test_schema_mapping(client: flight.FlightClient):
-    """Test the get_schema_mapping action."""
+    """Test the get_type_name_mapping action."""
     print("=" * 60)
-    print("TEST: get_schema_mapping action")
+    print("TEST: get_type_name_mapping action")
     print("=" * 60)
 
-    action = flight.Action("get_schema_mapping", b"")
+    action = flight.Action("get_type_name_mapping", b"")
     results = list(client.do_action(action))
     mapping = json.loads(results[0].body.to_pybytes())
 
@@ -173,7 +173,7 @@ def test_pyg_sampler(
 
     # First fetch schema mapping to know edge/node types.
     client = flight.connect(server_address)
-    action = flight.Action("get_schema_mapping", b"")
+    action = flight.Action("get_type_name_mapping", b"")
     results = list(client.do_action(action))
     mapping = json.loads(results[0].body.to_pybytes())
     del client
