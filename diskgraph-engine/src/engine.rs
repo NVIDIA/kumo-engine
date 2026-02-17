@@ -704,7 +704,8 @@ impl DiskGraphEngine {
             if chunk_bytes > 0 {
                 let avg_bytes = chunk_bytes / chunk_ids.len();
                 if avg_bytes > 0 {
-                    batch_size = (self.target_batch_bytes / avg_bytes).clamp(1, self.target_batch_rows);
+                    batch_size =
+                        (self.target_batch_bytes / avg_bytes).clamp(1, self.target_batch_rows);
                 }
             }
 

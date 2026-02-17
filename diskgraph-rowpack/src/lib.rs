@@ -2349,6 +2349,7 @@ impl RowPackEncoder {
     /// Generic version of `encode_row_from_access_into_buffers` that accepts a
     /// `ColumnValueObserver`. With `NoOpObserver`, LLVM monomorphizes away all
     /// observer calls — the generated code is identical to the non-generic path.
+    #[allow(clippy::too_many_arguments)]
     pub fn encode_row_observed<O: ColumnValueObserver>(
         &self,
         access: &mut RowAccess<'_>,

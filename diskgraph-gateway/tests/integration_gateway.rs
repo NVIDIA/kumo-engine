@@ -337,8 +337,16 @@ async fn test_fused_sampling_flow() {
     // Verify Node Batch Content (User 0) - id_a should be SeedIdx 0
     let mut found_user_0 = false;
     for batch in node_batches {
-        let id_a = batch.column(1).as_any().downcast_ref::<arrow_array::UInt64Array>().unwrap();
-        let id_b = batch.column(2).as_any().downcast_ref::<arrow_array::UInt64Array>().unwrap();
+        let id_a = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<arrow_array::UInt64Array>()
+            .unwrap();
+        let id_b = batch
+            .column(2)
+            .as_any()
+            .downcast_ref::<arrow_array::UInt64Array>()
+            .unwrap();
         for i in 0..batch.num_rows() {
             if id_b.value(i) == 0 {
                 assert_eq!(id_a.value(i), 0, "id_a should contain seed_index 0");
