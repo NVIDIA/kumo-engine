@@ -4,7 +4,7 @@ use crate::output::OutputHandler;
 use crate::state::{LookupKey, NodeRecord, SamplingState};
 use diskgraph_core::sampling::*;
 use diskgraph_core::sortkey::SortKeyDecoder;
-use diskgraph_index::layout::{EdgeListView, RelationLayout, RelationSegment};
+use diskgraph_index::layout::{EdgeListView, RelationSegment};
 use diskgraph_index::reader::ShardReader;
 use std::collections::HashMap;
 use std::path::Path;
@@ -27,8 +27,19 @@ pub struct TypeNameMapping {
 
 use diskgraph_rowpack::{RowPackDecodeScratch, RowPackDecoder};
 
-const TARGET_BATCH_BYTES: usize = 64 * 1024 * 1024;
-const TARGET_BATCH_ROWS: usize = 64_000;
+fn get_feature_batch_bytes() -> usize {
+    std::env::var("FEATURE_BATCH_SIZE_BYTES")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(64 * 1024 * 1024)
+}
+
+fn get_feature_batch_rows() -> usize {
+    std::env::var("FEATURE_BATCH_SIZE_ROWS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(64_000)
+}
 
 /// The core engine responsible for executing graph sampling requests.
 pub struct DiskGraphEngine {
@@ -50,6 +61,10 @@ pub struct DiskGraphEngine {
     pub id_to_node_type: Vec<String>,
     /// Map from dense ID to relation name.
     pub id_to_rel_name: Vec<String>,
+    /// Feature batch target size in bytes.
+    pub target_batch_bytes: usize,
+    /// Feature batch target size in num rows.
+    pub target_batch_rows: usize,
 }
 
 struct CompiledSamplingPlan {
@@ -230,6 +245,8 @@ impl DiskGraphEngine {
             rel_name_to_id,
             id_to_node_type,
             id_to_rel_name,
+            target_batch_bytes: get_feature_batch_bytes(),
+            target_batch_rows: get_feature_batch_rows(),
         }
     }
 
@@ -494,7 +511,9 @@ impl DiskGraphEngine {
                 type_state.builder_bytes += data.len();
             }
 
-            if type_state.builder_bytes >= TARGET_BATCH_BYTES || type_state.builder_rows >= TARGET_BATCH_ROWS {
+            if type_state.builder_bytes >= self.target_batch_bytes
+                || type_state.builder_rows >= self.target_batch_rows
+            {
                 self.flush_fused_features(type_id, type_state, output)?;
             }
         }
@@ -596,7 +615,7 @@ impl DiskGraphEngine {
             if chunk_bytes > 0 {
                 let avg_bytes = chunk_bytes / chunk_ids.len();
                 if avg_bytes > 0 {
-                    batch_size = (TARGET_BATCH_BYTES / avg_bytes).clamp(1, TARGET_BATCH_ROWS);
+                    batch_size = (self.target_batch_bytes / avg_bytes).clamp(1, self.target_batch_rows);
                 }
             }
 

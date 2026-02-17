@@ -74,6 +74,7 @@ impl FlightSender {
         Ok(())
     }
 
+    #[allow(deprecated)]
     pub async fn send_batch_async(&self, batch: RecordBatch) -> Result<(), Status> {
         let generator = IpcDataGenerator::default();
         let mut tracker = DictionaryTracker::new(false);

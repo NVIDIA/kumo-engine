@@ -24,10 +24,19 @@ use handler::ArrowFlightOutput;
 pub use registry::TicketRegistry;
 use sender::FlightSender;
 
+fn get_env_usize(key: &str, default: usize) -> usize {
+    std::env::var(key)
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(default)
+}
+
 pub struct SamplerGateway {
     sampler: Arc<DiskGraphEngine>,
     pool: StatePool,
     registry: TicketRegistry,
+    channel_capacity: usize,
+    edge_batch_size: usize,
 }
 
 impl SamplerGateway {
@@ -36,6 +45,8 @@ impl SamplerGateway {
             sampler,
             pool,
             registry: TicketRegistry::new(),
+            channel_capacity: get_env_usize("CHANNEL_CAPACITY", 100),
+            edge_batch_size: get_env_usize("EDGE_BATCH_SIZE", 64 * 1024),
         }
     }
 }
@@ -173,7 +184,9 @@ impl SamplerGateway {
         let sampler = Arc::clone(&self.sampler);
         let pool = self.pool.clone();
         let registry = self.registry.clone();
-        let (tx, rx) = mpsc::channel(100);
+        let capacity = self.channel_capacity;
+        let edge_batch_size = self.edge_batch_size;
+        let (tx, rx) = mpsc::channel(capacity);
 
         tokio::task::spawn_blocking(move || {
             let mut state = pool.acquire();
@@ -183,15 +196,15 @@ impl SamplerGateway {
             let mut tickets = HashMap::new();
 
             if req.flags.fused_feature_fetching {
-                for (type_id, ntype) in sampler.id_to_node_type.iter().enumerate() {
-                    let (ftx, frx) = mpsc::channel(100);
+                for (type_id, _) in sampler.id_to_node_type.iter().enumerate() {
+                    let (ftx, frx) = mpsc::channel(capacity);
                     let ticket_id = registry.register(frx);
                     tickets.insert(type_id, ticket_id);
                     feature_senders.insert(type_id, ftx);
                 }
             }
 
-            let mut output = ArrowFlightOutput::with_feature_senders(tx.clone(), feature_senders);
+            let mut output = ArrowFlightOutput::with_config(tx.clone(), feature_senders, edge_batch_size);
             let options = IpcWriteOptions::default();
 
             // Message 1: Edges Schema (No metadata)
@@ -221,10 +234,12 @@ impl SamplerGateway {
         req: BatchFeatureRequest,
     ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
         let sampler = Arc::clone(&self.sampler);
-        let (tx, rx) = mpsc::channel(100);
+        let capacity = self.channel_capacity;
+        let edge_batch_size = self.edge_batch_size;
+        let (tx, rx) = mpsc::channel(capacity);
 
         tokio::task::spawn_blocking(move || {
-            let mut output = ArrowFlightOutput::new(tx.clone());
+            let mut output = ArrowFlightOutput::with_config(tx.clone(), HashMap::new(), edge_batch_size);
             for feature_req in req.batch {
                 let node_type_id = match sampler.node_type_to_id.get(&feature_req.node_type) {
                     Some(&id) => id,
@@ -256,7 +271,8 @@ impl SamplerGateway {
         &self,
         mut rx: mpsc::Receiver<RecordBatch>,
     ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
-        let (tx, response_rx) = mpsc::channel(100);
+        let capacity = self.channel_capacity;
+        let (tx, response_rx) = mpsc::channel(capacity);
 
         tokio::spawn(async move {
             let sender = FlightSender::new(tx);

@@ -12,37 +12,27 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tonic::Status;
 
-const CHUNK_SIZE: usize = 64 * 1024; // 64k edges per batch
-
 pub struct ArrowFlightOutput {
     flight_sender: FlightSender,
     /// Map of rel_id -> (src_builder, dst_builder)
     edge_builders: HashMap<u16, (UInt64Builder, UInt64Builder)>,
-    // Map of node_type_id -> (Sender, Buffer)
-    feature_senders: HashMap<usize, (FeatureSender, Vec<RecordBatch>)>,
+    /// Map of node_type_id -> Sender
+    feature_senders: HashMap<usize, FeatureSender>,
+    /// Edge batch target chunk size in num rows
+    chunk_size: usize,
 }
 
 impl ArrowFlightOutput {
-    pub fn new(sender: mpsc::Sender<Result<FlightData, Status>>) -> Self {
-        Self {
-            flight_sender: FlightSender::new(sender),
-            edge_builders: HashMap::new(),
-            feature_senders: HashMap::new(),
-        }
-    }
-
-    pub fn with_feature_senders(
+    pub fn with_config(
         sender: mpsc::Sender<Result<FlightData, Status>>,
         feature_senders: HashMap<usize, FeatureSender>,
+        chunk_size: usize,
     ) -> Self {
-        let feature_senders = feature_senders
-            .into_iter()
-            .map(|(k, v)| (k, (v, Vec::new())))
-            .collect();
         Self {
             flight_sender: FlightSender::new(sender),
             edge_builders: HashMap::new(),
             feature_senders,
+            chunk_size,
         }
     }
 
@@ -78,7 +68,6 @@ impl ArrowFlightOutput {
 
         let row_type = Int8Array::from(vec![0; len]);
         let meta_type = UInt64Array::from(vec![rel_id as u64; len]);
-        let meta_val = UInt64Array::from(vec![0; len]);
 
         let batch = RecordBatch::try_new(
             self.schema(),
@@ -87,7 +76,6 @@ impl ArrowFlightOutput {
                 Arc::new(src_array) as ArrayRef,
                 Arc::new(dst_array) as ArrayRef,
                 Arc::new(meta_type) as ArrayRef,
-                Arc::new(meta_val) as ArrayRef,
             ],
         )
         .map_err(|e| EngineError::Internal(e.to_string()))?;
@@ -101,7 +89,6 @@ impl ArrowFlightOutput {
             Field::new("id_a", DataType::UInt64, false),
             Field::new("id_b", DataType::UInt64, false),
             Field::new("meta_type", DataType::UInt64, false),
-            Field::new("meta_val", DataType::UInt64, true),
         ]))
     }
 
@@ -120,17 +107,18 @@ impl OutputHandler for ArrowFlightOutput {
         src_local_id: u32,
         dst_local_id: u32,
     ) -> Result<(), EngineError> {
+        let chunk_size = self.chunk_size;
         let (src_b, dst_b) = self.edge_builders.entry(rel_id).or_insert_with(|| {
             (
-                UInt64Builder::with_capacity(CHUNK_SIZE),
-                UInt64Builder::with_capacity(CHUNK_SIZE),
+                UInt64Builder::with_capacity(chunk_size),
+                UInt64Builder::with_capacity(chunk_size),
             )
         });
 
         src_b.append_value(src_local_id as u64);
         dst_b.append_value(dst_local_id as u64);
 
-        if src_b.len() >= CHUNK_SIZE {
+        if src_b.len() >= chunk_size {
             self.flush_edge_builder(rel_id)?;
         }
         Ok(())
@@ -151,7 +139,7 @@ impl OutputHandler for ArrowFlightOutput {
         type_id: usize,
         batch: RecordBatch,
     ) -> Result<(), EngineError> {
-        if let Some((sender, _)) = self.feature_senders.get_mut(&type_id) {
+        if let Some(sender) = self.feature_senders.get_mut(&type_id) {
             sender
                 .blocking_send(batch)
                 .map_err(|_| EngineError::Output("side channel closed".into()))?;
@@ -178,7 +166,7 @@ impl OutputHandler for ArrowFlightOutput {
                 type_state
                     .nodes
                     .iter()
-                    .map(|n| n.local_id as u64)
+                    .map(|n| n.seed_index as u64)
                     .collect::<Vec<_>>(),
             );
             let id_b = UInt64Array::from(
@@ -189,13 +177,6 @@ impl OutputHandler for ArrowFlightOutput {
                     .collect::<Vec<_>>(),
             );
             let meta_type = UInt64Array::from(vec![*type_id as u64; len]);
-            let meta_val = UInt64Array::from(
-                type_state
-                    .nodes
-                    .iter()
-                    .map(|n| n.seed_index as u64)
-                    .collect::<Vec<_>>(),
-            );
 
             let batch = RecordBatch::try_new(
                 self.schema(),
@@ -204,7 +185,6 @@ impl OutputHandler for ArrowFlightOutput {
                     Arc::new(id_a) as ArrayRef,
                     Arc::new(id_b) as ArrayRef,
                     Arc::new(meta_type) as ArrayRef,
-                    Arc::new(meta_val) as ArrayRef,
                 ],
             )
             .map_err(|e| EngineError::Internal(e.to_string()))?;

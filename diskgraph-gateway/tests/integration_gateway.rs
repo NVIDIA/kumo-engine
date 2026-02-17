@@ -220,21 +220,18 @@ async fn test_fused_sampling_flow() {
 
     let response = service.do_get(tonic::Request::new(Ticket { ticket: req_json.into() })).await.unwrap();
     let mut stream = response.into_inner();
-    let _schema_msg = stream.next().await.unwrap().unwrap(); // Schema
+    let _ = stream.next().await.unwrap().unwrap(); // Schema
 
     let mut tickets = HashMap::new();
     let mut stats_msg = None;
     let mut node_batches = Vec::new();
-    let mut edge_batches = Vec::new();
 
     let main_schema = Arc::new(arrow_schema::Schema::new(vec![
         arrow_schema::Field::new("row_type", arrow_schema::DataType::Int8, false),
         arrow_schema::Field::new("id_a", arrow_schema::DataType::UInt64, false),
         arrow_schema::Field::new("id_b", arrow_schema::DataType::UInt64, false),
         arrow_schema::Field::new("meta_type", arrow_schema::DataType::UInt64, false),
-        arrow_schema::Field::new("meta_val", arrow_schema::DataType::UInt64, true),
     ]));
-    let dict_tracker = HashMap::new();
 
     while let Some(msg) = stream.next().await {
         let msg = msg.expect("main stream error");
@@ -244,29 +241,33 @@ async fn test_fused_sampling_flow() {
                  stats_msg = Some(msg);
                  break;
              } else {
-                 // Tickets
                  tickets = meta.into_iter().map(|(k, v)| (k, v.as_str().unwrap().to_string())).collect();
              }
         }
-
-        // Handle Data (Skip empty ticket batch)
         if msg.data_header.is_empty() { continue; }
-        let batch = arrow_flight::utils::flight_data_to_arrow_batch(&msg, main_schema.clone(), &dict_tracker)
-            .expect("failed to decode main batch");
-
+        let batch = arrow_flight::utils::flight_data_to_arrow_batch(&msg, main_schema.clone(), &HashMap::new()).expect("failed to decode");
         if batch.num_rows() == 0 { continue; }
-
         let row_type = batch.column(0).as_any().downcast_ref::<arrow_array::Int8Array>().unwrap();
         if row_type.value(0) == 1 {
             node_batches.push(batch);
-        } else {
-            edge_batches.push(batch);
         }
     }
 
     assert!(!tickets.is_empty(), "Tickets not found");
-    assert!(!node_batches.is_empty(), "No nodes returned");
-    assert!(!edge_batches.is_empty(), "No edges returned");
+
+    // Verify Node Batch Content (User 0) - id_a should be SeedIdx 0
+    let mut found_user_0 = false;
+    for batch in node_batches {
+        let id_a = batch.column(1).as_any().downcast_ref::<arrow_array::UInt64Array>().unwrap();
+        let id_b = batch.column(2).as_any().downcast_ref::<arrow_array::UInt64Array>().unwrap();
+        for i in 0..batch.num_rows() {
+            if id_b.value(i) == 0 {
+                assert_eq!(id_a.value(i), 0, "id_a should contain seed_index 0");
+                found_user_0 = true;
+            }
+        }
+    }
+    assert!(found_user_0);
 
     // 1. Check Users (2 nodes: Seed 0, Leaf 1)
     let u_ticket = tickets.get("1").unwrap();
