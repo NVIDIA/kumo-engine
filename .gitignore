@@ -10,6 +10,9 @@ heap-*.heap
 heap-*.svg
 heap-*.txt
 data
+!diskgraph-ingest/data/
+diskgraph-ingest/data/*
+!diskgraph-ingest/data/glove_bloom.bin
 temp_data
 diskgraph_output
 benchmark/
