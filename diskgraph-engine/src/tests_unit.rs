@@ -341,6 +341,7 @@ fn test_basic_sampling() {
             return_edge_id: false,
             adaptive: false,
             fused_feature_fetching: false,
+            swap_edge_direction: false,
         },
     };
 
@@ -388,6 +389,7 @@ fn test_fused_sampling() {
             return_edge_id: false,
             adaptive: false,
             fused_feature_fetching: true, // Enable Fused
+            swap_edge_direction: false,
         },
     };
 
@@ -443,6 +445,7 @@ fn test_sampling_empty_seeds() {
             return_edge_id: false,
             adaptive: false,
             fused_feature_fetching: false,
+            swap_edge_direction: false,
         },
     };
 

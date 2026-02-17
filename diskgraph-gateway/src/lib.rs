@@ -210,7 +210,6 @@ impl SamplerGateway {
                 edge_batch_size,
                 sampler.relation_src_type.clone(),
                 sampler.relation_info.clone(),
-                sampler.reverse_rel_map.clone(),
             );
             let options = IpcWriteOptions::default();
 
@@ -250,7 +249,6 @@ impl SamplerGateway {
                 tx.clone(),
                 HashMap::new(),
                 edge_batch_size,
-                Vec::new(),
                 Vec::new(),
                 Vec::new(),
             );

@@ -25,6 +25,14 @@ pub struct SamplingFlags {
     /// Default: false
     #[serde(default)]
     pub fused_feature_fetching: bool,
+    /// If true, swaps edge direction (src↔dst) and maps to reverse relation.
+    /// Required for PyG's CSC convention. Default: true.
+    #[serde(default = "default_swap_edge_direction")]
+    pub swap_edge_direction: bool,
+}
+
+fn default_swap_edge_direction() -> bool {
+    true
 }
 
 /// A request to sample a neighborhood subgraph starting from a batch of seeds.
@@ -159,6 +167,7 @@ mod tests {
                 return_edge_id: false,
                 adaptive: false,
                 fused_feature_fetching: false,
+                swap_edge_direction: true,
             },
         };
 
@@ -206,6 +215,7 @@ mod tests {
                 return_edge_id: false,
                 adaptive: false,
                 fused_feature_fetching: false,
+                swap_edge_direction: true,
             },
         };
 

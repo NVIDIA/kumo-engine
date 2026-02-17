@@ -912,7 +912,7 @@ impl DiskGraphEngine {
         rel_id: usize,
         fanout: u32,
         mode: &SamplingMode,
-        _request: &BatchSamplingRequest,
+        request: &BatchSamplingRequest,
         state: &mut SamplingState,
         output: &mut impl OutputHandler,
     ) -> Result<()> {
@@ -947,8 +947,8 @@ impl DiskGraphEngine {
                         let dst_id = state.dst_scratch[i];
                         let packed_key = state.key_scratch[i];
 
-                        let seed_type = _request.seed_nodes.keys().next().unwrap();
-                        let anchor = _request
+                        let seed_type = request.seed_nodes.keys().next().unwrap();
+                        let anchor = request
                             .seed_timestamps
                             .as_ref()
                             .and_then(|m| m.get(seed_type))
@@ -970,6 +970,7 @@ impl DiskGraphEngine {
                             dst_id,
                             dst_type_id,
                             rel_id as u16,
+                            request.flags.swap_edge_direction,
                             state,
                             output,
                         )?;
@@ -1002,6 +1003,7 @@ impl DiskGraphEngine {
                                 state.dst_scratch[i],
                                 dst_type_id,
                                 rel_id as u16,
+                                request.flags.swap_edge_direction,
                                 state,
                                 output,
                             )?;
@@ -1033,6 +1035,7 @@ impl DiskGraphEngine {
                                 state.dst_scratch[0],
                                 dst_type_id,
                                 rel_id as u16,
+                                request.flags.swap_edge_direction,
                                 state,
                                 output,
                             )?;
@@ -1061,6 +1064,7 @@ impl DiskGraphEngine {
         dst_global_id: u64,
         dst_type_id: usize,
         rel_id: u16,
+        swap_edge_direction: bool,
         state: &mut SamplingState,
         output: &mut impl OutputHandler,
     ) -> Result<()> {
@@ -1091,8 +1095,18 @@ impl DiskGraphEngine {
             id
         };
 
-        output.handle_edge(layer_idx, rel_id, src.local_id, dst_local_id)?;
-        state.stats.record_edge(layer_idx, rel_id as usize);
+        // Apply edge direction reversal if requested (PyG CSC convention).
+        let (actual_rel, actual_src, actual_dst) = if swap_edge_direction {
+            match self.reverse_rel_map.get(rel_id as usize) {
+                Some(Some(rev_id)) => (*rev_id as u16, dst_local_id, src.local_id),
+                _ => (rel_id, src.local_id, dst_local_id),
+            }
+        } else {
+            (rel_id, src.local_id, dst_local_id)
+        };
+
+        output.handle_edge(layer_idx, actual_rel, actual_src, actual_dst)?;
+        state.stats.record_edge(layer_idx, actual_rel as usize);
 
         Ok(())
     }

@@ -290,6 +290,7 @@ async fn test_fused_sampling_flow() {
         arrow_schema::Field::new("id_b", arrow_schema::DataType::UInt64, false),
         arrow_schema::Field::new("meta_type", arrow_schema::DataType::UInt64, false),
     ]));
+    let dict_tracker = HashMap::new();
 
     while let Some(msg) = stream.next().await {
         let msg = msg.expect("main stream error");
