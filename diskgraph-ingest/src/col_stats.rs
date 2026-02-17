@@ -2378,6 +2378,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
+    #[allow(clippy::assertions_on_constants)]
     fn test_isqrt() {
         assert_eq!(isqrt(0), 0);
         assert_eq!(isqrt(1), 1);

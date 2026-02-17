@@ -52,7 +52,7 @@ impl SamplingStats {
             self.edges_per_type.resize(num_rels, Vec::new());
         }
         for i in 0..num_rels {
-            self.edges_per_type[i].resize(num_hops + 1, 0);
+            self.edges_per_type[i].resize(num_hops, 0);
             self.edges_per_type[i].fill(0);
         }
     }

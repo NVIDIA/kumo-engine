@@ -146,6 +146,7 @@ mod tests {
                 return_edge_id: false,
                 adaptive: false,
                 fused_feature_fetching: false,
+                swap_edge_direction: true,
             },
         };
 

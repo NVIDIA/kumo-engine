@@ -20,9 +20,16 @@ pub struct ShardHandle {
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize)]
+pub struct EdgeRelationInfo {
+    pub name: String,
+    pub src_type: String,
+    pub dst_type: String,
+}
+
+#[derive(Serialize, Deserialize)]
 pub struct TypeNameMapping {
     pub node_types: Vec<String>,
-    pub edge_relations: Vec<String>,
+    pub edge_relations: Vec<EdgeRelationInfo>,
 }
 
 use diskgraph_rowpack::{RowPackDecodeScratch, RowPackDecoder};
@@ -61,6 +68,11 @@ pub struct DiskGraphEngine {
     pub id_to_node_type: Vec<String>,
     /// Map from dense ID to relation name.
     pub id_to_rel_name: Vec<String>,
+    /// Map from dense Relation ID to SrcTypeID.
+    pub relation_src_type: Vec<usize>,
+    /// Forward↔reverse relation pairs: rel_id -> reverse_rel_id.
+    /// Built from the `*_src_to_dst` ↔ `*_dst_to_src` naming convention.
+    pub reverse_rel_map: Vec<Option<usize>>,
     /// Feature batch target size in bytes.
     pub target_batch_bytes: usize,
     /// Feature batch target size in num rows.
@@ -93,7 +105,8 @@ impl DiskGraphEngine {
         let all_layouts = diskgraph_index::builder::compute_relation_layouts(
             &metadata.edge_relations,
             &metadata.node_types,
-        ).map_err(|e| EngineError::Internal(format!("failed to compute layouts: {}", e)))?;
+        )
+        .map_err(|e| EngineError::Internal(format!("failed to compute layouts: {}", e)))?;
 
         let mut readers = HashMap::new();
         let mut node_decoders_map = HashMap::new();
@@ -116,11 +129,12 @@ impl DiskGraphEngine {
                     .join(format!("shard-{:05}", i));
 
                 if shard_dir.exists() {
-                    let reader =
-                        ShardReader::open(&shard_dir, type_layouts.clone(), node_type.has_node_data)
-                            .map_err(|e| {
-                                EngineError::Internal(format!("failed to open shard: {}", e))
-                            })?;
+                    let reader = ShardReader::open(
+                        &shard_dir,
+                        type_layouts.clone(),
+                        node_type.has_node_data,
+                    )
+                    .map_err(|e| EngineError::Internal(format!("failed to open shard: {}", e)))?;
 
                     shards.push(ShardHandle {
                         reader: Arc::new(reader),
@@ -151,7 +165,10 @@ impl DiskGraphEngine {
         let mut relation_info = HashMap::new();
         let mut decoders = HashMap::new();
         for (rel_id, rel) in metadata.edge_relations.iter().enumerate() {
-            relation_info.insert(rel_id, (rel.name.clone(), rel.dst_type.clone()));
+            relation_info.insert(
+                rel_id,
+                (rel.name.clone(), rel.src_type.clone(), rel.dst_type.clone()),
+            );
 
             if let Some(meta) = &rel.dest_sort_key {
                 let decoder = SortKeyDecoder::new(meta);
@@ -170,7 +187,7 @@ impl DiskGraphEngine {
 
     pub fn new(
         readers_map: HashMap<String, Vec<ShardHandle>>,
-        relation_info_map: HashMap<usize, (String, String)>,
+        relation_info_map: HashMap<usize, (String, String, String)>,
         decoders_map: HashMap<usize, SortKeyDecoder>,
         node_decoders_map: HashMap<String, RowPackDecoder>,
     ) -> Self {
@@ -221,17 +238,40 @@ impl DiskGraphEngine {
         id_to_rel_name.resize(max_rel_id + 1, String::new());
         // Use usize::MAX as sentinel for invalid/unmapped relations
         let mut relation_info = vec![usize::MAX; max_rel_id + 1];
+        let mut relation_src_type = vec![usize::MAX; max_rel_id + 1];
         let mut decoders: Vec<Option<SortKeyDecoder>> = vec![None; max_rel_id + 1];
 
-        for (rel_id, (rel_name, dst_type)) in relation_info_map {
-            if let Some(&dst_id) = node_type_to_id.get(&dst_type) {
-                rel_name_to_id.insert(rel_name.clone(), rel_id);
-                id_to_rel_name[rel_id] = rel_name.clone();
-                relation_info[rel_id] = dst_id;
+        for (rel_id, (rel_name, src_type, dst_type)) in &relation_info_map {
+            if let (Some(&src_id), Some(&dst_id)) =
+                (node_type_to_id.get(src_type), node_type_to_id.get(dst_type))
+            {
+                rel_name_to_id.insert(rel_name.clone(), *rel_id);
+                id_to_rel_name[*rel_id] = rel_name.clone();
+                relation_info[*rel_id] = dst_id;
+                relation_src_type[*rel_id] = src_id;
 
-                if let Some(decoder) = decoders_map.get(&rel_id) {
-                    decoders[rel_id] = Some(decoder.clone());
+                if let Some(decoder) = decoders_map.get(rel_id) {
+                    decoders[*rel_id] = Some(decoder.clone());
                 }
+            }
+        }
+
+        // Build forward↔reverse relation pairs from naming convention.
+        let mut reverse_rel_map: Vec<Option<usize>> = vec![None; id_to_rel_name.len()];
+        for (i, name_i) in id_to_rel_name.iter().enumerate() {
+            if name_i.is_empty() || reverse_rel_map[i].is_some() {
+                continue;
+            }
+            let partner = if let Some(base) = name_i.strip_suffix("_src_to_dst") {
+                format!("{}_dst_to_src", base)
+            } else if let Some(base) = name_i.strip_suffix("_dst_to_src") {
+                format!("{}_src_to_dst", base)
+            } else {
+                continue;
+            };
+            if let Some(&j) = rel_name_to_id.get(&partner) {
+                reverse_rel_map[i] = Some(j);
+                reverse_rel_map[j] = Some(i);
             }
         }
 
@@ -245,15 +285,41 @@ impl DiskGraphEngine {
             rel_name_to_id,
             id_to_node_type,
             id_to_rel_name,
+            relation_src_type,
+            reverse_rel_map,
             target_batch_bytes: get_feature_batch_bytes(),
             target_batch_rows: get_feature_batch_rows(),
         }
     }
 
     pub fn get_type_name_mapping(&self) -> TypeNameMapping {
+        let edge_relations = self
+            .id_to_rel_name
+            .iter()
+            .enumerate()
+            .map(|(rel_id, name)| {
+                let src_type = self
+                    .relation_src_type
+                    .get(rel_id)
+                    .and_then(|&id| self.id_to_node_type.get(id))
+                    .cloned()
+                    .unwrap_or_default();
+                let dst_type = self
+                    .relation_info
+                    .get(rel_id)
+                    .and_then(|&id| self.id_to_node_type.get(id))
+                    .cloned()
+                    .unwrap_or_default();
+                EdgeRelationInfo {
+                    name: name.clone(),
+                    src_type,
+                    dst_type,
+                }
+            })
+            .collect();
         TypeNameMapping {
             node_types: self.id_to_node_type.clone(),
-            edge_relations: self.id_to_rel_name.clone(),
+            edge_relations,
         }
     }
 
@@ -307,11 +373,20 @@ impl DiskGraphEngine {
                 .map_err(|e| EngineError::Internal(format!("schema projection failed: {}", e)))?;
             output.handle_schema(Arc::new(projected))?;
         } else {
-             return Err(EngineError::Internal(format!("no schema for type {}", node_type_id)));
+            return Err(EngineError::Internal(format!(
+                "no schema for type {}",
+                node_type_id
+            )));
         }
 
         // Use Bulk Fetch helper
-        self.accumulate_features_from_ids_chunked(node_type_id, node_ids, &col_indices, decoder, output)?;
+        self.accumulate_features_from_ids_chunked(
+            node_type_id,
+            node_ids,
+            &col_indices,
+            decoder,
+            output,
+        )?;
 
         Ok(())
     }
@@ -443,9 +518,12 @@ impl DiskGraphEngine {
                 let scratch = &mut state.decode_scratch;
                 if let Some(ts) = state.type_states.get_mut(&type_id) {
                     if !ts.next_frontier.is_empty() {
-                         let node_ids: Vec<u64> = ts.next_frontier.iter().map(|n| n.global_id).collect();
-                         self.accumulate_features_from_ids_builder(type_id, &node_ids, ts, scratch, output)?;
-                         ts.next_frontier.clear();
+                        let node_ids: Vec<u64> =
+                            ts.next_frontier.iter().map(|n| n.global_id).collect();
+                        self.accumulate_features_from_ids_builder(
+                            type_id, &node_ids, ts, scratch, output,
+                        )?;
+                        ts.next_frontier.clear();
                     }
                     self.flush_fused_features(type_id, ts, output)?;
                 }
@@ -472,7 +550,9 @@ impl DiskGraphEngine {
             .and_then(|d| d.as_ref())
             .ok_or_else(|| EngineError::Internal(format!("no decoder for type {}", type_id)))?;
 
-        self.accumulate_features_from_view_internal(type_id, type_state, scratch, decoder, edges_view, output)
+        self.accumulate_features_from_view_internal(
+            type_id, type_state, scratch, decoder, edges_view, output,
+        )
     }
 
     fn accumulate_features_from_view_internal(
@@ -528,9 +608,10 @@ impl DiskGraphEngine {
         scratch: &mut RowPackDecodeScratch,
         output: &mut impl OutputHandler,
     ) -> Result<()> {
-        let shards = self.readers.get(type_id).ok_or_else(|| {
-            EngineError::InvalidRequest("invalid node type id".to_string())
-        })?;
+        let shards = self
+            .readers
+            .get(type_id)
+            .ok_or_else(|| EngineError::InvalidRequest("invalid node type id".to_string()))?;
 
         let decoder = self
             .node_decoders
@@ -548,7 +629,14 @@ impl DiskGraphEngine {
                 .edges_for_node(local_id)
                 .map_err(|e| EngineError::DataCorruption(e.to_string()))?;
 
-            self.accumulate_features_from_view_internal(type_id, type_state, scratch, decoder, &edges_view, output)?;
+            self.accumulate_features_from_view_internal(
+                type_id,
+                type_state,
+                scratch,
+                decoder,
+                &edges_view,
+                output,
+            )?;
         }
         Ok(())
     }
@@ -561,9 +649,10 @@ impl DiskGraphEngine {
         decoder: &RowPackDecoder,
         output: &mut impl OutputHandler,
     ) -> Result<()> {
-        let shards = self.readers.get(type_id).ok_or_else(|| {
-            EngineError::InvalidRequest("invalid node type id".to_string())
-        })?;
+        let shards = self
+            .readers
+            .get(type_id)
+            .ok_or_else(|| EngineError::InvalidRequest("invalid node type id".to_string()))?;
 
         let mut last_shard_idx = 0;
         let mut batch_size = 128;
@@ -615,7 +704,8 @@ impl DiskGraphEngine {
             if chunk_bytes > 0 {
                 let avg_bytes = chunk_bytes / chunk_ids.len();
                 if avg_bytes > 0 {
-                    batch_size = (self.target_batch_bytes / avg_bytes).clamp(1, self.target_batch_rows);
+                    batch_size =
+                        (self.target_batch_bytes / avg_bytes).clamp(1, self.target_batch_rows);
                 }
             }
 
@@ -642,9 +732,9 @@ impl DiskGraphEngine {
             }
         }
 
-        let schema = self.node_schemas[type_id]
-            .as_ref()
-            .ok_or_else(|| EngineError::Internal(format!("no precomputed schema for type {}", type_id)))?;
+        let schema = self.node_schemas[type_id].as_ref().ok_or_else(|| {
+            EngineError::Internal(format!("no precomputed schema for type {}", type_id))
+        })?;
 
         let batch = arrow_array::RecordBatch::try_new(schema.clone(), arrays)
             .map_err(|e| EngineError::Internal(e.to_string()))?;
@@ -676,9 +766,13 @@ impl DiskGraphEngine {
         // Fused fetching path
         if fused {
             for (src_type_id, frontier) in work_queue {
-                if src_type_id >= self.readers.len() { continue; }
+                if src_type_id >= self.readers.len() {
+                    continue;
+                }
                 let shards = &self.readers[src_type_id];
-                if shards.is_empty() { continue; }
+                if shards.is_empty() {
+                    continue;
+                }
 
                 for node in &frontier {
                     let shard_idx = self.find_shard(shards, node.global_id)?;
@@ -703,12 +797,11 @@ impl DiskGraphEngine {
                         )?;
                     }
 
-                    let segments = match edges_view.relation_segments() {
-                        Ok(s) => s,
-                        Err(_) => Vec::new(),
-                    };
+                    let segments = edges_view.relation_segments().unwrap_or_default();
 
-                    self.process_node_relations(layer_idx, &segments, node, layer_spec, request, state, output)?;
+                    self.process_node_relations(
+                        layer_idx, &segments, node, layer_spec, request, state, output,
+                    )?;
                 }
             }
             return Ok(());
@@ -752,13 +845,18 @@ impl DiskGraphEngine {
                             .map_err(|e| EngineError::DataCorruption(e.to_string()))?;
 
                         last_id = Some(node.global_id);
-                        current_segments = match edges_view.relation_segments() {
-                            Ok(s) => s,
-                            Err(_) => Vec::new(),
-                        };
+                        current_segments = edges_view.relation_segments().unwrap_or_default();
                     }
 
-                    self.process_node_relations(layer_idx, &current_segments, node, layer_spec, request, state, output)?;
+                    self.process_node_relations(
+                        layer_idx,
+                        &current_segments,
+                        node,
+                        layer_spec,
+                        request,
+                        state,
+                        output,
+                    )?;
                 }
             }
         }
@@ -766,6 +864,7 @@ impl DiskGraphEngine {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn process_node_relations(
         &self,
         layer_idx: usize,
@@ -814,7 +913,7 @@ impl DiskGraphEngine {
         rel_id: usize,
         fanout: u32,
         mode: &SamplingMode,
-        _request: &BatchSamplingRequest,
+        request: &BatchSamplingRequest,
         state: &mut SamplingState,
         output: &mut impl OutputHandler,
     ) -> Result<()> {
@@ -849,8 +948,8 @@ impl DiskGraphEngine {
                         let dst_id = state.dst_scratch[i];
                         let packed_key = state.key_scratch[i];
 
-                        let seed_type = _request.seed_nodes.keys().next().unwrap();
-                        let anchor = _request
+                        let seed_type = request.seed_nodes.keys().next().unwrap();
+                        let anchor = request
                             .seed_timestamps
                             .as_ref()
                             .and_then(|m| m.get(seed_type))
@@ -872,6 +971,7 @@ impl DiskGraphEngine {
                             dst_id,
                             dst_type_id,
                             rel_id as u16,
+                            request.flags.swap_edge_direction,
                             state,
                             output,
                         )?;
@@ -904,6 +1004,7 @@ impl DiskGraphEngine {
                                 state.dst_scratch[i],
                                 dst_type_id,
                                 rel_id as u16,
+                                request.flags.swap_edge_direction,
                                 state,
                                 output,
                             )?;
@@ -935,6 +1036,7 @@ impl DiskGraphEngine {
                                 state.dst_scratch[0],
                                 dst_type_id,
                                 rel_id as u16,
+                                request.flags.swap_edge_direction,
                                 state,
                                 output,
                             )?;
@@ -963,6 +1065,7 @@ impl DiskGraphEngine {
         dst_global_id: u64,
         dst_type_id: usize,
         rel_id: u16,
+        swap_edge_direction: bool,
         state: &mut SamplingState,
         output: &mut impl OutputHandler,
     ) -> Result<()> {
@@ -993,8 +1096,18 @@ impl DiskGraphEngine {
             id
         };
 
-        output.handle_edge(layer_idx, rel_id, src.local_id, dst_local_id)?;
-        state.stats.record_edge(layer_idx, rel_id as usize);
+        // Apply edge direction reversal if requested (PyG CSC convention).
+        let (actual_rel, actual_src, actual_dst) = if swap_edge_direction {
+            match self.reverse_rel_map.get(rel_id as usize) {
+                Some(Some(rev_id)) => (*rev_id as u16, dst_local_id, src.local_id),
+                _ => (rel_id, src.local_id, dst_local_id),
+            }
+        } else {
+            (rel_id, src.local_id, dst_local_id)
+        };
+
+        output.handle_edge(layer_idx, actual_rel, actual_src, actual_dst)?;
+        state.stats.record_edge(layer_idx, actual_rel as usize);
 
         Ok(())
     }

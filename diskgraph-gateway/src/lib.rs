@@ -204,13 +204,19 @@ impl SamplerGateway {
                 }
             }
 
-            let mut output = ArrowFlightOutput::with_config(tx.clone(), feature_senders, edge_batch_size);
+            let mut output = ArrowFlightOutput::with_config(
+                tx.clone(),
+                feature_senders,
+                edge_batch_size,
+                sampler.relation_src_type.clone(),
+                sampler.relation_info.clone(),
+            );
             let options = IpcWriteOptions::default();
 
             // Message 1: Edges Schema (No metadata)
             let schema_msg: arrow_flight::FlightData =
                 arrow_flight::SchemaAsIpc::new(&output.schema(), &options).into();
-            if let Err(_) = tx.blocking_send(Ok(schema_msg)) {
+            if tx.blocking_send(Ok(schema_msg)).is_err() {
                 return;
             }
 
@@ -239,7 +245,13 @@ impl SamplerGateway {
         let (tx, rx) = mpsc::channel(capacity);
 
         tokio::task::spawn_blocking(move || {
-            let mut output = ArrowFlightOutput::with_config(tx.clone(), HashMap::new(), edge_batch_size);
+            let mut output = ArrowFlightOutput::with_config(
+                tx.clone(),
+                HashMap::new(),
+                edge_batch_size,
+                Vec::new(),
+                Vec::new(),
+            );
             for feature_req in req.batch {
                 let node_type_id = match sampler.node_type_to_id.get(&feature_req.node_type) {
                     Some(&id) => id,
