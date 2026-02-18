@@ -53,21 +53,10 @@ jobs:
             fi
 
             # Generate local config by rewriting S3 paths to local paths.
-            _CFG="${config}" _LOCAL_DIR="${local_dir}" python3 -c "
-            import json, os
-            config = os.environ['_CFG']
-            s3_prefix = os.environ['S3_PREFIX']
-            data_root = os.environ['DATA_ROOT']
-            local_dir = os.environ['_LOCAL_DIR']
-            with open(config) as f:
-                cfg = json.load(f)
-            for table in cfg.get('tables', []):
-                src = table.get('source', {})
-                paths = src.get('paths', [])
-                src['paths'] = [p.replace(s3_prefix + '/', data_root + '/') for p in paths]
-            with open(local_dir + '/diskgraph_config.json', 'w') as f:
-                json.dump(cfg, f, indent=2)
-            "
+            python3 scripts/benchmarks/rewrite_config.py "${config}" \
+              --s3-prefix "${S3_PREFIX}" \
+              --data-root "${DATA_ROOT}" \
+              --output "${local_dir}/diskgraph_config.json"
             echo "Prepared local config: ${local_dir}/diskgraph_config.json"
           done < "${CONFIG_LIST}"
 
@@ -127,62 +116,11 @@ jobs:
             fi
 
             # Regression check
-            result=$(python3 - <<PYEOF
-          import json, sys
-
-          with open("${stats_file}") as f:
-              current = json.load(f)["stats"]["perf"]
-          with open("${baseline_file}") as f:
-              base = json.load(f)["stats"]["perf"]
-
-          warn_threshold = ${WARN_THRESHOLD}
-          fail_threshold = ${FAIL_THRESHOLD}
-          metrics = ["encode_wall_ms", "pk_map_wall_ms", "edges_map_wall_ms", "index_wall_ms"]
-          warned = False
-          failed = False
-
-          for m in metrics:
-              if m not in current or m not in base:
-                  continue
-              cur = current[m]
-              bas = base[m]
-              if bas == 0:
-                  continue
-              delta_pct = ((cur - bas) / bas) * 100
-              status = "OK"
-              if delta_pct > fail_threshold:
-                  status = "FAIL"
-                  failed = True
-                  print(f"::error::${dataset}: {m} is {delta_pct:+.1f}% vs baseline ({cur}ms vs {bas}ms)")
-              elif delta_pct > warn_threshold:
-                  status = "WARN"
-                  warned = True
-                  print(f"::warning::${dataset}: {m} is {delta_pct:+.1f}% vs baseline ({cur}ms vs {bas}ms)")
-              print(f"  {m}: {bas}ms -> {cur}ms ({delta_pct:+.1f}%) {status}")
-
-          cur_total = sum(current.get(m, 0) for m in metrics)
-          bas_total = sum(base.get(m, 0) for m in metrics)
-          if bas_total > 0:
-              total_delta = ((cur_total - bas_total) / bas_total) * 100
-              print(f"  TOTAL: {bas_total}ms -> {cur_total}ms ({total_delta:+.1f}%)")
-              if total_delta > fail_threshold:
-                  failed = True
-                  print(f"::error::${dataset}: overall {total_delta:+.1f}% vs baseline")
-              elif total_delta > warn_threshold:
-                  warned = True
-                  print(f"::warning::${dataset}: overall {total_delta:+.1f}% vs baseline")
-
-          if failed:
-              print("STATUS:FAIL")
-              print(f"DELTA:{total_delta:+.1f}%")
-              sys.exit(1)
-          elif warned:
-              print("STATUS:WARN")
-              print(f"DELTA:{total_delta:+.1f}%")
-          else:
-              print("STATUS:OK")
-              print(f"DELTA:{total_delta:+.1f}%")
-          PYEOF
+            result=$(python3 scripts/benchmarks/regression_check.py \
+              "${stats_file}" "${baseline_file}" \
+              --dataset "${dataset}" \
+              --warn-threshold "${WARN_THRESHOLD}" \
+              --fail-threshold "${FAIL_THRESHOLD}"
             )
             rc=$?
 
