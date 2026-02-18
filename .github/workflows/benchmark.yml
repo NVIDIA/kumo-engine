@@ -91,6 +91,7 @@ jobs:
 
             # Run ingest with --col-stats using local data
             output_dir="/mnt/localssd/diskgraph-index/${dataset}"
+            rm -rf /mnt/localssd/diskgraph-index
             if ! COL_STATS_ENABLED=true OUTPUT="${output_dir}" ./diskgraph-ingest/scripts/ingest_s3.sh "${local_config}"; then
               echo "::error::Ingest failed for ${dataset}"
               overall_failed=1
