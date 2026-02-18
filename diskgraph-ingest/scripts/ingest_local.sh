@@ -6,12 +6,14 @@ set -euo pipefail
 # Quick usage:
 #   ./diskgraph-ingest/scripts/ingest_local.sh /path/to/source_dir
 #   ./diskgraph-ingest/scripts/ingest_local.sh -d /path/to/source_dir
-#   ./diskgraph-ingest/scripts/ingest_local.sh -m /path/to/source_dir
+#   ./diskgraph-ingest/scripts/ingest_local.sh /path/to/source /path/to/output --col-stats --cat-count-strategy hybrid
 #
 # Flags:
 #   -P  Disable pprof profiling output (default: enabled).
 #   -d  Build with debuginfo + frame pointers for stack dumps.
 #   -m  Enable jemalloc heap dump watchdog.
+#
+# Any extra arguments after SOURCE [OUTPUT] are passed through to the ingest binary.
 
 ULIMIT_NOFILE="${ULIMIT_NOFILE:-100000}"
 if ! ulimit -n "${ULIMIT_NOFILE}" 2>/dev/null; then
@@ -43,6 +45,7 @@ set -- "${POSITIONAL[@]}"
 
 SOURCE="${SOURCE:-${1:-}}"
 OUTPUT="${OUTPUT:-${2:-}}"
+EXTRA_ARGS=("${@:3}")
 
 if [[ -z "${SOURCE}" ]]; then
   echo "Usage: SOURCE=/path/to/source_dir_or_metadata [OUTPUT=path] $0 [-P] [-d] [-m]" >&2
@@ -109,6 +112,7 @@ fi
 if [[ "${PARALLEL_ENABLED}" == "true" ]]; then
   args+=(--parallel)
 fi
+args+=(${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"})
 env ${env_args[@]+"${env_args[@]}"} "${args[@]}"
 
 echo -e "\033[36;1mNext:\033[0m ./diskgraph-ingest/scripts/perf_explorer.sh \"${INPUT_NAME}\""
