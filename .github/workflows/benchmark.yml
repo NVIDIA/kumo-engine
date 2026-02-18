@@ -53,17 +53,21 @@ jobs:
             fi
 
             # Generate local config by rewriting S3 paths to local paths.
-            python3 -c "
-import json, sys
-with open('${config}') as f:
-    cfg = json.load(f)
-for table in cfg.get('tables', []):
-    src = table.get('source', {})
-    paths = src.get('paths', [])
-    src['paths'] = [p.replace('${S3_PREFIX}/', '${DATA_ROOT}/') for p in paths]
-with open('${local_dir}/diskgraph_config.json', 'w') as f:
-    json.dump(cfg, f, indent=2)
-"
+            _CFG="${config}" _LOCAL_DIR="${local_dir}" python3 -c "
+            import json, os
+            config = os.environ['_CFG']
+            s3_prefix = os.environ['S3_PREFIX']
+            data_root = os.environ['DATA_ROOT']
+            local_dir = os.environ['_LOCAL_DIR']
+            with open(config) as f:
+                cfg = json.load(f)
+            for table in cfg.get('tables', []):
+                src = table.get('source', {})
+                paths = src.get('paths', [])
+                src['paths'] = [p.replace(s3_prefix + '/', data_root + '/') for p in paths]
+            with open(local_dir + '/diskgraph_config.json', 'w') as f:
+                json.dump(cfg, f, indent=2)
+            "
             echo "Prepared local config: ${local_dir}/diskgraph_config.json"
           done < "${CONFIG_LIST}"
 
