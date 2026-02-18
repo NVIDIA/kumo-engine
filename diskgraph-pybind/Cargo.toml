@@ -1,0 +1,21 @@
+[package]
+name = "diskgraph-pybind"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "diskgraph_pybind"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.26", features = ["extension-module", "abi3-py37", "hashbrown"] }
+arrow = { version = "57.2.0", features = ["pyarrow"] }
+arrow-array = "57.2.0"
+arrow-schema = "57.2.0"
+diskgraph-engine = { path = "../diskgraph-engine" }
+diskgraph-core = { path = "../diskgraph-core" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+crossbeam-channel = "0.5"
+tokio = { version = "1.33", features = ["full"] }
+uuid = { version = "1.4.0", features = ["v4", "serde"] }

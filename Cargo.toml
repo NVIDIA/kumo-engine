@@ -12,6 +12,7 @@ members = [
     "diskgraph-train-table",
     "diskgraph-engine",
     "diskgraph-gateway",
+    "diskgraph-pybind",
 ]
 resolver = "2"
 
