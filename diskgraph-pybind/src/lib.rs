@@ -1,19 +1,21 @@
-use pyo3::prelude::*;
-use pyo3::exceptions::{PyRuntimeError, PyValueError};
-use pyo3::types::{PyDict, PyList};
 use arrow::pyarrow::ToPyArrow;
-use arrow_array::{RecordBatch, Array};
 use arrow_array::builder::{ArrayBuilder, UInt64Builder};
+use arrow_array::{Array, RecordBatch};
 use crossbeam_channel::{bounded, Receiver, Sender};
+use pyo3::exceptions::{PyRuntimeError, PyValueError};
+use pyo3::prelude::*;
+use pyo3::types::{PyDict, PyList};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::thread;
 
+use diskgraph_core::features::{BatchFeatureRequest, FeatureRequest};
+use diskgraph_core::sampling::{BatchSamplingRequest, SamplingFlags, SamplingPlan};
 use diskgraph_engine::engine::DiskGraphEngine;
 use diskgraph_engine::output::OutputHandler;
 use diskgraph_engine::state::{SamplingState, StatePool};
-use diskgraph_core::sampling::{BatchSamplingRequest, SamplingPlan, SamplingFlags};
-use diskgraph_core::features::{BatchFeatureRequest, FeatureRequest};
+
+mod tt_builder;
 
 /// Events yielded by the sampling iterator.
 #[derive(Debug)]
@@ -36,7 +38,11 @@ struct PyOutputHandler {
 }
 
 impl PyOutputHandler {
-    fn new(sender: Sender<SampleEvent>, relation_src_type: Vec<usize>, relation_dst_type: Vec<usize>) -> Self {
+    fn new(
+        sender: Sender<SampleEvent>,
+        relation_src_type: Vec<usize>,
+        relation_dst_type: Vec<usize>,
+    ) -> Self {
         let chunk_size = std::env::var("EDGE_BATCH_SIZE_ROWS")
             .ok()
             .and_then(|s| s.parse().ok())
@@ -84,11 +90,12 @@ impl PyOutputHandler {
                 Arc::new(dst_array) as Arc<dyn Array>,
                 Arc::new(meta_type) as Arc<dyn Array>,
             ],
-        ).map_err(|e| diskgraph_engine::errors::EngineError::Internal(e.to_string()))?;
+        )
+        .map_err(|e| diskgraph_engine::errors::EngineError::Internal(e.to_string()))?;
 
         let _ = self.sender.send(SampleEvent::EdgeBatch {
             rel_id: rel_id as usize,
-            batch
+            batch,
         });
         Ok(())
     }
@@ -123,12 +130,17 @@ impl OutputHandler for PyOutputHandler {
         Ok(())
     }
 
-    fn handle_schema(&mut self, _schema: arrow_schema::SchemaRef) -> diskgraph_engine::errors::Result<()> {
+    fn handle_schema(
+        &mut self,
+        _schema: arrow_schema::SchemaRef,
+    ) -> diskgraph_engine::errors::Result<()> {
         Ok(())
     }
 
     fn handle_feature_batch(&mut self, batch: RecordBatch) -> diskgraph_engine::errors::Result<()> {
-        let _ = self.sender.send(SampleEvent::FeatureBatch { type_id: 0, batch });
+        let _ = self
+            .sender
+            .send(SampleEvent::FeatureBatch { type_id: 0, batch });
         Ok(())
     }
 
@@ -137,7 +149,9 @@ impl OutputHandler for PyOutputHandler {
         type_id: usize,
         batch: RecordBatch,
     ) -> diskgraph_engine::errors::Result<()> {
-        let _ = self.sender.send(SampleEvent::FeatureBatch { type_id, batch });
+        let _ = self
+            .sender
+            .send(SampleEvent::FeatureBatch { type_id, batch });
         Ok(())
     }
 
@@ -149,20 +163,32 @@ impl OutputHandler for PyOutputHandler {
                 self.relation_src_type.get(rel_idx),
                 self.relation_dst_type.get(rel_idx),
             ) {
-                let src_count = state.type_states.get(&src_type_id).map(|s| s.nodes.len()).unwrap_or(0);
-                let dst_count = state.type_states.get(&dst_type_id).map(|s| s.nodes.len()).unwrap_or(0);
+                let src_count = state
+                    .type_states
+                    .get(&src_type_id)
+                    .map(|s| s.nodes.len())
+                    .unwrap_or(0);
+                let dst_count = state
+                    .type_states
+                    .get(&dst_type_id)
+                    .map(|s| s.nodes.len())
+                    .unwrap_or(0);
 
                 if src_count > 0 && (max_src as usize) >= src_count {
-                    return Err(diskgraph_engine::errors::EngineError::DataCorruption(format!(
-                        "invalid src_local_id for rel_id={}: max_src={} >= src_count={}",
-                        rel_id, max_src, src_count
-                    )));
+                    return Err(diskgraph_engine::errors::EngineError::DataCorruption(
+                        format!(
+                            "invalid src_local_id for rel_id={}: max_src={} >= src_count={}",
+                            rel_id, max_src, src_count
+                        ),
+                    ));
                 }
                 if dst_count > 0 && (max_dst as usize) >= dst_count {
-                    return Err(diskgraph_engine::errors::EngineError::DataCorruption(format!(
-                        "invalid dst_local_id for rel_id={}: max_dst={} >= dst_count={}",
-                        rel_id, max_dst, dst_count
-                    )));
+                    return Err(diskgraph_engine::errors::EngineError::DataCorruption(
+                        format!(
+                            "invalid dst_local_id for rel_id={}: max_dst={} >= dst_count={}",
+                            rel_id, max_dst, dst_count
+                        ),
+                    ));
                 }
             }
         }
@@ -180,11 +206,17 @@ impl OutputHandler for PyOutputHandler {
         ]));
 
         for (type_id, type_state) in &state.type_states {
-            if type_state.nodes.is_empty() { continue; }
+            if type_state.nodes.is_empty() {
+                continue;
+            }
             let len = type_state.nodes.len();
             let row_type = arrow_array::Int8Array::from(vec![1; len]);
-            let id_a = arrow_array::UInt64Array::from_iter_values(type_state.nodes.iter().map(|n| n.seed_index as u64));
-            let id_b = arrow_array::UInt64Array::from_iter_values(type_state.nodes.iter().map(|n| n.global_id));
+            let id_a = arrow_array::UInt64Array::from_iter_values(
+                type_state.nodes.iter().map(|n| n.seed_index as u64),
+            );
+            let id_b = arrow_array::UInt64Array::from_iter_values(
+                type_state.nodes.iter().map(|n| n.global_id),
+            );
             let meta_type = arrow_array::UInt64Array::from(vec![*type_id as u64; len]);
 
             let batch = RecordBatch::try_new(
@@ -195,9 +227,13 @@ impl OutputHandler for PyOutputHandler {
                     Arc::new(id_b) as Arc<dyn Array>,
                     Arc::new(meta_type) as Arc<dyn Array>,
                 ],
-            ).map_err(|e| diskgraph_engine::errors::EngineError::Internal(e.to_string()))?;
+            )
+            .map_err(|e| diskgraph_engine::errors::EngineError::Internal(e.to_string()))?;
 
-            let _ = self.sender.send(SampleEvent::NodeBatch { type_id: *type_id, batch });
+            let _ = self.sender.send(SampleEvent::NodeBatch {
+                type_id: *type_id,
+                batch,
+            });
         }
 
         let stats_json = serde_json::to_string(&state.stats).unwrap_or_default();
@@ -270,10 +306,12 @@ impl SamplerEngine {
                 let mut handler = PyOutputHandler::new(
                     tx.clone(),
                     engine.relation_src_type.clone(),
-                    engine.relation_info.clone()
+                    engine.relation_info.clone(),
                 );
                 if let Err(e) = engine.sample(&request, &mut state, &mut handler) {
-                    let _ = tx.send(SampleEvent::Error { message: e.to_string() });
+                    let _ = tx.send(SampleEvent::Error {
+                        message: e.to_string(),
+                    });
                 }
             });
         });
@@ -291,7 +329,10 @@ impl SamplerEngine {
             let dict: Bound<'_, PyDict> = item.extract()?;
             let node_type: String = dict.get_item("node_type")?.expect("node_type").extract()?;
             let node_ids: Vec<u64> = dict.get_item("node_ids")?.expect("node_ids").extract()?;
-            let feature_names: Vec<String> = dict.get_item("feature_names")?.expect("feature_names").extract()?;
+            let feature_names: Vec<String> = dict
+                .get_item("feature_names")?
+                .expect("feature_names")
+                .extract()?;
 
             req_batch.push(FeatureRequest {
                 node_type,
@@ -316,7 +357,9 @@ impl SamplerEngine {
                     let node_type_id = match engine.node_type_to_id.get(&feature_req.node_type) {
                         Some(&id) => id,
                         None => {
-                            let _ = tx.send(SampleEvent::Error { message: format!("Unknown node type: {}", feature_req.node_type) });
+                            let _ = tx.send(SampleEvent::Error {
+                                message: format!("Unknown node type: {}", feature_req.node_type),
+                            });
                             return;
                         }
                     };
@@ -327,7 +370,9 @@ impl SamplerEngine {
                         &feature_req.feature_names,
                         &mut handler,
                     ) {
-                        let _ = tx.send(SampleEvent::Error { message: e.to_string() });
+                        let _ = tx.send(SampleEvent::Error {
+                            message: e.to_string(),
+                        });
                         return;
                     }
                 }
@@ -395,5 +440,9 @@ impl PySampleIterator {
 fn diskgraph_pybind(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<SamplerEngine>()?;
     m.add_class::<PySampleIterator>()?;
+    m.add_class::<tt_builder::DiskGraphTTBuilder>()?;
+    m.add_class::<tt_builder::EdgeRef>()?;
+    m.add_class::<tt_builder::RowFilter>()?;
+    m.add_class::<tt_builder::StageFilter>()?;
     Ok(())
 }
