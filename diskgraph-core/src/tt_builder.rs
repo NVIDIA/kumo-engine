@@ -20,8 +20,11 @@
 //!
 //! ## Two filter types
 //!
-//! - [`RowFilter`]: evaluated during edge traversal on table columns (SQL `WHERE`).
-//! - [`StageFilter`]: evaluated after ops complete on computed aliases (SQL `HAVING`).
+//! - [`RowFilter`]: evaluated per-row during edge traversal. LHS is a column
+//!   value (local or remote via sub-traversal). RHS is a constant, entity
+//!   column, or remote column.
+//! - [`StageFilter`]: evaluated per-entity between stages. LHS is a computed
+//!   alias. RHS is a constant, entity column, remote column, or another alias.
 
 use serde::{Deserialize, Serialize};
 
@@ -43,8 +46,12 @@ pub struct DiskGraphTTPlan {
 pub struct EntitySpec {
     pub table: String,
     pub column: String,
-    /// Entity-level temporal filtering (skip entities where `time_col > timestamp`).
+    /// Entity create-time column for temporal filtering.
     pub time_col: Option<String>,
+    /// Entity valid-to column for temporal filtering (seed entities need both
+    /// `time_col` and `valid_to_col` read from rowpack since they are not
+    /// visited via edges).
+    pub valid_to_col: Option<String>,
     /// Row-level filter on entity table columns.
     pub filter: Option<RowFilter>,
 }
@@ -58,20 +65,14 @@ pub struct TemporalSpec {
     pub lag_timesteps: Option<i64>,
 }
 
+/// A single timestamp window. Split labels (train/val/test) are a
+/// postprocessing concern and not part of the execution plan.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TimestampEntry {
     /// Epoch microseconds, inclusive.
     pub start: i64,
     /// Epoch microseconds, exclusive.
     pub end: i64,
-    pub split: SplitLabel,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-pub enum SplitLabel {
-    Train,
-    Val,
-    Test,
 }
 
 // ─── Prediction type ─────────────────────────────────────────────────────────
@@ -80,8 +81,6 @@ pub enum SplitLabel {
 pub enum PredictionType {
     Node,
     Link {
-        target_entity_table: String,
-        target_entity_col: String,
         /// When `true`, each list element becomes a separate output row.
         explode: bool,
     },
@@ -112,6 +111,9 @@ pub enum Op {
         window: Option<(i64, i64)>,
         window_unit: Option<TimeUnit>,
         row_filter: Option<RowFilter>,
+        /// Early-termination limit (PQL `TOP k`). The executor may stop
+        /// accumulating after `limit` items, primarily useful for `ListDistinct`.
+        limit: Option<u32>,
     },
     /// Direct column lookup (no traversal).
     Column {
@@ -148,6 +150,8 @@ pub enum AggFunc {
     Max,
     CountDistinct,
     ListDistinct,
+    First,
+    Last,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -180,30 +184,89 @@ pub enum Value {
     Bool(bool),
 }
 
+// ─── Filter LHS / RHS types ─────────────────────────────────────────────────
+
+/// Where the left-hand value comes from in a [`RowFilter`] comparison.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum RowFilterLhs {
+    /// Column on the table currently being traversed.
+    Column(String),
+    /// Column on a table reachable via sub-traversal from the current row
+    /// (multi-hop filtering).
+    Remote {
+        path: Vec<EdgeRef>,
+        column: String,
+    },
+}
+
+/// Right-hand side of a [`RowFilter`] comparison.
+///
+/// Does not include `Alias` — aliases are computed by ops and do not exist
+/// during per-row traversal. If a comparison involves a computed alias, it
+/// belongs in a [`StageFilter`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum RowFilterRhs {
+    /// Literal constant.
+    Constant(Value),
+    /// Column on the entity table (resolved per-entity before traversal).
+    EntityColumn(String),
+    /// Column on a table reachable via sub-traversal from the current row.
+    Remote {
+        path: Vec<EdgeRef>,
+        column: String,
+    },
+}
+
+/// Right-hand side of a [`StageFilter`] comparison.
+///
+/// Extends [`RowFilterRhs`] with `Alias` for comparing two computed values
+/// (e.g. `WHERE SUM(...) > AVG(...)`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum StageFilterRhs {
+    /// Literal constant.
+    Constant(Value),
+    /// Column on the entity table (resolved per-entity at runtime).
+    EntityColumn(String),
+    /// Column on a table reachable via sub-traversal from the entity.
+    Remote {
+        path: Vec<EdgeRef>,
+        column: String,
+    },
+    /// Alias of a previously computed op in a prior stage.
+    Alias(String),
+}
+
 // ─── Filters ─────────────────────────────────────────────────────────────────
 
-/// Post-stage filter on computed aliases (SQL `HAVING`).
+/// Row-level filter evaluated per-row during edge traversal.
+///
+/// LHS is parameterised by [`RowFilterLhs`] (local column or remote
+/// sub-traversal). RHS is parameterised by [`RowFilterRhs`] (constant,
+/// entity column, or remote sub-traversal).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum RowFilter {
+    Compare {
+        lhs: RowFilterLhs,
+        op: CompareOp,
+        rhs: RowFilterRhs,
+    },
+    And(Vec<RowFilter>),
+    Or(Vec<RowFilter>),
+    Not(Box<RowFilter>),
+}
+
+/// Post-stage filter evaluated per-entity between stages.
+///
+/// LHS is always a computed alias (from a prior op). RHS is parameterised
+/// by [`StageFilterRhs`] (constant, entity column, remote, or another alias).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum StageFilter {
     Compare {
         alias: String,
         op: CompareOp,
-        value: Value,
+        rhs: StageFilterRhs,
     },
     And(Vec<StageFilter>),
     Or(Vec<StageFilter>),
     Not(Box<StageFilter>),
-}
-
-/// Row-level filter on table columns during edge traversal (SQL `WHERE`).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum RowFilter {
-    Compare {
-        column: String,
-        op: CompareOp,
-        value: Value,
-    },
-    And(Vec<RowFilter>),
-    Or(Vec<RowFilter>),
-    Not(Box<RowFilter>),
 }

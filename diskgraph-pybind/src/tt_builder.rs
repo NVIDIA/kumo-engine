@@ -55,13 +55,112 @@ pub struct RowFilter {
 
 #[pymethods]
 impl RowFilter {
+    /// Column vs constant (today's common case).
+    ///
+    /// ```python
+    /// RowFilter.compare("status", "==", "paid")
+    /// ```
     #[staticmethod]
     fn compare(column: String, op: &str, value: &Bound<'_, PyAny>) -> PyResult<Self> {
         Ok(Self {
             inner: tt::RowFilter::Compare {
-                column,
+                lhs: tt::RowFilterLhs::Column(column),
                 op: parse_compare_op(op)?,
-                value: extract_value(value)?,
+                rhs: tt::RowFilterRhs::Constant(extract_value(value)?),
+            },
+        })
+    }
+
+    /// Column vs entity column (entity=target comparison).
+    ///
+    /// ```python
+    /// RowFilter.compare_to_entity("currency", "==", "pref_currency")
+    /// ```
+    #[staticmethod]
+    fn compare_to_entity(
+        column: String,
+        op: &str,
+        entity_column: String,
+    ) -> PyResult<Self> {
+        Ok(Self {
+            inner: tt::RowFilter::Compare {
+                lhs: tt::RowFilterLhs::Column(column),
+                op: parse_compare_op(op)?,
+                rhs: tt::RowFilterRhs::EntityColumn(entity_column),
+            },
+        })
+    }
+
+    /// Remote column (via sub-traversal) vs constant (multi-hop filtering).
+    ///
+    /// ```python
+    /// RowFilter.compare_remote_lhs(order_to_merchant, "country", "==", "US")
+    /// ```
+    #[staticmethod]
+    fn compare_remote_lhs(
+        path: &Bound<'_, PyAny>,
+        column: String,
+        op: &str,
+        value: &Bound<'_, PyAny>,
+    ) -> PyResult<Self> {
+        Ok(Self {
+            inner: tt::RowFilter::Compare {
+                lhs: tt::RowFilterLhs::Remote {
+                    path: extract_edge_path(path)?,
+                    column,
+                },
+                op: parse_compare_op(op)?,
+                rhs: tt::RowFilterRhs::Constant(extract_value(value)?),
+            },
+        })
+    }
+
+    /// Column vs remote column (sub-traversal on RHS).
+    ///
+    /// ```python
+    /// RowFilter.compare_remote_rhs("currency", "==", order_to_merchant, "default_currency")
+    /// ```
+    #[staticmethod]
+    fn compare_remote_rhs(
+        column: String,
+        op: &str,
+        rhs_path: &Bound<'_, PyAny>,
+        rhs_column: String,
+    ) -> PyResult<Self> {
+        Ok(Self {
+            inner: tt::RowFilter::Compare {
+                lhs: tt::RowFilterLhs::Column(column),
+                op: parse_compare_op(op)?,
+                rhs: tt::RowFilterRhs::Remote {
+                    path: extract_edge_path(rhs_path)?,
+                    column: rhs_column,
+                },
+            },
+        })
+    }
+
+    /// Remote column vs entity column.
+    ///
+    /// ```python
+    /// RowFilter.compare_remote_to_entity(
+    ///     order_to_merchant, "country", "==", "country",
+    /// )
+    /// ```
+    #[staticmethod]
+    fn compare_remote_to_entity(
+        path: &Bound<'_, PyAny>,
+        column: String,
+        op: &str,
+        entity_column: String,
+    ) -> PyResult<Self> {
+        Ok(Self {
+            inner: tt::RowFilter::Compare {
+                lhs: tt::RowFilterLhs::Remote {
+                    path: extract_edge_path(path)?,
+                    column,
+                },
+                op: parse_compare_op(op)?,
+                rhs: tt::RowFilterRhs::EntityColumn(entity_column),
             },
         })
     }
@@ -100,13 +199,82 @@ pub struct StageFilter {
 
 #[pymethods]
 impl StageFilter {
+    /// Alias vs constant (today's common case).
+    ///
+    /// ```python
+    /// StageFilter.compare("_sum", ">", 0)
+    /// ```
     #[staticmethod]
     fn compare(alias: String, op: &str, value: &Bound<'_, PyAny>) -> PyResult<Self> {
         Ok(Self {
             inner: tt::StageFilter::Compare {
                 alias,
                 op: parse_compare_op(op)?,
-                value: extract_value(value)?,
+                rhs: tt::StageFilterRhs::Constant(extract_value(value)?),
+            },
+        })
+    }
+
+    /// Alias vs entity column.
+    ///
+    /// ```python
+    /// StageFilter.compare_to_entity("_sum", ">", "credit_limit")
+    /// ```
+    #[staticmethod]
+    fn compare_to_entity(
+        alias: String,
+        op: &str,
+        entity_column: String,
+    ) -> PyResult<Self> {
+        Ok(Self {
+            inner: tt::StageFilter::Compare {
+                alias,
+                op: parse_compare_op(op)?,
+                rhs: tt::StageFilterRhs::EntityColumn(entity_column),
+            },
+        })
+    }
+
+    /// Alias vs remote column (sub-traversal from entity).
+    ///
+    /// ```python
+    /// StageFilter.compare_to_remote("_sum", ">", user_to_company, "spending_limit")
+    /// ```
+    #[staticmethod]
+    fn compare_to_remote(
+        alias: String,
+        op: &str,
+        path: &Bound<'_, PyAny>,
+        column: String,
+    ) -> PyResult<Self> {
+        Ok(Self {
+            inner: tt::StageFilter::Compare {
+                alias,
+                op: parse_compare_op(op)?,
+                rhs: tt::StageFilterRhs::Remote {
+                    path: extract_edge_path(path)?,
+                    column,
+                },
+            },
+        })
+    }
+
+    /// Alias vs another alias.
+    ///
+    /// ```python
+    /// StageFilter.compare_to_alias("_sum", ">", "_avg")
+    /// ```
+    #[staticmethod]
+    fn compare_to_alias(
+        alias: String,
+        op: &str,
+        rhs_alias: String,
+    ) -> PyResult<Self> {
+        Ok(Self {
+            inner: tt::StageFilter::Compare {
+                alias,
+                op: parse_compare_op(op)?,
+                rhs: tt::StageFilterRhs::Alias(rhs_alias),
             },
         })
     }
@@ -165,11 +333,12 @@ impl DiskGraphTTBuilder {
             table,
             column,
             time_col: None,
+            valid_to_col: None,
             filter: None,
         });
     }
 
-    /// Entity-level time column for temporal filtering.
+    /// Entity-level create-time column for temporal filtering.
     fn entity_time_col(&mut self, column: String) -> PyResult<()> {
         match &mut self.entity {
             Some(e) => {
@@ -178,6 +347,19 @@ impl DiskGraphTTBuilder {
             }
             None => Err(PyValueError::new_err(
                 "call for_each() before entity_time_col()",
+            )),
+        }
+    }
+
+    /// Entity-level valid-to column for temporal filtering.
+    fn entity_valid_to_col(&mut self, column: String) -> PyResult<()> {
+        match &mut self.entity {
+            Some(e) => {
+                e.valid_to_col = Some(column);
+                Ok(())
+            }
+            None => Err(PyValueError::new_err(
+                "call for_each() before entity_valid_to_col()",
             )),
         }
     }
@@ -195,34 +377,18 @@ impl DiskGraphTTBuilder {
         }
     }
 
-    /// Timestamp windows. `timestamps`: list of `(start_us, end_us, "train"|"val"|"test")`.
+    /// Timestamp windows. `timestamps`: list of `(start_us, end_us)`.
     #[pyo3(signature = (timestamps, forecast_length, lag_timesteps=None))]
     fn temporal(
         &mut self,
-        timestamps: Vec<(i64, i64, String)>,
+        timestamps: Vec<(i64, i64)>,
         forecast_length: i64,
         lag_timesteps: Option<i64>,
     ) -> PyResult<()> {
         let entries = timestamps
             .into_iter()
-            .map(|(start, end, split)| {
-                let label = match split.as_str() {
-                    "train" => tt::SplitLabel::Train,
-                    "val" => tt::SplitLabel::Val,
-                    "test" => tt::SplitLabel::Test,
-                    _ => {
-                        return Err(PyValueError::new_err(format!(
-                            "invalid split label: {split} (expected train/val/test)"
-                        )))
-                    }
-                };
-                Ok(tt::TimestampEntry {
-                    start,
-                    end,
-                    split: label,
-                })
-            })
-            .collect::<PyResult<Vec<_>>>()?;
+            .map(|(start, end)| tt::TimestampEntry { start, end })
+            .collect();
 
         self.temporal = Some(tt::TemporalSpec {
             timestamps: entries,
@@ -238,17 +404,14 @@ impl DiskGraphTTBuilder {
     }
 
     /// Link prediction.
-    #[pyo3(signature = (target_table, target_col, explode=false))]
-    fn link_prediction(&mut self, target_table: String, target_col: String, explode: bool) {
-        self.prediction_type = tt::PredictionType::Link {
-            target_entity_table: target_table,
-            target_entity_col: target_col,
-            explode,
-        };
+    #[pyo3(signature = (explode=false))]
+    fn link_prediction(&mut self, explode: bool) {
+        self.prediction_type = tt::PredictionType::Link { explode };
     }
 
     /// Add aggregate op. `path`: single `EdgeRef` or list for multi-hop.
-    #[pyo3(signature = (alias, path, func, target_col=None, time_col=None, window=None, window_unit=None, row_filter=None))]
+    /// `limit`: early-termination hint (PQL `TOP k`), primarily for `ListDistinct`.
+    #[pyo3(signature = (alias, path, func, target_col=None, time_col=None, window=None, window_unit=None, row_filter=None, limit=None))]
     #[allow(clippy::too_many_arguments)]
     fn aggregate(
         &mut self,
@@ -260,6 +423,7 @@ impl DiskGraphTTBuilder {
         window: Option<(i64, i64)>,
         window_unit: Option<&str>,
         row_filter: Option<RowFilter>,
+        limit: Option<u32>,
     ) -> PyResult<()> {
         let edge_path = extract_edge_path(path)?;
         let agg_func = parse_agg_func(func)?;
@@ -274,6 +438,7 @@ impl DiskGraphTTBuilder {
             window,
             window_unit: unit,
             row_filter: row_filter.map(|f| f.inner),
+            limit,
         });
         Ok(())
     }
@@ -359,6 +524,8 @@ fn parse_agg_func(func: &str) -> PyResult<tt::AggFunc> {
         "max" => Ok(tt::AggFunc::Max),
         "count_distinct" | "countdistinct" => Ok(tt::AggFunc::CountDistinct),
         "list_distinct" | "listdistinct" => Ok(tt::AggFunc::ListDistinct),
+        "first" => Ok(tt::AggFunc::First),
+        "last" => Ok(tt::AggFunc::Last),
         _ => Err(PyValueError::new_err(format!("unknown agg func: {func}"))),
     }
 }
