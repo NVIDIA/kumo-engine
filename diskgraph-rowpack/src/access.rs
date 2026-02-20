@@ -1379,7 +1379,7 @@ impl<'p> RowAccess<'p> {
                 return Ok(Some(with_stack_str(value, trimmed, f)?));
             }
             DataType::Timestamp(_, _) => {
-                let (secs, _) = timestamp_parts_from_array(array, self.row)?;
+                let secs = timestamp_secs_from_array(array, self.row)?;
                 return Ok(Some(with_stack_str(secs, trimmed, f)?));
             }
             DataType::Decimal128(_, scale) => {
@@ -1704,7 +1704,7 @@ impl<'p> RowAccess<'p> {
                     return Ok(Some(days));
                 }
                 if let Some(value) = parse_i64(text) {
-                    let (secs, _) = timestamp_from_int(value, unit);
+                    let secs = timestamp_from_int(value, unit);
                     return Ok(Some(days_from_secs(secs)));
                 }
                 Err(anyhow!("date parse failed"))
@@ -1760,18 +1760,18 @@ impl<'p> RowAccess<'p> {
                         .value(self.row) as i64,
                     _ => return Err(anyhow!("date type mismatch")),
                 };
-                let (secs, _) = timestamp_from_int(value, unit);
+                let secs = timestamp_from_int(value, unit);
                 Ok(Some(days_from_secs(secs)))
             }
             DataType::Timestamp(_, _) => {
-                let (secs, _) = timestamp_parts_from_array(array, self.row)?;
+                let secs = timestamp_secs_from_array(array, self.row)?;
                 Ok(Some(days_from_secs(secs)))
             }
             _ => Err(anyhow!("date type mismatch")),
         }
     }
 
-    pub fn get_timestamp(&self, idx: usize) -> Result<Option<(i64, u32)>> {
+    pub fn get_timestamp(&self, idx: usize) -> Result<Option<i64>> {
         let array = self.array(idx)?;
         if array.is_null(self.row) {
             return Ok(None);
@@ -1782,8 +1782,8 @@ impl<'p> RowAccess<'p> {
         let fast = self.fast_parsers.get(idx).and_then(|v| v.as_ref());
         match array.data_type() {
             DataType::Timestamp(_, _) => {
-                let (secs, nanos) = timestamp_parts_from_array(array, self.row)?;
-                Ok(Some((secs, nanos)))
+                let secs = timestamp_secs_from_array(array, self.row)?;
+                Ok(Some(secs))
             }
             DataType::Utf8
             | DataType::LargeUtf8
@@ -1825,12 +1825,12 @@ impl<'p> RowAccess<'p> {
                     _ => return Err(anyhow!("timestamp type mismatch")),
                 };
                 if let Some(parser) = fast {
-                    if let Some((secs, nanos)) = parser.parse_timestamp(text) {
-                        return Ok(Some((secs, nanos)));
+                    if let Some(secs) = parser.parse_timestamp(text) {
+                        return Ok(Some(secs));
                     }
                 }
-                if let Some((secs, nanos)) = parse_timestamp_text(text, format) {
-                    return Ok(Some((secs, nanos)));
+                if let Some(secs) = parse_timestamp_text(text, format) {
+                    return Ok(Some(secs));
                 }
                 if let Some(value) = parse_i64(text) {
                     return Ok(Some(timestamp_from_int(value, unit)));
@@ -1898,7 +1898,7 @@ impl<'p> RowAccess<'p> {
                 let days = arr.value(self.row);
                 // Convert days since epoch to seconds since epoch
                 let secs = days as i64 * 86400;
-                Ok(Some((secs, 0)))
+                Ok(Some(secs))
             }
             _ => Err(anyhow!("timestamp type mismatch")),
         }

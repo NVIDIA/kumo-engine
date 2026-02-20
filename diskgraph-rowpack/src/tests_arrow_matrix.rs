@@ -284,45 +284,34 @@ fn test_matrix_ip() -> Result<()> {
 fn test_matrix_timestamp() -> Result<()> {
     // 2023-01-01 00:00:00 UTC = 1672531200 secs
     let ts = 1672531200i64;
-    let nanos = 123456789u32;
-
-    // Expected Micros: 1672531200 * 1M + 123456
-    #[allow(clippy::inconsistent_digit_grouping)]
-    let expected_micros = 1672531200_000_000 + 123456;
 
     roundtrip_value(
         IngestedType::Timestamp,
-        ValueRef::Timestamp { secs: ts, nanos },
+        ValueRef::Timestamp(ts),
         0,
         |arr| {
             let a = arr
                 .as_any()
-                .downcast_ref::<TimestampMicrosecondArray>()
+                .downcast_ref::<TimestampSecondArray>()
                 .unwrap();
-            assert_eq!(a.value(0), expected_micros);
+            assert_eq!(a.value(0), ts);
         },
         None,
         None,
     )?;
 
-    // Test Overflow handling (Saturating)
-    // Max i64 micros is approx +/- 292,000 years.
-    // RowPack supports wider range (i64 secs).
+    // Test large value (no overflow concern — seconds stored as i64 directly)
     let max_secs = i64::MAX;
 
     roundtrip_value(
         IngestedType::Timestamp,
-        ValueRef::Timestamp {
-            secs: max_secs,
-            nanos: 0,
-        },
+        ValueRef::Timestamp(max_secs),
         0,
         |arr| {
             let a = arr
                 .as_any()
-                .downcast_ref::<TimestampMicrosecondArray>()
+                .downcast_ref::<TimestampSecondArray>()
                 .unwrap();
-            // Should saturate to i64::MAX
             assert_eq!(a.value(0), i64::MAX);
         },
         None,

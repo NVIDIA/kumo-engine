@@ -7042,7 +7042,7 @@ impl SortKeyComponentBatcher {
                 encoding,
             } => {
                 let ts_value =
-                    if let Some((secs, _)) = access.get_timestamp(*column_idx).ok().flatten() {
+                    if let Some(secs) = access.get_timestamp(*column_idx).ok().flatten() {
                         Some(secs)
                     } else {
                         access
@@ -9556,7 +9556,7 @@ fn value_from_array(array: &ArrayRef, row: usize) -> Result<JsonValue> {
             Ok(JsonValue::from(arr.value(row)))
         }
         DataType::Timestamp(_, _) => {
-            let (secs, _) = timestamp_parts_from_array(array, row)?;
+            let secs = timestamp_secs_from_array(array, row)?;
             Ok(JsonValue::from(secs))
         }
         DataType::Decimal128(_, scale) => {
@@ -9596,7 +9596,7 @@ fn value_from_array(array: &ArrayRef, row: usize) -> Result<JsonValue> {
     }
 }
 
-fn timestamp_parts_from_array(array: &ArrayRef, row: usize) -> Result<(i64, u32)> {
+fn timestamp_secs_from_array(array: &ArrayRef, row: usize) -> Result<i64> {
     let unit = match array.data_type() {
         DataType::Timestamp(unit, _) => *unit,
         _ => return Err(anyhow!("timestamp type mismatch")),
@@ -9607,37 +9607,28 @@ fn timestamp_parts_from_array(array: &ArrayRef, row: usize) -> Result<(i64, u32)
                 .as_any()
                 .downcast_ref::<arrow_array::TimestampSecondArray>()
                 .ok_or_else(|| anyhow!("timestamp second cast"))?;
-            Ok((arr.value(row), 0))
+            Ok(arr.value(row))
         }
         arrow_schema::TimeUnit::Millisecond => {
             let arr = array
                 .as_any()
                 .downcast_ref::<arrow_array::TimestampMillisecondArray>()
                 .ok_or_else(|| anyhow!("timestamp millisecond cast"))?;
-            let value = arr.value(row);
-            let secs = value.div_euclid(1_000);
-            let millis = value.rem_euclid(1_000) as u32;
-            Ok((secs, millis * 1_000_000))
+            Ok(arr.value(row).div_euclid(1_000))
         }
         arrow_schema::TimeUnit::Microsecond => {
             let arr = array
                 .as_any()
                 .downcast_ref::<arrow_array::TimestampMicrosecondArray>()
                 .ok_or_else(|| anyhow!("timestamp microsecond cast"))?;
-            let value = arr.value(row);
-            let secs = value.div_euclid(1_000_000);
-            let micros = value.rem_euclid(1_000_000) as u32;
-            Ok((secs, micros * 1_000))
+            Ok(arr.value(row).div_euclid(1_000_000))
         }
         arrow_schema::TimeUnit::Nanosecond => {
             let arr = array
                 .as_any()
                 .downcast_ref::<arrow_array::TimestampNanosecondArray>()
                 .ok_or_else(|| anyhow!("timestamp nanosecond cast"))?;
-            let value = arr.value(row);
-            let secs = value.div_euclid(1_000_000_000);
-            let nanos = value.rem_euclid(1_000_000_000) as u32;
-            Ok((secs, nanos))
+            Ok(arr.value(row).div_euclid(1_000_000_000))
         }
     }
 }

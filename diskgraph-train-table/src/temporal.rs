@@ -323,7 +323,7 @@ fn decode_entity_timestamp(
 ) -> Result<Option<i64>> {
     let value = decoder.decode_column_value(row, idx, scratch)?;
     Ok(match value {
-        ValueRef::Timestamp { secs, .. } => Some(secs),
+        ValueRef::Timestamp(secs) => Some(secs),
         ValueRef::Date(days) => Some(days as i64 * 86_400),
         ValueRef::Int64(v) => Some(v),
         ValueRef::Int32(v) => Some(v as i64),
@@ -909,7 +909,7 @@ fn eval_expr_value(
                 diskgraph_rowpack::ValueRef::Bool(v) => SimpleValue::Bool(v),
                 diskgraph_rowpack::ValueRef::Null => SimpleValue::Null,
                 diskgraph_rowpack::ValueRef::Date(v) => SimpleValue::Number(v as f64),
-                diskgraph_rowpack::ValueRef::Timestamp { secs, .. } => {
+                diskgraph_rowpack::ValueRef::Timestamp(secs) => {
                     SimpleValue::Number(secs as f64)
                 }
                 diskgraph_rowpack::ValueRef::Decimal128(v) => SimpleValue::Number(v as f64),

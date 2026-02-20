@@ -353,7 +353,7 @@ pub enum StringEncoding {
     Lz4,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ValueRef<'a> {
     Null,
     Int64(i64),
@@ -369,7 +369,8 @@ pub enum ValueRef<'a> {
     Uuid256([u8; 32]),
     Ip([u8; 16]),
     Date(i32),
-    Timestamp { secs: i64, nanos: u32 },
+    /// Epoch seconds.
+    Timestamp(i64),
     Decimal128(i128),
     Decimal256([u8; 32]),
     Float32Array(&'a [f32]),
@@ -816,7 +817,7 @@ impl RowPackContextBuilder {
                 },
                 IngestedType::Timestamp => match access.get_timestamp(idx).ok().flatten() {
                     None => stats.observe_null(),
-                    Some((secs, _)) => stats.observe_timestamp(secs),
+                    Some(secs) => stats.observe_timestamp(secs),
                 },
                 IngestedType::Decimal128 => match access.get_decimal128(idx).ok().flatten() {
                     None => stats.observe_null(),
@@ -964,7 +965,7 @@ fn estimate_column_bytes(encoding: &ColumnEncoding, stats: &ColumnStats) -> usiz
             } else {
                 64
             };
-            varint_bytes(secs_bits) + 5
+            varint_bytes(secs_bits)
         }
         ColumnEncoding::Float { storage } => match storage {
             FloatStorage::F16 => 2,
@@ -1262,7 +1263,7 @@ impl ColumnStats {
                 self.bytes_count += 1;
             }
             ValueRef::Date(_) => {}
-            ValueRef::Timestamp { secs, .. } => {
+            ValueRef::Timestamp(secs) => {
                 self.ts_min = self.ts_min.min(*secs);
                 self.ts_max = self.ts_max.max(*secs);
                 self.ts_seen = true;
@@ -1742,7 +1743,7 @@ pub trait ColumnValueObserver {
     fn observe_i64(&mut self, col_idx: usize, value: i64);
     fn observe_f64(&mut self, col_idx: usize, value: f64);
     fn observe_string(&mut self, col_idx: usize, value: &str);
-    fn observe_timestamp(&mut self, col_idx: usize, secs: i64, nanos: u32);
+    fn observe_timestamp(&mut self, col_idx: usize, secs: i64);
     fn observe_float_list(&mut self, col_idx: usize, view: &FloatListView);
     fn observe_null(&mut self, col_idx: usize);
 }
@@ -1758,7 +1759,7 @@ impl ColumnValueObserver for NoOpObserver {
     #[inline(always)]
     fn observe_string(&mut self, _col_idx: usize, _value: &str) {}
     #[inline(always)]
-    fn observe_timestamp(&mut self, _col_idx: usize, _secs: i64, _nanos: u32) {}
+    fn observe_timestamp(&mut self, _col_idx: usize, _secs: i64) {}
     #[inline(always)]
     fn observe_float_list(&mut self, _col_idx: usize, _view: &FloatListView) {}
     #[inline(always)]
@@ -2208,9 +2209,8 @@ impl RowPackEncoder {
                 },
                 IngestedType::Timestamp => match access.get_timestamp(idx).ok().flatten() {
                     None => 0u8,
-                    Some((secs, nanos)) => {
+                    Some(secs) => {
                         write_varint(zigzag_encode(secs), &mut scratch.data);
-                        write_varint(nanos as u64, &mut scratch.data);
                         1u8
                     }
                 },
@@ -2639,10 +2639,9 @@ impl RowPackEncoder {
                 },
                 IngestedType::Timestamp => match access.get_timestamp(idx).ok().flatten() {
                     None => 0u8,
-                    Some((secs, nanos)) => {
-                        observer.observe_timestamp(idx, secs, nanos);
+                    Some(secs) => {
+                        observer.observe_timestamp(idx, secs);
                         write_varint(zigzag_encode(secs), data);
-                        write_varint(nanos as u64, data);
                         1u8
                     }
                 },
@@ -2984,9 +2983,8 @@ fn encode_value_with_tag<'a>(
             encode_int(out, true, *varint, *bits, *v as i128)?;
             Ok(1)
         }
-        (ColumnEncoding::Timestamp, ValueRef::Timestamp { secs, nanos }) => {
+        (ColumnEncoding::Timestamp, ValueRef::Timestamp(secs)) => {
             write_varint(zigzag_encode(*secs), out);
-            write_varint(*nanos as u64, out);
             Ok(1)
         }
         (
@@ -4130,8 +4128,7 @@ fn decode_value_msgpack(
         }
         ColumnEncoding::Timestamp => {
             let secs = zigzag_decode(read_varint(data)?);
-            let nanos = read_varint(data)? as u32;
-            write_msgpack_timestamp(out, secs, nanos)?;
+            write_msgpack_timestamp(out, secs, 0)?;
         }
         ColumnEncoding::Decimal {
             scale,
@@ -4257,8 +4254,7 @@ fn decode_value_json(
         ColumnEncoding::Date { varint, bits } => JsonValue::from(decode_int(data, *varint, *bits)?),
         ColumnEncoding::Timestamp => {
             let secs = zigzag_decode(read_varint(data)?);
-            let nanos = read_varint(data)? as u32;
-            let formatted = format_timestamp_default(secs, nanos);
+            let formatted = format_timestamp_default(secs, 0);
             JsonValue::from(formatted)
         }
         ColumnEncoding::Decimal {
@@ -4371,8 +4367,7 @@ fn decode_value_ref<'a>(
         }
         ColumnEncoding::Timestamp => {
             let secs = zigzag_decode(read_varint(data)?);
-            let nanos = read_varint(data)? as u32;
-            Ok(ValueRef::Timestamp { secs, nanos })
+            Ok(ValueRef::Timestamp(secs))
         }
         ColumnEncoding::Decimal {
             scale,
@@ -4485,7 +4480,6 @@ fn decode_value_skip(
             let _ = decode_int(data, *varint, *bits)?;
         }
         ColumnEncoding::Timestamp => {
-            let _ = read_varint(data)?;
             let _ = read_varint(data)?;
         }
         ColumnEncoding::Decimal {
@@ -5230,7 +5224,7 @@ fn append_null(builder: &mut dyn arrow_array::builder::ArrayBuilder) {
     }
     if let Some(b) = builder
         .as_any_mut()
-        .downcast_mut::<TimestampMicrosecondBuilder>()
+        .downcast_mut::<TimestampSecondBuilder>()
     {
         b.append_null();
         return;
@@ -5324,8 +5318,8 @@ pub fn make_arrow_builder(
             Box::new(BinaryBuilder::with_capacity(capacity, capacity * 32)),
         ),
         IngestedType::Timestamp => (
-            DataType::Timestamp(TimeUnit::Microsecond, None),
-            Box::new(TimestampMicrosecondBuilder::with_capacity(capacity)),
+            DataType::Timestamp(TimeUnit::Second, None),
+            Box::new(TimestampSecondBuilder::with_capacity(capacity)),
         ),
         IngestedType::Date => (
             DataType::Date32,
@@ -5509,15 +5503,11 @@ fn decode_and_append_to_builder(
         }
         ColumnEncoding::Timestamp => {
             let secs = zigzag_decode(read_varint(data)?);
-            let nanos = read_varint(data)? as u32;
-            let micros = secs
-                .saturating_mul(1_000_000)
-                .saturating_add(nanos as i64 / 1000);
             builder
                 .as_any_mut()
-                .downcast_mut::<TimestampMicrosecondBuilder>()
+                .downcast_mut::<TimestampSecondBuilder>()
                 .unwrap()
-                .append_value(micros);
+                .append_value(secs);
         }
         ColumnEncoding::Decimal {
             scale,

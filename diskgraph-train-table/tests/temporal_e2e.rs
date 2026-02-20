@@ -438,10 +438,7 @@ fn temporal_sampling_entity_time_column_e2e() {
         &metadata,
         vec![vec![(1u64, 50i64), (2u64, 150i64)]],
         &user_ctx,
-        vec![vec![ValueRef::Timestamp {
-            secs: 120,
-            nanos: 0,
-        }]],
+        vec![vec![ValueRef::Timestamp(120)]],
     );
 
     let query =

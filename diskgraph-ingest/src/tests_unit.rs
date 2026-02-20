@@ -323,8 +323,7 @@ fn convert_string_timestamp_to_rowpack_timestamp() {
     let arr = StringArray::from(vec!["2020-01-02T03:04:05Z"]);
     let cols: Vec<ArrayRef> = vec![Arc::new(arr)];
     with_access(&table, cols, |access| {
-        let (secs, nanos) = access.get_timestamp(0).unwrap().unwrap();
-        assert_eq!(nanos, 0);
+        let secs = access.get_timestamp(0).unwrap().unwrap();
         assert_eq!(secs, 1_577_934_245);
     });
 }
@@ -356,9 +355,8 @@ fn convert_int_timestamp_with_unit() {
     let arr = Int64Array::from(vec![1_500_000_i64]);
     let cols: Vec<ArrayRef> = vec![Arc::new(arr)];
     with_access(&table, cols, |access| {
-        let (secs, nanos) = access.get_timestamp(0).unwrap().unwrap();
+        let secs = access.get_timestamp(0).unwrap().unwrap();
         assert_eq!(secs, 1500);
-        assert_eq!(nanos, 0);
     });
 }
 

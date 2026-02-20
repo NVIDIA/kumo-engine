@@ -659,7 +659,7 @@ fn decode_timestamp(
 ) -> Result<Option<i64>> {
     let value = decoder.decode_column_value(row, idx, scratch)?;
     Ok(match value {
-        ValueRef::Timestamp { secs, .. } => Some(secs),
+        ValueRef::Timestamp(secs) => Some(secs),
         ValueRef::Date(days) => Some(days as i64 * 86_400),
         ValueRef::Int64(v) => Some(v),
         ValueRef::Int32(v) => Some(v as i64),

@@ -220,22 +220,18 @@ fn parse_precompiled_timestamp_formats_match_chrono() {
     for (fmt, values) in cases {
         let parser = TimestampFormatParser::compile(fmt).unwrap();
         for value in values {
-            let (fast_secs, fast_nanos) = parser.parse_timestamp(value).unwrap();
-            let (chrono_secs, chrono_nanos) = if fmt.contains("%z") || fmt.contains("%:z") {
+            let fast_secs = parser.parse_timestamp(value).unwrap();
+            let chrono_secs = if fmt.contains("%z") || fmt.contains("%:z") {
                 let dt: DateTime<FixedOffset> = DateTime::parse_from_str(value, fmt).unwrap();
-                let utc = dt.naive_utc().and_utc();
-                (utc.timestamp(), utc.timestamp_subsec_nanos())
+                dt.naive_utc().and_utc().timestamp()
             } else if fmt == "%Y-%m-%d" {
                 let date = NaiveDate::parse_from_str(value, fmt).unwrap();
-                let dt = date.and_hms_opt(0, 0, 0).unwrap();
-                let utc = dt.and_utc();
-                (utc.timestamp(), utc.timestamp_subsec_nanos())
+                date.and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp()
             } else {
                 let dt = NaiveDateTime::parse_from_str(value, fmt).unwrap();
-                let utc = dt.and_utc();
-                (utc.timestamp(), utc.timestamp_subsec_nanos())
+                dt.and_utc().timestamp()
             };
-            assert_eq!((fast_secs, fast_nanos), (chrono_secs, chrono_nanos));
+            assert_eq!(fast_secs, chrono_secs);
         }
     }
 }
@@ -250,10 +246,7 @@ fn roundtrip_basic() {
         ValueRef::Bool(true),
         ValueRef::Float32(3.5),
         ValueRef::Bytes(b"hello"),
-        ValueRef::Timestamp {
-            secs: 1_700_000_000,
-            nanos: 123_000_000,
-        },
+        ValueRef::Timestamp(1_700_000_000),
         ValueRef::Float32Array(&[0.1, 0.2, 0.3]),
     ];
     let encoded = encode_row(&encoder, &row);
@@ -276,14 +269,12 @@ fn timestamp_nanos_roundtrip() {
         estimated_row_bytes: 0,
     };
     let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
-    let row = vec![ValueRef::Timestamp {
-        secs: 1_700_000_000,
-        nanos: 123_000_000,
-    }];
+    let row = vec![ValueRef::Timestamp(1_700_000_000)];
     let encoded = encode_row(&encoder, &row);
     let decoder = RowPackDecoder::new(ctx).unwrap();
-    let json = decoder.decode_json(&encoded).unwrap();
-    assert!(json.to_string().contains(".123"));
+    let mut scratch = RowPackDecodeScratch::default();
+    let val = decoder.decode_column_value(&encoded, 0, &mut scratch).unwrap();
+    assert_eq!(val, ValueRef::Timestamp(1_700_000_000));
 }
 
 #[test]
@@ -509,7 +500,7 @@ fn dict_fallback() {
         ValueRef::Bool(false),
         ValueRef::Float32(1.0),
         ValueRef::Bytes(b"data"),
-        ValueRef::Timestamp { secs: 0, nanos: 0 },
+        ValueRef::Timestamp(0),
         ValueRef::Float32Array(&[]),
     ];
     let encoded = encode_row(&encoder, &row);

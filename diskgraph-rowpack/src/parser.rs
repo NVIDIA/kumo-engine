@@ -190,7 +190,7 @@ pub(crate) fn ip_to_ipv6_bytes(ip: std::net::IpAddr) -> [u8; 16] {
     }
 }
 
-pub(crate) fn parse_timestamp_text(value: &str, format: Option<&str>) -> Option<(i64, u32)> {
+pub(crate) fn parse_timestamp_text(value: &str, format: Option<&str>) -> Option<i64> {
     let ts = if let Some(fmt) = format {
         let has_tz = fmt.contains("%z") || fmt.contains("%:z");
         if has_tz {
@@ -210,7 +210,7 @@ pub(crate) fn parse_timestamp_text(value: &str, format: Option<&str>) -> Option<
             .map(|v| v.naive_utc())?
     };
     let ts = ts.and_utc();
-    Some((ts.timestamp(), ts.timestamp_subsec_nanos()))
+    Some(ts.timestamp())
 }
 
 pub(crate) fn parse_date_text(value: &str, format: Option<&str>) -> Option<i32> {
@@ -274,7 +274,7 @@ impl TimestampFormatParser {
         Some(Self { kind })
     }
 
-    pub(crate) fn parse_timestamp(&self, value: &str) -> Option<(i64, u32)> {
+    pub(crate) fn parse_timestamp(&self, value: &str) -> Option<i64> {
         match self.kind {
             TimestampFormatKind::Ymd => parse_ymd_fast(value.as_bytes()),
             TimestampFormatKind::YmdHmSpace => parse_ymd_hm_space_fast(value.as_bytes()),
@@ -304,7 +304,7 @@ impl TimestampFormatParser {
     }
 
     pub(crate) fn parse_date(&self, value: &str) -> Option<i32> {
-        let (secs, _nanos) = self.parse_timestamp(value)?;
+        let secs = self.parse_timestamp(value)?;
         Some(days_from_secs(secs))
     }
 }
@@ -328,30 +328,8 @@ pub(crate) fn parse_fraction(bytes: &[u8], pos: usize) -> Option<(u32, usize, us
     Some((val, digits.min(9), idx))
 }
 
-pub(crate) fn fraction_to_nanos(value: u32, digits: usize) -> u32 {
-    const POW10: [u32; 10] = [
-        1_000_000_000,
-        100_000_000,
-        10_000_000,
-        1_000_000,
-        100_000,
-        10_000,
-        1_000,
-        100,
-        10,
-        1,
-    ];
-    if digits == 0 {
-        0
-    } else if digits >= 9 {
-        value
-    } else {
-        value.saturating_mul(POW10[digits])
-    }
-}
-
 // "%Y-%m-%d"
-pub(crate) fn parse_ymd_fast(bytes: &[u8]) -> Option<(i64, u32)> {
+pub(crate) fn parse_ymd_fast(bytes: &[u8]) -> Option<i64> {
     if bytes.len() != 10 {
         return None;
     }
@@ -378,11 +356,11 @@ pub(crate) fn parse_ymd_fast(bytes: &[u8]) -> Option<(i64, u32)> {
     let day = byte_u32(db, 0) * 10 + byte_u32(db, 8);
 
     let secs = timestamp_from_parts_fast(year as i32, month, day, 0, 0, 0);
-    Some((secs, 0))
+    Some(secs)
 }
 
 // "%Y-%m-%d %H:%M"
-pub(crate) fn parse_ymd_hm_space_fast(bytes: &[u8]) -> Option<(i64, u32)> {
+pub(crate) fn parse_ymd_hm_space_fast(bytes: &[u8]) -> Option<i64> {
     if bytes.len() != 16 {
         return None;
     }
@@ -409,7 +387,7 @@ pub(crate) fn parse_ymd_hm_space_fast(bytes: &[u8]) -> Option<(i64, u32)> {
     let minute = byte_u32(db, 48) * 10 + byte_u32(db, 56);
 
     let secs = timestamp_from_parts_fast(year as i32, month, day, hour, minute, 0);
-    Some((secs, 0))
+    Some(secs)
 }
 
 #[inline]
@@ -451,28 +429,28 @@ pub(crate) fn parse_ymd_hms_digits(bytes: &[u8]) -> Option<(u32, u32, u32, u32, 
 }
 
 // "%Y-%m-%d %H:%M:%S" / "%Y-%m-%dT%H:%M:%S"
-pub(crate) fn parse_ymd_hms_space_fast(bytes: &[u8]) -> Option<(i64, u32)> {
+pub(crate) fn parse_ymd_hms_space_fast(bytes: &[u8]) -> Option<i64> {
     if bytes.len() != 19 {
         return None;
     }
     let (year, month, day, hour, minute, second) = parse_ymd_hms_digits(bytes)?;
     let secs = timestamp_from_parts_fast(year as i32, month, day, hour, minute, second);
-    Some((secs, 0))
+    Some(secs)
 }
 
 // "%Y-%m-%d %H:%M:%S%.f" / "%Y-%m-%dT%H:%M:%S%.f"
-pub(crate) fn parse_ymd_hms_space_frac_fast(bytes: &[u8]) -> Option<(i64, u32)> {
+pub(crate) fn parse_ymd_hms_space_frac_fast(bytes: &[u8]) -> Option<i64> {
     if bytes.len() < 21 {
         return None;
     }
     let (year, month, day, hour, minute, second) = parse_ymd_hms_digits(bytes)?;
-    let (fraction, digits, next) = parse_fraction(bytes, 20)?;
+    let (_fraction, _digits, next) = parse_fraction(bytes, 20)?;
     if next != bytes.len() {
         return None;
     }
-    let nanos = fraction_to_nanos(fraction, digits);
+    // Sub-second fraction discarded — standardized to epoch seconds.
     let secs = timestamp_from_parts_fast(year as i32, month, day, hour, minute, second);
-    Some((secs, nanos))
+    Some(secs)
 }
 
 #[inline]
@@ -520,7 +498,7 @@ pub(crate) fn parse_offset_hhmm_colon(bytes: &[u8], pos: usize) -> Option<i64> {
 }
 
 // "%Y-%m-%d %H:%M:%S%z" / "%Y-%m-%dT%H:%M:%S%z"
-pub(crate) fn parse_ymd_hms_offset_nocolon_fast(bytes: &[u8]) -> Option<(i64, u32)> {
+pub(crate) fn parse_ymd_hms_offset_nocolon_fast(bytes: &[u8]) -> Option<i64> {
     if bytes.len() != 24 {
         return None;
     }
@@ -528,11 +506,11 @@ pub(crate) fn parse_ymd_hms_offset_nocolon_fast(bytes: &[u8]) -> Option<(i64, u3
     let offset_secs = parse_offset_hhmm(bytes, 19)?;
     let secs = timestamp_from_parts_fast(year as i32, month, day, hour, minute, second)
         .saturating_sub(offset_secs);
-    Some((secs, 0))
+    Some(secs)
 }
 
 // "%Y-%m-%d %H:%M:%S%:z" / "%Y-%m-%dT%H:%M:%S%:z"
-pub(crate) fn parse_ymd_hms_offset_colon_fast(bytes: &[u8]) -> Option<(i64, u32)> {
+pub(crate) fn parse_ymd_hms_offset_colon_fast(bytes: &[u8]) -> Option<i64> {
     if bytes.len() != 25 {
         return None;
     }
@@ -540,11 +518,11 @@ pub(crate) fn parse_ymd_hms_offset_colon_fast(bytes: &[u8]) -> Option<(i64, u32)
     let offset_secs = parse_offset_hhmm_colon(bytes, 19)?;
     let secs = timestamp_from_parts_fast(year as i32, month, day, hour, minute, second)
         .saturating_sub(offset_secs);
-    Some((secs, 0))
+    Some(secs)
 }
 
 // "%Y-%m-%d %H:%M:%S %z"
-pub(crate) fn parse_ymd_hms_offset_nocolon_spaced_fast(bytes: &[u8]) -> Option<(i64, u32)> {
+pub(crate) fn parse_ymd_hms_offset_nocolon_spaced_fast(bytes: &[u8]) -> Option<i64> {
     if bytes.len() != 25 {
         return None;
     }
@@ -552,11 +530,11 @@ pub(crate) fn parse_ymd_hms_offset_nocolon_spaced_fast(bytes: &[u8]) -> Option<(
     let offset_secs = parse_offset_hhmm(bytes, 20)?;
     let secs = timestamp_from_parts_fast(year as i32, month, day, hour, minute, second)
         .saturating_sub(offset_secs);
-    Some((secs, 0))
+    Some(secs)
 }
 
 // "%Y-%m-%d %H:%M:%S %:z"
-pub(crate) fn parse_ymd_hms_offset_colon_spaced_fast(bytes: &[u8]) -> Option<(i64, u32)> {
+pub(crate) fn parse_ymd_hms_offset_colon_spaced_fast(bytes: &[u8]) -> Option<i64> {
     if bytes.len() != 26 {
         return None;
     }
@@ -564,7 +542,7 @@ pub(crate) fn parse_ymd_hms_offset_colon_spaced_fast(bytes: &[u8]) -> Option<(i6
     let offset_secs = parse_offset_hhmm_colon(bytes, 20)?;
     let secs = timestamp_from_parts_fast(year as i32, month, day, hour, minute, second)
         .saturating_sub(offset_secs);
-    Some((secs, 0))
+    Some(secs)
 }
 
 #[inline]
@@ -606,25 +584,13 @@ pub(crate) fn days_from_civil_fast(year: i32, month: u32, day: u32) -> i64 {
     era * 146097 + doe - 719468
 }
 
-pub(crate) fn timestamp_from_int(value: i64, unit: Option<arrow_schema::TimeUnit>) -> (i64, u32) {
+pub(crate) fn timestamp_from_int(value: i64, unit: Option<arrow_schema::TimeUnit>) -> i64 {
     let unit = unit.unwrap_or(arrow_schema::TimeUnit::Second);
     match unit {
-        arrow_schema::TimeUnit::Second => (value, 0),
-        arrow_schema::TimeUnit::Millisecond => {
-            let secs = value.div_euclid(1_000);
-            let millis = value.rem_euclid(1_000) as u32;
-            (secs, millis * 1_000_000)
-        }
-        arrow_schema::TimeUnit::Microsecond => {
-            let secs = value.div_euclid(1_000_000);
-            let micros = value.rem_euclid(1_000_000) as u32;
-            (secs, micros * 1_000)
-        }
-        arrow_schema::TimeUnit::Nanosecond => {
-            let secs = value.div_euclid(1_000_000_000);
-            let nanos = value.rem_euclid(1_000_000_000) as u32;
-            (secs, nanos)
-        }
+        arrow_schema::TimeUnit::Second => value,
+        arrow_schema::TimeUnit::Millisecond => value.div_euclid(1_000),
+        arrow_schema::TimeUnit::Microsecond => value.div_euclid(1_000_000),
+        arrow_schema::TimeUnit::Nanosecond => value.div_euclid(1_000_000_000),
     }
 }
 
@@ -699,7 +665,7 @@ pub(crate) fn parse_decimal_i256(value: &str, scale: i32) -> Option<arrow_buffer
     Some(parsed)
 }
 
-pub(crate) fn timestamp_parts_from_array(array: &ArrayRef, row: usize) -> Result<(i64, u32)> {
+pub(crate) fn timestamp_secs_from_array(array: &ArrayRef, row: usize) -> Result<i64> {
     let unit = match array.data_type() {
         DataType::Timestamp(unit, _) => *unit,
         _ => return Err(anyhow!("timestamp type mismatch")),
@@ -710,37 +676,28 @@ pub(crate) fn timestamp_parts_from_array(array: &ArrayRef, row: usize) -> Result
                 .as_any()
                 .downcast_ref::<arrow_array::TimestampSecondArray>()
                 .ok_or_else(|| anyhow!("timestamp second cast"))?;
-            Ok((arr.value(row), 0))
+            Ok(arr.value(row))
         }
         arrow_schema::TimeUnit::Millisecond => {
             let arr = array
                 .as_any()
                 .downcast_ref::<arrow_array::TimestampMillisecondArray>()
                 .ok_or_else(|| anyhow!("timestamp millisecond cast"))?;
-            let value = arr.value(row);
-            let secs = value.div_euclid(1_000);
-            let millis = value.rem_euclid(1_000) as u32;
-            Ok((secs, millis * 1_000_000))
+            Ok(arr.value(row).div_euclid(1_000))
         }
         arrow_schema::TimeUnit::Microsecond => {
             let arr = array
                 .as_any()
                 .downcast_ref::<arrow_array::TimestampMicrosecondArray>()
                 .ok_or_else(|| anyhow!("timestamp microsecond cast"))?;
-            let value = arr.value(row);
-            let secs = value.div_euclid(1_000_000);
-            let micros = value.rem_euclid(1_000_000) as u32;
-            Ok((secs, micros * 1_000))
+            Ok(arr.value(row).div_euclid(1_000_000))
         }
         arrow_schema::TimeUnit::Nanosecond => {
             let arr = array
                 .as_any()
                 .downcast_ref::<arrow_array::TimestampNanosecondArray>()
                 .ok_or_else(|| anyhow!("timestamp nanosecond cast"))?;
-            let value = arr.value(row);
-            let secs = value.div_euclid(1_000_000_000);
-            let nanos = value.rem_euclid(1_000_000_000) as u32;
-            Ok((secs, nanos))
+            Ok(arr.value(row).div_euclid(1_000_000_000))
         }
     }
 }

@@ -1343,9 +1343,7 @@ pub enum ColumnStatsCollector {
         count: u64,
         null_count: u64,
         min_secs: i64,
-        min_nanos: u32,
         max_secs: i64,
-        max_nanos: u32,
     },
     Sequence {
         count: u64,
@@ -1575,9 +1573,7 @@ impl ColumnStatsCollector {
                 count: 0,
                 null_count: 0,
                 min_secs: i64::MAX,
-                min_nanos: 0,
                 max_secs: i64::MIN,
-                max_nanos: 0,
             },
             Some(SemanticType::Sequence) => ColumnStatsCollector::Sequence {
                 count: 0,
@@ -1667,30 +1663,22 @@ impl ColumnStatsCollector {
                     count,
                     null_count,
                     min_secs,
-                    min_nanos,
                     max_secs,
-                    max_nanos,
                 },
                 ColumnStatsCollector::Timestamp {
                     count: c2,
                     null_count: nc2,
                     min_secs: ms2,
-                    min_nanos: mn2,
                     max_secs: xs2,
-                    max_nanos: xn2,
                 },
             ) => {
                 *count += *c2;
                 *null_count += *nc2;
-                // Tuple comparison for min
-                if *ms2 < *min_secs || (*ms2 == *min_secs && *mn2 < *min_nanos) {
+                if *ms2 < *min_secs {
                     *min_secs = *ms2;
-                    *min_nanos = *mn2;
                 }
-                // Tuple comparison for max
-                if *xs2 > *max_secs || (*xs2 == *max_secs && *xn2 > *max_nanos) {
+                if *xs2 > *max_secs {
                     *max_secs = *xs2;
-                    *max_nanos = *xn2;
                 }
             }
             (
@@ -1788,17 +1776,13 @@ impl ColumnStatsCollector {
                 count,
                 null_count,
                 min_secs,
-                min_nanos,
                 max_secs,
-                max_nanos,
             } => Some(json!({
                 "semantic_type": "timestamp",
                 "count": *count,
                 "null_count": *null_count,
                 "min_secs": *min_secs,
-                "min_nanos": *min_nanos,
                 "max_secs": *max_secs,
-                "max_nanos": *max_nanos,
             })),
             ColumnStatsCollector::Sequence {
                 count,
@@ -2082,25 +2066,20 @@ impl ColumnValueObserver for FileColStats {
     }
 
     #[inline]
-    fn observe_timestamp(&mut self, col_idx: usize, secs: i64, nanos: u32) {
-        debug_assert!(nanos < 1_000_000_000);
+    fn observe_timestamp(&mut self, col_idx: usize, secs: i64) {
         if let ColumnStatsCollector::Timestamp {
             count,
             min_secs,
-            min_nanos,
             max_secs,
-            max_nanos,
             ..
         } = &mut self.cols[col_idx]
         {
             *count += 1;
-            if secs < *min_secs || (secs == *min_secs && nanos < *min_nanos) {
+            if secs < *min_secs {
                 *min_secs = secs;
-                *min_nanos = nanos;
             }
-            if secs > *max_secs || (secs == *max_secs && nanos > *max_nanos) {
+            if secs > *max_secs {
                 *max_secs = secs;
-                *max_nanos = nanos;
             }
         }
     }
