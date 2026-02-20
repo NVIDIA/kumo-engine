@@ -191,6 +191,11 @@ fn build_columns(kumo_table: &KumoTable) -> Result<Vec<ColumnSpec>, ConvertError
             Some(dt) => map_kumo_dtype(dt).unwrap_or(IngestedType::String),
             None => IngestedType::String,
         };
+        // TODO(vedaant): When stype="sequence" but ingested_dtype is String, the
+        // column is likely a JSON-encoded float array (e.g. "[0.1, -0.2, ...]").
+        // We should detect this case and convert to Float32Array so that rowpack
+        // encodes it as a native float list and col_stats can collect sequence
+        // statistics. See mapping.rs for details.
 
         let ts_unit = timestamp_unit.and_then(map_timestamp_unit);
         let semantic_type = stype.and_then(map_kumo_stype);

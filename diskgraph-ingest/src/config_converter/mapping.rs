@@ -38,6 +38,19 @@ pub fn map_kumo_dtype(dtype: &str) -> Option<IngestedType> {
         "intlist" => Some(IngestedType::String),
         "stringlist" => Some(IngestedType::String),
 
+        // TODO(vedaant): Some Kumo datasets store embeddings as JSON-encoded strings
+        // (e.g. "[0.1, -0.2, ...]") with dtype="string" and stype="sequence". These
+        // end up as IngestedType::String here, which means the rowpack encoder treats
+        // them as strings and the col_stats Sequence collector never sees float list
+        // observations (it only handles observe_float_list, not observe_string).
+        // We need to support String → Float32Array conversion:
+        //   1. Detect stype="sequence" + dtype="string" in the config converter and
+        //      set ingested_dtype to Float32Array (or a new StringEncodedFloatArray).
+        //   2. Add a parsing step in rowpack that JSON-decodes the string into a float
+        //      list before encoding.
+        // Observed in: Faire product.EMBEDDING column.
+        // See also: diskgraph-ingest/src/config_converter/convert.rs column building.
+
         // Binary
         "binary" => Some(IngestedType::Bytes),
 
