@@ -1,18 +1,12 @@
 #!/bin/bash
 set -e
 
-# 1. Build
-echo "Building diskgraph-pybind..."
-cargo build --release
+PYTHON=${PYTHON:-python3}
 
-# 2. Setup Python Env
-# Copy .so to current dir so pytest can find it
-cp ../target/release/libdiskgraph_pybind.so diskgraph_pybind.so
+# 1. Build via maturin (produces correctly-named .so)
+echo "Building diskgraph-pybind via maturin..."
+RUSTFLAGS="${RUSTFLAGS:--C target-cpu=native}" uvx maturin develop --release --manifest-path Cargo.toml
 
-# 3. Run Tests
+# 2. Run Tests
 echo "Running Pytest..."
-export PYTHONPATH=.
-~/kumo/venv/bin/python -m pytest tests/
-
-# 4. Cleanup
-rm diskgraph_pybind.so
+$PYTHON -m pytest tests/
