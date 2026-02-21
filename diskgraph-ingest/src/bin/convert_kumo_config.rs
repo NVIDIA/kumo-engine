@@ -13,8 +13,9 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, ValueEnum};
 
 use diskgraph_ingest::config_converter::{
-    convert_kumo_to_diskgraph, ConvertOptions, KumoGraphConfig,
+    convert_kumo_to_diskgraph, estimate_num_shards, ConvertOptions, KumoGraphConfig,
 };
+use diskgraph_ingest::progress::format_bytes;
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum Region {
@@ -54,8 +55,8 @@ struct Args {
     output: Option<PathBuf>,
 
     /// AWS profile to use for S3 access
-    #[arg(long, default_value = "normal-profile")]
-    profile: String,
+    #[arg(long)]
+    profile: Option<String>,
 
     /// Number of shards for the index (default: not set, ingest binary picks)
     #[arg(long)]
@@ -63,10 +64,14 @@ struct Args {
 }
 
 /// Download a file from S3 using AWS CLI
-fn s3_download(bucket: &str, key: &str, profile: &str) -> Result<String> {
+fn s3_download(bucket: &str, key: &str, profile: Option<&str>) -> Result<String> {
     let s3_path = format!("s3://{}/{}", bucket, key);
+    let mut args = vec!["s3", "cp", &s3_path, "-"];
+    if let Some(p) = profile {
+        args.extend_from_slice(&["--profile", p]);
+    }
     let output = Command::new("aws")
-        .args(["s3", "cp", &s3_path, "-", "--profile", profile])
+        .args(&args)
         .output()
         .with_context(|| format!("Failed to run aws s3 cp for {}", s3_path))?;
 
@@ -80,10 +85,14 @@ fn s3_download(bucket: &str, key: &str, profile: &str) -> Result<String> {
 }
 
 /// List S3 directory and return first entry
-fn s3_list_first(bucket: &str, prefix: &str, profile: &str) -> Result<String> {
+fn s3_list_first(bucket: &str, prefix: &str, profile: Option<&str>) -> Result<String> {
     let s3_path = format!("s3://{}/{}", bucket, prefix);
+    let mut args = vec!["s3", "ls", &s3_path];
+    if let Some(p) = profile {
+        args.extend_from_slice(&["--profile", p]);
+    }
     let output = Command::new("aws")
-        .args(["s3", "ls", &s3_path, "--profile", profile])
+        .args(&args)
         .output()
         .with_context(|| format!("Failed to run aws s3 ls for {}", s3_path))?;
 
@@ -103,11 +112,16 @@ fn s3_list_first(bucket: &str, prefix: &str, profile: &str) -> Result<String> {
     bail!("No directories found in {}", s3_path)
 }
 
-/// List parquet files under an S3 prefix, returning full S3 URLs.
-fn s3_list_parquet(s3_url: &str, profile: &str) -> Result<Vec<String>> {
+/// List parquet files under an S3 prefix, returning (full S3 URL, size_bytes).
+fn s3_list_parquet(s3_url: &str, profile: Option<&str>) -> Result<Vec<(String, u64)>> {
     let url = s3_url.trim_end_matches('/');
+    let url_slash = format!("{}/", url);
+    let mut args = vec!["s3", "ls", url_slash.as_str()];
+    if let Some(p) = profile {
+        args.extend_from_slice(&["--profile", p]);
+    }
     let output = Command::new("aws")
-        .args(["s3", "ls", &format!("{}/", url), "--profile", profile])
+        .args(&args)
         .output()
         .with_context(|| format!("Failed to run aws s3 ls for {}", url))?;
 
@@ -117,18 +131,23 @@ fn s3_list_parquet(s3_url: &str, profile: &str) -> Result<Vec<String>> {
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut files: Vec<String> = stdout
+    let mut files: Vec<(String, u64)> = stdout
         .lines()
         .filter_map(|line| {
-            let filename = line.split_whitespace().last()?;
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() < 4 {
+                return None;
+            }
+            let size = parts[2].parse::<u64>().ok()?;
+            let filename = parts[3];
             if filename.ends_with(".parquet") {
-                Some(format!("{}/{}", url, filename))
+                Some((format!("{}/{}", url, filename), size))
             } else {
                 None
             }
         })
         .collect();
-    files.sort();
+    files.sort_by(|a, b| a.0.cmp(&b.0));
     Ok(files)
 }
 
@@ -146,7 +165,7 @@ fn main() -> Result<()> {
 
     // Find the graph directory (e.g., NA-abc123)
     let graphs_prefix = format!("{}/prod/jobs/{}/graphs/", customer, job_id);
-    let graph_dir = s3_list_first(bucket, &graphs_prefix, &args.profile)
+    let graph_dir = s3_list_first(bucket, &graphs_prefix, args.profile.as_deref())
         .with_context(|| format!("Failed to find graph directory in {}", graphs_prefix))?;
 
     eprintln!("Found graph: {}", graph_dir);
@@ -154,7 +173,7 @@ fn main() -> Result<()> {
     // Download the config.json
     let config_key = format!("{}{}/config.json", graphs_prefix, graph_dir);
     eprintln!("Downloading config from {}...", config_key);
-    let config_json = s3_download(bucket, &config_key, &args.profile)?;
+    let config_json = s3_download(bucket, &config_key, args.profile.as_deref())?;
 
     // Parse Kumo config
     let kumo_config: KumoGraphConfig =
@@ -180,12 +199,13 @@ fn main() -> Result<()> {
     // Expand S3 directory prefixes to individual parquet file paths.
     // The converter outputs fpv3 directory paths but the ingest binary
     // expects individual file paths (it does HEAD per path, not prefix listing).
+    let mut total_bytes = 0u64;
     for table in &mut diskgraph_config.tables {
         let dir_paths: Vec<String> = table.get_paths().to_vec();
         let mut expanded: Vec<String> = Vec::new();
         for dir_path in &dir_paths {
             if dir_path.starts_with("s3://") {
-                let parquet_files = s3_list_parquet(dir_path, &args.profile)
+                let parquet_files = s3_list_parquet(dir_path, args.profile.as_deref())
                     .with_context(|| format!("Failed to list parquet files in {}", dir_path))?;
                 if parquet_files.is_empty() {
                     bail!(
@@ -199,7 +219,10 @@ fn main() -> Result<()> {
                     table.name,
                     parquet_files.len()
                 );
-                expanded.extend(parquet_files);
+                for (path, size) in parquet_files {
+                    expanded.push(path);
+                    total_bytes = total_bytes.saturating_add(size);
+                }
             } else {
                 expanded.push(dir_path.clone());
             }
@@ -207,10 +230,18 @@ fn main() -> Result<()> {
         *table.get_paths_mut() = expanded;
     }
 
-    // Set num_shards if provided
+    // Set num_shards if provided, otherwise infer from total size
     if let Some(shards) = args.num_shards {
         diskgraph_config.num_shards = Some(shards);
-        eprintln!("Set num_shards to {}", shards);
+        eprintln!("Set num_shards to {} (manual override)", shards);
+    } else {
+        let shards = estimate_num_shards(total_bytes);
+        diskgraph_config.num_shards = Some(shards);
+        eprintln!(
+            "Inferred num_shards={} for total data size {}",
+            shards,
+            format_bytes(total_bytes)
+        );
     }
 
     // Serialize output

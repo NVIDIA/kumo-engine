@@ -302,6 +302,10 @@ impl MemoryBudget {
             waiters: self.waiters.load(Ordering::Relaxed),
         }
     }
+
+    pub fn has_waiters(&self) -> bool {
+        self.waiters.load(Ordering::Relaxed) > 0
+    }
 }
 
 impl Drop for MemoryBudgetGuard {
@@ -591,6 +595,15 @@ impl EdgeBufferPool {
     }
 
     fn release(&self, buf: Vec<EdgeRecord>, reservation: Option<BudgetReservation>) {
+        if let Some(budget) = &self.budget {
+            if budget.has_waiters() {
+                // Deadlock Fix: If threads are waiting for budget, do not hoard this buffer.
+                // Drop it immediately to release the reservation back to the global budget,
+                // which triggers cvar.notify_all() and wakes the sleepers.
+                drop(reservation);
+                return;
+            }
+        }
         let mut buffers = self.buffers.lock().unwrap();
         buffers.push(PooledEdgeBuffer { buf, reservation });
     }
