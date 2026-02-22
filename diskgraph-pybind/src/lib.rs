@@ -437,6 +437,7 @@ impl PySampleIterator {
 }
 
 #[pymodule]
+#[pyo3(name = "_c")]
 fn diskgraph_pybind(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<SamplerEngine>()?;
     m.add_class::<PySampleIterator>()?;

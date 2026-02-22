@@ -3,9 +3,10 @@ requires = ["maturin>=1.0,<2.0"]
 build-backend = "maturin"
 
 [project]
-name = "diskgraph-pybind"
+name = "diskgraph"
 version = "0.1.0"
 requires-python = ">=3.7"
 
 [tool.maturin]
 manifest-path = "Cargo.toml"
+module-name = "diskgraph._c"
