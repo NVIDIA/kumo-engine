@@ -377,21 +377,16 @@ impl DiskGraphTTBuilder {
         }
     }
 
-    /// Timestamp windows. `timestamps`: list of `(start_us, end_us)`.
+    /// Timestamp windows. `timestamps`: list of epoch microseconds.
     #[pyo3(signature = (timestamps, forecast_length, lag_timesteps=None))]
     fn temporal(
         &mut self,
-        timestamps: Vec<(i64, i64)>,
+        timestamps: Vec<i64>,
         forecast_length: i64,
         lag_timesteps: Option<i64>,
     ) -> PyResult<()> {
-        let entries = timestamps
-            .into_iter()
-            .map(|(start, end)| tt::TimestampEntry { start, end })
-            .collect();
-
         self.temporal = Some(tt::TemporalSpec {
-            timestamps: entries,
+            timestamps,
             forecast_length,
             lag_timesteps,
         });

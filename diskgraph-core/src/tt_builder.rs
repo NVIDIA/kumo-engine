@@ -60,19 +60,10 @@ pub struct EntitySpec {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TemporalSpec {
-    pub timestamps: Vec<TimestampEntry>,
+    /// Epoch microseconds for each anchor time.
+    pub timestamps: Vec<i64>,
     pub forecast_length: i64,
     pub lag_timesteps: Option<i64>,
-}
-
-/// A single timestamp window. Split labels (train/val/test) are a
-/// postprocessing concern and not part of the execution plan.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TimestampEntry {
-    /// Epoch microseconds, inclusive.
-    pub start: i64,
-    /// Epoch microseconds, exclusive.
-    pub end: i64,
 }
 
 // ─── Prediction type ─────────────────────────────────────────────────────────
