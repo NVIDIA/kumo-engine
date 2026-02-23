@@ -1,0 +1,4 @@
+# Compiled PyO3 Extensions
+python/diskgraph/*.so
+python/diskgraph/*.pyd
+__pycache__/
