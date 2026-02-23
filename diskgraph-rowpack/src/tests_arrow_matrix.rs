@@ -290,10 +290,7 @@ fn test_matrix_timestamp() -> Result<()> {
         ValueRef::Timestamp(ts),
         0,
         |arr| {
-            let a = arr
-                .as_any()
-                .downcast_ref::<TimestampSecondArray>()
-                .unwrap();
+            let a = arr.as_any().downcast_ref::<TimestampSecondArray>().unwrap();
             assert_eq!(a.value(0), ts);
         },
         None,
@@ -308,10 +305,7 @@ fn test_matrix_timestamp() -> Result<()> {
         ValueRef::Timestamp(max_secs),
         0,
         |arr| {
-            let a = arr
-                .as_any()
-                .downcast_ref::<TimestampSecondArray>()
-                .unwrap();
+            let a = arr.as_any().downcast_ref::<TimestampSecondArray>().unwrap();
             assert_eq!(a.value(0), i64::MAX);
         },
         None,

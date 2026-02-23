@@ -196,10 +196,7 @@ pub enum RowFilterLhs {
     Column(String),
     /// Column on a table reachable via sub-traversal from the current row
     /// (multi-hop filtering).
-    Remote {
-        path: Vec<EdgeRef>,
-        column: String,
-    },
+    Remote { path: Vec<EdgeRef>, column: String },
 }
 
 /// Right-hand side of a [`RowFilter`] comparison.
@@ -215,10 +212,7 @@ pub enum RowFilterRhs {
     /// Column on the entity table (resolved per-entity before traversal).
     EntityColumn(String),
     /// Column on a table reachable via sub-traversal from the current row.
-    Remote {
-        path: Vec<EdgeRef>,
-        column: String,
-    },
+    Remote { path: Vec<EdgeRef>, column: String },
 }
 
 /// Right-hand side of a [`StageFilter`] comparison.
@@ -233,10 +227,7 @@ pub enum StageFilterRhs {
     /// Column on the entity table (resolved per-entity at runtime).
     EntityColumn(String),
     /// Column on a table reachable via sub-traversal from the entity.
-    Remote {
-        path: Vec<EdgeRef>,
-        column: String,
-    },
+    Remote { path: Vec<EdgeRef>, column: String },
     /// Alias of a previously computed op in a prior stage.
     Alias(String),
 }

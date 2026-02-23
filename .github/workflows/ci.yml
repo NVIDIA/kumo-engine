@@ -37,3 +37,25 @@ jobs:
         run: cargo build --workspace
       - name: Test
         run: cargo test --workspace
+
+  python-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # Pre-install specific versions to fix kumoapi grpcio-tools build isolation issues
+          pip install "setuptools<82" grpcio-tools maturin pytest
+      - name: Build and Test Python Package
+        working-directory: ./diskgraph-pybind
+        env:
+          PYTHONPATH: python
+        run: |
+          maturin develop --release --pip-path pip -- --no-build-isolation
+          pytest python/tests/

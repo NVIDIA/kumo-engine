@@ -273,7 +273,9 @@ fn timestamp_nanos_roundtrip() {
     let encoded = encode_row(&encoder, &row);
     let decoder = RowPackDecoder::new(ctx).unwrap();
     let mut scratch = RowPackDecodeScratch::default();
-    let val = decoder.decode_column_value(&encoded, 0, &mut scratch).unwrap();
+    let val = decoder
+        .decode_column_value(&encoded, 0, &mut scratch)
+        .unwrap();
     assert_eq!(val, ValueRef::Timestamp(1_700_000_000));
 }
 

@@ -25,7 +25,7 @@ def test_fused_sampling_1hop(ifood_graph):
         "layers": [
             {
                 "fanouts": {
-                    "orders_parquet_user_id_and_centroid_unique_numerical_to_users_user_id_and_centroid_unique_numerical_reverse": {
+                    "orders_parquet_user_id_to_users_user_id_reverse": {
                         "fanout": 5, "mode": "uniform", "absent_key_policy": "uniform_fallback"
                     }
                 },
@@ -71,7 +71,7 @@ def test_standalone_sampling(ifood_graph):
         "layers": [
             {
                 "fanouts": {
-                    "orders_parquet_user_id_and_centroid_unique_numerical_to_users_user_id_and_centroid_unique_numerical_reverse": {
+                    "orders_parquet_user_id_to_users_user_id_reverse": {
                         "fanout": 5, "mode": "uniform", "absent_key_policy": "uniform_fallback"
                     }
                 },
@@ -140,7 +140,7 @@ def test_fused_sampling_2hop_consistency(ifood_graph):
         "layers": [
             {
                 "fanouts": {
-                    "orders_parquet_user_id_and_centroid_unique_numerical_to_users_user_id_and_centroid_unique_numerical_reverse": {
+                    "orders_parquet_user_id_to_users_user_id_reverse": {
                         "fanout": 5, "mode": "uniform", "absent_key_policy": "uniform_fallback"
                     }
                 },
@@ -148,7 +148,7 @@ def test_fused_sampling_2hop_consistency(ifood_graph):
             },
             {
                 "fanouts": {
-                    "orders_parquet_merchant_id_numerical_to_merchants_merchant_id_numerical": {
+                    "orders_parquet_merchant_id_to_merchants_merchant_id": {
                         "fanout": 5, "mode": "uniform", "absent_key_policy": "uniform_fallback"
                     }
                 },
@@ -182,7 +182,7 @@ def test_concurrency_gil(ifood_graph):
 
     def worker():
         # Simple 1-hop
-        plan = { "layers": [{ "fanouts": { "orders_parquet_user_id_and_centroid_unique_numerical_to_users_user_id_and_centroid_unique_numerical_reverse": { "fanout": 5, "mode": "uniform", "absent_key_policy": "uniform_fallback" } }, "default_fanout": None }] }
+        plan = { "layers": [{ "fanouts": { "orders_parquet_user_id_to_users_user_id_reverse": { "fanout": 5, "mode": "uniform", "absent_key_policy": "uniform_fallback" } }, "default_fanout": None }] }
 
         # Run multiple queries per thread
         for _ in range(5):
@@ -221,7 +221,7 @@ def test_temporal_sampling(ifood_graph):
         "layers": [
             {
                 "fanouts": {
-                    "orders_parquet_user_id_and_centroid_unique_numerical_to_users_user_id_and_centroid_unique_numerical_reverse": {
+                    "orders_parquet_user_id_to_users_user_id_reverse": {
                         "fanout": 5, "mode": "uniform", "absent_key_policy": "uniform_fallback"
                     }
                 },
