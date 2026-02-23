@@ -77,7 +77,11 @@ impl RowFilter {
     /// RowFilter.compare_to_entity("currency", "==", "pref_currency")
     /// ```
     #[staticmethod]
-    fn compare_to_entity(column: String, op: &str, entity_column: String) -> PyResult<Self> {
+    fn compare_to_entity(
+        column: String,
+        op: &str,
+        entity_column: String,
+    ) -> PyResult<Self> {
         Ok(Self {
             inner: tt::RowFilter::Compare {
                 lhs: tt::RowFilterLhs::Column(column),
@@ -217,7 +221,11 @@ impl StageFilter {
     /// StageFilter.compare_to_entity("_sum", ">", "credit_limit")
     /// ```
     #[staticmethod]
-    fn compare_to_entity(alias: String, op: &str, entity_column: String) -> PyResult<Self> {
+    fn compare_to_entity(
+        alias: String,
+        op: &str,
+        entity_column: String,
+    ) -> PyResult<Self> {
         Ok(Self {
             inner: tt::StageFilter::Compare {
                 alias,
@@ -257,7 +265,11 @@ impl StageFilter {
     /// StageFilter.compare_to_alias("_sum", ">", "_avg")
     /// ```
     #[staticmethod]
-    fn compare_to_alias(alias: String, op: &str, rhs_alias: String) -> PyResult<Self> {
+    fn compare_to_alias(
+        alias: String,
+        op: &str,
+        rhs_alias: String,
+    ) -> PyResult<Self> {
         Ok(Self {
             inner: tt::StageFilter::Compare {
                 alias,

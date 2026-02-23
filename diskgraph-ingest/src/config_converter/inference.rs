@@ -66,7 +66,7 @@ fn smooth_shard_target(per_cpu_bytes: u64, total_bytes: u64) -> u64 {
         // Smooth interpolation t: 0.0 -> 1.0
         let t = ((total_gb - 10.0) / 30.0).clamp(0.0, 1.0);
         let smooth = t * t * (3.0 - 2.0 * t); // Smoothstep function
-                                              // Divisor: 16.0 -> 4.0
+        // Divisor: 16.0 -> 4.0
         16.0 - 12.0 * smooth
     } else if total_gb <= 1024.0 {
         // Range: 40GB - 1TB
@@ -118,8 +118,8 @@ mod tests {
     #[test]
     fn test_smooth_shard_target_small() {
         let per_cpu = 2 * GB; // 2GB per core
-                              // Case: 10GB total (Start of small range)
-                              // t=0, smooth=0, divisor=16. Target = 2GB/16 = 128MB.
+        // Case: 10GB total (Start of small range)
+        // t=0, smooth=0, divisor=16. Target = 2GB/16 = 128MB.
         let target_10gb = smooth_shard_target(per_cpu, 10 * GB);
         assert_eq!(target_10gb, 128 * 1024 * 1024);
 
@@ -132,10 +132,10 @@ mod tests {
     #[test]
     fn test_smooth_shard_target_medium() {
         let per_cpu = 4 * GB; // 4GB per core
-                              // Case: 40GB total (Start of medium range)
-                              // Divisor starts at 4.0. Target = 4GB/4 = 1GB.
+        // Case: 40GB total (Start of medium range)
+        // Divisor starts at 4.0. Target = 4GB/4 = 1GB.
         let target_40gb = smooth_shard_target(per_cpu, 40 * GB);
-        assert_eq!(target_40gb, GB);
+        assert_eq!(target_40gb, 1 * GB);
 
         // Case: 1TB total (End of medium range)
         // Divisor ends at 1.0. Target = 4GB/1 = 4GB.
@@ -183,7 +183,7 @@ mod tests {
 
         // Range 1: Small to Medium (< 1TB)
         let mut prev_target = 0;
-        let mut bytes = GB;
+        let mut bytes = 1 * GB;
         while bytes < 1_000 * GB {
             let target = smooth_shard_target(per_cpu, bytes);
             assert!(

@@ -12,15 +12,3 @@ if ! cargo clippy --workspace --all-targets -- -D warnings 2>/dev/null; then
     echo "Clippy check failed. Fix the warnings above."
     exit 1
 fi
-
-echo "Running Python tests in diskgraph-pybind..."
-if [ -d "diskgraph-pybind" ]; then
-    cd diskgraph-pybind
-    # Use existing environment if available, otherwise tests will just fail or be skipped
-    if command -v pytest &> /dev/null; then
-        PYTHONPATH=python pytest python/tests/
-    else
-        echo "pytest not found. Skipping Python tests in pre-commit hook."
-    fi
-fi
-

@@ -214,7 +214,11 @@ fn main() -> Result<()> {
                         dir_path
                     );
                 }
-                eprintln!("  {}: {} parquet files", table.name, parquet_files.len());
+                eprintln!(
+                    "  {}: {} parquet files",
+                    table.name,
+                    parquet_files.len()
+                );
                 for (path, size) in parquet_files {
                     expanded.push(path);
                     total_bytes = total_bytes.saturating_add(size);

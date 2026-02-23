@@ -22,7 +22,7 @@ def ifood_graph(tmp_path_factory):
         ("age", pa.int64())
     ])
     users_table = pa.Table.from_arrays(
-        [pa.array(["u1", "u2", "u3"]), pa.array([25, 30, 35])], 
+        [pa.array(["u1", "u2", "u3"]), pa.array([25, 30, 35])],
         schema=users_schema
     )
     users_path = str(data_dir / "users.parquet")
@@ -86,7 +86,7 @@ def ifood_graph(tmp_path_factory):
             }
         ]
     }
-    
+
     config_path = root / "config.json"
     with open(config_path, "w") as f:
         json.dump(config, f)
@@ -96,9 +96,9 @@ def ifood_graph(tmp_path_factory):
         # Find cargo project root (assuming tests are run from diskgraph-pybind or root)
         project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.."))
         subprocess.run(
-            ["cargo", "run", "--release", "--bin", "ingest", "--", 
-             "--source", str(config_path), 
-             "--dest", "local", 
+            ["cargo", "run", "--release", "--bin", "ingest", "--",
+             "--source", str(config_path),
+             "--dest", "local",
              "--output", str(index_dir)],
             cwd=project_root,
             check=True,
