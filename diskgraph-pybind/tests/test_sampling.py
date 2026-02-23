@@ -1,6 +1,6 @@
 import pytest
 import json
-import diskgraph_pybind as diskgraph_py
+import diskgraph as diskgraph_py
 import pyarrow as pa
 import threading
 import time
@@ -212,3 +212,42 @@ def test_invalid_plan(ifood_graph):
     dg = diskgraph_py.SamplerEngine(ifood_graph)
     with pytest.raises(ValueError):
         dg.sample({"users": [0]}, "{invalid_json", fused=True)
+
+def test_temporal_sampling(ifood_graph):
+    dg = diskgraph_py.SamplerEngine(ifood_graph)
+
+    # Simple 1-hop plan
+    plan = {
+        "layers": [
+            {
+                "fanouts": {
+                    "orders_parquet_user_id_and_centroid_unique_numerical_to_users_user_id_and_centroid_unique_numerical_reverse": {
+                        "fanout": 5, "mode": "uniform", "absent_key_policy": "uniform_fallback"
+                    }
+                },
+                "default_fanout": None
+            }
+        ]
+    }
+
+    # Pass seed_timestamps (epoch microseconds)
+    timestamps = {"users": [1609459200000000]} # Jan 1 2021
+
+    iterator = dg.sample(
+        {"users": [0]},
+        json.dumps(plan),
+        fused=True,
+        seed_timestamps=timestamps
+    )
+
+    events = []
+    for event in iterator:
+        events.append(event)
+
+    # Basic verification that it runs without error
+    types = [e["type"] for e in events]
+    assert "stats" in types
+    stats_event = next(e for e in events if e["type"] == "stats")
+    stats = json.loads(stats_event["stats"])
+    assert "total_nodes" in stats
+
