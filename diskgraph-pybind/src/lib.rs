@@ -260,13 +260,14 @@ impl SamplerEngine {
         })
     }
 
-    #[pyo3(signature = (seed_nodes, plan_json, fused, swap_edge_direction=None))]
+    #[pyo3(signature = (seed_nodes, plan_json, fused, seed_timestamps=None, swap_edge_direction=None))]
     pub fn sample(
         &self,
         py: Python<'_>,
         seed_nodes: Bound<'_, PyDict>,
         plan_json: String,
         fused: bool,
+        seed_timestamps: Option<Bound<'_, PyDict>>,
         swap_edge_direction: Option<bool>,
     ) -> PyResult<PySampleIterator> {
         let mut seeds = HashMap::new();
@@ -274,6 +275,17 @@ impl SamplerEngine {
             let type_name: String = key.extract()?;
             let ids: Vec<u64> = value.extract()?;
             seeds.insert(type_name, ids);
+        }
+
+        let mut timestamps = None;
+        if let Some(st) = seed_timestamps {
+            let mut ts_map = HashMap::new();
+            for (key, value) in st.into_iter() {
+                let type_name: String = key.extract()?;
+                let ts: Vec<i64> = value.extract()?;
+                ts_map.insert(type_name, ts);
+            }
+            timestamps = Some(ts_map);
         }
 
         let plan: SamplingPlan = serde_json::from_str(&plan_json)
@@ -292,7 +304,7 @@ impl SamplerEngine {
         let request = BatchSamplingRequest {
             dataset_id: uuid::Uuid::nil(),
             seed_nodes: seeds,
-            seed_timestamps: None,
+            seed_timestamps: timestamps,
             plan,
             flags,
         };
