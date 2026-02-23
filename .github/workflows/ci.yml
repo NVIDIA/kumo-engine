@@ -57,5 +57,5 @@ jobs:
         env:
           PYTHONPATH: python
         run: |
-          maturin develop --release --pip-path pip -- --no-build-isolation
+          pip install -e ".[test]" --no-build-isolation
           pytest python/tests/
