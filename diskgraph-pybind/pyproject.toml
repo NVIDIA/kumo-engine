@@ -6,15 +6,16 @@ build-backend = "maturin"
 name = "diskgraph"
 version = "0.1.0"
 requires-python = ">=3.7"
-# dependencies = [
-#    "kumo-api @ git+ssh://git@github.com/kumo-ai/kumo-api.git@v0.53.0",
-# ]
+dependencies = [
+    "kumo-api @ git+ssh://git@github.com/kumo-ai/kumo-api.git@v0.53.0",
+]
 
-# [project.optional-dependencies]
-# test = [
-#    "pytest",
-#    "kumo-pql @ git+ssh://git@github.com/kumo-ai/kumo-pql.git@4bdab83d790151a749f34a205fdbe848234de44f"
-# ]
+[project.optional-dependencies]
+test = [
+    "pytest",
+    "pyarrow",
+    "kumo-pql @ git+ssh://git@github.com/kumo-ai/kumo-pql.git@4bdab83d790151a749f34a205fdbe848234de44f"
+]
 
 [tool.maturin]
 manifest-path = "Cargo.toml"
