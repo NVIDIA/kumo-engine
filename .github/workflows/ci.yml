@@ -58,10 +58,8 @@ jobs:
           PYTHONPATH: python
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Rewrite SSH URLs to HTTPS with the GitHub Action token
-          # Note: The x-access-token prefix is the standard way to use GITHUB_TOKEN for cloning
-          git config --global url."https://x-access-token:${GITHUB_TOKEN}@github.com/".insteadOf "ssh://git@github.com/"
-          git config --global url."https://x-access-token:${GITHUB_TOKEN}@github.com/".insteadOf "git@github.com:"
+          # Rewrite SSH URLs to HTTPS directly in pyproject.toml so pip uses the token
+          sed -i "s|git+ssh://git@github.com/|git+https://x-access-token:${GITHUB_TOKEN}@github.com/|g" pyproject.toml
 
           pip install -e ".[test]" --no-build-isolation
           pytest python/tests/
