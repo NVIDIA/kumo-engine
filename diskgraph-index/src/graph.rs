@@ -139,7 +139,7 @@ impl GraphIndexBuilder {
                 let output_dir = Arc::new(
                     self.output_root
                         .join("nodes")
-                        .join(&node_type.name.to_lowercase())
+                        .join(node_type.name.to_lowercase())
                         .join(format!("shard-{:05}", shard_idx)),
                 );
                 let (node_data, node_data_max_len) = if node_type.has_node_data {
@@ -381,7 +381,7 @@ impl GraphIndexReader {
             for (shard_idx, _shard_meta) in node_type.shards.iter().enumerate() {
                 let dir = root
                     .join("nodes")
-                    .join(&node_type.name.to_lowercase())
+                    .join(node_type.name.to_lowercase())
                     .join(format!("shard-{:05}", shard_idx));
                 let reader =
                     ShardReader::open(&dir, Arc::clone(&layouts), node_type.has_node_data)?;
