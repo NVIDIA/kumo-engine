@@ -641,124 +641,10 @@ impl TableCategoryCounts {
 }
 
 // ---------------------------------------------------------------------------
-// HyperLogLog (p=14)
+// HyperLogLog — re-exported from diskgraph-core
 // ---------------------------------------------------------------------------
 
-/// HyperLogLog cardinality estimator with precision p=14.
-///
-/// Uses 2^14 = 16384 registers (16KB per column). Relative error ~0.8%.
-/// Hash function: gxhash (hardware-accelerated).
-pub struct HyperLogLog {
-    registers: Box<[u8; Self::M]>,
-}
-
-impl Default for HyperLogLog {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl HyperLogLog {
-    const P: u32 = 14;
-    const M: usize = 1 << Self::P; // 16384
-    /// Fixed seed for deterministic hashing. All HLL instances must use the
-    /// same hash function for register-max merge to be valid.
-    const HASH_SEED: i64 = 0x517c_c1b7_2722_0a95_u64 as i64;
-
-    pub fn new() -> Self {
-        Self {
-            registers: Box::new([0u8; Self::M]),
-        }
-    }
-
-    /// Compute a u64 hash for a byte slice using the fixed HLL seed.
-    /// Used by both HLL and category counts to share a single hash computation.
-    #[inline]
-    pub fn hash_bytes(bytes: &[u8]) -> u64 {
-        let mut hasher = gxhash::GxHasher::with_seed(Self::HASH_SEED);
-        hasher.write(bytes);
-        hasher.finish()
-    }
-
-    /// Compute a u64 hash for an i64 value using the fixed HLL seed.
-    #[inline]
-    pub fn hash_i64(value: i64) -> u64 {
-        let mut hasher = gxhash::GxHasher::with_seed(Self::HASH_SEED);
-        hasher.write_i64(value);
-        hasher.finish()
-    }
-
-    /// Compute a u64 hash for a f64 value using the fixed HLL seed.
-    #[inline]
-    pub fn hash_f64(value: f64) -> u64 {
-        let mut hasher = gxhash::GxHasher::with_seed(Self::HASH_SEED);
-        hasher.write_u64(value.to_bits());
-        hasher.finish()
-    }
-
-    /// Hash and observe a byte slice.
-    #[inline]
-    pub fn observe_bytes(&mut self, bytes: &[u8]) {
-        self.observe_hash(Self::hash_bytes(bytes));
-    }
-
-    /// Observe an i64 value.
-    #[inline]
-    pub fn observe_i64(&mut self, value: i64) {
-        self.observe_hash(Self::hash_i64(value));
-    }
-
-    /// Observe a f64 value (uses bit representation for hashing).
-    #[inline]
-    pub fn observe_f64(&mut self, value: f64) {
-        self.observe_hash(Self::hash_f64(value));
-    }
-
-    #[inline(always)]
-    fn observe_hash(&mut self, hash: u64) {
-        let idx = (hash >> (64 - Self::P)) as usize;
-        let remaining = (hash << Self::P) | (1 << (Self::P - 1));
-        let rho = remaining.leading_zeros() as u8 + 1;
-        if rho > self.registers[idx] {
-            self.registers[idx] = rho;
-        }
-    }
-
-    /// Estimate cardinality using the HLL algorithm with bias correction.
-    pub fn estimate(&self) -> f64 {
-        let m = Self::M as f64;
-        let alpha = match Self::M {
-            16 => 0.673,
-            32 => 0.697,
-            64 => 0.709,
-            _ => 0.7213 / (1.0 + 1.079 / m),
-        };
-        let sum: f64 = self
-            .registers
-            .iter()
-            .map(|&r| 2.0_f64.powi(-(r as i32)))
-            .sum();
-        let raw = alpha * m * m / sum;
-
-        // Small range correction
-        if raw <= 2.5 * m {
-            let zeros = self.registers.iter().filter(|&&r| r == 0).count();
-            if zeros > 0 {
-                return m * (m / zeros as f64).ln();
-            }
-        }
-        raw
-    }
-
-    /// Merge another HLL into this one (element-wise max of registers).
-    pub fn merge(&mut self, other: &HyperLogLog) {
-        for (a, &b) in self.registers.iter_mut().zip(other.registers.iter()) {
-            if b > *a {
-                *a = b;
-            }
-        }
-    }
-}
+pub use diskgraph_core::accumulators::HyperLogLog;
 
 // ---------------------------------------------------------------------------
 // Reservoir sampler (Efraimidis-Spirakis with priority keys)
@@ -1145,151 +1031,10 @@ impl TDigestEstimator {
 }
 
 // ---------------------------------------------------------------------------
-// Welford online accumulator (M1–M4)
+// WelfordAccumulator — re-exported from diskgraph-core
 // ---------------------------------------------------------------------------
 
-/// Streaming moments accumulator using Welford's online algorithm.
-///
-/// Tracks count, mean (M1), variance (M2), skewness (M3), kurtosis (M4),
-/// plus running min/max. Numerically stable for large datasets.
-pub struct WelfordAccumulator {
-    pub count: u64,
-    pub m1: f64,
-    pub m2: f64,
-    pub m3: f64,
-    pub m4: f64,
-    pub min: f64,
-    pub max: f64,
-}
-
-impl Default for WelfordAccumulator {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl WelfordAccumulator {
-    pub fn new() -> Self {
-        Self {
-            count: 0,
-            m1: 0.0,
-            m2: 0.0,
-            m3: 0.0,
-            m4: 0.0,
-            min: f64::INFINITY,
-            max: f64::NEG_INFINITY,
-        }
-    }
-
-    /// Observe a single value. NaN/Inf values are silently skipped.
-    #[inline]
-    pub fn observe(&mut self, value: f64) {
-        if !value.is_finite() {
-            return;
-        }
-        let n1 = self.count;
-        self.count += 1;
-        let n = self.count as f64;
-        let delta = value - self.m1;
-        let delta_n = delta / n;
-        let delta_n2 = delta_n * delta_n;
-        let term1 = delta * delta_n * n1 as f64;
-
-        self.m1 += delta_n;
-        self.m4 += term1 * delta_n2 * (n * n - 3.0 * n + 3.0) + 6.0 * delta_n2 * self.m2
-            - 4.0 * delta_n * self.m3;
-        self.m3 += term1 * delta_n * (n - 2.0) - 3.0 * delta_n * self.m2;
-        self.m2 += term1;
-
-        if value < self.min {
-            self.min = value;
-        }
-        if value > self.max {
-            self.max = value;
-        }
-    }
-
-    pub fn mean(&self) -> f64 {
-        self.m1
-    }
-
-    pub fn variance(&self) -> f64 {
-        if self.count < 2 {
-            return 0.0;
-        }
-        self.m2 / (self.count - 1) as f64
-    }
-
-    pub fn std_dev(&self) -> f64 {
-        self.variance().sqrt()
-    }
-
-    pub fn skewness(&self) -> f64 {
-        if self.m2 < 1e-10 {
-            return 0.0;
-        }
-        let n = self.count as f64;
-        (n.sqrt() * self.m3) / self.m2.powf(1.5)
-    }
-
-    pub fn kurtosis(&self) -> f64 {
-        if self.m2 < 1e-10 {
-            return 0.0;
-        }
-        let n = self.count as f64;
-        (n * self.m4) / (self.m2 * self.m2) - 3.0
-    }
-
-    /// Merge another accumulator into this one (Chan et al. parallel formula).
-    pub fn merge(&mut self, other: &WelfordAccumulator) {
-        if other.count == 0 {
-            return;
-        }
-        if self.count == 0 {
-            *self = WelfordAccumulator {
-                count: other.count,
-                m1: other.m1,
-                m2: other.m2,
-                m3: other.m3,
-                m4: other.m4,
-                min: other.min,
-                max: other.max,
-            };
-            return;
-        }
-        let na = self.count as f64;
-        let nb = other.count as f64;
-        let n = na + nb;
-        let delta = other.m1 - self.m1;
-        let delta2 = delta * delta;
-        let delta3 = delta2 * delta;
-        let delta4 = delta2 * delta2;
-
-        let new_m1 = (na * self.m1 + nb * other.m1) / n;
-        let new_m2 = self.m2 + other.m2 + delta2 * na * nb / n;
-        let new_m3 = self.m3
-            + other.m3
-            + delta3 * na * nb * (na - nb) / (n * n)
-            + 3.0 * delta * (na * other.m2 - nb * self.m2) / n;
-        let new_m4 = self.m4
-            + other.m4
-            + delta4 * na * nb * (na * na - na * nb + nb * nb) / (n * n * n)
-            + 6.0 * delta2 * (na * na * other.m2 + nb * nb * self.m2) / (n * n)
-            + 4.0 * delta * (na * other.m3 - nb * self.m3) / n;
-
-        self.count += other.count;
-        self.m1 = new_m1;
-        self.m2 = new_m2;
-        self.m3 = new_m3;
-        self.m4 = new_m4;
-        if other.min < self.min {
-            self.min = other.min;
-        }
-        if other.max > self.max {
-            self.max = other.max;
-        }
-    }
-}
+pub use diskgraph_core::accumulators::WelfordAccumulator;
 
 // ---------------------------------------------------------------------------
 // FileColStats — per-file observer
@@ -1342,6 +1087,7 @@ pub enum ColumnStatsCollector {
     Timestamp {
         count: u64,
         null_count: u64,
+        parse_fail_count: u64,
         min_secs: i64,
         max_secs: i64,
     },
@@ -1465,6 +1211,52 @@ impl FileColStats {
         }
     }
 
+    /// Check for columns where parse failures or nulls exceed 80% of total rows.
+    /// Returns an error if any timestamp column has (parse_fail_count + null_count)
+    /// / total > 0.8, indicating a likely format mismatch or data issue.
+    pub fn check_parse_failures(&self, column_names: &[String], table_name: &str) -> anyhow::Result<()> {
+        for (col, name) in self.cols.iter().zip(column_names.iter()) {
+            if let ColumnStatsCollector::Timestamp {
+                count,
+                null_count,
+                parse_fail_count,
+                ..
+            } = col
+            {
+                let total = count + null_count + parse_fail_count;
+                if total == 0 {
+                    continue;
+                }
+                let bad = null_count + parse_fail_count;
+                let bad_frac = bad as f64 / total as f64;
+                if *parse_fail_count > 0 {
+                    eprintln!(
+                        "WARNING: table '{}' column '{}': {} parse failures out of {} rows ({:.1}%)",
+                        table_name,
+                        name,
+                        parse_fail_count,
+                        total,
+                        *parse_fail_count as f64 / total as f64 * 100.0,
+                    );
+                }
+                if bad_frac > 0.8 {
+                    return Err(anyhow::anyhow!(
+                        "table '{}' column '{}': {:.1}% of rows are null or failed to parse \
+                         ({} null + {} parse failures out of {} total). \
+                         This likely indicates a timestamp format mismatch.",
+                        table_name,
+                        name,
+                        bad_frac * 100.0,
+                        null_count,
+                        parse_fail_count,
+                        total,
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Serialize accumulated stats to a JSON object keyed by column name.
     /// Category counts are included from the shared state (Approach 2&3) or
     /// local accumulator (Approach 1).
@@ -1572,6 +1364,7 @@ impl ColumnStatsCollector {
             Some(SemanticType::Timestamp) => ColumnStatsCollector::Timestamp {
                 count: 0,
                 null_count: 0,
+                parse_fail_count: 0,
                 min_secs: i64::MAX,
                 max_secs: i64::MIN,
             },
@@ -1662,18 +1455,21 @@ impl ColumnStatsCollector {
                 ColumnStatsCollector::Timestamp {
                     count,
                     null_count,
+                    parse_fail_count,
                     min_secs,
                     max_secs,
                 },
                 ColumnStatsCollector::Timestamp {
                     count: c2,
                     null_count: nc2,
+                    parse_fail_count: pf2,
                     min_secs: ms2,
                     max_secs: xs2,
                 },
             ) => {
                 *count += *c2;
                 *null_count += *nc2;
+                *parse_fail_count += *pf2;
                 if *ms2 < *min_secs {
                     *min_secs = *ms2;
                 }
@@ -1725,10 +1521,11 @@ impl ColumnStatsCollector {
                 hll,
                 tdigest,
             } => {
+                let total = welford.count + *null_count;
                 let (q25, q50, q75) = tdigest.quantiles().unwrap_or((0.0, 0.0, 0.0));
                 Some(json!({
                     "semantic_type": "numerical",
-                    "count": welford.count,
+                    "count": total,
                     "null_count": *null_count,
                     "mean": welford.mean(),
                     "std": welford.std_dev(),
@@ -1748,7 +1545,7 @@ impl ColumnStatsCollector {
                 hll,
             } => Some(json!({
                 "semantic_type": "categorical",
-                "count": *count,
+                "count": *count + *null_count,
                 "null_count": *null_count,
                 "num_unique": hll.estimate() as u64,
             })),
@@ -1758,7 +1555,7 @@ impl ColumnStatsCollector {
                 hll,
             } => Some(json!({
                 "semantic_type": "id",
-                "count": *count,
+                "count": *count + *null_count,
                 "null_count": *null_count,
                 "num_unique": hll.estimate() as u64,
             })),
@@ -1768,22 +1565,27 @@ impl ColumnStatsCollector {
                 hll,
             } => Some(json!({
                 "semantic_type": "text",
-                "count": *count,
+                "count": *count + *null_count,
                 "null_count": *null_count,
                 "num_unique": hll.estimate() as u64,
             })),
             ColumnStatsCollector::Timestamp {
                 count,
                 null_count,
+                parse_fail_count,
                 min_secs,
                 max_secs,
-            } => Some(json!({
-                "semantic_type": "timestamp",
-                "count": *count,
-                "null_count": *null_count,
-                "min_secs": *min_secs,
-                "max_secs": *max_secs,
-            })),
+            } => {
+                let total = *count + *null_count + *parse_fail_count;
+                Some(json!({
+                    "semantic_type": "timestamp",
+                    "count": total,
+                    "null_count": *null_count,
+                    "parse_fail_count": *parse_fail_count,
+                    "min_secs": *min_secs,
+                    "max_secs": *max_secs,
+                }))
+            }
             ColumnStatsCollector::Sequence {
                 count,
                 null_count,
@@ -1792,7 +1594,7 @@ impl ColumnStatsCollector {
                 welford,
             } => Some(json!({
                 "semantic_type": "sequence",
-                "count": *count,
+                "count": *count + *null_count,
                 "null_count": *null_count,
                 "min_len": *min_len,
                 "max_len": *max_len,
@@ -2116,6 +1918,16 @@ impl ColumnValueObserver for FileColStats {
             ColumnStatsCollector::Timestamp { null_count, .. } => *null_count += 1,
             ColumnStatsCollector::Sequence { null_count, .. } => *null_count += 1,
             ColumnStatsCollector::Skip => {}
+        }
+    }
+
+    #[inline]
+    fn observe_parse_failure(&mut self, col_idx: usize) {
+        if let ColumnStatsCollector::Timestamp {
+            parse_fail_count, ..
+        } = &mut self.cols[col_idx]
+        {
+            *parse_fail_count += 1;
         }
     }
 }

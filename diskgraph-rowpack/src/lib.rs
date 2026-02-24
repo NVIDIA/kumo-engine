@@ -1746,6 +1746,7 @@ pub trait ColumnValueObserver {
     fn observe_timestamp(&mut self, col_idx: usize, secs: i64);
     fn observe_float_list(&mut self, col_idx: usize, view: &FloatListView);
     fn observe_null(&mut self, col_idx: usize);
+    fn observe_parse_failure(&mut self, col_idx: usize);
 }
 
 /// Zero-sized observer that does nothing. LLVM eliminates all calls via monomorphization.
@@ -1764,6 +1765,8 @@ impl ColumnValueObserver for NoOpObserver {
     fn observe_float_list(&mut self, _col_idx: usize, _view: &FloatListView) {}
     #[inline(always)]
     fn observe_null(&mut self, _col_idx: usize) {}
+    #[inline(always)]
+    fn observe_parse_failure(&mut self, _col_idx: usize) {}
 }
 
 pub struct RowPackEncoder {
@@ -2637,12 +2640,16 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                IngestedType::Timestamp => match access.get_timestamp(idx).ok().flatten() {
-                    None => 0u8,
-                    Some(secs) => {
+                IngestedType::Timestamp => match access.get_timestamp(idx) {
+                    Ok(None) => 0u8,
+                    Ok(Some(secs)) => {
                         observer.observe_timestamp(idx, secs);
                         write_varint(zigzag_encode(secs), data);
                         1u8
+                    }
+                    Err(_) => {
+                        observer.observe_parse_failure(idx);
+                        0u8
                     }
                 },
                 IngestedType::Decimal128 => match access.get_decimal128(idx).ok().flatten() {

@@ -78,6 +78,9 @@ pub enum PredictionType {
     Link {
         /// When `true`, each list element becomes a separate output row.
         explode: bool,
+        /// When `true`, include a FREQUENCY column counting occurrences of each
+        /// distinct value. Set for RANK problems; unset for CLASSIFY.
+        include_frequency: bool,
     },
 }
 
@@ -184,6 +187,7 @@ pub enum Value {
     Float(f64),
     Str(String),
     Bool(bool),
+    List(Vec<Value>),
 }
 
 // ─── Filter LHS / RHS types ─────────────────────────────────────────────────

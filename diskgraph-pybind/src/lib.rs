@@ -16,6 +16,7 @@ use diskgraph_engine::output::OutputHandler;
 use diskgraph_engine::state::{SamplingState, StatePool};
 
 mod tt_builder;
+mod tt_executor;
 
 /// Events yielded by the sampling iterator.
 #[derive(Debug)]
@@ -457,5 +458,6 @@ fn diskgraph_pybind(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<tt_builder::EdgeRef>()?;
     m.add_class::<tt_builder::RowFilter>()?;
     m.add_class::<tt_builder::StageFilter>()?;
+    m.add_function(wrap_pyfunction!(tt_executor::execute_tt_plan, m)?)?;
     Ok(())
 }

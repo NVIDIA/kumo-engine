@@ -39,9 +39,16 @@ class DiskGraphPlanCompiler:
         forecast_length: int = 1,
         lag_timesteps: Optional[int] = None,
         list_distinct_target_is_array: bool = False,
+        include_frequency: bool = False,
+        entity_time_col: Optional[str] = None,
     ) -> str:
         """
         Build the DiskGraph execution plan.
+
+        Args:
+            include_frequency: When True and target is LIST_DISTINCT, include a
+                FREQUENCY column counting occurrences of each distinct value.
+                Set for RANK problems; unset for CLASSIFY.
         """
         # 1. Temporal Spec
         if query.query_type.name == "TEMPORAL" and timestamps:
@@ -51,14 +58,28 @@ class DiskGraphPlanCompiler:
         entity_table, entity_col = query.entity_column.split('.')
         self.builder.for_each(entity_table, entity_col)
 
+        # Always pass entity_time_col when available. For temporal queries this
+        # enables create_time filtering (skip entity/timestamp pairs where
+        # timestamp < create_time). For static queries it lets the executor
+        # emit actual timestamps instead of 0.
+        if entity_time_col:
+            self.builder.entity_time_col(entity_time_col)
+
         # Handle simple entity filters (WHERE col = constant)
         if isinstance(query.entity_ast, Filter):
             self._compile_entity_filter(query.entity_ast.condition, query)
 
         # 3. Prediction Type
-        if (query.target_ast.__class__.__name__ == 'Aggregation' and
-            query.target_ast.aggr.value.lower() in ('list_distinct', 'listdistinct')):
-            self.builder.link_prediction(explode=not list_distinct_target_is_array)
+        # Unwrap Join wrappers to find the actual aggregation for type detection.
+        target_for_type = query.target_ast
+        while isinstance(target_for_type, Join):
+            target_for_type = target_for_type.rhs_target
+        if (isinstance(target_for_type, Aggregation) and
+            target_for_type.aggr.value.lower() in ('list_distinct', 'listdistinct')):
+            self.builder.link_prediction(
+                explode=not list_distinct_target_is_array,
+                include_frequency=include_frequency,
+            )
         else:
             self.builder.node_prediction()
 
@@ -68,7 +89,10 @@ class DiskGraphPlanCompiler:
             self.builder.filter(sf)
 
         # 5. Target AST Traversal
-        self._traverse_target(query.target_ast, query, top_k=query.top_k)
+        # NOTE: top_k is intentionally NOT passed through. In Kumo, top_k is
+        # only used at ML prediction time, not during training table generation.
+        # The TT executor collects ALL distinct values.
+        self._traverse_target(query.target_ast, query)
 
         return self.builder.build()
 
@@ -132,8 +156,24 @@ class DiskGraphPlanCompiler:
                 return True
         return False
 
-    def _compile_row_filter(self, node: ASTNode, query: ValidatedPredictiveQuery) -> RowFilter:
+    def _compile_row_filter(self, node: ASTNode, query: ValidatedPredictiveQuery, context_table: str = None) -> RowFilter:
         if isinstance(node, Condition):
+            # When context_table is set (row filter inside an aggregation),
+            # columns on the context table should use Column LHS (not Remote).
+            # The row filter is evaluated on each destination node during traversal,
+            # so columns on that table are directly accessible.
+            if context_table and isinstance(node.target, Column):
+                target_table = node.target.fqn.split('.')[0]
+                if target_table == context_table:
+                    col_name = node.target.fqn.split('.')[1]
+                    op = _map_op(node.op.value if hasattr(node.op, 'value') else str(node.op))
+                    if isinstance(node.value, Column):
+                        ent_col = node.value.fqn.split('.')[1]
+                        return RowFilter.compare_to_entity(col_name, op, ent_col)
+                    else:
+                        val = node.get_typed_value()
+                        return RowFilter.compare(col_name, op, val)
+
             path, leaf = self._extract_path(node.target, query)
             col_name = leaf.fqn.split('.')[1]
             op = _map_op(node.op.value if hasattr(node.op, 'value') else str(node.op))
@@ -153,10 +193,10 @@ class DiskGraphPlanCompiler:
                     return RowFilter.compare_remote_lhs(path, col_name, op, val)
 
         elif isinstance(node, LogicalOperation):
-            left = self._compile_row_filter(node.left, query)
+            left = self._compile_row_filter(node.left, query, context_table=context_table)
             if node.bool_op == BoolOp.NOT:
                 return RowFilter.not_(left)
-            right = self._compile_row_filter(node.right, query)
+            right = self._compile_row_filter(node.right, query, context_table=context_table)
             if node.bool_op == BoolOp.AND:
                 return RowFilter.and_(left, right)
             elif node.bool_op == BoolOp.OR:
@@ -199,7 +239,7 @@ class DiskGraphPlanCompiler:
 
         raise ValueError(f"Unsupported stage filter node: {type(node)}")
 
-    def _traverse_target(self, node: ASTNode, query: ValidatedPredictiveQuery, top_k: Optional[int] = None) -> str:
+    def _traverse_target(self, node: ASTNode, query: ValidatedPredictiveQuery) -> str:
         if isinstance(node, Column):
             alias = self._next_alias("col")
             table, col = node.fqn.split('.')
@@ -209,13 +249,25 @@ class DiskGraphPlanCompiler:
         elif isinstance(node, Aggregation):
             alias = self._next_alias("agg")
 
-            row_filter = None
+            # Extract path FIRST so we know the destination table for row filter context
+            filter_node = None
             target_inner = node.target
             if isinstance(target_inner, Filter):
-                row_filter = self._compile_row_filter(target_inner.condition, query)
+                filter_node = target_inner.condition
                 target_inner = target_inner.target
 
             path, leaf = self._extract_path(target_inner, query)
+
+            # Determine the destination table: row filter columns resolve against it.
+            # The leaf from _extract_path is always a Column on the destination table.
+            if isinstance(leaf, Column):
+                dest_table = leaf.fqn.split('.')[0]
+            else:
+                dest_table = None
+
+            row_filter = None
+            if filter_node is not None:
+                row_filter = self._compile_row_filter(filter_node, query, context_table=dest_table)
 
             target_col = None
             if isinstance(leaf, Column):
@@ -237,9 +289,8 @@ class DiskGraphPlanCompiler:
             if node.time_col:
                 time_col = node.time_col.split('.')[1]
 
-            limit = None
-            if node.aggr.value.lower() in ('list_distinct', 'listdistinct'):
-                limit = top_k
+            # NOTE: limit stays None for training table generation.
+            # top_k from PQL is only used at ML prediction time, not here.
 
             self.builder.aggregate(
                 alias=alias,
@@ -250,7 +301,6 @@ class DiskGraphPlanCompiler:
                 window=window,
                 window_unit=window_unit,
                 row_filter=row_filter,
-                limit=limit
             )
             return alias
 
@@ -260,5 +310,13 @@ class DiskGraphPlanCompiler:
             op = _map_op(node.op.value if hasattr(node.op, 'value') else str(node.op))
             self.builder.compare(alias, lhs_alias, op, node.get_typed_value())
             return alias
+
+        elif isinstance(node, Join):
+            # Join wraps the target AST for link prediction queries.
+            # The Join's lhs_key/rhs_key encode the edge path, which
+            # _extract_path already knows how to extract when it finds
+            # Join nodes inside an Aggregation's target. So we just
+            # recurse into the rhs_target (the actual Aggregation).
+            return self._traverse_target(node.rhs_target, query)
 
         raise ValueError(f"Unsupported target node: {type(node)}")

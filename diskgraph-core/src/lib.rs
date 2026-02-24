@@ -7,6 +7,7 @@
 //! a single source of truth for sampling semantics, metadata layout, and
 //! dataset lifecycle state.
 
+pub mod accumulators;
 pub mod dataset;
 pub mod errors;
 pub mod features;

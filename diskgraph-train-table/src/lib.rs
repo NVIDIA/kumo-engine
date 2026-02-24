@@ -1,11 +1,7 @@
-pub mod ast;
-pub mod config;
-pub mod exec;
-pub mod index_reader;
-pub mod parquet_writer;
-pub mod parser;
-pub mod pipeline;
-pub mod report;
-pub mod split;
-pub mod temporal;
-pub mod validate;
+// TT-gen executor (plan-based, driven by DiskGraphTTPlan from PyO3 builder)
+pub mod ttgen_accumulator;
+pub mod ttgen_executor;
+pub mod ttgen_filter;
+pub mod ttgen_output;
+pub mod ttgen_resolve;
+pub mod ttgen_traversal;

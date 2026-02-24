@@ -1,0 +1,310 @@
+//! TT-gen accumulators — one per `AggFunc` variant.
+//!
+//! Each accumulator is created fresh per (entity, timestamp, op), used during
+//! traversal, and finalized into a [`Value`] for the aliases Vec.
+
+use std::collections::HashSet;
+
+use diskgraph_core::accumulators::WelfordAccumulator;
+use diskgraph_core::tt_builder::Value;
+
+/// Runtime accumulator for a single aggregation op.
+pub enum Accumulator {
+    Count(u64),
+    Sum(f64),
+    Avg(WelfordAccumulator),
+    Min(f64),
+    Max(f64),
+    CountDistinct(HashSet<u64>),
+    ListDistinct {
+        set: HashSet<u64>,
+        /// Maps hash → original value for output reconstruction.
+        values: Vec<Value>,
+        limit: Option<u32>,
+    },
+    First(Option<Value>),
+    Last(Option<Value>),
+}
+
+impl Accumulator {
+    /// Convert the accumulated state into a final output value.
+    pub fn finalize(self) -> Value {
+        match self {
+            Accumulator::Count(n) => Value::Int(n as i64),
+            Accumulator::Sum(x) => Value::Float(x),
+            Accumulator::Avg(w) => {
+                if w.count == 0 {
+                    Value::Float(f64::NAN)
+                } else {
+                    Value::Float(w.mean())
+                }
+            }
+            Accumulator::Min(x) => {
+                if x == f64::INFINITY {
+                    Value::Float(f64::NAN) // no values observed
+                } else {
+                    Value::Float(x)
+                }
+            }
+            Accumulator::Max(x) => {
+                if x == f64::NEG_INFINITY {
+                    Value::Float(f64::NAN) // no values observed
+                } else {
+                    Value::Float(x)
+                }
+            }
+            Accumulator::CountDistinct(set) => Value::Int(set.len() as i64),
+            Accumulator::ListDistinct { values, .. } => Value::List(values),
+            Accumulator::First(v) | Accumulator::Last(v) => {
+                v.unwrap_or(Value::Float(f64::NAN))
+            }
+        }
+    }
+}
+
+/// Hash a Value for use in CountDistinct / ListDistinct sets.
+pub fn hash_value(v: &Value) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    match v {
+        Value::Int(i) => i.hash(&mut hasher),
+        Value::Float(f) => f.to_bits().hash(&mut hasher),
+        Value::Str(s) => s.hash(&mut hasher),
+        Value::Bool(b) => b.hash(&mut hasher),
+        Value::List(vs) => {
+            vs.len().hash(&mut hasher);
+            for item in vs {
+                hash_value(item).hash(&mut hasher);
+            }
+        }
+    }
+    hasher.finish()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_count() {
+        let acc = Accumulator::Count(42);
+        assert_eq!(acc.finalize(), Value::Int(42));
+    }
+
+    #[test]
+    fn test_sum() {
+        let acc = Accumulator::Sum(3.14);
+        assert_eq!(acc.finalize(), Value::Float(3.14));
+    }
+
+    #[test]
+    fn test_avg() {
+        let mut w = WelfordAccumulator::new();
+        w.observe(1.0);
+        w.observe(2.0);
+        w.observe(3.0);
+        let acc = Accumulator::Avg(w);
+        match acc.finalize() {
+            Value::Float(f) => assert!((f - 2.0).abs() < 1e-10),
+            other => panic!("expected Float, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_avg_empty() {
+        let w = WelfordAccumulator::new();
+        let acc = Accumulator::Avg(w);
+        match acc.finalize() {
+            Value::Float(f) => assert!(f.is_nan()),
+            other => panic!("expected Float(NaN), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_min_max() {
+        let acc_min = Accumulator::Min(1.5);
+        assert_eq!(acc_min.finalize(), Value::Float(1.5));
+
+        let acc_max = Accumulator::Max(99.9);
+        assert_eq!(acc_max.finalize(), Value::Float(99.9));
+    }
+
+    #[test]
+    fn test_min_max_empty() {
+        let acc_min = Accumulator::Min(f64::INFINITY);
+        match acc_min.finalize() {
+            Value::Float(f) => assert!(f.is_nan()),
+            other => panic!("expected Float(NaN), got {:?}", other),
+        }
+
+        let acc_max = Accumulator::Max(f64::NEG_INFINITY);
+        match acc_max.finalize() {
+            Value::Float(f) => assert!(f.is_nan()),
+            other => panic!("expected Float(NaN), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_count_distinct() {
+        let mut set = HashSet::new();
+        set.insert(1u64);
+        set.insert(2);
+        set.insert(3);
+        set.insert(1); // duplicate
+        let acc = Accumulator::CountDistinct(set);
+        assert_eq!(acc.finalize(), Value::Int(3));
+    }
+
+    #[test]
+    fn test_first_last() {
+        let acc_first = Accumulator::First(Some(Value::Int(10)));
+        assert_eq!(acc_first.finalize(), Value::Int(10));
+
+        let acc_last = Accumulator::Last(Some(Value::Str("hello".into())));
+        assert_eq!(acc_last.finalize(), Value::Str("hello".into()));
+
+        let acc_none = Accumulator::First(None);
+        match acc_none.finalize() {
+            Value::Float(f) => assert!(f.is_nan()),
+            other => panic!("expected Float(NaN), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_first_empty_is_nan() {
+        let acc = Accumulator::First(None);
+        match acc.finalize() {
+            Value::Float(f) => assert!(f.is_nan()),
+            other => panic!("expected Float(NaN), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_last_empty_is_nan() {
+        let acc = Accumulator::Last(None);
+        match acc.finalize() {
+            Value::Float(f) => assert!(f.is_nan()),
+            other => panic!("expected Float(NaN), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_count_empty() {
+        let acc = Accumulator::Count(0);
+        assert_eq!(acc.finalize(), Value::Int(0));
+    }
+
+    #[test]
+    fn test_sum_empty() {
+        let acc = Accumulator::Sum(0.0);
+        assert_eq!(acc.finalize(), Value::Float(0.0));
+    }
+
+    #[test]
+    fn test_count_distinct_empty() {
+        let acc = Accumulator::CountDistinct(HashSet::new());
+        assert_eq!(acc.finalize(), Value::Int(0));
+    }
+
+    #[test]
+    fn test_list_distinct_empty() {
+        let acc = Accumulator::ListDistinct {
+            set: HashSet::new(),
+            values: vec![],
+            limit: None,
+        };
+        assert_eq!(acc.finalize(), Value::List(vec![]));
+    }
+
+    #[test]
+    fn test_list_distinct_with_values() {
+        let mut set = HashSet::new();
+        let v1 = Value::Str("a".into());
+        let v2 = Value::Str("b".into());
+        set.insert(hash_value(&v1));
+        set.insert(hash_value(&v2));
+        let acc = Accumulator::ListDistinct {
+            set,
+            values: vec![v1.clone(), v2.clone()],
+            limit: None,
+        };
+        match acc.finalize() {
+            Value::List(v) => assert_eq!(v.len(), 2),
+            other => panic!("expected List, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_list_distinct_with_limit() {
+        let mut set = HashSet::new();
+        let vals: Vec<Value> = (0..5).map(|i| Value::Int(i)).collect();
+        for v in &vals {
+            set.insert(hash_value(v));
+        }
+        // Limit doesn't affect finalize — it's enforced during accumulation.
+        // finalize returns whatever values are stored.
+        let acc = Accumulator::ListDistinct {
+            set,
+            values: vals.clone(),
+            limit: Some(3),
+        };
+        match acc.finalize() {
+            Value::List(v) => assert_eq!(v.len(), 5), // all values stored
+            other => panic!("expected List, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_first_with_float() {
+        let acc = Accumulator::First(Some(Value::Float(3.14)));
+        assert_eq!(acc.finalize(), Value::Float(3.14));
+    }
+
+    #[test]
+    fn test_last_with_float() {
+        let acc = Accumulator::Last(Some(Value::Float(2.71)));
+        assert_eq!(acc.finalize(), Value::Float(2.71));
+    }
+
+    #[test]
+    fn test_sum_negative() {
+        let acc = Accumulator::Sum(-100.5);
+        assert_eq!(acc.finalize(), Value::Float(-100.5));
+    }
+
+    #[test]
+    fn test_hash_value() {
+        let h1 = hash_value(&Value::Int(42));
+        let h2 = hash_value(&Value::Int(42));
+        assert_eq!(h1, h2);
+
+        let h3 = hash_value(&Value::Int(43));
+        assert_ne!(h1, h3);
+    }
+
+    #[test]
+    fn test_hash_value_different_types() {
+        let h_int = hash_value(&Value::Int(5));
+        let h_float = hash_value(&Value::Float(5.0));
+        let h_str = hash_value(&Value::Str("5".into()));
+        // Different types should produce different hashes
+        assert_ne!(h_int, h_float);
+        assert_ne!(h_int, h_str);
+    }
+
+    #[test]
+    fn test_hash_value_bool() {
+        let h_true = hash_value(&Value::Bool(true));
+        let h_false = hash_value(&Value::Bool(false));
+        assert_ne!(h_true, h_false);
+    }
+
+    #[test]
+    fn test_hash_value_list() {
+        let h1 = hash_value(&Value::List(vec![Value::Int(1), Value::Int(2)]));
+        let h2 = hash_value(&Value::List(vec![Value::Int(1), Value::Int(2)]));
+        let h3 = hash_value(&Value::List(vec![Value::Int(2), Value::Int(1)]));
+        assert_eq!(h1, h2);
+        assert_ne!(h1, h3); // order matters
+    }
+}

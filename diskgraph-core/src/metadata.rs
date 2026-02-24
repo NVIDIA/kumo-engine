@@ -45,6 +45,12 @@ pub struct NodeTypeMetadata {
     pub node_data_compression: Option<NodeDataCompression>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub primary_key_map: Option<PrimaryKeyMap>,
+    /// Name of the create_time column (if configured in graph config).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub create_time_col: Option<String>,
+    /// Name of the end_time column (if configured in graph config).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_time_col: Option<String>,
     /// Contiguous ID ranges for node shards.
     pub shards: Vec<NodeShardMetadata>,
 }

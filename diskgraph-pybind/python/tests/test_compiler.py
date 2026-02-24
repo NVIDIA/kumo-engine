@@ -118,8 +118,9 @@ def test_compiler_with_row_filter():
     assert op["target_col"] == "transaction_id"
 
     row_filter = op["row_filter"]["compare"]
-    # In this test, we have a Join in the Filter target, so it is a remote LHS
-    assert row_filter["lhs"]["remote"]["column"] == "status"
+    # The filter column (transactions.status) is on the destination table of the
+    # aggregation, so it resolves as a local column, not a remote one.
+    assert row_filter["lhs"]["column"] == "status"
     assert row_filter["op"] == "eq"
     assert row_filter["rhs"]["constant"]["str"] == "paid"
 
@@ -182,6 +183,7 @@ def test_compiler_stage_filter():
     assert stage2["ops"][0]["aggregate"]["func"] == "sum"
 
 def test_compiler_pql_e2e():
+    kumopql = pytest.importorskip("kumopql", reason="kumopql not installed")
     from kumopql.parser import PQLParser
 
     pql = "PREDICT SUM(transactions.amount, -30, 0, days) FOR users.user_id WHERE users.country = 'US'"

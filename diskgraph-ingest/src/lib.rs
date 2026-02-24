@@ -2049,6 +2049,14 @@ impl IngestContext {
         }
         // Write col_stats.json if enabled
         if col_stats_enabled && !table_col_stats.is_empty() {
+            // Check for timestamp parse failures before writing stats
+            for table in &tables {
+                if let Some(stats) = table_col_stats.get(&table.name) {
+                    let col_names: Vec<String> =
+                        table.columns.iter().map(|c| c.name.clone()).collect();
+                    stats.check_parse_failures(&col_names, &table.name)?;
+                }
+            }
             let mut root_map = serde_json::Map::new();
             for table in &tables {
                 if let Some(mut stats) = table_col_stats.remove(&table.name) {
@@ -5193,6 +5201,8 @@ impl IngestContext {
                 has_node_data: true,
                 node_data_compression: compression,
                 primary_key_map: pk_map,
+                create_time_col: table.create_time.clone(),
+                end_time_col: table.end_time.clone(),
                 shards,
             });
         }

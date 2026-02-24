@@ -39,7 +39,7 @@ fn test_map_dtype_string() {
 
 #[test]
 fn test_map_dtype_temporal() {
-    assert_eq!(map_kumo_dtype("date"), Some(IngestedType::Date));
+    assert_eq!(map_kumo_dtype("date"), Some(IngestedType::Timestamp));
     assert_eq!(map_kumo_dtype("time"), Some(IngestedType::Timestamp));
     assert_eq!(map_kumo_dtype("timedelta"), Some(IngestedType::Int64));
 }

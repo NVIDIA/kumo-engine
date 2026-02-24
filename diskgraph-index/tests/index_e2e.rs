@@ -803,6 +803,8 @@ fn selects_32bit_offsets_with_large_node_data_budget() {
         has_node_data: true,
         node_data_compression: None,
         primary_key_map: None,
+        create_time_col: None,
+        end_time_col: None,
         shards: vec![NodeShardMetadata {
             min_id: 0,
             max_id: 69,
@@ -1076,6 +1078,8 @@ fn truncates_large_node_multi_relation() {
         has_node_data: false,
         node_data_compression: None,
         primary_key_map: None,
+        create_time_col: None,
+        end_time_col: None,
         shards: vec![NodeShardMetadata {
             min_id: 0,
             max_id: 1,
@@ -1476,6 +1480,8 @@ fn node_meta(name: &str, max_id: u64) -> NodeTypeMetadata {
         has_node_data: false,
         node_data_compression: None,
         primary_key_map: None,
+        create_time_col: None,
+        end_time_col: None,
         shards: vec![NodeShardMetadata {
             min_id: 0,
             max_id,
@@ -1661,6 +1667,8 @@ fn builder_writes_node_data() {
         has_node_data: true,
         node_data_compression: None,
         primary_key_map: None,
+        create_time_col: None,
+        end_time_col: None,
         shards: vec![NodeShardMetadata {
             min_id: 0,
             max_id: 2,
@@ -1728,6 +1736,8 @@ fn builder_errors_on_node_data_row_count_mismatch() {
         has_node_data: true,
         node_data_compression: None,
         primary_key_map: None,
+        create_time_col: None,
+        end_time_col: None,
         shards: vec![NodeShardMetadata {
             min_id: 0,
             max_id: 2,

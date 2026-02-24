@@ -26,7 +26,7 @@ pub fn map_kumo_dtype(dtype: &str) -> Option<IngestedType> {
         "string" => Some(IngestedType::String),
 
         // Date/Time
-        "date" => Some(IngestedType::Date),
+        "date" => Some(IngestedType::Timestamp),
         "time" => Some(IngestedType::Timestamp),
 
         // Time delta stored as int64 nanoseconds

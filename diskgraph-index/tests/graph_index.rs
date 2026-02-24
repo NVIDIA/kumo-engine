@@ -54,6 +54,8 @@ fn graph_builder_and_reader_multi_table() {
                 has_node_data: false,
                 node_data_compression: None,
                 primary_key_map: None,
+                create_time_col: None,
+                end_time_col: None,
                 shards: vec![
                     NodeShardMetadata {
                         min_id: 0,
@@ -73,6 +75,8 @@ fn graph_builder_and_reader_multi_table() {
                 has_node_data: false,
                 node_data_compression: None,
                 primary_key_map: None,
+                create_time_col: None,
+                end_time_col: None,
                 shards: vec![NodeShardMetadata {
                     min_id: 0,
                     max_id: 1,

@@ -399,9 +399,9 @@ impl DiskGraphTTBuilder {
     }
 
     /// Link prediction.
-    #[pyo3(signature = (explode=false))]
-    fn link_prediction(&mut self, explode: bool) {
-        self.prediction_type = tt::PredictionType::Link { explode };
+    #[pyo3(signature = (explode=false, include_frequency=false))]
+    fn link_prediction(&mut self, explode: bool, include_frequency: bool) {
+        self.prediction_type = tt::PredictionType::Link { explode, include_frequency };
     }
 
     /// Add aggregate op. `path`: single `EdgeRef` or list for multi-hop.

@@ -11,6 +11,7 @@ use diskgraph_core::metadata::{
     DatasetMetadata, EdgeRelationMetadata, NodeDataCompression, NodeShardMetadata,
     NodeTypeMetadata, PrimaryKeyMap,
 };
+use diskgraph_core::tt_builder::Value;
 use serde_json;
 use std::collections::HashMap;
 use std::fs;
@@ -443,6 +444,8 @@ pub struct TableReader {
     node_data_decoder: Option<diskgraph_rowpack::RowPackDecoder>,
     primary_key_map: Option<PrimaryKeyMap>,
     pk_map: Option<PkHashTable>,
+    create_time_col: Option<String>,
+    end_time_col: Option<String>,
 }
 
 impl TableReader {
@@ -477,6 +480,8 @@ impl TableReader {
             node_data_decoder,
             primary_key_map,
             pk_map,
+            create_time_col: node_type.create_time_col.clone(),
+            end_time_col: node_type.end_time_col.clone(),
         })
     }
 
@@ -498,6 +503,14 @@ impl TableReader {
 
     pub fn node_data_decoder(&self) -> Option<&diskgraph_rowpack::RowPackDecoder> {
         self.node_data_decoder.as_ref()
+    }
+
+    pub fn create_time_col(&self) -> Option<&str> {
+        self.create_time_col.as_deref()
+    }
+
+    pub fn end_time_col(&self) -> Option<&str> {
+        self.end_time_col.as_deref()
     }
 
     pub fn relations(&self) -> &[EdgeRelationMetadata] {
@@ -610,6 +623,46 @@ impl TableReader {
             return Ok(None);
         }
         Ok(Some(node_id))
+    }
+
+    /// Check whether `node_id` is the canonical (first-occurrence) node for its
+    /// primary key value. Duplicate PK rows get separate node IDs during ingest,
+    /// but only the first occurrence is stored in the MPHF. Returns `true` if
+    /// this node is canonical or if no pk_map is available (conservative).
+    pub fn is_canonical_node(&self, node_id: u64, pk_value: &Value) -> bool {
+        let pk_map = match &self.pk_map {
+            Some(map) => map,
+            None => return true, // no pk_map → assume valid
+        };
+        let key = match Self::value_to_pk_key(pk_value, pk_map.key_type()) {
+            Some(k) => k,
+            None => return true, // can't convert → assume valid
+        };
+        let shard_idx = pkmap::shard_for_key(&key, self.shards.len());
+        let shard = match pk_map.shard(shard_idx) {
+            Some(s) => s,
+            None => return true,
+        };
+        let canonical_local = match shard.lookup(&key) {
+            Some(id) => id,
+            None => return true, // not in MPHF → assume valid
+        };
+        let min_id = self
+            .shard_ranges
+            .get(shard_idx)
+            .map(|r| r.min_id)
+            .unwrap_or(0);
+        let canonical_node_id = min_id.saturating_add(canonical_local as u64);
+        canonical_node_id == node_id
+    }
+
+    fn value_to_pk_key(value: &Value, key_type: pkmap::KeyType) -> Option<Key> {
+        match (value, key_type) {
+            (Value::Int(i), pkmap::KeyType::Int64) => Some(Key::Int(*i as u64)),
+            (Value::Str(s), pkmap::KeyType::VarBytes) => Some(Key::Bytes(s.as_bytes().to_vec())),
+            (Value::Float(f), pkmap::KeyType::Int64) => Some(Key::Int(*f as u64)),
+            _ => None,
+        }
     }
 
     pub fn node_id_from_offset(&self, offset: u64) -> Option<u64> {

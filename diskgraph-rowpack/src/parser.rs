@@ -207,7 +207,13 @@ pub(crate) fn parse_timestamp_text(value: &str, format: Option<&str>) -> Option<
     } else {
         chrono::DateTime::parse_from_rfc3339(value)
             .ok()
-            .map(|v| v.naive_utc())?
+            .map(|v| v.naive_utc())
+            .or_else(|| NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S").ok())
+            .or_else(|| {
+                NaiveDate::parse_from_str(value, "%Y-%m-%d")
+                    .ok()
+                    .map(|d| d.and_hms_opt(0, 0, 0).unwrap())
+            })?
     };
     let ts = ts.and_utc();
     Some(ts.timestamp())
