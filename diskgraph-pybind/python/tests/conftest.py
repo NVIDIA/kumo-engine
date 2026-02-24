@@ -95,17 +95,16 @@ def ifood_graph(tmp_path_factory):
     try:
         # Find cargo project root (assuming tests are run from diskgraph-pybind or root)
         project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.."))
+        print(f"\nBuilding mock index at {index_dir} using cargo run...")
         subprocess.run(
             ["cargo", "run", "--release", "--bin", "ingest", "--",
              "--source", str(config_path),
              "--dest", "local",
              "--output", str(index_dir)],
             cwd=project_root,
-            check=True,
-            capture_output=True
+            check=True
         )
     except subprocess.CalledProcessError as e:
-        pytest.fail(f"Index ingestion failed:\nSTDOUT: {e.stdout.decode()}\nSTDERR: {e.stderr.decode()}")
+        pytest.fail(f"Index ingestion failed with exit code {e.returncode}")
 
     return str(index_dir)
-
