@@ -1,4 +1,7 @@
 from ._c import (
+    export_tt_artifacts,
+    ExportConfig,
+    FkeyConfig,
     SamplerEngine,
     PySampleIterator,
     DiskGraphTTBuilder,
@@ -19,6 +22,9 @@ def __getattr__(name):
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 __all__ = [
+    "export_tt_artifacts",
+    "ExportConfig",
+    "FkeyConfig",
     "SamplerEngine",
     "PySampleIterator",
     "DiskGraphTTBuilder",

@@ -9,6 +9,7 @@ diskgraph-index = { path = "../diskgraph-index" }
 diskgraph-rowpack = { path = "../diskgraph-rowpack" }
 arrow-array = { workspace = true }
 arrow-schema = { workspace = true }
+parquet = { version = "57.2.0", features = ["arrow"] }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 half = { workspace = true }

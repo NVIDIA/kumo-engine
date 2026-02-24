@@ -449,9 +449,96 @@ impl PySampleIterator {
     }
 }
 
+#[pyclass]
+#[derive(Clone)]
+pub struct FkeyConfig {
+    #[pyo3(get, set)]
+    pub column_name: String,
+    #[pyo3(get, set)]
+    pub target_table: String,
+}
+
+#[pymethods]
+impl FkeyConfig {
+    #[new]
+    fn new(column_name: String, target_table: String) -> Self {
+        Self {
+            column_name,
+            target_table,
+        }
+    }
+}
+
+#[pyclass]
+#[derive(Clone)]
+pub struct ExportConfig {
+    #[pyo3(get, set)]
+    pub train_table_path: String,
+    #[pyo3(get, set)]
+    pub index_path: String,
+    #[pyo3(get, set)]
+    pub output_dir: String,
+    #[pyo3(get, set)]
+    pub row_idx_col: String,
+    #[pyo3(get, set)]
+    pub train_table_name: String,
+    #[pyo3(get, set)]
+    pub fkeys: Vec<FkeyConfig>,
+}
+
+#[pymethods]
+impl ExportConfig {
+    #[new]
+    #[pyo3(signature = (train_table_path, index_path, output_dir, fkeys, row_idx_col="arange".to_string(), train_table_name="custom_train_table".to_string()))]
+    fn new(
+        train_table_path: String,
+        index_path: String,
+        output_dir: String,
+        fkeys: Vec<FkeyConfig>,
+        row_idx_col: String,
+        train_table_name: String,
+    ) -> Self {
+        Self {
+            train_table_path,
+            index_path,
+            output_dir,
+            row_idx_col,
+            train_table_name,
+            fkeys,
+        }
+    }
+}
+
+#[pyfunction]
+pub fn export_tt_artifacts(config: &ExportConfig) -> PyResult<()> {
+    let fkeys = config
+        .fkeys
+        .iter()
+        .map(|f| diskgraph_engine::export_tt_artifacts::FkeyConfig {
+            column_name: f.column_name.clone(),
+            target_table: f.target_table.clone(),
+        })
+        .collect();
+
+    let internal_config = diskgraph_engine::export_tt_artifacts::ExportConfig {
+        train_table_path: config.train_table_path.clone(),
+        index_path: config.index_path.clone(),
+        output_dir: config.output_dir.clone(),
+        row_idx_col: config.row_idx_col.clone(),
+        train_table_name: config.train_table_name.clone(),
+        fkeys,
+    };
+
+    diskgraph_engine::export_tt_artifacts::process_export(&internal_config)
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))
+}
+
 #[pymodule]
 #[pyo3(name = "_c")]
 fn diskgraph_pybind(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(export_tt_artifacts, m)?)?;
+    m.add_class::<ExportConfig>()?;
+    m.add_class::<FkeyConfig>()?;
     m.add_class::<SamplerEngine>()?;
     m.add_class::<PySampleIterator>()?;
     m.add_class::<tt_builder::DiskGraphTTBuilder>()?;
