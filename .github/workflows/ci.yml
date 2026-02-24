@@ -56,10 +56,10 @@ jobs:
         working-directory: ./diskgraph-pybind
         env:
           PYTHONPATH: python
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          KUMO_GITHUB_BOT_TOKEN: ${{ secrets.KUMO_GITHUB_BOT_TOKEN }}
         run: |
           # Rewrite SSH URLs to HTTPS directly in pyproject.toml so pip uses the token
-          sed -i "s|git+ssh://git@github.com/|git+https://x-access-token:${GITHUB_TOKEN}@github.com/|g" pyproject.toml
+          sed -i "s|git+ssh://git@github.com/|git+https://${KUMO_GITHUB_BOT_TOKEN}@github.com/|g" pyproject.toml
 
           pip install -e ".[test]" --no-build-isolation
           pytest python/tests/
