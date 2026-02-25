@@ -179,6 +179,7 @@ async fn run_app<B: ratatui::backend::Backend>(
                     dataset_id: diskgraph_core::dataset::DatasetId::nil(),
                     seed_nodes: [(seed_type.clone(), seeds)].into(),
                     seed_timestamps: None,
+                    seed_timestamp_unit: diskgraph_core::time::TimeUnit::Seconds,
                     plan: plan.clone(),
                     flags: SamplingFlags {
                         replace: false,

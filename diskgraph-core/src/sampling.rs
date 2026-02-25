@@ -1,4 +1,5 @@
 use crate::dataset::DatasetId;
+use crate::time::TimeUnit;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -45,6 +46,9 @@ pub struct BatchSamplingRequest {
     /// Optional batch of timestamps (1:1 with seed_nodes), grouped by node type.
     /// If present, acts as the anchor time for temporal filtering.
     pub seed_timestamps: Option<HashMap<String, Vec<i64>>>,
+    /// The unit of the provided seed_timestamps.
+    #[serde(default)]
+    pub seed_timestamp_unit: TimeUnit,
     /// The recursive sampling strategy.
     pub plan: SamplingPlan,
     /// Global behavioral modifiers.
@@ -159,6 +163,7 @@ mod tests {
             dataset_id: DatasetId::nil(),
             seed_nodes: [("User".to_string(), vec![1, 2, 3])].into(),
             seed_timestamps: Some([("User".to_string(), vec![100, 200, 300])].into()),
+            seed_timestamp_unit: crate::time::TimeUnit::Seconds,
             plan,
             flags: SamplingFlags {
                 replace: false,
@@ -194,6 +199,7 @@ mod tests {
             dataset_id: DatasetId::nil(),
             seed_nodes: [("User".to_string(), vec![1, 2, 3])].into(),
             seed_timestamps: None,
+            seed_timestamp_unit: crate::time::TimeUnit::Seconds,
             plan: SamplingPlan {
                 layers: vec![LayerSpec {
                     fanouts: [(

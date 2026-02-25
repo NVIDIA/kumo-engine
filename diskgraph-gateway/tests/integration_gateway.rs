@@ -205,7 +205,13 @@ impl TestGraph {
         node_decoders.insert("users".to_string(), RowPackDecoder::new(ctx_user).unwrap());
         node_decoders.insert("items".to_string(), RowPackDecoder::new(ctx_item).unwrap());
 
-        let sampler = DiskGraphEngine::new(readers, relation_info, HashMap::new(), node_decoders);
+        let sampler = DiskGraphEngine::new(
+            readers,
+            relation_info,
+            HashMap::new(),
+            node_decoders,
+            diskgraph_core::time::TimeUnit::Seconds,
+        );
         Self { _dir: dir, sampler }
     }
 

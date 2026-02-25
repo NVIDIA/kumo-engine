@@ -46,6 +46,7 @@ fn graph_builder_and_reader_multi_table() {
     write_edges(&tagged0, &[EdgeRow { src: 0, dst: 0 }]).unwrap();
 
     let metadata = DatasetMetadata {
+        timestamp_unit: Default::default(),
         dataset_name: "graph-index-test".into(),
         node_types: vec![
             NodeTypeMetadata {

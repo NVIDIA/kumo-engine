@@ -150,7 +150,13 @@ impl TestGraph {
             RowPackDecoder::new(ctx.clone()).unwrap(),
         );
 
-        let sampler = DiskGraphEngine::new(readers, relation_info, HashMap::new(), node_decoders);
+        let sampler = DiskGraphEngine::new(
+            readers,
+            relation_info,
+            HashMap::new(),
+            node_decoders,
+            diskgraph_core::time::TimeUnit::Seconds,
+        );
 
         Self {
             _dir: dir,
@@ -329,7 +335,7 @@ fn test_basic_sampling() {
         }],
     };
 
-    let req = BatchSamplingRequest {
+    let req = BatchSamplingRequest { seed_timestamp_unit: Default::default(),
         dataset_id: DatasetId::nil(),
         seed_nodes: [("User".to_string(), vec![0])].into(),
         seed_timestamps: None,
@@ -377,7 +383,7 @@ fn test_fused_sampling() {
         }],
     };
 
-    let req = BatchSamplingRequest {
+    let req = BatchSamplingRequest { seed_timestamp_unit: Default::default(),
         dataset_id: DatasetId::nil(),
         seed_nodes: [("User".to_string(), vec![0])].into(),
         seed_timestamps: None,
@@ -433,7 +439,7 @@ fn test_sampling_empty_seeds() {
         }],
     };
 
-    let req = BatchSamplingRequest {
+    let req = BatchSamplingRequest { seed_timestamp_unit: Default::default(),
         dataset_id: DatasetId::nil(),
         seed_nodes: [("User".to_string(), vec![])].into(), // Empty seeds
         seed_timestamps: None,

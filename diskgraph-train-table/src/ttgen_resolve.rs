@@ -861,6 +861,9 @@ fn time_unit_to_secs(unit: &TimeUnit) -> i64 {
         TimeUnit::Hours => 3600,
         TimeUnit::Days => 86400,
         TimeUnit::Weeks => 604800,
+        TimeUnit::Milliseconds | TimeUnit::Microseconds | TimeUnit::Nanoseconds => {
+            unreachable!("Sub-second units are not supported for PQL window aggregation")
+        }
         // Months and Years are handled as Calendar windows, not fixed seconds.
         TimeUnit::Months | TimeUnit::Years => {
             unreachable!("Months/Years should use ResolvedWindow::Calendar")

@@ -57,7 +57,8 @@ def test_compiler_basic_aggregation():
     assert plan["entity"]["table"] == "users"
     assert plan["entity"]["column"] == "user_id"
 
-    assert plan["temporal"]["timestamps"] == timestamps
+    # Normalized to seconds by default
+    assert plan["temporal"]["timestamps"] == [1609459200, 1609545600]
     assert plan["temporal"]["forecast_length"] == 1
     assert plan["temporal"]["lag_timesteps"] == 30
 
@@ -226,3 +227,24 @@ def test_compiler_pql_e2e():
     assert op["func"] == "sum"
     assert op["target_col"] == "amount"
     assert op["window"] == [-30, 0]
+    # Normalized
+    assert plan["temporal"]["timestamps"] == [1700000000]
+
+def test_timestamp_normalization():
+    from diskgraph.compiler import DiskGraphPlanCompiler
+    compiler = DiskGraphPlanCompiler()
+
+    # 1. Micros to Seconds (standard Kumo case)
+    us_ts = [1700000000000000] # Nov 2023 in micros
+    norm_s = compiler._normalize_timestamps(us_ts, "seconds")
+    assert norm_s[0] == 1700000000
+
+    # 2. Seconds to Seconds (No change)
+    s_ts = [1700000000]
+    norm_s = compiler._normalize_timestamps(s_ts, "seconds")
+    assert norm_s[0] == 1700000000
+
+    # 3. Nanos to Seconds
+    ns_ts = [1700000000000000000]
+    norm_s = compiler._normalize_timestamps(ns_ts, "seconds")
+    assert norm_s[0] == 1700000000

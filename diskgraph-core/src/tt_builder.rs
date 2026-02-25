@@ -26,6 +26,7 @@
 //! - [`StageFilter`]: evaluated per-entity between stages. LHS is a computed
 //!   alias. RHS is a constant, entity column, remote column, or another alias.
 
+pub use crate::time::TimeUnit;
 use serde::{Deserialize, Serialize};
 
 // ─── Top-level plan ──────────────────────────────────────────────────────────
@@ -165,18 +166,6 @@ pub enum CompareOp {
     Gte,
     Lt,
     Lte,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum TimeUnit {
-    Seconds,
-    Minutes,
-    Hours,
-    Days,
-    Weeks,
-    Months,
-    Years,
 }
 
 /// Dynamically-typed scalar for filter comparisons.

@@ -125,6 +125,7 @@ mod tests {
             dataset_id,
             seed_nodes: [("User".to_string(), vec![100, 200])].into(),
             seed_timestamps: None,
+            seed_timestamp_unit: crate::time::TimeUnit::Seconds,
             plan: SamplingPlan {
                 layers: vec![LayerSpec {
                     fanouts: [(

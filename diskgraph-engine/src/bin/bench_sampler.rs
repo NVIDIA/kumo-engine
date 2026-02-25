@@ -72,6 +72,7 @@ fn main() -> Result<()> {
         dataset_id: diskgraph_core::dataset::DatasetId::nil(),
         seed_nodes: [(seed_type.to_string(), seeds)].into(),
         seed_timestamps: None,
+        seed_timestamp_unit: diskgraph_core::time::TimeUnit::Seconds,
         plan,
         flags: SamplingFlags {
             replace: false,

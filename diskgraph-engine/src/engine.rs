@@ -77,6 +77,8 @@ pub struct DiskGraphEngine {
     pub target_batch_bytes: usize,
     /// Feature batch target size in num rows.
     pub target_batch_rows: usize,
+    /// Global timestamp unit for the index.
+    pub timestamp_unit: diskgraph_core::time::TimeUnit,
 }
 
 struct CompiledSamplingPlan {
@@ -182,6 +184,7 @@ impl DiskGraphEngine {
             relation_info,
             decoders,
             node_decoders_map,
+            metadata.timestamp_unit,
         ))
     }
 
@@ -190,6 +193,7 @@ impl DiskGraphEngine {
         relation_info_map: HashMap<usize, (String, String, String)>,
         decoders_map: HashMap<usize, SortKeyDecoder>,
         node_decoders_map: HashMap<String, RowPackDecoder>,
+        timestamp_unit: diskgraph_core::time::TimeUnit,
     ) -> Self {
         let mut node_type_to_id = HashMap::new();
         let mut id_to_node_type = Vec::new();
@@ -289,6 +293,7 @@ impl DiskGraphEngine {
             reverse_rel_map,
             target_batch_bytes: get_feature_batch_bytes(),
             target_batch_rows: get_feature_batch_rows(),
+            timestamp_unit,
         }
     }
 
@@ -435,6 +440,25 @@ impl DiskGraphEngine {
         state: &mut SamplingState,
         output: &mut impl OutputHandler,
     ) -> Result<()> {
+        // Standardize seed timestamps to index unit in a single pass if needed
+        let mut request_cow = std::borrow::Cow::Borrowed(request);
+        let multiplier = request.seed_timestamp_unit.multiplier_to(self.timestamp_unit);
+
+        if (multiplier - 1.0).abs() > f64::EPSILON {
+            if let Some(mut ts_map) = request.seed_timestamps.clone() {
+                for (_, ts_vec) in ts_map.iter_mut() {
+                    for ts in ts_vec.iter_mut() {
+                        *ts = (*ts as f64 * multiplier) as i64;
+                    }
+                }
+                let mut owned = request.clone();
+                owned.seed_timestamps = Some(ts_map);
+                owned.seed_timestamp_unit = self.timestamp_unit;
+                request_cow = std::borrow::Cow::Owned(owned);
+            }
+        }
+        let request = request_cow.as_ref();
+
         // 1. Initial Validation & Initialization
         let (seed_type, seed_ids) =
             request.seed_nodes.iter().next().ok_or_else(|| {

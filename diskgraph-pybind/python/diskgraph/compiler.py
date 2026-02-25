@@ -32,6 +32,47 @@ class DiskGraphPlanCompiler:
         self._alias_counter += 1
         return f"{prefix}_{self._alias_counter}"
 
+    def _infer_unit(self, timestamps: List[int]) -> str:
+        """
+        Heuristically infer the unit of the given timestamps based on magnitude.
+        """
+        if not timestamps:
+            return "seconds"
+
+        # We use the maximum timestamp to check magnitude.
+        # Unix epoch 1.7B seconds is ~10^9.
+        # 10^12 -> Millis
+        # 10^15 -> Micros
+        # 10^18 -> Nanos
+        max_ts = max(abs(t) for t in timestamps)
+
+        if max_ts > 10**16: return "nanoseconds"
+        if max_ts > 10**13: return "microseconds"
+        if max_ts > 10**10: return "milliseconds"
+        return "seconds"
+
+    def _normalize_timestamps(self, timestamps: List[int], target_unit: str) -> List[int]:
+        """
+        Convert timestamps from their inferred unit to the target unit.
+        """
+        input_unit = self._infer_unit(timestamps)
+        if input_unit == target_unit:
+            return timestamps
+
+        # Standard conversion ratios to nanoseconds
+        ratios = {
+            "nanoseconds": 1,
+            "microseconds": 1_000,
+            "milliseconds": 1_000_000,
+            "seconds": 1_000_000_000,
+        }
+
+        in_factor = ratios.get(input_unit, 1_000_000_000)
+        out_factor = ratios.get(target_unit, 1_000_000_000)
+
+        # Scale to nanos then to target
+        return [(t * in_factor) // out_factor for t in timestamps]
+
     def compile(
         self,
         query: ValidatedPredictiveQuery,
@@ -41,6 +82,7 @@ class DiskGraphPlanCompiler:
         list_distinct_target_is_array: bool = False,
         include_frequency: bool = False,
         entity_time_col: Optional[str] = None,
+        target_unit: str = "seconds",
     ) -> str:
         """
         Build the DiskGraph execution plan.
@@ -52,7 +94,8 @@ class DiskGraphPlanCompiler:
         """
         # 1. Temporal Spec
         if query.query_type.name == "TEMPORAL" and timestamps:
-            self.builder.temporal(timestamps, forecast_length, lag_timesteps)
+            normalized_ts = self._normalize_timestamps(timestamps, target_unit)
+            self.builder.temporal(normalized_ts, forecast_length, lag_timesteps)
 
         # 2. Entity Spec
         entity_table, entity_col = query.entity_column.split('.')

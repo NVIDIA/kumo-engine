@@ -306,6 +306,7 @@ impl SamplerEngine {
             dataset_id: uuid::Uuid::nil(),
             seed_nodes: seeds,
             seed_timestamps: timestamps,
+            seed_timestamp_unit: Default::default(),
             plan,
             flags,
         };

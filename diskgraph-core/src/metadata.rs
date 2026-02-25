@@ -1,4 +1,5 @@
 use crate::errors::{DiskgraphError, Result};
+use crate::time::TimeUnit;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
@@ -151,6 +152,8 @@ pub enum EdgeSortKeyWeightKind {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DatasetMetadata {
     pub dataset_name: String,
+    #[serde(default)]
+    pub timestamp_unit: TimeUnit,
     pub node_types: Vec<NodeTypeMetadata>,
     pub edge_relations: Vec<EdgeRelationMetadata>,
 }
