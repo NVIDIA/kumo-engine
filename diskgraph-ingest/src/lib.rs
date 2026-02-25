@@ -5242,7 +5242,7 @@ impl IngestContext {
         }
 
         let index_metadata = DatasetMetadata {
-            timestamp_unit: Default::default(),
+            timestamp_unit: diskgraph_core::time::TimeUnit::Seconds,
             dataset_name: self.source.dataset_name.clone(),
             node_types,
             edge_relations,

@@ -335,10 +335,11 @@ fn test_basic_sampling() {
         }],
     };
 
-    let req = BatchSamplingRequest { seed_timestamp_unit: Default::default(),
+    let req = BatchSamplingRequest {
         dataset_id: DatasetId::nil(),
         seed_nodes: [("User".to_string(), vec![0])].into(),
         seed_timestamps: None,
+        seed_timestamp_unit: diskgraph_core::time::TimeUnit::Nanoseconds,
         plan,
         flags: SamplingFlags {
             replace: false,
@@ -383,10 +384,11 @@ fn test_fused_sampling() {
         }],
     };
 
-    let req = BatchSamplingRequest { seed_timestamp_unit: Default::default(),
+    let req = BatchSamplingRequest {
         dataset_id: DatasetId::nil(),
         seed_nodes: [("User".to_string(), vec![0])].into(),
         seed_timestamps: None,
+        seed_timestamp_unit: diskgraph_core::time::TimeUnit::Nanoseconds,
         plan,
         flags: SamplingFlags {
             replace: false,
@@ -439,10 +441,11 @@ fn test_sampling_empty_seeds() {
         }],
     };
 
-    let req = BatchSamplingRequest { seed_timestamp_unit: Default::default(),
+    let req = BatchSamplingRequest {
         dataset_id: DatasetId::nil(),
         seed_nodes: [("User".to_string(), vec![])].into(), // Empty seeds
         seed_timestamps: None,
+        seed_timestamp_unit: diskgraph_core::time::TimeUnit::Nanoseconds,
         plan,
         flags: SamplingFlags {
             replace: false,

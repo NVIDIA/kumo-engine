@@ -18,6 +18,45 @@ use diskgraph_engine::state::{SamplingState, StatePool};
 mod tt_builder;
 mod tt_executor;
 
+#[pyclass(eq, eq_int, name = "TimeUnit")]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PyTimeUnit {
+    Seconds,
+    Milliseconds,
+    Microseconds,
+    Nanoseconds,
+    Minutes,
+    Hours,
+    Days,
+    Weeks,
+    Months,
+    Years,
+}
+
+#[pymethods]
+impl PyTimeUnit {
+    fn __hash__(&self) -> u64 {
+        *self as u64
+    }
+}
+
+impl From<PyTimeUnit> for diskgraph_core::time::TimeUnit {
+    fn from(unit: PyTimeUnit) -> Self {
+        match unit {
+            PyTimeUnit::Seconds => diskgraph_core::time::TimeUnit::Seconds,
+            PyTimeUnit::Milliseconds => diskgraph_core::time::TimeUnit::Milliseconds,
+            PyTimeUnit::Microseconds => diskgraph_core::time::TimeUnit::Microseconds,
+            PyTimeUnit::Nanoseconds => diskgraph_core::time::TimeUnit::Nanoseconds,
+            PyTimeUnit::Minutes => diskgraph_core::time::TimeUnit::Minutes,
+            PyTimeUnit::Hours => diskgraph_core::time::TimeUnit::Hours,
+            PyTimeUnit::Days => diskgraph_core::time::TimeUnit::Days,
+            PyTimeUnit::Weeks => diskgraph_core::time::TimeUnit::Weeks,
+            PyTimeUnit::Months => diskgraph_core::time::TimeUnit::Months,
+            PyTimeUnit::Years => diskgraph_core::time::TimeUnit::Years,
+        }
+    }
+}
+
 /// Events yielded by the sampling iterator.
 #[derive(Debug)]
 enum SampleEvent {
@@ -261,7 +300,7 @@ impl SamplerEngine {
         })
     }
 
-    #[pyo3(signature = (seed_nodes, plan_json, fused, seed_timestamps=None, swap_edge_direction=None))]
+    #[pyo3(signature = (seed_nodes, plan_json, fused, seed_timestamps=None, swap_edge_direction=None, seed_timestamp_unit=None))]
     pub fn sample(
         &self,
         py: Python<'_>,
@@ -270,6 +309,7 @@ impl SamplerEngine {
         fused: bool,
         seed_timestamps: Option<Bound<'_, PyDict>>,
         swap_edge_direction: Option<bool>,
+        seed_timestamp_unit: Option<PyTimeUnit>,
     ) -> PyResult<PySampleIterator> {
         let mut seeds = HashMap::new();
         for (key, value) in seed_nodes.into_iter() {
@@ -302,11 +342,15 @@ impl SamplerEngine {
             swap_edge_direction: swap_edge_direction.unwrap_or(true),
         };
 
+        let parsed_unit = seed_timestamp_unit
+            .map(|u| u.into())
+            .unwrap_or(diskgraph_core::time::TimeUnit::Nanoseconds);
+
         let request = BatchSamplingRequest {
             dataset_id: uuid::Uuid::nil(),
             seed_nodes: seeds,
             seed_timestamps: timestamps,
-            seed_timestamp_unit: Default::default(),
+            seed_timestamp_unit: parsed_unit,
             plan,
             flags,
         };
@@ -540,6 +584,7 @@ fn diskgraph_pybind(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(export_tt_artifacts, m)?)?;
     m.add_class::<ExportConfig>()?;
     m.add_class::<FkeyConfig>()?;
+    m.add_class::<PyTimeUnit>()?;
     m.add_class::<SamplerEngine>()?;
     m.add_class::<PySampleIterator>()?;
     m.add_class::<tt_builder::DiskGraphTTBuilder>()?;

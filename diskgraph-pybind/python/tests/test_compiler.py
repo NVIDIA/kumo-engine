@@ -232,19 +232,20 @@ def test_compiler_pql_e2e():
 
 def test_timestamp_normalization():
     from diskgraph.compiler import DiskGraphPlanCompiler
+    from diskgraph import TimeUnit
     compiler = DiskGraphPlanCompiler()
 
     # 1. Micros to Seconds (standard Kumo case)
     us_ts = [1700000000000000] # Nov 2023 in micros
-    norm_s = compiler._normalize_timestamps(us_ts, "seconds")
+    norm_s = compiler._normalize_timestamps(us_ts, TimeUnit.Seconds)
     assert norm_s[0] == 1700000000
 
     # 2. Seconds to Seconds (No change)
     s_ts = [1700000000]
-    norm_s = compiler._normalize_timestamps(s_ts, "seconds")
+    norm_s = compiler._normalize_timestamps(s_ts, TimeUnit.Seconds)
     assert norm_s[0] == 1700000000
 
     # 3. Nanos to Seconds
     ns_ts = [1700000000000000000]
-    norm_s = compiler._normalize_timestamps(ns_ts, "seconds")
+    norm_s = compiler._normalize_timestamps(ns_ts, TimeUnit.Seconds)
     assert norm_s[0] == 1700000000

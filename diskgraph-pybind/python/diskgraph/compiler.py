@@ -12,7 +12,7 @@ from kumoapi.pquery.AST import (
 )
 from kumoapi.typing import BoolOp
 
-from ._c import DiskGraphTTBuilder, EdgeRef, RowFilter, StageFilter
+from ._c import DiskGraphTTBuilder, EdgeRef, RowFilter, StageFilter, TimeUnit
 
 def _map_op(op: str) -> str:
     if op == '=':
@@ -32,12 +32,12 @@ class DiskGraphPlanCompiler:
         self._alias_counter += 1
         return f"{prefix}_{self._alias_counter}"
 
-    def _infer_unit(self, timestamps: List[int]) -> str:
+    def _infer_unit(self, timestamps: List[int]) -> TimeUnit:
         """
         Heuristically infer the unit of the given timestamps based on magnitude.
         """
         if not timestamps:
-            return "seconds"
+            return TimeUnit.Seconds
 
         # We use the maximum timestamp to check magnitude.
         # Unix epoch 1.7B seconds is ~10^9.
@@ -46,12 +46,12 @@ class DiskGraphPlanCompiler:
         # 10^18 -> Nanos
         max_ts = max(abs(t) for t in timestamps)
 
-        if max_ts > 10**16: return "nanoseconds"
-        if max_ts > 10**13: return "microseconds"
-        if max_ts > 10**10: return "milliseconds"
-        return "seconds"
+        if max_ts > 10**16: return TimeUnit.Nanoseconds
+        if max_ts > 10**13: return TimeUnit.Microseconds
+        if max_ts > 10**10: return TimeUnit.Milliseconds
+        return TimeUnit.Seconds
 
-    def _normalize_timestamps(self, timestamps: List[int], target_unit: str) -> List[int]:
+    def _normalize_timestamps(self, timestamps: List[int], target_unit: TimeUnit) -> List[int]:
         """
         Convert timestamps from their inferred unit to the target unit.
         """
@@ -61,10 +61,10 @@ class DiskGraphPlanCompiler:
 
         # Standard conversion ratios to nanoseconds
         ratios = {
-            "nanoseconds": 1,
-            "microseconds": 1_000,
-            "milliseconds": 1_000_000,
-            "seconds": 1_000_000_000,
+            TimeUnit.Nanoseconds: 1,
+            TimeUnit.Microseconds: 1_000,
+            TimeUnit.Milliseconds: 1_000_000,
+            TimeUnit.Seconds: 1_000_000_000,
         }
 
         in_factor = ratios.get(input_unit, 1_000_000_000)
@@ -82,19 +82,26 @@ class DiskGraphPlanCompiler:
         list_distinct_target_is_array: bool = False,
         include_frequency: bool = False,
         entity_time_col: Optional[str] = None,
-        target_unit: str = "seconds",
+        timestamp_unit: Optional[TimeUnit] = TimeUnit.Seconds,
     ) -> str:
         """
         Build the DiskGraph execution plan.
 
         Args:
+            query: The ValidatedPredictiveQuery AST from Kumo.
+            timestamps: Observation anchor times for the batch (e.g., in Kumo Microseconds).
+            forecast_length: Number of future timesteps to ignore before the target window.
+            lag_timesteps: Lookback window for autoregressive features.
+            list_distinct_target_is_array: If True, output Link Prediction targets as a single LIST column instead of exploded rows.
             include_frequency: When True and target is LIST_DISTINCT, include a
                 FREQUENCY column counting occurrences of each distinct value.
                 Set for RANK problems; unset for CLASSIFY.
+            entity_time_col: Optional column name to use as static observation timestamps.
+            timestamp_unit: The target TimeUnit expected by the engine (defaults to Seconds).
         """
         # 1. Temporal Spec
         if query.query_type.name == "TEMPORAL" and timestamps:
-            normalized_ts = self._normalize_timestamps(timestamps, target_unit)
+            normalized_ts = self._normalize_timestamps(timestamps, timestamp_unit)
             self.builder.temporal(normalized_ts, forecast_length, lag_timesteps)
 
         # 2. Entity Spec
