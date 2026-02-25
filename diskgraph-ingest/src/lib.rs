@@ -1108,8 +1108,6 @@ fn build_sort_key_batchers_for_node_table(
     table: &TableSpec,
     relation_defs: &[RelationDef],
     num_shards: usize,
-    buffer_limit: usize,
-    senders: std::sync::Arc<Vec<std::sync::mpsc::SyncSender<SortKeyWriteMessage>>>,
 ) -> Result<Vec<SortKeyComponentBatcher>> {
     let mut batchers = Vec::new();
     for rel in relation_defs {
@@ -1130,8 +1128,6 @@ fn build_sort_key_batchers_for_node_table(
                         encoding: ts.encoding.clone(),
                     },
                     num_shards,
-                    buffer_limit,
-                    std::sync::Arc::clone(&senders),
                 ));
             }
         }
@@ -1148,8 +1144,6 @@ fn build_sort_key_batchers_for_node_table(
                         encoding: weight.encoding.clone(),
                     },
                     num_shards,
-                    buffer_limit,
-                    std::sync::Arc::clone(&senders),
                 ));
             }
         }
@@ -1161,8 +1155,6 @@ fn build_sort_key_batchers_for_edge_table(
     table: &TableSpec,
     relation_defs: &[RelationDef],
     num_shards: usize,
-    buffer_limit: usize,
-    senders: std::sync::Arc<Vec<std::sync::mpsc::SyncSender<SortKeyWriteMessage>>>,
 ) -> Result<Vec<SortKeyComponentBatcher>> {
     let mut batchers = Vec::new();
     for rel in relation_defs {
@@ -1183,8 +1175,6 @@ fn build_sort_key_batchers_for_edge_table(
                         encoding: ts.encoding.clone(),
                     },
                     num_shards,
-                    buffer_limit,
-                    std::sync::Arc::clone(&senders),
                 ));
             }
         }
@@ -1201,8 +1191,6 @@ fn build_sort_key_batchers_for_edge_table(
                         encoding: weight.encoding.clone(),
                     },
                     num_shards,
-                    buffer_limit,
-                    std::sync::Arc::clone(&senders),
                 ));
             }
         }
@@ -1818,14 +1806,11 @@ impl IngestContext {
             EdgeSrcWritePool::new(std::sync::Arc::clone(&target), edge_writer_workers());
         let dest_key_pool =
             DestKeyWritePool::new(std::sync::Arc::clone(&target), edge_writer_workers());
-        let sort_key_pool =
-            SortKeyWritePool::new(std::sync::Arc::clone(&target), edge_writer_workers());
         let node_senders = node_pool.senders();
         let edge_senders = edge_pool.senders();
         let edge_errors = edge_pool.error();
         let dest_key_senders = dest_key_pool.senders();
         let dest_key_errors = dest_key_pool.error();
-        let sort_key_senders = sort_key_pool.senders();
         let input_transfer = self.input_transfer.clone();
         let trimmed_strings = std::sync::Arc::clone(&self.trimmed_strings);
         let progress = self.progress.clone();
@@ -1874,7 +1859,6 @@ impl IngestContext {
             let target = std::sync::Arc::clone(&target);
             let node_senders = std::sync::Arc::clone(&node_senders);
             let edge_senders = std::sync::Arc::clone(&edge_senders);
-            let sort_key_senders = std::sync::Arc::clone(&sort_key_senders);
             let trimmed_strings = std::sync::Arc::clone(&trimmed_strings);
             let progress = progress.clone();
             let root = root.clone();
@@ -1890,7 +1874,6 @@ impl IngestContext {
                 let edge_senders = std::sync::Arc::clone(&edge_senders);
                 let dest_key_senders = std::sync::Arc::clone(&dest_key_senders);
                 let dest_key_errors = std::sync::Arc::clone(&dest_key_errors);
-                let sort_key_senders = std::sync::Arc::clone(&sort_key_senders);
                 let trimmed_strings = std::sync::Arc::clone(&trimmed_strings);
                 let progress = progress.clone();
                 let root = root.clone();
@@ -1918,7 +1901,6 @@ impl IngestContext {
                                 &edge_errors,
                                 &dest_key_senders,
                                 &dest_key_errors,
-                                &sort_key_senders,
                                 relation_defs.as_ref(),
                                 &fk_edge_targets,
                             )?;
@@ -1958,7 +1940,6 @@ impl IngestContext {
                                 &node_senders,
                                 &dest_key_senders,
                                 &dest_key_errors,
-                                &sort_key_senders,
                                 &fk_edge_targets,
                                 &mut obs,
                             )?;
@@ -1981,7 +1962,6 @@ impl IngestContext {
                                 &node_senders,
                                 &dest_key_senders,
                                 &dest_key_errors,
-                                &sort_key_senders,
                                 &fk_edge_targets,
                                 &mut diskgraph_rowpack::NoOpObserver,
                             )?;
@@ -2075,11 +2055,9 @@ impl IngestContext {
         drop(node_senders);
         drop(edge_senders);
         drop(dest_key_senders);
-        drop(sort_key_senders);
         let node_stats = node_pool.finish()?;
         let edge_stats = edge_pool.finish()?;
         let dest_key_stats = dest_key_pool.finish()?;
-        let _sort_key_stats = sort_key_pool.finish()?;
         self.write_consolidated_meta(&node_stats, &edge_stats, &dest_key_stats)?;
         self.refresh_shard_rows_from_stats(&node_stats);
         self.table_rows = table_rows;
@@ -2261,7 +2239,6 @@ impl IngestContext {
         senders: &std::sync::Arc<Vec<std::sync::mpsc::SyncSender<NodeWriteMessage>>>,
         dest_key_senders: &std::sync::Arc<Vec<std::sync::mpsc::SyncSender<DestKeyWriteMessage>>>,
         dest_key_errors: &std::sync::Arc<std::sync::Mutex<Option<String>>>,
-        sort_key_senders: &std::sync::Arc<Vec<std::sync::mpsc::SyncSender<SortKeyWriteMessage>>>,
         fk_edge_targets: &HashMap<String, FkEdgeTarget>,
         observer: &mut O,
     ) -> Result<TempNodeFileResult> {
@@ -2328,8 +2305,6 @@ impl IngestContext {
             table,
             relation_defs,
             num_shards,
-            buffer_limit,
-            std::sync::Arc::clone(sort_key_senders),
         )?;
 
         let create_time_info = table.create_time.as_ref().and_then(|ct| {
@@ -2548,11 +2523,8 @@ impl IngestContext {
                 }
             }
         }
-        batcher.flush_all()?;
+        batcher.flush_all(&mut sort_key_batchers)?;
         dest_fkey_batcher.flush_all()?;
-        for batcher in &mut sort_key_batchers {
-            batcher.flush_all()?;
-        }
         if let Some(cb) = progress {
             cb(ProgressEvent {
                 phase: ProgressPhase::Encode,
@@ -2712,7 +2684,7 @@ impl IngestContext {
                 }
             }
         }
-        batcher.maybe_flush(shard)?;
+        batcher.maybe_flush(shard, sort_key_batchers)?;
         *row_id = row_id.saturating_add(1);
         Ok(())
     }
@@ -2731,7 +2703,6 @@ impl IngestContext {
         error: &std::sync::Arc<std::sync::Mutex<Option<String>>>,
         dest_key_senders: &std::sync::Arc<Vec<std::sync::mpsc::SyncSender<DestKeyWriteMessage>>>,
         dest_key_errors: &std::sync::Arc<std::sync::Mutex<Option<String>>>,
-        sort_key_senders: &std::sync::Arc<Vec<std::sync::mpsc::SyncSender<SortKeyWriteMessage>>>,
         relation_defs: &[RelationDef],
         fk_edge_targets: &HashMap<String, FkEdgeTarget>,
     ) -> Result<u64> {
@@ -2775,8 +2746,6 @@ impl IngestContext {
             table,
             relation_defs,
             num_shards,
-            buffer_limit,
-            std::sync::Arc::clone(sort_key_senders),
         )?;
 
         let create_time_info = table.create_time.as_ref().and_then(|ct| {
@@ -3058,11 +3027,8 @@ impl IngestContext {
                 }
             }
         }
-        batcher.flush_all()?;
+        batcher.flush_all(&mut sort_key_batchers)?;
         edge_key_batcher.flush_all()?;
-        for batcher in &mut sort_key_batchers {
-            batcher.flush_all()?;
-        }
         if let Some(cb) = progress {
             cb(ProgressEvent {
                 phase: ProgressPhase::Encode,
@@ -3162,12 +3128,12 @@ impl IngestContext {
         );
         append_key_bytes_with_len_prefix(forward_row, src_key_buf, src_col, src_target_type)?;
         append_key_bytes_with_len_prefix(forward_row, dst_key_buf, dst_col, dst_target_type)?;
-        batcher.push(forward_shard, forward_row, timestamp_valid)?;
+        for sk in sort_key_batchers.iter_mut() {
+            sk.push_row(forward_shard, access)?;
+        }
+        batcher.push(forward_shard, forward_row, timestamp_valid, sort_key_batchers)?;
         edge_key_batcher.push_src(forward_shard, src_key_buf)?;
         edge_key_batcher.push_dst(dst_shard, dst_key_buf)?;
-        for batcher in sort_key_batchers.iter_mut() {
-            batcher.push_row(forward_shard, access)?;
-        }
         Ok(())
     }
 
@@ -6352,6 +6318,7 @@ struct NodeWriteBatch {
     fkey_data: Vec<Vec<u8>>,
     fkey_bits: Vec<Vec<u8>>,
     fkey_rows: Vec<u64>,
+    sort_keys: Vec<SortKeyWriteBatch>,
 }
 
 struct RowPackSegmentBatch {
@@ -6526,6 +6493,10 @@ fn node_writer_worker(
     rx: std::sync::mpsc::Receiver<NodeWriteMessage>,
 ) -> Result<NodeWriterStats> {
     let mut writers: HashMap<(std::sync::Arc<str>, usize), NodeShardWriter> = HashMap::new();
+    let mut sort_key_writers: HashMap<
+        (std::sync::Arc<str>, SortKeyComponentKind, usize),
+        SortKeyShardWriter,
+    > = HashMap::new();
     let mut stats = NodeWriterStats::default();
     while let Ok(msg) = rx.recv() {
         match msg {
@@ -6619,6 +6590,10 @@ fn node_writer_worker(
                         writer_bits.append_bits(&bits, rows)?;
                     }
                 }
+                // Write bundled sort key data.
+                for sk_batch in batch.sort_keys {
+                    write_sort_key_batch(&target, &mut sort_key_writers, sk_batch)?;
+                }
             }
         }
     }
@@ -6633,6 +6608,14 @@ fn node_writer_worker(
         for bits in writer.fkey_bits {
             bits.finish()?;
         }
+    }
+    for (_, mut writer) in sort_key_writers {
+        writer.writer.flush()?;
+        let sink = writer
+            .writer
+            .into_inner()
+            .map_err(|_| anyhow!("sort key flush failed"))?;
+        sink.finish()?;
     }
     Ok(stats)
 }
@@ -6798,18 +6781,26 @@ impl NodeBatcher {
         Ok(())
     }
 
-    fn maybe_flush(&mut self, shard: usize) -> Result<()> {
+    fn maybe_flush(
+        &mut self,
+        shard: usize,
+        sort_key_batchers: &mut [SortKeyComponentBatcher],
+    ) -> Result<()> {
         let buffer = self
             .buffers
             .get(shard)
             .ok_or_else(|| anyhow!("node buffer shard {} out of bounds", shard))?;
         if buffer.bytes >= self.buffer_limit {
-            self.flush_shard(shard)?;
+            self.flush_shard(shard, sort_key_batchers)?;
         }
         Ok(())
     }
 
-    fn flush_shard(&mut self, shard: usize) -> Result<()> {
+    fn flush_shard(
+        &mut self,
+        shard: usize,
+        sort_key_batchers: &mut [SortKeyComponentBatcher],
+    ) -> Result<()> {
         let buffer = self
             .buffers
             .get_mut(shard)
@@ -6846,6 +6837,13 @@ impl NodeBatcher {
             fkey_bits.push(data);
         }
         let fkey_rows = buffer.fkey_rows.clone();
+        // Drain sort key data for this shard and bundle into the batch.
+        let mut sort_keys = Vec::new();
+        for sk in sort_key_batchers.iter_mut() {
+            if let Some(sk_batch) = sk.drain_shard(shard)? {
+                sort_keys.push(sk_batch);
+            }
+        }
         let batch = NodeWriteBatch {
             table: std::sync::Arc::clone(&self.table),
             rel_names: std::sync::Arc::clone(&self.rel_names),
@@ -6856,6 +6854,7 @@ impl NodeBatcher {
             fkey_data: fkeys,
             fkey_bits,
             fkey_rows,
+            sort_keys,
         };
         buffer.node.rows.clear();
         buffer.pkey_rows = 0;
@@ -6870,14 +6869,15 @@ impl NodeBatcher {
         Ok(())
     }
 
-    fn flush_all(&mut self) -> Result<()> {
+    fn flush_all(&mut self, sort_key_batchers: &mut [SortKeyComponentBatcher]) -> Result<()> {
         for shard in 0..self.buffers.len() {
-            self.flush_shard(shard)?;
+            self.flush_shard(shard, sort_key_batchers)?;
         }
         Ok(())
     }
 }
 
+#[allow(dead_code)]
 struct SortKeyWriteBatch {
     rel: std::sync::Arc<str>,
     kind: SortKeyComponentKind,
@@ -6887,22 +6887,39 @@ struct SortKeyWriteBatch {
     width_bytes: usize,
 }
 
-enum SortKeyWriteMessage {
-    Batch(SortKeyWriteBatch),
-}
-
-#[derive(Default)]
-struct SortKeyWriterStats {
-    rows: HashMap<(String, SortKeyComponentKind, usize), u64>,
-}
-
-impl SortKeyWriterStats {
-    fn merge(&mut self, other: SortKeyWriterStats) {
-        for (key, value) in other.rows {
-            let entry = self.rows.entry(key).or_insert(0);
-            *entry = entry.saturating_add(value);
+/// Write a single sort key batch to the appropriate shard writer, creating it
+/// on first access.  Shared by node_writer_worker and edge_src_writer_worker.
+fn write_sort_key_batch(
+    target: &OutputTarget,
+    writers: &mut HashMap<(std::sync::Arc<str>, SortKeyComponentKind, usize), SortKeyShardWriter>,
+    batch: SortKeyWriteBatch,
+) -> Result<()> {
+    let key = (std::sync::Arc::clone(&batch.rel), batch.kind, batch.shard);
+    let writer = match writers.get_mut(&key) {
+        Some(writer) => writer,
+        None => {
+            let path = temp_sort_key_component_path(&batch.rel, batch.kind, batch.shard);
+            let w = open_sort_key_writer(target, &path)?;
+            writers.insert(
+                key.clone(),
+                SortKeyShardWriter {
+                    writer: w,
+                    width_bytes: batch.width_bytes,
+                },
+            );
+            writers.get_mut(&key).unwrap()
         }
+    };
+    if writer.width_bytes != batch.width_bytes {
+        return Err(anyhow!(
+            "sort key width mismatch for {} {:?} shard {}",
+            batch.rel,
+            batch.kind,
+            batch.shard
+        ));
     }
+    writer.writer.write_all(&batch.data)?;
+    Ok(())
 }
 
 struct SortKeyShardWriter {
@@ -6910,116 +6927,13 @@ struct SortKeyShardWriter {
     width_bytes: usize,
 }
 
-struct SortKeyWritePool {
-    senders: std::sync::Arc<Vec<std::sync::mpsc::SyncSender<SortKeyWriteMessage>>>,
-    handles: Vec<std::thread::JoinHandle<Result<SortKeyWriterStats>>>,
-}
-
-impl SortKeyWritePool {
-    fn new(target: std::sync::Arc<OutputTarget>, workers: usize) -> Self {
-        let mut senders = Vec::with_capacity(workers);
-        let mut handles = Vec::with_capacity(workers);
-        for _ in 0..workers {
-            let (tx, rx) =
-                std::sync::mpsc::sync_channel::<SortKeyWriteMessage>(EDGE_WRITE_QUEUE_DEPTH);
-            let target = std::sync::Arc::clone(&target);
-            handles.push(std::thread::spawn(move || {
-                sort_key_writer_worker(target, rx)
-            }));
-            senders.push(tx);
-        }
-        Self {
-            senders: std::sync::Arc::new(senders),
-            handles,
-        }
-    }
-
-    fn senders(&self) -> std::sync::Arc<Vec<std::sync::mpsc::SyncSender<SortKeyWriteMessage>>> {
-        std::sync::Arc::clone(&self.senders)
-    }
-
-    fn finish(self) -> Result<SortKeyWriterStats> {
-        drop(self.senders);
-        let mut stats = SortKeyWriterStats::default();
-        for handle in self.handles {
-            match handle.join() {
-                Ok(result) => {
-                    stats.merge(result?);
-                }
-                Err(_) => return Err(anyhow!("sort key writer thread panicked")),
-            }
-        }
-        Ok(stats)
-    }
-}
-
-fn sort_key_writer_worker(
-    target: std::sync::Arc<OutputTarget>,
-    rx: std::sync::mpsc::Receiver<SortKeyWriteMessage>,
-) -> Result<SortKeyWriterStats> {
-    let mut writers: HashMap<
-        (std::sync::Arc<str>, SortKeyComponentKind, usize),
-        SortKeyShardWriter,
-    > = HashMap::new();
-    let mut stats = SortKeyWriterStats::default();
-    while let Ok(msg) = rx.recv() {
-        match msg {
-            SortKeyWriteMessage::Batch(batch) => {
-                let key = (std::sync::Arc::clone(&batch.rel), batch.kind, batch.shard);
-                let writer = match writers.get_mut(&key) {
-                    Some(writer) => writer,
-                    None => {
-                        let path =
-                            temp_sort_key_component_path(&batch.rel, batch.kind, batch.shard);
-                        let writer = open_sort_key_writer(&target, &path)?;
-                        writers.insert(
-                            key.clone(),
-                            SortKeyShardWriter {
-                                writer,
-                                width_bytes: batch.width_bytes,
-                            },
-                        );
-                        writers.get_mut(&key).unwrap()
-                    }
-                };
-                if writer.width_bytes != batch.width_bytes {
-                    return Err(anyhow!(
-                        "sort key width mismatch for {} {:?} shard {}",
-                        batch.rel,
-                        batch.kind,
-                        batch.shard
-                    ));
-                }
-                writer.writer.write_all(&batch.data)?;
-                let entry = stats
-                    .rows
-                    .entry((batch.rel.to_string(), batch.kind, batch.shard))
-                    .or_insert(0);
-                *entry = entry.saturating_add(batch.row_count);
-            }
-        }
-    }
-    for (_, mut writer) in writers {
-        writer.writer.flush()?;
-        let sink = writer
-            .writer
-            .into_inner()
-            .map_err(|_| anyhow!("sort key flush failed"))?;
-        sink.finish()?;
-    }
-    Ok(stats)
-}
-
 struct SortKeyComponentBatcher {
     rel: std::sync::Arc<str>,
-    rel_hash: u64,
     kind: SortKeyComponentKind,
     width_bytes: u8,
     encoder: SortKeyComponentEncoder,
     buffers: Vec<Vec<u8>>,
     rows: Vec<u64>,
-    buffer_limit: usize,
-    senders: std::sync::Arc<Vec<std::sync::mpsc::SyncSender<SortKeyWriteMessage>>>,
 }
 
 impl SortKeyComponentBatcher {
@@ -7029,20 +6943,14 @@ impl SortKeyComponentBatcher {
         width_bytes: u8,
         encoder: SortKeyComponentEncoder,
         num_shards: usize,
-        buffer_limit: usize,
-        senders: std::sync::Arc<Vec<std::sync::mpsc::SyncSender<SortKeyWriteMessage>>>,
     ) -> Self {
-        let rel_hash = hash_name(&rel);
         Self {
             rel,
-            rel_hash,
             kind,
             width_bytes,
             encoder,
             buffers: vec![Vec::new(); num_shards],
             rows: vec![0; num_shards],
-            buffer_limit,
-            senders,
         }
     }
 
@@ -7077,13 +6985,13 @@ impl SortKeyComponentBatcher {
         if let Some(row_count) = self.rows.get_mut(shard) {
             *row_count = row_count.saturating_add(1);
         }
-        if buffer.len() >= self.buffer_limit {
-            self.flush_shard(shard)?;
-        }
         Ok(())
     }
 
-    fn flush_shard(&mut self, shard: usize) -> Result<()> {
+    /// Drain the buffer for a shard, returning a `SortKeyWriteBatch` if there
+    /// is data. Does not send to any channel — the caller bundles the result
+    /// into a `NodeWriteBatch` or `EdgeSrcWriteBatch`.
+    fn drain_shard(&mut self, shard: usize) -> Result<Option<SortKeyWriteBatch>> {
         let buffer = self
             .buffers
             .get_mut(shard)
@@ -7093,7 +7001,7 @@ impl SortKeyComponentBatcher {
             .get_mut(shard)
             .ok_or_else(|| anyhow!("sort key row count missing"))?;
         if *rows == 0 {
-            return Ok(());
+            return Ok(None);
         }
         let mut data = Vec::with_capacity(buffer.capacity());
         std::mem::swap(&mut data, buffer);
@@ -7106,18 +7014,7 @@ impl SortKeyComponentBatcher {
             width_bytes: self.width_bytes as usize,
         };
         *rows = 0;
-        let idx = edge_writer_index(self.rel_hash, shard, self.senders.len());
-        self.senders[idx]
-            .send(SortKeyWriteMessage::Batch(batch))
-            .map_err(|e| anyhow!("sort key writer channel error: {e}"))?;
-        Ok(())
-    }
-
-    fn flush_all(&mut self) -> Result<()> {
-        for shard in 0..self.buffers.len() {
-            self.flush_shard(shard)?;
-        }
-        Ok(())
+        Ok(Some(batch))
     }
 }
 
@@ -7126,6 +7023,7 @@ struct EdgeSrcWriteBatch {
     shard: usize,
     data: Vec<u8>,
     row_count: u64,
+    sort_keys: Vec<SortKeyWriteBatch>,
 }
 
 enum EdgeSrcWriteMessage {
@@ -7216,6 +7114,10 @@ fn edge_src_writer_worker(
     rx: std::sync::mpsc::Receiver<EdgeSrcWriteMessage>,
 ) -> Result<EdgeSrcWriterStats> {
     let mut writers: HashMap<(std::sync::Arc<str>, usize), TempRowWriter> = HashMap::new();
+    let mut sort_key_writers: HashMap<
+        (std::sync::Arc<str>, SortKeyComponentKind, usize),
+        SortKeyShardWriter,
+    > = HashMap::new();
     let mut stats = EdgeSrcWriterStats::default();
     while let Ok(msg) = rx.recv() {
         match msg {
@@ -7240,11 +7142,23 @@ fn edge_src_writer_worker(
                     .entry((batch.rel.to_string(), batch.shard))
                     .or_insert(0);
                 *entry = entry.saturating_add(batch.row_count);
+                // Write bundled sort key data.
+                for sk_batch in batch.sort_keys {
+                    write_sort_key_batch(&target, &mut sort_key_writers, sk_batch)?;
+                }
             }
         }
     }
     for (_, writer) in writers {
         finish_temp_writer(writer)?;
+    }
+    for (_, mut writer) in sort_key_writers {
+        writer.writer.flush()?;
+        let sink = writer
+            .writer
+            .into_inner()
+            .map_err(|_| anyhow!("sort key flush failed"))?;
+        sink.finish()?;
     }
     Ok(stats)
 }
@@ -7473,7 +7387,13 @@ impl EdgeSrcBatcher {
         }
     }
 
-    fn push(&mut self, shard: usize, row: &[u8], timestamp_valid: bool) -> Result<()> {
+    fn push(
+        &mut self,
+        shard: usize,
+        row: &[u8],
+        timestamp_valid: bool,
+        sort_key_batchers: &mut [SortKeyComponentBatcher],
+    ) -> Result<()> {
         let buffer = self
             .buffers
             .get_mut(shard)
@@ -7484,12 +7404,16 @@ impl EdgeSrcBatcher {
         buffer.data.push(if timestamp_valid { 1 } else { 0 });
         buffer.row_count = buffer.row_count.saturating_add(1);
         if buffer.data.len() >= self.buffer_limit {
-            self.flush_shard(shard)?;
+            self.flush_shard(shard, sort_key_batchers)?;
         }
         Ok(())
     }
 
-    fn flush_shard(&mut self, shard: usize) -> Result<()> {
+    fn flush_shard(
+        &mut self,
+        shard: usize,
+        sort_key_batchers: &mut [SortKeyComponentBatcher],
+    ) -> Result<()> {
         if let Ok(guard) = self.error.lock() {
             if let Some(message) = guard.as_ref() {
                 return Err(anyhow!("edge src writer failed: {message}"));
@@ -7504,11 +7428,19 @@ impl EdgeSrcBatcher {
         }
         let mut data = Vec::with_capacity(buffer.data.capacity());
         std::mem::swap(&mut data, &mut buffer.data);
+        // Drain sort key data for this shard and bundle into the batch.
+        let mut sort_keys = Vec::new();
+        for sk in sort_key_batchers.iter_mut() {
+            if let Some(sk_batch) = sk.drain_shard(shard)? {
+                sort_keys.push(sk_batch);
+            }
+        }
         let batch = EdgeSrcWriteBatch {
             rel: std::sync::Arc::clone(&self.rel),
             shard,
             data,
             row_count: buffer.row_count,
+            sort_keys,
         };
         buffer.row_count = 0;
         let idx = edge_writer_index(self.rel_hash, shard, self.senders.len());
@@ -7525,9 +7457,9 @@ impl EdgeSrcBatcher {
         Ok(())
     }
 
-    fn flush_all(&mut self) -> Result<()> {
+    fn flush_all(&mut self, sort_key_batchers: &mut [SortKeyComponentBatcher]) -> Result<()> {
         for shard in 0..self.buffers.len() {
-            self.flush_shard(shard)?;
+            self.flush_shard(shard, sort_key_batchers)?;
         }
         Ok(())
     }
