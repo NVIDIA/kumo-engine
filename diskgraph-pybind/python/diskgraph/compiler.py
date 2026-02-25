@@ -269,6 +269,17 @@ class DiskGraphPlanCompiler:
                 else:
                     return StageFilter.compare(alias, op, node.get_typed_value())
 
+            # LHS is a Join wrapping an aggregation (edge traversal in stage filter)
+            elif isinstance(node.target, Join):
+                alias = self._traverse_target(node.target, query)
+                if isinstance(node.value, Column):
+                    return StageFilter.compare_to_entity(alias, op, node.value.fqn.split('.')[1])
+                elif isinstance(node.value, Aggregation):
+                    rhs_alias = self._traverse_target(node.value, query)
+                    return StageFilter.compare_to_alias(alias, op, rhs_alias)
+                else:
+                    return StageFilter.compare(alias, op, node.get_typed_value())
+
             # Simple Column LHS in StageFilter
             elif isinstance(node.target, Column):
                 col_name = node.target.fqn.split('.')[1]
