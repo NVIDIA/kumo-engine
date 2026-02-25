@@ -622,7 +622,7 @@ fn integ_avg_basic() {
     assert_target_eq(groups[&1][0].1, 115.0, "bob");
     assert_target_eq(groups[&2][0].1, 60.0, "carol");
     assert_target_eq(groups[&3][0].1, 85.0, "dave");
-    assert_target_eq(groups[&4][0].1, f64::NAN, "eve");
+    assert!(!groups.contains_key(&4), "eve should be absent (no orders)");
 }
 
 #[test]
@@ -639,7 +639,7 @@ fn integ_min_basic() {
     assert_target_eq(groups[&1][0].1, 30.0, "bob");
     assert_target_eq(groups[&2][0].1, 60.0, "carol");
     assert_target_eq(groups[&3][0].1, 25.0, "dave");
-    assert_target_eq(groups[&4][0].1, f64::NAN, "eve");
+    assert!(!groups.contains_key(&4), "eve should be absent (no orders)");
 }
 
 #[test]
@@ -656,7 +656,7 @@ fn integ_max_basic() {
     assert_target_eq(groups[&1][0].1, 200.0, "bob");
     assert_target_eq(groups[&2][0].1, 60.0, "carol");
     assert_target_eq(groups[&3][0].1, 150.0, "dave");
-    assert_target_eq(groups[&4][0].1, f64::NAN, "eve");
+    assert!(!groups.contains_key(&4), "eve should be absent (no orders)");
 }
 
 #[test]
@@ -674,7 +674,7 @@ fn integ_first_basic() {
     assert_target_eq(groups[&1][0].1, 200.0, "bob first=ts2100");
     assert_target_eq(groups[&2][0].1, 60.0, "carol");
     assert_target_eq(groups[&3][0].1, 150.0, "dave first=ts3100");
-    assert_target_eq(groups[&4][0].1, f64::NAN, "eve");
+    assert!(!groups.contains_key(&4), "eve should be absent (no orders)");
 }
 
 #[test]
@@ -692,7 +692,7 @@ fn integ_last_basic() {
     assert_target_eq(groups[&1][0].1, 30.0, "bob last=ts2200");
     assert_target_eq(groups[&2][0].1, 60.0, "carol");
     assert_target_eq(groups[&3][0].1, 25.0, "dave last=ts3300");
-    assert_target_eq(groups[&4][0].1, f64::NAN, "eve");
+    assert!(!groups.contains_key(&4), "eve should be absent (no orders)");
 }
 
 #[test]
@@ -2460,12 +2460,12 @@ fn integ_multi_hop_avg_rating() {
     );
     let groups = execute_and_group(&plan, &index, &output);
     // alice: (2.0+4.5+3.0+5.0)/4 = 3.625
-    // bob: (4.5+3.0)/2 = 3.75. carol: 5.0. dave: (4.5+3.0+5.0)/3 ≈ 4.1667. eve: NaN.
+    // bob: (4.5+3.0)/2 = 3.75. carol: 5.0. dave: (4.5+3.0+5.0)/3 ≈ 4.1667. eve: absent.
     assert_target_eq(groups[&0][0].1, 3.625, "alice");
     assert_target_eq(groups[&1][0].1, 3.75, "bob");
     assert_target_eq(groups[&2][0].1, 5.0, "carol");
     assert_target_eq(groups[&3][0].1, 12.5 / 3.0, "dave");
-    assert_target_eq(groups[&4][0].1, f64::NAN, "eve");
+    assert!(!groups.contains_key(&4), "eve should be absent (no orders)");
 }
 
 #[test]
@@ -2497,13 +2497,13 @@ fn integ_multi_hop_with_filter() {
     );
     let groups = execute_and_group(&plan, &index, &output);
     // Row filter on last hop (products). shoes: p0(4.5),p1(3.0)
-    // alice: p0,p1 → (4.5+3.0)/2=3.75. bob: same → 3.75. carol: p2(clothing) → NaN.
-    // dave: p0,p1 → 3.75. eve: NaN.
+    // alice: p0,p1 → (4.5+3.0)/2=3.75. bob: same → 3.75. carol: p2(clothing) → absent.
+    // dave: p0,p1 → 3.75. eve: absent.
     assert_target_eq(groups[&0][0].1, 3.75, "alice");
     assert_target_eq(groups[&1][0].1, 3.75, "bob");
-    assert_target_eq(groups[&2][0].1, f64::NAN, "carol");
+    assert!(!groups.contains_key(&2), "carol should be absent (no shoes)");
     assert_target_eq(groups[&3][0].1, 3.75, "dave");
-    assert_target_eq(groups[&4][0].1, f64::NAN, "eve");
+    assert!(!groups.contains_key(&4), "eve should be absent (no orders)");
 }
 
 #[test]
@@ -2540,19 +2540,22 @@ fn integ_multi_hop_temporal() {
 
 #[test]
 fn integ_all_agg_empty_states() {
-    // Verify empty-state values for each aggregation function (eve has 0 orders)
+    // Verify empty-state values for each aggregation function (eve has 0 orders).
+    // COUNT/SUM/COUNT_DISTINCT always produce a value (0); AVG/MIN/MAX/FIRST/LAST
+    // produce None for empty traversals → row is skipped (matching Kumo INNER join).
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
 
-    let cases: Vec<(&str, AggFunc, Option<&str>, f64)> = vec![
-        ("count", AggFunc::Count, None, 0.0),
-        ("sum", AggFunc::Sum, Some("price"), 0.0),
-        ("avg", AggFunc::Avg, Some("price"), f64::NAN),
-        ("min", AggFunc::Min, Some("price"), f64::NAN),
-        ("max", AggFunc::Max, Some("price"), f64::NAN),
-        ("first", AggFunc::First, Some("price"), f64::NAN),
-        ("last", AggFunc::Last, Some("price"), f64::NAN),
-        ("count_distinct", AggFunc::CountDistinct, Some("status"), 0.0),
+    // (name, func, target_col, expected): Some(f64) = eve row present, None = eve row absent
+    let cases: Vec<(&str, AggFunc, Option<&str>, Option<f64>)> = vec![
+        ("count", AggFunc::Count, None, Some(0.0)),
+        ("sum", AggFunc::Sum, Some("price"), Some(0.0)),
+        ("avg", AggFunc::Avg, Some("price"), None),
+        ("min", AggFunc::Min, Some("price"), None),
+        ("max", AggFunc::Max, Some("price"), None),
+        ("first", AggFunc::First, Some("price"), None),
+        ("last", AggFunc::Last, Some("price"), None),
+        ("count_distinct", AggFunc::CountDistinct, Some("status"), Some(0.0)),
     ];
 
     for (name, func, target_col, expected) in cases {
@@ -2575,7 +2578,10 @@ fn integ_all_agg_empty_states() {
             vec![0],
         );
         let groups = execute_and_group(&plan, &index, &output);
-        assert_target_eq(groups[&4][0].1, expected, &format!("eve {name}"));
+        match expected {
+            Some(val) => assert_target_eq(groups[&4][0].1, val, &format!("eve {name}")),
+            None => assert!(!groups.contains_key(&4), "eve {name} should be absent"),
+        }
     }
 }
 

@@ -46,7 +46,7 @@ pub struct ResolvedPlan {
     // Prediction type
     pub prediction_type: PredictionType,
 
-    // Target dtype (Bool for Compare targets, Float64 otherwise)
+    // Target dtype: Bool for Compare, else inferred from ingested column type
     pub target_dtype: DataType,
 }
 
@@ -798,41 +798,59 @@ fn find_relation<'a>(
 /// Infer the Arrow DataType for the TARGET column.
 ///
 /// - Compare ops → Boolean
-/// - LP aggregates (ListDistinct) → dtype of the destination FK column
-/// - Other aggregates → Float64
+/// - FIRST/LAST → dtype from the ingested column type (preserves source type)
+/// - LP (ListDistinct) → dtype from the ingested column type
+/// - Direct column prediction → dtype from the ingested column type
+/// - COUNT/SUM/AVG/MIN/MAX/COUNT_DISTINCT → Float64 (always numeric output)
 fn infer_target_dtype(plan: &DiskGraphTTPlan, stages: &[ResolvedStage]) -> DataType {
     let last_plan_op = plan.stages.iter().rev()
         .flat_map(|s| s.ops.iter().rev())
         .next();
     match last_plan_op {
         Some(Op::Compare { .. }) => DataType::Boolean,
-        _ => {
-            // For LP tasks, the target is the ListDistinct column value.
-            // Its dtype should match the destination column's ingested type.
-            if matches!(plan.prediction_type, PredictionType::Link { .. }) {
-                // Find the last resolved aggregate with a target_col_idx
-                let last_agg = stages.iter().rev()
-                    .flat_map(|s| s.ops.iter().rev())
-                    .find_map(|op| {
-                        if let ResolvedOp::Aggregate(a) = op {
-                            Some(a)
-                        } else {
-                            None
-                        }
-                    });
-                if let Some(agg) = last_agg {
-                    if let Some(col_idx) = agg.target_col_idx {
-                        let dst_table = &agg.path.last().unwrap().dst_table;
-                        if let Some(decoder) = dst_table.node_data_decoder() {
-                            let col = &decoder.context().columns[col_idx];
-                            return ingested_type_to_arrow(&col.logical_type);
-                        }
-                    }
+        // FIRST/LAST preserve the source column's dtype (e.g. FIRST of string → Utf8).
+        Some(Op::Aggregate { func, .. })
+            if matches!(func, AggFunc::First | AggFunc::Last) =>
+        {
+            lookup_last_agg_col_dtype(stages).unwrap_or(DataType::Float64)
+        }
+        // Direct column prediction: look up the column's ingested type.
+        Some(Op::Column { .. }) => {
+            let last_col = stages.iter().rev()
+                .flat_map(|s| s.ops.iter().rev())
+                .find_map(|op| {
+                    if let ResolvedOp::Column(c) = op { Some(c) } else { None }
+                });
+            if let Some(col) = last_col {
+                if let Some(decoder) = col.table.node_data_decoder() {
+                    let c = &decoder.context().columns[col.col_idx];
+                    return ingested_type_to_arrow(&c.logical_type);
                 }
             }
             DataType::Float64
         }
+        _ => {
+            // LP (ListDistinct): look up ingested type for the target column.
+            if matches!(plan.prediction_type, PredictionType::Link { .. }) {
+                return lookup_last_agg_col_dtype(stages).unwrap_or(DataType::Float64);
+            }
+            DataType::Float64
+        }
     }
+}
+
+/// Look up the ingested column type from the last resolved aggregate.
+fn lookup_last_agg_col_dtype(stages: &[ResolvedStage]) -> Option<DataType> {
+    let last_agg = stages.iter().rev()
+        .flat_map(|s| s.ops.iter().rev())
+        .find_map(|op| {
+            if let ResolvedOp::Aggregate(a) = op { Some(a) } else { None }
+        })?;
+    let col_idx = last_agg.target_col_idx?;
+    let dst_table = &last_agg.path.last()?.dst_table;
+    let decoder = dst_table.node_data_decoder()?;
+    let col = &decoder.context().columns[col_idx];
+    Some(ingested_type_to_arrow(&col.logical_type))
 }
 
 /// Map an ingested column type to the Arrow DataType used for the ENTITY column.

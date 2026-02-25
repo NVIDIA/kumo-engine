@@ -32,7 +32,7 @@ const BATCH_SIZE: usize = 65536;
 /// Which output format the writer produces.
 #[derive(Debug, Clone)]
 pub enum OutputMode {
-    /// Node prediction: scalar target (f64 or bool depending on target_dtype).
+    /// Node prediction: scalar target (dtype from ingested column type).
     Node { target_dtype: DataType },
     /// Link + explode: one row per distinct target + i64 frequency.
     LinkExploded { include_frequency: bool, target_dtype: DataType },
@@ -153,7 +153,8 @@ impl ParquetShardWriter {
     ///
     /// The target value is dispatched by the writer's target dtype:
     /// - Boolean: stored in `target_bool_buf`
-    /// - Float64 (default): converted via `value_to_f64` into `target_f64_buf`
+    /// - Float64: converted via `value_to_f64` into `target_f64_buf`
+    /// - Utf8/Int64/other: stored as `Value` in `target_value_buf`
     #[inline]
     pub fn write_row(
         &mut self,
@@ -173,6 +174,13 @@ impl ParquetShardWriter {
                     _ => false,
                 };
                 self.target_bool_buf.push(b);
+            }
+            OutputMode::Node { target_dtype } if *target_dtype == DataType::Float64 => {
+                self.target_f64_buf.push(value_to_f64(target));
+            }
+            OutputMode::Node { .. } => {
+                // Utf8, Int64, etc — store the Value directly
+                self.target_value_buf.push(target.clone());
             }
             _ => {
                 self.target_f64_buf.push(value_to_f64(target));
@@ -257,9 +265,14 @@ impl ParquetShardWriter {
                 let target_arr = BooleanArray::from(std::mem::take(&mut self.target_bool_buf));
                 columns.push(Arc::new(target_arr));
             }
-            OutputMode::Node { .. } => {
+            OutputMode::Node { target_dtype } if *target_dtype == DataType::Float64 => {
                 let target_arr = Float64Array::from(std::mem::take(&mut self.target_f64_buf));
                 columns.push(Arc::new(target_arr));
+            }
+            OutputMode::Node { target_dtype } => {
+                // Utf8, Int64, etc — use flush_value_buf which handles all types
+                let target_arr = flush_value_buf(&mut self.target_value_buf, target_dtype);
+                columns.push(target_arr);
             }
             OutputMode::LinkExploded { include_frequency, target_dtype } => {
                 let target_arr = flush_value_buf(&mut self.target_value_buf, target_dtype);

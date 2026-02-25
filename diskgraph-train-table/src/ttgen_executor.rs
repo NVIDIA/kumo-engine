@@ -331,17 +331,17 @@ fn execute_stages(
                     )
                 }
                 ResolvedOp::Column(col) => {
-                    read_column_value(&col.table, entity_node, col.col_idx)
-                        .unwrap_or(Value::Int(0))
+                    Some(read_column_value(&col.table, entity_node, col.col_idx)
+                        .unwrap_or(Value::Int(0)))
                 }
                 ResolvedOp::Compare(cmp) => {
                     let lhs = aliases[cmp.lhs_alias_idx]
                         .as_ref()
                         .unwrap_or(&Value::Int(0));
-                    Value::Bool(compare_values(lhs, &cmp.op, &cmp.rhs))
+                    Some(Value::Bool(compare_values(lhs, &cmp.op, &cmp.rhs)))
                 }
             };
-            aliases[op.alias_idx()] = Some(result);
+            aliases[op.alias_idx()] = result;
         }
 
         // Stage filter: short-circuit on failure
@@ -369,7 +369,7 @@ fn execute_aggregate(
     entity_cols: &[Option<Value>],
     observation_ts: Option<i64>,
     link_frequencies: &mut Vec<i64>,
-) -> Value {
+) -> Option<Value> {
     // Compute window bounds (sort key space).
     // Kumo uses half-open interval (start, end]: exclusive lower, inclusive upper.
     // encode_upper sets all weight bits to 1, giving the max sort key for that
@@ -409,7 +409,7 @@ fn execute_aggregate(
                 acc += 1;
                 true
             });
-            Value::Int(acc as i64)
+            Some(Value::Int(acc as i64))
         }
         AggFunc::Sum => {
             let mut acc = 0.0f64;
@@ -424,7 +424,7 @@ fn execute_aggregate(
                 }
                 true
             });
-            Value::Float(acc)
+            Some(Value::Float(acc))
         }
         AggFunc::Avg => {
             let mut w = WelfordAccumulator::new();
@@ -486,7 +486,7 @@ fn execute_aggregate(
                 }
                 true
             });
-            Value::Int(set.len() as i64)
+            Some(Value::Int(set.len() as i64))
         }
         AggFunc::ListDistinct => {
             let mut seen: HashMap<u64, usize> = HashMap::new();
@@ -519,7 +519,7 @@ fn execute_aggregate(
             // Store frequency counts for link prediction output
             link_frequencies.clear();
             link_frequencies.extend_from_slice(&counts);
-            Value::List(values)
+            Some(Value::List(values))
         }
         AggFunc::First => {
             // Edges iterate DESCENDING by sort key (newest first),
@@ -538,7 +538,7 @@ fn execute_aggregate(
                 }
                 true // keep going — earliest is last in descending order
             });
-            val.unwrap_or(Value::Float(f64::NAN))
+            val
         }
         AggFunc::Last => {
             // Edges iterate DESCENDING by sort key (newest first),
@@ -557,7 +557,7 @@ fn execute_aggregate(
                 }
                 false // stop after first match — latest in descending order
             });
-            val.unwrap_or(Value::Float(f64::NAN))
+            val
         }
     }
 }
