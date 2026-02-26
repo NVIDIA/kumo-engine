@@ -29,3 +29,4 @@ sysinfo = "0.30"
 hdrhistogram = "7.5"
 tokio = { workspace = true }
 serde_json = { workspace = true }
+uuid_simd = { package = "uuid-simd", version = "0.8.0", default-features = false, features = ["std"] }
