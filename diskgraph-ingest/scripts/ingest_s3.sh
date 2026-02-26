@@ -24,6 +24,7 @@ DEBUGINFO_ENABLED="false"
 MEM_PROFILE_ENABLED="false"
 PARALLEL_ENABLED="${PARALLEL_ENABLED:-true}"
 COL_STATS_ENABLED="${COL_STATS_ENABLED:-false}"
+CAT_COUNT_STRATEGY="${CAT_COUNT_STRATEGY:-hybrid}"
 POSITIONAL=()
 for arg in "$@"; do
   case "${arg}" in
@@ -54,6 +55,9 @@ if [[ -z "${SOURCE}" ]]; then
   exit 1
 fi
 
+SOURCE_TRIMMED="${SOURCE%/}"
+INPUT_NAME="$(basename "${SOURCE_TRIMMED}")"
+
 if [[ -z "${OUTPUT}" ]]; then
   if [[ -n "${DISKGRAPH_DATA_ROOT:-}" ]]; then
     DEFAULT_OUT_ROOT="${DISKGRAPH_DATA_ROOT%/}/diskgraph-index"
@@ -62,8 +66,6 @@ if [[ -z "${OUTPUT}" ]]; then
   else
     DEFAULT_OUT_ROOT="/tmp/diskgraph-index"
   fi
-  SOURCE_TRIMMED="${SOURCE%/}"
-  INPUT_NAME="$(basename "${SOURCE_TRIMMED}")"
   OUTPUT="${OUT_ROOT:-${DEFAULT_OUT_ROOT}}/${INPUT_NAME}"
 fi
 
@@ -112,7 +114,7 @@ if [[ "${PARALLEL_ENABLED}" == "true" ]]; then
   args+=(--parallel)
 fi
 if [[ "${COL_STATS_ENABLED}" == "true" ]]; then
-  args+=(--col-stats)
+  args+=(--col-stats --cat-count-strategy "${CAT_COUNT_STRATEGY}")
 fi
 env ${env_args[@]+"${env_args[@]}"} "${args[@]}"
 echo -e "\033[36;1mNext:\033[0m ./diskgraph-ingest/scripts/perf_explorer.sh \"${INPUT_NAME}\""

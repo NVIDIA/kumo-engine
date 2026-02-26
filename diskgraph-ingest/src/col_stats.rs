@@ -1185,25 +1185,30 @@ impl FileColStats {
             CategoryCountStrategy::Hybrid => {
                 if let Some(ref shared) = self.cat_shared {
                     for (col_idx, local) in self.cat_local.iter_mut().enumerate() {
-                        if let Some(local) = local.as_mut() {
+                        if let Some(inner) = local.as_mut() {
                             if let Some(ref col_shared) = shared.columns[col_idx] {
-                                col_shared.merge_local_batch(local);
+                                col_shared.merge_local_batch(inner);
                             }
-                            local.clear();
                         }
+                        // Drop the local HashMap entirely to free bucket arrays.
+                        // After merging to shared, local counts are never reused
+                        // and the FileColStats will sit in an unbounded channel
+                        // until all files complete — retaining capacity across
+                        // 19K+ files would consume 100+ GB.
+                        *local = None;
                     }
                 }
             }
             CategoryCountStrategy::Graduation => {
                 if let Some(ref shared) = self.cat_shared {
                     for (col_idx, local) in self.cat_local.iter_mut().enumerate() {
-                        if let Some(local) = local.as_mut() {
+                        if let Some(inner) = local.as_mut() {
                             if let Some(ref col_shared) = shared.columns[col_idx] {
-                                let snap = col_shared.merge_local_batch_graduation(local);
+                                let snap = col_shared.merge_local_batch_graduation(inner);
                                 self.grad_snapshots[col_idx] = Some(snap);
                             }
-                            local.clear();
                         }
+                        *local = None;
                     }
                 }
             }
