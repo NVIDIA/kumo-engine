@@ -62,6 +62,7 @@ fn start_peak_rss_tracker() -> (Arc<AtomicBool>, Arc<AtomicU64>) {
 }
 
 #[test]
+#[ignore] // Resource-intensive: 2000 files, needs large disk + RAM. Run manually with --ignored.
 fn test_col_stats_memory_bounded() -> Result<()> {
     let num_files = 2000;
     let num_cat_cols = 10;
