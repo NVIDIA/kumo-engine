@@ -4507,71 +4507,86 @@ fn decode_value_skip(
             }
             let _ = scale;
         }
-        ColumnEncoding::String { encoding } => match encoding {
-            StringEncoding::Raw => {
+        ColumnEncoding::String { encoding } => {
+            if tag == 2 {
+                // Inline fallback: [varint_len][raw_bytes] for all string encodings.
+                // Matches decode_value_ref which calls decode_string_fallback_into.
                 let len = read_varint(data)? as usize;
                 if len > MAX_FIELD_BYTES {
-                    return Err(anyhow!("rowpack string too large"));
+                    return Err(anyhow!("rowpack string fallback too large"));
                 }
                 if data.len() < len {
-                    return Err(anyhow!("rowpack string truncated"));
+                    return Err(anyhow!("rowpack string fallback truncated"));
                 }
                 *data = &data[len..];
-            }
-            StringEncoding::Dict { .. } => {
-                let idx = read_varint(data)? as usize;
-                if let Some(values) = dict {
-                    if idx < values.len() {
-                        return Ok(());
+            } else {
+                match encoding {
+                    StringEncoding::Raw => {
+                        let len = read_varint(data)? as usize;
+                        if len > MAX_FIELD_BYTES {
+                            return Err(anyhow!("rowpack string too large"));
+                        }
+                        if data.len() < len {
+                            return Err(anyhow!("rowpack string truncated"));
+                        }
+                        *data = &data[len..];
+                    }
+                    StringEncoding::Dict { .. } => {
+                        let idx = read_varint(data)? as usize;
+                        if let Some(values) = dict {
+                            if idx < values.len() {
+                                return Ok(());
+                            }
+                        }
+                        let len = read_varint(data)? as usize;
+                        if len > MAX_FIELD_BYTES {
+                            return Err(anyhow!("rowpack dict fallback too large"));
+                        }
+                        if data.len() < len {
+                            return Err(anyhow!("rowpack dict fallback truncated"));
+                        }
+                        *data = &data[len..];
+                    }
+                    StringEncoding::Alphabet { alphabet } => {
+                        let len = read_varint(data)? as usize;
+                        if len > MAX_FIELD_BYTES {
+                            return Err(anyhow!("rowpack string too large"));
+                        }
+                        let bits = alphabet_bits(alphabet.len());
+                        let total_bits = len.saturating_mul(bits as usize);
+                        let byte_len = total_bits.div_ceil(8);
+                        if data.len() < byte_len {
+                            return Err(anyhow!("rowpack string truncated"));
+                        }
+                        *data = &data[byte_len..];
+                    }
+                    StringEncoding::Bpe { dict } => {
+                        let token_count = read_varint(data)? as usize;
+                        if token_count > MAX_ARRAY_LEN {
+                            return Err(anyhow!("rowpack bpe token count too large"));
+                        }
+                        let bits = bpe_token_bits(dict.len());
+                        let total_bits = token_count.saturating_mul(bits as usize);
+                        let byte_len = total_bits.div_ceil(8);
+                        if data.len() < byte_len {
+                            return Err(anyhow!("rowpack bpe truncated"));
+                        }
+                        *data = &data[byte_len..];
+                    }
+                    StringEncoding::Lz4 => {
+                        let raw_len = read_varint(data)? as usize;
+                        if raw_len > MAX_FIELD_BYTES {
+                            return Err(anyhow!("rowpack lz4 too large"));
+                        }
+                        let compressed_len = read_varint(data)? as usize;
+                        if data.len() < compressed_len {
+                            return Err(anyhow!("rowpack lz4 truncated"));
+                        }
+                        *data = &data[compressed_len..];
                     }
                 }
-                let len = read_varint(data)? as usize;
-                if len > MAX_FIELD_BYTES {
-                    return Err(anyhow!("rowpack dict fallback too large"));
-                }
-                if data.len() < len {
-                    return Err(anyhow!("rowpack dict fallback truncated"));
-                }
-                *data = &data[len..];
             }
-            StringEncoding::Alphabet { alphabet } => {
-                let len = read_varint(data)? as usize;
-                if len > MAX_FIELD_BYTES {
-                    return Err(anyhow!("rowpack string too large"));
-                }
-                let bits = alphabet_bits(alphabet.len());
-                let total_bits = len.saturating_mul(bits as usize);
-                let byte_len = total_bits.div_ceil(8);
-                if data.len() < byte_len {
-                    return Err(anyhow!("rowpack string truncated"));
-                }
-                *data = &data[byte_len..];
-            }
-            StringEncoding::Bpe { dict } => {
-                let token_count = read_varint(data)? as usize;
-                if token_count > MAX_ARRAY_LEN {
-                    return Err(anyhow!("rowpack bpe token count too large"));
-                }
-                let bits = bpe_token_bits(dict.len());
-                let total_bits = token_count.saturating_mul(bits as usize);
-                let byte_len = total_bits.div_ceil(8);
-                if data.len() < byte_len {
-                    return Err(anyhow!("rowpack bpe truncated"));
-                }
-                *data = &data[byte_len..];
-            }
-            StringEncoding::Lz4 => {
-                let raw_len = read_varint(data)? as usize;
-                if raw_len > MAX_FIELD_BYTES {
-                    return Err(anyhow!("rowpack lz4 too large"));
-                }
-                let compressed_len = read_varint(data)? as usize;
-                if data.len() < compressed_len {
-                    return Err(anyhow!("rowpack lz4 truncated"));
-                }
-                *data = &data[compressed_len..];
-            }
-        },
+        }
         ColumnEncoding::FloatArray { storage } => {
             let len = read_varint(data)? as usize;
             let elem_bytes = match storage {

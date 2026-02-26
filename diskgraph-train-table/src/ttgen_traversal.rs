@@ -191,6 +191,32 @@ pub fn read_column_value(
     Some(value_ref_to_value(&value_ref))
 }
 
+/// Read a column value, distinguishing explicit NULL from missing data.
+///
+/// Returns:
+/// - `Some(Some(value))` — column has a non-null value
+/// - `Some(None)` — column is explicitly NULL in rowpack
+/// - `None` — node data is missing or undecodable
+pub fn read_column_value_nullable(
+    table: &Arc<TableReader>,
+    node_id: u64,
+    col_idx: usize,
+) -> Option<Option<Value>> {
+    let view = table.edges_for_node(node_id).ok()?;
+    let decoder = table.node_data_decoder()?;
+    let raw_data = view.node_data().ok()??;
+
+    let mut scratch = RowPackDecodeScratch::default();
+    let value_ref = decoder
+        .decode_column_value(raw_data, col_idx, &mut scratch)
+        .ok()?;
+
+    match value_ref {
+        ValueRef::Null => Some(None),
+        _ => Some(Some(value_ref_to_value(&value_ref))),
+    }
+}
+
 /// Read a column as f64 from a node's rowpack data.
 /// Returns 0.0 if not found or not numeric.
 pub fn read_column_f64(
@@ -208,13 +234,13 @@ pub fn read_column_f64(
 }
 
 /// Read a column as i64 from a node's rowpack data.
-/// Returns None if not found.
+/// Returns None if the column is NULL or if the node data is missing.
 pub fn read_column_i64(
     table: &Arc<TableReader>,
     node_id: u64,
     col_idx: usize,
 ) -> Option<i64> {
-    read_column_value(table, node_id, col_idx).and_then(|v| match v {
+    read_column_value_nullable(table, node_id, col_idx)?.and_then(|v| match v {
         Value::Int(i) => Some(i),
         Value::Float(f) => Some(f as i64),
         _ => None,

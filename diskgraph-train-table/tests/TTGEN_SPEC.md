@@ -330,7 +330,7 @@ The test builds an in-memory graph index on disk in a temp directory. The graph 
 - `nodes/{table}/shard-00000/offsets.bin` — offset index
 - `nodes/{table}/node_data.ctx` — rowpack schema for node data columns
 
-The executor is invoked via `ttgen_executor::execute(plan, index_path, output_dir)`.
+The executor is invoked via `ttgen_executor::execute(plan, index_path)`, which returns a `(Receiver<RecordBatch>, JoinHandle)` for streaming consumption.
 
 Output is read back from the Parquet shards and sorted by (entity_id, timestamp) for deterministic comparison.
 

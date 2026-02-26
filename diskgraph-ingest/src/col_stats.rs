@@ -1212,8 +1212,9 @@ impl FileColStats {
     }
 
     /// Check for columns where parse failures or nulls exceed 80% of total rows.
-    /// Returns an error if any timestamp column has (parse_fail_count + null_count)
-    /// / total > 0.8, indicating a likely format mismatch or data issue.
+    /// Returns an error if any timestamp column has a high parse failure rate,
+    /// indicating a likely format mismatch. High null rates are allowed — a
+    /// column that is mostly or entirely null is valid (e.g. DELETED_DATE).
     pub fn check_parse_failures(&self, column_names: &[String], table_name: &str) -> anyhow::Result<()> {
         for (col, name) in self.cols.iter().zip(column_names.iter()) {
             if let ColumnStatsCollector::Timestamp {
@@ -1227,30 +1228,32 @@ impl FileColStats {
                 if total == 0 {
                     continue;
                 }
-                let bad = null_count + parse_fail_count;
-                let bad_frac = bad as f64 / total as f64;
                 if *parse_fail_count > 0 {
+                    let fail_frac = *parse_fail_count as f64 / total as f64;
                     eprintln!(
                         "WARNING: table '{}' column '{}': {} parse failures out of {} rows ({:.1}%)",
                         table_name,
                         name,
                         parse_fail_count,
                         total,
-                        *parse_fail_count as f64 / total as f64 * 100.0,
+                        fail_frac * 100.0,
                     );
-                }
-                if bad_frac > 0.8 {
-                    return Err(anyhow::anyhow!(
-                        "table '{}' column '{}': {:.1}% of rows are null or failed to parse \
-                         ({} null + {} parse failures out of {} total). \
-                         This likely indicates a timestamp format mismatch.",
-                        table_name,
-                        name,
-                        bad_frac * 100.0,
-                        null_count,
-                        parse_fail_count,
-                        total,
-                    ));
+                    // Only error on high parse failure rate — nulls are valid data.
+                    let non_null = total - *null_count;
+                    if non_null > 0 && *parse_fail_count as f64 / non_null as f64 > 0.5 {
+                        return Err(anyhow::anyhow!(
+                            "table '{}' column '{}': {:.1}% of non-null rows failed to parse \
+                             ({} parse failures out of {} non-null, {} null out of {} total). \
+                             This likely indicates a timestamp format mismatch.",
+                            table_name,
+                            name,
+                            *parse_fail_count as f64 / non_null as f64 * 100.0,
+                            parse_fail_count,
+                            non_null,
+                            null_count,
+                            total,
+                        ));
+                    }
                 }
             }
         }
