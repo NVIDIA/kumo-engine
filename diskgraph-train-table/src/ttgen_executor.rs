@@ -4,11 +4,13 @@
 //! returns output Parquet shard paths.
 
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use arrow_array::RecordBatch;
 use arrow_schema::DataType;
+use crossbeam_channel::{bounded, Receiver, Sender};
 use diskgraph_core::accumulators::WelfordAccumulator;
 use diskgraph_core::tt_builder::*;
 use diskgraph_index::graph::GraphIndexReader;
@@ -18,7 +20,7 @@ use chrono::{DateTime, Months};
 
 use crate::ttgen_accumulator::{hash_value, Accumulator};
 use crate::ttgen_filter::{compare_values, eval_row_filter, eval_stage_filter};
-use crate::ttgen_output::{OutputMode, ParquetShardWriter};
+use crate::ttgen_output::{OutputMode, ChannelBatchWriter};
 use crate::ttgen_resolve::*;
 
 /// Add calendar months to an epoch-seconds timestamp.
@@ -39,14 +41,17 @@ use crate::ttgen_traversal::*;
 
 // ─── Public API ──────────────────────────────────────────────────────────────
 
-/// Execute a TT-gen plan against an index, producing output Parquet shards.
+/// Execute a TT-gen plan against an index, streaming RecordBatches through
+/// a crossbeam channel.
 ///
-/// Returns the paths of the output shard files.
+/// Returns a `Receiver<RecordBatch>` that yields batches as rayon workers
+/// produce them. The caller should iterate until the receiver is exhausted.
+/// A background thread is spawned to drive the rayon parallel executor;
+/// it is joined via the returned `JoinHandle`.
 pub fn execute(
     plan: &DiskGraphTTPlan,
     index_path: &Path,
-    output_dir: &Path,
-) -> Result<Vec<PathBuf>> {
+) -> Result<(Receiver<RecordBatch>, std::thread::JoinHandle<Result<u64>>)> {
     // Open index
     let metadata_path = index_path.join("index_metadata.json");
     let reader = GraphIndexReader::open(&metadata_path, index_path)
@@ -59,10 +64,6 @@ pub fn execute(
 
     let num_entities = resolved.entity_table.node_count();
     let num_threads = rayon::current_num_threads();
-
-    // Use 8x more chunks than threads for better load balancing via
-    // Rayon's work-stealing scheduler. Entities have highly uneven degree
-    // distributions, so static per-thread partitioning leaves threads idle.
     let num_chunks = (num_threads * 8).min(num_entities as usize).max(1);
 
     eprintln!(
@@ -74,42 +75,41 @@ pub fn execute(
         resolved.num_aliases,
     );
 
-    // Create output directory
-    std::fs::create_dir_all(output_dir)
-        .with_context(|| format!("creating output dir {}", output_dir.display()))?;
+    // Bounded channel: buffer up to 16 batches (~1MB each) for back-pressure.
+    let (sender, receiver) = bounded::<RecordBatch>(16);
 
-    // Partition entities into many small chunks for work-stealing
-    let shard_paths: Vec<PathBuf> = (0..num_chunks)
-        .map(|i| output_dir.join(format!("shard_{}.parquet", i)))
-        .collect();
+    let handle = std::thread::spawn(move || {
+        // Parallel execution with fine-grained chunks
+        let results: Vec<Result<u64>> = (0..num_chunks)
+            .into_par_iter()
+            .map(|chunk_idx| {
+                let start = chunk_idx as u64 * num_entities / num_chunks as u64;
+                let end = (chunk_idx as u64 + 1) * num_entities / num_chunks as u64;
+                execute_chunk(&resolved, start..end, &sender)
+            })
+            .collect();
 
-    // Parallel execution with fine-grained chunks
-    let results: Vec<Result<u64>> = shard_paths
-        .par_iter()
-        .enumerate()
-        .map(|(chunk_idx, path)| {
-            let start = chunk_idx as u64 * num_entities / num_chunks as u64;
-            let end = (chunk_idx as u64 + 1) * num_entities / num_chunks as u64;
-            execute_chunk(&resolved, start..end, path)
-        })
-        .collect();
+        // Drop the sender so the receiver sees end-of-stream.
+        drop(sender);
 
-    // Check for errors and report
-    let mut total_rows = 0u64;
-    for (i, result) in results.iter().enumerate() {
-        match result {
-            Ok(rows) => {
-                total_rows += rows;
-            }
-            Err(e) => {
-                return Err(anyhow::anyhow!("thread {} failed: {}", i, e));
+        // Check for errors and report
+        let mut total_rows = 0u64;
+        for (i, result) in results.iter().enumerate() {
+            match result {
+                Ok(rows) => {
+                    total_rows += rows;
+                }
+                Err(e) => {
+                    return Err(anyhow::anyhow!("thread {} failed: {}", i, e));
+                }
             }
         }
-    }
 
-    eprintln!("TT-gen: {} total output rows", total_rows);
+        eprintln!("TT-gen: {} total output rows", total_rows);
+        Ok(total_rows)
+    });
 
-    Ok(shard_paths)
+    Ok((receiver, handle))
 }
 
 // ─── Per-thread execution ────────────────────────────────────────────────────
@@ -135,11 +135,11 @@ fn output_mode_from_prediction_type(pt: &PredictionType, target_dtype: DataType)
 fn execute_chunk(
     plan: &ResolvedPlan,
     entity_range: std::ops::Range<u64>,
-    output_path: &Path,
+    sender: &Sender<RecordBatch>,
 ) -> Result<u64> {
     let mode = output_mode_from_prediction_type(&plan.prediction_type, plan.target_dtype.clone());
-    let mut writer = ParquetShardWriter::new(
-        output_path,
+    let mut writer = ChannelBatchWriter::new(
+        sender.clone(),
         mode,
         plan.lag_timesteps > 0,
         plan.entity_dtype.clone(),
@@ -164,7 +164,7 @@ fn execute_entity(
     entity_node: u64,
     aliases: &mut Vec<Option<Value>>,
     link_frequencies: &mut Vec<i64>,
-    writer: &mut ParquetShardWriter,
+    writer: &mut ChannelBatchWriter,
 ) -> Result<()> {
     // 0. Look up the entity PK value for output
     let entity_pk = read_column_value(&plan.entity_table, entity_node, plan.entity_pk_col_idx)
@@ -204,10 +204,15 @@ fn execute_entity(
     }
 
     if !plan.has_temporal {
-        // Non-temporal: single row per entity
+        // Non-temporal: single row per entity.
+        // Match Kumo drop_na_rows(TIMESTAMP): skip if entity time_col is NULL.
+        let ts = match (plan.entity_time_col_idx, time_col_val) {
+            (Some(_), None) => return Ok(()),  // time_col configured but NULL → drop
+            (_, Some(t)) => t,
+            (None, None) => 0,
+        };
         link_frequencies.clear();
         if execute_stages(plan, entity_node, &entity_cols, None, aliases, link_frequencies) {
-            let ts = time_col_val.unwrap_or(0);
             write_target(plan, &entity_pk, ts, aliases, link_frequencies, entity_include_bit, writer)?;
         }
         aliases.iter_mut().for_each(|a| *a = None);
@@ -260,12 +265,23 @@ fn write_target(
     aliases: &[Option<Value>],
     link_frequencies: &[i64],
     entity_include_bit: bool,
-    writer: &mut ParquetShardWriter,
+    writer: &mut ChannelBatchWriter,
 ) -> Result<()> {
     let target = match &aliases[plan.target_alias_idx] {
         Some(v) => v,
         None => return Ok(()),
     };
+    // Match Kumo _drop_empty_string_targets: for node prediction with string
+    // target dtype, skip rows where the target is an empty string.
+    if matches!(plan.prediction_type, PredictionType::Node)
+        && plan.target_dtype == DataType::Utf8
+    {
+        if let Value::Str(s) = target {
+            if s.is_empty() {
+                return Ok(());
+            }
+        }
+    }
 
     match &plan.prediction_type {
         PredictionType::Node => {
@@ -331,14 +347,17 @@ fn execute_stages(
                     )
                 }
                 ResolvedOp::Column(col) => {
-                    Some(read_column_value(&col.table, entity_node, col.col_idx)
-                        .unwrap_or(Value::Int(0)))
+                    match read_column_value_nullable(&col.table, entity_node, col.col_idx) {
+                        Some(Some(v)) => Some(v),     // non-null value
+                        Some(None) => None,            // explicit NULL → skip row
+                        None => None,                  // missing data → skip row
+                    }
                 }
                 ResolvedOp::Compare(cmp) => {
-                    let lhs = aliases[cmp.lhs_alias_idx]
-                        .as_ref()
-                        .unwrap_or(&Value::Int(0));
-                    Some(Value::Bool(compare_values(lhs, &cmp.op, &cmp.rhs)))
+                    match &aliases[cmp.lhs_alias_idx] {
+                        Some(lhs) => Some(Value::Bool(compare_values(lhs, &cmp.op, &cmp.rhs))),
+                        None => None, // NULL propagation: NULL op x → NULL
+                    }
                 }
             };
             aliases[op.alias_idx()] = result;

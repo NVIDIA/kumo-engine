@@ -10,12 +10,12 @@ use std::sync::Arc;
 use arrow_array::builder::*;
 use arrow_array::{Array, BooleanArray, Float64Array, Int64Array, RecordBatch, TimestampNanosecondArray};
 use arrow_schema::{DataType, Field, Schema};
+use crossbeam_channel::Receiver;
 use diskgraph_core::tt_builder::*;
 use diskgraph_ingest::coercion::CoercionMode;
 use diskgraph_ingest::config::IngestOptions;
 use diskgraph_ingest::graph_config::*;
 use diskgraph_ingest::io::Dest;
-use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::arrow::ArrowWriter;
 use parquet::file::properties::WriterProperties;
 
@@ -30,22 +30,14 @@ fn write_parquet(path: &Path, batch: &RecordBatch) {
 }
 
 /// Read output rows, converting nanosecond timestamps back to epoch seconds.
-fn read_output_rows(shard_paths: &[PathBuf]) -> Vec<(i64, i64, f64)> {
+fn read_output_rows(receiver: Receiver<RecordBatch>) -> Vec<(i64, i64, f64)> {
     let mut rows = Vec::new();
-    for path in shard_paths {
-        let file = fs::File::open(path).unwrap();
-        let reader = ParquetRecordBatchReaderBuilder::try_new(file)
-            .unwrap()
-            .build()
-            .unwrap();
-        for batch in reader {
-            let batch = batch.unwrap();
-            let entities = batch.column(0).as_any().downcast_ref::<Int64Array>().unwrap();
-            let timestamps = batch.column(1).as_any().downcast_ref::<TimestampNanosecondArray>().unwrap();
-            let targets = batch.column(2).as_any().downcast_ref::<Float64Array>().unwrap();
-            for i in 0..batch.num_rows() {
-                rows.push((entities.value(i), timestamps.value(i) / 1_000_000_000, targets.value(i)));
-            }
+    for batch in receiver {
+        let entities = batch.column(0).as_any().downcast_ref::<Int64Array>().unwrap();
+        let timestamps = batch.column(1).as_any().downcast_ref::<TimestampNanosecondArray>().unwrap();
+        let targets = batch.column(2).as_any().downcast_ref::<Float64Array>().unwrap();
+        for i in 0..batch.num_rows() {
+            rows.push((entities.value(i), timestamps.value(i) / 1_000_000_000, targets.value(i)));
         }
     }
     rows.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
@@ -53,23 +45,15 @@ fn read_output_rows(shard_paths: &[PathBuf]) -> Vec<(i64, i64, f64)> {
 }
 
 /// Read output rows including the ENTITY_INCLUDE_BIT column.
-fn read_output_rows_with_bit(shard_paths: &[PathBuf]) -> Vec<(i64, i64, f64, bool)> {
+fn read_output_rows_with_bit(receiver: Receiver<RecordBatch>) -> Vec<(i64, i64, f64, bool)> {
     let mut rows = Vec::new();
-    for path in shard_paths {
-        let file = fs::File::open(path).unwrap();
-        let reader = ParquetRecordBatchReaderBuilder::try_new(file)
-            .unwrap()
-            .build()
-            .unwrap();
-        for batch in reader {
-            let batch = batch.unwrap();
-            let entities = batch.column(0).as_any().downcast_ref::<Int64Array>().unwrap();
-            let timestamps = batch.column(1).as_any().downcast_ref::<TimestampNanosecondArray>().unwrap();
-            let targets = batch.column(2).as_any().downcast_ref::<Float64Array>().unwrap();
-            let bits = batch.column(3).as_any().downcast_ref::<BooleanArray>().unwrap();
-            for i in 0..batch.num_rows() {
-                rows.push((entities.value(i), timestamps.value(i) / 1_000_000_000, targets.value(i), bits.value(i)));
-            }
+    for batch in receiver {
+        let entities = batch.column(0).as_any().downcast_ref::<Int64Array>().unwrap();
+        let timestamps = batch.column(1).as_any().downcast_ref::<TimestampNanosecondArray>().unwrap();
+        let targets = batch.column(2).as_any().downcast_ref::<Float64Array>().unwrap();
+        let bits = batch.column(3).as_any().downcast_ref::<BooleanArray>().unwrap();
+        for i in 0..batch.num_rows() {
+            rows.push((entities.value(i), timestamps.value(i) / 1_000_000_000, targets.value(i), bits.value(i)));
         }
     }
     rows.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
@@ -77,22 +61,14 @@ fn read_output_rows_with_bit(shard_paths: &[PathBuf]) -> Vec<(i64, i64, f64, boo
 }
 
 /// Read output rows where TARGET is Boolean (e.g. Compare ops).
-fn read_output_rows_bool(shard_paths: &[PathBuf]) -> Vec<(i64, i64, bool)> {
+fn read_output_rows_bool(receiver: Receiver<RecordBatch>) -> Vec<(i64, i64, bool)> {
     let mut rows = Vec::new();
-    for path in shard_paths {
-        let file = fs::File::open(path).unwrap();
-        let reader = ParquetRecordBatchReaderBuilder::try_new(file)
-            .unwrap()
-            .build()
-            .unwrap();
-        for batch in reader {
-            let batch = batch.unwrap();
-            let entities = batch.column(0).as_any().downcast_ref::<Int64Array>().unwrap();
-            let timestamps = batch.column(1).as_any().downcast_ref::<TimestampNanosecondArray>().unwrap();
-            let targets = batch.column(2).as_any().downcast_ref::<BooleanArray>().unwrap();
-            for i in 0..batch.num_rows() {
-                rows.push((entities.value(i), timestamps.value(i) / 1_000_000_000, targets.value(i)));
-            }
+    for batch in receiver {
+        let entities = batch.column(0).as_any().downcast_ref::<Int64Array>().unwrap();
+        let timestamps = batch.column(1).as_any().downcast_ref::<TimestampNanosecondArray>().unwrap();
+        let targets = batch.column(2).as_any().downcast_ref::<BooleanArray>().unwrap();
+        for i in 0..batch.num_rows() {
+            rows.push((entities.value(i), timestamps.value(i) / 1_000_000_000, targets.value(i)));
         }
     }
     rows.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
@@ -124,22 +100,22 @@ fn run_ingest(config_path: &Path, index_path: &Path) {
 fn execute_and_group(
     plan: &DiskGraphTTPlan,
     index_path: &Path,
-    output_dir: &Path,
 ) -> HashMap<i64, Vec<(i64, f64)>> {
-    let shard_paths =
-        diskgraph_train_table::ttgen_executor::execute(plan, index_path, output_dir).unwrap();
-    let rows = read_output_rows(&shard_paths);
+    let (receiver, handle) =
+        diskgraph_train_table::ttgen_executor::execute(plan, index_path).unwrap();
+    let rows = read_output_rows(receiver);
+    handle.join().unwrap().unwrap();
     group_by_entity(&rows)
 }
 
 fn execute_and_group_bool(
     plan: &DiskGraphTTPlan,
     index_path: &Path,
-    output_dir: &Path,
 ) -> HashMap<i64, Vec<(i64, bool)>> {
-    let shard_paths =
-        diskgraph_train_table::ttgen_executor::execute(plan, index_path, output_dir).unwrap();
-    let rows = read_output_rows_bool(&shard_paths);
+    let (receiver, handle) =
+        diskgraph_train_table::ttgen_executor::execute(plan, index_path).unwrap();
+    let rows = read_output_rows_bool(receiver);
+    handle.join().unwrap().unwrap();
     let mut map: HashMap<i64, Vec<(i64, bool)>> = HashMap::new();
     for &(entity, ts, target) in &rows {
         map.entry(entity).or_default().push((ts, target));
@@ -577,12 +553,11 @@ fn agg_orders_price(alias: &str, func: AggFunc, window: Option<(i64, i64)>) -> O
 fn integ_count_basic() {
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
-    let output = dir.path().join("out_count");
     let plan = g1_temporal(
         vec![Stage { ops: vec![count_orders_op("cnt", Some((0, 5000)))], filter: None }],
         vec![0],
     );
-    let groups = execute_and_group(&plan, &index, &output);
+    let groups = execute_and_group(&plan, &index);
     assert_eq!(groups.len(), 5);
     assert_target_eq(groups[&0][0].1, 4.0, "alice");
     assert_target_eq(groups[&1][0].1, 2.0, "bob");
@@ -595,12 +570,12 @@ fn integ_count_basic() {
 fn integ_sum_basic() {
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
-    let output = dir.path().join("out");
+
     let plan = g1_temporal(
         vec![Stage { ops: vec![agg_orders_price("s", AggFunc::Sum, Some((0, 5000)))], filter: None }],
         vec![0],
     );
-    let groups = execute_and_group(&plan, &index, &output);
+    let groups = execute_and_group(&plan, &index);
     assert_target_eq(groups[&0][0].1, 235.0, "alice");
     assert_target_eq(groups[&1][0].1, 230.0, "bob");
     assert_target_eq(groups[&2][0].1, 60.0, "carol");
@@ -612,12 +587,12 @@ fn integ_sum_basic() {
 fn integ_avg_basic() {
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
-    let output = dir.path().join("out");
+
     let plan = g1_temporal(
         vec![Stage { ops: vec![agg_orders_price("a", AggFunc::Avg, Some((0, 5000)))], filter: None }],
         vec![0],
     );
-    let groups = execute_and_group(&plan, &index, &output);
+    let groups = execute_and_group(&plan, &index);
     assert_target_eq(groups[&0][0].1, 58.75, "alice");
     assert_target_eq(groups[&1][0].1, 115.0, "bob");
     assert_target_eq(groups[&2][0].1, 60.0, "carol");
@@ -629,12 +604,12 @@ fn integ_avg_basic() {
 fn integ_min_basic() {
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
-    let output = dir.path().join("out");
+
     let plan = g1_temporal(
         vec![Stage { ops: vec![agg_orders_price("m", AggFunc::Min, Some((0, 5000)))], filter: None }],
         vec![0],
     );
-    let groups = execute_and_group(&plan, &index, &output);
+    let groups = execute_and_group(&plan, &index);
     assert_target_eq(groups[&0][0].1, 10.0, "alice");
     assert_target_eq(groups[&1][0].1, 30.0, "bob");
     assert_target_eq(groups[&2][0].1, 60.0, "carol");
@@ -646,12 +621,12 @@ fn integ_min_basic() {
 fn integ_max_basic() {
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
-    let output = dir.path().join("out");
+
     let plan = g1_temporal(
         vec![Stage { ops: vec![agg_orders_price("m", AggFunc::Max, Some((0, 5000)))], filter: None }],
         vec![0],
     );
-    let groups = execute_and_group(&plan, &index, &output);
+    let groups = execute_and_group(&plan, &index);
     assert_target_eq(groups[&0][0].1, 100.0, "alice");
     assert_target_eq(groups[&1][0].1, 200.0, "bob");
     assert_target_eq(groups[&2][0].1, 60.0, "carol");
@@ -664,12 +639,12 @@ fn integ_first_basic() {
     // Edges descending: FIRST = earliest = last encountered by iterator.
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
-    let output = dir.path().join("out");
+
     let plan = g1_temporal(
         vec![Stage { ops: vec![agg_orders_price("f", AggFunc::First, Some((0, 5000)))], filter: None }],
         vec![0],
     );
-    let groups = execute_and_group(&plan, &index, &output);
+    let groups = execute_and_group(&plan, &index);
     assert_target_eq(groups[&0][0].1, 10.0, "alice first=ts1050");
     assert_target_eq(groups[&1][0].1, 200.0, "bob first=ts2100");
     assert_target_eq(groups[&2][0].1, 60.0, "carol");
@@ -682,12 +657,12 @@ fn integ_last_basic() {
     // Edges descending: LAST = latest = first encountered, stop early.
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
-    let output = dir.path().join("out");
+
     let plan = g1_temporal(
         vec![Stage { ops: vec![agg_orders_price("l", AggFunc::Last, Some((0, 5000)))], filter: None }],
         vec![0],
     );
-    let groups = execute_and_group(&plan, &index, &output);
+    let groups = execute_and_group(&plan, &index);
     assert_target_eq(groups[&0][0].1, 75.0, "alice last=ts1300");
     assert_target_eq(groups[&1][0].1, 30.0, "bob last=ts2200");
     assert_target_eq(groups[&2][0].1, 60.0, "carol");
@@ -699,7 +674,7 @@ fn integ_last_basic() {
 fn integ_count_distinct_basic() {
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
-    let output = dir.path().join("out");
+
     let plan = g1_temporal(
         vec![Stage {
             ops: vec![Op::Aggregate {
@@ -717,7 +692,7 @@ fn integ_count_distinct_basic() {
         }],
         vec![0],
     );
-    let groups = execute_and_group(&plan, &index, &output);
+    let groups = execute_and_group(&plan, &index);
     assert_target_eq(groups[&0][0].1, 3.0, "alice: returned,shipped,pending");
     assert_target_eq(groups[&1][0].1, 2.0, "bob: shipped,returned");
     assert_target_eq(groups[&2][0].1, 1.0, "carol: shipped");
@@ -732,7 +707,7 @@ fn integ_count_with_row_filter() {
     // COUNT(orders.* WHERE status = 'shipped', 0, 5000)
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
-    let output = dir.path().join("out");
+
     let plan = g1_temporal(
         vec![Stage {
             ops: vec![Op::Aggregate {
@@ -754,7 +729,7 @@ fn integ_count_with_row_filter() {
         }],
         vec![0],
     );
-    let groups = execute_and_group(&plan, &index, &output);
+    let groups = execute_and_group(&plan, &index);
     assert_target_eq(groups[&0][0].1, 2.0, "alice");
     assert_target_eq(groups[&1][0].1, 1.0, "bob");
     assert_target_eq(groups[&2][0].1, 1.0, "carol");
@@ -767,7 +742,7 @@ fn integ_sum_with_row_filter() {
     // SUM(orders.price WHERE status = 'shipped', 0, 5000)
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
-    let output = dir.path().join("out");
+
     let plan = g1_temporal(
         vec![Stage {
             ops: vec![Op::Aggregate {
@@ -789,7 +764,7 @@ fn integ_sum_with_row_filter() {
         }],
         vec![0],
     );
-    let groups = execute_and_group(&plan, &index, &output);
+    let groups = execute_and_group(&plan, &index);
     assert_target_eq(groups[&0][0].1, 175.0, "alice: 100+75");
     assert_target_eq(groups[&1][0].1, 200.0, "bob");
     assert_target_eq(groups[&2][0].1, 60.0, "carol");
@@ -802,7 +777,7 @@ fn integ_filter_and() {
     // COUNT WHERE status='shipped' AND price > 50
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
-    let output = dir.path().join("out");
+
     let plan = g1_temporal(
         vec![Stage {
             ops: vec![Op::Aggregate {
@@ -831,7 +806,7 @@ fn integ_filter_and() {
         }],
         vec![0],
     );
-    let groups = execute_and_group(&plan, &index, &output);
+    let groups = execute_and_group(&plan, &index);
     assert_target_eq(groups[&0][0].1, 2.0, "alice: 100,75");
     assert_target_eq(groups[&1][0].1, 1.0, "bob: 200");
     assert_target_eq(groups[&2][0].1, 1.0, "carol: 60");
@@ -844,7 +819,7 @@ fn integ_filter_or() {
     // COUNT WHERE status='shipped' OR status='returned'
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
-    let output = dir.path().join("out");
+
     let plan = g1_temporal(
         vec![Stage {
             ops: vec![Op::Aggregate {
@@ -873,7 +848,7 @@ fn integ_filter_or() {
         }],
         vec![0],
     );
-    let groups = execute_and_group(&plan, &index, &output);
+    let groups = execute_and_group(&plan, &index);
     assert_target_eq(groups[&0][0].1, 3.0, "alice: returned,shipped,shipped");
     assert_target_eq(groups[&1][0].1, 2.0, "bob");
     assert_target_eq(groups[&2][0].1, 1.0, "carol");
@@ -886,7 +861,7 @@ fn integ_filter_not() {
     // COUNT WHERE NOT status='pending'
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
-    let output = dir.path().join("out");
+
     let plan = g1_temporal(
         vec![Stage {
             ops: vec![Op::Aggregate {
@@ -908,7 +883,7 @@ fn integ_filter_not() {
         }],
         vec![0],
     );
-    let groups = execute_and_group(&plan, &index, &output);
+    let groups = execute_and_group(&plan, &index);
     assert_target_eq(groups[&0][0].1, 3.0, "alice: excl pending");
     assert_target_eq(groups[&1][0].1, 2.0, "bob");
     assert_target_eq(groups[&2][0].1, 1.0, "carol");
@@ -923,7 +898,7 @@ fn integ_compare_lt() {
     // COUNT WHERE price < 80
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
-    let output = dir.path().join("out");
+
     let plan = g1_temporal(
         vec![Stage {
             ops: vec![Op::Aggregate {
@@ -945,7 +920,7 @@ fn integ_compare_lt() {
         }],
         vec![0],
     );
-    let groups = execute_and_group(&plan, &index, &output);
+    let groups = execute_and_group(&plan, &index);
     // alice: 10,50,75 < 80 → 3. bob: 30 < 80 → 1. carol: 60 → 1. dave: 25 → 1. eve: 0.
     assert_target_eq(groups[&0][0].1, 3.0, "alice");
     assert_target_eq(groups[&1][0].1, 1.0, "bob");
@@ -959,7 +934,7 @@ fn integ_compare_lte() {
     // COUNT WHERE price <= 80
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
-    let output = dir.path().join("out");
+
     let plan = g1_temporal(
         vec![Stage {
             ops: vec![Op::Aggregate {
@@ -981,7 +956,7 @@ fn integ_compare_lte() {
         }],
         vec![0],
     );
-    let groups = execute_and_group(&plan, &index, &output);
+    let groups = execute_and_group(&plan, &index);
     // alice: 10,50,75 ≤ 80 → 3. bob: 30 → 1. carol: 60 → 1. dave: 80,25 → 2. eve: 0.
     assert_target_eq(groups[&0][0].1, 3.0, "alice");
     assert_target_eq(groups[&1][0].1, 1.0, "bob");
@@ -995,7 +970,7 @@ fn integ_compare_gte() {
     // COUNT WHERE price >= 80
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
-    let output = dir.path().join("out");
+
     let plan = g1_temporal(
         vec![Stage {
             ops: vec![Op::Aggregate {
@@ -1017,7 +992,7 @@ fn integ_compare_gte() {
         }],
         vec![0],
     );
-    let groups = execute_and_group(&plan, &index, &output);
+    let groups = execute_and_group(&plan, &index);
     // alice: 100 → 1. bob: 200 → 1. carol: 0. dave: 150,80 → 2. eve: 0.
     assert_target_eq(groups[&0][0].1, 1.0, "alice");
     assert_target_eq(groups[&1][0].1, 1.0, "bob");
@@ -1031,7 +1006,7 @@ fn integ_compare_neq() {
     // COUNT WHERE status != 'shipped'
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
-    let output = dir.path().join("out");
+
     let plan = g1_temporal(
         vec![Stage {
             ops: vec![Op::Aggregate {
@@ -1053,7 +1028,7 @@ fn integ_compare_neq() {
         }],
         vec![0],
     );
-    let groups = execute_and_group(&plan, &index, &output);
+    let groups = execute_and_group(&plan, &index);
     // alice: returned,pending → 2. bob: returned → 1. carol: 0. dave: pending → 1. eve: 0.
     assert_target_eq(groups[&0][0].1, 2.0, "alice");
     assert_target_eq(groups[&1][0].1, 1.0, "bob");
@@ -1069,7 +1044,7 @@ fn integ_filter_entity_column_rhs() {
     // COUNT WHERE orders.quantity > entity.level
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
-    let output = dir.path().join("out");
+
     let plan = g1_temporal(
         vec![Stage {
             ops: vec![Op::Aggregate {
@@ -1091,7 +1066,7 @@ fn integ_filter_entity_column_rhs() {
         }],
         vec![0],
     );
-    let groups = execute_and_group(&plan, &index, &output);
+    let groups = execute_and_group(&plan, &index);
     // alice(level=3): qty 5>3 → 1. bob(1): qty 2>1,1>1(no) → 1. carol(2): qty 1>2 no → 0.
     // dave(1): qty 1>1(no),2>1,1>1(no) → 1. eve(5): 0.
     assert_target_eq(groups[&0][0].1, 1.0, "alice");
@@ -1106,7 +1081,7 @@ fn integ_filter_remote_lhs() {
     // COUNT WHERE orders.PRODUCTS.category = 'shoes'
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
-    let output = dir.path().join("out");
+
     let plan = g1_temporal(
         vec![Stage {
             ops: vec![Op::Aggregate {
@@ -1131,7 +1106,7 @@ fn integ_filter_remote_lhs() {
         }],
         vec![0],
     );
-    let groups = execute_and_group(&plan, &index, &output);
+    let groups = execute_and_group(&plan, &index);
     // Products 0(shoes),1(shoes),2(clothing),3(accessories)
     // alice: orders 0→p3(acc),1→p0(shoes),2→p1(shoes),3→p2(clothing) → 2
     // bob: 4→p0(shoes),5→p1(shoes) → 2. carol: 6→p2(clothing) → 0.
@@ -1150,7 +1125,7 @@ fn integ_stage_filter_constant() {
     // HAVING COUNT > 2
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
-    let output = dir.path().join("out");
+
     let plan = g1_temporal(
         vec![Stage {
             ops: vec![count_orders_op("cnt", Some((0, 5000)))],
@@ -1162,7 +1137,7 @@ fn integ_stage_filter_constant() {
         }],
         vec![0],
     );
-    let groups = execute_and_group(&plan, &index, &output);
+    let groups = execute_and_group(&plan, &index);
     assert_eq!(groups.len(), 2);
     assert_target_eq(groups[&0][0].1, 4.0, "alice");
     assert_target_eq(groups[&3][0].1, 3.0, "dave");
@@ -1173,7 +1148,7 @@ fn integ_stage_filter_entity_column() {
     // HAVING SUM(price) > entity.score
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
-    let output = dir.path().join("out");
+
     let plan = g1_temporal(
         vec![Stage {
             ops: vec![agg_orders_price("total", AggFunc::Sum, Some((0, 5000)))],
@@ -1185,7 +1160,7 @@ fn integ_stage_filter_entity_column() {
         }],
         vec![0],
     );
-    let groups = execute_and_group(&plan, &index, &output);
+    let groups = execute_and_group(&plan, &index);
     // alice: 235>75✓, bob: 230>120✓, carol: 60>50✓, dave: 255>200✓, eve: 0>10✗
     assert_eq!(groups.len(), 4);
     assert_target_eq(groups[&0][0].1, 235.0, "alice");
@@ -1200,7 +1175,7 @@ fn integ_stage_filter_alias_vs_alias() {
     // Target = average (last alias).
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
-    let output = dir.path().join("out");
+
     let plan = g1_temporal(
         vec![Stage {
             ops: vec![
@@ -1215,7 +1190,7 @@ fn integ_stage_filter_alias_vs_alias() {
         }],
         vec![0],
     );
-    let groups = execute_and_group(&plan, &index, &output);
+    let groups = execute_and_group(&plan, &index);
     // alice: 235>58.75✓, bob: 230>115✓, carol: 60>60✗(equal), dave: 255>85✓, eve: 0>NaN✗
     assert_eq!(groups.len(), 3);
     assert_target_eq(groups[&0][0].1, 58.75, "alice avg");
@@ -1231,7 +1206,7 @@ fn integ_three_stage_short_circuit() {
     // Only dave makes it through both filters.
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
-    let output = dir.path().join("out");
+
     let plan = g1_temporal(
         vec![
             Stage {
@@ -1257,7 +1232,7 @@ fn integ_three_stage_short_circuit() {
         ],
         vec![0],
     );
-    let groups = execute_and_group(&plan, &index, &output);
+    let groups = execute_and_group(&plan, &index);
     // Stage 1 pass: alice(4), bob(2), dave(3). Stage 2: alice 235<240✗, bob 230<240✗, dave 255>240✓
     assert_eq!(groups.len(), 1);
     assert_target_eq(groups[&3][0].1, 85.0, "dave");
@@ -1270,7 +1245,7 @@ fn integ_multiple_ops_same_stage() {
     // COUNT + SUM in same stage, target = SUM (last op)
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
-    let output = dir.path().join("out");
+
     let plan = g1_temporal(
         vec![Stage {
             ops: vec![
@@ -1281,7 +1256,7 @@ fn integ_multiple_ops_same_stage() {
         }],
         vec![0],
     );
-    let groups = execute_and_group(&plan, &index, &output);
+    let groups = execute_and_group(&plan, &index);
     assert_eq!(groups.len(), 5);
     assert_target_eq(groups[&0][0].1, 235.0, "alice");
     assert_target_eq(groups[&4][0].1, 0.0, "eve");
@@ -1292,7 +1267,7 @@ fn integ_column_and_aggregate_same_stage() {
     // Op::Column(users.score) + COUNT in same stage, target = COUNT
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
-    let output = dir.path().join("out");
+
     let plan = g1_temporal(
         vec![Stage {
             ops: vec![
@@ -1307,7 +1282,7 @@ fn integ_column_and_aggregate_same_stage() {
         }],
         vec![0],
     );
-    let groups = execute_and_group(&plan, &index, &output);
+    let groups = execute_and_group(&plan, &index);
     assert_target_eq(groups[&0][0].1, 4.0, "alice cnt");
     assert_target_eq(groups[&4][0].1, 0.0, "eve cnt");
 }
@@ -1317,7 +1292,7 @@ fn integ_entity_filter_and_stage_filter() {
     // Entity filter: active=true (excludes carol). Stage filter: COUNT > 1.
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
-    let output = dir.path().join("out");
+
     let mut plan = g1_temporal(
         vec![Stage {
             ops: vec![count_orders_op("cnt", Some((0, 5000)))],
@@ -1334,7 +1309,7 @@ fn integ_entity_filter_and_stage_filter() {
         op: CompareOp::Eq,
         rhs: RowFilterRhs::Constant(Value::Bool(true)),
     });
-    let groups = execute_and_group(&plan, &index, &output);
+    let groups = execute_and_group(&plan, &index);
     // Active: alice(4),bob(2),dave(3),eve(0). Stage filter cnt>1: alice,bob,dave.
     assert_eq!(groups.len(), 3);
     assert_target_eq(groups[&0][0].1, 4.0, "alice");
@@ -1349,7 +1324,7 @@ fn integ_entity_column() {
     // Non-temporal: Op::Column(users.score)
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
-    let output = dir.path().join("out");
+
     let plan = g1_plan(vec![Stage {
         ops: vec![Op::Column {
             alias: "sc".to_string(),
@@ -1358,7 +1333,7 @@ fn integ_entity_column() {
         }],
         filter: None,
     }]);
-    let groups = execute_and_group(&plan, &index, &output);
+    let groups = execute_and_group(&plan, &index);
     assert_eq!(groups.len(), 5);
     assert_target_eq(groups[&0][0].1, 75.0, "alice");
     assert_target_eq(groups[&1][0].1, 120.0, "bob");
@@ -1372,7 +1347,7 @@ fn integ_entity_filter() {
     // Entity filter: active=true, then COUNT
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
-    let output = dir.path().join("out");
+
     let mut plan = g1_temporal(
         vec![Stage { ops: vec![count_orders_op("cnt", Some((0, 5000)))], filter: None }],
         vec![0],
@@ -1382,7 +1357,7 @@ fn integ_entity_filter() {
         op: CompareOp::Eq,
         rhs: RowFilterRhs::Constant(Value::Bool(true)),
     });
-    let groups = execute_and_group(&plan, &index, &output);
+    let groups = execute_and_group(&plan, &index);
     assert_eq!(groups.len(), 4); // carol excluded
     assert_target_eq(groups[&0][0].1, 4.0, "alice");
     assert_target_eq(groups[&1][0].1, 2.0, "bob");
@@ -1396,7 +1371,7 @@ fn integ_entity_time_col() {
     // COUNT(orders, 0, 500) window [1000,1500)
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
-    let output = dir.path().join("out");
+
     let plan = DiskGraphTTPlan {
         entity: EntitySpec {
             table: "users".to_string(),
@@ -1416,7 +1391,7 @@ fn integ_entity_time_col() {
             filter: None,
         }],
     };
-    let groups = execute_and_group(&plan, &index, &output);
+    let groups = execute_and_group(&plan, &index);
     // alice: orders at 1050,1100,1200,1300 all in [1000,1500) → 4. eve: 0 orders.
     assert_eq!(groups.len(), 2);
     assert_target_eq(groups[&0][0].1, 4.0, "alice");
@@ -1429,7 +1404,7 @@ fn integ_entity_valid_to_col() {
     // Valid: alice(2000), bob(3000), carol(1500), dave(4000). Expired: eve(1000).
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
-    let output = dir.path().join("out");
+
     let plan = DiskGraphTTPlan {
         entity: EntitySpec {
             table: "users".to_string(),
@@ -1449,7 +1424,7 @@ fn integ_entity_valid_to_col() {
             filter: None,
         }],
     };
-    let groups = execute_and_group(&plan, &index, &output);
+    let groups = execute_and_group(&plan, &index);
     // Window [1500,6500). alice: 0 (orders<1500). bob: 2100,2200→2. carol: 1600→1. dave: 3100,3200,3300→3.
     assert_eq!(groups.len(), 4);
     assert_target_eq(groups[&0][0].1, 0.0, "alice");
@@ -1735,7 +1710,7 @@ fn integ_entity_create_time_metadata_fallback() {
     // dave(3000) never appears.
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1_with_create_time(dir.path());
-    let output = dir.path().join("out");
+
 
     // Plan has time_col=None AND valid_to_col=None — both fall back to index
     // metadata (create_time=signup_ts, end_time=valid_to).
@@ -1758,7 +1733,7 @@ fn integ_entity_create_time_metadata_fallback() {
             filter: None,
         }],
     };
-    let groups = execute_and_group(&plan, &index, &output);
+    let groups = execute_and_group(&plan, &index);
 
     // Both create_time (signup_ts) AND end_time (valid_to) filters are active:
     //   entity visible at ts iff signup_ts <= ts AND ts <= valid_to
@@ -1801,7 +1776,7 @@ fn integ_entity_end_time_metadata_fallback() {
     // Expired: eve(valid_to=1000)
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1_with_create_time(dir.path());
-    let output = dir.path().join("out");
+
 
     // Plan has valid_to_col=None AND time_col=None — both fall back to index metadata.
     // create_time filter: at ts=1500, entities with signup_ts <= 1500: alice(1000), carol(1500), eve(500)
@@ -1826,7 +1801,7 @@ fn integ_entity_end_time_metadata_fallback() {
             filter: None,
         }],
     };
-    let groups = execute_and_group(&plan, &index, &output);
+    let groups = execute_and_group(&plan, &index);
 
     // Both create_time and end_time fallback active:
     // alice: signup_ts=1000 <= 1500, valid_to=2000 >= 1500 → VALID
@@ -1844,7 +1819,7 @@ fn integ_compare_string() {
     // Op::Column(name) then Op::Compare(name == "alice")
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
-    let output = dir.path().join("out");
+
     let plan = g1_plan(vec![
         Stage {
             ops: vec![Op::Column {
@@ -1864,7 +1839,7 @@ fn integ_compare_string() {
             filter: None,
         },
     ]);
-    let groups = execute_and_group_bool(&plan, &index, &output);
+    let groups = execute_and_group_bool(&plan, &index);
     assert_eq!(groups.len(), 5);
     assert!(groups[&0][0].1, "alice should be true");
     assert!(!groups[&1][0].1, "bob should be false");
@@ -1877,7 +1852,7 @@ fn integ_list_distinct_no_limit() {
     // LIST_DISTINCT(orders.status, 0, 5000)
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
-    let output = dir.path().join("out");
+
     let plan = g1_temporal(
         vec![Stage {
             ops: vec![Op::Aggregate {
@@ -1895,7 +1870,7 @@ fn integ_list_distinct_no_limit() {
         }],
         vec![0],
     );
-    let groups = execute_and_group(&plan, &index, &output);
+    let groups = execute_and_group(&plan, &index);
     // value_to_f64(List) = len. alice: 3 distinct, bob: 2, carol: 1, dave: 2, eve: 0
     assert_target_eq(groups[&0][0].1, 3.0, "alice");
     assert_target_eq(groups[&1][0].1, 2.0, "bob");
@@ -1909,7 +1884,7 @@ fn integ_list_distinct_with_limit() {
     // LIST_DISTINCT(orders.status, 0, 5000, limit=1)
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
-    let output = dir.path().join("out");
+
     let plan = g1_temporal(
         vec![Stage {
             ops: vec![Op::Aggregate {
@@ -1927,7 +1902,7 @@ fn integ_list_distinct_with_limit() {
         }],
         vec![0],
     );
-    let groups = execute_and_group(&plan, &index, &output);
+    let groups = execute_and_group(&plan, &index);
     // Limited to 1 distinct value each
     assert_target_eq(groups[&0][0].1, 1.0, "alice limited");
     assert_target_eq(groups[&1][0].1, 1.0, "bob limited");
@@ -1939,7 +1914,7 @@ fn integ_list_distinct_with_row_filter() {
     // LIST_DISTINCT(orders.status WHERE price > 50, 0, 5000)
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
-    let output = dir.path().join("out");
+
     let plan = g1_temporal(
         vec![Stage {
             ops: vec![Op::Aggregate {
@@ -1961,7 +1936,7 @@ fn integ_list_distinct_with_row_filter() {
         }],
         vec![0],
     );
-    let groups = execute_and_group(&plan, &index, &output);
+    let groups = execute_and_group(&plan, &index);
     // alice: prices>50: 100(shipped),75(shipped) → {shipped} → 1
     // bob: 200(shipped) → {shipped} → 1. carol: 60(shipped) → {shipped} → 1.
     // dave: 150(shipped),80(pending) → {shipped,pending} → 2. eve: 0.
@@ -1979,12 +1954,12 @@ fn integ_temporal_future_window() {
     // COUNT(orders.*, 0, 200, seconds) at obs=1000. Window (1000,1200].
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
-    let output = dir.path().join("out");
+
     let plan = g1_temporal(
         vec![Stage { ops: vec![count_orders_op("cnt", Some((0, 200)))], filter: None }],
         vec![1000],
     );
-    let groups = execute_and_group(&plan, &index, &output);
+    let groups = execute_and_group(&plan, &index);
     // alice: ts 1050,1100,1200 in (1000,1200] → 3. Others: 0.
     assert_target_eq(groups[&0][0].1, 3.0, "alice");
     assert_target_eq(groups[&1][0].1, 0.0, "bob");
@@ -1995,12 +1970,12 @@ fn integ_temporal_multiple_timestamps() {
     // COUNT at obs=1000 and obs=2000, window (0, 5000)
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
-    let output = dir.path().join("out");
+
     let plan = g1_temporal(
         vec![Stage { ops: vec![count_orders_op("cnt", Some((0, 5000)))], filter: None }],
         vec![1000, 2000],
     );
-    let groups = execute_and_group(&plan, &index, &output);
+    let groups = execute_and_group(&plan, &index);
     // obs=1000 [1000,6000): alice:4, bob:2, carol:1, dave:3, eve:0
     // obs=2000 [2000,7000): alice:0, bob:2, carol:0, dave:3, eve:0
     assert_eq!(groups[&0].len(), 2);
@@ -2016,12 +1991,12 @@ fn integ_temporal_window_boundary() {
     // alice: 1100,1200,1300 → 3. 1050 excluded (lo exclusive), 1300 included (hi inclusive).
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
-    let output = dir.path().join("out");
+
     let plan = g1_temporal(
         vec![Stage { ops: vec![count_orders_op("cnt", Some((0, 250)))], filter: None }],
         vec![1050],
     );
-    let groups = execute_and_group(&plan, &index, &output);
+    let groups = execute_and_group(&plan, &index);
     assert_target_eq(groups[&0][0].1, 3.0, "alice: 1050,1100,1200");
 }
 
@@ -2031,12 +2006,12 @@ fn integ_temporal_window_splits_edges() {
     // alice: only ts=1200(50) in range → 50.
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
-    let output = dir.path().join("out");
+
     let plan = g1_temporal(
         vec![Stage { ops: vec![agg_orders_price("s", AggFunc::Sum, Some((0, 100)))], filter: None }],
         vec![1150],
     );
-    let groups = execute_and_group(&plan, &index, &output);
+    let groups = execute_and_group(&plan, &index);
     assert_target_eq(groups[&0][0].1, 50.0, "alice");
 }
 
@@ -2046,12 +2021,12 @@ fn integ_temporal_window_excludes() {
     // alice: 1200 is inclusive → price=50.
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
-    let output = dir.path().join("out");
+
     let plan = g1_temporal(
         vec![Stage { ops: vec![agg_orders_price("s", AggFunc::Sum, Some((0, 50)))], filter: None }],
         vec![1150],
     );
-    let groups = execute_and_group(&plan, &index, &output);
+    let groups = execute_and_group(&plan, &index);
     assert_target_eq(groups[&0][0].1, 50.0, "alice: 1200 included (hi inclusive)");
 }
 
@@ -2061,12 +2036,12 @@ fn integ_temporal_multiple_windows_same_entity() {
     // obs=950: (950,1050] → ts=1050(10). obs=1000: (1000,1100] → ts=1050(10)+1100(100)=110.
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
-    let output = dir.path().join("out");
+
     let plan = g1_temporal(
         vec![Stage { ops: vec![agg_orders_price("s", AggFunc::Sum, Some((0, 100)))], filter: None }],
         vec![950, 1000],
     );
-    let groups = execute_and_group(&plan, &index, &output);
+    let groups = execute_and_group(&plan, &index);
     assert_target_eq(groups[&0][0].1, 10.0, "alice@950");
     assert_target_eq(groups[&0][1].1, 110.0, "alice@1000");
 }
@@ -2078,7 +2053,7 @@ fn integ_timeunit_hours() {
     // COUNT(orders.*, 0, 1, hours) at obs=0. Window [0,3600).
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
-    let output = dir.path().join("out");
+
     let plan = g1_temporal(
         vec![Stage {
             ops: vec![Op::Aggregate {
@@ -2096,7 +2071,7 @@ fn integ_timeunit_hours() {
         }],
         vec![0],
     );
-    let groups = execute_and_group(&plan, &index, &output);
+    let groups = execute_and_group(&plan, &index);
     // All orders < 3600: alice:4, bob:2, carol:1, dave:3, eve:0
     assert_target_eq(groups[&0][0].1, 4.0, "alice");
     assert_target_eq(groups[&1][0].1, 2.0, "bob");
@@ -2110,7 +2085,7 @@ fn integ_timeunit_days() {
     // COUNT(orders.*, 0, 1, days) at obs=0. Window [0,86400).
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
-    let output = dir.path().join("out");
+
     let plan = g1_temporal(
         vec![Stage {
             ops: vec![Op::Aggregate {
@@ -2128,7 +2103,7 @@ fn integ_timeunit_days() {
         }],
         vec![0],
     );
-    let groups = execute_and_group(&plan, &index, &output);
+    let groups = execute_and_group(&plan, &index);
     assert_target_eq(groups[&0][0].1, 4.0, "alice");
 }
 
@@ -2137,7 +2112,7 @@ fn integ_timeunit_weeks() {
     // COUNT(orders.*, 0, 1, weeks) at obs=0. Window [0,604800).
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
-    let output = dir.path().join("out");
+
     let plan = g1_temporal(
         vec![Stage {
             ops: vec![Op::Aggregate {
@@ -2155,7 +2130,7 @@ fn integ_timeunit_weeks() {
         }],
         vec![0],
     );
-    let groups = execute_and_group(&plan, &index, &output);
+    let groups = execute_and_group(&plan, &index);
     assert_target_eq(groups[&0][0].1, 4.0, "alice");
 }
 
@@ -2308,7 +2283,6 @@ fn integ_timeunit_months_calendar() {
     // This test proves calendar month arithmetic works correctly.
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph_calendar(dir.path());
-    let output = dir.path().join("out_cal");
 
     let apr1 = 1680307200i64;
     let jul1 = 1688169600i64;
@@ -2344,7 +2318,7 @@ fn integ_timeunit_months_calendar() {
         }],
     };
 
-    let groups = execute_and_group(&plan, &index, &output);
+    let groups = execute_and_group(&plan, &index);
     let company = &groups[&1800]; // entity PK = 1800
     assert_eq!(company.len(), 3, "should have 3 timestamps");
     assert_target_eq(company[0].1, 200.0, "obs=Apr1: (Apr1,Jul1] captures Jul1 filing");
@@ -2359,7 +2333,6 @@ fn integ_timeunit_years_calendar() {
     // (jul1=200 + oct1=300 + jan1=400 = 900; apr1 2023 excluded at lo boundary).
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph_calendar(dir.path());
-    let output = dir.path().join("out_year");
 
     let apr1 = 1680307200i64; // 2023-04-01
 
@@ -2393,7 +2366,7 @@ fn integ_timeunit_years_calendar() {
         }],
     };
 
-    let groups = execute_and_group(&plan, &index, &output);
+    let groups = execute_and_group(&plan, &index);
     let company = &groups[&1800]; // entity PK = 1800
     // (Apr1 2023, Apr1 2024]: jul1(200) + oct1(300) + jan1(400) = 900
     // apr1 2023 itself is excluded (lo exclusive)
@@ -2407,7 +2380,7 @@ fn integ_multi_hop_count_distinct_brand() {
     // COUNT_DISTINCT(orders.products.brand, 0, 5000) for each user
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
-    let output = dir.path().join("out");
+
     let plan = g1_temporal(
         vec![Stage {
             ops: vec![Op::Aggregate {
@@ -2425,7 +2398,7 @@ fn integ_multi_hop_count_distinct_brand() {
         }],
         vec![0],
     );
-    let groups = execute_and_group(&plan, &index, &output);
+    let groups = execute_and_group(&plan, &index);
     // alice: Puma,Nike,Adidas,Nike → {Puma,Nike,Adidas} = 3
     // bob: Nike,Adidas → 2. carol: Nike → 1. dave: Nike,Adidas,Nike → 2. eve: 0.
     assert_target_eq(groups[&0][0].1, 3.0, "alice");
@@ -2440,7 +2413,7 @@ fn integ_multi_hop_avg_rating() {
     // AVG(orders.products.rating, 0, 5000)
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
-    let output = dir.path().join("out");
+
     let plan = g1_temporal(
         vec![Stage {
             ops: vec![Op::Aggregate {
@@ -2458,7 +2431,7 @@ fn integ_multi_hop_avg_rating() {
         }],
         vec![0],
     );
-    let groups = execute_and_group(&plan, &index, &output);
+    let groups = execute_and_group(&plan, &index);
     // alice: (2.0+4.5+3.0+5.0)/4 = 3.625
     // bob: (4.5+3.0)/2 = 3.75. carol: 5.0. dave: (4.5+3.0+5.0)/3 ≈ 4.1667. eve: absent.
     assert_target_eq(groups[&0][0].1, 3.625, "alice");
@@ -2473,7 +2446,7 @@ fn integ_multi_hop_with_filter() {
     // AVG(orders.products.rating WHERE category='shoes', 0, 5000)
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
-    let output = dir.path().join("out");
+
     let plan = g1_temporal(
         vec![Stage {
             ops: vec![Op::Aggregate {
@@ -2495,7 +2468,7 @@ fn integ_multi_hop_with_filter() {
         }],
         vec![0],
     );
-    let groups = execute_and_group(&plan, &index, &output);
+    let groups = execute_and_group(&plan, &index);
     // Row filter on last hop (products). shoes: p0(4.5),p1(3.0)
     // alice: p0,p1 → (4.5+3.0)/2=3.75. bob: same → 3.75. carol: p2(clothing) → absent.
     // dave: p0,p1 → 3.75. eve: absent.
@@ -2512,7 +2485,7 @@ fn integ_multi_hop_temporal() {
     // Window on FIRST hop (1000,1200]: alice orders 0(ts=1050),1(ts=1100),2(ts=1200).
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
-    let output = dir.path().join("out");
+
     let plan = g1_temporal(
         vec![Stage {
             ops: vec![Op::Aggregate {
@@ -2530,7 +2503,7 @@ fn integ_multi_hop_temporal() {
         }],
         vec![1000],
     );
-    let groups = execute_and_group(&plan, &index, &output);
+    let groups = execute_and_group(&plan, &index);
     // alice: order 0→Puma, order 1→Nike, order 2→Adidas → {Puma,Nike,Adidas} = 3. Others: 0.
     assert_target_eq(groups[&0][0].1, 3.0, "alice");
     assert_target_eq(groups[&1][0].1, 0.0, "bob");
@@ -2559,7 +2532,6 @@ fn integ_all_agg_empty_states() {
     ];
 
     for (name, func, target_col, expected) in cases {
-        let output = dir.path().join(format!("out_{name}"));
         let plan = g1_temporal(
             vec![Stage {
                 ops: vec![Op::Aggregate {
@@ -2577,7 +2549,7 @@ fn integ_all_agg_empty_states() {
             }],
             vec![0],
         );
-        let groups = execute_and_group(&plan, &index, &output);
+        let groups = execute_and_group(&plan, &index);
         match expected {
             Some(val) => assert_target_eq(groups[&4][0].1, val, &format!("eve {name}")),
             None => assert!(!groups.contains_key(&4), "eve {name} should be absent"),
@@ -2590,7 +2562,7 @@ fn integ_entity_filter_excludes_all() {
     // Entity filter: level > 100 → no user matches → 0 output rows
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
-    let output = dir.path().join("out");
+
     let mut plan = g1_temporal(
         vec![Stage { ops: vec![count_orders_op("cnt", Some((0, 5000)))], filter: None }],
         vec![0],
@@ -2600,7 +2572,7 @@ fn integ_entity_filter_excludes_all() {
         op: CompareOp::Gt,
         rhs: RowFilterRhs::Constant(Value::Int(100)),
     });
-    let groups = execute_and_group(&plan, &index, &output);
+    let groups = execute_and_group(&plan, &index);
     assert_eq!(groups.len(), 0);
 }
 
@@ -2609,7 +2581,7 @@ fn integ_nested_filter_not_or() {
     // COUNT WHERE NOT(status='shipped' OR status='returned') → only 'pending'
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
-    let output = dir.path().join("out");
+
     let plan = g1_temporal(
         vec![Stage {
             ops: vec![Op::Aggregate {
@@ -2638,7 +2610,7 @@ fn integ_nested_filter_not_or() {
         }],
         vec![0],
     );
-    let groups = execute_and_group(&plan, &index, &output);
+    let groups = execute_and_group(&plan, &index);
     // Only pending: alice order 2, dave order 8.
     assert_target_eq(groups[&0][0].1, 1.0, "alice");
     assert_target_eq(groups[&1][0].1, 0.0, "bob");
@@ -2650,7 +2622,7 @@ fn integ_nested_filter_and_or() {
     // COUNT WHERE (status='shipped' AND price>100) OR status='returned'
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
-    let output = dir.path().join("out");
+
     let plan = g1_temporal(
         vec![Stage {
             ops: vec![Op::Aggregate {
@@ -2686,7 +2658,7 @@ fn integ_nested_filter_and_or() {
         }],
         vec![0],
     );
-    let groups = execute_and_group(&plan, &index, &output);
+    let groups = execute_and_group(&plan, &index);
     // alice: order0(returned)→1. bob: order4(shipped,200>100)→1, order5(returned)→1 total 2.
     // carol: 0. dave: order7(shipped,150>100)→1. eve: 0.
     assert_target_eq(groups[&0][0].1, 1.0, "alice");
@@ -2704,7 +2676,6 @@ fn integ_lag_timesteps_entity_include_bit() {
     // carol (active=false) should still produce rows but with ENTITY_INCLUDE_BIT=false.
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
-    let output = dir.path().join("out_lag");
     let plan = DiskGraphTTPlan {
         entity: EntitySpec {
             table: "users".to_string(),
@@ -2728,9 +2699,10 @@ fn integ_lag_timesteps_entity_include_bit() {
             filter: None,
         }],
     };
-    let shard_paths =
-        diskgraph_train_table::ttgen_executor::execute(&plan, &index, &output).unwrap();
-    let rows = read_output_rows_with_bit(&shard_paths);
+    let (receiver, handle) =
+        diskgraph_train_table::ttgen_executor::execute(&plan, &index).unwrap();
+    let rows = read_output_rows_with_bit(receiver);
+    handle.join().unwrap().unwrap();
     // All 5 entities should have rows (carol included despite filter fail)
     assert_eq!(rows.len(), 5);
     // Sort by entity
@@ -2755,7 +2727,6 @@ fn integ_lag_timesteps_zero_no_bit_column() {
     // lag_timesteps=0 (or None) → no ENTITY_INCLUDE_BIT column, entity filter drops rows normally.
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
-    let output = dir.path().join("out_nolag");
     let mut plan = g1_temporal(
         vec![Stage { ops: vec![count_orders_op("cnt", Some((0, 5000)))], filter: None }],
         vec![0],
@@ -2765,7 +2736,7 @@ fn integ_lag_timesteps_zero_no_bit_column() {
         op: CompareOp::Eq,
         rhs: RowFilterRhs::Constant(Value::Bool(true)),
     });
-    let groups = execute_and_group(&plan, &index, &output);
+    let groups = execute_and_group(&plan, &index);
     // carol filtered OUT (no lag_timesteps)
     assert_eq!(groups.len(), 4);
     assert!(!groups.contains_key(&2), "carol should be excluded");
@@ -2774,55 +2745,20 @@ fn integ_lag_timesteps_zero_no_bit_column() {
 // ─── Link prediction helpers ─────────────────────────────────────────────────
 
 /// Read exploded link-prediction rows: (entity, ts, target_str, frequency).
-fn read_output_rows_exploded(shard_paths: &[PathBuf]) -> Vec<(i64, i64, String, i64)> {
+fn read_output_rows_exploded(receiver: Receiver<RecordBatch>) -> Vec<(i64, i64, String, i64)> {
     let mut rows = Vec::new();
-    for path in shard_paths {
-        let file = fs::File::open(path).unwrap();
-        let reader = ParquetRecordBatchReaderBuilder::try_new(file)
-            .unwrap()
-            .build()
-            .unwrap();
-        for batch in reader {
-            let batch = batch.unwrap();
-            let entities = batch.column(0).as_any().downcast_ref::<Int64Array>().unwrap();
-            let timestamps = batch.column(1).as_any().downcast_ref::<TimestampNanosecondArray>().unwrap();
-            let targets = read_target_column_as_strings(&batch, 2);
-            let freqs = batch.column(3).as_any().downcast_ref::<Int64Array>().unwrap();
-            for i in 0..batch.num_rows() {
-                rows.push((
-                    entities.value(i),
-                    timestamps.value(i) / 1_000_000_000,
-                    targets[i].clone(),
-                    freqs.value(i),
-                ));
-            }
-        }
-    }
-    rows.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
-    rows
-}
-
-/// Read exploded link-prediction rows WITHOUT frequency: (entity, ts, target_str).
-fn read_output_rows_exploded_no_freq(shard_paths: &[PathBuf]) -> Vec<(i64, i64, String)> {
-    let mut rows = Vec::new();
-    for path in shard_paths {
-        let file = fs::File::open(path).unwrap();
-        let reader = ParquetRecordBatchReaderBuilder::try_new(file)
-            .unwrap()
-            .build()
-            .unwrap();
-        for batch in reader {
-            let batch = batch.unwrap();
-            let entities = batch.column(0).as_any().downcast_ref::<Int64Array>().unwrap();
-            let timestamps = batch.column(1).as_any().downcast_ref::<TimestampNanosecondArray>().unwrap();
-            let targets = read_target_column_as_strings(&batch, 2);
-            for i in 0..batch.num_rows() {
-                rows.push((
-                    entities.value(i),
-                    timestamps.value(i) / 1_000_000_000,
-                    targets[i].clone(),
-                ));
-            }
+    for batch in receiver {
+        let entities = batch.column(0).as_any().downcast_ref::<Int64Array>().unwrap();
+        let timestamps = batch.column(1).as_any().downcast_ref::<TimestampNanosecondArray>().unwrap();
+        let targets = read_target_column_as_strings(&batch, 2);
+        let freqs = batch.column(3).as_any().downcast_ref::<Int64Array>().unwrap();
+        for i in 0..batch.num_rows() {
+            rows.push((
+                entities.value(i),
+                timestamps.value(i) / 1_000_000_000,
+                targets[i].clone(),
+                freqs.value(i),
+            ));
         }
     }
     rows.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
@@ -2830,75 +2766,34 @@ fn read_output_rows_exploded_no_freq(shard_paths: &[PathBuf]) -> Vec<(i64, i64, 
 }
 
 /// Read array link-prediction rows: (entity, ts, targets, frequencies).
-fn read_output_rows_array(shard_paths: &[PathBuf]) -> Vec<(i64, i64, Vec<String>, Vec<i64>)> {
+fn read_output_rows_array(receiver: Receiver<RecordBatch>) -> Vec<(i64, i64, Vec<String>, Vec<i64>)> {
     use arrow_array::{Array, ListArray};
 
     let mut rows = Vec::new();
-    for path in shard_paths {
-        let file = fs::File::open(path).unwrap();
-        let reader = ParquetRecordBatchReaderBuilder::try_new(file)
-            .unwrap()
-            .build()
-            .unwrap();
-        for batch in reader {
-            let batch = batch.unwrap();
-            let entities = batch.column(0).as_any().downcast_ref::<Int64Array>().unwrap();
-            let timestamps = batch.column(1).as_any().downcast_ref::<TimestampNanosecondArray>().unwrap();
-            let target_list = batch.column(2).as_any().downcast_ref::<ListArray>().unwrap();
-            let freq_list = batch.column(3).as_any().downcast_ref::<ListArray>().unwrap();
+    for batch in receiver {
+        let entities = batch.column(0).as_any().downcast_ref::<Int64Array>().unwrap();
+        let timestamps = batch.column(1).as_any().downcast_ref::<TimestampNanosecondArray>().unwrap();
+        let target_list = batch.column(2).as_any().downcast_ref::<ListArray>().unwrap();
+        let freq_list = batch.column(3).as_any().downcast_ref::<ListArray>().unwrap();
 
-            for i in 0..batch.num_rows() {
-                let target_arr = target_list.value(i);
-                let targets = read_list_values_as_strings(&target_arr);
+        for i in 0..batch.num_rows() {
+            let target_arr = target_list.value(i);
+            let targets = read_list_values_as_strings(&target_arr);
 
-                let freq_arr = freq_list.value(i);
-                let freq_vals = freq_arr
-                    .as_any()
-                    .downcast_ref::<Int64Array>()
-                    .unwrap();
-                let freqs: Vec<i64> =
-                    (0..freq_vals.len()).map(|j| freq_vals.value(j)).collect();
+            let freq_arr = freq_list.value(i);
+            let freq_vals = freq_arr
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap();
+            let freqs: Vec<i64> =
+                (0..freq_vals.len()).map(|j| freq_vals.value(j)).collect();
 
-                rows.push((
-                    entities.value(i),
-                    timestamps.value(i) / 1_000_000_000,
-                    targets,
-                    freqs,
-                ));
-            }
-        }
-    }
-    rows.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
-    rows
-}
-
-/// Read array link-prediction rows WITHOUT frequency: (entity, ts, targets).
-fn read_output_rows_array_no_freq(shard_paths: &[PathBuf]) -> Vec<(i64, i64, Vec<String>)> {
-    use arrow_array::{Array, ListArray};
-
-    let mut rows = Vec::new();
-    for path in shard_paths {
-        let file = fs::File::open(path).unwrap();
-        let reader = ParquetRecordBatchReaderBuilder::try_new(file)
-            .unwrap()
-            .build()
-            .unwrap();
-        for batch in reader {
-            let batch = batch.unwrap();
-            let entities = batch.column(0).as_any().downcast_ref::<Int64Array>().unwrap();
-            let timestamps = batch.column(1).as_any().downcast_ref::<TimestampNanosecondArray>().unwrap();
-            let target_list = batch.column(2).as_any().downcast_ref::<ListArray>().unwrap();
-
-            for i in 0..batch.num_rows() {
-                let target_arr = target_list.value(i);
-                let targets = read_list_values_as_strings(&target_arr);
-
-                rows.push((
-                    entities.value(i),
-                    timestamps.value(i) / 1_000_000_000,
-                    targets,
-                ));
-            }
+            rows.push((
+                entities.value(i),
+                timestamps.value(i) / 1_000_000_000,
+                targets,
+                freqs,
+            ));
         }
     }
     rows.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
@@ -2991,7 +2886,6 @@ fn integ_link_exploded_with_frequency() {
     //   eve: (no orders)
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
-    let output = dir.path().join("out_lp_exploded");
     let plan = g1_link_temporal(
         vec![Stage {
             ops: vec![list_distinct_status_op("ld", Some((0, 5000)), None)],
@@ -3001,9 +2895,10 @@ fn integ_link_exploded_with_frequency() {
         true,  // explode
         true,  // include_frequency
     );
-    let shard_paths =
-        diskgraph_train_table::ttgen_executor::execute(&plan, &index, &output).unwrap();
-    let rows = read_output_rows_exploded(&shard_paths);
+    let (receiver, handle) =
+        diskgraph_train_table::ttgen_executor::execute(&plan, &index).unwrap();
+    let rows = read_output_rows_exploded(receiver);
+    handle.join().unwrap().unwrap();
 
     // Collect as sets of (entity, target, freq) since order within entity may vary
     let as_set: std::collections::HashSet<(i64, String, i64)> = rows
@@ -3044,7 +2939,6 @@ fn integ_link_exploded_no_frequency() {
     // CLASSIFY: LIST_DISTINCT(orders.status, 0, 5000), exploded but no frequency column.
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
-    let output = dir.path().join("out_lp_exploded_nf");
     let plan = g1_link_temporal(
         vec![Stage {
             ops: vec![list_distinct_status_op("ld", Some((0, 5000)), None)],
@@ -3054,15 +2948,32 @@ fn integ_link_exploded_no_frequency() {
         true,  // explode
         false, // no frequency
     );
-    let shard_paths =
-        diskgraph_train_table::ttgen_executor::execute(&plan, &index, &output).unwrap();
-    let rows = read_output_rows_exploded_no_freq(&shard_paths);
+    let (receiver, handle) =
+        diskgraph_train_table::ttgen_executor::execute(&plan, &index).unwrap();
+    // Collect batches to check schema and extract rows.
+    let batches: Vec<RecordBatch> = receiver.into_iter().collect();
+    handle.join().unwrap().unwrap();
 
     // Schema should have 3 columns: ENTITY, TIMESTAMP, TARGET (no FREQUENCY)
-    let file = fs::File::open(&shard_paths[0]).unwrap();
-    let reader_builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
-    let schema = reader_builder.schema();
+    assert!(!batches.is_empty(), "should produce at least one batch");
+    let schema = batches[0].schema();
     assert_eq!(schema.fields().len(), 3, "should have ENTITY, TIMESTAMP, TARGET only");
+
+    // Extract rows from collected batches.
+    let mut rows = Vec::new();
+    for batch in &batches {
+        let entities = batch.column(0).as_any().downcast_ref::<Int64Array>().unwrap();
+        let timestamps = batch.column(1).as_any().downcast_ref::<TimestampNanosecondArray>().unwrap();
+        let targets = read_target_column_as_strings(batch, 2);
+        for i in 0..batch.num_rows() {
+            rows.push((
+                entities.value(i),
+                timestamps.value(i) / 1_000_000_000,
+                targets[i].clone(),
+            ));
+        }
+    }
+    rows.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
 
     let targets_for_entity: HashMap<i64, Vec<String>> = {
         let mut map: HashMap<i64, Vec<String>> = HashMap::new();
@@ -3092,7 +3003,6 @@ fn integ_link_array_with_frequency() {
     // with TARGET as List<Utf8> and FREQUENCY as List<Int64>.
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
-    let output = dir.path().join("out_lp_array");
     let plan = g1_link_temporal(
         vec![Stage {
             ops: vec![list_distinct_status_op("ld", Some((0, 5000)), None)],
@@ -3102,9 +3012,10 @@ fn integ_link_array_with_frequency() {
         false, // no explode → array mode
         true,  // include_frequency
     );
-    let shard_paths =
-        diskgraph_train_table::ttgen_executor::execute(&plan, &index, &output).unwrap();
-    let rows = read_output_rows_array(&shard_paths);
+    let (receiver, handle) =
+        diskgraph_train_table::ttgen_executor::execute(&plan, &index).unwrap();
+    let rows = read_output_rows_array(receiver);
+    handle.join().unwrap().unwrap();
 
     // 5 entities, but eve has no orders → empty list → still emitted as row
     // (Value::List(vec![]) is a valid target)
@@ -3158,7 +3069,6 @@ fn integ_link_array_no_frequency() {
     // TARGET as List<Utf8>, no FREQUENCY column.
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
-    let output = dir.path().join("out_lp_array_nf");
     let plan = g1_link_temporal(
         vec![Stage {
             ops: vec![list_distinct_status_op("ld", Some((0, 5000)), None)],
@@ -3168,15 +3078,37 @@ fn integ_link_array_no_frequency() {
         false, // no explode → array mode
         false, // no frequency
     );
-    let shard_paths =
-        diskgraph_train_table::ttgen_executor::execute(&plan, &index, &output).unwrap();
-    let rows = read_output_rows_array_no_freq(&shard_paths);
+    let (receiver, handle) =
+        diskgraph_train_table::ttgen_executor::execute(&plan, &index).unwrap();
+    // Collect batches to check schema and extract rows.
+    let batches: Vec<RecordBatch> = receiver.into_iter().collect();
+    handle.join().unwrap().unwrap();
 
     // Schema: ENTITY, TIMESTAMP, TARGET (List<Utf8>) — 3 columns
-    let file = fs::File::open(&shard_paths[0]).unwrap();
-    let reader_builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
-    let schema = reader_builder.schema();
+    assert!(!batches.is_empty(), "should produce at least one batch");
+    let schema = batches[0].schema();
     assert_eq!(schema.fields().len(), 3, "no FREQUENCY column");
+
+    // Extract rows from collected batches.
+    let mut rows = Vec::new();
+    {
+        use arrow_array::{Array, ListArray};
+        for batch in &batches {
+            let entities = batch.column(0).as_any().downcast_ref::<Int64Array>().unwrap();
+            let timestamps = batch.column(1).as_any().downcast_ref::<TimestampNanosecondArray>().unwrap();
+            let target_list = batch.column(2).as_any().downcast_ref::<ListArray>().unwrap();
+            for i in 0..batch.num_rows() {
+                let target_arr = target_list.value(i);
+                let targets = read_list_values_as_strings(&target_arr);
+                rows.push((
+                    entities.value(i),
+                    timestamps.value(i) / 1_000_000_000,
+                    targets,
+                ));
+            }
+        }
+    }
+    rows.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
 
     assert_eq!(rows.len(), 5, "one row per entity");
     for (entity, _ts, targets) in &rows {
@@ -3211,7 +3143,6 @@ fn integ_link_exploded_with_row_filter_frequency() {
     // eve: no orders
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
-    let output = dir.path().join("out_lp_filter_freq");
     let plan = g1_link_temporal(
         vec![Stage {
             ops: vec![Op::Aggregate {
@@ -3235,9 +3166,10 @@ fn integ_link_exploded_with_row_filter_frequency() {
         true,  // explode
         true,  // include_frequency
     );
-    let shard_paths =
-        diskgraph_train_table::ttgen_executor::execute(&plan, &index, &output).unwrap();
-    let rows = read_output_rows_exploded(&shard_paths);
+    let (receiver, handle) =
+        diskgraph_train_table::ttgen_executor::execute(&plan, &index).unwrap();
+    let rows = read_output_rows_exploded(receiver);
+    handle.join().unwrap().unwrap();
 
     let as_set: std::collections::HashSet<(i64, String, i64)> = rows
         .iter()
@@ -3279,7 +3211,6 @@ fn integ_link_exploded_frequency_duplicates() {
     // dave: shipped(2), pending(1)
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
-    let output = dir.path().join("out_lp_freq_dup");
     let plan = g1_link_temporal(
         vec![Stage {
             ops: vec![list_distinct_status_op("ld", Some((0, 5000)), None)],
@@ -3289,9 +3220,10 @@ fn integ_link_exploded_frequency_duplicates() {
         true,  // explode
         true,  // include_frequency
     );
-    let shard_paths =
-        diskgraph_train_table::ttgen_executor::execute(&plan, &index, &output).unwrap();
-    let rows = read_output_rows_exploded(&shard_paths);
+    let (receiver, handle) =
+        diskgraph_train_table::ttgen_executor::execute(&plan, &index).unwrap();
+    let rows = read_output_rows_exploded(receiver);
+    handle.join().unwrap().unwrap();
 
     // Focus on entities with duplicates
     let alice_shipped: Vec<_> = rows.iter()
@@ -3314,7 +3246,6 @@ fn integ_link_static_exploded() {
     // Static (non-temporal): LIST_DISTINCT(orders.status) — no window, no timestamp
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
-    let output = dir.path().join("out_lp_static");
     let plan = g1_link(
         vec![Stage {
             ops: vec![Op::Aggregate {
@@ -3333,9 +3264,10 @@ fn integ_link_static_exploded() {
         true,  // explode
         true,  // include_frequency
     );
-    let shard_paths =
-        diskgraph_train_table::ttgen_executor::execute(&plan, &index, &output).unwrap();
-    let rows = read_output_rows_exploded(&shard_paths);
+    let (receiver, handle) =
+        diskgraph_train_table::ttgen_executor::execute(&plan, &index).unwrap();
+    let rows = read_output_rows_exploded(receiver);
+    handle.join().unwrap().unwrap();
 
     // All timestamps should be 0 (non-temporal)
     for (_, ts, _, _) in &rows {
@@ -3375,7 +3307,6 @@ fn integ_link_temporal_multiple_timestamps() {
     //   everyone else: no orders in window
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
-    let output = dir.path().join("out_lp_temporal_multi");
     let plan = g1_link_temporal(
         vec![Stage {
             ops: vec![list_distinct_product_id_op("ld", Some((-500, 0)), None)],
@@ -3385,9 +3316,10 @@ fn integ_link_temporal_multiple_timestamps() {
         true,  // explode
         true,  // include_frequency
     );
-    let shard_paths =
-        diskgraph_train_table::ttgen_executor::execute(&plan, &index, &output).unwrap();
-    let rows = read_output_rows_exploded(&shard_paths);
+    let (receiver, handle) =
+        diskgraph_train_table::ttgen_executor::execute(&plan, &index).unwrap();
+    let rows = read_output_rows_exploded(receiver);
+    handle.join().unwrap().unwrap();
 
     // At ts=1200: alice has 3 products (1200 now included at hi boundary)
     let alice_1200: Vec<_> = rows.iter().filter(|(e, ts, ..)| *e == 0 && *ts == 1200).collect();
@@ -3415,7 +3347,6 @@ fn integ_link_exploded_with_limit() {
     // Should stop after 1 distinct value.
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
-    let output = dir.path().join("out_lp_limit");
     let plan = g1_link_temporal(
         vec![Stage {
             ops: vec![list_distinct_status_op("ld", Some((0, 5000)), Some(1))],
@@ -3425,9 +3356,10 @@ fn integ_link_exploded_with_limit() {
         true,  // explode
         true,  // include_frequency
     );
-    let shard_paths =
-        diskgraph_train_table::ttgen_executor::execute(&plan, &index, &output).unwrap();
-    let rows = read_output_rows_exploded(&shard_paths);
+    let (receiver, handle) =
+        diskgraph_train_table::ttgen_executor::execute(&plan, &index).unwrap();
+    let rows = read_output_rows_exploded(receiver);
+    handle.join().unwrap().unwrap();
 
     // Each entity should have at most 1 target row (limit=1)
     let mut by_entity: HashMap<i64, Vec<_>> = HashMap::new();
@@ -3454,7 +3386,6 @@ fn integ_link_empty_exploded() {
     // Window [10000, 20000) captures nothing.
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
-    let output = dir.path().join("out_lp_empty_exploded");
     let plan = g1_link_temporal(
         vec![Stage {
             ops: vec![list_distinct_status_op("ld", Some((10000, 20000)), None)],
@@ -3464,9 +3395,10 @@ fn integ_link_empty_exploded() {
         true,  // explode
         true,  // include_frequency
     );
-    let shard_paths =
-        diskgraph_train_table::ttgen_executor::execute(&plan, &index, &output).unwrap();
-    let rows = read_output_rows_exploded(&shard_paths);
+    let (receiver, handle) =
+        diskgraph_train_table::ttgen_executor::execute(&plan, &index).unwrap();
+    let rows = read_output_rows_exploded(receiver);
+    handle.join().unwrap().unwrap();
     assert_eq!(rows.len(), 0, "no edges in window → no exploded rows");
 }
 
@@ -3476,7 +3408,6 @@ fn integ_link_empty_array() {
     // Window [10000, 20000) captures nothing.
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
-    let output = dir.path().join("out_lp_empty_array");
     let plan = g1_link_temporal(
         vec![Stage {
             ops: vec![list_distinct_status_op("ld", Some((10000, 20000)), None)],
@@ -3486,9 +3417,10 @@ fn integ_link_empty_array() {
         false, // no explode → array
         true,  // include_frequency
     );
-    let shard_paths =
-        diskgraph_train_table::ttgen_executor::execute(&plan, &index, &output).unwrap();
-    let rows = read_output_rows_array(&shard_paths);
+    let (receiver, handle) =
+        diskgraph_train_table::ttgen_executor::execute(&plan, &index).unwrap();
+    let rows = read_output_rows_array(receiver);
+    handle.join().unwrap().unwrap();
 
     // Each entity still produces one row, but with empty target/freq lists
     assert_eq!(rows.len(), 5, "one row per entity even with empty lists");
@@ -3515,7 +3447,6 @@ fn integ_link_multi_hop_exploded() {
     //   distinct: {Nike:2, Adidas:1}
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
-    let output = dir.path().join("out_lp_multihop");
     let plan = g1_link_temporal(
         vec![Stage {
             ops: vec![Op::Aggregate {
@@ -3535,9 +3466,10 @@ fn integ_link_multi_hop_exploded() {
         true,  // explode
         true,  // include_frequency
     );
-    let shard_paths =
-        diskgraph_train_table::ttgen_executor::execute(&plan, &index, &output).unwrap();
-    let rows = read_output_rows_exploded(&shard_paths);
+    let (receiver, handle) =
+        diskgraph_train_table::ttgen_executor::execute(&plan, &index).unwrap();
+    let rows = read_output_rows_exploded(receiver);
+    handle.join().unwrap().unwrap();
 
     let as_set: std::collections::HashSet<(i64, String, i64)> = rows
         .iter()
@@ -3863,7 +3795,6 @@ fn integ_g2_lp_temporal_exploded() {
     //   user 0: no orders in (172800, 345600]
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph2(dir.path());
-    let output = dir.path().join("out_g2_lp_exploded");
     let plan = g2_link_temporal(
         vec![Stage {
             ops: vec![g2_list_distinct_store_id("ld", Some((0, 2 * DAY)), None, None)],
@@ -3873,9 +3804,10 @@ fn integ_g2_lp_temporal_exploded() {
         true,
         true,
     );
-    let shard_paths =
-        diskgraph_train_table::ttgen_executor::execute(&plan, &index, &output).unwrap();
-    let rows = read_output_rows_exploded(&shard_paths);
+    let (receiver, handle) =
+        diskgraph_train_table::ttgen_executor::execute(&plan, &index).unwrap();
+    let rows = read_output_rows_exploded(receiver);
+    handle.join().unwrap().unwrap();
 
     let as_set: std::collections::HashSet<(i64, i64, String, i64)> = rows
         .iter()
@@ -3900,7 +3832,6 @@ fn integ_g2_lp_temporal_array() {
     // (lo, hi] convention: ts=0 window (0,172800], ts=172800 window (172800,345600].
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph2(dir.path());
-    let output = dir.path().join("out_g2_lp_array");
     let plan = g2_link_temporal(
         vec![Stage {
             ops: vec![g2_list_distinct_store_id("ld", Some((0, 2 * DAY)), None, None)],
@@ -3910,9 +3841,10 @@ fn integ_g2_lp_temporal_array() {
         false,
         true,
     );
-    let shard_paths =
-        diskgraph_train_table::ttgen_executor::execute(&plan, &index, &output).unwrap();
-    let rows = read_output_rows_array(&shard_paths);
+    let (receiver, handle) =
+        diskgraph_train_table::ttgen_executor::execute(&plan, &index).unwrap();
+    let rows = read_output_rows_array(receiver);
+    handle.join().unwrap().unwrap();
 
     // 5 users × 2 timestamps = 10 rows
     assert_eq!(rows.len(), 10);
@@ -3957,7 +3889,6 @@ fn integ_g2_lp_temporal_filtered() {
     // ts=172800, window (172800, 345600]: user 1 → store 0(×1), store 1(×1) → {0:1, 1:1}
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph2(dir.path());
-    let output = dir.path().join("out_g2_lp_filtered");
     let plan = g2_link_temporal(
         vec![Stage {
             ops: vec![g2_list_distinct_store_id(
@@ -3976,9 +3907,10 @@ fn integ_g2_lp_temporal_filtered() {
         true,
         true,
     );
-    let shard_paths =
-        diskgraph_train_table::ttgen_executor::execute(&plan, &index, &output).unwrap();
-    let rows = read_output_rows_exploded(&shard_paths);
+    let (receiver, handle) =
+        diskgraph_train_table::ttgen_executor::execute(&plan, &index).unwrap();
+    let rows = read_output_rows_exploded(receiver);
+    handle.join().unwrap().unwrap();
 
     let as_set: std::collections::HashSet<(i64, i64, String, i64)> = rows
         .iter()
@@ -4002,7 +3934,6 @@ fn integ_g2_lp_static_exploded() {
     // Each user has 3 orders to stores 0,1,2 → 3 distinct stores, each freq=1.
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph2(dir.path());
-    let output = dir.path().join("out_g2_lp_static");
     let plan = g2_link_static(
         vec![Stage {
             ops: vec![Op::Aggregate {
@@ -4021,9 +3952,10 @@ fn integ_g2_lp_static_exploded() {
         true,
         true,
     );
-    let shard_paths =
-        diskgraph_train_table::ttgen_executor::execute(&plan, &index, &output).unwrap();
-    let rows = read_output_rows_exploded(&shard_paths);
+    let (receiver, handle) =
+        diskgraph_train_table::ttgen_executor::execute(&plan, &index).unwrap();
+    let rows = read_output_rows_exploded(receiver);
+    handle.join().unwrap().unwrap();
 
     // All timestamps should be 0 (non-temporal)
     for (_, ts, _, _) in &rows {
@@ -4053,7 +3985,6 @@ fn integ_g2_lp_static_array() {
     // Static array mode: one row per entity with list of stores.
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph2(dir.path());
-    let output = dir.path().join("out_g2_lp_static_array");
     let plan = g2_link_static(
         vec![Stage {
             ops: vec![Op::Aggregate {
@@ -4072,9 +4003,10 @@ fn integ_g2_lp_static_array() {
         false,
         true,
     );
-    let shard_paths =
-        diskgraph_train_table::ttgen_executor::execute(&plan, &index, &output).unwrap();
-    let rows = read_output_rows_array(&shard_paths);
+    let (receiver, handle) =
+        diskgraph_train_table::ttgen_executor::execute(&plan, &index).unwrap();
+    let rows = read_output_rows_array(receiver);
+    handle.join().unwrap().unwrap();
 
     assert_eq!(rows.len(), 5, "one row per entity");
     for (entity, _ts, targets, freqs) in &rows {
@@ -4099,7 +4031,6 @@ fn integ_g2_lp_nonzero_offset() {
     //   others: no orders in range
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph2(dir.path());
-    let output = dir.path().join("out_g2_lp_offset");
     let plan = g2_link_temporal(
         vec![Stage {
             ops: vec![g2_list_distinct_store_id("ld", Some((6 * DAY, 8 * DAY)), None, None)],
@@ -4109,9 +4040,10 @@ fn integ_g2_lp_nonzero_offset() {
         true,
         true,
     );
-    let shard_paths =
-        diskgraph_train_table::ttgen_executor::execute(&plan, &index, &output).unwrap();
-    let rows = read_output_rows_exploded(&shard_paths);
+    let (receiver, handle) =
+        diskgraph_train_table::ttgen_executor::execute(&plan, &index).unwrap();
+    let rows = read_output_rows_exploded(receiver);
+    handle.join().unwrap().unwrap();
 
     let as_set: std::collections::HashSet<(i64, String, i64)> = rows
         .iter()
@@ -4407,7 +4339,6 @@ fn integ_g3_lp_temporal_rank() {
     // Each user → {product 0: 15, product 1: 15}
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph3(dir.path());
-    let output = dir.path().join("out_g3_rank");
     let plan = g3_link_temporal(
         vec![Stage {
             ops: vec![Op::Aggregate {
@@ -4427,9 +4358,10 @@ fn integ_g3_lp_temporal_rank() {
         true,
         true,
     );
-    let shard_paths =
-        diskgraph_train_table::ttgen_executor::execute(&plan, &index, &output).unwrap();
-    let rows = read_output_rows_exploded(&shard_paths);
+    let (receiver, handle) =
+        diskgraph_train_table::ttgen_executor::execute(&plan, &index).unwrap();
+    let rows = read_output_rows_exploded(receiver);
+    handle.join().unwrap().unwrap();
 
     // 2 users × 2 products = 4 exploded rows
     assert_eq!(rows.len(), 4);
@@ -4455,7 +4387,6 @@ fn integ_g3_lp_filtered_brand() {
     // Each user → {product 0: 15}
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph3(dir.path());
-    let output = dir.path().join("out_g3_brand");
     let plan = g3_link_temporal(
         vec![Stage {
             ops: vec![Op::Aggregate {
@@ -4482,9 +4413,10 @@ fn integ_g3_lp_filtered_brand() {
         true,
         true,
     );
-    let shard_paths =
-        diskgraph_train_table::ttgen_executor::execute(&plan, &index, &output).unwrap();
-    let rows = read_output_rows_exploded(&shard_paths);
+    let (receiver, handle) =
+        diskgraph_train_table::ttgen_executor::execute(&plan, &index).unwrap();
+    let rows = read_output_rows_exploded(receiver);
+    handle.join().unwrap().unwrap();
 
     // 2 users × 1 product = 2 rows
     assert_eq!(rows.len(), 2);
@@ -4506,7 +4438,6 @@ fn integ_g3_lp_static_rank() {
     // Each user → 30 total transactions, 2 distinct products, each freq=15
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph3(dir.path());
-    let output = dir.path().join("out_g3_static");
     let plan = g3_link_static(
         vec![Stage {
             ops: vec![Op::Aggregate {
@@ -4525,9 +4456,10 @@ fn integ_g3_lp_static_rank() {
         true,
         true,
     );
-    let shard_paths =
-        diskgraph_train_table::ttgen_executor::execute(&plan, &index, &output).unwrap();
-    let rows = read_output_rows_exploded(&shard_paths);
+    let (receiver, handle) =
+        diskgraph_train_table::ttgen_executor::execute(&plan, &index).unwrap();
+    let rows = read_output_rows_exploded(receiver);
+    handle.join().unwrap().unwrap();
 
     // 2 users × 2 products = 4 rows
     assert_eq!(rows.len(), 4);
@@ -4560,7 +4492,6 @@ fn integ_g3_lp_dangling_entity() {
     // no edges exist: ts far in the past → empty lists.
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph3(dir.path());
-    let output = dir.path().join("out_g3_dangling");
     let plan = g3_link_temporal(
         vec![Stage {
             ops: vec![Op::Aggregate {
@@ -4581,9 +4512,10 @@ fn integ_g3_lp_dangling_entity() {
         false,   // array mode
         true,
     );
-    let shard_paths =
-        diskgraph_train_table::ttgen_executor::execute(&plan, &index, &output).unwrap();
-    let rows = read_output_rows_array(&shard_paths);
+    let (receiver, handle) =
+        diskgraph_train_table::ttgen_executor::execute(&plan, &index).unwrap();
+    let rows = read_output_rows_array(receiver);
+    handle.join().unwrap().unwrap();
 
     // Both users produce rows but with empty target lists (no edges in window)
     assert_eq!(rows.len(), 2, "one row per user");
@@ -4599,7 +4531,6 @@ fn integ_g3_lp_entity_filter() {
     // User 0 (age=17) filtered out. User 1 (age=25) passes.
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph3(dir.path());
-    let output = dir.path().join("out_g3_entity_filter");
     let plan = DiskGraphTTPlan {
         entity: EntitySpec {
             table: "users".to_string(),
@@ -4632,9 +4563,10 @@ fn integ_g3_lp_entity_filter() {
             filter: None,
         }],
     };
-    let shard_paths =
-        diskgraph_train_table::ttgen_executor::execute(&plan, &index, &output).unwrap();
-    let rows = read_output_rows_exploded(&shard_paths);
+    let (receiver, handle) =
+        diskgraph_train_table::ttgen_executor::execute(&plan, &index).unwrap();
+    let rows = read_output_rows_exploded(receiver);
+    handle.join().unwrap().unwrap();
 
     // Only user 1 (age=25) passes the filter
     assert_eq!(rows.len(), 2, "user 1 has 2 distinct products");

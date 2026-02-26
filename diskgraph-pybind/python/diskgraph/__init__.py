@@ -9,6 +9,7 @@ from ._c import (
     EdgeRef,
     RowFilter,
     StageFilter,
+    TTPlanIterator,
     execute_tt_plan,
 )
 
@@ -36,6 +37,7 @@ __all__ = [
     "EdgeRef",
     "RowFilter",
     "StageFilter",
+    "TTPlanIterator",
     "DiskGraphPlanCompiler",
     "DiskgraphConfigConverter",
     "execute_tt_plan",

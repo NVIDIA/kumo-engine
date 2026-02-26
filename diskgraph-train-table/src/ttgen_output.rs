@@ -8,9 +8,6 @@
 //! - **LinkExploded**: one row per distinct target value (string target + i64 frequency)
 //! - **LinkArray**: one row per entity/timestamp with list columns
 
-use std::fs::File;
-use std::io::BufWriter;
-use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -20,10 +17,8 @@ use arrow_array::{
     TimestampNanosecondArray,
 };
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
+use crossbeam_channel::Sender;
 use diskgraph_core::tt_builder::Value;
-use parquet::arrow::ArrowWriter;
-use parquet::basic::Compression;
-use parquet::file::properties::WriterProperties;
 
 /// Batch size: flush to Parquet every N rows.
 /// 64K rows × 3-4 columns × 8 bytes = ~1.5-2MB per batch.
@@ -40,9 +35,10 @@ pub enum OutputMode {
     LinkArray { include_frequency: bool, target_dtype: DataType },
 }
 
-/// Per-thread Parquet writer that buffers rows and writes Arrow batches.
-pub struct ParquetShardWriter {
-    writer: ArrowWriter<BufWriter<File>>,
+/// Per-thread batch writer that buffers rows and sends Arrow RecordBatches
+/// through a crossbeam channel for streaming consumption by Python.
+pub struct ChannelBatchWriter {
+    sender: Sender<RecordBatch>,
     schema: Arc<Schema>,
     mode: OutputMode,
     has_include_bit: bool,
@@ -68,8 +64,8 @@ pub struct ParquetShardWriter {
     rows_written: u64,
 }
 
-impl ParquetShardWriter {
-    /// Create a new shard writer at the given path.
+impl ChannelBatchWriter {
+    /// Create a new batch writer that sends RecordBatches to `sender`.
     ///
     /// `entity_dtype` is the Arrow data type for the ENTITY column, matching
     /// the ingested type of the entity table's PK column.
@@ -78,7 +74,7 @@ impl ParquetShardWriter {
     /// column is added to the schema. This is used when `lag_timesteps > 0` to
     /// mark rows where the entity filter failed (kept for autoregressive features).
     pub fn new(
-        path: &Path,
+        sender: Sender<RecordBatch>,
         mode: OutputMode,
         include_entity_bit: bool,
         entity_dtype: DataType,
@@ -119,19 +115,8 @@ impl ParquetShardWriter {
         }
         let schema = Arc::new(Schema::new(fields));
 
-        let file = File::create(path)
-            .with_context(|| format!("creating shard file {}", path.display()))?;
-        let buf_writer = BufWriter::with_capacity(8 * 1024 * 1024, file); // 8MB buffer
-
-        let props = WriterProperties::builder()
-            .set_compression(Compression::SNAPPY)
-            .build();
-
-        let writer = ArrowWriter::try_new(buf_writer, schema.clone(), Some(props))
-            .context("creating Arrow writer")?;
-
         Ok(Self {
-            writer,
+            sender,
             schema,
             mode,
             has_include_bit: include_entity_bit,
@@ -241,7 +226,7 @@ impl ParquetShardWriter {
         Ok(())
     }
 
-    /// Flush buffered rows as an Arrow RecordBatch.
+    /// Flush buffered rows as an Arrow RecordBatch and send through channel.
     fn flush_batch(&mut self) -> Result<()> {
         if self.entity_buf.is_empty() {
             return Ok(());
@@ -270,7 +255,6 @@ impl ParquetShardWriter {
                 columns.push(Arc::new(target_arr));
             }
             OutputMode::Node { target_dtype } => {
-                // Utf8, Int64, etc — use flush_value_buf which handles all types
                 let target_arr = flush_value_buf(&mut self.target_value_buf, target_dtype);
                 columns.push(target_arr);
             }
@@ -316,7 +300,9 @@ impl ParquetShardWriter {
             .context("creating RecordBatch")?;
 
         self.rows_written += batch.num_rows() as u64;
-        self.writer.write(&batch).context("writing RecordBatch")?;
+        // Send batch through channel. If the receiver is dropped, we silently
+        // stop (Python side closed the iterator early).
+        let _ = self.sender.send(batch);
 
         // Re-allocate common buffers with capacity
         self.entity_buf = Vec::with_capacity(BATCH_SIZE);
@@ -328,10 +314,10 @@ impl ParquetShardWriter {
         Ok(())
     }
 
-    /// Flush remaining rows and close the Parquet file.
+    /// Flush remaining rows and drop the sender (signals end of stream).
     pub fn finish(mut self) -> Result<u64> {
         self.flush_batch()?;
-        self.writer.close().context("closing Parquet writer")?;
+        // Sender is dropped here, closing the channel.
         Ok(self.rows_written)
     }
 
@@ -463,98 +449,91 @@ fn flush_entity_buf(buf: &mut Vec<Value>, dtype: &DataType) -> Arc<dyn arrow_arr
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crossbeam_channel::bounded;
+
+    /// Helper: create a ChannelBatchWriter with a bounded channel and return
+    /// both the writer and the receiver for collecting output batches.
+    fn test_writer(
+        mode: OutputMode,
+        include_entity_bit: bool,
+        entity_dtype: DataType,
+    ) -> (ChannelBatchWriter, crossbeam_channel::Receiver<RecordBatch>) {
+        let (sender, receiver) = bounded(64);
+        let writer = ChannelBatchWriter::new(sender, mode, include_entity_bit, entity_dtype)
+            .unwrap();
+        (writer, receiver)
+    }
+
+    /// Drain all batches from the receiver into a Vec.
+    fn collect_batches(receiver: crossbeam_channel::Receiver<RecordBatch>) -> Vec<RecordBatch> {
+        receiver.iter().collect()
+    }
 
     #[test]
-    fn test_write_and_read_parquet() -> Result<()> {
-        let dir = tempfile::tempdir()?;
-        let path = dir.path().join("shard_0.parquet");
+    fn test_write_and_receive_batches() -> Result<()> {
+        let (mut writer, receiver) = test_writer(
+            OutputMode::Node { target_dtype: DataType::Float64 },
+            false,
+            DataType::Int64,
+        );
 
-        // Write some rows (no include bit, Int64 entity)
-        let mut writer =
-            ParquetShardWriter::new(&path, OutputMode::Node { target_dtype: DataType::Float64 }, false, DataType::Int64)?;
         for i in 0..100i64 {
             writer.write_row(Value::Int(i), i * 100, &Value::Float(i as f64 * 1.5), true)?;
         }
         let rows = writer.finish()?;
         assert_eq!(rows, 100);
 
-        // Read back and verify
-        let file = File::open(&path)?;
-        let reader = parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(file)?
-            .build()?;
-
-        let mut total_rows = 0;
-        for batch in reader {
-            let batch = batch?;
-            total_rows += batch.num_rows();
-            assert_eq!(batch.num_columns(), 3); // No include bit column
-
-            let entities = batch
-                .column(0)
-                .as_any()
-                .downcast_ref::<Int64Array>()
-                .unwrap();
-            let timestamps = batch
-                .column(1)
-                .as_any()
-                .downcast_ref::<TimestampNanosecondArray>()
-                .unwrap();
-            let targets = batch
-                .column(2)
-                .as_any()
-                .downcast_ref::<Float64Array>()
-                .unwrap();
-
-            // Verify first row (timestamps stored as nanoseconds)
-            assert_eq!(entities.value(0), 0);
-            assert_eq!(timestamps.value(0), 0); // 0 seconds * 1e9 = 0 ns
-            assert_eq!(targets.value(0), 0.0);
-        }
+        let batches = collect_batches(receiver);
+        let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
         assert_eq!(total_rows, 100);
+
+        let batch = &batches[0];
+        assert_eq!(batch.num_columns(), 3); // ENTITY, TIMESTAMP, TARGET
+
+        let entities = batch.column(0).as_any().downcast_ref::<Int64Array>().unwrap();
+        let timestamps = batch.column(1).as_any().downcast_ref::<TimestampNanosecondArray>().unwrap();
+        let targets = batch.column(2).as_any().downcast_ref::<Float64Array>().unwrap();
+
+        assert_eq!(entities.value(0), 0);
+        assert_eq!(timestamps.value(0), 0); // 0 seconds * 1e9 = 0 ns
+        assert_eq!(targets.value(0), 0.0);
 
         Ok(())
     }
 
     #[test]
     fn test_write_with_include_bit() -> Result<()> {
-        let dir = tempfile::tempdir()?;
-        let path = dir.path().join("shard_bit.parquet");
+        let (mut writer, receiver) = test_writer(
+            OutputMode::Node { target_dtype: DataType::Float64 },
+            true,
+            DataType::Int64,
+        );
 
-        let mut writer =
-            ParquetShardWriter::new(&path, OutputMode::Node { target_dtype: DataType::Float64 }, true, DataType::Int64)?;
         writer.write_row(Value::Int(0), 100, &Value::Float(1.0), true)?;
         writer.write_row(Value::Int(1), 100, &Value::Float(2.0), false)?;
         writer.write_row(Value::Int(2), 100, &Value::Float(3.0), true)?;
         let rows = writer.finish()?;
         assert_eq!(rows, 3);
 
-        let file = File::open(&path)?;
-        let reader = parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(file)?
-            .build()?;
+        let batches = collect_batches(receiver);
+        let batch = &batches[0];
+        assert_eq!(batch.num_columns(), 4); // ENTITY, TIMESTAMP, TARGET, ENTITY_INCLUDE_BIT
 
-        for batch in reader {
-            let batch = batch?;
-            assert_eq!(batch.num_columns(), 4);
-            let bits = batch
-                .column(3)
-                .as_any()
-                .downcast_ref::<BooleanArray>()
-                .unwrap();
-            assert!(bits.value(0));   // entity 0: true
-            assert!(!bits.value(1));  // entity 1: false
-            assert!(bits.value(2));   // entity 2: true
-        }
+        let bits = batch.column(3).as_any().downcast_ref::<BooleanArray>().unwrap();
+        assert!(bits.value(0));   // entity 0: true
+        assert!(!bits.value(1));  // entity 1: false
+        assert!(bits.value(2));   // entity 2: true
 
         Ok(())
     }
 
     #[test]
     fn test_batch_flush() -> Result<()> {
-        let dir = tempfile::tempdir()?;
-        let path = dir.path().join("shard_batch.parquet");
-
-        let mut writer =
-            ParquetShardWriter::new(&path, OutputMode::Node { target_dtype: DataType::Float64 }, false, DataType::Int64)?;
+        let (mut writer, receiver) = test_writer(
+            OutputMode::Node { target_dtype: DataType::Float64 },
+            false,
+            DataType::Int64,
+        );
 
         // Write more than BATCH_SIZE rows to trigger auto-flush
         for i in 0..(BATCH_SIZE as i64 + 100) {
@@ -563,79 +542,62 @@ mod tests {
         let rows = writer.finish()?;
         assert_eq!(rows, BATCH_SIZE as u64 + 100);
 
+        let batches = collect_batches(receiver);
+        // Should have at least 2 batches (one full + one partial)
+        assert!(batches.len() >= 2);
+        let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(total_rows, BATCH_SIZE + 100);
+
         Ok(())
     }
 
     #[test]
     fn test_write_exploded() -> Result<()> {
-        let dir = tempfile::tempdir()?;
-        let path = dir.path().join("shard_exploded.parquet");
-
-        let mut writer = ParquetShardWriter::new(
-            &path,
+        let (mut writer, receiver) = test_writer(
             OutputMode::LinkExploded { include_frequency: true, target_dtype: DataType::Utf8 },
             false,
             DataType::Int64,
-        )?;
+        );
+
         writer.write_row_exploded(Value::Int(0), 100, Value::Str("Nike".into()), 3, true)?;
         writer.write_row_exploded(Value::Int(0), 100, Value::Str("Adidas".into()), 1, true)?;
         writer.write_row_exploded(Value::Int(1), 200, Value::Str("Puma".into()), 2, true)?;
         let rows = writer.finish()?;
         assert_eq!(rows, 3);
 
-        let file = File::open(&path)?;
-        let reader = parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(file)?
-            .build()?;
+        let batches = collect_batches(receiver);
+        let batch = &batches[0];
+        assert_eq!(batch.num_columns(), 4); // ENTITY, TIMESTAMP, TARGET, FREQUENCY
 
-        for batch in reader {
-            let batch = batch?;
-            assert_eq!(batch.num_columns(), 4); // ENTITY, TIMESTAMP, TARGET, FREQUENCY
-            let targets = batch
-                .column(2)
-                .as_any()
-                .downcast_ref::<StringArray>()
-                .unwrap();
-            assert_eq!(targets.value(0), "Nike");
-            assert_eq!(targets.value(1), "Adidas");
-            assert_eq!(targets.value(2), "Puma");
+        let targets = batch.column(2).as_any().downcast_ref::<StringArray>().unwrap();
+        assert_eq!(targets.value(0), "Nike");
+        assert_eq!(targets.value(1), "Adidas");
+        assert_eq!(targets.value(2), "Puma");
 
-            let freqs = batch
-                .column(3)
-                .as_any()
-                .downcast_ref::<Int64Array>()
-                .unwrap();
-            assert_eq!(freqs.value(0), 3);
-            assert_eq!(freqs.value(1), 1);
-            assert_eq!(freqs.value(2), 2);
-        }
+        let freqs = batch.column(3).as_any().downcast_ref::<Int64Array>().unwrap();
+        assert_eq!(freqs.value(0), 3);
+        assert_eq!(freqs.value(1), 1);
+        assert_eq!(freqs.value(2), 2);
 
         Ok(())
     }
 
     #[test]
     fn test_write_exploded_no_frequency() -> Result<()> {
-        let dir = tempfile::tempdir()?;
-        let path = dir.path().join("shard_exploded_nf.parquet");
-
-        let mut writer = ParquetShardWriter::new(
-            &path,
+        let (mut writer, receiver) = test_writer(
             OutputMode::LinkExploded { include_frequency: false, target_dtype: DataType::Utf8 },
             false,
             DataType::Int64,
-        )?;
+        );
+
         writer.write_row_exploded(Value::Int(0), 100, Value::Str("Nike".into()), 0, true)?;
         writer.write_row_exploded(Value::Int(0), 100, Value::Str("Adidas".into()), 0, true)?;
         let rows = writer.finish()?;
         assert_eq!(rows, 2);
 
-        let file = File::open(&path)?;
-        let reader = parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(file)?
-            .build()?;
-
-        for batch in reader {
-            let batch = batch?;
-            assert_eq!(batch.num_columns(), 3); // ENTITY, TIMESTAMP, TARGET (no FREQUENCY)
-        }
+        let batches = collect_batches(receiver);
+        let batch = &batches[0];
+        assert_eq!(batch.num_columns(), 3); // ENTITY, TIMESTAMP, TARGET (no FREQUENCY)
 
         Ok(())
     }
@@ -644,15 +606,12 @@ mod tests {
     fn test_write_array() -> Result<()> {
         use arrow_array::{Array, ListArray};
 
-        let dir = tempfile::tempdir()?;
-        let path = dir.path().join("shard_array.parquet");
-
-        let mut writer = ParquetShardWriter::new(
-            &path,
+        let (mut writer, receiver) = test_writer(
             OutputMode::LinkArray { include_frequency: true, target_dtype: DataType::Utf8 },
             false,
             DataType::Int64,
-        )?;
+        );
+
         writer.write_row_array(
             Value::Int(0),
             100,
@@ -664,28 +623,15 @@ mod tests {
         let rows = writer.finish()?;
         assert_eq!(rows, 2);
 
-        let file = File::open(&path)?;
-        let reader = parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(file)?
-            .build()?;
+        let batches = collect_batches(receiver);
+        let batch = &batches[0];
+        assert_eq!(batch.num_columns(), 4); // ENTITY, TIMESTAMP, TARGET(list), FREQUENCY(list)
 
-        for batch in reader {
-            let batch = batch?;
-            assert_eq!(batch.num_columns(), 4); // ENTITY, TIMESTAMP, TARGET(list), FREQUENCY(list)
+        let target_list = batch.column(2).as_any().downcast_ref::<ListArray>().unwrap();
+        assert_eq!(target_list.len(), 2); // 2 rows
 
-            let target_list = batch
-                .column(2)
-                .as_any()
-                .downcast_ref::<ListArray>()
-                .unwrap();
-            assert_eq!(target_list.len(), 2); // 2 rows
-
-            let freq_list = batch
-                .column(3)
-                .as_any()
-                .downcast_ref::<ListArray>()
-                .unwrap();
-            assert_eq!(freq_list.len(), 2);
-        }
+        let freq_list = batch.column(3).as_any().downcast_ref::<ListArray>().unwrap();
+        assert_eq!(freq_list.len(), 2);
 
         Ok(())
     }
