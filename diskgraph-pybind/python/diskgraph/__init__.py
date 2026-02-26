@@ -20,6 +20,9 @@ def __getattr__(name):
     if name == "generate_training_table":
         from .executor import generate_training_table
         return generate_training_table
+    if name == "DiskgraphConfigConverter":
+        from .config_converter import DiskgraphConfigConverter
+        return DiskgraphConfigConverter
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 __all__ = [
@@ -34,6 +37,7 @@ __all__ = [
     "RowFilter",
     "StageFilter",
     "DiskGraphPlanCompiler",
+    "DiskgraphConfigConverter",
     "execute_tt_plan",
     "generate_training_table",
 ]
