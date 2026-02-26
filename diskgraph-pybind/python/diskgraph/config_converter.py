@@ -19,7 +19,6 @@ Usage::
 import os
 from typing import Dict, List, Optional
 
-
 # Mapping from kumo dtype strings to diskgraph ingested_dtype
 _DTYPE_MAP = {
     "int": "int64",
@@ -108,7 +107,7 @@ class DiskgraphConfigConverter:
         for table in kumo_config.get("tables", []):
             tc = table.get("time_col")
             if tc:
-                time_info[table["table_name"]] = tc
+                time_info[table["table_name"]] = tc.get("name") if isinstance(tc, dict) else tc
 
         tables = []
         missing_table_versions: List[str] = []
@@ -116,36 +115,61 @@ class DiskgraphConfigConverter:
 
         for table in kumo_config.get("tables", []):
             table_name = table["table_name"]
-            connector_id = table.get("connector_id", "default")
+            connector_id = table.get("data_source") or table.get("connector_id") or "default"
             source_name = table.get("source_table_name", table_name)
 
-            # Convert columns
+            # Convert columns.  GraphConfig stores pkey and time_col
+            # separately from ``cols``, but the Rust ingest binary
+            # expects them in the columns array as well.
             columns = []
-            for col in table.get("cols", []):
+            col_names_seen: set = set()
+
+            def _append_col(col: dict) -> None:
+                name = col.get("name", "")
+                if not name or name in col_names_seen:
+                    return
+                col_names_seen.add(name)
                 stype_raw = col.get("stype", "")
                 dtype_raw = col.get("dtype", "")
                 semantic_type = _STYPE_MAP.get(stype_raw, stype_raw.lower())
-
-                # Timestamp columns use ingested_dtype "timestamp" regardless
-                # of kumo dtype. The Rust binary requires create_time columns
-                # to have Timestamp/Date ingested_dtype.
                 if semantic_type == "timestamp":
                     ingested_dtype = "timestamp"
                 else:
                     ingested_dtype = _DTYPE_MAP.get(dtype_raw, dtype_raw)
-
                 columns.append({
-                    "name": col["name"],
+                    "name": name,
                     "ingested_dtype": ingested_dtype,
                     "semantic_type": semantic_type,
                 })
 
-            src_create_time = table.get("time_col")
+            # Add pkey and time_col first so they appear in the columns list.
+            raw_pkey_col = table.get("pkey")
+            if isinstance(raw_pkey_col, dict):
+                _append_col(raw_pkey_col)
+            raw_time_col_col = table.get("time_col")
+            if isinstance(raw_time_col_col, dict):
+                _append_col(raw_time_col_col)
+
+            # Add foreign key columns so src_column references resolve.
+            for fk in table.get("fkeys", []):
+                if isinstance(fk, dict):
+                    _append_col(fk)
+
+            for col in table.get("cols", []):
+                _append_col(col)
+
+            raw_src_time = table.get("time_col")
+            src_create_time = (raw_src_time.get("name")
+                               if isinstance(raw_src_time, dict)
+                               else raw_src_time)
 
             # Convert foreign keys with forward/reverse direction specs
             fkeys = []
             for fk in table.get("fkeys", []):
-                dst_table_name = fk["dst_table"]
+                raw_dst = fk["dst_table"]
+                # GraphConfig dst_table is "connector.TABLE"; strip the
+                # connector prefix so it matches the diskgraph table name.
+                dst_table_name = raw_dst.split(".", 1)[-1] if "." in raw_dst else raw_dst
                 fk_spec: dict = {
                     "src_column": fk["name"],
                     "dst_table": dst_table_name,
@@ -192,11 +216,21 @@ class DiskgraphConfigConverter:
                     f"dir={parquet_dir})"
                 )
 
+            # Extract just the column name string from pkey/time_col,
+            # which may be serialized as dicts with a "name" field.
+            raw_pkey = table.get("pkey")
+            if isinstance(raw_pkey, dict):
+                raw_pkey = raw_pkey.get("name")
+
+            raw_time_col = table.get("time_col")
+            if isinstance(raw_time_col, dict):
+                raw_time_col = raw_time_col.get("name")
+
             tables.append({
                 "name": table_name,
                 "columns": columns,
-                "primary_key": table.get("pkey"),
-                "create_time": table.get("time_col"),
+                "primary_key": raw_pkey,
+                "create_time": raw_time_col,
                 "source": {
                     "type": "parquet",
                     "paths": paths,
