@@ -638,6 +638,7 @@ struct RelationDef {
     src_table: String,
     dst_table: String,
     sort_key: Option<RelationSortKeyConfig>,
+    reverse_of: Option<String>,
 }
 
 #[derive(Clone)]
@@ -1367,17 +1368,20 @@ impl IngestContext {
                     .as_ref()
                     .and_then(build_relation_sort_key_config);
 
+                let rev_name = format!("{base}_reverse");
                 relation_defs.push(RelationDef {
                     name: base.clone(),
                     src_table: table.name.clone(),
                     dst_table: fkey.dst_table.clone(),
                     sort_key: dst_sort,
+                    reverse_of: Some(rev_name.clone()),
                 });
                 relation_defs.push(RelationDef {
-                    name: format!("{base}_reverse"),
+                    name: rev_name,
                     src_table: fkey.dst_table.clone(),
                     dst_table: table.name.clone(),
                     sort_key: src_sort,
+                    reverse_of: Some(base.clone()),
                 });
                 relationships.push(RelationshipRuntime {
                     name_forward: base.clone(),
@@ -1392,23 +1396,27 @@ impl IngestContext {
             if let Some(edge) = &table.edge_table {
                 let base = format!("edge_{}", table.name);
                 // Use forward/reverse from EdgeTableSpec directly
+                let fwd_name = format!("{base}_src_to_dst");
+                let rev_name = format!("{base}_dst_to_src");
                 let src_rel = RelationDef {
-                    name: format!("{base}_src_to_dst"),
+                    name: fwd_name.clone(),
                     src_table: edge.src_fk.ref_table.clone(),
                     dst_table: edge.dst_fk.ref_table.clone(),
                     sort_key: edge
                         .forward
                         .as_ref()
                         .and_then(build_relation_sort_key_config),
+                    reverse_of: Some(rev_name.clone()),
                 };
                 let dst_rel = RelationDef {
-                    name: format!("{base}_dst_to_src"),
+                    name: rev_name,
                     src_table: edge.dst_fk.ref_table.clone(),
                     dst_table: edge.src_fk.ref_table.clone(),
                     sort_key: edge
                         .reverse
                         .as_ref()
                         .and_then(build_relation_sort_key_config),
+                    reverse_of: Some(fwd_name),
                 };
                 relation_defs.push(src_rel);
                 relation_defs.push(dst_rel);
@@ -5204,6 +5212,7 @@ impl IngestContext {
                 dest_sort_key_bits: rel.sort_key.as_ref().map(|cfg| cfg.width_bits),
                 dest_sort_key: rel.sort_key.as_ref().map(build_sort_key_metadata),
                 format: EdgeStorageFormat::Binary,
+                reverse_of: rel.reverse_of.clone(),
             });
         }
 

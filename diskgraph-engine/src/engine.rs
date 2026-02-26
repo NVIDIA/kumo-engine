@@ -178,12 +178,32 @@ impl DiskGraphEngine {
             }
         }
 
+        // Build explicit reverse pairs from metadata.
+        let mut reverse_pairs: HashMap<usize, usize> = HashMap::new();
+        for (rel_id, rel) in metadata.edge_relations.iter().enumerate() {
+            if let Some(ref partner_name) = rel.reverse_of {
+                if let Some(partner_id) = metadata
+                    .edge_relations
+                    .iter()
+                    .position(|r| r.name == *partner_name)
+                {
+                    reverse_pairs.insert(rel_id, partner_id);
+                }
+            }
+        }
+        let reverse_pairs_opt = if reverse_pairs.is_empty() {
+            None
+        } else {
+            Some(reverse_pairs)
+        };
+
         println!("Graph loaded. Ready to serve.");
         Ok(Self::new(
             readers,
             relation_info,
             decoders,
             node_decoders_map,
+            reverse_pairs_opt,
             metadata.timestamp_unit,
         ))
     }
@@ -193,6 +213,7 @@ impl DiskGraphEngine {
         relation_info_map: HashMap<usize, (String, String, String)>,
         decoders_map: HashMap<usize, SortKeyDecoder>,
         node_decoders_map: HashMap<String, RowPackDecoder>,
+        reverse_pairs: Option<HashMap<usize, usize>>,
         timestamp_unit: diskgraph_core::time::TimeUnit,
     ) -> Self {
         let mut node_type_to_id = HashMap::new();
@@ -260,22 +281,32 @@ impl DiskGraphEngine {
             }
         }
 
-        // Build forward↔reverse relation pairs from naming convention.
+        // Build forward↔reverse relation pairs.
+        // Prefer explicit pairs from metadata; fall back to naming convention.
         let mut reverse_rel_map: Vec<Option<usize>> = vec![None; id_to_rel_name.len()];
-        for (i, name_i) in id_to_rel_name.iter().enumerate() {
-            if name_i.is_empty() || reverse_rel_map[i].is_some() {
-                continue;
+        if let Some(pairs) = reverse_pairs {
+            for (rel_id, partner_id) in pairs {
+                if rel_id < reverse_rel_map.len() && partner_id < reverse_rel_map.len() {
+                    reverse_rel_map[rel_id] = Some(partner_id);
+                }
             }
-            let partner = if let Some(base) = name_i.strip_suffix("_src_to_dst") {
-                format!("{}_dst_to_src", base)
-            } else if let Some(base) = name_i.strip_suffix("_dst_to_src") {
-                format!("{}_src_to_dst", base)
-            } else {
-                continue;
-            };
-            if let Some(&j) = rel_name_to_id.get(&partner) {
-                reverse_rel_map[i] = Some(j);
-                reverse_rel_map[j] = Some(i);
+        } else {
+            // Fallback: naming convention for old indexes without reverse_of.
+            for (i, name_i) in id_to_rel_name.iter().enumerate() {
+                if name_i.is_empty() || reverse_rel_map[i].is_some() {
+                    continue;
+                }
+                let partner = if let Some(base) = name_i.strip_suffix("_src_to_dst") {
+                    format!("{}_dst_to_src", base)
+                } else if let Some(base) = name_i.strip_suffix("_dst_to_src") {
+                    format!("{}_src_to_dst", base)
+                } else {
+                    continue;
+                };
+                if let Some(&j) = rel_name_to_id.get(&partner) {
+                    reverse_rel_map[i] = Some(j);
+                    reverse_rel_map[j] = Some(i);
+                }
             }
         }
 

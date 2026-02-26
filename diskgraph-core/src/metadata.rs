@@ -91,6 +91,9 @@ pub struct EdgeRelationMetadata {
     pub dest_sort_key: Option<EdgeSortKeyMetadata>,
     #[serde(default = "default_edge_storage_format")]
     pub format: EdgeStorageFormat,
+    /// Name of the paired reverse relation, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reverse_of: Option<String>,
 }
 
 /// Optional dest_sort_key decoding metadata (when present).

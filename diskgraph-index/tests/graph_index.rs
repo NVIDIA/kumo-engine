@@ -105,6 +105,7 @@ fn graph_builder_and_reader_multi_table() {
                 dest_sort_key_bits: None,
                 dest_sort_key: None,
                 format: diskgraph_core::metadata::EdgeStorageFormat::Binary,
+                reverse_of: None,
             },
             EdgeRelationMetadata {
                 name: "Likes".into(),
@@ -125,6 +126,7 @@ fn graph_builder_and_reader_multi_table() {
                 dest_sort_key_bits: None,
                 dest_sort_key: None,
                 format: diskgraph_core::metadata::EdgeStorageFormat::Binary,
+                reverse_of: None,
             },
             EdgeRelationMetadata {
                 name: "Tagged".into(),
@@ -138,6 +140,7 @@ fn graph_builder_and_reader_multi_table() {
                 dest_sort_key_bits: None,
                 dest_sort_key: None,
                 format: diskgraph_core::metadata::EdgeStorageFormat::Binary,
+                reverse_of: None,
             },
         ],
     };

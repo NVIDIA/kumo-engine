@@ -1504,6 +1504,7 @@ pub fn relation_meta(
         dest_sort_key_bits,
         dest_sort_key: None,
         format: diskgraph_core::metadata::EdgeStorageFormat::Binary,
+        reverse_of: None,
     }
 }
 

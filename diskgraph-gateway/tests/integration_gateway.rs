@@ -210,6 +210,7 @@ impl TestGraph {
             relation_info,
             HashMap::new(),
             node_decoders,
+            None,
             diskgraph_core::time::TimeUnit::Seconds,
         );
         Self { _dir: dir, sampler }
