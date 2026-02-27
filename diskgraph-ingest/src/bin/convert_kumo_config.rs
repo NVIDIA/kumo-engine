@@ -13,9 +13,8 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, ValueEnum};
 
 use diskgraph_ingest::config_converter::{
-    convert_kumo_to_diskgraph, estimate_num_shards, ConvertOptions, KumoGraphConfig,
+    convert_kumo_to_diskgraph, ConvertOptions, KumoGraphConfig,
 };
-use diskgraph_ingest::progress::format_bytes;
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum Region {
@@ -57,10 +56,6 @@ struct Args {
     /// AWS profile to use for S3 access
     #[arg(long)]
     profile: Option<String>,
-
-    /// Number of shards for the index (default: not set, ingest binary picks)
-    #[arg(long)]
-    num_shards: Option<usize>,
 }
 
 /// Download a file from S3 using AWS CLI
@@ -200,7 +195,6 @@ fn main() -> Result<()> {
     // Expand S3 directory prefixes to individual parquet file paths.
     // The converter outputs fpv3 directory paths but the ingest binary
     // expects individual file paths (it does HEAD per path, not prefix listing).
-    let mut total_bytes = 0u64;
     for table in &mut diskgraph_config.tables {
         let dir_paths: Vec<String> = table.get_paths().to_vec();
         let mut expanded: Vec<String> = Vec::new();
@@ -220,29 +214,14 @@ fn main() -> Result<()> {
                     table.name,
                     parquet_files.len()
                 );
-                for (path, size) in parquet_files {
+                for (path, _size) in parquet_files {
                     expanded.push(path);
-                    total_bytes = total_bytes.saturating_add(size);
                 }
             } else {
                 expanded.push(dir_path.clone());
             }
         }
         *table.get_paths_mut() = expanded;
-    }
-
-    // Set num_shards if provided, otherwise infer from total size
-    if let Some(shards) = args.num_shards {
-        diskgraph_config.num_shards = Some(shards);
-        eprintln!("Set num_shards to {} (manual override)", shards);
-    } else {
-        let shards = estimate_num_shards(total_bytes);
-        diskgraph_config.num_shards = Some(shards);
-        eprintln!(
-            "Inferred num_shards={} for total data size {}",
-            shards,
-            format_bytes(total_bytes)
-        );
     }
 
     // Serialize output

@@ -464,6 +464,27 @@ impl DiskGraphTTBuilder {
         Ok(())
     }
 
+    /// Logical combination of previously computed boolean aliases.
+    fn logical_op(
+        &mut self,
+        alias: String,
+        op: &str,
+        operands: Vec<String>,
+    ) -> PyResult<()> {
+        let kind = match op {
+            "and" => tt::LogicalOpKind::And,
+            "or" => tt::LogicalOpKind::Or,
+            "not" => tt::LogicalOpKind::Not,
+            _ => return Err(PyValueError::new_err(format!("unknown logical op: {op}"))),
+        };
+        self.current_ops.push(tt::Op::LogicalOp {
+            alias,
+            op: kind,
+            operands,
+        });
+        Ok(())
+    }
+
     /// Close current stage with a short-circuit filter, start new stage.
     fn filter(&mut self, expr: StageFilter) {
         let ops = std::mem::take(&mut self.current_ops);

@@ -66,14 +66,35 @@ pub fn convert_kumo_to_diskgraph(
         tables.push(table_spec);
     }
 
-    Ok(GraphConfig {
+    let mut config = GraphConfig {
         dataset_name: options.dataset_name.clone(),
         tables,
         rowpack: None,
         num_shards: None,
         edge_format: None,
         coercion_mode: Default::default(),
-    })
+    };
+
+    // Best-effort: detect timestamp formats and estimate num_shards.
+    // These require I/O (reading parquet files, listing cloud objects) and may fail
+    // when files aren't accessible (e.g., in tests). The config is still valid without them.
+    let transfer = crate::io::build_input_transfer(&config).ok().flatten();
+
+    if let Err(e) = super::inference::detect_timestamp_formats(&mut config, &transfer) {
+        eprintln!("Warning: timestamp format detection failed: {e}");
+    }
+
+    match super::inference::compute_total_bytes(&config, &transfer) {
+        Ok(total_bytes) if total_bytes > 0 => {
+            config.num_shards = Some(super::inference::estimate_num_shards(total_bytes));
+        }
+        Err(e) => {
+            eprintln!("Warning: num_shards estimation failed: {e}");
+        }
+        _ => {}
+    }
+
+    Ok(config)
 }
 
 /// Convert a single Kumo table to a DiskGraph TableSpec.

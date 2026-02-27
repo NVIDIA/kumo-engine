@@ -87,7 +87,9 @@ pub fn build_store_for_cloud_path(path: &str) -> Result<Arc<dyn ObjectStore>> {
             endpoint: std::env::var("S3_ENDPOINT").ok(),
             allow_http: None,
             virtual_hosted: None,
-            profile: std::env::var("S3_PROFILE").ok(),
+            profile: std::env::var("S3_PROFILE")
+                .or_else(|_| std::env::var("AWS_PROFILE"))
+                .ok(),
             access_key_id: None,
             secret_access_key: None,
             session_token: None,
@@ -208,7 +210,9 @@ impl OutputTarget {
                     endpoint: None,
                     allow_http: None,
                     virtual_hosted: None,
-                    profile: std::env::var("S3_PROFILE").ok(),
+                    profile: std::env::var("S3_PROFILE")
+                .or_else(|_| std::env::var("AWS_PROFILE"))
+                .ok(),
                     access_key_id: None,
                     secret_access_key: None,
                     session_token: None,

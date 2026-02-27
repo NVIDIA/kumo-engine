@@ -380,4 +380,16 @@ class DiskGraphPlanCompiler:
             # recurse into the rhs_target (the actual Aggregation).
             return self._traverse_target(node.rhs_target, query)
 
+        elif isinstance(node, LogicalOperation):
+            left_alias = self._traverse_target(node.left, query)
+            if node.bool_op == BoolOp.NOT:
+                alias = self._next_alias("logic")
+                self.builder.logical_op(alias, "not", [left_alias])
+                return alias
+            right_alias = self._traverse_target(node.right, query)
+            alias = self._next_alias("logic")
+            op_str = "and" if node.bool_op == BoolOp.AND else "or"
+            self.builder.logical_op(alias, op_str, [left_alias, right_alias])
+            return alias
+
         raise ValueError(f"Unsupported target node: {type(node)}")

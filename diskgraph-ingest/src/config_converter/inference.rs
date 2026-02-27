@@ -44,7 +44,15 @@ pub fn detect_timestamp_formats(
         if all_paths.is_empty() {
             continue;
         }
-        let path = all_paths[0].clone();
+
+        // Resolve the first path to an actual parquet file.
+        // Paths from the converter are directory prefixes (e.g., "s3://.../version/")
+        // so we need to list and pick the first .parquet file.
+        let first_parquet = resolve_first_parquet_file(&all_paths[0], input_transfer)?;
+        let path = match first_parquet {
+            Some(p) => p,
+            None => continue, // No parquet files found, skip this table
+        };
 
         // Open the first parquet file (cloud or local).
         let pooled = if let Some(transfer) = input_transfer {
@@ -150,6 +158,125 @@ pub fn detect_timestamp_formats(
         }
     }
     Ok(())
+}
+
+/// Compute total bytes across all table paths in a GraphConfig.
+///
+/// For local paths, walks directories and sums file sizes.
+/// For cloud paths, lists objects under the prefix and sums sizes.
+pub fn compute_total_bytes(
+    config: &GraphConfig,
+    input_transfer: &Option<CloudTransfer>,
+) -> Result<u64> {
+    let mut total: u64 = 0;
+    for table in &config.tables {
+        for path in table.get_paths() {
+            if is_cloud_path(path) {
+                if let Some(transfer) = input_transfer {
+                    total += compute_cloud_dir_bytes(transfer, path)?;
+                }
+            } else {
+                total += compute_local_dir_bytes(path);
+            }
+        }
+    }
+    Ok(total)
+}
+
+/// Resolve a path (which may be a directory prefix) to the first .parquet file.
+///
+/// - Cloud directory prefixes (ending with `/`): lists objects and picks the first `.parquet`.
+/// - Cloud file paths: returned as-is if they end with `.parquet`.
+/// - Local directories: walks entries and picks the first `.parquet`.
+/// - Local file paths: returned as-is if they end with `.parquet`.
+fn resolve_first_parquet_file(
+    path: &str,
+    transfer: &Option<CloudTransfer>,
+) -> Result<Option<String>> {
+    if is_cloud_path(path) {
+        if path.ends_with('/') || !path.ends_with(".parquet") {
+            // Directory prefix — list and find first parquet file.
+            if let Some(transfer) = transfer {
+                let prefix = crate::io::object_path_from_cloud_url(path)?;
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()?;
+                let objects = rt.block_on(transfer.list_objects(&prefix))?;
+                // Find first .parquet object and reconstruct full cloud URL.
+                let base_url = path.trim_end_matches('/');
+                // Strip the prefix portion from the base URL to get the bucket root.
+                let bucket_root = base_url
+                    .find("://")
+                    .and_then(|i| base_url[i + 3..].find('/').map(|j| &base_url[..i + 3 + j]))
+                    .unwrap_or(base_url);
+                for obj in &objects {
+                    let loc = obj.location.as_ref().to_string();
+                    if loc.ends_with(".parquet") {
+                        return Ok(Some(format!("{}/{}", bucket_root, loc)));
+                    }
+                }
+                return Ok(None);
+            }
+            Ok(None)
+        } else {
+            Ok(Some(path.to_string()))
+        }
+    } else {
+        // Local path
+        let p = std::path::Path::new(path.trim_end_matches('/'));
+        if p.is_dir() {
+            let mut entries: Vec<_> = std::fs::read_dir(p)?
+                .flatten()
+                .filter(|e| {
+                    e.path()
+                        .extension()
+                        .map(|ext| ext == "parquet")
+                        .unwrap_or(false)
+                })
+                .collect();
+            entries.sort_by_key(|e| e.file_name());
+            Ok(entries
+                .first()
+                .map(|e| e.path().to_string_lossy().to_string()))
+        } else if path.ends_with(".parquet") {
+            Ok(Some(path.to_string()))
+        } else {
+            Ok(None)
+        }
+    }
+}
+
+/// Sum file sizes in a local directory or single file.
+fn compute_local_dir_bytes(dir_path: &str) -> u64 {
+    let dir_path = dir_path.trim_end_matches('/');
+    let entries = match std::fs::read_dir(dir_path) {
+        Ok(entries) => entries,
+        Err(_) => {
+            // Maybe it's a single file, not a directory
+            return std::fs::metadata(dir_path)
+                .map(|m| m.len())
+                .unwrap_or(0);
+        }
+    };
+    let mut total: u64 = 0;
+    for entry in entries.flatten() {
+        if let Ok(meta) = entry.metadata() {
+            if meta.is_file() {
+                total += meta.len();
+            }
+        }
+    }
+    total
+}
+
+/// Sum object sizes under a cloud prefix.
+fn compute_cloud_dir_bytes(transfer: &CloudTransfer, path: &str) -> Result<u64> {
+    let prefix = crate::io::object_path_from_cloud_url(path)?;
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let objects = rt.block_on(transfer.list_objects(&prefix))?;
+    Ok(objects.iter().map(|o| o.size as u64).sum())
 }
 
 /// Estimate the optimal number of shards based on total dataset size.

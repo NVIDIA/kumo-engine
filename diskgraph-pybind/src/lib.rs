@@ -579,18 +579,16 @@ pub fn export_tt_artifacts(config: &ExportConfig) -> PyResult<()> {
 }
 
 #[pyfunction]
-#[pyo3(signature = (kumo_config_json, data_persist_dir, dataset_name, table_data_versions_json=None, detect_timestamps=false))]
+#[pyo3(signature = (kumo_config_json, data_persist_dir, dataset_name, table_data_versions_json=None))]
 pub fn convert_kumo_config(
     kumo_config_json: &str,
     data_persist_dir: &str,
     dataset_name: &str,
     table_data_versions_json: Option<&str>,
-    detect_timestamps: bool,
 ) -> PyResult<String> {
     use diskgraph_ingest::config_converter::{
-        convert_kumo_to_diskgraph, detect_timestamp_formats, ConvertOptions, KumoGraphConfig,
+        convert_kumo_to_diskgraph, ConvertOptions, KumoGraphConfig,
     };
-    use diskgraph_ingest::io::build_input_transfer;
 
     let kumo_config: KumoGraphConfig = serde_json::from_str(kumo_config_json)
         .map_err(|e| PyValueError::new_err(format!("Invalid kumo config JSON: {e}")))?;
@@ -613,15 +611,9 @@ pub fn convert_kumo_config(
         table_data_versions,
     };
 
-    let mut diskgraph_config = convert_kumo_to_diskgraph(&kumo_config, &options)
+    // convert_kumo_to_diskgraph handles everything: schema, timestamp detection, num_shards.
+    let diskgraph_config = convert_kumo_to_diskgraph(&kumo_config, &options)
         .map_err(|e| PyRuntimeError::new_err(format!("Config conversion failed: {e}")))?;
-
-    if detect_timestamps {
-        let transfer = build_input_transfer(&diskgraph_config)
-            .map_err(|e| PyRuntimeError::new_err(format!("Failed to build cloud transfer: {e}")))?;
-        detect_timestamp_formats(&mut diskgraph_config, &transfer)
-            .map_err(|e| PyRuntimeError::new_err(format!("Timestamp detection failed: {e}")))?;
-    }
 
     serde_json::to_string(&diskgraph_config)
         .map_err(|e| PyRuntimeError::new_err(format!("Failed to serialize config: {e}")))

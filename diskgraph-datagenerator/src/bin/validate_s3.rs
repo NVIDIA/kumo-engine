@@ -54,10 +54,6 @@ struct Args {
     #[arg(long)]
     index_mem_budget_bytes: Option<u64>,
 
-    /// Number of shards for the dataset.
-    #[arg(long)]
-    num_shards: Option<usize>,
-
     /// S3 bucket to use (default: kumo-prod-dataplane-bucket, or kumo-doordash-cache for doordash)
     #[arg(long)]
     bucket: Option<String>,
@@ -135,7 +131,6 @@ async fn main() -> Result<()> {
                 args.resume,
                 args.parallel,
                 args.index_mem_budget_bytes,
-                args.num_shards,
                 args.bucket.clone(),
                 args.use_config_converter,
             )
@@ -245,7 +240,6 @@ async fn validate_job(
     resume: bool,
     parallel: bool,
     index_mem_budget_bytes: Option<u64>,
-    num_shards: Option<usize>,
     bucket: Option<String>,
     use_config_converter: bool,
 ) -> Result<ValidationReport> {
@@ -356,12 +350,6 @@ async fn validate_job(
             *table.get_paths_mut() = parquet_files;
         }
 
-        // Apply num_shards override
-        if let Some(shards) = num_shards {
-            println!("Overriding num_shards to {}", shards);
-            diskgraph_config.num_shards = Some(shards);
-        }
-
         fs::write(
             &metadata_path,
             serde_json::to_vec_pretty(&diskgraph_config)?,
@@ -376,12 +364,7 @@ async fn validate_job(
             infer_opts.graph_config = Some(serde_json::from_value(cfg.clone())?);
         }
 
-        let mut infer_res = infer_source_metadata(&source_root, infer_opts)?;
-
-        if let Some(shards) = num_shards {
-            println!("Overriding num_shards to {}", shards);
-            infer_res.metadata.num_shards = Some(shards);
-        }
+        let infer_res = infer_source_metadata(&source_root, infer_opts)?;
 
         fs::write(
             &metadata_path,

@@ -4592,3 +4592,190 @@ fn integ_g3_lp_entity_filter() {
     assert!(as_set.contains(&(1, "0".into(), 15)));
     assert!(as_set.contains(&(1, "1".into(), 15)));
 }
+
+// ─── Tests: LogicalOp (target-level boolean logic) ──────────────────────────
+
+#[test]
+fn integ_logical_not_target() {
+    // PREDICT NOT users.name='alice' FOR users.user_id
+    let dir = tempfile::tempdir().unwrap();
+    let index = build_graph1(dir.path());
+
+    let plan = g1_plan(vec![Stage {
+        ops: vec![
+            Op::Column {
+                alias: "nm".to_string(),
+                table: "users".to_string(),
+                column: "name".to_string(),
+            },
+            Op::Compare {
+                alias: "is_alice".to_string(),
+                lhs: "nm".to_string(),
+                op: CompareOp::Eq,
+                rhs: Value::Str("alice".to_string()),
+            },
+            Op::LogicalOp {
+                alias: "not_alice".to_string(),
+                op: LogicalOpKind::Not,
+                operands: vec!["is_alice".to_string()],
+            },
+        ],
+        filter: None,
+    }]);
+    let groups = execute_and_group_bool(&plan, &index);
+    assert_eq!(groups.len(), 5);
+    assert!(!groups[&0][0].1, "alice: NOT true = false");
+    assert!(groups[&1][0].1, "bob: NOT false = true");
+    assert!(groups[&2][0].1, "carol: NOT false = true");
+    assert!(groups[&3][0].1, "dave: NOT false = true");
+    assert!(groups[&4][0].1, "eve: NOT false = true");
+}
+
+#[test]
+fn integ_logical_and_target() {
+    // PREDICT (COUNT(orders) > 2 AND COUNT(orders) < 4) FOR users.user_id
+    // alice=4 → F, bob=2 → F, carol=1 → F, dave=3 → T, eve=0 → F
+    let dir = tempfile::tempdir().unwrap();
+    let index = build_graph1(dir.path());
+
+    let plan = g1_temporal(
+        vec![
+            Stage {
+                ops: vec![count_orders_op("cnt", Some((0, 5000)))],
+                filter: None,
+            },
+            Stage {
+                ops: vec![
+                    Op::Compare {
+                        alias: "gt2".to_string(),
+                        lhs: "cnt".to_string(),
+                        op: CompareOp::Gt,
+                        rhs: Value::Int(2),
+                    },
+                    Op::Compare {
+                        alias: "lt4".to_string(),
+                        lhs: "cnt".to_string(),
+                        op: CompareOp::Lt,
+                        rhs: Value::Int(4),
+                    },
+                    Op::LogicalOp {
+                        alias: "both".to_string(),
+                        op: LogicalOpKind::And,
+                        operands: vec!["gt2".to_string(), "lt4".to_string()],
+                    },
+                ],
+                filter: None,
+            },
+        ],
+        vec![0],
+    );
+    let groups = execute_and_group_bool(&plan, &index);
+    assert!(!groups[&0][0].1, "alice: 4>2 AND 4<4 = false");
+    assert!(!groups[&1][0].1, "bob: 2>2 AND 2<4 = false");
+    assert!(!groups[&2][0].1, "carol: 1>2 AND 1<4 = false");
+    assert!(groups[&3][0].1, "dave: 3>2 AND 3<4 = true");
+    assert!(!groups[&4][0].1, "eve: 0>2 AND 0<4 = false");
+}
+
+#[test]
+fn integ_logical_or_target() {
+    // PREDICT (users.name='alice' OR users.name='bob') FOR users.user_id
+    let dir = tempfile::tempdir().unwrap();
+    let index = build_graph1(dir.path());
+
+    let plan = g1_plan(vec![Stage {
+        ops: vec![
+            Op::Column {
+                alias: "nm".to_string(),
+                table: "users".to_string(),
+                column: "name".to_string(),
+            },
+            Op::Compare {
+                alias: "is_alice".to_string(),
+                lhs: "nm".to_string(),
+                op: CompareOp::Eq,
+                rhs: Value::Str("alice".to_string()),
+            },
+            Op::Compare {
+                alias: "is_bob".to_string(),
+                lhs: "nm".to_string(),
+                op: CompareOp::Eq,
+                rhs: Value::Str("bob".to_string()),
+            },
+            Op::LogicalOp {
+                alias: "either".to_string(),
+                op: LogicalOpKind::Or,
+                operands: vec!["is_alice".to_string(), "is_bob".to_string()],
+            },
+        ],
+        filter: None,
+    }]);
+    let groups = execute_and_group_bool(&plan, &index);
+    assert!(groups[&0][0].1, "alice: true OR false = true");
+    assert!(groups[&1][0].1, "bob: false OR true = true");
+    assert!(!groups[&2][0].1, "carol: false OR false = false");
+    assert!(!groups[&3][0].1, "dave: false OR false = false");
+    assert!(!groups[&4][0].1, "eve: false OR false = false");
+}
+
+#[test]
+fn integ_logical_nested_not_and() {
+    // PREDICT NOT(COUNT(orders) > 2 AND users.name='alice') FOR users.user_id
+    // alice: NOT(true AND true) = false
+    // bob: NOT(false AND false) = true
+    // carol: NOT(false AND false) = true
+    // dave: NOT(true AND false) = true
+    // eve: NOT(false AND false) = true
+    let dir = tempfile::tempdir().unwrap();
+    let index = build_graph1(dir.path());
+
+    let plan = g1_temporal(
+        vec![
+            Stage {
+                ops: vec![
+                    count_orders_op("cnt", Some((0, 5000))),
+                    Op::Column {
+                        alias: "nm".to_string(),
+                        table: "users".to_string(),
+                        column: "name".to_string(),
+                    },
+                ],
+                filter: None,
+            },
+            Stage {
+                ops: vec![
+                    Op::Compare {
+                        alias: "gt2".to_string(),
+                        lhs: "cnt".to_string(),
+                        op: CompareOp::Gt,
+                        rhs: Value::Int(2),
+                    },
+                    Op::Compare {
+                        alias: "is_alice".to_string(),
+                        lhs: "nm".to_string(),
+                        op: CompareOp::Eq,
+                        rhs: Value::Str("alice".to_string()),
+                    },
+                    Op::LogicalOp {
+                        alias: "conj".to_string(),
+                        op: LogicalOpKind::And,
+                        operands: vec!["gt2".to_string(), "is_alice".to_string()],
+                    },
+                    Op::LogicalOp {
+                        alias: "neg".to_string(),
+                        op: LogicalOpKind::Not,
+                        operands: vec!["conj".to_string()],
+                    },
+                ],
+                filter: None,
+            },
+        ],
+        vec![0],
+    );
+    let groups = execute_and_group_bool(&plan, &index);
+    assert!(!groups[&0][0].1, "alice: NOT(T AND T) = false");
+    assert!(groups[&1][0].1, "bob: NOT(F AND F) = true");
+    assert!(groups[&2][0].1, "carol: NOT(F AND F) = true");
+    assert!(groups[&3][0].1, "dave: NOT(T AND F) = true");
+    assert!(groups[&4][0].1, "eve: NOT(F AND F) = true");
+}

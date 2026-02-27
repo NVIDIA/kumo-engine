@@ -359,6 +359,46 @@ fn execute_stages(
                         None => None, // NULL propagation: NULL op x → NULL
                     }
                 }
+                ResolvedOp::LogicalOp(lop) => {
+                    use diskgraph_core::tt_builder::LogicalOpKind;
+                    match lop.op {
+                        LogicalOpKind::Not => {
+                            match &aliases[lop.operand_indices[0]] {
+                                Some(Value::Bool(b)) => Some(Value::Bool(!b)),
+                                None => None,
+                                _ => None, // non-bool → NULL
+                            }
+                        }
+                        LogicalOpKind::And => {
+                            // 3-valued logic: false AND anything = false
+                            let a = &aliases[lop.operand_indices[0]];
+                            let b = &aliases[lop.operand_indices[1]];
+                            match (a, b) {
+                                (Some(Value::Bool(false)), _) | (_, Some(Value::Bool(false))) => {
+                                    Some(Value::Bool(false))
+                                }
+                                (Some(Value::Bool(true)), Some(Value::Bool(true))) => {
+                                    Some(Value::Bool(true))
+                                }
+                                _ => None, // NULL AND true = NULL
+                            }
+                        }
+                        LogicalOpKind::Or => {
+                            // 3-valued logic: true OR anything = true
+                            let a = &aliases[lop.operand_indices[0]];
+                            let b = &aliases[lop.operand_indices[1]];
+                            match (a, b) {
+                                (Some(Value::Bool(true)), _) | (_, Some(Value::Bool(true))) => {
+                                    Some(Value::Bool(true))
+                                }
+                                (Some(Value::Bool(false)), Some(Value::Bool(false))) => {
+                                    Some(Value::Bool(false))
+                                }
+                                _ => None, // NULL OR false = NULL
+                            }
+                        }
+                    }
+                }
             };
             aliases[op.alias_idx()] = result;
         }

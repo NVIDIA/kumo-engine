@@ -69,13 +69,11 @@ class DiskgraphConfigConverter:
             kumo_graph_config = json.load(f)
         return cls(kumo_graph_config, data_persist_dir, table_data_versions)
 
-    def convert(self, detect_timestamps: bool = True) -> dict:
+    def convert(self) -> dict:
         """Convert to diskgraph ingest config dict.
 
-        Args:
-            detect_timestamps: If True, open first parquet file per table
-                to detect timestamp format strings for string-backed
-                timestamp/date columns.
+        The Rust converter handles everything: schema mapping, timestamp
+        format detection, and num_shards estimation.
 
         Returns:
             Dict ready to be serialized to JSON and passed to the ingest binary.
@@ -93,13 +91,12 @@ class DiskgraphConfigConverter:
         else:
             dataset_name = raw_name or ""
 
-        # Call the Rust converter.
+        # Call the Rust converter (handles timestamps + num_shards internally).
         result_json = _convert_rust(
             json.dumps(self.kumo_config),
             self.data_persist_dir,
             dataset_name,
             json.dumps(self.table_data_versions),
-            detect_timestamps,
         )
         config = json.loads(result_json)
 

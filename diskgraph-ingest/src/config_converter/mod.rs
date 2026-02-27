@@ -10,7 +10,7 @@ mod types;
 
 pub use crate::errors::ConvertError;
 pub use convert::{convert_kumo_to_diskgraph, ConvertOptions};
-pub use inference::{detect_timestamp_formats, estimate_num_shards};
+pub use inference::detect_timestamp_formats;
 pub use mapping::{map_kumo_dtype, map_timestamp_unit};
 pub use types::*;
 

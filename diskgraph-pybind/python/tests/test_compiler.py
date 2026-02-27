@@ -11,7 +11,7 @@ from kumoapi.pquery.AST import (
     LogicalOperation,
     DateOffsetRange,
 )
-from kumoapi.typing import AggregationType, RelOp, TimeUnit
+from kumoapi.typing import AggregationType, BoolOp, RelOp, TimeUnit
 from diskgraph import DiskGraphPlanCompiler
 
 def test_compiler_basic_aggregation():
@@ -229,6 +229,136 @@ def test_compiler_pql_e2e():
     assert op["window"] == [-30, 0]
     # Normalized
     assert plan["temporal"]["timestamps"] == [1700000000]
+
+def test_compiler_not_target():
+    # PREDICT NOT transactions.status='paid' FOR users.user_id
+    inner_cond = Condition(
+        target=Column(fqn="transactions.status"),
+        op=RelOp.EQ,
+        value=Constant.from_value("paid"),
+    )
+    inner_cond.target = Join(
+        rhs_target=Column(fqn="transactions.status"),
+        lhs_key="users.user_id",
+        rhs_key="transactions.user_id",
+    )
+    target_ast = LogicalOperation(
+        left=inner_cond,
+        bool_op=BoolOp.NOT,
+    )
+
+    query = ValidatedPredictiveQuery(
+        entity_ast=Column(fqn="users.user_id"),
+        target_ast=target_ast,
+    )
+    query._query_type = "STATIC"
+
+    compiler = DiskGraphPlanCompiler()
+    plan_json = compiler.compile(query=query, timestamps=[], forecast_length=1, lag_timesteps=None)
+    plan = json.loads(plan_json)
+
+    stage = plan["stages"][0]
+    ops = stage["ops"]
+    last_op = ops[-1]
+    assert "logical_op" in last_op, f"Expected logical_op, got {list(last_op.keys())}"
+    lop = last_op["logical_op"]
+    assert lop["op"] == "not"
+    assert len(lop["operands"]) == 1
+
+
+def test_compiler_and_target():
+    # PREDICT (transactions.status='paid' AND transactions.status='shipped') FOR users.user_id
+    cond1 = Condition(
+        target=Column(fqn="transactions.status"),
+        op=RelOp.EQ,
+        value=Constant.from_value("paid"),
+    )
+    cond1.target = Join(
+        rhs_target=Column(fqn="transactions.status"),
+        lhs_key="users.user_id",
+        rhs_key="transactions.user_id",
+    )
+    cond2 = Condition(
+        target=Column(fqn="transactions.status"),
+        op=RelOp.EQ,
+        value=Constant.from_value("shipped"),
+    )
+    cond2.target = Join(
+        rhs_target=Column(fqn="transactions.status"),
+        lhs_key="users.user_id",
+        rhs_key="transactions.user_id",
+    )
+    target_ast = LogicalOperation(
+        left=cond1,
+        right=cond2,
+        bool_op=BoolOp.AND,
+    )
+
+    query = ValidatedPredictiveQuery(
+        entity_ast=Column(fqn="users.user_id"),
+        target_ast=target_ast,
+    )
+    query._query_type = "STATIC"
+
+    compiler = DiskGraphPlanCompiler()
+    plan_json = compiler.compile(query=query, timestamps=[], forecast_length=1, lag_timesteps=None)
+    plan = json.loads(plan_json)
+
+    stage = plan["stages"][0]
+    ops = stage["ops"]
+    last_op = ops[-1]
+    assert "logical_op" in last_op, f"Expected logical_op, got {list(last_op.keys())}"
+    lop = last_op["logical_op"]
+    assert lop["op"] == "and"
+    assert len(lop["operands"]) == 2
+
+
+def test_compiler_or_target():
+    # PREDICT (transactions.status='paid' OR transactions.status='shipped') FOR users.user_id
+    cond1 = Condition(
+        target=Column(fqn="transactions.status"),
+        op=RelOp.EQ,
+        value=Constant.from_value("paid"),
+    )
+    cond1.target = Join(
+        rhs_target=Column(fqn="transactions.status"),
+        lhs_key="users.user_id",
+        rhs_key="transactions.user_id",
+    )
+    cond2 = Condition(
+        target=Column(fqn="transactions.status"),
+        op=RelOp.EQ,
+        value=Constant.from_value("shipped"),
+    )
+    cond2.target = Join(
+        rhs_target=Column(fqn="transactions.status"),
+        lhs_key="users.user_id",
+        rhs_key="transactions.user_id",
+    )
+    target_ast = LogicalOperation(
+        left=cond1,
+        right=cond2,
+        bool_op=BoolOp.OR,
+    )
+
+    query = ValidatedPredictiveQuery(
+        entity_ast=Column(fqn="users.user_id"),
+        target_ast=target_ast,
+    )
+    query._query_type = "STATIC"
+
+    compiler = DiskGraphPlanCompiler()
+    plan_json = compiler.compile(query=query, timestamps=[], forecast_length=1, lag_timesteps=None)
+    plan = json.loads(plan_json)
+
+    stage = plan["stages"][0]
+    ops = stage["ops"]
+    last_op = ops[-1]
+    assert "logical_op" in last_op, f"Expected logical_op, got {list(last_op.keys())}"
+    lop = last_op["logical_op"]
+    assert lop["op"] == "or"
+    assert len(lop["operands"]) == 2
+
 
 def test_timestamp_normalization():
     from diskgraph.compiler import DiskGraphPlanCompiler

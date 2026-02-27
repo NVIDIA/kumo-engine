@@ -59,6 +59,7 @@ pub enum ResolvedOp {
     Aggregate(ResolvedAggregate),
     Column(ResolvedColumn),
     Compare(ResolvedCompare),
+    LogicalOp(ResolvedLogicalOp),
 }
 
 impl ResolvedOp {
@@ -67,6 +68,7 @@ impl ResolvedOp {
             ResolvedOp::Aggregate(a) => a.alias_idx,
             ResolvedOp::Column(c) => c.alias_idx,
             ResolvedOp::Compare(c) => c.alias_idx,
+            ResolvedOp::LogicalOp(l) => l.alias_idx,
         }
     }
 }
@@ -92,6 +94,12 @@ pub struct ResolvedCompare {
     pub lhs_alias_idx: usize,
     pub op: CompareOp,
     pub rhs: Value,
+}
+
+pub struct ResolvedLogicalOp {
+    pub alias_idx: usize,
+    pub op: LogicalOpKind,
+    pub operand_indices: Vec<usize>,
 }
 
 /// A resolved edge hop: relation index + sort key encoder + destination table.
@@ -237,6 +245,7 @@ pub fn resolve_plan(
                 Op::Aggregate { alias, .. } => alias,
                 Op::Column { alias, .. } => alias,
                 Op::Compare { alias, .. } => alias,
+                Op::LogicalOp { alias, .. } => alias,
             };
             alias_names.push(alias.clone());
         }
@@ -529,6 +538,23 @@ fn resolve_op(
                 rhs: rhs.clone(),
             }))
         }
+        Op::LogicalOp { alias, op, operands } => {
+            let alias_idx = alias_to_idx[alias];
+            let operand_indices = operands
+                .iter()
+                .map(|name| {
+                    alias_to_idx
+                        .get(name)
+                        .copied()
+                        .ok_or_else(|| anyhow::anyhow!("alias '{}' not found", name))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            Ok(ResolvedOp::LogicalOp(ResolvedLogicalOp {
+                alias_idx,
+                op: *op,
+                operand_indices,
+            }))
+        }
     }
 }
 
@@ -807,7 +833,7 @@ fn infer_target_dtype(plan: &DiskGraphTTPlan, stages: &[ResolvedStage]) -> DataT
         .flat_map(|s| s.ops.iter().rev())
         .next();
     match last_plan_op {
-        Some(Op::Compare { .. }) => DataType::Boolean,
+        Some(Op::Compare { .. }) | Some(Op::LogicalOp { .. }) => DataType::Boolean,
         // COUNT/COUNT_DISTINCT always produce integer counts.
         Some(Op::Aggregate { func, .. })
             if matches!(func, AggFunc::Count | AggFunc::CountDistinct) =>

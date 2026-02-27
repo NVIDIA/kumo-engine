@@ -129,6 +129,22 @@ pub enum Op {
         op: CompareOp,
         rhs: Value,
     },
+    /// Logical combination of previously computed boolean aliases.
+    LogicalOp {
+        alias: String,
+        op: LogicalOpKind,
+        /// For `Not`: single operand. For `And`/`Or`: two operands.
+        operands: Vec<String>,
+    },
+}
+
+/// Kind of logical operation on boolean values.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LogicalOpKind {
+    And,
+    Or,
+    Not,
 }
 
 /// Directed foreign-key reference between two tables.
