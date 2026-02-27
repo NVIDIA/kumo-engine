@@ -2,11 +2,12 @@ use crate::engine::{DiskGraphEngine, ShardHandle};
 use crate::output::OutputHandler;
 use crate::state::SamplingState;
 use diskgraph_core::dataset::DatasetId;
+use diskgraph_core::metadata::{DatasetMetadata, NodeShardMetadata, NodeTypeMetadata};
 use diskgraph_core::sampling::*;
 use diskgraph_index::layout::{OffsetFileHeader, RelationLayout, EDGES_FILENAME, OFFSETS_FILENAME};
 use diskgraph_index::reader::ShardReader;
 use std::collections::HashMap;
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::Write;
 use std::sync::Arc;
 use tempfile::TempDir;
@@ -463,4 +464,96 @@ fn test_sampling_empty_seeds() {
 
     assert_eq!(output.edges.len(), 0);
     assert_eq!(state.stats.total_nodes, 0);
+}
+
+/// Helper: write a minimal valid shard (1 node, 0 edges, with node data)
+/// into the given directory.
+fn write_minimal_shard(shard_dir: &std::path::Path) {
+    fs::create_dir_all(shard_dir).unwrap();
+
+    // RowPack context for one column
+    let cols = vec![RowPackColumn {
+        name: "feat".into(),
+        logical_type: IngestedType::Int64,
+        fixed_len: None,
+        precision: None,
+        scale: None,
+    }];
+    let mut ctx_builder = RowPackContextBuilder::new(cols, RowPackConfig::default());
+    let row = vec![ValueRef::Int64(1)];
+    ctx_builder.observe_row(&row).unwrap();
+    let ctx = ctx_builder.finish().unwrap();
+    let encoder = RowPackEncoder::new(ctx).unwrap();
+    let mut scratch = RowPackScratch::new(encoder.context());
+    let mut node_data = Vec::new();
+    encoder
+        .encode_row_into(&row, &mut node_data, &mut scratch)
+        .unwrap();
+
+    // edges.bin: 1 node, 0 edges
+    let mut f = File::create(shard_dir.join(EDGES_FILENAME)).unwrap();
+    f.write_all(&[0x00]).unwrap(); // 0 edges
+    f.write_all(&(node_data.len() as u16).to_le_bytes()).unwrap();
+    f.write_all(&node_data).unwrap();
+    f.flush().unwrap();
+    let edges_len = f.metadata().unwrap().len();
+
+    // offsets.bin: 1 node → 2 offsets
+    let header = OffsetFileHeader::new(1, 2);
+    let header_bytes = bincode::serialize(&header).unwrap();
+    let mut offsets = Vec::new();
+    offsets.extend_from_slice(&header_bytes);
+    offsets.extend_from_slice(&2u16.to_le_bytes()); // chunk count = 2
+    offsets.extend_from_slice(&0u64.to_le_bytes()); // base offset = 0
+    let node_len = (1 + 2 + node_data.len()) as u16;
+    offsets.extend_from_slice(&node_len.to_le_bytes());
+    assert_eq!(node_len as u64, edges_len);
+    let mut f = File::create(shard_dir.join(OFFSETS_FILENAME)).unwrap();
+    f.write_all(&offsets).unwrap();
+}
+
+/// Verify that DiskGraphEngine::load() finds shard dirs via lowercase
+/// fallback when metadata preserves original (mixed-case) table names.
+#[test]
+fn load_finds_lowercase_node_dir() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+
+    // Write shard under lowercase path: nodes/user/shard-00000/
+    let shard_dir = root.join("nodes").join("user").join("shard-00000");
+    write_minimal_shard(&shard_dir);
+
+    // Write metadata with uppercase "User" in node_types
+    let metadata = DatasetMetadata {
+        dataset_name: "test".into(),
+        timestamp_unit: diskgraph_core::time::TimeUnit::Seconds,
+        node_types: vec![NodeTypeMetadata {
+            name: "User".into(),
+            max_id: 0,
+            has_node_data: true,
+            node_data_compression: None,
+            primary_key_map: None,
+            create_time_col: None,
+            end_time_col: None,
+            shards: vec![NodeShardMetadata {
+                min_id: 0,
+                max_id: 0,
+                node_data_paths: None,
+            }],
+        }],
+        edge_relations: vec![],
+    };
+    let metadata_json = serde_json::to_string_pretty(&metadata).unwrap();
+    fs::write(root.join("index_metadata.json"), &metadata_json).unwrap();
+
+    // Load should succeed via lowercase fallback (no "User" dir exists)
+    let engine = DiskGraphEngine::load(root).unwrap();
+
+    // Verify the shard was loaded (can look up node 0 for type "User")
+    let type_id = engine.node_type_to_id["User"];
+    assert_eq!(
+        engine.readers[type_id].len(),
+        1,
+        "engine should have loaded 1 shard for 'User' from lowercase dir"
+    );
 }

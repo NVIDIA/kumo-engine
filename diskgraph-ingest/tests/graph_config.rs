@@ -129,6 +129,13 @@ fn validate_duplicate_table_names() {
 }
 
 #[test]
+fn validate_case_colliding_table_names() {
+    let mut meta = base_metadata();
+    meta.tables.push(base_table("user"));
+    assert_err_contains(meta, "collide under lowercase normalization");
+}
+
+#[test]
 fn validate_table_no_paths() {
     let mut meta = base_metadata();
     meta.tables[0].get_paths_mut().clear();

@@ -123,12 +123,23 @@ impl DiskGraphEngine {
             }
             let type_layouts = Arc::new(type_layouts);
 
+            // Ingest currently writes node shard directories in lowercase
+            // (`nodes/<table_name_lower>/...`), while metadata preserves the
+            // original table name case. Support both to keep runtime robust.
+            let node_dir_exact = path.join("nodes").join(&node_type.name);
+            let node_dir_lower = path.join("nodes").join(node_type.name.to_lowercase());
+            let node_dir = if node_dir_exact.exists() {
+                node_dir_exact
+            } else if node_dir_lower.exists() {
+                node_dir_lower
+            } else {
+                // Keep old behavior for error surfaces if neither exists.
+                path.join("nodes").join(&node_type.name)
+            };
+
             let mut shards = Vec::new();
             for (i, shard_meta) in node_type.shards.iter().enumerate() {
-                let shard_dir = path
-                    .join("nodes")
-                    .join(&node_type.name)
-                    .join(format!("shard-{:05}", i));
+                let shard_dir = node_dir.join(format!("shard-{:05}", i));
 
                 if shard_dir.exists() {
                     let reader = ShardReader::open(

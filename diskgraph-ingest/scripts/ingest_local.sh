@@ -52,6 +52,12 @@ if [[ -z "${SOURCE}" ]]; then
   exit 1
 fi
 
+if [[ -d "${SOURCE}" ]]; then
+  INPUT_NAME="$(basename "${SOURCE}")"
+else
+  INPUT_NAME="$(basename "$(dirname "${SOURCE}")")"
+fi
+
 if [[ -z "${OUTPUT}" ]]; then
   if [[ -n "${DISKGRAPH_DATA_ROOT:-}" ]]; then
     DEFAULT_OUT_ROOT="${DISKGRAPH_DATA_ROOT%/}/diskgraph-index"
@@ -59,11 +65,6 @@ if [[ -z "${OUTPUT}" ]]; then
     DEFAULT_OUT_ROOT="/mnt/localssd/diskgraph-index"
   else
     DEFAULT_OUT_ROOT="/tmp/diskgraph-index"
-  fi
-  if [[ -d "${SOURCE}" ]]; then
-    INPUT_NAME="$(basename "${SOURCE}")"
-  else
-    INPUT_NAME="$(basename "$(dirname "${SOURCE}")")"
   fi
   OUTPUT="${OUT_ROOT:-${DEFAULT_OUT_ROOT}}/${INPUT_NAME}"
 fi

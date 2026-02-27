@@ -363,6 +363,9 @@ impl GraphConfig {
             }
         }
         let mut table_names = HashSet::new();
+        // Disk artifacts use lowercase table directory names, so reject
+        // case-insensitive collisions up front (e.g. User vs user).
+        let mut table_names_ci: HashMap<String, String> = HashMap::new();
         let mut table_map: HashMap<&str, &TableSpec> = HashMap::new();
         let mut cloud_source: Option<CloudSource> = None;
         let mut has_local_paths = false;
@@ -373,6 +376,17 @@ impl GraphConfig {
             }
             if !table_names.insert(table.name.as_str()) {
                 errors.push(format!("duplicate table name {}", table.name));
+            }
+            let lower_name = table.name.to_lowercase();
+            if let Some(existing) = table_names_ci.get(&lower_name) {
+                if existing != &table.name {
+                    errors.push(format!(
+                        "table names '{}' and '{}' collide under lowercase normalization",
+                        existing, table.name
+                    ));
+                }
+            } else {
+                table_names_ci.insert(lower_name, table.name.clone());
             }
             if table.get_paths().is_empty() {
                 errors.push(format!("table {} has no paths", table.name));
