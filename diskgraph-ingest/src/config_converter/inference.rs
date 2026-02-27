@@ -5,22 +5,6 @@ use crate::graph_config::{GraphConfig, IngestedType, TableFormat};
 use crate::io::{download_cloud_bytes, is_cloud_path};
 use diskgraph_fs::CloudTransfer;
 
-/// Run a future on the current tokio runtime if one exists, otherwise create a
-/// temporary single-threaded runtime.  This avoids the "cannot start a runtime
-/// from within a runtime" panic when inference functions are called from an
-/// async context (e.g. validate-s3-ingest).
-fn block_on_async<F: std::future::Future>(f: F) -> F::Output {
-    if let Ok(handle) = tokio::runtime::Handle::try_current() {
-        tokio::task::block_in_place(|| handle.block_on(f))
-    } else {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("failed to build tokio runtime");
-        rt.block_on(f)
-    }
-}
-
 /// Detect timestamp format strings for string-backed timestamp/date columns.
 ///
 /// For each table in the config, finds columns with `ingested_dtype ∈ {Timestamp, Date}`
@@ -214,7 +198,10 @@ fn resolve_first_parquet_file(
             // Directory prefix — list and find first parquet file.
             if let Some(transfer) = transfer {
                 let prefix = crate::io::object_path_from_cloud_url(path)?;
-                let objects = block_on_async(transfer.list_objects(&prefix))?;
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()?;
+                let objects = rt.block_on(transfer.list_objects(&prefix))?;
                 // Find first .parquet object and reconstruct full cloud URL.
                 let base_url = path.trim_end_matches('/');
                 // Strip the prefix portion from the base URL to get the bucket root.
@@ -285,7 +272,10 @@ fn compute_local_dir_bytes(dir_path: &str) -> u64 {
 /// Sum object sizes under a cloud prefix.
 fn compute_cloud_dir_bytes(transfer: &CloudTransfer, path: &str) -> Result<u64> {
     let prefix = crate::io::object_path_from_cloud_url(path)?;
-    let objects = block_on_async(transfer.list_objects(&prefix))?;
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let objects = rt.block_on(transfer.list_objects(&prefix))?;
     Ok(objects.iter().map(|o| o.size as u64).sum())
 }
 

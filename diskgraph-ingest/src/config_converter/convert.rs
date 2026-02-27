@@ -78,21 +78,39 @@ pub fn convert_kumo_to_diskgraph(
     // Best-effort: detect timestamp formats and estimate num_shards.
     // These require I/O (reading parquet files, listing cloud objects) and may fail
     // when files aren't accessible (e.g., in tests). The config is still valid without them.
-    let transfer = crate::io::build_input_transfer(&config).ok().flatten();
+    //
+    // Run on a separate OS thread so this works even when called from inside a
+    // tokio runtime (e.g., validate-s3-ingest). The I/O helpers create their own
+    // tokio runtimes internally, which panics if nested inside an existing one.
+    std::thread::scope(|s| {
+        let cfg = &mut config;
+        s.spawn(move || {
+            let transfer = match crate::io::build_input_transfer(cfg) {
+                Ok(t) => t,
+                Err(e) => {
+                    eprintln!("Warning: could not build cloud transfer: {e}");
+                    return;
+                }
+            };
 
-    if let Err(e) = super::inference::detect_timestamp_formats(&mut config, &transfer) {
-        eprintln!("Warning: timestamp format detection failed: {e}");
-    }
+            if let Err(e) = super::inference::detect_timestamp_formats(cfg, &transfer) {
+                eprintln!("Warning: timestamp format detection failed: {e}");
+            }
 
-    match super::inference::compute_total_bytes(&config, &transfer) {
-        Ok(total_bytes) if total_bytes > 0 => {
-            config.num_shards = Some(super::inference::estimate_num_shards(total_bytes));
-        }
-        Err(e) => {
-            eprintln!("Warning: num_shards estimation failed: {e}");
-        }
-        _ => {}
-    }
+            match super::inference::compute_total_bytes(cfg, &transfer) {
+                Ok(total_bytes) if total_bytes > 0 => {
+                    cfg.num_shards =
+                        Some(super::inference::estimate_num_shards(total_bytes));
+                }
+                Err(e) => {
+                    eprintln!("Warning: num_shards estimation failed: {e}");
+                }
+                _ => {}
+            }
+        })
+        .join()
+        .ok();
+    });
 
     Ok(config)
 }
