@@ -11,6 +11,7 @@ serde_json = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 futures = { workspace = true }
 diskgraph-ingest = { path = "../diskgraph-ingest" }
+diskgraph-rowpack = { path = "../diskgraph-rowpack" }
 diskgraph-fs = { path = "../diskgraph-fs" }
 object_store = { version = "0.13.1", features = ["aws", "gcp", "azure"] }
 parquet = { version = "57.2.0", features = ["arrow", "async"] }

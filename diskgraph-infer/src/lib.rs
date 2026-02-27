@@ -1578,7 +1578,7 @@ impl ColumnStats {
             self.ts_ok = false;
             self.ts_format = None;
         } else if self.ts_ok {
-            if let Some(fmt) = parse_timestamp_format(value) {
+            if let Some(fmt) = diskgraph_rowpack::detect_timestamp_format(value) {
                 match &self.ts_format {
                     None => self.ts_format = Some(fmt.to_string()),
                     Some(existing) if existing == fmt => {}
@@ -1715,45 +1715,6 @@ fn parse_timestamp(value: &str) -> Option<NaiveDateTime> {
         .or_else(|| parse_ymd_hms_offset(bytes, true, true))
         .or_else(|| parse_ymd_hms_t_offset(bytes, false))
         .or_else(|| parse_ymd_hms_t_offset(bytes, true))
-}
-
-fn parse_timestamp_format(value: &str) -> Option<&'static str> {
-    [
-        "%Y-%m-%d",
-        "%Y-%m-%d %H:%M:%S",
-        "%Y-%m-%d %H:%M:%S%.f",
-        "%Y-%m-%d %H:%M",
-        "%Y-%m-%dT%H:%M:%S",
-        "%Y-%m-%dT%H:%M:%S%.f",
-        "%Y-%m-%d %H:%M:%S%z",
-        "%Y-%m-%d %H:%M:%S %z",
-        "%Y-%m-%d %H:%M:%S%:z",
-        "%Y-%m-%d %H:%M:%S %:z",
-        "%Y-%m-%dT%H:%M:%S%z",
-        "%Y-%m-%dT%H:%M:%S%:z",
-    ]
-    .into_iter()
-    .find(|&fmt| parse_timestamp_with_format(value, fmt).is_some())
-    .map(|v| v as _)
-}
-
-fn parse_timestamp_with_format(value: &str, fmt: &str) -> Option<NaiveDateTime> {
-    let bytes = value.as_bytes();
-    match fmt {
-        "%Y-%m-%d" => parse_ymd(bytes),
-        "%Y-%m-%d %H:%M" => parse_ymd_hm(bytes),
-        "%Y-%m-%d %H:%M:%S" => parse_ymd_hms(bytes, false),
-        "%Y-%m-%d %H:%M:%S%.f" => parse_ymd_hms(bytes, true),
-        "%Y-%m-%dT%H:%M:%S" => parse_ymd_hms_t(bytes, false),
-        "%Y-%m-%dT%H:%M:%S%.f" => parse_ymd_hms_t(bytes, true),
-        "%Y-%m-%d %H:%M:%S%z" => parse_ymd_hms_offset(bytes, false, false),
-        "%Y-%m-%d %H:%M:%S %z" => parse_ymd_hms_offset(bytes, false, true),
-        "%Y-%m-%d %H:%M:%S%:z" => parse_ymd_hms_offset(bytes, true, false),
-        "%Y-%m-%d %H:%M:%S %:z" => parse_ymd_hms_offset(bytes, true, true),
-        "%Y-%m-%dT%H:%M:%S%z" => parse_ymd_hms_t_offset(bytes, false),
-        "%Y-%m-%dT%H:%M:%S%:z" => parse_ymd_hms_t_offset(bytes, true),
-        _ => NaiveDateTime::parse_from_str(value, fmt).ok(),
-    }
 }
 
 fn parse_ymd(bytes: &[u8]) -> Option<NaiveDateTime> {

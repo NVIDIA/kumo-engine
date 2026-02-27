@@ -1,5 +1,6 @@
 from ._c import (
     export_tt_artifacts,
+    convert_kumo_config,
     ExportConfig,
     FkeyConfig,
     TimeUnit,
@@ -28,6 +29,7 @@ def __getattr__(name):
 
 __all__ = [
     "export_tt_artifacts",
+    "convert_kumo_config",
     "ExportConfig",
     "FkeyConfig",
     "TimeUnit",

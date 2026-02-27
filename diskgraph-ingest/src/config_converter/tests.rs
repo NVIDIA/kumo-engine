@@ -133,6 +133,7 @@ fn make_convert_options() -> ConvertOptions {
     ConvertOptions {
         data_persist_dir: "s3://test-bucket/customer/prod/data-persist-dir".to_string(),
         dataset_name: "test_dataset".to_string(),
+        table_data_versions: None,
     }
 }
 
@@ -1008,4 +1009,298 @@ fn test_deserialize_with_optional_fields() {
     assert!(config.name.is_none());
     assert!(config.tables[0].pkey.is_none());
     assert!(config.tables[0].source_name.is_none());
+}
+
+// =============================================================================
+// table_data_versions Tests
+// =============================================================================
+
+#[test]
+fn test_table_data_versions_overrides_data_version() {
+    let kumo_table = KumoTable {
+        table_name: "users".to_string(),
+        data_source: Some("postgres".to_string()),
+        source_name: Some("users".to_string()),
+        data_version: Some("old_version".to_string()),
+        pkey: Some(KumoPrimaryKey {
+            name: "id".to_string(),
+            dtype: Some("int64".to_string()),
+            stype: None,
+            drop_duplicates: false,
+        }),
+        fkeys: vec![],
+        cols: vec![],
+        time_col: None,
+        end_time_col: None,
+    };
+
+    let kumo_config = make_kumo_config(vec![kumo_table]);
+    let mut versions = std::collections::HashMap::new();
+    versions.insert("users".to_string(), "new_version_123".to_string());
+
+    let options = ConvertOptions {
+        data_persist_dir: "s3://test-bucket/customer/prod/data-persist-dir".to_string(),
+        dataset_name: "test_dataset".to_string(),
+        table_data_versions: Some(versions),
+    };
+
+    let result = convert_kumo_to_diskgraph(&kumo_config, &options).unwrap();
+    let table = &result.tables[0];
+    match &table.source {
+        crate::graph_config::DataSource::Parquet { paths } => {
+            assert!(
+                paths[0].contains("new_version_123"),
+                "Expected path to contain new_version_123, got: {}",
+                paths[0]
+            );
+            assert!(
+                !paths[0].contains("old_version"),
+                "Expected path to NOT contain old_version, got: {}",
+                paths[0]
+            );
+        }
+        _ => panic!("Expected Parquet source"),
+    }
+}
+
+#[test]
+fn test_table_data_versions_missing_entry_errors() {
+    let kumo_table = KumoTable {
+        table_name: "users".to_string(),
+        data_source: Some("postgres".to_string()),
+        source_name: Some("users".to_string()),
+        data_version: None,
+        pkey: Some(KumoPrimaryKey {
+            name: "id".to_string(),
+            dtype: Some("int64".to_string()),
+            stype: None,
+            drop_duplicates: false,
+        }),
+        fkeys: vec![],
+        cols: vec![],
+        time_col: None,
+        end_time_col: None,
+    };
+
+    let kumo_config = make_kumo_config(vec![kumo_table]);
+    // Provide a map but without the "users" entry.
+    let versions = std::collections::HashMap::new();
+    let options = ConvertOptions {
+        data_persist_dir: "s3://test-bucket/data".to_string(),
+        dataset_name: "test".to_string(),
+        table_data_versions: Some(versions),
+    };
+
+    let result = convert_kumo_to_diskgraph(&kumo_config, &options);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_table_data_versions_none_uses_inline() {
+    let kumo_table = KumoTable {
+        table_name: "users".to_string(),
+        data_source: Some("postgres".to_string()),
+        source_name: Some("users".to_string()),
+        data_version: Some("inline_v42".to_string()),
+        pkey: Some(KumoPrimaryKey {
+            name: "id".to_string(),
+            dtype: Some("int64".to_string()),
+            stype: None,
+            drop_duplicates: false,
+        }),
+        fkeys: vec![],
+        cols: vec![],
+        time_col: None,
+        end_time_col: None,
+    };
+
+    let kumo_config = make_kumo_config(vec![kumo_table]);
+    let options = ConvertOptions {
+        data_persist_dir: "s3://test-bucket/data".to_string(),
+        dataset_name: "test".to_string(),
+        table_data_versions: None, // Use inline data_version
+    };
+
+    let result = convert_kumo_to_diskgraph(&kumo_config, &options).unwrap();
+    match &result.tables[0].source {
+        crate::graph_config::DataSource::Parquet { paths } => {
+            assert!(paths[0].contains("inline_v42"));
+        }
+        _ => panic!("Expected Parquet source"),
+    }
+}
+
+// =============================================================================
+// detect_timestamp_formats Tests
+// =============================================================================
+
+#[test]
+fn test_detect_timestamp_formats_from_parquet() {
+    use crate::config_converter::detect_timestamp_formats;
+    use crate::graph_config::{ColumnSpec, DataSource, GraphConfig, IngestedType, TableSpec};
+    use arrow_array::{RecordBatch, StringArray};
+    use arrow_schema::{DataType, Field, Schema};
+    use parquet::arrow::ArrowWriter;
+    use std::sync::Arc;
+
+    // Create a temp parquet file with a string column containing timestamps.
+    let dir = tempfile::tempdir().unwrap();
+    let parquet_path = dir.path().join("test.parquet");
+
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Utf8, false),
+        Field::new("created_at", DataType::Utf8, true),
+    ]));
+
+    let id_array = StringArray::from(vec!["a", "b", "c"]);
+    let ts_array = StringArray::from(vec![
+        Some("2024-01-15T10:30:00"),
+        Some("2024-02-20T14:45:30"),
+        None,
+    ]);
+
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![Arc::new(id_array), Arc::new(ts_array)],
+    )
+    .unwrap();
+
+    let file = std::fs::File::create(&parquet_path).unwrap();
+    let mut writer = ArrowWriter::try_new(file, schema, None).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+
+    // Build a GraphConfig with a Timestamp column pointing to the parquet file.
+    let mut config = GraphConfig {
+        dataset_name: "test".to_string(),
+        tables: vec![TableSpec {
+            name: "events".to_string(),
+            columns: vec![
+                ColumnSpec {
+                    name: "id".to_string(),
+                    source_dtype: None,
+                    ingested_dtype: IngestedType::String,
+                    fixed_len: None,
+                    timestamp_format: None,
+                    timestamp_unit: None,
+                    precision: None,
+                    scale: None,
+                    semantic_type: None,
+                },
+                ColumnSpec {
+                    name: "created_at".to_string(),
+                    source_dtype: None,
+                    ingested_dtype: IngestedType::Timestamp,
+                    fixed_len: None,
+                    timestamp_format: None,
+                    timestamp_unit: None,
+                    precision: None,
+                    scale: None,
+                    semantic_type: None,
+                },
+            ],
+            primary_key: Some("id".to_string()),
+            create_time: None,
+            end_time: None,
+            weight: None,
+            edge_table: None,
+            rowpack: None,
+            source: DataSource::Parquet {
+                paths: vec![parquet_path.to_string_lossy().to_string()],
+            },
+            fkeys: vec![],
+        }],
+        rowpack: None,
+        num_shards: None,
+        edge_format: None,
+        coercion_mode: Default::default(),
+    };
+
+    // Run detection (no cloud transfer needed for local files).
+    detect_timestamp_formats(&mut config, &None).unwrap();
+
+    // The created_at column should now have a detected timestamp format.
+    let col = &config.tables[0].columns[1];
+    assert_eq!(col.name, "created_at");
+    assert!(
+        col.timestamp_format.is_some(),
+        "Expected a detected timestamp format, got None"
+    );
+    // The parser may match "%Y-%m-%d %H:%M:%S" (space) or "%Y-%m-%dT%H:%M:%S" (T)
+    // depending on format priority — both are valid for ISO 8601 with T separator.
+    let fmt = col.timestamp_format.as_ref().unwrap();
+    assert!(
+        fmt.contains("%Y-%m-%d") && fmt.contains("%H:%M:%S"),
+        "Expected date+time format, got {:?}",
+        fmt
+    );
+
+    // The id column should remain unchanged.
+    assert_eq!(config.tables[0].columns[0].timestamp_format, None);
+}
+
+#[test]
+fn test_detect_timestamp_formats_skips_native_timestamp_columns() {
+    use crate::config_converter::detect_timestamp_formats;
+    use crate::graph_config::{ColumnSpec, DataSource, GraphConfig, IngestedType, TableSpec};
+    use arrow_array::{RecordBatch, TimestampMicrosecondArray};
+    use arrow_schema::{DataType, Field, Schema, TimeUnit};
+    use parquet::arrow::ArrowWriter;
+    use std::sync::Arc;
+
+    // Create a parquet file with a native Arrow timestamp column (not string).
+    let dir = tempfile::tempdir().unwrap();
+    let parquet_path = dir.path().join("native_ts.parquet");
+
+    let schema = Arc::new(Schema::new(vec![Field::new(
+        "event_time",
+        DataType::Timestamp(TimeUnit::Microsecond, None),
+        true,
+    )]));
+
+    let ts_array = TimestampMicrosecondArray::from(vec![Some(1700000000_000_000i64), Some(1700100000_000_000)]);
+    let batch =
+        RecordBatch::try_new(schema.clone(), vec![Arc::new(ts_array)]).unwrap();
+
+    let file = std::fs::File::create(&parquet_path).unwrap();
+    let mut writer = ArrowWriter::try_new(file, schema, None).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+
+    let mut config = GraphConfig {
+        dataset_name: "test".to_string(),
+        tables: vec![TableSpec {
+            name: "events".to_string(),
+            columns: vec![ColumnSpec {
+                name: "event_time".to_string(),
+                source_dtype: None,
+                ingested_dtype: IngestedType::Timestamp,
+                fixed_len: None,
+                timestamp_format: None,
+                timestamp_unit: None,
+                precision: None,
+                scale: None,
+                semantic_type: None,
+            }],
+            primary_key: None,
+            create_time: None,
+            end_time: None,
+            weight: None,
+            edge_table: None,
+            rowpack: None,
+            source: DataSource::Parquet {
+                paths: vec![parquet_path.to_string_lossy().to_string()],
+            },
+            fkeys: vec![],
+        }],
+        rowpack: None,
+        num_shards: None,
+        edge_format: None,
+        coercion_mode: Default::default(),
+    };
+
+    detect_timestamp_formats(&mut config, &None).unwrap();
+
+    // Native timestamp column should NOT get a format string (it's not Utf8).
+    assert_eq!(config.tables[0].columns[0].timestamp_format, None);
 }

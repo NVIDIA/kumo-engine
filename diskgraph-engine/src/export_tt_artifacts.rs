@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Result};
 use arrow_array::cast::AsArray;
 use arrow_array::types::{Int32Type, Int64Type, UInt32Type, UInt64Type};
-use arrow_array::{Array, BooleanArray, Int64Array, RecordBatch};
+use arrow_array::{Array, Int32Array, Int64Array, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
 use diskgraph_index::graph::{GraphIndexReader, TableReader};
 use diskgraph_index::pkmap::{Key, KeyType};
@@ -181,7 +181,7 @@ pub fn process_export_internal<R: IdResolver>(
             .ok_or_else(|| anyhow!("Column {} not found", config.row_idx_col))?;
         let arange_array = arange_col.as_primitive::<Int64Type>();
 
-        let mut mask_builder = BooleanArray::builder(num_rows);
+        let mut mask_values: Vec<i32> = Vec::with_capacity(num_rows);
         let mut fkey_arrays = Vec::new();
         let mut fkey_fields = Vec::new();
 
@@ -218,10 +218,10 @@ pub fn process_export_internal<R: IdResolver>(
                     break;
                 }
             }
-            mask_builder.append_value(valid);
+            mask_values.push(if valid { 1 } else { 0 });
         }
 
-        let mask_array = Arc::new(mask_builder.finish()) as Arc<dyn Array>;
+        let mask_array = Arc::new(Int32Array::from(mask_values)) as Arc<dyn Array>;
 
         let fkey_schema = Arc::new(Schema::new(fkey_fields));
         let fkey_batch = RecordBatch::try_new(fkey_schema, fkey_arrays)?;
@@ -234,7 +234,7 @@ pub fn process_export_internal<R: IdResolver>(
 
         let mask_schema = Arc::new(Schema::new(vec![Field::new(
             "__mask__",
-            DataType::Boolean,
+            DataType::Int32,
             false,
         )]));
         let mask_batch = RecordBatch::try_new(mask_schema, vec![mask_array])?;
@@ -273,7 +273,7 @@ pub fn process_export_internal<R: IdResolver>(
 
             let edge_dir = output_dir
                 .join(format!(
-                    "{}__rev__{}__{}",
+                    "{}__rev_{}__{}",
                     fkey_conf.target_table, fkey_conf.column_name, config.train_table_name
                 ))
                 .join("edge.parquet");
@@ -447,11 +447,11 @@ mod tests {
             .build()
             .unwrap();
         let batch = reader.next().unwrap().unwrap();
-        let mask = batch.column(0).as_boolean();
+        let mask = batch.column(0).as_primitive::<Int32Type>();
         assert_eq!(mask.len(), 3);
-        assert!(mask.value(0)); // user_1, prod_1 (both valid)
-        assert!(!mask.value(1)); // user_2, prod_999 (invalid target)
-        assert!(!mask.value(2)); // user_1, null (invalid target)
+        assert_eq!(mask.value(0), 1); // user_1, prod_1 (both valid)
+        assert_eq!(mask.value(1), 0); // user_2, prod_999 (invalid target)
+        assert_eq!(mask.value(2), 0); // user_1, null (invalid target)
     }
 
     #[test]
@@ -500,11 +500,11 @@ mod tests {
             .build()
             .unwrap();
         let batch = reader.next().unwrap().unwrap();
-        let mask = batch.column(0).as_boolean();
+        let mask = batch.column(0).as_primitive::<Int32Type>();
         assert_eq!(mask.len(), 3);
-        assert!(mask.value(0)); // entity=1, target=10 (both valid)
-        assert!(!mask.value(1)); // entity=2, target=999 (invalid target)
-        assert!(!mask.value(2)); // entity=1, target=null
+        assert_eq!(mask.value(0), 1); // entity=1, target=10 (both valid)
+        assert_eq!(mask.value(1), 0); // entity=2, target=999 (invalid target)
+        assert_eq!(mask.value(2), 0); // entity=1, target=null
 
         // Verify fkey_cols
         let fkey_file = File::open(
@@ -523,7 +523,7 @@ mod tests {
         // Verify edge parquet
         let edge_file = File::open(
             output_dir
-                .join("products__rev__TARGET__custom_train_table/edge.parquet/part-0000.parquet"),
+                .join("products__rev_TARGET__custom_train_table/edge.parquet/part-0000.parquet"),
         )
         .unwrap();
         let mut reader = ParquetRecordBatchReaderBuilder::try_new(edge_file)
@@ -663,10 +663,10 @@ mod tests {
             .build()
             .unwrap();
         let batch = reader.next().unwrap().unwrap();
-        let mask = batch.column(0).as_boolean();
+        let mask = batch.column(0).as_primitive::<Int32Type>();
         assert_eq!(mask.len(), 3);
-        assert!(mask.value(0));
-        assert!(!mask.value(1));
-        assert!(!mask.value(2));
+        assert_eq!(mask.value(0), 1);
+        assert_eq!(mask.value(1), 0);
+        assert_eq!(mask.value(2), 0);
     }
 }

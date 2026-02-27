@@ -578,10 +578,60 @@ pub fn export_tt_artifacts(config: &ExportConfig) -> PyResult<()> {
         .map_err(|e| PyRuntimeError::new_err(e.to_string()))
 }
 
+#[pyfunction]
+#[pyo3(signature = (kumo_config_json, data_persist_dir, dataset_name, table_data_versions_json=None, detect_timestamps=false))]
+pub fn convert_kumo_config(
+    kumo_config_json: &str,
+    data_persist_dir: &str,
+    dataset_name: &str,
+    table_data_versions_json: Option<&str>,
+    detect_timestamps: bool,
+) -> PyResult<String> {
+    use diskgraph_ingest::config_converter::{
+        convert_kumo_to_diskgraph, detect_timestamp_formats, ConvertOptions, KumoGraphConfig,
+    };
+    use diskgraph_ingest::io::build_input_transfer;
+
+    let kumo_config: KumoGraphConfig = serde_json::from_str(kumo_config_json)
+        .map_err(|e| PyValueError::new_err(format!("Invalid kumo config JSON: {e}")))?;
+
+    let table_data_versions: Option<HashMap<String, String>> =
+        match table_data_versions_json {
+            Some(json) => Some(
+                serde_json::from_str(json).map_err(|e| {
+                    PyValueError::new_err(format!(
+                        "Invalid table_data_versions JSON: {e}"
+                    ))
+                })?,
+            ),
+            None => None,
+        };
+
+    let options = ConvertOptions {
+        data_persist_dir: data_persist_dir.to_string(),
+        dataset_name: dataset_name.to_string(),
+        table_data_versions,
+    };
+
+    let mut diskgraph_config = convert_kumo_to_diskgraph(&kumo_config, &options)
+        .map_err(|e| PyRuntimeError::new_err(format!("Config conversion failed: {e}")))?;
+
+    if detect_timestamps {
+        let transfer = build_input_transfer(&diskgraph_config)
+            .map_err(|e| PyRuntimeError::new_err(format!("Failed to build cloud transfer: {e}")))?;
+        detect_timestamp_formats(&mut diskgraph_config, &transfer)
+            .map_err(|e| PyRuntimeError::new_err(format!("Timestamp detection failed: {e}")))?;
+    }
+
+    serde_json::to_string(&diskgraph_config)
+        .map_err(|e| PyRuntimeError::new_err(format!("Failed to serialize config: {e}")))
+}
+
 #[pymodule]
 #[pyo3(name = "_c")]
 fn diskgraph_pybind(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(export_tt_artifacts, m)?)?;
+    m.add_function(wrap_pyfunction!(convert_kumo_config, m)?)?;
     m.add_class::<ExportConfig>()?;
     m.add_class::<FkeyConfig>()?;
     m.add_class::<PyTimeUnit>()?;

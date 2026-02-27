@@ -191,6 +191,7 @@ fn main() -> Result<()> {
     let options = ConvertOptions {
         data_persist_dir,
         dataset_name,
+        table_data_versions: None,
     };
 
     let mut diskgraph_config =

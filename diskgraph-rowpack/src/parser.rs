@@ -315,6 +315,31 @@ impl TimestampFormatParser {
     }
 }
 
+/// Known timestamp format strings, ordered by detection priority.
+pub const TIMESTAMP_FORMATS: &[&str] = &[
+    "%Y-%m-%d",
+    "%Y-%m-%d %H:%M:%S",
+    "%Y-%m-%d %H:%M:%S%.f",
+    "%Y-%m-%d %H:%M",
+    "%Y-%m-%dT%H:%M:%S",
+    "%Y-%m-%dT%H:%M:%S%.f",
+    "%Y-%m-%d %H:%M:%S%z",
+    "%Y-%m-%d %H:%M:%S %z",
+    "%Y-%m-%d %H:%M:%S%:z",
+    "%Y-%m-%d %H:%M:%S %:z",
+    "%Y-%m-%dT%H:%M:%S%z",
+    "%Y-%m-%dT%H:%M:%S%:z",
+];
+
+/// Detect the timestamp format of a string value.
+pub fn detect_timestamp_format(value: &str) -> Option<&'static str> {
+    TIMESTAMP_FORMATS.iter().copied().find(|&fmt| {
+        TimestampFormatParser::compile(fmt)
+            .and_then(|p| p.parse_timestamp(value))
+            .is_some()
+    })
+}
+
 pub(crate) fn parse_fraction(bytes: &[u8], pos: usize) -> Option<(u32, usize, usize)> {
     let mut idx = pos;
     let mut val: u32 = 0;

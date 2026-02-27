@@ -28,6 +28,9 @@ pub struct ConvertOptions {
     pub data_persist_dir: String,
     /// Dataset name for the output GraphConfig.
     pub dataset_name: String,
+    /// Per-table data versions, keyed by table_name.
+    /// When provided, these override `kumo_table.data_version` for path building.
+    pub table_data_versions: Option<HashMap<String, String>>,
 }
 
 /// Convert a Kumo GraphConfig to a DiskGraph GraphConfig.
@@ -152,14 +155,25 @@ fn build_table_paths(
         .as_ref()
         .unwrap_or(&kumo_table.table_name);
 
-    let data_version =
+    // Look up data_version: prefer table_data_versions map, fall back to kumo_table.data_version.
+    let data_version = if let Some(versions) = &options.table_data_versions {
+        versions
+            .get(&kumo_table.table_name)
+            .ok_or_else(|| ConvertError::MissingField {
+                table: kumo_table.table_name.clone(),
+                field: "table_data_versions entry".to_string(),
+            })?
+            .clone()
+    } else {
         kumo_table
             .data_version
             .as_ref()
             .ok_or_else(|| ConvertError::MissingField {
                 table: kumo_table.table_name.clone(),
                 field: "data_version".to_string(),
-            })?;
+            })?
+            .clone()
+    };
 
     // Build fpv3 path: {data_persist_dir}/ingest/fpv3.{data_source}.{source_name}/{data_version}/
     let base = options.data_persist_dir.trim_end_matches('/');

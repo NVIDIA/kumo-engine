@@ -320,6 +320,7 @@ async fn validate_job(
         let convert_options = ConvertOptions {
             data_persist_dir,
             dataset_name,
+            table_data_versions: None,
         };
 
         // Convert Kumo config to DiskGraph config

@@ -1,3 +1,157 @@
+use anyhow::{Context, Result};
+use std::collections::HashMap;
+
+use crate::graph_config::{GraphConfig, IngestedType, TableFormat};
+use crate::io::{download_cloud_bytes, is_cloud_path};
+use diskgraph_fs::CloudTransfer;
+
+/// Detect timestamp format strings for string-backed timestamp/date columns.
+///
+/// For each table in the config, finds columns with `ingested_dtype ∈ {Timestamp, Date}`
+/// whose `timestamp_format` is not yet set. Opens the first parquet file, reads
+/// one batch, and uses `diskgraph_rowpack::detect_timestamp_format` on the first
+/// non-null value of each candidate column.
+///
+/// Modifies `config` in place, setting `col.timestamp_format` for detected columns.
+pub fn detect_timestamp_formats(
+    config: &mut GraphConfig,
+    input_transfer: &Option<CloudTransfer>,
+) -> Result<()> {
+    for table in &mut config.tables {
+        // Find candidate columns: Timestamp or Date with no format set yet.
+        let candidates: Vec<(usize, String)> = table
+            .columns
+            .iter()
+            .enumerate()
+            .filter(|(_, col)| {
+                matches!(
+                    col.ingested_dtype,
+                    IngestedType::Timestamp | IngestedType::Date
+                ) && col.timestamp_format.is_none()
+            })
+            .map(|(i, col)| (i, col.name.clone()))
+            .collect();
+
+        if candidates.is_empty() {
+            continue;
+        }
+
+        if table.format() != TableFormat::Parquet {
+            continue;
+        }
+
+        let all_paths = table.get_paths();
+        if all_paths.is_empty() {
+            continue;
+        }
+        let path = all_paths[0].clone();
+
+        // Open the first parquet file (cloud or local).
+        let pooled = if let Some(transfer) = input_transfer {
+            if is_cloud_path(&path) {
+                Some(download_cloud_bytes(transfer, &path)?)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        // Detected formats: col_index -> format string
+        let mut detected: HashMap<usize, String> = HashMap::new();
+
+        macro_rules! detect_from_reader {
+            ($reader:expr, $schema:expr) => {{
+                // Resolve column indices; skip candidates whose parquet type is not string-like.
+                let col_indices: Vec<Option<usize>> = candidates
+                    .iter()
+                    .map(|(_, name)| {
+                        if let Ok(idx) = $schema.index_of(name) {
+                            match $schema.field(idx).data_type() {
+                                arrow_schema::DataType::Utf8
+                                | arrow_schema::DataType::LargeUtf8
+                                | arrow_schema::DataType::Binary => Some(idx),
+                                _ => None,
+                            }
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+
+                // Read one batch and detect from first non-null value per column.
+                for batch in $reader {
+                    let batch = batch?;
+                    for (cand_idx, arr_idx) in col_indices.iter().enumerate() {
+                        let arr_idx = match arr_idx {
+                            Some(i) => *i,
+                            None => continue,
+                        };
+                        if detected.contains_key(&candidates[cand_idx].0) {
+                            continue;
+                        }
+                        let array = batch.column(arr_idx);
+                        for row in 0..batch.num_rows() {
+                            if array.is_null(row) {
+                                continue;
+                            }
+                            let value: Option<&str> = if let Some(s) =
+                                array.as_any().downcast_ref::<arrow_array::StringArray>()
+                            {
+                                Some(s.value(row))
+                            } else if let Some(s) =
+                                array.as_any().downcast_ref::<arrow_array::LargeStringArray>()
+                            {
+                                Some(s.value(row))
+                            } else if let Some(s) =
+                                array.as_any().downcast_ref::<arrow_array::BinaryArray>()
+                            {
+                                std::str::from_utf8(s.value(row)).ok()
+                            } else {
+                                None
+                            };
+                            if let Some(value) = value {
+                                if let Some(fmt) =
+                                    diskgraph_rowpack::detect_timestamp_format(value)
+                                {
+                                    detected
+                                        .insert(candidates[cand_idx].0, fmt.to_string());
+                                }
+                            }
+                            break; // Only need first non-null value
+                        }
+                    }
+                    // One batch is enough.
+                    break;
+                }
+            }};
+        }
+
+        if let Some(pooled) = pooled {
+            let bytes = pooled.bytes();
+            let builder =
+                parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(bytes)?;
+            let schema = builder.schema().clone();
+            let reader = builder.with_batch_size(1024).build()?;
+            detect_from_reader!(reader, schema);
+        } else {
+            let file = std::fs::File::open(&path)
+                .with_context(|| format!("open {} for timestamp detection", path))?;
+            let builder =
+                parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(file)?;
+            let schema = builder.schema().clone();
+            let reader = builder.with_batch_size(1024).build()?;
+            detect_from_reader!(reader, schema);
+        }
+
+        // Apply detected formats to the config.
+        for (col_idx, fmt) in detected {
+            table.columns[col_idx].timestamp_format = Some(fmt);
+        }
+    }
+    Ok(())
+}
+
 /// Estimate the optimal number of shards based on total dataset size.
 ///
 /// This function attempts to balance two competing goals:
