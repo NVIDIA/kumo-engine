@@ -29,15 +29,26 @@ fn write_parquet(path: &Path, batch: &RecordBatch) {
     writer.close().unwrap();
 }
 
+/// Extract target column value as f64 from either a Float64Array or Int64Array.
+fn target_as_f64(batch: &RecordBatch, col: usize, row: usize) -> f64 {
+    let arr = batch.column(col);
+    if let Some(f) = arr.as_any().downcast_ref::<Float64Array>() {
+        f.value(row)
+    } else if let Some(i) = arr.as_any().downcast_ref::<Int64Array>() {
+        i.value(row) as f64
+    } else {
+        panic!("TARGET column is neither Float64 nor Int64");
+    }
+}
+
 /// Read output rows, converting nanosecond timestamps back to epoch seconds.
 fn read_output_rows(receiver: Receiver<RecordBatch>) -> Vec<(i64, i64, f64)> {
     let mut rows = Vec::new();
     for batch in receiver {
         let entities = batch.column(0).as_any().downcast_ref::<Int64Array>().unwrap();
         let timestamps = batch.column(1).as_any().downcast_ref::<TimestampNanosecondArray>().unwrap();
-        let targets = batch.column(2).as_any().downcast_ref::<Float64Array>().unwrap();
         for i in 0..batch.num_rows() {
-            rows.push((entities.value(i), timestamps.value(i) / 1_000_000_000, targets.value(i)));
+            rows.push((entities.value(i), timestamps.value(i) / 1_000_000_000, target_as_f64(&batch, 2, i)));
         }
     }
     rows.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
@@ -50,10 +61,9 @@ fn read_output_rows_with_bit(receiver: Receiver<RecordBatch>) -> Vec<(i64, i64, 
     for batch in receiver {
         let entities = batch.column(0).as_any().downcast_ref::<Int64Array>().unwrap();
         let timestamps = batch.column(1).as_any().downcast_ref::<TimestampNanosecondArray>().unwrap();
-        let targets = batch.column(2).as_any().downcast_ref::<Float64Array>().unwrap();
         let bits = batch.column(3).as_any().downcast_ref::<BooleanArray>().unwrap();
         for i in 0..batch.num_rows() {
-            rows.push((entities.value(i), timestamps.value(i) / 1_000_000_000, targets.value(i), bits.value(i)));
+            rows.push((entities.value(i), timestamps.value(i) / 1_000_000_000, target_as_f64(&batch, 2, i), bits.value(i)));
         }
     }
     rows.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));

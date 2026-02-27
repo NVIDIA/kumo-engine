@@ -808,6 +808,12 @@ fn infer_target_dtype(plan: &DiskGraphTTPlan, stages: &[ResolvedStage]) -> DataT
         .next();
     match last_plan_op {
         Some(Op::Compare { .. }) => DataType::Boolean,
+        // COUNT/COUNT_DISTINCT always produce integer counts.
+        Some(Op::Aggregate { func, .. })
+            if matches!(func, AggFunc::Count | AggFunc::CountDistinct) =>
+        {
+            DataType::Int64
+        }
         // FIRST/LAST preserve the source column's dtype (e.g. FIRST of string → Utf8).
         Some(Op::Aggregate { func, .. })
             if matches!(func, AggFunc::First | AggFunc::Last) =>
