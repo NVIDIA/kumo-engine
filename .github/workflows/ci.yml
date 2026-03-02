@@ -29,13 +29,14 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
+    env:
+      # Reduce linker memory pressure on CI runners with limited RAM.
+      RUSTFLAGS: "-C link-arg=-Wl,--no-keep-memory"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Build
-        run: cargo build --workspace
-      - name: Test
+      - name: Build and Test
         run: cargo test --workspace
 
   python-test:
