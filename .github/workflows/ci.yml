@@ -31,7 +31,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       # Reduce linker memory pressure on CI runners with limited RAM.
-      RUSTFLAGS: "-C link-arg=-Wl,--no-keep-memory"
+      RUSTFLAGS: "-C target-feature=+aes,+sse2 -C link-arg=-Wl,--no-keep-memory"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
