@@ -1,24 +1,37 @@
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 
-use crate::graph_config::{GraphConfig, IngestedType, TableFormat};
+use crate::graph_config::{GraphConfig, IngestedType, TableFormat, TimestampUnit};
 use crate::io::{download_cloud_bytes, is_cloud_path};
 use diskgraph_fs::CloudTransfer;
 
-/// Detect timestamp format strings for string-backed timestamp/date columns.
+/// Detection result for a single timestamp column.
+enum TimestampDetection {
+    /// String format detected (e.g., "%Y-%m-%d %H:%M:%S").
+    Format(String),
+    /// Epoch unit detected from integer magnitude.
+    Unit(TimestampUnit),
+}
+
+/// Detect timestamp format strings and epoch units for timestamp/date columns.
 ///
 /// For each table in the config, finds columns with `ingested_dtype ∈ {Timestamp, Date}`
-/// whose `timestamp_format` is not yet set. Opens the first parquet file, reads
-/// one batch, and uses `diskgraph_rowpack::detect_timestamp_format` on the first
-/// non-null value of each candidate column.
+/// that are missing both `timestamp_format` and `timestamp_unit`. Opens the first
+/// parquet file, reads one batch, and for each candidate column:
 ///
-/// Modifies `config` in place, setting `col.timestamp_format` for detected columns.
+/// 1. **String columns**: tries `detect_timestamp_format` on the first non-null value.
+///    If no format matches but the string parses as an integer, falls through to (3).
+/// 2. **Integer columns**: falls through to (3).
+/// 3. **Epoch unit heuristic**: interprets the integer value's magnitude to determine
+///    whether it represents seconds, milliseconds, microseconds, or nanoseconds.
+///
+/// Modifies `config` in place, setting `col.timestamp_format` or `col.timestamp_unit`.
 pub fn detect_timestamp_formats(
     config: &mut GraphConfig,
     input_transfer: &Option<CloudTransfer>,
 ) -> Result<()> {
     for table in &mut config.tables {
-        // Find candidate columns: Timestamp or Date with no format set yet.
+        // Find candidate columns: Timestamp or Date with no format and no unit set yet.
         let candidates: Vec<(usize, String)> = table
             .columns
             .iter()
@@ -28,6 +41,7 @@ pub fn detect_timestamp_formats(
                     col.ingested_dtype,
                     IngestedType::Timestamp | IngestedType::Date
                 ) && col.timestamp_format.is_none()
+                    && col.timestamp_unit.is_none()
             })
             .map(|(i, col)| (i, col.name.clone()))
             .collect();
@@ -65,37 +79,31 @@ pub fn detect_timestamp_formats(
             None
         };
 
-        // Detected formats: col_index -> format string
-        let mut detected: HashMap<usize, String> = HashMap::new();
+        // Detected hints: col_index -> detection result
+        let mut detected: HashMap<usize, TimestampDetection> = HashMap::new();
 
         macro_rules! detect_from_reader {
             ($reader:expr, $schema:expr) => {{
-                // Resolve column indices; skip candidates whose parquet type is not string-like.
-                let col_indices: Vec<Option<usize>> = candidates
+                // Resolve column indices and their arrow data types.
+                let col_info: Vec<Option<(usize, arrow_schema::DataType)>> = candidates
                     .iter()
                     .map(|(_, name)| {
-                        if let Ok(idx) = $schema.index_of(name) {
-                            match $schema.field(idx).data_type() {
-                                arrow_schema::DataType::Utf8
-                                | arrow_schema::DataType::LargeUtf8
-                                | arrow_schema::DataType::Binary => Some(idx),
-                                _ => None,
-                            }
-                        } else {
-                            None
-                        }
+                        $schema.index_of(name).ok().map(|idx| {
+                            (idx, $schema.field(idx).data_type().clone())
+                        })
                     })
                     .collect();
 
                 // Read one batch and detect from first non-null value per column.
                 for batch in $reader {
                     let batch = batch?;
-                    for (cand_idx, arr_idx) in col_indices.iter().enumerate() {
-                        let arr_idx = match arr_idx {
-                            Some(i) => *i,
+                    for (cand_idx, info) in col_info.iter().enumerate() {
+                        let (arr_idx, dt) = match info {
+                            Some((i, dt)) => (*i, dt),
                             None => continue,
                         };
-                        if detected.contains_key(&candidates[cand_idx].0) {
+                        let col_key = candidates[cand_idx].0;
+                        if detected.contains_key(&col_key) {
                             continue;
                         }
                         let array = batch.column(arr_idx);
@@ -103,28 +111,64 @@ pub fn detect_timestamp_formats(
                             if array.is_null(row) {
                                 continue;
                             }
-                            let value: Option<&str> = if let Some(s) =
-                                array.as_any().downcast_ref::<arrow_array::StringArray>()
-                            {
-                                Some(s.value(row))
-                            } else if let Some(s) =
-                                array.as_any().downcast_ref::<arrow_array::LargeStringArray>()
-                            {
-                                Some(s.value(row))
-                            } else if let Some(s) =
-                                array.as_any().downcast_ref::<arrow_array::BinaryArray>()
-                            {
-                                std::str::from_utf8(s.value(row)).ok()
-                            } else {
-                                None
-                            };
-                            if let Some(value) = value {
-                                if let Some(fmt) =
-                                    diskgraph_rowpack::detect_timestamp_format(value)
-                                {
-                                    detected
-                                        .insert(candidates[cand_idx].0, fmt.to_string());
+                            match dt {
+                                arrow_schema::DataType::Utf8
+                                | arrow_schema::DataType::LargeUtf8
+                                | arrow_schema::DataType::Binary => {
+                                    let text: Option<&str> = if let Some(s) =
+                                        array.as_any().downcast_ref::<arrow_array::StringArray>()
+                                    {
+                                        Some(s.value(row))
+                                    } else if let Some(s) = array
+                                        .as_any()
+                                        .downcast_ref::<arrow_array::LargeStringArray>()
+                                    {
+                                        Some(s.value(row))
+                                    } else if let Some(s) =
+                                        array.as_any().downcast_ref::<arrow_array::BinaryArray>()
+                                    {
+                                        std::str::from_utf8(s.value(row)).ok()
+                                    } else {
+                                        None
+                                    };
+                                    if let Some(text) = text {
+                                        // Try format detection first.
+                                        if let Some(fmt) =
+                                            diskgraph_rowpack::detect_timestamp_format(text)
+                                        {
+                                            detected.insert(
+                                                col_key,
+                                                TimestampDetection::Format(fmt.to_string()),
+                                            );
+                                        } else if let Ok(v) = text.trim().parse::<i64>() {
+                                            // String of digits — detect unit from magnitude.
+                                            if let Some(unit) = detect_epoch_unit(v) {
+                                                detected.insert(
+                                                    col_key,
+                                                    TimestampDetection::Unit(unit),
+                                                );
+                                            }
+                                        }
+                                    }
                                 }
+                                arrow_schema::DataType::Int8
+                                | arrow_schema::DataType::Int16
+                                | arrow_schema::DataType::Int32
+                                | arrow_schema::DataType::Int64
+                                | arrow_schema::DataType::UInt8
+                                | arrow_schema::DataType::UInt16
+                                | arrow_schema::DataType::UInt32
+                                | arrow_schema::DataType::UInt64 => {
+                                    if let Some(v) = read_int_value(array, row) {
+                                        if let Some(unit) = detect_epoch_unit(v) {
+                                            detected.insert(
+                                                col_key,
+                                                TimestampDetection::Unit(unit),
+                                            );
+                                        }
+                                    }
+                                }
+                                _ => {}
                             }
                             break; // Only need first non-null value
                         }
@@ -152,12 +196,70 @@ pub fn detect_timestamp_formats(
             detect_from_reader!(reader, schema);
         }
 
-        // Apply detected formats to the config.
-        for (col_idx, fmt) in detected {
-            table.columns[col_idx].timestamp_format = Some(fmt);
+        // Apply detected hints to the config.
+        for (col_idx, detection) in detected {
+            match detection {
+                TimestampDetection::Format(fmt) => {
+                    table.columns[col_idx].timestamp_format = Some(fmt);
+                }
+                TimestampDetection::Unit(unit) => {
+                    table.columns[col_idx].timestamp_unit = Some(unit);
+                }
+            }
         }
     }
     Ok(())
+}
+
+/// Detect epoch unit from an integer timestamp value based on magnitude.
+///
+/// Heuristic ranges (covers ~1970 to ~2286):
+/// - `|v| < 1e10`  → Seconds
+/// - `|v| < 1e13`  → Milliseconds
+/// - `|v| < 1e16`  → Microseconds
+/// - `|v| >= 1e16` → Nanoseconds
+fn detect_epoch_unit(value: i64) -> Option<TimestampUnit> {
+    let abs = value.unsigned_abs();
+    if abs == 0 {
+        return None;
+    }
+    Some(if abs < 10_000_000_000 {
+        // < 1e10 → seconds (max ~2286)
+        TimestampUnit::Seconds
+    } else if abs < 10_000_000_000_000 {
+        // < 1e13 → milliseconds
+        TimestampUnit::Millis
+    } else if abs < 10_000_000_000_000_000 {
+        // < 1e16 → microseconds
+        TimestampUnit::Micros
+    } else {
+        // >= 1e16 → nanoseconds
+        TimestampUnit::Nanos
+    })
+}
+
+/// Read an integer value from an arrow array at a given row.
+fn read_int_value(array: &dyn arrow_array::Array, row: usize) -> Option<i64> {
+    use arrow_array::*;
+    if let Some(a) = array.as_any().downcast_ref::<Int64Array>() {
+        Some(a.value(row))
+    } else if let Some(a) = array.as_any().downcast_ref::<Int32Array>() {
+        Some(a.value(row) as i64)
+    } else if let Some(a) = array.as_any().downcast_ref::<Int16Array>() {
+        Some(a.value(row) as i64)
+    } else if let Some(a) = array.as_any().downcast_ref::<Int8Array>() {
+        Some(a.value(row) as i64)
+    } else if let Some(a) = array.as_any().downcast_ref::<UInt64Array>() {
+        Some(a.value(row) as i64)
+    } else if let Some(a) = array.as_any().downcast_ref::<UInt32Array>() {
+        Some(a.value(row) as i64)
+    } else if let Some(a) = array.as_any().downcast_ref::<UInt16Array>() {
+        Some(a.value(row) as i64)
+    } else if let Some(a) = array.as_any().downcast_ref::<UInt8Array>() {
+        Some(a.value(row) as i64)
+    } else {
+        None
+    }
 }
 
 /// Compute total bytes across all table paths in a GraphConfig.
@@ -493,5 +595,71 @@ mod tests {
             prev_target = target;
             bytes += 100 * GB;
         }
+    }
+
+    #[test]
+    fn test_detect_epoch_unit_zero() {
+        assert_eq!(detect_epoch_unit(0), None);
+    }
+
+    #[test]
+    fn test_detect_epoch_unit_seconds() {
+        // Unix epoch 2024-03-01 ~= 1709251200
+        assert_eq!(detect_epoch_unit(1709251200), Some(TimestampUnit::Seconds));
+        // Small value (year 2001)
+        assert_eq!(detect_epoch_unit(1_000_000_000), Some(TimestampUnit::Seconds));
+        // Negative (before epoch)
+        assert_eq!(detect_epoch_unit(-86400), Some(TimestampUnit::Seconds));
+    }
+
+    #[test]
+    fn test_detect_epoch_unit_millis() {
+        // 1709251200 * 1000
+        assert_eq!(
+            detect_epoch_unit(1_709_251_200_000),
+            Some(TimestampUnit::Millis)
+        );
+    }
+
+    #[test]
+    fn test_detect_epoch_unit_micros() {
+        // 1709251200 * 1_000_000
+        assert_eq!(
+            detect_epoch_unit(1_709_251_200_000_000),
+            Some(TimestampUnit::Micros)
+        );
+    }
+
+    #[test]
+    fn test_detect_epoch_unit_nanos() {
+        // 1709251200 * 1_000_000_000
+        assert_eq!(
+            detect_epoch_unit(1_709_251_200_000_000_000),
+            Some(TimestampUnit::Nanos)
+        );
+    }
+
+    #[test]
+    fn test_detect_epoch_unit_boundary() {
+        // Just below 1e10 → seconds
+        assert_eq!(
+            detect_epoch_unit(9_999_999_999),
+            Some(TimestampUnit::Seconds)
+        );
+        // At 1e10 → millis
+        assert_eq!(
+            detect_epoch_unit(10_000_000_000),
+            Some(TimestampUnit::Millis)
+        );
+        // Just below 1e13 → millis
+        assert_eq!(
+            detect_epoch_unit(9_999_999_999_999),
+            Some(TimestampUnit::Millis)
+        );
+        // At 1e13 → micros
+        assert_eq!(
+            detect_epoch_unit(10_000_000_000_000),
+            Some(TimestampUnit::Micros)
+        );
     }
 }
