@@ -53,7 +53,7 @@ impl Reduce for FM32 {
         let d = d.max(1);
         Self {
             d,
-            m: u64::MAX / d + 1,
+            m: (u64::MAX / d).wrapping_add(1),
         }
     }
     fn reduce(self, h: u64) -> usize {

@@ -3481,3 +3481,105 @@ fn ingest_parquet_binary_ip_fk_to_string_pk() -> Result<()> {
 
     Ok(())
 }
+
+/// Regression test: when num_shards is much larger than a table's row count,
+/// some shards receive zero rows during encode. The pk_map and edges_map
+/// phases iterate all shards, so the pipeline must tolerate missing shard
+/// files instead of crashing on "No such file or directory".
+#[test]
+fn ingest_survives_empty_shards() -> Result<()> {
+    let dir = tempdir()?;
+    let input_root = dir.path().join("input");
+    let output_root = dir.path().join("output");
+
+    // 3 users, 2 orders — with num_shards=64, most shards are empty.
+    write_parquet(
+        &input_root.join("users.parquet"),
+        Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("name", DataType::Utf8, false),
+        ]),
+        vec![
+            Arc::new(Int64Array::from(vec![10, 20, 30])) as ArrayRef,
+            Arc::new(StringArray::from(vec!["alice", "bob", "carol"])) as ArrayRef,
+        ],
+    )?;
+    write_parquet(
+        &input_root.join("orders.parquet"),
+        Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("user_id", DataType::Int64, false),
+        ]),
+        vec![
+            Arc::new(Int64Array::from(vec![100, 200])) as ArrayRef,
+            Arc::new(Int64Array::from(vec![10, 30])) as ArrayRef,
+        ],
+    )?;
+
+    let source = serde_json::json!({
+        "dataset_name": "empty_shard_test",
+        "num_shards": 64,
+        "tables": [
+            {
+                "name": "User",
+                "source": {"type": "parquet", "paths": [input_root.join("users.parquet").to_string_lossy()]},
+                "primary_key": "id",
+                "columns": [
+                    {"name": "id", "ingested_dtype": "int64"},
+                    {"name": "name", "ingested_dtype": "string"}
+                ]
+            },
+            {
+                "name": "Order",
+                "source": {"type": "parquet", "paths": [input_root.join("orders.parquet").to_string_lossy()]},
+                "primary_key": "id",
+                "columns": [
+                    {"name": "id", "ingested_dtype": "int64"},
+                    {"name": "user_id", "ingested_dtype": "int64"}
+                ],
+                "fkeys": [
+                    {
+                        "src_column": "user_id",
+                        "dst_table": "User"
+                    }
+                ]
+            }
+        ]
+    });
+    let source_path = dir.path().join("diskgraph_config.json");
+    fs::write(&source_path, serde_json::to_vec_pretty(&source)?)?;
+
+    let stats = ingest_with_stats(
+        &source_path,
+        output_root.to_str().unwrap(),
+        Dest::Local,
+        IngestOptions {
+            profile_dir: None,
+            progress: None,
+            parallel: true,
+            index_mem_budget_bytes: None,
+            peak_mem_stats: None,
+            col_stats: false,
+            cat_count_strategy: diskgraph_ingest::col_stats::CategoryCountStrategy::None,
+            row_subsample: false,
+        },
+    )?;
+
+    // All 3 users and 2 orders should be ingested despite most shards being empty.
+    let reader = GraphIndexReader::open(&output_root.join("index_metadata.json"), &output_root)?;
+    let user_table = reader.table("User").unwrap();
+    assert_eq!(user_table.node_count(), 3, "3 users");
+
+    let order_table = reader.table("Order").unwrap();
+    assert_eq!(order_table.node_count(), 2, "2 orders");
+
+    let forward = sum_relation_edges(&order_table, "Order_user_id_to_User_id")?;
+    let reverse = sum_relation_edges(&user_table, "Order_user_id_to_User_id_reverse")?;
+    assert_eq!(forward, 2, "2 forward edges");
+    assert_eq!(reverse, 2, "2 reverse edges");
+
+    assert_eq!(stats.1.key_parse_failures, 0, "no parse failures");
+    assert_eq!(stats.1.key_lookup_failures, 0, "no lookup failures");
+
+    Ok(())
+}

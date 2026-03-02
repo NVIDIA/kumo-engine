@@ -808,3 +808,86 @@ fn test_extract_batch_keys_edge_cases() {
         assert_eq!(extracted[1], None);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Integration: Int32 YYYYMMDD → get_timestamp via timestamp_format
+// ---------------------------------------------------------------------------
+
+#[test]
+fn int32_yyyymmdd_create_time_via_format() {
+    use crate::graph_config::{SemanticType, TableSpec};
+    use arrow_array::Int32Array;
+
+    let table = TableSpec {
+        name: "events".to_string(),
+        columns: vec![ColumnSpec {
+            name: "event_date".to_string(),
+            ingested_dtype: IngestedType::Int32,
+            source_dtype: Some("int".to_string()),
+            fixed_len: None,
+            timestamp_format: Some("%Y%m%d".to_string()),
+            timestamp_unit: None,
+            precision: None,
+            scale: None,
+            semantic_type: Some(SemanticType::Timestamp),
+        }],
+        primary_key: None,
+        create_time: Some("event_date".to_string()),
+        end_time: None,
+        weight: None,
+        edge_table: None,
+        rowpack: None,
+        source: DataSource::Parquet { paths: vec![] },
+        fkeys: Vec::new(),
+    };
+
+    let arr = Int32Array::from(vec![20240301]);
+    let cols: Vec<ArrayRef> = vec![Arc::new(arr)];
+    with_access(&table, cols, |access| {
+        let secs = access.get_timestamp(0).unwrap().unwrap();
+        let expected = NaiveDate::from_ymd_opt(2024, 3, 1)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap()
+            .and_utc()
+            .timestamp();
+        assert_eq!(secs, expected, "Int32 YYYYMMDD should parse via format hint");
+    });
+}
+
+#[test]
+fn int32_epoch_secs_no_format_unchanged() {
+    use arrow_array::Int32Array;
+
+    let table = TableSpec {
+        name: "events".to_string(),
+        columns: vec![ColumnSpec {
+            name: "ts".to_string(),
+            ingested_dtype: IngestedType::Int32,
+            source_dtype: None,
+            fixed_len: None,
+            timestamp_format: None,
+            timestamp_unit: None,
+            precision: None,
+            scale: None,
+            semantic_type: None,
+        }],
+        primary_key: None,
+        create_time: Some("ts".to_string()),
+        end_time: None,
+        weight: None,
+        edge_table: None,
+        rowpack: None,
+        source: DataSource::Parquet { paths: vec![] },
+        fkeys: Vec::new(),
+    };
+
+    // Normal epoch seconds — no format hint, should pass through as-is
+    let epoch = 1709251200i32; // 2024-03-01 00:00:00 UTC
+    let arr = Int32Array::from(vec![epoch]);
+    let cols: Vec<ArrayRef> = vec![Arc::new(arr)];
+    with_access(&table, cols, |access| {
+        let secs = access.get_timestamp(0).unwrap().unwrap();
+        assert_eq!(secs, epoch as i64, "Epoch seconds should pass through unchanged");
+    });
+}

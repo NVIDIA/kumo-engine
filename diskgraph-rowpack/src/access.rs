@@ -1888,6 +1888,15 @@ impl<'p> RowAccess<'p> {
                         .value(self.row) as i64,
                     _ => return Err(anyhow!("timestamp type mismatch")),
                 };
+                // If a format hint is set (e.g., "%Y%m%d"), convert the integer to
+                // a string and parse with the format. This handles date-encoded
+                // integers like YYYYMMDD (20240301) that are NOT epoch values.
+                if let Some(fmt) = format {
+                    let text = value.to_string();
+                    if let Some(secs) = parse_timestamp_text(&text, Some(fmt)) {
+                        return Ok(Some(secs));
+                    }
+                }
                 Ok(Some(timestamp_from_int(value, unit)))
             }
             DataType::Date32 => {

@@ -1549,3 +1549,102 @@ fn decode_rejects_corrupt_lz4() {
     let err = decoder.decode_json(&row).unwrap_err();
     assert!(err.to_string().contains("lz4"));
 }
+
+// ---------------------------------------------------------------------------
+// get_timestamp with timestamp_format on integer columns (YYYYMMDD support)
+// ---------------------------------------------------------------------------
+
+/// Helper: build a RowAccess with one column, set the given Arrow array, and
+/// call `get_timestamp(0)`.
+fn get_timestamp_from_array(
+    array: ArrayRef,
+    format: Option<&str>,
+    unit: Option<arrow_schema::TimeUnit>,
+) -> anyhow::Result<Option<i64>> {
+    let hints = vec![RowAccessHints {
+        timestamp_format: format.map(|s| s.to_string()),
+        timestamp_unit: unit,
+        ..Default::default()
+    }];
+    let stats = RowAccessStats::new(None);
+    let mut access = RowAccess::new(hints, stats);
+    let cols: Vec<ArrayRef> = vec![array];
+    access.set_cols(&cols);
+    access.set_row(0);
+    access.get_timestamp(0)
+}
+
+#[test]
+fn int32_yyyymmdd_with_format_hint() {
+    // 20240301 as Int32 with format "%Y%m%d" should parse to 2024-03-01 00:00:00 UTC
+    let arr: ArrayRef = Arc::new(Int32Array::from(vec![20240301]));
+    let secs = get_timestamp_from_array(arr, Some("%Y%m%d"), None)
+        .unwrap()
+        .unwrap();
+    let expected = chrono::NaiveDate::from_ymd_opt(2024, 3, 1)
+        .unwrap()
+        .and_hms_opt(0, 0, 0)
+        .unwrap()
+        .and_utc()
+        .timestamp();
+    assert_eq!(secs, expected);
+}
+
+#[test]
+fn int64_yyyymmdd_with_format_hint() {
+    // Same test but with Int64 backing
+    let arr: ArrayRef = Arc::new(arrow_array::Int64Array::from(vec![19930715i64]));
+    let secs = get_timestamp_from_array(arr, Some("%Y%m%d"), None)
+        .unwrap()
+        .unwrap();
+    let expected = chrono::NaiveDate::from_ymd_opt(1993, 7, 15)
+        .unwrap()
+        .and_hms_opt(0, 0, 0)
+        .unwrap()
+        .and_utc()
+        .timestamp();
+    assert_eq!(secs, expected);
+}
+
+#[test]
+fn int32_epoch_without_format_hint() {
+    // Without a format hint, integer values should be treated as epoch seconds
+    // (the original behavior).
+    let epoch_secs = 1709251200i32; // 2024-03-01 00:00:00 UTC
+    let arr: ArrayRef = Arc::new(Int32Array::from(vec![epoch_secs]));
+    let secs = get_timestamp_from_array(arr, None, None)
+        .unwrap()
+        .unwrap();
+    assert_eq!(secs, epoch_secs as i64);
+}
+
+#[test]
+fn int64_epoch_millis_without_format_hint() {
+    // Int64 with unit=Millisecond and no format → divide by 1000
+    let epoch_ms = 1709251200_000i64;
+    let arr: ArrayRef = Arc::new(arrow_array::Int64Array::from(vec![epoch_ms]));
+    let secs = get_timestamp_from_array(arr, None, Some(arrow_schema::TimeUnit::Millisecond))
+        .unwrap()
+        .unwrap();
+    assert_eq!(secs, 1709251200);
+}
+
+#[test]
+fn int32_yyyymmdd_format_takes_priority_over_unit() {
+    // When both format and unit are set, format should win for YYYYMMDD values.
+    let arr: ArrayRef = Arc::new(Int32Array::from(vec![20240301]));
+    let secs = get_timestamp_from_array(
+        arr,
+        Some("%Y%m%d"),
+        Some(arrow_schema::TimeUnit::Second),
+    )
+    .unwrap()
+    .unwrap();
+    let expected = chrono::NaiveDate::from_ymd_opt(2024, 3, 1)
+        .unwrap()
+        .and_hms_opt(0, 0, 0)
+        .unwrap()
+        .and_utc()
+        .timestamp();
+    assert_eq!(secs, expected);
+}
