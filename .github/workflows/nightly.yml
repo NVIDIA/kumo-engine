@@ -51,9 +51,9 @@ jobs:
             --release \
             --interpreter python${{ matrix.python }}
 
-          WHEEL_PATH=$(find diskgraph-pybind/target/wheels -maxdepth 1 -type f -name '*.whl' | head -n 1)
+          WHEEL_PATH=$(find target/wheels -maxdepth 1 -type f -name '*.whl' | head -n 1)
           if [ -z "$WHEEL_PATH" ]; then
-            echo "No wheel found in diskgraph-pybind/target/wheels"
+            echo "No wheel found in target/wheels"
             exit 1
           fi
 
