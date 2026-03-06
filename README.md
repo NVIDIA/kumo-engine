@@ -124,8 +124,8 @@ The repo now has two wheel-related workflows:
     - `ubuntu-20.04`, Python `3.10`
     - `ubuntu-22.04`, Python `3.10`
   - Uploads wheels to S3:
-    - `s3://kumo-unit-test/diskgraph-packages/<os>/py<python>/latest/<wheel-file>`
-    - `s3://kumo-unit-test/diskgraph-packages/<os>/py<python>/<version>.dev<YYYYMMDD>/<wheel-file>`
+    - `s3://kumo-diskgraph/packages/<os>/py<python>/latest/<wheel-file>`
+    - `s3://kumo-diskgraph/packages/<os>/py<python>/<version>.dev<YYYYMMDD>/<wheel-file>`
 
 Required GitHub Actions secrets for nightly upload:
 

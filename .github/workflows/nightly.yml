@@ -62,7 +62,7 @@ jobs:
 
       - name: Upload wheel
         run: |
-          prefix="s3://kumo-unit-test/diskgraph-packages/${{ matrix.os }}/py${{ matrix.python }}"
+          prefix="s3://kumo-diskgraph/packages/${{ matrix.os }}/py${{ matrix.python }}"
           aws s3 cp "${{ env.WHEEL_PATH }}" "$prefix/latest/${{ env.WHEEL_BASENAME }}"
           aws s3 cp "${{ env.WHEEL_PATH }}" "$prefix/${{ env.VERSION_TODAY }}/${{ env.WHEEL_BASENAME }}"
         env:
