@@ -619,11 +619,68 @@ pub fn convert_kumo_config(
         .map_err(|e| PyRuntimeError::new_err(format!("Failed to serialize config: {e}")))
 }
 
+#[pyfunction]
+#[pyo3(signature = (config_json, output_dir, col_stats=true, cat_count_strategy="hybrid"))]
+pub fn ingest(
+    py: Python<'_>,
+    config_json: &str,
+    output_dir: &str,
+    col_stats: bool,
+    cat_count_strategy: &str,
+) -> PyResult<String> {
+    let source: diskgraph_ingest::GraphConfig = serde_json::from_str(config_json)
+        .map_err(|e| PyValueError::new_err(format!("Invalid config JSON: {e}")))?;
+
+    let strategy = match cat_count_strategy {
+        "hybrid" => diskgraph_ingest::col_stats::CategoryCountStrategy::Hybrid,
+        "graduation" => diskgraph_ingest::col_stats::CategoryCountStrategy::Graduation,
+        "none" => diskgraph_ingest::col_stats::CategoryCountStrategy::None,
+        other => {
+            return Err(PyValueError::new_err(format!(
+                "Unknown cat_count_strategy: {other}"
+            )))
+        }
+    };
+
+    let options = diskgraph_ingest::IngestOptions {
+        profile_dir: None,
+        progress: None,
+        parallel: true,
+        index_mem_budget_bytes: None,
+        peak_mem_stats: None,
+        col_stats,
+        cat_count_strategy: strategy,
+        row_subsample: false,
+    };
+
+    let output_dir = output_dir.to_string();
+
+    // Release the GIL during ingest — this is a long-running CPU/IO operation
+    // and holding the GIL would block heartbeats and other activities in the
+    // Temporal worker.
+    let result = py.allow_threads(move || {
+        diskgraph_ingest::ingest_with_stats_from_source(
+            source,
+            None,
+            &output_dir,
+            diskgraph_ingest::Dest::Local,
+            options,
+        )
+    });
+
+    let (_metadata, stats) =
+        result.map_err(|e| PyRuntimeError::new_err(format!("Ingest failed: {e}")))?;
+
+    serde_json::to_string(&stats)
+        .map_err(|e| PyRuntimeError::new_err(format!("Failed to serialize stats: {e}")))
+}
+
 #[pymodule]
 #[pyo3(name = "_c")]
 fn diskgraph_pybind(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(export_tt_artifacts, m)?)?;
     m.add_function(wrap_pyfunction!(convert_kumo_config, m)?)?;
+    m.add_function(wrap_pyfunction!(ingest, m)?)?;
     m.add_class::<ExportConfig>()?;
     m.add_class::<FkeyConfig>()?;
     m.add_class::<PyTimeUnit>()?;
