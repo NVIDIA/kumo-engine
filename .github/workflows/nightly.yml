@@ -1,10 +1,19 @@
 ---
-name: Nightly Build
+name: Wheel Publish
 
 on:  # yamllint disable-line rule:truthy
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/nightly.yml'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'diskgraph-*/**'
   workflow_dispatch:
-  schedule:
-    - cron: "0 6 * * *"  # Everyday at 6:00am UTC/10:00pm PST
+
+concurrency:
+  group: diskgraph-wheel-main
+  cancel-in-progress: true
 
 jobs:
   wheel:
