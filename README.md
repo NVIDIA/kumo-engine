@@ -109,3 +109,30 @@ Use this when you have a training or bp job ID and want the raw parquet tables f
 ./diskgraph-infer/scripts/infer_config.sh /mnt/localssd/datasets/<customer_name>_<job_id>
 ./diskgraph-ingest/scripts/ingest_local.sh /mnt/localssd/datasets/<customer_name>_<job_id>
 ```
+
+## Python wheel CI / nightly publishing
+
+The repo now has two wheel-related workflows:
+
+- `.github/workflows/build.yml`
+  - Runs on push/PR to `main`
+  - Builds the Python wheel from `diskgraph-pybind` using `maturin`
+
+- `.github/workflows/nightly.yml`
+  - Runs daily at `0 6 * * *` UTC and via manual dispatch
+  - Builds wheels for:
+    - `ubuntu-20.04`, Python `3.10`
+    - `ubuntu-22.04`, Python `3.10`
+  - Uploads wheels to S3:
+    - `s3://kumo-diskgraph/packages/<os>/py<python>/latest/<wheel-file>`
+    - `s3://kumo-diskgraph/packages/<os>/py<python>/<version>.dev<YYYYMMDD>/<wheel-file>`
+
+Required GitHub Actions secrets for nightly upload:
+
+- `AWS_ACCESS_KEY_ID`
+- `AWS_SECRET_ACCESS_KEY`
+
+Region used by the workflow: `us-west-2`.
+
+Current Python package version is read from `diskgraph-pybind/pyproject.toml` (`[project].version`).
+
