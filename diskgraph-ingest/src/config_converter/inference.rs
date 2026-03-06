@@ -81,6 +81,8 @@ pub fn detect_timestamp_formats(
 
         // Detected hints: col_index -> detection result
         let mut detected: HashMap<usize, TimestampDetection> = HashMap::new();
+        /// Maximum number of non-null values to sample per column for majority vote.
+        const MAX_SAMPLES: usize = 10;
 
         macro_rules! detect_from_reader {
             ($reader:expr, $schema:expr) => {{
@@ -94,7 +96,11 @@ pub fn detect_timestamp_formats(
                     })
                     .collect();
 
-                // Read one batch and detect from first non-null value per column.
+                // Collect up to MAX_SAMPLES non-null detections per column, then majority-vote.
+                // Key: candidate col_key → Vec of detection results (as strings for voting).
+                let mut votes: HashMap<usize, Vec<String>> = HashMap::new();
+                let mut sample_counts: HashMap<usize, usize> = HashMap::new();
+
                 for batch in $reader {
                     let batch = batch?;
                     for (cand_idx, info) in col_info.iter().enumerate() {
@@ -103,14 +109,18 @@ pub fn detect_timestamp_formats(
                             None => continue,
                         };
                         let col_key = candidates[cand_idx].0;
-                        if detected.contains_key(&col_key) {
+                        if *sample_counts.get(&col_key).unwrap_or(&0) >= MAX_SAMPLES {
                             continue;
                         }
                         let array = batch.column(arr_idx);
                         for row in 0..batch.num_rows() {
+                            if *sample_counts.get(&col_key).unwrap_or(&0) >= MAX_SAMPLES {
+                                break;
+                            }
                             if array.is_null(row) {
                                 continue;
                             }
+                            *sample_counts.entry(col_key).or_insert(0) += 1;
                             match dt {
                                 arrow_schema::DataType::Utf8
                                 | arrow_schema::DataType::LargeUtf8
@@ -132,21 +142,19 @@ pub fn detect_timestamp_formats(
                                         None
                                     };
                                     if let Some(text) = text {
-                                        // Try format detection first.
                                         if let Some(fmt) =
                                             diskgraph_rowpack::detect_timestamp_format(text)
                                         {
-                                            detected.insert(
-                                                col_key,
-                                                TimestampDetection::Format(fmt.to_string()),
-                                            );
+                                            votes
+                                                .entry(col_key)
+                                                .or_default()
+                                                .push(format!("fmt:{}", fmt));
                                         } else if let Ok(v) = text.trim().parse::<i64>() {
-                                            // String of digits — detect unit from magnitude.
-                                            if let Some(unit) = detect_epoch_unit(v) {
-                                                detected.insert(
-                                                    col_key,
-                                                    TimestampDetection::Unit(unit),
-                                                );
+                                            if let Some(det) = detect_int_timestamp(v) {
+                                                votes
+                                                    .entry(col_key)
+                                                    .or_default()
+                                                    .push(detection_to_vote_key(&det));
                                             }
                                         }
                                     }
@@ -160,21 +168,28 @@ pub fn detect_timestamp_formats(
                                 | arrow_schema::DataType::UInt32
                                 | arrow_schema::DataType::UInt64 => {
                                     if let Some(v) = read_int_value(array, row) {
-                                        if let Some(unit) = detect_epoch_unit(v) {
-                                            detected.insert(
-                                                col_key,
-                                                TimestampDetection::Unit(unit),
-                                            );
+                                        if let Some(det) = detect_int_timestamp(v) {
+                                            votes
+                                                .entry(col_key)
+                                                .or_default()
+                                                .push(detection_to_vote_key(&det));
                                         }
                                     }
                                 }
                                 _ => {}
                             }
-                            break; // Only need first non-null value
                         }
                     }
-                    // One batch is enough.
+                    // One batch (1024 rows) is enough for sampling.
                     break;
+                }
+
+                // Majority vote: pick the most common detection per column.
+                // On ties, prefer Format over Unit.
+                for (col_key, col_votes) in votes {
+                    if let Some(winner) = majority_vote(&col_votes) {
+                        detected.insert(col_key, winner);
+                    }
                 }
             }};
         }
@@ -211,13 +226,27 @@ pub fn detect_timestamp_formats(
     Ok(())
 }
 
-/// Detect epoch unit from an integer timestamp value based on magnitude.
+/// Detect timestamp representation from an integer value.
 ///
-/// Heuristic ranges (covers ~1970 to ~2286):
+/// First checks for encoded date patterns (YYYYMMDD, YYYYMMDDHHMMSS, etc.)
+/// via `detect_encoded_int_format`. Only falls back to epoch-magnitude
+/// heuristic if no encoded date pattern matches.
+///
+/// Epoch heuristic ranges (covers ~1970 to ~2286):
 /// - `|v| < 1e10`  → Seconds
 /// - `|v| < 1e13`  → Milliseconds
 /// - `|v| < 1e16`  → Microseconds
 /// - `|v| >= 1e16` → Nanoseconds
+fn detect_int_timestamp(value: i64) -> Option<TimestampDetection> {
+    // Check encoded date formats first (e.g. 20230408 → "%Y%m%d")
+    if let Some(fmt) = diskgraph_rowpack::detect_encoded_int_format(value) {
+        return Some(TimestampDetection::Format(fmt.to_string()));
+    }
+    // Fall back to epoch unit detection
+    detect_epoch_unit(value).map(TimestampDetection::Unit)
+}
+
+/// Detect epoch unit from an integer timestamp value based on magnitude.
 fn detect_epoch_unit(value: i64) -> Option<TimestampUnit> {
     let abs = value.unsigned_abs();
     if abs == 0 {
@@ -236,6 +265,57 @@ fn detect_epoch_unit(value: i64) -> Option<TimestampUnit> {
         // >= 1e16 → nanoseconds
         TimestampUnit::Nanos
     })
+}
+
+/// Convert a `TimestampDetection` to a string key for majority voting.
+fn detection_to_vote_key(det: &TimestampDetection) -> String {
+    match det {
+        TimestampDetection::Format(f) => format!("fmt:{}", f),
+        TimestampDetection::Unit(u) => format!("unit:{:?}", u),
+    }
+}
+
+/// Parse a vote key back into a `TimestampDetection`.
+fn vote_key_to_detection(key: &str) -> Option<TimestampDetection> {
+    if let Some(fmt) = key.strip_prefix("fmt:") {
+        Some(TimestampDetection::Format(fmt.to_string()))
+    } else if let Some(unit_str) = key.strip_prefix("unit:") {
+        let unit = match unit_str {
+            "Seconds" => TimestampUnit::Seconds,
+            "Millis" => TimestampUnit::Millis,
+            "Micros" => TimestampUnit::Micros,
+            "Nanos" => TimestampUnit::Nanos,
+            _ => return None,
+        };
+        Some(TimestampDetection::Unit(unit))
+    } else {
+        None
+    }
+}
+
+/// Pick the most common vote. On ties, prefer Format over Unit.
+fn majority_vote(votes: &[String]) -> Option<TimestampDetection> {
+    if votes.is_empty() {
+        return None;
+    }
+    let mut counts: HashMap<&str, usize> = HashMap::new();
+    for v in votes {
+        *counts.entry(v.as_str()).or_insert(0) += 1;
+    }
+    let max_count = *counts.values().max().unwrap();
+    // Collect all keys with the max count
+    let mut best: Vec<&str> = counts
+        .iter()
+        .filter(|(_, &c)| c == max_count)
+        .map(|(&k, _)| k)
+        .collect();
+    // On ties, prefer Format over Unit
+    best.sort_by(|a, b| {
+        let a_is_fmt = a.starts_with("fmt:");
+        let b_is_fmt = b.starts_with("fmt:");
+        b_is_fmt.cmp(&a_is_fmt) // true (fmt) sorts before false (unit)
+    });
+    vote_key_to_detection(best[0])
 }
 
 /// Read an integer value from an arrow array at a given row.
@@ -661,5 +741,42 @@ mod tests {
             detect_epoch_unit(10_000_000_000_000),
             Some(TimestampUnit::Micros)
         );
+    }
+
+    #[test]
+    fn test_detect_int_timestamp_yyyymmdd() {
+        let result = detect_int_timestamp(20230408);
+        match result {
+            Some(TimestampDetection::Format(fmt)) => assert_eq!(fmt, "%Y%m%d"),
+            other => panic!("Expected Format(\"%Y%m%d\"), got {:?}", other.map(|d| match d {
+                TimestampDetection::Format(f) => format!("Format({})", f),
+                TimestampDetection::Unit(u) => format!("Unit({:?})", u),
+            })),
+        }
+    }
+
+    #[test]
+    fn test_detect_int_timestamp_yyyymmddhhmmss() {
+        let result = detect_int_timestamp(20230408120530);
+        match result {
+            Some(TimestampDetection::Format(fmt)) => assert_eq!(fmt, "%Y%m%d%H%M%S"),
+            other => panic!("Expected Format(\"%Y%m%d%H%M%S\"), got {:?}", other.map(|d| match d {
+                TimestampDetection::Format(f) => format!("Format({})", f),
+                TimestampDetection::Unit(u) => format!("Unit({:?})", u),
+            })),
+        }
+    }
+
+    #[test]
+    fn test_detect_int_timestamp_epoch_seconds() {
+        // 1709251200 is 10 digits — not a valid date pattern, should be epoch seconds
+        let result = detect_int_timestamp(1709251200);
+        match result {
+            Some(TimestampDetection::Unit(TimestampUnit::Seconds)) => {}
+            other => panic!("Expected Unit(Seconds), got {:?}", other.map(|d| match d {
+                TimestampDetection::Format(f) => format!("Format({})", f),
+                TimestampDetection::Unit(u) => format!("Unit({:?})", u),
+            })),
+        }
     }
 }

@@ -1304,3 +1304,154 @@ fn test_detect_timestamp_formats_skips_native_timestamp_columns() {
     // Native timestamp column should NOT get a format string (it's not Utf8).
     assert_eq!(config.tables[0].columns[0].timestamp_format, None);
 }
+
+#[test]
+fn test_detect_timestamp_formats_integer_yyyymmdd() {
+    use crate::config_converter::detect_timestamp_formats;
+    use crate::graph_config::{ColumnSpec, DataSource, GraphConfig, IngestedType, TableSpec};
+    use arrow_array::{Int64Array, RecordBatch};
+    use arrow_schema::{DataType, Field, Schema};
+    use parquet::arrow::ArrowWriter;
+    use std::sync::Arc;
+
+    // Create a parquet file with Int64 column containing YYYYMMDD values.
+    let dir = tempfile::tempdir().unwrap();
+    let parquet_path = dir.path().join("yyyymmdd.parquet");
+
+    let schema = Arc::new(Schema::new(vec![Field::new(
+        "date_col",
+        DataType::Int64,
+        false,
+    )]));
+
+    let int_array = Int64Array::from(vec![20230408, 20240115, 20250301]);
+    let batch = RecordBatch::try_new(schema.clone(), vec![Arc::new(int_array)]).unwrap();
+
+    let file = std::fs::File::create(&parquet_path).unwrap();
+    let mut writer = ArrowWriter::try_new(file, schema, None).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+
+    let mut config = GraphConfig {
+        dataset_name: "test".to_string(),
+        tables: vec![TableSpec {
+            name: "events".to_string(),
+            columns: vec![ColumnSpec {
+                name: "date_col".to_string(),
+                source_dtype: None,
+                ingested_dtype: IngestedType::Timestamp,
+                fixed_len: None,
+                timestamp_format: None,
+                timestamp_unit: None,
+                precision: None,
+                scale: None,
+                semantic_type: None,
+            }],
+            primary_key: None,
+            create_time: None,
+            end_time: None,
+            weight: None,
+            edge_table: None,
+            rowpack: None,
+            source: DataSource::Parquet {
+                paths: vec![parquet_path.to_string_lossy().to_string()],
+            },
+            fkeys: vec![],
+        }],
+        rowpack: None,
+        num_shards: None,
+        edge_format: None,
+        coercion_mode: Default::default(),
+    };
+
+    detect_timestamp_formats(&mut config, &None).unwrap();
+
+    // Should detect %Y%m%d format, NOT epoch seconds unit
+    let col = &config.tables[0].columns[0];
+    assert_eq!(
+        col.timestamp_format.as_deref(),
+        Some("%Y%m%d"),
+        "Expected %Y%m%d format, got format={:?}, unit={:?}",
+        col.timestamp_format,
+        col.timestamp_unit
+    );
+    assert_eq!(col.timestamp_unit, None);
+}
+
+#[test]
+fn test_detect_timestamp_formats_multi_value_sampling() {
+    use crate::config_converter::detect_timestamp_formats;
+    use crate::graph_config::{ColumnSpec, DataSource, GraphConfig, IngestedType, TableSpec};
+    use arrow_array::{Int64Array, RecordBatch};
+    use arrow_schema::{DataType, Field, Schema};
+    use parquet::arrow::ArrowWriter;
+    use std::sync::Arc;
+
+    // Create a parquet file with 20 values: 18 YYYYMMDD + 2 outliers (small epoch-like).
+    let dir = tempfile::tempdir().unwrap();
+    let parquet_path = dir.path().join("multi_sample.parquet");
+
+    let schema = Arc::new(Schema::new(vec![Field::new(
+        "date_col",
+        DataType::Int64,
+        false,
+    )]));
+
+    let mut values: Vec<i64> = (0..18)
+        .map(|i| 20230101 + i * 100) // 20230101, 20230201, 20230301, ...
+        .collect();
+    // Add 2 outlier values that look like small epoch seconds
+    values.push(86400);  // 1 day in seconds
+    values.push(172800); // 2 days in seconds
+    let int_array = Int64Array::from(values);
+    let batch = RecordBatch::try_new(schema.clone(), vec![Arc::new(int_array)]).unwrap();
+
+    let file = std::fs::File::create(&parquet_path).unwrap();
+    let mut writer = ArrowWriter::try_new(file, schema, None).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+
+    let mut config = GraphConfig {
+        dataset_name: "test".to_string(),
+        tables: vec![TableSpec {
+            name: "events".to_string(),
+            columns: vec![ColumnSpec {
+                name: "date_col".to_string(),
+                source_dtype: None,
+                ingested_dtype: IngestedType::Timestamp,
+                fixed_len: None,
+                timestamp_format: None,
+                timestamp_unit: None,
+                precision: None,
+                scale: None,
+                semantic_type: None,
+            }],
+            primary_key: None,
+            create_time: None,
+            end_time: None,
+            weight: None,
+            edge_table: None,
+            rowpack: None,
+            source: DataSource::Parquet {
+                paths: vec![parquet_path.to_string_lossy().to_string()],
+            },
+            fkeys: vec![],
+        }],
+        rowpack: None,
+        num_shards: None,
+        edge_format: None,
+        coercion_mode: Default::default(),
+    };
+
+    detect_timestamp_formats(&mut config, &None).unwrap();
+
+    // Majority vote should pick %Y%m%d (8 out of 10 sampled values)
+    let col = &config.tables[0].columns[0];
+    assert_eq!(
+        col.timestamp_format.as_deref(),
+        Some("%Y%m%d"),
+        "Expected majority vote to pick %Y%m%d, got format={:?}, unit={:?}",
+        col.timestamp_format,
+        col.timestamp_unit
+    );
+}

@@ -1648,3 +1648,190 @@ fn int32_yyyymmdd_format_takes_priority_over_unit() {
         .timestamp();
     assert_eq!(secs, expected);
 }
+
+// ---- detect_encoded_int_format tests ----
+
+#[test]
+fn test_detect_encoded_int_format_yyyymmdd() {
+    assert_eq!(detect_encoded_int_format(20230408), Some("%Y%m%d"));
+}
+
+#[test]
+fn test_detect_encoded_int_format_yyyymmddhhmmss() {
+    assert_eq!(
+        detect_encoded_int_format(20230408120530),
+        Some("%Y%m%d%H%M%S")
+    );
+}
+
+#[test]
+fn test_detect_encoded_int_format_yyyy() {
+    assert_eq!(detect_encoded_int_format(2023), Some("%Y"));
+}
+
+#[test]
+fn test_detect_encoded_int_format_yyyymm() {
+    assert_eq!(detect_encoded_int_format(202304), Some("%Y%m"));
+}
+
+#[test]
+fn test_detect_encoded_int_format_not_date() {
+    // 99999999 → invalid month (99) and day (99), should not match
+    assert_eq!(detect_encoded_int_format(99999999), None);
+    // epoch seconds value — 10 digits, no matching pattern
+    assert_eq!(detect_encoded_int_format(1709251200), None);
+    // 5-digit number — no matching pattern
+    assert_eq!(detect_encoded_int_format(12345), None);
+}
+
+#[test]
+fn test_detect_encoded_int_format_boundary() {
+    // Earliest valid date: 1900-01-01
+    assert_eq!(detect_encoded_int_format(19000101), Some("%Y%m%d"));
+    // Latest valid date: 2100-12-31
+    assert_eq!(detect_encoded_int_format(21001231), Some("%Y%m%d"));
+    // Year out of range
+    assert_eq!(detect_encoded_int_format(18991231), None);
+    assert_eq!(detect_encoded_int_format(21010101), None);
+    // Invalid month
+    assert_eq!(detect_encoded_int_format(20231301), None);
+    assert_eq!(detect_encoded_int_format(20230001), None);
+    // Invalid day
+    assert_eq!(detect_encoded_int_format(20230100), None);
+    assert_eq!(detect_encoded_int_format(20230132), None);
+    // Valid 14-digit boundary
+    assert_eq!(
+        detect_encoded_int_format(19000101000000),
+        Some("%Y%m%d%H%M%S")
+    );
+    assert_eq!(
+        detect_encoded_int_format(21001231235959),
+        Some("%Y%m%d%H%M%S")
+    );
+    // Invalid time components in 14-digit
+    assert_eq!(detect_encoded_int_format(20230408240000), None); // hour 24
+    assert_eq!(detect_encoded_int_format(20230408006000), None); // minute 60
+    assert_eq!(detect_encoded_int_format(20230408000060), None); // second 60
+}
+
+// ---- compact format parsing tests ----
+
+#[test]
+fn test_parse_yyyymmdd_fast() {
+    let expected = chrono::NaiveDate::from_ymd_opt(2023, 4, 8)
+        .unwrap()
+        .and_hms_opt(0, 0, 0)
+        .unwrap()
+        .and_utc()
+        .timestamp();
+    assert_eq!(parse_compact_ymd_fast(b"20230408"), Some(expected));
+
+    // 1970-01-01
+    let epoch = chrono::NaiveDate::from_ymd_opt(1970, 1, 1)
+        .unwrap()
+        .and_hms_opt(0, 0, 0)
+        .unwrap()
+        .and_utc()
+        .timestamp();
+    assert_eq!(parse_compact_ymd_fast(b"19700101"), Some(epoch));
+
+    // Wrong length
+    assert_eq!(parse_compact_ymd_fast(b"2023040"), None);
+    assert_eq!(parse_compact_ymd_fast(b"202304081"), None);
+
+    // Non-digits
+    assert_eq!(parse_compact_ymd_fast(b"2023-4-8"), None);
+}
+
+#[test]
+fn test_parse_yyyymmddhhmmss_fast() {
+    let expected = chrono::NaiveDate::from_ymd_opt(2023, 4, 8)
+        .unwrap()
+        .and_hms_opt(12, 5, 30)
+        .unwrap()
+        .and_utc()
+        .timestamp();
+    assert_eq!(
+        parse_compact_ymd_hms_fast(b"20230408120530"),
+        Some(expected)
+    );
+
+    // Midnight
+    let midnight = chrono::NaiveDate::from_ymd_opt(2024, 1, 15)
+        .unwrap()
+        .and_hms_opt(0, 0, 0)
+        .unwrap()
+        .and_utc()
+        .timestamp();
+    assert_eq!(
+        parse_compact_ymd_hms_fast(b"20240115000000"),
+        Some(midnight)
+    );
+
+    // Wrong length
+    assert_eq!(parse_compact_ymd_hms_fast(b"2023040812053"), None);
+    assert_eq!(parse_compact_ymd_hms_fast(b"202304081205300"), None);
+}
+
+// ---- non-ISO format detection tests ----
+
+#[test]
+fn test_detect_non_iso_formats() {
+    // US date: month/day/year — chrono fallback since no ISO fast-path matches
+    assert_eq!(
+        detect_timestamp_format("01/15/2024"),
+        Some("%m/%d/%Y")
+    );
+    // US date with time
+    assert_eq!(
+        detect_timestamp_format("01/15/2024 10:30:00"),
+        Some("%m/%d/%Y %H:%M:%S")
+    );
+    // EU date (note: 15 > 12 so only d/m/Y can match)
+    assert_eq!(
+        detect_timestamp_format("15/01/2024"),
+        Some("%d/%m/%Y")
+    );
+    // Slash-separated ISO-like: the fast parser for "%Y-%m-%d" is separator-agnostic,
+    // so "2024/01/15" matches "%Y-%m-%d" first (higher priority). This is acceptable
+    // since the parsed timestamp is identical.
+    assert_eq!(
+        detect_timestamp_format("2024/01/15"),
+        Some("%Y-%m-%d")
+    );
+    // Slash-separated ISO with time: same — fast parser is separator-agnostic
+    assert_eq!(
+        detect_timestamp_format("2024/01/15 10:30:00"),
+        Some("%Y-%m-%d %H:%M:%S")
+    );
+    // Verify the non-ISO formats still parse correctly via parse_timestamp_text
+    assert!(parse_timestamp_text("01/15/2024", Some("%m/%d/%Y")).is_some());
+    assert!(parse_timestamp_text("15/01/2024", Some("%d/%m/%Y")).is_some());
+    assert!(parse_timestamp_text("15/01/2024 10:30:00", Some("%d/%m/%Y %H:%M:%S")).is_some());
+}
+
+// ---- mixed timezone fallback tests ----
+
+#[test]
+fn test_parse_timestamp_text_no_tz_format_rejects_tz_value() {
+    // Format has no tz, value has tz offset → should NOT silently parse
+    // (detection should have picked a tz-aware format if the column has tz values)
+    let result =
+        parse_timestamp_text("2024-01-15 10:30:00+05:30", Some("%Y-%m-%d %H:%M:%S"));
+    assert!(result.is_none());
+}
+
+#[test]
+fn test_parse_timestamp_text_tz_format_no_tz_value() {
+    // Format expects tz, but value has none → should still parse (as naive UTC)
+    let result =
+        parse_timestamp_text("2024-01-15 10:30:00", Some("%Y-%m-%d %H:%M:%S%:z"));
+    assert!(result.is_some());
+    let expected = chrono::NaiveDate::from_ymd_opt(2024, 1, 15)
+        .unwrap()
+        .and_hms_opt(10, 30, 0)
+        .unwrap()
+        .and_utc()
+        .timestamp();
+    assert_eq!(result.unwrap(), expected);
+}

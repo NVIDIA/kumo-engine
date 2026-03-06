@@ -30,7 +30,7 @@ mod tests_unit;
 
 use crate::access::FloatListValues;
 pub use crate::access::{BinaryStringHint, FloatListView, RowAccess, RowAccessHints};
-pub use crate::parser::{detect_timestamp_format, TIMESTAMP_FORMATS};
+pub use crate::parser::{detect_encoded_int_format, detect_timestamp_format, TIMESTAMP_FORMATS};
 
 pub(crate) const ROWPACK_VERSION: u8 = 3;
 pub(crate) const MAX_INPUT_STRING_BYTES: usize = 64 * 1024 * 1024;

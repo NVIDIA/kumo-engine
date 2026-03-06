@@ -196,13 +196,30 @@ pub(crate) fn parse_timestamp_text(value: &str, format: Option<&str>) -> Option<
         if has_tz {
             chrono::DateTime::parse_from_str(value, fmt)
                 .ok()
-                .map(|v| v.naive_utc())?
+                .map(|v| v.naive_utc())
+                // Mixed-tz fallback: format expects tz but value has none → try without tz
+                .or_else(|| {
+                    let base_fmt = fmt
+                        .replace(" %:z", "")
+                        .replace("%:z", "")
+                        .replace(" %z", "")
+                        .replace("%z", "");
+                    NaiveDateTime::parse_from_str(value, &base_fmt)
+                        .ok()
+                        .or_else(|| {
+                            NaiveDate::parse_from_str(value, &base_fmt)
+                                .ok()
+                                .map(|d| d.and_hms_opt(0, 0, 0).unwrap())
+                        })
+                })?
         } else {
-            NaiveDateTime::parse_from_str(value, fmt).ok().or_else(|| {
-                NaiveDate::parse_from_str(value, fmt)
-                    .ok()
-                    .map(|d| d.and_hms_opt(0, 0, 0).unwrap())
-            })?
+            NaiveDateTime::parse_from_str(value, fmt)
+                .ok()
+                .or_else(|| {
+                    NaiveDate::parse_from_str(value, fmt)
+                        .ok()
+                        .map(|d| d.and_hms_opt(0, 0, 0).unwrap())
+                })?
         }
     } else {
         chrono::DateTime::parse_from_rfc3339(value)
@@ -253,6 +270,10 @@ enum TimestampFormatKind {
     YmdHmsSpaceOffsetColonSpaced,
     YmdHmsTOffset,
     YmdHmsTOffsetColon,
+    /// "%Y%m%d" — encoded integer date (e.g. 20230408)
+    CompactYmd,
+    /// "%Y%m%d%H%M%S" — encoded integer datetime (e.g. 20230408120530)
+    CompactYmdHms,
 }
 
 #[derive(Clone, Debug)]
@@ -275,6 +296,8 @@ impl TimestampFormatParser {
             "%Y-%m-%d %H:%M:%S %:z" => TimestampFormatKind::YmdHmsSpaceOffsetColonSpaced,
             "%Y-%m-%dT%H:%M:%S%z" => TimestampFormatKind::YmdHmsTOffset,
             "%Y-%m-%dT%H:%M:%S%:z" => TimestampFormatKind::YmdHmsTOffsetColon,
+            "%Y%m%d" => TimestampFormatKind::CompactYmd,
+            "%Y%m%d%H%M%S" => TimestampFormatKind::CompactYmdHms,
             _ => return None,
         };
         Some(Self { kind })
@@ -306,6 +329,8 @@ impl TimestampFormatParser {
             TimestampFormatKind::YmdHmsTOffsetColon => {
                 parse_ymd_hms_offset_colon_fast(value.as_bytes())
             }
+            TimestampFormatKind::CompactYmd => parse_compact_ymd_fast(value.as_bytes()),
+            TimestampFormatKind::CompactYmdHms => parse_compact_ymd_hms_fast(value.as_bytes()),
         }
     }
 
@@ -316,6 +341,7 @@ impl TimestampFormatParser {
 }
 
 /// Known timestamp format strings, ordered by detection priority.
+/// ISO formats first (fast-path), then non-ISO formats (chrono fallback for detection only).
 pub const TIMESTAMP_FORMATS: &[&str] = &[
     "%Y-%m-%d",
     "%Y-%m-%d %H:%M:%S",
@@ -329,15 +355,147 @@ pub const TIMESTAMP_FORMATS: &[&str] = &[
     "%Y-%m-%d %H:%M:%S %:z",
     "%Y-%m-%dT%H:%M:%S%z",
     "%Y-%m-%dT%H:%M:%S%:z",
+    // Non-ISO formats (chrono fallback, lower priority)
+    "%m/%d/%Y",
+    "%m/%d/%Y %H:%M:%S",
+    "%d/%m/%Y",
+    "%d/%m/%Y %H:%M:%S",
+    "%Y/%m/%d",
+    "%Y/%m/%d %H:%M:%S",
 ];
 
 /// Detect the timestamp format of a string value.
 pub fn detect_timestamp_format(value: &str) -> Option<&'static str> {
     TIMESTAMP_FORMATS.iter().copied().find(|&fmt| {
-        TimestampFormatParser::compile(fmt)
-            .and_then(|p| p.parse_timestamp(value))
-            .is_some()
+        if let Some(p) = TimestampFormatParser::compile(fmt) {
+            p.parse_timestamp(value).is_some()
+        } else {
+            // Formats without a compiled fast-path: try chrono directly
+            parse_timestamp_text(value, Some(fmt)).is_some()
+        }
     })
+}
+
+/// Detect if an integer value encodes a date in a compact format.
+///
+/// Checks digit count and validates plausibility (year 1900-2100, etc.):
+/// - 4 digits  → `"%Y"`           (e.g. 2023)
+/// - 6 digits  → `"%Y%m"`         (e.g. 202304)
+/// - 8 digits  → `"%Y%m%d"`       (e.g. 20230408)
+/// - 14 digits → `"%Y%m%d%H%M%S"` (e.g. 20230408120530)
+///
+/// Returns `None` for values that don't match or fail plausibility checks.
+pub fn detect_encoded_int_format(value: i64) -> Option<&'static str> {
+    let abs = value.unsigned_abs();
+    let digits = if abs == 0 { 1 } else { ((abs as f64).log10().floor() as u32) + 1 };
+
+    match digits {
+        4 => {
+            // %Y — year only
+            let year = abs as u32;
+            if (1900..=2100).contains(&year) {
+                Some("%Y")
+            } else {
+                None
+            }
+        }
+        6 => {
+            // %Y%m — year + month
+            let year = (abs / 100) as u32;
+            let month = (abs % 100) as u32;
+            if (1900..=2100).contains(&year) && (1..=12).contains(&month) {
+                Some("%Y%m")
+            } else {
+                None
+            }
+        }
+        8 => {
+            // %Y%m%d — year + month + day
+            let year = (abs / 10_000) as u32;
+            let month = ((abs / 100) % 100) as u32;
+            let day = (abs % 100) as u32;
+            if (1900..=2100).contains(&year)
+                && (1..=12).contains(&month)
+                && (1..=31).contains(&day)
+            {
+                Some("%Y%m%d")
+            } else {
+                None
+            }
+        }
+        14 => {
+            // %Y%m%d%H%M%S — year + month + day + hour + minute + second
+            let year = (abs / 10_000_000_000) as u32;
+            let month = ((abs / 100_000_000) % 100) as u32;
+            let day = ((abs / 1_000_000) % 100) as u32;
+            let hour = ((abs / 10_000) % 100) as u32;
+            let minute = ((abs / 100) % 100) as u32;
+            let second = (abs % 100) as u32;
+            if (1900..=2100).contains(&year)
+                && (1..=12).contains(&month)
+                && (1..=31).contains(&day)
+                && hour <= 23
+                && minute <= 59
+                && second <= 59
+            {
+                Some("%Y%m%d%H%M%S")
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+// "%Y%m%d" — compact date without separators
+pub(crate) fn parse_compact_ymd_fast(bytes: &[u8]) -> Option<i64> {
+    if bytes.len() != 8 {
+        return None;
+    }
+    let a = unsafe { std::ptr::read_unaligned(bytes.as_ptr() as *const u64) };
+    const ZERO: u64 = 0x3030_3030_3030_3030;
+    if !all_digits(a) {
+        return None;
+    }
+    let d = a.wrapping_sub(ZERO);
+    let year = byte_u32(d, 0) * 1000 + byte_u32(d, 8) * 100 + byte_u32(d, 16) * 10 + byte_u32(d, 24);
+    let month = byte_u32(d, 32) * 10 + byte_u32(d, 40);
+    let day = byte_u32(d, 48) * 10 + byte_u32(d, 56);
+    let secs = timestamp_from_parts_fast(year as i32, month, day, 0, 0, 0);
+    Some(secs)
+}
+
+// "%Y%m%d%H%M%S" — compact datetime without separators
+pub(crate) fn parse_compact_ymd_hms_fast(bytes: &[u8]) -> Option<i64> {
+    if bytes.len() != 14 {
+        return None;
+    }
+    let a = unsafe { std::ptr::read_unaligned(bytes.as_ptr() as *const u64) };
+    let mut tail = [0u8; 8];
+    tail[..6].copy_from_slice(&bytes[8..14]);
+    let b = u64::from_le_bytes(tail);
+
+    const ZERO: u64 = 0x3030_3030_3030_3030;
+    const MASK_B: u64 = u64::from_le_bytes([0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00]);
+    if !all_digits(a) {
+        return None;
+    }
+    let x_b = (b & MASK_B) | (!MASK_B & ZERO);
+    if !all_digits(x_b) {
+        return None;
+    }
+
+    let da = a.wrapping_sub(ZERO);
+    let db = x_b.wrapping_sub(ZERO);
+    let year = byte_u32(da, 0) * 1000 + byte_u32(da, 8) * 100 + byte_u32(da, 16) * 10 + byte_u32(da, 24);
+    let month = byte_u32(da, 32) * 10 + byte_u32(da, 40);
+    let day = byte_u32(da, 48) * 10 + byte_u32(da, 56);
+    let hour = byte_u32(db, 0) * 10 + byte_u32(db, 8);
+    let minute = byte_u32(db, 16) * 10 + byte_u32(db, 24);
+    let second = byte_u32(db, 32) * 10 + byte_u32(db, 40);
+
+    let secs = timestamp_from_parts_fast(year as i32, month, day, hour, minute, second);
+    Some(secs)
 }
 
 pub(crate) fn parse_fraction(bytes: &[u8], pos: usize) -> Option<(u32, usize, usize)> {
