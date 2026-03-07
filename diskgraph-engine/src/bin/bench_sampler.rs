@@ -19,7 +19,7 @@ fn main() -> Result<()> {
     let metadata: DatasetMetadata = serde_json::from_slice(&metadata_bytes)?;
 
     println!("Loading graph from {:?}...", data_path);
-    let engine = DiskGraphEngine::load(&data_path)?;
+    let engine = DiskGraphEngine::load(&data_path, None)?;
     let sampler = Arc::new(engine); // Bench code expects sampler var name
     let pool = StatePool::new();
 

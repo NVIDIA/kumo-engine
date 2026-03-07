@@ -21,6 +21,10 @@ struct Args {
     /// Path to Unix Domain Socket (UDS) to listen on. If provided, port is ignored.
     #[arg(short, long)]
     uds_path: Option<PathBuf>,
+
+    /// Optional global random seed for deterministic sampling
+    #[arg(long)]
+    seed: Option<u64>,
 }
 
 #[tokio::main]
@@ -28,7 +32,10 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
     let args = Args::parse();
 
-    let engine = Arc::new(DiskGraphEngine::load(&args.data)?);
+    if let Some(seed) = args.seed {
+        println!("Using deterministic random seed: {}", seed);
+    }
+    let engine = Arc::new(DiskGraphEngine::load(&args.data, args.seed)?);
     let pool = StatePool::new();
 
     let service = SamplerGateway::new(engine, pool);

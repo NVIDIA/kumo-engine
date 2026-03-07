@@ -291,8 +291,9 @@ pub struct SamplerEngine {
 #[pymethods]
 impl SamplerEngine {
     #[new]
-    pub fn new(path: String) -> PyResult<Self> {
-        let engine = DiskGraphEngine::load(std::path::Path::new(&path))
+    #[pyo3(signature = (path, random_seed=None))]
+    pub fn new(path: String, random_seed: Option<u64>) -> PyResult<Self> {
+        let engine = DiskGraphEngine::load(std::path::Path::new(&path), random_seed)
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
         Ok(Self {
             engine: Arc::new(engine),

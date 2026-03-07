@@ -212,6 +212,7 @@ impl TestGraph {
             node_decoders,
             None,
             diskgraph_core::time::TimeUnit::Seconds,
+            None,
         );
         Self { _dir: dir, sampler }
     }

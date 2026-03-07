@@ -79,6 +79,8 @@ pub struct DiskGraphEngine {
     pub target_batch_rows: usize,
     /// Global timestamp unit for the index.
     pub timestamp_unit: diskgraph_core::time::TimeUnit,
+    /// Optional global random seed for deterministic neighbor sampling.
+    pub random_seed: Option<u64>,
 }
 
 struct CompiledSamplingPlan {
@@ -91,7 +93,7 @@ struct CompiledLayerSpec {
 }
 
 impl DiskGraphEngine {
-    pub fn load(path: &Path) -> Result<Self> {
+    pub fn load(path: &Path, random_seed: Option<u64>) -> Result<Self> {
         let metadata_path = path.join("index_metadata.json");
         let metadata_bytes = std::fs::read(&metadata_path)
             .map_err(|e| EngineError::Internal(format!("failed to read metadata: {}", e)))?;
@@ -216,6 +218,7 @@ impl DiskGraphEngine {
             node_decoders_map,
             reverse_pairs_opt,
             metadata.timestamp_unit,
+            random_seed,
         ))
     }
 
@@ -226,6 +229,7 @@ impl DiskGraphEngine {
         node_decoders_map: HashMap<String, RowPackDecoder>,
         reverse_pairs: Option<HashMap<usize, usize>>,
         timestamp_unit: diskgraph_core::time::TimeUnit,
+        random_seed: Option<u64>,
     ) -> Self {
         let mut node_type_to_id = HashMap::new();
         let mut id_to_node_type = Vec::new();
@@ -336,6 +340,7 @@ impl DiskGraphEngine {
             target_batch_bytes: get_feature_batch_bytes(),
             target_batch_rows: get_feature_batch_rows(),
             timestamp_unit,
+            random_seed,
         }
     }
 
@@ -1077,10 +1082,21 @@ impl DiskGraphEngine {
                         }
                     }
                 } else {
-                    let mut rng = rand::thread_rng();
                     use rand::seq::index::sample;
+                    let indices = if let Some(seed) = self.random_seed {
+                        use rand::SeedableRng;
+                        // Combine the global random_seed with the unique deterministic global_id
+                        // to ensure every seed node walks the same deterministic path consistently
+                        // regardless of batch composition or multi-threading order.
+                        let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(
+                            seed.wrapping_add(src_item.global_id)
+                        );
+                        sample(&mut rng, edge_count, k)
+                    } else {
+                        let mut rng = rand::thread_rng();
+                        sample(&mut rng, edge_count, k)
+                    };
 
-                    let indices = sample(&mut rng, edge_count, k);
                     let mut sorted_indices = indices.into_vec();
                     sorted_indices.sort_unstable();
 

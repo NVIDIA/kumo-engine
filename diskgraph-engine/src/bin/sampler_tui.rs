@@ -80,7 +80,7 @@ fn load_graph(path: &std::path::Path) -> Result<(DiskGraphEngine, DatasetMetadat
     let metadata_bytes = fs::read(&index_path)?;
     let metadata: DatasetMetadata = serde_json::from_slice(&metadata_bytes)?;
 
-    let engine = DiskGraphEngine::load(path)?;
+    let engine = DiskGraphEngine::load(path, None)?;
 
     Ok((engine, metadata))
 }
