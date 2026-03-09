@@ -11,9 +11,21 @@ use diskgraph_rowpack::{
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::Write;
-use std::sync::Arc;
+use std::sync::{Arc, Once};
 use tempfile::TempDir;
 use tokio_stream::StreamExt;
+
+fn init_tracing() {
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        let filter = std::env::var("RUST_LOG")
+            .unwrap_or_else(|_| "diskgraph_gateway=debug,diskgraph_engine=debug".to_string());
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::new(filter))
+            .with_test_writer()
+            .try_init();
+    });
+}
 
 struct TestGraph {
     _dir: TempDir,
@@ -252,6 +264,7 @@ impl TestGraph {
 
 #[tokio::test]
 async fn test_fused_sampling_flow() {
+    init_tracing();
     let graph = TestGraph::new();
     let sampler = Arc::new(graph.sampler);
     let pool = StatePool::new();
@@ -437,6 +450,7 @@ async fn test_fused_sampling_flow() {
 
 #[tokio::test]
 async fn test_feature_fetching_flow() {
+    init_tracing();
     let graph = TestGraph::new();
     let sampler = Arc::new(graph.sampler);
     let pool = StatePool::new();
@@ -471,6 +485,7 @@ async fn test_feature_fetching_flow() {
 
 #[tokio::test]
 async fn test_invalid_requests() {
+    init_tracing();
     let graph = TestGraph::new();
     let sampler = Arc::new(graph.sampler);
     let pool = StatePool::new();
@@ -485,6 +500,7 @@ async fn test_invalid_requests() {
 
 #[tokio::test]
 async fn test_get_type_name_mapping_action() {
+    init_tracing();
     let graph = TestGraph::new();
     let sampler = Arc::new(graph.sampler);
     let pool = StatePool::new();
@@ -505,6 +521,7 @@ async fn test_get_type_name_mapping_action() {
 
 #[tokio::test]
 async fn test_gateway_end_to_end_flow() {
+    init_tracing();
     let graph = TestGraph::new();
     let sampler = Arc::new(graph.sampler);
     let pool = StatePool::new();

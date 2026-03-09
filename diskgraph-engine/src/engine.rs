@@ -9,6 +9,8 @@ use diskgraph_index::reader::ShardReader;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Instant;
+use tracing::{debug, info, warn};
 
 /// Metadata and reader for a single graph shard.
 pub struct ShardHandle {
@@ -487,9 +489,13 @@ impl DiskGraphEngine {
         state: &mut SamplingState,
         output: &mut impl OutputHandler,
     ) -> Result<()> {
+        let sample_start = Instant::now();
+
         // Standardize seed timestamps to index unit in a single pass if needed
         let mut request_cow = std::borrow::Cow::Borrowed(request);
-        let multiplier = request.seed_timestamp_unit.multiplier_to(self.timestamp_unit);
+        let multiplier = request
+            .seed_timestamp_unit
+            .multiplier_to(self.timestamp_unit);
 
         if (multiplier - 1.0).abs() > f64::EPSILON {
             if let Some(mut ts_map) = request.seed_timestamps.clone() {
@@ -515,6 +521,16 @@ impl DiskGraphEngine {
         let seed_type_id = *self.node_type_to_id.get(seed_type).ok_or_else(|| {
             EngineError::InvalidRequest(format!("unknown seed type: {}", seed_type))
         })?;
+
+        info!(
+            dataset_id = %request.dataset_id,
+            seed_type = %seed_type,
+            seed_count = seed_ids.len(),
+            hops = request.plan.layers.len(),
+            fused_feature_fetching = request.flags.fused_feature_fetching,
+            swap_edge_direction = request.flags.swap_edge_direction,
+            "Sampling engine run started"
+        );
 
         // Pre-allocate stats
         let num_types = self.readers.len();
@@ -572,6 +588,10 @@ impl DiskGraphEngine {
         // 3. Process Layers (BFS)
         let compiled_plan = self.compile_plan(&request.plan)?;
         for layer_idx in 0..request.plan.layers.len() {
+            let hop_start = Instant::now();
+            let edges_before = state.stats.total_edges;
+            let nodes_before = state.stats.total_nodes;
+
             self.process_layer(
                 layer_idx,
                 &compiled_plan.layers[layer_idx],
@@ -579,6 +599,14 @@ impl DiskGraphEngine {
                 state,
                 output,
             )?;
+
+            debug!(
+                hop = layer_idx,
+                hop_edges = state.stats.total_edges.saturating_sub(edges_before),
+                hop_new_nodes = state.stats.total_nodes.saturating_sub(nodes_before),
+                elapsed_ms = hop_start.elapsed().as_millis() as u64,
+                "Completed sampling hop"
+            );
         }
 
         // 4. Finalize fused fetching by fetching leaf node features
@@ -603,6 +631,13 @@ impl DiskGraphEngine {
 
         // 5. Finalize node batch and stats
         output.finalize(state)?;
+
+        info!(
+            total_nodes = state.stats.total_nodes,
+            total_edges = state.stats.total_edges,
+            elapsed_ms = sample_start.elapsed().as_millis() as u64,
+            "Sampling engine run finished"
+        );
 
         Ok(())
     }
@@ -1089,7 +1124,7 @@ impl DiskGraphEngine {
                         // to ensure every seed node walks the same deterministic path consistently
                         // regardless of batch composition or multi-threading order.
                         let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(
-                            seed.wrapping_add(src_item.global_id)
+                            seed.wrapping_add(src_item.global_id),
                         );
                         sample(&mut rng, edge_count, k)
                     } else {
@@ -1129,10 +1164,16 @@ impl DiskGraphEngine {
                 }
             }
             _ => {
+                warn!(
+                    relation_id = rel_id,
+                    hop = layer_idx,
+                    mode = ?mode,
+                    "Unsupported sampling mode requested"
+                );
                 return Err(EngineError::InvalidRequest(format!(
                     "Sampling mode {:?} not supported in initial scope",
                     mode
-                )))
+                )));
             }
         }
 

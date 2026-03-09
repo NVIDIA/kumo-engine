@@ -7,6 +7,7 @@ use futures::Stream;
 use std::pin::Pin;
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
+use tracing::{debug, error, info, warn};
 
 use arrow_array::RecordBatch;
 use arrow_ipc::writer::IpcWriteOptions;
@@ -106,11 +107,16 @@ impl FlightService for SamplerGateway {
         request: Request<Ticket>,
     ) -> Result<Response<Self::DoGetStream>, Status> {
         let ticket = request.into_inner();
+        debug!(
+            ticket_bytes = ticket.ticket.len(),
+            "Received Flight do_get ticket"
+        );
 
         // 1. Resolve Side-Channel Feature Tickets (Plain string ticket)
         if ticket.ticket.len() == 36 {
             if let Ok(ticket_str) = std::str::from_utf8(&ticket.ticket) {
                 if let Some(rx) = self.registry.take(ticket_str) {
+                    debug!(ticket = ticket_str, "Resolved side-channel feature ticket");
                     return self.handle_ticket_stream(rx).await;
                 }
             }
@@ -118,15 +124,19 @@ impl FlightService for SamplerGateway {
 
         // 2. Resolve Standard Requests
         if let Ok(req) = serde_json::from_slice::<BatchSamplingRequest>(&ticket.ticket) {
+            debug!("Parsed sampling request from JSON ticket");
             return self.handle_sampling(req).await;
         }
         if let Ok(req) = serde_json::from_slice::<BatchFeatureRequest>(&ticket.ticket) {
+            debug!("Parsed feature request from JSON ticket");
             return self.handle_features(req).await;
         }
         if let Ok(req) = bincode::deserialize::<BatchSamplingRequest>(&ticket.ticket) {
+            debug!("Parsed sampling request from bincode ticket");
             return self.handle_sampling(req).await;
         }
 
+        warn!("Unknown request type in do_get ticket");
         Err(Status::invalid_argument("Unknown request type in ticket"))
     }
 
@@ -188,7 +198,20 @@ impl SamplerGateway {
         let edge_batch_size = self.edge_batch_size;
         let (tx, rx) = mpsc::channel(capacity);
 
+        let seed_type = req.seed_nodes.keys().next().cloned().unwrap_or_default();
+        let seed_count = req.seed_nodes.values().next().map_or(0usize, |v| v.len());
+        let hops = req.plan.layers.len();
+        info!(
+            dataset_id = %req.dataset_id,
+            seed_type = %seed_type,
+            seed_count,
+            hops,
+            fused_feature_fetching = req.flags.fused_feature_fetching,
+            "Starting sampling request"
+        );
+
         tokio::task::spawn_blocking(move || {
+            let started = std::time::Instant::now();
             let mut state = pool.acquire();
 
             // Side-Channel Setup
@@ -217,17 +240,34 @@ impl SamplerGateway {
             let schema_msg: arrow_flight::FlightData =
                 arrow_flight::SchemaAsIpc::new(&output.schema(), &options).into();
             if tx.blocking_send(Ok(schema_msg)).is_err() {
+                warn!("Sampling stream closed before schema could be sent");
                 return;
             }
 
             // Injected tickets metadata into output handler
             if let Err(e) = output.send_ticket_batch(tickets) {
+                error!(error = %e, "Failed to send side-channel ticket metadata");
                 let _ = tx.blocking_send(Err(Status::internal(e.to_string())));
                 return;
             }
 
-            if let Err(e) = sampler.sample(&req, &mut state, &mut output) {
-                let _ = tx.blocking_send(Err(Status::internal(e.to_string())));
+            match sampler.sample(&req, &mut state, &mut output) {
+                Ok(()) => {
+                    info!(
+                        duration_ms = started.elapsed().as_millis() as u64,
+                        total_nodes = state.stats.total_nodes,
+                        total_edges = state.stats.total_edges,
+                        "Sampling request finished"
+                    );
+                }
+                Err(e) => {
+                    error!(
+                        error = %e,
+                        duration_ms = started.elapsed().as_millis() as u64,
+                        "Sampling request failed"
+                    );
+                    let _ = tx.blocking_send(Err(Status::internal(e.to_string())));
+                }
             }
         });
 
