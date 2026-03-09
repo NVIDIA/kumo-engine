@@ -13,6 +13,7 @@ use object_store::{ObjectStore, ObjectStoreExt, PutPayload};
 use tokio::runtime::Runtime;
 use tokio::sync::{mpsc, oneshot, Semaphore};
 use tokio::task::JoinSet;
+use tracing::{debug, error, info, instrument, warn};
 
 #[derive(Clone, Debug)]
 pub struct CloudTransferConfig {
@@ -544,6 +545,8 @@ impl CloudTransfer {
     }
 
     pub fn submit_upload(&self, path: ObjectPath, buffer: Vec<u8>) -> Result<CloudTransferTicket> {
+        let path_str = path.to_string();
+        let bytes = buffer.len();
         let (tx, rx) = oneshot::channel();
         let job = UploadJob {
             path,
@@ -556,8 +559,10 @@ impl CloudTransfer {
             let job = err.0.into_upload();
             self.inner.stats.queued_jobs.fetch_sub(1, Ordering::Relaxed);
             self.inner.pool.release(job.buffer);
+            warn!(path = %path_str, "Upload queue rejected: transfer stopped");
             return Err(anyhow!("cloud transfer stopped"));
         }
+        info!(path = %path_str, bytes, "Upload job queued");
         Ok(CloudTransferTicket {
             result: None,
             receiver: Some(rx),
@@ -569,6 +574,7 @@ impl CloudTransfer {
     }
 
     pub fn submit_download(&self, path: ObjectPath) -> Result<CloudTransferDownloadTicket> {
+        let path_str = path.to_string();
         let (tx, rx) = oneshot::channel();
         let job = DownloadJob {
             path,
@@ -583,8 +589,10 @@ impl CloudTransfer {
             .is_err()
         {
             self.inner.stats.queued_jobs.fetch_sub(1, Ordering::Relaxed);
+            warn!(path = %path_str, "Download queue rejected: transfer stopped");
             return Err(anyhow!("cloud transfer stopped"));
         }
+        info!(path = %path_str, "Download job queued");
         Ok(CloudTransferDownloadTicket { receiver: Some(rx) })
     }
 
@@ -600,26 +608,41 @@ impl CloudTransfer {
         }
     }
 
+    #[instrument(level = "debug", skip(self), fields(prefix = %prefix))]
     pub async fn list_prefixes(&self, prefix: &ObjectPath) -> Result<Vec<ObjectPath>> {
+        debug!(prefix = %prefix, "Listing prefixes");
         let result = self.inner.store.list_with_delimiter(Some(prefix)).await?;
+        info!(prefix = %prefix, count = result.common_prefixes.len(), "Listed prefixes");
         Ok(result.common_prefixes)
     }
 
+    #[instrument(level = "debug", skip(self), fields(prefix = %prefix))]
     pub async fn list_objects(&self, prefix: &ObjectPath) -> Result<Vec<object_store::ObjectMeta>> {
+        debug!(prefix = %prefix, "Listing objects");
         let stream = self.inner.store.list(Some(prefix));
-        let objects = stream.try_collect().await?;
+        let objects: Vec<object_store::ObjectMeta> = stream.try_collect().await?;
+        info!(prefix = %prefix, count = objects.len(), "Listed objects");
         Ok(objects)
     }
 
+    #[instrument(level = "debug", skip(self), fields(path = %path))]
     pub async fn head(&self, path: &ObjectPath) -> Result<object_store::ObjectMeta> {
-        Ok(self.inner.store.head(path).await?)
+        debug!(path = %path, "Reading object metadata");
+        let meta = self.inner.store.head(path).await?;
+        info!(path = %path, size = meta.size, "Read object metadata");
+        Ok(meta)
     }
 
+    #[instrument(level = "debug", skip(self), fields(path = %path))]
     pub async fn get_bytes(&self, path: &ObjectPath) -> Result<Bytes> {
+        debug!(path = %path, "Downloading object bytes");
         let result = self.inner.store.get(path).await?;
-        Ok(result.bytes().await?)
+        let bytes = result.bytes().await?;
+        info!(path = %path, bytes = bytes.len(), "Downloaded object bytes");
+        Ok(bytes)
     }
 
+    #[instrument(level = "debug", skip(self), fields(path = %path))]
     pub async fn get_string(&self, path: &ObjectPath) -> Result<String> {
         let bytes = self.get_bytes(path).await?;
         let text = String::from_utf8(bytes.to_vec())?;
@@ -760,6 +783,7 @@ async fn upload_loop(
                 match result {
                     TransferResult::Upload { mut job, result } => match result {
                         Ok(()) => {
+                            info!(path = %job.path, attempt = job.attempt, "Upload completed");
                             pool.release(job.buffer);
                             let _ = job.response.send(Ok(()));
                         }
@@ -770,9 +794,11 @@ async fn upload_loop(
                             stats.parts_errors.fetch_add(1, Ordering::Relaxed);
                             job.attempt += 1;
                             if job.attempt > config.max_file_retries {
+                                error!(path = %job.path, attempt = job.attempt, error = %err, "Upload failed after retries");
                                 pool.release(job.buffer);
                                 let _ = job.response.send(Err(err));
                             } else {
+                                warn!(path = %job.path, attempt = job.attempt, error = %err, "Upload failed; re-queueing retry");
                                 stats.queued_jobs.fetch_add(1, Ordering::Relaxed);
                                 retry_queue.push_back(TransferJob::Upload(job));
                             }
@@ -780,6 +806,7 @@ async fn upload_loop(
                     },
                     TransferResult::Download { mut job, result } => match result {
                         Ok(buffer) => {
+                            info!(path = %job.path, attempt = job.attempt, bytes = buffer.as_slice().len(), "Download completed");
                             let _ = job.response.send(Ok(buffer));
                         }
                         Err(err) => {
@@ -789,8 +816,10 @@ async fn upload_loop(
                             stats.parts_errors.fetch_add(1, Ordering::Relaxed);
                             job.attempt += 1;
                             if job.attempt > config.max_file_retries {
+                                error!(path = %job.path, attempt = job.attempt, error = %err, "Download failed after retries");
                                 let _ = job.response.send(Err(err));
                             } else {
+                                warn!(path = %job.path, attempt = job.attempt, error = %err, "Download failed; re-queueing retry");
                                 stats.queued_jobs.fetch_add(1, Ordering::Relaxed);
                                 retry_queue.push_back(TransferJob::Download(job));
                             }
@@ -1081,9 +1110,23 @@ fn host_mem_bytes() -> Option<u64> {
 mod tests {
     use super::*;
     use object_store::memory::InMemory;
+    use std::sync::Once;
+
+    fn init_tracing() {
+        static INIT: Once = Once::new();
+        INIT.call_once(|| {
+            let filter =
+                std::env::var("RUST_LOG").unwrap_or_else(|_| "diskgraph_fs=debug".to_string());
+            let _ = tracing_subscriber::fmt()
+                .with_env_filter(tracing_subscriber::EnvFilter::new(filter))
+                .with_test_writer()
+                .try_init();
+        });
+    }
 
     #[test]
     fn cloud_transfer_writes_object() -> Result<()> {
+        init_tracing();
         let store = Arc::new(InMemory::new()) as Arc<dyn ObjectStore>;
         let config = CloudTransferConfig {
             part_size: 5,

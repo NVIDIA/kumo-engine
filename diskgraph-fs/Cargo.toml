@@ -17,3 +17,7 @@ bytes = { workspace = true }
 futures-util = "0.3"
 object_store = { version = "0.13.1", features = ["aws", "gcp", "azure"] }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tracing-subscriber = { workspace = true }
