@@ -7,7 +7,7 @@ use futures::Stream;
 use std::pin::Pin;
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, instrument, warn};
 
 use arrow_array::RecordBatch;
 use arrow_ipc::writer::IpcWriteOptions;
@@ -102,6 +102,7 @@ impl FlightService for SamplerGateway {
         Err(Status::unimplemented("GetSchema not implemented"))
     }
 
+    #[instrument(level = "debug", skip(self, request))]
     async fn do_get(
         &self,
         request: Request<Ticket>,
@@ -140,6 +141,7 @@ impl FlightService for SamplerGateway {
         Err(Status::invalid_argument("Unknown request type in ticket"))
     }
 
+    #[instrument(level = "debug", skip(self, request))]
     async fn do_action(
         &self,
         request: Request<Action>,
@@ -187,6 +189,7 @@ impl FlightService for SamplerGateway {
 }
 
 impl SamplerGateway {
+    #[instrument(level = "debug", skip(self, req), fields(dataset_id = %req.dataset_id, hops = req.plan.layers.len(), fused_feature_fetching = req.flags.fused_feature_fetching))]
     async fn handle_sampling(
         &self,
         req: BatchSamplingRequest,
@@ -275,6 +278,7 @@ impl SamplerGateway {
         Ok(Response::new(Box::pin(output_stream)))
     }
 
+    #[instrument(level = "debug", skip(self, req), fields(dataset_id = %req.dataset_id, feature_batches = req.batch.len()))]
     async fn handle_features(
         &self,
         req: BatchFeatureRequest,
@@ -319,6 +323,7 @@ impl SamplerGateway {
         Ok(Response::new(Box::pin(output_stream)))
     }
 
+    #[instrument(level = "debug", skip(self, rx))]
     async fn handle_ticket_stream(
         &self,
         mut rx: mpsc::Receiver<RecordBatch>,
