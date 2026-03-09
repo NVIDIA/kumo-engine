@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Once};
 
 use arrow_array::builder::*;
 use arrow_array::{Array, BooleanArray, Float64Array, Int64Array, RecordBatch, TimestampNanosecondArray};
@@ -18,6 +18,18 @@ use diskgraph_ingest::graph_config::*;
 use diskgraph_ingest::io::Dest;
 use parquet::arrow::ArrowWriter;
 use parquet::file::properties::WriterProperties;
+
+fn init_tracing() {
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        let filter = std::env::var("RUST_LOG")
+            .unwrap_or_else(|_| "diskgraph_train_table=debug".to_string());
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::new(filter))
+            .with_test_writer()
+            .try_init();
+    });
+}
 
 // ─── Test infrastructure ─────────────────────────────────────────────────────
 
@@ -561,6 +573,7 @@ fn agg_orders_price(alias: &str, func: AggFunc, window: Option<(i64, i64)>) -> O
 
 #[test]
 fn integ_count_basic() {
+    init_tracing();
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
     let plan = g1_temporal(

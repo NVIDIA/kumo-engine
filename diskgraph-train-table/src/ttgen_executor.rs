@@ -66,13 +66,13 @@ pub fn execute(
     let num_threads = rayon::current_num_threads();
     let num_chunks = (num_threads * 8).min(num_entities as usize).max(1);
 
-    eprintln!(
-        "TT-gen: {} entities, {} threads, {} chunks, {} stages, {} aliases",
-        num_entities,
-        num_threads,
-        num_chunks,
-        resolved.stages.len(),
-        resolved.num_aliases,
+    tracing::info!(
+        entities = num_entities,
+        threads = num_threads,
+        chunks = num_chunks,
+        stages = resolved.stages.len(),
+        aliases = resolved.num_aliases,
+        "TT-gen execution started"
     );
 
     // Bounded channel: buffer up to 16 batches (~1MB each) for back-pressure.
@@ -105,7 +105,7 @@ pub fn execute(
             }
         }
 
-        eprintln!("TT-gen: {} total output rows", total_rows);
+        tracing::info!(total_rows, "TT-gen execution finished");
         Ok(total_rows)
     });
 
