@@ -145,6 +145,14 @@ pub fn ingest_with_stats_from_source(
     options: IngestOptions,
 ) -> Result<(DatasetMetadata, IngestStats)> {
     let wall_start = std::time::Instant::now();
+    tracing::debug!(
+        dataset_name = %source.dataset_name,
+        tables = source.tables.len(),
+        output,
+        dest = ?dest,
+        has_base_dir = base_dir.is_some(),
+        "Ingest run started"
+    );
     if let Some(base_dir) = base_dir {
         resolve_local_paths(&mut source, base_dir);
     }
@@ -179,9 +187,11 @@ pub fn ingest_with_stats_from_source(
         ctx.build_node_contexts()?;
     }
     let context_wall = context_start.elapsed();
-    eprintln!(
-        "context stage complete elapsed={}",
-        format_duration(context_wall.as_millis() as u64)
+    tracing::info!(
+        stage = "context",
+        elapsed_ms = context_wall.as_millis() as u64,
+        elapsed = %format_duration(context_wall.as_millis() as u64),
+        "context stage complete"
     );
     ctx.set_peak_stage(Some(1));
     let encode_start = std::time::Instant::now();
@@ -191,9 +201,11 @@ pub fn ingest_with_stats_from_source(
         ctx.build_temp_shards()?;
     }
     let encode_wall = encode_start.elapsed();
-    eprintln!(
-        "encode stage complete elapsed={}",
-        format_duration(encode_wall.as_millis() as u64)
+    tracing::info!(
+        stage = "encode",
+        elapsed_ms = encode_wall.as_millis() as u64,
+        elapsed = %format_duration(encode_wall.as_millis() as u64),
+        "encode stage complete"
     );
     ctx.set_peak_stage(Some(2));
     let pk_map_start = std::time::Instant::now();
@@ -203,9 +215,11 @@ pub fn ingest_with_stats_from_source(
         ctx.build_sharded_pk_maps()?;
     }
     let pk_map_wall = pk_map_start.elapsed();
-    eprintln!(
-        "pk_map stage complete elapsed={}",
-        format_duration(pk_map_wall.as_millis() as u64)
+    tracing::info!(
+        stage = "pk_map",
+        elapsed_ms = pk_map_wall.as_millis() as u64,
+        elapsed = %format_duration(pk_map_wall.as_millis() as u64),
+        "pk_map stage complete"
     );
     let edge_ctx = ctx.edge_build_context()?;
     ctx.set_peak_stage(Some(3));
@@ -218,9 +232,11 @@ pub fn ingest_with_stats_from_source(
         ctx.build_edges_mapped(&edge_ctx)?;
     }
     let edges_map_wall = edges_map_start.elapsed();
-    eprintln!(
-        "edges_map stage complete elapsed={}",
-        format_duration(edges_map_wall.as_millis() as u64)
+    tracing::info!(
+        stage = "edges_map",
+        elapsed_ms = edges_map_wall.as_millis() as u64,
+        elapsed = %format_duration(edges_map_wall.as_millis() as u64),
+        "edges_map stage complete"
     );
     drop(edge_ctx);
     ctx.set_peak_stage(Some(4));
@@ -234,9 +250,11 @@ pub fn ingest_with_stats_from_source(
         ctx.build_index(index_metadata.clone())?;
     }
     let index_wall = index_start.elapsed();
-    eprintln!(
-        "index stage complete elapsed={}",
-        format_duration(index_wall.as_millis() as u64)
+    tracing::info!(
+        stage = "index",
+        elapsed_ms = index_wall.as_millis() as u64,
+        elapsed = %format_duration(index_wall.as_millis() as u64),
+        "index stage complete"
     );
     ctx.set_peak_stage(Some(5));
     let finalize_start = std::time::Instant::now();
@@ -254,9 +272,11 @@ pub fn ingest_with_stats_from_source(
     ctx.cleanup_temp()?;
     let finalize_wall = finalize_start.elapsed();
     ctx.set_peak_stage(None);
-    eprintln!(
-        "finalize stage complete elapsed={}",
-        format_duration(finalize_wall.as_millis() as u64)
+    tracing::info!(
+        stage = "finalize",
+        elapsed_ms = finalize_wall.as_millis() as u64,
+        elapsed = %format_duration(finalize_wall.as_millis() as u64),
+        "finalize stage complete"
     );
     let wall_time = wall_start.elapsed();
     let bytes_read = sum_input_bytes(&ctx.source);
@@ -328,6 +348,17 @@ pub fn ingest_with_stats_from_source(
     };
     ctx.target
         .write_bytes("ingest_stats.json", serde_json::to_vec_pretty(&report)?)?;
+
+    tracing::debug!(
+        elapsed_ms = wall_time.as_millis() as u64,
+        node_types = index_metadata.node_types.len(),
+        edge_relations = index_metadata.edge_relations.len(),
+        bytes_read,
+        bytes_written,
+        num_shards = ctx.num_shards,
+        "Ingest run finished"
+    );
+
     Ok((index_metadata, stats))
 }
 
@@ -2309,11 +2340,8 @@ impl IngestContext {
             std::sync::Arc::clone(dest_key_senders),
             std::sync::Arc::clone(dest_key_errors),
         );
-        let mut sort_key_batchers = build_sort_key_batchers_for_node_table(
-            table,
-            relation_defs,
-            num_shards,
-        )?;
+        let mut sort_key_batchers =
+            build_sort_key_batchers_for_node_table(table, relation_defs, num_shards)?;
 
         let create_time_info = table.create_time.as_ref().and_then(|ct| {
             let idx = column_index(table, ct).ok()?;
@@ -2750,11 +2778,8 @@ impl IngestContext {
             std::sync::Arc::clone(dest_key_senders),
             std::sync::Arc::clone(dest_key_errors),
         );
-        let mut sort_key_batchers = build_sort_key_batchers_for_edge_table(
-            table,
-            relation_defs,
-            num_shards,
-        )?;
+        let mut sort_key_batchers =
+            build_sort_key_batchers_for_edge_table(table, relation_defs, num_shards)?;
 
         let create_time_info = table.create_time.as_ref().and_then(|ct| {
             let idx = column_index(table, ct).ok()?;
@@ -3139,7 +3164,12 @@ impl IngestContext {
         for sk in sort_key_batchers.iter_mut() {
             sk.push_row(forward_shard, access)?;
         }
-        batcher.push(forward_shard, forward_row, timestamp_valid, sort_key_batchers)?;
+        batcher.push(
+            forward_shard,
+            forward_row,
+            timestamp_valid,
+            sort_key_batchers,
+        )?;
         edge_key_batcher.push_src(forward_shard, src_key_buf)?;
         edge_key_batcher.push_dst(dst_shard, dst_key_buf)?;
         Ok(())
@@ -4185,17 +4215,18 @@ impl IngestContext {
             _ => PkDataAdvice::Random,
         };
         if let Some(total_mem) = total_memory_bytes() {
-            println!(
-                "pk_hash mmap hint: total_bytes={} total_mem={} advice={:?}",
-                format_bytes(total_bytes),
-                format_bytes(total_mem),
-                data_advice
+            tracing::info!(
+                total_bytes = %format_bytes(total_bytes),
+                total_mem = %format_bytes(total_mem),
+                advice = ?data_advice,
+                "pk_hash mmap hint"
             );
         } else {
-            println!(
-                "pk_hash mmap hint: total_bytes={} total_mem=unknown advice={:?}",
-                format_bytes(total_bytes),
-                data_advice
+            tracing::info!(
+                total_bytes = %format_bytes(total_bytes),
+                total_mem = "unknown",
+                advice = ?data_advice,
+                "pk_hash mmap hint"
             );
         }
         let (tx, rx) = std::sync::mpsc::channel::<Result<(String, usize, PkHashShard)>>();
@@ -4319,21 +4350,22 @@ impl IngestContext {
                 null_timestamp_drops: u64,
             }
             if let Some(total_mem) = total_memory_bytes() {
-                println!(
-                    "edges_map mmap sizes: pk_hash_bytes={} sort_key_bytes={} (edge={} dest={}) total_mem={}",
-                    format_bytes(edge_ctx.pk_hash_total_bytes),
-                    format_bytes(edge_ctx.sort_key_total_bytes),
-                    format_bytes(edge_ctx.sort_key_edge_bytes),
-                    format_bytes(edge_ctx.sort_key_dest_bytes),
-                    format_bytes(total_mem)
+                tracing::info!(
+                    pk_hash_bytes = %format_bytes(edge_ctx.pk_hash_total_bytes),
+                    sort_key_bytes = %format_bytes(edge_ctx.sort_key_total_bytes),
+                    sort_key_edge_bytes = %format_bytes(edge_ctx.sort_key_edge_bytes),
+                    sort_key_dest_bytes = %format_bytes(edge_ctx.sort_key_dest_bytes),
+                    total_mem = %format_bytes(total_mem),
+                    "edges_map mmap sizes"
                 );
             } else {
-                println!(
-                    "edges_map mmap sizes: pk_hash_bytes={} sort_key_bytes={} (edge={} dest={}) total_mem=unknown",
-                    format_bytes(edge_ctx.pk_hash_total_bytes),
-                    format_bytes(edge_ctx.sort_key_total_bytes),
-                    format_bytes(edge_ctx.sort_key_edge_bytes),
-                    format_bytes(edge_ctx.sort_key_dest_bytes)
+                tracing::info!(
+                    pk_hash_bytes = %format_bytes(edge_ctx.pk_hash_total_bytes),
+                    sort_key_bytes = %format_bytes(edge_ctx.sort_key_total_bytes),
+                    sort_key_edge_bytes = %format_bytes(edge_ctx.sort_key_edge_bytes),
+                    sort_key_dest_bytes = %format_bytes(edge_ctx.sort_key_dest_bytes),
+                    total_mem = "unknown",
+                    "edges_map mmap sizes"
                 );
             }
             let progress = self.progress.clone();
@@ -6969,16 +7001,16 @@ impl SortKeyComponentBatcher {
                 column_idx,
                 encoding,
             } => {
-                let ts_value =
-                    if let Some(secs) = access.get_timestamp(*column_idx).ok().flatten() {
-                        Some(secs)
-                    } else {
-                        access
-                            .get_date(*column_idx)
-                            .ok()
-                            .flatten()
-                            .map(|days| i64::from(days) * 86_400)
-                    };
+                let ts_value = if let Some(secs) = access.get_timestamp(*column_idx).ok().flatten()
+                {
+                    Some(secs)
+                } else {
+                    access
+                        .get_date(*column_idx)
+                        .ok()
+                        .flatten()
+                        .map(|days| i64::from(days) * 86_400)
+                };
                 encode_timestamp_value(ts_value, encoding)
             }
             SortKeyComponentEncoder::Weight { expr, encoding } => {
