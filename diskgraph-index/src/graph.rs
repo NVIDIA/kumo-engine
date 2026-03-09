@@ -351,6 +351,11 @@ impl GraphIndexReader {
         let metadata: DatasetMetadata =
             serde_json::from_slice(&bytes).context("parse index_metadata.json")?;
         let mut tables = HashMap::new();
+        tracing::info!(
+            node_types = metadata.node_types.len(),
+            edge_relations = metadata.edge_relations.len(),
+            "Loaded index metadata"
+        );
         for node_type in &metadata.node_types {
             let (node_data_compression, node_data_decoder) = match &node_type.node_data_compression
             {
@@ -414,6 +419,7 @@ impl GraphIndexReader {
             )?;
             tables.insert(node_type.name.clone(), Arc::new(table));
         }
+        tracing::info!(tables = tables.len(), "GraphIndexReader open completed");
         Ok(Self { metadata, tables })
     }
 

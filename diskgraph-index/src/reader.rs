@@ -66,6 +66,14 @@ impl ShardReader {
             header_len,
         )?;
         let edge_count = header.edge_count;
+        tracing::info!(
+            dir = %dir.display(),
+            edge_count,
+            total_offsets = header.total_offsets,
+            delta_bytes = header.delta_bytes,
+            node_data_len_bytes = header.node_data_len_bytes,
+            "Shard reader opened"
+        );
         Ok(Self {
             offsets_mmap: offsets,
             edges,

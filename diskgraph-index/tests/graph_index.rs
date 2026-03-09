@@ -5,7 +5,20 @@ use diskgraph_index::graph::{GraphIndexBuilder, GraphIndexReader};
 use std::fs;
 use std::io::Write;
 use std::path::Path;
+use std::sync::Once;
 use tempfile::tempdir;
+
+fn init_tracing() {
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        let filter =
+            std::env::var("RUST_LOG").unwrap_or_else(|_| "diskgraph_index=debug".to_string());
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::new(filter))
+            .with_test_writer()
+            .try_init();
+    });
+}
 
 #[derive(Clone)]
 struct EdgeRow {
@@ -15,6 +28,7 @@ struct EdgeRow {
 
 #[test]
 fn graph_builder_and_reader_multi_table() {
+    init_tracing();
     let dir = tempdir().unwrap();
     let root = dir.path().join("dataset");
     fs::create_dir_all(&root).unwrap();
