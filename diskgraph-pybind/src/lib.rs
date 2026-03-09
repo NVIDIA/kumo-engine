@@ -8,6 +8,7 @@ use pyo3::types::{PyDict, PyList};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::thread;
+use tracing::{debug, error, info};
 
 use diskgraph_core::features::{BatchFeatureRequest, FeatureRequest};
 use diskgraph_core::sampling::{BatchSamplingRequest, SamplingFlags, SamplingPlan};
@@ -293,8 +294,10 @@ impl SamplerEngine {
     #[new]
     #[pyo3(signature = (path, random_seed=None))]
     pub fn new(path: String, random_seed: Option<u64>) -> PyResult<Self> {
+        debug!(path = %path, random_seed = ?random_seed, "Initializing SamplerEngine");
         let engine = DiskGraphEngine::load(std::path::Path::new(&path), random_seed)
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        info!(path = %path, "SamplerEngine initialized");
         Ok(Self {
             engine: Arc::new(engine),
             pool: StatePool::new(),
@@ -356,6 +359,26 @@ impl SamplerEngine {
             flags,
         };
 
+        let seed_type = request
+            .seed_nodes
+            .keys()
+            .next()
+            .cloned()
+            .unwrap_or_default();
+        let seed_count = request
+            .seed_nodes
+            .values()
+            .next()
+            .map_or(0usize, |v| v.len());
+        info!(
+            seed_type = %seed_type,
+            seed_count,
+            hops = request.plan.layers.len(),
+            fused_feature_fetching = request.flags.fused_feature_fetching,
+            swap_edge_direction = request.flags.swap_edge_direction,
+            "Pybind sampling request started"
+        );
+
         let (tx, rx) = bounded(1);
         let engine = Arc::clone(&self.engine);
         let mut state = self.pool.acquire();
@@ -367,10 +390,20 @@ impl SamplerEngine {
                     engine.relation_src_type.clone(),
                     engine.relation_info.clone(),
                 );
-                if let Err(e) = engine.sample(&request, &mut state, &mut handler) {
-                    let _ = tx.send(SampleEvent::Error {
-                        message: e.to_string(),
-                    });
+                match engine.sample(&request, &mut state, &mut handler) {
+                    Ok(()) => {
+                        info!(
+                            total_nodes = state.stats.total_nodes,
+                            total_edges = state.stats.total_edges,
+                            "Pybind sampling request finished"
+                        );
+                    }
+                    Err(e) => {
+                        error!(error = %e, "Pybind sampling request failed");
+                        let _ = tx.send(SampleEvent::Error {
+                            message: e.to_string(),
+                        });
+                    }
                 }
             });
         });
@@ -405,6 +438,9 @@ impl SamplerEngine {
             batch: req_batch,
         };
 
+        let req_count = request.batch.len();
+        info!(requests = req_count, "Pybind feature request started");
+
         let (tx, rx) = bounded(1);
         let engine = Arc::clone(&self.engine);
 
@@ -416,6 +452,7 @@ impl SamplerEngine {
                     let node_type_id = match engine.node_type_to_id.get(&feature_req.node_type) {
                         Some(&id) => id,
                         None => {
+                            error!(node_type = %feature_req.node_type, "Unknown node type in pybind feature request");
                             let _ = tx.send(SampleEvent::Error {
                                 message: format!("Unknown node type: {}", feature_req.node_type),
                             });
@@ -429,12 +466,14 @@ impl SamplerEngine {
                         &feature_req.feature_names,
                         &mut handler,
                     ) {
+                        error!(error = %e, node_type = %feature_req.node_type, "Pybind feature request failed");
                         let _ = tx.send(SampleEvent::Error {
                             message: e.to_string(),
                         });
                         return;
                     }
                 }
+                info!("Pybind feature request finished");
             });
         });
 
@@ -557,6 +596,13 @@ impl ExportConfig {
 
 #[pyfunction]
 pub fn export_tt_artifacts(config: &ExportConfig) -> PyResult<()> {
+    info!(
+        train_table_path = %config.train_table_path,
+        index_path = %config.index_path,
+        output_dir = %config.output_dir,
+        fkeys = config.fkeys.len(),
+        "Pybind export_tt_artifacts started"
+    );
     let fkeys = config
         .fkeys
         .iter()
@@ -576,6 +622,9 @@ pub fn export_tt_artifacts(config: &ExportConfig) -> PyResult<()> {
     };
 
     diskgraph_engine::export_tt_artifacts::process_export(&internal_config)
+        .map(|_| {
+            info!("Pybind export_tt_artifacts finished");
+        })
         .map_err(|e| PyRuntimeError::new_err(e.to_string()))
 }
 
@@ -587,6 +636,12 @@ pub fn convert_kumo_config(
     dataset_name: &str,
     table_data_versions_json: Option<&str>,
 ) -> PyResult<String> {
+    info!(
+        dataset_name = %dataset_name,
+        data_persist_dir = %data_persist_dir,
+        has_table_data_versions = table_data_versions_json.is_some(),
+        "Pybind convert_kumo_config started"
+    );
     use diskgraph_ingest::config_converter::{
         convert_kumo_to_diskgraph, ConvertOptions, KumoGraphConfig,
     };
@@ -594,17 +649,12 @@ pub fn convert_kumo_config(
     let kumo_config: KumoGraphConfig = serde_json::from_str(kumo_config_json)
         .map_err(|e| PyValueError::new_err(format!("Invalid kumo config JSON: {e}")))?;
 
-    let table_data_versions: Option<HashMap<String, String>> =
-        match table_data_versions_json {
-            Some(json) => Some(
-                serde_json::from_str(json).map_err(|e| {
-                    PyValueError::new_err(format!(
-                        "Invalid table_data_versions JSON: {e}"
-                    ))
-                })?,
-            ),
-            None => None,
-        };
+    let table_data_versions: Option<HashMap<String, String>> = match table_data_versions_json {
+        Some(json) => Some(serde_json::from_str(json).map_err(|e| {
+            PyValueError::new_err(format!("Invalid table_data_versions JSON: {e}"))
+        })?),
+        None => None,
+    };
 
     let options = ConvertOptions {
         data_persist_dir: data_persist_dir.to_string(),
@@ -617,6 +667,10 @@ pub fn convert_kumo_config(
         .map_err(|e| PyRuntimeError::new_err(format!("Config conversion failed: {e}")))?;
 
     serde_json::to_string(&diskgraph_config)
+        .map(|s| {
+            info!("Pybind convert_kumo_config finished");
+            s
+        })
         .map_err(|e| PyRuntimeError::new_err(format!("Failed to serialize config: {e}")))
 }
 
@@ -629,6 +683,12 @@ pub fn ingest(
     col_stats: bool,
     cat_count_strategy: &str,
 ) -> PyResult<String> {
+    info!(
+        output_dir = %output_dir,
+        col_stats,
+        cat_count_strategy = %cat_count_strategy,
+        "Pybind ingest started"
+    );
     let source: diskgraph_ingest::GraphConfig = serde_json::from_str(config_json)
         .map_err(|e| PyValueError::new_err(format!("Invalid config JSON: {e}")))?;
 
@@ -673,6 +733,14 @@ pub fn ingest(
         result.map_err(|e| PyRuntimeError::new_err(format!("Ingest failed: {e}")))?;
 
     serde_json::to_string(&stats)
+        .map(|s| {
+            info!(
+                total_nodes = stats.node_counts.values().copied().sum::<u64>(),
+                total_edges = stats.edge_counts.values().copied().sum::<u64>(),
+                "Pybind ingest finished"
+            );
+            s
+        })
         .map_err(|e| PyRuntimeError::new_err(format!("Failed to serialize stats: {e}")))
 }
 

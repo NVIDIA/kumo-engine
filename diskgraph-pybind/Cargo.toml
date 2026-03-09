@@ -22,3 +22,4 @@ crossbeam-channel = "0.5"
 anyhow = { workspace = true }
 tokio = { version = "1.33", features = ["full"] }
 uuid = { version = "1.4.0", features = ["v4", "serde"] }
+tracing = { workspace = true }
