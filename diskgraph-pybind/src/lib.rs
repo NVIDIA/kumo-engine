@@ -663,8 +663,14 @@ pub fn convert_kumo_config(
     };
 
     // convert_kumo_to_diskgraph handles everything: schema, timestamp detection, num_shards.
-    let diskgraph_config = convert_kumo_to_diskgraph(&kumo_config, &options)
+    let mut diskgraph_config = convert_kumo_to_diskgraph(&kumo_config, &options)
         .map_err(|e| PyRuntimeError::new_err(format!("Config conversion failed: {e}")))?;
+
+    // Expand cloud directory prefixes (s3://, gs://, az://) to individual
+    // parquet file paths.  The converter outputs fpv3 directory paths but
+    // ingest() expects individual file paths (it does HEAD per path).
+    diskgraph_ingest::io::expand_cloud_paths_in_config(&mut diskgraph_config)
+        .map_err(|e| PyRuntimeError::new_err(format!("Failed to expand cloud paths: {e}")))?;
 
     serde_json::to_string(&diskgraph_config)
         .map(|s| {

@@ -161,6 +161,65 @@ pub fn is_cloud_path(path: &str) -> bool {
     path.starts_with("s3://") || path.starts_with("gs://") || path.starts_with("az://")
 }
 
+/// Expand a cloud directory prefix to individual `.parquet` file URLs.
+///
+/// Uses the object_store SDK to list objects under the prefix and returns
+/// sorted full cloud URLs for every `.parquet` file found.
+pub fn expand_cloud_parquet_paths(dir_url: &str) -> Result<Vec<String>> {
+    let transfer = build_transfer_for_cloud_path(dir_url)?;
+    let prefix = object_path_from_cloud_url(dir_url)?;
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let objects = rt.block_on(transfer.list_objects(&prefix))?;
+
+    // Reconstruct full cloud URLs from object locations.
+    let base_url = dir_url.trim_end_matches('/');
+    let bucket_root = base_url
+        .find("://")
+        .and_then(|i| base_url[i + 3..].find('/').map(|j| &base_url[..i + 3 + j]))
+        .unwrap_or(base_url);
+
+    let mut files: Vec<String> = objects
+        .iter()
+        .filter(|obj| obj.location.as_ref().ends_with(".parquet"))
+        .map(|obj| format!("{}/{}", bucket_root, obj.location.as_ref()))
+        .collect();
+    files.sort();
+    Ok(files)
+}
+
+/// Expand cloud directory prefixes in all tables of a GraphConfig to
+/// individual parquet file paths.  Local paths are left unchanged.
+pub fn expand_cloud_paths_in_config(config: &mut GraphConfig) -> Result<()> {
+    for table in &mut config.tables {
+        let dir_paths: Vec<String> = table.get_paths().to_vec();
+        let has_cloud = dir_paths.iter().any(|p| is_cloud_path(p));
+        if !has_cloud {
+            continue;
+        }
+
+        let mut expanded: Vec<String> = Vec::new();
+        for dir_path in &dir_paths {
+            if is_cloud_path(dir_path) {
+                let files = expand_cloud_parquet_paths(dir_path)?;
+                if files.is_empty() {
+                    return Err(anyhow!(
+                        "No parquet files found for table {} in {}",
+                        table.name,
+                        dir_path
+                    ));
+                }
+                expanded.extend(files);
+            } else {
+                expanded.push(dir_path.clone());
+            }
+        }
+        *table.get_paths_mut() = expanded;
+    }
+    Ok(())
+}
+
 pub fn require_local_output(target: &OutputTarget) -> Result<&Path> {
     match target {
         OutputTarget::Local { root } => Ok(root.as_path()),

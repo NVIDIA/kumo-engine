@@ -108,19 +108,20 @@ class DiskgraphConfigConverter:
             source = table.get("source", {})
             if source.get("type") != "parquet":
                 continue
-            dir_paths = source.get("paths", [])
+            paths = source.get("paths", [])
             expanded: List[str] = []
-            for dir_path in dir_paths:
-                if dir_path.startswith("s3://") or dir_path.startswith("gs://") or dir_path.startswith("az://"):
-                    # Cloud paths stay as-is (directory prefixes expanded later by CLI).
-                    expanded.append(dir_path)
+            for path in paths:
+                if path.startswith("s3://") or path.startswith("gs://") or path.startswith("az://"):
+                    # Cloud paths are expanded in Rust by expand_cloud_paths_in_config;
+                    # pass through as-is here.
+                    expanded.append(path)
                 else:
-                    files = _list_parquet_files(dir_path.rstrip("/"))
+                    files = _list_parquet_files(path.rstrip("/"))
                     if files:
                         expanded.extend(files)
                     else:
                         missing_parquet.append(
-                            f"{table['name']} (dir={dir_path})"
+                            f"{table['name']} (path={path})"
                         )
             source["paths"] = expanded
 
