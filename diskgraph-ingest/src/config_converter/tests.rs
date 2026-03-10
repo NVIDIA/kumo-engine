@@ -1455,3 +1455,109 @@ fn test_detect_timestamp_formats_multi_value_sampling() {
         col.timestamp_unit
     );
 }
+
+#[test]
+fn test_detect_timestamp_formats_skips_empty_parquet_files() {
+    use crate::config_converter::detect_timestamp_formats;
+    use crate::graph_config::{
+        ColumnSpec, DataSource, GraphConfig, IngestedType, TableSpec, TimestampUnit,
+    };
+    use arrow_array::{Int64Array, RecordBatch, StringArray};
+    use arrow_schema::{DataType, Field, Schema};
+    use parquet::arrow::ArrowWriter;
+    use std::sync::Arc;
+
+    // Create a directory with an empty parquet file first, then a non-empty one.
+    // This simulates PySpark writing empty partition files (e.g., part-00000 with 0 rows).
+    let dir = tempfile::tempdir().unwrap();
+
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Utf8, false),
+        Field::new("t_dat", DataType::Int64, false),
+    ]));
+
+    // File 1: empty (schema only, 0 rows) — mimics empty Spark partition
+    let empty_path = dir.path().join("part-00000.parquet");
+    let file = std::fs::File::create(&empty_path).unwrap();
+    let writer = ArrowWriter::try_new(file, schema.clone(), None).unwrap();
+    writer.close().unwrap(); // Close without writing any batches → 0 rows
+
+    // File 2: non-empty with nanosecond epoch timestamps
+    let data_path = dir.path().join("part-00001.parquet");
+    let id_array = StringArray::from(vec!["a", "b", "c"]);
+    let ts_array = Int64Array::from(vec![
+        1537401600_000_000_000i64, // 2018-09-20 in nanos
+        1538006400_000_000_000i64, // 2018-09-27 in nanos
+        1600732800_000_000_000i64, // 2020-09-22 in nanos
+    ]);
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![Arc::new(id_array), Arc::new(ts_array)],
+    )
+    .unwrap();
+    let file = std::fs::File::create(&data_path).unwrap();
+    let mut writer = ArrowWriter::try_new(file, schema, None).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+
+    // Point the config at the directory (not individual files).
+    let mut config = GraphConfig {
+        dataset_name: "test".to_string(),
+        tables: vec![TableSpec {
+            name: "transactions".to_string(),
+            columns: vec![
+                ColumnSpec {
+                    name: "id".to_string(),
+                    source_dtype: None,
+                    ingested_dtype: IngestedType::String,
+                    fixed_len: None,
+                    timestamp_format: None,
+                    timestamp_unit: None,
+                    precision: None,
+                    scale: None,
+                    semantic_type: None,
+                },
+                ColumnSpec {
+                    name: "t_dat".to_string(),
+                    source_dtype: None,
+                    ingested_dtype: IngestedType::Timestamp,
+                    fixed_len: None,
+                    timestamp_format: None,
+                    timestamp_unit: None,
+                    precision: None,
+                    scale: None,
+                    semantic_type: None,
+                },
+            ],
+            primary_key: Some("id".to_string()),
+            create_time: Some("t_dat".to_string()),
+            end_time: None,
+            weight: None,
+            edge_table: None,
+            rowpack: None,
+            source: DataSource::Parquet {
+                paths: vec![dir.path().to_string_lossy().to_string()],
+            },
+            fkeys: vec![],
+        }],
+        rowpack: None,
+        num_shards: None,
+        edge_format: None,
+        coercion_mode: Default::default(),
+    };
+
+    detect_timestamp_formats(&mut config, &None).unwrap();
+
+    // Detection should have skipped the empty file and read from part-00001,
+    // correctly detecting nanosecond epoch timestamps.
+    let col = &config.tables[0].columns[1];
+    assert_eq!(col.name, "t_dat");
+    assert_eq!(
+        col.timestamp_unit,
+        Some(TimestampUnit::Nanos),
+        "Expected Nanos from magnitude detection after skipping empty file, \
+         got format={:?}, unit={:?}",
+        col.timestamp_format,
+        col.timestamp_unit
+    );
+}

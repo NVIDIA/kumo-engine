@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use std::collections::HashMap;
 
 use crate::graph_config::{GraphConfig, IngestedType, TableFormat, TimestampUnit};
@@ -16,14 +16,18 @@ enum TimestampDetection {
 /// Detect timestamp format strings and epoch units for timestamp/date columns.
 ///
 /// For each table in the config, finds columns with `ingested_dtype ∈ {Timestamp, Date}`
-/// that are missing both `timestamp_format` and `timestamp_unit`. Opens the first
-/// parquet file, reads one batch, and for each candidate column:
+/// that are missing both `timestamp_format` and `timestamp_unit`. Iterates through the
+/// table's parquet files, reading one batch (1024 rows) from each, until all candidate
+/// columns have been resolved or files are exhausted. For each candidate column:
 ///
 /// 1. **String columns**: tries `detect_timestamp_format` on the first non-null value.
 ///    If no format matches but the string parses as an integer, falls through to (3).
 /// 2. **Integer columns**: falls through to (3).
 /// 3. **Epoch unit heuristic**: interprets the integer value's magnitude to determine
 ///    whether it represents seconds, milliseconds, microseconds, or nanoseconds.
+///
+/// Files that are empty (0 rows) or where a candidate column is entirely null are
+/// automatically skipped, and detection continues with the next file.
 ///
 /// Modifies `config` in place, setting `col.timestamp_format` or `col.timestamp_unit`.
 pub fn detect_timestamp_formats(
@@ -59,32 +63,19 @@ pub fn detect_timestamp_formats(
             continue;
         }
 
-        // Resolve the first path to an actual parquet file.
-        // Paths from the converter are directory prefixes (e.g., "s3://.../version/")
-        // so we need to list and pick the first .parquet file.
-        let first_parquet = resolve_first_parquet_file(&all_paths[0], input_transfer)?;
-        let path = match first_parquet {
-            Some(p) => p,
-            None => continue, // No parquet files found, skip this table
-        };
+        // Resolve directory prefixes to individual parquet file paths.
+        let parquet_files = resolve_parquet_files(&all_paths[0], input_transfer)?;
+        if parquet_files.is_empty() {
+            continue;
+        }
 
-        // Open the first parquet file (cloud or local).
-        let pooled = if let Some(transfer) = input_transfer {
-            if is_cloud_path(&path) {
-                Some(download_cloud_bytes(transfer, &path)?)
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-
-        // Detected hints: col_index -> detection result
-        let mut detected: HashMap<usize, TimestampDetection> = HashMap::new();
+        // Accumulated state across files.
+        let mut votes: HashMap<usize, Vec<String>> = HashMap::new();
+        let mut sample_counts: HashMap<usize, usize> = HashMap::new();
         /// Maximum number of non-null values to sample per column for majority vote.
         const MAX_SAMPLES: usize = 10;
 
-        macro_rules! detect_from_reader {
+        macro_rules! sample_from_reader {
             ($reader:expr, $schema:expr) => {{
                 // Resolve column indices and their arrow data types.
                 let col_info: Vec<Option<(usize, arrow_schema::DataType)>> = candidates
@@ -95,11 +86,6 @@ pub fn detect_timestamp_formats(
                         })
                     })
                     .collect();
-
-                // Collect up to MAX_SAMPLES non-null detections per column, then majority-vote.
-                // Key: candidate col_key → Vec of detection results (as strings for voting).
-                let mut votes: HashMap<usize, Vec<String>> = HashMap::new();
-                let mut sample_counts: HashMap<usize, usize> = HashMap::new();
 
                 for batch in $reader {
                     let batch = batch?;
@@ -180,38 +166,82 @@ pub fn detect_timestamp_formats(
                             }
                         }
                     }
-                    // One batch (1024 rows) is enough for sampling.
+                    // One batch (1024 rows) is enough per file.
                     break;
-                }
-
-                // Majority vote: pick the most common detection per column.
-                // On ties, prefer Format over Unit.
-                for (col_key, col_votes) in votes {
-                    if let Some(winner) = majority_vote(&col_votes) {
-                        detected.insert(col_key, winner);
-                    }
                 }
             }};
         }
 
-        if let Some(pooled) = pooled {
-            let bytes = pooled.bytes();
-            let builder =
-                parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(bytes)?;
-            let schema = builder.schema().clone();
-            let reader = builder.with_batch_size(1024).build()?;
-            detect_from_reader!(reader, schema);
-        } else {
-            let file = std::fs::File::open(&path)
-                .with_context(|| format!("open {} for timestamp detection", path))?;
-            let builder =
-                parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(file)?;
-            let schema = builder.schema().clone();
-            let reader = builder.with_batch_size(1024).build()?;
-            detect_from_reader!(reader, schema);
+        // Iterate through files until all candidates have at least one vote.
+        for path in &parquet_files {
+            let pooled = if let Some(transfer) = input_transfer {
+                if is_cloud_path(path) {
+                    match download_cloud_bytes(transfer, path) {
+                        Ok(p) => Some(p),
+                        Err(e) => {
+                            tracing::warn!("Skipping {}: download failed: {e}", path);
+                            continue;
+                        }
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            if let Some(pooled) = pooled {
+                let bytes = pooled.bytes();
+                let builder = match
+                    parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(bytes)
+                {
+                    Ok(b) => b,
+                    Err(e) => {
+                        tracing::warn!("Skipping {}: failed to read parquet: {e}", path);
+                        continue;
+                    }
+                };
+                let schema = builder.schema().clone();
+                let reader = builder.with_batch_size(1024).build()?;
+                sample_from_reader!(reader, schema);
+            } else {
+                let file = match std::fs::File::open(path) {
+                    Ok(f) => f,
+                    Err(e) => {
+                        tracing::warn!("Skipping {}: failed to open: {e}", path);
+                        continue;
+                    }
+                };
+                let builder = match
+                    parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(file)
+                {
+                    Ok(b) => b,
+                    Err(e) => {
+                        tracing::warn!("Skipping {}: failed to read parquet: {e}", path);
+                        continue;
+                    }
+                };
+                let schema = builder.schema().clone();
+                let reader = builder.with_batch_size(1024).build()?;
+                sample_from_reader!(reader, schema);
+            }
+
+            // Check if all candidates have at least one vote — no need to read more files.
+            let all_resolved = candidates
+                .iter()
+                .all(|(col_idx, _)| votes.contains_key(col_idx));
+            if all_resolved {
+                break;
+            }
         }
 
-        // Apply detected hints to the config.
+        // Majority vote across accumulated samples, then apply to config.
+        let mut detected: HashMap<usize, TimestampDetection> = HashMap::new();
+        for (col_key, col_votes) in &votes {
+            if let Some(winner) = majority_vote(col_votes) {
+                detected.insert(*col_key, winner);
+            }
+        }
         for (col_idx, detection) in detected {
             match detection {
                 TimestampDetection::Format(fmt) => {
@@ -365,43 +395,47 @@ pub fn compute_total_bytes(
     Ok(total)
 }
 
-/// Resolve a path (which may be a directory prefix) to the first .parquet file.
+/// Resolve a path (which may be a directory prefix) to all `.parquet` files within it.
 ///
-/// - Cloud directory prefixes (ending with `/`): lists objects and picks the first `.parquet`.
-/// - Cloud file paths: returned as-is if they end with `.parquet`.
-/// - Local directories: walks entries and picks the first `.parquet`.
-/// - Local file paths: returned as-is if they end with `.parquet`.
-fn resolve_first_parquet_file(
+/// - Cloud directory prefixes (ending with `/`): lists objects and collects all `.parquet` files.
+/// - Cloud file paths: returned as a single-element vec if they end with `.parquet`.
+/// - Local directories: walks entries and collects all `.parquet` files, sorted by name.
+/// - Local file paths: returned as a single-element vec if they end with `.parquet`.
+fn resolve_parquet_files(
     path: &str,
     transfer: &Option<CloudTransfer>,
-) -> Result<Option<String>> {
+) -> Result<Vec<String>> {
     if is_cloud_path(path) {
         if path.ends_with('/') || !path.ends_with(".parquet") {
-            // Directory prefix — list and find first parquet file.
+            // Directory prefix — list and collect all parquet files.
             if let Some(transfer) = transfer {
                 let prefix = crate::io::object_path_from_cloud_url(path)?;
                 let rt = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()?;
                 let objects = rt.block_on(transfer.list_objects(&prefix))?;
-                // Find first .parquet object and reconstruct full cloud URL.
                 let base_url = path.trim_end_matches('/');
-                // Strip the prefix portion from the base URL to get the bucket root.
                 let bucket_root = base_url
                     .find("://")
                     .and_then(|i| base_url[i + 3..].find('/').map(|j| &base_url[..i + 3 + j]))
                     .unwrap_or(base_url);
-                for obj in &objects {
-                    let loc = obj.location.as_ref().to_string();
-                    if loc.ends_with(".parquet") {
-                        return Ok(Some(format!("{}/{}", bucket_root, loc)));
-                    }
-                }
-                return Ok(None);
+                let mut files: Vec<String> = objects
+                    .iter()
+                    .filter_map(|obj| {
+                        let loc = obj.location.as_ref().to_string();
+                        if loc.ends_with(".parquet") {
+                            Some(format!("{}/{}", bucket_root, loc))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                files.sort();
+                return Ok(files);
             }
-            Ok(None)
+            Ok(Vec::new())
         } else {
-            Ok(Some(path.to_string()))
+            Ok(vec![path.to_string()])
         }
     } else {
         // Local path
@@ -418,12 +452,13 @@ fn resolve_first_parquet_file(
                 .collect();
             entries.sort_by_key(|e| e.file_name());
             Ok(entries
-                .first()
-                .map(|e| e.path().to_string_lossy().to_string()))
+                .iter()
+                .map(|e| e.path().to_string_lossy().to_string())
+                .collect())
         } else if path.ends_with(".parquet") {
-            Ok(Some(path.to_string()))
+            Ok(vec![path.to_string()])
         } else {
-            Ok(None)
+            Ok(Vec::new())
         }
     }
 }
