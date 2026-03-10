@@ -300,7 +300,8 @@ class DiskGraphPlanCompiler:
 
         raise ValueError(f"Unsupported stage filter node: {type(node)}")
 
-    def _traverse_target(self, node: ASTNode, query: ValidatedPredictiveQuery) -> str:
+    def _traverse_target(self, node: ASTNode, query: ValidatedPredictiveQuery,
+                         outer_path: Optional[List[EdgeRef]] = None) -> str:
         if isinstance(node, Column):
             alias = self._next_alias("col")
             table, col = node.fqn.split('.')
@@ -318,6 +319,11 @@ class DiskGraphPlanCompiler:
                 target_inner = target_inner.target
 
             path, leaf = self._extract_path(target_inner, query)
+
+            # If a parent Join node already resolved the edge path, use it
+            # instead of the (possibly incorrect) inferred path.
+            if outer_path is not None:
+                path = outer_path
 
             # Determine the destination table: row filter columns resolve against it.
             # The leaf from _extract_path is always a Column on the destination table.
@@ -373,12 +379,19 @@ class DiskGraphPlanCompiler:
             return alias
 
         elif isinstance(node, Join):
-            # Join wraps the target AST for link prediction queries.
-            # The Join's lhs_key/rhs_key encode the edge path, which
-            # _extract_path already knows how to extract when it finds
-            # Join nodes inside an Aggregation's target. So we just
-            # recurse into the rhs_target (the actual Aggregation).
-            return self._traverse_target(node.rhs_target, query)
+            # Join nodes encode validated edge paths from the PQL validator.
+            # Extract the edge(s) and pass them to the inner node so the
+            # Aggregation handler uses the correct path instead of
+            # re-inferring it via get_single_target_fkey (which is
+            # query-scoped and may point to a different table).
+            join_path: List[EdgeRef] = []
+            current = node
+            while isinstance(current, Join):
+                src_table, src_col = current.lhs_key.split('.')
+                dst_table, dst_col = current.rhs_key.split('.')
+                join_path.append(EdgeRef(src_table, src_col, dst_table, dst_col))
+                current = current.rhs_target
+            return self._traverse_target(current, query, outer_path=join_path)
 
         elif isinstance(node, LogicalOperation):
             left_alias = self._traverse_target(node.left, query)
