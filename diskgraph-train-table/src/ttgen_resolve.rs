@@ -281,12 +281,15 @@ pub fn resolve_plan(
     // - Other aggregates → Float64
     let target_dtype = infer_target_dtype(plan, &resolved_stages);
 
-    // 8. Timestamps
-    let timestamps = plan
+    // 8. Timestamps – the executor uses partition_point (binary search)
+    //    which requires ascending order. Sort defensively since callers
+    //    may pass timestamps in arbitrary order.
+    let mut timestamps = plan
         .temporal
         .as_ref()
         .map(|t| t.timestamps.clone())
         .unwrap_or_default();
+    timestamps.sort_unstable();
 
     // 9. Entity filter
     let entity_filter = plan
