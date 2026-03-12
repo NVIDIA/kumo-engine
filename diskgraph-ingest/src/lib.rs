@@ -1050,7 +1050,10 @@ fn access_value_to_f64(
 pub(crate) fn encode_timestamp_value(value: Option<i64>, encoding: &TimestampEncodingSpec) -> u64 {
     let step = encoding.step.max(1);
     let raw = value.unwrap_or(i64::MIN);
-    let delta = raw.saturating_sub(encoding.anchor).div_euclid(step);
+    let diff = raw.saturating_sub(encoding.anchor);
+    let d = diff.div_euclid(step);
+    let r = diff.rem_euclid(step);
+    let delta = if r > 0 { d + 1 } else { d };
     match encoding.kind {
         TimestampEncodingKind::Int8 => {
             let clamped = delta.clamp(i8::MIN as i64, i8::MAX as i64) as i8;
@@ -2081,9 +2084,11 @@ impl IngestContext {
                 if let Some(mut stats) = table_col_stats.remove(&table.name) {
                     let col_names: Vec<String> =
                         table.columns.iter().map(|c| c.name.clone()).collect();
+                    let ingested_types: Vec<_> =
+                        table.columns.iter().map(|c| c.ingested_dtype.clone()).collect();
                     let tc = table_cat_counts.get(&table.name).map(|a| a.as_ref());
                     let tss = self.text_sample_stats.get(&table.name);
-                    root_map.insert(table.name.clone(), stats.to_json(&col_names, tc, tss));
+                    root_map.insert(table.name.clone(), stats.to_json(&col_names, &ingested_types, tc, tss));
                 }
             }
             let json_str = serde_json::to_string_pretty(&serde_json::Value::Object(root_map))?;

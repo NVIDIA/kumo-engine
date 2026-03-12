@@ -277,7 +277,10 @@ impl SortKeyEncoder {
         if !self.has_timestamp {
             return 0;
         }
-        let delta = timestamp_secs.saturating_sub(self.ts_anchor).div_euclid(self.ts_step);
+        let diff = timestamp_secs.saturating_sub(self.ts_anchor);
+        let d = diff.div_euclid(self.ts_step);
+        let r = diff.rem_euclid(self.ts_step);
+        let delta = if r > 0 { d + 1 } else { d };
         // Truncate to timestamp_bits width, then flip sign bit for unsigned ordering
         let truncated = match self.timestamp_bits {
             8 => (delta as i8 as u8) as u64,
@@ -734,7 +737,7 @@ mod tests {
     }
 
     #[test]
-    fn test_encoder_div_euclid_negative_delta() {
+    fn test_encoder_ceiling_division() {
         // Ingestion uses div_euclid, encoder must match.
         // div_euclid floors toward -inf; / truncates toward zero.
         // They differ for negative dividends with step > 1:
@@ -762,22 +765,30 @@ mod tests {
         // Timestamp 1000 seconds before anchor (Dec 31 2023 23:43:20)
         let ts = anchor - 1000;
 
-        // Ingestion puts this in bucket -1: div_euclid(-1000, 86400) = -1
-        // Decoded timestamp for bucket -1 = anchor + (-1 * step) = anchor - 86400
+        // Ceiling division: div_ceil(-1000, 86400) = 0 (rounds toward +inf)
+        // This prevents assigning the timestamp to an earlier bucket, avoiding
+        // future data leakage in temporal aggregations.
         let encoded = encoder.encode_lower(ts);
         let (decoded, _) = decoder.decode(encoded);
         assert_eq!(
             decoded,
-            Some(anchor - step),
-            "encoder should use div_euclid (bucket -1), not / (bucket 0)"
+            Some(anchor),
+            "encoder should use ceiling division (bucket 0), not floor (bucket -1)"
         );
 
-        // Also verify the positive case still works
+        // Positive case: 1000 seconds after anchor
         let ts_pos = anchor + 1000;
         let encoded_pos = encoder.encode_lower(ts_pos);
         let (decoded_pos, _) = decoder.decode(encoded_pos);
-        // div_euclid(1000, 86400) = 0, same as 1000/86400 = 0
-        assert_eq!(decoded_pos, Some(anchor));
+        // div_ceil(1000, 86400) = 1 (rounds up to next bucket)
+        assert_eq!(decoded_pos, Some(anchor + step));
+
+        // Exact boundary: timestamp exactly on anchor
+        let ts_exact = anchor;
+        let encoded_exact = encoder.encode_lower(ts_exact);
+        let (decoded_exact, _) = decoder.decode(encoded_exact);
+        // div_ceil(0, 86400) = 0 (no remainder, no rounding)
+        assert_eq!(decoded_exact, Some(anchor));
     }
 
     #[test]

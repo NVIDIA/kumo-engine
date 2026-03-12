@@ -14,7 +14,7 @@ use arc_swap::ArcSwap;
 use dashmap::DashMap;
 use parking_lot::Mutex;
 
-use crate::graph_config::SemanticType;
+use crate::graph_config::{IngestedType, SemanticType};
 use diskgraph_rowpack::{ColumnValueObserver, FloatListView};
 use serde_json::{json, Value as JsonValue};
 
@@ -1271,6 +1271,7 @@ impl FileColStats {
     pub fn to_json(
         &mut self,
         column_names: &[String],
+        ingested_types: &[IngestedType],
         table_cat: Option<&TableCategoryCounts>,
         text_sample_stats: Option<&HashMap<String, TextSampleStats>>,
     ) -> JsonValue {
@@ -1285,16 +1286,29 @@ impl FileColStats {
         let mut map = serde_json::Map::new();
         for (col_idx, (col, name)) in self.cols.iter_mut().zip(column_names.iter()).enumerate() {
             if let Some(mut val) = col.to_json() {
-                // Add category counts if available
+                // Add category counts if available, as array of [key, count] pairs
+                // matching the format GraphEngine/Spark produces.
                 if let Some(ref cc) = cat_counts[col_idx] {
                     if let JsonValue::Object(ref mut obj) = val {
-                        let json_counts: serde_json::Map<String, JsonValue> = cc
+                        let is_int = ingested_types
+                            .get(col_idx)
+                            .map_or(false, |t| t.is_integer_like());
+                        let json_counts: Vec<JsonValue> = cc
                             .iter()
-                            .map(|(k, v)| (k.clone(), JsonValue::Number((*v).into())))
+                            .map(|(k, v)| {
+                                let key_val = if is_int {
+                                    k.parse::<i64>()
+                                        .map(|n| JsonValue::Number(n.into()))
+                                        .unwrap_or_else(|_| JsonValue::String(k.clone()))
+                                } else {
+                                    JsonValue::String(k.clone())
+                                };
+                                json!([key_val, v])
+                            })
                             .collect();
                         obj.insert(
                             "category_counts".to_string(),
-                            JsonValue::Object(json_counts),
+                            JsonValue::Array(json_counts),
                         );
                     }
                 }

@@ -773,18 +773,29 @@ pub(crate) fn days_from_civil_fast(year: i32, month: u32, day: u32) -> i64 {
     era * 146097 + doe - 719468
 }
 
+/// Ceiling division for signed integers with a positive divisor.
+/// Rounds toward positive infinity — ensures sub-second timestamps are
+/// never assigned to an earlier second, preventing future data leakage
+/// in temporal aggregations.
+#[inline]
+fn div_ceil_i64(value: i64, divisor: i64) -> i64 {
+    let d = value.div_euclid(divisor);
+    let r = value.rem_euclid(divisor);
+    if r > 0 { d + 1 } else { d }
+}
+
 pub(crate) fn timestamp_from_int(value: i64, unit: Option<arrow_schema::TimeUnit>) -> i64 {
     let unit = unit.unwrap_or(arrow_schema::TimeUnit::Second);
     match unit {
         arrow_schema::TimeUnit::Second => value,
-        arrow_schema::TimeUnit::Millisecond => value.div_euclid(1_000),
-        arrow_schema::TimeUnit::Microsecond => value.div_euclid(1_000_000),
-        arrow_schema::TimeUnit::Nanosecond => value.div_euclid(1_000_000_000),
+        arrow_schema::TimeUnit::Millisecond => div_ceil_i64(value, 1_000),
+        arrow_schema::TimeUnit::Microsecond => div_ceil_i64(value, 1_000_000),
+        arrow_schema::TimeUnit::Nanosecond => div_ceil_i64(value, 1_000_000_000),
     }
 }
 
 pub(crate) fn days_from_secs(secs: i64) -> i32 {
-    secs.div_euclid(86_400) as i32
+    div_ceil_i64(secs, 86_400) as i32
 }
 
 pub(crate) fn parse_decimal_i128(value: &str, scale: i32) -> Option<i128> {
@@ -872,21 +883,21 @@ pub(crate) fn timestamp_secs_from_array(array: &ArrayRef, row: usize) -> Result<
                 .as_any()
                 .downcast_ref::<arrow_array::TimestampMillisecondArray>()
                 .ok_or_else(|| anyhow!("timestamp millisecond cast"))?;
-            Ok(arr.value(row).div_euclid(1_000))
+            Ok(div_ceil_i64(arr.value(row), 1_000))
         }
         arrow_schema::TimeUnit::Microsecond => {
             let arr = array
                 .as_any()
                 .downcast_ref::<arrow_array::TimestampMicrosecondArray>()
                 .ok_or_else(|| anyhow!("timestamp microsecond cast"))?;
-            Ok(arr.value(row).div_euclid(1_000_000))
+            Ok(div_ceil_i64(arr.value(row), 1_000_000))
         }
         arrow_schema::TimeUnit::Nanosecond => {
             let arr = array
                 .as_any()
                 .downcast_ref::<arrow_array::TimestampNanosecondArray>()
                 .ok_or_else(|| anyhow!("timestamp nanosecond cast"))?;
-            Ok(arr.value(row).div_euclid(1_000_000_000))
+            Ok(div_ceil_i64(arr.value(row), 1_000_000_000))
         }
     }
 }

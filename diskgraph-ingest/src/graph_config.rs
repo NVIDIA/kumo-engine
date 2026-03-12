@@ -167,6 +167,25 @@ pub enum IngestedType {
     Float16Array,
 }
 
+impl IngestedType {
+    /// Returns true if this type represents an integer or boolean value.
+    /// Used to emit category count keys as JSON numbers instead of strings.
+    pub fn is_integer_like(&self) -> bool {
+        matches!(
+            self,
+            IngestedType::Int8
+                | IngestedType::Int16
+                | IngestedType::Int32
+                | IngestedType::Int64
+                | IngestedType::UInt8
+                | IngestedType::UInt16
+                | IngestedType::UInt32
+                | IngestedType::UInt64
+                | IngestedType::Bool
+        )
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum TimestampUnit {
