@@ -20,8 +20,9 @@ use chrono::{DateTime, Months};
 
 use crate::ttgen_accumulator::{hash_value, Accumulator};
 use crate::ttgen_filter::{compare_values, eval_row_filter, eval_stage_filter};
-use crate::ttgen_output::{OutputMode, ChannelBatchWriter};
+use crate::ttgen_output::{ChannelBatchWriter, OutputMode};
 use crate::ttgen_resolve::*;
+use crate::ttgen_stats::{ChunkStats, StatsMerger, TTExecutionSummary};
 
 /// Add calendar months to an epoch-seconds timestamp.
 /// Matches Kumo's `pd.DateOffset(months=N)` behavior.
@@ -52,14 +53,31 @@ pub fn execute(
     plan: &DiskGraphTTPlan,
     index_path: &Path,
 ) -> Result<(Receiver<RecordBatch>, std::thread::JoinHandle<Result<u64>>)> {
+    let (receiver, summary_handle) = execute_with_summary(plan, index_path)?;
+    let handle = std::thread::spawn(move || {
+        let summary = summary_handle
+            .join()
+            .map_err(|_| anyhow::anyhow!("TT-gen summary thread panicked"))??;
+        Ok(summary.rows_written)
+    });
+    Ok((receiver, handle))
+}
+
+/// Execute a TT-gen plan and return a rich summary payload.
+pub fn execute_with_summary(
+    plan: &DiskGraphTTPlan,
+    index_path: &Path,
+) -> Result<(
+    Receiver<RecordBatch>,
+    std::thread::JoinHandle<Result<TTExecutionSummary>>,
+)> {
     // Open index
     let metadata_path = index_path.join("index_metadata.json");
-    let reader = GraphIndexReader::open(&metadata_path, index_path)
-        .context("opening graph index")?;
+    let reader =
+        GraphIndexReader::open(&metadata_path, index_path).context("opening graph index")?;
 
     // Preprocess plan (main thread, once)
-    let resolved = resolve_plan(plan, &reader)
-        .context("resolving plan")?;
+    let resolved = resolve_plan(plan, &reader).context("resolving plan")?;
     let resolved = Arc::new(resolved);
 
     let num_entities = resolved.entity_table.node_count();
@@ -77,10 +95,11 @@ pub fn execute(
 
     // Bounded channel: buffer up to 16 batches (~1MB each) for back-pressure.
     let (sender, receiver) = bounded::<RecordBatch>(16);
+    let is_link_prediction = matches!(resolved.prediction_type, PredictionType::Link { .. });
 
     let handle = std::thread::spawn(move || {
         // Parallel execution with fine-grained chunks
-        let results: Vec<Result<u64>> = (0..num_chunks)
+        let results: Vec<Result<(u64, ChunkStats)>> = (0..num_chunks)
             .into_par_iter()
             .map(|chunk_idx| {
                 let start = chunk_idx as u64 * num_entities / num_chunks as u64;
@@ -94,10 +113,12 @@ pub fn execute(
 
         // Check for errors and report
         let mut total_rows = 0u64;
-        for (i, result) in results.iter().enumerate() {
+        let mut stats = StatsMerger::default();
+        for (i, result) in results.into_iter().enumerate() {
             match result {
-                Ok(rows) => {
+                Ok((rows, chunk_stats)) => {
                     total_rows += rows;
+                    stats.merge(chunk_stats);
                 }
                 Err(e) => {
                     return Err(anyhow::anyhow!("thread {} failed: {}", i, e));
@@ -106,7 +127,10 @@ pub fn execute(
         }
 
         tracing::info!(total_rows, "TT-gen execution finished");
-        Ok(total_rows)
+        Ok(TTExecutionSummary {
+            rows_written: total_rows,
+            stats: Some(stats.finalize(total_rows, is_link_prediction)),
+        })
     });
 
     Ok((receiver, handle))
@@ -117,18 +141,20 @@ pub fn execute(
 fn output_mode_from_prediction_type(pt: &PredictionType, target_dtype: DataType) -> OutputMode {
     match pt {
         PredictionType::Node => OutputMode::Node { target_dtype },
-        PredictionType::Link { explode: true, include_frequency } => {
-            OutputMode::LinkExploded {
-                include_frequency: *include_frequency,
-                target_dtype,
-            }
-        }
-        PredictionType::Link { explode: false, include_frequency } => {
-            OutputMode::LinkArray {
-                include_frequency: *include_frequency,
-                target_dtype,
-            }
-        }
+        PredictionType::Link {
+            explode: true,
+            include_frequency,
+        } => OutputMode::LinkExploded {
+            include_frequency: *include_frequency,
+            target_dtype,
+        },
+        PredictionType::Link {
+            explode: false,
+            include_frequency,
+        } => OutputMode::LinkArray {
+            include_frequency: *include_frequency,
+            target_dtype,
+        },
     }
 }
 
@@ -136,7 +162,7 @@ fn execute_chunk(
     plan: &ResolvedPlan,
     entity_range: std::ops::Range<u64>,
     sender: &Sender<RecordBatch>,
-) -> Result<u64> {
+) -> Result<(u64, ChunkStats)> {
     let mode = output_mode_from_prediction_type(&plan.prediction_type, plan.target_dtype.clone());
     let mut writer = ChannelBatchWriter::new(
         sender.clone(),
@@ -149,12 +175,22 @@ fn execute_chunk(
     let mut aliases: Vec<Option<Value>> = vec![None; plan.num_aliases];
     // Thread-local frequency counts for ListDistinct (reused across entities)
     let mut link_frequencies: Vec<i64> = Vec::new();
+    let mut stats = ChunkStats::default();
 
     for entity_node in entity_range {
-        execute_entity(plan, entity_node, &mut aliases, &mut link_frequencies, &mut writer)?;
+        execute_entity(
+            plan,
+            entity_node,
+            &mut aliases,
+            &mut link_frequencies,
+            &mut writer,
+            &mut stats,
+        )?;
     }
 
-    writer.finish()
+    let rows = writer.finish()?;
+    stats.num_total_rows = rows;
+    Ok((rows, stats))
 }
 
 // ─── Per-entity execution ────────────────────────────────────────────────────
@@ -165,6 +201,7 @@ fn execute_entity(
     aliases: &mut Vec<Option<Value>>,
     link_frequencies: &mut Vec<i64>,
     writer: &mut ChannelBatchWriter,
+    stats: &mut ChunkStats,
 ) -> Result<()> {
     // 0. Look up the entity PK value for output
     let entity_pk = read_column_value(&plan.entity_table, entity_node, plan.entity_pk_col_idx)
@@ -207,13 +244,29 @@ fn execute_entity(
         // Non-temporal: single row per entity.
         // Match Kumo drop_na_rows(TIMESTAMP): skip if entity time_col is NULL.
         let ts = match (plan.entity_time_col_idx, time_col_val) {
-            (Some(_), None) => return Ok(()),  // time_col configured but NULL → drop
+            (Some(_), None) => return Ok(()), // time_col configured but NULL → drop
             (_, Some(t)) => t,
             (None, None) => 0,
         };
         link_frequencies.clear();
-        if execute_stages(plan, entity_node, &entity_cols, None, aliases, link_frequencies) {
-            write_target(plan, &entity_pk, ts, aliases, link_frequencies, entity_include_bit, writer)?;
+        if execute_stages(
+            plan,
+            entity_node,
+            &entity_cols,
+            None,
+            aliases,
+            link_frequencies,
+        ) {
+            write_target(
+                plan,
+                &entity_pk,
+                ts,
+                aliases,
+                link_frequencies,
+                entity_include_bit,
+                writer,
+                stats,
+            )?;
         }
         aliases.iter_mut().for_each(|a| *a = None);
         return Ok(());
@@ -246,8 +299,24 @@ fn execute_entity(
 
         // Execute all stages for this (entity, timestamp)
         link_frequencies.clear();
-        if execute_stages(plan, entity_node, &entity_cols, Some(ts), aliases, link_frequencies) {
-            write_target(plan, &entity_pk, ts, aliases, link_frequencies, entity_include_bit, writer)?;
+        if execute_stages(
+            plan,
+            entity_node,
+            &entity_cols,
+            Some(ts),
+            aliases,
+            link_frequencies,
+        ) {
+            write_target(
+                plan,
+                &entity_pk,
+                ts,
+                aliases,
+                link_frequencies,
+                entity_include_bit,
+                writer,
+                stats,
+            )?;
         }
 
         // Clear aliases for next timestamp
@@ -266,6 +335,7 @@ fn write_target(
     link_frequencies: &[i64],
     entity_include_bit: bool,
     writer: &mut ChannelBatchWriter,
+    stats: &mut ChunkStats,
 ) -> Result<()> {
     let target = match &aliases[plan.target_alias_idx] {
         Some(v) => v,
@@ -273,9 +343,7 @@ fn write_target(
     };
     // Match Kumo _drop_empty_string_targets: for node prediction with string
     // target dtype, skip rows where the target is an empty string.
-    if matches!(plan.prediction_type, PredictionType::Node)
-        && plan.target_dtype == DataType::Utf8
-    {
+    if matches!(plan.prediction_type, PredictionType::Node) && plan.target_dtype == DataType::Utf8 {
         if let Value::Str(s) = target {
             if s.is_empty() {
                 return Ok(());
@@ -286,8 +354,16 @@ fn write_target(
     match &plan.prediction_type {
         PredictionType::Node => {
             writer.write_row(entity_pk.clone(), ts, target, entity_include_bit)?;
+            if entity_include_bit {
+                stats.num_train_rows += 1;
+                stats.entities.insert(hash_value(entity_pk));
+                stats.targets.insert(hash_value(target));
+            }
         }
-        PredictionType::Link { explode: true, include_frequency } => {
+        PredictionType::Link {
+            explode: true,
+            include_frequency,
+        } => {
             if let Value::List(targets) = target {
                 for (i, val) in targets.iter().enumerate() {
                     let freq = if *include_frequency {
@@ -296,12 +372,25 @@ fn write_target(
                         0
                     };
                     writer.write_row_exploded(
-                        entity_pk.clone(), ts, val.clone(), freq, entity_include_bit,
+                        entity_pk.clone(),
+                        ts,
+                        val.clone(),
+                        freq,
+                        entity_include_bit,
                     )?;
+                    if entity_include_bit {
+                        stats.num_train_rows += 1;
+                        stats.num_links += 1;
+                        stats.entities.insert(hash_value(entity_pk));
+                        stats.targets.insert(hash_value(val));
+                    }
                 }
             }
         }
-        PredictionType::Link { explode: false, include_frequency } => {
+        PredictionType::Link {
+            explode: false,
+            include_frequency,
+        } => {
             if let Value::List(targets) = target {
                 let freqs: Vec<i64> = if *include_frequency {
                     link_frequencies.to_vec()
@@ -309,8 +398,20 @@ fn write_target(
                     Vec::new()
                 };
                 writer.write_row_array(
-                    entity_pk.clone(), ts, targets.clone(), &freqs, entity_include_bit,
+                    entity_pk.clone(),
+                    ts,
+                    targets.clone(),
+                    &freqs,
+                    entity_include_bit,
                 )?;
+                if entity_include_bit {
+                    stats.num_train_rows += 1;
+                    stats.num_links += targets.len() as u64;
+                    stats.entities.insert(hash_value(entity_pk));
+                    for target in targets {
+                        stats.targets.insert(hash_value(target));
+                    }
+                }
             }
         }
     }
@@ -340,35 +441,33 @@ fn execute_stages(
         // Execute all ops in this stage
         for op in &stage.ops {
             let result = match op {
-                ResolvedOp::Aggregate(agg) => {
-                    execute_aggregate(
-                        plan, entity_node, agg, entity_cols, observation_ts,
-                        link_frequencies,
-                    )
-                }
+                ResolvedOp::Aggregate(agg) => execute_aggregate(
+                    plan,
+                    entity_node,
+                    agg,
+                    entity_cols,
+                    observation_ts,
+                    link_frequencies,
+                ),
                 ResolvedOp::Column(col) => {
                     match read_column_value_nullable(&col.table, entity_node, col.col_idx) {
-                        Some(Some(v)) => Some(v),     // non-null value
-                        Some(None) => None,            // explicit NULL → skip row
-                        None => None,                  // missing data → skip row
+                        Some(Some(v)) => Some(v), // non-null value
+                        Some(None) => None,       // explicit NULL → skip row
+                        None => None,             // missing data → skip row
                     }
                 }
-                ResolvedOp::Compare(cmp) => {
-                    match &aliases[cmp.lhs_alias_idx] {
-                        Some(lhs) => Some(Value::Bool(compare_values(lhs, &cmp.op, &cmp.rhs))),
-                        None => None, // NULL propagation: NULL op x → NULL
-                    }
-                }
+                ResolvedOp::Compare(cmp) => match &aliases[cmp.lhs_alias_idx] {
+                    Some(lhs) => Some(Value::Bool(compare_values(lhs, &cmp.op, &cmp.rhs))),
+                    None => None, // NULL propagation: NULL op x → NULL
+                },
                 ResolvedOp::LogicalOp(lop) => {
                     use diskgraph_core::tt_builder::LogicalOpKind;
                     match lop.op {
-                        LogicalOpKind::Not => {
-                            match &aliases[lop.operand_indices[0]] {
-                                Some(Value::Bool(b)) => Some(Value::Bool(!b)),
-                                None => None,
-                                _ => None, // non-bool → NULL
-                            }
-                        }
+                        LogicalOpKind::Not => match &aliases[lop.operand_indices[0]] {
+                            Some(Value::Bool(b)) => Some(Value::Bool(!b)),
+                            None => None,
+                            _ => None, // non-bool → NULL
+                        },
                         LogicalOpKind::And => {
                             // 3-valued logic: false AND anything = false
                             let a = &aliases[lop.operand_indices[0]];
@@ -438,12 +537,20 @@ fn execute_aggregate(
     let window = agg.window.as_ref().map(|w| {
         let obs = observation_ts.unwrap_or(0);
         match w {
-            ResolvedWindow::Fixed { offset_lo_secs, offset_hi_secs, encoder } => {
+            ResolvedWindow::Fixed {
+                offset_lo_secs,
+                offset_hi_secs,
+                encoder,
+            } => {
                 let lo = encoder.encode_upper(obs + offset_lo_secs);
                 let hi = encoder.encode_upper(obs + offset_hi_secs);
                 (lo, hi)
             }
-            ResolvedWindow::Calendar { lo_months, hi_months, encoder } => {
+            ResolvedWindow::Calendar {
+                lo_months,
+                hi_months,
+                encoder,
+            } => {
                 let lo_secs = add_calendar_months(obs, *lo_months);
                 let hi_secs = add_calendar_months(obs, *hi_months);
                 let lo = encoder.encode_upper(lo_secs);
@@ -622,7 +729,6 @@ fn execute_aggregate(
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
-
 
 #[cfg(test)]
 mod tests {

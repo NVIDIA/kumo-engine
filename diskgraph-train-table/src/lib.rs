@@ -4,4 +4,5 @@ pub mod ttgen_executor;
 pub mod ttgen_filter;
 pub mod ttgen_output;
 pub mod ttgen_resolve;
+pub mod ttgen_stats;
 pub mod ttgen_traversal;
