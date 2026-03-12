@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
-use arrow_schema::DataType;
+use arrow_schema::{DataType, Field};
 use diskgraph_core::sortkey::SortKeyEncoder;
 use diskgraph_core::tt_builder::*;
 use diskgraph_index::graph::{GraphIndexReader, TableReader};
@@ -18,6 +18,7 @@ use diskgraph_rowpack::{IngestedType, RowPackContext};
 /// A fully resolved plan ready for parallel execution.
 pub struct ResolvedPlan {
     // Entity
+    pub entity_table_spec: EntitySpec,
     pub entity_table: Arc<TableReader>,
     pub entity_time_col_idx: Option<usize>,
     pub entity_valid_to_col_idx: Option<usize>,
@@ -38,6 +39,8 @@ pub struct ResolvedPlan {
     pub num_aliases: usize,
     pub alias_to_idx: HashMap<String, usize>,
     pub target_alias_idx: usize,
+    pub autoregression_alias_idx: Option<usize>,
+    pub yoy_alias_idx: Option<usize>,
 
     // Entity PK
     pub entity_pk_col_idx: usize,
@@ -48,6 +51,8 @@ pub struct ResolvedPlan {
 
     // Target dtype: Bool for Compare, else inferred from ingested column type
     pub target_dtype: DataType,
+    pub autoregression_dtype: Option<DataType>,
+    pub yoy_dtype: Option<DataType>,
 }
 
 pub struct ResolvedStage {
@@ -60,15 +65,32 @@ pub enum ResolvedOp {
     Column(ResolvedColumn),
     Compare(ResolvedCompare),
     LogicalOp(ResolvedLogicalOp),
+    Autoregression(ResolvedAutoregression),
+    HasEdges(ResolvedHasEdges),
+}
+
+pub struct ResolvedHasEdges {
+    pub alias_idx: usize,
+    pub path: Vec<ResolvedEdge>,
+    pub window: Option<ResolvedWindow>,
+    pub row_filter: Option<ResolvedRowFilter>,
+}
+
+pub struct ResolvedAutoregression {
+    pub alias_idx: usize,
+    pub target_op: Box<ResolvedOp>,
+    pub lag_offsets: Vec<i64>,
 }
 
 impl ResolvedOp {
     pub fn alias_idx(&self) -> usize {
         match self {
             ResolvedOp::Aggregate(a) => a.alias_idx,
+            ResolvedOp::HasEdges(a) => a.alias_idx,
             ResolvedOp::Column(c) => c.alias_idx,
             ResolvedOp::Compare(c) => c.alias_idx,
             ResolvedOp::LogicalOp(l) => l.alias_idx,
+            ResolvedOp::Autoregression(a) => a.alias_idx,
         }
     }
 }
@@ -241,13 +263,24 @@ pub fn resolve_plan(
     let mut alias_names = Vec::new();
     for stage in &plan.stages {
         for op in &stage.ops {
-            let alias = match op {
-                Op::Aggregate { alias, .. } => alias,
-                Op::Column { alias, .. } => alias,
-                Op::Compare { alias, .. } => alias,
-                Op::LogicalOp { alias, .. } => alias,
+            match op {
+                Op::Aggregate { alias, .. } |
+                Op::HasEdges { alias, .. } |
+                Op::Column { alias, .. } |
+                Op::Compare { alias, .. } |
+                Op::LogicalOp { alias, .. } => {
+                    alias_names.push(alias.clone());
+                }
+                Op::Autoregression { alias, target_op, .. } => {
+                    // Extract the inner op's alias first so it gets a valid index
+                    let inner_alias = match &**target_op {
+                        Op::Aggregate { alias: inner, .. } => inner,
+                        _ => panic!("Autoregression target must be an Aggregate"),
+                    };
+                    alias_names.push(inner_alias.clone());
+                    alias_names.push(alias.clone());
+                }
             };
-            alias_names.push(alias.clone());
         }
     }
     let alias_to_idx: HashMap<String, usize> = alias_names
@@ -272,7 +305,11 @@ pub fn resolve_plan(
         // The last op's alias is typically the target
         num_aliases - 1
     } else {
-        bail!("plan has no ops");
+        if matches!(plan.prediction_type, PredictionType::PassThrough) {
+            0 // Dummy value, safely ignored by executor
+        } else {
+            bail!("plan has no ops");
+        }
     };
 
     // Infer target dtype from the last op:
@@ -280,6 +317,29 @@ pub fn resolve_plan(
     // - LP aggregate (ListDistinct) → dtype of the target column (FK column type)
     // - Other aggregates → Float64
     let target_dtype = infer_target_dtype(plan, &resolved_stages);
+
+    // 7.5 Resolve forecasting-specific aliases
+    let mut autoregression_alias_idx = None;
+    let mut autoregression_dtype = None;
+    let mut yoy_alias_idx = None;
+    let mut yoy_dtype = None;
+
+    if matches!(plan.prediction_type, PredictionType::Forecasting) {
+        if let Some(idx) = alias_to_idx.get("AUTOREGRESSION_COL") {
+            autoregression_alias_idx = Some(*idx);
+            autoregression_dtype = Some(infer_op_dtype(&plan.stages.iter().flat_map(|s| &s.ops).find(|op| match op {
+                Op::Autoregression { alias, .. } => alias == "AUTOREGRESSION_COL",
+                _ => false,
+            }).unwrap(), &resolved_stages));
+        }
+        if let Some(idx) = alias_to_idx.get("YOY_COL") {
+            yoy_alias_idx = Some(*idx);
+            yoy_dtype = Some(infer_op_dtype(&plan.stages.iter().flat_map(|s| &s.ops).find(|op| match op {
+                Op::Autoregression { alias, .. } => alias == "YOY_COL",
+                _ => false,
+            }).unwrap(), &resolved_stages));
+        }
+    }
 
     // 8. Timestamps – the executor uses partition_point (binary search)
     //    which requires ascending order. Sort defensively since callers
@@ -307,6 +367,7 @@ pub fn resolve_plan(
         .unwrap_or(0);
 
     Ok(ResolvedPlan {
+        entity_table_spec: plan.entity.clone(),
         entity_table,
         entity_time_col_idx,
         entity_valid_to_col_idx,
@@ -319,10 +380,14 @@ pub fn resolve_plan(
         num_aliases,
         alias_to_idx,
         target_alias_idx,
+        autoregression_alias_idx,
+        yoy_alias_idx,
         entity_pk_col_idx,
         entity_dtype,
         prediction_type: plan.prediction_type.clone(),
         target_dtype,
+        autoregression_dtype,
+        yoy_dtype,
     })
 }
 
@@ -390,6 +455,9 @@ fn collect_entity_col_refs(
     for stage in &plan.stages {
         for op in &stage.ops {
             if let Op::Aggregate { row_filter: Some(f), .. } = op {
+                collect_from_row_filter(f, &mut seen);
+            }
+            if let Op::HasEdges { row_filter: Some(f), .. } = op {
                 collect_from_row_filter(f, &mut seen);
             }
         }
@@ -515,6 +583,64 @@ fn resolve_op(
                 limit: *limit,
             }))
         }
+        Op::HasEdges {
+            alias,
+            path,
+            time_col: _,
+            window,
+            window_unit,
+            row_filter,
+        } => {
+            let alias_idx = alias_to_idx[alias];
+            let resolved_path = resolve_path(path, reader)?;
+            let dst_table = &resolved_path.last().unwrap().dst_table;
+            let dst_ctx = dst_table.node_data_decoder().map(|d| d.context().clone());
+
+            let resolved_window: Option<ResolvedWindow> = match window {
+                Some((lo, hi)) => {
+                    let first_edge = resolved_path.first().unwrap();
+                    let encoder = first_edge.encoder.clone().ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "cannot apply time window on edge relation without sort key timestamp"
+                        )
+                    })?;
+                    let unit = window_unit.as_ref().unwrap_or(&TimeUnit::Seconds);
+                    match unit {
+                        TimeUnit::Months => Some(ResolvedWindow::Calendar {
+                            lo_months: *lo as i32,
+                            hi_months: *hi as i32,
+                            encoder,
+                        }),
+                        TimeUnit::Years => Some(ResolvedWindow::Calendar {
+                            lo_months: (*lo as i32) * 12,
+                            hi_months: (*hi as i32) * 12,
+                            encoder,
+                        }),
+                        _ => {
+                            let unit_secs = time_unit_to_secs(unit);
+                            Some(ResolvedWindow::Fixed {
+                                offset_lo_secs: lo * unit_secs,
+                                offset_hi_secs: hi * unit_secs,
+                                encoder,
+                            })
+                        }
+                    }
+                }
+                None => None,
+            };
+
+            let resolved_filter = row_filter
+                .as_ref()
+                .map(|f| resolve_row_filter(f, reader, dst_table, &dst_ctx, entity_col_indices))
+                .transpose()?;
+
+            Ok(ResolvedOp::HasEdges(ResolvedHasEdges {
+                alias_idx,
+                path: resolved_path,
+                window: resolved_window,
+                row_filter: resolved_filter,
+            }))
+        }
         Op::Column { alias, table, column } => {
             let alias_idx = alias_to_idx[alias];
             let table_reader = reader
@@ -556,6 +682,15 @@ fn resolve_op(
                 alias_idx,
                 op: *op,
                 operand_indices,
+            }))
+        }
+        Op::Autoregression { alias, target_op, lag_offsets } => {
+            let alias_idx = alias_to_idx[alias];
+            let resolved_target = resolve_op(target_op, reader, _entity_table, _entity_ctx, alias_to_idx, entity_col_indices)?;
+            Ok(ResolvedOp::Autoregression(ResolvedAutoregression {
+                alias_idx,
+                target_op: Box::new(resolved_target),
+                lag_offsets: lag_offsets.clone(),
             }))
         }
     }
@@ -825,32 +960,57 @@ fn find_relation<'a>(
 }
 
 /// Infer the Arrow DataType for the TARGET column.
-///
-/// - Compare ops → Boolean
-/// - FIRST/LAST → dtype from the ingested column type (preserves source type)
-/// - LP (ListDistinct) → dtype from the ingested column type
-/// - Direct column prediction → dtype from the ingested column type
-/// - COUNT/SUM/AVG/MIN/MAX/COUNT_DISTINCT → Float64 (always numeric output)
 fn infer_target_dtype(plan: &DiskGraphTTPlan, stages: &[ResolvedStage]) -> DataType {
     let last_plan_op = plan.stages.iter().rev()
         .flat_map(|s| s.ops.iter().rev())
         .next();
     match last_plan_op {
-        Some(Op::Compare { .. }) | Some(Op::LogicalOp { .. }) => DataType::Boolean,
+        Some(op) => {
+            let mut dtype = infer_op_dtype(op, stages);
+            // LP (ListDistinct): look up ingested type for the target column.
+            // (Only for Link prediction, to match previous behavior).
+            if matches!(plan.prediction_type, PredictionType::Link { .. }) {
+                if let Op::Aggregate { func: AggFunc::ListDistinct, .. } = op {
+                    dtype = lookup_last_agg_col_dtype(stages).unwrap_or(DataType::Float64);
+                }
+            }
+            dtype
+        },
+        None => {
+            // LP (ListDistinct) with no ops: look up ingested type for the target column.
+            if matches!(plan.prediction_type, PredictionType::Link { .. }) {
+                return lookup_last_agg_col_dtype(stages).unwrap_or(DataType::Float64);
+            }
+            DataType::Float64
+        }
+    }
+}
+
+/// Infer Arrow DataType for a specific Op.
+fn infer_op_dtype(op: &Op, stages: &[ResolvedStage]) -> DataType {
+    match op {
+        Op::Compare { .. } | Op::LogicalOp { .. } => DataType::Boolean,
         // COUNT/COUNT_DISTINCT always produce integer counts.
-        Some(Op::Aggregate { func, .. })
+        Op::Aggregate { func, .. }
             if matches!(func, AggFunc::Count | AggFunc::CountDistinct) =>
         {
             DataType::Int64
         }
+        Op::HasEdges { .. } => DataType::Boolean,
+        Op::Autoregression { target_op, .. } => {
+            // Autoregression yields a List of whatever the inner target_op yields
+            let inner_dtype = infer_op_dtype(target_op, stages);
+            DataType::List(Arc::new(Field::new("item", inner_dtype, true)))
+        },
+
         // FIRST/LAST preserve the source column's dtype (e.g. FIRST of string → Utf8).
-        Some(Op::Aggregate { func, .. })
+        Op::Aggregate { func, .. }
             if matches!(func, AggFunc::First | AggFunc::Last) =>
         {
             lookup_last_agg_col_dtype(stages).unwrap_or(DataType::Float64)
         }
         // Direct column prediction: look up the column's ingested type.
-        Some(Op::Column { .. }) => {
+        Op::Column { .. } => {
             let last_col = stages.iter().rev()
                 .flat_map(|s| s.ops.iter().rev())
                 .find_map(|op| {
@@ -864,13 +1024,7 @@ fn infer_target_dtype(plan: &DiskGraphTTPlan, stages: &[ResolvedStage]) -> DataT
             }
             DataType::Float64
         }
-        _ => {
-            // LP (ListDistinct): look up ingested type for the target column.
-            if matches!(plan.prediction_type, PredictionType::Link { .. }) {
-                return lookup_last_agg_col_dtype(stages).unwrap_or(DataType::Float64);
-            }
-            DataType::Float64
-        }
+        _ => DataType::Float64,
     }
 }
 

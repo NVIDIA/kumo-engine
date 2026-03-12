@@ -33,6 +33,13 @@ pub enum OutputMode {
     LinkExploded { include_frequency: bool, target_dtype: DataType },
     /// Link + no explode: one row per entity/ts with list columns.
     LinkArray { include_frequency: bool, target_dtype: DataType },
+    /// Emits only (ENTITY, TIMESTAMP) columns.
+    PassThrough,
+    /// Forecasting: emits (ENTITY, TIMESTAMP, AUTOREGRESSION_COL, [YOY_COL]).
+    Forecasting {
+        autoregression_dtype: DataType,
+        yoy_dtype: Option<DataType>,
+    },
 }
 
 /// Per-thread batch writer that buffers rows and sends Arrow RecordBatches
@@ -61,6 +68,10 @@ pub struct ChannelBatchWriter {
     target_value_list_buf: Vec<Vec<Value>>,
     frequency_list_buf: Vec<Vec<i64>>,
 
+    // Forecasting mode
+    autoregression_list_buf: Vec<Vec<Value>>,
+    yoy_list_buf: Vec<Vec<Value>>,
+
     rows_written: u64,
 }
 
@@ -78,10 +89,11 @@ impl ChannelBatchWriter {
         mode: OutputMode,
         include_entity_bit: bool,
         entity_dtype: DataType,
+        time_col_name: &str,
     ) -> Result<Self> {
         let mut fields = vec![
             Field::new("ENTITY", entity_dtype.clone(), false),
-            Field::new("TIMESTAMP", DataType::Timestamp(TimeUnit::Nanosecond, None), false),
+            Field::new(time_col_name, DataType::Timestamp(TimeUnit::Nanosecond, None), false),
         ];
 
         match &mode {
@@ -108,6 +120,21 @@ impl ChannelBatchWriter {
                     ));
                 }
             }
+            OutputMode::PassThrough => {}
+            OutputMode::Forecasting { autoregression_dtype, yoy_dtype } => {
+                fields.push(Field::new(
+                    "AUTOREGRESSION_COL",
+                    autoregression_dtype.clone(),
+                    true,
+                ));
+                if let Some(yoy_dt) = yoy_dtype {
+                    fields.push(Field::new(
+                        "YOY_COL",
+                        yoy_dt.clone(),
+                        true,
+                    ));
+                }
+            }
         }
 
         if include_entity_bit {
@@ -130,6 +157,8 @@ impl ChannelBatchWriter {
             frequency_buf: Vec::new(),
             target_value_list_buf: Vec::new(),
             frequency_list_buf: Vec::new(),
+            autoregression_list_buf: Vec::new(),
+            yoy_list_buf: Vec::new(),
             rows_written: 0,
         })
     }
@@ -171,6 +200,50 @@ impl ChannelBatchWriter {
                 self.target_f64_buf.push(value_to_f64(target));
             }
         }
+        if self.has_include_bit {
+            self.include_bit_buf.push(entity_include_bit);
+        }
+        if self.entity_buf.len() >= BATCH_SIZE {
+            self.flush_batch()?;
+        }
+        Ok(())
+    }
+
+    /// Buffer a single forecasting row.
+    #[inline]
+    pub fn write_row_forecasting(
+        &mut self,
+        entity: Value,
+        timestamp: i64,
+        autoregression: Vec<Value>,
+        yoy: Option<Vec<Value>>,
+        entity_include_bit: bool,
+    ) -> Result<()> {
+        self.entity_buf.push(entity);
+        self.timestamp_buf.push(timestamp);
+        self.autoregression_list_buf.push(autoregression);
+        if let OutputMode::Forecasting { yoy_dtype: Some(_), .. } = self.mode {
+            self.yoy_list_buf.push(yoy.unwrap_or_default());
+        }
+        if self.has_include_bit {
+            self.include_bit_buf.push(entity_include_bit);
+        }
+        if self.entity_buf.len() >= BATCH_SIZE {
+            self.flush_batch()?;
+        }
+        Ok(())
+    }
+
+    /// Buffer a single pass-through row (entity + timestamp only).
+    #[inline]
+    pub fn write_row_pass_through(
+        &mut self,
+        entity: Value,
+        timestamp: i64,
+        entity_include_bit: bool,
+    ) -> Result<()> {
+        self.entity_buf.push(entity);
+        self.timestamp_buf.push(timestamp);
         if self.has_include_bit {
             self.include_bit_buf.push(entity_include_bit);
         }
@@ -289,6 +362,20 @@ impl ChannelBatchWriter {
                     self.frequency_list_buf.clear();
                 }
             }
+            OutputMode::PassThrough => {}
+            OutputMode::Forecasting { autoregression_dtype, yoy_dtype } => {
+                let ar_lists = std::mem::take(&mut self.autoregression_list_buf);
+                if let DataType::List(inner_field) = autoregression_dtype {
+                    columns.push(flush_value_list_buf(ar_lists, inner_field.data_type()));
+                } else {
+                    unreachable!("autoregression_dtype must be List");
+                }
+
+                if let Some(DataType::List(inner_field)) = yoy_dtype {
+                    let yoy_lists = std::mem::take(&mut self.yoy_list_buf);
+                    columns.push(flush_value_list_buf(yoy_lists, inner_field.data_type()));
+                }
+            }
         }
 
         if self.has_include_bit {
@@ -340,6 +427,16 @@ fn value_to_f64(v: &Value) -> f64 {
 /// Convert a flat buffer of `Value` to the correct Arrow array based on dtype.
 /// Used for both ENTITY and LP TARGET columns.
 fn flush_value_buf(buf: &mut Vec<Value>, dtype: &DataType) -> Arc<dyn arrow_array::Array> {
+    if let DataType::List(inner_field) = dtype {
+        let lists = std::mem::take(buf)
+            .into_iter()
+            .map(|v| match v {
+                Value::List(l) => l,
+                _ => vec![],
+            })
+            .collect();
+        return flush_value_list_buf(lists, inner_field.data_type());
+    }
     flush_entity_buf(buf, dtype)
 }
 
@@ -459,7 +556,7 @@ mod tests {
         entity_dtype: DataType,
     ) -> (ChannelBatchWriter, crossbeam_channel::Receiver<RecordBatch>) {
         let (sender, receiver) = bounded(64);
-        let writer = ChannelBatchWriter::new(sender, mode, include_entity_bit, entity_dtype)
+        let writer = ChannelBatchWriter::new(sender, mode, include_entity_bit, entity_dtype, "TIMESTAMP")
             .unwrap();
         (writer, receiver)
     }

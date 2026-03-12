@@ -25,8 +25,22 @@ pub fn eval_row_filter(
 ) -> bool {
     match filter {
         ResolvedRowFilter::Compare { lhs, op, rhs } => {
-            let l = resolve_row_lhs(lhs, current_node, current_table);
-            let r = resolve_row_rhs(rhs, current_node, current_table, entity_cols);
+            let l_opt = resolve_row_lhs(lhs, current_node, current_table);
+
+            match op {
+                CompareOp::IsNull => return l_opt.is_none(),
+                CompareOp::IsNotNull => return l_opt.is_some(),
+                _ => {}
+            }
+
+            let l = match l_opt {
+                Some(v) => v,
+                None => return false, // SQL tri-state: op with NULL evaluates to NULL (fails filter)
+            };
+            let r = match resolve_row_rhs(rhs, current_node, current_table, entity_cols) {
+                Some(v) => v,
+                None => return false,
+            };
             compare_values(&l, op, &r)
         }
         ResolvedRowFilter::And(filters) => filters
@@ -43,15 +57,13 @@ fn resolve_row_lhs(
     lhs: &ResolvedRowFilterLhs,
     current_node: u64,
     current_table: &Arc<TableReader>,
-) -> Value {
+) -> Option<Value> {
     match lhs {
         ResolvedRowFilterLhs::Column(col_idx) => {
             read_column_value(current_table, current_node, *col_idx)
-                .unwrap_or(Value::Int(0))
         }
         ResolvedRowFilterLhs::Remote { path, col_idx } => {
             resolve_remote_value(path, current_node, *col_idx)
-                .unwrap_or(Value::Int(0))
         }
     }
 }
@@ -61,18 +73,14 @@ fn resolve_row_rhs(
     current_node: u64,
     _current_table: &Arc<TableReader>,
     entity_cols: &[Option<Value>],
-) -> Value {
+) -> Option<Value> {
     match rhs {
-        ResolvedRowFilterRhs::Constant(v) => v.clone(),
+        ResolvedRowFilterRhs::Constant(v) => Some(v.clone()),
         ResolvedRowFilterRhs::EntityColumn(idx) => {
-            entity_cols
-                .get(*idx)
-                .and_then(|v| v.clone())
-                .unwrap_or(Value::Int(0))
+            entity_cols.get(*idx).and_then(|v| v.clone())
         }
         ResolvedRowFilterRhs::Remote { path, col_idx } => {
             resolve_remote_value(path, current_node, *col_idx)
-                .unwrap_or(Value::Int(0))
         }
     }
 }
@@ -121,11 +129,22 @@ pub fn eval_stage_filter(
 ) -> bool {
     match filter {
         ResolvedStageFilter::Compare { alias_idx, op, rhs } => {
-            let l = match &aliases[*alias_idx] {
+            let l_opt = &aliases[*alias_idx];
+
+            match op {
+                CompareOp::IsNull => return l_opt.is_none(),
+                CompareOp::IsNotNull => return l_opt.is_some(),
+                _ => {}
+            }
+
+            let l = match l_opt {
                 Some(v) => v,
-                None => return false, // alias not computed = filter fails
+                None => return false, // alias not computed = filter fails (unless IsNull)
             };
-            let r = resolve_stage_rhs(rhs, aliases, entity_cols, entity_table, entity_node);
+            let r = match resolve_stage_rhs(rhs, aliases, entity_cols, entity_table, entity_node) {
+                Some(v) => v,
+                None => return false, // SQL tri-state: op with NULL evaluates to NULL (fails filter)
+            };
             compare_values(l, op, &r)
         }
         ResolvedStageFilter::And(filters) => filters
@@ -146,24 +165,17 @@ fn resolve_stage_rhs(
     entity_cols: &[Option<Value>],
     _entity_table: &Arc<TableReader>,
     entity_node: u64,
-) -> Value {
+) -> Option<Value> {
     match rhs {
-        ResolvedStageFilterRhs::Constant(v) => v.clone(),
+        ResolvedStageFilterRhs::Constant(v) => Some(v.clone()),
         ResolvedStageFilterRhs::EntityColumn(idx) => {
-            entity_cols
-                .get(*idx)
-                .and_then(|v| v.clone())
-                .unwrap_or(Value::Int(0))
+            entity_cols.get(*idx).and_then(|v| v.clone())
         }
         ResolvedStageFilterRhs::Remote { path, col_idx } => {
             resolve_remote_value(path, entity_node, *col_idx)
-                .unwrap_or(Value::Int(0))
         }
         ResolvedStageFilterRhs::Alias(idx) => {
-            aliases
-                .get(*idx)
-                .and_then(|v| v.clone())
-                .unwrap_or(Value::Int(0))
+            aliases.get(*idx).and_then(|v| v.clone())
         }
     }
 }
@@ -198,6 +210,7 @@ fn compare_ord<T: Ord>(a: &T, b: &T, op: &CompareOp) -> bool {
         CompareOp::Gte => a >= b,
         CompareOp::Lt => a < b,
         CompareOp::Lte => a <= b,
+        CompareOp::IsNull | CompareOp::IsNotNull => unreachable!("null checks handled in eval_filter"),
     }
 }
 
@@ -209,6 +222,7 @@ fn compare_f64(a: f64, b: f64, op: &CompareOp) -> bool {
         CompareOp::Gte => a >= b,
         CompareOp::Lt => a < b,
         CompareOp::Lte => a <= b,
+        CompareOp::IsNull | CompareOp::IsNotNull => unreachable!("null checks handled in eval_filter"),
     }
 }
 

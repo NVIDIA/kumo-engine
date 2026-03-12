@@ -115,7 +115,7 @@ pub fn execute_tt_plan(
         .detach(|| {
             diskgraph_train_table::ttgen_executor::execute_with_summary(&plan, Path::new(&idx))
         })
-        .map_err(|e| PyValueError::new_err(format!("execute failed: {e}")))?;
+        .map_err(|e| PyValueError::new_err(format!("execute failed: {e:#}")))?;
 
     Ok(TTPlanIterator {
         receiver: Some(receiver),

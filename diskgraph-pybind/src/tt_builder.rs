@@ -328,10 +328,13 @@ impl DiskGraphTTBuilder {
     }
 
     /// `FOR EACH {table}.{column}`.
-    fn for_each(&mut self, table: String, column: String) {
+    #[pyo3(signature = (table, column, output_time_col_name=None, default_time_value=None))]
+    fn for_each(&mut self, table: String, column: String, output_time_col_name: Option<String>, default_time_value: Option<i64>) {
         self.entity = Some(tt::EntitySpec {
             table,
             column,
+            output_time_col_name,
+            default_time_value,
             time_col: None,
             valid_to_col: None,
             filter: None,
@@ -404,6 +407,16 @@ impl DiskGraphTTBuilder {
         self.prediction_type = tt::PredictionType::Link { explode, include_frequency };
     }
 
+    /// Pass-through prediction (LHS/RHS extraction without target ops).
+    fn pass_through_prediction(&mut self) {
+        self.prediction_type = tt::PredictionType::PassThrough;
+    }
+
+    /// Forecasting prediction (outputs Autoregression and YoY columns).
+    fn forecasting_prediction(&mut self) {
+        self.prediction_type = tt::PredictionType::Forecasting;
+    }
+
     /// Add aggregate op. `path`: single `EdgeRef` or list for multi-hop.
     /// `limit`: early-termination hint (PQL `TOP k`), primarily for `ListDistinct`.
     #[pyo3(signature = (alias, path, func, target_col=None, time_col=None, window=None, window_unit=None, row_filter=None, limit=None))]
@@ -465,24 +478,75 @@ impl DiskGraphTTBuilder {
     }
 
     /// Logical combination of previously computed boolean aliases.
-    fn logical_op(
+    pub fn logical_op(
         &mut self,
         alias: String,
-        op: &str,
+        op: String,
         operands: Vec<String>,
     ) -> PyResult<()> {
-        let kind = match op {
+        let op_kind = match op.as_str() {
             "and" => tt::LogicalOpKind::And,
             "or" => tt::LogicalOpKind::Or,
             "not" => tt::LogicalOpKind::Not,
-            _ => return Err(PyValueError::new_err(format!("unknown logical op: {op}"))),
+            _ => return Err(PyValueError::new_err(format!("Invalid logical op: {}", op))),
         };
+
         self.current_ops.push(tt::Op::LogicalOp {
             alias,
-            op: kind,
+            op: op_kind,
             operands,
         });
         Ok(())
+    }
+
+    #[pyo3(signature = (alias, target_op_json, lag_offsets))]
+    pub fn autoregression(
+        &mut self,
+        alias: String,
+        target_op_json: String,
+        lag_offsets: Vec<i64>,
+    ) -> PyResult<()> {
+        let target_op: tt::Op = serde_json::from_str(&target_op_json)
+            .map_err(|e| PyValueError::new_err(format!("Invalid target op JSON: {}", e)))?;
+
+        self.current_ops.push(tt::Op::Autoregression {
+            alias,
+            target_op: Box::new(target_op),
+            lag_offsets,
+        });
+        Ok(())
+    }
+
+    #[pyo3(signature = (alias, path, time_col=None, window=None, window_unit=None, row_filter=None))]
+    pub fn has_edges(
+        &mut self,
+        alias: String,
+        path: &Bound<'_, PyAny>,
+        time_col: Option<String>,
+        window: Option<(i64, i64)>,
+        window_unit: Option<&str>,
+        row_filter: Option<RowFilter>,
+    ) -> PyResult<()> {
+        let path = extract_edge_path(path)?;
+        let unit = window_unit.map(parse_time_unit).transpose()?;
+        self.current_ops.push(tt::Op::HasEdges {
+            alias,
+            path,
+            time_col,
+            window,
+            window_unit: unit,
+            row_filter: row_filter.map(|f| f.inner.clone()),
+        });
+        Ok(())
+    }
+
+    /// Pops the last operation off the current stage and returns it as a JSON string.
+    /// This is useful for wrapping existing operations (like Aggregates) inside other operations (like Autoregression).
+    pub fn pop_last_op_json(&mut self) -> PyResult<String> {
+        let op = self.current_ops.pop()
+            .ok_or_else(|| PyValueError::new_err("No operations to pop"))?;
+        serde_json::to_string(&op)
+            .map_err(|e| PyValueError::new_err(format!("Failed to serialize op: {}", e)))
     }
 
     /// Close current stage with a short-circuit filter, start new stage.
@@ -527,6 +591,8 @@ fn parse_compare_op(op: &str) -> PyResult<tt::CompareOp> {
         ">=" | "gte" => Ok(tt::CompareOp::Gte),
         "<" | "lt" => Ok(tt::CompareOp::Lt),
         "<=" | "lte" => Ok(tt::CompareOp::Lte),
+        "isnull" | "is_null" => Ok(tt::CompareOp::IsNull),
+        "isnotnull" | "is_not_null" => Ok(tt::CompareOp::IsNotNull),
         _ => Err(PyValueError::new_err(format!("unknown compare op: {op}"))),
     }
 }

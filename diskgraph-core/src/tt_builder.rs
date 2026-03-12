@@ -49,6 +49,12 @@ pub struct DiskGraphTTPlan {
 pub struct EntitySpec {
     pub table: String,
     pub column: String,
+    /// Overrides the name of the output time column (defaults to "TIMESTAMP").
+    #[serde(default)]
+    pub output_time_col_name: Option<String>,
+    /// The default timestamp value to emit for static queries (defaults to 0).
+    #[serde(default)]
+    pub default_time_value: Option<i64>,
     /// Entity create-time column for temporal filtering.
     pub time_col: Option<String>,
     /// Entity valid-to column for temporal filtering (seed entities need both
@@ -83,6 +89,10 @@ pub enum PredictionType {
         /// distinct value. Set for RANK problems; unset for CLASSIFY.
         include_frequency: bool,
     },
+    /// Emits only (ENTITY, TIMESTAMP) columns. Used for RHS candidate generation.
+    PassThrough,
+    /// Forecasting task: emits AUTOREGRESSION_COL and optionally YOY_COL.
+    Forecasting,
 }
 
 // ─── Staged execution ────────────────────────────────────────────────────────
@@ -136,6 +146,23 @@ pub enum Op {
         /// For `Not`: single operand. For `And`/`Or`: two operands.
         operands: Vec<String>,
     },
+    /// Evaluate a target operation repeatedly across historical lag offsets.
+    Autoregression {
+        alias: String,
+        /// The inner operation to evaluate (typically an Aggregate).
+        target_op: Box<Op>,
+        /// List of negative offsets (in seconds) applied to the anchor timestamp.
+        lag_offsets: Vec<i64>,
+    },
+    /// Fast boolean check: Returns true if any edge satisfies the path and filters.
+    HasEdges {
+        alias: String,
+        path: Vec<EdgeRef>,
+        time_col: Option<String>,
+        window: Option<(i64, i64)>,
+        window_unit: Option<TimeUnit>,
+        row_filter: Option<RowFilter>,
+    },
 }
 
 /// Kind of logical operation on boolean values.
@@ -182,6 +209,8 @@ pub enum CompareOp {
     Gte,
     Lt,
     Lte,
+    IsNull,
+    IsNotNull,
 }
 
 /// Dynamically-typed scalar for filter comparisons.

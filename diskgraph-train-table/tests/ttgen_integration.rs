@@ -67,6 +67,56 @@ fn read_output_rows(receiver: Receiver<RecordBatch>) -> Vec<(i64, i64, f64)> {
     rows
 }
 
+/// Read output rows for PassThrough tasks (Entity, Timestamp only).
+fn read_output_rows_pass_through(receiver: Receiver<RecordBatch>) -> (Vec<(i64, i64)>, arrow_schema::SchemaRef) {
+    let mut rows = Vec::new();
+    let mut last_schema = None;
+    for batch in receiver {
+        last_schema = Some(batch.schema());
+        let entities = batch.column(0).as_any().downcast_ref::<Int64Array>().unwrap();
+        let timestamps = batch.column(1).as_any().downcast_ref::<TimestampNanosecondArray>().unwrap();
+        for i in 0..batch.num_rows() {
+            rows.push((entities.value(i), timestamps.value(i) / 1_000_000_000));
+        }
+    }
+    rows.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+    (rows, last_schema.unwrap())
+}
+
+/// Read output rows for Forecasting tasks. Returns lists as Vec<f64>.
+fn read_output_rows_forecasting(receiver: Receiver<RecordBatch>) -> Vec<(i64, i64, Vec<f64>, Option<Vec<f64>>)> {
+    let mut rows = Vec::new();
+    for batch in receiver {
+        let entities = batch.column(0).as_any().downcast_ref::<Int64Array>().unwrap();
+        let timestamps = batch.column(1).as_any().downcast_ref::<TimestampNanosecondArray>().unwrap();
+
+        let ar_col = batch.column(2).as_any().downcast_ref::<arrow_array::ListArray>().unwrap();
+        let yoy_col = if batch.num_columns() > 3 && batch.schema().field(3).name() == "YOY_COL" {
+            Some(batch.column(3).as_any().downcast_ref::<arrow_array::ListArray>().unwrap())
+        } else {
+            None
+        };
+
+        for i in 0..batch.num_rows() {
+            let ar_list = ar_col.value(i);
+            let ar_vals = ar_list.as_any().downcast_ref::<Float64Array>().unwrap();
+            let ar_vec: Vec<f64> = (0..ar_vals.len()).map(|j| if ar_vals.is_null(j) { f64::NAN } else { ar_vals.value(j) }).collect();
+
+            let yoy_vec = if let Some(y_arr) = yoy_col {
+                let y_list = y_arr.value(i);
+                let y_vals = y_list.as_any().downcast_ref::<Float64Array>().unwrap();
+                Some((0..y_vals.len()).map(|j| if y_vals.is_null(j) { f64::NAN } else { y_vals.value(j) }).collect())
+            } else {
+                None
+            };
+
+            rows.push((entities.value(i), timestamps.value(i) / 1_000_000_000, ar_vec, yoy_vec));
+        }
+    }
+    rows.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+    rows
+}
+
 /// Read output rows including the ENTITY_INCLUDE_BIT column.
 fn read_output_rows_with_bit(receiver: Receiver<RecordBatch>) -> Vec<(i64, i64, f64, bool)> {
     let mut rows = Vec::new();
@@ -490,6 +540,8 @@ fn g1_plan(stages: Vec<Stage>) -> DiskGraphTTPlan {
         entity: EntitySpec {
             table: "users".to_string(),
             column: "user_id".to_string(),
+            output_time_col_name: None,
+            default_time_value: None,
             time_col: None,
             valid_to_col: None,
             filter: None,
@@ -505,6 +557,8 @@ fn g1_temporal(stages: Vec<Stage>, timestamps: Vec<i64>) -> DiskGraphTTPlan {
         entity: EntitySpec {
             table: "users".to_string(),
             column: "user_id".to_string(),
+            output_time_col_name: None,
+            default_time_value: None,
             time_col: None,
             valid_to_col: None,
             filter: None,
@@ -1399,6 +1453,8 @@ fn integ_entity_time_col() {
         entity: EntitySpec {
             table: "users".to_string(),
             column: "user_id".to_string(),
+            output_time_col_name: None,
+            default_time_value: None,
             time_col: Some("signup_ts".to_string()),
             valid_to_col: None,
             filter: None,
@@ -1432,6 +1488,8 @@ fn integ_entity_valid_to_col() {
         entity: EntitySpec {
             table: "users".to_string(),
             column: "user_id".to_string(),
+            output_time_col_name: None,
+            default_time_value: None,
             time_col: None,
             valid_to_col: Some("valid_to".to_string()),
             filter: None,
@@ -1741,6 +1799,8 @@ fn integ_entity_create_time_metadata_fallback() {
         entity: EntitySpec {
             table: "users".to_string(),
             column: "user_id".to_string(),
+            output_time_col_name: None,
+            default_time_value: None,
             time_col: None,
             valid_to_col: None,
             filter: None,
@@ -1809,6 +1869,8 @@ fn integ_entity_end_time_metadata_fallback() {
         entity: EntitySpec {
             table: "users".to_string(),
             column: "user_id".to_string(),
+            output_time_col_name: None,
+            default_time_value: None,
             time_col: None,
             valid_to_col: None,
             filter: None,
@@ -2315,6 +2377,8 @@ fn integ_timeunit_months_calendar() {
         entity: EntitySpec {
             table: "company".to_string(),
             column: "cik".to_string(),
+            output_time_col_name: None,
+            default_time_value: None,
             time_col: None,
             valid_to_col: None,
             filter: None,
@@ -2363,6 +2427,8 @@ fn integ_timeunit_years_calendar() {
         entity: EntitySpec {
             table: "company".to_string(),
             column: "cik".to_string(),
+            output_time_col_name: None,
+            default_time_value: None,
             time_col: None,
             valid_to_col: None,
             filter: None,
@@ -2703,6 +2769,8 @@ fn integ_lag_timesteps_entity_include_bit() {
         entity: EntitySpec {
             table: "users".to_string(),
             column: "user_id".to_string(),
+            output_time_col_name: None,
+            default_time_value: None,
             time_col: None,
             valid_to_col: None,
             filter: Some(RowFilter::Compare {
@@ -2861,6 +2929,8 @@ fn g1_link_temporal(
         entity: EntitySpec {
             table: "users".to_string(),
             column: "user_id".to_string(),
+            output_time_col_name: None,
+            default_time_value: None,
             time_col: None,
             valid_to_col: None,
             filter: None,
@@ -2884,6 +2954,8 @@ fn g1_link(
         entity: EntitySpec {
             table: "users".to_string(),
             column: "user_id".to_string(),
+            output_time_col_name: None,
+            default_time_value: None,
             time_col: None,
             valid_to_col: None,
             filter: None,
@@ -3748,6 +3820,8 @@ fn g2_link_temporal(
         entity: EntitySpec {
             table: "users".to_string(),
             column: "user_id".to_string(),
+            output_time_col_name: None,
+            default_time_value: None,
             time_col: None,
             valid_to_col: None,
             filter: None,
@@ -3771,6 +3845,8 @@ fn g2_link_static(
         entity: EntitySpec {
             table: "users".to_string(),
             column: "user_id".to_string(),
+            output_time_col_name: None,
+            default_time_value: None,
             time_col: None,
             valid_to_col: None,
             filter: None,
@@ -4318,6 +4394,8 @@ fn g3_link_temporal(
         entity: EntitySpec {
             table: "users".to_string(),
             column: "user_id".to_string(),
+            output_time_col_name: None,
+            default_time_value: None,
             time_col: None,
             valid_to_col: None,
             filter: None,
@@ -4341,6 +4419,8 @@ fn g3_link_static(
         entity: EntitySpec {
             table: "users".to_string(),
             column: "user_id".to_string(),
+            output_time_col_name: None,
+            default_time_value: None,
             time_col: None,
             valid_to_col: None,
             filter: None,
@@ -4558,6 +4638,8 @@ fn integ_g3_lp_entity_filter() {
         entity: EntitySpec {
             table: "users".to_string(),
             column: "user_id".to_string(),
+            output_time_col_name: None,
+            default_time_value: None,
             time_col: None,
             valid_to_col: None,
             filter: Some(RowFilter::Compare {
@@ -4791,4 +4873,211 @@ fn integ_logical_nested_not_and() {
     assert!(groups[&2][0].1, "carol: NOT(F AND F) = true");
     assert!(groups[&3][0].1, "dave: NOT(T AND F) = true");
     assert!(groups[&4][0].1, "eve: NOT(F AND F) = true");
+}
+
+// ─── Tests: Batch Prediction Execution Modes ────────────────────────────────
+
+#[test]
+fn integ_bp_pass_through() {
+    let dir = tempfile::tempdir().unwrap();
+    let index = build_graph1(dir.path());
+
+    let plan = DiskGraphTTPlan {
+        entity: EntitySpec {
+            table: "users".to_string(),
+            column: "user_id".to_string(),
+            output_time_col_name: None,
+            default_time_value: None,
+            time_col: None,
+            valid_to_col: None,
+            filter: Some(RowFilter::Compare {
+                lhs: RowFilterLhs::Column("level".to_string()),
+                op: CompareOp::Gt,
+                rhs: RowFilterRhs::Constant(Value::Int(2)),
+            }),
+        },
+        temporal: Some(TemporalSpec {
+            timestamps: vec![1234],
+            forecast_length: 1,
+            lag_timesteps: None,
+        }),
+        prediction_type: PredictionType::PassThrough,
+        stages: vec![],
+    };
+
+    let (receiver, handle) =
+        diskgraph_train_table::ttgen_executor::execute(&plan, &index).unwrap();
+    let (rows, schema) = read_output_rows_pass_through(receiver);
+    handle.join().unwrap().unwrap();
+
+    // Check schema
+    assert_eq!(schema.fields().len(), 2);
+    assert_eq!(schema.field(0).name(), "ENTITY");
+    assert_eq!(schema.field(1).name(), "TIMESTAMP");
+
+    // Check filtered entities (level > 2): alice(3), eve(5).
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0], (0, 1234)); // alice
+    assert_eq!(rows[1], (4, 1234)); // eve
+}
+
+#[test]
+fn integ_bp_pseudo_time_injection() {
+    let dir = tempfile::tempdir().unwrap();
+    let index = build_graph1(dir.path());
+
+    let plan = DiskGraphTTPlan {
+        entity: EntitySpec {
+            table: "users".to_string(),
+            column: "user_id".to_string(),
+            output_time_col_name: Some("__PSEUDO_TIME__".to_string()),
+            default_time_value: Some(100_000_000_000_000),
+            time_col: None,
+            valid_to_col: None,
+            filter: None,
+        },
+        temporal: None, // static query!
+        prediction_type: PredictionType::PassThrough,
+        stages: vec![],
+    };
+
+    let (receiver, handle) =
+        diskgraph_train_table::ttgen_executor::execute(&plan, &index).unwrap();
+    let (rows, schema) = read_output_rows_pass_through(receiver);
+    handle.join().unwrap().unwrap();
+
+    // Check schema correctly renamed TIMESTAMP to __PSEUDO_TIME__
+    assert_eq!(schema.fields().len(), 2);
+    assert_eq!(schema.field(1).name(), "__PSEUDO_TIME__");
+
+    assert_eq!(rows.len(), 5);
+    for (_, ts) in rows {
+        // Due to saturating_mul(1_000_000_000) into i64::MAX for nanoseconds,
+        // it caps out at roughly 9223372036 seconds.
+        assert_eq!(ts, 9223372036);
+    }
+}
+
+#[test]
+fn integ_bp_is_null_filter() {
+    let dir = tempfile::tempdir().unwrap();
+    let index = build_graph1(dir.path());
+
+    let plan = g1_plan(vec![
+        Stage {
+            ops: vec![agg_orders_price("f_price", AggFunc::First, Some((0, 5000)))],
+            filter: Some(StageFilter::Compare {
+                alias: "f_price".to_string(),
+                op: CompareOp::IsNull,
+                rhs: StageFilterRhs::Constant(Value::Int(0)), // ignored
+            }),
+        },
+        // Dummy target so the test framework target extractor doesn't complain.
+        Stage {
+            ops: vec![Op::Column {
+                alias: "dummy".to_string(),
+                table: "users".to_string(),
+                column: "user_id".to_string(),
+            }],
+            filter: None,
+        },
+    ]);
+
+    let groups = execute_and_group(&plan, &index);
+    // Only 'eve' (4) has no orders, so FIRST(price) is None. IS NULL is True for eve!
+    assert_eq!(groups.len(), 1);
+    assert!(groups.contains_key(&4), "eve should be the only unlabeled node");
+}
+
+#[test]
+fn integ_bp_is_not_null_filter() {
+    let dir = tempfile::tempdir().unwrap();
+    let index = build_graph1(dir.path());
+
+    let plan = g1_plan(vec![
+        Stage {
+            ops: vec![agg_orders_price("f_price", AggFunc::First, Some((0, 5000)))],
+            filter: Some(StageFilter::Compare {
+                alias: "f_price".to_string(),
+                op: CompareOp::IsNotNull,
+                rhs: StageFilterRhs::Constant(Value::Int(0)), // ignored
+            }),
+        },
+        Stage {
+            ops: vec![Op::Column {
+                alias: "dummy".to_string(),
+                table: "users".to_string(),
+                column: "user_id".to_string(),
+            }],
+            filter: None,
+        },
+    ]);
+
+    let groups = execute_and_group(&plan, &index);
+    // Everyone EXCEPT eve has orders.
+    assert_eq!(groups.len(), 4);
+    assert!(!groups.contains_key(&4), "eve should be excluded");
+}
+
+#[test]
+fn integ_bp_forecasting_multiple_lags() {
+    let dir = tempfile::tempdir().unwrap();
+    let index = build_graph1(dir.path());
+
+    // Base timestamp is 3000
+    let plan = DiskGraphTTPlan {
+        entity: EntitySpec {
+            table: "users".to_string(),
+            column: "user_id".to_string(),
+            output_time_col_name: None,
+            default_time_value: None,
+            time_col: None,
+            valid_to_col: None,
+            filter: None,
+        },
+        temporal: Some(TemporalSpec {
+            timestamps: vec![3000],
+            forecast_length: 1,
+            lag_timesteps: Some(2),
+        }),
+        prediction_type: PredictionType::Forecasting,
+        stages: vec![Stage {
+            ops: vec![
+                Op::Autoregression {
+                    alias: "AUTOREGRESSION_COL".to_string(),
+                    target_op: Box::new(agg_orders_price("inner", AggFunc::Sum, Some((0, 200)))),
+                    lag_offsets: vec![0, -1000], // evaluate at ts=3000, ts=2000
+                },
+                Op::Autoregression {
+                    alias: "YOY_COL".to_string(),
+                    target_op: Box::new(agg_orders_price("inner", AggFunc::Sum, Some((0, 200)))),
+                    lag_offsets: vec![-2000], // evaluate at ts=1000
+                },
+            ],
+            filter: None,
+        }],
+    };
+
+    let (receiver, handle) =
+        diskgraph_train_table::ttgen_executor::execute(&plan, &index).unwrap();
+    let rows = read_output_rows_forecasting(receiver);
+    handle.join().unwrap().unwrap();
+
+    let map: HashMap<i64, _> = rows.into_iter().map(|r| (r.0, r)).collect();
+
+    // Alice (orders: 1050, 1100, 1200, 1300)
+    // ts=3000, window=(3000, 3200] -> SUM = 0
+    // ts=2000, window=(2000, 2200] -> SUM = 0
+    // ts=1000, window=(1000, 1200] -> SUM = 10 (1050) + 100 (1100) + 50 (1200) = 160.
+    let alice = &map[&0];
+    assert_eq!(alice.2, vec![0.0, 0.0]); // AUTOREGRESSION
+    assert_eq!(alice.3.as_ref().unwrap(), &vec![160.0]); // YOY
+
+    // Bob (orders: 2100, 2200)
+    // ts=3000, window=(3000, 3200] -> SUM = 0
+    // ts=2000, window=(2000, 2200] -> SUM = 200 (2100) + 30 (2200) = 230
+    // ts=1000, window=(1000, 1200] -> SUM = 0
+    let bob = &map[&1];
+    assert_eq!(bob.2, vec![0.0, 230.0]); // AUTOREGRESSION
+    assert_eq!(bob.3.as_ref().unwrap(), &vec![0.0]); // YOY
 }

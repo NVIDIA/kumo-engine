@@ -48,8 +48,8 @@ def test_compiler_basic_aggregation():
         query=query,
         timestamps=timestamps,
         forecast_length=1,
-        lag_timesteps=30
-    )
+        lag_timesteps=30,
+        task_type="binary_classification")
 
     plan = json.loads(plan_json)
 
@@ -111,7 +111,7 @@ def test_compiler_with_row_filter():
     query._query_type = "STATIC"
 
     compiler = DiskGraphPlanCompiler()
-    plan_json = compiler.compile(query=query, timestamps=[], forecast_length=1, lag_timesteps=None)
+    plan_json = compiler.compile(query=query, timestamps=[], forecast_length=1, lag_timesteps=None, task_type="binary_classification")
     plan = json.loads(plan_json)
 
     op = plan["stages"][0]["ops"][0]["aggregate"]
@@ -166,7 +166,7 @@ def test_compiler_stage_filter():
     query._query_type = "STATIC"
 
     compiler = DiskGraphPlanCompiler()
-    plan_json = compiler.compile(query=query, timestamps=[], forecast_length=1, lag_timesteps=None)
+    plan_json = compiler.compile(query=query, timestamps=[], forecast_length=1, lag_timesteps=None, task_type="binary_classification")
     plan = json.loads(plan_json)
 
     # Should have 2 stages because of the filter on aggregation
@@ -208,8 +208,8 @@ def test_compiler_pql_e2e():
         query=query,
         timestamps=timestamps,
         forecast_length=1,
-        lag_timesteps=30
-    )
+        lag_timesteps=30,
+        task_type="binary_classification")
 
     plan = json.loads(plan_json)
 
@@ -254,7 +254,7 @@ def test_compiler_not_target():
     query._query_type = "STATIC"
 
     compiler = DiskGraphPlanCompiler()
-    plan_json = compiler.compile(query=query, timestamps=[], forecast_length=1, lag_timesteps=None)
+    plan_json = compiler.compile(query=query, timestamps=[], forecast_length=1, lag_timesteps=None, task_type="binary_classification")
     plan = json.loads(plan_json)
 
     stage = plan["stages"][0]
@@ -301,7 +301,7 @@ def test_compiler_and_target():
     query._query_type = "STATIC"
 
     compiler = DiskGraphPlanCompiler()
-    plan_json = compiler.compile(query=query, timestamps=[], forecast_length=1, lag_timesteps=None)
+    plan_json = compiler.compile(query=query, timestamps=[], forecast_length=1, lag_timesteps=None, task_type="binary_classification")
     plan = json.loads(plan_json)
 
     stage = plan["stages"][0]
@@ -348,7 +348,7 @@ def test_compiler_or_target():
     query._query_type = "STATIC"
 
     compiler = DiskGraphPlanCompiler()
-    plan_json = compiler.compile(query=query, timestamps=[], forecast_length=1, lag_timesteps=None)
+    plan_json = compiler.compile(query=query, timestamps=[], forecast_length=1, lag_timesteps=None, task_type="binary_classification")
     plan = json.loads(plan_json)
 
     stage = plan["stages"][0]
@@ -379,3 +379,162 @@ def test_timestamp_normalization():
     ns_ts = [1700000000000000000]
     norm_s = compiler._normalize_timestamps(ns_ts, TimeUnit.Seconds)
     assert norm_s[0] == 1700000000
+
+def test_compiler_static_node_prediction_is_null():
+    target_ast = Aggregation(
+        target=Column(fqn="transactions.amount"),
+        aggr=AggregationType.SUM
+    )
+    target_ast.target = Join(
+        rhs_target=Column(fqn="transactions.amount"),
+        lhs_key="users.user_id",
+        rhs_key="transactions.user_id"
+    )
+    query = ValidatedPredictiveQuery(
+        entity_ast=Column(fqn="users.user_id"),
+        target_ast=target_ast,
+    )
+    query._query_type = "STATIC"
+
+    compiler = DiskGraphPlanCompiler()
+    # is_prediction=True, task_type="binary_classification", timestamps=[] triggers static node prediction IS NULL injection
+    plan_json = compiler.compile(query=query, timestamps=[], is_prediction=True, task_type="binary_classification")
+    plan = json.loads(plan_json)
+
+    assert "node" in plan["prediction_type"]
+
+    # We should have the target traversed to get the alias, and a stage filter applied
+    # Also, we injected a dummy column for the entity_id_target
+    assert len(plan["stages"]) >= 1
+
+    # Look for the has_edges op and the == False stage filter
+    found_has_edges = False
+    found_filter = False
+    for stage in plan["stages"]:
+        for op in stage.get("ops", []):
+            if "has_edges" in op:
+                found_has_edges = True
+        if "filter" in stage and stage["filter"]:
+            if "compare" in stage["filter"]:
+                cmp = stage["filter"]["compare"]
+                if cmp["op"] == "eq" and cmp["rhs"] == {"constant": {"bool": False}}:
+                    found_filter = True
+
+    assert found_has_edges, f"Expected an 'has_edges' operation to be injected. Plan: {json.dumps(plan, indent=2)}"
+    assert found_filter, f"Expected a '== False' stage filter to be injected. Plan: {json.dumps(plan, indent=2)}"
+
+def test_compiler_link_prediction_legacy_pseudo_time():
+    target_ast = Aggregation(
+        target=Column(fqn="products.product_id"),
+        aggr=AggregationType.LIST_DISTINCT
+    )
+    target_ast.target = Join(
+        rhs_target=Column(fqn="products.product_id"),
+        lhs_key="users.user_id",
+        rhs_key="orders.user_id"
+    )
+    query = ValidatedPredictiveQuery(
+        entity_ast=Column(fqn="users.user_id"),
+        target_ast=target_ast,
+    )
+    query._query_type = "STATIC"
+    query.task_type = "static_link_prediction"
+
+    compiler = DiskGraphPlanCompiler()
+    plan_json = compiler.compile(
+        query=query,
+        timestamps=[],
+        is_prediction=True, task_type="link_prediction",
+        list_distinct_target_is_array=False # Legacy HStack mode
+    )
+    plan = json.loads(plan_json)
+
+    assert "link" in plan["prediction_type"]
+    assert plan["entity"]["output_time_col_name"] == "__PSEUDO_TIME__"
+    assert plan["entity"]["default_time_value"] == 100_000_000_000_000
+
+def test_compiler_link_prediction_rhs_pass_through():
+    # Target has a filter: products.category = 'shoes'
+    filtered_target = Filter(
+        target=Column(fqn="products.product_id"),
+        condition=Condition(
+            target=Column(fqn="products.category"),
+            op=RelOp.EQ,
+            value=Constant.from_value("shoes")
+        )
+    )
+    target_ast = Aggregation(
+        target=filtered_target,
+        aggr=AggregationType.LIST_DISTINCT
+    )
+    # Bypass Pydantic validation by assigning after initialization
+    j = Join(
+        rhs_target=Column(fqn="products.product_id"), # valid initially
+        lhs_key="users.user_id",
+        rhs_key="orders.user_id"
+    )
+    # The Filter wraps the Join in Kumo AST
+    target_ast.target.target = j
+
+    query = ValidatedPredictiveQuery(
+        entity_ast=Column(fqn="users.user_id"),
+        target_ast=target_ast,
+    )
+
+    compiler = DiskGraphPlanCompiler()
+    plan_json = compiler.compile(
+        query=query,
+        timestamps=[1700000000000000],
+        is_prediction=True, task_type="link_prediction",
+        lp_prediction_mode='RHS', lp_rhs_entity_table="products", lp_rhs_entity_column="product_id"
+    )
+    plan = json.loads(plan_json)
+
+    assert plan["prediction_type"] == "pass_through"
+    # Should extract RHS entity
+    assert plan["entity"]["table"] == "products"
+    assert plan["entity"]["column"] == "product_id"
+
+    # Should extract RHS filter
+    assert plan["entity"]["filter"]["compare"]["lhs"]["column"] == "category"
+    assert plan["entity"]["filter"]["compare"]["op"] == "eq"
+    assert plan["entity"]["filter"]["compare"]["rhs"]["constant"]["str"] == "shoes"
+
+def test_compiler_forecasting():
+    target_ast = Aggregation(
+        target=Column(fqn="transactions.amount"),
+        aggr=AggregationType.SUM
+    )
+    target_ast.target = Join(
+        rhs_target=Column(fqn="transactions.amount"),
+        lhs_key="users.user_id",
+        rhs_key="transactions.user_id"
+    )
+    query = ValidatedPredictiveQuery(
+        entity_ast=Column(fqn="users.user_id"),
+        target_ast=target_ast,
+    )
+    query._query_type = "TEMPORAL"
+
+    compiler = DiskGraphPlanCompiler()
+    plan_json = compiler.compile(
+        query=query,
+        timestamps=[1700000000000000],
+        is_prediction=True, task_type="binary_classification",
+        lag_offsets_secs=[-86400, -172800],
+        yoy_offsets_secs=[-31536000]
+    )
+    plan = json.loads(plan_json)
+
+    assert plan["prediction_type"] == "forecasting"
+
+    # Should find two Autoregression ops in the final stage
+    stage = plan["stages"][0]
+    auto_ops = [op["autoregression"] for op in stage["ops"] if "autoregression" in op]
+
+    assert len(auto_ops) == 2
+    assert auto_ops[0]["alias"] == "AUTOREGRESSION_COL"
+    assert auto_ops[0]["lag_offsets"] == [-86400, -172800]
+
+    assert auto_ops[1]["alias"] == "YOY_COL"
+    assert auto_ops[1]["lag_offsets"] == [-31536000]

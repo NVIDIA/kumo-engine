@@ -138,22 +138,30 @@ pub fn execute_with_summary(
 
 // ─── Per-thread execution ────────────────────────────────────────────────────
 
-fn output_mode_from_prediction_type(pt: &PredictionType, target_dtype: DataType) -> OutputMode {
+fn output_mode_from_prediction_type(
+    pt: &PredictionType,
+    target_dtype: DataType,
+    autoregression_dtype: Option<DataType>,
+    yoy_dtype: Option<DataType>,
+) -> OutputMode {
     match pt {
         PredictionType::Node => OutputMode::Node { target_dtype },
-        PredictionType::Link {
-            explode: true,
-            include_frequency,
-        } => OutputMode::LinkExploded {
-            include_frequency: *include_frequency,
-            target_dtype,
-        },
-        PredictionType::Link {
-            explode: false,
-            include_frequency,
-        } => OutputMode::LinkArray {
-            include_frequency: *include_frequency,
-            target_dtype,
+        PredictionType::Link { explode: true, include_frequency } => {
+            OutputMode::LinkExploded {
+                include_frequency: *include_frequency,
+                target_dtype,
+            }
+        }
+        PredictionType::Link { explode: false, include_frequency } => {
+            OutputMode::LinkArray {
+                include_frequency: *include_frequency,
+                target_dtype,
+            }
+        }
+        PredictionType::PassThrough => OutputMode::PassThrough,
+        PredictionType::Forecasting => OutputMode::Forecasting {
+            autoregression_dtype: autoregression_dtype.expect("forecasting missing ar_dtype"),
+            yoy_dtype,
         },
     }
 }
@@ -163,12 +171,20 @@ fn execute_chunk(
     entity_range: std::ops::Range<u64>,
     sender: &Sender<RecordBatch>,
 ) -> Result<(u64, ChunkStats)> {
-    let mode = output_mode_from_prediction_type(&plan.prediction_type, plan.target_dtype.clone());
+    let mode = output_mode_from_prediction_type(
+        &plan.prediction_type,
+        plan.target_dtype.clone(),
+        plan.autoregression_dtype.clone(),
+        plan.yoy_dtype.clone(),
+    );
+    let time_col_name = plan.entity_table_spec.output_time_col_name.as_deref().unwrap_or("TIMESTAMP");
+
     let mut writer = ChannelBatchWriter::new(
         sender.clone(),
         mode,
         plan.lag_timesteps > 0,
         plan.entity_dtype.clone(),
+        time_col_name,
     )?;
 
     // Thread-local aliases Vec, reused across entities
@@ -243,10 +259,11 @@ fn execute_entity(
     if !plan.has_temporal {
         // Non-temporal: single row per entity.
         // Match Kumo drop_na_rows(TIMESTAMP): skip if entity time_col is NULL.
+        let default_ts = plan.entity_table_spec.default_time_value.unwrap_or(0);
         let ts = match (plan.entity_time_col_idx, time_col_val) {
             (Some(_), None) => return Ok(()), // time_col configured but NULL → drop
             (_, Some(t)) => t,
-            (None, None) => 0,
+            (None, None) => default_ts,
         };
         link_frequencies.clear();
         if execute_stages(
@@ -337,81 +354,106 @@ fn write_target(
     writer: &mut ChannelBatchWriter,
     stats: &mut ChunkStats,
 ) -> Result<()> {
-    let target = match &aliases[plan.target_alias_idx] {
-        Some(v) => v,
-        None => return Ok(()),
-    };
-    // Match Kumo _drop_empty_string_targets: for node prediction with string
-    // target dtype, skip rows where the target is an empty string.
-    if matches!(plan.prediction_type, PredictionType::Node) && plan.target_dtype == DataType::Utf8 {
-        if let Value::Str(s) = target {
-            if s.is_empty() {
-                return Ok(());
-            }
-        }
-    }
-
     match &plan.prediction_type {
-        PredictionType::Node => {
-            writer.write_row(entity_pk.clone(), ts, target, entity_include_bit)?;
-            if entity_include_bit {
-                stats.num_train_rows += 1;
-                stats.entities.insert(hash_value(entity_pk));
-                stats.targets.insert(hash_value(target));
-            }
+        PredictionType::PassThrough => {
+            writer.write_row_pass_through(entity_pk.clone(), ts, entity_include_bit)?;
         }
-        PredictionType::Link {
-            explode: true,
-            include_frequency,
-        } => {
-            if let Value::List(targets) = target {
-                for (i, val) in targets.iter().enumerate() {
-                    let freq = if *include_frequency {
-                        link_frequencies.get(i).copied().unwrap_or(1)
-                    } else {
-                        0
-                    };
-                    writer.write_row_exploded(
-                        entity_pk.clone(),
-                        ts,
-                        val.clone(),
-                        freq,
-                        entity_include_bit,
-                    )?;
-                    if entity_include_bit {
-                        stats.num_train_rows += 1;
-                        stats.num_links += 1;
-                        stats.entities.insert(hash_value(entity_pk));
-                        stats.targets.insert(hash_value(val));
+        PredictionType::Forecasting => {
+            let mut autoregression = Vec::new();
+            if let Some(idx) = plan.autoregression_alias_idx {
+                if let Some(Value::List(l)) = &aliases[idx] {
+                    autoregression = l.clone();
+                }
+            }
+            let mut yoy = None;
+            if let Some(idx) = plan.yoy_alias_idx {
+                if let Some(Value::List(l)) = &aliases[idx] {
+                    yoy = Some(l.clone());
+                }
+            }
+            writer.write_row_forecasting(
+                entity_pk.clone(),
+                ts,
+                autoregression,
+                yoy,
+                entity_include_bit,
+            )?;
+        }
+        PredictionType::Node | PredictionType::Link { .. } => {
+            let target = match &aliases[plan.target_alias_idx] {
+                Some(v) => v,
+                None => return Ok(()),
+            };
+            // Match Kumo _drop_empty_string_targets: for node prediction with string
+            // target dtype, skip rows where the target is an empty string.
+            if matches!(plan.prediction_type, PredictionType::Node)
+                && plan.target_dtype == DataType::Utf8
+            {
+                if let Value::Str(s) = target {
+                    if s.is_empty() {
+                        return Ok(());
                     }
                 }
             }
-        }
-        PredictionType::Link {
-            explode: false,
-            include_frequency,
-        } => {
-            if let Value::List(targets) = target {
-                let freqs: Vec<i64> = if *include_frequency {
-                    link_frequencies.to_vec()
-                } else {
-                    Vec::new()
-                };
-                writer.write_row_array(
-                    entity_pk.clone(),
-                    ts,
-                    targets.clone(),
-                    &freqs,
-                    entity_include_bit,
-                )?;
-                if entity_include_bit {
-                    stats.num_train_rows += 1;
-                    stats.num_links += targets.len() as u64;
-                    stats.entities.insert(hash_value(entity_pk));
-                    for target in targets {
+
+            match &plan.prediction_type {
+                PredictionType::Node => {
+                    writer.write_row(entity_pk.clone(), ts, target, entity_include_bit)?;
+                    if entity_include_bit {
+                        stats.num_train_rows += 1;
+                        stats.entities.insert(hash_value(entity_pk));
                         stats.targets.insert(hash_value(target));
                     }
                 }
+                PredictionType::Link { explode: true, include_frequency } => {
+                    if let Value::List(targets) = target {
+                        for (i, val) in targets.iter().enumerate() {
+                            let freq = if *include_frequency {
+                                link_frequencies.get(i).copied().unwrap_or(1)
+                            } else {
+                                0
+                            };
+                            writer.write_row_exploded(
+                                entity_pk.clone(),
+                                ts,
+                                val.clone(),
+                                freq,
+                                entity_include_bit,
+                            )?;
+                            if entity_include_bit {
+                                stats.num_train_rows += 1;
+                                stats.num_links += 1;
+                                stats.entities.insert(hash_value(entity_pk));
+                                stats.targets.insert(hash_value(val));
+                            }
+                        }
+                    }
+                }
+                PredictionType::Link { explode: false, include_frequency } => {
+                    if let Value::List(targets) = target {
+                        let freqs: Vec<i64> = if *include_frequency {
+                            link_frequencies.to_vec()
+                        } else {
+                            Vec::new()
+                        };
+                        writer.write_row_array(
+                            entity_pk.clone(),
+                            ts,
+                            targets.clone(),
+                            &freqs,
+                            entity_include_bit,
+                        )?;
+                        if entity_include_bit {
+                            stats.num_train_rows += 1;
+                            stats.num_links += targets.len() as u64;
+                            stats.entities.insert(hash_value(entity_pk));
+                            for target in targets {
+                                stats.targets.insert(hash_value(target));
+                            }
+                        }
+                    }
+                }
+                _ => unreachable!()
             }
         }
     }
@@ -441,19 +483,33 @@ fn execute_stages(
         // Execute all ops in this stage
         for op in &stage.ops {
             let result = match op {
-                ResolvedOp::Aggregate(agg) => execute_aggregate(
-                    plan,
-                    entity_node,
-                    agg,
-                    entity_cols,
-                    observation_ts,
-                    link_frequencies,
-                ),
+                ResolvedOp::Aggregate(agg) => {
+                    execute_aggregate(
+                        plan, entity_node, agg, entity_cols, observation_ts,
+                        link_frequencies,
+                    )
+                }
+                ResolvedOp::HasEdges(has_edges) => {
+                    execute_has_edges(
+                        plan, entity_node, has_edges, entity_cols, observation_ts,
+                    )
+                }
                 ResolvedOp::Column(col) => {
                     match read_column_value_nullable(&col.table, entity_node, col.col_idx) {
-                        Some(Some(v)) => Some(v), // non-null value
-                        Some(None) => None,       // explicit NULL → skip row
-                        None => None,             // missing data → skip row
+                        Some(Some(v)) => Some(v),     // non-null value
+                        Some(None) => None,            // explicit NULL → skip row
+                        None => None,                  // missing data → skip row
+                    }
+                }
+                ResolvedOp::Compare(cmp) => {
+                    let l_opt = &aliases[cmp.lhs_alias_idx];
+                    match cmp.op {
+                        CompareOp::IsNull => Some(Value::Bool(l_opt.is_none())),
+                        CompareOp::IsNotNull => Some(Value::Bool(l_opt.is_some())),
+                        _ => match l_opt {
+                            Some(lhs) => Some(Value::Bool(compare_values(lhs, &cmp.op, &cmp.rhs))),
+                            None => None, // NULL propagation: NULL op x → NULL
+                        }
                     }
                 }
                 ResolvedOp::Compare(cmp) => match &aliases[cmp.lhs_alias_idx] {
@@ -498,6 +554,31 @@ fn execute_stages(
                         }
                     }
                 }
+                ResolvedOp::Autoregression(auto) => {
+                    let mut results = Vec::with_capacity(auto.lag_offsets.len());
+                    let base_ts = observation_ts.unwrap_or(0);
+
+                    if let ResolvedOp::Aggregate(ref agg) = *auto.target_op {
+                        for &offset in &auto.lag_offsets {
+                            let shifted_ts = base_ts + offset;
+                            let val_opt = execute_aggregate(
+                                plan, entity_node, agg, entity_cols, Some(shifted_ts),
+                                &mut Vec::new(), // inner frequencies not needed
+                            );
+
+                            // For Autoregression, we collect the scalar outputs.
+                            // If None is returned (e.g. empty sum/avg), we push a Float NaN
+                            // to align with Kumo's PySpark forecasting behavior.
+                            match val_opt {
+                                Some(v) => results.push(v),
+                                None => results.push(Value::Float(f64::NAN)),
+                            }
+                        }
+                        Some(Value::List(results))
+                    } else {
+                        None
+                    }
+                }
             };
             aliases[op.alias_idx()] = result;
         }
@@ -516,6 +597,50 @@ fn execute_stages(
         }
     }
     true
+}
+
+// ─── Fast Existence Check (Null Emitting Target Logic) ───────────────────────
+
+fn execute_has_edges(
+    _plan: &ResolvedPlan,
+    entity_node: u64,
+    has_edges: &ResolvedHasEdges,
+    entity_cols: &[Option<Value>],
+    observation_ts: Option<i64>,
+) -> Option<Value> {
+    let window = has_edges.window.as_ref().map(|w| {
+        let obs = observation_ts.unwrap_or(0);
+        match w {
+            ResolvedWindow::Fixed { offset_lo_secs, offset_hi_secs, encoder } => {
+                let lo = encoder.encode_upper(obs + offset_lo_secs);
+                let hi = encoder.encode_upper(obs + offset_hi_secs);
+                (lo, hi)
+            }
+            ResolvedWindow::Calendar { lo_months, hi_months, encoder } => {
+                let lo_secs = add_calendar_months(obs, *lo_months);
+                let hi_secs = add_calendar_months(obs, *hi_months);
+                let lo = encoder.encode_upper(lo_secs);
+                let hi = encoder.encode_upper(hi_secs);
+                (lo, hi)
+            }
+        }
+    });
+
+    let dst_table = &has_edges.path.last().unwrap().dst_table;
+    let mut traversed = false;
+
+    traverse_and_accumulate(entity_node, &has_edges.path, window, true, &mut |dst, _sk| {
+        if let Some(ref f) = has_edges.row_filter {
+            if !eval_row_filter(f, dst, dst_table, entity_cols) {
+                return true; // Skip this edge but keep searching
+            }
+        }
+        // Found a matching edge!
+        traversed = true;
+        false // Immediate short-circuit (O(1) runtime after first match)
+    });
+
+    Some(Value::Bool(traversed))
 }
 
 // ─── Aggregate execution (match-once monomorphization) ───────────────────────
