@@ -179,6 +179,7 @@ def compile_plan(config: dict, timestamps: list[int]) -> tuple[str, str | None]:
     plan_json = compiler.compile(
         query=vpq,
         timestamps=timestamps,
+        task_type=config["task_type"],
         forecast_length=config["forecast_length"],
         lag_timesteps=config["lag_timesteps"],
         include_frequency=config["include_frequency"],
