@@ -9,7 +9,6 @@ use crate::graph_config::{
     ColumnSpec, DataSource, DirectionSpec, EdgeTableSpec, FKeySpec, ForeignKeySpec, GraphConfig,
     IngestedType, SemanticType, TableSpec, TimeSpec,
 };
-use crate::utils::is_edge_table_compatible;
 
 use super::mapping::{map_kumo_dtype, map_kumo_stype, map_timestamp_unit};
 use super::types::{KumoForeignKey, KumoGraphConfig, KumoTable};
@@ -420,21 +419,15 @@ fn detect_edge_table_or_fkeys(
 }
 
 /// Check if a table should be treated as an edge table.
+///
+/// Always returns false — the config converter should never auto-classify
+/// tables as edge tables. Edge table detection is left to diskgraph-infer.
 fn should_be_edge_table(
-    fkeys: &[KumoForeignKey],
-    columns: &[ColumnSpec],
-    create_time: Option<&str>,
+    _fkeys: &[KumoForeignKey],
+    _columns: &[ColumnSpec],
+    _create_time: Option<&str>,
 ) -> bool {
-    // Must have exactly 2 foreign keys
-    if fkeys.len() != 2 {
-        return false;
-    }
-
-    // Build set of fkey column names
-    let fkey_cols: HashSet<&str> = fkeys.iter().map(|f| f.name.as_str()).collect();
-
-    // Use shared edge table compatibility check
-    is_edge_table_compatible(columns, &fkey_cols, create_time)
+    false
 }
 
 /// Strip namespace prefix from a table name.

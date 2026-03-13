@@ -274,14 +274,12 @@ fn test_convert_edge_table() {
 
     let table = &result.tables[0];
     assert_eq!(table.name, "purchases");
-    assert!(table.edge_table.is_some()); // Should be edge table
-    assert!(table.fkeys.is_empty()); // fkeys go into edge_table instead
-
-    let edge = table.edge_table.as_ref().unwrap();
-    assert_eq!(edge.src_fk.edge_column, "user_id");
-    assert_eq!(edge.src_fk.ref_table, "users");
-    assert_eq!(edge.dst_fk.edge_column, "item_id");
-    assert_eq!(edge.dst_fk.ref_table, "items");
+    assert!(table.edge_table.is_none()); // Config converter never auto-detects edge tables
+    assert_eq!(table.fkeys.len(), 2);
+    assert_eq!(table.fkeys[0].src_column, "user_id");
+    assert_eq!(table.fkeys[0].dst_table, "users");
+    assert_eq!(table.fkeys[1].src_column, "item_id");
+    assert_eq!(table.fkeys[1].dst_table, "items");
 }
 
 #[test]
@@ -555,8 +553,8 @@ fn test_convert_edge_table_with_weight_column() {
     let result = convert_kumo_to_diskgraph(&kumo_config, &options).unwrap();
 
     let table = &result.tables[0];
-    assert!(table.edge_table.is_some()); // Should still be edge table with numeric weight
-    assert!(table.fkeys.is_empty());
+    assert!(table.edge_table.is_none()); // Config converter never auto-detects edge tables
+    assert_eq!(table.fkeys.len(), 2);
 }
 
 #[test]
@@ -895,19 +893,17 @@ fn test_convert_multi_table_graph() {
     assert!(items.edge_table.is_none());
     assert!(items.fkeys.is_empty());
 
-    // Purchases table - edge table
+    // Purchases table - has fkeys, not auto-detected as edge table
     let purchases = result
         .tables
         .iter()
         .find(|t| t.name == "purchases")
         .unwrap();
     assert!(purchases.primary_key.is_none());
-    assert!(purchases.edge_table.is_some());
-    assert!(purchases.fkeys.is_empty());
-
-    let edge = purchases.edge_table.as_ref().unwrap();
-    assert_eq!(edge.src_fk.ref_table, "users");
-    assert_eq!(edge.dst_fk.ref_table, "items");
+    assert!(purchases.edge_table.is_none());
+    assert_eq!(purchases.fkeys.len(), 2);
+    assert_eq!(purchases.fkeys[0].dst_table, "users");
+    assert_eq!(purchases.fkeys[1].dst_table, "items");
 }
 
 #[test]
