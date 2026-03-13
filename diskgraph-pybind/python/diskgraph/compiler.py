@@ -408,17 +408,18 @@ class DiskGraphPlanCompiler:
                         val = 0
                     return StageFilter.compare(alias, op, val)
 
-            # Simple Column LHS in StageFilter
+            # Simple Column LHS in StageFilter — must emit a column-fetch
+            # op so the Rust engine can resolve the alias at execution time.
             elif isinstance(node.target, Column):
-                col_name = node.target.fqn.split('.')[1]
+                alias = self._traverse_target(node.target, query)
                 if isinstance(node.value, Column):
-                    return StageFilter.compare_to_entity(col_name, op, node.value.fqn.split('.')[1])
+                    return StageFilter.compare_to_entity(alias, op, node.value.fqn.split('.')[1])
                 else:
                     val = node.get_typed_value()
                     if val is None:
                         op = "is_null" if op in ("==", "eq") else "is_not_null"
                         val = 0
-                    return StageFilter.compare(col_name, op, val)
+                    return StageFilter.compare(alias, op, val)
 
         elif isinstance(node, LogicalOperation):
             left = self._compile_stage_filter(node.left, query)

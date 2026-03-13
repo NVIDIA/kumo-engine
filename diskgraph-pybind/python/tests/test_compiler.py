@@ -500,6 +500,75 @@ def test_compiler_link_prediction_rhs_pass_through():
     assert plan["entity"]["filter"]["compare"]["op"] == "eq"
     assert plan["entity"]["filter"]["compare"]["rhs"]["constant"]["str"] == "shoes"
 
+def test_compiler_mixed_entity_filter_column_and_aggregation():
+    """Entity WHERE with both a column condition and an aggregation.
+
+    PQL: PREDICT COUNT(msgs.*, 0, 30) > 10 FOR EACH users.user_id
+         WHERE users.is_verified = False AND COUNT(friends.*, -30, 0) > 3
+
+    The column condition (is_verified = False) must emit a column-fetch op
+    so the Rust engine can resolve the alias in the stage filter.
+    """
+    kumopql = pytest.importorskip("kumopql", reason="kumopql not installed")
+    from kumopql.parser import PQLParser
+
+    pql = (
+        "PREDICT COUNT(message_requests.*, 0, 30) > 10 "
+        "FOR EACH user_entities.user_id "
+        "WHERE user_entities.is_verified = False "
+        "AND COUNT(friend_requests.*, -30, 0) > 3"
+    )
+    parsed = PQLParser().to_parsed_predictive_query(pql)
+    query = ValidatedPredictiveQuery(
+        entity_ast=parsed.entity_ast,
+        target_ast=parsed.target_ast,
+        problem_type=parsed.problem_type,
+        top_k=parsed.top_k,
+    )
+    query._query_type = "TEMPORAL"
+
+    compiler = DiskGraphPlanCompiler()
+    plan_json = compiler.compile(
+        query=query,
+        timestamps=[1700000000],
+        task_type="binary_classification",
+        forecast_length=1,
+        entity_time_col="signup_date",
+    )
+    plan = json.loads(plan_json)
+
+    # Stage 0 should have the entity filter (column + aggregation)
+    stage0 = plan["stages"][0]
+    ops = stage0["ops"]
+
+    # Must have a column-fetch op for is_verified
+    col_ops = [op for op in ops if "column" in op]
+    assert len(col_ops) >= 1, (
+        f"Expected a column-fetch op for is_verified, got ops: {ops}"
+    )
+    col_op = col_ops[0]["column"]
+    assert col_op["column"] == "is_verified"
+    col_alias = col_op["alias"]
+
+    # Must have an aggregate op for COUNT(friend_requests.*)
+    agg_ops = [op for op in ops if "aggregate" in op]
+    assert len(agg_ops) >= 1
+    agg_alias = agg_ops[0]["aggregate"]["alias"]
+
+    # The stage filter must reference both aliases (not raw column names)
+    filt = stage0["filter"]
+    assert "and" in filt
+    aliases_in_filter = [
+        branch["compare"]["alias"] for branch in filt["and"]
+    ]
+    assert col_alias in aliases_in_filter, (
+        f"Expected column alias '{col_alias}' in filter, got {aliases_in_filter}"
+    )
+    assert agg_alias in aliases_in_filter, (
+        f"Expected agg alias '{agg_alias}' in filter, got {aliases_in_filter}"
+    )
+
+
 def test_compiler_forecasting():
     target_ast = Aggregation(
         target=Column(fqn="transactions.amount"),
