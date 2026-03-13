@@ -1561,3 +1561,40 @@ fn test_detect_timestamp_formats_skips_empty_parquet_files() {
         col.timestamp_unit
     );
 }
+
+#[test]
+fn test_convert_string_sequence_errors() {
+    // dtype="string" + stype="sequence" should error — the data is likely
+    // a JSON-encoded float array that should use dtype="floatlist" instead.
+    let kumo_table = KumoTable {
+        table_name: "products".to_string(),
+        data_source: Some("postgres".to_string()),
+        source_name: Some("products".to_string()),
+        data_version: Some("12345".to_string()),
+        pkey: Some(KumoPrimaryKey {
+            name: "product_id".to_string(),
+            dtype: Some("string".to_string()),
+            stype: Some("ID".to_string()),
+            drop_duplicates: false,
+        }),
+        fkeys: vec![],
+        cols: vec![KumoColumn {
+            name: "embedding".to_string(),
+            dtype: Some("string".to_string()),
+            stype: Some("sequence".to_string()),
+            timestamp_unit: None,
+        }],
+        time_col: None,
+        end_time_col: None,
+    };
+
+    let kumo_config = make_kumo_config(vec![kumo_table]);
+    let options = make_convert_options();
+
+    let result = convert_kumo_to_diskgraph(&kumo_config, &options);
+    assert!(result.is_err());
+    assert!(matches!(
+        result.unwrap_err(),
+        ConvertError::StringSequenceUnsupported { .. }
+    ));
+}

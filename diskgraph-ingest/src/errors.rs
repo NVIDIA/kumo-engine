@@ -132,4 +132,15 @@ pub enum ConvertError {
 
     #[error("table '{table}' has no columns")]
     NoColumns { table: String },
+
+    #[error(
+        "table '{table}' column '{column}': dtype '{dtype}' with stype 'sequence' is not supported. \
+         The column likely contains JSON-encoded float arrays (e.g. \"[0.1, -0.2, ...]\") — \
+         use dtype 'floatlist' instead"
+    )]
+    StringSequenceUnsupported {
+        table: String,
+        column: String,
+        dtype: String,
+    },
 }

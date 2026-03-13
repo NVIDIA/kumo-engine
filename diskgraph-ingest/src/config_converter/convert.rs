@@ -7,7 +7,7 @@ use anyhow::Result;
 use crate::errors::ConvertError;
 use crate::graph_config::{
     ColumnSpec, DataSource, DirectionSpec, EdgeTableSpec, FKeySpec, ForeignKeySpec, GraphConfig,
-    IngestedType, TableSpec, TimeSpec,
+    IngestedType, SemanticType, TableSpec, TimeSpec,
 };
 use crate::utils::is_edge_table_compatible;
 
@@ -248,14 +248,22 @@ fn build_columns(kumo_table: &KumoTable) -> Result<Vec<ColumnSpec>, ConvertError
             })?,
             None => IngestedType::String,
         };
-        // TODO(vedaant): When stype="sequence" but ingested_dtype is String, the
-        // column is likely a JSON-encoded float array (e.g. "[0.1, -0.2, ...]").
-        // We should detect this case and convert to Float32Array so that rowpack
-        // encodes it as a native float list and col_stats can collect sequence
-        // statistics. See mapping.rs for details.
 
         let ts_unit = timestamp_unit.and_then(map_timestamp_unit);
         let semantic_type = stype.and_then(map_kumo_stype);
+
+        // Error on dtype="string" + stype="sequence": the data is likely a
+        // JSON-encoded float array that rowpack can't parse from a string column.
+        // The Kumo config should use dtype="floatlist" instead.
+        if ingested_dtype == IngestedType::String
+            && semantic_type == Some(SemanticType::Sequence)
+        {
+            return Err(ConvertError::StringSequenceUnsupported {
+                table: kumo_table.table_name.clone(),
+                column: name.to_string(),
+                dtype: dtype.unwrap_or("(none)").to_string(),
+            });
+        }
 
         columns.push(ColumnSpec {
             name: name.to_string(),
