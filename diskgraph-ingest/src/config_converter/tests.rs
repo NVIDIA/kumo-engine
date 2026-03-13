@@ -9,61 +9,61 @@ use crate::graph_config::IngestedType;
 
 #[test]
 fn test_map_dtype_bool() {
-    assert_eq!(map_kumo_dtype("bool"), Some(IngestedType::Bool));
+    assert_eq!(map_kumo_dtype("bool"), Ok(IngestedType::Bool));
 }
 
 #[test]
 fn test_map_dtype_int_variants() {
-    assert_eq!(map_kumo_dtype("int"), Some(IngestedType::Int64));
-    assert_eq!(map_kumo_dtype("int64"), Some(IngestedType::Int64));
-    assert_eq!(map_kumo_dtype("int32"), Some(IngestedType::Int32));
-    assert_eq!(map_kumo_dtype("int16"), Some(IngestedType::Int16));
+    assert_eq!(map_kumo_dtype("int"), Ok(IngestedType::Int64));
+    assert_eq!(map_kumo_dtype("int64"), Ok(IngestedType::Int64));
+    assert_eq!(map_kumo_dtype("int32"), Ok(IngestedType::Int32));
+    assert_eq!(map_kumo_dtype("int16"), Ok(IngestedType::Int16));
 }
 
 #[test]
 fn test_map_dtype_uint_byte() {
-    assert_eq!(map_kumo_dtype("byte"), Some(IngestedType::UInt8));
+    assert_eq!(map_kumo_dtype("byte"), Ok(IngestedType::UInt8));
 }
 
 #[test]
 fn test_map_dtype_float_variants() {
-    assert_eq!(map_kumo_dtype("float"), Some(IngestedType::Float32));
-    assert_eq!(map_kumo_dtype("float32"), Some(IngestedType::Float32));
-    assert_eq!(map_kumo_dtype("float64"), Some(IngestedType::Float64));
+    assert_eq!(map_kumo_dtype("float"), Ok(IngestedType::Float32));
+    assert_eq!(map_kumo_dtype("float32"), Ok(IngestedType::Float32));
+    assert_eq!(map_kumo_dtype("float64"), Ok(IngestedType::Float64));
 }
 
 #[test]
 fn test_map_dtype_string() {
-    assert_eq!(map_kumo_dtype("string"), Some(IngestedType::String));
+    assert_eq!(map_kumo_dtype("string"), Ok(IngestedType::String));
 }
 
 #[test]
 fn test_map_dtype_temporal() {
-    assert_eq!(map_kumo_dtype("date"), Some(IngestedType::Timestamp));
-    assert_eq!(map_kumo_dtype("time"), Some(IngestedType::Timestamp));
-    assert_eq!(map_kumo_dtype("timedelta"), Some(IngestedType::Int64));
+    assert_eq!(map_kumo_dtype("date"), Ok(IngestedType::Timestamp));
+    assert_eq!(map_kumo_dtype("time"), Ok(IngestedType::Timestamp));
+    assert_eq!(map_kumo_dtype("timedelta"), Ok(IngestedType::Int64));
 }
 
 #[test]
 fn test_map_dtype_lists() {
     assert_eq!(
         map_kumo_dtype("floatlist"),
-        Some(IngestedType::Float32Array)
+        Ok(IngestedType::Float32Array)
     );
-    assert_eq!(map_kumo_dtype("intlist"), Some(IngestedType::String));
-    assert_eq!(map_kumo_dtype("stringlist"), Some(IngestedType::String));
+    assert!(map_kumo_dtype("intlist").is_err());
+    assert!(map_kumo_dtype("stringlist").is_err());
 }
 
 #[test]
 fn test_map_dtype_binary() {
-    assert_eq!(map_kumo_dtype("binary"), Some(IngestedType::Bytes));
+    assert_eq!(map_kumo_dtype("binary"), Ok(IngestedType::Bytes));
 }
 
 #[test]
 fn test_map_dtype_unknown() {
-    assert_eq!(map_kumo_dtype("unknown_type"), None);
-    assert_eq!(map_kumo_dtype("unsupported"), None);
-    assert_eq!(map_kumo_dtype(""), None);
+    assert!(map_kumo_dtype("unknown_type").is_err());
+    assert!(map_kumo_dtype("unsupported").is_err());
+    assert!(map_kumo_dtype("").is_err());
 }
 
 // =============================================================================

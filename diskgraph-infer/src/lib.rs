@@ -284,7 +284,7 @@ pub fn infer_source_metadata(root: &RootSource, options: InferOptions) -> Result
 
                 for col in &mut table.columns {
                     if let Some(dtype_str) = col_dtypes.get(&col.name) {
-                        if let Some(ingested_type) = map_kumo_dtype(dtype_str) {
+                        if let Ok(ingested_type) = map_kumo_dtype(dtype_str) {
                             col.ingested_dtype = ingested_type;
                             if !matches!(
                                 col.ingested_dtype,

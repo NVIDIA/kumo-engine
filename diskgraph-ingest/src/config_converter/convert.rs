@@ -241,7 +241,11 @@ fn build_columns(kumo_table: &KumoTable) -> Result<Vec<ColumnSpec>, ConvertError
         seen_names.insert(name.to_string());
 
         let ingested_dtype = match dtype {
-            Some(dt) => map_kumo_dtype(dt).unwrap_or(IngestedType::String),
+            Some(dt) => map_kumo_dtype(dt).map_err(|unknown| ConvertError::UnknownDtype {
+                table: kumo_table.table_name.clone(),
+                column: name.to_string(),
+                dtype: unknown.to_string(),
+            })?,
             None => IngestedType::String,
         };
         // TODO(vedaant): When stype="sequence" but ingested_dtype is String, the

@@ -2,11 +2,11 @@ use super::{map_kumo_dtype, unify_types, IngestedType};
 
 #[test]
 fn test_map_kumo_dtype() {
-    assert_eq!(map_kumo_dtype("int"), Some(IngestedType::Int64));
-    assert_eq!(map_kumo_dtype("float"), Some(IngestedType::Float32));
-    assert_eq!(map_kumo_dtype("string"), Some(IngestedType::String));
-    assert_eq!(map_kumo_dtype("timedelta"), Some(IngestedType::Int64));
-    assert_eq!(map_kumo_dtype("unknown"), None);
+    assert_eq!(map_kumo_dtype("int"), Ok(IngestedType::Int64));
+    assert_eq!(map_kumo_dtype("float"), Ok(IngestedType::Float32));
+    assert_eq!(map_kumo_dtype("string"), Ok(IngestedType::String));
+    assert_eq!(map_kumo_dtype("timedelta"), Ok(IngestedType::Int64));
+    assert!(map_kumo_dtype("unknown").is_err());
 }
 
 #[test]

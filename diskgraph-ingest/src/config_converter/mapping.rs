@@ -4,39 +4,37 @@ use crate::graph_config::{IngestedType, SemanticType, TimestampUnit};
 
 /// Map a Kumo dtype string to a DiskGraph IngestedType.
 ///
-/// Returns None for unknown or unsupported types.
-pub fn map_kumo_dtype(dtype: &str) -> Option<IngestedType> {
+/// Returns `Ok(IngestedType)` for supported types, `Err(dtype)` for
+/// unsupported or unknown types that should be reported as errors.
+pub fn map_kumo_dtype(dtype: &str) -> Result<IngestedType, &str> {
     match dtype {
         // Boolean
-        "bool" => Some(IngestedType::Bool),
+        "bool" => Ok(IngestedType::Bool),
 
         // Signed integers
-        "int" | "int64" => Some(IngestedType::Int64),
-        "int32" => Some(IngestedType::Int32),
-        "int16" => Some(IngestedType::Int16),
+        "int" | "int64" => Ok(IngestedType::Int64),
+        "int32" => Ok(IngestedType::Int32),
+        "int16" => Ok(IngestedType::Int16),
 
         // Unsigned integers (kumo uses "byte" for uint8)
-        "byte" => Some(IngestedType::UInt8),
+        "byte" => Ok(IngestedType::UInt8),
 
         // Floating point
-        "float" | "float32" => Some(IngestedType::Float32),
-        "float64" => Some(IngestedType::Float64),
+        "float" | "float32" => Ok(IngestedType::Float32),
+        "float64" => Ok(IngestedType::Float64),
 
         // String
-        "string" => Some(IngestedType::String),
+        "string" => Ok(IngestedType::String),
 
         // Date/Time
-        "date" => Some(IngestedType::Timestamp),
-        "time" => Some(IngestedType::Timestamp),
+        "date" => Ok(IngestedType::Timestamp),
+        "time" => Ok(IngestedType::Timestamp),
 
         // Time delta stored as int64 nanoseconds
-        "timedelta" => Some(IngestedType::Int64),
+        "timedelta" => Ok(IngestedType::Int64),
 
         // Array types
-        "floatlist" => Some(IngestedType::Float32Array),
-        // intlist and stringlist don't have native array support, fallback to string
-        "intlist" => Some(IngestedType::String),
-        "stringlist" => Some(IngestedType::String),
+        "floatlist" => Ok(IngestedType::Float32Array),
 
         // TODO(vedaant): Some Kumo datasets store embeddings as JSON-encoded strings
         // (e.g. "[0.1, -0.2, ...]") with dtype="string" and stype="sequence". These
@@ -52,11 +50,10 @@ pub fn map_kumo_dtype(dtype: &str) -> Option<IngestedType> {
         // See also: diskgraph-ingest/src/config_converter/convert.rs column building.
 
         // Binary
-        "binary" => Some(IngestedType::Bytes),
+        "binary" => Ok(IngestedType::Bytes),
 
-        // Unsupported or unknown
-        "unsupported" => None,
-        _ => None,
+        // Unsupported types — error out so the caller knows
+        _ => Err(dtype),
     }
 }
 
