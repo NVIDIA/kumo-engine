@@ -1,5 +1,5 @@
 use anyhow::Result;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::graph_config::{GraphConfig, IngestedType, TableFormat, TimestampUnit};
 use crate::io::{download_cloud_bytes, is_cloud_path};
@@ -72,8 +72,16 @@ pub fn detect_timestamp_formats(
         // Accumulated state across files.
         let mut votes: HashMap<usize, Vec<String>> = HashMap::new();
         let mut sample_counts: HashMap<usize, usize> = HashMap::new();
+        // Columns whose Arrow type is a native temporal type (Date32, Date64,
+        // Timestamp, etc.) — rowpack handles these without format/unit hints.
+        let mut native_temporal: HashSet<usize> = HashSet::new();
+        // Info about non-null values we couldn't classify (for warnings).
+        let mut unrecognized_info: HashMap<usize, String> = HashMap::new();
+
         /// Maximum number of non-null values to sample per column for majority vote.
         const MAX_SAMPLES: usize = 10;
+        /// Maximum number of files to download when searching for non-null values.
+        const MAX_FILES: usize = 15;
 
         macro_rules! sample_from_reader {
             ($reader:expr, $schema:expr) => {{
@@ -95,6 +103,9 @@ pub fn detect_timestamp_formats(
                             None => continue,
                         };
                         let col_key = candidates[cand_idx].0;
+                        if native_temporal.contains(&col_key) {
+                            continue;
+                        }
                         if *sample_counts.get(&col_key).unwrap_or(&0) >= MAX_SAMPLES {
                             continue;
                         }
@@ -108,6 +119,16 @@ pub fn detect_timestamp_formats(
                             }
                             *sample_counts.entry(col_key).or_insert(0) += 1;
                             match dt {
+                                // Native Arrow temporal types — rowpack handles
+                                // these directly from the Arrow type, no hint needed.
+                                arrow_schema::DataType::Date32
+                                | arrow_schema::DataType::Date64
+                                | arrow_schema::DataType::Timestamp(_, _)
+                                | arrow_schema::DataType::Time32(_)
+                                | arrow_schema::DataType::Time64(_) => {
+                                    native_temporal.insert(col_key);
+                                    break; // done with this column
+                                }
                                 arrow_schema::DataType::Utf8
                                 | arrow_schema::DataType::LargeUtf8
                                 | arrow_schema::DataType::Binary => {
@@ -142,6 +163,17 @@ pub fn detect_timestamp_formats(
                                                     .or_default()
                                                     .push(detection_to_vote_key(&det));
                                             }
+                                        } else {
+                                            // Non-null string, not a recognized timestamp
+                                            // format, not parseable as integer.
+                                            let sample = if text.len() > 50 {
+                                                &text[..50]
+                                            } else {
+                                                text
+                                            };
+                                            unrecognized_info.entry(col_key).or_insert_with(|| {
+                                                format!("unrecognized string format, sample: \"{}\"", sample)
+                                            });
                                         }
                                     }
                                 }
@@ -162,7 +194,11 @@ pub fn detect_timestamp_formats(
                                         }
                                     }
                                 }
-                                _ => {}
+                                _ => {
+                                    unrecognized_info.entry(col_key).or_insert_with(|| {
+                                        format!("unsupported arrow type: {:?}", dt)
+                                    });
+                                }
                             }
                         }
                     }
@@ -172,8 +208,11 @@ pub fn detect_timestamp_formats(
             }};
         }
 
-        // Iterate through files until all candidates have at least one vote.
-        for path in &parquet_files {
+        // Iterate through files until all candidates are resolved.
+        // A candidate is resolved when it has: a vote, a native temporal type,
+        // or a non-null value we couldn't classify (more files won't help).
+        // Cap at MAX_FILES to avoid downloading hundreds of files for all-null columns.
+        for path in parquet_files.iter().take(MAX_FILES) {
             let pooled = if let Some(transfer) = input_transfer {
                 if is_cloud_path(path) {
                     match download_cloud_bytes(transfer, path) {
@@ -226,12 +265,28 @@ pub fn detect_timestamp_formats(
                 sample_from_reader!(reader, schema);
             }
 
-            // Check if all candidates have at least one vote — no need to read more files.
-            let all_resolved = candidates
-                .iter()
-                .all(|(col_idx, _)| votes.contains_key(col_idx));
+            let all_resolved = candidates.iter().all(|(col_idx, _)| {
+                votes.contains_key(col_idx)
+                    || native_temporal.contains(col_idx)
+                    || sample_counts.get(col_idx).copied().unwrap_or(0) > 0
+            });
             if all_resolved {
                 break;
+            }
+        }
+
+        // Emit warnings for columns we couldn't classify.
+        for (col_idx, col_name) in &candidates {
+            if votes.contains_key(col_idx) || native_temporal.contains(col_idx) {
+                continue;
+            }
+            if let Some(info) = unrecognized_info.get(col_idx) {
+                eprintln!("Warning: {}.{}: {}", table.name, col_name, info);
+            } else if sample_counts.get(col_idx).copied().unwrap_or(0) == 0 {
+                eprintln!(
+                    "Warning: {}.{}: column is entirely null across {} file(s)",
+                    table.name, col_name, parquet_files.len().min(MAX_FILES)
+                );
             }
         }
 
