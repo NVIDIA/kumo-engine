@@ -120,7 +120,7 @@ class DiskGraphPlanCompiler:
             lag_timesteps: Lookback window for autoregressive features.
             list_distinct_target_is_array: If True, output Link Prediction targets as a single LIST column instead of exploded rows.
             include_frequency: When True and target is LIST_DISTINCT, include a
-                FREQUENCY column counting occurrences of each distinct value.
+                __kumo_internal_frequency_column__ column counting occurrences of each distinct value.
                 Set for RANK problems; unset for CLASSIFY.
             entity_time_col: Optional column name to use as static observation timestamps.
             timestamp_unit: The target TimeUnit expected by the engine (defaults to Seconds).

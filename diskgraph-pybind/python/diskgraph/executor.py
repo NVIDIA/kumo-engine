@@ -24,7 +24,7 @@ def generate_training_table(
 
     Returns a streaming iterator of ``pyarrow.RecordBatch`` objects.
     Each batch contains ~64K rows with columns: ENTITY, TIMESTAMP,
-    TARGET, and optionally FREQUENCY / ENTITY_INCLUDE_BIT.
+    TARGET, and optionally __kumo_internal_frequency_column__ / ENTITY_INCLUDE_BIT.
 
     Args:
         plan_json: JSON-serialised ``DiskGraphTTPlan`` (from

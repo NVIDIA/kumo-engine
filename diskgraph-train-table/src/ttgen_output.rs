@@ -103,7 +103,7 @@ impl ChannelBatchWriter {
             OutputMode::LinkExploded { include_frequency, target_dtype } => {
                 fields.push(Field::new("TARGET", target_dtype.clone(), true));
                 if *include_frequency {
-                    fields.push(Field::new("FREQUENCY", DataType::Int64, false));
+                    fields.push(Field::new("__kumo_internal_frequency_column__", DataType::Int64, false));
                 }
             }
             OutputMode::LinkArray { include_frequency, target_dtype } => {
@@ -114,7 +114,7 @@ impl ChannelBatchWriter {
                 ));
                 if *include_frequency {
                     fields.push(Field::new(
-                        "FREQUENCY",
+                        "__kumo_internal_frequency_column__",
                         DataType::List(Arc::new(Field::new("item", DataType::Int64, true))),
                         false,
                     ));
