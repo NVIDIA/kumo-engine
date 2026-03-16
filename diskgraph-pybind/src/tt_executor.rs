@@ -98,6 +98,30 @@ impl TTPlanIterator {
 
         Ok(out.into())
     }
+
+    /// Returns TT execution stats after iteration completes.
+    ///
+    /// The returned dict contains:
+    /// - output_rows: rows emitted after target-null filtering
+    /// - pre_target_drop_rows: rows before target-null filtering
+    ///
+    /// Returns None when called before iterator exhaustion to avoid blocking.
+    fn get_execution_stats(&mut self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
+        if self.summary.is_none() {
+            return Ok(None);
+        }
+
+        let summary = self.summary.as_ref().expect("summary checked above");
+        let stats = summary
+            .stats
+            .as_ref()
+            .ok_or_else(|| PyRuntimeError::new_err("TT-gen summary missing stats payload"))?;
+
+        let out = PyDict::new(py);
+        out.set_item("output_rows", summary.rows_written)?;
+        out.set_item("pre_target_drop_rows", stats.num_total_rows)?;
+        Ok(Some(out.into()))
+    }
 }
 
 #[pyfunction]

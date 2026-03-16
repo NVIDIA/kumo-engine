@@ -1,7 +1,8 @@
 //! TT-gen executor: drives the entity loop, staged execution, and threading.
 //!
-//! Entry point: [`execute`] takes a `DiskGraphTTPlan` and an index path,
-//! returns output Parquet shard paths.
+//! Entry points (`execute` / `execute_with_summary`) take a `DiskGraphTTPlan`
+//! and index path and return a streaming `RecordBatch` receiver plus a
+//! join handle for completion stats.
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
