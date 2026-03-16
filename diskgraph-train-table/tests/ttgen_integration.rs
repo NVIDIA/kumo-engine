@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Once};
 
 use arrow_array::builder::*;
-use arrow_array::{Array, BooleanArray, Float64Array, Int64Array, RecordBatch, TimestampNanosecondArray};
+use arrow_array::{Array, BooleanArray, Float64Array, Int64Array, RecordBatch, StringArray, TimestampNanosecondArray};
 use arrow_schema::{DataType, Field, Schema};
 use crossbeam_channel::Receiver;
 use diskgraph_core::tt_builder::*;
@@ -53,6 +53,15 @@ fn target_as_f64(batch: &RecordBatch, col: usize, row: usize) -> f64 {
     }
 }
 
+/// Extract target column value as String from a StringArray.
+fn target_as_string(batch: &RecordBatch, col: usize, row: usize) -> String {
+    let arr = batch.column(col);
+    arr.as_any().downcast_ref::<StringArray>()
+        .expect("TARGET column is not StringArray")
+        .value(row)
+        .to_string()
+}
+
 /// Read output rows, converting nanosecond timestamps back to epoch seconds.
 fn read_output_rows(receiver: Receiver<RecordBatch>) -> Vec<(i64, i64, f64)> {
     let mut rows = Vec::new();
@@ -65,6 +74,27 @@ fn read_output_rows(receiver: Receiver<RecordBatch>) -> Vec<(i64, i64, f64)> {
     }
     rows.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
     rows
+}
+
+/// Read output rows with string target, converting nanosecond timestamps back to epoch seconds.
+fn read_output_rows_str(receiver: Receiver<RecordBatch>) -> Vec<(i64, i64, String)> {
+    let mut rows = Vec::new();
+    for batch in receiver {
+        let entities = batch.column(0).as_any().downcast_ref::<Int64Array>().unwrap();
+        let timestamps = batch.column(1).as_any().downcast_ref::<TimestampNanosecondArray>().unwrap();
+        for i in 0..batch.num_rows() {
+            rows.push((entities.value(i), timestamps.value(i) / 1_000_000_000, target_as_string(&batch, 2, i)));
+        }
+    }
+    rows.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+    rows
+}
+
+/// Normalize a pipe-separated string by sorting its components.
+fn sorted_pipe(s: &str) -> String {
+    let mut parts: Vec<&str> = s.split('|').filter(|p| !p.is_empty()).collect();
+    parts.sort();
+    parts.join("|")
 }
 
 /// Read output rows for PassThrough tasks (Entity, Timestamp only).
@@ -178,6 +208,21 @@ fn execute_and_group(
     let rows = read_output_rows(receiver);
     handle.join().unwrap().unwrap();
     group_by_entity(&rows)
+}
+
+fn execute_and_group_str(
+    plan: &DiskGraphTTPlan,
+    index_path: &Path,
+) -> HashMap<i64, Vec<(i64, String)>> {
+    let (receiver, handle) =
+        diskgraph_train_table::ttgen_executor::execute(plan, index_path).unwrap();
+    let rows = read_output_rows_str(receiver);
+    handle.join().unwrap().unwrap();
+    let mut map: HashMap<i64, Vec<(i64, String)>> = HashMap::new();
+    for (entity, ts, target) in rows {
+        map.entry(entity).or_default().push((ts, target));
+    }
+    map
 }
 
 fn execute_and_group_bool(
@@ -1955,13 +2000,15 @@ fn integ_list_distinct_no_limit() {
         }],
         vec![0],
     );
-    let groups = execute_and_group(&plan, &index);
-    // value_to_f64(List) = len. alice: 3 distinct, bob: 2, carol: 1, dave: 2, eve: 0
-    assert_target_eq(groups[&0][0].1, 3.0, "alice");
-    assert_target_eq(groups[&1][0].1, 2.0, "bob");
-    assert_target_eq(groups[&2][0].1, 1.0, "carol");
-    assert_target_eq(groups[&3][0].1, 2.0, "dave");
-    assert_target_eq(groups[&4][0].1, 0.0, "eve");
+    let groups = execute_and_group_str(&plan, &index);
+    // LIST_DISTINCT produces pipe-separated strings for node prediction.
+    // alice: {returned, shipped, pending}, bob: {shipped, returned},
+    // carol: {shipped}, dave: {shipped, pending}, eve: (none)
+    assert_eq!(sorted_pipe(&groups[&0][0].1), "pending|returned|shipped", "alice");
+    assert_eq!(sorted_pipe(&groups[&1][0].1), "returned|shipped", "bob");
+    assert_eq!(sorted_pipe(&groups[&2][0].1), "shipped", "carol");
+    assert_eq!(sorted_pipe(&groups[&3][0].1), "pending|shipped", "dave");
+    assert_eq!(groups[&4][0].1, "", "eve");
 }
 
 #[test]
@@ -1987,11 +2034,11 @@ fn integ_list_distinct_with_limit() {
         }],
         vec![0],
     );
-    let groups = execute_and_group(&plan, &index);
-    // Limited to 1 distinct value each
-    assert_target_eq(groups[&0][0].1, 1.0, "alice limited");
-    assert_target_eq(groups[&1][0].1, 1.0, "bob limited");
-    assert_target_eq(groups[&4][0].1, 0.0, "eve");
+    let groups = execute_and_group_str(&plan, &index);
+    // Limited to 1 distinct value each — exactly one pipe-separated item
+    assert_eq!(groups[&0][0].1.split('|').filter(|s| !s.is_empty()).count(), 1, "alice limited");
+    assert_eq!(groups[&1][0].1.split('|').filter(|s| !s.is_empty()).count(), 1, "bob limited");
+    assert_eq!(groups[&4][0].1, "", "eve");
 }
 
 #[test]
@@ -2021,15 +2068,15 @@ fn integ_list_distinct_with_row_filter() {
         }],
         vec![0],
     );
-    let groups = execute_and_group(&plan, &index);
-    // alice: prices>50: 100(shipped),75(shipped) → {shipped} → 1
-    // bob: 200(shipped) → {shipped} → 1. carol: 60(shipped) → {shipped} → 1.
-    // dave: 150(shipped),80(pending) → {shipped,pending} → 2. eve: 0.
-    assert_target_eq(groups[&0][0].1, 1.0, "alice");
-    assert_target_eq(groups[&1][0].1, 1.0, "bob");
-    assert_target_eq(groups[&2][0].1, 1.0, "carol");
-    assert_target_eq(groups[&3][0].1, 2.0, "dave");
-    assert_target_eq(groups[&4][0].1, 0.0, "eve");
+    let groups = execute_and_group_str(&plan, &index);
+    // alice: prices>50: 100(shipped),75(shipped) → {shipped}
+    // bob: 200(shipped) → {shipped}. carol: 60(shipped) → {shipped}.
+    // dave: 150(shipped),80(pending) → {shipped,pending}. eve: none.
+    assert_eq!(sorted_pipe(&groups[&0][0].1), "shipped", "alice");
+    assert_eq!(sorted_pipe(&groups[&1][0].1), "shipped", "bob");
+    assert_eq!(sorted_pipe(&groups[&2][0].1), "shipped", "carol");
+    assert_eq!(sorted_pipe(&groups[&3][0].1), "pending|shipped", "dave");
+    assert_eq!(groups[&4][0].1, "", "eve");
 }
 
 // ─── Tests: Temporal windows ────────────────────────────────────────────────

@@ -965,6 +965,14 @@ fn infer_target_dtype(plan: &DiskGraphTTPlan, stages: &[ResolvedStage]) -> DataT
         .flat_map(|s| s.ops.iter().rev())
         .next();
     match last_plan_op {
+        // ListDistinct + Link prediction: source column dtype (exploded/array rows).
+        Some(Op::Aggregate { func: AggFunc::ListDistinct, .. })
+            if matches!(plan.prediction_type, PredictionType::Link { .. }) =>
+        {
+            lookup_last_agg_col_dtype(stages).unwrap_or(DataType::Float64)
+        }
+        // ListDistinct + Node prediction (CLASSIFY): pipe-separated string.
+        Some(Op::Aggregate { func: AggFunc::ListDistinct, .. }) => DataType::Utf8,
         Some(op) => infer_op_dtype(op, stages),
         None => {
             // No ops (e.g. LP with implicit ListDistinct): look up ingested type.
@@ -990,10 +998,9 @@ fn infer_op_dtype(op: &Op, stages: &[ResolvedStage]) -> DataType {
             DataType::List(Arc::new(Field::new("item", inner_dtype, true)))
         },
 
-        // FIRST/LAST/LIST_DISTINCT preserve the source column's dtype
-        // (e.g. FIRST of string → Utf8, LIST_DISTINCT of string → Utf8).
+        // FIRST/LAST preserve the source column's dtype (e.g. FIRST of string → Utf8).
         Op::Aggregate { func, .. }
-            if matches!(func, AggFunc::First | AggFunc::Last | AggFunc::ListDistinct) =>
+            if matches!(func, AggFunc::First | AggFunc::Last) =>
         {
             lookup_last_agg_col_dtype(stages).unwrap_or(DataType::Float64)
         }
