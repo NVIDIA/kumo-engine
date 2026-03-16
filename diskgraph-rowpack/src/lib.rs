@@ -25,6 +25,8 @@ mod tests_casting;
 #[cfg(test)]
 mod tests_type_matrix;
 #[cfg(test)]
+mod tests_string_float_array;
+#[cfg(test)]
 #[allow(clippy::field_reassign_with_default)]
 mod tests_unit;
 
@@ -3328,6 +3330,25 @@ fn encode_float_list_with_tag(
                                 out.extend_from_slice(&values_arr.value(idx).to_le_bytes());
                             }
                         }
+                    }
+                }
+            }
+        }
+        FloatListValues::Parsed(ref parsed) => {
+            // Parsed from string — clean Vec<f32>, no nulls.
+            let slice = &parsed[view.start..view.end];
+            match storage {
+                FloatStorage::F16 => {
+                    f16_buf.resize(slice.len(), f16::from_bits(0));
+                    f16_buf.as_mut_slice().convert_from_f32_slice(slice);
+                    extend_f16_slice_le(out, f16_buf);
+                }
+                FloatStorage::F32 => {
+                    extend_f32_slice_le(out, slice);
+                }
+                FloatStorage::F64 => {
+                    for &v in slice {
+                        out.extend_from_slice(&(v as f64).to_le_bytes());
                     }
                 }
             }

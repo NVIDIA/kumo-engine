@@ -323,6 +323,12 @@ fn all_arrow_test_data() -> Vec<ArrowTestData> {
             array: make_list_float64_array(),
             hints: default_hints(),
         },
+        // String-encoded float array (e.g. embeddings stored as "[1.0, 2.0, 3.0]")
+        ArrowTestData {
+            name: "StringFloatArray",
+            array: Arc::new(StringArray::from(vec!["[1.0, 2.0, 3.0]"])),
+            hints: default_hints(),
+        },
     ]
 }
 
@@ -417,6 +423,9 @@ fn expected_result(arrow_name: &str, target: IngestedTarget) -> ExpectedResult {
 
         // String can be parsed as decimal
         ("Utf8" | "LargeUtf8", Decimal128 | Decimal256) => Success,
+
+        // String can be parsed as float array (e.g. "42" → [42.0])
+        ("Utf8" | "LargeUtf8", Float32Array | Float16Array | Float64Array) => Success,
 
         // =====================================================================
         // Binary Arrow types (Binary, LargeBinary)
@@ -545,7 +554,27 @@ fn expected_result(arrow_name: &str, target: IngestedTarget) -> ExpectedResult {
         ) => Error,
 
         // =====================================================================
-        // All non-List Arrow types → Array targets = Error
+        // String-encoded float arrays → Array targets
+        // Strings like "[1.0, 2.0, 3.0]" can be parsed into float arrays
+        // =====================================================================
+        ("StringFloatArray", Float32Array | Float16Array | Float64Array) => Success,
+
+        // StringFloatArray is still a string, so String/Bytes getters work
+        ("StringFloatArray", String | Bytes) => Success,
+
+        (
+            "StringFloatArray",
+            Int64 | Int32 | UInt64 | UInt32 | Float64 | Float32 | Bool | Uuid | Uuid256 | Ip
+            | Date | Timestamp | Decimal128 | Decimal256,
+        ) => Error,
+
+        // Note: regular "String" (plain text like "hello") → Array targets still errors
+        // because parse_string_as_float32_array will fail on non-numeric content.
+        // However, the with_string getter handles "String" arrow type, so
+        // "String" → String target is Success (handled above).
+
+        // =====================================================================
+        // All other non-List Arrow types → Array targets = Error
         // =====================================================================
         (_, Float32Array | Float64Array | Float16Array) => Error,
 
@@ -627,14 +656,14 @@ fn test_matrix_coverage() {
     let total = arrow_count * target_count;
 
     assert_eq!(
-        arrow_count, 26,
-        "Should have 26 Arrow types (24 base + 2 List types)"
+        arrow_count, 27,
+        "Should have 27 Arrow types (24 base + 2 List types + 1 StringFloatArray)"
     );
     assert_eq!(
         target_count, 19,
         "Should have 19 IngestedType targets (16 base + 3 array types)"
     );
-    assert_eq!(total, 494, "Should test 26×19 = 494 combinations");
+    assert_eq!(total, 513, "Should test 27×19 = 513 combinations");
 }
 
 // =============================================================================
@@ -1159,6 +1188,17 @@ fn all_roundtrip_test_cases() -> Vec<RoundtripTestCase> {
             hints: default_hints(),
             verify: |v| v["val"].as_array().map(|a| a.len() == 3).unwrap_or(false),
         },
+        // ===== String-encoded Float Arrays =====
+        RoundtripTestCase {
+            name: "StringFloat32Array",
+            logical_type: IngestedType::Float32Array,
+            encoding: ColumnEncoding::FloatArray {
+                storage: FloatStorage::F32,
+            },
+            array: Arc::new(StringArray::from(vec!["[1.0, 2.0, 3.0]"])),
+            hints: default_hints(),
+            verify: |v| v["val"].as_array().map(|a| a.len() == 3).unwrap_or(false),
+        },
         // ===== Decimals =====
         RoundtripTestCase {
             name: "Decimal128",
@@ -1289,10 +1329,10 @@ fn test_full_roundtrip_matrix() {
         );
     }
 
-    // Verify coverage - should have at least 23 (one per IngestedType)
+    // Verify coverage - should have at least 24 (one per IngestedType + string float array)
     assert!(
-        success_count >= 23,
-        "Should test at least 23 roundtrip cases (one per IngestedType), got {}",
+        success_count >= 24,
+        "Should test at least 24 roundtrip cases (one per IngestedType + string float array), got {}",
         success_count
     );
 }

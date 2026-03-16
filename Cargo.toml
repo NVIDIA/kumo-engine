@@ -48,5 +48,6 @@ chrono = { version = "0.4", features = ["serde"] }
 serde_with = "3.4"
 futures = "0.3"
 half = "2.3"
+fast-float = "0.2"
 ptr_hash = { package = "diskgraph-ptrhash", path = "diskgraph-ptrhash", features = ["epserde"] }
 epserde = { version = "0.8", features = ["std", "derive"] }

@@ -45,6 +45,8 @@ pub enum FloatListValues {
     F16(ArrayRef),
     F32(ArrayRef),
     F64(ArrayRef),
+    /// Parsed from a string like "[1.0, 2.0, 3.0]".
+    Parsed(Vec<f32>),
 }
 
 pub struct FloatListView {
@@ -109,8 +111,42 @@ impl FloatListView {
                     f(v);
                 }
             }
+            FloatListValues::Parsed(vec) => {
+                for &v in &vec[self.start..self.end] {
+                    f(v as f64);
+                }
+            }
         }
     }
+}
+
+/// Parse a JSON-style string like `"[1.0, 2.0, 3.0]"` or `"1.0, 2.0, 3.0"`
+/// into a `Vec<f32>`. Uses `fast_float` for ~5x faster parsing than stdlib.
+///
+/// Returns `Ok(vec![])` for empty/whitespace-only strings or `"[]"`.
+/// Returns `Err` for malformed strings (hard error).
+pub fn parse_string_as_float32_array(s: &str) -> Result<Vec<f32>> {
+    let s = s.trim();
+    if s.is_empty() {
+        return Ok(Vec::new());
+    }
+    // Strip optional brackets
+    let inner = s
+        .strip_prefix('[')
+        .and_then(|s| s.strip_suffix(']'))
+        .unwrap_or(s)
+        .trim();
+    if inner.is_empty() {
+        return Ok(Vec::new());
+    }
+    inner
+        .split(',')
+        .map(|tok| {
+            let tok = tok.trim();
+            fast_float::parse::<f32, _>(tok)
+                .map_err(|_| anyhow!("failed to parse float from {:?}", tok))
+        })
+        .collect()
 }
 
 impl<'p> RowAccess<'p> {
@@ -2222,6 +2258,15 @@ impl<'p> RowAccess<'p> {
         if array.is_null(self.row) {
             return Ok(None);
         }
+        // String column → parse "[1.0, 2.0, ...]" into Vec<f32>
+        if let Some(str_arr) = array.as_any().downcast_ref::<arrow_array::StringArray>() {
+            let parsed = parse_string_as_float32_array(str_arr.value(self.row))?;
+            return Ok(Some(f(&parsed)?));
+        }
+        if let Some(str_arr) = array.as_any().downcast_ref::<arrow_array::LargeStringArray>() {
+            let parsed = parse_string_as_float32_array(str_arr.value(self.row))?;
+            return Ok(Some(f(&parsed)?));
+        }
         let (start, end, values) = if let Some(list) =
             array.as_any().downcast_ref::<arrow_array::ListArray>()
         {
@@ -2299,6 +2344,25 @@ impl<'p> RowAccess<'p> {
         if array.is_null(self.row) {
             return Ok(None);
         }
+        // String column → parse "[1.0, 2.0, ...]" into Parsed(Vec<f32>)
+        if let Some(str_arr) = array.as_any().downcast_ref::<arrow_array::StringArray>() {
+            let parsed = parse_string_as_float32_array(str_arr.value(self.row))?;
+            let len = parsed.len();
+            return Ok(Some(FloatListView {
+                start: 0,
+                end: len,
+                values: FloatListValues::Parsed(parsed),
+            }));
+        }
+        if let Some(str_arr) = array.as_any().downcast_ref::<arrow_array::LargeStringArray>() {
+            let parsed = parse_string_as_float32_array(str_arr.value(self.row))?;
+            let len = parsed.len();
+            return Ok(Some(FloatListView {
+                start: 0,
+                end: len,
+                values: FloatListValues::Parsed(parsed),
+            }));
+        }
         let (start, end, values) = if let Some(list) =
             array.as_any().downcast_ref::<arrow_array::ListArray>()
         {
@@ -2335,6 +2399,17 @@ impl<'p> RowAccess<'p> {
         let array = self.array(idx)?.clone();
         if array.is_null(self.row) {
             return Ok(None);
+        }
+        // String column → parse "[1.0, 2.0, ...]" into Vec<f64>
+        if let Some(str_arr) = array.as_any().downcast_ref::<arrow_array::StringArray>() {
+            let parsed = parse_string_as_float32_array(str_arr.value(self.row))?;
+            let f64_vec: Vec<f64> = parsed.iter().map(|&v| v as f64).collect();
+            return Ok(Some(f(&f64_vec)?));
+        }
+        if let Some(str_arr) = array.as_any().downcast_ref::<arrow_array::LargeStringArray>() {
+            let parsed = parse_string_as_float32_array(str_arr.value(self.row))?;
+            let f64_vec: Vec<f64> = parsed.iter().map(|&v| v as f64).collect();
+            return Ok(Some(f(&f64_vec)?));
         }
         let (start, end, values) = if let Some(list) =
             array.as_any().downcast_ref::<arrow_array::ListArray>()
