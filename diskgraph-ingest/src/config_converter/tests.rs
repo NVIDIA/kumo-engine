@@ -134,6 +134,8 @@ fn make_convert_options() -> ConvertOptions {
         data_persist_dir: "s3://test-bucket/customer/prod/data-persist-dir".to_string(),
         dataset_name: "test_dataset".to_string(),
         table_data_versions: None,
+        source_paths_base: None,
+        source_paths: None,
     }
 }
 
@@ -1038,6 +1040,8 @@ fn test_table_data_versions_overrides_data_version() {
         data_persist_dir: "s3://test-bucket/customer/prod/data-persist-dir".to_string(),
         dataset_name: "test_dataset".to_string(),
         table_data_versions: Some(versions),
+        source_paths_base: None,
+        source_paths: None,
     };
 
     let result = convert_kumo_to_diskgraph(&kumo_config, &options).unwrap();
@@ -1085,6 +1089,8 @@ fn test_table_data_versions_missing_entry_errors() {
         data_persist_dir: "s3://test-bucket/data".to_string(),
         dataset_name: "test".to_string(),
         table_data_versions: Some(versions),
+        source_paths_base: None,
+        source_paths: None,
     };
 
     let result = convert_kumo_to_diskgraph(&kumo_config, &options);
@@ -1115,6 +1121,8 @@ fn test_table_data_versions_none_uses_inline() {
         data_persist_dir: "s3://test-bucket/data".to_string(),
         dataset_name: "test".to_string(),
         table_data_versions: None, // Use inline data_version
+        source_paths_base: None,
+        source_paths: None,
     };
 
     let result = convert_kumo_to_diskgraph(&kumo_config, &options).unwrap();

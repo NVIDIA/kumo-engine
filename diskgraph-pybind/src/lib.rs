@@ -629,17 +629,21 @@ pub fn export_tt_artifacts(config: &ExportConfig) -> PyResult<()> {
 }
 
 #[pyfunction]
-#[pyo3(signature = (kumo_config_json, data_persist_dir, dataset_name, table_data_versions_json=None))]
+#[pyo3(signature = (kumo_config_json, data_persist_dir, dataset_name, table_data_versions_json=None, source_paths_base=None, source_paths_json=None))]
 pub fn convert_kumo_config(
     kumo_config_json: &str,
     data_persist_dir: &str,
     dataset_name: &str,
     table_data_versions_json: Option<&str>,
+    source_paths_base: Option<&str>,
+    source_paths_json: Option<&str>,
 ) -> PyResult<String> {
     info!(
         dataset_name = %dataset_name,
         data_persist_dir = %data_persist_dir,
         has_table_data_versions = table_data_versions_json.is_some(),
+        has_source_paths_base = source_paths_base.is_some(),
+        has_source_paths = source_paths_json.is_some(),
         "Pybind convert_kumo_config started"
     );
     use diskgraph_ingest::config_converter::{
@@ -656,10 +660,19 @@ pub fn convert_kumo_config(
         None => None,
     };
 
+    let source_paths: Option<HashMap<String, String>> = match source_paths_json {
+        Some(json) => Some(serde_json::from_str(json).map_err(|e| {
+            PyValueError::new_err(format!("Invalid source_paths JSON: {e}"))
+        })?),
+        None => None,
+    };
+
     let options = ConvertOptions {
         data_persist_dir: data_persist_dir.to_string(),
         dataset_name: dataset_name.to_string(),
         table_data_versions,
+        source_paths_base: source_paths_base.map(|s| s.to_string()),
+        source_paths,
     };
 
     // convert_kumo_to_diskgraph handles everything: schema, timestamp detection, num_shards.

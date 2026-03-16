@@ -187,6 +187,8 @@ fn main() -> Result<()> {
         data_persist_dir,
         dataset_name,
         table_data_versions: None,
+        source_paths_base: None,
+        source_paths: None,
     };
 
     let mut diskgraph_config =

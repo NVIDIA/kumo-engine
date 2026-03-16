@@ -30,6 +30,13 @@ pub struct ConvertOptions {
     /// Per-table data versions, keyed by table_name.
     /// When provided, these override `kumo_table.data_version` for path building.
     pub table_data_versions: Option<HashMap<String, String>>,
+    /// Override base path for source data. When set, table paths become
+    /// `{source_paths_base}/{source_name}/` instead of the fpv3 pattern.
+    /// Lower priority than `source_paths`.
+    pub source_paths_base: Option<String>,
+    /// Per-table explicit source path overrides, keyed by table_name.
+    /// Highest priority — completely overrides path construction for matched tables.
+    pub source_paths: Option<HashMap<String, String>>,
 }
 
 /// Convert a Kumo GraphConfig to a DiskGraph GraphConfig.
@@ -173,11 +180,41 @@ fn convert_table(
     })
 }
 
-/// Build the S3 paths for a table using the fpv3 pattern.
+/// Build the source data paths for a table.
+///
+/// Priority:
+/// 1. `source_paths[table_name]` — per-table explicit override
+/// 2. `source_paths_base` — `{base}/{source_name}/`
+/// 3. Default fpv3 — `{data_persist_dir}/ingest/fpv3.{data_source}.{source_name}/{version}/`
 fn build_table_paths(
     kumo_table: &KumoTable,
     options: &ConvertOptions,
 ) -> Result<Vec<String>, ConvertError> {
+    // Priority 1: per-table explicit path
+    if let Some(paths_map) = &options.source_paths {
+        if let Some(path) = paths_map.get(&kumo_table.table_name) {
+            let mut p = path.clone();
+            if !p.ends_with('/') {
+                p.push('/');
+            }
+            return Ok(vec![p]);
+        }
+    }
+
+    // source_name defaults to table_name if not specified
+    let source_name = kumo_table
+        .source_name
+        .as_ref()
+        .unwrap_or(&kumo_table.table_name);
+
+    // Priority 2: base path override — {source_paths_base}/{source_name}/
+    if let Some(base) = &options.source_paths_base {
+        let base = base.trim_end_matches('/');
+        let path = format!("{}/{}/", base, source_name);
+        return Ok(vec![path]);
+    }
+
+    // Priority 3: default fpv3 pattern
     let data_source =
         kumo_table
             .data_source
@@ -186,12 +223,6 @@ fn build_table_paths(
                 table: kumo_table.table_name.clone(),
                 field: "data_source".to_string(),
             })?;
-
-    // source_name defaults to table_name if not specified
-    let source_name = kumo_table
-        .source_name
-        .as_ref()
-        .unwrap_or(&kumo_table.table_name);
 
     // Look up data_version: prefer table_data_versions map, fall back to kumo_table.data_version.
     let data_version = if let Some(versions) = &options.table_data_versions {

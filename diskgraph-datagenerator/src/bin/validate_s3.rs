@@ -315,6 +315,8 @@ async fn validate_job(
             data_persist_dir,
             dataset_name,
             table_data_versions: None,
+            source_paths_base: None,
+            source_paths: None,
         };
 
         // Convert Kumo config to DiskGraph config
