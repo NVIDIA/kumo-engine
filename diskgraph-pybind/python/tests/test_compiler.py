@@ -450,7 +450,7 @@ def test_compiler_link_prediction_legacy_pseudo_time():
     plan = json.loads(plan_json)
 
     assert "link" in plan["prediction_type"]
-    assert plan["entity"]["output_time_col_name"] == "__PSEUDO_TIME__"
+    assert plan["entity"]["output_time_col_name"] == "PSEUDO_TIMESTAMP"
     assert plan["entity"]["default_time_value"] == 100_000_000_000_000
 
 def test_compiler_link_prediction_rhs_pass_through():

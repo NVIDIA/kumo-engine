@@ -4977,7 +4977,7 @@ fn integ_bp_pseudo_time_injection() {
         entity: EntitySpec {
             table: "users".to_string(),
             column: "user_id".to_string(),
-            output_time_col_name: Some("__PSEUDO_TIME__".to_string()),
+            output_time_col_name: Some("PSEUDO_TIMESTAMP".to_string()),
             default_time_value: Some(100_000_000_000_000),
             time_col: None,
             valid_to_col: None,
@@ -4993,9 +4993,9 @@ fn integ_bp_pseudo_time_injection() {
     let (rows, schema) = read_output_rows_pass_through(receiver);
     handle.join().unwrap().unwrap();
 
-    // Check schema correctly renamed TIMESTAMP to __PSEUDO_TIME__
+    // Check schema correctly renamed TIMESTAMP to PSEUDO_TIMESTAMP
     assert_eq!(schema.fields().len(), 2);
-    assert_eq!(schema.field(1).name(), "__PSEUDO_TIME__");
+    assert_eq!(schema.field(1).name(), "PSEUDO_TIMESTAMP");
 
     assert_eq!(rows.len(), 5);
     for (_, ts) in rows {

@@ -173,12 +173,12 @@ class DiskGraphPlanCompiler:
 
         # By default, the output time column is TIMESTAMP and populated with 0 for static queries.
         # For static link prediction queries with legacy format, Kumo expects
-        # the time column to be named '__PSEUDO_TIME__' and populated with MAX_PSEUDO_TIME.
+        # the time column to be named 'PSEUDO_TIMESTAMP' and populated with MAX_PSEUDO_TIME.
         output_time_col_name = 'TIMESTAMP'
         default_time_value = 0
         is_static_query = query.query_type.name == "STATIC"
         if is_static_query and is_link_pred and not list_distinct_target_is_array:
-            output_time_col_name = '__PSEUDO_TIME__'
+            output_time_col_name = 'PSEUDO_TIMESTAMP'
             default_time_value = 100 * (10**12)  # 100 trillion
 
         self.builder.for_each(entity_table, entity_col, output_time_col_name, default_time_value)
