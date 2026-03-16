@@ -143,4 +143,13 @@ pub enum ConvertError {
         column: String,
         dtype: String,
     },
+
+    #[error(
+        "table '{table}' column '{column}': stype 'multicategorical' is not supported by diskgraph. \
+         Column stats collection and encoding for multicategorical columns are not yet implemented"
+    )]
+    MulticategoricalUnsupported {
+        table: String,
+        column: String,
+    },
 }

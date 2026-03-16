@@ -264,6 +264,15 @@ fn build_columns(kumo_table: &KumoTable) -> Result<Vec<ColumnSpec>, ConvertError
             });
         }
 
+        // Error on stype="multicategorical": diskgraph does not yet support
+        // column stats collection or encoding for multicategorical columns.
+        if semantic_type == Some(SemanticType::Multicategorical) {
+            return Err(ConvertError::MulticategoricalUnsupported {
+                table: kumo_table.table_name.clone(),
+                column: name.to_string(),
+            });
+        }
+
         columns.push(ColumnSpec {
             name: name.to_string(),
             source_dtype: dtype.map(|s| s.to_string()),

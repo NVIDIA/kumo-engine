@@ -533,7 +533,17 @@ fn flush_entity_buf(buf: &mut Vec<Value>, dtype: &DataType) -> Arc<dyn arrow_arr
                     Value::Int(i) => i.to_string(),
                     Value::Float(f) => f.to_string(),
                     Value::Bool(b) => b.to_string(),
-                    Value::List(_) => String::new(),
+                    Value::List(items) => items
+                        .into_iter()
+                        .map(|item| match item {
+                            Value::Str(s) => s,
+                            Value::Int(i) => i.to_string(),
+                            Value::Float(f) => f.to_string(),
+                            Value::Bool(b) => b.to_string(),
+                            Value::List(_) => String::new(),
+                        })
+                        .collect::<Vec<_>>()
+                        .join("|"),
                 })
                 .collect();
             Arc::new(StringArray::from(

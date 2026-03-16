@@ -965,23 +965,10 @@ fn infer_target_dtype(plan: &DiskGraphTTPlan, stages: &[ResolvedStage]) -> DataT
         .flat_map(|s| s.ops.iter().rev())
         .next();
     match last_plan_op {
-        Some(op) => {
-            let mut dtype = infer_op_dtype(op, stages);
-            // LP (ListDistinct): look up ingested type for the target column.
-            // (Only for Link prediction, to match previous behavior).
-            if matches!(plan.prediction_type, PredictionType::Link { .. }) {
-                if let Op::Aggregate { func: AggFunc::ListDistinct, .. } = op {
-                    dtype = lookup_last_agg_col_dtype(stages).unwrap_or(DataType::Float64);
-                }
-            }
-            dtype
-        },
+        Some(op) => infer_op_dtype(op, stages),
         None => {
-            // LP (ListDistinct) with no ops: look up ingested type for the target column.
-            if matches!(plan.prediction_type, PredictionType::Link { .. }) {
-                return lookup_last_agg_col_dtype(stages).unwrap_or(DataType::Float64);
-            }
-            DataType::Float64
+            // No ops (e.g. LP with implicit ListDistinct): look up ingested type.
+            lookup_last_agg_col_dtype(stages).unwrap_or(DataType::Float64)
         }
     }
 }
@@ -1003,9 +990,10 @@ fn infer_op_dtype(op: &Op, stages: &[ResolvedStage]) -> DataType {
             DataType::List(Arc::new(Field::new("item", inner_dtype, true)))
         },
 
-        // FIRST/LAST preserve the source column's dtype (e.g. FIRST of string → Utf8).
+        // FIRST/LAST/LIST_DISTINCT preserve the source column's dtype
+        // (e.g. FIRST of string → Utf8, LIST_DISTINCT of string → Utf8).
         Op::Aggregate { func, .. }
-            if matches!(func, AggFunc::First | AggFunc::Last) =>
+            if matches!(func, AggFunc::First | AggFunc::Last | AggFunc::ListDistinct) =>
         {
             lookup_last_agg_col_dtype(stages).unwrap_or(DataType::Float64)
         }
