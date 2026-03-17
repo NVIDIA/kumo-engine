@@ -58,6 +58,9 @@ pub struct TableSpec {
     /// Foreign key relationships (edges embedded in table).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fkeys: Vec<FKeySpec>,
+    /// Data version identifier (carried from config converter for kumo stats output).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_version: Option<String>,
 }
 
 impl TableSpec {
@@ -1040,6 +1043,7 @@ mod tests {
                 paths: vec!["test.parquet".to_string()],
             },
             fkeys: vec![],
+            data_version: None,
         }
     }
 

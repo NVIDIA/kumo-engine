@@ -61,6 +61,7 @@ fn table(name: &str, cols: &[(&str, IngestedType)]) -> TableSpec {
         rowpack: None,
         source: DataSource::Parquet { paths: vec![] },
         fkeys: Vec::new(),
+        data_version: None,
     }
 }
 
@@ -147,6 +148,7 @@ fn infer_pk_prefers_customer_id_over_postal_code() {
             paths: vec!["/tmp/customers.parquet".to_string()],
         },
         fkeys: Vec::new(),
+        data_version: None,
     };
     infer_primary_keys(std::slice::from_mut(&mut t), None);
     assert_eq!(t.primary_key.as_deref(), Some("customer_id"));
@@ -468,6 +470,7 @@ fn infer_fk_relationship() {
             rowpack: None,
             source: DataSource::Parquet { paths: vec![] },
             fkeys: Vec::new(),
+            data_version: None,
         },
         TableSpec {
             name: "orders".to_string(),
@@ -490,6 +493,7 @@ fn infer_fk_relationship() {
             rowpack: None,
             source: DataSource::Parquet { paths: vec![] },
             fkeys: Vec::new(),
+            data_version: None,
         },
     ];
     let mut inferred_fkeys = Vec::new();
@@ -524,6 +528,7 @@ fn infer_fk_skips_incompatible() {
             rowpack: None,
             source: DataSource::Parquet { paths: vec![] },
             fkeys: Vec::new(),
+            data_version: None,
         },
         TableSpec {
             name: "sessions".to_string(),
@@ -546,6 +551,7 @@ fn infer_fk_skips_incompatible() {
             rowpack: None,
             source: DataSource::Parquet { paths: vec![] },
             fkeys: Vec::new(),
+            data_version: None,
         },
     ];
     let mut inferred_fkeys = Vec::new();
@@ -597,6 +603,7 @@ fn infer_fk_prefers_best_token_match() {
             rowpack: None,
             source: DataSource::Parquet { paths: vec![] },
             fkeys: Vec::new(),
+            data_version: None,
         },
         TableSpec {
             name: "d_lab".to_string(),
@@ -619,6 +626,7 @@ fn infer_fk_prefers_best_token_match() {
             rowpack: None,
             source: DataSource::Parquet { paths: vec![] },
             fkeys: Vec::new(),
+            data_version: None,
         },
         TableSpec {
             name: "labevents".to_string(),
@@ -641,6 +649,7 @@ fn infer_fk_prefers_best_token_match() {
             rowpack: None,
             source: DataSource::Parquet { paths: vec![] },
             fkeys: Vec::new(),
+            data_version: None,
         },
     ];
     let mut inferred_fkeys = Vec::new();
@@ -687,6 +696,7 @@ fn infer_fk_self_reference_suffix() {
         rowpack: None,
         source: DataSource::Parquet { paths: vec![] },
         fkeys: Vec::new(),
+        data_version: None,
     }];
     let mut inferred_fkeys = Vec::new();
     let mut notes = Vec::new();
@@ -776,6 +786,7 @@ fn infer_fk_base_match_allows_code() {
             rowpack: None,
             source: DataSource::Parquet { paths: vec![] },
             fkeys: Vec::new(),
+            data_version: None,
         },
         TableSpec {
             name: "hcpcs".to_string(),
@@ -798,6 +809,7 @@ fn infer_fk_base_match_allows_code() {
             rowpack: None,
             source: DataSource::Parquet { paths: vec![] },
             fkeys: Vec::new(),
+            data_version: None,
         },
     ];
     let mut inferred_fkeys = Vec::new();
@@ -832,6 +844,7 @@ fn infer_fk_avoids_generic_code_match() {
             rowpack: None,
             source: DataSource::Parquet { paths: vec![] },
             fkeys: Vec::new(),
+            data_version: None,
         },
         TableSpec {
             name: "d_icd_diag".to_string(),
@@ -854,6 +867,7 @@ fn infer_fk_avoids_generic_code_match() {
             rowpack: None,
             source: DataSource::Parquet { paths: vec![] },
             fkeys: Vec::new(),
+            data_version: None,
         },
     ];
     let mut inferred_fkeys = Vec::new();
@@ -901,6 +915,7 @@ fn infer_fk_prefers_shorter_table_on_tie() {
             rowpack: None,
             source: DataSource::Parquet { paths: vec![] },
             fkeys: Vec::new(),
+            data_version: None,
         },
         TableSpec {
             name: "poe_detail".to_string(),
@@ -923,6 +938,7 @@ fn infer_fk_prefers_shorter_table_on_tie() {
             rowpack: None,
             source: DataSource::Parquet { paths: vec![] },
             fkeys: Vec::new(),
+            data_version: None,
         },
         TableSpec {
             name: "emar".to_string(),
@@ -945,6 +961,7 @@ fn infer_fk_prefers_shorter_table_on_tie() {
             rowpack: None,
             source: DataSource::Parquet { paths: vec![] },
             fkeys: Vec::new(),
+            data_version: None,
         },
     ];
     let mut inferred_fkeys = Vec::new();
@@ -978,6 +995,7 @@ fn infer_fk_exact_pk_name_match() {
             rowpack: None,
             source: DataSource::Parquet { paths: vec![] },
             fkeys: Vec::new(),
+            data_version: None,
         },
         TableSpec {
             name: "services".to_string(),
@@ -1000,6 +1018,7 @@ fn infer_fk_exact_pk_name_match() {
             rowpack: None,
             source: DataSource::Parquet { paths: vec![] },
             fkeys: Vec::new(),
+            data_version: None,
         },
     ];
     let mut inferred_fkeys = Vec::new();
@@ -1033,6 +1052,7 @@ fn infer_fk_itemid_prefers_lab_table() {
             rowpack: None,
             source: DataSource::Parquet { paths: vec![] },
             fkeys: Vec::new(),
+            data_version: None,
         },
         TableSpec {
             name: "d_lab".to_string(),
@@ -1055,6 +1075,7 @@ fn infer_fk_itemid_prefers_lab_table() {
             rowpack: None,
             source: DataSource::Parquet { paths: vec![] },
             fkeys: Vec::new(),
+            data_version: None,
         },
         TableSpec {
             name: "labevents".to_string(),
@@ -1077,6 +1098,7 @@ fn infer_fk_itemid_prefers_lab_table() {
             rowpack: None,
             source: DataSource::Parquet { paths: vec![] },
             fkeys: Vec::new(),
+            data_version: None,
         },
     ];
     let mut inferred_fkeys = Vec::new();
@@ -1110,6 +1132,7 @@ fn infer_pk_pk_relationship_when_table_names_overlap() {
             rowpack: None,
             source: DataSource::Parquet { paths: vec![] },
             fkeys: Vec::new(),
+            data_version: None,
         },
         TableSpec {
             name: "user_profile".to_string(),
@@ -1132,6 +1155,7 @@ fn infer_pk_pk_relationship_when_table_names_overlap() {
             rowpack: None,
             source: DataSource::Parquet { paths: vec![] },
             fkeys: Vec::new(),
+            data_version: None,
         },
     ];
     let mut inferred_fkeys = Vec::new();
@@ -1166,6 +1190,7 @@ fn infer_pk_pk_skips_generic_id() {
             rowpack: None,
             source: DataSource::Parquet { paths: vec![] },
             fkeys: Vec::new(),
+            data_version: None,
         },
         TableSpec {
             name: "beta".to_string(),
@@ -1188,6 +1213,7 @@ fn infer_pk_pk_skips_generic_id() {
             rowpack: None,
             source: DataSource::Parquet { paths: vec![] },
             fkeys: Vec::new(),
+            data_version: None,
         },
     ];
     let mut inferred_fkeys = Vec::new();

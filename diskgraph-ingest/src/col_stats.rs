@@ -1628,6 +1628,268 @@ impl ColumnStatsCollector {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Kumo-format stats output (replaces Python bridge)
+// ---------------------------------------------------------------------------
+
+/// Format an epoch-second timestamp to kumo timestamp string.
+/// Sentinels (i64::MAX/MIN) and unparseable values → "kumo_timestamp_NaT".
+fn format_kumo_timestamp(epoch_secs: i64) -> String {
+    if epoch_secs == i64::MAX || epoch_secs == i64::MIN {
+        return "kumo_timestamp_NaT".to_string();
+    }
+    match chrono::DateTime::from_timestamp(epoch_secs, 0) {
+        Some(dt) => format!("kumo_timestamp_{}", dt.format("%Y-%m-%d %H:%M:%S")),
+        None => "kumo_timestamp_NaT".to_string(),
+    }
+}
+
+fn kumo_stype_key(col: &ColumnStatsCollector) -> &'static str {
+    match col {
+        ColumnStatsCollector::Numerical { .. } => "kumo.numerical",
+        ColumnStatsCollector::Categorical { .. } => "kumo.categorical",
+        ColumnStatsCollector::Id { .. } => "kumo.ID",
+        ColumnStatsCollector::Text { .. } => "kumo.text",
+        ColumnStatsCollector::Timestamp { .. } => "kumo.timestamp",
+        ColumnStatsCollector::Sequence { .. } => "kumo.sequence",
+        ColumnStatsCollector::Skip => "",
+    }
+}
+
+fn kumo_key(col: &str, stype: &str, stat: &str, approx: bool) -> String {
+    let approx_str = if approx { "True" } else { "False" };
+    format!("{col}__{stype}__{stat}__{approx_str}")
+}
+
+fn kumo_entry(value: JsonValue, approx: bool, dv: &str, n: u64) -> JsonValue {
+    json!({"value": value, "approx": approx, "data_version": dv, "num_entries": n})
+}
+
+fn kumo_safe_div(num: u64, den: u64) -> f64 {
+    if den == 0 { 0.0 } else { num as f64 / den as f64 }
+}
+
+/// Build category count JSON array: [[key, count], ...].
+/// For integer-like columns, keys are emitted as JSON numbers.
+fn build_cat_count_json(
+    col_idx: usize,
+    cat_counts: &[Option<HashMap<String, u64>>],
+    ingested_types: &[IngestedType],
+) -> JsonValue {
+    let Some(ref cc) = cat_counts[col_idx] else {
+        return json!([]);
+    };
+    let is_int = ingested_types
+        .get(col_idx)
+        .map_or(false, |t| t.is_integer_like());
+    let pairs: Vec<JsonValue> = cc
+        .iter()
+        .map(|(k, v)| {
+            let key_val = if is_int {
+                k.parse::<i64>()
+                    .map(|n| JsonValue::Number(n.into()))
+                    .unwrap_or_else(|_| JsonValue::String(k.clone()))
+            } else {
+                JsonValue::String(k.clone())
+            };
+            json!([key_val, v])
+        })
+        .collect();
+    JsonValue::Array(pairs)
+}
+
+/// Truncate CATEGORY_COUNTS values to `limit` entries for minified output.
+pub fn minify_kumo_stats(
+    stats: &serde_json::Map<String, JsonValue>,
+    limit: usize,
+) -> serde_json::Map<String, JsonValue> {
+    stats
+        .iter()
+        .map(|(key, value)| {
+            if key.ends_with("CATEGORY_COUNTS__False")
+                || key.ends_with("CATEGORY_COUNTS__True")
+            {
+                let mut val = value.clone();
+                if let Some(obj) = val.as_object_mut() {
+                    if let Some(arr) = obj.get_mut("value").and_then(|v| v.as_array_mut()) {
+                        arr.truncate(limit);
+                    }
+                }
+                (key.clone(), val)
+            } else {
+                (key.clone(), value.clone())
+            }
+        })
+        .collect()
+}
+
+impl FileColStats {
+    /// Produce kumo-format stats for one table.
+    ///
+    /// Each column produces stat entries keyed as
+    /// `"{col}__{kumo.stype}__{STAT}__{True|False}"` with values
+    /// `{"value": .., "approx": bool, "data_version": str, "num_entries": int}`.
+    ///
+    /// The output is written directly to per-table JSON files and copied
+    /// into the kumo table cache by the Python `diskgraph_col_stats_activity`.
+    pub fn to_kumo_json(
+        &mut self,
+        column_names: &[String],
+        ingested_types: &[IngestedType],
+        table_cat: Option<&TableCategoryCounts>,
+        text_sample_stats: Option<&HashMap<String, TextSampleStats>>,
+        data_version: &str,
+    ) -> serde_json::Map<String, JsonValue> {
+        // Pre-collect category counts (same pattern as to_json to avoid borrow issues).
+        let cat_counts: Vec<Option<HashMap<String, u64>>> = (0..self.cols.len())
+            .map(|col_idx| {
+                get_category_counts_for_col(
+                    self.cat_strategy,
+                    &self.cat_local,
+                    table_cat,
+                    col_idx,
+                )
+            })
+            .collect();
+
+        let mut map = serde_json::Map::new();
+        let dv = data_version;
+
+        for (col_idx, col) in self.cols.iter_mut().enumerate() {
+            let name = &column_names[col_idx];
+            let sk = kumo_stype_key(col);
+
+            match col {
+                ColumnStatsCollector::Numerical {
+                    null_count,
+                    welford,
+                    hll,
+                    tdigest,
+                } => {
+                    let count = welford.count + *null_count;
+                    // Base stats
+                    map.insert(kumo_key(name, sk, "COUNT", false), kumo_entry(json!(count), false, dv, count));
+                    map.insert(kumo_key(name, sk, "NUM_NA", false), kumo_entry(json!(*null_count), false, dv, count));
+                    map.insert(kumo_key(name, sk, "NA_FRACTION", false), kumo_entry(json!(kumo_safe_div(*null_count, count)), false, dv, count));
+                    map.insert(kumo_key(name, sk, "INVALID_FRACTION", false), kumo_entry(json!(0.0), false, dv, count));
+                    // Numerical-specific
+                    map.insert(kumo_key(name, sk, "MEAN", false), kumo_entry(json!(welford.mean()), false, dv, count));
+                    map.insert(kumo_key(name, sk, "STD", false), kumo_entry(json!(welford.std_dev()), false, dv, count));
+                    map.insert(kumo_key(name, sk, "MIN", false), kumo_entry(json!(welford.min), false, dv, count));
+                    map.insert(kumo_key(name, sk, "MAX", false), kumo_entry(json!(welford.max), false, dv, count));
+                    let (q25, q50, q75) = tdigest.quantiles().unwrap_or((0.0, 0.0, 0.0));
+                    map.insert(kumo_key(name, sk, "QUANTILES", false), kumo_entry(json!([q25, q50, q75]), false, dv, count));
+                    map.insert(kumo_key(name, sk, "QUANTILE25", false), kumo_entry(json!(q25), false, dv, count));
+                    map.insert(kumo_key(name, sk, "MEDIAN", false), kumo_entry(json!(q50), false, dv, count));
+                    map.insert(kumo_key(name, sk, "QUANTILE75", false), kumo_entry(json!(q75), false, dv, count));
+                    map.insert(kumo_key(name, sk, "MEDIAN", true), kumo_entry(json!(q50), true, dv, count));
+                    let kurt = welford.kurtosis();
+                    map.insert(kumo_key(name, sk, "KURTOSIS", false), kumo_entry(json!(kurt), false, dv, count));
+                    map.insert(kumo_key(name, sk, "KURTOSIS", true), kumo_entry(json!(kurt), true, dv, count));
+                    let num_unique = hll.estimate() as u64;
+                    let num_unique = if num_unique > count { count } else { num_unique };
+                    map.insert(kumo_key(name, sk, "NUM_UNIQUE", false), kumo_entry(json!(num_unique), false, dv, count));
+                    map.insert(kumo_key(name, sk, "UNIQUE_FRACTION", false), kumo_entry(json!(kumo_safe_div(num_unique, count)), false, dv, count));
+                }
+                ColumnStatsCollector::Categorical {
+                    count,
+                    null_count,
+                    hll,
+                } => {
+                    let total = *count + *null_count;
+                    map.insert(kumo_key(name, sk, "COUNT", false), kumo_entry(json!(total), false, dv, total));
+                    map.insert(kumo_key(name, sk, "NUM_NA", false), kumo_entry(json!(*null_count), false, dv, total));
+                    map.insert(kumo_key(name, sk, "NA_FRACTION", false), kumo_entry(json!(kumo_safe_div(*null_count, total)), false, dv, total));
+                    map.insert(kumo_key(name, sk, "INVALID_FRACTION", false), kumo_entry(json!(0.0), false, dv, total));
+                    // Category counts
+                    let values = build_cat_count_json(col_idx, &cat_counts, ingested_types);
+                    map.insert(kumo_key(name, sk, "CATEGORY_COUNTS", false), kumo_entry(values, false, dv, total));
+                    let num_unique = hll.estimate() as u64;
+                    let num_unique = if num_unique > total { total } else { num_unique };
+                    map.insert(kumo_key(name, sk, "NUM_UNIQUE", false), kumo_entry(json!(num_unique), false, dv, total));
+                    map.insert(kumo_key(name, sk, "UNIQUE_FRACTION", false), kumo_entry(json!(kumo_safe_div(num_unique, total)), false, dv, total));
+                }
+                ColumnStatsCollector::Id {
+                    count,
+                    null_count,
+                    hll,
+                } => {
+                    let total = *count + *null_count;
+                    map.insert(kumo_key(name, sk, "COUNT", false), kumo_entry(json!(total), false, dv, total));
+                    map.insert(kumo_key(name, sk, "NUM_NA", false), kumo_entry(json!(*null_count), false, dv, total));
+                    map.insert(kumo_key(name, sk, "NA_FRACTION", false), kumo_entry(json!(kumo_safe_div(*null_count, total)), false, dv, total));
+                    map.insert(kumo_key(name, sk, "INVALID_FRACTION", false), kumo_entry(json!(0.0), false, dv, total));
+                    let values = build_cat_count_json(col_idx, &cat_counts, ingested_types);
+                    map.insert(kumo_key(name, sk, "CATEGORY_COUNTS", false), kumo_entry(values, false, dv, total));
+                    let num_unique = hll.estimate() as u64;
+                    let num_unique = if num_unique > total { total } else { num_unique };
+                    map.insert(kumo_key(name, sk, "NUM_UNIQUE", false), kumo_entry(json!(num_unique), false, dv, total));
+                    map.insert(kumo_key(name, sk, "UNIQUE_FRACTION", false), kumo_entry(json!(kumo_safe_div(num_unique, total)), false, dv, total));
+                }
+                ColumnStatsCollector::Text {
+                    count,
+                    null_count,
+                    hll,
+                } => {
+                    let total = *count + *null_count;
+                    map.insert(kumo_key(name, sk, "COUNT", false), kumo_entry(json!(total), false, dv, total));
+                    map.insert(kumo_key(name, sk, "NUM_NA", false), kumo_entry(json!(*null_count), false, dv, total));
+                    map.insert(kumo_key(name, sk, "NA_FRACTION", false), kumo_entry(json!(kumo_safe_div(*null_count, total)), false, dv, total));
+                    map.insert(kumo_key(name, sk, "INVALID_FRACTION", false), kumo_entry(json!(0.0), false, dv, total));
+                    // Text sample stats (approx=true)
+                    if let Some(tss) = text_sample_stats.and_then(|m| m.get(name.as_str())) {
+                        map.insert(kumo_key(name, sk, "STRING_AVG_TOKENS", true), kumo_entry(json!(tss.avg_tokens), true, dv, total));
+                        map.insert(kumo_key(name, sk, "STRING_MAX_TOKENS", true), kumo_entry(json!(tss.max_tokens), true, dv, total));
+                        map.insert(kumo_key(name, sk, "STRING_AVG_NON_CHAR", true), kumo_entry(json!(tss.non_char_fraction), true, dv, total));
+                        map.insert(kumo_key(name, sk, "STRING_GLOVE_OVERLAP", true), kumo_entry(json!(tss.glove_overlap), true, dv, total));
+                    }
+                    let num_unique = hll.estimate() as u64;
+                    let num_unique = if num_unique > total { total } else { num_unique };
+                    map.insert(kumo_key(name, sk, "NUM_UNIQUE", false), kumo_entry(json!(num_unique), false, dv, total));
+                    map.insert(kumo_key(name, sk, "UNIQUE_FRACTION", false), kumo_entry(json!(kumo_safe_div(num_unique, total)), false, dv, total));
+                }
+                ColumnStatsCollector::Timestamp {
+                    count: c,
+                    null_count,
+                    parse_fail_count,
+                    min_secs,
+                    max_secs,
+                } => {
+                    let total = *c + *null_count + *parse_fail_count;
+                    map.insert(kumo_key(name, sk, "COUNT", false), kumo_entry(json!(total), false, dv, total));
+                    map.insert(kumo_key(name, sk, "NUM_NA", false), kumo_entry(json!(*null_count), false, dv, total));
+                    map.insert(kumo_key(name, sk, "NA_FRACTION", false), kumo_entry(json!(kumo_safe_div(*null_count, total)), false, dv, total));
+                    map.insert(kumo_key(name, sk, "INVALID_FRACTION", false), kumo_entry(json!(0.0), false, dv, total));
+                    map.insert(kumo_key(name, sk, "DROPPED_ROWS", false), kumo_entry(json!(*parse_fail_count), false, dv, total));
+                    map.insert(kumo_key(name, sk, "MIN", false), kumo_entry(json!(format_kumo_timestamp(*min_secs)), false, dv, total));
+                    map.insert(kumo_key(name, sk, "MAX", false), kumo_entry(json!(format_kumo_timestamp(*max_secs)), false, dv, total));
+                    // Timestamp has no HLL — use total as num_unique
+                    map.insert(kumo_key(name, sk, "NUM_UNIQUE", false), kumo_entry(json!(total), false, dv, total));
+                }
+                ColumnStatsCollector::Sequence {
+                    count: c,
+                    null_count,
+                    min_len,
+                    max_len,
+                    ..
+                } => {
+                    let total = *c + *null_count;
+                    map.insert(kumo_key(name, sk, "COUNT", false), kumo_entry(json!(total), false, dv, total));
+                    map.insert(kumo_key(name, sk, "NUM_NA", false), kumo_entry(json!(*null_count), false, dv, total));
+                    map.insert(kumo_key(name, sk, "NA_FRACTION", false), kumo_entry(json!(kumo_safe_div(*null_count, total)), false, dv, total));
+                    map.insert(kumo_key(name, sk, "INVALID_FRACTION", false), kumo_entry(json!(0.0), false, dv, total));
+                    // Always emit min/max length (Python bridge emits even sentinels).
+                    map.insert(kumo_key(name, sk, "SEQUENCE_MIN_LENGTH", false), kumo_entry(json!(*min_len), false, dv, total));
+                    map.insert(kumo_key(name, sk, "SEQUENCE_MAX_LENGTH", false), kumo_entry(json!(*max_len), false, dv, total));
+                }
+                ColumnStatsCollector::Skip => {}
+            }
+        }
+        map
+    }
+
+}
+
 impl FileColStats {
     /// xorshift64* PRNG step → returns true if this row should be sampled.
     #[inline(always)]
@@ -2357,5 +2619,398 @@ mod tests {
             (stats.string_truncation_scale - 2.0).abs() < 1e-9,
             "1024/512 = 2.0"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Kumo-format stats tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_format_kumo_timestamp_normal() {
+        assert_eq!(
+            format_kumo_timestamp(1537401600),
+            "kumo_timestamp_2018-09-20 00:00:00"
+        );
+    }
+
+    #[test]
+    fn test_format_kumo_timestamp_sentinels() {
+        assert_eq!(format_kumo_timestamp(i64::MAX), "kumo_timestamp_NaT");
+        assert_eq!(format_kumo_timestamp(i64::MIN), "kumo_timestamp_NaT");
+    }
+
+    #[test]
+    fn test_to_kumo_json_numerical() {
+        let stypes = vec![Some(SemanticType::Numerical)];
+        let mut stats = FileColStats::new(&stypes);
+        stats.observe_f64(0, 10.0);
+        stats.observe_f64(0, 20.0);
+        stats.observe_null(0);
+
+        let col_names = vec!["age".to_string()];
+        let ingested_types = vec![IngestedType::Float64];
+        let map = stats.to_kumo_json(&col_names, &ingested_types, None, None, "v1");
+
+        // Check base stats
+        let count_entry = map.get("age__kumo.numerical__COUNT__False").unwrap();
+        assert_eq!(count_entry["value"], 3);
+        assert_eq!(count_entry["data_version"], "v1");
+        assert_eq!(count_entry["num_entries"], 3);
+
+        let na_entry = map.get("age__kumo.numerical__NUM_NA__False").unwrap();
+        assert_eq!(na_entry["value"], 1);
+
+        // Check numerical-specific stats
+        assert!(map.contains_key("age__kumo.numerical__MEAN__False"));
+        assert!(map.contains_key("age__kumo.numerical__STD__False"));
+        assert!(map.contains_key("age__kumo.numerical__MIN__False"));
+        assert!(map.contains_key("age__kumo.numerical__MAX__False"));
+        assert!(map.contains_key("age__kumo.numerical__QUANTILES__False"));
+        assert!(map.contains_key("age__kumo.numerical__KURTOSIS__True"));
+        assert!(map.contains_key("age__kumo.numerical__NUM_UNIQUE__False"));
+        assert!(map.contains_key("age__kumo.numerical__UNIQUE_FRACTION__False"));
+
+        let mean = map.get("age__kumo.numerical__MEAN__False").unwrap();
+        assert_eq!(mean["value"], 15.0);
+    }
+
+    #[test]
+    fn test_to_kumo_json_timestamp() {
+        let stypes = vec![Some(SemanticType::Timestamp)];
+        let mut stats = FileColStats::new(&stypes);
+        stats.observe_timestamp(0, 1537401600); // 2018-09-20
+        stats.observe_timestamp(0, 1700000000); // 2023-11-14
+        stats.observe_null(0);
+
+        let col_names = vec!["ts".to_string()];
+        let ingested_types = vec![IngestedType::Timestamp];
+        let map = stats.to_kumo_json(&col_names, &ingested_types, None, None, "v2");
+
+        let min_entry = map.get("ts__kumo.timestamp__MIN__False").unwrap();
+        assert_eq!(min_entry["value"], "kumo_timestamp_2018-09-20 00:00:00");
+
+        let max_entry = map.get("ts__kumo.timestamp__MAX__False").unwrap();
+        assert_eq!(max_entry["value"], "kumo_timestamp_2023-11-14 22:13:20");
+
+        assert!(map.contains_key("ts__kumo.timestamp__DROPPED_ROWS__False"));
+        assert!(map.contains_key("ts__kumo.timestamp__NUM_UNIQUE__False"));
+    }
+
+    #[test]
+    fn test_to_kumo_json_timestamp_sentinel() {
+        let stypes = vec![Some(SemanticType::Timestamp)];
+        let mut stats = FileColStats::new(&stypes);
+        // No valid timestamps observed → min=MAX, max=MIN (sentinels)
+        stats.observe_null(0);
+
+        let col_names = vec!["ts".to_string()];
+        let ingested_types = vec![IngestedType::Timestamp];
+        let map = stats.to_kumo_json(&col_names, &ingested_types, None, None, "v1");
+
+        let min_entry = map.get("ts__kumo.timestamp__MIN__False").unwrap();
+        assert_eq!(min_entry["value"], "kumo_timestamp_NaT");
+        let max_entry = map.get("ts__kumo.timestamp__MAX__False").unwrap();
+        assert_eq!(max_entry["value"], "kumo_timestamp_NaT");
+    }
+
+    #[test]
+    fn test_to_kumo_json_skip_column() {
+        let stypes = vec![Some(SemanticType::Unsupported)];
+        let mut stats = FileColStats::new(&stypes);
+        let col_names = vec!["x".to_string()];
+        let ingested_types = vec![IngestedType::String];
+        let map = stats.to_kumo_json(&col_names, &ingested_types, None, None, "v1");
+        assert!(map.is_empty());
+    }
+
+    /// Normalize a kumo stats map to a deterministic JSON string for snapshot
+    /// comparison.  Category count arrays are sorted by stringified key so that
+    /// HashMap iteration order doesn't matter.
+    fn canonicalize_kumo_map(map: &serde_json::Map<String, JsonValue>) -> String {
+        let mut sorted: Vec<(&String, &JsonValue)> = map.iter().collect();
+        sorted.sort_by_key(|(k, _)| (*k).clone());
+
+        let entries: Vec<String> = sorted
+            .into_iter()
+            .map(|(k, v)| {
+                let mut val = v.clone();
+                // Sort CATEGORY_COUNTS array by stringified first element
+                if k.contains("CATEGORY_COUNTS") {
+                    if let Some(obj) = val.as_object_mut() {
+                        if let Some(arr) = obj.get_mut("value").and_then(|v| v.as_array_mut()) {
+                            arr.sort_by(|a, b| {
+                                let ak = a.get(0).map(|v| v.to_string()).unwrap_or_default();
+                                let bk = b.get(0).map(|v| v.to_string()).unwrap_or_default();
+                                ak.cmp(&bk)
+                            });
+                        }
+                    }
+                }
+                format!("{}: {}", serde_json::to_string(k).unwrap(), serde_json::to_string(&val).unwrap())
+            })
+            .collect();
+        format!("{{\n{}\n}}", entries.join(",\n"))
+    }
+
+    /// Exact-output snapshot test for to_kumo_json().
+    ///
+    /// Exercises all 6 supported column types plus unsupported/skip.
+    /// Every key and value is asserted against a hardcoded expected JSON.
+    /// Category count arrays are sorted by key for determinism.
+    ///
+    /// If the Rust stats output changes, this test will fail — update the
+    /// snapshot after verifying the new output is correct.
+    #[test]
+    fn test_to_kumo_json_exact_snapshot() {
+        let stypes = vec![
+            Some(SemanticType::Numerical),    // 0: "age"
+            Some(SemanticType::Categorical),  // 1: "status"
+            Some(SemanticType::Id),           // 2: "user_id"
+            Some(SemanticType::Text),         // 3: "bio"
+            Some(SemanticType::Timestamp),    // 4: "created_at"
+            Some(SemanticType::Sequence),     // 5: "embedding"
+            Some(SemanticType::Unsupported),  // 6: "skip_me"
+        ];
+        let mut stats = FileColStats::new(&stypes);
+
+        // Numerical: 10, 20, 30 + 1 null → count=4
+        stats.observe_f64(0, 10.0);
+        stats.observe_f64(0, 20.0);
+        stats.observe_f64(0, 30.0);
+        stats.observe_null(0);
+        // Categorical: "active"×2, "inactive"×1, 1 null → count=4
+        stats.observe_string(1, "active");
+        stats.observe_string(1, "inactive");
+        stats.observe_string(1, "active");
+        stats.observe_null(1);
+        // Id: "u1", "u2" → count=2
+        stats.observe_string(2, "u1");
+        stats.observe_string(2, "u2");
+        // Text: 2 values, 1 null → count=3
+        stats.observe_string(3, "hello world");
+        stats.observe_string(3, "foo bar baz");
+        stats.observe_null(3);
+        // Timestamp: 2 values, 1 null, 1 parse fail → count=4
+        stats.observe_timestamp(4, 1537401600);
+        stats.observe_timestamp(4, 1700000000);
+        stats.observe_null(4);
+        stats.observe_parse_failure(4);
+        // Sequence: 2 nulls only → count=2
+        stats.observe_null(5);
+        stats.observe_null(5);
+
+        let col_names: Vec<String> =
+            ["age", "status", "user_id", "bio", "created_at", "embedding", "skip_me"]
+                .iter().map(|s| s.to_string()).collect();
+        let ingested_types = vec![
+            IngestedType::Float64, IngestedType::String, IngestedType::String,
+            IngestedType::String, IngestedType::Timestamp, IngestedType::Float32Array,
+            IngestedType::String,
+        ];
+        let mut text_stats = HashMap::new();
+        text_stats.insert("bio".to_string(), TextSampleStats {
+            avg_tokens: 2.5, max_tokens: 3, non_char_fraction: 0.0,
+            string_truncation_scale: 1.0, glove_overlap: 0.8,
+        });
+
+        let map = stats.to_kumo_json(&col_names, &ingested_types, None, Some(&text_stats), "v42");
+        let canonical = canonicalize_kumo_map(&map);
+
+        // ---- Assert exact key set ----
+        let keys: Vec<&String> = {
+            let mut v: Vec<_> = map.keys().collect();
+            v.sort();
+            v
+        };
+        assert!(!keys.iter().any(|k| k.starts_with("skip_me__")),
+            "Unsupported column must not appear");
+
+        // ---- Assert every entry exactly ----
+        // Helper: assert a single stat entry's 4 fields
+        fn e(map: &serde_json::Map<String, JsonValue>, key: &str,
+             val: JsonValue, approx: bool, dv: &str, n: u64) {
+            let entry = map.get(key).unwrap_or_else(|| panic!("missing key: {key}"));
+            let obj = entry.as_object().unwrap();
+            assert_eq!(obj["approx"], json!(approx), "approx @ {key}");
+            assert_eq!(obj["data_version"], json!(dv), "data_version @ {key}");
+            assert_eq!(obj["num_entries"], json!(n), "num_entries @ {key}");
+            // For floats allow small tolerance
+            let actual = &obj["value"];
+            match (&val, actual) {
+                (JsonValue::Number(expected), JsonValue::Number(got)) => {
+                    let ef = expected.as_f64().unwrap();
+                    let gf = got.as_f64().unwrap();
+                    assert!(
+                        (ef - gf).abs() < 1e-9,
+                        "value @ {key}: expected {ef}, got {gf}"
+                    );
+                }
+                _ => assert_eq!(*actual, val, "value @ {key}"),
+            }
+        }
+
+        // ---- Numerical: age ----
+        // 3 observations + 1 null = count 4
+        // mean=20, std=10, min=10, max=30, kurtosis=-1.5
+        // With only 3 data points, tdigest quantiles = [10, 20, 30]
+        // HLL with 3 distinct f64s → num_unique 3 (exact for small n)
+        e(&map, "age__kumo.numerical__COUNT__False",              json!(4), false, "v42", 4);
+        e(&map, "age__kumo.numerical__NUM_NA__False",             json!(1), false, "v42", 4);
+        e(&map, "age__kumo.numerical__NA_FRACTION__False",        json!(0.25), false, "v42", 4);
+        e(&map, "age__kumo.numerical__INVALID_FRACTION__False",   json!(0.0), false, "v42", 4);
+        e(&map, "age__kumo.numerical__MEAN__False",               json!(20.0), false, "v42", 4);
+        e(&map, "age__kumo.numerical__STD__False",                json!(10.0), false, "v42", 4);
+        e(&map, "age__kumo.numerical__MIN__False",                json!(10.0), false, "v42", 4);
+        e(&map, "age__kumo.numerical__MAX__False",                json!(30.0), false, "v42", 4);
+        e(&map, "age__kumo.numerical__KURTOSIS__False",           json!(-1.5), false, "v42", 4);
+        e(&map, "age__kumo.numerical__KURTOSIS__True",            json!(-1.5), true,  "v42", 4);
+        // Quantiles are TDigest approximations — assert structure and reasonable range
+        for qkey in [
+            "age__kumo.numerical__QUANTILE25__False",
+            "age__kumo.numerical__MEDIAN__False",
+            "age__kumo.numerical__QUANTILE75__False",
+            "age__kumo.numerical__MEDIAN__True",
+        ] {
+            let entry = map.get(qkey).unwrap_or_else(|| panic!("missing {qkey}"));
+            let v = entry["value"].as_f64().unwrap();
+            assert!(v >= 10.0 && v <= 30.0, "{qkey} value {v} out of [10,30]");
+            assert_eq!(entry["data_version"], json!("v42"));
+        }
+        {
+            let q = map.get("age__kumo.numerical__QUANTILES__False").unwrap();
+            let arr = q["value"].as_array().unwrap();
+            assert_eq!(arr.len(), 3);
+            for v in arr {
+                let f = v.as_f64().unwrap();
+                assert!(f >= 10.0 && f <= 30.0, "quantile {f} out of range");
+            }
+            // Monotonicity: q25 <= median <= q75
+            assert!(arr[0].as_f64().unwrap() <= arr[1].as_f64().unwrap());
+            assert!(arr[1].as_f64().unwrap() <= arr[2].as_f64().unwrap());
+        }
+        // NUM_UNIQUE: HLL exact for 3 values
+        {
+            let nu = map.get("age__kumo.numerical__NUM_UNIQUE__False").unwrap();
+            let v = nu["value"].as_u64().unwrap();
+            assert!(v >= 2 && v <= 4, "NUM_UNIQUE should be ~3, got {v}");
+        }
+        {
+            let uf = map.get("age__kumo.numerical__UNIQUE_FRACTION__False").unwrap();
+            let v = uf["value"].as_f64().unwrap();
+            assert!(v > 0.0 && v <= 1.0, "UNIQUE_FRACTION should be in (0,1], got {v}");
+        }
+
+        // ---- Categorical: status ----
+        // 3 observations + 1 null = count 4, no cat counts (strategy=None)
+        e(&map, "status__kumo.categorical__COUNT__False",            json!(4), false, "v42", 4);
+        e(&map, "status__kumo.categorical__NUM_NA__False",           json!(1), false, "v42", 4);
+        e(&map, "status__kumo.categorical__NA_FRACTION__False",      json!(0.25), false, "v42", 4);
+        e(&map, "status__kumo.categorical__INVALID_FRACTION__False", json!(0.0), false, "v42", 4);
+        e(&map, "status__kumo.categorical__CATEGORY_COUNTS__False",  json!([]), false, "v42", 4);
+        {
+            let nu = map.get("status__kumo.categorical__NUM_UNIQUE__False").unwrap();
+            let v = nu["value"].as_u64().unwrap();
+            assert!(v >= 1 && v <= 4, "status NUM_UNIQUE should be ~2, got {v}");
+        }
+
+        // ---- Id: user_id ----
+        // 2 observations, 0 null = count 2
+        e(&map, "user_id__kumo.ID__COUNT__False",            json!(2), false, "v42", 2);
+        e(&map, "user_id__kumo.ID__NUM_NA__False",           json!(0), false, "v42", 2);
+        e(&map, "user_id__kumo.ID__NA_FRACTION__False",      json!(0.0), false, "v42", 2);
+        e(&map, "user_id__kumo.ID__INVALID_FRACTION__False", json!(0.0), false, "v42", 2);
+        e(&map, "user_id__kumo.ID__CATEGORY_COUNTS__False",  json!([]), false, "v42", 2);
+        {
+            let nu = map.get("user_id__kumo.ID__NUM_UNIQUE__False").unwrap();
+            let v = nu["value"].as_u64().unwrap();
+            assert!(v >= 1 && v <= 2, "user_id NUM_UNIQUE should be ~2, got {v}");
+        }
+
+        // ---- Text: bio ----
+        // 2 observations + 1 null = count 3
+        e(&map, "bio__kumo.text__COUNT__False",              json!(3), false, "v42", 3);
+        e(&map, "bio__kumo.text__NUM_NA__False",             json!(1), false, "v42", 3);
+        e(&map, "bio__kumo.text__NA_FRACTION__False",        json!(1.0 / 3.0), false, "v42", 3);
+        e(&map, "bio__kumo.text__INVALID_FRACTION__False",   json!(0.0), false, "v42", 3);
+        e(&map, "bio__kumo.text__STRING_AVG_TOKENS__True",   json!(2.5), true, "v42", 3);
+        e(&map, "bio__kumo.text__STRING_MAX_TOKENS__True",   json!(3), true, "v42", 3);
+        e(&map, "bio__kumo.text__STRING_AVG_NON_CHAR__True", json!(0.0), true, "v42", 3);
+        e(&map, "bio__kumo.text__STRING_GLOVE_OVERLAP__True",json!(0.8), true, "v42", 3);
+        {
+            let nu = map.get("bio__kumo.text__NUM_UNIQUE__False").unwrap();
+            let v = nu["value"].as_u64().unwrap();
+            assert!(v >= 1 && v <= 3, "bio NUM_UNIQUE should be ~2, got {v}");
+        }
+
+        // ---- Timestamp: created_at ----
+        // 2 observations + 1 null + 1 parse_fail = count 4
+        e(&map, "created_at__kumo.timestamp__COUNT__False",            json!(4), false, "v42", 4);
+        e(&map, "created_at__kumo.timestamp__NUM_NA__False",           json!(1), false, "v42", 4);
+        e(&map, "created_at__kumo.timestamp__NA_FRACTION__False",      json!(0.25), false, "v42", 4);
+        e(&map, "created_at__kumo.timestamp__INVALID_FRACTION__False", json!(0.0), false, "v42", 4);
+        e(&map, "created_at__kumo.timestamp__DROPPED_ROWS__False",     json!(1), false, "v42", 4);
+        e(&map, "created_at__kumo.timestamp__MIN__False",
+          json!("kumo_timestamp_2018-09-20 00:00:00"), false, "v42", 4);
+        e(&map, "created_at__kumo.timestamp__MAX__False",
+          json!("kumo_timestamp_2023-11-14 22:13:20"), false, "v42", 4);
+        e(&map, "created_at__kumo.timestamp__NUM_UNIQUE__False",       json!(4), false, "v42", 4);
+
+        // ---- Sequence: embedding ----
+        // 0 observations + 2 null = count 2
+        e(&map, "embedding__kumo.sequence__COUNT__False",            json!(2), false, "v42", 2);
+        e(&map, "embedding__kumo.sequence__NUM_NA__False",           json!(2), false, "v42", 2);
+        e(&map, "embedding__kumo.sequence__NA_FRACTION__False",      json!(1.0), false, "v42", 2);
+        e(&map, "embedding__kumo.sequence__INVALID_FRACTION__False", json!(0.0), false, "v42", 2);
+        // min_len=usize::MAX, max_len=0 (sentinel values from zero observations)
+        {
+            let min_l = map.get("embedding__kumo.sequence__SEQUENCE_MIN_LENGTH__False").unwrap();
+            assert_eq!(min_l["value"], json!(usize::MAX));
+        }
+        {
+            let max_l = map.get("embedding__kumo.sequence__SEQUENCE_MAX_LENGTH__False").unwrap();
+            assert_eq!(max_l["value"], json!(0));
+        }
+
+        // ---- Total key count ----
+        // numerical: 4 base + MEAN STD MIN MAX (4) + QUANTILES Q25 MEDIAN Q75 MEDIAN(approx) (5)
+        //          + KURTOSIS(exact) KURTOSIS(approx) (2) + NUM_UNIQUE UNIQUE_FRACTION (2) = 17
+        // categorical: 4 base + CATEGORY_COUNTS + NUM_UNIQUE + UNIQUE_FRACTION = 7
+        // id: same = 7
+        // text: 4 base + 4 text stats + NUM_UNIQUE + UNIQUE_FRACTION = 10
+        // timestamp: 4 base + DROPPED_ROWS + MIN + MAX + NUM_UNIQUE = 8
+        // sequence: 4 base + SEQ_MIN + SEQ_MAX = 6
+        // Total = 17 + 7 + 7 + 10 + 8 + 6 = 55
+        assert_eq!(map.len(), 55, "Expected exactly 55 stat entries, got {}", map.len());
+
+        // ---- Verify canonical JSON is stable ----
+        // Re-run and assert identical canonical output
+        let canonical2 = canonicalize_kumo_map(&map);
+        assert_eq!(canonical, canonical2, "Canonical output should be deterministic");
+    }
+
+    #[test]
+    fn test_minify_kumo_stats_truncates_category_counts() {
+        let mut stats = serde_json::Map::new();
+        let big_list: Vec<JsonValue> = (0..50).map(|i| json!([format!("cat_{i}"), i])).collect();
+        stats.insert(
+            "col__kumo.categorical__CATEGORY_COUNTS__False".to_string(),
+            json!({"value": big_list, "approx": false, "data_version": "v1", "num_entries": 100}),
+        );
+        stats.insert(
+            "col__kumo.categorical__COUNT__False".to_string(),
+            json!({"value": 100, "approx": false, "data_version": "v1", "num_entries": 100}),
+        );
+
+        let minified = minify_kumo_stats(&stats, 20);
+
+        // COUNT untouched
+        let count = minified.get("col__kumo.categorical__COUNT__False").unwrap();
+        assert_eq!(count["value"], 100);
+
+        // CATEGORY_COUNTS truncated to 20
+        let cc = minified
+            .get("col__kumo.categorical__CATEGORY_COUNTS__False")
+            .unwrap();
+        assert_eq!(cc["value"].as_array().unwrap().len(), 20);
     }
 }

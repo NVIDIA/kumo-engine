@@ -40,6 +40,7 @@ fn base_table(name: &str) -> TableSpec {
             paths: vec!["/tmp/table.parquet".into()],
         },
         fkeys: Vec::new(),
+        data_version: None,
     }
 }
 
@@ -105,6 +106,7 @@ fn validate_missing_pk_column() {
                 paths: vec!["/tmp/user.parquet".into()],
             },
             fkeys: Vec::new(),
+            data_version: None,
         }],
         rowpack: None,
         num_shards: None,
@@ -344,6 +346,7 @@ fn validate_edge_fk_missing_column() {
             paths: vec!["/tmp/edge.parquet".into()],
         },
         fkeys: Vec::new(),
+        data_version: None,
     });
     assert_err_contains(meta, "edge fk column dst_id not found");
 }
@@ -398,6 +401,7 @@ fn validate_edge_fk_missing_table() {
             paths: vec!["/tmp/edge.parquet".into()],
         },
         fkeys: Vec::new(),
+        data_version: None,
     });
     assert_err_contains(meta, "edge table Edge references missing table Missing");
 }
@@ -453,6 +457,7 @@ fn validate_edge_fk_ref_table_no_pk() {
             paths: vec!["/tmp/edge.parquet".into()],
         },
         fkeys: Vec::new(),
+        data_version: None,
     });
     assert_err_contains(meta, "references Device which has no primary key");
 }
@@ -509,6 +514,7 @@ fn validate_edge_fk_int_string_ok() {
             paths: vec!["/tmp/edge.parquet".into()],
         },
         fkeys: Vec::new(),
+        data_version: None,
     });
     assert!(meta.validate().is_ok());
 }
@@ -563,6 +569,7 @@ fn validate_edge_fk_string_int_ok() {
             paths: vec!["/tmp/edge.parquet".into()],
         },
         fkeys: Vec::new(),
+        data_version: None,
     });
     assert!(meta.validate().is_ok());
 }
@@ -625,6 +632,7 @@ fn validate_edge_fk_string_bytes_ok() {
             paths: vec!["/tmp/edge.parquet".into()],
         },
         fkeys: Vec::new(),
+        data_version: None,
     });
     assert!(meta.validate().is_ok());
 }
@@ -687,6 +695,7 @@ fn validate_edge_fk_string_bytes_len_mismatch() {
             paths: vec!["/tmp/edge.parquet".into()],
         },
         fkeys: Vec::new(),
+        data_version: None,
     });
     assert!(meta.validate().is_ok());
 }
@@ -731,6 +740,7 @@ fn validate_edge_fk_uuid_ok() {
             paths: vec!["/tmp/edge.parquet".into()],
         },
         fkeys: Vec::new(),
+        data_version: None,
     });
     assert!(meta.validate().is_ok());
 }
@@ -775,6 +785,7 @@ fn validate_edge_fk_uuid_mismatch() {
             paths: vec!["/tmp/edge.parquet".into()],
         },
         fkeys: Vec::new(),
+        data_version: None,
     });
     assert_err_contains(meta, "incompatible types");
 }
@@ -1162,6 +1173,7 @@ mod new_schema_types {
                 paths: vec!["s3://bucket/events/".into()],
             },
             fkeys: Vec::new(),
+            data_version: None,
         };
         let json = serde_json::to_string(&table).unwrap();
         assert!(json.contains(r#""source""#));
@@ -1198,6 +1210,7 @@ mod new_schema_types {
                 forward: None,
                 reverse: None,
             }],
+            data_version: None,
         };
         let json = serde_json::to_string(&table).unwrap();
         assert!(json.contains(r#""fkeys""#));
@@ -1219,6 +1232,7 @@ mod new_schema_types {
                 paths: vec!["/data/subs.parquet".into()],
             },
             fkeys: Vec::new(),
+            data_version: None,
         };
         let json = serde_json::to_string(&table).unwrap();
         assert!(json.contains(r#""create_time":"start_date""#));

@@ -314,6 +314,7 @@ pub fn infer_source_metadata(root: &RootSource, options: InferOptions) -> Result
                 paths: table.paths.clone(),
             },
             fkeys: Vec::new(),
+            data_version: None,
         })
         .collect();
 

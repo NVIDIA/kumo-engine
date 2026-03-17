@@ -2080,6 +2080,10 @@ impl IngestContext {
                 }
             }
             let mut root_map = serde_json::Map::new();
+            let kumo_stats_dir = root.join("kumo_col_stats").join("col_stats_full");
+            let kumo_stats_min_dir = root.join("kumo_col_stats").join("col_stats_min");
+            std::fs::create_dir_all(&kumo_stats_dir)?;
+            std::fs::create_dir_all(&kumo_stats_min_dir)?;
             for table in &tables {
                 if let Some(mut stats) = table_col_stats.remove(&table.name) {
                     let col_names: Vec<String> =
@@ -2089,12 +2093,30 @@ impl IngestContext {
                     let tc = table_cat_counts.get(&table.name).map(|a| a.as_ref());
                     let tss = self.text_sample_stats.get(&table.name);
                     root_map.insert(table.name.clone(), stats.to_json(&col_names, &ingested_types, tc, tss));
+                    // Write per-table kumo-format stats (replaces Python bridge)
+                    if let Some(dv) = &table.data_version {
+                        let kumo_map = stats.to_kumo_json(
+                            &col_names, &ingested_types, tc, tss, dv,
+                        );
+                        let kumo_json = serde_json::to_string(&kumo_map)?;
+                        std::fs::write(
+                            kumo_stats_dir.join(format!("{}.json", table.name)),
+                            &kumo_json,
+                        )?;
+                        let min_map = crate::col_stats::minify_kumo_stats(&kumo_map, 20);
+                        let min_json = serde_json::to_string(&min_map)?;
+                        std::fs::write(
+                            kumo_stats_min_dir.join(format!("{}.json", table.name)),
+                            &min_json,
+                        )?;
+                    }
                 }
             }
             let json_str = serde_json::to_string_pretty(&serde_json::Value::Object(root_map))?;
             let col_stats_path = root.join("col_stats.json");
             std::fs::write(&col_stats_path, json_str)?;
             eprintln!("wrote col_stats.json to {}", col_stats_path.display());
+            eprintln!("wrote kumo_col_stats to {}", kumo_stats_dir.display());
         }
         drop(node_senders);
         drop(edge_senders);

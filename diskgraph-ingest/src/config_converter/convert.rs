@@ -127,6 +127,9 @@ fn convert_table(
     options: &ConvertOptions,
     time_info_map: &HashMap<String, TableTimeInfo>,
 ) -> Result<TableSpec, ConvertError> {
+    // Resolve data version (used for path building and kumo stats output)
+    let data_version = resolve_data_version(kumo_table, options)?;
+
     // Build the S3 path
     let paths = build_table_paths(kumo_table, options)?;
 
@@ -177,7 +180,33 @@ fn convert_table(
         rowpack: None,
         source: DataSource::Parquet { paths },
         fkeys,
+        data_version: Some(data_version),
     })
+}
+
+/// Resolve the data_version for a table from options or inline config.
+fn resolve_data_version(
+    kumo_table: &KumoTable,
+    options: &ConvertOptions,
+) -> Result<String, ConvertError> {
+    if let Some(versions) = &options.table_data_versions {
+        versions
+            .get(&kumo_table.table_name)
+            .ok_or_else(|| ConvertError::MissingField {
+                table: kumo_table.table_name.clone(),
+                field: "table_data_versions entry".to_string(),
+            })
+            .cloned()
+    } else {
+        kumo_table
+            .data_version
+            .as_ref()
+            .ok_or_else(|| ConvertError::MissingField {
+                table: kumo_table.table_name.clone(),
+                field: "data_version".to_string(),
+            })
+            .cloned()
+    }
 }
 
 /// Build the source data paths for a table.
@@ -224,25 +253,7 @@ fn build_table_paths(
                 field: "data_source".to_string(),
             })?;
 
-    // Look up data_version: prefer table_data_versions map, fall back to kumo_table.data_version.
-    let data_version = if let Some(versions) = &options.table_data_versions {
-        versions
-            .get(&kumo_table.table_name)
-            .ok_or_else(|| ConvertError::MissingField {
-                table: kumo_table.table_name.clone(),
-                field: "table_data_versions entry".to_string(),
-            })?
-            .clone()
-    } else {
-        kumo_table
-            .data_version
-            .as_ref()
-            .ok_or_else(|| ConvertError::MissingField {
-                table: kumo_table.table_name.clone(),
-                field: "data_version".to_string(),
-            })?
-            .clone()
-    };
+    let data_version = resolve_data_version(kumo_table, options)?;
 
     // Build fpv3 path: {data_persist_dir}/ingest/fpv3.{data_source}.{source_name}/{data_version}/
     let base = options.data_persist_dir.trim_end_matches('/');

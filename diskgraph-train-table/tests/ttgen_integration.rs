@@ -477,6 +477,7 @@ fn build_graph1(root: &Path) -> PathBuf {
                     paths: vec![data_dir.join("users.parquet").to_str().unwrap().to_string()],
                 },
                 fkeys: vec![],
+                data_version: None,
             },
             TableSpec {
                 name: "products".to_string(),
@@ -496,6 +497,7 @@ fn build_graph1(root: &Path) -> PathBuf {
                     paths: vec![data_dir.join("products.parquet").to_str().unwrap().to_string()],
                 },
                 fkeys: vec![],
+                data_version: None,
             },
             TableSpec {
                 name: "orders".to_string(),
@@ -549,6 +551,7 @@ fn build_graph1(root: &Path) -> PathBuf {
                         }),
                     },
                 ],
+                data_version: None,
             },
         ],
         rowpack: None,
@@ -1735,6 +1738,7 @@ fn build_graph1_with_create_time(root: &Path) -> PathBuf {
                     paths: vec![data_dir.join("users.parquet").to_str().unwrap().to_string()],
                 },
                 fkeys: vec![],
+                data_version: None,
             },
             TableSpec {
                 name: "products".to_string(),
@@ -1754,6 +1758,7 @@ fn build_graph1_with_create_time(root: &Path) -> PathBuf {
                     paths: vec![data_dir.join("products.parquet").to_str().unwrap().to_string()],
                 },
                 fkeys: vec![],
+                data_version: None,
             },
             TableSpec {
                 name: "orders".to_string(),
@@ -1807,6 +1812,7 @@ fn build_graph1_with_create_time(root: &Path) -> PathBuf {
                         }),
                     },
                 ],
+                data_version: None,
             },
         ],
         rowpack: None,
@@ -2339,6 +2345,7 @@ fn build_graph_calendar(root: &Path) -> PathBuf {
                     paths: vec![data_dir.join("company.parquet").to_str().unwrap().to_string()],
                 },
                 fkeys: vec![],
+                data_version: None,
             },
             TableSpec {
                 name: "filings".to_string(),
@@ -2374,6 +2381,7 @@ fn build_graph_calendar(root: &Path) -> PathBuf {
                         }),
                     },
                 ],
+                data_version: None,
             },
         ],
         rowpack: None,
@@ -3766,6 +3774,7 @@ fn build_graph2(root: &Path) -> PathBuf {
                     paths: vec![data_dir.join("users.parquet").to_str().unwrap().to_string()],
                 },
                 fkeys: vec![],
+                data_version: None,
             },
             TableSpec {
                 name: "stores".to_string(),
@@ -3780,6 +3789,7 @@ fn build_graph2(root: &Path) -> PathBuf {
                     paths: vec![data_dir.join("stores.parquet").to_str().unwrap().to_string()],
                 },
                 fkeys: vec![],
+                data_version: None,
             },
             TableSpec {
                 name: "orders".to_string(),
@@ -3832,6 +3842,7 @@ fn build_graph2(root: &Path) -> PathBuf {
                         }),
                     },
                 ],
+                data_version: None,
             },
         ],
         rowpack: None,
@@ -4329,6 +4340,7 @@ fn build_graph3(root: &Path) -> PathBuf {
                     paths: vec![data_dir.join("users.parquet").to_str().unwrap().to_string()],
                 },
                 fkeys: vec![],
+                data_version: None,
             },
             TableSpec {
                 name: "products".to_string(),
@@ -4346,6 +4358,7 @@ fn build_graph3(root: &Path) -> PathBuf {
                     paths: vec![data_dir.join("products.parquet").to_str().unwrap().to_string()],
                 },
                 fkeys: vec![],
+                data_version: None,
             },
             TableSpec {
                 name: "trans".to_string(),
@@ -4397,6 +4410,7 @@ fn build_graph3(root: &Path) -> PathBuf {
                         }),
                     },
                 ],
+                data_version: None,
             },
         ],
         rowpack: None,
