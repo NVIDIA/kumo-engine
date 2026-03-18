@@ -1785,6 +1785,12 @@ impl IngestContext {
 
                     let node_context = node_builder.finish()?;
                     let ctx_bytes = node_context.to_bytes()?;
+                    tracing::info!(
+                        table = %table.name,
+                        ctx_bytes_len = ctx_bytes.len(),
+                        temp_path = %temp_node_context_path(&table.name),
+                        "writing node_data.ctx",
+                    );
                     target.write_bytes(&temp_node_context_path(&table.name), ctx_bytes.clone())?;
                     target.write_bytes(&node_context_output_path(&table.name), ctx_bytes)?;
                     if let Some(cb) = &progress {
@@ -2352,8 +2358,17 @@ impl IngestContext {
         let stats = RowAccessStats::new(Some(trimmed_strings.as_ref()));
         let mut access = RowAccess::new(row_access_hints, stats);
         let ctx_path = root.join(temp_node_context_path(&table.name));
+        let ctx_file_len = fs::metadata(&ctx_path).map(|m| m.len()).unwrap_or(0);
+        tracing::info!(
+            table = %table.name,
+            path = %ctx_path.display(),
+            file_len = ctx_file_len,
+            "reading node_data.ctx",
+        );
         let ctx_bytes =
-            fs::read(&ctx_path).with_context(|| format!("read {}", ctx_path.display()))?;
+            fs::read(&ctx_path).with_context(|| format!(
+                "read {} (file_len={})", ctx_path.display(), ctx_file_len,
+            ))?;
         let node_context = diskgraph_rowpack::RowPackContext::from_bytes(&ctx_bytes)?;
         let node_encoder = Some(RowPackEncoder::new(node_context)?);
         let mut key_bufs: Vec<Vec<u8>> = vec![Vec::new(); table.columns.len()];
@@ -5113,7 +5128,29 @@ impl IngestContext {
         if let OutputTarget::Local { root } = &*self.target {
             let temp_root = root.join(TEMP_DIR_NAME);
             if temp_root.exists() {
-                spawn_background_delete(temp_root);
+                // Synchronous parallel delete: collect top-level subdirs and
+                // delete them in parallel threads, then remove the (now empty)
+                // temp root.  This avoids the race condition where a background
+                // delete process from a previous attempt interferes with a
+                // Temporal retry's fresh writes.
+                let entries: Vec<_> = std::fs::read_dir(&temp_root)?
+                    .filter_map(|e| e.ok().map(|e| e.path()))
+                    .collect();
+                if !entries.is_empty() {
+                    let start = std::time::Instant::now();
+                    entries.par_iter().for_each(|p| {
+                        if let Err(e) = std::fs::remove_dir_all(p) {
+                            tracing::warn!("cleanup_temp: failed to delete {}: {}", p.display(), e);
+                        }
+                    });
+                    tracing::info!(
+                        elapsed_ms = start.elapsed().as_millis() as u64,
+                        entries = entries.len(),
+                        "cleanup_temp: parallel delete complete",
+                    );
+                }
+                // Remove the now-empty temp root
+                let _ = std::fs::remove_dir(&temp_root);
             }
         }
         Ok(())
@@ -5123,7 +5160,8 @@ impl IngestContext {
         if let OutputTarget::Local { root } = &*self.target {
             let stage_root = root.join(TEMP_DIR_NAME).join(dir);
             if stage_root.exists() {
-                spawn_background_delete(stage_root);
+                std::fs::remove_dir_all(&stage_root)
+                    .with_context(|| format!("cleanup_edge_stage: {}", stage_root.display()))?;
             }
         }
         Ok(())
@@ -6114,23 +6152,32 @@ fn append_fkey_bit(bits: &mut Vec<u8>, row_idx: u64, present: bool) -> usize {
 
 fn read_temp_rows(path: &Path, mut f: impl FnMut(&[u8]) -> Result<()>) -> Result<()> {
     let file = fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
+    let file_len = file.metadata().map(|m| m.len()).unwrap_or(0);
     advise_file_willneed(&file);
     let mut file = FrameDecoder::new(file);
     let mut len_buf = [0u8; 4];
     let mut data = Vec::new();
+    let mut row_count: u64 = 0;
     loop {
         match file.read_exact(&mut len_buf) {
             Ok(()) => {}
             Err(err) if err.kind() == std_io::ErrorKind::UnexpectedEof => return Ok(()),
-            Err(err) => return Err(err.into()),
+            Err(err) => return Err(err).with_context(|| format!(
+                "read length prefix at row {} in {} (file_len={})",
+                row_count, path.display(), file_len,
+            )),
         }
         let len = u32::from_le_bytes(len_buf) as usize;
         if data.len() < len {
             data.resize(len, 0u8);
         }
         let slice = &mut data[..len];
-        file.read_exact(slice)?;
+        file.read_exact(slice).with_context(|| format!(
+            "read {} bytes at row {} in {} (file_len={})",
+            len, row_count, path.display(), file_len,
+        ))?;
         f(slice)?;
+        row_count += 1;
     }
 }
 
