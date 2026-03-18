@@ -595,7 +595,7 @@ impl ExportConfig {
 }
 
 #[pyfunction]
-pub fn export_tt_artifacts(config: &ExportConfig) -> PyResult<()> {
+pub fn export_tt_artifacts(py: Python<'_>, config: &ExportConfig) -> PyResult<()> {
     info!(
         train_table_path = %config.train_table_path,
         index_path = %config.index_path,
@@ -621,11 +621,16 @@ pub fn export_tt_artifacts(config: &ExportConfig) -> PyResult<()> {
         fkeys,
     };
 
-    diskgraph_engine::export_tt_artifacts::process_export(&internal_config)
-        .map(|_| {
-            info!("Pybind export_tt_artifacts finished");
-        })
-        .map_err(|e| PyRuntimeError::new_err(e.to_string()))
+    // Release the GIL during export — this is a long-running CPU/IO operation
+    // and holding the GIL would block heartbeats and other Python threads in the
+    // Temporal worker.
+    py.allow_threads(move || {
+        diskgraph_engine::export_tt_artifacts::process_export(&internal_config)
+    })
+    .map(|_| {
+        info!("Pybind export_tt_artifacts finished");
+    })
+    .map_err(|e| PyRuntimeError::new_err(e.to_string()))
 }
 
 #[pyfunction]
