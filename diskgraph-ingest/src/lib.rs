@@ -5138,9 +5138,14 @@ impl IngestContext {
                     .collect();
                 if !entries.is_empty() {
                     let start = std::time::Instant::now();
-                    entries.par_iter().for_each(|p| {
-                        if let Err(e) = std::fs::remove_dir_all(p) {
-                            tracing::warn!("cleanup_temp: failed to delete {}: {}", p.display(), e);
+                    std::thread::scope(|s| {
+                        for p in &entries {
+                            let p = p.clone();
+                            s.spawn(move || {
+                                if let Err(e) = std::fs::remove_dir_all(&p) {
+                                    tracing::warn!("cleanup_temp: failed to delete {}: {}", p.display(), e);
+                                }
+                            });
                         }
                     });
                     tracing::info!(
