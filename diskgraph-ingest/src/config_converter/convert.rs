@@ -181,6 +181,11 @@ fn convert_table(
         source: DataSource::Parquet { paths },
         fkeys,
         data_version: Some(data_version),
+        kumo_connector_id: kumo_table.data_source.clone(),
+        kumo_source_table_name: kumo_table
+            .source_name
+            .clone()
+            .or_else(|| Some(kumo_table.table_name.clone())),
     })
 }
 

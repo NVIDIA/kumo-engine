@@ -61,6 +61,12 @@ pub struct TableSpec {
     /// Data version identifier (carried from config converter for kumo stats output).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data_version: Option<String>,
+    /// Kumo connector ID (carried from config converter for edge stats output).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kumo_connector_id: Option<String>,
+    /// Kumo source table name (carried from config converter for edge stats output).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kumo_source_table_name: Option<String>,
 }
 
 impl TableSpec {
@@ -1044,6 +1050,8 @@ mod tests {
             },
             fkeys: vec![],
             data_version: None,
+            kumo_connector_id: None,
+            kumo_source_table_name: None,
         }
     }
 

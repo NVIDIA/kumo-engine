@@ -227,6 +227,8 @@ fn single_col_table(ingested: IngestedType) -> TableSpec {
         source: DataSource::Parquet { paths: vec![] },
         fkeys: Vec::new(),
         data_version: None,
+        kumo_connector_id: None,
+        kumo_source_table_name: None,
     }
 }
 
@@ -321,6 +323,8 @@ fn convert_string_timestamp_to_rowpack_timestamp() {
         source: DataSource::Parquet { paths: vec![] },
         fkeys: Vec::new(),
         data_version: None,
+        kumo_connector_id: None,
+        kumo_source_table_name: None,
     };
     let arr = StringArray::from(vec!["2020-01-02T03:04:05Z"]);
     let cols: Vec<ArrayRef> = vec![Arc::new(arr)];
@@ -354,6 +358,8 @@ fn convert_int_timestamp_with_unit() {
         source: DataSource::Parquet { paths: vec![] },
         fkeys: Vec::new(),
         data_version: None,
+        kumo_connector_id: None,
+        kumo_source_table_name: None,
     };
     let arr = Int64Array::from(vec![1_500_000_i64]);
     let cols: Vec<ArrayRef> = vec![Arc::new(arr)];
@@ -403,6 +409,8 @@ fn convert_string_date_to_rowpack_date() {
         source: DataSource::Parquet { paths: vec![] },
         fkeys: Vec::new(),
         data_version: None,
+        kumo_connector_id: None,
+        kumo_source_table_name: None,
     };
     let arr = StringArray::from(vec!["2024-02-03"]);
     let cols: Vec<ArrayRef> = vec![Arc::new(arr)];
@@ -444,6 +452,8 @@ fn convert_numeric_to_string_for_rowpack() {
         source: DataSource::Parquet { paths: vec![] },
         fkeys: Vec::new(),
         data_version: None,
+        kumo_connector_id: None,
+        kumo_source_table_name: None,
     };
     let arr = Int64Array::from(vec![42_i64]);
     let cols: Vec<ArrayRef> = vec![Arc::new(arr)];
@@ -480,6 +490,8 @@ fn convert_bytes_to_int_for_rowpack() {
         source: DataSource::Parquet { paths: vec![] },
         fkeys: Vec::new(),
         data_version: None,
+        kumo_connector_id: None,
+        kumo_source_table_name: None,
     };
     let arr = BinaryArray::from(vec![b"123".as_slice()]);
     let cols: Vec<ArrayRef> = vec![Arc::new(arr)];
@@ -846,6 +858,8 @@ fn int32_yyyymmdd_create_time_via_format() {
         source: DataSource::Parquet { paths: vec![] },
         fkeys: Vec::new(),
         data_version: None,
+        kumo_connector_id: None,
+        kumo_source_table_name: None,
     };
 
     let arr = Int32Array::from(vec![20240301]);
@@ -888,6 +902,8 @@ fn int32_epoch_secs_no_format_unchanged() {
         source: DataSource::Parquet { paths: vec![] },
         fkeys: Vec::new(),
         data_version: None,
+        kumo_connector_id: None,
+        kumo_source_table_name: None,
     };
 
     // Normal epoch seconds — no format hint, should pass through as-is

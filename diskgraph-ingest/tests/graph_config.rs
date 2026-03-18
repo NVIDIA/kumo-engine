@@ -41,6 +41,8 @@ fn base_table(name: &str) -> TableSpec {
         },
         fkeys: Vec::new(),
         data_version: None,
+        kumo_connector_id: None,
+        kumo_source_table_name: None,
     }
 }
 
@@ -107,6 +109,8 @@ fn validate_missing_pk_column() {
             },
             fkeys: Vec::new(),
             data_version: None,
+            kumo_connector_id: None,
+            kumo_source_table_name: None,
         }],
         rowpack: None,
         num_shards: None,
@@ -347,6 +351,8 @@ fn validate_edge_fk_missing_column() {
         },
         fkeys: Vec::new(),
         data_version: None,
+        kumo_connector_id: None,
+        kumo_source_table_name: None,
     });
     assert_err_contains(meta, "edge fk column dst_id not found");
 }
@@ -402,6 +408,8 @@ fn validate_edge_fk_missing_table() {
         },
         fkeys: Vec::new(),
         data_version: None,
+        kumo_connector_id: None,
+        kumo_source_table_name: None,
     });
     assert_err_contains(meta, "edge table Edge references missing table Missing");
 }
@@ -458,6 +466,8 @@ fn validate_edge_fk_ref_table_no_pk() {
         },
         fkeys: Vec::new(),
         data_version: None,
+        kumo_connector_id: None,
+        kumo_source_table_name: None,
     });
     assert_err_contains(meta, "references Device which has no primary key");
 }
@@ -515,6 +525,8 @@ fn validate_edge_fk_int_string_ok() {
         },
         fkeys: Vec::new(),
         data_version: None,
+        kumo_connector_id: None,
+        kumo_source_table_name: None,
     });
     assert!(meta.validate().is_ok());
 }
@@ -570,6 +582,8 @@ fn validate_edge_fk_string_int_ok() {
         },
         fkeys: Vec::new(),
         data_version: None,
+        kumo_connector_id: None,
+        kumo_source_table_name: None,
     });
     assert!(meta.validate().is_ok());
 }
@@ -633,6 +647,8 @@ fn validate_edge_fk_string_bytes_ok() {
         },
         fkeys: Vec::new(),
         data_version: None,
+        kumo_connector_id: None,
+        kumo_source_table_name: None,
     });
     assert!(meta.validate().is_ok());
 }
@@ -696,6 +712,8 @@ fn validate_edge_fk_string_bytes_len_mismatch() {
         },
         fkeys: Vec::new(),
         data_version: None,
+        kumo_connector_id: None,
+        kumo_source_table_name: None,
     });
     assert!(meta.validate().is_ok());
 }
@@ -741,6 +759,8 @@ fn validate_edge_fk_uuid_ok() {
         },
         fkeys: Vec::new(),
         data_version: None,
+        kumo_connector_id: None,
+        kumo_source_table_name: None,
     });
     assert!(meta.validate().is_ok());
 }
@@ -786,6 +806,8 @@ fn validate_edge_fk_uuid_mismatch() {
         },
         fkeys: Vec::new(),
         data_version: None,
+        kumo_connector_id: None,
+        kumo_source_table_name: None,
     });
     assert_err_contains(meta, "incompatible types");
 }
@@ -1174,6 +1196,8 @@ mod new_schema_types {
             },
             fkeys: Vec::new(),
             data_version: None,
+            kumo_connector_id: None,
+            kumo_source_table_name: None,
         };
         let json = serde_json::to_string(&table).unwrap();
         assert!(json.contains(r#""source""#));
@@ -1211,6 +1235,8 @@ mod new_schema_types {
                 reverse: None,
             }],
             data_version: None,
+            kumo_connector_id: None,
+            kumo_source_table_name: None,
         };
         let json = serde_json::to_string(&table).unwrap();
         assert!(json.contains(r#""fkeys""#));
@@ -1233,6 +1259,8 @@ mod new_schema_types {
             },
             fkeys: Vec::new(),
             data_version: None,
+            kumo_connector_id: None,
+            kumo_source_table_name: None,
         };
         let json = serde_json::to_string(&table).unwrap();
         assert!(json.contains(r#""create_time":"start_date""#));

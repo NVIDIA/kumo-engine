@@ -315,6 +315,8 @@ pub fn infer_source_metadata(root: &RootSource, options: InferOptions) -> Result
             },
             fkeys: Vec::new(),
             data_version: None,
+            kumo_connector_id: None,
+            kumo_source_table_name: None,
         })
         .collect();
 

@@ -349,6 +349,13 @@ pub fn ingest_with_stats_from_source(
     ctx.target
         .write_bytes("ingest_stats.json", serde_json::to_vec_pretty(&report)?)?;
 
+    // Write kumo-format edge stats if kumo metadata is available.
+    if let Some(edge_stats_bytes) = ctx.build_edge_stats_json(&index_metadata)? {
+        ctx.target
+            .write_bytes("edge_stats.json", edge_stats_bytes)?;
+        tracing::info!("wrote edge_stats.json");
+    }
+
     tracing::debug!(
         elapsed_ms = wall_time.as_millis() as u64,
         node_types = index_metadata.node_types.len(),
@@ -383,6 +390,9 @@ struct IngestContext {
     /// Key format: "table_name.column_name" -> FkEdgeTarget
     fk_edge_targets: HashMap<String, FkEdgeTarget>,
     edge_counts: HashMap<String, u64>,
+    /// Per forward-relation bitvec of dst node IDs with nonzero degree.
+    /// Used to compute NUM_DST_NONZERO_DEGREE for kumo edge stats.
+    edge_dst_degree_bits: HashMap<String, Vec<u8>>,
     pk_duplicate_counts: HashMap<String, u64>,
     pk_duplicate_drops: HashMap<String, u64>,
     pk_null_timestamp_drops: HashMap<String, u64>,
@@ -1474,6 +1484,7 @@ impl IngestContext {
             relationships,
             fk_edge_targets,
             edge_counts: HashMap::new(),
+            edge_dst_degree_bits: HashMap::new(),
             pk_duplicate_counts: HashMap::new(),
             pk_duplicate_drops: HashMap::new(),
             pk_null_timestamp_drops: HashMap::new(),
@@ -4375,6 +4386,8 @@ impl IngestContext {
                 edge_counts: HashMap<String, u64>,
                 pk_duplicate_drops: u64,
                 null_timestamp_drops: u64,
+                /// Forward relation name → bitvec tracking unique dst node IDs.
+                dst_degree_bits: HashMap<String, Vec<u8>>,
             }
             if let Some(total_mem) = total_memory_bytes() {
                 tracing::info!(
@@ -4541,6 +4554,8 @@ impl IngestContext {
                             let mut forward_count = 0u64;
                             let mut reverse_count = 0u64;
                             let mut pk_duplicate_drops = 0u64;
+                            let dst_max = max_ids.get(&rel.dst_table).copied().unwrap_or(0);
+                            let mut dst_bits = vec![0u8; ((dst_max + 8) / 8) as usize];
                             let fkey_path =
                                 root.join(temp_fkey_path(&rel.src_table, &rel.name_forward, shard));
                             let bitmap_path = root.join(temp_fkey_bitmap_path(
@@ -4657,6 +4672,10 @@ impl IngestContext {
                                         src_id,
                                         reverse_sort_key,
                                     )?;
+                                    let bit_idx = dst_id as usize;
+                                    if bit_idx / 8 < dst_bits.len() {
+                                        dst_bits[bit_idx / 8] |= 1u8 << (bit_idx % 8) as u8;
+                                    }
                                     forward_count = forward_count.saturating_add(1);
                                     reverse_count = reverse_count.saturating_add(1);
                                     Ok(())
@@ -4684,6 +4703,9 @@ impl IngestContext {
                             result
                                 .edge_counts
                                 .insert(rel.name_reverse.clone(), reverse_count);
+                            result
+                                .dst_degree_bits
+                                .insert(rel.name_forward.clone(), dst_bits);
                             result.pk_duplicate_drops = pk_duplicate_drops;
                             tx.send(Ok(result))
                                 .map_err(|e| anyhow!("edges_map output error: {e}"))?;
@@ -4983,6 +5005,18 @@ impl IngestContext {
                 for (rel, count) in result.edge_counts {
                     let entry = self.edge_counts.entry(rel).or_insert(0);
                     *entry = entry.saturating_add(count);
+                }
+                for (rel, bits) in result.dst_degree_bits {
+                    let merged = self.edge_dst_degree_bits.entry(rel).or_default();
+                    if merged.is_empty() {
+                        *merged = bits;
+                    } else {
+                        for (i, b) in bits.iter().enumerate() {
+                            if i < merged.len() {
+                                merged[i] |= b;
+                            }
+                        }
+                    }
                 }
                 if result.pk_duplicate_drops > 0 {
                     let entry = self
@@ -5353,6 +5387,182 @@ impl IngestContext {
             perf,
             num_shards: Some(self.num_shards),
         }
+    }
+
+    /// Build kumo-format edge_stats.json content.
+    ///
+    /// Returns `None` if kumo metadata (connector_id, source_table_name) is not
+    /// available on the tables — i.e., the config was not produced by
+    /// `convert_kumo_to_diskgraph` and we're running outside the kumo pipeline.
+    fn build_edge_stats_json(
+        &self,
+        metadata: &diskgraph_core::metadata::DatasetMetadata,
+    ) -> Result<Option<Vec<u8>>> {
+        use serde_json::{json, Map, Value};
+
+        // Build table name → TableSpec lookup
+        let table_map: HashMap<&str, &crate::graph_config::TableSpec> = self
+            .source
+            .tables
+            .iter()
+            .map(|t| (t.name.as_str(), t))
+            .collect();
+
+        // Build table name → node count from metadata
+        let mut node_counts: HashMap<&str, u64> = HashMap::new();
+        for nt in &metadata.node_types {
+            node_counts.insert(
+                // Find matching table name (metadata node type name matches table name)
+                table_map
+                    .keys()
+                    .find(|k| **k == nt.name)
+                    .copied()
+                    .unwrap_or(nt.name.as_str()),
+                nt.max_id.saturating_add(1),
+            );
+        }
+
+        // Check that kumo metadata is available on at least one table
+        let has_kumo_metadata = self
+            .source
+            .tables
+            .iter()
+            .any(|t| t.kumo_connector_id.is_some());
+        if !has_kumo_metadata {
+            return Ok(None);
+        }
+
+        let mut stats_map = Map::new();
+
+        for rel in &self.relationships {
+            let src_table = match table_map.get(rel.src_table.as_str()) {
+                Some(t) => t,
+                None => continue,
+            };
+            let dst_table = match table_map.get(rel.dst_table.as_str()) {
+                Some(t) => t,
+                None => continue,
+            };
+
+            let src_connector = src_table
+                .kumo_connector_id
+                .as_deref()
+                .unwrap_or("");
+            let src_source_name = src_table
+                .kumo_source_table_name
+                .as_deref()
+                .unwrap_or(&src_table.name);
+            let dst_connector = dst_table
+                .kumo_connector_id
+                .as_deref()
+                .unwrap_or("");
+            let dst_source_name = dst_table
+                .kumo_source_table_name
+                .as_deref()
+                .unwrap_or(&dst_table.name);
+            let fk_col = &rel.src_column;
+            let pk_col = match &dst_table.primary_key {
+                Some(pk) => pk.as_str(),
+                None => continue,
+            };
+            let data_version = src_table
+                .data_version
+                .as_deref()
+                .unwrap_or("");
+
+            let edge_count = self
+                .edge_counts
+                .get(&rel.name_forward)
+                .copied()
+                .unwrap_or(0);
+            let num_src_nodes = node_counts
+                .get(rel.src_table.as_str())
+                .copied()
+                .unwrap_or(0);
+            let num_dst_nodes = node_counts
+                .get(rel.dst_table.as_str())
+                .copied()
+                .unwrap_or(0);
+
+            // For FK→PK, forward_count = unique src nodes (each src row → 0 or 1 edge)
+            let num_src_nonzero = edge_count;
+
+            // Unique dst from bitvec popcount
+            let num_dst_nonzero = self
+                .edge_dst_degree_bits
+                .get(&rel.name_forward)
+                .map(|bits| {
+                    bits.iter()
+                        .map(|b| b.count_ones() as u64)
+                        .sum::<u64>()
+                })
+                .unwrap_or(0);
+
+            let frac_src = if num_src_nodes > 0 {
+                num_src_nonzero as f64 / num_src_nodes as f64
+            } else {
+                0.0
+            };
+            let frac_dst = if num_dst_nodes > 0 {
+                num_dst_nonzero as f64 / num_dst_nodes as f64
+            } else {
+                0.0
+            };
+
+            // Build key prefix: src_table__src_connector__dst_table__dst_connector__fk__pk
+            let key_prefix = format!(
+                "{}__{}__{}__{}__{}__{}",
+                src_source_name, src_connector,
+                dst_source_name, dst_connector,
+                fk_col, pk_col,
+            );
+
+            let stat_value = |val: Value| -> Value {
+                json!({
+                    "value": val,
+                    "approx": false,
+                    "data_version": data_version,
+                    "num_entries": null,
+                    "timestamp": null,
+                })
+            };
+
+            stats_map.insert(
+                format!("{}__EDGE_COUNT", key_prefix),
+                stat_value(json!(edge_count)),
+            );
+            stats_map.insert(
+                format!("{}__NUM_SRC_NODES", key_prefix),
+                stat_value(json!(num_src_nodes)),
+            );
+            stats_map.insert(
+                format!("{}__NUM_DST_NODES", key_prefix),
+                stat_value(json!(num_dst_nodes)),
+            );
+            stats_map.insert(
+                format!("{}__NUM_SRC_NONZERO_DEGREE", key_prefix),
+                stat_value(json!(num_src_nonzero)),
+            );
+            stats_map.insert(
+                format!("{}__NUM_DST_NONZERO_DEGREE", key_prefix),
+                stat_value(json!(num_dst_nonzero)),
+            );
+            stats_map.insert(
+                format!("{}__FRAC_SRC_NONZERO_DEGREE", key_prefix),
+                stat_value(json!(frac_src)),
+            );
+            stats_map.insert(
+                format!("{}__FRAC_DST_NONZERO_DEGREE", key_prefix),
+                stat_value(json!(frac_dst)),
+            );
+        }
+
+        if stats_map.is_empty() {
+            return Ok(None);
+        }
+
+        let json_bytes = serde_json::to_vec_pretty(&Value::Object(stats_map))?;
+        Ok(Some(json_bytes))
     }
 }
 

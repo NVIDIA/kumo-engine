@@ -62,6 +62,8 @@ fn table(name: &str, cols: &[(&str, IngestedType)]) -> TableSpec {
         source: DataSource::Parquet { paths: vec![] },
         fkeys: Vec::new(),
         data_version: None,
+        kumo_connector_id: None,
+        kumo_source_table_name: None,
     }
 }
 
@@ -149,6 +151,8 @@ fn infer_pk_prefers_customer_id_over_postal_code() {
         },
         fkeys: Vec::new(),
         data_version: None,
+        kumo_connector_id: None,
+        kumo_source_table_name: None,
     };
     infer_primary_keys(std::slice::from_mut(&mut t), None);
     assert_eq!(t.primary_key.as_deref(), Some("customer_id"));
@@ -471,6 +475,8 @@ fn infer_fk_relationship() {
             source: DataSource::Parquet { paths: vec![] },
             fkeys: Vec::new(),
             data_version: None,
+            kumo_connector_id: None,
+            kumo_source_table_name: None,
         },
         TableSpec {
             name: "orders".to_string(),
@@ -494,6 +500,8 @@ fn infer_fk_relationship() {
             source: DataSource::Parquet { paths: vec![] },
             fkeys: Vec::new(),
             data_version: None,
+            kumo_connector_id: None,
+            kumo_source_table_name: None,
         },
     ];
     let mut inferred_fkeys = Vec::new();
@@ -529,6 +537,8 @@ fn infer_fk_skips_incompatible() {
             source: DataSource::Parquet { paths: vec![] },
             fkeys: Vec::new(),
             data_version: None,
+            kumo_connector_id: None,
+            kumo_source_table_name: None,
         },
         TableSpec {
             name: "sessions".to_string(),
@@ -552,6 +562,8 @@ fn infer_fk_skips_incompatible() {
             source: DataSource::Parquet { paths: vec![] },
             fkeys: Vec::new(),
             data_version: None,
+            kumo_connector_id: None,
+            kumo_source_table_name: None,
         },
     ];
     let mut inferred_fkeys = Vec::new();
@@ -604,6 +616,8 @@ fn infer_fk_prefers_best_token_match() {
             source: DataSource::Parquet { paths: vec![] },
             fkeys: Vec::new(),
             data_version: None,
+            kumo_connector_id: None,
+            kumo_source_table_name: None,
         },
         TableSpec {
             name: "d_lab".to_string(),
@@ -627,6 +641,8 @@ fn infer_fk_prefers_best_token_match() {
             source: DataSource::Parquet { paths: vec![] },
             fkeys: Vec::new(),
             data_version: None,
+            kumo_connector_id: None,
+            kumo_source_table_name: None,
         },
         TableSpec {
             name: "labevents".to_string(),
@@ -650,6 +666,8 @@ fn infer_fk_prefers_best_token_match() {
             source: DataSource::Parquet { paths: vec![] },
             fkeys: Vec::new(),
             data_version: None,
+            kumo_connector_id: None,
+            kumo_source_table_name: None,
         },
     ];
     let mut inferred_fkeys = Vec::new();
@@ -697,6 +715,8 @@ fn infer_fk_self_reference_suffix() {
         source: DataSource::Parquet { paths: vec![] },
         fkeys: Vec::new(),
         data_version: None,
+        kumo_connector_id: None,
+        kumo_source_table_name: None,
     }];
     let mut inferred_fkeys = Vec::new();
     let mut notes = Vec::new();
@@ -787,6 +807,8 @@ fn infer_fk_base_match_allows_code() {
             source: DataSource::Parquet { paths: vec![] },
             fkeys: Vec::new(),
             data_version: None,
+            kumo_connector_id: None,
+            kumo_source_table_name: None,
         },
         TableSpec {
             name: "hcpcs".to_string(),
@@ -810,6 +832,8 @@ fn infer_fk_base_match_allows_code() {
             source: DataSource::Parquet { paths: vec![] },
             fkeys: Vec::new(),
             data_version: None,
+            kumo_connector_id: None,
+            kumo_source_table_name: None,
         },
     ];
     let mut inferred_fkeys = Vec::new();
@@ -845,6 +869,8 @@ fn infer_fk_avoids_generic_code_match() {
             source: DataSource::Parquet { paths: vec![] },
             fkeys: Vec::new(),
             data_version: None,
+            kumo_connector_id: None,
+            kumo_source_table_name: None,
         },
         TableSpec {
             name: "d_icd_diag".to_string(),
@@ -868,6 +894,8 @@ fn infer_fk_avoids_generic_code_match() {
             source: DataSource::Parquet { paths: vec![] },
             fkeys: Vec::new(),
             data_version: None,
+            kumo_connector_id: None,
+            kumo_source_table_name: None,
         },
     ];
     let mut inferred_fkeys = Vec::new();
@@ -916,6 +944,8 @@ fn infer_fk_prefers_shorter_table_on_tie() {
             source: DataSource::Parquet { paths: vec![] },
             fkeys: Vec::new(),
             data_version: None,
+            kumo_connector_id: None,
+            kumo_source_table_name: None,
         },
         TableSpec {
             name: "poe_detail".to_string(),
@@ -939,6 +969,8 @@ fn infer_fk_prefers_shorter_table_on_tie() {
             source: DataSource::Parquet { paths: vec![] },
             fkeys: Vec::new(),
             data_version: None,
+            kumo_connector_id: None,
+            kumo_source_table_name: None,
         },
         TableSpec {
             name: "emar".to_string(),
@@ -962,6 +994,8 @@ fn infer_fk_prefers_shorter_table_on_tie() {
             source: DataSource::Parquet { paths: vec![] },
             fkeys: Vec::new(),
             data_version: None,
+            kumo_connector_id: None,
+            kumo_source_table_name: None,
         },
     ];
     let mut inferred_fkeys = Vec::new();
@@ -996,6 +1030,8 @@ fn infer_fk_exact_pk_name_match() {
             source: DataSource::Parquet { paths: vec![] },
             fkeys: Vec::new(),
             data_version: None,
+            kumo_connector_id: None,
+            kumo_source_table_name: None,
         },
         TableSpec {
             name: "services".to_string(),
@@ -1019,6 +1055,8 @@ fn infer_fk_exact_pk_name_match() {
             source: DataSource::Parquet { paths: vec![] },
             fkeys: Vec::new(),
             data_version: None,
+            kumo_connector_id: None,
+            kumo_source_table_name: None,
         },
     ];
     let mut inferred_fkeys = Vec::new();
@@ -1053,6 +1091,8 @@ fn infer_fk_itemid_prefers_lab_table() {
             source: DataSource::Parquet { paths: vec![] },
             fkeys: Vec::new(),
             data_version: None,
+            kumo_connector_id: None,
+            kumo_source_table_name: None,
         },
         TableSpec {
             name: "d_lab".to_string(),
@@ -1076,6 +1116,8 @@ fn infer_fk_itemid_prefers_lab_table() {
             source: DataSource::Parquet { paths: vec![] },
             fkeys: Vec::new(),
             data_version: None,
+            kumo_connector_id: None,
+            kumo_source_table_name: None,
         },
         TableSpec {
             name: "labevents".to_string(),
@@ -1099,6 +1141,8 @@ fn infer_fk_itemid_prefers_lab_table() {
             source: DataSource::Parquet { paths: vec![] },
             fkeys: Vec::new(),
             data_version: None,
+            kumo_connector_id: None,
+            kumo_source_table_name: None,
         },
     ];
     let mut inferred_fkeys = Vec::new();
@@ -1133,6 +1177,8 @@ fn infer_pk_pk_relationship_when_table_names_overlap() {
             source: DataSource::Parquet { paths: vec![] },
             fkeys: Vec::new(),
             data_version: None,
+            kumo_connector_id: None,
+            kumo_source_table_name: None,
         },
         TableSpec {
             name: "user_profile".to_string(),
@@ -1156,6 +1202,8 @@ fn infer_pk_pk_relationship_when_table_names_overlap() {
             source: DataSource::Parquet { paths: vec![] },
             fkeys: Vec::new(),
             data_version: None,
+            kumo_connector_id: None,
+            kumo_source_table_name: None,
         },
     ];
     let mut inferred_fkeys = Vec::new();
@@ -1191,6 +1239,8 @@ fn infer_pk_pk_skips_generic_id() {
             source: DataSource::Parquet { paths: vec![] },
             fkeys: Vec::new(),
             data_version: None,
+            kumo_connector_id: None,
+            kumo_source_table_name: None,
         },
         TableSpec {
             name: "beta".to_string(),
@@ -1214,6 +1264,8 @@ fn infer_pk_pk_skips_generic_id() {
             source: DataSource::Parquet { paths: vec![] },
             fkeys: Vec::new(),
             data_version: None,
+            kumo_connector_id: None,
+            kumo_source_table_name: None,
         },
     ];
     let mut inferred_fkeys = Vec::new();
