@@ -54,3 +54,61 @@ def test_export_tt_artifacts_pybind(tmp_path_factory, ifood_graph):
     assert mask_table.column("__mask__")[0].as_py() == True
     assert mask_table.column("__mask__")[1].as_py() == False
     assert mask_table.column("__mask__")[2].as_py() == False
+
+
+def test_export_tt_artifacts_pybind_multi_file(tmp_path_factory, ifood_graph):
+    """
+    Tests the PyBind exposure of the export_tt_artifacts Rust utility using
+    multiple parquet files in a directory.
+    """
+    root = tmp_path_factory.mktemp("export_test_multi")
+
+    tt_dir = root / "train_table_dir"
+    tt_dir.mkdir()
+
+    schema = pa.schema([
+        ("arange", pa.int64()),
+        ("USER_FKEY", pa.string()),
+        ("MERCHANT_FKEY", pa.string())
+    ])
+
+    # File 1: 2 rows
+    table1 = pa.Table.from_arrays([
+        pa.array([100, 101]),
+        pa.array(["u1", "u2"]),
+        pa.array(["m1", "m_invalid"])
+    ], schema=schema)
+    pq.write_table(table1, str(tt_dir / "part-00000.parquet"))
+
+    # File 2: 1 row
+    table2 = pa.Table.from_arrays([
+        pa.array([102]),
+        pa.array(["u3"]),
+        pa.array([None])
+    ], schema=schema)
+    pq.write_table(table2, str(tt_dir / "part-00001.parquet"))
+
+    # Also add a non-parquet file that should be ignored
+    (tt_dir / "_SUCCESS").touch()
+
+    output_dir = str(root / "output")
+
+    config = diskgraph_py.ExportConfig(
+        train_table_path=str(tt_dir),
+        index_path=ifood_graph,
+        output_dir=output_dir,
+        fkeys=[
+            diskgraph_py.FkeyConfig("USER_FKEY", "users"),
+            diskgraph_py.FkeyConfig("MERCHANT_FKEY", "merchants")
+        ]
+    )
+
+    diskgraph_py.export_tt_artifacts(config)
+
+    mask_table = pq.read_table(f"{output_dir}/custom_train_table_mask.parquet")
+    assert mask_table.num_rows == 3
+
+    assert mask_table.column("__mask__")[0].as_py() == True
+    assert mask_table.column("__mask__")[1].as_py() == False
+    assert mask_table.column("__mask__")[2].as_py() == False
+

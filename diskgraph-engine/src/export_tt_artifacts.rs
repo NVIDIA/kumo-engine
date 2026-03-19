@@ -163,127 +163,151 @@ pub fn process_export_internal<R: IdResolver>(
     resolver: &R,
     key_types: &[KeyType],
 ) -> Result<()> {
-    let input_file = File::open(&config.train_table_path)?;
-    let builder = ParquetRecordBatchReaderBuilder::try_new(input_file)?;
-    let mut reader = builder.build()?;
+    let train_table_path = Path::new(&config.train_table_path);
+    let mut input_files = Vec::new();
+
+    if train_table_path.is_dir() {
+        for entry in std::fs::read_dir(train_table_path)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_file()
+                && path
+                    .extension()
+                    .map(|ext| ext == "parquet")
+                    .unwrap_or(false)
+            {
+                input_files.push(path);
+            }
+        }
+        // Sort files to ensure deterministic batch_index if needed
+        input_files.sort();
+    } else {
+        input_files.push(train_table_path.to_path_buf());
+    }
 
     let output_dir = Path::new(&config.output_dir);
     std::fs::create_dir_all(output_dir)?;
 
     let mut batch_index = 0;
 
-    while let Some(maybe_batch) = reader.next() {
-        let batch = maybe_batch?;
-        let num_rows = batch.num_rows();
+    for file_path in input_files {
+        let input_file = File::open(file_path)?;
+        let builder = ParquetRecordBatchReaderBuilder::try_new(input_file)?;
+        let mut reader = builder.build()?;
 
-        let arange_col = batch
-            .column_by_name(&config.row_idx_col)
-            .ok_or_else(|| anyhow!("Column {} not found", config.row_idx_col))?;
-        let arange_array = arange_col.as_primitive::<Int64Type>();
+        while let Some(maybe_batch) = reader.next() {
+            let batch = maybe_batch?;
+            let num_rows = batch.num_rows();
 
-        let mut mask_values: Vec<i32> = Vec::with_capacity(num_rows);
-        let mut fkey_arrays = Vec::new();
-        let mut fkey_fields = Vec::new();
+            let arange_col = batch
+                .column_by_name(&config.row_idx_col)
+                .ok_or_else(|| anyhow!("Column {} not found", config.row_idx_col))?;
+            let arange_array = arange_col.as_primitive::<Int64Type>();
 
-        let mut resolved_matrix: Vec<Vec<i64>> =
-            vec![Vec::with_capacity(num_rows); config.fkeys.len()];
+            let mut mask_values: Vec<i32> = Vec::with_capacity(num_rows);
+            let mut fkey_arrays = Vec::new();
+            let mut fkey_fields = Vec::new();
 
-        for (i, fkey_conf) in config.fkeys.iter().enumerate() {
-            let col = batch
-                .column_by_name(&fkey_conf.column_name)
-                .ok_or_else(|| anyhow!("Column {} not found", fkey_conf.column_name))?;
+            let mut resolved_matrix: Vec<Vec<i64>> =
+                vec![Vec::with_capacity(num_rows); config.fkeys.len()];
 
-            let kt = key_types[i];
+            for (i, fkey_conf) in config.fkeys.iter().enumerate() {
+                let col = batch
+                    .column_by_name(&fkey_conf.column_name)
+                    .ok_or_else(|| anyhow!("Column {} not found", fkey_conf.column_name))?;
 
-            for row in 0..num_rows {
-                match read_key_from_column(col.as_ref(), row, kt) {
-                    None => resolved_matrix[i].push(-1),
-                    Some(key) => match resolver.resolve(i, &key)? {
-                        Some(local_id) => resolved_matrix[i].push(local_id as i64),
+                let kt = key_types[i];
+
+                for row in 0..num_rows {
+                    match read_key_from_column(col.as_ref(), row, kt) {
                         None => resolved_matrix[i].push(-1),
-                    },
+                        Some(key) => match resolver.resolve(i, &key)? {
+                            Some(local_id) => resolved_matrix[i].push(local_id as i64),
+                            None => resolved_matrix[i].push(-1),
+                        },
+                    }
                 }
+
+                let array = Int64Array::from(resolved_matrix[i].clone());
+                fkey_arrays.push(Arc::new(array) as Arc<dyn Array>);
+                fkey_fields.push(Field::new(&fkey_conf.column_name, DataType::Int64, true));
             }
-
-            let array = Int64Array::from(resolved_matrix[i].clone());
-            fkey_arrays.push(Arc::new(array) as Arc<dyn Array>);
-            fkey_fields.push(Field::new(&fkey_conf.column_name, DataType::Int64, true));
-        }
-
-        for row in 0..num_rows {
-            let mut valid = true;
-            for i in 0..config.fkeys.len() {
-                if resolved_matrix[i][row] == -1 {
-                    valid = false;
-                    break;
-                }
-            }
-            mask_values.push(if valid { 1 } else { 0 });
-        }
-
-        let mask_array = Arc::new(Int32Array::from(mask_values)) as Arc<dyn Array>;
-
-        let fkey_schema = Arc::new(Schema::new(fkey_fields));
-        let fkey_batch = RecordBatch::try_new(fkey_schema, fkey_arrays)?;
-        let fkey_dir =
-            output_dir.join(format!("{}_fkey_cols.parquet", config.train_table_name));
-        write_parquet(
-            &fkey_dir.join(format!("part-{:04}.parquet", batch_index)),
-            &fkey_batch,
-        )?;
-
-        let mask_schema = Arc::new(Schema::new(vec![Field::new(
-            "__mask__",
-            DataType::Int32,
-            false,
-        )]));
-        let mask_batch = RecordBatch::try_new(mask_schema, vec![mask_array])?;
-        let mask_dir =
-            output_dir.join(format!("{}_mask.parquet", config.train_table_name));
-        write_parquet(
-            &mask_dir.join(format!("part-{:04}.parquet", batch_index)),
-            &mask_batch,
-        )?;
-
-        for (i, fkey_conf) in config.fkeys.iter().enumerate() {
-            let mut rows = Vec::new();
-            let mut cols = Vec::new();
 
             for row in 0..num_rows {
-                let target_id = resolved_matrix[i][row];
-                if target_id != -1 {
-                    let arange_val = arange_array.value(row);
-                    rows.push(target_id);
-                    cols.push(arange_val);
+                let mut valid = true;
+                for i in 0..config.fkeys.len() {
+                    if resolved_matrix[i][row] == -1 {
+                        valid = false;
+                        break;
+                    }
                 }
+                mask_values.push(if valid { 1 } else { 0 });
             }
 
-            let edge_schema = Arc::new(Schema::new(vec![
-                Field::new("row", DataType::Int64, false),
-                Field::new("col", DataType::Int64, false),
-            ]));
+            let mask_array = Arc::new(Int32Array::from(mask_values)) as Arc<dyn Array>;
 
-            let edge_batch = RecordBatch::try_new(
-                edge_schema,
-                vec![
-                    Arc::new(Int64Array::from(rows)) as Arc<dyn Array>,
-                    Arc::new(Int64Array::from(cols)) as Arc<dyn Array>,
-                ],
-            )?;
-
-            let edge_dir = output_dir
-                .join(format!(
-                    "{}__rev_{}__{}",
-                    fkey_conf.target_table, fkey_conf.column_name, config.train_table_name
-                ))
-                .join("edge.parquet");
+            let fkey_schema = Arc::new(Schema::new(fkey_fields));
+            let fkey_batch = RecordBatch::try_new(fkey_schema, fkey_arrays)?;
+            let fkey_dir =
+                output_dir.join(format!("{}_fkey_cols.parquet", config.train_table_name));
             write_parquet(
-                &edge_dir.join(format!("part-{:04}.parquet", batch_index)),
-                &edge_batch,
+                &fkey_dir.join(format!("part-{:04}.parquet", batch_index)),
+                &fkey_batch,
             )?;
-        }
 
-        batch_index += 1;
+            let mask_schema = Arc::new(Schema::new(vec![Field::new(
+                "__mask__",
+                DataType::Int32,
+                false,
+            )]));
+            let mask_batch = RecordBatch::try_new(mask_schema, vec![mask_array])?;
+            let mask_dir =
+                output_dir.join(format!("{}_mask.parquet", config.train_table_name));
+            write_parquet(
+                &mask_dir.join(format!("part-{:04}.parquet", batch_index)),
+                &mask_batch,
+            )?;
+
+            for (i, fkey_conf) in config.fkeys.iter().enumerate() {
+                let mut rows = Vec::new();
+                let mut cols = Vec::new();
+
+                for row in 0..num_rows {
+                    let target_id = resolved_matrix[i][row];
+                    if target_id != -1 {
+                        let arange_val = arange_array.value(row);
+                        rows.push(target_id);
+                        cols.push(arange_val);
+                    }
+                }
+
+                let edge_schema = Arc::new(Schema::new(vec![
+                    Field::new("row", DataType::Int64, false),
+                    Field::new("col", DataType::Int64, false),
+                ]));
+
+                let edge_batch = RecordBatch::try_new(
+                    edge_schema,
+                    vec![
+                        Arc::new(Int64Array::from(rows)) as Arc<dyn Array>,
+                        Arc::new(Int64Array::from(cols)) as Arc<dyn Array>,
+                    ],
+                )?;
+
+                let edge_dir = output_dir
+                    .join(format!(
+                        "{}__rev_{}__{}",
+                        fkey_conf.target_table, fkey_conf.column_name, config.train_table_name
+                    ))
+                    .join("edge.parquet");
+                write_parquet(
+                    &edge_dir.join(format!("part-{:04}.parquet", batch_index)),
+                    &edge_batch,
+                )?;
+            }
+
+            batch_index += 1;
+        }
     }
 
     Ok(())
