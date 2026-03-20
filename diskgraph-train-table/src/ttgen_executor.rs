@@ -1,8 +1,7 @@
 //! TT-gen executor: drives the entity loop, staged execution, and threading.
 //!
-//! Entry points (`execute` / `execute_with_summary`) take a `DiskGraphTTPlan`
-//! and index path and return a streaming `RecordBatch` receiver plus a
-//! join handle for completion stats.
+//! Entry point: [`execute`] takes a `DiskGraphTTPlan` and an index path,
+//! returns output Parquet shard paths.
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -97,6 +96,40 @@ pub fn execute_with_summary(
     // Bounded channel: buffer up to 16 batches (~1MB each) for back-pressure.
     let (sender, receiver) = bounded::<RecordBatch>(16);
     let is_link_prediction = matches!(resolved.prediction_type, PredictionType::Link { .. });
+    let has_frequency_col = matches!(
+        resolved.prediction_type,
+        PredictionType::Link {
+            include_frequency: true,
+            ..
+        }
+    );
+    let has_include_bit_col = resolved.lag_timesteps > 0;
+    let split_ratio = plan.split.as_ref().map(|s| s.ratio.clone());
+    let split_kind = plan.split.as_ref().and_then(|s| s.kind.clone());
+    let split_is_temporal = plan
+        .split
+        .as_ref()
+        .and_then(|s| s.is_temporal)
+        .unwrap_or(false);
+    let split_offsets = plan.split.as_ref().and_then(|s| s.offsets.clone());
+    let split_ranges = plan.split.as_ref().and_then(|s| s.ranges.clone());
+    let split_backtesting_timestamp = plan
+        .split
+        .as_ref()
+        .and_then(|s| s.backtesting_timestamp);
+    let split_column = plan.split.as_ref().and_then(|s| s.split_column.clone());
+    let manual_train_values = plan
+        .split
+        .as_ref()
+        .and_then(|s| s.manual_train_values.clone());
+    let manual_val_values = plan
+        .split
+        .as_ref()
+        .and_then(|s| s.manual_val_values.clone());
+    let manual_test_values = plan
+        .split
+        .as_ref()
+        .and_then(|s| s.manual_test_values.clone());
 
     let handle = std::thread::spawn(move || {
         // Parallel execution with fine-grained chunks
@@ -130,7 +163,22 @@ pub fn execute_with_summary(
         tracing::info!(total_rows, "TT-gen execution finished");
         Ok(TTExecutionSummary {
             rows_written: total_rows,
-            stats: Some(stats.finalize(total_rows, is_link_prediction)),
+            stats: Some(stats.finalize(
+                total_rows,
+                is_link_prediction,
+                has_frequency_col,
+                has_include_bit_col,
+                split_ratio.as_deref(),
+                split_kind.as_deref(),
+                split_is_temporal,
+                split_offsets.as_deref(),
+                split_ranges.as_deref(),
+                split_backtesting_timestamp,
+                split_column.as_deref(),
+                manual_train_values.as_deref(),
+                manual_val_values.as_deref(),
+                manual_test_values.as_deref(),
+            )),
         })
     });
 
@@ -147,21 +195,24 @@ fn output_mode_from_prediction_type(
 ) -> OutputMode {
     match pt {
         PredictionType::Node => OutputMode::Node { target_dtype },
-        PredictionType::Link { explode: true, include_frequency } => {
-            OutputMode::LinkExploded {
-                include_frequency: *include_frequency,
-                target_dtype,
-            }
-        }
-        PredictionType::Link { explode: false, include_frequency } => {
-            OutputMode::LinkArray {
-                include_frequency: *include_frequency,
-                target_dtype,
-            }
-        }
+        PredictionType::Link {
+            explode: true,
+            include_frequency,
+        } => OutputMode::LinkExploded {
+            include_frequency: *include_frequency,
+            target_dtype,
+        },
+        PredictionType::Link {
+            explode: false,
+            include_frequency,
+        } => OutputMode::LinkArray {
+            include_frequency: *include_frequency,
+            target_dtype,
+        },
         PredictionType::PassThrough => OutputMode::PassThrough,
         PredictionType::Forecasting => OutputMode::Forecasting {
-            autoregression_dtype: autoregression_dtype.expect("forecasting missing ar_dtype"),
+            autoregression_dtype: autoregression_dtype
+                .expect("forecasting missing ar_dtype"),
             yoy_dtype,
         },
     }
@@ -178,8 +229,11 @@ fn execute_chunk(
         plan.autoregression_dtype.clone(),
         plan.yoy_dtype.clone(),
     );
-    let time_col_name = plan.entity_table_spec.output_time_col_name.as_deref().unwrap_or("TIMESTAMP");
-
+    let time_col_name = plan
+        .entity_table_spec
+        .output_time_col_name
+        .as_deref()
+        .unwrap_or("TIMESTAMP");
     let mut writer = ChannelBatchWriter::new(
         sender.clone(),
         mode,
@@ -385,8 +439,7 @@ fn write_target(
                 Some(v) => v,
                 None => return Ok(()),
             };
-            // Match Kumo _drop_empty_string_targets: for node prediction with string
-            // target dtype, skip rows where the target is an empty string.
+
             if matches!(plan.prediction_type, PredictionType::Node)
                 && plan.target_dtype == DataType::Utf8
             {
@@ -400,13 +453,18 @@ fn write_target(
             match &plan.prediction_type {
                 PredictionType::Node => {
                     writer.write_row(entity_pk.clone(), ts, target, entity_include_bit)?;
+                    update_exact_stats(stats, entity_pk, ts, target, None);
                     if entity_include_bit {
+                        stats.include_true_count += 1;
                         stats.num_train_rows += 1;
-                        stats.entities.insert(hash_value(entity_pk));
-                        stats.targets.insert(hash_value(target));
+                    } else {
+                        stats.include_false_count += 1;
                     }
                 }
-                PredictionType::Link { explode: true, include_frequency } => {
+                PredictionType::Link {
+                    explode: true,
+                    include_frequency,
+                } => {
                     if let Value::List(targets) = target {
                         for (i, val) in targets.iter().enumerate() {
                             let freq = if *include_frequency {
@@ -421,16 +479,21 @@ fn write_target(
                                 freq,
                                 entity_include_bit,
                             )?;
+                            update_exact_stats(stats, entity_pk, ts, val, Some(freq));
                             if entity_include_bit {
-                                stats.num_train_rows += 1;
+                                stats.include_true_count += 1;
                                 stats.num_links += 1;
-                                stats.entities.insert(hash_value(entity_pk));
-                                stats.targets.insert(hash_value(val));
+                                stats.num_train_rows += 1;
+                            } else {
+                                stats.include_false_count += 1;
                             }
                         }
                     }
                 }
-                PredictionType::Link { explode: false, include_frequency } => {
+                PredictionType::Link {
+                    explode: false,
+                    include_frequency,
+                } => {
                     if let Value::List(targets) = target {
                         let freqs: Vec<i64> = if *include_frequency {
                             link_frequencies.to_vec()
@@ -444,21 +507,110 @@ fn write_target(
                             &freqs,
                             entity_include_bit,
                         )?;
-                        if entity_include_bit {
-                            stats.num_train_rows += 1;
-                            stats.num_links += targets.len() as u64;
-                            stats.entities.insert(hash_value(entity_pk));
-                            for target in targets {
-                                stats.targets.insert(hash_value(target));
+
+                        if let Some(first_target) = targets.first() {
+                            let first_freq = if *include_frequency {
+                                freqs.first().copied()
+                            } else {
+                                None
+                            };
+                            update_exact_stats(stats, entity_pk, ts, first_target, first_freq);
+                            for (idx, tgt) in targets.iter().enumerate().skip(1) {
+                                let freq = if *include_frequency {
+                                    freqs.get(idx).copied()
+                                } else {
+                                    None
+                                };
+                                stats.targets.insert(hash_value(tgt));
+                                if let Some(v) = value_to_i64_opt(tgt) {
+                                    stats.target_min = min_opt_i64(stats.target_min, v);
+                                    stats.target_max = max_opt_i64(stats.target_max, v);
+                                }
+                                if let Some(freq) = freq {
+                                    stats.frequency_min = min_opt_i64(stats.frequency_min, freq);
+                                    stats.frequency_max = max_opt_i64(stats.frequency_max, freq);
+                                }
                             }
+                        } else {
+                            stats.entities.insert(hash_value(entity_pk));
+                            stats.timestamps.insert(ts);
+                            *stats.timestamp_counts.entry(ts).or_insert(0) += 1;
+                            stats.timestamp_min = min_opt_i64(stats.timestamp_min, ts);
+                            stats.timestamp_max = max_opt_i64(stats.timestamp_max, ts);
+                            if let Some(v) = value_to_i64_opt(entity_pk) {
+                                stats.entity_min = min_opt_i64(stats.entity_min, v);
+                                stats.entity_max = max_opt_i64(stats.entity_max, v);
+                            }
+                        }
+
+                        if entity_include_bit {
+                            stats.include_true_count += 1;
+                            stats.num_links += targets.len() as u64;
+                            stats.num_train_rows += 1;
+                        } else {
+                            stats.include_false_count += 1;
                         }
                     }
                 }
-                _ => unreachable!()
+                _ => unreachable!(),
             }
         }
     }
     Ok(())
+}
+
+fn update_exact_stats(
+    stats: &mut ChunkStats,
+    entity_pk: &Value,
+    ts: i64,
+    target: &Value,
+    frequency: Option<i64>,
+) {
+    stats.entities.insert(hash_value(entity_pk));
+    stats.targets.insert(hash_value(target));
+    stats.timestamps.insert(ts);
+    *stats.timestamp_counts.entry(ts).or_insert(0) += 1;
+
+    stats.timestamp_min = min_opt_i64(stats.timestamp_min, ts);
+    stats.timestamp_max = max_opt_i64(stats.timestamp_max, ts);
+
+    if let Some(v) = value_to_i64_opt(entity_pk) {
+        stats.entity_min = min_opt_i64(stats.entity_min, v);
+        stats.entity_max = max_opt_i64(stats.entity_max, v);
+    }
+
+    if let Some(v) = value_to_i64_opt(target) {
+        stats.target_min = min_opt_i64(stats.target_min, v);
+        stats.target_max = max_opt_i64(stats.target_max, v);
+    }
+
+    if let Some(freq) = frequency {
+        stats.frequency_min = min_opt_i64(stats.frequency_min, freq);
+        stats.frequency_max = max_opt_i64(stats.frequency_max, freq);
+    }
+}
+
+fn value_to_i64_opt(value: &Value) -> Option<i64> {
+    match value {
+        Value::Int(v) => Some(*v),
+        Value::Float(v) => Some(*v as i64),
+        Value::Bool(v) => Some(if *v { 1 } else { 0 }),
+        Value::Str(_) | Value::List(_) => None,
+    }
+}
+
+fn min_opt_i64(current: Option<i64>, value: i64) -> Option<i64> {
+    match current {
+        Some(cur) => Some(cur.min(value)),
+        None => Some(value),
+    }
+}
+
+fn max_opt_i64(current: Option<i64>, value: i64) -> Option<i64> {
+    match current {
+        Some(cur) => Some(cur.max(value)),
+        None => Some(value),
+    }
 }
 
 // ─── Staged execution ────────────────────────────────────────────────────────
@@ -481,25 +633,26 @@ fn execute_stages(
     link_frequencies: &mut Vec<i64>,
 ) -> bool {
     for stage in &plan.stages {
-        // Execute all ops in this stage
         for op in &stage.ops {
             let result = match op {
                 ResolvedOp::Aggregate(agg) => {
                     execute_aggregate(
-                        plan, entity_node, agg, entity_cols, observation_ts,
+                        plan,
+                        entity_node,
+                        agg,
+                        entity_cols,
+                        observation_ts,
                         link_frequencies,
                     )
                 }
                 ResolvedOp::HasEdges(has_edges) => {
-                    execute_has_edges(
-                        plan, entity_node, has_edges, entity_cols, observation_ts,
-                    )
+                    execute_has_edges(plan, entity_node, has_edges, entity_cols, observation_ts)
                 }
                 ResolvedOp::Column(col) => {
                     match read_column_value_nullable(&col.table, entity_node, col.col_idx) {
-                        Some(Some(v)) => Some(v),     // non-null value
-                        Some(None) => None,            // explicit NULL → skip row
-                        None => None,                  // missing data → skip row
+                        Some(Some(v)) => Some(v),
+                        Some(None) => None,
+                        None => None,
                     }
                 }
                 ResolvedOp::Compare(cmp) => {
@@ -509,24 +662,19 @@ fn execute_stages(
                         CompareOp::IsNotNull => Some(Value::Bool(l_opt.is_some())),
                         _ => match l_opt {
                             Some(lhs) => Some(Value::Bool(compare_values(lhs, &cmp.op, &cmp.rhs))),
-                            None => None, // NULL propagation: NULL op x → NULL
-                        }
+                            None => None,
+                        },
                     }
                 }
-                ResolvedOp::Compare(cmp) => match &aliases[cmp.lhs_alias_idx] {
-                    Some(lhs) => Some(Value::Bool(compare_values(lhs, &cmp.op, &cmp.rhs))),
-                    None => None, // NULL propagation: NULL op x → NULL
-                },
                 ResolvedOp::LogicalOp(lop) => {
                     use diskgraph_core::tt_builder::LogicalOpKind;
                     match lop.op {
                         LogicalOpKind::Not => match &aliases[lop.operand_indices[0]] {
                             Some(Value::Bool(b)) => Some(Value::Bool(!b)),
                             None => None,
-                            _ => None, // non-bool → NULL
+                            _ => None,
                         },
                         LogicalOpKind::And => {
-                            // 3-valued logic: false AND anything = false
                             let a = &aliases[lop.operand_indices[0]];
                             let b = &aliases[lop.operand_indices[1]];
                             match (a, b) {
@@ -536,11 +684,10 @@ fn execute_stages(
                                 (Some(Value::Bool(true)), Some(Value::Bool(true))) => {
                                     Some(Value::Bool(true))
                                 }
-                                _ => None, // NULL AND true = NULL
+                                _ => None,
                             }
                         }
                         LogicalOpKind::Or => {
-                            // 3-valued logic: true OR anything = true
                             let a = &aliases[lop.operand_indices[0]];
                             let b = &aliases[lop.operand_indices[1]];
                             match (a, b) {
@@ -550,7 +697,7 @@ fn execute_stages(
                                 (Some(Value::Bool(false)), Some(Value::Bool(false))) => {
                                     Some(Value::Bool(false))
                                 }
-                                _ => None, // NULL OR false = NULL
+                                _ => None,
                             }
                         }
                     }
@@ -563,13 +710,13 @@ fn execute_stages(
                         for &offset in &auto.lag_offsets {
                             let shifted_ts = base_ts + offset;
                             let val_opt = execute_aggregate(
-                                plan, entity_node, agg, entity_cols, Some(shifted_ts),
-                                &mut Vec::new(), // inner frequencies not needed
+                                plan,
+                                entity_node,
+                                agg,
+                                entity_cols,
+                                Some(shifted_ts),
+                                &mut Vec::new(),
                             );
-
-                            // For Autoregression, we collect the scalar outputs.
-                            // If None is returned (e.g. empty sum/avg), we push a Float NaN
-                            // to align with Kumo's PySpark forecasting behavior.
                             match val_opt {
                                 Some(v) => results.push(v),
                                 None => results.push(Value::Float(f64::NAN)),
@@ -584,7 +731,6 @@ fn execute_stages(
             aliases[op.alias_idx()] = result;
         }
 
-        // Stage filter: short-circuit on failure
         if let Some(ref filter) = stage.filter {
             if !eval_stage_filter(
                 filter,
@@ -633,12 +779,11 @@ fn execute_has_edges(
     traverse_and_accumulate(entity_node, &has_edges.path, window, true, &mut |dst, _sk| {
         if let Some(ref f) = has_edges.row_filter {
             if !eval_row_filter(f, dst, dst_table, entity_cols) {
-                return true; // Skip this edge but keep searching
+                return true;
             }
         }
-        // Found a matching edge!
         traversed = true;
-        false // Immediate short-circuit (O(1) runtime after first match)
+        false
     });
 
     Some(Value::Bool(traversed))

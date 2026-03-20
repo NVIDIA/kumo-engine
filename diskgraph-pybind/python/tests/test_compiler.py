@@ -12,7 +12,7 @@ from kumoapi.pquery.AST import (
     DateOffsetRange,
 )
 from kumoapi.typing import AggregationType, BoolOp, RelOp, TimeUnit
-from diskgraph import DiskGraphPlanCompiler
+from diskgraph import DiskGraphPlanCompiler, SplitSpec
 
 def test_compiler_basic_aggregation():
     # Construct a Mock Validated AST
@@ -82,6 +82,78 @@ def test_compiler_basic_aggregation():
     assert path[0]["src_col"] == "user_id"
     assert path[0]["dst_table"] == "transactions"
     assert path[0]["dst_col"] == "user_id"
+
+
+def test_compile_signature_prefers_split_spec_param():
+    import inspect
+
+    sig = inspect.signature(DiskGraphPlanCompiler.compile)
+    assert 'split' in sig.parameters
+    assert 'split_ratio' not in sig.parameters
+
+
+def test_compiler_accepts_split_spec_object():
+    target_ast = Aggregation(
+        target=Column(fqn="transactions.amount"),
+        aggr=AggregationType.SUM,
+        aggr_time_range=DateOffsetRange(start=-30, end=0, unit=TimeUnit.DAYS)
+    )
+    target_ast.target = Join(
+        rhs_target=Column(fqn="transactions.amount"),
+        lhs_key="users.user_id",
+        rhs_key="transactions.user_id"
+    )
+
+    query = ValidatedPredictiveQuery(
+        entity_ast=Column(fqn="users.user_id"),
+        target_ast=target_ast,
+    )
+    query._query_type = "TEMPORAL"
+
+    compiler = DiskGraphPlanCompiler()
+    plan_json = compiler.compile(
+        query=query,
+        timestamps=[1609459200000000],
+        forecast_length=1,
+        lag_timesteps=30,
+        task_type="binary_classification",
+        split=SplitSpec(ratio=[0.8, 0.1, 0.1], kind="FixedSplit"),
+    )
+    plan = json.loads(plan_json)
+    assert plan["split"]["ratio"] == [0.8, 0.1, 0.1]
+    assert plan["split"]["kind"] == "FixedSplit"
+
+
+def test_compiler_accepts_legacy_split_dict_payload():
+    target_ast = Aggregation(
+        target=Column(fqn="transactions.amount"),
+        aggr=AggregationType.SUM,
+        aggr_time_range=DateOffsetRange(start=-30, end=0, unit=TimeUnit.DAYS)
+    )
+    target_ast.target = Join(
+        rhs_target=Column(fqn="transactions.amount"),
+        lhs_key="users.user_id",
+        rhs_key="transactions.user_id"
+    )
+    query = ValidatedPredictiveQuery(
+        entity_ast=Column(fqn="users.user_id"),
+        target_ast=target_ast,
+    )
+    query._query_type = "TEMPORAL"
+
+    compiler = DiskGraphPlanCompiler()
+    plan_json = compiler.compile(
+        query=query,
+        timestamps=[1609459200000000],
+        forecast_length=1,
+        lag_timesteps=30,
+        task_type="binary_classification",
+        split={"split_kind": "FixedSplit", "ratio": [0.8, 0.1, 0.1]},
+    )
+    plan = json.loads(plan_json)
+    assert plan["split"]["kind"] == "FixedSplit"
+    assert plan["split"]["ratio"] == [0.8, 0.1, 0.1]
+
 
 def test_compiler_with_row_filter():
     # PREDICT COUNT(transactions.transaction_id WHERE transactions.status = 'paid') FOR users.user_id

@@ -1,4 +1,4 @@
-from typing import List, Optional, Tuple, Union
+from typing import Any, List, Optional, Tuple
 from kumoapi.pquery.validated_predictive_query import ValidatedPredictiveQuery
 from kumoapi.pquery.AST import (
     Aggregation,
@@ -13,6 +13,7 @@ from kumoapi.pquery.AST import (
 from kumoapi.typing import BoolOp
 
 from ._c import DiskGraphTTBuilder, EdgeRef, RowFilter, StageFilter, TimeUnit
+from .split_contract import SplitSpec, normalize_split_spec
 
 VALID_TASK_TYPES = {
     "binary_classification",
@@ -31,6 +32,7 @@ LINK_PRED_TASKS = {
     "temporal_link_prediction",
     "link_prediction",
 }
+
 
 def _map_op(op: str) -> str:
     if op == '=':
@@ -108,6 +110,7 @@ class DiskGraphPlanCompiler:
         lp_rhs_entity_column: Optional[str] = None,
         lag_offsets_secs: Optional[List[int]] = None,
         yoy_offsets_secs: Optional[List[int]] = None,
+        split: Optional[Any] = None,
     ) -> str:
         """
         Build the DiskGraph execution plan.
@@ -130,6 +133,7 @@ class DiskGraphPlanCompiler:
             lp_rhs_entity_column: The explicitly resolved Target Node PK (used when lp_prediction_mode == 'RHS').
             lag_offsets_secs: Optional lag offsets to be used in bp forecasting task.
             yoy_offsets_secs: Optional yoy offsets to be used in bp forecasting task.
+            split: Optional split spec. Accepts canonical SplitSpec or legacy dict payload and normalizes at the boundary.
         """
         task_type = task_type.lower()
         if task_type not in VALID_TASK_TYPES:
@@ -202,7 +206,24 @@ class DiskGraphPlanCompiler:
         else:
             self.builder.node_prediction()
 
-        # 5. What-If (Assuming)
+        split_spec = normalize_split_spec(split)
+        if split_spec is not None:
+            if split_spec.ratio is None:
+                raise RuntimeError('diskgraph split contract requires ratio for compiler split planning')
+            self.builder.split_ratio(
+                split_spec.ratio,
+                kind=split_spec.kind,
+                is_temporal=split_spec.is_temporal,
+                offsets=split_spec.offsets,
+                ranges=split_spec.ranges,
+                backtesting_timestamp=split_spec.backtesting_timestamp,
+                split_column=split_spec.split_column,
+                manual_train_values=split_spec.manual_train_values,
+                manual_val_values=split_spec.manual_val_values,
+                manual_test_values=split_spec.manual_test_values,
+            )
+
+        # 4. What-If (Assuming)
         if query.whatif_ast:
             sf = self._compile_stage_filter(query.whatif_ast, query)
             self.builder.filter(sf)

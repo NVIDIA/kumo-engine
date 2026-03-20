@@ -602,6 +602,7 @@ fn g1_plan(stages: Vec<Stage>) -> DiskGraphTTPlan {
         },
         temporal: None,
         prediction_type: PredictionType::Node,
+        split: None,
         stages,
     }
 }
@@ -623,6 +624,7 @@ fn g1_temporal(stages: Vec<Stage>, timestamps: Vec<i64>) -> DiskGraphTTPlan {
             lag_timesteps: None,
         }),
         prediction_type: PredictionType::Node,
+        split: None,
         stages,
     }
 }
@@ -1519,6 +1521,7 @@ fn integ_entity_time_col() {
             lag_timesteps: None,
         }),
         prediction_type: PredictionType::Node,
+        split: None,
         stages: vec![Stage {
             ops: vec![count_orders_op("cnt", Some((0, 500)))],
             filter: None,
@@ -1554,6 +1557,7 @@ fn integ_entity_valid_to_col() {
             lag_timesteps: None,
         }),
         prediction_type: PredictionType::Node,
+        split: None,
         stages: vec![Stage {
             ops: vec![count_orders_op("cnt", Some((0, 5000)))],
             filter: None,
@@ -1874,6 +1878,7 @@ fn integ_entity_create_time_metadata_fallback() {
             lag_timesteps: None,
         }),
         prediction_type: PredictionType::Node,
+        split: None,
         stages: vec![Stage {
             ops: vec![count_orders_op("cnt", Some((0, 500)))],
             filter: None,
@@ -1944,6 +1949,7 @@ fn integ_entity_end_time_metadata_fallback() {
             lag_timesteps: None,
         }),
         prediction_type: PredictionType::Node,
+        split: None,
         stages: vec![Stage {
             ops: vec![count_orders_op("cnt", Some((0, 5000)))],
             filter: None,
@@ -2460,6 +2466,7 @@ fn integ_timeunit_months_calendar() {
             lag_timesteps: None,
         }),
         prediction_type: PredictionType::Node,
+        split: None,
         stages: vec![Stage {
             ops: vec![Op::Aggregate {
                 alias: "target".to_string(),
@@ -2510,6 +2517,7 @@ fn integ_timeunit_years_calendar() {
             lag_timesteps: None,
         }),
         prediction_type: PredictionType::Node,
+        split: None,
         stages: vec![Stage {
             ops: vec![Op::Aggregate {
                 alias: "target".to_string(),
@@ -2856,6 +2864,7 @@ fn integ_lag_timesteps_entity_include_bit() {
             lag_timesteps: Some(2),
         }),
         prediction_type: PredictionType::Node,
+        split: None,
         stages: vec![Stage {
             ops: vec![count_orders_op("cnt", Some((0, 5000)))],
             filter: None,
@@ -3012,6 +3021,7 @@ fn g1_link_temporal(
             lag_timesteps: None,
         }),
         prediction_type: PredictionType::Link { explode, include_frequency },
+        split: None,
         stages,
     }
 }
@@ -3033,6 +3043,7 @@ fn g1_link(
         },
         temporal: None,
         prediction_type: PredictionType::Link { explode, include_frequency },
+        split: None,
         stages,
     }
 }
@@ -3912,6 +3923,7 @@ fn g2_link_temporal(
             lag_timesteps: None,
         }),
         prediction_type: PredictionType::Link { explode, include_frequency },
+        split: None,
         stages,
     }
 }
@@ -3933,6 +3945,7 @@ fn g2_link_static(
         },
         temporal: None,
         prediction_type: PredictionType::Link { explode, include_frequency },
+        split: None,
         stages,
     }
 }
@@ -4495,6 +4508,7 @@ fn g3_link_temporal(
             lag_timesteps: None,
         }),
         prediction_type: PredictionType::Link { explode, include_frequency },
+        split: None,
         stages,
     }
 }
@@ -4516,6 +4530,7 @@ fn g3_link_static(
         },
         temporal: None,
         prediction_type: PredictionType::Link { explode, include_frequency },
+        split: None,
         stages,
     }
 }
@@ -4742,6 +4757,7 @@ fn integ_g3_lp_entity_filter() {
             explode: true,
             include_frequency: true,
         },
+        split: None,
         stages: vec![Stage {
             ops: vec![Op::Aggregate {
                 alias: "ld".to_string(),
@@ -4992,6 +5008,7 @@ fn integ_bp_pass_through() {
         }),
         prediction_type: PredictionType::PassThrough,
         stages: vec![],
+        split: None,
     };
 
     let (receiver, handle) =
@@ -5028,6 +5045,7 @@ fn integ_bp_pseudo_time_injection() {
         temporal: None, // static query!
         prediction_type: PredictionType::PassThrough,
         stages: vec![],
+        split: None,
     };
 
     let (receiver, handle) =
@@ -5145,6 +5163,7 @@ fn integ_bp_forecasting_multiple_lags() {
             ],
             filter: None,
         }],
+        split: None,
     };
 
     let (receiver, handle) =

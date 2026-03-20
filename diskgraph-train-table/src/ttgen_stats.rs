@@ -1,6 +1,83 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+
+const SPLIT_RATIO_EPSILON: f64 = 1e-6;
 
 use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct IntColumnStats {
+    pub count: u64,
+    pub null_count: u64,
+    pub num_unique: Option<u64>,
+    pub min: Option<i64>,
+    pub max: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct BoolColumnStats {
+    pub count: u64,
+    pub null_count: u64,
+    pub true_count: u64,
+    pub false_count: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct TrainTableExactStatsPayload {
+    pub entity: IntColumnStats,
+    pub timestamp: IntColumnStats,
+    pub target: IntColumnStats,
+    pub frequency: Option<IntColumnStats>,
+    pub entity_include_bit: Option<BoolColumnStats>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct TrainTableSplitMaskCounts {
+    pub train: u64,
+    pub val: u64,
+    pub test: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct TimestampSplitAssignmentV3 {
+    pub timestamp: i64,
+    pub stage: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct TrainTableSplitPayloadArtifactsV3 {
+    pub strategy: String,
+    pub split_kind: Option<String>,
+    pub ratio: Option<Vec<String>>,
+    pub offsets: Option<Vec<i64>>,
+    pub ranges: Option<Vec<(i64, i64)>>,
+    pub backtesting_timestamp: Option<i64>,
+    pub split_column: Option<String>,
+    pub manual_train_values: Option<Vec<String>>,
+    pub manual_val_values: Option<Vec<String>>,
+    pub manual_test_values: Option<Vec<String>>,
+    pub authoritative_supported_family: bool,
+    pub timestamp_stage_assignments: Option<Vec<TimestampSplitAssignmentV3>>,
+    pub index_stage_sizes: Option<TrainTableSplitMaskCounts>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct TrainTableSplitPayload {
+    pub version: u32,
+    pub status: String,
+    pub supports_native_execution: bool,
+    pub split_kind: Option<String>,
+    pub derivation_method: Option<String>,
+    pub num_total_rows: u64,
+    pub mask_counts: Option<TrainTableSplitMaskCounts>,
+    pub artifacts_v3: Option<TrainTableSplitPayloadArtifactsV3>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -11,6 +88,8 @@ pub struct TrainTableStatsPayload {
     pub num_entities: u64,
     pub num_targets: u64,
     pub num_links: Option<u64>,
+    pub exact_stats: TrainTableExactStatsPayload,
+    pub split_payload: Option<TrainTableSplitPayload>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -27,6 +106,18 @@ pub(crate) struct ChunkStats {
     pub(crate) num_links: u64,
     pub(crate) entities: HashSet<u64>,
     pub(crate) targets: HashSet<u64>,
+    pub(crate) timestamps: HashSet<i64>,
+    pub(crate) timestamp_counts: HashMap<i64, u64>,
+    pub(crate) timestamp_min: Option<i64>,
+    pub(crate) timestamp_max: Option<i64>,
+    pub(crate) entity_min: Option<i64>,
+    pub(crate) entity_max: Option<i64>,
+    pub(crate) target_min: Option<i64>,
+    pub(crate) target_max: Option<i64>,
+    pub(crate) frequency_min: Option<i64>,
+    pub(crate) frequency_max: Option<i64>,
+    pub(crate) include_true_count: u64,
+    pub(crate) include_false_count: u64,
 }
 
 #[derive(Default)]
@@ -35,6 +126,18 @@ pub(crate) struct StatsMerger {
     num_links: u64,
     entities: HashSet<u64>,
     targets: HashSet<u64>,
+    timestamps: HashSet<i64>,
+    timestamp_counts: HashMap<i64, u64>,
+    timestamp_min: Option<i64>,
+    timestamp_max: Option<i64>,
+    entity_min: Option<i64>,
+    entity_max: Option<i64>,
+    target_min: Option<i64>,
+    target_max: Option<i64>,
+    frequency_min: Option<i64>,
+    frequency_max: Option<i64>,
+    include_true_count: u64,
+    include_false_count: u64,
 }
 
 impl StatsMerger {
@@ -43,24 +146,1015 @@ impl StatsMerger {
         self.num_links += chunk.num_links;
         self.entities.extend(chunk.entities);
         self.targets.extend(chunk.targets);
+        self.timestamps.extend(chunk.timestamps);
+        for (ts, count) in chunk.timestamp_counts {
+            *self.timestamp_counts.entry(ts).or_insert(0) += count;
+        }
+
+        self.timestamp_min = min_opt(self.timestamp_min, chunk.timestamp_min);
+        self.timestamp_max = max_opt(self.timestamp_max, chunk.timestamp_max);
+        self.entity_min = min_opt(self.entity_min, chunk.entity_min);
+        self.entity_max = max_opt(self.entity_max, chunk.entity_max);
+        self.target_min = min_opt(self.target_min, chunk.target_min);
+        self.target_max = max_opt(self.target_max, chunk.target_max);
+        self.frequency_min = min_opt(self.frequency_min, chunk.frequency_min);
+        self.frequency_max = max_opt(self.frequency_max, chunk.frequency_max);
+        self.include_true_count += chunk.include_true_count;
+        self.include_false_count += chunk.include_false_count;
     }
 
     pub(crate) fn finalize(
         self,
         num_total_rows: u64,
         is_link_prediction: bool,
+        has_frequency_col: bool,
+        has_include_bit_col: bool,
+        split_ratio: Option<&[f64]>,
+        split_kind: Option<&str>,
+        split_is_temporal: bool,
+        split_offsets: Option<&[i64]>,
+        split_ranges: Option<&[(i64, i64)]>,
+        split_backtesting_timestamp: Option<i64>,
+        split_column: Option<&str>,
+        manual_train_values: Option<&[String]>,
+        manual_val_values: Option<&[String]>,
+        manual_test_values: Option<&[String]>,
     ) -> TrainTableStatsPayload {
+        let num_entities = self.entities.len() as u64;
+        let num_targets = self.targets.len() as u64;
+
+        let entity_stats = IntColumnStats {
+            count: self.num_train_rows,
+            null_count: 0,
+            num_unique: Some(num_entities),
+            min: self.entity_min,
+            max: self.entity_max,
+        };
+
+        let timestamp_stats = IntColumnStats {
+            count: self.num_train_rows,
+            null_count: 0,
+            num_unique: Some(self.timestamps.len() as u64),
+            min: self.timestamp_min,
+            max: self.timestamp_max,
+        };
+
+        let target_stats = IntColumnStats {
+            count: self.num_train_rows,
+            null_count: 0,
+            num_unique: Some(num_targets),
+            min: self.target_min,
+            max: self.target_max,
+        };
+
+        let frequency_stats = if has_frequency_col {
+            Some(IntColumnStats {
+                count: self.num_train_rows,
+                null_count: 0,
+                num_unique: None,
+                min: self.frequency_min,
+                max: self.frequency_max,
+            })
+        } else {
+            None
+        };
+
+        let include_bit_stats = if has_include_bit_col {
+            Some(BoolColumnStats {
+                count: self.include_true_count + self.include_false_count,
+                null_count: 0,
+                true_count: self.include_true_count,
+                false_count: self.include_false_count,
+            })
+        } else {
+            None
+        };
+
+        let split_derivation = derive_split_mask_counts(
+            num_total_rows,
+            split_ratio,
+            split_kind,
+            split_is_temporal,
+            split_offsets,
+            split_ranges,
+            split_backtesting_timestamp,
+            split_column,
+            manual_train_values,
+            manual_val_values,
+            manual_test_values,
+            &self.timestamp_counts,
+        );
+
         TrainTableStatsPayload {
-            version: 1,
+            version: 2,
             num_total_rows,
             num_train_rows: self.num_train_rows,
-            num_entities: self.entities.len() as u64,
-            num_targets: self.targets.len() as u64,
+            num_entities,
+            num_targets,
             num_links: if is_link_prediction {
                 Some(self.num_links)
             } else {
                 None
             },
+            exact_stats: TrainTableExactStatsPayload {
+                entity: entity_stats,
+                timestamp: timestamp_stats,
+                target: target_stats,
+                frequency: frequency_stats,
+                entity_include_bit: include_bit_stats,
+            },
+            split_payload: Some(TrainTableSplitPayload {
+                version: 3,
+                status: if split_derivation.supports_native_execution {
+                    "ready_row_artifacts_v3".to_string()
+                } else {
+                    "counts_only_no_masks".to_string()
+                },
+                supports_native_execution: split_derivation.supports_native_execution,
+                split_kind: split_kind.map(|s| s.to_string()),
+                derivation_method: split_derivation.method.clone(),
+                num_total_rows,
+                mask_counts: split_derivation.mask_counts.clone(),
+                artifacts_v3: Some(build_split_artifacts_v3(
+                    split_kind,
+                    split_ratio,
+                    split_offsets,
+                    split_ranges,
+                    split_backtesting_timestamp,
+                    split_column,
+                    manual_train_values,
+                    manual_val_values,
+                    manual_test_values,
+                    &split_derivation,
+                )),
+            }),
         }
+    }
+}
+
+struct SplitMaskDerivation {
+    method: Option<String>,
+    mask_counts: Option<TrainTableSplitMaskCounts>,
+    timestamp_stage_assignments: Option<Vec<TimestampSplitAssignmentV3>>,
+    index_stage_sizes: Option<TrainTableSplitMaskCounts>,
+    supports_native_execution: bool,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_split_artifacts_v3(
+    split_kind: Option<&str>,
+    split_ratio: Option<&[f64]>,
+    split_offsets: Option<&[i64]>,
+    split_ranges: Option<&[(i64, i64)]>,
+    split_backtesting_timestamp: Option<i64>,
+    split_column: Option<&str>,
+    manual_train_values: Option<&[String]>,
+    manual_val_values: Option<&[String]>,
+    manual_test_values: Option<&[String]>,
+    split_derivation: &SplitMaskDerivation,
+) -> TrainTableSplitPayloadArtifactsV3 {
+    TrainTableSplitPayloadArtifactsV3 {
+        strategy: "rule_based_v3".to_string(),
+        split_kind: split_kind.map(str::to_string),
+        ratio: split_ratio.map(|xs| xs.iter().map(|x| x.to_string()).collect()),
+        offsets: split_offsets.map(|xs| xs.to_vec()),
+        ranges: split_ranges.map(|xs| xs.to_vec()),
+        backtesting_timestamp: split_backtesting_timestamp,
+        split_column: split_column.map(str::to_string),
+        manual_train_values: manual_train_values.map(|xs| xs.to_vec()),
+        manual_val_values: manual_val_values.map(|xs| xs.to_vec()),
+        manual_test_values: manual_test_values.map(|xs| xs.to_vec()),
+        authoritative_supported_family: split_derivation.supports_native_execution,
+        timestamp_stage_assignments: split_derivation.timestamp_stage_assignments.clone(),
+        index_stage_sizes: split_derivation.index_stage_sizes.clone(),
+    }
+}
+
+fn derive_split_mask_counts(
+    num_total_rows: u64,
+    split_ratio: Option<&[f64]>,
+    split_kind: Option<&str>,
+    split_is_temporal: bool,
+    split_offsets: Option<&[i64]>,
+    split_ranges: Option<&[(i64, i64)]>,
+    split_backtesting_timestamp: Option<i64>,
+    split_column: Option<&str>,
+    manual_train_values: Option<&[String]>,
+    manual_val_values: Option<&[String]>,
+    manual_test_values: Option<&[String]>,
+    timestamp_counts: &HashMap<i64, u64>,
+) -> SplitMaskDerivation {
+    match (split_kind, split_is_temporal) {
+        (Some("FixedSplit"), false) => {
+            let counts = validate_split_ratio(split_ratio)
+                .and_then(|ratio| derive_ratio_mask_counts(num_total_rows, ratio));
+            SplitMaskDerivation {
+                method: Some("fixed_index_ranges".to_string()),
+                mask_counts: counts.clone(),
+                timestamp_stage_assignments: None,
+                index_stage_sizes: counts,
+                supports_native_execution: true,
+            }
+        }
+        (Some("ApproxDateOffsetSplit"), true) => {
+            let ratio = validate_split_ratio(split_ratio);
+            let stage_map = ratio.and_then(|r| {
+                derive_approx_date_offset_timestamp_stage_assignments(r, timestamp_counts)
+            });
+            let counts = stage_map
+                .as_ref()
+                .map(|assignments| mask_counts_from_timestamp_assignments(assignments, timestamp_counts));
+            SplitMaskDerivation {
+                method: Some("approx_date_offset_timeframes".to_string()),
+                mask_counts: counts,
+                timestamp_stage_assignments: stage_map,
+                index_stage_sizes: None,
+                supports_native_execution: true,
+            }
+        }
+        (Some("DateOffsetSplit"), true) => {
+            let stage_map =
+                derive_date_offset_timestamp_stage_assignments(split_offsets, timestamp_counts);
+            let counts = stage_map
+                .as_ref()
+                .map(|assignments| mask_counts_from_timestamp_assignments(assignments, timestamp_counts));
+            SplitMaskDerivation {
+                method: Some("date_offset_boundaries".to_string()),
+                mask_counts: counts,
+                timestamp_stage_assignments: stage_map,
+                index_stage_sizes: None,
+                supports_native_execution: true,
+            }
+        }
+        (Some("TimeRangeSplit"), true) => {
+            let stage_map =
+                derive_time_range_timestamp_stage_assignments(split_ranges, timestamp_counts);
+            let counts = stage_map
+                .as_ref()
+                .map(|assignments| mask_counts_from_timestamp_assignments(assignments, timestamp_counts));
+            SplitMaskDerivation {
+                method: Some("time_range_boundaries".to_string()),
+                mask_counts: counts,
+                timestamp_stage_assignments: stage_map,
+                index_stage_sizes: None,
+                supports_native_execution: true,
+            }
+        }
+        (Some("BacktestingSplit"), true) => {
+            let stage_map = derive_backtesting_timestamp_stage_assignments(
+                split_backtesting_timestamp,
+                timestamp_counts,
+            );
+            let counts = stage_map
+                .as_ref()
+                .map(|assignments| mask_counts_from_timestamp_assignments(assignments, timestamp_counts));
+            SplitMaskDerivation {
+                method: Some("backtesting_timestamp".to_string()),
+                mask_counts: counts,
+                timestamp_stage_assignments: stage_map,
+                index_stage_sizes: None,
+                supports_native_execution: true,
+            }
+        }
+        (Some("TemporalSplit"), true) => {
+            let counts = validate_split_ratio(split_ratio)
+                .and_then(|ratio| derive_ratio_mask_counts(num_total_rows, ratio));
+            SplitMaskDerivation {
+                method: Some("temporal_ratio_sort_reconstruct".to_string()),
+                mask_counts: counts,
+                timestamp_stage_assignments: None,
+                index_stage_sizes: None,
+                supports_native_execution: true,
+            }
+        }
+        (Some("ColumnSplit"), false) => {
+            let counts = validate_split_ratio(split_ratio)
+                .and_then(|ratio| derive_ratio_mask_counts(num_total_rows, ratio));
+            SplitMaskDerivation {
+                method: Some("column_ratio_sort_reconstruct".to_string()),
+                mask_counts: counts,
+                timestamp_stage_assignments: None,
+                index_stage_sizes: None,
+                supports_native_execution: true,
+            }
+        }
+        (Some("ManualSplit"), false) => {
+            let counts = derive_manual_split_mask_counts(
+                split_column,
+                manual_train_values,
+                manual_val_values,
+                manual_test_values,
+                timestamp_counts,
+            );
+            SplitMaskDerivation {
+                method: Some("manual_value_membership_reconstruct".to_string()),
+                mask_counts: counts,
+                timestamp_stage_assignments: None,
+                index_stage_sizes: None,
+                supports_native_execution: true,
+            }
+        }
+        (Some("RandomSplit"), false) | (Some("RandomLinkSplit"), false) => {
+            let counts = validate_split_ratio(split_ratio)
+                .and_then(|ratio| derive_ratio_mask_counts(num_total_rows, ratio));
+            SplitMaskDerivation {
+                method: Some("ratio_rounding".to_string()),
+                mask_counts: counts,
+                timestamp_stage_assignments: None,
+                index_stage_sizes: None,
+                supports_native_execution: false,
+            }
+        }
+        _ => SplitMaskDerivation {
+            method: None,
+            mask_counts: None,
+            timestamp_stage_assignments: None,
+            index_stage_sizes: None,
+            supports_native_execution: false,
+        },
+    }
+}
+
+fn validate_split_ratio(split_ratio: Option<&[f64]>) -> Option<&[f64]> {
+    let ratio = split_ratio?;
+    if ratio.len() < 2 || ratio.len() > 3 {
+        return None;
+    }
+    if ratio.iter().any(|v| !v.is_finite() || *v < 0.0) {
+        return None;
+    }
+    let sum: f64 = ratio.iter().sum();
+    if sum > 1.0 + SPLIT_RATIO_EPSILON {
+        return None;
+    }
+    Some(ratio)
+}
+
+fn derive_ratio_mask_counts(
+    num_total_rows: u64,
+    ratio: &[f64],
+) -> Option<TrainTableSplitMaskCounts> {
+    let mut ratio_vals: Vec<f64> = ratio.iter().take(3).map(|x| x.max(0.0)).collect();
+    if ratio_vals.is_empty() {
+        return Some(TrainTableSplitMaskCounts {
+            train: 0,
+            val: 0,
+            test: 0,
+        });
+    }
+
+    let total: f64 = ratio_vals.iter().sum();
+    if total <= 0.0 {
+        return Some(TrainTableSplitMaskCounts {
+            train: 0,
+            val: 0,
+            test: 0,
+        });
+    }
+    for x in &mut ratio_vals {
+        *x /= total;
+    }
+
+    let row_count = num_total_rows as usize;
+    let ideal: Vec<f64> = ratio_vals.iter().map(|x| x * row_count as f64).collect();
+    let mut sizes: Vec<usize> = ideal.iter().map(|v| v.floor() as usize).collect();
+
+    let assigned_floor: usize = sizes.iter().sum();
+    let mut remaining = row_count.saturating_sub(assigned_floor);
+
+    let mut order: Vec<usize> = (0..sizes.len()).collect();
+    order.sort_by(|&a, &b| {
+        let ra = ideal[a] - sizes[a] as f64;
+        let rb = ideal[b] - sizes[b] as f64;
+        rb.partial_cmp(&ra)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.cmp(&b))
+    });
+
+    let mut k = 0usize;
+    while remaining > 0 && !order.is_empty() {
+        sizes[order[k]] += 1;
+        remaining -= 1;
+        k += 1;
+        if k == order.len() {
+            k = 0;
+        }
+    }
+
+    let train = sizes.get(0).copied().unwrap_or(0) as u64;
+    let val = sizes.get(1).copied().unwrap_or(0) as u64;
+    let test = sizes.get(2).copied().unwrap_or(0) as u64;
+    Some(TrainTableSplitMaskCounts { train, val, test })
+}
+
+fn derive_approx_date_offset_mask_counts(
+    ratio: &[f64],
+    timestamp_counts: &HashMap<i64, u64>,
+) -> Option<TrainTableSplitMaskCounts> {
+    if timestamp_counts.is_empty() {
+        return None;
+    }
+
+    // Kumo timeframe stats are stored from latest -> earliest. The
+    // ApproxDateOffset boundary search runs on reversed ratios
+    // (earliest -> latest), so we build cumulative ratios over that order.
+    let mut latest_to_earliest: Vec<(i64, u64)> = timestamp_counts
+        .iter()
+        .map(|(ts, c)| (*ts, *c))
+        .collect();
+    latest_to_earliest.sort_by(|a, b| b.0.cmp(&a.0));
+
+    let earliest_to_latest_counts: Vec<u64> =
+        latest_to_earliest.iter().rev().map(|(_, c)| *c).collect();
+    let num_timeframes = earliest_to_latest_counts.len();
+    let num_split = ratio.len();
+    if num_timeframes < num_split {
+        return None;
+    }
+
+    let total: f64 = earliest_to_latest_counts.iter().map(|c| *c as f64).sum();
+    if total <= 0.0 {
+        return None;
+    }
+
+    let mut cumulative = Vec::with_capacity(num_timeframes);
+    let mut acc = 0.0f64;
+    for count in &earliest_to_latest_counts {
+        acc += (*count as f64) / total;
+        cumulative.push(acc);
+    }
+
+    let mut train_val_index = search_sorted_left(&cumulative, ratio[0]);
+    train_val_index = train_val_index.min(num_timeframes - num_split);
+
+    let (train_count, val_count, test_count) = if num_split == 2 {
+        let train = sum_slice(&earliest_to_latest_counts, 0, train_val_index);
+        let val = sum_slice(
+            &earliest_to_latest_counts,
+            train_val_index + 1,
+            num_timeframes.saturating_sub(1),
+        );
+        (train, val, 0)
+    } else {
+        let mut val_test_index = search_sorted_left(&cumulative, ratio[0] + ratio[1]);
+        val_test_index = val_test_index.min(num_timeframes - 2);
+        val_test_index = val_test_index.max(train_val_index + 1);
+
+        let train = sum_slice(&earliest_to_latest_counts, 0, train_val_index);
+        let val = sum_slice(
+            &earliest_to_latest_counts,
+            train_val_index + 1,
+            val_test_index,
+        );
+        let test = sum_slice(
+            &earliest_to_latest_counts,
+            val_test_index + 1,
+            num_timeframes.saturating_sub(1),
+        );
+        (train, val, test)
+    };
+
+    Some(TrainTableSplitMaskCounts {
+        train: train_count,
+        val: val_count,
+        test: test_count,
+    })
+}
+
+fn derive_date_offset_split_mask_counts(
+    split_offsets: Option<&[i64]>,
+    timestamp_counts: &HashMap<i64, u64>,
+) -> Option<TrainTableSplitMaskCounts> {
+    let offsets = split_offsets?;
+    if timestamp_counts.is_empty() || offsets.is_empty() || offsets.len() > 2 {
+        return None;
+    }
+
+    let mut ts_values: Vec<i64> = timestamp_counts.keys().copied().collect();
+    ts_values.sort_unstable();
+    let min_ts = *ts_values.first()?;
+    let max_ts = *ts_values.last()?;
+
+    let mut boundaries = vec![min_ts];
+    for off in offsets {
+        boundaries.push(max_ts + *off * 86_400);
+    }
+    boundaries.push(max_ts);
+
+    if boundaries.len() < 3 {
+        return None;
+    }
+
+    let mut counts = vec![0_u64; boundaries.len() - 1];
+    for (ts, c) in timestamp_counts {
+        for i in 0..(boundaries.len() - 1) {
+            let start = boundaries[i];
+            let end = boundaries[i + 1];
+            let in_bucket = if i == 0 {
+                *ts > start && *ts <= end
+            } else {
+                *ts >= start && *ts <= end
+            };
+            if in_bucket {
+                counts[i] += *c;
+                break;
+            }
+        }
+    }
+
+    Some(TrainTableSplitMaskCounts {
+        train: *counts.get(0).unwrap_or(&0),
+        val: *counts.get(1).unwrap_or(&0),
+        test: *counts.get(2).unwrap_or(&0),
+    })
+}
+
+fn derive_time_range_split_mask_counts(
+    split_ranges: Option<&[(i64, i64)]>,
+    timestamp_counts: &HashMap<i64, u64>,
+) -> Option<TrainTableSplitMaskCounts> {
+    let ranges = split_ranges?;
+    if ranges.len() < 2 || ranges.len() > 3 {
+        return None;
+    }
+
+    let mut counts = vec![0_u64; ranges.len()];
+    for (idx, (start, end)) in ranges.iter().enumerate() {
+        for (ts, c) in timestamp_counts {
+            if *ts >= *start && *ts <= *end {
+                counts[idx] += *c;
+            }
+        }
+    }
+
+    Some(TrainTableSplitMaskCounts {
+        train: *counts.get(0).unwrap_or(&0),
+        val: *counts.get(1).unwrap_or(&0),
+        test: *counts.get(2).unwrap_or(&0),
+    })
+}
+
+fn derive_backtesting_split_mask_counts(
+    split_backtesting_timestamp: Option<i64>,
+    timestamp_counts: &HashMap<i64, u64>,
+) -> Option<TrainTableSplitMaskCounts> {
+    let ts = split_backtesting_timestamp?;
+    let test = *timestamp_counts.get(&ts).unwrap_or(&0);
+    Some(TrainTableSplitMaskCounts {
+        train: 0,
+        val: 0,
+        test,
+    })
+}
+
+fn derive_manual_split_mask_counts(
+    split_column: Option<&str>,
+    manual_train_values: Option<&[String]>,
+    manual_val_values: Option<&[String]>,
+    manual_test_values: Option<&[String]>,
+    timestamp_counts: &HashMap<i64, u64>,
+) -> Option<TrainTableSplitMaskCounts> {
+    // Current TT summary only carries timestamp-level value distributions.
+    // Therefore ManualSplit parity is supported only when splitting on
+    // TIMESTAMP/PSEUDO_TIMESTAMP and values are epoch-second integers.
+    let col = split_column?;
+    if col != "TIMESTAMP" && col != "PSEUDO_TIMESTAMP" {
+        return None;
+    }
+
+    let parse = |vals: Option<&[String]>| -> Option<Vec<i64>> {
+        vals.map(|xs| {
+            xs.iter()
+                .filter_map(|x| x.parse::<i64>().ok())
+                .collect::<Vec<_>>()
+        })
+    };
+
+    let train_vals = parse(manual_train_values).unwrap_or_default();
+    let val_vals = parse(manual_val_values).unwrap_or_default();
+    let test_vals = parse(manual_test_values).unwrap_or_default();
+
+    let sum_for = |vals: &[i64]| -> u64 {
+        vals.iter()
+            .map(|v| *timestamp_counts.get(v).unwrap_or(&0))
+            .sum()
+    };
+
+    Some(TrainTableSplitMaskCounts {
+        train: sum_for(&train_vals),
+        val: sum_for(&val_vals),
+        test: sum_for(&test_vals),
+    })
+}
+
+fn stage_name(idx: usize) -> String {
+    match idx {
+        0 => "train".to_string(),
+        1 => "val".to_string(),
+        _ => "test".to_string(),
+    }
+}
+
+fn mask_counts_from_timestamp_assignments(
+    assignments: &[TimestampSplitAssignmentV3],
+    timestamp_counts: &HashMap<i64, u64>,
+) -> TrainTableSplitMaskCounts {
+    let mut counts = TrainTableSplitMaskCounts {
+        train: 0,
+        val: 0,
+        test: 0,
+    };
+    for a in assignments {
+        let c = *timestamp_counts.get(&a.timestamp).unwrap_or(&0);
+        match a.stage.as_str() {
+            "train" => counts.train += c,
+            "val" => counts.val += c,
+            "test" => counts.test += c,
+            _ => {}
+        }
+    }
+    counts
+}
+
+fn derive_approx_date_offset_timestamp_stage_assignments(
+    ratio: &[f64],
+    timestamp_counts: &HashMap<i64, u64>,
+) -> Option<Vec<TimestampSplitAssignmentV3>> {
+    if timestamp_counts.is_empty() {
+        return None;
+    }
+    let mut latest_to_earliest: Vec<(i64, u64)> = timestamp_counts
+        .iter()
+        .map(|(ts, c)| (*ts, *c))
+        .collect();
+    latest_to_earliest.sort_by(|a, b| b.0.cmp(&a.0));
+
+    let earliest_to_latest: Vec<(i64, u64)> = latest_to_earliest.into_iter().rev().collect();
+    let counts_only: Vec<u64> = earliest_to_latest.iter().map(|(_, c)| *c).collect();
+    let num_timeframes = counts_only.len();
+    let num_split = ratio.len();
+    if num_timeframes < num_split {
+        return None;
+    }
+
+    let total: f64 = counts_only.iter().map(|c| *c as f64).sum();
+    if total <= 0.0 {
+        return None;
+    }
+
+    let mut cumulative = Vec::with_capacity(num_timeframes);
+    let mut acc = 0.0f64;
+    for count in &counts_only {
+        acc += (*count as f64) / total;
+        cumulative.push(acc);
+    }
+
+    let mut train_val_index = search_sorted_left(&cumulative, ratio[0]);
+    train_val_index = train_val_index.min(num_timeframes - num_split);
+
+    let mut val_test_index = None;
+    if num_split == 3 {
+        let mut idx = search_sorted_left(&cumulative, ratio[0] + ratio[1]);
+        idx = idx.min(num_timeframes - 2);
+        idx = idx.max(train_val_index + 1);
+        val_test_index = Some(idx);
+    }
+
+    let mut assignments = Vec::with_capacity(num_timeframes);
+    for (i, (ts, _)) in earliest_to_latest.into_iter().enumerate() {
+        let stage = if i <= train_val_index {
+            stage_name(0)
+        } else if num_split == 2 {
+            stage_name(1)
+        } else if i <= val_test_index.unwrap_or(i) {
+            stage_name(1)
+        } else {
+            stage_name(2)
+        };
+        assignments.push(TimestampSplitAssignmentV3 {
+            timestamp: ts,
+            stage,
+        });
+    }
+    Some(assignments)
+}
+
+fn derive_date_offset_timestamp_stage_assignments(
+    split_offsets: Option<&[i64]>,
+    timestamp_counts: &HashMap<i64, u64>,
+) -> Option<Vec<TimestampSplitAssignmentV3>> {
+    let offsets = split_offsets?;
+    if timestamp_counts.is_empty() || offsets.is_empty() || offsets.len() > 2 {
+        return None;
+    }
+
+    let mut ts_values: Vec<i64> = timestamp_counts.keys().copied().collect();
+    ts_values.sort_unstable();
+    let min_ts = *ts_values.first()?;
+    let max_ts = *ts_values.last()?;
+
+    let mut boundaries = vec![min_ts];
+    for off in offsets {
+        boundaries.push(max_ts + *off * 86_400);
+    }
+    boundaries.push(max_ts);
+
+    if boundaries.len() < 3 {
+        return None;
+    }
+
+    let mut assignments = Vec::with_capacity(ts_values.len());
+    for ts in ts_values {
+        for i in 0..(boundaries.len() - 1) {
+            let start = boundaries[i];
+            let end = boundaries[i + 1];
+            let in_bucket = if i == 0 {
+                ts > start && ts <= end
+            } else {
+                ts >= start && ts <= end
+            };
+            if in_bucket {
+                assignments.push(TimestampSplitAssignmentV3 {
+                    timestamp: ts,
+                    stage: stage_name(i),
+                });
+                break;
+            }
+        }
+    }
+    Some(assignments)
+}
+
+fn derive_time_range_timestamp_stage_assignments(
+    split_ranges: Option<&[(i64, i64)]>,
+    timestamp_counts: &HashMap<i64, u64>,
+) -> Option<Vec<TimestampSplitAssignmentV3>> {
+    let ranges = split_ranges?;
+    if ranges.len() < 2 || ranges.len() > 3 {
+        return None;
+    }
+    let mut ts_values: Vec<i64> = timestamp_counts.keys().copied().collect();
+    ts_values.sort_unstable();
+
+    let mut assignments = Vec::with_capacity(ts_values.len());
+    for ts in ts_values {
+        for (idx, (start, end)) in ranges.iter().enumerate() {
+            if ts >= *start && ts <= *end {
+                assignments.push(TimestampSplitAssignmentV3 {
+                    timestamp: ts,
+                    stage: stage_name(idx),
+                });
+                break;
+            }
+        }
+    }
+    Some(assignments)
+}
+
+fn derive_backtesting_timestamp_stage_assignments(
+    split_backtesting_timestamp: Option<i64>,
+    timestamp_counts: &HashMap<i64, u64>,
+) -> Option<Vec<TimestampSplitAssignmentV3>> {
+    let test_ts = split_backtesting_timestamp?;
+    if !timestamp_counts.contains_key(&test_ts) {
+        return Some(Vec::new());
+    }
+
+    Some(vec![TimestampSplitAssignmentV3 {
+        timestamp: test_ts,
+        stage: stage_name(2),
+    }])
+}
+
+fn search_sorted_left(cumulative: &[f64], value: f64) -> usize {
+    for (idx, v) in cumulative.iter().enumerate() {
+        if *v >= value {
+            return idx;
+        }
+    }
+    cumulative.len().saturating_sub(1)
+}
+
+fn sum_slice(values: &[u64], start: usize, end_inclusive: usize) -> u64 {
+    if values.is_empty() || start >= values.len() || start > end_inclusive {
+        return 0;
+    }
+    let end = end_inclusive.min(values.len().saturating_sub(1));
+    values[start..=end].iter().copied().sum()
+}
+
+fn min_opt(a: Option<i64>, b: Option<i64>) -> Option<i64> {
+    match (a, b) {
+        (Some(x), Some(y)) => Some(x.min(y)),
+        (Some(x), None) => Some(x),
+        (None, Some(y)) => Some(y),
+        (None, None) => None,
+    }
+}
+
+fn max_opt(a: Option<i64>, b: Option<i64>) -> Option<i64> {
+    match (a, b) {
+        (Some(x), Some(y)) => Some(x.max(y)),
+        (Some(x), None) => Some(x),
+        (None, Some(y)) => Some(y),
+        (None, None) => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_finalize_contains_exact_stats_payload() {
+        let mut merger = StatsMerger::default();
+        let mut chunk = ChunkStats::default();
+        chunk.num_train_rows = 3;
+        chunk.num_links = 2;
+        chunk.entities.insert(10);
+        chunk.entities.insert(20);
+        chunk.targets.insert(100);
+        chunk.timestamps.insert(1000);
+        chunk.timestamps.insert(2000);
+        chunk.timestamp_min = Some(1000);
+        chunk.timestamp_max = Some(2000);
+        chunk.entity_min = Some(10);
+        chunk.entity_max = Some(20);
+        chunk.target_min = Some(100);
+        chunk.target_max = Some(100);
+        chunk.frequency_min = Some(1);
+        chunk.frequency_max = Some(2);
+        chunk.include_true_count = 3;
+        chunk.include_false_count = 1;
+
+        merger.merge(chunk);
+        let out = merger.finalize(
+            4,
+            true,
+            true,
+            true,
+            Some(&[0.5, 0.25, 0.25]),
+            Some("RandomSplit"),
+            false,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        assert_eq!(out.version, 2);
+        assert_eq!(out.num_total_rows, 4);
+        assert_eq!(out.num_train_rows, 3);
+        assert_eq!(out.num_entities, 2);
+        assert_eq!(out.num_targets, 1);
+        assert_eq!(out.num_links, Some(2));
+        assert_eq!(out.exact_stats.timestamp.min, Some(1000));
+        assert_eq!(out.exact_stats.timestamp.max, Some(2000));
+        assert_eq!(out.exact_stats.entity_include_bit.unwrap().false_count, 1);
+        assert_eq!(out.split_payload.as_ref().map(|p| p.version), Some(3));
+        assert_eq!(
+            out.split_payload.as_ref().map(|p| p.status.as_str()),
+            Some("counts_only_no_masks")
+        );
+        assert_eq!(
+            out.split_payload
+                .as_ref()
+                .map(|p| p.supports_native_execution),
+            Some(false)
+        );
+        assert_eq!(
+            out.split_payload.as_ref().map(|p| p.num_total_rows),
+            Some(4)
+        );
+        assert!(!out
+            .split_payload
+            .as_ref()
+            .and_then(|p| p.artifacts_v3.as_ref())
+            .map(|a| a.authoritative_supported_family)
+            .unwrap_or(false));
+        let counts = out
+            .split_payload
+            .as_ref()
+            .and_then(|p| p.mask_counts.as_ref())
+            .expect("mask counts should be present");
+        assert_eq!(counts.train, 2);
+        assert_eq!(counts.val, 1);
+        assert_eq!(counts.test, 1);
+    }
+
+    #[test]
+    fn test_finalize_approx_date_offset_split_counts() {
+        let mut merger = StatsMerger::default();
+        let mut chunk = ChunkStats::default();
+
+        // Latest -> earliest frame counts: [4500, 4500, 4500, 4500]
+        // ApproxDateOffsetSplit(0.8, 0.1, 0.1) should allocate full
+        // timeframes and result in 9000/4500/4500 under Kumo logic.
+        for ts in [40_i64, 30, 20, 10] {
+            chunk.timestamps.insert(ts);
+            chunk.timestamp_counts.insert(ts, 4_500);
+        }
+        chunk.num_train_rows = 18_000;
+
+        merger.merge(chunk);
+        let out = merger.finalize(
+            18_000,
+            true,
+            false,
+            false,
+            Some(&[0.8, 0.1, 0.1]),
+            Some("ApproxDateOffsetSplit"),
+            true,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let counts = out
+            .split_payload
+            .as_ref()
+            .and_then(|p| p.mask_counts.as_ref())
+            .expect("mask counts should be present for ApproxDateOffsetSplit");
+        assert_eq!(counts.train, 9_000);
+        assert_eq!(counts.val, 4_500);
+        assert_eq!(counts.test, 4_500);
+    }
+
+    #[test]
+    fn test_finalize_backtesting_split_counts() {
+        let mut merger = StatsMerger::default();
+        let mut chunk = ChunkStats::default();
+        chunk.timestamps.insert(10);
+        chunk.timestamps.insert(20);
+        chunk.timestamp_counts.insert(10, 7);
+        chunk.timestamp_counts.insert(20, 3);
+        chunk.num_train_rows = 10;
+
+        merger.merge(chunk);
+        let out = merger.finalize(
+            10,
+            true,
+            false,
+            false,
+            Some(&[1.0, 0.0]),
+            Some("BacktestingSplit"),
+            true,
+            None,
+            None,
+            Some(20),
+            None,
+            None,
+            None,
+            None,
+        );
+        let counts = out
+            .split_payload
+            .as_ref()
+            .and_then(|p| p.mask_counts.as_ref())
+            .expect("mask counts should be present for BacktestingSplit");
+        assert_eq!(counts.train, 0);
+        assert_eq!(counts.val, 0);
+        assert_eq!(counts.test, 3);
+    }
+
+    #[test]
+    fn test_finalize_fixed_split_counts_match_largest_remainder() {
+        let mut merger = StatsMerger::default();
+        let mut chunk = ChunkStats::default();
+        chunk.num_train_rows = 10;
+        merger.merge(chunk);
+
+        let out = merger.finalize(
+            10,
+            true,
+            false,
+            false,
+            Some(&[0.34, 0.33, 0.33]),
+            Some("FixedSplit"),
+            false,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let counts = out
+            .split_payload
+            .as_ref()
+            .and_then(|p| p.mask_counts.as_ref())
+            .expect("mask counts should be present for FixedSplit");
+        assert_eq!(counts.train, 4);
+        assert_eq!(counts.val, 3);
+        assert_eq!(counts.test, 3);
     }
 }

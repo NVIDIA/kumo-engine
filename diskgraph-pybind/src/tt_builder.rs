@@ -310,6 +310,7 @@ pub struct DiskGraphTTBuilder {
     entity: Option<tt::EntitySpec>,
     temporal: Option<tt::TemporalSpec>,
     prediction_type: tt::PredictionType,
+    split: Option<tt::SplitSpec>,
     stages: Vec<tt::Stage>,
     current_ops: Vec<tt::Op>,
 }
@@ -322,6 +323,7 @@ impl DiskGraphTTBuilder {
             entity: None,
             temporal: None,
             prediction_type: tt::PredictionType::Node,
+            split: None,
             stages: Vec::new(),
             current_ops: Vec::new(),
         }
@@ -399,6 +401,57 @@ impl DiskGraphTTBuilder {
     /// Node-level prediction (default).
     fn node_prediction(&mut self) {
         self.prediction_type = tt::PredictionType::Node;
+    }
+
+    /// Optional split metadata for native split payload derivation.
+    #[pyo3(signature = (
+        ratio,
+        kind=None,
+        is_temporal=None,
+        offsets=None,
+        ranges=None,
+        backtesting_timestamp=None,
+        split_column=None,
+        manual_train_values=None,
+        manual_val_values=None,
+        manual_test_values=None
+    ))]
+    fn split_ratio(
+        &mut self,
+        ratio: Vec<f64>,
+        kind: Option<String>,
+        is_temporal: Option<bool>,
+        offsets: Option<Vec<i64>>,
+        ranges: Option<Vec<(i64, i64)>>,
+        backtesting_timestamp: Option<i64>,
+        split_column: Option<String>,
+        manual_train_values: Option<Vec<String>>,
+        manual_val_values: Option<Vec<String>>,
+        manual_test_values: Option<Vec<String>>,
+    ) -> PyResult<()> {
+        if ratio.len() < 2 || ratio.len() > 3 {
+            return Err(PyValueError::new_err(
+                "split ratio must contain 2 or 3 entries",
+            ));
+        }
+        if ratio.iter().any(|v| *v < 0.0) {
+            return Err(PyValueError::new_err(
+                "split ratio cannot contain negative values",
+            ));
+        }
+        self.split = Some(tt::SplitSpec {
+            ratio,
+            kind,
+            is_temporal,
+            offsets,
+            ranges,
+            backtesting_timestamp,
+            split_column,
+            manual_train_values,
+            manual_val_values,
+            manual_test_values,
+        });
+        Ok(())
     }
 
     /// Link prediction.
@@ -574,6 +627,7 @@ impl DiskGraphTTBuilder {
             entity,
             temporal: self.temporal.take(),
             prediction_type: std::mem::replace(&mut self.prediction_type, tt::PredictionType::Node),
+            split: self.split.take(),
             stages: std::mem::take(&mut self.stages),
         };
 

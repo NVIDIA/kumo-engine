@@ -38,7 +38,24 @@ pub struct DiskGraphTTPlan {
     pub entity: EntitySpec,
     pub temporal: Option<TemporalSpec>,
     pub prediction_type: PredictionType,
+    #[serde(default)]
+    pub split: Option<SplitSpec>,
     pub stages: Vec<Stage>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct SplitSpec {
+    pub ratio: Vec<f64>,
+    pub kind: Option<String>,
+    pub is_temporal: Option<bool>,
+    pub offsets: Option<Vec<i64>>,
+    pub ranges: Option<Vec<(i64, i64)>>,
+    pub backtesting_timestamp: Option<i64>,
+    pub split_column: Option<String>,
+    pub manual_train_values: Option<Vec<String>>,
+    pub manual_val_values: Option<Vec<String>>,
+    pub manual_test_values: Option<Vec<String>>,
 }
 
 // ─── Entity (FOR EACH) ──────────────────────────────────────────────────────

@@ -16,6 +16,7 @@ use diskgraph_engine::engine::DiskGraphEngine;
 use diskgraph_engine::output::OutputHandler;
 use diskgraph_engine::state::{SamplingState, StatePool};
 
+mod split_assignments;
 mod tt_builder;
 mod tt_executor;
 
@@ -784,6 +785,15 @@ fn diskgraph_pybind(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<tt_builder::RowFilter>()?;
     m.add_class::<tt_builder::StageFilter>()?;
     m.add_function(wrap_pyfunction!(tt_executor::execute_tt_plan, m)?)?;
+    m.add_function(wrap_pyfunction!(tt_executor::execute_tt_plan_materialize, m)?)?;
     m.add_class::<tt_executor::TTPlanIterator>()?;
+    m.add_function(wrap_pyfunction!(split_assignments::assign_by_ratio_on_perm, m)?)?;
+    m.add_function(wrap_pyfunction!(split_assignments::compute_dense_split_assignments_core, m)?)?;
+    m.add_function(wrap_pyfunction!(split_assignments::apply_entity_include_mask, m)?)?;
+    m.add_function(wrap_pyfunction!(split_assignments::assign_manual_split, m)?)?;
+    m.add_function(wrap_pyfunction!(split_assignments::assign_backtesting_split, m)?)?;
+    m.add_function(wrap_pyfunction!(split_assignments::assign_approx_date_offset_split, m)?)?;
+    m.add_function(wrap_pyfunction!(split_assignments::assign_date_offset_split, m)?)?;
+    m.add_function(wrap_pyfunction!(split_assignments::assign_time_range_split, m)?)?;
     Ok(())
 }
