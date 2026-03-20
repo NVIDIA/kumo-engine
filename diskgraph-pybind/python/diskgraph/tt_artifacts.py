@@ -39,7 +39,6 @@ from .split_contract import SplitSpec
 class DownsamplingConfig:
     enabled: bool
     max_rows: int
-    strategy: str
     preserve_pre_downsample_tt: bool
     is_link_prediction: bool
     list_distinct_target_is_array: bool
@@ -53,11 +52,6 @@ class SplitStatsConfig:
     time_col: str
     task_type: Optional[str]
     list_distinct_target_is_array: bool
-
-
-SUPPORTED_DOWNSAMPLING_STRATEGIES = {
-    'legacy_parity',
-}
 
 
 def _ensure_native_strict_artifact_capabilities() -> None:
@@ -86,7 +80,6 @@ def _normalize_downsampling_config(raw: Optional[Any]) -> DownsamplingConfig:
     cfg = raw if isinstance(raw, dict) else {}
     enabled = bool(cfg.get('enabled', False))
     max_rows = int(cfg.get('max_rows', 0) or 0)
-    strategy = str(cfg.get('strategy', 'legacy_parity'))
     if 'seed' in cfg:
         raise RuntimeError('diskgraph downsampling config no longer accepts seed')
     if 'fail_on_unsupported' in cfg:
@@ -100,16 +93,11 @@ def _normalize_downsampling_config(raw: Optional[Any]) -> DownsamplingConfig:
         if enabled:
             raise RuntimeError(
                 'diskgraph downsampling config requires positive max_rows')
-        # Disabled mode default for backward compatibility.
         max_rows = 2_147_483_647
-    if strategy not in SUPPORTED_DOWNSAMPLING_STRATEGIES:
-        raise RuntimeError(
-            f'diskgraph downsampling strategy is unsupported: {strategy}')
 
     return DownsamplingConfig(
         enabled=enabled,
         max_rows=max_rows,
-        strategy=strategy,
         preserve_pre_downsample_tt=preserve_pre,
         is_link_prediction=is_link_prediction,
         list_distinct_target_is_array=list_distinct_target_is_array,
@@ -204,7 +192,6 @@ def execute_tt_plan_with_artifacts(
     downsampling_cfg_json = json.dumps({
         'enabled': bool(downsampling_cfg.enabled),
         'max_rows': int(downsampling_cfg.max_rows),
-        'strategy': str(downsampling_cfg.strategy),
         'preserve_pre_downsample_tt': bool(downsampling_cfg.preserve_pre_downsample_tt),
         'is_link_prediction': bool(downsampling_cfg.is_link_prediction),
         'list_distinct_target_is_array': bool(downsampling_cfg.list_distinct_target_is_array),
@@ -333,7 +320,6 @@ def execute_tt_plan_with_artifacts(
         'config': {
             'enabled': downsampling_cfg.enabled,
             'max_rows': downsampling_cfg.max_rows,
-            'strategy': downsampling_cfg.strategy,
             'preserve_pre_downsample_tt': downsampling_cfg.preserve_pre_downsample_tt,
             'is_link_prediction': downsampling_cfg.is_link_prediction,
             'list_distinct_target_is_array': downsampling_cfg.list_distinct_target_is_array,

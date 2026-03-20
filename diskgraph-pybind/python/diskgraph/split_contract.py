@@ -35,20 +35,16 @@ class SplitSpec:
             cfg['split_column'] = self.split_column
         if self.manual_train_values is not None:
             cfg['manual_train_values'] = list(self.manual_train_values)
-            cfg['train_value'] = list(self.manual_train_values)
         if self.manual_val_values is not None:
             cfg['manual_val_values'] = list(self.manual_val_values)
-            cfg['val_value'] = list(self.manual_val_values)
         if self.manual_test_values is not None:
             cfg['manual_test_values'] = list(self.manual_test_values)
-            cfg['test_value'] = list(self.manual_test_values)
         if self.offsets is not None:
             cfg['offsets'] = list(self.offsets)
         if self.ranges is not None:
             cfg['ranges'] = list(self.ranges)
         if self.backtesting_timestamp is not None:
             cfg['backtesting_timestamp'] = self.backtesting_timestamp
-            cfg['timestamp'] = self.backtesting_timestamp
         if self.timeframe is not None:
             cfg['timeframe'] = int(self.timeframe)
         if self.unit is not None:
@@ -69,17 +65,9 @@ def _coerce_split_payload(raw: Optional[Any]) -> dict[str, Any]:
         return raw.to_assignment_config()
     if isinstance(raw, dict):
         return dict(raw)
-    if hasattr(raw, 'config') and callable(raw.config):
-        payload = raw.config()
-        if isinstance(payload, dict):
-            return payload
-    if hasattr(raw, 'model_dump') and callable(raw.model_dump):
-        payload = raw.model_dump()
-        if isinstance(payload, dict):
-            return payload
-    if hasattr(raw, '__dict__'):
-        return {k: v for k, v in raw.__dict__.items() if not k.startswith('_')}
-    return {}
+    raise TypeError(
+        f'diskgraph split contract requires SplitSpec or dict, got {type(raw).__name__}'
+    )
 
 
 def _as_list(v: Any) -> list[Any]:
@@ -170,11 +158,11 @@ def normalize_split_spec(
         is_temporal=is_temporal,
         offsets=offsets,
         ranges=ranges,
-        backtesting_timestamp=payload.get('backtesting_timestamp', payload.get('timestamp')),
+        backtesting_timestamp=payload.get('backtesting_timestamp'),
         split_column=str(split_column) if isinstance(split_column, str) and split_column else None,
-        manual_train_values=_string_list('manual_train_values', 'train_value'),
-        manual_val_values=_string_list('manual_val_values', 'val_value'),
-        manual_test_values=_string_list('manual_test_values', 'test_value'),
+        manual_train_values=_string_list('manual_train_values'),
+        manual_val_values=_string_list('manual_val_values'),
+        manual_test_values=_string_list('manual_test_values'),
         timeframe=timeframe,
         unit=str(payload['unit']) if isinstance(payload.get('unit'), str) else None,
         offset_unit=str(payload['offset_unit']) if isinstance(payload.get('offset_unit'), str) else None,

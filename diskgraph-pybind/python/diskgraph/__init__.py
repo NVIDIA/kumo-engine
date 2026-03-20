@@ -26,9 +26,6 @@ def __getattr__(name):
     if name == "generate_training_table":
         from .executor import generate_training_table
         return generate_training_table
-    if name == "execute_tt_plan_materialize":
-        from . import _c
-        return getattr(_c, "execute_tt_plan_materialize")
     if name == "DiskgraphConfigConverter":
         from .config_converter import DiskgraphConfigConverter
         return DiskgraphConfigConverter
@@ -58,7 +55,6 @@ __all__ = [
     "SplitSpec",
     "DiskgraphConfigConverter",
     "execute_tt_plan",
-    "execute_tt_plan_materialize",
     "generate_training_table",
     "compute_dense_split_assignments",
     "execute_tt_plan_with_artifacts",

@@ -251,10 +251,6 @@ impl TTPlanIterator {
         Ok(out.into())
     }
 
-    /// Backward-compat alias for older callers.
-    fn get_execution_stats(&mut self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        self.execution_summary(py)
-    }
 }
 
 #[pyfunction]
@@ -298,6 +294,43 @@ fn append_arange_column(batch: RecordBatch, row_offset: i64) -> anyhow::Result<R
 
     RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
         .map_err(|e| anyhow::anyhow!("failed to append arange column: {e}"))
+}
+
+/// Distribute `total` items into `buckets` using largest-remainder method.
+/// Guarantees the result sums to exactly `total`.
+fn largest_remainder_distribute(total: u64, buckets: usize) -> Vec<u64> {
+    if buckets == 0 {
+        return Vec::new();
+    }
+    if total == 0 {
+        return vec![0; buckets];
+    }
+    let ideal: Vec<f64> = (0..buckets)
+        .map(|_| total as f64 / buckets as f64)
+        .collect();
+    let mut sizes: Vec<u64> = ideal.iter().map(|v| v.floor() as u64).collect();
+    let assigned: u64 = sizes.iter().sum();
+    let mut remaining = total.saturating_sub(assigned);
+
+    let mut order: Vec<usize> = (0..buckets).collect();
+    order.sort_by(|&a, &b| {
+        let ra = ideal[a] - sizes[a] as f64;
+        let rb = ideal[b] - sizes[b] as f64;
+        rb.partial_cmp(&ra)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.cmp(&b))
+    });
+
+    let mut k = 0usize;
+    while remaining > 0 {
+        sizes[order[k]] += 1;
+        remaining -= 1;
+        k += 1;
+        if k == order.len() {
+            k = 0;
+        }
+    }
+    sizes
 }
 
 fn take_batch_rows(batch: &RecordBatch, local_indices: &[u64]) -> anyhow::Result<RecordBatch> {
@@ -540,7 +573,6 @@ fn parse_split_column_name(split_cfg: &Value) -> Option<String> {
 struct DownsamplingConfigNative {
     enabled: bool,
     max_rows: usize,
-    strategy: String,
     preserve_pre_downsample_tt: bool,
     is_link_prediction: bool,
     list_distinct_target_is_array: bool,
@@ -551,7 +583,6 @@ fn parse_downsampling_config(raw: Option<&Value>) -> anyhow::Result<Downsampling
     let mut cfg = DownsamplingConfigNative {
         enabled: false,
         max_rows: i32::MAX as usize,
-        strategy: "legacy_parity".to_string(),
         preserve_pre_downsample_tt: true,
         is_link_prediction: false,
         list_distinct_target_is_array: false,
@@ -568,11 +599,6 @@ fn parse_downsampling_config(raw: Option<&Value>) -> anyhow::Result<Downsampling
         .and_then(|v| v.as_u64())
         .map(|v| v as usize)
         .unwrap_or(i32::MAX as usize);
-    cfg.strategy = m
-        .get("strategy")
-        .and_then(|v| v.as_str())
-        .unwrap_or("legacy_parity")
-        .to_string();
     cfg.preserve_pre_downsample_tt = m
         .get("preserve_pre_downsample_tt")
         .and_then(|v| v.as_bool())
@@ -592,12 +618,6 @@ fn parse_downsampling_config(raw: Option<&Value>) -> anyhow::Result<Downsampling
 
     if cfg.enabled && cfg.max_rows == 0 {
         return Err(anyhow::anyhow!("downsampling max_rows must be positive"));
-    }
-    if cfg.enabled && cfg.strategy != "legacy_parity" {
-        return Err(anyhow::anyhow!(
-            "downsampling strategy unsupported: {}",
-            cfg.strategy
-        ));
     }
 
     Ok(cfg)
@@ -761,8 +781,9 @@ fn build_tt_stats_artifact_value(
         } else if ts_values.len() == 1 {
             ts_values.push(ts_values[0]);
         }
-        let per_row = ((num_train_rows as f64) / (ts_values.len() as f64)).round() as u64;
+        let per_timeframe_rows = largest_remainder_distribute(num_train_rows, ts_values.len());
         for (idx, ts) in ts_values.iter().enumerate() {
+            let rows_for_tf = per_timeframe_rows.get(idx).copied().unwrap_or(0);
             let dt = Utc
                 .timestamp_opt(*ts, 0)
                 .single()
@@ -773,7 +794,7 @@ fn build_tt_stats_artifact_value(
                     "min_date": dt,
                     "max_date": dt,
                     "anchor_date": dt,
-                    "num_train_rows": per_row,
+                    "num_train_rows": rows_for_tf,
                     "num_entities": num_entities,
                     "num_targets": num_targets,
                     "num_links": num_links,
@@ -784,7 +805,7 @@ fn build_tt_stats_artifact_value(
                     "min_date": dt,
                     "max_date": dt,
                     "anchor_date": dt,
-                    "num_train_rows": per_row,
+                    "num_train_rows": rows_for_tf,
                     "num_entities": num_entities,
                     "num_targets": num_targets,
                     "target_distribution": json!({}),
@@ -1093,76 +1114,6 @@ fn extract_string_values(batch: &RecordBatch, col_name: &str) -> anyhow::Result<
 }
 
 #[pyfunction]
-pub fn execute_tt_plan_materialize(
-    py: Python<'_>,
-    plan_json: &str,
-    index_path: &str,
-    output_path: &str,
-) -> PyResult<Py<PyAny>> {
-    let plan: DiskGraphTTPlan = serde_json::from_str(plan_json)
-        .map_err(|e| PyValueError::new_err(format!("invalid plan JSON: {e}")))?;
-
-    let idx = index_path.to_owned();
-    let out = output_path.to_owned();
-
-    let (rows_written, summary_json) = py
-        .detach(|| -> anyhow::Result<(u64, String)> {
-            let (receiver, handle) =
-                diskgraph_train_table::ttgen_executor::execute_with_summary(&plan, Path::new(&idx))?;
-
-            let file = File::create(&out)?;
-            let props = WriterProperties::builder()
-                .set_compression(Compression::SNAPPY)
-                .build();
-
-            let mut writer: Option<ArrowWriter<File>> = None;
-            let mut file_opt = Some(file);
-            let mut row_offset = 0i64;
-
-            for batch in receiver.iter() {
-                let batch = append_arange_column(batch, row_offset)?;
-                row_offset += batch.num_rows() as i64;
-
-                if writer.is_none() {
-                    let f = file_opt
-                        .take()
-                        .ok_or_else(|| anyhow::anyhow!("missing output file handle"))?;
-                    writer = Some(ArrowWriter::try_new(
-                        f,
-                        batch.schema(),
-                        Some(props.clone()),
-                    )?);
-                }
-
-                if let Some(w) = writer.as_mut() {
-                    w.write(&batch)?;
-                }
-            }
-
-            if row_offset == 0 {
-                return Err(anyhow::anyhow!("diskgraph execute_tt_plan returned zero rows"));
-            }
-
-            if let Some(w) = writer.take() {
-                w.close()?;
-            }
-
-            let summary = handle
-                .join()
-                .map_err(|_| anyhow::anyhow!("TT-gen summary thread panicked"))??;
-
-            let summary_json = serde_json::to_string(&summary)?;
-            Ok((row_offset as u64, summary_json))
-        })
-        .map_err(|e| PyRuntimeError::new_err(format!("materialize failed: {e:#}")))?;
-
-    let out = PyDict::new(py);
-    out.set_item("rows_written", rows_written)?;
-    out.set_item("summary_json", summary_json)?;
-    Ok(out.into())
-}
-
-#[pyfunction]
 #[pyo3(signature=(plan_json, index_path, output_path, split_config_json=None, split_family_hint=None, downsampling_config_json=None))]
 pub fn execute_tt_plan_materialize_with_split(
     py: Python<'_>,
@@ -1200,15 +1151,15 @@ pub fn execute_tt_plan_materialize_with_split(
 
     let manual_train_values = split_cfg
         .as_ref()
-        .map(|cfg| parse_optional_string_list(cfg, "train_value"))
+        .map(|cfg| parse_optional_string_list(cfg, "manual_train_values"))
         .unwrap_or_default();
     let manual_val_values = split_cfg
         .as_ref()
-        .map(|cfg| parse_optional_string_list(cfg, "val_value"))
+        .map(|cfg| parse_optional_string_list(cfg, "manual_val_values"))
         .unwrap_or_default();
     let manual_test_values = split_cfg
         .as_ref()
-        .map(|cfg| parse_optional_string_list(cfg, "test_value"))
+        .map(|cfg| parse_optional_string_list(cfg, "manual_test_values"))
         .unwrap_or_default();
 
     let idx = index_path.to_owned();
@@ -1471,8 +1422,8 @@ pub fn execute_tt_plan_materialize_with_split(
                     }
                     "BacktestingSplit" => {
                         let ts_val = split_cfg
-                            .get("timestamp")
-                            .ok_or_else(|| anyhow::anyhow!("BacktestingSplit requires timestamp"))?;
+                            .get("backtesting_timestamp")
+                            .ok_or_else(|| anyhow::anyhow!("BacktestingSplit requires backtesting_timestamp"))?;
                         let ts = parse_timestamp_ns_json(ts_val)?;
                         split_assignments::assign_backtesting_split(timestamps_ns.clone(), ts)
                     }
@@ -1516,19 +1467,14 @@ pub fn execute_tt_plan_materialize_with_split(
                         .map_err(|e| anyhow::anyhow!(e.to_string()))?
                     }
                     "RandomLinkSplit" => {
-                        split_authoritative = false;
-                        split_reason = Some(
-                            "RandomLinkSplit is not implemented for diskgraph dense split assignment"
-                                .to_string(),
-                        );
-                        Vec::new()
+                        return Err(anyhow::anyhow!(
+                            "RandomLinkSplit is not supported for diskgraph dense split assignment"
+                        ));
                     }
                     other => {
-                        split_authoritative = false;
-                        split_reason = Some(format!(
-                            "native materialize split unsupported for family: {other}"
+                        return Err(anyhow::anyhow!(
+                            "unsupported split family for diskgraph dense split assignment: {other}"
                         ));
-                        Vec::new()
                     }
                 };
 

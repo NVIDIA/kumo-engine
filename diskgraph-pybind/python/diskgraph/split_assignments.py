@@ -6,11 +6,6 @@ import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
 
-try:
-    from .split_contract import normalize_split_spec
-except Exception:  # pragma: no cover - direct module loading in tests
-    from diskgraph.split_contract import normalize_split_spec
-
 _RUST_SPLIT_IMPORT_ERROR: Optional[Exception] = None
 
 _rust_mod = None
@@ -32,10 +27,7 @@ assign_time_range_split = getattr(_rust_mod, 'assign_time_range_split', None)
 compute_dense_split_assignments_core = getattr(_rust_mod, 'compute_dense_split_assignments_core', None)
 
 _UNUSED_STAGE_ID = 255
-_ENTITY_INCLUDE_BIT_COLS = (
-    'ENTITY_INCLUDE_BIT',
-    '__kumo_internal_entity_inclusive_bit_column__',  # backward compatibility
-)
+_ENTITY_INCLUDE_BIT_COL = 'ENTITY_INCLUDE_BIT'
 
 
 def _require_rust_split_core() -> None:
@@ -153,18 +145,17 @@ def _assign_for_manual_split(split_cfg: dict[str, Any], train_table_path: str) -
         raise RuntimeError('ManualSplit requires split.col name')
 
     df = _read_parquet_columns(train_table_path, ['arange', col_name]).sort_values('arange', kind='mergesort')
-    train_raw = split_cfg.get('train_value', split_cfg.get('manual_train_values'))
-    val_raw = split_cfg.get('val_value', split_cfg.get('manual_val_values'))
+    train_raw = split_cfg.get('manual_train_values')
+    val_raw = split_cfg.get('manual_val_values')
     if train_raw is None or val_raw is None:
         raise RuntimeError(
-            'ManualSplit requires explicit train_value/manual_train_values '
-            'and val_value/manual_val_values'
+            'ManualSplit requires explicit manual_train_values and manual_val_values'
         )
     train_vals = [str(v) for v in _as_list(train_raw)]
     val_vals = [str(v) for v in _as_list(val_raw)]
     if not train_vals or not val_vals:
         raise RuntimeError('ManualSplit requires non-empty train and val values')
-    test_raw = split_cfg.get('test_value', split_cfg.get('manual_test_values'))
+    test_raw = split_cfg.get('manual_test_values')
     test_vals = [str(v) for v in (_as_list(test_raw) if test_raw is not None else [])]
 
     values = df[col_name].astype(str).to_numpy(dtype=object).tolist()
@@ -180,9 +171,9 @@ def _assign_for_manual_split(split_cfg: dict[str, Any], train_table_path: str) -
 
 def _assign_for_backtesting_split(split_cfg: dict[str, Any], train_table_path: str) -> np.ndarray:
     _require_rust_split_core()
-    ts_raw = split_cfg.get('timestamp')
+    ts_raw = split_cfg.get('backtesting_timestamp')
     if ts_raw is None:
-        raise RuntimeError('BacktestingSplit requires timestamp')
+        raise RuntimeError('BacktestingSplit requires backtesting_timestamp')
     df = _read_parquet_columns(train_table_path, ['arange', 'TIMESTAMP']).sort_values('arange', kind='mergesort')
     time_ser = _infer_datetime_series(df['TIMESTAMP'])
     ts_ns = time_ser.astype('int64').to_numpy(dtype=np.int64)
@@ -279,11 +270,10 @@ def _assign_for_approx_date_offset_split(split_cfg: dict[str, Any], train_table_
 def _apply_entity_include_filter(assignments: np.ndarray, train_table_path: str) -> np.ndarray:
     _require_rust_split_core()
     schema = pq.read_schema(train_table_path)
-    include_col = next((c for c in _ENTITY_INCLUDE_BIT_COLS if c in schema.names), None)
-    if include_col is None:
+    if _ENTITY_INCLUDE_BIT_COL not in schema.names:
         return assignments
-    include_df = pq.read_table(train_table_path, columns=[include_col]).to_pandas()
-    include_mask = include_df[include_col].astype(bool).to_numpy()
+    include_df = pq.read_table(train_table_path, columns=[_ENTITY_INCLUDE_BIT_COL]).to_pandas()
+    include_mask = include_df[_ENTITY_INCLUDE_BIT_COL].astype(bool).to_numpy()
     apply_mask = _require_rust_fn(apply_entity_include_mask, 'apply_entity_include_mask')
     out = apply_mask(
         assignments=np.asarray(assignments, dtype=np.uint8).tolist(),
@@ -294,21 +284,38 @@ def _apply_entity_include_filter(assignments: np.ndarray, train_table_path: str)
 
 def compute_dense_split_assignments(
     train_table_path: str,
-    split_config: Optional[Any],
+    split_config: 'SplitSpec',
     split_family_hint: Optional[str] = None,
 ) -> tuple[np.ndarray, dict[str, Any]]:
     """Compute dense row-stage split assignment vector aligned with TT arange order.
 
+    Args:
+        train_table_path: Path to the materialized train table parquet.
+        split_config: A SplitSpec instance describing the split configuration.
+            Must have ``to_assignment_config()`` method and ``kind`` attribute.
+        split_family_hint: Optional override for the split family. Must match
+            split_config.kind if both are set.
+
     Returns assignments uint8 vector and metadata dict.
     """
-    split_spec = normalize_split_spec(
-        split_config,
-        split_family_hint=split_family_hint,
-        require=True,
-    )
-    assert split_spec is not None
-    split_cfg = split_spec.to_assignment_config()
-    family = split_spec.kind
+    if isinstance(split_config, dict):
+        raise TypeError(
+            'compute_dense_split_assignments requires split_config as SplitSpec, '
+            'got dict. Construct a SplitSpec first.'
+        )
+    if not (hasattr(split_config, 'to_assignment_config') and callable(split_config.to_assignment_config)
+            and hasattr(split_config, 'kind')):
+        raise TypeError(
+            f'compute_dense_split_assignments requires split_config as SplitSpec '
+            f'(must have to_assignment_config() and kind), got {type(split_config).__name__}'
+        )
+    if split_family_hint and split_config.kind and split_family_hint != split_config.kind:
+        raise RuntimeError(
+            'diskgraph split contract mismatch: '
+            f'split_family_hint={split_family_hint} conflicts with split_config.kind={split_config.kind}'
+        )
+    split_cfg = split_config.to_assignment_config()
+    family = split_family_hint or split_config.kind
     if not family:
         raise RuntimeError('missing split family for diskgraph dense split assignment')
 

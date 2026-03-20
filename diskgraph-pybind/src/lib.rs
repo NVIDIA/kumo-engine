@@ -785,7 +785,6 @@ fn diskgraph_pybind(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<tt_builder::RowFilter>()?;
     m.add_class::<tt_builder::StageFilter>()?;
     m.add_function(wrap_pyfunction!(tt_executor::execute_tt_plan, m)?)?;
-    m.add_function(wrap_pyfunction!(tt_executor::execute_tt_plan_materialize, m)?)?;
     m.add_function(wrap_pyfunction!(tt_executor::execute_tt_plan_materialize_with_split, m)?)?;
     m.add_function(wrap_pyfunction!(tt_executor::build_tt_stats_artifact, m)?)?;
     m.add_function(wrap_pyfunction!(tt_executor::build_split_stats_artifact, m)?)?;

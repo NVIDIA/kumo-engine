@@ -16,7 +16,18 @@ def _load_module():
     return module
 
 
+def _load_split_contract():
+    root = Path(__file__).resolve().parents[1] / 'diskgraph' / 'split_contract.py'
+    spec = importlib.util.spec_from_file_location('diskgraph_split_contract', root)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 M = _load_module()
+SC = _load_split_contract()
+SplitSpec = SC.SplitSpec
 
 def _write_tt(path: Path, cols: dict):
     table = pa.table({k: pa.array(v) for k, v in cols.items()})
@@ -35,10 +46,7 @@ def test_fixed_split_dense_assignments(tmp_path):
 
     assignments, meta = M.compute_dense_split_assignments(
         train_table_path=str(p),
-        split_config={
-            '_target_': 'kumo.task.split.FixedSplit',
-            'ratio': [0.8, 0.1, 0.1],
-        },
+        split_config=SplitSpec(kind='FixedSplit', ratio=[0.8, 0.1, 0.1]),
     )
     assert assignments.shape[0] == 10
     assert meta['authoritative'] is True
@@ -60,11 +68,7 @@ def test_random_link_split_not_implemented(tmp_path):
     with pytest.raises(NotImplementedError):
         M.compute_dense_split_assignments(
             train_table_path=str(p),
-            split_config={
-                '_target_': 'kumo.task.split.RandomLinkSplit',
-                'ratio': [0.8, 0.1, 0.1],
-                'seed': 1,
-            },
+            split_config=SplitSpec(kind='RandomLinkSplit', ratio=[0.8, 0.1, 0.1], seed=1),
         )
 
 
@@ -81,11 +85,7 @@ def test_column_split_is_stable_for_ties(tmp_path):
 
     assignments, meta = M.compute_dense_split_assignments(
         train_table_path=str(p),
-        split_config={
-            '_target_': 'kumo.task.split.ColumnSplit',
-            'col': {'name': 'SPLIT_COL'},
-            'ratio': [0.5, 0.25, 0.25],
-        },
+        split_config=SplitSpec(kind='ColumnSplit', split_column='SPLIT_COL', ratio=[0.5, 0.25, 0.25]),
     )
     assert meta['authoritative'] is True
     # With stable sort, ties keep original arange order. First 3 entries are stage 0,
@@ -105,10 +105,7 @@ def test_ratio_assignment_uses_all_rows_no_unused(tmp_path):
 
     assignments, _ = M.compute_dense_split_assignments(
         train_table_path=str(p),
-        split_config={
-            '_target_': 'kumo.task.split.FixedSplit',
-            'ratio': [0.34, 0.33, 0.33],
-        },
+        split_config=SplitSpec(kind='FixedSplit', ratio=[0.34, 0.33, 0.33]),
     )
     assert assignments.shape[0] == 10
     assert int((assignments == 255).sum()) == 0
@@ -128,11 +125,28 @@ def test_split_family_hint_conflict_fails_fast(tmp_path):
     with pytest.raises(RuntimeError, match='split contract mismatch'):
         M.compute_dense_split_assignments(
             train_table_path=str(p),
+            split_config=SplitSpec(kind='FixedSplit', ratio=[0.8, 0.1, 0.1]),
+            split_family_hint='TemporalSplit',
+        )
+
+
+def test_rejects_dict_split_config(tmp_path):
+    p = tmp_path / 'tt.parquet'
+    _write_tt(
+        p,
+        {
+            'arange': list(range(5)),
+            'TIMESTAMP': [f'2020-01-{i:02d}' for i in range(1, 6)],
+        },
+    )
+
+    with pytest.raises(TypeError, match='requires split_config as SplitSpec'):
+        M.compute_dense_split_assignments(
+            train_table_path=str(p),
             split_config={
                 '_target_': 'kumo.task.split.FixedSplit',
                 'ratio': [0.8, 0.1, 0.1],
             },
-            split_family_hint='TemporalSplit',
         )
 
 
@@ -150,10 +164,7 @@ def test_manual_split_requires_explicit_train_and_val_values(tmp_path):
     with pytest.raises(RuntimeError, match='ManualSplit requires explicit'):
         M.compute_dense_split_assignments(
             train_table_path=str(p),
-            split_config={
-                '_target_': 'kumo.task.split.ManualSplit',
-                'col': {'name': 'SPLIT_COL'},
-            },
+            split_config=SplitSpec(kind='ManualSplit', split_column='SPLIT_COL'),
         )
 
 
@@ -170,9 +181,6 @@ def test_entity_include_bit_masks_rows_with_canonical_column_name(tmp_path):
 
     assignments, _ = M.compute_dense_split_assignments(
         train_table_path=str(p),
-        split_config={
-            '_target_': 'kumo.task.split.FixedSplit',
-            'ratio': [1.0, 0.0, 0.0],
-        },
+        split_config=SplitSpec(kind='FixedSplit', ratio=[1.0, 0.0, 0.0]),
     )
     assert assignments.tolist() == [0, 255, 0, 255]

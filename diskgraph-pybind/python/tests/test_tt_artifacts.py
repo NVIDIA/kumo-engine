@@ -61,16 +61,18 @@ def _mock_native_persist(**_kwargs):
     return {'manifest_path': '/tmp/fake.manifest.json', 'artifacts_dir': '/tmp/fake.artifacts'}
 
 
-def test_downsampling_config_rejects_unsupported_strategy():
-    with pytest.raises(RuntimeError, match='unsupported'):
-        _normalize_downsampling_config({'enabled': True, 'max_rows': 10, 'strategy': 'bad'})
+def test_downsampling_config_ignores_unknown_strategy_field():
+    # strategy field is no longer used; unknown values should not cause errors
+    cfg = _normalize_downsampling_config({'enabled': True, 'max_rows': 10, 'strategy': 'anything'})
+    assert cfg.enabled is True
+    assert cfg.max_rows == 10
 
 
 def test_downsampling_config_rejects_removed_knobs():
     with pytest.raises(RuntimeError, match='no longer accepts seed'):
-        _normalize_downsampling_config({'enabled': True, 'max_rows': 10, 'strategy': 'legacy_parity', 'seed': 1})
+        _normalize_downsampling_config({'enabled': True, 'max_rows': 10, 'seed': 1})
     with pytest.raises(RuntimeError, match='no longer accepts fail_on_unsupported'):
-        _normalize_downsampling_config({'enabled': True, 'max_rows': 10, 'strategy': 'legacy_parity', 'fail_on_unsupported': True})
+        _normalize_downsampling_config({'enabled': True, 'max_rows': 10, 'fail_on_unsupported': True})
 
 
 def test_rejects_non_split_spec(tmp_path: Path, monkeypatch):
@@ -112,7 +114,7 @@ def test_fails_without_downsampling_metadata(tmp_path: Path, monkeypatch):
             index_path='unused',
             output_path=str(tmp_path / 'tt.parquet'),
             split_config=SplitSpec(kind='FixedSplit', ratio=[0.5, 0.25, 0.25]),
-            downsampling={'enabled': True, 'max_rows': 1, 'strategy': 'legacy_parity'},
+            downsampling={'enabled': True, 'max_rows': 1},
         )
 
 
