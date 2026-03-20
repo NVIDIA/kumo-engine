@@ -124,7 +124,7 @@ def test_compiler_accepts_split_spec_object():
     assert plan["split"]["kind"] == "FixedSplit"
 
 
-def test_compiler_accepts_legacy_split_dict_payload():
+def test_compiler_rejects_legacy_split_dict_payload():
     target_ast = Aggregation(
         target=Column(fqn="transactions.amount"),
         aggr=AggregationType.SUM,
@@ -142,17 +142,15 @@ def test_compiler_accepts_legacy_split_dict_payload():
     query._query_type = "TEMPORAL"
 
     compiler = DiskGraphPlanCompiler()
-    plan_json = compiler.compile(
-        query=query,
-        timestamps=[1609459200000000],
-        forecast_length=1,
-        lag_timesteps=30,
-        task_type="binary_classification",
-        split={"split_kind": "FixedSplit", "ratio": [0.8, 0.1, 0.1]},
-    )
-    plan = json.loads(plan_json)
-    assert plan["split"]["kind"] == "FixedSplit"
-    assert plan["split"]["ratio"] == [0.8, 0.1, 0.1]
+    with pytest.raises(TypeError, match='requires split=SplitSpec'):
+        compiler.compile(
+            query=query,
+            timestamps=[1609459200000000],
+            forecast_length=1,
+            lag_timesteps=30,
+            task_type="binary_classification",
+            split={"split_kind": "FixedSplit", "ratio": [0.8, 0.1, 0.1]},
+        )
 
 
 def test_compiler_with_row_filter():

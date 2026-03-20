@@ -1,249 +1,150 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import struct
-from datetime import datetime, timezone
+from dataclasses import dataclass
 from typing import Any, Optional
 
 import numpy as np
-import pyarrow as pa
-import pyarrow.parquet as pq
 
-from ._c import execute_tt_plan
+_NATIVE_IMPORT_ERROR: Optional[Exception] = None
 try:
-    from ._c import execute_tt_plan_materialize as _execute_tt_plan_materialize
-except Exception:  # pragma: no cover - stale wheel fallback
-    _execute_tt_plan_materialize = None
-try:
-    from ._c import execute_tt_plan_materialize_with_split as _execute_tt_plan_materialize_with_split
-except Exception:  # pragma: no cover - stale wheel fallback
-    _execute_tt_plan_materialize_with_split = None
-from .split_assignments import compute_dense_split_assignments
-from .split_contract import normalize_split_spec
+    from . import _c as _native_c
+except Exception as exc:  # pragma: no cover - exercised via capability checks
+    _native_c = None
+    _NATIVE_IMPORT_ERROR = exc
+
+_execute_tt_plan_materialize_with_split = (
+    getattr(_native_c, 'execute_tt_plan_materialize_with_split', None)
+    if _native_c is not None else None
+)
+_persist_tt_artifact_bundle = (
+    getattr(_native_c, 'persist_tt_artifact_bundle', None)
+    if _native_c is not None else None
+)
+_build_tt_stats_artifact_native = (
+    getattr(_native_c, 'build_tt_stats_artifact', None)
+    if _native_c is not None else None
+)
+_build_split_stats_artifact_native = (
+    getattr(_native_c, 'build_split_stats_artifact', None)
+    if _native_c is not None else None
+)
+
+from .split_contract import SplitSpec
 
 
-def _sha256_bytes(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
+@dataclass(frozen=True)
+class DownsamplingConfig:
+    enabled: bool
+    max_rows: int
+    strategy: str
+    preserve_pre_downsample_tt: bool
+    is_link_prediction: bool
+    list_distinct_target_is_array: bool
+    uses_arl_labels: bool
 
 
-def _sha256_file(path: str) -> str:
-    h = hashlib.sha256()
-    with open(path, 'rb') as f:
-        for chunk in iter(lambda: f.read(1024 * 1024), b''):
-            h.update(chunk)
-    return h.hexdigest()
+@dataclass(frozen=True)
+class SplitStatsConfig:
+    entity_col: str
+    target_col: str
+    time_col: str
+    task_type: Optional[str]
+    list_distinct_target_is_array: bool
 
 
-def _to_epoch_seconds(v: Any) -> int:
-    iv = int(v)
-    av = abs(iv)
-    # magnitude-based unit inference: s/ms/us/ns -> seconds
-    if av >= 10**17:
-        return iv // 1_000_000_000
-    if av >= 10**14:
-        return iv // 1_000_000
-    if av >= 10**11:
-        return iv // 1_000
-    return iv
+SUPPORTED_DOWNSAMPLING_STRATEGIES = {
+    'legacy_parity',
+}
 
 
-def _largest_remainder_counts(total: int, buckets: int) -> list[int]:
-    if buckets <= 0:
-        return []
-    if total <= 0:
-        return [0] * buckets
-    ideal = [float(total) / float(buckets)] * buckets
-    sizes = [int(x) for x in ideal]
-    remaining = total - sum(sizes)
-    order = list(range(buckets))
-    order.sort(key=lambda i: (-(ideal[i] - sizes[i]), i))
-    k = 0
-    while remaining > 0 and order:
-        sizes[order[k]] += 1
-        remaining -= 1
-        k += 1
-        if k == len(order):
-            k = 0
-    return sizes
+def _ensure_native_strict_artifact_capabilities() -> None:
+    required = {
+        'execute_tt_plan_materialize_with_split': _execute_tt_plan_materialize_with_split,
+        'build_tt_stats_artifact': _build_tt_stats_artifact_native,
+        'build_split_stats_artifact': _build_split_stats_artifact_native,
+        'persist_tt_artifact_bundle': _persist_tt_artifact_bundle,
+    }
+    missing = [name for name, fn in required.items() if not callable(fn)]
+    if not missing:
+        return
 
-
-def _build_stats_artifact(
-    native_summary: Optional[dict[str, Any]],
-    row_count: int,
-    plan_json: Optional[str] = None,
-) -> dict[str, Any]:
-    stats = (native_summary or {}).get('stats') if isinstance(native_summary, dict) else None
-    if not isinstance(stats, dict):
-        stats = {}
-
-    num_total_rows = int(stats.get('num_total_rows', row_count))
-    num_train_rows = int(stats.get('num_train_rows', row_count))
-    num_entities = int(stats.get('num_entities', 0))
-    num_targets = int(stats.get('num_targets', 0))
-    num_links = stats.get('num_links')
-    if num_links is not None:
-        num_links = int(num_links)
-
-    exact_stats = stats.get('exact_stats') if isinstance(stats.get('exact_stats'), dict) else None
-    split_payload = stats.get('split_payload') if isinstance(stats.get('split_payload'), dict) else None
-
-    # Temporal stats fallbacks required by strict native_full cache seeding.
-    timestamp_unique = None
-    timestamp_max = None
-    if isinstance(exact_stats, dict):
-        ts_stats = exact_stats.get('timestamp')
-        if isinstance(ts_stats, dict):
-            raw_unique = ts_stats.get('num_unique')
-            if isinstance(raw_unique, int):
-                timestamp_unique = raw_unique
-            raw_max = ts_stats.get('max')
-            if isinstance(raw_max, int):
-                timestamp_max = raw_max
-
-    temporal_timestamps: list[int] = []
-    prediction_type_raw: Any = None
-    if plan_json:
-        try:
-            plan_obj = json.loads(plan_json)
-            if isinstance(plan_obj, dict):
-                temporal_obj = plan_obj.get('temporal')
-                if isinstance(temporal_obj, dict):
-                    raw_ts = temporal_obj.get('timestamps')
-                    if isinstance(raw_ts, list):
-                        temporal_timestamps = [int(ts) for ts in raw_ts if isinstance(ts, (int, float))]
-                prediction_type_raw = plan_obj.get('prediction_type')
-        except Exception:
-            # Non-fatal: fall back to exact-stats-only derivation.
-            pass
-
-    is_temporal = len(temporal_timestamps) > 0
-    is_link_prediction = isinstance(prediction_type_raw, dict) and ('link' in prediction_type_raw)
-
-    if is_temporal:
-        num_timeframes = len(temporal_timestamps)
-        num_timeframes_post_filter = len(temporal_timestamps)
-    else:
-        num_timeframes = int(timestamp_unique or 0)
-        num_timeframes_post_filter = int(timestamp_unique or 0)
-
-    avg_entities_per_timeframe = (
-        int(round(num_train_rows / num_timeframes_post_filter))
-        if num_timeframes_post_filter > 0 else 0
+    details = ''
+    if _NATIVE_IMPORT_ERROR is not None:
+        details = f' native_import_error={_NATIVE_IMPORT_ERROR!r}'
+    raise RuntimeError(
+        'diskgraph strict artifact path missing native helper(s): '
+        + ', '.join(missing)
+        + '. Install a compatible diskgraph runtime wheel.'
+        + details
     )
 
-    stats_per_timeframe: list[dict[str, Any]] = []
-    if is_temporal:
-        # Ensure at least two entries so legacy split-adjustment code that
-        # indexes [0] and [1] remains safe.
-        ts_values = temporal_timestamps if len(temporal_timestamps) >= 2 else (
-            temporal_timestamps * 2 if temporal_timestamps else []
-        )
-        if not ts_values:
-            fallback_ts = timestamp_max if timestamp_max is not None else 0
-            ts_values = [fallback_ts, fallback_ts]
 
-        per_rows = _largest_remainder_counts(num_train_rows, len(ts_values))
-        for i, ts_raw in enumerate(ts_values):
-            ts_sec = _to_epoch_seconds(ts_raw)
-            dt = datetime.fromtimestamp(ts_sec, tz=timezone.utc).isoformat()
-            if is_link_prediction:
-                stats_per_timeframe.append({
-                    'min_date': dt,
-                    'max_date': dt,
-                    'anchor_date': dt,
-                    'num_train_rows': int(per_rows[i]),
-                    'num_entities': num_entities,
-                    'num_targets': num_targets,
-                    'num_links': num_links,
-                    'index': i,
-                })
-            else:
-                stats_per_timeframe.append({
-                    'min_date': dt,
-                    'max_date': dt,
-                    'anchor_date': dt,
-                    'num_train_rows': int(per_rows[i]),
-                    'num_entities': num_entities,
-                    'num_targets': num_targets,
-                    'target_distribution': {},
-                    'index': i,
-                })
+def _normalize_downsampling_config(raw: Optional[Any]) -> DownsamplingConfig:
+    cfg = raw if isinstance(raw, dict) else {}
+    enabled = bool(cfg.get('enabled', False))
+    max_rows = int(cfg.get('max_rows', 0) or 0)
+    strategy = str(cfg.get('strategy', 'legacy_parity'))
+    if 'seed' in cfg:
+        raise RuntimeError('diskgraph downsampling config no longer accepts seed')
+    if 'fail_on_unsupported' in cfg:
+        raise RuntimeError('diskgraph downsampling config no longer accepts fail_on_unsupported')
+    preserve_pre = bool(cfg.get('preserve_pre_downsample_tt', True))
+    is_link_prediction = bool(cfg.get('is_link_prediction', False))
+    list_distinct_target_is_array = bool(cfg.get('list_distinct_target_is_array', False))
+    uses_arl_labels = bool(cfg.get('uses_arl_labels', False))
 
-    payload: dict[str, Any] = {
-        'version': 1,
-        'kind': 'tt_stats',
-        'num_total_rows': num_total_rows,
-        'num_train_rows': num_train_rows,
-        'num_entities': num_entities,
-        'num_targets': num_targets,
-        'num_links': num_links,
-        'num_target_rows': num_train_rows,
-        'num_timeframes': num_timeframes,
-        'num_timeframes_post_filter': num_timeframes_post_filter,
-        'avg_entities_per_timeframe': avg_entities_per_timeframe,
-        # Keep temporal payload keys present for strict native_full. Detailed
-        # structures are emitted as they become available from native stats.
-        'node_degree_stats': None,
-        'stats_per_timeframe': stats_per_timeframe,
-        'target_distribution': {},
-        'scoring_table_column_stats': None,
-        # Optional DG-provided sections.
-        'exact_stats': exact_stats,
-        'split_payload': split_payload,
-    }
+    if max_rows <= 0:
+        if enabled:
+            raise RuntimeError(
+                'diskgraph downsampling config requires positive max_rows')
+        # Disabled mode default for backward compatibility.
+        max_rows = 2_147_483_647
+    if strategy not in SUPPORTED_DOWNSAMPLING_STRATEGIES:
+        raise RuntimeError(
+            f'diskgraph downsampling strategy is unsupported: {strategy}')
 
-    provided_fields = [
-        'num_total_rows',
-        'num_train_rows',
-        'num_entities',
-        'num_targets',
-        'num_target_rows',
-        'num_timeframes',
-        'num_timeframes_post_filter',
-        'avg_entities_per_timeframe',
-        'node_degree_stats',
-        'stats_per_timeframe',
-        'target_distribution',
-        'scoring_table_column_stats',
-    ]
-    if num_links is not None:
-        provided_fields.append('num_links')
-    if payload['exact_stats'] is not None:
-        provided_fields.append('exact_stats')
-    if payload['split_payload'] is not None:
-        provided_fields.append('split_payload')
+    return DownsamplingConfig(
+        enabled=enabled,
+        max_rows=max_rows,
+        strategy=strategy,
+        preserve_pre_downsample_tt=preserve_pre,
+        is_link_prediction=is_link_prediction,
+        list_distinct_target_is_array=list_distinct_target_is_array,
+        uses_arl_labels=uses_arl_labels,
+    )
 
-    payload['provided_fields'] = provided_fields
-    return payload
+
+def _normalize_split_stats_config(
+    raw: Optional[Any],
+    downsampling_cfg: DownsamplingConfig,
+) -> SplitStatsConfig:
+    cfg = raw if isinstance(raw, dict) else {}
+    entity_col = str(cfg.get('entity_col', 'ENTITY'))
+    target_col = str(cfg.get('target_col', 'TARGET'))
+    time_col = str(cfg.get('time_col', 'TIMESTAMP'))
+    task_type_raw = cfg.get('task_type')
+    task_type = str(task_type_raw).lower() if isinstance(task_type_raw, str) else None
+    list_distinct_target_is_array = bool(
+        cfg.get('list_distinct_target_is_array', downsampling_cfg.list_distinct_target_is_array)
+    )
+    return SplitStatsConfig(
+        entity_col=entity_col,
+        target_col=target_col,
+        time_col=time_col,
+        task_type=task_type,
+        list_distinct_target_is_array=list_distinct_target_is_array,
+    )
 
 
 def _build_split_assignment_artifact(assignments: np.ndarray) -> bytes:
     arr = np.asarray(assignments, dtype=np.uint8)
     row_count = int(arr.shape[0])
-    magic = b'DGSPLT4\x00'
+    magic = b'DGSPLT\x00\x00'
     header = struct.pack('<IQ', 1, row_count)
     return magic + header + arr.tobytes(order='C')
-
-
-
-def _coerce_split_config_dict(split_config: Optional[Any]) -> Optional[dict[str, Any]]:
-    if split_config is None:
-        return None
-    if isinstance(split_config, dict):
-        return dict(split_config)
-    if hasattr(split_config, 'config') and callable(split_config.config):
-        payload = split_config.config()
-        if isinstance(payload, dict):
-            return payload
-    if hasattr(split_config, 'model_dump') and callable(split_config.model_dump):
-        payload = split_config.model_dump()
-        if isinstance(payload, dict):
-            return payload
-    if hasattr(split_config, '__dict__'):
-        return {k: v for k, v in split_config.__dict__.items() if not k.startswith('_')}
-    return None
 
 
 def execute_tt_plan_with_artifacts(
@@ -251,8 +152,10 @@ def execute_tt_plan_with_artifacts(
     plan_json: str,
     index_path: str,
     output_path: str,
-    split_config: Optional[Any],
+    split_config: SplitSpec,
     split_family_hint: Optional[str] = None,
+    downsampling: Optional[Any] = None,
+    split_stats_config: Optional[Any] = None,
 ) -> dict[str, Any]:
     """Execute TT plan and materialize producer artifacts.
 
@@ -262,157 +165,204 @@ def execute_tt_plan_with_artifacts(
     - stats artifact
     - manifest with artifact references + checksums
     """
+    if not isinstance(split_config, SplitSpec):
+        raise TypeError('diskgraph strict artifact path requires split_config as SplitSpec')
+    if split_family_hint and split_config.kind and split_family_hint != split_config.kind:
+        raise RuntimeError(
+            'diskgraph split contract mismatch: '
+            f'split_family_hint={split_family_hint} conflicts with split_config.kind={split_config.kind}'
+        )
+    resolved_family = split_config.kind or split_family_hint
+    if not resolved_family:
+        raise RuntimeError('diskgraph strict artifact path requires split family in split_config.kind or split_family_hint')
+
+    _ensure_native_strict_artifact_capabilities()
+
+    downsampling_cfg = _normalize_downsampling_config(downsampling)
+    split_stats_cfg = _normalize_split_stats_config(
+        split_stats_config,
+        downsampling_cfg,
+    )
     output_dir = os.path.dirname(output_path)
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
 
-    split_spec = normalize_split_spec(
-        split_config,
-        split_family_hint=split_family_hint,
-        require=True,
-    )
-    assert split_spec is not None
-    split_cfg_dict = split_spec.to_assignment_config()
+    split_cfg_dict = split_config.to_assignment_config()
 
     row_count = 0
     native_summary: Optional[dict[str, Any]] = None
     native_split_bytes: Optional[bytes] = None
     native_split_meta: Optional[dict[str, Any]] = None
+    native_downsampling_handled = False
+    native_downsampling_applied = False
+    native_pre_downsample_row_count: Optional[int] = None
 
     materialize_with_split_fn = _execute_tt_plan_materialize_with_split
-    materialize_fn = _execute_tt_plan_materialize
 
-    if callable(materialize_with_split_fn):
-        mat = materialize_with_split_fn(
-            plan_json=plan_json,
-            index_path=index_path,
-            output_path=output_path,
-            split_config_json=json.dumps(split_cfg_dict),
-            split_family_hint=split_spec.kind,
-        )
-        if not isinstance(mat, dict):
-            raise RuntimeError('diskgraph native materialize_with_split returned invalid payload type')
-        row_count = int(mat.get('rows_written', 0) or 0)
-        summary_json = mat.get('summary_json')
-        if isinstance(summary_json, str) and summary_json:
-            parsed = json.loads(summary_json)
-            if isinstance(parsed, dict):
-                native_summary = parsed
-        split_blob = mat.get('split_assignments')
-        if isinstance(split_blob, (bytes, bytearray)):
-            native_split_bytes = bytes(split_blob)
-        native_split_meta = {
-            'family': mat.get('split_family') or split_spec.kind,
-            'authoritative': bool(mat.get('split_authoritative', False)),
-            'reason': mat.get('split_reason'),
-        }
-    elif callable(materialize_fn):
-        mat = materialize_fn(
-            plan_json=plan_json,
-            index_path=index_path,
-            output_path=output_path,
-        )
-        if not isinstance(mat, dict):
-            raise RuntimeError('diskgraph native materialize returned invalid payload type')
-        row_count = int(mat.get('rows_written', 0) or 0)
-        summary_json = mat.get('summary_json')
-        if isinstance(summary_json, str) and summary_json:
-            parsed = json.loads(summary_json)
-            if isinstance(parsed, dict):
-                native_summary = parsed
-    else:
-        # Backward-compat fallback for stale wheels.
-        batch_iterator = execute_tt_plan(plan_json=plan_json, index_path=index_path)
-        writer = None
-        try:
-            for raw_batch in batch_iterator:
-                n = raw_batch.num_rows
-                arange_array = pa.array(range(row_count, row_count + n), type=pa.int64())
-                batch_with_idx = raw_batch.append_column('arange', arange_array)
-                row_count += n
+    split_cfg_json = json.dumps(split_cfg_dict)
 
-                if writer is None:
-                    writer = pq.ParquetWriter(output_path, batch_with_idx.schema, compression='snappy')
-                writer.write_batch(batch_with_idx)
+    downsampling_cfg_json = json.dumps({
+        'enabled': bool(downsampling_cfg.enabled),
+        'max_rows': int(downsampling_cfg.max_rows),
+        'strategy': str(downsampling_cfg.strategy),
+        'preserve_pre_downsample_tt': bool(downsampling_cfg.preserve_pre_downsample_tt),
+        'is_link_prediction': bool(downsampling_cfg.is_link_prediction),
+        'list_distinct_target_is_array': bool(downsampling_cfg.list_distinct_target_is_array),
+        'uses_arl_labels': bool(downsampling_cfg.uses_arl_labels),
+    })
 
-            summary_fn = getattr(batch_iterator, 'execution_summary', None)
-            if callable(summary_fn):
-                raw_summary = summary_fn()
-                if isinstance(raw_summary, dict):
-                    native_summary = raw_summary
-        finally:
-            if writer is not None:
-                writer.close()
+    mat = materialize_with_split_fn(
+        plan_json=plan_json,
+        index_path=index_path,
+        output_path=output_path,
+        split_config_json=split_cfg_json,
+        split_family_hint=resolved_family,
+        downsampling_config_json=downsampling_cfg_json,
+    )
+    if not isinstance(mat, dict):
+        raise RuntimeError('diskgraph native materialize_with_split returned invalid payload type')
+    row_count = int(mat.get('rows_written', 0) or 0)
+    summary_json = mat.get('summary_json')
+    if isinstance(summary_json, str) and summary_json:
+        parsed = json.loads(summary_json)
+        if isinstance(parsed, dict):
+            native_summary = parsed
+    split_blob = mat.get('split_assignments')
+    if isinstance(split_blob, (bytes, bytearray)):
+        native_split_bytes = bytes(split_blob)
+    native_split_meta = {
+        'family': mat.get('split_family') or resolved_family,
+        'authoritative': bool(mat.get('split_authoritative', False)),
+        'reason': mat.get('split_reason'),
+    }
+    native_downsampling_handled = bool(mat.get('downsampling_handled', False))
+    native_downsampling_applied = bool(mat.get('downsampling_applied', False))
+    pre_raw = mat.get('pre_downsample_row_count')
+    if isinstance(pre_raw, int):
+        native_pre_downsample_row_count = int(pre_raw)
 
     if row_count == 0:
         raise RuntimeError('diskgraph execute_tt_plan returned zero rows')
 
-    artifacts_dir = output_path + '.artifacts'
-    os.makedirs(artifacts_dir, exist_ok=True)
+    if downsampling_cfg.enabled and not native_downsampling_handled:
+        raise RuntimeError(
+            'diskgraph native materialize_with_split did not handle downsampling metadata'
+        )
 
-    stats_payload = _build_stats_artifact(native_summary, row_count, plan_json)
-    stats_bytes = json.dumps(stats_payload, sort_keys=True).encode('utf-8')
-    stats_path = os.path.join(artifacts_dir, 'stats.tt.json')
-    with open(stats_path, 'wb') as f:
-        f.write(stats_bytes)
+    pre_row_count = int(native_pre_downsample_row_count if native_pre_downsample_row_count is not None else row_count)
+    downsample_applied = bool(native_downsampling_applied)
+    pre_downsample_path = (
+        output_path + '.pre_downsample.parquet'
+        if (downsample_applied and downsampling_cfg.preserve_pre_downsample_tt)
+        else None
+    )
+    downsample_info = {
+        'path': 'native_materialize',
+        'summary_source': 'native',
+        'fallback_python_downsampling': False,
+    }
+    if downsampling_cfg.enabled:
+        stats_obj = (native_summary or {}).get('stats') if isinstance(native_summary, dict) else None
+        if not isinstance(stats_obj, dict):
+            raise RuntimeError(
+                'diskgraph native downsampling reported handled=true but summary.stats is missing'
+            )
+        native_rows = stats_obj.get('num_total_rows')
+        if isinstance(native_rows, (int, float)) and int(native_rows) != int(row_count):
+            raise RuntimeError(
+                'diskgraph native downsampling summary row-count mismatch '
+                f'(summary_rows={int(native_rows)}, rows_written={int(row_count)})'
+            )
 
     split_meta: dict[str, Any]
     split_bytes: bytes
     assignments: np.ndarray
 
-    if native_split_bytes is not None and native_split_meta is not None and native_split_meta.get('authoritative', False):
-        if len(native_split_bytes) != row_count:
-            raise RuntimeError(
-                'diskgraph native split assignment row count mismatch '
-                f'(rows={row_count}, assignment_rows={len(native_split_bytes)})'
-            )
-        assignments = np.frombuffer(native_split_bytes, dtype=np.uint8).copy()
-        split_meta = native_split_meta
-        split_bytes = _build_split_assignment_artifact(assignments)
-    else:
-        assignments, split_meta = compute_dense_split_assignments(
-            train_table_path=output_path,
-            split_config=split_spec,
-            split_family_hint=split_spec.kind,
-        )
-        if len(assignments) != row_count:
-            raise RuntimeError(
-                'diskgraph dense split assignment row count mismatch '
-                f'(rows={row_count}, assignment_rows={len(assignments)})'
-            )
-        split_bytes = _build_split_assignment_artifact(assignments)
-
-    if not split_meta.get('authoritative', False):
+    if native_split_bytes is None or native_split_meta is None:
+        raise RuntimeError('diskgraph native split assignment payload is missing')
+    if not native_split_meta.get('authoritative', False):
         raise RuntimeError(
             'diskgraph split assignment is non-authoritative '
-            f"(family={split_meta.get('family')}, reason={split_meta.get('reason')})"
+            f"(family={native_split_meta.get('family')}, reason={native_split_meta.get('reason')})"
         )
-    split_path = os.path.join(artifacts_dir, 'split_assignments.row_stage.v1.bin')
-    with open(split_path, 'wb') as f:
-        f.write(split_bytes)
 
-    manifest_path = output_path + '.manifest.json'
-    manifest = {
-        'version': 1,
-        'row_count': row_count,
-        'train_table': {'path': output_path, 'format': 'parquet_with_arange'},
-        'split': {
-            'path': split_path,
-            'format': 'split_assignment_row_stage_bin',
-            'authoritative': bool(split_meta.get('authoritative', False)),
-            'family': split_meta.get('family'),
-            'reason': split_meta.get('reason'),
+    if len(native_split_bytes) != row_count:
+        raise RuntimeError(
+            'diskgraph native split assignment row count mismatch '
+            f'(rows={row_count}, assignment_rows={len(native_split_bytes)})'
+        )
+    assignments = np.frombuffer(native_split_bytes, dtype=np.uint8).copy()
+    split_meta = native_split_meta
+    split_bytes = _build_split_assignment_artifact(assignments)
+
+    stats_payload: dict[str, Any]
+    built = _build_tt_stats_artifact_native(
+        row_count=int(row_count),
+        summary_json=(json.dumps(native_summary, sort_keys=True) if native_summary is not None else None),
+        plan_json=plan_json,
+    )
+    payload_json = built.get('payload_json') if isinstance(built, dict) else None
+    if not isinstance(payload_json, str) or not payload_json:
+        raise RuntimeError('diskgraph native tt stats builder returned invalid payload_json')
+    parsed_payload = json.loads(payload_json)
+    if not isinstance(parsed_payload, dict):
+        raise RuntimeError('diskgraph native tt stats builder returned non-dict payload')
+    stats_payload = parsed_payload
+    stats_json = json.dumps(stats_payload, sort_keys=True)
+
+    split_stats_built = _build_split_stats_artifact_native(
+        output_path=output_path,
+        split_assignments=assignments.tobytes(order='C'),
+        split_stats_config_json=json.dumps({
+            'entity_col': split_stats_cfg.entity_col,
+            'target_col': split_stats_cfg.target_col,
+            'time_col': split_stats_cfg.time_col,
+            'task_type': split_stats_cfg.task_type,
+            'list_distinct_target_is_array': split_stats_cfg.list_distinct_target_is_array,
+        }, sort_keys=True),
+    )
+    split_stats_payload_json = split_stats_built.get('payload_json') if isinstance(split_stats_built, dict) else None
+    if not isinstance(split_stats_payload_json, str) or not split_stats_payload_json:
+        raise RuntimeError('diskgraph native split stats builder returned invalid payload_json')
+    split_stats_payload = json.loads(split_stats_payload_json)
+    if not isinstance(split_stats_payload, dict):
+        raise RuntimeError('diskgraph native split stats builder returned non-dict payload')
+    split_stats_json = json.dumps(split_stats_payload, sort_keys=True)
+
+    downsampling_payload = {
+        'config': {
+            'enabled': downsampling_cfg.enabled,
+            'max_rows': downsampling_cfg.max_rows,
+            'strategy': downsampling_cfg.strategy,
+            'preserve_pre_downsample_tt': downsampling_cfg.preserve_pre_downsample_tt,
+            'is_link_prediction': downsampling_cfg.is_link_prediction,
+            'list_distinct_target_is_array': downsampling_cfg.list_distinct_target_is_array,
+            'uses_arl_labels': downsampling_cfg.uses_arl_labels,
         },
-        'stats': {'path': stats_path, 'format': 'tt_stats_json'},
-        'checksums': {
-            'train_table_sha256': _sha256_file(output_path),
-            'split_sha256': _sha256_bytes(split_bytes),
-            'stats_sha256': _sha256_bytes(stats_bytes),
-        },
-        'producer_summary': native_summary,
+        'applied': downsample_applied,
+        'pre_downsample_row_count': pre_row_count,
+        'post_downsample_row_count': row_count,
+        'pre_downsample_train_table_path': pre_downsample_path,
+        'details': downsample_info,
     }
-    with open(manifest_path, 'w', encoding='utf-8') as f:
-        json.dump(manifest, f, sort_keys=True)
+
+    artifacts_dir = output_path + '.artifacts'
+    manifest_path = output_path + '.manifest.json'
+    persisted = _persist_tt_artifact_bundle(
+        output_path=output_path,
+        row_count=int(row_count),
+        stats_json=stats_json,
+        split_stats_json=split_stats_json,
+        split_bytes=split_bytes,
+        split_family=split_meta.get('family'),
+        split_authoritative=bool(split_meta.get('authoritative', False)),
+        split_reason=split_meta.get('reason'),
+        downsampling_json=json.dumps(downsampling_payload, sort_keys=True),
+        producer_summary_json=(json.dumps(native_summary, sort_keys=True) if native_summary is not None else None),
+    )
+    if isinstance(persisted, dict):
+        manifest_path = str(persisted.get('manifest_path') or manifest_path)
+        artifacts_dir = str(persisted.get('artifacts_dir') or artifacts_dir)
 
     split_counts = {
         int(stage): int(count)
@@ -424,4 +374,11 @@ def execute_tt_plan_with_artifacts(
         'row_count': row_count,
         'split_counts': split_counts,
         'split_meta': split_meta,
+        'downsampling': {
+            'applied': downsample_applied,
+            'pre_downsample_row_count': pre_row_count,
+            'post_downsample_row_count': row_count,
+            'pre_downsample_train_table_path': pre_downsample_path,
+            'details': downsample_info,
+        },
     }

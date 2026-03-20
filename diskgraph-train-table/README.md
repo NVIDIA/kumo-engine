@@ -58,15 +58,15 @@ This script downloads the H&M dataset, infers `diskgraph_config.json`, ingests a
 - `random`: sample uniformly across each entity's temporal range. Sample count is proportional to the target window size.
 - `timeframe`: sample per target aggregation window (aligned windows).
 
-## Current output contract (native artifact pipeline)
+## Current output contract (diskgraph artifact pipeline)
 
 The TT executor produces parquet batches (entity/timestamp/target and optional helper columns).
 Downstream (`kumo`) appends contiguous `arange` and writes manifest/artifacts.
 
-Split is **not** a parquet column in the native path.
+Split is **not** a parquet column in the diskgraph path.
 Instead, split assignments are represented as a separate dense row-stage artifact:
 
-- format: `split_assignment_row_stage_v1_bin` (legacy format label)
+- format: `split_assignment_row_stage_bin`
 - payload: `u8[N]` aligned to TT `arange`
 - stage ids:
   - `0 = train`
@@ -76,7 +76,7 @@ Instead, split assignments are represented as a separate dense row-stage artifac
 
 ## Split computation ownership
 
-For the DG-native path, split semantics are producer-owned by the DiskGraph side.
+For the DG-diskgraph path, split semantics are producer-owned by the DiskGraph side.
 Kumo passes split intent (`split_kind` + params) and consumes producer output.
 
 Currently supported families for dense row-stage assignment:

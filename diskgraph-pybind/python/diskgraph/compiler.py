@@ -13,7 +13,7 @@ from kumoapi.pquery.AST import (
 from kumoapi.typing import BoolOp
 
 from ._c import DiskGraphTTBuilder, EdgeRef, RowFilter, StageFilter, TimeUnit
-from .split_contract import SplitSpec, normalize_split_spec
+from .split_contract import SplitSpec
 
 VALID_TASK_TYPES = {
     "binary_classification",
@@ -110,7 +110,7 @@ class DiskGraphPlanCompiler:
         lp_rhs_entity_column: Optional[str] = None,
         lag_offsets_secs: Optional[List[int]] = None,
         yoy_offsets_secs: Optional[List[int]] = None,
-        split: Optional[Any] = None,
+        split: Optional[SplitSpec] = None,
     ) -> str:
         """
         Build the DiskGraph execution plan.
@@ -133,7 +133,7 @@ class DiskGraphPlanCompiler:
             lp_rhs_entity_column: The explicitly resolved Target Node PK (used when lp_prediction_mode == 'RHS').
             lag_offsets_secs: Optional lag offsets to be used in bp forecasting task.
             yoy_offsets_secs: Optional yoy offsets to be used in bp forecasting task.
-            split: Optional split spec. Accepts canonical SplitSpec or legacy dict payload and normalizes at the boundary.
+            split: Optional canonical SplitSpec. Legacy dict payloads are not supported.
         """
         task_type = task_type.lower()
         if task_type not in VALID_TASK_TYPES:
@@ -206,7 +206,12 @@ class DiskGraphPlanCompiler:
         else:
             self.builder.node_prediction()
 
-        split_spec = normalize_split_spec(split)
+        split_spec = split
+        if split_spec is not None and not isinstance(split_spec, SplitSpec):
+            raise TypeError(
+                'diskgraph compiler split contract requires split=SplitSpec; '
+                'legacy dict split payloads are no longer supported'
+            )
         if split_spec is not None:
             if split_spec.ratio is None:
                 raise RuntimeError('diskgraph split contract requires ratio for compiler split planning')
