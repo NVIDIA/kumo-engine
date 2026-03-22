@@ -788,6 +788,7 @@ fn diskgraph_pybind(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(tt_executor::execute_tt_plan_materialize_with_split, m)?)?;
     m.add_function(wrap_pyfunction!(tt_executor::build_tt_stats_artifact, m)?)?;
     m.add_function(wrap_pyfunction!(tt_executor::build_split_stats_artifact, m)?)?;
+    m.add_function(wrap_pyfunction!(tt_executor::build_train_table_col_stats_artifact, m)?)?;
     m.add_function(wrap_pyfunction!(tt_executor::persist_tt_artifact_bundle, m)?)?;
     m.add_class::<tt_executor::TTPlanIterator>()?;
     m.add_function(wrap_pyfunction!(split_assignments::assign_by_ratio_on_perm, m)?)?;

@@ -10,29 +10,32 @@ use std::path::Path;
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
+use crate::split_assignments;
 use arrow::compute::take;
 use arrow::pyarrow::ToPyArrow;
 use arrow_array::{
-    Array, BooleanArray, Float64Array, Int64Array, RecordBatch, StringArray,
-    TimestampNanosecondArray,
+    Array, BooleanArray, Float32Array, Float64Array, Int16Array, Int32Array, Int64Array, Int8Array,
+    RecordBatch, StringArray, TimestampNanosecondArray, UInt16Array, UInt32Array, UInt64Array,
+    UInt8Array,
 };
 use arrow_schema::{DataType, Field, Schema};
-use crate::split_assignments;
 use chrono::{DateTime, NaiveDate, TimeZone, Utc};
-use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
-use parquet::arrow::ArrowWriter;
-use parquet::file::reader::FileReader;
-use parquet::basic::Compression;
-use parquet::file::properties::WriterProperties;
 use crossbeam_channel::Receiver;
 use diskgraph_core::tt_builder::DiskGraphTTPlan;
 use diskgraph_train_table::ttgen_stats::TTExecutionSummary;
+use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use parquet::arrow::ArrowWriter;
+use parquet::basic::Compression;
+use parquet::file::properties::WriterProperties;
+use parquet::file::reader::FileReader;
 use pyo3::exceptions::{PyRuntimeError, PyStopIteration, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict};
+use pyo3::Py;
+use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use pyo3::Py;
 
 #[pyclass]
 pub struct TTPlanIterator {
@@ -97,7 +100,10 @@ impl TTPlanIterator {
         let out = PyDict::new(py);
         if let Some(summary) = &self.summary {
             out.set_item("rows_written", summary.rows_written)?;
+            // Backward-compatible top-level aliases expected by Kumo.
+            out.set_item("output_rows", summary.rows_written)?;
             if let Some(stats) = &summary.stats {
+                out.set_item("pre_target_drop_rows", stats.num_total_rows)?;
                 let stats_dict = PyDict::new(py);
                 stats_dict.set_item("version", stats.version)?;
                 stats_dict.set_item("num_total_rows", stats.num_total_rows)?;
@@ -160,15 +166,10 @@ impl TTPlanIterator {
                     let split_dict = PyDict::new(py);
                     split_dict.set_item("version", split.version)?;
                     split_dict.set_item("status", split.status.as_str())?;
-                    split_dict.set_item(
-                        "supports_native_execution",
-                        split.supports_native_execution,
-                    )?;
+                    split_dict
+                        .set_item("supports_native_execution", split.supports_native_execution)?;
                     split_dict.set_item("split_kind", split.split_kind.as_deref())?;
-                    split_dict.set_item(
-                        "derivation_method",
-                        split.derivation_method.as_deref(),
-                    )?;
+                    split_dict.set_item("derivation_method", split.derivation_method.as_deref())?;
                     split_dict.set_item("num_total_rows", split.num_total_rows)?;
                     if let Some(art) = &split.artifacts_v3 {
                         let art_dict = PyDict::new(py);
@@ -177,20 +178,12 @@ impl TTPlanIterator {
                         art_dict.set_item("ratio", art.ratio.clone())?;
                         art_dict.set_item("offsets", art.offsets.clone())?;
                         art_dict.set_item("ranges", art.ranges.clone())?;
-                        art_dict.set_item(
-                            "backtesting_timestamp",
-                            art.backtesting_timestamp,
-                        )?;
+                        art_dict.set_item("backtesting_timestamp", art.backtesting_timestamp)?;
                         art_dict.set_item("split_column", art.split_column.as_deref())?;
-                        art_dict.set_item(
-                            "manual_train_values",
-                            art.manual_train_values.clone(),
-                        )?;
+                        art_dict
+                            .set_item("manual_train_values", art.manual_train_values.clone())?;
                         art_dict.set_item("manual_val_values", art.manual_val_values.clone())?;
-                        art_dict.set_item(
-                            "manual_test_values",
-                            art.manual_test_values.clone(),
-                        )?;
+                        art_dict.set_item("manual_test_values", art.manual_test_values.clone())?;
                         art_dict.set_item(
                             "authoritative_supported_family",
                             art.authoritative_supported_family,
@@ -203,10 +196,7 @@ impl TTPlanIterator {
                                 item.set_item("stage", a.stage.as_str())?;
                                 py_assignments.append(item)?;
                             }
-                            art_dict.set_item(
-                                "timestamp_stage_assignments",
-                                py_assignments,
-                            )?;
+                            art_dict.set_item("timestamp_stage_assignments", py_assignments)?;
                         } else {
                             art_dict.set_item("timestamp_stage_assignments", py.None())?;
                         }
@@ -241,16 +231,18 @@ impl TTPlanIterator {
 
                 out.set_item("stats", stats_dict)?;
             } else {
-                out.set_item("stats", py.None())?;
+                return Err(PyRuntimeError::new_err(
+                    "TT-gen summary missing stats payload; cannot produce pre_target_drop_rows",
+                ));
             }
         } else {
-            out.set_item("rows_written", 0u64)?;
-            out.set_item("stats", py.None())?;
+            return Err(PyRuntimeError::new_err(
+                "TT-gen execution summary is unavailable",
+            ));
         }
 
         Ok(out.into())
     }
-
 }
 
 #[pyfunction]
@@ -387,7 +379,11 @@ fn write_batches_with_arange(
         row_offset += with_idx.num_rows() as i64;
 
         if writer.is_none() {
-            writer = Some(ArrowWriter::try_new(file.try_clone()?, with_idx.schema(), Some(props.clone()))?);
+            writer = Some(ArrowWriter::try_new(
+                file.try_clone()?,
+                with_idx.schema(),
+                Some(props.clone()),
+            )?);
         }
         if let Some(w) = writer.as_mut() {
             w.write(&with_idx)?;
@@ -425,7 +421,10 @@ fn sha256_hex_file(path: &str) -> anyhow::Result<String> {
     Ok(digest.iter().map(|b| format!("{:02x}", b)).collect())
 }
 
-fn split_family_from_config(split_family_hint: Option<&str>, split_cfg: Option<&Value>) -> Option<String> {
+fn split_family_from_config(
+    split_family_hint: Option<&str>,
+    split_cfg: Option<&Value>,
+) -> Option<String> {
     if let Some(h) = split_family_hint {
         if !h.is_empty() {
             return Some(h.to_string());
@@ -446,7 +445,10 @@ fn parse_ratio(split_cfg: &Value) -> anyhow::Result<Vec<f64>> {
         .ok_or_else(|| anyhow::anyhow!("split ratio is required"))?;
     let out = ratio
         .iter()
-        .map(|v| v.as_f64().ok_or_else(|| anyhow::anyhow!("split ratio must be numeric")))
+        .map(|v| {
+            v.as_f64()
+                .ok_or_else(|| anyhow::anyhow!("split ratio must be numeric"))
+        })
         .collect::<anyhow::Result<Vec<_>>>()?;
     Ok(out)
 }
@@ -685,8 +687,14 @@ fn patch_summary_for_final_rows(
         .as_object_mut()
         .ok_or_else(|| anyhow::anyhow!("summary.stats must be object"))?;
 
-    stats.insert("num_total_rows".to_string(), Value::from(final_row_count as u64));
-    stats.insert("num_train_rows".to_string(), Value::from(final_row_count as u64));
+    stats.insert(
+        "num_total_rows".to_string(),
+        Value::from(final_row_count as u64),
+    );
+    stats.insert(
+        "num_train_rows".to_string(),
+        Value::from(final_row_count as u64),
+    );
 
     if let Some(entities) = entity_values {
         let uniq = entities.iter().collect::<HashSet<_>>().len();
@@ -852,10 +860,18 @@ fn build_tt_stats_artifact_value(
     if num_links.is_some() {
         provided_fields.push("num_links");
     }
-    if !payload.get("exact_stats").map(|v| v.is_null()).unwrap_or(true) {
+    if !payload
+        .get("exact_stats")
+        .map(|v| v.is_null())
+        .unwrap_or(true)
+    {
         provided_fields.push("exact_stats");
     }
-    if !payload.get("split_payload").map(|v| v.is_null()).unwrap_or(true) {
+    if !payload
+        .get("split_payload")
+        .map(|v| v.is_null())
+        .unwrap_or(true)
+    {
         provided_fields.push("split_payload");
     }
     payload["provided_fields"] = Value::Array(
@@ -870,33 +886,66 @@ fn build_tt_stats_artifact_value(
 fn array_to_opt_strings(arr: &dyn Array) -> anyhow::Result<Vec<Option<String>>> {
     if let Some(a) = arr.as_any().downcast_ref::<Int64Array>() {
         return Ok((0..a.len())
-            .map(|i| if a.is_null(i) { None } else { Some(a.value(i).to_string()) })
+            .map(|i| {
+                if a.is_null(i) {
+                    None
+                } else {
+                    Some(a.value(i).to_string())
+                }
+            })
             .collect());
     }
     if let Some(a) = arr.as_any().downcast_ref::<Float64Array>() {
         return Ok((0..a.len())
-            .map(|i| if a.is_null(i) { None } else { Some(a.value(i).to_string()) })
+            .map(|i| {
+                if a.is_null(i) {
+                    None
+                } else {
+                    Some(a.value(i).to_string())
+                }
+            })
             .collect());
     }
     if let Some(a) = arr.as_any().downcast_ref::<StringArray>() {
         return Ok((0..a.len())
-            .map(|i| if a.is_null(i) { None } else { Some(a.value(i).to_string()) })
+            .map(|i| {
+                if a.is_null(i) {
+                    None
+                } else {
+                    Some(a.value(i).to_string())
+                }
+            })
             .collect());
     }
     if let Some(a) = arr.as_any().downcast_ref::<BooleanArray>() {
         return Ok((0..a.len())
-            .map(|i| if a.is_null(i) { None } else { Some(a.value(i).to_string()) })
+            .map(|i| {
+                if a.is_null(i) {
+                    None
+                } else {
+                    Some(a.value(i).to_string())
+                }
+            })
             .collect());
     }
     if let Some(a) = arr.as_any().downcast_ref::<TimestampNanosecondArray>() {
         return Ok((0..a.len())
-            .map(|i| if a.is_null(i) { None } else { Some(a.value(i).to_string()) })
+            .map(|i| {
+                if a.is_null(i) {
+                    None
+                } else {
+                    Some(a.value(i).to_string())
+                }
+            })
             .collect());
     }
     Err(anyhow::anyhow!("unsupported column dtype for split stats"))
 }
 
-fn collect_column_opt_strings(path: &str, col_name: &str) -> anyhow::Result<Option<Vec<Option<String>>>> {
+fn collect_column_opt_strings(
+    path: &str,
+    col_name: &str,
+) -> anyhow::Result<Option<Vec<Option<String>>>> {
     let file = File::open(path)?;
     let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
     let schema = builder.schema().clone();
@@ -911,6 +960,390 @@ fn collect_column_opt_strings(path: &str, col_name: &str) -> anyhow::Result<Opti
         out.append(&mut vals);
     }
     Ok(Some(out))
+}
+
+const TRAIN_COL_STATS_RESERVOIR_SIZE: usize = 8_192;
+
+#[derive(Debug)]
+struct NumericAccumulator {
+    null_count: u64,
+    count: u64,
+    mean: f64,
+    m2: f64,
+    m3: f64,
+    m4: f64,
+    min: f64,
+    max: f64,
+    reservoir: Vec<f64>,
+    rng: StdRng,
+}
+
+impl NumericAccumulator {
+    fn new(seed: u64) -> Self {
+        Self {
+            null_count: 0,
+            count: 0,
+            mean: 0.0,
+            m2: 0.0,
+            m3: 0.0,
+            m4: 0.0,
+            min: 0.0,
+            max: 0.0,
+            reservoir: Vec::with_capacity(TRAIN_COL_STATS_RESERVOIR_SIZE),
+            rng: StdRng::seed_from_u64(seed),
+        }
+    }
+
+    fn observe_null(&mut self) {
+        self.null_count = self.null_count.saturating_add(1);
+    }
+
+    fn observe_value(&mut self, x: f64) {
+        self.count = self.count.saturating_add(1);
+        if self.count == 1 {
+            self.mean = x;
+            self.min = x;
+            self.max = x;
+            self.reservoir.push(x);
+            return;
+        }
+
+        if x < self.min {
+            self.min = x;
+        }
+        if x > self.max {
+            self.max = x;
+        }
+
+        let n = self.count as f64;
+        let n1 = (self.count - 1) as f64;
+        let delta = x - self.mean;
+        let delta_n = delta / n;
+        let delta_n2 = delta_n * delta_n;
+        let term1 = delta * delta_n * n1;
+
+        self.mean += delta_n;
+        self.m4 += term1 * delta_n2 * (n * n - 3.0 * n + 3.0) + 6.0 * delta_n2 * self.m2
+            - 4.0 * delta_n * self.m3;
+        self.m3 += term1 * delta_n * (n - 2.0) - 3.0 * delta_n * self.m2;
+        self.m2 += term1;
+
+        if self.reservoir.len() < TRAIN_COL_STATS_RESERVOIR_SIZE {
+            self.reservoir.push(x);
+        } else {
+            let slot = self.rng.gen_range(0..self.count as usize);
+            if slot < TRAIN_COL_STATS_RESERVOIR_SIZE {
+                self.reservoir[slot] = x;
+            }
+        }
+    }
+
+    fn total_count(&self) -> u64 {
+        self.count.saturating_add(self.null_count)
+    }
+
+    fn std_dev(&self) -> f64 {
+        if self.count > 1 {
+            (self.m2 / (self.count - 1) as f64).sqrt()
+        } else {
+            0.0
+        }
+    }
+
+    fn kurtosis_excess(&self) -> f64 {
+        if self.count < 2 || self.m2.abs() < f64::EPSILON {
+            return 0.0;
+        }
+        (self.count as f64) * self.m4 / (self.m2 * self.m2) - 3.0
+    }
+
+    fn quantiles(&self) -> (f64, f64, f64) {
+        if self.reservoir.is_empty() {
+            return (0.0, 0.0, 0.0);
+        }
+        let mut sorted = self.reservoir.clone();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        (
+            percentile_from_sorted(&sorted, 0.25),
+            percentile_from_sorted(&sorted, 0.5),
+            percentile_from_sorted(&sorted, 0.75),
+        )
+    }
+}
+
+fn percentile_from_sorted(sorted: &[f64], p: f64) -> f64 {
+    if sorted.is_empty() {
+        return 0.0;
+    }
+    if sorted.len() == 1 {
+        return sorted[0];
+    }
+    let pos = p.clamp(0.0, 1.0) * (sorted.len() - 1) as f64;
+    let lo = pos.floor() as usize;
+    let hi = pos.ceil() as usize;
+    if lo == hi {
+        return sorted[lo];
+    }
+    let w = pos - lo as f64;
+    sorted[lo] * (1.0 - w) + sorted[hi] * w
+}
+
+fn is_numeric_stats_type(dtype: &DataType) -> bool {
+    matches!(
+        dtype,
+        DataType::Int8
+            | DataType::Int16
+            | DataType::Int32
+            | DataType::Int64
+            | DataType::UInt8
+            | DataType::UInt16
+            | DataType::UInt32
+            | DataType::UInt64
+            | DataType::Float32
+            | DataType::Float64
+            | DataType::Boolean
+    )
+}
+
+fn kumo_key(col: &str, stype: &str, stat: &str, approx: bool) -> String {
+    let approx_str = if approx { "True" } else { "False" };
+    format!("{col}__{stype}__{stat}__{approx_str}")
+}
+
+fn kumo_entry(value: Value, approx: bool, data_version: &str, num_entries: u64) -> Value {
+    json!({"value": value, "approx": approx, "data_version": data_version, "num_entries": num_entries})
+}
+
+fn observe_numeric_array_for_train_rows(
+    arr: &dyn Array,
+    assignment_slice: &[u8],
+    acc: &mut NumericAccumulator,
+) -> anyhow::Result<()> {
+    if arr.len() != assignment_slice.len() {
+        return Err(anyhow::anyhow!(
+            "batch assignment length mismatch (array_len={}, assignment_len={})",
+            arr.len(),
+            assignment_slice.len()
+        ));
+    }
+
+    macro_rules! observe_primitive {
+        ($ty:ty, $to_f64:expr) => {
+            if let Some(a) = arr.as_any().downcast_ref::<$ty>() {
+                for i in 0..a.len() {
+                    if assignment_slice[i] != 0 {
+                        continue;
+                    }
+                    if a.is_null(i) {
+                        acc.observe_null();
+                    } else {
+                        acc.observe_value($to_f64(a.value(i)));
+                    }
+                }
+                return Ok(());
+            }
+        };
+    }
+
+    observe_primitive!(Int8Array, |v: i8| v as f64);
+    observe_primitive!(Int16Array, |v: i16| v as f64);
+    observe_primitive!(Int32Array, |v: i32| v as f64);
+    observe_primitive!(Int64Array, |v: i64| v as f64);
+    observe_primitive!(UInt8Array, |v: u8| v as f64);
+    observe_primitive!(UInt16Array, |v: u16| v as f64);
+    observe_primitive!(UInt32Array, |v: u32| v as f64);
+    observe_primitive!(UInt64Array, |v: u64| v as f64);
+    observe_primitive!(Float32Array, |v: f32| v as f64);
+    observe_primitive!(Float64Array, |v: f64| v);
+
+    if let Some(a) = arr.as_any().downcast_ref::<BooleanArray>() {
+        for i in 0..a.len() {
+            if assignment_slice[i] != 0 {
+                continue;
+            }
+            if a.is_null(i) {
+                acc.observe_null();
+            } else {
+                acc.observe_value(if a.value(i) { 1.0 } else { 0.0 });
+            }
+        }
+        return Ok(());
+    }
+
+    Err(anyhow::anyhow!(
+        "unsupported dtype for train table col stats"
+    ))
+}
+
+fn init_numeric_trackers(schema: &Schema) -> Vec<(usize, String, NumericAccumulator)> {
+    schema
+        .fields()
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, field)| {
+            if is_numeric_stats_type(field.data_type()) {
+                Some((
+                    idx,
+                    field.name().to_string(),
+                    NumericAccumulator::new(idx as u64 + 17),
+                ))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn build_train_table_col_stats_payload(
+    trackers: Vec<(usize, String, NumericAccumulator)>,
+    data_version: &str,
+    row_count: usize,
+    num_train_rows: u64,
+) -> Value {
+    let mut stats = serde_json::Map::new();
+    for (_col_idx, name, acc) in trackers.into_iter() {
+        let total = acc.total_count();
+        let na_fraction = if total > 0 {
+            acc.null_count as f64 / total as f64
+        } else {
+            0.0
+        };
+        let (q25, q50, q75) = acc.quantiles();
+        let min = if acc.count > 0 { acc.min } else { 0.0 };
+        let max = if acc.count > 0 { acc.max } else { 0.0 };
+        let stype = "kumo.numerical";
+
+        stats.insert(
+            kumo_key(&name, stype, "COUNT", false),
+            kumo_entry(json!(total), false, data_version, total),
+        );
+        stats.insert(
+            kumo_key(&name, stype, "NUM_NA", false),
+            kumo_entry(json!(acc.null_count), false, data_version, total),
+        );
+        stats.insert(
+            kumo_key(&name, stype, "NA_FRACTION", false),
+            kumo_entry(json!(na_fraction), false, data_version, total),
+        );
+
+        stats.insert(
+            kumo_key(&name, stype, "MEAN", true),
+            kumo_entry(json!(acc.mean), true, data_version, total),
+        );
+        stats.insert(
+            kumo_key(&name, stype, "STD", true),
+            kumo_entry(json!(acc.std_dev()), true, data_version, total),
+        );
+        stats.insert(
+            kumo_key(&name, stype, "MIN", true),
+            kumo_entry(json!(min), true, data_version, total),
+        );
+        stats.insert(
+            kumo_key(&name, stype, "MAX", true),
+            kumo_entry(json!(max), true, data_version, total),
+        );
+        stats.insert(
+            kumo_key(&name, stype, "MEDIAN", true),
+            kumo_entry(json!(q50), true, data_version, total),
+        );
+        stats.insert(
+            kumo_key(&name, stype, "QUANTILES", true),
+            kumo_entry(json!([q25, q50, q75]), true, data_version, total),
+        );
+        stats.insert(
+            kumo_key(&name, stype, "KURTOSIS", true),
+            kumo_entry(json!(acc.kurtosis_excess()), true, data_version, total),
+        );
+    }
+
+    json!({
+        "version": 1,
+        "kind": "tt_train_table_col_stats",
+        "stats_format": "kumo_col_stats_v1",
+        "row_count": row_count,
+        "num_train_rows": num_train_rows,
+        "stats": stats,
+        "provided_fields": ["stats"],
+    })
+}
+
+fn compute_train_table_col_stats_from_batches(
+    raw_batches: &[RecordBatch],
+    split_assignments: &[u8],
+    selected_indices: Option<&[usize]>,
+    pre_downsample_row_count: usize,
+    data_version: &str,
+) -> anyhow::Result<Value> {
+    let first = raw_batches
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("cannot build train table col stats for empty batches"))?;
+    let mut trackers = init_numeric_trackers(first.schema().as_ref());
+
+    let mut assignment_by_original = vec![255u8; pre_downsample_row_count];
+    if let Some(idxs) = selected_indices {
+        if idxs.len() != split_assignments.len() {
+            return Err(anyhow::anyhow!(
+                "downsample assignment mismatch while building train_table_col_stats (selected_rows={}, assignment_rows={})",
+                idxs.len(),
+                split_assignments.len()
+            ));
+        }
+        for (final_idx, original_idx) in idxs.iter().copied().enumerate() {
+            if original_idx >= pre_downsample_row_count {
+                return Err(anyhow::anyhow!(
+                    "selected row index out of bounds while building train_table_col_stats (selected_idx={}, pre_downsample_rows={})",
+                    original_idx,
+                    pre_downsample_row_count
+                ));
+            }
+            assignment_by_original[original_idx] = split_assignments[final_idx];
+        }
+    } else {
+        if split_assignments.len() != pre_downsample_row_count {
+            return Err(anyhow::anyhow!(
+                "assignment row mismatch while building train_table_col_stats (rows={}, assignment_rows={})",
+                pre_downsample_row_count,
+                split_assignments.len()
+            ));
+        }
+        assignment_by_original.copy_from_slice(split_assignments);
+    }
+
+    let mut row_offset = 0usize;
+    for batch in raw_batches {
+        let end = row_offset.saturating_add(batch.num_rows());
+        if end > assignment_by_original.len() {
+            return Err(anyhow::anyhow!(
+                "raw batch row count overflow while building train_table_col_stats (batch_end={}, rows={})",
+                end,
+                assignment_by_original.len()
+            ));
+        }
+        let assignment_slice = &assignment_by_original[row_offset..end];
+        for (col_idx, _name, acc) in trackers.iter_mut() {
+            observe_numeric_array_for_train_rows(
+                batch.column(*col_idx).as_ref(),
+                assignment_slice,
+                acc,
+            )?;
+        }
+        row_offset = end;
+    }
+    if row_offset != pre_downsample_row_count {
+        return Err(anyhow::anyhow!(
+            "raw batch row mismatch while building train_table_col_stats (rows={}, expected={})",
+            row_offset,
+            pre_downsample_row_count
+        ));
+    }
+
+    let num_train_rows = split_assignments.iter().filter(|s| **s == 0).count() as u64;
+    Ok(build_train_table_col_stats_payload(
+        trackers,
+        data_version,
+        split_assignments.len(),
+        num_train_rows,
+    ))
 }
 
 fn build_stage_stats_from_columns(
@@ -1028,17 +1461,24 @@ fn parse_timestamp_ns_json(v: &Value) -> anyhow::Result<i64> {
     }
     if let Some(s) = v.as_str() {
         if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
-            return Ok(dt.with_timezone(&Utc).timestamp_nanos_opt().ok_or_else(|| anyhow::anyhow!("timestamp ns overflow"))?);
+            return Ok(dt
+                .with_timezone(&Utc)
+                .timestamp_nanos_opt()
+                .ok_or_else(|| anyhow::anyhow!("timestamp ns overflow"))?);
         }
         if let Ok(d) = NaiveDate::parse_from_str(s, "%Y-%m-%d") {
             let dt = d
                 .and_hms_opt(0, 0, 0)
                 .ok_or_else(|| anyhow::anyhow!("invalid date"))?
                 .and_utc();
-            return Ok(dt.timestamp_nanos_opt().ok_or_else(|| anyhow::anyhow!("timestamp ns overflow"))?);
+            return Ok(dt
+                .timestamp_nanos_opt()
+                .ok_or_else(|| anyhow::anyhow!("timestamp ns overflow"))?);
         }
     }
-    Err(anyhow::anyhow!("timestamp must be numeric epoch-ns or parseable date string"))
+    Err(anyhow::anyhow!(
+        "timestamp must be numeric epoch-ns or parseable date string"
+    ))
 }
 
 fn extract_sort_values(batch: &RecordBatch, col_name: &str) -> anyhow::Result<Vec<SortValue>> {
@@ -1050,31 +1490,63 @@ fn extract_sort_values(batch: &RecordBatch, col_name: &str) -> anyhow::Result<Ve
 
     if let Some(a) = arr.as_any().downcast_ref::<Int64Array>() {
         return Ok((0..a.len())
-            .map(|i| if a.is_null(i) { SortValue::Null } else { SortValue::Int(a.value(i)) })
+            .map(|i| {
+                if a.is_null(i) {
+                    SortValue::Null
+                } else {
+                    SortValue::Int(a.value(i))
+                }
+            })
             .collect());
     }
     if let Some(a) = arr.as_any().downcast_ref::<Float64Array>() {
         return Ok((0..a.len())
-            .map(|i| if a.is_null(i) { SortValue::Null } else { SortValue::Float(a.value(i)) })
+            .map(|i| {
+                if a.is_null(i) {
+                    SortValue::Null
+                } else {
+                    SortValue::Float(a.value(i))
+                }
+            })
             .collect());
     }
     if let Some(a) = arr.as_any().downcast_ref::<StringArray>() {
         return Ok((0..a.len())
-            .map(|i| if a.is_null(i) { SortValue::Null } else { SortValue::Str(a.value(i).to_string()) })
+            .map(|i| {
+                if a.is_null(i) {
+                    SortValue::Null
+                } else {
+                    SortValue::Str(a.value(i).to_string())
+                }
+            })
             .collect());
     }
     if let Some(a) = arr.as_any().downcast_ref::<BooleanArray>() {
         return Ok((0..a.len())
-            .map(|i| if a.is_null(i) { SortValue::Null } else { SortValue::Bool(a.value(i)) })
+            .map(|i| {
+                if a.is_null(i) {
+                    SortValue::Null
+                } else {
+                    SortValue::Bool(a.value(i))
+                }
+            })
             .collect());
     }
     if let Some(a) = arr.as_any().downcast_ref::<TimestampNanosecondArray>() {
         return Ok((0..a.len())
-            .map(|i| if a.is_null(i) { SortValue::Null } else { SortValue::Ts(a.value(i)) })
+            .map(|i| {
+                if a.is_null(i) {
+                    SortValue::Null
+                } else {
+                    SortValue::Ts(a.value(i))
+                }
+            })
             .collect());
     }
 
-    Err(anyhow::anyhow!("ColumnSplit unsupported split column dtype for {col_name}"))
+    Err(anyhow::anyhow!(
+        "ColumnSplit unsupported split column dtype for {col_name}"
+    ))
 }
 
 fn extract_string_values(batch: &RecordBatch, col_name: &str) -> anyhow::Result<Vec<String>> {
@@ -1086,31 +1558,63 @@ fn extract_string_values(batch: &RecordBatch, col_name: &str) -> anyhow::Result<
 
     if let Some(a) = arr.as_any().downcast_ref::<Int64Array>() {
         return Ok((0..a.len())
-            .map(|i| if a.is_null(i) { "None".to_string() } else { a.value(i).to_string() })
+            .map(|i| {
+                if a.is_null(i) {
+                    "None".to_string()
+                } else {
+                    a.value(i).to_string()
+                }
+            })
             .collect());
     }
     if let Some(a) = arr.as_any().downcast_ref::<Float64Array>() {
         return Ok((0..a.len())
-            .map(|i| if a.is_null(i) { "None".to_string() } else { a.value(i).to_string() })
+            .map(|i| {
+                if a.is_null(i) {
+                    "None".to_string()
+                } else {
+                    a.value(i).to_string()
+                }
+            })
             .collect());
     }
     if let Some(a) = arr.as_any().downcast_ref::<StringArray>() {
         return Ok((0..a.len())
-            .map(|i| if a.is_null(i) { "None".to_string() } else { a.value(i).to_string() })
+            .map(|i| {
+                if a.is_null(i) {
+                    "None".to_string()
+                } else {
+                    a.value(i).to_string()
+                }
+            })
             .collect());
     }
     if let Some(a) = arr.as_any().downcast_ref::<BooleanArray>() {
         return Ok((0..a.len())
-            .map(|i| if a.is_null(i) { "None".to_string() } else { a.value(i).to_string() })
+            .map(|i| {
+                if a.is_null(i) {
+                    "None".to_string()
+                } else {
+                    a.value(i).to_string()
+                }
+            })
             .collect());
     }
     if let Some(a) = arr.as_any().downcast_ref::<TimestampNanosecondArray>() {
         return Ok((0..a.len())
-            .map(|i| if a.is_null(i) { "None".to_string() } else { a.value(i).to_string() })
+            .map(|i| {
+                if a.is_null(i) {
+                    "None".to_string()
+                } else {
+                    a.value(i).to_string()
+                }
+            })
             .collect());
     }
 
-    Err(anyhow::anyhow!("ManualSplit unsupported split column dtype for {col_name}"))
+    Err(anyhow::anyhow!(
+        "ManualSplit unsupported split column dtype for {col_name}"
+    ))
 }
 
 #[pyfunction]
@@ -1140,10 +1644,9 @@ pub fn execute_tt_plan_materialize_with_split(
 
     let split_column_name = split_cfg.as_ref().and_then(parse_split_column_name);
     let downsampling_cfg: Option<Value> = match downsampling_config_json {
-        Some(s) if !s.is_empty() => Some(
-            serde_json::from_str(s)
-                .map_err(|e| PyValueError::new_err(format!("invalid downsampling config JSON: {e}")))?,
-        ),
+        Some(s) if !s.is_empty() => Some(serde_json::from_str(s).map_err(|e| {
+            PyValueError::new_err(format!("invalid downsampling config JSON: {e}"))
+        })?),
         _ => None,
     };
     let downsampling_cfg = parse_downsampling_config(downsampling_cfg.as_ref())
@@ -1174,8 +1677,9 @@ pub fn execute_tt_plan_materialize_with_split(
         downsampling_handled,
         downsampling_applied,
         pre_downsample_row_count,
+        train_table_col_stats_json,
     ) = py
-        .detach(|| -> anyhow::Result<(u64, String, Option<Vec<u8>>, bool, Option<String>, bool, bool, u64)> {
+        .detach(|| -> anyhow::Result<(u64, String, Option<Vec<u8>>, bool, Option<String>, bool, bool, u64, Option<String>)> {
             let (receiver, handle) =
                 diskgraph_train_table::ttgen_executor::execute_with_summary(&plan, Path::new(&idx))?;
 
@@ -1328,8 +1832,8 @@ pub fn execute_tt_plan_materialize_with_split(
                 &downsampling_cfg,
             )?;
 
-            let mut split_authoritative = true;
-            let mut split_reason: Option<String> = None;
+            let split_authoritative = true;
+            let split_reason: Option<String> = None;
             let split_assignments = if let Some(split_cfg) = split_cfg.as_ref() {
                 let out = match family.as_str() {
                     "FixedSplit" => {
@@ -1493,6 +1997,21 @@ pub fn execute_tt_plan_materialize_with_split(
                 None
             };
 
+            let assignments = split_assignments.as_ref().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "split assignments missing; cannot build train_table_col_stats_json (split_family={family}, authoritative={split_authoritative}, reason={})",
+                    split_reason.as_deref().unwrap_or("none")
+                )
+            })?;
+            let payload = compute_train_table_col_stats_from_batches(
+                &raw_batches,
+                assignments,
+                selected_indices.as_deref(),
+                pre_downsample_row_count,
+                "v1",
+            )?;
+            let train_table_col_stats_json = Some(serde_json::to_string(&payload)?);
+
             Ok((
                 row_offset as u64,
                 summary_json,
@@ -1502,6 +2021,7 @@ pub fn execute_tt_plan_materialize_with_split(
                 downsampling_handled,
                 downsampling_applied,
                 pre_downsample_row_count as u64,
+                train_table_col_stats_json,
             ))
         })
         .map_err(|e| PyRuntimeError::new_err(format!("materialize_with_split failed: {e:#}")))?;
@@ -1520,6 +2040,11 @@ pub fn execute_tt_plan_materialize_with_split(
     } else {
         out.set_item("split_assignments", py.None())?;
     }
+    if let Some(train_col_stats_json) = train_table_col_stats_json {
+        out.set_item("train_table_col_stats_json", train_col_stats_json)?;
+    } else {
+        out.set_item("train_table_col_stats_json", py.None())?;
+    }
     Ok(out.into())
 }
 
@@ -1531,18 +2056,16 @@ pub fn build_tt_stats_artifact(
     summary_json: Option<&str>,
     plan_json: Option<&str>,
 ) -> PyResult<Py<PyAny>> {
-    let summary_value = summary_json
-        .and_then(|s| serde_json::from_str::<Value>(s).ok());
-    let plan_value = plan_json
-        .and_then(|s| serde_json::from_str::<Value>(s).ok());
-    let payload = build_tt_stats_artifact_value(
-        summary_value.as_ref(),
-        row_count,
-        plan_value.as_ref(),
-    );
+    let summary_value = summary_json.and_then(|s| serde_json::from_str::<Value>(s).ok());
+    let plan_value = plan_json.and_then(|s| serde_json::from_str::<Value>(s).ok());
+    let payload =
+        build_tt_stats_artifact_value(summary_value.as_ref(), row_count, plan_value.as_ref());
 
     let out = PyDict::new(py);
-    out.set_item("payload_json", serde_json::to_string(&payload).map_err(|e| PyRuntimeError::new_err(e.to_string()))?)?;
+    out.set_item(
+        "payload_json",
+        serde_json::to_string(&payload).map_err(|e| PyRuntimeError::new_err(e.to_string()))?,
+    )?;
     Ok(out.into())
 }
 
@@ -1637,12 +2160,71 @@ pub fn build_split_stats_artifact(
         .map_err(|e| PyRuntimeError::new_err(format!("build_split_stats_artifact failed: {e:#}")))?;
 
     let out_dict = PyDict::new(py);
-    out_dict.set_item("payload_json", serde_json::to_string(&payload).map_err(|e| PyRuntimeError::new_err(e.to_string()))?)?;
+    out_dict.set_item(
+        "payload_json",
+        serde_json::to_string(&payload).map_err(|e| PyRuntimeError::new_err(e.to_string()))?,
+    )?;
     Ok(out_dict.into())
 }
 
 #[pyfunction]
-#[pyo3(signature=(output_path, row_count, stats_json, split_stats_json, split_bytes, split_family=None, split_authoritative=false, split_reason=None, downsampling_json=None, producer_summary_json=None))]
+#[pyo3(signature=(output_path, split_assignments, train_table_col_stats_config_json=None))]
+pub fn build_train_table_col_stats_artifact(
+    py: Python<'_>,
+    output_path: &str,
+    split_assignments: &[u8],
+    train_table_col_stats_config_json: Option<&str>,
+) -> PyResult<Py<PyAny>> {
+    let out = output_path.to_owned();
+    let assignments = split_assignments.to_vec();
+    let cfg_value = train_table_col_stats_config_json
+        .and_then(|s| serde_json::from_str::<Value>(s).ok())
+        .unwrap_or_else(|| json!({}));
+    let data_version = cfg_value
+        .get("data_version")
+        .and_then(|v| v.as_str())
+        .unwrap_or("v1")
+        .to_string();
+
+    let payload = py
+        .detach(|| -> anyhow::Result<Value> {
+            let file = File::open(&out)?;
+            let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
+            let mut reader = builder.build()?;
+            let mut raw_batches = Vec::new();
+            let mut row_count = 0usize;
+            while let Some(batch_res) = reader.next() {
+                let batch = batch_res?;
+                row_count = row_count.saturating_add(batch.num_rows());
+                raw_batches.push(batch);
+            }
+            if row_count != assignments.len() {
+                return Err(anyhow::anyhow!(
+                    "train table row count mismatch while building train_table_col_stats artifact (table_rows={}, assignment_rows={})",
+                    row_count,
+                    assignments.len(),
+                ));
+            }
+            compute_train_table_col_stats_from_batches(
+                &raw_batches,
+                &assignments,
+                None,
+                row_count,
+                &data_version,
+            )
+        })
+        .map_err(|e| PyRuntimeError::new_err(format!("build_train_table_col_stats_artifact failed: {e:#}")))?;
+
+    let out_dict = PyDict::new(py);
+    out_dict.set_item(
+        "payload_json",
+        serde_json::to_string(&payload).map_err(|e| PyRuntimeError::new_err(e.to_string()))?,
+    )?;
+    Ok(out_dict.into())
+}
+
+#[pyfunction]
+#[pyo3(signature=(output_path, row_count, stats_json, split_stats_json, split_bytes, train_table_col_stats_json, split_family=None, split_authoritative=false, split_reason=None, downsampling_json=None, producer_summary_json=None))]
 pub fn persist_tt_artifact_bundle(
     py: Python<'_>,
     output_path: &str,
@@ -1650,6 +2232,7 @@ pub fn persist_tt_artifact_bundle(
     stats_json: &str,
     split_stats_json: &str,
     split_bytes: &[u8],
+    train_table_col_stats_json: &str,
     split_family: Option<&str>,
     split_authoritative: bool,
     split_reason: Option<&str>,
@@ -1665,6 +2248,7 @@ pub fn persist_tt_artifact_bundle(
     let producer_summary_value: Value = producer_summary_json
         .and_then(|s| serde_json::from_str::<Value>(s).ok())
         .unwrap_or(Value::Null);
+    let train_table_col_stats_payload = train_table_col_stats_json.to_string();
 
     let (manifest_path, artifacts_dir) = py
         .detach(|| -> anyhow::Result<(String, String)> {
@@ -1674,6 +2258,8 @@ pub fn persist_tt_artifact_bundle(
             let stats_path = format!("{}/stats.tt.json", artifacts_dir);
             let split_path = format!("{}/split_assignments.row_stage.bin", artifacts_dir);
             let split_stats_path = format!("{}/stats.split.json", artifacts_dir);
+            let train_table_col_stats_path =
+                format!("{}/stats.train_table_col_stats.json", artifacts_dir);
             let manifest_path = format!("{}.manifest.json", out);
 
             {
@@ -1688,39 +2274,182 @@ pub fn persist_tt_artifact_bundle(
                 let mut f = File::create(&split_stats_path)?;
                 f.write_all(split_stats_json.as_bytes())?;
             }
+            {
+                let mut f = File::create(&train_table_col_stats_path)?;
+                f.write_all(train_table_col_stats_payload.as_bytes())?;
+            }
 
-            let manifest = json!({
-                "version": 1,
-                "row_count": row_count,
-                "train_table": {"path": out, "format": "parquet_with_arange"},
-                "split": {
+            let mut checksums = serde_json::Map::new();
+            checksums.insert(
+                "train_table_sha256".to_string(),
+                json!(sha256_hex_file(&out)?),
+            );
+            checksums.insert(
+                "split_sha256".to_string(),
+                json!(sha256_hex_bytes(split_bytes)),
+            );
+            checksums.insert(
+                "stats_sha256".to_string(),
+                json!(sha256_hex_bytes(stats_json.as_bytes())),
+            );
+            checksums.insert(
+                "split_stats_sha256".to_string(),
+                json!(sha256_hex_bytes(split_stats_json.as_bytes())),
+            );
+            checksums.insert(
+                "train_table_col_stats_sha256".to_string(),
+                json!(sha256_hex_bytes(train_table_col_stats_payload.as_bytes())),
+            );
+
+            let mut manifest = serde_json::Map::new();
+            manifest.insert("version".to_string(), json!(1));
+            manifest.insert("row_count".to_string(), json!(row_count));
+            manifest.insert(
+                "train_table".to_string(),
+                json!({"path": out, "format": "parquet_with_arange"}),
+            );
+            manifest.insert(
+                "split".to_string(),
+                json!({
                     "path": split_path,
                     "format": "split_assignment_row_stage_bin",
                     "authoritative": split_authoritative,
                     "family": split_family_s,
                     "reason": split_reason_s,
-                },
-                "stats": {"path": stats_path, "format": "tt_stats_json"},
-                "split_stats": {"path": split_stats_path, "format": "tt_split_stats_json"},
-                "checksums": {
-                    "train_table_sha256": sha256_hex_file(&out)?,
-                    "split_sha256": sha256_hex_bytes(split_bytes),
-                    "stats_sha256": sha256_hex_bytes(stats_json.as_bytes()),
-                    "split_stats_sha256": sha256_hex_bytes(split_stats_json.as_bytes()),
-                },
-                "downsampling": downsampling_value,
-                "producer_summary": producer_summary_value,
-            });
+                }),
+            );
+            manifest.insert(
+                "stats".to_string(),
+                json!({"path": stats_path, "format": "tt_stats_json"}),
+            );
+            manifest.insert(
+                "split_stats".to_string(),
+                json!({"path": split_stats_path, "format": "tt_split_stats_json"}),
+            );
+            manifest.insert(
+                "train_table_col_stats".to_string(),
+                json!({
+                    "path": train_table_col_stats_path,
+                    "format": "tt_train_table_col_stats_json"
+                }),
+            );
+            manifest.insert("checksums".to_string(), Value::Object(checksums));
+            manifest.insert("downsampling".to_string(), downsampling_value);
+            manifest.insert("producer_summary".to_string(), producer_summary_value);
+            let manifest = Value::Object(manifest);
 
             let mut f = File::create(&manifest_path)?;
             f.write_all(serde_json::to_string(&manifest)?.as_bytes())?;
 
             Ok((manifest_path, artifacts_dir))
         })
-        .map_err(|e| PyRuntimeError::new_err(format!("persist_tt_artifact_bundle failed: {e:#}")))?;
+        .map_err(|e| {
+            PyRuntimeError::new_err(format!("persist_tt_artifact_bundle failed: {e:#}"))
+        })?;
 
     let out_dict = PyDict::new(py);
     out_dict.set_item("manifest_path", manifest_path)?;
     out_dict.set_item("artifacts_dir", artifacts_dir)?;
     Ok(out_dict.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_compute_train_table_col_stats_from_batches_downsampled() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("TARGET", DataType::Float64, true),
+            Field::new("SCORE", DataType::Int64, true),
+            Field::new("CITY", DataType::Utf8, true),
+        ]));
+
+        let b1 = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Float64Array::from(vec![Some(1.0), None, Some(3.0)])),
+                Arc::new(Int64Array::from(vec![Some(10), Some(20), Some(30)])),
+                Arc::new(StringArray::from(vec![Some("a"), Some("b"), Some("c")])),
+            ],
+        )
+        .unwrap();
+        let b2 = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Float64Array::from(vec![Some(4.0), Some(5.0)])),
+                Arc::new(Int64Array::from(vec![Some(40), Some(50)])),
+                Arc::new(StringArray::from(vec![Some("d"), Some("e")])),
+            ],
+        )
+        .unwrap();
+
+        let raw_batches = vec![b1, b2];
+        let selected_indices = vec![0usize, 2usize, 4usize];
+        let split_assignments = vec![0u8, 1u8, 0u8];
+
+        let payload = compute_train_table_col_stats_from_batches(
+            &raw_batches,
+            &split_assignments,
+            Some(&selected_indices),
+            5,
+            "v1",
+        )
+        .unwrap();
+
+        let stats = payload.get("stats").and_then(|v| v.as_object()).unwrap();
+        let target_count = stats
+            .get("TARGET__kumo.numerical__COUNT__False")
+            .and_then(|v| v.get("value"))
+            .and_then(|v| v.as_u64())
+            .unwrap();
+        let target_mean = stats
+            .get("TARGET__kumo.numerical__MEAN__True")
+            .and_then(|v| v.get("value"))
+            .and_then(|v| v.as_f64())
+            .unwrap();
+        let target_median = stats
+            .get("TARGET__kumo.numerical__MEDIAN__True")
+            .and_then(|v| v.get("value"))
+            .and_then(|v| v.as_f64())
+            .unwrap();
+        let score_count = stats
+            .get("SCORE__kumo.numerical__COUNT__False")
+            .and_then(|v| v.get("value"))
+            .and_then(|v| v.as_u64())
+            .unwrap();
+
+        assert_eq!(target_count, 2);
+        assert_eq!(score_count, 2);
+        assert!((target_mean - 3.0).abs() < 1e-9);
+        assert!((target_median - 3.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_compute_train_table_col_stats_from_batches_no_numeric_columns() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("CITY", DataType::Utf8, true),
+            Field::new("TAG", DataType::Utf8, true),
+        ]));
+
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec![Some("a"), Some("b"), None])),
+                Arc::new(StringArray::from(vec![Some("x"), Some("y"), Some("z")])),
+            ],
+        )
+        .unwrap();
+
+        let payload =
+            compute_train_table_col_stats_from_batches(&[batch], &[0u8, 1u8, 0u8], None, 3, "v1")
+                .unwrap();
+
+        assert_eq!(
+            payload.get("num_train_rows").and_then(|v| v.as_u64()),
+            Some(2)
+        );
+        let stats = payload.get("stats").and_then(|v| v.as_object()).unwrap();
+        assert!(stats.is_empty());
+    }
 }

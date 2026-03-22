@@ -31,7 +31,6 @@ _build_split_stats_artifact_native = (
     getattr(_native_c, 'build_split_stats_artifact', None)
     if _native_c is not None else None
 )
-
 from .split_contract import SplitSpec
 
 
@@ -316,6 +315,16 @@ def execute_tt_plan_with_artifacts(
         raise RuntimeError('diskgraph native split stats builder returned non-dict payload')
     split_stats_json = json.dumps(split_stats_payload, sort_keys=True)
 
+    train_col_stats_payload_json = mat.get('train_table_col_stats_json')
+    if not isinstance(train_col_stats_payload_json, str) or not train_col_stats_payload_json:
+        raise RuntimeError(
+            'diskgraph native materialize_with_split did not provide train_table_col_stats_json')
+    train_col_stats_payload = json.loads(train_col_stats_payload_json)
+    if not isinstance(train_col_stats_payload, dict):
+        raise RuntimeError(
+            'diskgraph native train_table_col_stats_json payload must be dict')
+    train_col_stats_json = json.dumps(train_col_stats_payload, sort_keys=True)
+
     downsampling_payload = {
         'config': {
             'enabled': downsampling_cfg.enabled,
@@ -345,6 +354,7 @@ def execute_tt_plan_with_artifacts(
         split_reason=split_meta.get('reason'),
         downsampling_json=json.dumps(downsampling_payload, sort_keys=True),
         producer_summary_json=(json.dumps(native_summary, sort_keys=True) if native_summary is not None else None),
+        train_table_col_stats_json=train_col_stats_json,
     )
     if isinstance(persisted, dict):
         manifest_path = str(persisted.get('manifest_path') or manifest_path)

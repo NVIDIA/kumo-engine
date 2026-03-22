@@ -30,6 +30,7 @@ def _mock_native_materialize_ok(**_kwargs):
         'downsampling_handled': True,
         'downsampling_applied': False,
         'pre_downsample_row_count': 2,
+        'train_table_col_stats_json': '{"version":1,"kind":"tt_train_table_col_stats","stats":{},"provided_fields":["stats"]}',
     }
 
 
@@ -118,10 +119,33 @@ def test_fails_without_downsampling_metadata(tmp_path: Path, monkeypatch):
         )
 
 
+def test_fails_when_materialize_omits_train_table_col_stats_json(tmp_path: Path, monkeypatch):
+    _write_min_table(tmp_path / 'tt.parquet')
+
+    def bad_materialize(**_kwargs):
+        out = _mock_native_materialize_ok()
+        out.pop('train_table_col_stats_json', None)
+        return out
+
+    monkeypatch.setattr(tt_artifacts, '_execute_tt_plan_materialize_with_split', bad_materialize)
+    monkeypatch.setattr(tt_artifacts, '_build_tt_stats_artifact_native', _mock_native_tt_stats)
+    monkeypatch.setattr(tt_artifacts, '_build_split_stats_artifact_native', _mock_native_split_stats)
+    monkeypatch.setattr(tt_artifacts, '_persist_tt_artifact_bundle', _mock_native_persist)
+    with pytest.raises(RuntimeError, match='did not provide train_table_col_stats_json'):
+        execute_tt_plan_with_artifacts(
+            plan_json='{}',
+            index_path='unused',
+            output_path=str(tmp_path / 'tt.parquet'),
+            split_config=SplitSpec(kind='FixedSplit', ratio=[0.5, 0.25, 0.25]),
+        )
+
+
 def test_fails_without_native_tt_stats_builder(tmp_path: Path, monkeypatch):
     _write_min_table(tmp_path / 'tt.parquet')
     monkeypatch.setattr(tt_artifacts, '_execute_tt_plan_materialize_with_split', _mock_native_materialize_ok)
     monkeypatch.setattr(tt_artifacts, '_build_tt_stats_artifact_native', None)
+    monkeypatch.setattr(tt_artifacts, '_build_split_stats_artifact_native', _mock_native_split_stats)
+    monkeypatch.setattr(tt_artifacts, '_persist_tt_artifact_bundle', _mock_native_persist)
     with pytest.raises(RuntimeError, match=r'missing native helper\(s\): build_tt_stats_artifact'):
         execute_tt_plan_with_artifacts(
             plan_json='{}',
@@ -199,10 +223,16 @@ def test_requires_split_family_when_split_kind_missing(tmp_path: Path, monkeypat
 
 def test_success_with_native_helpers_only(tmp_path: Path, monkeypatch):
     _write_min_table(tmp_path / 'tt.parquet')
+    captured = {}
+
+    def persist_capture(**kwargs):
+        captured.update(kwargs)
+        return _mock_native_persist(**kwargs)
+
     monkeypatch.setattr(tt_artifacts, '_execute_tt_plan_materialize_with_split', _mock_native_materialize_ok)
     monkeypatch.setattr(tt_artifacts, '_build_tt_stats_artifact_native', _mock_native_tt_stats)
     monkeypatch.setattr(tt_artifacts, '_build_split_stats_artifact_native', _mock_native_split_stats)
-    monkeypatch.setattr(tt_artifacts, '_persist_tt_artifact_bundle', _mock_native_persist)
+    monkeypatch.setattr(tt_artifacts, '_persist_tt_artifact_bundle', persist_capture)
 
     out = execute_tt_plan_with_artifacts(
         plan_json='{}',
@@ -212,3 +242,5 @@ def test_success_with_native_helpers_only(tmp_path: Path, monkeypatch):
     )
     assert out['row_count'] == 2
     assert out['manifest_path'] == '/tmp/fake.manifest.json'
+    assert isinstance(captured.get('train_table_col_stats_json'), str)
+    assert captured['train_table_col_stats_json']
