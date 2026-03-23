@@ -639,3 +639,81 @@ fn write_minimal_shard(shard_dir: &std::path::Path) {
 
     assert_eq!(edges_len as u64, node_len as u64);
 }
+
+#[test]
+fn test_empty_shard_sentinel_filtered_at_construction() {
+    // Reproduces the doordash bug: when a small node type (e.g. 500 nodes)
+    // gets 3 shards, empty shards get the sentinel (min_id=1, max_id=0).
+    // These must be filtered out so find_shard's binary search works.
+    //
+    // The fix filters empty shards when building the ShardHandle vec
+    // (in DiskGraphEngine::load). This test verifies that after filtering,
+    // find_shard works correctly for all node IDs.
+    let graph = TestGraph::new();
+    let valid_shard = &graph.sampler.readers[0][0];
+
+    // Simulate what the fix does: filter out empty shards
+    let all_shards = vec![
+        (1u64, 0u64),   // empty sentinel — should be filtered
+        (1u64, 0u64),   // empty sentinel — should be filtered
+        (0u64, 20u64),  // valid shard
+    ];
+    let filtered: Vec<ShardHandle> = all_shards
+        .into_iter()
+        .filter(|(min_id, max_id)| min_id <= max_id)
+        .map(|(min_id, max_id)| ShardHandle {
+            reader: valid_shard.reader.clone(),
+            min_id,
+            max_id,
+        })
+        .collect();
+
+    // After filtering, only 1 shard remains
+    assert_eq!(filtered.len(), 1);
+    assert_eq!(filtered[0].min_id, 0);
+    assert_eq!(filtered[0].max_id, 20);
+
+    // find_shard works on the filtered vec
+    let result = graph.sampler.find_shard(&filtered, 0);
+    assert!(result.is_ok(), "node 0 should be found: {:?}", result.err());
+    assert_eq!(result.unwrap(), 0);
+
+    let result = graph.sampler.find_shard(&filtered, 10);
+    assert!(result.is_ok());
+
+    let result = graph.sampler.find_shard(&filtered, 999);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_empty_shard_between_valid_filtered() {
+    // Empty shard between two valid shards — after filtering, binary
+    // search sees only the two valid shards in correct order.
+    let graph = TestGraph::new();
+    let valid_shard = &graph.sampler.readers[0][0];
+
+    let all_shards = vec![
+        (0u64, 9u64),   // valid
+        (1u64, 0u64),   // empty sentinel
+        (10u64, 20u64), // valid
+    ];
+    let filtered: Vec<ShardHandle> = all_shards
+        .into_iter()
+        .filter(|(min_id, max_id)| min_id <= max_id)
+        .map(|(min_id, max_id)| ShardHandle {
+            reader: valid_shard.reader.clone(),
+            min_id,
+            max_id,
+        })
+        .collect();
+
+    assert_eq!(filtered.len(), 2);
+
+    let result = graph.sampler.find_shard(&filtered, 5);
+    assert!(result.is_ok());
+    assert_eq!(result.unwrap(), 0);
+
+    let result = graph.sampler.find_shard(&filtered, 15);
+    assert!(result.is_ok());
+    assert_eq!(result.unwrap(), 1);
+}

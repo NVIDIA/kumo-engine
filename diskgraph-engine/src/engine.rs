@@ -143,6 +143,13 @@ impl DiskGraphEngine {
 
             let mut shards = Vec::new();
             for (i, shard_meta) in node_type.shards.iter().enumerate() {
+                // Skip empty shards. Ingest writes (min_id=1, max_id=0) as
+                // a sentinel for shards that received no data. Including
+                // them in the shard vec breaks binary search in find_shard.
+                if shard_meta.min_id > shard_meta.max_id {
+                    continue;
+                }
+
                 let shard_dir = node_dir.join(format!("shard-{:05}", i));
 
                 if shard_dir.exists() {
