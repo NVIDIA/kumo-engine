@@ -6,7 +6,7 @@
 use std::collections::HashSet;
 use std::fs::File;
 use std::io::{Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
@@ -419,6 +419,174 @@ fn sha256_hex_file(path: &str) -> anyhow::Result<String> {
     }
     let digest = hasher.finalize();
     Ok(digest.iter().map(|b| format!("{:02x}", b)).collect())
+}
+
+fn collect_files_recursive(root: &Path) -> anyhow::Result<Vec<PathBuf>> {
+    if root.is_file() {
+        return Ok(vec![root.to_path_buf()]);
+    }
+    let mut out = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.is_file() {
+                out.push(path);
+            }
+        }
+    }
+    out.sort();
+    Ok(out)
+}
+
+/// Compute SHA256 for a file or a deterministic directory digest.
+///
+/// Directory digest format (Linux path semantics):
+/// `sha256(rel_path + '\0' + file_sha256_hex + '\0' for each file sorted lexicographically)`.
+fn sha256_hex_path(path: &Path) -> anyhow::Result<String> {
+    if path.is_file() {
+        return sha256_hex_file(
+            path.to_str()
+                .ok_or_else(|| anyhow::anyhow!("non-utf8 path not supported"))?,
+        );
+    }
+
+    let mut hasher = Sha256::new();
+    let files = collect_files_recursive(path)?;
+    for file in files {
+        let rel = file
+            .strip_prefix(path)
+            .map_err(|_| anyhow::anyhow!("failed to strip prefix while hashing path"))?;
+        hasher.update(rel.to_string_lossy().as_bytes());
+        hasher.update([0u8]);
+        let file_hash = sha256_hex_file(
+            file.to_str()
+                .ok_or_else(|| anyhow::anyhow!("non-utf8 path not supported"))?,
+        )?;
+        hasher.update(file_hash.as_bytes());
+        hasher.update([0u8]);
+    }
+    let digest = hasher.finalize();
+    Ok(digest.iter().map(|b| format!("{:02x}", b)).collect())
+}
+
+fn build_train_table_edges_bundle_value(
+    output_dir: &Path,
+    train_table_name: &str,
+    mask_present: bool,
+    mask_absent_reason: Option<&str>,
+    edge_attrs_path: Option<&str>,
+) -> anyhow::Result<Value> {
+    let fkey_path = output_dir.join(format!("{}_fkey_cols.parquet", train_table_name));
+    if !fkey_path.exists() {
+        return Err(anyhow::anyhow!(
+            "fkey_cols artifact missing for train_table_edges bundle: {}",
+            fkey_path.display()
+        ));
+    }
+
+    let mut reverse_edges = serde_json::Map::new();
+    let mut reverse_checksums = serde_json::Map::new();
+    for entry in std::fs::read_dir(output_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        if !name.contains("__rev_") || !name.ends_with(&format!("__{train_table_name}")) {
+            continue;
+        }
+        let edge_path = path.join("edge.parquet");
+        if !edge_path.exists() {
+            continue;
+        }
+        reverse_edges.insert(
+            name.to_string(),
+            json!({"path": edge_path.to_string_lossy(), "format": "edge_parquet"}),
+        );
+        reverse_checksums.insert(name.to_string(), json!(sha256_hex_path(&edge_path)?));
+    }
+    if reverse_edges.is_empty() {
+        return Err(anyhow::anyhow!(
+            "no reverse edge artifacts discovered for train_table_edges bundle in {}",
+            output_dir.display()
+        ));
+    }
+
+    let mask_value = if mask_present {
+        let mask_path = output_dir.join(format!("{}_mask.parquet", train_table_name));
+        if !mask_path.exists() {
+            return Err(anyhow::anyhow!(
+                "mask artifact missing for train_table_edges bundle: {}",
+                mask_path.display()
+            ));
+        }
+        json!({
+            "present": true,
+            "path": mask_path.to_string_lossy(),
+            "format": "mask_parquet",
+        })
+    } else {
+        json!({
+            "present": false,
+            "reason": mask_absent_reason.unwrap_or("mask_not_required"),
+        })
+    };
+
+    let mut checksums = serde_json::Map::new();
+    checksums.insert(
+        "fkey_cols_sha256".to_string(),
+        json!(sha256_hex_path(&fkey_path)?),
+    );
+    for (k, v) in &reverse_checksums {
+        checksums.insert(format!("{}_sha256", k), v.clone());
+    }
+    if mask_present {
+        let mask_path = output_dir.join(format!("{}_mask.parquet", train_table_name));
+        checksums.insert(
+            "mask_sha256".to_string(),
+            json!(sha256_hex_path(&mask_path)?),
+        );
+    }
+
+    let edge_attrs_value = if let Some(path) = edge_attrs_path {
+        let p = Path::new(path);
+        if !p.exists() {
+            return Err(anyhow::anyhow!(
+                "edge_attrs artifact missing for train_table_edges bundle: {}",
+                p.display()
+            ));
+        }
+        checksums.insert("edge_attrs_sha256".to_string(), json!(sha256_hex_path(p)?));
+        Some(json!({"path": path, "format": "edge_attrs_json"}))
+    } else {
+        None
+    };
+
+    let mut root = serde_json::Map::new();
+    root.insert("version".to_string(), json!(1));
+    root.insert("kind".to_string(), json!("tt_train_table_edges"));
+    root.insert("format".to_string(), json!("tt_edge_bundle_v1"));
+    root.insert("reverse_edges".to_string(), Value::Object(reverse_edges));
+    root.insert(
+        "fkey_cols".to_string(),
+        json!({"path": fkey_path.to_string_lossy(), "format": "fkey_cols_parquet"}),
+    );
+    root.insert("mask".to_string(), mask_value);
+    let mut provided_fields = vec!["reverse_edges", "fkey_cols", "mask"];
+    if let Some(v) = edge_attrs_value {
+        root.insert("edge_attrs".to_string(), v);
+        provided_fields.push("edge_attrs");
+    }
+    root.insert("checksums".to_string(), Value::Object(checksums));
+    root.insert("provided_fields".to_string(), json!(provided_fields));
+    Ok(Value::Object(root))
 }
 
 fn split_family_from_config(
@@ -2224,7 +2392,46 @@ pub fn build_train_table_col_stats_artifact(
 }
 
 #[pyfunction]
-#[pyo3(signature=(output_path, row_count, stats_json, split_stats_json, split_bytes, train_table_col_stats_json, split_family=None, split_authoritative=false, split_reason=None, downsampling_json=None, producer_summary_json=None))]
+#[pyo3(signature=(output_dir, train_table_name="custom_train_table", mask_present=true, mask_absent_reason=None, edge_attrs_path=None))]
+pub fn build_train_table_edge_bundle_artifact(
+    py: Python<'_>,
+    output_dir: &str,
+    train_table_name: &str,
+    mask_present: bool,
+    mask_absent_reason: Option<&str>,
+    edge_attrs_path: Option<&str>,
+) -> PyResult<Py<PyAny>> {
+    let out_dir = output_dir.to_owned();
+    let train_table_name = train_table_name.to_owned();
+    let edge_attrs_path = edge_attrs_path.map(|s| s.to_owned());
+    let mask_absent_reason = mask_absent_reason.map(|s| s.to_owned());
+
+    let payload = py
+        .detach(|| -> anyhow::Result<Value> {
+            build_train_table_edges_bundle_value(
+                Path::new(&out_dir),
+                &train_table_name,
+                mask_present,
+                mask_absent_reason.as_deref(),
+                edge_attrs_path.as_deref(),
+            )
+        })
+        .map_err(|e| {
+            PyRuntimeError::new_err(format!(
+                "build_train_table_edge_bundle_artifact failed: {e:#}"
+            ))
+        })?;
+
+    let out_dict = PyDict::new(py);
+    out_dict.set_item(
+        "payload_json",
+        serde_json::to_string(&payload).map_err(|e| PyRuntimeError::new_err(e.to_string()))?,
+    )?;
+    Ok(out_dict.into())
+}
+
+#[pyfunction]
+#[pyo3(signature=(output_path, row_count, stats_json, split_stats_json, split_bytes, train_table_col_stats_json, split_family=None, split_authoritative=false, split_reason=None, downsampling_json=None, producer_summary_json=None, train_table_edges_json=None))]
 pub fn persist_tt_artifact_bundle(
     py: Python<'_>,
     output_path: &str,
@@ -2238,6 +2445,7 @@ pub fn persist_tt_artifact_bundle(
     split_reason: Option<&str>,
     downsampling_json: Option<&str>,
     producer_summary_json: Option<&str>,
+    train_table_edges_json: Option<&str>,
 ) -> PyResult<Py<PyAny>> {
     let out = output_path.to_owned();
     let split_family_s = split_family.unwrap_or("UnknownSplit").to_string();
@@ -2249,6 +2457,14 @@ pub fn persist_tt_artifact_bundle(
         .and_then(|s| serde_json::from_str::<Value>(s).ok())
         .unwrap_or(Value::Null);
     let train_table_col_stats_payload = train_table_col_stats_json.to_string();
+    let train_table_edges_payload = train_table_edges_json.map(|s| s.to_string());
+    let train_table_edges_value: Option<Value> =
+        match train_table_edges_payload.as_ref() {
+            Some(s) => Some(serde_json::from_str::<Value>(s).map_err(|e| {
+                PyValueError::new_err(format!("invalid train_table_edges_json: {e}"))
+            })?),
+            None => None,
+        };
 
     let (manifest_path, artifacts_dir) = py
         .detach(|| -> anyhow::Result<(String, String)> {
@@ -2300,6 +2516,22 @@ pub fn persist_tt_artifact_bundle(
                 "train_table_col_stats_sha256".to_string(),
                 json!(sha256_hex_bytes(train_table_col_stats_payload.as_bytes())),
             );
+            if let Some(edge_bundle) = train_table_edges_value.as_ref() {
+                let raw = train_table_edges_payload
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("missing train_table_edges_payload"))?;
+                checksums.insert(
+                    "train_table_edges_sha256".to_string(),
+                    json!(sha256_hex_bytes(raw.as_bytes())),
+                );
+                if let Some(edge_checksums) =
+                    edge_bundle.get("checksums").and_then(|v| v.as_object())
+                {
+                    for (k, v) in edge_checksums {
+                        checksums.insert(format!("train_table_edges__{k}"), v.clone());
+                    }
+                }
+            }
 
             let mut manifest = serde_json::Map::new();
             manifest.insert("version".to_string(), json!(1));
@@ -2333,6 +2565,9 @@ pub fn persist_tt_artifact_bundle(
                     "format": "tt_train_table_col_stats_json"
                 }),
             );
+            if let Some(edge_bundle) = train_table_edges_value.as_ref() {
+                manifest.insert("train_table_edges".to_string(), edge_bundle.clone());
+            }
             manifest.insert("checksums".to_string(), Value::Object(checksums));
             manifest.insert("downsampling".to_string(), downsampling_value);
             manifest.insert("producer_summary".to_string(), producer_summary_value);
@@ -2451,5 +2686,46 @@ mod tests {
         );
         let stats = payload.get("stats").and_then(|v| v.as_object()).unwrap();
         assert!(stats.is_empty());
+    }
+
+    #[test]
+    fn test_build_train_table_edges_bundle_value_basic() {
+        let root = std::env::temp_dir().join(format!("dg_tt_edges_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+
+        let fkey = root.join("custom_train_table_fkey_cols.parquet");
+        std::fs::create_dir_all(&fkey).unwrap();
+        std::fs::write(fkey.join("part-0000.parquet"), b"fkey").unwrap();
+
+        let mask = root.join("custom_train_table_mask.parquet");
+        std::fs::create_dir_all(&mask).unwrap();
+        std::fs::write(mask.join("part-0000.parquet"), b"mask").unwrap();
+
+        let edge = root
+            .join("users__rev_user_id__custom_train_table")
+            .join("edge.parquet");
+        std::fs::create_dir_all(&edge).unwrap();
+        std::fs::write(edge.join("part-0000.parquet"), b"edge").unwrap();
+
+        let payload =
+            build_train_table_edges_bundle_value(&root, "custom_train_table", true, None, None)
+                .unwrap();
+
+        assert_eq!(
+            payload.get("format").and_then(|v| v.as_str()),
+            Some("tt_edge_bundle_v1")
+        );
+        assert!(payload
+            .get("reverse_edges")
+            .and_then(|v| v.as_object())
+            .map(|m| m.contains_key("users__rev_user_id__custom_train_table"))
+            .unwrap_or(false));
+        assert!(payload
+            .get("checksums")
+            .and_then(|v| v.as_object())
+            .map(|m| m.contains_key("fkey_cols_sha256") && m.contains_key("mask_sha256"))
+            .unwrap_or(false));
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

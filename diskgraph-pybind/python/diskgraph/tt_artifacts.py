@@ -31,6 +31,22 @@ _build_split_stats_artifact_native = (
     getattr(_native_c, 'build_split_stats_artifact', None)
     if _native_c is not None else None
 )
+_build_train_table_edge_bundle_artifact_native = (
+    getattr(_native_c, 'build_train_table_edge_bundle_artifact', None)
+    if _native_c is not None else None
+)
+_export_tt_artifacts_native = (
+    getattr(_native_c, 'export_tt_artifacts', None)
+    if _native_c is not None else None
+)
+_export_config_cls = (
+    getattr(_native_c, 'ExportConfig', None)
+    if _native_c is not None else None
+)
+_fkey_config_cls = (
+    getattr(_native_c, 'FkeyConfig', None)
+    if _native_c is not None else None
+)
 from .split_contract import SplitSpec
 
 
@@ -134,6 +150,75 @@ def _build_split_assignment_artifact(assignments: np.ndarray) -> bytes:
     return magic + header + arr.tobytes(order='C')
 
 
+def _build_train_table_edges_artifact(
+    *,
+    output_path: str,
+    index_path: str,
+    cfg: dict[str, Any],
+) -> Optional[str]:
+    if not bool(cfg.get('enabled', False)):
+        return None
+
+    if not callable(_export_tt_artifacts_native) or _export_config_cls is None or _fkey_config_cls is None:
+        raise RuntimeError(
+            'diskgraph strict artifact path requires native export_tt_artifacts '
+            'with ExportConfig/FkeyConfig when train_table_edges_config.enabled=true'
+        )
+    if not callable(_build_train_table_edge_bundle_artifact_native):
+        raise RuntimeError(
+            'diskgraph strict artifact path requires native helper '
+            'build_train_table_edge_bundle_artifact when train_table_edges_config.enabled=true'
+        )
+
+    edge_output_dir = str(
+        cfg.get('output_dir')
+        or os.path.join(output_path + '.artifacts', 'train_table_edges')
+    )
+    train_table_name = str(cfg.get('train_table_name', 'custom_train_table'))
+    row_idx_col = str(cfg.get('row_idx_col', 'arange'))
+    fkeys_raw = cfg.get('fkeys')
+    if not isinstance(fkeys_raw, list) or not fkeys_raw:
+        raise RuntimeError('train_table_edges_config.fkeys must be a non-empty list')
+
+    fkeys = []
+    for idx, item in enumerate(fkeys_raw):
+        if not isinstance(item, dict):
+            raise RuntimeError(f'train_table_edges_config.fkeys[{idx}] must be dict')
+        col = item.get('column_name')
+        tgt = item.get('target_table')
+        if not isinstance(col, str) or not col:
+            raise RuntimeError(f'train_table_edges_config.fkeys[{idx}].column_name is required')
+        if not isinstance(tgt, str) or not tgt:
+            raise RuntimeError(f'train_table_edges_config.fkeys[{idx}].target_table is required')
+        fkeys.append(_fkey_config_cls(column_name=col, target_table=tgt))
+
+    os.makedirs(edge_output_dir, exist_ok=True)
+    export_cfg = _export_config_cls(
+        train_table_path=output_path,
+        index_path=index_path,
+        output_dir=edge_output_dir,
+        fkeys=fkeys,
+        row_idx_col=row_idx_col,
+        train_table_name=train_table_name,
+    )
+    _export_tt_artifacts_native(export_cfg)
+
+    built_edges = _build_train_table_edge_bundle_artifact_native(
+        output_dir=edge_output_dir,
+        train_table_name=train_table_name,
+        mask_present=bool(cfg.get('mask_present', True)),
+        mask_absent_reason=cfg.get('mask_absent_reason'),
+        edge_attrs_path=cfg.get('edge_attrs_path'),
+    )
+    payload_json = built_edges.get('payload_json') if isinstance(built_edges, dict) else None
+    if not isinstance(payload_json, str) or not payload_json:
+        raise RuntimeError('diskgraph native train-table edges builder returned invalid payload_json')
+    payload = json.loads(payload_json)
+    if not isinstance(payload, dict):
+        raise RuntimeError('diskgraph native train-table edges builder returned non-dict payload')
+    return json.dumps(payload, sort_keys=True)
+
+
 def execute_tt_plan_with_artifacts(
     *,
     plan_json: str,
@@ -143,6 +228,7 @@ def execute_tt_plan_with_artifacts(
     split_family_hint: Optional[str] = None,
     downsampling: Optional[Any] = None,
     split_stats_config: Optional[Any] = None,
+    train_table_edges_config: Optional[Any] = None,
 ) -> dict[str, Any]:
     """Execute TT plan and materialize producer artifacts.
 
@@ -341,6 +427,12 @@ def execute_tt_plan_with_artifacts(
         'details': downsample_info,
     }
 
+    train_table_edges_json = _build_train_table_edges_artifact(
+        output_path=output_path,
+        index_path=index_path,
+        cfg=(train_table_edges_config if isinstance(train_table_edges_config, dict) else {}),
+    )
+
     artifacts_dir = output_path + '.artifacts'
     manifest_path = output_path + '.manifest.json'
     persisted = _persist_tt_artifact_bundle(
@@ -355,6 +447,7 @@ def execute_tt_plan_with_artifacts(
         downsampling_json=json.dumps(downsampling_payload, sort_keys=True),
         producer_summary_json=(json.dumps(native_summary, sort_keys=True) if native_summary is not None else None),
         train_table_col_stats_json=train_col_stats_json,
+        train_table_edges_json=train_table_edges_json,
     )
     if isinstance(persisted, dict):
         manifest_path = str(persisted.get('manifest_path') or manifest_path)

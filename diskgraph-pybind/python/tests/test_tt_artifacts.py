@@ -58,6 +58,12 @@ def _mock_native_split_stats(**_kwargs):
     }
 
 
+def _mock_native_edge_bundle(**_kwargs):
+    return {
+        'payload_json': '{"version":1,"kind":"tt_train_table_edges","format":"tt_edge_bundle_v1","reverse_edges":{},"fkey_cols":{"path":"/tmp/fkey","format":"fkey_cols_parquet"},"mask":{"present":false},"checksums":{},"provided_fields":["reverse_edges","fkey_cols","mask"]}'
+    }
+
+
 def _mock_native_persist(**_kwargs):
     return {'manifest_path': '/tmp/fake.manifest.json', 'artifacts_dir': '/tmp/fake.artifacts'}
 
@@ -219,6 +225,70 @@ def test_requires_split_family_when_split_kind_missing(tmp_path: Path, monkeypat
             output_path=str(tmp_path / 'tt.parquet'),
             split_config=SplitSpec(kind=None, ratio=[0.5, 0.25, 0.25]),
         )
+
+
+def test_fails_when_train_table_edges_enabled_without_export_helpers(tmp_path: Path, monkeypatch):
+    _write_min_table(tmp_path / 'tt.parquet')
+    monkeypatch.setattr(tt_artifacts, '_execute_tt_plan_materialize_with_split', _mock_native_materialize_ok)
+    monkeypatch.setattr(tt_artifacts, '_build_tt_stats_artifact_native', _mock_native_tt_stats)
+    monkeypatch.setattr(tt_artifacts, '_build_split_stats_artifact_native', _mock_native_split_stats)
+    monkeypatch.setattr(tt_artifacts, '_persist_tt_artifact_bundle', _mock_native_persist)
+    monkeypatch.setattr(tt_artifacts, '_export_tt_artifacts_native', None)
+
+    with pytest.raises(RuntimeError, match='requires native export_tt_artifacts'):
+        execute_tt_plan_with_artifacts(
+            plan_json='{}',
+            index_path='unused',
+            output_path=str(tmp_path / 'tt.parquet'),
+            split_config=SplitSpec(kind='FixedSplit', ratio=[0.5, 0.25, 0.25]),
+            train_table_edges_config={
+                'enabled': True,
+                'fkeys': [{'column_name': 'ENTITY', 'target_table': 'users'}],
+            },
+        )
+
+
+def test_success_with_train_table_edges_bundle(tmp_path: Path, monkeypatch):
+    _write_min_table(tmp_path / 'tt.parquet')
+    captured = {}
+
+    def persist_capture(**kwargs):
+        captured.update(kwargs)
+        return _mock_native_persist(**kwargs)
+
+    class _FakeFkeyConfig:
+        def __init__(self, column_name: str, target_table: str):
+            self.column_name = column_name
+            self.target_table = target_table
+
+    class _FakeExportConfig:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    monkeypatch.setattr(tt_artifacts, '_execute_tt_plan_materialize_with_split', _mock_native_materialize_ok)
+    monkeypatch.setattr(tt_artifacts, '_build_tt_stats_artifact_native', _mock_native_tt_stats)
+    monkeypatch.setattr(tt_artifacts, '_build_split_stats_artifact_native', _mock_native_split_stats)
+    monkeypatch.setattr(tt_artifacts, '_persist_tt_artifact_bundle', persist_capture)
+    monkeypatch.setattr(tt_artifacts, '_export_tt_artifacts_native', lambda _cfg: None)
+    monkeypatch.setattr(tt_artifacts, '_build_train_table_edge_bundle_artifact_native', _mock_native_edge_bundle)
+    monkeypatch.setattr(tt_artifacts, '_fkey_config_cls', _FakeFkeyConfig)
+    monkeypatch.setattr(tt_artifacts, '_export_config_cls', _FakeExportConfig)
+
+    out = execute_tt_plan_with_artifacts(
+        plan_json='{}',
+        index_path='unused',
+        output_path=str(tmp_path / 'tt.parquet'),
+        split_config=SplitSpec(kind='FixedSplit', ratio=[0.5, 0.25, 0.25]),
+        train_table_edges_config={
+            'enabled': True,
+            'fkeys': [{'column_name': 'ENTITY', 'target_table': 'users'}],
+            'mask_present': False,
+            'mask_absent_reason': 'lp_array_target_no_mask',
+        },
+    )
+    assert out['row_count'] == 2
+    assert isinstance(captured.get('train_table_edges_json'), str)
+    assert captured['train_table_edges_json']
 
 
 def test_success_with_native_helpers_only(tmp_path: Path, monkeypatch):
