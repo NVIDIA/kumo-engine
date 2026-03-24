@@ -667,9 +667,10 @@ pub fn convert_kumo_config(
     };
 
     let source_paths: Option<HashMap<String, String>> = match source_paths_json {
-        Some(json) => Some(serde_json::from_str(json).map_err(|e| {
-            PyValueError::new_err(format!("Invalid source_paths JSON: {e}"))
-        })?),
+        Some(json) => Some(
+            serde_json::from_str(json)
+                .map_err(|e| PyValueError::new_err(format!("Invalid source_paths JSON: {e}")))?,
+        ),
         None => None,
     };
 
@@ -785,20 +786,68 @@ fn diskgraph_pybind(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<tt_builder::RowFilter>()?;
     m.add_class::<tt_builder::StageFilter>()?;
     m.add_function(wrap_pyfunction!(tt_executor::execute_tt_plan, m)?)?;
-    m.add_function(wrap_pyfunction!(tt_executor::execute_tt_plan_materialize_with_split, m)?)?;
+    m.add_function(wrap_pyfunction!(
+        tt_executor::execute_tt_plan_materialize_with_split,
+        m
+    )?)?;
     m.add_function(wrap_pyfunction!(tt_executor::build_tt_stats_artifact, m)?)?;
-    m.add_function(wrap_pyfunction!(tt_executor::build_split_stats_artifact, m)?)?;
-    m.add_function(wrap_pyfunction!(tt_executor::build_train_table_col_stats_artifact, m)?)?;
-    m.add_function(wrap_pyfunction!(tt_executor::build_train_table_edge_bundle_artifact, m)?)?;
-    m.add_function(wrap_pyfunction!(tt_executor::persist_tt_artifact_bundle, m)?)?;
+    m.add_function(wrap_pyfunction!(
+        tt_executor::build_split_stats_artifact,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
+        tt_executor::build_train_table_col_stats_artifact,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
+        tt_executor::build_prediction_table_col_stats_artifact,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
+        tt_executor::build_train_table_edge_bundle_artifact,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
+        tt_executor::build_prediction_table_edge_bundle_artifact,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
+        tt_executor::persist_prediction_artifact_bundle,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
+        tt_executor::persist_tt_artifact_bundle,
+        m
+    )?)?;
     m.add_class::<tt_executor::TTPlanIterator>()?;
-    m.add_function(wrap_pyfunction!(split_assignments::assign_by_ratio_on_perm, m)?)?;
-    m.add_function(wrap_pyfunction!(split_assignments::compute_dense_split_assignments_core, m)?)?;
-    m.add_function(wrap_pyfunction!(split_assignments::apply_entity_include_mask, m)?)?;
+    m.add_function(wrap_pyfunction!(
+        split_assignments::assign_by_ratio_on_perm,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
+        split_assignments::compute_dense_split_assignments_core,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
+        split_assignments::apply_entity_include_mask,
+        m
+    )?)?;
     m.add_function(wrap_pyfunction!(split_assignments::assign_manual_split, m)?)?;
-    m.add_function(wrap_pyfunction!(split_assignments::assign_backtesting_split, m)?)?;
-    m.add_function(wrap_pyfunction!(split_assignments::assign_approx_date_offset_split, m)?)?;
-    m.add_function(wrap_pyfunction!(split_assignments::assign_date_offset_split, m)?)?;
-    m.add_function(wrap_pyfunction!(split_assignments::assign_time_range_split, m)?)?;
+    m.add_function(wrap_pyfunction!(
+        split_assignments::assign_backtesting_split,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
+        split_assignments::assign_approx_date_offset_split,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
+        split_assignments::assign_date_offset_split,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
+        split_assignments::assign_time_range_split,
+        m
+    )?)?;
     Ok(())
 }

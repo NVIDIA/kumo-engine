@@ -473,17 +473,20 @@ fn sha256_hex_path(path: &Path) -> anyhow::Result<String> {
     Ok(digest.iter().map(|b| format!("{:02x}", b)).collect())
 }
 
-fn build_train_table_edges_bundle_value(
+fn build_table_edges_bundle_value(
     output_dir: &Path,
-    train_table_name: &str,
+    table_name: &str,
     mask_present: bool,
     mask_absent_reason: Option<&str>,
     edge_attrs_path: Option<&str>,
+    artifact_kind: &str,
+    artifact_format: &str,
+    artifact_label: &str,
 ) -> anyhow::Result<Value> {
-    let fkey_path = output_dir.join(format!("{}_fkey_cols.parquet", train_table_name));
+    let fkey_path = output_dir.join(format!("{}_fkey_cols.parquet", table_name));
     if !fkey_path.exists() {
         return Err(anyhow::anyhow!(
-            "fkey_cols artifact missing for train_table_edges bundle: {}",
+            "fkey_cols artifact missing for {artifact_label} bundle: {}",
             fkey_path.display()
         ));
     }
@@ -499,7 +502,7 @@ fn build_train_table_edges_bundle_value(
         let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
             continue;
         };
-        if !name.contains("__rev_") || !name.ends_with(&format!("__{train_table_name}")) {
+        if !name.contains("__rev_") || !name.ends_with(&format!("__{table_name}")) {
             continue;
         }
         let edge_path = path.join("edge.parquet");
@@ -514,16 +517,16 @@ fn build_train_table_edges_bundle_value(
     }
     if reverse_edges.is_empty() {
         return Err(anyhow::anyhow!(
-            "no reverse edge artifacts discovered for train_table_edges bundle in {}",
+            "no reverse edge artifacts discovered for {artifact_label} bundle in {}",
             output_dir.display()
         ));
     }
 
     let mask_value = if mask_present {
-        let mask_path = output_dir.join(format!("{}_mask.parquet", train_table_name));
+        let mask_path = output_dir.join(format!("{}_mask.parquet", table_name));
         if !mask_path.exists() {
             return Err(anyhow::anyhow!(
-                "mask artifact missing for train_table_edges bundle: {}",
+                "mask artifact missing for {artifact_label} bundle: {}",
                 mask_path.display()
             ));
         }
@@ -548,7 +551,7 @@ fn build_train_table_edges_bundle_value(
         checksums.insert(format!("{}_sha256", k), v.clone());
     }
     if mask_present {
-        let mask_path = output_dir.join(format!("{}_mask.parquet", train_table_name));
+        let mask_path = output_dir.join(format!("{}_mask.parquet", table_name));
         checksums.insert(
             "mask_sha256".to_string(),
             json!(sha256_hex_path(&mask_path)?),
@@ -559,7 +562,7 @@ fn build_train_table_edges_bundle_value(
         let p = Path::new(path);
         if !p.exists() {
             return Err(anyhow::anyhow!(
-                "edge_attrs artifact missing for train_table_edges bundle: {}",
+                "edge_attrs artifact missing for {artifact_label} bundle: {}",
                 p.display()
             ));
         }
@@ -571,8 +574,8 @@ fn build_train_table_edges_bundle_value(
 
     let mut root = serde_json::Map::new();
     root.insert("version".to_string(), json!(1));
-    root.insert("kind".to_string(), json!("tt_train_table_edges"));
-    root.insert("format".to_string(), json!("tt_edge_bundle_v1"));
+    root.insert("kind".to_string(), json!(artifact_kind));
+    root.insert("format".to_string(), json!(artifact_format));
     root.insert("reverse_edges".to_string(), Value::Object(reverse_edges));
     root.insert(
         "fkey_cols".to_string(),
@@ -587,6 +590,44 @@ fn build_train_table_edges_bundle_value(
     root.insert("checksums".to_string(), Value::Object(checksums));
     root.insert("provided_fields".to_string(), json!(provided_fields));
     Ok(Value::Object(root))
+}
+
+fn build_train_table_edges_bundle_value(
+    output_dir: &Path,
+    train_table_name: &str,
+    mask_present: bool,
+    mask_absent_reason: Option<&str>,
+    edge_attrs_path: Option<&str>,
+) -> anyhow::Result<Value> {
+    build_table_edges_bundle_value(
+        output_dir,
+        train_table_name,
+        mask_present,
+        mask_absent_reason,
+        edge_attrs_path,
+        "tt_train_table_edges",
+        "tt_edge_bundle_v1",
+        "train_table_edges",
+    )
+}
+
+fn build_prediction_table_edges_bundle_value(
+    output_dir: &Path,
+    prediction_table_name: &str,
+    mask_present: bool,
+    mask_absent_reason: Option<&str>,
+    edge_attrs_path: Option<&str>,
+) -> anyhow::Result<Value> {
+    build_table_edges_bundle_value(
+        output_dir,
+        prediction_table_name,
+        mask_present,
+        mask_absent_reason,
+        edge_attrs_path,
+        "tt_prediction_table_edges",
+        "tt_pred_edge_bundle_v1",
+        "prediction_table_edges",
+    )
 }
 
 fn split_family_from_config(
@@ -1343,6 +1384,52 @@ fn observe_numeric_array_for_train_rows(
     ))
 }
 
+fn observe_numeric_array_all_rows(
+    arr: &dyn Array,
+    acc: &mut NumericAccumulator,
+) -> anyhow::Result<()> {
+    macro_rules! observe_primitive_all {
+        ($ty:ty, $to_f64:expr) => {
+            if let Some(a) = arr.as_any().downcast_ref::<$ty>() {
+                for i in 0..a.len() {
+                    if a.is_null(i) {
+                        acc.observe_null();
+                    } else {
+                        acc.observe_value($to_f64(a.value(i)));
+                    }
+                }
+                return Ok(());
+            }
+        };
+    }
+
+    observe_primitive_all!(Int8Array, |v: i8| v as f64);
+    observe_primitive_all!(Int16Array, |v: i16| v as f64);
+    observe_primitive_all!(Int32Array, |v: i32| v as f64);
+    observe_primitive_all!(Int64Array, |v: i64| v as f64);
+    observe_primitive_all!(UInt8Array, |v: u8| v as f64);
+    observe_primitive_all!(UInt16Array, |v: u16| v as f64);
+    observe_primitive_all!(UInt32Array, |v: u32| v as f64);
+    observe_primitive_all!(UInt64Array, |v: u64| v as f64);
+    observe_primitive_all!(Float32Array, |v: f32| v as f64);
+    observe_primitive_all!(Float64Array, |v: f64| v);
+
+    if let Some(a) = arr.as_any().downcast_ref::<BooleanArray>() {
+        for i in 0..a.len() {
+            if a.is_null(i) {
+                acc.observe_null();
+            } else {
+                acc.observe_value(if a.value(i) { 1.0 } else { 0.0 });
+            }
+        }
+        return Ok(());
+    }
+
+    Err(anyhow::anyhow!(
+        "unsupported dtype for prediction table col stats"
+    ))
+}
+
 fn init_numeric_trackers(schema: &Schema) -> Vec<(usize, String, NumericAccumulator)> {
     schema
         .fields()
@@ -1362,11 +1449,10 @@ fn init_numeric_trackers(schema: &Schema) -> Vec<(usize, String, NumericAccumula
         .collect()
 }
 
-fn build_train_table_col_stats_payload(
+fn build_col_stats_map(
     trackers: Vec<(usize, String, NumericAccumulator)>,
     data_version: &str,
-    row_count: usize,
-    num_train_rows: u64,
+    approx_for_distribution_stats: bool,
 ) -> Value {
     let mut stats = serde_json::Map::new();
     for (_col_idx, name, acc) in trackers.into_iter() {
@@ -1395,41 +1481,103 @@ fn build_train_table_col_stats_payload(
         );
 
         stats.insert(
-            kumo_key(&name, stype, "MEAN", true),
-            kumo_entry(json!(acc.mean), true, data_version, total),
+            kumo_key(&name, stype, "MEAN", approx_for_distribution_stats),
+            kumo_entry(
+                json!(acc.mean),
+                approx_for_distribution_stats,
+                data_version,
+                total,
+            ),
         );
         stats.insert(
-            kumo_key(&name, stype, "STD", true),
-            kumo_entry(json!(acc.std_dev()), true, data_version, total),
+            kumo_key(&name, stype, "STD", approx_for_distribution_stats),
+            kumo_entry(
+                json!(acc.std_dev()),
+                approx_for_distribution_stats,
+                data_version,
+                total,
+            ),
         );
         stats.insert(
-            kumo_key(&name, stype, "MIN", true),
-            kumo_entry(json!(min), true, data_version, total),
+            kumo_key(&name, stype, "MIN", approx_for_distribution_stats),
+            kumo_entry(
+                json!(min),
+                approx_for_distribution_stats,
+                data_version,
+                total,
+            ),
         );
         stats.insert(
-            kumo_key(&name, stype, "MAX", true),
-            kumo_entry(json!(max), true, data_version, total),
+            kumo_key(&name, stype, "MAX", approx_for_distribution_stats),
+            kumo_entry(
+                json!(max),
+                approx_for_distribution_stats,
+                data_version,
+                total,
+            ),
         );
         stats.insert(
-            kumo_key(&name, stype, "MEDIAN", true),
-            kumo_entry(json!(q50), true, data_version, total),
+            kumo_key(&name, stype, "MEDIAN", approx_for_distribution_stats),
+            kumo_entry(
+                json!(q50),
+                approx_for_distribution_stats,
+                data_version,
+                total,
+            ),
         );
         stats.insert(
-            kumo_key(&name, stype, "QUANTILES", true),
-            kumo_entry(json!([q25, q50, q75]), true, data_version, total),
+            kumo_key(&name, stype, "QUANTILES", approx_for_distribution_stats),
+            kumo_entry(
+                json!([q25, q50, q75]),
+                approx_for_distribution_stats,
+                data_version,
+                total,
+            ),
         );
         stats.insert(
-            kumo_key(&name, stype, "KURTOSIS", true),
-            kumo_entry(json!(acc.kurtosis_excess()), true, data_version, total),
+            kumo_key(&name, stype, "KURTOSIS", approx_for_distribution_stats),
+            kumo_entry(
+                json!(acc.kurtosis_excess()),
+                approx_for_distribution_stats,
+                data_version,
+                total,
+            ),
         );
     }
+    Value::Object(stats)
+}
 
+fn build_train_table_col_stats_payload(
+    trackers: Vec<(usize, String, NumericAccumulator)>,
+    data_version: &str,
+    row_count: usize,
+    num_train_rows: u64,
+) -> Value {
+    let stats = build_col_stats_map(trackers, data_version, true);
     json!({
         "version": 1,
         "kind": "tt_train_table_col_stats",
         "stats_format": "kumo_col_stats_v1",
         "row_count": row_count,
         "num_train_rows": num_train_rows,
+        "stats": stats,
+        "provided_fields": ["stats"],
+    })
+}
+
+fn build_prediction_table_col_stats_payload(
+    trackers: Vec<(usize, String, NumericAccumulator)>,
+    data_version: &str,
+    row_count: usize,
+) -> Value {
+    // Keep approx=True key suffix parity with train-table col stats so encoder
+    // lookup contracts can remain shared across train/prediction paths.
+    let stats = build_col_stats_map(trackers, data_version, true);
+    json!({
+        "version": 1,
+        "kind": "tt_prediction_table_col_stats",
+        "stats_format": "kumo_col_stats_v1",
+        "row_count": row_count,
         "stats": stats,
         "provided_fields": ["stats"],
     })
@@ -1511,6 +1659,30 @@ fn compute_train_table_col_stats_from_batches(
         data_version,
         split_assignments.len(),
         num_train_rows,
+    ))
+}
+
+fn compute_prediction_table_col_stats_from_batches(
+    raw_batches: &[RecordBatch],
+    data_version: &str,
+) -> anyhow::Result<Value> {
+    let first = raw_batches.first().ok_or_else(|| {
+        anyhow::anyhow!("cannot build prediction table col stats for empty batches")
+    })?;
+    let mut trackers = init_numeric_trackers(first.schema().as_ref());
+
+    let mut row_count = 0usize;
+    for batch in raw_batches {
+        row_count = row_count.saturating_add(batch.num_rows());
+        for (col_idx, _name, acc) in trackers.iter_mut() {
+            observe_numeric_array_all_rows(batch.column(*col_idx).as_ref(), acc)?;
+        }
+    }
+
+    Ok(build_prediction_table_col_stats_payload(
+        trackers,
+        data_version,
+        row_count,
     ))
 }
 
@@ -2392,6 +2564,48 @@ pub fn build_train_table_col_stats_artifact(
 }
 
 #[pyfunction]
+#[pyo3(signature=(output_path, prediction_table_col_stats_config_json=None))]
+pub fn build_prediction_table_col_stats_artifact(
+    py: Python<'_>,
+    output_path: &str,
+    prediction_table_col_stats_config_json: Option<&str>,
+) -> PyResult<Py<PyAny>> {
+    let out = output_path.to_owned();
+    let cfg_value = prediction_table_col_stats_config_json
+        .and_then(|s| serde_json::from_str::<Value>(s).ok())
+        .unwrap_or_else(|| json!({}));
+    let data_version = cfg_value
+        .get("data_version")
+        .and_then(|v| v.as_str())
+        .unwrap_or("v1")
+        .to_string();
+
+    let payload = py
+        .detach(|| -> anyhow::Result<Value> {
+            let file = File::open(&out)?;
+            let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
+            let mut reader = builder.build()?;
+            let mut raw_batches = Vec::new();
+            while let Some(batch_res) = reader.next() {
+                raw_batches.push(batch_res?);
+            }
+            compute_prediction_table_col_stats_from_batches(&raw_batches, &data_version)
+        })
+        .map_err(|e| {
+            PyRuntimeError::new_err(format!(
+                "build_prediction_table_col_stats_artifact failed: {e:#}"
+            ))
+        })?;
+
+    let out_dict = PyDict::new(py);
+    out_dict.set_item(
+        "payload_json",
+        serde_json::to_string(&payload).map_err(|e| PyRuntimeError::new_err(e.to_string()))?,
+    )?;
+    Ok(out_dict.into())
+}
+
+#[pyfunction]
 #[pyo3(signature=(output_dir, train_table_name="custom_train_table", mask_present=true, mask_absent_reason=None, edge_attrs_path=None))]
 pub fn build_train_table_edge_bundle_artifact(
     py: Python<'_>,
@@ -2427,6 +2641,217 @@ pub fn build_train_table_edge_bundle_artifact(
         "payload_json",
         serde_json::to_string(&payload).map_err(|e| PyRuntimeError::new_err(e.to_string()))?,
     )?;
+    Ok(out_dict.into())
+}
+
+#[pyfunction]
+#[pyo3(signature=(output_dir, prediction_table_name="custom_prediction_table", mask_present=true, mask_absent_reason=None, edge_attrs_path=None))]
+pub fn build_prediction_table_edge_bundle_artifact(
+    py: Python<'_>,
+    output_dir: &str,
+    prediction_table_name: &str,
+    mask_present: bool,
+    mask_absent_reason: Option<&str>,
+    edge_attrs_path: Option<&str>,
+) -> PyResult<Py<PyAny>> {
+    let out_dir = output_dir.to_owned();
+    let prediction_table_name = prediction_table_name.to_owned();
+    let edge_attrs_path = edge_attrs_path.map(|s| s.to_owned());
+    let mask_absent_reason = mask_absent_reason.map(|s| s.to_owned());
+
+    let payload = py
+        .detach(|| -> anyhow::Result<Value> {
+            build_prediction_table_edges_bundle_value(
+                Path::new(&out_dir),
+                &prediction_table_name,
+                mask_present,
+                mask_absent_reason.as_deref(),
+                edge_attrs_path.as_deref(),
+            )
+        })
+        .map_err(|e| {
+            PyRuntimeError::new_err(format!(
+                "build_prediction_table_edge_bundle_artifact failed: {e:#}"
+            ))
+        })?;
+
+    let out_dict = PyDict::new(py);
+    out_dict.set_item(
+        "payload_json",
+        serde_json::to_string(&payload).map_err(|e| PyRuntimeError::new_err(e.to_string()))?,
+    )?;
+    Ok(out_dict.into())
+}
+
+#[pyfunction]
+#[pyo3(signature=(output_path, row_count, prediction_table_edges_json, prediction_table_col_stats_json=None, producer_summary_json=None))]
+pub fn persist_prediction_artifact_bundle(
+    py: Python<'_>,
+    output_path: &str,
+    row_count: u64,
+    prediction_table_edges_json: &str,
+    prediction_table_col_stats_json: Option<&str>,
+    producer_summary_json: Option<&str>,
+) -> PyResult<Py<PyAny>> {
+    let out = output_path.to_owned();
+    let prediction_table_edges_payload = prediction_table_edges_json.to_string();
+    let prediction_table_edges_value: Value =
+        serde_json::from_str::<Value>(&prediction_table_edges_payload).map_err(|e| {
+            PyValueError::new_err(format!("invalid prediction_table_edges_json: {e}"))
+        })?;
+
+    let kind_ok = prediction_table_edges_value
+        .get("kind")
+        .and_then(|v| v.as_str())
+        == Some("tt_prediction_table_edges");
+    if !kind_ok {
+        return Err(PyValueError::new_err(
+            "prediction_table_edges_json.kind must be tt_prediction_table_edges",
+        ));
+    }
+
+    let format_ok = prediction_table_edges_value
+        .get("format")
+        .and_then(|v| v.as_str())
+        == Some("tt_pred_edge_bundle_v1");
+    if !format_ok {
+        return Err(PyValueError::new_err(
+            "prediction_table_edges_json.format must be tt_pred_edge_bundle_v1",
+        ));
+    }
+
+    let prediction_col_stats_payload = prediction_table_col_stats_json.map(|s| s.to_string());
+    let prediction_col_stats_value: Option<Value> = match prediction_col_stats_payload.as_ref() {
+        Some(s) => Some(serde_json::from_str::<Value>(s).map_err(|e| {
+            PyValueError::new_err(format!("invalid prediction_table_col_stats_json: {e}"))
+        })?),
+        None => None,
+    };
+    if let Some(v) = prediction_col_stats_value.as_ref() {
+        let kind_ok =
+            v.get("kind").and_then(|x| x.as_str()) == Some("tt_prediction_table_col_stats");
+        if !kind_ok {
+            return Err(PyValueError::new_err(
+                "prediction_table_col_stats_json.kind must be tt_prediction_table_col_stats",
+            ));
+        }
+        let format_ok = v.get("stats_format").and_then(|x| x.as_str()) == Some("kumo_col_stats_v1");
+        if !format_ok {
+            return Err(PyValueError::new_err(
+                "prediction_table_col_stats_json.stats_format must be kumo_col_stats_v1",
+            ));
+        }
+    }
+
+    let producer_summary_value: Value = producer_summary_json
+        .and_then(|s| serde_json::from_str::<Value>(s).ok())
+        .unwrap_or(Value::Null);
+
+    let (manifest_path, artifacts_dir) = py
+        .detach(|| -> anyhow::Result<(String, String)> {
+            let artifacts_dir = format!("{}.artifacts", out);
+            std::fs::create_dir_all(&artifacts_dir)?;
+            let manifest_path = format!("{}.prediction.manifest.json", out);
+            let edge_bundle_path = format!("{}/prediction_table_edges.bundle.json", artifacts_dir);
+            let col_stats_path = format!("{}/stats.prediction_table_col_stats.json", artifacts_dir);
+
+            {
+                let mut f = File::create(&edge_bundle_path)?;
+                f.write_all(prediction_table_edges_payload.as_bytes())?;
+            }
+            if let Some(raw) = prediction_col_stats_payload.as_ref() {
+                let mut f = File::create(&col_stats_path)?;
+                f.write_all(raw.as_bytes())?;
+            }
+
+            let mut checksums = serde_json::Map::new();
+            checksums.insert(
+                "prediction_table_sha256".to_string(),
+                json!(sha256_hex_file(&out)?),
+            );
+            checksums.insert(
+                "prediction_table_edges_sha256".to_string(),
+                json!(sha256_hex_bytes(prediction_table_edges_payload.as_bytes())),
+            );
+            if let Some(edge_checksums) = prediction_table_edges_value
+                .get("checksums")
+                .and_then(|v| v.as_object())
+            {
+                for (k, v) in edge_checksums {
+                    checksums.insert(format!("prediction_table_edges__{k}"), v.clone());
+                }
+            }
+            if let Some(raw) = prediction_col_stats_payload.as_ref() {
+                checksums.insert(
+                    "prediction_table_col_stats_sha256".to_string(),
+                    json!(sha256_hex_bytes(raw.as_bytes())),
+                );
+                if let Some(stats_checksums) = prediction_col_stats_value
+                    .as_ref()
+                    .and_then(|v| v.get("checksums"))
+                    .and_then(|v| v.as_object())
+                {
+                    for (k, v) in stats_checksums {
+                        checksums.insert(format!("prediction_table_col_stats__{k}"), v.clone());
+                    }
+                }
+            }
+
+            let mut manifest = serde_json::Map::new();
+            manifest.insert("version".to_string(), json!(1));
+            manifest.insert("row_count".to_string(), json!(row_count));
+            manifest.insert(
+                "prediction_table".to_string(),
+                json!({"path": out, "format": "parquet_with_arange"}),
+            );
+            manifest.insert(
+                "prediction_table_edges".to_string(),
+                prediction_table_edges_value.clone(),
+            );
+            if let Some(stats_value) = prediction_col_stats_value.as_ref() {
+                manifest.insert(
+                    "prediction_table_col_stats".to_string(),
+                    stats_value.clone(),
+                );
+            }
+
+            let mut prediction_artifacts = serde_json::Map::new();
+            prediction_artifacts.insert(
+                "prediction_table_edges".to_string(),
+                json!({
+                    "path": edge_bundle_path,
+                    "format": "tt_prediction_table_edges_json"
+                }),
+            );
+            if prediction_col_stats_payload.is_some() {
+                prediction_artifacts.insert(
+                    "prediction_table_col_stats".to_string(),
+                    json!({
+                        "path": col_stats_path,
+                        "format": "tt_prediction_table_col_stats_json"
+                    }),
+                );
+            }
+            manifest.insert(
+                "prediction_artifacts".to_string(),
+                Value::Object(prediction_artifacts),
+            );
+            manifest.insert("checksums".to_string(), Value::Object(checksums));
+            if !producer_summary_value.is_null() {
+                manifest.insert("producer_summary".to_string(), producer_summary_value);
+            }
+
+            let mut mf = File::create(&manifest_path)?;
+            mf.write_all(serde_json::to_string(&manifest)?.as_bytes())?;
+            Ok((manifest_path, artifacts_dir))
+        })
+        .map_err(|e| {
+            PyRuntimeError::new_err(format!("persist_prediction_artifact_bundle failed: {e:#}"))
+        })?;
+
+    let out_dict = PyDict::new(py);
+    out_dict.set_item("manifest_path", manifest_path)?;
+    out_dict.set_item("artifacts_dir", artifacts_dir)?;
     Ok(out_dict.into())
 }
 
@@ -2689,6 +3114,36 @@ mod tests {
     }
 
     #[test]
+    fn test_compute_prediction_table_col_stats_from_batches_basic() {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "TARGET",
+            DataType::Float64,
+            true,
+        )]));
+
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(Float64Array::from(vec![
+                Some(1.0),
+                Some(2.0),
+                Some(3.0),
+                None,
+            ]))],
+        )
+        .unwrap();
+
+        let payload = compute_prediction_table_col_stats_from_batches(&[batch], "v1").unwrap();
+        assert_eq!(
+            payload.get("kind").and_then(|v| v.as_str()),
+            Some("tt_prediction_table_col_stats")
+        );
+
+        let stats = payload.get("stats").and_then(|v| v.as_object()).unwrap();
+        assert!(stats.contains_key("TARGET__kumo.numerical__MEAN__True"));
+        assert!(stats.contains_key("TARGET__kumo.numerical__STD__True"));
+    }
+
+    #[test]
     fn test_build_train_table_edges_bundle_value_basic() {
         let root = std::env::temp_dir().join(format!("dg_tt_edges_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
@@ -2715,6 +3170,10 @@ mod tests {
             payload.get("format").and_then(|v| v.as_str()),
             Some("tt_edge_bundle_v1")
         );
+        assert_eq!(
+            payload.get("kind").and_then(|v| v.as_str()),
+            Some("tt_train_table_edges")
+        );
         assert!(payload
             .get("reverse_edges")
             .and_then(|v| v.as_object())
@@ -2725,6 +3184,49 @@ mod tests {
             .and_then(|v| v.as_object())
             .map(|m| m.contains_key("fkey_cols_sha256") && m.contains_key("mask_sha256"))
             .unwrap_or(false));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn test_build_prediction_table_edges_bundle_value_basic() {
+        let root = std::env::temp_dir().join(format!("dg_pred_edges_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+
+        let fkey = root.join("custom_prediction_table_fkey_cols.parquet");
+        std::fs::create_dir_all(&fkey).unwrap();
+        std::fs::write(fkey.join("part-0000.parquet"), b"fkey").unwrap();
+
+        let edge = root
+            .join("users__rev_user_id__custom_prediction_table")
+            .join("edge.parquet");
+        std::fs::create_dir_all(&edge).unwrap();
+        std::fs::write(edge.join("part-0000.parquet"), b"edge").unwrap();
+
+        let payload = build_prediction_table_edges_bundle_value(
+            &root,
+            "custom_prediction_table",
+            false,
+            Some("mask_not_required"),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(
+            payload.get("format").and_then(|v| v.as_str()),
+            Some("tt_pred_edge_bundle_v1")
+        );
+        assert_eq!(
+            payload.get("kind").and_then(|v| v.as_str()),
+            Some("tt_prediction_table_edges")
+        );
+        assert_eq!(
+            payload
+                .get("mask")
+                .and_then(|v| v.get("present"))
+                .and_then(|v| v.as_bool()),
+            Some(false)
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }
