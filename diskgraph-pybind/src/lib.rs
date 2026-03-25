@@ -2,13 +2,114 @@ use arrow::pyarrow::ToPyArrow;
 use arrow_array::builder::{ArrayBuilder, UInt64Builder};
 use arrow_array::{Array, RecordBatch};
 use crossbeam_channel::{bounded, Receiver, Sender};
-use pyo3::exceptions::{PyRuntimeError, PyValueError};
+use pyo3::create_exception;
+use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
+
+create_exception!(diskgraph, DiskgraphDataError, PyException);
+create_exception!(diskgraph, DiskgraphConfigError, PyException);
+create_exception!(diskgraph, DiskgraphSystemError, PyException);
+
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::thread;
-use tracing::{debug, error, info};
+use tracing::{error, info};
+
+fn get_current_rss_mb() -> usize {
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(content) = std::fs::read_to_string("/proc/self/statm") {
+            let parts: Vec<&str> = content.split_whitespace().collect();
+            if parts.len() >= 2 {
+                if let Ok(rss_pages) = parts[1].parse::<usize>() {
+                    // Page size is usually 4KB on Linux
+                    return (rss_pages * 4096) / 1024 / 1024;
+                }
+            }
+        }
+    }
+    0
+}
+
+pub(crate) fn map_ttgen_err(err: diskgraph_train_table::errors::TTGenError) -> PyErr {
+    use diskgraph_train_table::errors::TTGenError;
+    match err {
+        TTGenError::SchemaError(msg) => DiskgraphDataError::new_err(msg),
+        TTGenError::InvalidPlan(msg) => DiskgraphConfigError::new_err(msg),
+        TTGenError::SystemError(msg) => DiskgraphSystemError::new_err(msg),
+        TTGenError::Io(e) => DiskgraphSystemError::new_err(e.to_string()),
+    }
+}
+
+pub(crate) fn map_engine_err(err: diskgraph_engine::errors::EngineError) -> PyErr {
+    use diskgraph_engine::errors::EngineError;
+    match err {
+        EngineError::InvalidRequest(msg) => DiskgraphConfigError::new_err(msg),
+        EngineError::Configuration(msg) => DiskgraphConfigError::new_err(msg),
+        EngineError::DataCorruption(msg)
+        | EngineError::Output(msg)
+        | EngineError::Internal(msg) => DiskgraphSystemError::new_err(msg),
+        EngineError::Io(e) => DiskgraphSystemError::new_err(e.to_string()),
+    }
+}
+
+pub(crate) fn map_anyhow_err(err: anyhow::Error) -> PyErr {
+    if let Some(e) = err.downcast_ref::<diskgraph_ingest::errors::ConvertError>() {
+        return DiskgraphConfigError::new_err(e.to_string());
+    }
+    if let Some(e) = err.downcast_ref::<diskgraph_ingest::errors::CoercionError>() {
+        return DiskgraphDataError::new_err(e.to_string());
+    }
+    if let Some(e) = err.downcast_ref::<diskgraph_ingest::errors::KeyParseError>() {
+        return DiskgraphDataError::new_err(e.to_string());
+    }
+    if let Some(e) = err.downcast_ref::<diskgraph_train_table::errors::TTGenError>() {
+        match e {
+            diskgraph_train_table::errors::TTGenError::SchemaError(_) => {
+                return DiskgraphDataError::new_err(e.to_string());
+            }
+            diskgraph_train_table::errors::TTGenError::InvalidPlan(_) => {
+                return DiskgraphConfigError::new_err(e.to_string());
+            }
+            _ => return DiskgraphSystemError::new_err(e.to_string()),
+        }
+    }
+
+    map_py_err(err)
+}
+
+pub(crate) fn map_py_err<E: std::fmt::Display>(err: E) -> PyErr {
+    let msg = err.to_string();
+    let msg_lower = msg.to_lowercase();
+
+    // Data Errors (Schema/mismatches bubbling from anyhow in ingest/export)
+    if msg_lower.contains("schema error")
+        || msg_lower.contains("column not found")
+        || msg_lower.contains("table not found")
+        || msg_lower.contains("type mismatch")
+    {
+        return DiskgraphDataError::new_err(msg);
+    }
+
+    // Config Errors (bubbling from anyhow in ingest/export)
+    if msg_lower.contains("invalid plan json")
+        || msg_lower.contains("invalid split config")
+        || msg_lower.contains("invalid downsampling config")
+        || msg_lower.contains("invalid kumo config json")
+        || msg_lower.contains("invalid config json")
+        || msg_lower.contains("unknown cat_count_strategy")
+        || msg_lower.contains("unsupported time unit")
+        || msg_lower.contains("unknown node type")
+    {
+        return DiskgraphConfigError::new_err(msg);
+    }
+
+    // Default to System Error for any unclassified anyhow payloads (panics, IO, memory)
+    DiskgraphSystemError::new_err(msg)
+}
+
+
 
 use diskgraph_core::features::{BatchFeatureRequest, FeatureRequest};
 use diskgraph_core::sampling::{BatchSamplingRequest, SamplingFlags, SamplingPlan};
@@ -66,7 +167,7 @@ enum SampleEvent {
     NodeBatch { type_id: usize, batch: RecordBatch },
     FeatureBatch { type_id: usize, batch: RecordBatch },
     Stats { stats: String },
-    Error { message: String },
+    Error { err: diskgraph_engine::errors::EngineError },
 }
 
 /// Bridge between Rust Engine and Python Iterator.
@@ -288,24 +389,27 @@ impl OutputHandler for PyOutputHandler {
 pub struct SamplerEngine {
     engine: Arc<DiskGraphEngine>,
     pool: StatePool,
+    sample_count: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 #[pymethods]
 impl SamplerEngine {
     #[new]
     #[pyo3(signature = (path, random_seed=None))]
+    #[tracing::instrument(level = "info", skip(path), fields(index_path = %path))]
     pub fn new(path: String, random_seed: Option<u64>) -> PyResult<Self> {
-        debug!(path = %path, random_seed = ?random_seed, "Initializing SamplerEngine");
         let engine = DiskGraphEngine::load(std::path::Path::new(&path), random_seed)
-            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-        info!(path = %path, "SamplerEngine initialized");
+            .map_err(map_engine_err)?;
+        info!("SamplerEngine initialized successfully");
         Ok(Self {
             engine: Arc::new(engine),
             pool: StatePool::new(),
+            sample_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         })
     }
 
     #[pyo3(signature = (seed_nodes, plan_json, fused, seed_timestamps=None, swap_edge_direction=None, seed_timestamp_unit=None))]
+    #[tracing::instrument(level = "debug", skip(self, py, seed_nodes, plan_json))]
     pub fn sample(
         &self,
         py: Python<'_>,
@@ -335,7 +439,7 @@ impl SamplerEngine {
         }
 
         let plan: SamplingPlan = serde_json::from_str(&plan_json)
-            .map_err(|e| PyValueError::new_err(format!("Invalid plan JSON: {}", e)))?;
+            .map_err(|e| DiskgraphConfigError::new_err(format!("Invalid plan JSON: {}", e)))?;
 
         let flags = SamplingFlags {
             replace: false,
@@ -371,14 +475,27 @@ impl SamplerEngine {
             .values()
             .next()
             .map_or(0usize, |v| v.len());
-        info!(
-            seed_type = %seed_type,
-            seed_count,
-            hops = request.plan.layers.len(),
-            fused_feature_fetching = request.flags.fused_feature_fetching,
-            swap_edge_direction = request.flags.swap_edge_direction,
-            "Pybind sampling request started"
-        );
+
+        let count = self.sample_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if count % 100 == 0 {
+            info!(
+                seed_type = %seed_type,
+                seed_count,
+                hops = request.plan.layers.len(),
+                fused_feature_fetching = request.flags.fused_feature_fetching,
+                swap_edge_direction = request.flags.swap_edge_direction,
+                "Pybind sampling request started"
+            );
+        } else {
+            tracing::debug!(
+                seed_type = %seed_type,
+                seed_count,
+                hops = request.plan.layers.len(),
+                fused_feature_fetching = request.flags.fused_feature_fetching,
+                swap_edge_direction = request.flags.swap_edge_direction,
+                "Pybind sampling request started"
+            );
+        }
 
         let (tx, rx) = bounded(1);
         let engine = Arc::clone(&self.engine);
@@ -393,17 +510,25 @@ impl SamplerEngine {
                 );
                 match engine.sample(&request, &mut state, &mut handler) {
                     Ok(()) => {
-                        info!(
-                            total_nodes = state.stats.total_nodes,
-                            total_edges = state.stats.total_edges,
-                            "Pybind sampling request finished"
-                        );
+                        if count % 100 == 0 {
+                            info!(
+                                total_nodes = state.stats.total_nodes,
+                                total_edges = state.stats.total_edges,
+                                process_rss_mb = get_current_rss_mb(),
+                                "Pybind sampling request finished"
+                            );
+                        } else {
+                            tracing::debug!(
+                                total_nodes = state.stats.total_nodes,
+                                total_edges = state.stats.total_edges,
+                                process_rss_mb = get_current_rss_mb(),
+                                "Pybind sampling request finished"
+                            );
+                        }
                     }
                     Err(e) => {
                         error!(error = %e, "Pybind sampling request failed");
-                        let _ = tx.send(SampleEvent::Error {
-                            message: e.to_string(),
-                        });
+                        let _ = tx.send(SampleEvent::Error { err: e });
                     }
                 }
             });
@@ -412,6 +537,7 @@ impl SamplerEngine {
         Ok(PySampleIterator { receiver: rx })
     }
 
+    #[tracing::instrument(level = "debug", skip(self, py, batch))]
     pub fn fetch_features(
         &self,
         py: Python<'_>,
@@ -440,7 +566,12 @@ impl SamplerEngine {
         };
 
         let req_count = request.batch.len();
-        info!(requests = req_count, "Pybind feature request started");
+        let count = self.sample_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if count % 100 == 0 {
+            info!(requests = req_count, "Pybind feature request started");
+        } else {
+            tracing::debug!(requests = req_count, "Pybind feature request started");
+        }
 
         let (tx, rx) = bounded(1);
         let engine = Arc::clone(&self.engine);
@@ -455,7 +586,7 @@ impl SamplerEngine {
                         None => {
                             error!(node_type = %feature_req.node_type, "Unknown node type in pybind feature request");
                             let _ = tx.send(SampleEvent::Error {
-                                message: format!("Unknown node type: {}", feature_req.node_type),
+                                err: diskgraph_engine::errors::EngineError::InvalidRequest(format!("Unknown node type: {}", feature_req.node_type)),
                             });
                             return;
                         }
@@ -468,13 +599,21 @@ impl SamplerEngine {
                         &mut handler,
                     ) {
                         error!(error = %e, node_type = %feature_req.node_type, "Pybind feature request failed");
-                        let _ = tx.send(SampleEvent::Error {
-                            message: e.to_string(),
-                        });
+                        let _ = tx.send(SampleEvent::Error { err: e });
                         return;
                     }
                 }
-                info!("Pybind feature request finished");
+                if count % 100 == 0 {
+                    info!(
+                        process_rss_mb = get_current_rss_mb(),
+                        "Pybind feature request finished"
+                    );
+                } else {
+                    tracing::debug!(
+                        process_rss_mb = get_current_rss_mb(),
+                        "Pybind feature request finished"
+                    );
+                }
             });
         });
 
@@ -483,7 +622,7 @@ impl SamplerEngine {
 
     pub fn get_type_mapping(&self) -> PyResult<String> {
         let mapping = self.engine.get_type_name_mapping();
-        serde_json::to_string(&mapping).map_err(|e| PyRuntimeError::new_err(e.to_string()))
+        serde_json::to_string(&mapping).map_err(|e| DiskgraphSystemError::new_err(e.to_string()))
     }
 }
 
@@ -529,7 +668,7 @@ impl PySampleIterator {
                 dict.set_item("stats", stats)?;
                 Ok(Some(dict.into()))
             }
-            Ok(SampleEvent::Error { message }) => Err(PyRuntimeError::new_err(message)),
+            Ok(SampleEvent::Error { err }) => Err(crate::map_engine_err(err)),
             Err(_) => Ok(None),
         }
     }
@@ -625,17 +764,18 @@ pub fn export_tt_artifacts(py: Python<'_>, config: &ExportConfig) -> PyResult<()
     // Release the GIL during export — this is a long-running CPU/IO operation
     // and holding the GIL would block heartbeats and other Python threads in the
     // Temporal worker.
-    py.allow_threads(move || {
+    py.detach(move || {
         diskgraph_engine::export_tt_artifacts::process_export(&internal_config)
     })
     .map(|_| {
         info!("Pybind export_tt_artifacts finished");
     })
-    .map_err(|e| PyRuntimeError::new_err(e.to_string()))
+    .map_err(map_anyhow_err)
 }
 
 #[pyfunction]
 #[pyo3(signature = (kumo_config_json, data_persist_dir, dataset_name, table_data_versions_json=None, source_paths_base=None, source_paths_json=None))]
+#[tracing::instrument(level = "info", skip_all, fields(dataset_name = %dataset_name, data_persist_dir = %data_persist_dir))]
 pub fn convert_kumo_config(
     kumo_config_json: &str,
     data_persist_dir: &str,
@@ -645,23 +785,22 @@ pub fn convert_kumo_config(
     source_paths_json: Option<&str>,
 ) -> PyResult<String> {
     info!(
-        dataset_name = %dataset_name,
-        data_persist_dir = %data_persist_dir,
         has_table_data_versions = table_data_versions_json.is_some(),
         has_source_paths_base = source_paths_base.is_some(),
         has_source_paths = source_paths_json.is_some(),
         "Pybind convert_kumo_config started"
     );
+    let start_time = std::time::Instant::now();
     use diskgraph_ingest::config_converter::{
         convert_kumo_to_diskgraph, ConvertOptions, KumoGraphConfig,
     };
 
     let kumo_config: KumoGraphConfig = serde_json::from_str(kumo_config_json)
-        .map_err(|e| PyValueError::new_err(format!("Invalid kumo config JSON: {e}")))?;
+        .map_err(|e| DiskgraphConfigError::new_err(format!("Invalid kumo config JSON: {e}")))?;
 
     let table_data_versions: Option<HashMap<String, String>> = match table_data_versions_json {
         Some(json) => Some(serde_json::from_str(json).map_err(|e| {
-            PyValueError::new_err(format!("Invalid table_data_versions JSON: {e}"))
+            DiskgraphConfigError::new_err(format!("Invalid table_data_versions JSON: {e}"))
         })?),
         None => None,
     };
@@ -669,7 +808,7 @@ pub fn convert_kumo_config(
     let source_paths: Option<HashMap<String, String>> = match source_paths_json {
         Some(json) => Some(
             serde_json::from_str(json)
-                .map_err(|e| PyValueError::new_err(format!("Invalid source_paths JSON: {e}")))?,
+                .map_err(|e| DiskgraphConfigError::new_err(format!("Invalid source_paths JSON: {e}")))?,
         ),
         None => None,
     };
@@ -684,24 +823,28 @@ pub fn convert_kumo_config(
 
     // convert_kumo_to_diskgraph handles everything: schema, timestamp detection, num_shards.
     let mut diskgraph_config = convert_kumo_to_diskgraph(&kumo_config, &options)
-        .map_err(|e| PyRuntimeError::new_err(format!("Config conversion failed: {e}")))?;
+        .map_err(|e| DiskgraphDataError::new_err(format!("Config conversion failed: {e}")))?;
 
     // Expand cloud directory prefixes (s3://, gs://, az://) to individual
     // parquet file paths.  The converter outputs fpv3 directory paths but
     // ingest() expects individual file paths (it does HEAD per path).
     diskgraph_ingest::io::expand_cloud_paths_in_config(&mut diskgraph_config)
-        .map_err(|e| PyRuntimeError::new_err(format!("Failed to expand cloud paths: {e}")))?;
+        .map_err(|e| DiskgraphSystemError::new_err(format!("Failed to expand cloud paths: {e}")))?;
 
     serde_json::to_string(&diskgraph_config)
         .map(|s| {
-            info!("Pybind convert_kumo_config finished");
+            info!(
+                duration_ms = start_time.elapsed().as_millis(),
+                "Pybind convert_kumo_config finished"
+            );
             s
         })
-        .map_err(|e| PyRuntimeError::new_err(format!("Failed to serialize config: {e}")))
+        .map_err(|e| DiskgraphSystemError::new_err(format!("Failed to serialize config: {e}")))
 }
 
 #[pyfunction]
 #[pyo3(signature = (config_json, output_dir, col_stats=true, cat_count_strategy="hybrid"))]
+#[tracing::instrument(level = "info", skip(py, config_json), fields(output_dir = %output_dir))]
 pub fn ingest(
     py: Python<'_>,
     config_json: &str,
@@ -709,6 +852,7 @@ pub fn ingest(
     col_stats: bool,
     cat_count_strategy: &str,
 ) -> PyResult<String> {
+    let start_time = std::time::Instant::now();
     info!(
         output_dir = %output_dir,
         col_stats,
@@ -716,14 +860,14 @@ pub fn ingest(
         "Pybind ingest started"
     );
     let source: diskgraph_ingest::GraphConfig = serde_json::from_str(config_json)
-        .map_err(|e| PyValueError::new_err(format!("Invalid config JSON: {e}")))?;
+        .map_err(|e| DiskgraphConfigError::new_err(format!("Invalid config JSON: {e}")))?;
 
     let strategy = match cat_count_strategy {
         "hybrid" => diskgraph_ingest::col_stats::CategoryCountStrategy::Hybrid,
         "graduation" => diskgraph_ingest::col_stats::CategoryCountStrategy::Graduation,
         "none" => diskgraph_ingest::col_stats::CategoryCountStrategy::None,
         other => {
-            return Err(PyValueError::new_err(format!(
+            return Err(DiskgraphConfigError::new_err(format!(
                 "Unknown cat_count_strategy: {other}"
             )))
         }
@@ -745,7 +889,7 @@ pub fn ingest(
     // Release the GIL during ingest — this is a long-running CPU/IO operation
     // and holding the GIL would block heartbeats and other activities in the
     // Temporal worker.
-    let result = py.allow_threads(move || {
+    let result = py.detach(move || {
         diskgraph_ingest::ingest_with_stats_from_source(
             source,
             None,
@@ -756,23 +900,31 @@ pub fn ingest(
     });
 
     let (_metadata, stats) =
-        result.map_err(|e| PyRuntimeError::new_err(format!("Ingest failed: {e}")))?;
+        result.map_err(|e| map_anyhow_err(e.context("Ingest failed")))?;
 
+    let elapsed_ms = start_time.elapsed().as_millis();
     serde_json::to_string(&stats)
         .map(|s| {
             info!(
                 total_nodes = stats.node_counts.values().copied().sum::<u64>(),
                 total_edges = stats.edge_counts.values().copied().sum::<u64>(),
-                "Pybind ingest finished"
+                peak_rss_mb = stats.perf.peak_rss_anon_bytes.unwrap_or(0) / 1024 / 1024,
+                duration_ms = elapsed_ms,
+                "Ingestion materialization complete"
             );
             s
         })
-        .map_err(|e| PyRuntimeError::new_err(format!("Failed to serialize stats: {e}")))
+        .map_err(|e| DiskgraphSystemError::new_err(format!("Failed to serialize stats: {e}")))
 }
 
 #[pymodule]
 #[pyo3(name = "_c")]
 fn diskgraph_pybind(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    let _ = pyo3_log::try_init();
+    let _ = tracing_log::LogTracer::init();
+    m.add("DiskgraphDataError", m.py().get_type::<DiskgraphDataError>())?;
+    m.add("DiskgraphConfigError", m.py().get_type::<DiskgraphConfigError>())?;
+    m.add("DiskgraphSystemError", m.py().get_type::<DiskgraphSystemError>())?;
     m.add_function(wrap_pyfunction!(export_tt_artifacts, m)?)?;
     m.add_function(wrap_pyfunction!(convert_kumo_config, m)?)?;
     m.add_function(wrap_pyfunction!(ingest, m)?)?;

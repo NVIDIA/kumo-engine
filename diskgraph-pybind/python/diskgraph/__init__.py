@@ -13,6 +13,9 @@ from ._c import (
     StageFilter,
     TTPlanIterator,
     execute_tt_plan,
+    DiskgraphDataError,
+    DiskgraphConfigError,
+    DiskgraphSystemError,
 )
 
 # Lazy imports for modules that have external dependencies (kumoapi)
@@ -72,6 +75,9 @@ __all__ = [
     "RowFilter",
     "StageFilter",
     "TTPlanIterator",
+    "DiskgraphDataError",
+    "DiskgraphConfigError",
+    "DiskgraphSystemError",
     "DiskGraphPlanCompiler",
     "SplitSpec",
     "DiskgraphConfigConverter",

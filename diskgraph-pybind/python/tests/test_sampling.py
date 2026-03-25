@@ -1,6 +1,9 @@
 import pytest
+from diskgraph._c import DiskgraphConfigError, DiskgraphDataError, DiskgraphSystemError
+
 import json
 import diskgraph as diskgraph_py
+from diskgraph import DiskgraphConfigError
 import pyarrow as pa
 import threading
 import time
@@ -129,7 +132,7 @@ def test_fetch_features(ifood_graph):
     # Check Error Handling (Bad Type)
     bad_req = [{"node_type": "invalid_type", "node_ids": [0], "feature_names": []}]
     iter_bad = dg.fetch_features(bad_req)
-    with pytest.raises(RuntimeError, match="Unknown node type"):
+    with pytest.raises(DiskgraphConfigError, match="Unknown node type"):
         for _ in iter_bad: pass
 
 def test_fused_sampling_2hop_consistency(ifood_graph):
@@ -210,7 +213,7 @@ def test_concurrency_gil(ifood_graph):
 
 def test_invalid_plan(ifood_graph):
     dg = diskgraph_py.SamplerEngine(ifood_graph)
-    with pytest.raises(ValueError):
+    with pytest.raises(DiskgraphConfigError):
         dg.sample({"users": [0]}, "{invalid_json", fused=True)
 
 def test_temporal_sampling(ifood_graph):

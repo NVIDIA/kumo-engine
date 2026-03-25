@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use anyhow::{bail, Context, Result};
+use crate::errors::{TTGenError, TTGenResult};
 use arrow_schema::{DataType, Field};
 use diskgraph_core::sortkey::SortKeyEncoder;
 use diskgraph_core::tt_builder::*;
@@ -212,11 +212,11 @@ pub enum ResolvedStageFilterRhs {
 pub fn resolve_plan(
     plan: &DiskGraphTTPlan,
     reader: &GraphIndexReader,
-) -> Result<ResolvedPlan> {
+) -> TTGenResult<ResolvedPlan> {
     // 1. Resolve entity table
     let entity_table = reader
         .table(&plan.entity.table)
-        .ok_or_else(|| anyhow::anyhow!("entity table '{}' not found in index", plan.entity.table))?;
+        .ok_or_else(|| TTGenError::SchemaError(format!("entity table '{}' not found in index", plan.entity.table)))?;
 
     let entity_ctx = entity_table
         .node_data_decoder()
@@ -234,8 +234,7 @@ pub fn resolve_plan(
 
     let entity_time_col_idx = effective_time_col
         .map(|col| find_col_idx_in_context(&entity_ctx, col))
-        .transpose()
-        .context("resolving entity time_col")?;
+        .transpose().map_err(|e| TTGenError::SchemaError(format!("resolving entity time_col: {}", e)))?;
 
     // Same fallback for valid_to_col: use index metadata end_time_col.
     let effective_valid_to_col: Option<&str> = plan
@@ -246,12 +245,10 @@ pub fn resolve_plan(
 
     let entity_valid_to_col_idx = effective_valid_to_col
         .map(|col| find_col_idx_in_context(&entity_ctx, col))
-        .transpose()
-        .context("resolving entity valid_to_col")?;
+        .transpose().map_err(|e| TTGenError::SchemaError(format!("resolving entity valid_to_col: {}", e)))?;
 
     // 3. Resolve entity PK column index and Arrow type
-    let entity_pk_col_idx = find_col_idx_in_context(&entity_ctx, &plan.entity.column)
-        .context("resolving entity PK column")?;
+    let entity_pk_col_idx = find_col_idx_in_context(&entity_ctx, &plan.entity.column).map_err(|e| TTGenError::SchemaError(format!("resolving entity PK column: {}", e)))?;
     let entity_dtype = {
         let ctx = entity_ctx
             .as_ref()
@@ -308,7 +305,7 @@ pub fn resolve_plan(
         if matches!(plan.prediction_type, PredictionType::PassThrough) {
             0 // Dummy value, safely ignored by executor
         } else {
-            bail!("plan has no ops");
+            return Err(TTGenError::InvalidPlan("plan has no ops".to_string()));
         }
     };
 
@@ -357,8 +354,7 @@ pub fn resolve_plan(
         .filter
         .as_ref()
         .map(|f| resolve_row_filter(f, reader, &entity_table, &entity_ctx, &entity_col_indices))
-        .transpose()
-        .context("resolving entity filter")?;
+        .transpose().map_err(|e| TTGenError::SchemaError(format!("resolving entity filter: {}", e)))?;
 
     let lag_timesteps = plan
         .temporal
@@ -396,20 +392,20 @@ pub fn resolve_plan(
 fn find_col_idx_in_context(
     ctx: &Option<RowPackContext>,
     col_name: &str,
-) -> Result<usize> {
+) -> TTGenResult<usize> {
     let ctx = ctx
         .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("no rowpack context available"))?;
+        .ok_or_else(|| TTGenError::SystemError("no rowpack context available".to_string()))?;
     ctx.columns
         .iter()
         .position(|c| c.name == col_name)
-        .ok_or_else(|| anyhow::anyhow!("column '{}' not found in rowpack context", col_name))
+        .ok_or_else(|| TTGenError::SchemaError(format!("column '{}' not found in rowpack context", col_name)))
 }
 
 fn collect_entity_col_refs(
     plan: &DiskGraphTTPlan,
     entity_ctx: &Option<RowPackContext>,
-) -> Result<Vec<(String, usize)>> {
+) -> TTGenResult<Vec<(String, usize)>> {
     let mut refs = Vec::new();
     let mut seen = std::collections::HashSet::new();
 
@@ -483,7 +479,7 @@ fn resolve_stage(
     entity_ctx: &Option<RowPackContext>,
     alias_to_idx: &HashMap<String, usize>,
     entity_col_indices: &[(String, usize)],
-) -> Result<ResolvedStage> {
+) -> TTGenResult<ResolvedStage> {
     let mut ops = Vec::new();
     for op in &stage.ops {
         let resolved = resolve_op(op, reader, entity_table, entity_ctx, alias_to_idx, entity_col_indices)?;
@@ -494,7 +490,7 @@ fn resolve_stage(
         .filter
         .as_ref()
         .map(|f| resolve_stage_filter(f, reader, entity_table, entity_ctx, alias_to_idx, entity_col_indices))
-        .transpose()?;
+        .transpose().map_err(|e| TTGenError::SchemaError(format!("resolving stage filter: {}", e)))?;
 
     Ok(ResolvedStage { ops, filter })
 }
@@ -506,7 +502,7 @@ fn resolve_op(
     _entity_ctx: &Option<RowPackContext>,
     alias_to_idx: &HashMap<String, usize>,
     entity_col_indices: &[(String, usize)],
-) -> Result<ResolvedOp> {
+) -> TTGenResult<ResolvedOp> {
     match op {
         Op::Aggregate {
             alias,
@@ -528,8 +524,7 @@ fn resolve_op(
             let target_col_idx = target_col
                 .as_ref()
                 .map(|col| find_col_idx_in_context(&dst_ctx, col))
-                .transpose()
-                .context("resolving aggregate target column")?;
+                .transpose().map_err(|e| TTGenError::SchemaError(format!("resolving aggregate target column: {}", e)))?;
 
             // Resolve window — applies to the FIRST hop (reverse FK with sort keys),
             // matching Kumo's temporal join semantics.
@@ -537,9 +532,7 @@ fn resolve_op(
                 Some((lo, hi)) => {
                     let first_edge = resolved_path.first().unwrap();
                     let encoder = first_edge.encoder.clone().ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "cannot apply time window on edge relation without sort key timestamp"
-                        )
+                        TTGenError::InvalidPlan("cannot apply time window on edge relation without sort key timestamp".to_string())
                     })?;
                     let unit = window_unit.as_ref().unwrap_or(&TimeUnit::Seconds);
                     match unit {
@@ -571,7 +564,7 @@ fn resolve_op(
             let resolved_filter = row_filter
                 .as_ref()
                 .map(|f| resolve_row_filter(f, reader, dst_table, &dst_ctx, entity_col_indices))
-                .transpose()?;
+                .transpose().map_err(|e| TTGenError::SchemaError(format!("resolving aggregate row filter: {}", e)))?;
 
             Ok(ResolvedOp::Aggregate(ResolvedAggregate {
                 alias_idx,
@@ -600,9 +593,7 @@ fn resolve_op(
                 Some((lo, hi)) => {
                     let first_edge = resolved_path.first().unwrap();
                     let encoder = first_edge.encoder.clone().ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "cannot apply time window on edge relation without sort key timestamp"
-                        )
+                        TTGenError::InvalidPlan("cannot apply time window on edge relation without sort key timestamp".to_string())
                     })?;
                     let unit = window_unit.as_ref().unwrap_or(&TimeUnit::Seconds);
                     match unit {
@@ -628,11 +619,10 @@ fn resolve_op(
                 }
                 None => None,
             };
-
             let resolved_filter = row_filter
                 .as_ref()
                 .map(|f| resolve_row_filter(f, reader, dst_table, &dst_ctx, entity_col_indices))
-                .transpose()?;
+                .transpose().map_err(|e| TTGenError::SchemaError(format!("resolving has_edges row filter: {}", e)))?;
 
             Ok(ResolvedOp::HasEdges(ResolvedHasEdges {
                 alias_idx,
@@ -645,7 +635,7 @@ fn resolve_op(
             let alias_idx = alias_to_idx[alias];
             let table_reader = reader
                 .table(table)
-                .ok_or_else(|| anyhow::anyhow!("table '{}' not found", table))?;
+                .ok_or_else(|| TTGenError::SchemaError(format!("table '{}' not found", table)))?;
             let ctx = table_reader.node_data_decoder().map(|d| d.context().clone());
             let col_idx = find_col_idx_in_context(&ctx, column)?;
             Ok(ResolvedOp::Column(ResolvedColumn {
@@ -659,7 +649,7 @@ fn resolve_op(
             let lhs_alias_idx = alias_to_idx
                 .get(lhs)
                 .copied()
-                .ok_or_else(|| anyhow::anyhow!("alias '{}' not found", lhs))?;
+                .ok_or_else(|| TTGenError::SchemaError(format!("alias '{}' not found", lhs)))?;
             Ok(ResolvedOp::Compare(ResolvedCompare {
                 alias_idx,
                 lhs_alias_idx,
@@ -675,9 +665,9 @@ fn resolve_op(
                     alias_to_idx
                         .get(name)
                         .copied()
-                        .ok_or_else(|| anyhow::anyhow!("alias '{}' not found", name))
+                        .ok_or_else(|| TTGenError::SchemaError(format!("alias '{}' not found", name)))
                 })
-                .collect::<Result<Vec<_>>>()?;
+                .collect::<TTGenResult<Vec<_>>>()?;
             Ok(ResolvedOp::LogicalOp(ResolvedLogicalOp {
                 alias_idx,
                 op: *op,
@@ -699,15 +689,15 @@ fn resolve_op(
 fn resolve_path(
     path: &[EdgeRef],
     reader: &GraphIndexReader,
-) -> Result<Vec<ResolvedEdge>> {
+) -> TTGenResult<Vec<ResolvedEdge>> {
     let mut resolved = Vec::with_capacity(path.len());
     for edge_ref in path {
         let src_table = reader
             .table(&edge_ref.src_table)
-            .ok_or_else(|| anyhow::anyhow!("src table '{}' not found", edge_ref.src_table))?;
+            .ok_or_else(|| TTGenError::SchemaError(format!("src table '{}' not found", edge_ref.src_table)))?;
         let dst_table = reader
             .table(&edge_ref.dst_table)
-            .ok_or_else(|| anyhow::anyhow!("dst table '{}' not found", edge_ref.dst_table))?;
+            .ok_or_else(|| TTGenError::SchemaError(format!("dst table '{}' not found", edge_ref.dst_table)))?;
 
         // Find the relation in src_table's relations.
         // Multiple relations can share the same (src_type, dst_type) — e.g.,
@@ -720,7 +710,7 @@ fn resolve_path(
         let layout = layouts
             .get(relation_idx)
             .cloned()
-            .ok_or_else(|| anyhow::anyhow!("layout not found for relation index {}", relation_idx))?;
+            .ok_or_else(|| TTGenError::SystemError(format!("layout not found for relation index {}", relation_idx)))?;
 
         let encoder = relation_meta
             .dest_sort_key
@@ -744,7 +734,7 @@ fn resolve_row_filter(
     current_table: &Arc<TableReader>,
     current_ctx: &Option<RowPackContext>,
     entity_col_indices: &[(String, usize)],
-) -> Result<ResolvedRowFilter> {
+) -> TTGenResult<ResolvedRowFilter> {
     match filter {
         RowFilter::Compare { lhs, op, rhs } => {
             let resolved_lhs = match lhs {
@@ -770,7 +760,7 @@ fn resolve_row_filter(
                     let idx = entity_col_indices
                         .iter()
                         .position(|(name, _)| name == col)
-                        .ok_or_else(|| anyhow::anyhow!("entity column '{}' not found in refs", col))?;
+                        .ok_or_else(|| TTGenError::SchemaError(format!("entity column '{}' not found in refs", col)))?;
                     ResolvedRowFilterRhs::EntityColumn(idx)
                 }
                 RowFilterRhs::Remote { path, column } => {
@@ -795,14 +785,14 @@ fn resolve_row_filter(
             let resolved = filters
                 .iter()
                 .map(|f| resolve_row_filter(f, reader, current_table, current_ctx, entity_col_indices))
-                .collect::<Result<Vec<_>>>()?;
+                .collect::<TTGenResult<Vec<_>>>()?;
             Ok(ResolvedRowFilter::And(resolved))
         }
         RowFilter::Or(filters) => {
             let resolved = filters
                 .iter()
                 .map(|f| resolve_row_filter(f, reader, current_table, current_ctx, entity_col_indices))
-                .collect::<Result<Vec<_>>>()?;
+                .collect::<TTGenResult<Vec<_>>>()?;
             Ok(ResolvedRowFilter::Or(resolved))
         }
         RowFilter::Not(f) => {
@@ -819,13 +809,13 @@ fn resolve_stage_filter(
     entity_ctx: &Option<RowPackContext>,
     alias_to_idx: &HashMap<String, usize>,
     entity_col_indices: &[(String, usize)],
-) -> Result<ResolvedStageFilter> {
+) -> TTGenResult<ResolvedStageFilter> {
     match filter {
         StageFilter::Compare { alias, op, rhs } => {
             let alias_idx = alias_to_idx
                 .get(alias)
                 .copied()
-                .ok_or_else(|| anyhow::anyhow!("alias '{}' not found", alias))?;
+                .ok_or_else(|| TTGenError::SchemaError(format!("alias '{}' not found", alias)))?;
 
             let resolved_rhs = match rhs {
                 StageFilterRhs::Constant(v) => ResolvedStageFilterRhs::Constant(v.clone()),
@@ -835,7 +825,7 @@ fn resolve_stage_filter(
                     let idx = entity_col_indices
                         .iter()
                         .position(|(name, _)| name == col)
-                        .ok_or_else(|| anyhow::anyhow!("entity column '{}' not found in refs", col))?;
+                        .ok_or_else(|| TTGenError::SchemaError(format!("entity column '{}' not found in refs", col)))?;
                     ResolvedStageFilterRhs::EntityColumn(idx)
                 }
                 StageFilterRhs::Remote { path, column } => {
@@ -852,7 +842,7 @@ fn resolve_stage_filter(
                     let idx = alias_to_idx
                         .get(a)
                         .copied()
-                        .ok_or_else(|| anyhow::anyhow!("alias '{}' not found", a))?;
+                        .ok_or_else(|| TTGenError::SchemaError(format!("alias '{}' not found", a)))?;
                     ResolvedStageFilterRhs::Alias(idx)
                 }
             };
@@ -867,14 +857,14 @@ fn resolve_stage_filter(
             let resolved = filters
                 .iter()
                 .map(|f| resolve_stage_filter(f, reader, entity_table, entity_ctx, alias_to_idx, entity_col_indices))
-                .collect::<Result<Vec<_>>>()?;
+                .collect::<TTGenResult<Vec<_>>>()?;
             Ok(ResolvedStageFilter::And(resolved))
         }
         StageFilter::Or(filters) => {
             let resolved = filters
                 .iter()
                 .map(|f| resolve_stage_filter(f, reader, entity_table, entity_ctx, alias_to_idx, entity_col_indices))
-                .collect::<Result<Vec<_>>>()?;
+                .collect::<TTGenResult<Vec<_>>>()?;
             Ok(ResolvedStageFilter::Or(resolved))
         }
         StageFilter::Not(f) => {
@@ -897,7 +887,7 @@ fn resolve_stage_filter(
 fn find_relation<'a>(
     relations: &'a [diskgraph_core::metadata::EdgeRelationMetadata],
     edge_ref: &EdgeRef,
-) -> Result<(usize, &'a diskgraph_core::metadata::EdgeRelationMetadata)> {
+) -> TTGenResult<(usize, &'a diskgraph_core::metadata::EdgeRelationMetadata)> {
     // Candidates matching dst_type
     let candidates: Vec<(usize, &diskgraph_core::metadata::EdgeRelationMetadata)> = relations
         .iter()
@@ -906,11 +896,10 @@ fn find_relation<'a>(
         .collect();
 
     if candidates.is_empty() {
-        bail!(
+        return Err(TTGenError::InvalidPlan(format!(
             "edge relation from '{}' to '{}' not found",
-            edge_ref.src_table,
-            edge_ref.dst_table,
-        );
+            edge_ref.src_table, edge_ref.dst_table,
+        )));
     }
 
     // If only one candidate, no ambiguity
@@ -947,7 +936,7 @@ fn find_relation<'a>(
         }
     }
 
-    bail!(
+    return Err(TTGenError::InvalidPlan(format!(
         "ambiguous: {} relations from '{}' to '{}', none match columns '{}.{}'. \
          Relation names: [{}]",
         candidates.len(),
@@ -956,7 +945,7 @@ fn find_relation<'a>(
         edge_ref.src_col,
         edge_ref.dst_col,
         candidates.iter().map(|(_, r)| r.name.as_str()).collect::<Vec<_>>().join(", "),
-    );
+    )));
 }
 
 /// Infer the Arrow DataType for the TARGET column.

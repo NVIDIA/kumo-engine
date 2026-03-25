@@ -9,6 +9,23 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::thread::JoinHandle;
+use tracing::info;
+
+fn get_current_rss_mb() -> usize {
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(content) = std::fs::read_to_string("/proc/self/statm") {
+            let parts: Vec<&str> = content.split_whitespace().collect();
+            if parts.len() >= 2 {
+                if let Ok(rss_pages) = parts[1].parse::<usize>() {
+                    // Page size is usually 4KB on Linux
+                    return (rss_pages * 4096) / 1024 / 1024;
+                }
+            }
+        }
+    }
+    0
+}
 
 use crate::split_assignments;
 use arrow::compute::take;
@@ -22,13 +39,14 @@ use arrow_schema::{DataType, Field, Schema};
 use chrono::{DateTime, NaiveDate, TimeZone, Utc};
 use crossbeam_channel::Receiver;
 use diskgraph_core::tt_builder::DiskGraphTTPlan;
+use diskgraph_train_table::errors::TTGenResult;
 use diskgraph_train_table::ttgen_stats::TTExecutionSummary;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::arrow::ArrowWriter;
 use parquet::basic::Compression;
 use parquet::file::properties::WriterProperties;
 use parquet::file::reader::FileReader;
-use pyo3::exceptions::{PyRuntimeError, PyStopIteration, PyValueError};
+use pyo3::exceptions::PyStopIteration;
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict};
 use pyo3::Py;
@@ -40,12 +58,12 @@ use sha2::{Digest, Sha256};
 #[pyclass]
 pub struct TTPlanIterator {
     receiver: Option<Receiver<RecordBatch>>,
-    handle: Option<JoinHandle<anyhow::Result<TTExecutionSummary>>>,
+    handle: Option<JoinHandle<TTGenResult<TTExecutionSummary>>>,
     summary: Option<TTExecutionSummary>,
 }
 
 impl TTPlanIterator {
-    fn finish_execution(&mut self) -> Result<(), String> {
+    fn finish_execution(&mut self) -> TTGenResult<()> {
         if self.summary.is_some() {
             return Ok(());
         }
@@ -57,8 +75,8 @@ impl TTPlanIterator {
                     self.summary = Some(summary);
                     Ok(())
                 }
-                Ok(Err(e)) => Err(format!("TT-gen executor failed: {e}")),
-                Err(_) => Err("TT-gen executor thread panicked".to_string()),
+                Ok(Err(e)) => Err(e),
+                Err(_) => Err(diskgraph_train_table::errors::TTGenError::SystemError("TT-gen executor thread panicked".to_string())),
             }
         } else {
             Ok(())
@@ -84,7 +102,7 @@ impl TTPlanIterator {
             Ok(batch) => batch.to_pyarrow(py).map(|b| b.unbind()),
             Err(_) => {
                 self.receiver = None;
-                self.finish_execution().map_err(PyRuntimeError::new_err)?;
+                self.finish_execution().map_err(crate::map_ttgen_err)?;
                 Err(PyStopIteration::new_err(()))
             }
         }
@@ -95,7 +113,7 @@ impl TTPlanIterator {
     /// If called before stream exhaustion, this forces finalization and blocks
     /// until all workers complete.
     fn execution_summary(&mut self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        self.finish_execution().map_err(PyRuntimeError::new_err)?;
+        self.finish_execution().map_err(crate::map_ttgen_err)?;
 
         let out = PyDict::new(py);
         if let Some(summary) = &self.summary {
@@ -231,12 +249,12 @@ impl TTPlanIterator {
 
                 out.set_item("stats", stats_dict)?;
             } else {
-                return Err(PyRuntimeError::new_err(
+                return Err(crate::DiskgraphSystemError::new_err(
                     "TT-gen summary missing stats payload; cannot produce pre_target_drop_rows",
                 ));
             }
         } else {
-            return Err(PyRuntimeError::new_err(
+            return Err(crate::DiskgraphSystemError::new_err(
                 "TT-gen execution summary is unavailable",
             ));
         }
@@ -246,13 +264,15 @@ impl TTPlanIterator {
 }
 
 #[pyfunction]
+#[tracing::instrument(level = "info", skip_all, fields(index_path = %index_path))]
 pub fn execute_tt_plan(
     py: Python<'_>,
     plan_json: &str,
     index_path: &str,
 ) -> PyResult<TTPlanIterator> {
+    info!("Legacy execute_tt_plan started");
     let plan: DiskGraphTTPlan = serde_json::from_str(plan_json)
-        .map_err(|e| PyValueError::new_err(format!("invalid plan JSON: {e}")))?;
+        .map_err(|e| crate::DiskgraphConfigError::new_err(format!("invalid plan JSON: {e}")))?;
 
     let idx = index_path.to_owned();
 
@@ -260,7 +280,7 @@ pub fn execute_tt_plan(
         .detach(|| {
             diskgraph_train_table::ttgen_executor::execute_with_summary(&plan, Path::new(&idx))
         })
-        .map_err(|e| PyValueError::new_err(format!("execute failed: {e:#}")))?;
+        .map_err(crate::map_ttgen_err)?;
 
     Ok(TTPlanIterator {
         receiver: Some(receiver),
@@ -1959,6 +1979,7 @@ fn extract_string_values(batch: &RecordBatch, col_name: &str) -> anyhow::Result<
 
 #[pyfunction]
 #[pyo3(signature=(plan_json, index_path, output_path, split_config_json=None, split_family_hint=None, downsampling_config_json=None))]
+#[tracing::instrument(level = "info", skip(py, plan_json, split_config_json, downsampling_config_json), fields(index_path = %index_path, output_path = %output_path))]
 pub fn execute_tt_plan_materialize_with_split(
     py: Python<'_>,
     plan_json: &str,
@@ -1968,13 +1989,14 @@ pub fn execute_tt_plan_materialize_with_split(
     split_family_hint: Option<&str>,
     downsampling_config_json: Option<&str>,
 ) -> PyResult<Py<PyAny>> {
+    let overall_start = std::time::Instant::now();
     let plan: DiskGraphTTPlan = serde_json::from_str(plan_json)
-        .map_err(|e| PyValueError::new_err(format!("invalid plan JSON: {e}")))?;
+        .map_err(|e| crate::DiskgraphConfigError::new_err(format!("invalid plan JSON: {e}")))?;
 
     let split_cfg: Option<Value> = match split_config_json {
         Some(s) if !s.is_empty() => Some(
             serde_json::from_str(s)
-                .map_err(|e| PyValueError::new_err(format!("invalid split config JSON: {e}")))?,
+                .map_err(|e| crate::DiskgraphConfigError::new_err(format!("invalid split config JSON: {e}")))?,
         ),
         _ => None,
     };
@@ -1985,12 +2007,12 @@ pub fn execute_tt_plan_materialize_with_split(
     let split_column_name = split_cfg.as_ref().and_then(parse_split_column_name);
     let downsampling_cfg: Option<Value> = match downsampling_config_json {
         Some(s) if !s.is_empty() => Some(serde_json::from_str(s).map_err(|e| {
-            PyValueError::new_err(format!("invalid downsampling config JSON: {e}"))
+            crate::DiskgraphConfigError::new_err(format!("invalid downsampling config JSON: {e}"))
         })?),
         _ => None,
     };
     let downsampling_cfg = parse_downsampling_config(downsampling_cfg.as_ref())
-        .map_err(|e| PyValueError::new_err(format!("invalid downsampling config: {e}")))?;
+        .map_err(|e| crate::DiskgraphConfigError::new_err(format!("invalid downsampling config: {e}")))?;
 
     let manual_train_values = split_cfg
         .as_ref()
@@ -2020,10 +2042,12 @@ pub fn execute_tt_plan_materialize_with_split(
         train_table_col_stats_json,
     ) = py
         .detach(|| -> anyhow::Result<(u64, String, Option<Vec<u8>>, bool, Option<String>, bool, bool, u64, Option<String>)> {
+            let traversal_start = std::time::Instant::now();
             let (receiver, handle) =
                 diskgraph_train_table::ttgen_executor::execute_with_summary(&plan, Path::new(&idx))?;
 
             let mut row_offset = 0i64;
+            let mut total_memory_bytes = 0usize;
             let mut timestamps_ns: Vec<i64> = Vec::new();
             let mut include_mask: Option<Vec<bool>> = None;
             let mut column_sort_values: Vec<SortValue> = Vec::new();
@@ -2032,7 +2056,23 @@ pub fn execute_tt_plan_materialize_with_split(
             let mut target_values: Vec<String> = Vec::new();
             let mut raw_batches: Vec<RecordBatch> = Vec::new();
 
+            let mut last_logged_gb = 0usize;
             for batch in receiver.iter() {
+                let batch_memory = batch.get_array_memory_size();
+                total_memory_bytes += batch_memory;
+
+                // Log progressive memory usage every 1GB of additional batch data
+                let current_gb = total_memory_bytes / (1024 * 1024 * 1024);
+                if current_gb > last_logged_gb {
+                    info!(
+                        batches_buffered = raw_batches.len() + 1,
+                        batch_memory_mb = total_memory_bytes / 1024 / 1024,
+                        process_rss_mb = get_current_rss_mb(),
+                        "TT-gen materialization memory checkpoint"
+                    );
+                    last_logged_gb = current_gb;
+                }
+
                 if let Some(ts_arr) = batch
                     .column(1)
                     .as_any()
@@ -2096,11 +2136,20 @@ pub fn execute_tt_plan_materialize_with_split(
             }
 
             let pre_downsample_row_count = row_offset as usize;
+            info!(
+                rows_generated = pre_downsample_row_count,
+                batch_memory_mb = total_memory_bytes / 1024 / 1024,
+                process_rss_mb = get_current_rss_mb(),
+                duration_ms = traversal_start.elapsed().as_millis(),
+                "Parallel traversal complete"
+            );
+
             let mut selected_indices: Option<Vec<usize>> = None;
             let mut downsampling_applied = false;
             let mut downsampling_handled = false;
 
             if downsampling_cfg.enabled {
+                let downsample_start = std::time::Instant::now();
                 downsampling_handled = true;
                 if downsampling_cfg.is_link_prediction
                     && !downsampling_cfg.list_distinct_target_is_array
@@ -2119,6 +2168,11 @@ pub fn execute_tt_plan_materialize_with_split(
                     downsampling_applied = true;
                     selected_indices = Some(idxs);
                 }
+                info!(
+                    rows_after_downsample = selected_indices.as_ref().map_or(pre_downsample_row_count, |v| v.len()),
+                    duration_ms = downsample_start.elapsed().as_millis(),
+                    "Downsampling complete"
+                );
             }
 
             if downsampling_cfg.enabled && downsampling_cfg.preserve_pre_downsample_tt {
@@ -2126,11 +2180,17 @@ pub fn execute_tt_plan_materialize_with_split(
                 let _ = write_batches_with_arange(&pre_path, &raw_batches, None)?;
             }
 
+            let materialization_start = std::time::Instant::now();
             let final_rows = if let Some(idxs) = selected_indices.as_ref() {
                 write_batches_with_arange(&out, &raw_batches, Some(idxs))?
             } else {
                 write_batches_with_arange(&out, &raw_batches, None)?
             } as usize;
+            info!(
+                final_rows = final_rows,
+                duration_ms = materialization_start.elapsed().as_millis(),
+                "Final materialization complete"
+            );
 
             if let Some(idxs) = selected_indices.as_ref() {
                 timestamps_ns = idxs.iter().map(|i| timestamps_ns[*i]).collect();
@@ -2364,7 +2424,13 @@ pub fn execute_tt_plan_materialize_with_split(
                 train_table_col_stats_json,
             ))
         })
-        .map_err(|e| PyRuntimeError::new_err(format!("materialize_with_split failed: {e:#}")))?;
+        .map_err(|e| crate::map_anyhow_err(e))?;
+
+    info!(
+        total_rows = rows_written,
+        overall_duration_ms = overall_start.elapsed().as_millis(),
+        "execute_tt_plan_materialize_with_split finished"
+    );
 
     let out = PyDict::new(py);
     out.set_item("rows_written", rows_written)?;
@@ -2389,6 +2455,7 @@ pub fn execute_tt_plan_materialize_with_split(
 }
 
 #[pyfunction]
+#[tracing::instrument(level = "info", skip_all)]
 #[pyo3(signature=(row_count, summary_json=None, plan_json=None))]
 pub fn build_tt_stats_artifact(
     py: Python<'_>,
@@ -2404,12 +2471,13 @@ pub fn build_tt_stats_artifact(
     let out = PyDict::new(py);
     out.set_item(
         "payload_json",
-        serde_json::to_string(&payload).map_err(|e| PyRuntimeError::new_err(e.to_string()))?,
+        serde_json::to_string(&payload).map_err(|e| crate::DiskgraphConfigError::new_err(e.to_string()))?,
     )?;
     Ok(out.into())
 }
 
 #[pyfunction]
+#[tracing::instrument(level = "info", skip_all)]
 #[pyo3(signature=(output_path, split_assignments, split_stats_config_json=None))]
 pub fn build_split_stats_artifact(
     py: Python<'_>,
@@ -2497,17 +2565,18 @@ pub fn build_split_stats_artifact(
                 "provided_fields": ["train_table_stats", "val_table_stats", "test_table_stats"],
             }))
         })
-        .map_err(|e| PyRuntimeError::new_err(format!("build_split_stats_artifact failed: {e:#}")))?;
+        .map_err(|e| crate::DiskgraphConfigError::new_err(format!("build_split_stats_artifact failed: {e:#}")))?;
 
     let out_dict = PyDict::new(py);
     out_dict.set_item(
         "payload_json",
-        serde_json::to_string(&payload).map_err(|e| PyRuntimeError::new_err(e.to_string()))?,
+        serde_json::to_string(&payload).map_err(|e| crate::DiskgraphConfigError::new_err(e.to_string()))?,
     )?;
     Ok(out_dict.into())
 }
 
 #[pyfunction]
+#[tracing::instrument(level = "info", skip_all)]
 #[pyo3(signature=(output_path, split_assignments, train_table_col_stats_config_json=None))]
 pub fn build_train_table_col_stats_artifact(
     py: Python<'_>,
@@ -2553,17 +2622,18 @@ pub fn build_train_table_col_stats_artifact(
                 &data_version,
             )
         })
-        .map_err(|e| PyRuntimeError::new_err(format!("build_train_table_col_stats_artifact failed: {e:#}")))?;
+        .map_err(|e| crate::DiskgraphConfigError::new_err(format!("build_train_table_col_stats_artifact failed: {e:#}")))?;
 
     let out_dict = PyDict::new(py);
     out_dict.set_item(
         "payload_json",
-        serde_json::to_string(&payload).map_err(|e| PyRuntimeError::new_err(e.to_string()))?,
+        serde_json::to_string(&payload).map_err(|e| crate::DiskgraphConfigError::new_err(e.to_string()))?,
     )?;
     Ok(out_dict.into())
 }
 
 #[pyfunction]
+#[tracing::instrument(level = "info", skip_all)]
 #[pyo3(signature=(output_path, prediction_table_col_stats_config_json=None))]
 pub fn build_prediction_table_col_stats_artifact(
     py: Python<'_>,
@@ -2592,7 +2662,7 @@ pub fn build_prediction_table_col_stats_artifact(
             compute_prediction_table_col_stats_from_batches(&raw_batches, &data_version)
         })
         .map_err(|e| {
-            PyRuntimeError::new_err(format!(
+            crate::DiskgraphConfigError::new_err(format!(
                 "build_prediction_table_col_stats_artifact failed: {e:#}"
             ))
         })?;
@@ -2600,12 +2670,13 @@ pub fn build_prediction_table_col_stats_artifact(
     let out_dict = PyDict::new(py);
     out_dict.set_item(
         "payload_json",
-        serde_json::to_string(&payload).map_err(|e| PyRuntimeError::new_err(e.to_string()))?,
+        serde_json::to_string(&payload).map_err(|e| crate::DiskgraphConfigError::new_err(e.to_string()))?,
     )?;
     Ok(out_dict.into())
 }
 
 #[pyfunction]
+#[tracing::instrument(level = "info", skip_all)]
 #[pyo3(signature=(output_dir, train_table_name="custom_train_table", mask_present=true, mask_absent_reason=None, edge_attrs_path=None))]
 pub fn build_train_table_edge_bundle_artifact(
     py: Python<'_>,
@@ -2631,7 +2702,7 @@ pub fn build_train_table_edge_bundle_artifact(
             )
         })
         .map_err(|e| {
-            PyRuntimeError::new_err(format!(
+            crate::DiskgraphConfigError::new_err(format!(
                 "build_train_table_edge_bundle_artifact failed: {e:#}"
             ))
         })?;
@@ -2639,12 +2710,13 @@ pub fn build_train_table_edge_bundle_artifact(
     let out_dict = PyDict::new(py);
     out_dict.set_item(
         "payload_json",
-        serde_json::to_string(&payload).map_err(|e| PyRuntimeError::new_err(e.to_string()))?,
+        serde_json::to_string(&payload).map_err(|e| crate::DiskgraphConfigError::new_err(e.to_string()))?,
     )?;
     Ok(out_dict.into())
 }
 
 #[pyfunction]
+#[tracing::instrument(level = "info", skip_all)]
 #[pyo3(signature=(output_dir, prediction_table_name="custom_prediction_table", mask_present=true, mask_absent_reason=None, edge_attrs_path=None))]
 pub fn build_prediction_table_edge_bundle_artifact(
     py: Python<'_>,
@@ -2670,7 +2742,7 @@ pub fn build_prediction_table_edge_bundle_artifact(
             )
         })
         .map_err(|e| {
-            PyRuntimeError::new_err(format!(
+            crate::DiskgraphConfigError::new_err(format!(
                 "build_prediction_table_edge_bundle_artifact failed: {e:#}"
             ))
         })?;
@@ -2678,12 +2750,13 @@ pub fn build_prediction_table_edge_bundle_artifact(
     let out_dict = PyDict::new(py);
     out_dict.set_item(
         "payload_json",
-        serde_json::to_string(&payload).map_err(|e| PyRuntimeError::new_err(e.to_string()))?,
+        serde_json::to_string(&payload).map_err(|e| crate::DiskgraphConfigError::new_err(e.to_string()))?,
     )?;
     Ok(out_dict.into())
 }
 
 #[pyfunction]
+#[tracing::instrument(level = "info", skip_all)]
 #[pyo3(signature=(output_path, row_count, prediction_table_edges_json, prediction_table_col_stats_json=None, producer_summary_json=None))]
 pub fn persist_prediction_artifact_bundle(
     py: Python<'_>,
@@ -2697,7 +2770,7 @@ pub fn persist_prediction_artifact_bundle(
     let prediction_table_edges_payload = prediction_table_edges_json.to_string();
     let prediction_table_edges_value: Value =
         serde_json::from_str::<Value>(&prediction_table_edges_payload).map_err(|e| {
-            PyValueError::new_err(format!("invalid prediction_table_edges_json: {e}"))
+            crate::DiskgraphConfigError::new_err(format!("invalid prediction_table_edges_json: {e}"))
         })?;
 
     let kind_ok = prediction_table_edges_value
@@ -2705,7 +2778,7 @@ pub fn persist_prediction_artifact_bundle(
         .and_then(|v| v.as_str())
         == Some("tt_prediction_table_edges");
     if !kind_ok {
-        return Err(PyValueError::new_err(
+        return Err(crate::DiskgraphConfigError::new_err(
             "prediction_table_edges_json.kind must be tt_prediction_table_edges",
         ));
     }
@@ -2715,7 +2788,7 @@ pub fn persist_prediction_artifact_bundle(
         .and_then(|v| v.as_str())
         == Some("tt_pred_edge_bundle_v1");
     if !format_ok {
-        return Err(PyValueError::new_err(
+        return Err(crate::DiskgraphConfigError::new_err(
             "prediction_table_edges_json.format must be tt_pred_edge_bundle_v1",
         ));
     }
@@ -2723,7 +2796,7 @@ pub fn persist_prediction_artifact_bundle(
     let prediction_col_stats_payload = prediction_table_col_stats_json.map(|s| s.to_string());
     let prediction_col_stats_value: Option<Value> = match prediction_col_stats_payload.as_ref() {
         Some(s) => Some(serde_json::from_str::<Value>(s).map_err(|e| {
-            PyValueError::new_err(format!("invalid prediction_table_col_stats_json: {e}"))
+            crate::DiskgraphConfigError::new_err(format!("invalid prediction_table_col_stats_json: {e}"))
         })?),
         None => None,
     };
@@ -2731,13 +2804,13 @@ pub fn persist_prediction_artifact_bundle(
         let kind_ok =
             v.get("kind").and_then(|x| x.as_str()) == Some("tt_prediction_table_col_stats");
         if !kind_ok {
-            return Err(PyValueError::new_err(
+            return Err(crate::DiskgraphConfigError::new_err(
                 "prediction_table_col_stats_json.kind must be tt_prediction_table_col_stats",
             ));
         }
         let format_ok = v.get("stats_format").and_then(|x| x.as_str()) == Some("kumo_col_stats_v1");
         if !format_ok {
-            return Err(PyValueError::new_err(
+            return Err(crate::DiskgraphConfigError::new_err(
                 "prediction_table_col_stats_json.stats_format must be kumo_col_stats_v1",
             ));
         }
@@ -2846,7 +2919,7 @@ pub fn persist_prediction_artifact_bundle(
             Ok((manifest_path, artifacts_dir))
         })
         .map_err(|e| {
-            PyRuntimeError::new_err(format!("persist_prediction_artifact_bundle failed: {e:#}"))
+            crate::DiskgraphConfigError::new_err(format!("persist_prediction_artifact_bundle failed: {e:#}"))
         })?;
 
     let out_dict = PyDict::new(py);
@@ -2856,6 +2929,7 @@ pub fn persist_prediction_artifact_bundle(
 }
 
 #[pyfunction]
+#[tracing::instrument(level = "info", skip_all)]
 #[pyo3(signature=(output_path, row_count, stats_json, split_stats_json, split_bytes, train_table_col_stats_json, split_family=None, split_authoritative=false, split_reason=None, downsampling_json=None, producer_summary_json=None, train_table_edges_json=None))]
 pub fn persist_tt_artifact_bundle(
     py: Python<'_>,
@@ -2886,7 +2960,7 @@ pub fn persist_tt_artifact_bundle(
     let train_table_edges_value: Option<Value> =
         match train_table_edges_payload.as_ref() {
             Some(s) => Some(serde_json::from_str::<Value>(s).map_err(|e| {
-                PyValueError::new_err(format!("invalid train_table_edges_json: {e}"))
+                crate::DiskgraphConfigError::new_err(format!("invalid train_table_edges_json: {e}"))
             })?),
             None => None,
         };
@@ -3004,7 +3078,7 @@ pub fn persist_tt_artifact_bundle(
             Ok((manifest_path, artifacts_dir))
         })
         .map_err(|e| {
-            PyRuntimeError::new_err(format!("persist_tt_artifact_bundle failed: {e:#}"))
+            crate::DiskgraphConfigError::new_err(format!("persist_tt_artifact_bundle failed: {e:#}"))
         })?;
 
     let out_dict = PyDict::new(py);

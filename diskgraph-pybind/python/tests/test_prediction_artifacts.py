@@ -5,6 +5,8 @@ from pathlib import Path
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
+from diskgraph._c import DiskgraphConfigError, DiskgraphConfigError, DiskgraphDataError, DiskgraphSystemError
+
 
 
 def _load_prediction_artifacts_module():
@@ -25,18 +27,18 @@ def _write_min_table(path: Path) -> None:
 
 
 def test_validate_prediction_artifact_kind():
-    with pytest.raises(RuntimeError, match='kind must be tt_prediction_table_edges'):
+    with pytest.raises(DiskgraphDataError, match='kind must be tt_prediction_table_edges'):
         prediction_artifacts.validate_prediction_table_edges_artifact({'kind': 'tt_train_table_edges'})
 
 
 def test_parse_prediction_artifact_rejects_non_json():
-    with pytest.raises(RuntimeError, match='invalid prediction edge artifact JSON'):
+    with pytest.raises(DiskgraphDataError, match='invalid prediction edge artifact JSON'):
         prediction_artifacts.parse_prediction_table_edges_artifact('{')
 
 
 def test_build_prediction_edges_requires_explicit_prediction_mode(tmp_path: Path):
     _write_min_table(tmp_path / 'pred.parquet')
-    with pytest.raises(RuntimeError, match='task_table_edge_kind must be "prediction"'):
+    with pytest.raises(DiskgraphConfigError, match='task_table_edge_kind must be "prediction"'):
         prediction_artifacts.build_prediction_table_edges_artifact(
             prediction_table_path=str(tmp_path / 'pred.parquet'),
             index_path='unused',
@@ -58,17 +60,17 @@ def test_validate_prediction_artifact_mask_present_requires_path():
         'mask': {'present': True},
         'checksums': {'fkey_cols_sha256': 'abc'},
     }
-    with pytest.raises(RuntimeError, match='mask.path is required'):
+    with pytest.raises(DiskgraphConfigError, match='mask.path is required'):
         prediction_artifacts.validate_prediction_table_edges_artifact(payload)
 
 
 def test_parse_prediction_col_stats_artifact_rejects_non_json():
-    with pytest.raises(RuntimeError, match='invalid prediction col-stats artifact JSON'):
+    with pytest.raises(DiskgraphDataError, match='invalid prediction col-stats artifact JSON'):
         prediction_artifacts.parse_prediction_table_col_stats_artifact('{')
 
 
 def test_validate_prediction_col_stats_artifact_kind():
-    with pytest.raises(RuntimeError, match='kind must be tt_prediction_table_col_stats'):
+    with pytest.raises(DiskgraphDataError, match='kind must be tt_prediction_table_col_stats'):
         prediction_artifacts.validate_prediction_table_col_stats_artifact({'kind': 'tt_train_table_col_stats'})
 
 

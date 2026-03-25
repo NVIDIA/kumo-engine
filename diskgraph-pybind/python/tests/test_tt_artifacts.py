@@ -3,9 +3,11 @@ from pathlib import Path
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
+from diskgraph._c import DiskgraphConfigError, DiskgraphConfigError, DiskgraphDataError, DiskgraphSystemError
+
 
 import diskgraph.tt_artifacts as tt_artifacts
-from diskgraph import SplitSpec
+from diskgraph import DiskgraphConfigError, SplitSpec
 from diskgraph.tt_artifacts import _normalize_downsampling_config, execute_tt_plan_with_artifacts
 
 
@@ -76,16 +78,16 @@ def test_downsampling_config_ignores_unknown_strategy_field():
 
 
 def test_downsampling_config_rejects_removed_knobs():
-    with pytest.raises(RuntimeError, match='no longer accepts seed'):
+    with pytest.raises(DiskgraphConfigError, match='no longer accepts seed'):
         _normalize_downsampling_config({'enabled': True, 'max_rows': 10, 'seed': 1})
-    with pytest.raises(RuntimeError, match='no longer accepts fail_on_unsupported'):
+    with pytest.raises(DiskgraphConfigError, match='no longer accepts fail_on_unsupported'):
         _normalize_downsampling_config({'enabled': True, 'max_rows': 10, 'fail_on_unsupported': True})
 
 
 def test_rejects_non_split_spec(tmp_path: Path, monkeypatch):
     _write_min_table(tmp_path / 'tt.parquet')
     monkeypatch.setattr(tt_artifacts, '_execute_tt_plan_materialize_with_split', _mock_native_materialize_ok)
-    with pytest.raises(TypeError, match='requires split_config as SplitSpec'):
+    with pytest.raises(DiskgraphDataError, match='requires split_config as SplitSpec'):
         execute_tt_plan_with_artifacts(
             plan_json='{}',
             index_path='unused',
@@ -97,7 +99,7 @@ def test_rejects_non_split_spec(tmp_path: Path, monkeypatch):
 def test_fails_without_native_materialize_with_split(tmp_path: Path, monkeypatch):
     _write_min_table(tmp_path / 'tt.parquet')
     monkeypatch.setattr(tt_artifacts, '_execute_tt_plan_materialize_with_split', None)
-    with pytest.raises(RuntimeError, match=r'missing native helper\(s\): execute_tt_plan_materialize_with_split'):
+    with pytest.raises(DiskgraphSystemError, match=r'missing native helper\(s\): execute_tt_plan_materialize_with_split'):
         execute_tt_plan_with_artifacts(
             plan_json='{}',
             index_path='unused',
@@ -115,7 +117,7 @@ def test_fails_without_downsampling_metadata(tmp_path: Path, monkeypatch):
         return out
 
     monkeypatch.setattr(tt_artifacts, '_execute_tt_plan_materialize_with_split', bad_materialize)
-    with pytest.raises(RuntimeError, match='did not handle downsampling metadata'):
+    with pytest.raises(DiskgraphSystemError, match='did not handle downsampling metadata'):
         execute_tt_plan_with_artifacts(
             plan_json='{}',
             index_path='unused',
@@ -137,7 +139,7 @@ def test_fails_when_materialize_omits_train_table_col_stats_json(tmp_path: Path,
     monkeypatch.setattr(tt_artifacts, '_build_tt_stats_artifact_native', _mock_native_tt_stats)
     monkeypatch.setattr(tt_artifacts, '_build_split_stats_artifact_native', _mock_native_split_stats)
     monkeypatch.setattr(tt_artifacts, '_persist_tt_artifact_bundle', _mock_native_persist)
-    with pytest.raises(RuntimeError, match='did not provide train_table_col_stats_json'):
+    with pytest.raises(DiskgraphSystemError, match='did not provide train_table_col_stats_json'):
         execute_tt_plan_with_artifacts(
             plan_json='{}',
             index_path='unused',
@@ -152,7 +154,7 @@ def test_fails_without_native_tt_stats_builder(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(tt_artifacts, '_build_tt_stats_artifact_native', None)
     monkeypatch.setattr(tt_artifacts, '_build_split_stats_artifact_native', _mock_native_split_stats)
     monkeypatch.setattr(tt_artifacts, '_persist_tt_artifact_bundle', _mock_native_persist)
-    with pytest.raises(RuntimeError, match=r'missing native helper\(s\): build_tt_stats_artifact'):
+    with pytest.raises(DiskgraphSystemError, match=r'missing native helper\(s\): build_tt_stats_artifact'):
         execute_tt_plan_with_artifacts(
             plan_json='{}',
             index_path='unused',
@@ -167,7 +169,7 @@ def test_fails_without_native_persist_helper(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(tt_artifacts, '_build_tt_stats_artifact_native', _mock_native_tt_stats)
     monkeypatch.setattr(tt_artifacts, '_build_split_stats_artifact_native', _mock_native_split_stats)
     monkeypatch.setattr(tt_artifacts, '_persist_tt_artifact_bundle', None)
-    with pytest.raises(RuntimeError, match=r'missing native helper\(s\): persist_tt_artifact_bundle'):
+    with pytest.raises(DiskgraphSystemError, match=r'missing native helper\(s\): persist_tt_artifact_bundle'):
         execute_tt_plan_with_artifacts(
             plan_json='{}',
             index_path='unused',
@@ -180,7 +182,7 @@ def test_fails_with_multiple_missing_native_helpers_lists_all(tmp_path: Path, mo
     _write_min_table(tmp_path / 'tt.parquet')
     monkeypatch.setattr(tt_artifacts, '_execute_tt_plan_materialize_with_split', None)
     monkeypatch.setattr(tt_artifacts, '_build_tt_stats_artifact_native', None)
-    with pytest.raises(RuntimeError) as exc:
+    with pytest.raises(DiskgraphSystemError) as exc:
         execute_tt_plan_with_artifacts(
             plan_json='{}',
             index_path='unused',
@@ -218,7 +220,7 @@ def test_uses_split_family_hint_when_split_kind_missing(tmp_path: Path, monkeypa
 def test_requires_split_family_when_split_kind_missing(tmp_path: Path, monkeypatch):
     _write_min_table(tmp_path / 'tt.parquet')
     monkeypatch.setattr(tt_artifacts, '_execute_tt_plan_materialize_with_split', _mock_native_materialize_ok)
-    with pytest.raises(RuntimeError, match='requires split family'):
+    with pytest.raises(DiskgraphConfigError, match='requires split family'):
         execute_tt_plan_with_artifacts(
             plan_json='{}',
             index_path='unused',
@@ -235,7 +237,7 @@ def test_fails_when_train_table_edges_enabled_without_export_helpers(tmp_path: P
     monkeypatch.setattr(tt_artifacts, '_persist_tt_artifact_bundle', _mock_native_persist)
     monkeypatch.setattr(tt_artifacts, '_export_tt_artifacts_native', None)
 
-    with pytest.raises(RuntimeError, match='requires native export_tt_artifacts'):
+    with pytest.raises(DiskgraphSystemError, match='requires native export_tt_artifacts'):
         execute_tt_plan_with_artifacts(
             plan_json='{}',
             index_path='unused',

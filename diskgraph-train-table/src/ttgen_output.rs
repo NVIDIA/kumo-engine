@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
+use crate::errors::{TTGenError, TTGenResult};
 use arrow_array::builder::{Int64Builder, ListBuilder, StringBuilder};
 use arrow_array::{
     BooleanArray, Float64Array, Int64Array, RecordBatch, StringArray,
@@ -90,7 +90,7 @@ impl ChannelBatchWriter {
         include_entity_bit: bool,
         entity_dtype: DataType,
         time_col_name: &str,
-    ) -> Result<Self> {
+    ) -> TTGenResult<Self> {
         let mut fields = vec![
             Field::new("ENTITY", entity_dtype.clone(), false),
             Field::new(time_col_name, DataType::Timestamp(TimeUnit::Nanosecond, None), false),
@@ -176,7 +176,7 @@ impl ChannelBatchWriter {
         timestamp: i64,
         target: &Value,
         entity_include_bit: bool,
-    ) -> Result<()> {
+    ) -> TTGenResult<()> {
         self.entity_buf.push(entity);
         self.timestamp_buf.push(timestamp);
         match &self.mode {
@@ -218,7 +218,7 @@ impl ChannelBatchWriter {
         autoregression: Vec<Value>,
         yoy: Option<Vec<Value>>,
         entity_include_bit: bool,
-    ) -> Result<()> {
+    ) -> TTGenResult<()> {
         self.entity_buf.push(entity);
         self.timestamp_buf.push(timestamp);
         self.autoregression_list_buf.push(autoregression);
@@ -241,7 +241,7 @@ impl ChannelBatchWriter {
         entity: Value,
         timestamp: i64,
         entity_include_bit: bool,
-    ) -> Result<()> {
+    ) -> TTGenResult<()> {
         self.entity_buf.push(entity);
         self.timestamp_buf.push(timestamp);
         if self.has_include_bit {
@@ -262,7 +262,7 @@ impl ChannelBatchWriter {
         target: Value,
         frequency: i64,
         entity_include_bit: bool,
-    ) -> Result<()> {
+    ) -> TTGenResult<()> {
         self.entity_buf.push(entity);
         self.timestamp_buf.push(timestamp);
         self.target_value_buf.push(target);
@@ -285,7 +285,7 @@ impl ChannelBatchWriter {
         targets: Vec<Value>,
         frequencies: &[i64],
         entity_include_bit: bool,
-    ) -> Result<()> {
+    ) -> TTGenResult<()> {
         self.entity_buf.push(entity);
         self.timestamp_buf.push(timestamp);
         self.target_value_list_buf.push(targets);
@@ -300,7 +300,7 @@ impl ChannelBatchWriter {
     }
 
     /// Flush buffered rows as an Arrow RecordBatch and send through channel.
-    fn flush_batch(&mut self) -> Result<()> {
+    fn flush_batch(&mut self) -> TTGenResult<()> {
         if self.entity_buf.is_empty() {
             return Ok(());
         }
@@ -384,7 +384,7 @@ impl ChannelBatchWriter {
         }
 
         let batch = RecordBatch::try_new(self.schema.clone(), columns)
-            .context("creating RecordBatch")?;
+            .map_err(|e| TTGenError::SystemError(format!("creating RecordBatch: {e}")))?;
 
         self.rows_written += batch.num_rows() as u64;
         // Send batch through channel. If the receiver is dropped, we silently
@@ -402,7 +402,7 @@ impl ChannelBatchWriter {
     }
 
     /// Flush remaining rows and drop the sender (signals end of stream).
-    pub fn finish(mut self) -> Result<u64> {
+    pub fn finish(mut self) -> TTGenResult<u64> {
         self.flush_batch()?;
         // Sender is dropped here, closing the channel.
         Ok(self.rows_written)
@@ -577,7 +577,7 @@ mod tests {
     }
 
     #[test]
-    fn test_write_and_receive_batches() -> Result<()> {
+    fn test_write_and_receive_batches() -> TTGenResult<()> {
         let (mut writer, receiver) = test_writer(
             OutputMode::Node { target_dtype: DataType::Float64 },
             false,
@@ -609,7 +609,7 @@ mod tests {
     }
 
     #[test]
-    fn test_write_with_include_bit() -> Result<()> {
+    fn test_write_with_include_bit() -> TTGenResult<()> {
         let (mut writer, receiver) = test_writer(
             OutputMode::Node { target_dtype: DataType::Float64 },
             true,
@@ -635,7 +635,7 @@ mod tests {
     }
 
     #[test]
-    fn test_batch_flush() -> Result<()> {
+    fn test_batch_flush() -> TTGenResult<()> {
         let (mut writer, receiver) = test_writer(
             OutputMode::Node { target_dtype: DataType::Float64 },
             false,
@@ -659,7 +659,7 @@ mod tests {
     }
 
     #[test]
-    fn test_write_exploded() -> Result<()> {
+    fn test_write_exploded() -> TTGenResult<()> {
         let (mut writer, receiver) = test_writer(
             OutputMode::LinkExploded { include_frequency: true, target_dtype: DataType::Utf8 },
             false,
@@ -690,7 +690,7 @@ mod tests {
     }
 
     #[test]
-    fn test_write_exploded_no_frequency() -> Result<()> {
+    fn test_write_exploded_no_frequency() -> TTGenResult<()> {
         let (mut writer, receiver) = test_writer(
             OutputMode::LinkExploded { include_frequency: false, target_dtype: DataType::Utf8 },
             false,
@@ -710,7 +710,7 @@ mod tests {
     }
 
     #[test]
-    fn test_write_array() -> Result<()> {
+    fn test_write_array() -> TTGenResult<()> {
         use arrow_array::{Array, ListArray};
 
         let (mut writer, receiver) = test_writer(

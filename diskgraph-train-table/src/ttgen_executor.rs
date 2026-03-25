@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
+use crate::errors::{TTGenError, TTGenResult};
 use arrow_array::RecordBatch;
 use arrow_schema::DataType;
 use crossbeam_channel::{bounded, Receiver, Sender};
@@ -52,12 +52,12 @@ use crate::ttgen_traversal::*;
 pub fn execute(
     plan: &DiskGraphTTPlan,
     index_path: &Path,
-) -> Result<(Receiver<RecordBatch>, std::thread::JoinHandle<Result<u64>>)> {
+) -> TTGenResult<(Receiver<RecordBatch>, std::thread::JoinHandle<TTGenResult<u64>>)> {
     let (receiver, summary_handle) = execute_with_summary(plan, index_path)?;
     let handle = std::thread::spawn(move || {
         let summary = summary_handle
             .join()
-            .map_err(|_| anyhow::anyhow!("TT-gen summary thread panicked"))??;
+            .map_err(|_| TTGenError::SystemError("TT-gen summary thread panicked".to_string()))??;
         Ok(summary.rows_written)
     });
     Ok((receiver, handle))
@@ -67,17 +67,18 @@ pub fn execute(
 pub fn execute_with_summary(
     plan: &DiskGraphTTPlan,
     index_path: &Path,
-) -> Result<(
+) -> TTGenResult<(
     Receiver<RecordBatch>,
-    std::thread::JoinHandle<Result<TTExecutionSummary>>,
+    std::thread::JoinHandle<TTGenResult<TTExecutionSummary>>,
 )> {
     // Open index
     let metadata_path = index_path.join("index_metadata.json");
-    let reader =
-        GraphIndexReader::open(&metadata_path, index_path).context("opening graph index")?;
+    let reader = GraphIndexReader::open(&metadata_path, index_path)
+        .map_err(|e| TTGenError::SystemError(format!("opening graph index: {e:#}")))?;
 
     // Preprocess plan (main thread, once)
-    let resolved = resolve_plan(plan, &reader).context("resolving plan")?;
+    let resolved = resolve_plan(plan, &reader)
+        .map_err(|e| TTGenError::InvalidPlan(format!("resolving plan: {e:#}")))?;
     let resolved = Arc::new(resolved);
 
     let num_entities = resolved.entity_table.node_count();
@@ -113,10 +114,7 @@ pub fn execute_with_summary(
         .unwrap_or(false);
     let split_offsets = plan.split.as_ref().and_then(|s| s.offsets.clone());
     let split_ranges = plan.split.as_ref().and_then(|s| s.ranges.clone());
-    let split_backtesting_timestamp = plan
-        .split
-        .as_ref()
-        .and_then(|s| s.backtesting_timestamp);
+    let split_backtesting_timestamp = plan.split.as_ref().and_then(|s| s.backtesting_timestamp);
     let split_column = plan.split.as_ref().and_then(|s| s.split_column.clone());
     let manual_train_values = plan
         .split
@@ -133,7 +131,7 @@ pub fn execute_with_summary(
 
     let handle = std::thread::spawn(move || {
         // Parallel execution with fine-grained chunks
-        let results: Vec<Result<(u64, ChunkStats)>> = (0..num_chunks)
+        let results: Vec<TTGenResult<(u64, ChunkStats)>> = (0..num_chunks)
             .into_par_iter()
             .map(|chunk_idx| {
                 let start = chunk_idx as u64 * num_entities / num_chunks as u64;
@@ -155,7 +153,7 @@ pub fn execute_with_summary(
                     stats.merge(chunk_stats);
                 }
                 Err(e) => {
-                    return Err(anyhow::anyhow!("thread {} failed: {}", i, e));
+                    return Err(TTGenError::SystemError(format!("thread {} failed: {}", i, e)));
                 }
             }
         }
@@ -222,7 +220,7 @@ fn execute_chunk(
     plan: &ResolvedPlan,
     entity_range: std::ops::Range<u64>,
     sender: &Sender<RecordBatch>,
-) -> Result<(u64, ChunkStats)> {
+) -> TTGenResult<(u64, ChunkStats)> {
     let mode = output_mode_from_prediction_type(
         &plan.prediction_type,
         plan.target_dtype.clone(),
@@ -273,7 +271,7 @@ fn execute_entity(
     link_frequencies: &mut Vec<i64>,
     writer: &mut ChannelBatchWriter,
     stats: &mut ChunkStats,
-) -> Result<()> {
+) -> TTGenResult<()> {
     // 0. Look up the entity PK value for output
     let entity_pk = read_column_value(&plan.entity_table, entity_node, plan.entity_pk_col_idx)
         .unwrap_or(Value::Int(entity_node as i64));
@@ -408,7 +406,7 @@ fn write_target(
     entity_include_bit: bool,
     writer: &mut ChannelBatchWriter,
     stats: &mut ChunkStats,
-) -> Result<()> {
+) -> TTGenResult<()> {
     match &plan.prediction_type {
         PredictionType::PassThrough => {
             writer.write_row_pass_through(entity_pk.clone(), ts, entity_include_bit)?;

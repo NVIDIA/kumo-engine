@@ -1,4 +1,13 @@
 from __future__ import annotations
+try:
+    from ._c import DiskgraphDataError, DiskgraphConfigError, DiskgraphSystemError
+except ImportError:
+    try:
+        from diskgraph._c import DiskgraphDataError, DiskgraphConfigError, DiskgraphSystemError
+    except ImportError:
+        DiskgraphDataError = RuntimeError
+        DiskgraphConfigError = RuntimeError
+        DiskgraphSystemError = RuntimeError
 
 import json
 import os
@@ -83,7 +92,7 @@ def _ensure_native_strict_artifact_capabilities() -> None:
     details = ''
     if _NATIVE_IMPORT_ERROR is not None:
         details = f' native_import_error={_NATIVE_IMPORT_ERROR!r}'
-    raise RuntimeError(
+    raise DiskgraphSystemError(
         'diskgraph strict artifact path missing native helper(s): '
         + ', '.join(missing)
         + '. Install a compatible diskgraph runtime wheel.'
@@ -96,9 +105,9 @@ def _normalize_downsampling_config(raw: Optional[Any]) -> DownsamplingConfig:
     enabled = bool(cfg.get('enabled', False))
     max_rows = int(cfg.get('max_rows', 0) or 0)
     if 'seed' in cfg:
-        raise RuntimeError('diskgraph downsampling config no longer accepts seed')
+        raise DiskgraphConfigError('diskgraph downsampling config no longer accepts seed')
     if 'fail_on_unsupported' in cfg:
-        raise RuntimeError('diskgraph downsampling config no longer accepts fail_on_unsupported')
+        raise DiskgraphConfigError('diskgraph downsampling config no longer accepts fail_on_unsupported')
     preserve_pre = bool(cfg.get('preserve_pre_downsample_tt', True))
     is_link_prediction = bool(cfg.get('is_link_prediction', False))
     list_distinct_target_is_array = bool(cfg.get('list_distinct_target_is_array', False))
@@ -106,7 +115,7 @@ def _normalize_downsampling_config(raw: Optional[Any]) -> DownsamplingConfig:
 
     if max_rows <= 0:
         if enabled:
-            raise RuntimeError(
+            raise DiskgraphConfigError(
                 'diskgraph downsampling config requires positive max_rows')
         max_rows = 2_147_483_647
 
@@ -160,12 +169,12 @@ def _build_train_table_edges_artifact(
         return None
 
     if not callable(_export_tt_artifacts_native) or _export_config_cls is None or _fkey_config_cls is None:
-        raise RuntimeError(
+        raise DiskgraphSystemError(
             'diskgraph strict artifact path requires native export_tt_artifacts '
             'with ExportConfig/FkeyConfig when train_table_edges_config.enabled=true'
         )
     if not callable(_build_train_table_edge_bundle_artifact_native):
-        raise RuntimeError(
+        raise DiskgraphSystemError(
             'diskgraph strict artifact path requires native helper '
             'build_train_table_edge_bundle_artifact when train_table_edges_config.enabled=true'
         )
@@ -178,18 +187,18 @@ def _build_train_table_edges_artifact(
     row_idx_col = str(cfg.get('row_idx_col', 'arange'))
     fkeys_raw = cfg.get('fkeys')
     if not isinstance(fkeys_raw, list) or not fkeys_raw:
-        raise RuntimeError('train_table_edges_config.fkeys must be a non-empty list')
+        raise DiskgraphConfigError('train_table_edges_config.fkeys must be a non-empty list')
 
     fkeys = []
     for idx, item in enumerate(fkeys_raw):
         if not isinstance(item, dict):
-            raise RuntimeError(f'train_table_edges_config.fkeys[{idx}] must be dict')
+            raise DiskgraphConfigError(f'train_table_edges_config.fkeys[{idx}] must be dict')
         col = item.get('column_name')
         tgt = item.get('target_table')
         if not isinstance(col, str) or not col:
-            raise RuntimeError(f'train_table_edges_config.fkeys[{idx}].column_name is required')
+            raise DiskgraphConfigError(f'train_table_edges_config.fkeys[{idx}].column_name is required')
         if not isinstance(tgt, str) or not tgt:
-            raise RuntimeError(f'train_table_edges_config.fkeys[{idx}].target_table is required')
+            raise DiskgraphConfigError(f'train_table_edges_config.fkeys[{idx}].target_table is required')
         fkeys.append(_fkey_config_cls(column_name=col, target_table=tgt))
 
     os.makedirs(edge_output_dir, exist_ok=True)
@@ -212,10 +221,10 @@ def _build_train_table_edges_artifact(
     )
     payload_json = built_edges.get('payload_json') if isinstance(built_edges, dict) else None
     if not isinstance(payload_json, str) or not payload_json:
-        raise RuntimeError('diskgraph native train-table edges builder returned invalid payload_json')
+        raise DiskgraphSystemError('diskgraph native train-table edges builder returned invalid payload_json')
     payload = json.loads(payload_json)
     if not isinstance(payload, dict):
-        raise RuntimeError('diskgraph native train-table edges builder returned non-dict payload')
+        raise DiskgraphSystemError('diskgraph native train-table edges builder returned non-dict payload')
     return json.dumps(payload, sort_keys=True)
 
 
@@ -239,15 +248,15 @@ def execute_tt_plan_with_artifacts(
     - manifest with artifact references + checksums
     """
     if not isinstance(split_config, SplitSpec):
-        raise TypeError('diskgraph strict artifact path requires split_config as SplitSpec')
+        raise DiskgraphDataError('diskgraph strict artifact path requires split_config as SplitSpec')
     if split_family_hint and split_config.kind and split_family_hint != split_config.kind:
-        raise RuntimeError(
+        raise DiskgraphConfigError(
             'diskgraph split contract mismatch: '
             f'split_family_hint={split_family_hint} conflicts with split_config.kind={split_config.kind}'
         )
     resolved_family = split_config.kind or split_family_hint
     if not resolved_family:
-        raise RuntimeError('diskgraph strict artifact path requires split family in split_config.kind or split_family_hint')
+        raise DiskgraphConfigError('diskgraph strict artifact path requires split family in split_config.kind or split_family_hint')
 
     _ensure_native_strict_artifact_capabilities()
 
@@ -292,7 +301,7 @@ def execute_tt_plan_with_artifacts(
         downsampling_config_json=downsampling_cfg_json,
     )
     if not isinstance(mat, dict):
-        raise RuntimeError('diskgraph native materialize_with_split returned invalid payload type')
+        raise DiskgraphSystemError('diskgraph native materialize_with_split returned invalid payload type')
     row_count = int(mat.get('rows_written', 0) or 0)
     summary_json = mat.get('summary_json')
     if isinstance(summary_json, str) and summary_json:
@@ -314,10 +323,10 @@ def execute_tt_plan_with_artifacts(
         native_pre_downsample_row_count = int(pre_raw)
 
     if row_count == 0:
-        raise RuntimeError('diskgraph execute_tt_plan returned zero rows')
+        raise DiskgraphDataError('diskgraph execute_tt_plan returned zero rows')
 
     if downsampling_cfg.enabled and not native_downsampling_handled:
-        raise RuntimeError(
+        raise DiskgraphSystemError(
             'diskgraph native materialize_with_split did not handle downsampling metadata'
         )
 
@@ -336,12 +345,12 @@ def execute_tt_plan_with_artifacts(
     if downsampling_cfg.enabled:
         stats_obj = (native_summary or {}).get('stats') if isinstance(native_summary, dict) else None
         if not isinstance(stats_obj, dict):
-            raise RuntimeError(
+            raise DiskgraphSystemError(
                 'diskgraph native downsampling reported handled=true but summary.stats is missing'
             )
         native_rows = stats_obj.get('num_total_rows')
         if isinstance(native_rows, (int, float)) and int(native_rows) != int(row_count):
-            raise RuntimeError(
+            raise DiskgraphDataError(
                 'diskgraph native downsampling summary row-count mismatch '
                 f'(summary_rows={int(native_rows)}, rows_written={int(row_count)})'
             )
@@ -351,15 +360,15 @@ def execute_tt_plan_with_artifacts(
     assignments: np.ndarray
 
     if native_split_bytes is None or native_split_meta is None:
-        raise RuntimeError('diskgraph native split assignment payload is missing')
+        raise DiskgraphDataError('diskgraph native split assignment payload is missing')
     if not native_split_meta.get('authoritative', False):
-        raise RuntimeError(
+        raise DiskgraphDataError(
             'diskgraph split assignment is non-authoritative '
             f"(family={native_split_meta.get('family')}, reason={native_split_meta.get('reason')})"
         )
 
     if len(native_split_bytes) != row_count:
-        raise RuntimeError(
+        raise DiskgraphDataError(
             'diskgraph native split assignment row count mismatch '
             f'(rows={row_count}, assignment_rows={len(native_split_bytes)})'
         )
@@ -375,10 +384,10 @@ def execute_tt_plan_with_artifacts(
     )
     payload_json = built.get('payload_json') if isinstance(built, dict) else None
     if not isinstance(payload_json, str) or not payload_json:
-        raise RuntimeError('diskgraph native tt stats builder returned invalid payload_json')
+        raise DiskgraphSystemError('diskgraph native tt stats builder returned invalid payload_json')
     parsed_payload = json.loads(payload_json)
     if not isinstance(parsed_payload, dict):
-        raise RuntimeError('diskgraph native tt stats builder returned non-dict payload')
+        raise DiskgraphSystemError('diskgraph native tt stats builder returned non-dict payload')
     stats_payload = parsed_payload
     stats_json = json.dumps(stats_payload, sort_keys=True)
 
@@ -395,19 +404,19 @@ def execute_tt_plan_with_artifacts(
     )
     split_stats_payload_json = split_stats_built.get('payload_json') if isinstance(split_stats_built, dict) else None
     if not isinstance(split_stats_payload_json, str) or not split_stats_payload_json:
-        raise RuntimeError('diskgraph native split stats builder returned invalid payload_json')
+        raise DiskgraphSystemError('diskgraph native split stats builder returned invalid payload_json')
     split_stats_payload = json.loads(split_stats_payload_json)
     if not isinstance(split_stats_payload, dict):
-        raise RuntimeError('diskgraph native split stats builder returned non-dict payload')
+        raise DiskgraphSystemError('diskgraph native split stats builder returned non-dict payload')
     split_stats_json = json.dumps(split_stats_payload, sort_keys=True)
 
     train_col_stats_payload_json = mat.get('train_table_col_stats_json')
     if not isinstance(train_col_stats_payload_json, str) or not train_col_stats_payload_json:
-        raise RuntimeError(
+        raise DiskgraphSystemError(
             'diskgraph native materialize_with_split did not provide train_table_col_stats_json')
     train_col_stats_payload = json.loads(train_col_stats_payload_json)
     if not isinstance(train_col_stats_payload, dict):
-        raise RuntimeError(
+        raise DiskgraphSystemError(
             'diskgraph native train_table_col_stats_json payload must be dict')
     train_col_stats_json = json.dumps(train_col_stats_payload, sort_keys=True)
 

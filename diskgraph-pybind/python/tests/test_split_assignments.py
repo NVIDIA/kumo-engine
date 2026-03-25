@@ -5,6 +5,8 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
+from diskgraph._c import DiskgraphConfigError, DiskgraphConfigError, DiskgraphDataError, DiskgraphSystemError
+
 
 
 def _load_module():
@@ -17,10 +19,12 @@ def _load_module():
 
 
 def _load_split_contract():
+    import sys
     root = Path(__file__).resolve().parents[1] / 'diskgraph' / 'split_contract.py'
     spec = importlib.util.spec_from_file_location('diskgraph_split_contract', root)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
+    sys.modules[module.__name__] = module
     spec.loader.exec_module(module)
     return module
 
@@ -122,7 +126,7 @@ def test_split_family_hint_conflict_fails_fast(tmp_path):
         },
     )
 
-    with pytest.raises(RuntimeError, match='split contract mismatch'):
+    with pytest.raises(DiskgraphSystemError, match='split contract mismatch'):
         M.compute_dense_split_assignments(
             train_table_path=str(p),
             split_config=SplitSpec(kind='FixedSplit', ratio=[0.8, 0.1, 0.1]),
@@ -140,7 +144,7 @@ def test_rejects_dict_split_config(tmp_path):
         },
     )
 
-    with pytest.raises(TypeError, match='requires split_config as SplitSpec'):
+    with pytest.raises(DiskgraphDataError, match='requires split_config as SplitSpec'):
         M.compute_dense_split_assignments(
             train_table_path=str(p),
             split_config={
@@ -161,7 +165,7 @@ def test_manual_split_requires_explicit_train_and_val_values(tmp_path):
         },
     )
 
-    with pytest.raises(RuntimeError, match='ManualSplit requires explicit'):
+    with pytest.raises(DiskgraphConfigError, match='ManualSplit requires explicit'):
         M.compute_dense_split_assignments(
             train_table_path=str(p),
             split_config=SplitSpec(kind='ManualSplit', split_column='SPLIT_COL'),

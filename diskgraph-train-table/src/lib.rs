@@ -6,3 +6,4 @@ pub mod ttgen_output;
 pub mod ttgen_resolve;
 pub mod ttgen_stats;
 pub mod ttgen_traversal;
+pub mod errors;

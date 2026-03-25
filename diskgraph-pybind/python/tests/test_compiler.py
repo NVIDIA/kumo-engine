@@ -1,4 +1,6 @@
 import pytest
+from diskgraph._c import DiskgraphConfigError, DiskgraphDataError, DiskgraphSystemError
+
 import json
 from kumoapi.pquery.validated_predictive_query import ValidatedPredictiveQuery
 from kumoapi.pquery.AST import (
@@ -12,7 +14,7 @@ from kumoapi.pquery.AST import (
     DateOffsetRange,
 )
 from kumoapi.typing import AggregationType, BoolOp, RelOp, TimeUnit
-from diskgraph import DiskGraphPlanCompiler, SplitSpec
+from diskgraph import DiskgraphConfigError, DiskGraphPlanCompiler, SplitSpec
 
 def test_compiler_basic_aggregation():
     # Construct a Mock Validated AST
@@ -142,7 +144,7 @@ def test_compiler_rejects_legacy_split_dict_payload():
     query._query_type = "TEMPORAL"
 
     compiler = DiskGraphPlanCompiler()
-    with pytest.raises(TypeError, match='requires split=SplitSpec'):
+    with pytest.raises(DiskgraphConfigError, match='requires split=SplitSpec'):
         compiler.compile(
             query=query,
             timestamps=[1609459200000000],
@@ -432,7 +434,7 @@ def test_compiler_or_target():
 
 def test_timestamp_normalization():
     from diskgraph.compiler import DiskGraphPlanCompiler
-    from diskgraph import TimeUnit
+    from diskgraph import DiskgraphConfigError, TimeUnit
     compiler = DiskGraphPlanCompiler()
 
     # 1. Micros to Seconds (standard Kumo case)

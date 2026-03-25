@@ -356,6 +356,14 @@ pub fn ingest_with_stats_from_source(
         tracing::info!("wrote edge_stats.json");
     }
 
+    let total_pk_drops: u64 = ctx.pk_duplicate_drops.values().sum();
+    let total_null_ts_drops: u64 = ctx.pk_null_timestamp_drops.values().sum::<u64>() + ctx.edge_null_timestamp_drops.values().sum::<u64>();
+    tracing::info!(
+        total_pk_duplicates_dropped = total_pk_drops,
+        total_null_timestamps_dropped = total_null_ts_drops,
+        "Ingestion data quality summary"
+    );
+
     tracing::debug!(
         elapsed_ms = wall_time.as_millis() as u64,
         node_types = index_metadata.node_types.len(),

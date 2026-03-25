@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 /// Metadata and reader for a single graph shard.
 pub struct ShardHandle {
@@ -529,7 +529,7 @@ impl DiskGraphEngine {
             EngineError::InvalidRequest(format!("unknown seed type: {}", seed_type))
         })?;
 
-        info!(
+        debug!(
             dataset_id = %request.dataset_id,
             seed_type = %seed_type,
             seed_count = seed_ids.len(),
@@ -639,7 +639,7 @@ impl DiskGraphEngine {
         // 5. Finalize node batch and stats
         output.finalize(state)?;
 
-        info!(
+        debug!(
             total_nodes = state.stats.total_nodes,
             total_edges = state.stats.total_edges,
             elapsed_ms = sample_start.elapsed().as_millis() as u64,

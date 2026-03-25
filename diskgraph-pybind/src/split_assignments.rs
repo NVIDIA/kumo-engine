@@ -1,5 +1,4 @@
 use chrono::{DateTime, Months, TimeZone, Utc};
-use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
@@ -15,7 +14,7 @@ fn stage_assignments_by_ratio_on_perm(
     perm: &[usize],
 ) -> PyResult<Vec<u8>> {
     if perm.len() != row_count {
-        return Err(PyValueError::new_err(format!(
+        return Err(crate::DiskgraphConfigError::new_err(format!(
             "perm length mismatch: expected {} got {}",
             row_count,
             perm.len()
@@ -95,12 +94,12 @@ fn ns_to_dt(ts_ns: i64) -> PyResult<DateTime<Utc>> {
     let nanos = ts_ns.rem_euclid(NS_PER_SEC) as u32;
     Utc.timestamp_opt(secs, nanos)
         .single()
-        .ok_or_else(|| PyValueError::new_err(format!("invalid timestamp ns: {}", ts_ns)))
+        .ok_or_else(|| crate::DiskgraphConfigError::new_err(format!("invalid timestamp ns: {}", ts_ns)))
 }
 
 fn dt_to_ns(dt: DateTime<Utc>) -> PyResult<i64> {
     dt.timestamp_nanos_opt()
-        .ok_or_else(|| PyValueError::new_err("timestamp nanos overflow"))
+        .ok_or_else(|| crate::DiskgraphConfigError::new_err("timestamp nanos overflow"))
 }
 
 fn add_unit(ts_ns: i64, unit: &str, value: i64) -> PyResult<i64> {
@@ -121,7 +120,7 @@ fn add_unit(ts_ns: i64, unit: &str, value: i64) -> PyResult<i64> {
             } else {
                 dt.checked_sub_months(Months::new(months))
             }
-            .ok_or_else(|| PyValueError::new_err("month offset overflow"))?;
+            .ok_or_else(|| crate::DiskgraphConfigError::new_err("month offset overflow"))?;
             dt_to_ns(out)
         }
         "years" => {
@@ -132,10 +131,10 @@ fn add_unit(ts_ns: i64, unit: &str, value: i64) -> PyResult<i64> {
             } else {
                 dt.checked_sub_months(Months::new(months))
             }
-            .ok_or_else(|| PyValueError::new_err("year offset overflow"))?;
+            .ok_or_else(|| crate::DiskgraphConfigError::new_err("year offset overflow"))?;
             dt_to_ns(out)
         }
-        other => Err(PyValueError::new_err(format!("unsupported time unit: {}", other))),
+        other => Err(crate::DiskgraphConfigError::new_err(format!("unsupported time unit: {}", other))),
     }
 }
 
@@ -167,10 +166,10 @@ pub fn compute_dense_split_assignments_core(
         }
         "TemporalSplit" => {
             let ts = timestamps.ok_or_else(|| {
-                PyValueError::new_err("timestamps are required for TemporalSplit")
+                crate::DiskgraphConfigError::new_err("timestamps are required for TemporalSplit")
             })?;
             if ts.len() != row_count {
-                return Err(PyValueError::new_err(format!(
+                return Err(crate::DiskgraphConfigError::new_err(format!(
                     "timestamps length mismatch: expected {} got {}",
                     row_count,
                     ts.len()
@@ -181,7 +180,7 @@ pub fn compute_dense_split_assignments_core(
             p
         }
         other => {
-            return Err(PyValueError::new_err(format!(
+            return Err(crate::DiskgraphConfigError::new_err(format!(
                 "unsupported family for Rust split core: {}",
                 other
             )))
@@ -194,7 +193,7 @@ pub fn compute_dense_split_assignments_core(
 #[pyfunction]
 pub fn apply_entity_include_mask(assignments: Vec<u8>, include_mask: Vec<bool>) -> PyResult<Vec<u8>> {
     if assignments.len() != include_mask.len() {
-        return Err(PyValueError::new_err(format!(
+        return Err(crate::DiskgraphConfigError::new_err(format!(
             "include mask length mismatch: assignments={} include_mask={}",
             assignments.len(),
             include_mask.len()
@@ -231,7 +230,7 @@ pub fn assign_manual_split(values: Vec<String>, train_values: Vec<String>, val_v
         }
 
         if !valid.contains(v) {
-            return Err(PyValueError::new_err(format!(
+            return Err(crate::DiskgraphConfigError::new_err(format!(
                 "Manual split value '{}' is outside configured split values",
                 v
             )));
@@ -258,7 +257,7 @@ pub fn assign_approx_date_offset_split(timestamps_ns: Vec<i64>, ratio: Vec<f64>)
         return Ok(Vec::new());
     }
     if ratio.len() < 2 || ratio.len() > 3 {
-        return Err(PyValueError::new_err("ApproxDateOffsetSplit requires 2 or 3 ratios"));
+        return Err(crate::DiskgraphConfigError::new_err("ApproxDateOffsetSplit requires 2 or 3 ratios"));
     }
 
     let mut counts: HashMap<i64, usize> = HashMap::new();
@@ -335,7 +334,7 @@ pub fn assign_date_offset_split(
     anchor_start_offset: i64,
 ) -> PyResult<Vec<u8>> {
     if offsets.is_empty() {
-        return Err(PyValueError::new_err("DateOffsetSplit requires offsets"));
+        return Err(crate::DiskgraphConfigError::new_err("DateOffsetSplit requires offsets"));
     }
     if timestamps_ns.is_empty() {
         return Ok(Vec::new());
@@ -386,7 +385,7 @@ pub fn assign_time_range_split(
     anchor_start_offset: i64,
 ) -> PyResult<Vec<u8>> {
     if ranges_start_ns.len() < 2 || ranges_start_ns.len() != ranges_end_ns.len() {
-        return Err(PyValueError::new_err(
+        return Err(crate::DiskgraphConfigError::new_err(
             "TimeRangeSplit requires at least two ranges with matching starts/ends",
         ));
     }

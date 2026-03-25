@@ -10,7 +10,6 @@
 //! plan_json = b.build()
 //! ```
 
-use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
 use diskgraph_core::tt_builder as tt;
@@ -350,7 +349,7 @@ impl DiskGraphTTBuilder {
                 e.time_col = Some(column);
                 Ok(())
             }
-            None => Err(PyValueError::new_err(
+            None => Err(crate::DiskgraphConfigError::new_err(
                 "call for_each() before entity_time_col()",
             )),
         }
@@ -363,7 +362,7 @@ impl DiskGraphTTBuilder {
                 e.valid_to_col = Some(column);
                 Ok(())
             }
-            None => Err(PyValueError::new_err(
+            None => Err(crate::DiskgraphConfigError::new_err(
                 "call for_each() before entity_valid_to_col()",
             )),
         }
@@ -376,7 +375,7 @@ impl DiskGraphTTBuilder {
                 e.filter = Some(f.inner);
                 Ok(())
             }
-            None => Err(PyValueError::new_err(
+            None => Err(crate::DiskgraphConfigError::new_err(
                 "call for_each() before entity_filter()",
             )),
         }
@@ -430,12 +429,12 @@ impl DiskGraphTTBuilder {
         manual_test_values: Option<Vec<String>>,
     ) -> PyResult<()> {
         if ratio.len() < 2 || ratio.len() > 3 {
-            return Err(PyValueError::new_err(
+            return Err(crate::DiskgraphConfigError::new_err(
                 "split ratio must contain 2 or 3 entries",
             ));
         }
         if ratio.iter().any(|v| *v < 0.0) {
-            return Err(PyValueError::new_err(
+            return Err(crate::DiskgraphConfigError::new_err(
                 "split ratio cannot contain negative values",
             ));
         }
@@ -541,7 +540,7 @@ impl DiskGraphTTBuilder {
             "and" => tt::LogicalOpKind::And,
             "or" => tt::LogicalOpKind::Or,
             "not" => tt::LogicalOpKind::Not,
-            _ => return Err(PyValueError::new_err(format!("Invalid logical op: {}", op))),
+            _ => return Err(crate::DiskgraphConfigError::new_err(format!("Invalid logical op: {}", op))),
         };
 
         self.current_ops.push(tt::Op::LogicalOp {
@@ -560,7 +559,7 @@ impl DiskGraphTTBuilder {
         lag_offsets: Vec<i64>,
     ) -> PyResult<()> {
         let target_op: tt::Op = serde_json::from_str(&target_op_json)
-            .map_err(|e| PyValueError::new_err(format!("Invalid target op JSON: {}", e)))?;
+            .map_err(|e| crate::DiskgraphConfigError::new_err(format!("Invalid target op JSON: {}", e)))?;
 
         self.current_ops.push(tt::Op::Autoregression {
             alias,
@@ -597,9 +596,9 @@ impl DiskGraphTTBuilder {
     /// This is useful for wrapping existing operations (like Aggregates) inside other operations (like Autoregression).
     pub fn pop_last_op_json(&mut self) -> PyResult<String> {
         let op = self.current_ops.pop()
-            .ok_or_else(|| PyValueError::new_err("No operations to pop"))?;
+            .ok_or_else(|| crate::DiskgraphConfigError::new_err("No operations to pop"))?;
         serde_json::to_string(&op)
-            .map_err(|e| PyValueError::new_err(format!("Failed to serialize op: {}", e)))
+            .map_err(|e| crate::DiskgraphConfigError::new_err(format!("Failed to serialize op: {}", e)))
     }
 
     /// Close current stage with a short-circuit filter, start new stage.
@@ -621,7 +620,7 @@ impl DiskGraphTTBuilder {
         let entity = self
             .entity
             .take()
-            .ok_or_else(|| PyValueError::new_err("call for_each() before build()"))?;
+            .ok_or_else(|| crate::DiskgraphConfigError::new_err("call for_each() before build()"))?;
 
         let plan = tt::DiskGraphTTPlan {
             entity,
@@ -631,7 +630,7 @@ impl DiskGraphTTBuilder {
             stages: std::mem::take(&mut self.stages),
         };
 
-        serde_json::to_string(&plan).map_err(|e| PyValueError::new_err(e.to_string()))
+        serde_json::to_string(&plan).map_err(|e| crate::DiskgraphConfigError::new_err(e.to_string()))
     }
 }
 
@@ -647,7 +646,7 @@ fn parse_compare_op(op: &str) -> PyResult<tt::CompareOp> {
         "<=" | "lte" => Ok(tt::CompareOp::Lte),
         "isnull" | "is_null" => Ok(tt::CompareOp::IsNull),
         "isnotnull" | "is_not_null" => Ok(tt::CompareOp::IsNotNull),
-        _ => Err(PyValueError::new_err(format!("unknown compare op: {op}"))),
+        _ => Err(crate::DiskgraphConfigError::new_err(format!("unknown compare op: {op}"))),
     }
 }
 
@@ -662,7 +661,7 @@ fn parse_agg_func(func: &str) -> PyResult<tt::AggFunc> {
         "list_distinct" | "listdistinct" => Ok(tt::AggFunc::ListDistinct),
         "first" => Ok(tt::AggFunc::First),
         "last" => Ok(tt::AggFunc::Last),
-        _ => Err(PyValueError::new_err(format!("unknown agg func: {func}"))),
+        _ => Err(crate::DiskgraphConfigError::new_err(format!("unknown agg func: {func}"))),
     }
 }
 
@@ -675,7 +674,7 @@ fn parse_time_unit(unit: &str) -> PyResult<tt::TimeUnit> {
         "weeks" | "week" | "w" => Ok(tt::TimeUnit::Weeks),
         "months" | "month" | "mo" => Ok(tt::TimeUnit::Months),
         "years" | "year" | "y" => Ok(tt::TimeUnit::Years),
-        _ => Err(PyValueError::new_err(format!("unknown time unit: {unit}"))),
+        _ => Err(crate::DiskgraphConfigError::new_err(format!("unknown time unit: {unit}"))),
     }
 }
 
@@ -690,7 +689,7 @@ fn extract_value(value: &Bound<'_, PyAny>) -> PyResult<tt::Value> {
     } else if let Ok(s) = value.extract::<String>() {
         Ok(tt::Value::Str(s))
     } else {
-        Err(PyValueError::new_err(
+        Err(crate::DiskgraphConfigError::new_err(
             "value must be bool, int, float, or str",
         ))
     }
@@ -701,13 +700,13 @@ fn extract_edge_path(path: &Bound<'_, PyAny>) -> PyResult<Vec<tt::EdgeRef>> {
         Ok(vec![edge.inner])
     } else if let Ok(edges) = path.extract::<Vec<EdgeRef>>() {
         if edges.is_empty() {
-            return Err(PyValueError::new_err(
+            return Err(crate::DiskgraphConfigError::new_err(
                 "path must contain at least one EdgeRef",
             ));
         }
         Ok(edges.into_iter().map(|e| e.inner).collect())
     } else {
-        Err(PyValueError::new_err(
+        Err(crate::DiskgraphConfigError::new_err(
             "path must be an EdgeRef or a list of EdgeRef",
         ))
     }

@@ -1,3 +1,4 @@
+from ._c import DiskgraphDataError, DiskgraphConfigError, DiskgraphSystemError
 """Convert Kumo GraphConfig to DiskGraph ingest config.
 
 The DiskgraphConfigConverter accepts a Kumo GraphConfig dict (loaded from
@@ -135,7 +136,7 @@ class DiskgraphConfigConverter:
             source["paths"] = expanded
 
         if missing_parquet:
-            raise ValueError(
+            raise DiskgraphDataError(
                 "No parquet inputs found for diskgraph ingest tables:\n- "
                 + "\n- ".join(missing_parquet)
             )

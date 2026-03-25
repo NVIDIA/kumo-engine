@@ -1,8 +1,11 @@
 import pytest
+from diskgraph._c import DiskgraphConfigError, DiskgraphConfigError, DiskgraphDataError, DiskgraphSystemError
+
 import json
 import pyarrow as pa
 import pyarrow.parquet as pq
 import diskgraph as diskgraph_py
+from diskgraph import DiskgraphConfigError
 
 def test_export_tt_artifacts_pybind(tmp_path_factory, ifood_graph):
     """

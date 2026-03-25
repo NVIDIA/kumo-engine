@@ -1,4 +1,13 @@
 from __future__ import annotations
+try:
+    from ._c import DiskgraphDataError, DiskgraphConfigError, DiskgraphSystemError
+except ImportError:
+    try:
+        from diskgraph._c import DiskgraphDataError, DiskgraphConfigError, DiskgraphSystemError
+    except ImportError:
+        DiskgraphDataError = RuntimeError
+        DiskgraphConfigError = RuntimeError
+        DiskgraphSystemError = RuntimeError
 
 from typing import Any, Optional
 
@@ -32,7 +41,7 @@ _ENTITY_INCLUDE_BIT_COL = 'ENTITY_INCLUDE_BIT'
 
 def _require_rust_split_core() -> None:
     if _RUST_SPLIT_IMPORT_ERROR is not None:
-        raise RuntimeError(
+        raise DiskgraphSystemError(
             'diskgraph split assignment requires diskgraph._c Rust extension; '
             f'import failed: {_RUST_SPLIT_IMPORT_ERROR}'
         )
@@ -41,7 +50,7 @@ def _require_rust_split_core() -> None:
 def _require_rust_fn(fn: Any, fn_name: str) -> Any:
     _require_rust_split_core()
     if fn is None:
-        raise RuntimeError(
+        raise DiskgraphSystemError(
             f'diskgraph split assignment requires Rust function `{fn_name}` in diskgraph._c; '
             'rebuild/reinstall diskgraph wheel'
         )
@@ -52,7 +61,7 @@ def _read_parquet_columns(path: str, required: list[str]) -> pd.DataFrame:
     schema = pq.read_schema(path)
     missing = [c for c in required if c not in schema.names]
     if missing:
-        raise RuntimeError(f'diskgraph native split requires missing columns: {missing}')
+        raise DiskgraphDataError(f'diskgraph native split requires missing columns: {missing}')
     return pq.read_table(path, columns=required).to_pandas()
 
 
@@ -125,7 +134,7 @@ def _assign_for_column_split(split_cfg: dict[str, Any], train_table_path: str) -
     col_spec = split_cfg.get('col')
     col_name = col_spec.get('name') if isinstance(col_spec, dict) else col_spec
     if not isinstance(col_name, str) or not col_name:
-        raise RuntimeError('ColumnSplit requires split.col name')
+        raise DiskgraphConfigError('ColumnSplit requires split.col name')
     df = _read_parquet_columns(train_table_path, ['arange', col_name]).sort_values('arange', kind='mergesort')
     perm = np.argsort(df[col_name].to_numpy(), kind='mergesort').astype(np.int64)
     assign_on_perm = _require_rust_fn(assign_by_ratio_on_perm, 'assign_by_ratio_on_perm')
@@ -142,19 +151,19 @@ def _assign_for_manual_split(split_cfg: dict[str, Any], train_table_path: str) -
     col_spec = split_cfg.get('col')
     col_name = col_spec.get('name') if isinstance(col_spec, dict) else col_spec
     if not isinstance(col_name, str) or not col_name:
-        raise RuntimeError('ManualSplit requires split.col name')
+        raise DiskgraphConfigError('ManualSplit requires split.col name')
 
     df = _read_parquet_columns(train_table_path, ['arange', col_name]).sort_values('arange', kind='mergesort')
     train_raw = split_cfg.get('manual_train_values')
     val_raw = split_cfg.get('manual_val_values')
     if train_raw is None or val_raw is None:
-        raise RuntimeError(
+        raise DiskgraphConfigError(
             'ManualSplit requires explicit manual_train_values and manual_val_values'
         )
     train_vals = [str(v) for v in _as_list(train_raw)]
     val_vals = [str(v) for v in _as_list(val_raw)]
     if not train_vals or not val_vals:
-        raise RuntimeError('ManualSplit requires non-empty train and val values')
+        raise DiskgraphConfigError('ManualSplit requires non-empty train and val values')
     test_raw = split_cfg.get('manual_test_values')
     test_vals = [str(v) for v in (_as_list(test_raw) if test_raw is not None else [])]
 
@@ -173,7 +182,7 @@ def _assign_for_backtesting_split(split_cfg: dict[str, Any], train_table_path: s
     _require_rust_split_core()
     ts_raw = split_cfg.get('backtesting_timestamp')
     if ts_raw is None:
-        raise RuntimeError('BacktestingSplit requires backtesting_timestamp')
+        raise DiskgraphConfigError('BacktestingSplit requires backtesting_timestamp')
     df = _read_parquet_columns(train_table_path, ['arange', 'TIMESTAMP']).sort_values('arange', kind='mergesort')
     time_ser = _infer_datetime_series(df['TIMESTAMP'])
     ts_ns = time_ser.astype('int64').to_numpy(dtype=np.int64)
@@ -190,7 +199,7 @@ def _assign_for_time_range_split(split_cfg: dict[str, Any], train_table_path: st
     _require_rust_split_core()
     ranges = split_cfg.get('ranges') or []
     if not isinstance(ranges, list) or len(ranges) < 2:
-        raise RuntimeError('TimeRangeSplit requires at least two ranges')
+        raise DiskgraphConfigError('TimeRangeSplit requires at least two ranges')
 
     df = _read_parquet_columns(train_table_path, ['arange', 'TIMESTAMP']).sort_values('arange', kind='mergesort')
     time_ser = _infer_datetime_series(df['TIMESTAMP'])
@@ -202,7 +211,7 @@ def _assign_for_time_range_split(split_cfg: dict[str, Any], train_table_path: st
         if split_idx > 2:
             break
         if not isinstance(pair, (list, tuple)) or len(pair) != 2:
-            raise RuntimeError('TimeRangeSplit range entries must be [start, end]')
+            raise DiskgraphConfigError('TimeRangeSplit range entries must be [start, end]')
         starts.append(int(pd.Timestamp(pair[0]).value))
         ends.append(int(pd.Timestamp(pair[1]).value))
 
@@ -226,7 +235,7 @@ def _assign_for_date_offset_split(split_cfg: dict[str, Any], train_table_path: s
     _require_rust_split_core()
     offsets_raw = split_cfg.get('offsets')
     if not isinstance(offsets_raw, list) or len(offsets_raw) < 1:
-        raise RuntimeError('DateOffsetSplit requires offsets')
+        raise DiskgraphConfigError('DateOffsetSplit requires offsets')
     offsets = [int(x) for x in offsets_raw]
 
     offset_unit = str(split_cfg.get('offset_unit', 'days')).lower()
@@ -255,7 +264,7 @@ def _assign_for_approx_date_offset_split(split_cfg: dict[str, Any], train_table_
     _require_rust_split_core()
     ratio = [float(x) for x in split_cfg.get('ratio', [0.8, 0.1, 0.1])]
     if len(ratio) < 2 or len(ratio) > 3:
-        raise RuntimeError('ApproxDateOffsetSplit requires 2 or 3 ratios')
+        raise DiskgraphConfigError('ApproxDateOffsetSplit requires 2 or 3 ratios')
 
     df = _read_parquet_columns(train_table_path, ['arange', 'TIMESTAMP']).sort_values('arange', kind='mergesort')
     ts = _infer_datetime_series(df['TIMESTAMP']).astype('int64').to_numpy(dtype=np.int64)
@@ -299,25 +308,25 @@ def compute_dense_split_assignments(
     Returns assignments uint8 vector and metadata dict.
     """
     if isinstance(split_config, dict):
-        raise TypeError(
+        raise DiskgraphDataError(
             'compute_dense_split_assignments requires split_config as SplitSpec, '
             'got dict. Construct a SplitSpec first.'
         )
     if not (hasattr(split_config, 'to_assignment_config') and callable(split_config.to_assignment_config)
             and hasattr(split_config, 'kind')):
-        raise TypeError(
+        raise DiskgraphDataError(
             f'compute_dense_split_assignments requires split_config as SplitSpec '
             f'(must have to_assignment_config() and kind), got {type(split_config).__name__}'
         )
     if split_family_hint and split_config.kind and split_family_hint != split_config.kind:
-        raise RuntimeError(
+        raise DiskgraphSystemError(
             'diskgraph split contract mismatch: '
             f'split_family_hint={split_family_hint} conflicts with split_config.kind={split_config.kind}'
         )
     split_cfg = split_config.to_assignment_config()
     family = split_family_hint or split_config.kind
     if not family:
-        raise RuntimeError('missing split family for diskgraph dense split assignment')
+        raise DiskgraphConfigError('missing split family for diskgraph dense split assignment')
 
     if family == 'RandomSplit':
         assignments = _assign_for_random_split(split_cfg, train_table_path)
@@ -340,7 +349,7 @@ def compute_dense_split_assignments(
     elif family == 'RandomLinkSplit':
         raise NotImplementedError('RandomLinkSplit is not implemented for diskgraph dense split assignment')
     else:
-        raise RuntimeError(f'unsupported split family for diskgraph dense split assignment: {family}')
+        raise DiskgraphConfigError(f'unsupported split family for diskgraph dense split assignment: {family}')
 
     assignments = _apply_entity_include_filter(assignments.astype(np.uint8), train_table_path)
     return assignments, {

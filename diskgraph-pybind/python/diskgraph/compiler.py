@@ -12,7 +12,7 @@ from kumoapi.pquery.AST import (
 )
 from kumoapi.typing import BoolOp
 
-from ._c import DiskGraphTTBuilder, EdgeRef, RowFilter, StageFilter, TimeUnit
+from ._c import DiskgraphDataError, DiskgraphConfigError, DiskgraphSystemError, DiskGraphTTBuilder, EdgeRef, RowFilter, StageFilter, TimeUnit
 from .split_contract import SplitSpec
 
 VALID_TASK_TYPES = {
@@ -137,7 +137,7 @@ class DiskGraphPlanCompiler:
         """
         task_type = task_type.lower()
         if task_type not in VALID_TASK_TYPES:
-            raise ValueError(f"Invalid task_type '{task_type}'. Must be one of {VALID_TASK_TYPES}")
+            raise DiskgraphConfigError(f"Invalid task_type '{task_type}'. Must be one of {VALID_TASK_TYPES}")
 
         # 1. Temporal Spec
         if query.query_type.name == "TEMPORAL" and timestamps:
@@ -152,7 +152,7 @@ class DiskGraphPlanCompiler:
 
         if lp_prediction_mode == 'RHS' and is_link_pred and is_prediction:
             if not lp_rhs_entity_table or not lp_rhs_entity_column:
-                raise ValueError("lp_rhs_entity_table and lp_rhs_entity_column are required for RHS extraction")
+                raise DiskgraphConfigError("lp_rhs_entity_table and lp_rhs_entity_column are required for RHS extraction")
 
             entity_table = lp_rhs_entity_table
             entity_col = lp_rhs_entity_column
@@ -208,13 +208,13 @@ class DiskGraphPlanCompiler:
 
         split_spec = split
         if split_spec is not None and not isinstance(split_spec, SplitSpec):
-            raise TypeError(
+            raise DiskgraphConfigError(
                 'diskgraph compiler split contract requires split=SplitSpec; '
                 'legacy dict split payloads are no longer supported'
             )
         if split_spec is not None:
             if split_spec.ratio is None:
-                raise RuntimeError('diskgraph split contract requires ratio for compiler split planning')
+                raise DiskgraphConfigError('diskgraph split contract requires ratio for compiler split planning')
             self.builder.split_ratio(
                 split_spec.ratio,
                 kind=split_spec.kind,
@@ -265,7 +265,7 @@ class DiskGraphPlanCompiler:
                         has_edges_alias = self._has_target_edges(query.target_ast, query)
                         sf = StageFilter.compare(has_edges_alias, "==", False)
                         self.builder.filter(sf)
-                    except ValueError:
+                    except DiskgraphConfigError:
                         # Fallback for non-aggregation targets (e.g. direct column lookups).
                         # In this case we CAN use is_null natively because columns evaluate correctly.
                         target_alias = self._traverse_target(query.target_ast, query)
@@ -333,10 +333,10 @@ class DiskGraphPlanCompiler:
         try:
             # We check if it involves any Aggregations. If so, it CANNOT be a RowFilter.
             if self._has_aggregation(node):
-                raise ValueError("Involves aggregation")
+                raise DiskgraphConfigError("Involves aggregation")
             rf = self._compile_row_filter(node, query, root_table=root_table)
             self.builder.entity_filter(rf)
-        except (ValueError, AttributeError):
+        except (DiskgraphConfigError, AttributeError):
             # If it involves aggregations, it must be a StageFilter
             sf = self._compile_stage_filter(node, query)
             self.builder.filter(sf)
@@ -398,7 +398,7 @@ class DiskGraphPlanCompiler:
             elif node.bool_op == BoolOp.OR:
                 return RowFilter.or_(left, right)
 
-        raise ValueError(f"Node {type(node)} cannot be a RowFilter")
+        raise DiskgraphConfigError(f"Node {type(node)} cannot be a RowFilter")
 
     def _compile_stage_filter(self, node: ASTNode, query: ValidatedPredictiveQuery) -> StageFilter:
         if isinstance(node, Condition):
@@ -457,7 +457,7 @@ class DiskGraphPlanCompiler:
             elif node.bool_op == BoolOp.OR:
                 return StageFilter.or_(left, right)
 
-        raise ValueError(f"Unsupported stage filter node: {type(node)}")
+        raise DiskgraphConfigError(f"Unsupported stage filter node: {type(node)}")
 
     def _has_target_edges(self, node: ASTNode, query: ValidatedPredictiveQuery) -> str:
         """
@@ -476,7 +476,7 @@ class DiskGraphPlanCompiler:
                 break
 
         if not isinstance(node, Aggregation):
-            raise ValueError("Target must contain an Aggregation to check for edges")
+            raise DiskgraphConfigError("Target must contain an Aggregation to check for edges")
 
         alias = self._next_alias("has_edges")
 
@@ -617,4 +617,4 @@ class DiskGraphPlanCompiler:
             self.builder.logical_op(alias, op_str, [left_alias, right_alias])
             return alias
 
-        raise ValueError(f"Unsupported target node: {type(node)}")
+        raise DiskgraphConfigError(f"Unsupported target node: {type(node)}")

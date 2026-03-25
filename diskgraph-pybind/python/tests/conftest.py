@@ -1,4 +1,6 @@
 import pytest
+from diskgraph._c import DiskgraphConfigError, DiskgraphConfigError, DiskgraphDataError, DiskgraphSystemError
+
 import os
 import json
 import subprocess

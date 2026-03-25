@@ -220,7 +220,7 @@ impl GraphProgressSink for IndexProgressAdapter {
 
 pub fn build_progress() -> Option<ProgressCallback> {
     if !std::io::stderr().is_terminal() {
-        return None;
+        return Some(build_log_progress());
     }
     let state = Arc::new(Mutex::new(ProgressState {
         mp: MultiProgress::new(),
@@ -293,6 +293,70 @@ pub fn build_progress() -> Option<ProgressCallback> {
         }
     });
     Some(cb)
+}
+
+struct LogProgressState {
+    last_logged_pct: i32,
+    current: u64,
+}
+
+fn build_log_progress() -> ProgressCallback {
+    let states = Arc::new(Mutex::new(HashMap::<ProgressKey, LogProgressState>::new()));
+    Arc::new(move |event: ProgressEvent| {
+        let mut guard = states.lock().unwrap();
+        let key = ProgressKey {
+            phase: event.phase,
+            table: event.table.clone(),
+            shard: event.shard,
+        };
+
+        let state = guard.entry(key).or_insert(LogProgressState {
+            last_logged_pct: -1,
+            current: 0,
+        });
+
+        match event.kind {
+            ProgressKind::Start => {
+                tracing::info!(
+                    phase = ?event.phase,
+                    table = %event.table,
+                    shard = ?event.shard,
+                    total = ?event.total,
+                    "Ingestion stage started"
+                );
+            }
+            ProgressKind::Advance => {
+                state.current += event.delta;
+                if let Some(total) = event.total {
+                    if total > 0 {
+                        let pct = (state.current as f64 / total as f64 * 100.0) as i32;
+                        // Log every 10%
+                        if pct >= state.last_logged_pct + 10 || (pct >= 100 && state.last_logged_pct < 100) {
+                            tracing::info!(
+                                phase = ?event.phase,
+                                table = %event.table,
+                                shard = ?event.shard,
+                                progress_pct = pct,
+                                current = state.current,
+                                total = total,
+                                "Ingestion stage progress"
+                            );
+                            state.last_logged_pct = pct;
+                        }
+                    }
+                }
+            }
+            ProgressKind::Finish => {
+                tracing::info!(
+                    phase = ?event.phase,
+                    table = %event.table,
+                    shard = ?event.shard,
+                    total = ?event.total.unwrap_or(state.current),
+                    "Ingestion stage finished"
+                );
+            }
+        }
+    })
 }
 
 fn progress_label(event: &ProgressEvent) -> String {
