@@ -875,7 +875,7 @@ pub fn ingest(
 
     let options = diskgraph_ingest::IngestOptions {
         profile_dir: None,
-        progress: None,
+        progress: diskgraph_ingest::progress::build_progress(),
         parallel: true,
         index_mem_budget_bytes: None,
         peak_mem_stats: None,
