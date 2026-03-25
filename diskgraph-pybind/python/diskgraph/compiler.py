@@ -228,8 +228,10 @@ class DiskGraphPlanCompiler:
                 manual_test_values=split_spec.manual_test_values,
             )
 
-        # 4. What-If (Assuming)
-        if query.whatif_ast:
+        # 4. What-If (Assuming) — only for training, not prediction.
+        # GE's batch_pred_table_generator skips ASSUMING entirely;
+        # match that behaviour here.
+        if query.whatif_ast and not is_prediction:
             sf = self._compile_stage_filter(query.whatif_ast, query)
             self.builder.filter(sf)
 
