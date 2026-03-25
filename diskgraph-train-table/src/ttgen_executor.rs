@@ -857,7 +857,9 @@ fn execute_aggregate(
                     }
                 }
                 if let Some(col_idx) = agg.target_col_idx {
-                    acc += read_column_f64(dst_table, dst, col_idx);
+                    if let Some(v) = read_column_f64(dst_table, dst, col_idx) {
+                        acc += v;
+                    }
                 }
                 true
             });
@@ -872,7 +874,9 @@ fn execute_aggregate(
                     }
                 }
                 if let Some(col_idx) = agg.target_col_idx {
-                    w.observe(read_column_f64(dst_table, dst, col_idx));
+                    if let Some(v) = read_column_f64(dst_table, dst, col_idx) {
+                        w.observe(v);
+                    }
                 }
                 true
             });
@@ -887,7 +891,9 @@ fn execute_aggregate(
                     }
                 }
                 if let Some(col_idx) = agg.target_col_idx {
-                    acc = acc.min(read_column_f64(dst_table, dst, col_idx));
+                    if let Some(v) = read_column_f64(dst_table, dst, col_idx) {
+                        acc = acc.min(v);
+                    }
                 }
                 true
             });
@@ -902,7 +908,9 @@ fn execute_aggregate(
                     }
                 }
                 if let Some(col_idx) = agg.target_col_idx {
-                    acc = acc.max(read_column_f64(dst_table, dst, col_idx));
+                    if let Some(v) = read_column_f64(dst_table, dst, col_idx) {
+                        acc = acc.max(v);
+                    }
                 }
                 true
             });

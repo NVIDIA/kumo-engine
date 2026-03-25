@@ -218,19 +218,20 @@ pub fn read_column_value_nullable(
 }
 
 /// Read a column as f64 from a node's rowpack data.
-/// Returns 0.0 if not found or not numeric.
+/// Returns `None` if the column is NULL or if the node data is missing,
+/// matching SQL/Spark NULL-skip semantics for aggregations.
 pub fn read_column_f64(
     table: &Arc<TableReader>,
     node_id: u64,
     col_idx: usize,
-) -> f64 {
-    read_column_value(table, node_id, col_idx)
-        .map(|v| match v {
-            Value::Int(i) => i as f64,
-            Value::Float(f) => f,
-            _ => 0.0,
+) -> Option<f64> {
+    read_column_value_nullable(table, node_id, col_idx)
+        .flatten()
+        .and_then(|v| match v {
+            Value::Int(i) => Some(i as f64),
+            Value::Float(f) => Some(f),
+            _ => None,
         })
-        .unwrap_or(0.0)
 }
 
 /// Read a column as i64 from a node's rowpack data.
