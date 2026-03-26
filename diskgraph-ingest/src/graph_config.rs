@@ -396,7 +396,6 @@ impl GraphConfig {
         let mut table_names_ci: HashMap<String, String> = HashMap::new();
         let mut table_map: HashMap<&str, &TableSpec> = HashMap::new();
         let mut cloud_source: Option<CloudSource> = None;
-        let mut has_local_paths = false;
         for table in &self.tables {
             if table.name.trim().is_empty() {
                 errors.push("table name cannot be empty".to_string());
@@ -423,13 +422,15 @@ impl GraphConfig {
                 errors.push(format!("table {} has no columns", table.name));
             }
             let mut col_names = HashSet::new();
+            // Track per-table path types: a single table must not mix
+            // local and cloud paths, but different tables CAN use
+            // different path types (e.g. one table local, another S3).
+            let mut table_has_cloud = false;
+            let mut table_has_local = false;
             for path in table.get_paths() {
                 match parse_cloud_source(path) {
                     Ok(Some(source)) => {
-                        if has_local_paths {
-                            errors
-                                .push(format!("table {} mixes local and cloud paths", table.name));
-                        }
+                        table_has_cloud = true;
                         if let Some(existing) = &cloud_source {
                             if existing != &source {
                                 errors.push(
@@ -442,14 +443,15 @@ impl GraphConfig {
                         }
                     }
                     Ok(None) => {
-                        if cloud_source.is_some() {
-                            errors
-                                .push(format!("table {} mixes local and cloud paths", table.name));
-                        }
-                        has_local_paths = true;
+                        table_has_local = true;
                     }
                     Err(err) => errors.push(err.to_string()),
                 }
+            }
+            if table_has_cloud && table_has_local {
+                errors.push(format!(
+                    "table {} mixes local and cloud paths", table.name
+                ));
             }
             for col in &table.columns {
                 if col.name.trim().is_empty() {
