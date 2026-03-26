@@ -40,21 +40,25 @@ jobs:
 
       - name: Set version
         run: |
-          VERSION=$(grep -m1 '^version = ' diskgraph-pybind/pyproject.toml | cut -d '"' -f2)
-          if [ -z "$VERSION" ]; then
+          BASE_VERSION=$(grep -m1 '^version = ' diskgraph-pybind/pyproject.toml | cut -d '"' -f2)
+          if [ -z "$BASE_VERSION" ]; then
             echo "Failed to parse version from diskgraph-pybind/pyproject.toml"
             exit 1
           fi
-          echo "VERSION_NUM=${VERSION}" >> $GITHUB_ENV
-
-      - name: Set time
-        run: echo "TODAY=$(date +'%Y%m%d')" >> $GITHUB_ENV
-
-      - name: Set version with date
-        run: echo "VERSION_TODAY=${{ env.VERSION_NUM }}.dev${{ env.TODAY }}" >> $GITHUB_ENV
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-8)
+          TODAY=$(date +'%Y%m%d')
+          # Embed commit SHA in version for traceability.
+          # PEP 440 local version: 0.1.0+g<sha> (works for direct file installs).
+          VERSION="${BASE_VERSION}+g${SHORT_SHA}"
+          echo "VERSION=${VERSION}" >> $GITHUB_ENV
+          echo "VERSION_TODAY=${BASE_VERSION}.dev${TODAY}" >> $GITHUB_ENV
 
       - name: Build wheel
         run: |
+          # Patch pyproject.toml with versioned string before build
+          sed -i "s/^version = .*/version = \"${{ env.VERSION }}\"/" diskgraph-pybind/pyproject.toml
+          cat diskgraph-pybind/pyproject.toml | grep version
+
           maturin build \
             --manifest-path diskgraph-pybind/Cargo.toml \
             --release \
@@ -74,6 +78,7 @@ jobs:
           prefix="s3://kumo-diskgraph/packages/${{ matrix.os }}/py${{ matrix.python }}"
           aws s3 cp "${{ env.WHEEL_PATH }}" "$prefix/latest/${{ env.WHEEL_BASENAME }}"
           aws s3 cp "${{ env.WHEEL_PATH }}" "$prefix/${{ env.VERSION_TODAY }}/${{ env.WHEEL_BASENAME }}"
+          aws s3 cp "${{ env.WHEEL_PATH }}" "$prefix/commit/${{ github.sha }}/${{ env.WHEEL_BASENAME }}"
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
