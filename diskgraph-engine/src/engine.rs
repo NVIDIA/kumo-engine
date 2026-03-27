@@ -453,15 +453,19 @@ impl DiskGraphEngine {
     }
 
     pub fn find_shard(&self, shards: &[ShardHandle], global_id: u64) -> Result<usize> {
-        for (i, shard) in shards.iter().enumerate() {
-            if global_id >= shard.min_id && global_id <= shard.max_id {
-                return Ok(i);
-            }
-        }
-        Err(EngineError::DataCorruption(format!(
-            "node id {} not found in any shard",
-            global_id
-        )))
+        shards
+            .binary_search_by(|s| {
+                if global_id < s.min_id {
+                    std::cmp::Ordering::Greater
+                } else if global_id > s.max_id {
+                    std::cmp::Ordering::Less
+                } else {
+                    std::cmp::Ordering::Equal
+                }
+            })
+            .map_err(|_| {
+                EngineError::DataCorruption(format!("node id {} not found in any shard", global_id))
+            })
     }
 
     fn compile_plan(

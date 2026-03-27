@@ -717,3 +717,41 @@ fn test_empty_shard_between_valid_filtered() {
     assert!(result.is_ok());
     assert_eq!(result.unwrap(), 1);
 }
+
+#[test]
+fn test_find_shard_binary_search_many_shards() {
+    // Verify binary search works correctly across many contiguous shards,
+    // hitting first, middle, last shards and boundary IDs.
+    let graph = TestGraph::new();
+    let valid_shard = &graph.sampler.readers[0][0];
+
+    let shards: Vec<ShardHandle> = (0..10)
+        .map(|i| ShardHandle {
+            reader: valid_shard.reader.clone(),
+            min_id: i * 100,
+            max_id: i * 100 + 99,
+        })
+        .collect();
+
+    // First shard: ids 0..99
+    let r = graph.sampler.find_shard(&shards, 0);
+    assert_eq!(r.unwrap(), 0);
+    let r = graph.sampler.find_shard(&shards, 99);
+    assert_eq!(r.unwrap(), 0);
+
+    // Middle shard: ids 500..599
+    let r = graph.sampler.find_shard(&shards, 500);
+    assert_eq!(r.unwrap(), 5);
+    let r = graph.sampler.find_shard(&shards, 550);
+    assert_eq!(r.unwrap(), 5);
+
+    // Last shard: ids 900..999
+    let r = graph.sampler.find_shard(&shards, 900);
+    assert_eq!(r.unwrap(), 9);
+    let r = graph.sampler.find_shard(&shards, 999);
+    assert_eq!(r.unwrap(), 9);
+
+    // Out of range
+    let r = graph.sampler.find_shard(&shards, 1000);
+    assert!(r.is_err());
+}
